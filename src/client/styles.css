@@ -1,0 +1,97 @@
+@import "tailwindcss";
+@source "../../public/index.html";
+@source "./**/*.ts";
+
+/* Semantic tokens — utilities like bg-surface/text-fg resolve to CSS vars that
+   flip with the .light / .dark class on <html>, giving true light & dark modes. */
+@theme {
+  --color-bg: var(--c-bg);
+  --color-surface: var(--c-surface);
+  --color-raised: var(--c-raised);
+  --color-hover: var(--c-hover);
+  --color-line: var(--c-line);
+  --color-fg: var(--c-fg);
+  --color-muted: var(--c-muted);
+  --color-faint: var(--c-faint);
+  --color-accent: var(--c-accent);
+  --color-accent-fg: var(--c-accent-fg);
+  --color-accent-soft: var(--c-accent-soft);
+  --color-sidebar: var(--c-sidebar);
+  --color-sidebar-fg: var(--c-sidebar-fg);
+  --color-sidebar-muted: var(--c-sidebar-muted);
+  --color-sidebar-hover: var(--c-sidebar-hover);
+  --color-sidebar-active: var(--c-sidebar-active);
+  --color-danger: var(--c-danger);
+  --color-ok: var(--c-ok);
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.dark {
+  --c-bg: #0e1117; --c-surface: #151a21; --c-raised: #1b212b; --c-hover: #ffffff14;
+  --c-line: #262d38; --c-fg: #e7e9ee; --c-muted: #9aa4b2; --c-faint: #6b7480;
+  --c-accent: #6d76f5; --c-accent-fg: #ffffff; --c-accent-soft: #6d76f524;
+  --c-sidebar: #14101c; --c-sidebar-fg: #d9d5e0; --c-sidebar-muted: #8f8899; --c-sidebar-hover: #ffffff12; --c-sidebar-active: #6d76f5;
+  --c-danger: #f2547d; --c-ok: #2fbe86;
+}
+.light {
+  --c-bg: #ffffff; --c-surface: #ffffff; --c-raised: #f6f7f9; --c-hover: #0000000a;
+  --c-line: #e5e7ec; --c-fg: #1a1d21; --c-muted: #5b606b; --c-faint: #8b909b;
+  --c-accent: #4f46e5; --c-accent-fg: #ffffff; --c-accent-soft: #4f46e514;
+  --c-sidebar: #3f0e40; --c-sidebar-fg: #f3eef4; --c-sidebar-muted: #c3aec4; --c-sidebar-hover: #ffffff1a; --c-sidebar-active: #ffffff26;
+  --c-danger: #e01e5a; --c-ok: #007a5a;
+}
+
+html, body { height: 100%; }
+body { background: var(--c-bg); color: var(--c-fg); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--c-line); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--c-faint); background-clip: content-box; }
+
+/* Buttons */
+.btn, .btn-primary, .btn-ghost, .btn-danger, .btn-subtle { @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors; }
+.btn-primary { @apply bg-accent text-accent-fg hover:opacity-90; }
+.btn-ghost { @apply text-muted hover:bg-hover hover:text-fg; }
+.btn-subtle { @apply bg-raised text-fg hover:bg-hover; }
+.btn-danger { @apply bg-danger text-white hover:opacity-90; }
+
+/* Inputs */
+.field { @apply w-full rounded-lg border border-line bg-raised px-3 py-2 text-sm text-fg outline-none transition placeholder:text-faint focus:border-accent; }
+select.field { @apply cursor-pointer appearance-none bg-[image:var(--chev)] bg-[length:16px] bg-[right_0.6rem_center] bg-no-repeat pr-9; }
+:root { --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%239aa4b2' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E"); }
+
+.card { @apply rounded-xl border border-line bg-surface; }
+.chip { @apply inline-flex items-center gap-1 rounded-full border border-line bg-raised px-2 py-0.5 text-xs text-muted; }
+
+/* Markdown */
+.md { @apply text-[15px] leading-relaxed; }
+.md > :first-child { @apply mt-0; }
+.md > :last-child { @apply mb-0; }
+.md p { @apply my-1.5; }
+.md a { @apply text-accent underline underline-offset-2; }
+.md code { @apply rounded bg-raised px-1.5 py-0.5 font-mono text-[0.85em] text-accent; }
+.md pre { @apply my-2 overflow-x-auto rounded-lg border border-line bg-raised p-3; }
+.md pre code { @apply bg-transparent p-0 text-fg; }
+.md ul { @apply my-1.5 list-disc space-y-0.5 pl-5; }
+.md ol { @apply my-1.5 list-decimal space-y-0.5 pl-5; }
+.md li { @apply pl-0.5; }
+.md strong { @apply font-semibold text-fg; }
+.md em { @apply italic; }
+.md del { @apply text-muted line-through; }
+.md blockquote { @apply my-1.5 border-l-2 border-accent/50 pl-3 text-muted; }
+.md hr { @apply my-3 border-t border-line; }
+.md h1 { @apply mt-3 mb-1.5 text-xl font-bold; }
+.md h2 { @apply mt-3 mb-1 text-lg font-bold; }
+.md h3 { @apply mt-2.5 mb-1 text-base font-semibold; }
+.md h4, .md h5, .md h6 { @apply mt-2 mb-1 text-sm font-semibold; }
+.md table { @apply my-2 block w-fit max-w-full overflow-x-auto border-collapse text-sm; }
+.md th, .md td { @apply border border-line px-2.5 py-1.5 text-left align-top; }
+.md th { @apply bg-raised font-semibold; }
+.md tbody tr:nth-child(even) { @apply bg-raised/50; }
+
+/* xterm */
+.xterm { padding: 8px; height: 100%; }
+.xterm-viewport::-webkit-scrollbar { width: 8px; }
+
+/* transitions for theme flip */
+.themed { transition: background-color .15s ease, color .15s ease, border-color .15s ease; }

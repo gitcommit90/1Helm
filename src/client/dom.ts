@@ -1,0 +1,140 @@
+export type Child = Node | string | null | undefined | false;
+
+/** Tiny hyperscript helper. Attributes: on* = listeners, class/style/dataset/value/checked handled. */
+export function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, any> = {}, ...children: Child[]): HTMLElementTagNameMap[K] {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
+    if (k === "class") e.className = v;
+    else if (k === "html") e.innerHTML = v;
+    else if (k === "dataset") Object.assign(e.dataset, v);
+    else if (k.startsWith("on") && typeof v === "function") e.addEventListener(k.slice(2).toLowerCase(), v);
+    else if (k in e) (e as any)[k] = v;
+    else e.setAttribute(k, String(v));
+  }
+  for (const c of children.flat()) if (c != null && c !== false) e.append(c as Node | string);
+  return e;
+}
+
+export const clear = (n: Node): void => { while (n.firstChild) n.removeChild(n.firstChild); };
+export const add = (parent: ParentNode, ...children: Child[]): void => { for (const c of children.flat()) if (c != null && c !== false) parent.append(c as Node | string); };
+export const esc = (s: string): string => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
+
+/** Minimal, safe Markdown → HTML (escapes first, then applies formatting). */
+/** Inline formatting (applied to already HTML-escaped text). */
+function inline(s: string): string {
+  return s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+?)__/g, "<strong>$1</strong>")
+    .replace(/\*([^*\n]+?)\*/g, "<em>$1</em>")
+    .replace(/(^|[^\w])_([^_\n]+?)_(?!\w)/g, "$1<em>$2</em>")
+    .replace(/~~([^~]+?)~~/g, "<del>$1</del>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/(^|\s)(@[a-zA-Z0-9_.-]+)/g, '$1<span class="font-medium text-accent">$2</span>');
+}
+const splitRow = (line: string): string[] => line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+
+/** Lightweight, safe Markdown → HTML: headings, lists (ul/ol), tables, quotes, code, hr, inline. */
+export function md(src: string): string {
+  const blocks: string[] = [];
+  let s = src.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, _lang, code) => { blocks.push(`<pre><code>${esc(String(code).replace(/\n$/, ""))}</code></pre>`); return `\u0000${blocks.length - 1}\u0000`; });
+  s = esc(s);
+  const lines = s.split("\n");
+  const out: string[] = [];
+  let list: "ul" | "ol" | null = null;
+  let para: string[] = [];
+  const closeList = (): void => { if (list) { out.push(`</${list}>`); list = null; } };
+  const flushPara = (): void => { if (para.length) { out.push(`<p>${para.map(inline).join("<br>")}</p>`); para = []; } };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\u0000\d+\u0000$/.test(line)) { flushPara(); closeList(); out.push(line); continue; }
+    const head = line.match(/^(#{1,6})\s+(.*)$/);
+    if (head) { flushPara(); closeList(); const l = head[1].length; out.push(`<h${l}>${inline(head[2])}</h${l}>`); continue; }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); closeList(); out.push("<hr>"); continue; }
+    // GFM table: header row followed by a |---|---| separator
+    if (line.includes("|") && i + 1 < lines.length && /^\s*\|?[\s:|-]*-{1,}[\s:|-]*\|?\s*$/.test(lines[i + 1]) && lines[i + 1].includes("|")) {
+      flushPara(); closeList();
+      const header = splitRow(line); i++;
+      const rows: string[][] = [];
+      while (i + 1 < lines.length && lines[i + 1].includes("|") && lines[i + 1].trim() !== "") rows.push(splitRow(lines[++i]));
+      out.push(`<table><thead><tr>${header.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
+      continue;
+    }
+    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (ul) { flushPara(); if (list !== "ul") { closeList(); out.push("<ul>"); list = "ul"; } out.push(`<li>${inline(ul[1])}</li>`); continue; }
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ol) { flushPara(); if (list !== "ol") { closeList(); out.push("<ol>"); list = "ol"; } out.push(`<li>${inline(ol[1])}</li>`); continue; }
+    const bq = line.match(/^\s*&gt;\s?(.*)$/);
+    if (bq) { flushPara(); closeList(); out.push(`<blockquote>${inline(bq[1])}</blockquote>`); continue; }
+    if (line.trim() === "") { flushPara(); closeList(); continue; }
+    closeList(); para.push(line);
+  }
+  flushPara(); closeList();
+  return out.join("\n").replace(/\u0000(\d+)\u0000/g, (_m, i) => blocks[Number(i)]);
+}
+
+const PALETTE = ["#f472b6", "#fb923c", "#34d399", "#60a5fa", "#a78bfa", "#22d3ee", "#facc15", "#f87171"];
+export const color = (seed: string): string => PALETTE[[...seed].reduce((a, c) => a + c.charCodeAt(0), 0) % PALETTE.length];
+export const initials = (name: string): string => name.split(/[\s_-]+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?";
+
+export function timeLabel(ts: number): string {
+  const d = new Date(ts);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const t = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return d.getTime() >= today.getTime() ? t : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${t}`;
+}
+export const sameDay = (a: number, b: number): boolean => new Date(a).toDateString() === new Date(b).toDateString();
+export function dayLabel(ts: number): string {
+  const d = new Date(ts); const today = new Date(); const yest = new Date(today.getTime() - 86400000);
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === yest.toDateString()) return "Yesterday";
+  return d.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+}
+
+const ICONS: Record<string, string> = {
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  moon: '<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.6 1.6 0 00-1.8-.3 1.6 1.6 0 00-1 1.5V21a2 2 0 11-4 0v-.1A1.6 1.6 0 009 19.4a1.6 1.6 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.6 1.6 0 00.3-1.8 1.6 1.6 0 00-1.5-1H3a2 2 0 110-4h.1A1.6 1.6 0 004.6 9a1.6 1.6 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.6 1.6 0 001.8.3H9a1.6 1.6 0 001-1.5V3a2 2 0 114 0v.1a1.6 1.6 0 001 1.5 1.6 1.6 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.6 1.6 0 00-.3 1.8V9a1.6 1.6 0 001.5 1H21a2 2 0 110 4h-.1a1.6 1.6 0 00-1.5 1z"/>',
+  terminal: '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>',
+  sliders: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
+  thread: '<path d="M21 11.5a8.4 8.4 0 01-9 8.4L3 21l1.1-3.2A8.4 8.4 0 1121 11.5z"/>',
+  file: '<path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/>',
+  paperclip: '<path d="M21.4 11.05l-8.5 8.5a5 5 0 01-7.1-7.1l8.5-8.5a3.3 3.3 0 014.7 4.7l-8.5 8.5a1.7 1.7 0 01-2.4-2.4l7.9-7.8"/>',
+  send: '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
+  plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6M10 11v6M14 11v6M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>',
+  splitRight: '<rect x="3" y="4" width="18" height="16" rx="2"/><line x1="12" y1="4" x2="12" y2="20"/>',
+  splitDown: '<rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="12" x2="21" y2="12"/>',
+  x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  check: '<polyline points="20 6 9 17 4 12"/>',
+};
+export function icon(name: keyof typeof ICONS | string, size = 16): SVGElement {
+  const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("width", String(size)); s.setAttribute("height", String(size));
+  s.setAttribute("fill", "none"); s.setAttribute("stroke", "currentColor"); s.setAttribute("stroke-width", "2");
+  s.setAttribute("stroke-linecap", "round"); s.setAttribute("stroke-linejoin", "round"); s.style.display = "inline-block";
+  s.innerHTML = ICONS[name] || "";
+  return s;
+}
+
+let audioCtx: AudioContext | null = null;
+/** Synthesized notification chirp — no asset files needed. */
+export function beep(kind: "msg" | "mention" = "msg"): void {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || (window as any).webkitAudioContext)();
+    const ctx = audioCtx;
+    const notes = kind === "mention" ? [880, 1320] : [660, 990];
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator(); const gain = ctx.createGain();
+      osc.type = "sine"; osc.frequency.value = freq;
+      const t0 = ctx.currentTime + i * 0.09;
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(0.12, t0 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.16);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(t0); osc.stop(t0 + 0.18);
+    });
+  } catch { /* audio not available */ }
+}

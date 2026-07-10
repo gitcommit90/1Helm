@@ -1,0 +1,33 @@
+{
+  "name": "ctrl-pane",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CTRL PANE — a lightweight Slack alternative with a BYOK AI bot and integrated terminals.",
+  "scripts": {
+    "build:js": "esbuild src/client/app.ts --bundle --format=esm --outfile=public/bundle.js --loader:.css=css --minify",
+    "build:css": "tailwindcss -i src/client/styles.css -o public/app.css --minify",
+    "build:stamp": "node src/build/stamp.mjs",
+    "build": "npm run build:js && npm run build:css && npm run build:stamp",
+    "start": "node --disable-warning=ExperimentalWarning src/server/index.ts",
+    "dev": "npm run build && npm start",
+    "watch:js": "esbuild src/client/app.ts --bundle --format=esm --outfile=public/bundle.js --loader:.css=css --watch",
+    "watch:css": "tailwindcss -i src/client/styles.css -o public/app.css --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencoredev/loginwithchatgpt-server": "^0.2.0",
+    "node-pty": "^1.1.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.2",
+    "@types/node": "^26.1.1",
+    "@types/ws": "^8.18.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "esbuild": "^0.28.1",
+    "puppeteer": "^25.3.0",
+    "typescript": "^7.0.2"
+  }
+}
