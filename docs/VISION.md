@@ -38,6 +38,16 @@ The starting codebase is a compact Node/TypeScript application:
 
 Development happens on the primary development machine. The private source repository is [`gitcommit90/1Helm`](https://github.com/gitcommit90/1Helm). The isolated fresh-user sandbox is the Hetzner VPS accessed with `ssh demo1helm`, publicly reachable at `http://167.233.229.141:8123` during early HTTP-only development.
 
+### VPS deploy rule (standing order)
+The demo VPS is a **fresh-user sandbox**. Every deploy/update there is a cold first-run by default:
+
+1. Pull the target branch
+2. Wipe `/root/1helm/data`
+3. Rebuild and restart
+4. Confirm `/api/setup/status` reports `needs_setup: true` with no users/providers
+
+Preserve VPS state only when the product owner explicitly says so. Use `scripts/deploy-vps-fresh.sh`.
+
 ## Cold-install baseline — 2026-07-10
 
 The first fresh VPS install established the gap between a developer checkout and a consumer install:
@@ -60,11 +70,13 @@ These findings are inputs to a future `install.sh`, not user-facing requirements
 - Fresh VPS cloned and started with official Node 22.
 - Plain-HTTP asset loading repaired in PR #1.
 
-### Slice 1 — 1Helm front door (in progress)
+### Slice 1 — 1Helm front door
 
 - User-facing rename from CTRL PANE to 1Helm.
 - First-run setup wizard: account, AI provider, terminal preference, workspace name.
 - `#main` and a preconfigured `@skipper` welcome message.
+- Wizard UX repair (`b7bdcaf`): scroll-safe layout, tested custom-provider model selection, async click locks, redesigned visual system.
+- Standing VPS rule: always redeploy as a wiped first-run unless told to preserve state.
 
 ### Next slices
 
