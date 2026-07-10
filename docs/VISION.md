@@ -86,7 +86,8 @@ These findings are inputs to a future `install.sh`, not user-facing requirements
 - **Release-state resolved — 2026-07-10:** PR #1 was marked ready and merged into `main` as merge commit `4887e0d`. GitHub’s default branch now contains the 1Helm product vision, README, onboarding, fresh-deploy rule, and product record.
 
 - **Public README hygiene — 2026-07-10:** removed the Demo VPS / sandbox / private-deploy section from `README.md`. Public-facing docs must not publish private VPS hostnames, IPs, SSH aliases, or internal wipe/deploy procedure. Those stay in this product record and operator tooling only.
-- **VPS state check — 2026-07-10:** the public sandbox is currently **not fresh**. Direct `GET /api/setup/status` reported `needs_setup: false`, `has_users: true`, `setup_complete: true`, workspace `1HelmDemo`, `terminals_enabled: true`, and `provider_count: 1`. It therefore retains a completed workspace and existing login/session state. Do not represent the URL as a cold install until it is deliberately redeployed with the fresh-wipe helper and rechecked.
+- **VPS state check — 2026-07-10:** the public sandbox was found **not fresh**: direct `GET /api/setup/status` reported `needs_setup: false`, `has_users: true`, `setup_complete: true`, workspace `1HelmDemo`, `terminals_enabled: true`, and `provider_count: 1`. It retained a completed workspace and existing login/session state.
+- **Confirmed cold redeploy — 2026-07-10:** after an explicit owner request, deployed `main` with `scripts/deploy-vps-fresh.sh`, discarding only a generated `public/index.html` stamp that had blocked the VPS branch checkout. The live public endpoint now reports `needs_setup: true`, `has_users: false`, `setup_complete: false`, and `provider_count: 0`; title is `1Helm`, and index/CSS/JS each return HTTP 200. This is a real fresh first-run until someone completes onboarding.
 
 ### Next slices
 
