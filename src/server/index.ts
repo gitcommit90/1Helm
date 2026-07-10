@@ -197,6 +197,8 @@ const server = createServer(async (req, res) => {
           name: String(b.name || "My Workspace"),
           terminalsEnabled: b.terminals_enabled !== false && b.terminalsEnabled !== false,
           userId: Number(user.id),
+          providerId: b.provider_id ? Number(b.provider_id) : undefined,
+          model: b.model ? String(b.model) : undefined,
         });
         return json(res, 200, result);
       } catch (e) { return json(res, 400, { error: (e as Error).message }); }

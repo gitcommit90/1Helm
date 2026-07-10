@@ -144,12 +144,19 @@ export async function completeSetup(opts: {
   name: string;
   terminalsEnabled: boolean;
   userId: number;
+  providerId?: number;
+  model?: string;
 }): Promise<{ workspace: Workspace; channelId: number; skipperId: number; welcome: Row }> {
   const name = opts.name.trim() || "My Workspace";
-  const provider = q1("SELECT * FROM providers ORDER BY id LIMIT 1");
+  const provider = opts.providerId
+    ? q1("SELECT * FROM providers WHERE id=?", opts.providerId)
+    : q1("SELECT * FROM providers ORDER BY id LIMIT 1");
   if (!provider) throw new Error("Connect an AI provider before finishing setup.");
 
-  const model = (await pickDefaultModel(Number(provider.id))) || String(provider.kind === "chatgpt" ? "gpt-5.4" : "");
+  const model = opts.model?.trim()
+    || (await pickDefaultModel(Number(provider.id)))
+    || String(provider.kind === "chatgpt" ? "gpt-5.4" : "");
+  if (!model) throw new Error("Choose a model before finishing setup.");
   const channelId = ensureMainChannel(opts.userId);
   const skipperId = await ensureSkipper(Number(provider.id), model, opts.terminalsEnabled);
   addBotToChannel(skipperId, channelId);
