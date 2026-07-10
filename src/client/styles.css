@@ -23,63 +23,237 @@
   --color-sidebar-active: var(--c-sidebar-active);
   --color-danger: var(--c-danger);
   --color-ok: var(--c-ok);
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+/* Precision instrument: graphite bridge + single teal signal. */
 .dark {
-  --c-bg: #0e1117; --c-surface: #151a21; --c-raised: #1b212b; --c-hover: #ffffff14;
-  --c-line: #262d38; --c-fg: #e7e9ee; --c-muted: #9aa4b2; --c-faint: #6b7480;
-  --c-accent: #6d76f5; --c-accent-fg: #ffffff; --c-accent-soft: #6d76f524;
-  --c-sidebar: #14101c; --c-sidebar-fg: #d9d5e0; --c-sidebar-muted: #8f8899; --c-sidebar-hover: #ffffff12; --c-sidebar-active: #6d76f5;
-  --c-danger: #f2547d; --c-ok: #2fbe86;
+  --c-bg: #070b10;
+  --c-surface: #0d131b;
+  --c-raised: #141c27;
+  --c-hover: #ffffff0d;
+  --c-line: #243041;
+  --c-fg: #e8edf4;
+  --c-muted: #93a0b3;
+  --c-faint: #647388;
+  --c-accent: #1fb8a0;
+  --c-accent-fg: #031412;
+  --c-accent-soft: #1fb8a01f;
+  --c-sidebar: #05080d;
+  --c-sidebar-fg: #d7e0ec;
+  --c-sidebar-muted: #7f8da1;
+  --c-sidebar-hover: #ffffff0f;
+  --c-sidebar-active: #1fb8a028;
+  --c-danger: #f0718b;
+  --c-ok: #3ecf9a;
+  --c-glow: rgba(31, 184, 160, 0.16);
+  --c-panel-shadow: 0 28px 80px -48px rgba(0, 0, 0, 0.9);
 }
 .light {
-  --c-bg: #ffffff; --c-surface: #ffffff; --c-raised: #f6f7f9; --c-hover: #0000000a;
-  --c-line: #e5e7ec; --c-fg: #1a1d21; --c-muted: #5b606b; --c-faint: #8b909b;
-  --c-accent: #4f46e5; --c-accent-fg: #ffffff; --c-accent-soft: #4f46e514;
-  --c-sidebar: #3f0e40; --c-sidebar-fg: #f3eef4; --c-sidebar-muted: #c3aec4; --c-sidebar-hover: #ffffff1a; --c-sidebar-active: #ffffff26;
-  --c-danger: #e01e5a; --c-ok: #007a5a;
+  --c-bg: #f4f6f8;
+  --c-surface: #ffffff;
+  --c-raised: #eef2f6;
+  --c-hover: #0b12200a;
+  --c-line: #d7dee7;
+  --c-fg: #111827;
+  --c-muted: #5b6677;
+  --c-faint: #8a95a5;
+  --c-accent: #0f8f7d;
+  --c-accent-fg: #ffffff;
+  --c-accent-soft: #0f8f7d14;
+  --c-sidebar: #0b1220;
+  --c-sidebar-fg: #e7edf6;
+  --c-sidebar-muted: #93a0b4;
+  --c-sidebar-hover: #ffffff12;
+  --c-sidebar-active: #1fb8a02e;
+  --c-danger: #d9486b;
+  --c-ok: #0f8a63;
+  --c-glow: rgba(15, 143, 125, 0.12);
+  --c-panel-shadow: 0 28px 80px -48px rgba(15, 23, 42, 0.35);
 }
 
 html, body { height: 100%; }
-body { background: var(--c-bg); color: var(--c-fg); }
+body {
+  background: var(--c-bg);
+  color: var(--c-fg);
+  font-family: var(--font-sans);
+  letter-spacing: -0.011em;
+  text-rendering: optimizeLegibility;
+}
+::selection { background: color-mix(in srgb, var(--c-accent) 34%, transparent); color: var(--c-fg); }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: var(--c-line); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb {
+  background: var(--c-line);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
 ::-webkit-scrollbar-thumb:hover { background: var(--c-faint); background-clip: content-box; }
 
 /* Buttons */
-.btn, .btn-primary, .btn-ghost, .btn-danger, .btn-subtle { @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors; }
-.btn-primary { @apply bg-accent text-accent-fg hover:opacity-90; }
+.btn, .btn-primary, .btn-ghost, .btn-danger, .btn-subtle {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition;
+}
+.btn-primary {
+  background: var(--c-accent);
+  color: var(--c-accent-fg);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+.btn-primary:hover { filter: brightness(1.05); }
+.btn-primary:active { filter: brightness(0.96); }
 .btn-ghost { @apply text-muted hover:bg-hover hover:text-fg; }
-.btn-subtle { @apply bg-raised text-fg hover:bg-hover; }
+.btn-subtle {
+  @apply border border-line bg-raised text-fg hover:bg-hover;
+}
 .btn-danger { @apply bg-danger text-white hover:opacity-90; }
+.btn:disabled, .btn-primary:disabled, .btn-subtle:disabled, .btn-ghost:disabled, .btn-danger:disabled {
+  opacity: .42;
+  cursor: not-allowed;
+  pointer-events: none;
+}
 
 /* Inputs */
-.field { @apply w-full rounded-lg border border-line bg-raised px-3 py-2 text-sm text-fg outline-none transition placeholder:text-faint focus:border-accent; }
-select.field { @apply cursor-pointer appearance-none bg-[image:var(--chev)] bg-[length:16px] bg-[right_0.6rem_center] bg-no-repeat pr-9; }
-:root { --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%239aa4b2' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E"); }
+.field {
+  @apply w-full rounded-lg border border-line bg-raised px-3 py-2 text-sm text-fg outline-none transition placeholder:text-faint;
+}
+.field:focus {
+  border-color: var(--c-accent);
+  box-shadow: 0 0 0 3px var(--c-accent-soft);
+}
+select.field {
+  @apply cursor-pointer appearance-none bg-[image:var(--chev)] bg-[length:16px] bg-[right_0.6rem_center] bg-no-repeat pr-9;
+}
+:root {
+  --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%2393a0b3' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+}
 
-.card { @apply rounded-xl border border-line bg-surface; }
-.chip { @apply inline-flex items-center gap-1 rounded-full border border-line bg-raised px-2 py-0.5 text-xs text-muted; }
+.card {
+  @apply rounded-xl border border-line bg-surface;
+  box-shadow: var(--c-panel-shadow);
+}
+.chip {
+  @apply inline-flex items-center gap-1 rounded-full border border-line bg-raised px-2 py-0.5 text-xs text-muted;
+}
 
-/* Setup wizard — intentionally quiet: the user's setup choices, not the chrome, carry the page. */
-.wizard-shell { min-height: 100%; overflow-y: auto; background: var(--c-bg); }
-.wizard-shell .btn-primary:disabled,
-.wizard-shell .btn-subtle:disabled,
-.wizard-shell .btn:disabled { opacity: .42; cursor: not-allowed; pointer-events: none; }
-.wizard-label { @apply mb-2 block text-xs font-medium text-muted; }
+/* Brand + identity */
+.brand-mark {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--c-accent) 35%, var(--c-line));
+  background:
+    radial-gradient(circle at 30% 20%, color-mix(in srgb, var(--c-accent) 28%, transparent), transparent 55%),
+    linear-gradient(180deg, color-mix(in srgb, var(--c-raised) 88%, #fff), var(--c-raised));
+  color: var(--c-accent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+.brand-mark-solid {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  background: var(--c-accent);
+  color: var(--c-accent-fg);
+  box-shadow: 0 10px 30px -18px var(--c-glow);
+}
+.logo-plate {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: #f2f2f2;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .2), 0 12px 28px -20px rgba(0, 0, 0, .8);
+}
+.logo-asset { display: block; height: 84%; width: 84%; object-fit: contain; }
+.identity-user {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--c-line) 80%, #fff);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--c-raised) 70%, #fff), var(--c-raised));
+  color: var(--c-fg);
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+.identity-bot {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--c-accent) 30%, var(--c-line));
+  background:
+    radial-gradient(circle at 30% 20%, color-mix(in srgb, var(--c-accent) 24%, transparent), transparent 60%),
+    var(--c-accent-soft);
+  color: var(--c-accent);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+/* Auth / stage backgrounds */
+.auth-stage, .wizard-shell {
+  min-height: 100%;
+  background:
+    radial-gradient(900px 420px at 50% -10%, var(--c-glow), transparent 60%),
+    radial-gradient(700px 360px at 85% 110%, color-mix(in srgb, var(--c-accent) 8%, transparent), transparent 55%),
+    linear-gradient(180deg, color-mix(in srgb, var(--c-bg) 88%, #101820), var(--c-bg));
+}
+.auth-stage { overflow: auto; }
+
+/* Setup wizard — install ritual, same instrument system as the workspace. */
+.wizard-shell { overflow-y: auto; }
+.wizard-label { @apply mb-2 block text-[11px] font-semibold uppercase tracking-[0.14em] text-muted; }
 .wizard-help { @apply mt-1.5 text-xs leading-5 text-muted; }
-.wizard-panel { @apply border border-line bg-surface shadow-[0_14px_50px_-34px_rgba(0,0,0,.55)]; }
-.wizard-choice { @apply w-full border border-line bg-surface p-4 text-left transition-colors; }
-.wizard-choice:hover { @apply bg-raised; }
-.wizard-choice.is-active { @apply border-fg bg-raised; }
+.wizard-panel {
+  @apply overflow-hidden border border-line bg-surface;
+  border-radius: 18px;
+  box-shadow: var(--c-panel-shadow);
+  backdrop-filter: blur(8px);
+}
+.wizard-choice {
+  @apply w-full border border-line bg-surface p-4 text-left transition;
+  border-radius: 14px;
+}
+.wizard-choice:hover { @apply bg-raised; border-color: color-mix(in srgb, var(--c-accent) 30%, var(--c-line)); }
+.wizard-choice.is-active {
+  border-color: color-mix(in srgb, var(--c-accent) 55%, var(--c-line));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--c-accent-soft) 70%, var(--c-surface)), var(--c-raised));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-accent) 18%, transparent);
+}
 .wizard-status-ok { @apply border-l-2 border-ok bg-raised px-3 py-2 text-sm text-fg; }
 .wizard-status-err { @apply border-l-2 border-danger bg-raised px-3 py-2 text-sm text-fg; }
-.wizard-status-warn { @apply border-l-2 border-fg bg-raised px-3 py-2 text-sm text-fg; }
-.wizard-progress { height: 2px; background: var(--c-line); }
-.wizard-progress > span { display: block; height: 100%; background: var(--c-fg); transition: width .2s ease; }
-.wizard-provider-mark { @apply grid h-8 w-8 shrink-0 place-items-center border border-line bg-raised font-mono text-[10px] font-semibold text-fg; }
+.wizard-status-warn { @apply border-l-2 border-accent bg-raised px-3 py-2 text-sm text-fg; }
+.wizard-progress {
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--c-line);
+}
+.wizard-progress > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--c-accent) 70%, #fff), var(--c-accent));
+  transition: width .22s ease;
+}
+.wizard-provider-mark {
+  @apply grid h-10 w-10 shrink-0 place-items-center border border-line bg-raised text-accent;
+  border-radius: 12px;
+}
+
+/* Sidebar nav polish */
+.nav-item {
+  @apply flex w-full items-center gap-2 rounded-md px-2 py-[6px] text-left text-[14px] transition;
+}
+.nav-item-active {
+  background: var(--c-sidebar-active);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--c-accent);
+}
+.nav-item-idle {
+  color: var(--c-sidebar-fg);
+}
+.nav-item-idle:hover { background: var(--c-sidebar-hover); color: #fff; }
 
 /* Markdown */
 .md { @apply text-[15px] leading-relaxed; }
