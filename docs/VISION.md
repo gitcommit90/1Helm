@@ -82,6 +82,7 @@ These findings are inputs to a future `install.sh`, not user-facing requirements
 - **Product-record operating rule:** before reporting any completed implementation, verification, VPS deployment, or material product decision, update this document with the confirmed result. The record update is part of completing the work, not a later cleanup task.
 - **README rewrite — 2026-07-10:** `README.md` now leads with the 1Helm product vision (self-hosting control plane, channels as operational objects, `@skipper` as chief of staff), current shipped surface, honest not-yet-shipped list, cold-install notes, and the VPS fresh-deploy rule. The completed scan found no remaining `CTRL PANE`, `CTRL-PANE`, `Slack clone`, or `agent cockpit` framing in the README.
 - **Ship rule — 2026-07-10:** local work is not delivered until it is committed and pushed to the private GitHub branch/PR (`worktree-fix-http-assets` / PR #1). Reporting local file edits as “done” without push is a process failure; finish means GitHub reflects the result.
+- **README/product-record shipped — 2026-07-10:** committed and pushed the README rewrite, public fresh-deploy record, and asset-stamp update as `c3d75e4` (`docs: align README with 1Helm vision`) to [draft PR #1](https://github.com/gitcommit90/1Helm/pull/1). The follow-up product-record commit will carry this shipping confirmation.
 
 ### Next slices
 
