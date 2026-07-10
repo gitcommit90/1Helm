@@ -75,8 +75,13 @@ These findings are inputs to a future `install.sh`, not user-facing requirements
 - User-facing rename from CTRL PANE to 1Helm.
 - First-run setup wizard: account, AI provider, terminal preference, workspace name.
 - `#main` and a preconfigured `@skipper` welcome message.
-- Wizard UX repair (`b7bdcaf`): scroll-safe layout, tested custom-provider model selection, async click locks, redesigned visual system.
+- Wizard UX repair (`b7bdcaf`): scroll-safe layout, tested custom-provider model selection, async click locks.
+- Visual redesign (quiet monochrome): no gradients, no purple/green provider badges, centered single-column surface, thin progress bar, neutral marks for OpenRouter/ChatGPT/API.
 - Standing VPS rule: always redeploy as a wiped first-run unless told to preserve state.
+- **Confirmed public cold-install deployment — 2026-07-10:** deployed `worktree-fix-http-assets` at commit `3fec1d3` to `http://167.233.229.141:8123` using `scripts/deploy-vps-fresh.sh`. The wipe was verified from the public endpoint: `needs_setup: true`, `has_users: false`, `setup_complete: false`, and `provider_count: 0`. This URL must open at **Create the owner account** until someone completes the wizard.
+- **Product-record operating rule:** before reporting any completed implementation, verification, VPS deployment, or material product decision, update this document with the confirmed result. The record update is part of completing the work, not a later cleanup task.
+- **README rewrite — 2026-07-10:** `README.md` now leads with the 1Helm product vision (self-hosting control plane, channels as operational objects, `@skipper` as chief of staff), current shipped surface, honest not-yet-shipped list, cold-install notes, and the VPS fresh-deploy rule. The completed scan found no remaining `CTRL PANE`, `CTRL-PANE`, `Slack clone`, or `agent cockpit` framing in the README.
+- **Ship rule — 2026-07-10:** local work is not delivered until it is committed and pushed to the private GitHub branch/PR (`worktree-fix-http-assets` / PR #1). Reporting local file edits as “done” without push is a process failure; finish means GitHub reflects the result.
 
 ### Next slices
 
