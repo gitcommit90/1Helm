@@ -13,6 +13,7 @@ import { register, unregister, broadcastToChannel, sendToUsers } from "./events.
 import { openSession, attachClient, listSessions } from "./terms.ts";
 import { startAgent } from "./agent.ts";
 import { CHATGPT_KIND, bindChatGPTProviderFromCookie, chatgptSessionStatus, chatgptWebResponse, disconnectChatGPTProvider, listChatGPTModels, writeChatGPTWebResponse } from "./chatgpt.ts";
+import { completeSetup, setupStatus, workspaceView } from "./setup.ts";
 
 const PORT = Number(process.env.PORT || 8123);
 const PUBLIC = join(process.cwd(), "public");
@@ -127,11 +128,12 @@ const server = createServer(async (req, res) => {
         return;
       }
       res.writeHead(200, { "content-type": "text/html", "cache-control": "no-cache, must-revalidate", ...SECURITY_HEADERS });
-      res.end(await readFile(join(PUBLIC, "index.html")).catch(() => "CTRL PANE (run npm run build)"));
+      res.end(await readFile(join(PUBLIC, "index.html")).catch(() => "1Helm (run npm run build)"));
       return;
     }
 
-    // ---- auth (no session required) ----
+    // ---- setup and auth (no session required) ----
+    if (p === "/api/setup/status" && m === "GET") return json(res, 200, setupStatus());
     if (p === "/api/auth/register" && m === "POST") {
       const b = await jbody(req);
       const username = String(b.username || "").trim().toLowerCase();
@@ -184,7 +186,21 @@ const server = createServer(async (req, res) => {
       catch (e) { return json(res, 502, { error: (e as Error).message }); }
     }
 
-    if (p === "/api/me") return json(res, 200, { user: publicUser(user) });
+    if (p === "/api/me") return json(res, 200, { user: publicUser(user), workspace: workspaceView() });
+    if (p === "/api/workspace" && m === "GET") return json(res, 200, { workspace: workspaceView() });
+    if (p === "/api/setup/complete" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Admin only" });
+      if (workspaceView().setup_complete) return json(res, 409, { error: "Setup already completed." });
+      const b = await jbody(req);
+      try {
+        const result = await completeSetup({
+          name: String(b.name || "My Workspace"),
+          terminalsEnabled: b.terminals_enabled !== false && b.terminalsEnabled !== false,
+          userId: Number(user.id),
+        });
+        return json(res, 200, result);
+      } catch (e) { return json(res, 400, { error: (e as Error).message }); }
+    }
     if (p === "/api/auth/logout" && m === "POST") {
       const h = req.headers["authorization"]; if (h?.startsWith("Bearer ")) run("DELETE FROM sessions WHERE token=?", h.slice(7));
       return json(res, 200, { ok: true });
@@ -427,6 +443,6 @@ async function bootstrap(): Promise<void> {
   const existing = q1("SELECT id FROM computers WHERE name='This Computer'");
   if (existing) run("UPDATE computers SET base_url=?, api_key=? WHERE id=?", url, agentKey, existing.id);
   else run("INSERT INTO computers (name, base_url, api_key, created) VALUES ('This Computer',?,?,?)", url, agentKey, now());
-  server.listen(PORT, () => console.log(`CTRL PANE → http://localhost:${PORT}  (local agent on ${agentPort})  data: ${DATA_DIR}`));
+  server.listen(PORT, () => console.log(`1Helm → http://localhost:${PORT}  (local agent on ${agentPort})  data: ${DATA_DIR}`));
 }
 void bootstrap();

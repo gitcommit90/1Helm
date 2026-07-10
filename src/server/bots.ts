@@ -12,7 +12,7 @@ const MAX_TOOL_ROUNDS = 6;
 /** Build the system prompt, including assigned computers and the permission grant. */
 function systemPrompt(bot: Row): string {
   const computers = q("SELECT c.* FROM computers c JOIN bot_computers bc ON bc.computer_id=c.id WHERE bc.bot_id=?", bot.id);
-  let p = `You are ${bot.name}, an AI assistant inside the CTRL PANE workspace. You are replying within a thread. Keep answers focused and useful. Use Markdown.`;
+  let p = `You are ${bot.name}, an AI assistant inside the 1Helm workspace. You are replying within a thread. Keep answers focused and useful. Use Markdown.`;
   if (bot.prompt) p += `\n\n${bot.prompt}`;
   if (computers.length) {
     p += `\n\nYou have been assigned the following computers:\n` +

@@ -1,8 +1,10 @@
-# ⌘ CTRL PANE
+# 1Helm
 
-A lightweight, self-hosted **Slack alternative** with a native **bring-your-own-key AI bot** and **integrated split-pane terminals**. The whole thing is ~1,700 lines of TypeScript — no heavyweight frameworks, no Electron, no build-time magic on the server.
+A lightweight, self-hosted **Slack-like control plane** for AI agents, optional terminals, and (soon) one-click apps that become dedicated channels. Built from a small TypeScript codebase — no heavyweight frameworks, no Electron, no server transpile step.
 
-Multi-channel chat · threads · DMs · drag-and-drop files · admin panel · notification sounds · context-aware AI bots with per-channel/per-thread model selection · WebSocket terminals with server-side keep-alive · one-to-many bot→computer assignment.
+Multi-channel chat · threads · DMs · first-run setup wizard · BYOK AI providers · context-aware bots · WebSocket terminals with server-side keep-alive · one-to-many bot→computer assignment.
+
+See [`docs/VISION.md`](docs/VISION.md) for the product direction and build record.
 
 ---
 
@@ -10,23 +12,30 @@ Multi-channel chat · threads · DMs · drag-and-drop files · admin panel · no
 
 | Piece | How |
 |---|---|
-| **Runtime** | Node 22 runs the server's TypeScript **directly** (native type-stripping) — no `tsc`/`ts-node` build step for the backend. |
+| **Runtime** | Node 22 runs the server's TypeScript **directly** (native type-stripping) — no `tsc`/`ts-node` build step for the backend. Use the official Node 22 binary, not every distro package. |
 | **Database** | `node:sqlite` (built into Node) — no ORM, no external DB. |
 | **Server** | `node:http` + `ws`. No Express, no Nest. |
 | **Terminals** | `node-pty` + an embedded [Open Terminal](https://github.com/open-webui/open-terminal)-compatible agent. |
 | **Client** | Vanilla TS bundled with esbuild + Tailwind v4. `xterm.js` only for terminals. |
 
-Total dependencies at runtime: **`ws`** and **`node-pty`**. That's it.
+Total dependencies at runtime: **`ws`**, **`node-pty`**, and the optional ChatGPT login package.
 
 ## Quick start
 
 ```bash
-npm install
+# Prefer the official Node 22 binary (some distro builds omit TypeScript support)
+PUPPETEER_SKIP_DOWNLOAD=1 npm install
 npm run build      # bundles the client (esbuild) + Tailwind CSS
 npm start          # serves on http://localhost:8123
 ```
 
-Open `http://localhost:8123`. **The first account you create becomes the admin.**
+Open `http://localhost:8123` and walk the setup wizard:
+
+1. Create the first account (it becomes admin).
+2. Connect an AI provider (OpenAI-compatible API key, OpenRouter, or ChatGPT).
+3. Choose whether terminals are enabled.
+4. Name the workspace.
+5. Land in `#main` with **@skipper** ready to help.
 
 Want it to feel like a desktop app? Point Chrome at it:
 
@@ -49,7 +58,7 @@ npm start          # terminal 3
 | `PORT` | `8123` | HTTP/WebSocket port. |
 | `CTRL_DATA_DIR` | `./data` | SQLite DB + uploaded files. |
 
-On first boot CTRL PANE starts a private, loopback-only Open-Terminal agent and registers it as the **"This Computer"** computer, so terminals and bot commands work out of the box.
+On first boot 1Helm starts a private, loopback-only Open-Terminal agent and registers it as the **"This Computer"** computer, so terminals and bot commands work out of the box when enabled.
 
 ---
 

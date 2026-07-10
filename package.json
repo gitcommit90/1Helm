@@ -1,9 +1,9 @@
 {
-  "name": "ctrl-pane",
+  "name": "1helm",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "CTRL PANE — a lightweight Slack alternative with a BYOK AI bot and integrated terminals.",
+  "description": "1Helm — a self-hosted, Slack-like control plane for AI agents, apps, and terminals.",
   "scripts": {
     "build:js": "esbuild src/client/app.ts --bundle --format=esm --outfile=public/bundle.js --loader:.css=css --minify",
     "build:css": "tailwindcss -i src/client/styles.css -o public/app.css --minify",

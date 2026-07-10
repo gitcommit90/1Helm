@@ -6,6 +6,7 @@ export type Channel = { id: number; name: string; kind: string; topic: string; u
 export type Bot = { id: number; name: string; model: string; prompt: string; avatar: string; provider_id: number | null; provider_name: string | null; provider_kind: string | null; computers: number[]; prefs: Record<string, string> };
 export type Computer = { id: number; name: string; base_url: string; has_key: boolean };
 export type Provider = { id: number; name: string; base_url: string; kind: string; has_key: boolean; bots: number };
+export type Workspace = { name: string; terminals_enabled: boolean; setup_complete: boolean };
 
 let token = localStorage.getItem("ctrl.token") || "";
 export const getToken = (): string => token;
