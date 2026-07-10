@@ -63,33 +63,23 @@ select.field { @apply cursor-pointer appearance-none bg-[image:var(--chev)] bg-[
 .card { @apply rounded-xl border border-line bg-surface; }
 .chip { @apply inline-flex items-center gap-1 rounded-full border border-line bg-raised px-2 py-0.5 text-xs text-muted; }
 
-/* Setup wizard */
-.wizard-shell {
-  min-height: 100%;
-  overflow-y: auto;
-  background:
-    radial-gradient(1200px 500px at 10% -10%, color-mix(in oklab, var(--c-accent) 22%, transparent), transparent 60%),
-    radial-gradient(900px 420px at 100% 0%, color-mix(in oklab, var(--c-ok) 12%, transparent), transparent 55%),
-    var(--c-bg);
-}
+/* Setup wizard — intentionally quiet: the user's setup choices, not the chrome, carry the page. */
+.wizard-shell { min-height: 100%; overflow-y: auto; background: var(--c-bg); }
 .wizard-shell .btn-primary:disabled,
 .wizard-shell .btn-subtle:disabled,
-.wizard-shell .btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-  pointer-events: none;
-}
-.wizard-label { @apply mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted; }
-.wizard-help { @apply mt-1 text-xs text-muted; }
-.wizard-panel { @apply rounded-2xl border border-line/80 bg-surface/95 shadow-[0_24px_80px_-40px_rgba(0,0,0,.55)] backdrop-blur; }
-.wizard-choice {
-  @apply w-full rounded-xl border border-line bg-raised/70 p-4 text-left transition;
-}
-.wizard-choice:hover { @apply border-accent/40 bg-hover; }
-.wizard-choice.is-active { @apply border-accent bg-accent-soft ring-1 ring-accent/30; }
-.wizard-status-ok { @apply rounded-lg border border-ok/30 bg-ok/10 px-3 py-2 text-sm text-ok; }
-.wizard-status-err { @apply rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger; }
-.wizard-status-warn { @apply rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300; }
+.wizard-shell .btn:disabled { opacity: .42; cursor: not-allowed; pointer-events: none; }
+.wizard-label { @apply mb-2 block text-xs font-medium text-muted; }
+.wizard-help { @apply mt-1.5 text-xs leading-5 text-muted; }
+.wizard-panel { @apply border border-line bg-surface shadow-[0_14px_50px_-34px_rgba(0,0,0,.55)]; }
+.wizard-choice { @apply w-full border border-line bg-surface p-4 text-left transition-colors; }
+.wizard-choice:hover { @apply bg-raised; }
+.wizard-choice.is-active { @apply border-fg bg-raised; }
+.wizard-status-ok { @apply border-l-2 border-ok bg-raised px-3 py-2 text-sm text-fg; }
+.wizard-status-err { @apply border-l-2 border-danger bg-raised px-3 py-2 text-sm text-fg; }
+.wizard-status-warn { @apply border-l-2 border-fg bg-raised px-3 py-2 text-sm text-fg; }
+.wizard-progress { height: 2px; background: var(--c-line); }
+.wizard-progress > span { display: block; height: 100%; background: var(--c-fg); transition: width .2s ease; }
+.wizard-provider-mark { @apply grid h-8 w-8 shrink-0 place-items-center border border-line bg-raised font-mono text-[10px] font-semibold text-fg; }
 
 /* Markdown */
 .md { @apply text-[15px] leading-relaxed; }

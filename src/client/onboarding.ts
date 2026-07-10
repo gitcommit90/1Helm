@@ -24,11 +24,9 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
   let terminalsEnabled = true;
 
   const shell = h("div", { class: "wizard-shell h-full" });
-  const stage = h("div", { class: "mx-auto flex min-h-full w-full max-w-5xl items-center px-4 py-8 sm:px-8" });
-  const frame = h("div", { class: "grid w-full gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(380px,520px)] lg:items-center" });
-  const story = h("section", { class: "hidden max-w-xl lg:block" });
+  const stage = h("div", { class: "mx-auto flex min-h-full w-full max-w-[620px] items-start px-4 py-8 sm:items-center sm:px-6" });
   const panel = h("section", { class: "w-full" });
-  frame.append(story, panel); stage.append(frame); shell.append(stage); clear(root); root.append(shell);
+  stage.append(panel); shell.append(stage); clear(root); root.append(shell);
 
   const refreshProviders = async (): Promise<void> => {
     if (getToken()) providers = (await api<{ providers: Provider[] }>("/api/providers")).providers;
@@ -44,39 +42,18 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     choice = { provider, models, model: preferred };
   };
 
-  const hero = (): HTMLElement => {
-    const copy = [
-      ["Owner", "You own your data, your agents, and your machine."],
-      ["AI brain", "Bring a provider you already trust. No mystery billing."],
-      ["Access", "Keep the surface simple. Enable terminals only when you need them."],
-      ["Workspace", "Meet Skipper in #main and start building your operating system."],
-    ][step];
-    const stepRows = steps.map((label, index) => {
-      const state = index < step ? "done" : index === step ? "active" : "future";
-      const badgeClass = state === "done"
-        ? "bg-ok text-white"
-        : state === "active"
-          ? "bg-accent text-accent-fg shadow shadow-accent/30"
-          : "bg-raised ring-1 ring-line";
-      return h("div", { class: `flex items-center gap-3 text-sm ${state === "active" ? "text-fg" : "text-muted"}` },
-        h("span", { class: `grid h-7 w-7 place-items-center rounded-full text-xs font-bold ${badgeClass}` }, state === "done" ? icon("check", 13) : String(index + 1)),
-        h("span", { class: state === "active" ? "font-semibold" : "" }, label));
-    });
-    return h("div", { class: "space-y-7" },
-      h("div", { class: "flex items-center gap-3" },
-        h("div", { class: "grid h-11 w-11 place-items-center rounded-2xl bg-accent font-mono text-2xl font-bold text-accent-fg shadow-lg shadow-accent/20" }, "1"),
-        h("div", {}, h("div", { class: "text-xl font-bold tracking-tight text-fg" }, "1Helm"), h("div", { class: "text-sm text-muted" }, "Your software. Your computer. Your control."))),
-      h("div", {}, h("p", { class: "text-sm font-semibold uppercase tracking-[0.18em] text-accent" }, `Step ${step + 1} of ${steps.length}`), h("h1", { class: "mt-3 text-4xl font-semibold tracking-tight text-fg" }, copy[0]), h("p", { class: "mt-4 max-w-lg text-lg leading-relaxed text-muted" }, copy[1])),
-      h("div", { class: "space-y-3" }, ...stepRows));
-  };
+  const brand = (): HTMLElement => h("div", { class: "mb-8 flex items-center justify-between" },
+    h("div", { class: "flex items-center gap-2.5" },
+      h("span", { class: "grid h-8 w-8 place-items-center border border-line bg-fg font-mono text-sm font-semibold text-bg" }, "1"),
+      h("div", {}, h("div", { class: "text-sm font-semibold tracking-tight text-fg" }, "1Helm"), h("div", { class: "text-xs text-muted" }, "Self-hosted control plane"))),
+    h("div", { class: "text-xs text-muted" }, `Step ${step + 1} of ${steps.length}`));
 
-  const mobileBrand = (): HTMLElement => h("div", { class: "mb-5 flex items-center justify-between lg:hidden" },
-    h("div", { class: "flex items-center gap-2" }, h("span", { class: "grid h-8 w-8 place-items-center rounded-xl bg-accent font-mono text-base font-bold text-accent-fg" }, "1"), h("span", { class: "font-bold text-fg" }, "1Helm")),
-    h("span", { class: "text-xs font-semibold text-muted" }, `${step + 1} / ${steps.length}`));
+  const progress = (): HTMLElement => h("div", { class: "mb-8" },
+    h("div", { class: "mb-2 flex justify-between text-[11px] uppercase tracking-[0.14em] text-muted" }, ...steps.map((label, index) => h("span", { class: index === step ? "text-fg" : "" }, label))),
+    h("div", { class: "wizard-progress" }, h("span", { style: `width:${((step + 1) / steps.length) * 100}%` })));
 
   const render = async (): Promise<void> => {
-    clear(story); story.append(hero());
-    clear(panel); panel.append(mobileBrand());
+    clear(panel);
     if (step === 0) panel.append(accountStep());
     else if (step === 1) { await refreshProviders(); panel.append(brainStep()); }
     else if (step === 2) panel.append(accessStep());
@@ -84,14 +61,15 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     shell.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const layout = (eyebrow: string, title: string, subtitle: string, body: HTMLElement, footer?: HTMLElement): HTMLElement =>
+  const layout = (title: string, subtitle: string, body: HTMLElement, footer?: HTMLElement): HTMLElement =>
     h("div", { class: "wizard-panel overflow-hidden" },
-      h("div", { class: "border-b border-line px-6 pb-5 pt-6 sm:px-8" }, h("p", { class: "text-xs font-semibold uppercase tracking-[0.16em] text-accent" }, eyebrow), h("h2", { class: "mt-2 text-2xl font-semibold tracking-tight text-fg" }, title), h("p", { class: "mt-2 text-sm leading-6 text-muted" }, subtitle)),
+      h("div", { class: "px-6 pt-6 sm:px-8 sm:pt-8" }, brand(), progress()),
+      h("div", { class: "px-6 pb-2 sm:px-8" }, h("h2", { class: "text-[1.65rem] font-semibold tracking-tight text-fg" }, title), h("p", { class: "mt-2 max-w-xl text-sm leading-6 text-muted" }, subtitle)),
       h("div", { class: "space-y-5 px-6 py-6 sm:px-8" }, body), footer || null);
 
   const footer = (back: (() => void) | null, next: (() => void), label: string, disabled = false): HTMLElement => {
-    const nextButton = h("button", { class: "btn-primary min-w-32 px-4 py-2", disabled, onclick: next }, label, icon("arrow-right", 16)) as HTMLButtonElement;
-    return h("div", { class: "flex items-center justify-between border-t border-line bg-raised/40 px-6 py-4 sm:px-8" },
+    const nextButton = h("button", { class: "btn-primary min-w-28 px-4 py-2", disabled, onclick: next }, label) as HTMLButtonElement;
+    return h("div", { class: "flex items-center justify-between border-t border-line px-6 py-4 sm:px-8" },
       back ? h("button", { class: "btn-ghost px-2", onclick: back }, "Back") : h("span"), nextButton);
   };
 
@@ -112,7 +90,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     };
     password.addEventListener("keydown", (event) => { if (event.key === "Enter") void submit(); });
     queueMicrotask(() => username.focus());
-    return layout("Start here", "Create the owner account", "This is the administrator for this self-hosted workspace. You can add people later.",
+    return layout("Create the owner account", "This account owns this workspace. Add people later if you need them.",
       h("div", { class: "space-y-4" }, field("Username", username, "Lowercase letters, numbers, dots, dashes, and underscores."), field("Your name", display, "How people and agents will address you."), field("Password", password), status),
       footer(null, () => { void submit(); }, "Continue"));
   };
@@ -143,7 +121,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
       }
       providerChoices.replaceChildren(
         ...providers.map((provider) => h("button", { class: `wizard-choice flex items-center justify-between gap-3 ${provider.id === selected ? "is-active" : ""}`, onclick: () => { void selectExisting(provider); } },
-          h("div", { class: "min-w-0" }, h("div", { class: "flex items-center gap-2" }, h("span", { class: "grid h-8 w-8 place-items-center rounded-lg bg-accent-soft text-xs font-bold text-accent" }, provider.kind === "openrouter" ? "OR" : provider.kind === "chatgpt" ? "GPT" : "API"), h("span", { class: "truncate font-semibold text-fg" }, provider.name)), h("div", { class: "mt-1 truncate text-xs text-muted" }, provider.kind === "chatgpt" ? "Login with ChatGPT" : provider.base_url)),
+          h("div", { class: "min-w-0" }, h("div", { class: "flex items-center gap-2" }, h("span", { class: "wizard-provider-mark" }, provider.kind === "openrouter" ? "OR" : provider.kind === "chatgpt" ? "GPT" : "API"), h("span", { class: "truncate font-semibold text-fg" }, provider.name)), h("div", { class: "mt-1 truncate text-xs text-muted" }, provider.kind === "chatgpt" ? "Login with ChatGPT" : provider.base_url)),
           provider.id === selected ? h("span", { class: "text-ok" }, icon("check", 18)) : h("span", { class: "text-muted" }, "Select"))));
     };
 
@@ -192,8 +170,8 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     const providerChoices = h("div", { class: "space-y-2" });
     const testButton = h("button", { class: "btn-subtle w-full py-2", onclick: (event: Event) => { void testCustom(event.currentTarget as HTMLButtonElement); } }, "Test connection & load models") as HTMLButtonElement;
     useCustom.onclick = () => { void saveCustom(); };
-    const openRouter = h("button", { class: "wizard-choice flex items-center gap-3", onclick: (event: Event) => { void connectOpenRouter(event.currentTarget as HTMLButtonElement); } }, h("span", { class: "grid h-9 w-9 place-items-center rounded-lg bg-[#4b2aad] text-xs font-bold text-white" }, "OR"), h("div", {}, h("div", { class: "font-semibold text-fg" }, "OpenRouter"), h("div", { class: "text-sm text-muted" }, "Connect once. We’ll start Skipper on a free model."))) as HTMLButtonElement;
-    const chatgpt = h("button", { class: "wizard-choice flex items-center gap-3", onclick: (event: Event) => { void connectChatGPT(event.currentTarget as HTMLButtonElement); } }, h("span", { class: "grid h-9 w-9 place-items-center rounded-lg bg-[#10a37f] text-xs font-bold text-white" }, "GPT"), h("div", {}, h("div", { class: "font-semibold text-fg" }, "ChatGPT"), h("div", { class: "text-sm text-muted" }, "Use your Login with ChatGPT account."))) as HTMLButtonElement;
+    const openRouter = h("button", { class: "wizard-choice flex items-center gap-3", onclick: (event: Event) => { void connectOpenRouter(event.currentTarget as HTMLButtonElement); } }, h("span", { class: "wizard-provider-mark" }, "OR"), h("div", {}, h("div", { class: "font-semibold text-fg" }, "OpenRouter"), h("div", { class: "text-sm text-muted" }, "Connect once. We’ll start Skipper on a free model."))) as HTMLButtonElement;
+    const chatgpt = h("button", { class: "wizard-choice flex items-center gap-3", onclick: (event: Event) => { void connectChatGPT(event.currentTarget as HTMLButtonElement); } }, h("span", { class: "wizard-provider-mark" }, "GPT"), h("div", {}, h("div", { class: "font-semibold text-fg" }, "ChatGPT"), h("div", { class: "text-sm text-muted" }, "Use your Login with ChatGPT account."))) as HTMLButtonElement;
 
     const next = async (): Promise<void> => {
       if (!choice?.provider || !choice.model) return;
@@ -209,13 +187,13 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     const brainFooter = footer(() => { step = 0; void render(); }, () => { void next(); }, "Continue", true);
     continueButton = brainFooter.querySelector("button.btn-primary") as HTMLButtonElement;
     queueMicrotask(renderChoice);
-    return layout("Your AI, your bill", "Connect an AI brain", "Choose how Skipper reaches a model. 1Helm stores the connection on this machine and never asks you to pick a provider again for every bot.", body, brainFooter);
+    return layout("Connect an AI brain", "Choose where Skipper gets its model. The connection stays on this machine and can be changed later.", body, brainFooter);
   };
 
   const accessStep = (): HTMLElement => {
     const choiceButton = (enabled: boolean, label: string, copy: string): HTMLElement => h("button", { class: `wizard-choice ${terminalsEnabled === enabled ? "is-active" : ""}`, onclick: () => { terminalsEnabled = enabled; void render(); } },
-      h("div", { class: "flex items-start gap-3" }, h("span", { class: `grid h-10 w-10 shrink-0 place-items-center rounded-xl ${enabled ? "bg-accent text-accent-fg" : "bg-raised text-muted"}` }, enabled ? icon("terminal", 19) : icon("x", 19)), h("div", {}, h("div", { class: "font-semibold text-fg" }, label), h("p", { class: "mt-1 text-sm leading-5 text-muted" }, copy))));
-    return layout("Optional power tool", "Do you want terminal access?", "Most people can leave this off. It only changes whether the Terminals button appears in your sidebar; you can change it later.",
+      h("div", { class: "flex items-start gap-3" }, h("span", { class: "wizard-provider-mark h-10 w-10 text-muted" }, enabled ? icon("terminal", 19) : icon("x", 19)), h("div", {}, h("div", { class: "font-semibold text-fg" }, label), h("p", { class: "mt-1 text-sm leading-5 text-muted" }, copy))));
+    return layout("Do you want terminal access?", "Most people can leave this off. This only controls whether the Terminals button appears in your sidebar.",
       h("div", { class: "space-y-3" }, choiceButton(true, "Enable terminals", "Keep a persistent shell to this machine inside 1Helm."), choiceButton(false, "Keep the workspace focused", "Hide terminals and use chat only for now.")),
       footer(() => { step = 1; void render(); }, () => { step = 3; void render(); }, "Continue"));
   };
@@ -228,13 +206,13 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
       setBusy(button, true, "Starting workspace…");
       try {
         await api("/api/setup/complete", { body: { name: name.value.trim() || "My Workspace", terminals_enabled: terminalsEnabled, provider_id: choice?.provider.id, model: choice?.model } });
-        clear(panel); panel.append(mobileBrand(), h("div", { class: "wizard-panel px-8 py-12 text-center" }, h("div", { class: "mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-ok/15 text-ok" }, icon("check", 27)), h("h2", { class: "mt-5 text-2xl font-semibold text-fg" }, "Your helm is ready."), h("p", { class: "mx-auto mt-3 max-w-sm text-sm leading-6 text-muted" }, "Skipper is setting up your home base in #main.")));
+        clear(panel); panel.append(h("div", { class: "wizard-panel px-8 py-12 text-center" }, h("div", { class: "mx-auto grid h-12 w-12 place-items-center border border-line bg-raised text-fg" }, icon("check", 22)), h("h2", { class: "mt-5 text-2xl font-semibold tracking-tight text-fg" }, "Your workspace is ready."), h("p", { class: "mx-auto mt-3 max-w-sm text-sm leading-6 text-muted" }, "Skipper is setting up your home base in #main.")));
         setTimeout(() => { void opts.onDone(); }, 700);
       } catch (error) { status.replaceChildren(h("div", { class: "wizard-status-err" }, (error as Error).message)); setBusy(button, false); }
     };
     name.addEventListener("keydown", (event) => { if (event.key === "Enter") void finish(); });
     queueMicrotask(() => { name.focus(); name.select(); });
-    return layout("Make it yours", "Name this workspace", "This appears in the sidebar and gives Skipper a proper place to welcome you.",
+    return layout("Name this workspace", "This appears in the sidebar and is how Skipper greets you.",
       h("div", { class: "space-y-4" }, field("Workspace name", name, "You can rename it later."), choice ? h("div", { class: "wizard-status-ok" }, `Skipper will begin with ${choice.provider.name} · ${choice.model}.`) : null, status),
       footer(() => { step = 2; void render(); }, () => { void finish(); }, "Create workspace"));
   };
