@@ -21,13 +21,10 @@ const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javasc
 seed();
 
 // ---- helpers ----
-// Defense-in-depth: browsers ignore HSTS on plain HTTP, and only apply
-// upgrade-insecure-requests when the response itself arrived over a secure
-// context. These do not replace a proper HTTP→HTTPS redirect at the proxy.
-const SECURITY_HEADERS: Record<string, string> = {
-  "strict-transport-security": "max-age=63072000; includeSubDomains",
-  "content-security-policy": "upgrade-insecure-requests",
-};
+// TLS is terminated by the deployment's reverse proxy. Do not advertise an
+// HTTPS-only policy here: local and first-run HTTP deployments must still load
+// their relative JS and CSS assets.
+const SECURITY_HEADERS: Record<string, string> = {};
 const json = (res: ServerResponse, code: number, body: unknown): void => {
   const s = JSON.stringify(body);
   res.writeHead(code, { "content-type": "application/json", ...SECURITY_HEADERS });
