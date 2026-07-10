@@ -83,7 +83,7 @@ These findings are inputs to a future `install.sh`, not user-facing requirements
 - **README rewrite — 2026-07-10:** `README.md` now leads with the 1Helm product vision (self-hosting control plane, channels as operational objects, `@skipper` as chief of staff), current shipped surface, honest not-yet-shipped list, cold-install notes, and the VPS fresh-deploy rule. The completed scan found no remaining `CTRL PANE`, `CTRL-PANE`, `Slack clone`, or `agent cockpit` framing in the README.
 - **Ship rule — 2026-07-10:** local work is not delivered until it is committed and pushed to the private GitHub branch/PR (`worktree-fix-http-assets` / PR #1). Reporting local file edits as “done” without push is a process failure; finish means GitHub reflects the result.
 - **README/product-record shipped — 2026-07-10:** committed and pushed the README rewrite, public fresh-deploy record, and asset-stamp update as `c3d75e4` (`docs: align README with 1Helm vision`) to [draft PR #1](https://github.com/gitcommit90/1Helm/pull/1). The follow-up product-record commit carries this shipping confirmation.
-- **Release-state gap — 2026-07-10:** all 1Helm work, including the rewritten README, is on `worktree-fix-http-assets` in draft PR #1. Default branch `main` still points to the original CTRL PANE import because PR #1 has not been reviewed/merged. GitHub’s repository homepage therefore remains old until that merge occurs.
+- **Release-state resolved — 2026-07-10:** PR #1 was marked ready and merged into `main` as merge commit `4887e0d`. GitHub’s default branch now contains the 1Helm product vision, README, onboarding, fresh-deploy rule, and product record.
 
 ### Next slices
 
