@@ -85,6 +85,8 @@ These findings are inputs to a future `install.sh`, not user-facing requirements
 - **README/product-record shipped — 2026-07-10:** committed and pushed the README rewrite, public fresh-deploy record, and asset-stamp update as `c3d75e4` (`docs: align README with 1Helm vision`) to [draft PR #1](https://github.com/gitcommit90/1Helm/pull/1). The follow-up product-record commit carries this shipping confirmation.
 - **Release-state resolved — 2026-07-10:** PR #1 was marked ready and merged into `main` as merge commit `4887e0d`. GitHub’s default branch now contains the 1Helm product vision, README, onboarding, fresh-deploy rule, and product record.
 
+- **Public README hygiene — 2026-07-10:** removed the Demo VPS / sandbox / private-deploy section from `README.md`. Public-facing docs must not publish private VPS hostnames, IPs, SSH aliases, or internal wipe/deploy procedure. Those stay in this product record and operator tooling only.
+
 ### Next slices
 
 1. Consumer-grade installer and managed service startup.
