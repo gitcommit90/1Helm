@@ -4,8 +4,8 @@
 set -euo pipefail
 
 BRANCH="${1:-$(git rev-parse --abbrev-ref HEAD)}"
-HOST="${1HELM_VPS_HOST:-demo1helm}"
-REMOTE_DIR="${1HELM_VPS_DIR:-/root/1helm}"
+HOST="${ONEHELM_VPS_HOST:-demo1helm}"
+REMOTE_DIR="${ONEHELM_VPS_DIR:-/root/1helm}"
 
 echo "Deploying branch '$BRANCH' to $HOST:$REMOTE_DIR as a FRESH first-run workspace"
 
