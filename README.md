@@ -108,27 +108,6 @@ Runtime deps: `ws`, `node-pty`, and the optional ChatGPT login package.
 
 ---
 
-## Demo VPS (fresh-user sandbox)
-
-Public early-HTTP sandbox: `http://167.233.229.141:8123` (`ssh demo1helm`).
-
-**Standing rule:** every deploy is a cold first-run unless the product owner explicitly says to preserve state.
-
-```bash
-scripts/deploy-vps-fresh.sh [branch]
-```
-
-That script pulls the branch, wipes `/root/1helm/data`, rebuilds, restarts, and confirms `/api/setup/status` reports `needs_setup: true` with no users/providers.
-
-### Cold-install notes (inputs to a future `install.sh`)
-
-- Prefer the **official Node 22** binary; some Ubuntu packages lack TypeScript stripping.
-- Use `PUPPETEER_SKIP_DOWNLOAD=1` during `npm install` unless you need browser tests.
-- OpenRouter OAuth needs a secure browser context (HTTPS or localhost). On plain `http://VPS-IP`, use an API key or ChatGPT until TLS/tunnel support exists.
-- Private GitHub clones need a read-only deploy key on the target machine.
-
----
-
 ## Features in more detail
 
 ### Chat
