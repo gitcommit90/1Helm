@@ -54,22 +54,28 @@ function clearExpiredVerifier(): void {
   } catch { localStorage.removeItem(VERIFIER_KEY); }
 }
 /** On return from OpenRouter, exchange ?code for a key and create a provider. */
-export async function finishOpenRouterOAuth(): Promise<void> {
+export async function finishOpenRouterOAuth(): Promise<{ connected: boolean }> {
   const code = new URLSearchParams(location.search).get("code");
-  if (!code) { clearExpiredVerifier(); return; }
+  if (!code) { clearExpiredVerifier(); return { connected: false }; }
   history.replaceState({}, "", location.pathname);
   const verifier = takeVerifier();
   if (!verifier) {
     console.warn("OpenRouter OAuth: callback code received but no stored PKCE verifier (storage cleared or sign-in older than 30 min)");
     alert("OpenRouter sent back an authorization code, but this browser no longer has the matching sign-in state (it may have been cleared during the redirect). Please click Connect OpenRouter and try again.");
-    return;
+    return { connected: false };
   }
-  try { await api("/api/oauth/openrouter/exchange", { body: { code, code_verifier: verifier, name: "OpenRouter" } }); await reloadProviders(); openSettings("providers"); }
-  catch (e) { alert("OpenRouter connection failed: " + (e as Error).message); }
+  try {
+    await api("/api/oauth/openrouter/exchange", { body: { code, code_verifier: verifier, name: "OpenRouter" } });
+    await reloadProviders();
+    return { connected: true };
+  } catch (e) {
+    alert("OpenRouter connection failed: " + (e as Error).message);
+    return { connected: false };
+  }
 }
 
 /** Start the shared admin Login-with-ChatGPT device flow and show its code in-app. */
-async function startChatGPTOAuth(): Promise<void> {
+export async function startChatGPTOAuth(): Promise<void> {
   const started = await api<{ status: string; userCode?: string; verificationUrl?: string; interval?: number; expiresAt?: number }>("/api/chatgpt/login", { body: {} });
   if (!started.userCode || !started.verificationUrl) throw new Error("ChatGPT did not return a verification code.");
 
@@ -84,7 +90,7 @@ async function startChatGPTOAuth(): Promise<void> {
   const modal = h("div", { class: "fixed inset-0 z-50 grid place-items-center bg-black/60 p-6", onclick: (e: MouseEvent) => { if (e.target === modal) close(); } },
     h("div", { class: "card w-full max-w-md space-y-5 p-6 shadow-2xl" },
       h("div", { class: "flex items-start justify-between gap-4" },
-        h("div", {}, h("h2", { class: "text-lg font-bold text-fg" }, "Connect ChatGPT"), h("p", { class: "mt-1 text-sm text-muted" }, "Connect the shared admin ChatGPT account for CTRL PANE bots.")),
+        h("div", {}, h("h2", { class: "text-lg font-bold text-fg" }, "Connect ChatGPT"), h("p", { class: "mt-1 text-sm text-muted" }, "Connect the shared admin ChatGPT account for 1Helm bots.")),
         h("button", { class: "grid h-8 w-8 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg", title: "Cancel", onclick: close }, icon("x"))),
       h("div", { class: "space-y-2 rounded-lg border border-line bg-raised p-4" },
         h("p", { class: "text-sm text-fg" }, "1. Open the OpenAI verification page."),
@@ -109,7 +115,8 @@ async function startChatGPTOAuth(): Promise<void> {
       await api("/api/providers/chatgpt/complete", { body: {} });
       await reloadProviders();
       modal.remove();
-      openSettings("providers");
+      const setup = await api<{ setup_complete: boolean }>("/api/setup/status");
+      if (setup.setup_complete) openSettings("providers");
       return;
     } catch (e) {
       if (!cancelled) status.textContent = `Still waiting: ${(e as Error).message}`;

@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS computers (
 CREATE TABLE IF NOT EXISTS bot_channels (bot_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, PRIMARY KEY (bot_id, channel_id));
 CREATE TABLE IF NOT EXISTS bot_computers (bot_id INTEGER NOT NULL, computer_id INTEGER NOT NULL, PRIMARY KEY (bot_id, computer_id));
 CREATE TABLE IF NOT EXISTS model_prefs (bot_id INTEGER NOT NULL, scope TEXT NOT NULL, scope_id TEXT NOT NULL, model TEXT NOT NULL, PRIMARY KEY (bot_id, scope, scope_id));
+CREATE TABLE IF NOT EXISTS workspace (
+  id INTEGER PRIMARY KEY CHECK (id = 1), name TEXT NOT NULL DEFAULT 'My Workspace',
+  terminals_enabled INTEGER NOT NULL DEFAULT 1, setup_complete INTEGER NOT NULL DEFAULT 0,
+  created INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_msg_channel ON messages(channel_id, parent_id, id);
 `);
 
@@ -69,10 +74,13 @@ export function verifyPassword(pw: string, stored: string): boolean {
 export const newToken = (): string => randomBytes(24).toString("hex");
 export const now = (): number => Date.now();
 
-/** Ensure the default #general channel exists. Bots/computers are user-added. */
+/** Ensure a new workspace has its configuration row and #main home channel. */
 export function seed(): void {
+  if (!q1("SELECT id FROM workspace WHERE id=1")) {
+    run("INSERT INTO workspace (id, name, terminals_enabled, setup_complete, created) VALUES (1,'My Workspace',1,0,?)", now());
+  }
   if (!q1("SELECT id FROM channels WHERE kind='channel' LIMIT 1")) {
-    run("INSERT INTO channels (name, kind, topic, created) VALUES ('general','channel','Company-wide announcements and chatter',?)", now());
+    run("INSERT INTO channels (name, kind, topic, created) VALUES ('main','channel','Your home base with @skipper',?)", now());
   }
 }
 

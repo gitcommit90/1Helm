@@ -13,6 +13,7 @@ import { register, unregister, broadcastToChannel, sendToUsers } from "./events.
 import { openSession, attachClient, listSessions } from "./terms.ts";
 import { startAgent } from "./agent.ts";
 import { CHATGPT_KIND, bindChatGPTProviderFromCookie, chatgptSessionStatus, chatgptWebResponse, disconnectChatGPTProvider, listChatGPTModels, writeChatGPTWebResponse } from "./chatgpt.ts";
+import { completeSetup, setupStatus, workspaceView } from "./setup.ts";
 
 const PORT = Number(process.env.PORT || 8123);
 const PUBLIC = join(process.cwd(), "public");
@@ -21,13 +22,10 @@ const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javasc
 seed();
 
 // ---- helpers ----
-// Defense-in-depth: browsers ignore HSTS on plain HTTP, and only apply
-// upgrade-insecure-requests when the response itself arrived over a secure
-// context. These do not replace a proper HTTP→HTTPS redirect at the proxy.
-const SECURITY_HEADERS: Record<string, string> = {
-  "strict-transport-security": "max-age=63072000; includeSubDomains",
-  "content-security-policy": "upgrade-insecure-requests",
-};
+// TLS is terminated by the deployment's reverse proxy. Do not advertise an
+// HTTPS-only policy here: local and first-run HTTP deployments must still load
+// their relative JS and CSS assets.
+const SECURITY_HEADERS: Record<string, string> = {};
 const json = (res: ServerResponse, code: number, body: unknown): void => {
   const s = JSON.stringify(body);
   res.writeHead(code, { "content-type": "application/json", ...SECURITY_HEADERS });
@@ -130,11 +128,12 @@ const server = createServer(async (req, res) => {
         return;
       }
       res.writeHead(200, { "content-type": "text/html", "cache-control": "no-cache, must-revalidate", ...SECURITY_HEADERS });
-      res.end(await readFile(join(PUBLIC, "index.html")).catch(() => "CTRL PANE (run npm run build)"));
+      res.end(await readFile(join(PUBLIC, "index.html")).catch(() => "1Helm (run npm run build)"));
       return;
     }
 
-    // ---- auth (no session required) ----
+    // ---- setup and auth (no session required) ----
+    if (p === "/api/setup/status" && m === "GET") return json(res, 200, setupStatus());
     if (p === "/api/auth/register" && m === "POST") {
       const b = await jbody(req);
       const username = String(b.username || "").trim().toLowerCase();
@@ -187,7 +186,23 @@ const server = createServer(async (req, res) => {
       catch (e) { return json(res, 502, { error: (e as Error).message }); }
     }
 
-    if (p === "/api/me") return json(res, 200, { user: publicUser(user) });
+    if (p === "/api/me") return json(res, 200, { user: publicUser(user), workspace: workspaceView() });
+    if (p === "/api/workspace" && m === "GET") return json(res, 200, { workspace: workspaceView() });
+    if (p === "/api/setup/complete" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Admin only" });
+      if (workspaceView().setup_complete) return json(res, 409, { error: "Setup already completed." });
+      const b = await jbody(req);
+      try {
+        const result = await completeSetup({
+          name: String(b.name || "My Workspace"),
+          terminalsEnabled: b.terminals_enabled !== false && b.terminalsEnabled !== false,
+          userId: Number(user.id),
+          providerId: b.provider_id ? Number(b.provider_id) : undefined,
+          model: b.model ? String(b.model) : undefined,
+        });
+        return json(res, 200, result);
+      } catch (e) { return json(res, 400, { error: (e as Error).message }); }
+    }
     if (p === "/api/auth/logout" && m === "POST") {
       const h = req.headers["authorization"]; if (h?.startsWith("Bearer ")) run("DELETE FROM sessions WHERE token=?", h.slice(7));
       return json(res, 200, { ok: true });
@@ -430,6 +445,6 @@ async function bootstrap(): Promise<void> {
   const existing = q1("SELECT id FROM computers WHERE name='This Computer'");
   if (existing) run("UPDATE computers SET base_url=?, api_key=? WHERE id=?", url, agentKey, existing.id);
   else run("INSERT INTO computers (name, base_url, api_key, created) VALUES ('This Computer',?,?,?)", url, agentKey, now());
-  server.listen(PORT, () => console.log(`CTRL PANE → http://localhost:${PORT}  (local agent on ${agentPort})  data: ${DATA_DIR}`));
+  server.listen(PORT, () => console.log(`1Helm → http://localhost:${PORT}  (local agent on ${agentPort})  data: ${DATA_DIR}`));
 }
 void bootstrap();

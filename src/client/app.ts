@@ -1,10 +1,12 @@
-import { api, uploadFile, connectEvents, getToken, setToken, clearToken, type User, type Channel, type Message, type Bot, type Computer, type Provider } from "./api.ts";
+import { api, uploadFile, connectEvents, getToken, setToken, clearToken, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace } from "./api.ts";
 import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, beep, icon } from "./dom.ts";
 import { openSettings, modelRoutingPanel, finishOpenRouterOAuth } from "./settings.ts";
+import { openOnboarding } from "./onboarding.ts";
 import { openTerminals } from "./term.ts";
 
 type State = {
   me: User; users: User[]; channels: Channel[]; bots: Bot[]; computers: Computer[]; providers: Provider[];
+  workspace: Workspace;
   channelId: number; channelBots: Bot[]; messages: Message[];
   threadRoot: Message | null; threadReplies: Message[]; view: "chat" | "terminal";
 };
@@ -24,30 +26,54 @@ export function toggleTheme(): void {
 }
 
 // ---------------- boot ----------------
-async function boot(): Promise<void> {
+export async function boot(): Promise<void> {
+  const setup = await api<{ needs_setup: boolean; has_users: boolean; setup_complete: boolean; workspace: Workspace }>("/api/setup/status").catch(() => null);
+  if (setup && !setup.has_users) return openOnboarding(root, { resume: false, onDone: () => boot() });
   if (!getToken()) return renderAuth();
-  try { S.me = (await api<{ user: User }>("/api/me")).user; }
-  catch { clearToken(); return renderAuth(); }
+  try {
+    const me = await api<{ user: User; workspace: Workspace }>("/api/me");
+    S.me = me.user;
+    S.workspace = me.workspace;
+  } catch { clearToken(); return renderAuth(); }
   // Complete OpenRouter OAuth before loading the workspace so a failed
   // channel/provider fetch cannot swallow the callback.
-  await finishOpenRouterOAuth();
+  const oauth = await finishOpenRouterOAuth();
+  if (!S.workspace.setup_complete && S.me.is_admin) {
+    return openOnboarding(root, { resume: true, resumeStep: oauth.connected ? 2 : 1, onDone: () => boot() });
+  }
+  await enterWorkspace();
+}
+
+async function enterWorkspace(preferredChannelId?: number): Promise<void> {
   S.messages = S.messages || []; S.channelBots = S.channelBots || []; S.view = "chat";
+  if (!S.workspace) {
+    try { S.workspace = (await api<{ workspace: Workspace }>("/api/workspace")).workspace; }
+    catch { S.workspace = { name: "My Workspace", terminals_enabled: true, setup_complete: true }; }
+  }
   await loadWorkspace();
   connectEvents(onEvent);
+  if (preferredChannelId) S.channelId = preferredChannelId;
+  const main = S.channels.find((c) => c.name === "main" && c.kind === "channel");
+  if (!S.channelId && main) S.channelId = main.id;
   if (S.channelId) await openChannel(S.channelId);
   else renderApp();
 }
 
 async function loadWorkspace(): Promise<void> {
-  const [ch, us, bots, comps, provs] = await Promise.all([
+  const [ch, us, bots, comps, provs, ws] = await Promise.all([
     api<{ channels: Channel[] }>("/api/channels"),
     api<{ users: User[] }>("/api/users"),
     api<{ bots: Bot[] }>("/api/bots"),
     api<{ computers: Computer[] }>("/api/computers"),
     api<{ providers: Provider[] }>("/api/providers"),
+    api<{ workspace: Workspace }>("/api/workspace").catch(() => ({ workspace: S.workspace })),
   ]);
   S.channels = ch.channels; S.users = us.users; S.bots = bots.bots; S.computers = comps.computers; S.providers = provs.providers;
-  if (!S.channelId || !S.channels.find((c) => c.id === S.channelId)) S.channelId = S.channels[0]?.id || 0;
+  if (ws?.workspace) S.workspace = ws.workspace;
+  if (!S.channelId || !S.channels.find((c) => c.id === S.channelId)) {
+    const main = S.channels.find((c) => c.name === "main" && c.kind === "channel");
+    S.channelId = main?.id || S.channels[0]?.id || 0;
+  }
 }
 
 async function openChannel(id: number): Promise<void> {
@@ -107,8 +133,8 @@ function renderAuth(): void {
   root.append(h("div", { class: "grid h-full place-items-center bg-bg p-6" },
     h("div", { class: "w-[380px]" },
       h("div", { class: "mb-6 flex items-center justify-center gap-2.5" },
-        h("div", { class: "grid h-11 w-11 place-items-center rounded-xl bg-accent font-mono text-2xl text-accent-fg shadow-lg" }, "⌘"),
-        h("h1", { class: "text-2xl font-bold text-fg" }, "CTRL PANE")),
+        h("div", { class: "grid h-11 w-11 place-items-center rounded-xl bg-accent font-mono text-2xl text-accent-fg shadow-lg" }, "1"),
+        h("h1", { class: "text-2xl font-bold text-fg" }, "1Helm")),
       h("div", { class: "card space-y-3 p-7 shadow-xl" },
         h("h2", { class: "text-lg font-semibold text-fg" }, "Sign in"),
         h("p", { class: "-mt-1 text-sm text-muted" }, "Welcome back."),
@@ -145,12 +171,12 @@ function sidebar(): HTMLElement {
 
   return h("aside", { class: "flex w-64 shrink-0 flex-col bg-sidebar text-sidebar-fg" },
     h("div", { class: "flex items-center justify-between border-b border-white/10 px-4 py-3" },
-      h("div", { class: "flex items-center gap-2 font-bold text-white" }, h("span", { class: "grid h-6 w-6 place-items-center rounded bg-accent font-mono text-sm text-accent-fg" }, "⌘"), "CTRL PANE"),
+      h("div", { class: "flex items-center gap-2 font-bold text-white" }, h("span", { class: "grid h-6 w-6 place-items-center rounded bg-accent font-mono text-sm text-accent-fg" }, "1"), S.workspace?.name || "1Helm"),
       h("button", { class: "grid h-7 w-7 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: theme === "light" ? "Switch to dark" : "Switch to light", onclick: toggleTheme }, icon(theme === "light" ? "moon" : "sun"))),
     h("div", { class: "flex-1 space-y-5 overflow-y-auto px-2 py-3" },
       h("div", {}, sbSection("Channels", () => newChannel()), h("div", { class: "space-y-px" }, ...channels.map(chan))),
       h("div", {}, sbSection("Direct messages", () => newDM()), h("div", { class: "space-y-px" }, ...dms.map(chan), dms.length === 0 && h("p", { class: "px-2 py-1 text-[13px] text-sidebar-muted" }, "No conversations yet"))),
-      h("button", { class: `flex w-full items-center gap-2 rounded-md px-2 py-[5px] text-left text-[15px] ${S.view === "terminal" ? "bg-sidebar-active font-semibold text-white" : "text-sidebar-fg hover:bg-sidebar-hover"}`, onclick: () => { S.view = "terminal"; renderApp(); } },
+      (S.workspace?.terminals_enabled !== false) && h("button", { class: `flex w-full items-center gap-2 rounded-md px-2 py-[5px] text-left text-[15px] ${S.view === "terminal" ? "bg-sidebar-active font-semibold text-white" : "text-sidebar-fg hover:bg-sidebar-hover"}`, onclick: () => { S.view = "terminal"; renderApp(); } },
         h("span", { class: "text-sidebar-muted" }, icon("terminal")), "Terminals")),
     h("button", { class: "flex items-center gap-2 border-t border-white/10 px-3 py-2 text-left hover:bg-sidebar-hover", title: "Settings", onclick: () => openSettings() },
       avatar(S.me.display, "user"),

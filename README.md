@@ -1,40 +1,61 @@
-# ⌘ CTRL PANE
+# 1Helm
 
-A lightweight, self-hosted **Slack alternative** with a native **bring-your-own-key AI bot** and **integrated split-pane terminals**. The whole thing is ~1,700 lines of TypeScript — no heavyweight frameworks, no Electron, no build-time magic on the server.
+**1Helm productizes self-hosting.** It gives someone who owns a computer or VPS a conversational control plane instead of requiring them to learn terminals, SSH, reverse proxies, Docker, and scattered SaaS dashboards.
 
-Multi-channel chat · threads · DMs · drag-and-drop files · admin panel · notification sounds · context-aware AI bots with per-channel/per-thread model selection · WebSocket terminals with server-side keep-alive · one-to-many bot→computer assignment.
+The workspace looks familiar — channels, threads, DMs — but channels are operational objects:
+
+- People can create ordinary channels freely.
+- Every deployed app gets its own dedicated channel and agent.
+- `@skipper` in `#main` is the chief of staff: the workspace-level assistant that coordinates the system.
+
+The first compelling demo is simple: ask the workspace to make something useful, then open the resulting service from another device.
+
+Distribution for now is fully OSS and self-hosted. State lives on the user's machine in local SQLite. Users bring their own AI provider. A managed hosted offering is a future layer; this repository is the on-box workspace runtime.
+
+Living product record: [`docs/VISION.md`](docs/VISION.md).
 
 ---
 
-## Why it's small
+## What works today
 
-| Piece | How |
-|---|---|
-| **Runtime** | Node 22 runs the server's TypeScript **directly** (native type-stripping) — no `tsc`/`ts-node` build step for the backend. |
-| **Database** | `node:sqlite` (built into Node) — no ORM, no external DB. |
-| **Server** | `node:http` + `ws`. No Express, no Nest. |
-| **Terminals** | `node-pty` + an embedded [Open Terminal](https://github.com/open-webui/open-terminal)-compatible agent. |
-| **Client** | Vanilla TS bundled with esbuild + Tailwind v4. `xterm.js` only for terminals. |
+- **First-run wizard** — create the owner account, connect an AI brain, choose terminal access, name the workspace, land in `#main`.
+- **`@skipper`** — seeded chief-of-staff bot with a canned welcome (no model wait on first impression).
+- **Chat** — channels, DMs, threads, Markdown, file uploads, unread badges, light/dark themes.
+- **AI providers** — OpenAI-compatible base URL/key, OpenRouter OAuth (HTTPS/localhost), Login with ChatGPT.
+- **Bots** — BYOK OpenAI-compatible bots, three-level model routing (thread → channel → global), context-aware replies.
+- **Terminals** — optional. Hidden unless enabled during setup; powered by an embedded Open-Terminal-compatible agent + `node-pty`.
 
-Total dependencies at runtime: **`ws`** and **`node-pty`**. That's it.
+Not yet shipped: app catalog, one-click deploy, Uptime Kuma as the first reference app, consumer installer, HTTPS/tunnel story.
+
+---
 
 ## Quick start
 
 ```bash
-npm install
-npm run build      # bundles the client (esbuild) + Tailwind CSS
-npm start          # serves on http://localhost:8123
+# Prefer the official Node 22 binary (some distro builds omit TypeScript support)
+PUPPETEER_SKIP_DOWNLOAD=1 npm install
+npm run build      # client bundle + Tailwind CSS
+npm start          # http://localhost:8123
 ```
 
-Open `http://localhost:8123`. **The first account you create becomes the admin.**
+Open `http://localhost:8123`. On a fresh data directory you should see the setup wizard, not a login screen:
 
-Want it to feel like a desktop app? Point Chrome at it:
+1. Create the owner account (first user is admin).
+2. Connect an AI provider.
+3. Choose whether terminals appear in the sidebar.
+4. Name the workspace.
+5. Land in `#main` with `@skipper`.
 
-```bash
-google-chrome --app=http://localhost:8123
-```
+### Configuration
 
-### Dev mode (auto-rebuild the client)
+| Env var | Default | Meaning |
+|---|---|---|
+| `PORT` | `8123` | HTTP/WebSocket port. |
+| `CTRL_DATA_DIR` | `./data` | SQLite DB + uploaded files (internal path name kept for compatibility). |
+
+On first boot 1Helm starts a private loopback Open-Terminal agent and registers it as **"This Computer"** so terminals and bot commands work when terminals are enabled.
+
+### Dev mode
 
 ```bash
 npm run watch:js   # terminal 1
@@ -42,91 +63,104 @@ npm run watch:css  # terminal 2
 npm start          # terminal 3
 ```
 
-### Configuration
+### Desktop-app feel
 
-| Env var | Default | Meaning |
-|---|---|---|
-| `PORT` | `8123` | HTTP/WebSocket port. |
-| `CTRL_DATA_DIR` | `./data` | SQLite DB + uploaded files. |
-
-On first boot CTRL PANE starts a private, loopback-only Open-Terminal agent and registers it as the **"This Computer"** computer, so terminals and bot commands work out of the box.
-
----
-
-## Features
-
-### Chat
-- **Channels** (public), **DMs** (private), and **threads** on any message.
-- **Slack-style message list** — avatar/name grouping for consecutive messages, sticky date dividers, hover actions, reply counts with "last reply" time.
-- **Light & dark themes** — toggle in the sidebar header; respects your OS preference on first load and persists your choice. Terminals recolor with the theme too.
-- **Drag-and-drop file sharing** — drop files on the composer, or use the attach button. Images render inline.
-- **Notification sounds** — synthesized in the browser (no asset files); a distinct chirp for @mentions.
-- **Unread badges**, `@mention` autocomplete, Markdown rendering.
-
-### AI bots (bring your own key)
-Add a bot in **Settings → Bots** with just a **base URL** and **API key** for any OpenAI-compatible endpoint. Click **Fetch** to pull the model list.
-
-- **Three-level model routing** with inheritance: **thread → channel → global**. Open the **Models** button in a channel header or thread panel to get a routing card that shows all three levels at once, highlights which one is *active here*, shows the effective model ("Serving here: …"), and lets you set or clear each level independently (clearing falls back to the parent).
-- **Slack-style add flow** — `@mention` a bot that isn't in the channel and you're prompted *"Add @bot to #channel?"*.
-- **Context awareness**:
-  - Mention it **in a thread** → it receives the **full thread context**.
-  - Mention it **in a channel** → **fresh session, no context**.
-- **Bots only ever reply in threads.** Mention one at the top level of a channel and it opens a thread under your message rather than speaking in the channel.
-
-### Computers & terminals
-- **Computers** (Settings → Computers) are [Open Terminal](https://github.com/open-webui/open-terminal) endpoints — again, just **base URL + API key**.
-- **Integrated terminal workspace** with **split panes** (split right / split down / close). Each pane is a live PTY over WebSocket.
-- **Keep-alive**: the server owns the upstream PTY connection and buffers scrollback, so sessions survive tab closes and reconnects, and are pinged so they don't die when idle.
-- **Assign computers to bots** (one-to-many) in the bot editor. The bot's system prompt then lists its computers and states that *the user has granted full permission to act on their behalf*; the bot runs commands via a `run_command` tool and reports back.
-
-### Admin
-- First user is admin. Admins manage bots, computers, and members (promote/demote/remove) in **Settings → Members**.
+```bash
+google-chrome --app=http://localhost:8123
+```
 
 ---
 
 ## Architecture
 
+Compact Node/TypeScript app — no Electron, no server transpile step:
+
+| Piece | How |
+|---|---|
+| **Runtime** | Official Node 22 runs server TypeScript directly (native type-stripping). |
+| **Database** | `node:sqlite` — no ORM, no external DB. |
+| **Server** | `node:http` + `ws`. |
+| **Client** | Vanilla TypeScript via esbuild + Tailwind CSS. |
+| **Terminals** | `node-pty` + embedded Open-Terminal-compatible agent. |
+
 ```
 src/
   server/
-    index.ts     HTTP + WebSocket server, REST API, auth, routing
-    db.ts        node:sqlite schema, password hashing, helpers
-    store.ts     message/model-pref/bot helpers, 3-level model resolution
-    bots.ts      OpenAI-compatible streaming + tool-call loop
-    computer.ts  client for Open-Terminal computers (exec, terminals, models)
-    terms.ts     keep-alive terminal session manager (upstream ↔ many browsers)
-    events.ts    membership-scoped live event fan-out
-    agent.ts     embedded Open-Terminal-compatible PTY/exec agent
+    index.ts      HTTP + WebSocket, REST API, auth
+    db.ts         schema, password hashing
+    setup.ts      workspace setup, #main, @skipper seed
+    store.ts      messages, model prefs, bots
+    bots.ts       OpenAI-compatible streaming + tools
+    computer.ts   Open-Terminal client
+    terms.ts      keep-alive terminal sessions
+    events.ts     live event fan-out
+    agent.ts      embedded local terminal agent
   client/
-    app.ts       auth, layout, sidebar, messages, threads, composer, mentions
-    settings.ts  settings/admin modal + reusable model picker
-    term.ts      split-pane xterm workspace
-    dom.ts       tiny hyperscript, safe Markdown, notification sounds
-    api.ts       REST + WebSocket client
+    app.ts        boot, auth, layout, chat
+    onboarding.ts first-run wizard
+    settings.ts   settings + provider OAuth
+    term.ts       split-pane xterm workspace
+    dom.ts        hyperscript, Markdown, sounds
+    api.ts        REST + WebSocket client
 ```
 
-### Notable design choices
-- **The embedded agent speaks the real Open-Terminal protocol**, so "This Computer" and any external Open-Terminal instance are reached through one client — no special-casing local vs remote.
-- **Model resolution lives in one function** (`resolveModel`) used by both the bot pipeline and mirrored in the client picker.
-- **Terminal keep-alive** is a fan-out proxy: one upstream WebSocket per session, N browser clients, a bounded scrollback ring replayed on attach.
+Runtime deps: `ws`, `node-pty`, and the optional ChatGPT login package.
+
+---
+
+## Demo VPS (fresh-user sandbox)
+
+Public early-HTTP sandbox: `http://167.233.229.141:8123` (`ssh demo1helm`).
+
+**Standing rule:** every deploy is a cold first-run unless the product owner explicitly says to preserve state.
+
+```bash
+scripts/deploy-vps-fresh.sh [branch]
+```
+
+That script pulls the branch, wipes `/root/1helm/data`, rebuilds, restarts, and confirms `/api/setup/status` reports `needs_setup: true` with no users/providers.
+
+### Cold-install notes (inputs to a future `install.sh`)
+
+- Prefer the **official Node 22** binary; some Ubuntu packages lack TypeScript stripping.
+- Use `PUPPETEER_SKIP_DOWNLOAD=1` during `npm install` unless you need browser tests.
+- OpenRouter OAuth needs a secure browser context (HTTPS or localhost). On plain `http://VPS-IP`, use an API key or ChatGPT until TLS/tunnel support exists.
+- Private GitHub clones need a read-only deploy key on the target machine.
+
+---
+
+## Features in more detail
+
+### Chat
+Channels, DMs, threads, Slack-style grouping, light/dark themes, drag-and-drop uploads, notification sounds, unread badges, `@mention` autocomplete, Markdown.
+
+### AI bots
+Add bots in **Settings → Bots** with any OpenAI-compatible base URL + API key. Model routing inherits **thread → channel → global**. Bots reply in threads only. Mentioning a bot that is not in the channel prompts to add it.
+
+### Computers & terminals
+Computers are Open-Terminal endpoints. Terminals are optional and can stay hidden. Assigned computers give bots a `run_command` tool; only assign machines you trust the bot and its provider to operate.
+
+### Admin
+First user is admin. Admins manage bots, computers, providers, and members.
+
+---
 
 ## Testing
 
 ```bash
-# backend pipeline (uses a bundled mock OpenAI endpoint; needs no extra deps)
 node test/mock-openai.mjs 9099 &
 npm start &
 node test/pipeline.mjs      # model inheritance, context rules, tool calls
 node test/term.mjs          # terminal WebSocket round-trip
 
-# full browser UI test (optional — needs puppeteer)
+# full browser UI test (optional)
 npm i -D puppeteer && npx puppeteer browsers install chrome
 node test/ui.mjs
 ```
 
 ## Security notes
-- Passwords are hashed with scrypt; sessions are random bearer tokens.
-- A bot assigned a computer can run arbitrary shell commands on it — that is the point. Only assign computers you trust the bot (and its provider) to operate.
+- Passwords: scrypt. Sessions: random bearer tokens.
+- A bot assigned a computer can run shell commands on it — that is intentional.
 - The embedded agent binds to `127.0.0.1` only.
 
 ## License

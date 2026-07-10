@@ -5,7 +5,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 
 /**
  * Embedded, open-terminal-compatible agent (https://github.com/open-webui/open-terminal).
- * Speaks the same HTTP + WebSocket protocol, so CTRL PANE can talk to this local
+ * Speaks the same HTTP + WebSocket protocol, so 1Helm can talk to this local
  * agent and to any external Open Terminal instance through one client (see computer.ts).
  */
 
