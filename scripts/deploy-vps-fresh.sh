@@ -15,12 +15,20 @@ BRANCH="$1"
 REMOTE_DIR="$2"
 cd "$REMOTE_DIR"
 
+# Stop whatever is actually bound to 8123. The old absolute-path pkill never
+# matched Node's argv ("src/server/index.ts"), so redeploys could leave a
+# completed workspace process alive and report its stale /api/setup/status.
 if [[ -f 1helm.pid ]]; then
   kill "$(cat 1helm.pid)" 2>/dev/null || true
   sleep 1
 fi
-# Best-effort stop of any residual server started without a pidfile.
-pkill -f "$REMOTE_DIR/src/server/index.ts" 2>/dev/null || true
+fuser -k 8123/tcp 2>/dev/null || true
+sleep 1
+if command -v ss >/dev/null 2>&1 && ss -lptn "sport = :8123" | grep -q 8123; then
+  echo "port 8123 still occupied after stop attempt" >&2
+  ss -lptn "sport = :8123" >&2 || true
+  exit 1
+fi
 
 git fetch origin
 git checkout "$BRANCH"
