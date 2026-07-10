@@ -1,5 +1,5 @@
 import { api, getToken, setToken, type Provider } from "./api.ts";
-import { h, clear, icon } from "./dom.ts";
+import { h, clear, icon, helmMark, providerMark } from "./dom.ts";
 import { startChatGPTOAuth, startOpenRouterOAuth } from "./settings.ts";
 
 type WizardOptions = {
@@ -43,10 +43,10 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
   };
 
   const brand = (): HTMLElement => h("div", { class: "mb-8 flex items-center justify-between" },
-    h("div", { class: "flex items-center gap-2.5" },
-      h("span", { class: "grid h-8 w-8 place-items-center border border-line bg-fg font-mono text-sm font-semibold text-bg" }, "1"),
-      h("div", {}, h("div", { class: "text-sm font-semibold tracking-tight text-fg" }, "1Helm"), h("div", { class: "text-xs text-muted" }, "Self-hosted control plane"))),
-    h("div", { class: "text-xs text-muted" }, `Step ${step + 1} of ${steps.length}`));
+    h("div", { class: "flex items-center gap-3" },
+      h("span", { class: "logo-plate h-9 w-9 rounded-xl" }, h("img", { class: "logo-asset", src: "/brand/1helm.png", alt: "1Helm" })),
+      h("div", {}, h("div", { class: "font-display text-sm font-bold tracking-[-0.03em] text-fg" }, "1Helm"), h("div", { class: "text-[10px] font-semibold uppercase tracking-[0.16em] text-muted" }, "Private control plane"))),
+    h("div", { class: "rounded-full border border-line bg-raised px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted" }, `Step ${step + 1} / ${steps.length}`));
 
   const progress = (): HTMLElement => h("div", { class: "mb-8" },
     h("div", { class: "mb-2 flex justify-between text-[11px] uppercase tracking-[0.14em] text-muted" }, ...steps.map((label, index) => h("span", { class: index === step ? "text-fg" : "" }, label))),
@@ -121,7 +121,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
       }
       providerChoices.replaceChildren(
         ...providers.map((provider) => h("button", { class: `wizard-choice flex items-center justify-between gap-3 ${provider.id === selected ? "is-active" : ""}`, onclick: () => { void selectExisting(provider); } },
-          h("div", { class: "min-w-0" }, h("div", { class: "flex items-center gap-2" }, h("span", { class: "wizard-provider-mark" }, provider.kind === "openrouter" ? "OR" : provider.kind === "chatgpt" ? "GPT" : "API"), h("span", { class: "truncate font-semibold text-fg" }, provider.name)), h("div", { class: "mt-1 truncate text-xs text-muted" }, provider.kind === "chatgpt" ? "Login with ChatGPT" : provider.base_url)),
+          h("div", { class: "min-w-0" }, h("div", { class: "flex items-center gap-2.5" }, h("span", { class: "wizard-provider-mark" }, providerMark(provider.kind, 18)), h("span", { class: "truncate font-semibold text-fg" }, provider.name)), h("div", { class: "mt-1 truncate text-xs text-muted" }, provider.kind === "chatgpt" ? "Login with ChatGPT" : provider.base_url)),
           provider.id === selected ? h("span", { class: "text-ok" }, icon("check", 18)) : h("span", { class: "text-muted" }, "Select"))));
     };
 
@@ -170,8 +170,8 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     const providerChoices = h("div", { class: "space-y-2" });
     const testButton = h("button", { class: "btn-subtle w-full py-2", onclick: (event: Event) => { void testCustom(event.currentTarget as HTMLButtonElement); } }, "Test connection & load models") as HTMLButtonElement;
     useCustom.onclick = () => { void saveCustom(); };
-    const openRouter = h("button", { class: "wizard-choice flex items-center gap-3", onclick: (event: Event) => { void connectOpenRouter(event.currentTarget as HTMLButtonElement); } }, h("span", { class: "wizard-provider-mark" }, "OR"), h("div", {}, h("div", { class: "font-semibold text-fg" }, "OpenRouter"), h("div", { class: "text-sm text-muted" }, "Connect once. We’ll start Skipper on a free model."))) as HTMLButtonElement;
-    const chatgpt = h("button", { class: "wizard-choice flex items-center gap-3", onclick: (event: Event) => { void connectChatGPT(event.currentTarget as HTMLButtonElement); } }, h("span", { class: "wizard-provider-mark" }, "GPT"), h("div", {}, h("div", { class: "font-semibold text-fg" }, "ChatGPT"), h("div", { class: "text-sm text-muted" }, "Use your Login with ChatGPT account."))) as HTMLButtonElement;
+    const openRouter = h("button", { class: "wizard-choice flex items-center gap-3", onclick: (event: Event) => { void connectOpenRouter(event.currentTarget as HTMLButtonElement); } }, h("span", { class: "wizard-provider-mark" }, providerMark("openrouter", 20)), h("div", {}, h("div", { class: "font-semibold text-fg" }, "OpenRouter"), h("div", { class: "text-sm leading-5 text-muted" }, "Connect once. Start Skipper on a free model."))) as HTMLButtonElement;
+    const chatgpt = h("button", { class: "wizard-choice flex items-center gap-3", onclick: (event: Event) => { void connectChatGPT(event.currentTarget as HTMLButtonElement); } }, h("span", { class: "wizard-provider-mark" }, providerMark("chatgpt", 20)), h("div", {}, h("div", { class: "font-semibold text-fg" }, "ChatGPT"), h("div", { class: "text-sm leading-5 text-muted" }, "Use your Login with ChatGPT account."))) as HTMLButtonElement;
 
     const next = async (): Promise<void> => {
       if (!choice?.provider || !choice.model) return;
@@ -206,7 +206,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
       setBusy(button, true, "Starting workspace…");
       try {
         await api("/api/setup/complete", { body: { name: name.value.trim() || "My Workspace", terminals_enabled: terminalsEnabled, provider_id: choice?.provider.id, model: choice?.model } });
-        clear(panel); panel.append(h("div", { class: "wizard-panel px-8 py-12 text-center" }, h("div", { class: "mx-auto grid h-12 w-12 place-items-center border border-line bg-raised text-fg" }, icon("check", 22)), h("h2", { class: "mt-5 text-2xl font-semibold tracking-tight text-fg" }, "Your workspace is ready."), h("p", { class: "mx-auto mt-3 max-w-sm text-sm leading-6 text-muted" }, "Skipper is setting up your home base in #main.")));
+        clear(panel); panel.append(h("div", { class: "wizard-panel px-8 py-12 text-center" }, h("div", { class: "logo-plate mx-auto grid h-14 w-14 place-items-center rounded-2xl" }, h("img", { class: "logo-asset", src: "/brand/1helm.png", alt: "1Helm" })), h("h2", { class: "mt-5 font-display text-2xl font-semibold tracking-[-0.03em] text-fg" }, "Your workspace is ready."), h("p", { class: "mx-auto mt-3 max-w-sm text-sm leading-6 text-muted" }, "Skipper is setting up your home base in #main.")));
         setTimeout(() => { void opts.onDone(); }, 700);
       } catch (error) { status.replaceChildren(h("div", { class: "wizard-status-err" }, (error as Error).message)); setBusy(button, false); }
     };

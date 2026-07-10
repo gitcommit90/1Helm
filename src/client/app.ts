@@ -1,5 +1,5 @@
 import { api, uploadFile, connectEvents, getToken, setToken, clearToken, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace } from "./api.ts";
-import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, beep, icon } from "./dom.ts";
+import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, beep, icon, helmMark } from "./dom.ts";
 import { openSettings, modelRoutingPanel, finishOpenRouterOAuth } from "./settings.ts";
 import { openOnboarding } from "./onboarding.ts";
 import { openTerminals } from "./term.ts";
@@ -130,14 +130,13 @@ function renderAuth(): void {
     try { const r = await api<{ token: string; user: User }>("/api/auth/login", { body: { username: u.value, password: pw.value } }); setToken(r.token); boot(); }
     catch (e) { err.textContent = (e as Error).message; }
   };
-  root.append(h("div", { class: "grid h-full place-items-center bg-bg p-6" },
-    h("div", { class: "w-[380px]" },
-      h("div", { class: "mb-6 flex items-center justify-center gap-2.5" },
-        h("div", { class: "grid h-11 w-11 place-items-center rounded-xl bg-accent font-mono text-2xl text-accent-fg shadow-lg" }, "1"),
-        h("h1", { class: "text-2xl font-bold text-fg" }, "1Helm")),
-      h("div", { class: "card space-y-3 p-7 shadow-xl" },
-        h("h2", { class: "text-lg font-semibold text-fg" }, "Sign in"),
-        h("p", { class: "-mt-1 text-sm text-muted" }, "Welcome back."),
+  root.append(h("div", { class: "auth-stage grid h-full place-items-center p-6" },
+    h("div", { class: "w-full max-w-[400px]" },
+      h("div", { class: "mb-7 flex items-center justify-center gap-3" },
+        h("div", { class: "logo-plate h-11 w-11 rounded-xl" }, h("img", { class: "logo-asset", src: "/brand/1helm.png", alt: "1Helm" })),
+        h("div", {}, h("h1", { class: "font-display text-2xl font-bold tracking-[-0.04em] text-fg" }, "1Helm"), h("p", { class: "mt-0.5 text-xs uppercase tracking-[0.16em] text-muted" }, "Control plane"))),
+      h("div", { class: "card space-y-3 p-7" },
+        h("div", { class: "mb-2" }, h("h2", { class: "text-lg font-semibold text-fg" }, "Enter the bridge"), h("p", { class: "mt-1 text-sm text-muted" }, "Sign in to your workspace.")),
         u, pw, err,
         h("button", { class: "btn-primary w-full py-2", onclick: submit }, "Sign in")))));
   pw.addEventListener("keydown", (ev) => { if ((ev as KeyboardEvent).key === "Enter") submit(); });
@@ -156,12 +155,12 @@ function sidebar(): HTMLElement {
   const chan = (c: Channel): HTMLElement => {
     const active = c.id === S.channelId && S.view === "chat";
     return h("button", {
-      class: `group flex w-full items-center gap-2 rounded-md px-2 py-[5px] text-left text-[15px] ${active ? "bg-sidebar-active font-semibold text-white" : "text-sidebar-fg hover:bg-sidebar-hover"} ${c.unread ? "font-semibold text-white" : ""}`,
+      class: `nav-item ${active ? "nav-item-active" : "nav-item-idle"} ${c.unread ? "font-semibold text-white" : ""}`,
       onclick: () => openChannel(c.id),
     },
       c.kind === "dm"
-        ? h("span", { class: "relative grid h-4 w-4 shrink-0 place-items-center rounded-sm text-[10px]", style: `background:${color(c.name)};color:#0b0f17` }, initials(c.name))
-        : h("span", { class: "shrink-0 text-sidebar-muted" }, "#"),
+        ? h("span", { class: "relative grid h-4 w-4 shrink-0 place-items-center rounded-sm border border-white/10 text-[9px] font-semibold", style: `background:${color(c.name)};color:#f4f7fb` }, initials(c.name))
+        : h("span", { class: "shrink-0 text-sidebar-muted" }, icon("hash", 14)),
       h("span", { class: "flex-1 truncate" }, c.name),
       c.unread > 0 && h("span", { class: "min-w-5 rounded-full bg-danger px-1.5 text-center text-[11px] font-bold text-white" }, String(c.unread)));
   };
@@ -169,14 +168,14 @@ function sidebar(): HTMLElement {
   const dms = S.channels.filter((c) => c.kind === "dm");
   const theme = currentTheme();
 
-  return h("aside", { class: "flex w-64 shrink-0 flex-col bg-sidebar text-sidebar-fg" },
-    h("div", { class: "flex items-center justify-between border-b border-white/10 px-4 py-3" },
-      h("div", { class: "flex items-center gap-2 font-bold text-white" }, h("span", { class: "grid h-6 w-6 place-items-center rounded bg-accent font-mono text-sm text-accent-fg" }, "1"), S.workspace?.name || "1Helm"),
+  return h("aside", { class: "flex w-64 shrink-0 flex-col border-r border-white/5 bg-sidebar text-sidebar-fg" },
+    h("div", { class: "flex items-center justify-between border-b border-white/10 px-4 py-3.5" },
+      h("div", { class: "flex min-w-0 items-center gap-2.5 font-bold text-white" }, h("span", { class: "logo-plate h-7 w-7 rounded-lg" }, h("img", { class: "logo-asset", src: "/brand/1helm.png", alt: "1Helm" })), h("span", { class: "truncate tracking-[-0.025em]" }, S.workspace?.name || "1Helm")),
       h("button", { class: "grid h-7 w-7 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: theme === "light" ? "Switch to dark" : "Switch to light", onclick: toggleTheme }, icon(theme === "light" ? "moon" : "sun"))),
     h("div", { class: "flex-1 space-y-5 overflow-y-auto px-2 py-3" },
       h("div", {}, sbSection("Channels", () => newChannel()), h("div", { class: "space-y-px" }, ...channels.map(chan))),
       h("div", {}, sbSection("Direct messages", () => newDM()), h("div", { class: "space-y-px" }, ...dms.map(chan), dms.length === 0 && h("p", { class: "px-2 py-1 text-[13px] text-sidebar-muted" }, "No conversations yet"))),
-      (S.workspace?.terminals_enabled !== false) && h("button", { class: `flex w-full items-center gap-2 rounded-md px-2 py-[5px] text-left text-[15px] ${S.view === "terminal" ? "bg-sidebar-active font-semibold text-white" : "text-sidebar-fg hover:bg-sidebar-hover"}`, onclick: () => { S.view = "terminal"; renderApp(); } },
+      (S.workspace?.terminals_enabled !== false) && h("button", { class: `nav-item ${S.view === "terminal" ? "nav-item-active" : "nav-item-idle"}`, onclick: () => { S.view = "terminal"; renderApp(); } },
         h("span", { class: "text-sidebar-muted" }, icon("terminal")), "Terminals")),
     h("button", { class: "flex items-center gap-2 border-t border-white/10 px-3 py-2 text-left hover:bg-sidebar-hover", title: "Settings", onclick: () => openSettings() },
       avatar(S.me.display, "user"),
@@ -242,10 +241,10 @@ function renderMessages(): void {
 }
 
 function emptyState(c: Channel | undefined): HTMLElement {
-  return h("div", { class: "flex h-full flex-col items-center justify-center gap-2 text-center" },
-    h("div", { class: "grid h-14 w-14 place-items-center rounded-2xl bg-accent-soft text-2xl text-accent" }, c?.kind === "dm" ? "✷" : "#"),
-    h("div", { class: "text-lg font-semibold text-fg" }, c?.kind === "dm" ? c.name : "#" + (c?.name || "")),
-    h("p", { class: "max-w-sm text-sm text-muted" }, "This is the very beginning. Say hello, drop a file, or @mention a bot to bring AI into a thread."));
+  return h("div", { class: "flex h-full flex-col items-center justify-center gap-3 px-6 text-center" },
+    h("div", { class: "brand-mark grid h-14 w-14 place-items-center rounded-2xl" }, c?.kind === "dm" ? helmMark(25) : icon("hash", 24)),
+    h("div", { class: "text-lg font-semibold tracking-[-0.02em] text-fg" }, c?.kind === "dm" ? c.name : "#" + (c?.name || "")),
+    h("p", { class: "max-w-sm text-sm leading-6 text-muted" }, "This channel is clear. Start with a message, a file, or a focused thread with an agent."));
 }
 
 function dateDivider(ts: number): HTMLElement {
@@ -271,7 +270,7 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
     h("div", { class: "min-w-0 flex-1" },
       h("div", { class: "flex items-baseline gap-2" },
         h("span", { class: "font-bold text-fg hover:underline" }, m.author.name),
-        isBot ? h("span", { class: "rounded bg-accent-soft px-1 py-px text-[10px] font-semibold uppercase text-accent" }, "App") : null,
+        isBot ? h("span", { class: "rounded-sm border border-accent/25 bg-accent-soft px-1.5 py-px text-[9px] font-semibold uppercase tracking-[0.12em] text-accent" }, "Agent") : null,
         h("span", { class: "text-xs text-faint" }, timeLabel(m.created))),
       bodyHtml, attachments(m), threadFooter(m, opts.inThread)), actions);
 }
@@ -411,8 +410,8 @@ function modelPopover(ev: MouseEvent, channelId: number, threadId: number | null
 // ---------------- shared atoms ----------------
 export function avatar(name: string, kind: "user" | "bot", size = 8): HTMLElement {
   const px = size * 4;
-  if (kind === "bot") return h("div", { class: "grid shrink-0 place-items-center rounded-md text-accent-fg", style: `width:${px}px;height:${px}px;background:linear-gradient(135deg,${color(name)},${color(name + "x")});font-size:${px / 2}px` }, "🤖");
-  return h("div", { class: "grid shrink-0 place-items-center rounded-lg font-semibold text-white", style: `width:${px}px;height:${px}px;background:${color(name)};font-size:${px / 2.6}px` }, initials(name));
+  if (kind === "bot") return h("div", { class: "identity-bot rounded-md", style: `width:${px}px;height:${px}px;font-size:${Math.max(9, px / 3.2)}px` }, helmMark(Math.max(12, px * .52)));
+  return h("div", { class: "identity-user rounded-lg", style: `width:${px}px;height:${px}px;font-size:${Math.max(8, px / 2.8)}px` }, initials(name));
 }
 export function pickList(title: string, items: { id: number; label: string }[], onPick: (id: number) => void): void {
   const overlay = h("div", { class: "fixed inset-0 z-50 grid place-items-center bg-black/40 p-6", onclick: (e: MouseEvent) => { if (e.target === overlay) overlay.remove(); } },

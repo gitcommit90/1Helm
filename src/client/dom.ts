@@ -75,9 +75,22 @@ export function md(src: string): string {
   return out.join("\n").replace(/\u0000(\d+)\u0000/g, (_m, i) => blocks[Number(i)]);
 }
 
-const PALETTE = ["#f472b6", "#fb923c", "#34d399", "#60a5fa", "#a78bfa", "#22d3ee", "#facc15", "#f87171"];
+/* Restrained stone/ink identity tones — no candy rainbow. */
+const PALETTE = ["#1fb8a0", "#6b7c93", "#a67c52", "#8a6b7c", "#4f6d7a", "#7a6a4f"];
 export const color = (seed: string): string => PALETTE[[...seed].reduce((a, c) => a + c.charCodeAt(0), 0) % PALETTE.length];
 export const initials = (name: string): string => name.split(/[\s_-]+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?";
+
+/** Compact helm-wheel brand mark used across auth, shell, wizard, and empty states. */
+export function helmMark(size = 18): SVGElement {
+  return icon("helm", size);
+}
+
+/** Provider kind mark used in onboarding + settings (no OR/GPT letter tiles). */
+export function providerMark(kind: string, size = 16): SVGElement {
+  if (kind === "openrouter") return icon("openrouter", size);
+  if (kind === "chatgpt") return icon("chatgpt", size);
+  return icon("api", size);
+}
 
 export function timeLabel(ts: number): string {
   const d = new Date(ts);
@@ -109,6 +122,12 @@ const ICONS: Record<string, string> = {
   splitDown: '<rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="12" x2="21" y2="12"/>',
   x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
   check: '<polyline points="20 6 9 17 4 12"/>',
+  /* Helm wheel: outer rim, hub, six spokes. */
+  helm: '<circle cx="12" cy="12" r="8.2"/><circle cx="12" cy="12" r="2.2"/><path d="M12 3.8v3.2M12 17v3.2M3.8 12h3.2M17 12h3.2M6.1 6.1l2.3 2.3M15.6 15.6l2.3 2.3M6.1 17.9l2.3-2.3M15.6 8.4l2.3-2.3"/>',
+  openrouter: '<path d="M5 16l7-10 7 10"/><path d="M8.5 16h7"/><circle cx="12" cy="7" r="1.2"/>',
+  chatgpt: '<path d="M8.2 8.4a3.4 3.4 0 015.7-2.4 3.5 3.5 0 014.8 3.7 3.4 3.4 0 01-1.4 5.9 3.4 3.4 0 01-5.7 2.4 3.5 3.5 0 01-4.8-3.7A3.4 3.4 0 018.2 8.4z"/><path d="M9.4 10.8h5.2M9.4 13.2h3.6"/>',
+  api: '<path d="M8 7h8M8 12h8M8 17h8"/><circle cx="7" cy="7" r="1.4"/><circle cx="17" cy="12" r="1.4"/><circle cx="7" cy="17" r="1.4"/>',
+  hash: '<line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="10" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="14" y2="20"/>',
 };
 export function icon(name: keyof typeof ICONS | string, size = 16): SVGElement {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");

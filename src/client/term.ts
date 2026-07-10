@@ -14,8 +14,8 @@ let seq = 0;
 let themeHooked = false;
 
 const themes = {
-  dark: { background: "#0e1117", foreground: "#c9cfda", cursor: "#6d76f5", cursorAccent: "#0e1117", selectionBackground: "#33406a", black: "#1b212b", brightBlack: "#3a4453", red: "#f2547d", green: "#2fbe86", yellow: "#e2b93d", blue: "#6d9bf5", magenta: "#c084fc", cyan: "#3bc9db", white: "#c9cfda", brightWhite: "#eef1f6" },
-  light: { background: "#1b1f27", foreground: "#e6e8ee", cursor: "#8b93ff", cursorAccent: "#1b1f27", selectionBackground: "#3a4576", black: "#2a2f3a", brightBlack: "#5a6472", red: "#ff6b93", green: "#42d19a", yellow: "#e9c34a", blue: "#7aa2ff", magenta: "#cf9bff", cyan: "#4fd6e6", white: "#e6e8ee", brightWhite: "#ffffff" },
+  dark: { background: "#070b10", foreground: "#d8e2ef", cursor: "#1fb8a0", cursorAccent: "#070b10", selectionBackground: "#1fb8a036", black: "#0d131b", brightBlack: "#314155", red: "#f0718b", green: "#3ecf9a", yellow: "#c9a86a", blue: "#78a5c3", magenta: "#a18bbf", cyan: "#1fb8a0", white: "#d8e2ef", brightWhite: "#f4f7fb" },
+  light: { background: "#111923", foreground: "#e8edf4", cursor: "#1fb8a0", cursorAccent: "#111923", selectionBackground: "#1fb8a03d", black: "#172230", brightBlack: "#526175", red: "#f07c92", green: "#47c89c", yellow: "#d1ae70", blue: "#7ba8c8", magenta: "#ad95c7", cyan: "#3cc6af", white: "#e8edf4", brightWhite: "#ffffff" },
 };
 const activeTheme = (): typeof themes.dark => (document.documentElement.classList.contains("light") ? themes.light : themes.dark);
 
@@ -70,7 +70,7 @@ function paneShell(p: Pane, colIdx: number): HTMLElement {
     h("button", { class: "grid h-6 w-6 place-items-center rounded text-muted hover:bg-hover hover:text-fg", title, onclick }, icon(name, 14));
   const shell = h("div", { class: "flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-line" },
     h("div", { class: "flex items-center gap-2 border-b border-line bg-surface px-2.5 py-1.5" },
-      h("span", { class: "h-2.5 w-2.5 rounded-full", style: "background:#2fbe86" }),
+      h("span", { class: "h-2.5 w-2.5 rounded-full bg-ok shadow-[0_0_0_3px_var(--c-accent-soft)]" }),
       h("span", { class: "text-xs font-medium text-fg" }, comp?.name || "computer"),
       h("div", { class: "flex-1" }),
       btn("splitDown", "Split down", () => splitDown(colIdx)),
@@ -84,7 +84,7 @@ function makePane(): Pane {
   const id = "p" + ++seq;
   const term = new Terminal({ fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13, theme: activeTheme(), cursorBlink: true, scrollback: 5000 });
   const fit = new FitAddon(); term.loadAddon(fit);
-  const el = h("div", { class: "min-h-0 flex-1 bg-[#0e1117]" });
+  const el = h("div", { class: "min-h-0 flex-1 bg-[#070b10]" });
   const pane: Pane = { id, computerId: activeComputer, term, fit, ws: null, el, ro: null as unknown as ResizeObserver };
   requestAnimationFrame(() => { term.open(el); connect(pane); });
   pane.ro = new ResizeObserver(() => { try { fit.fit(); sendResize(pane); } catch { /* ignore */ } });

@@ -1,5 +1,5 @@
 import { api, type Bot, type Computer, type Provider, type User } from "./api.ts";
-import { h, clear, add, icon } from "./dom.ts";
+import { h, clear, add, icon, providerMark } from "./dom.ts";
 import { S, avatar, reloadProviders } from "./app.ts";
 
 const modelCache = new Map<number, string[]>();
@@ -260,11 +260,10 @@ function providerCard(prov: Provider | null, refresh: () => void): HTMLElement {
       refresh();
     } catch (e) { status.textContent = (e as Error).message; }
   };
-  const badge = prov?.kind === "openrouter" ? "OR" : prov?.kind === "chatgpt" ? "GPT" : icon("sliders");
   const authChip = prov?.kind === "openrouter" ? "OAuth" : prov?.kind === "chatgpt" ? "ChatGPT login" : null;
   return h("div", { class: "card p-4" },
     h("div", { class: "mb-2 flex items-center gap-2" },
-      h("span", { class: "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent font-bold" }, badge),
+      h("span", { class: "wizard-provider-mark h-9 w-9" }, providerMark(prov?.kind || "openai", 18)),
       h("div", { class: "flex-1" }, name),
       prov ? h("span", { class: "chip" }, `${prov.bots} bot${prov.bots === 1 ? "" : "s"}`) : null,
       authChip ? h("span", { class: "chip border-accent/40 text-accent" }, authChip) : null),
