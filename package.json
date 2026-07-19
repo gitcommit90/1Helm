@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "1Helm — a self-hosted, Slack-like control plane for AI agents, apps, and terminals.",
+  "description": "1Helm \u2014 a self-hosted, Slack-like control plane for AI agents, apps, and terminals.",
   "scripts": {
     "build:js": "esbuild src/client/app.ts --bundle --format=esm --outfile=public/bundle.js --loader:.css=css --minify",
     "build:css": "tailwindcss -i src/client/styles.css -o public/app.css --minify",
@@ -13,7 +13,10 @@
     "dev": "npm run build && npm start",
     "watch:js": "esbuild src/client/app.ts --bundle --format=esm --outfile=public/bundle.js --loader:.css=css --watch",
     "watch:css": "tailwindcss -i src/client/styles.css -o public/app.css --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/run-pipeline-ci.mjs",
+    "ci": "npm run typecheck && npm run build && npm test",
+    "test:pipeline": "node test/pipeline.mjs"
   },
   "dependencies": {
     "@opencoredev/loginwithchatgpt-server": "^0.2.0",
@@ -29,5 +32,13 @@
     "esbuild": "^0.28.1",
     "puppeteer": "^25.3.0",
     "typescript": "^7.0.2"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gitcommit90/1Helm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gitcommit90/1Helm/issues"
+  },
+  "homepage": "https://github.com/gitcommit90/1Helm"
 }

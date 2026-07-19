@@ -144,3 +144,16 @@ node test/ui.mjs
 
 ## License
 MIT
+
+---
+
+## Project governance
+
+- Living product record: [`docs/VISION.md`](docs/VISION.md)
+- How the repo is run: [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md)
+- Release process: [`docs/release-lifecycle.md`](docs/release-lifecycle.md) · checklist [`docs/release-checklist.md`](docs/release-checklist.md)
+- Changes: [`CHANGELOG.md`](CHANGELOG.md) · maintainer notes [`CONTRIBUTING.md`](CONTRIBUTING.md)
+
+**Local directory naming:** the GitHub repository is `1Helm`. Some maintainer hosts still use a historical folder name `ctrl-pane` for the same remote — treat that path as a clone of this repo, not a different product. New clones should use `1Helm` as the directory name.
+
+**CI:** every PR and push to `main` runs typecheck, production build, and `test/pipeline.mjs`.

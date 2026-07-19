@@ -105,3 +105,15 @@ These findings are inputs to a future `install.sh`, not user-facing requirements
 - **OpenRouter OAuth needs a secure browser context.** It works on `localhost` and HTTPS deployments. It cannot complete on the current plain `http://VPS-IP` test URL because Web Crypto is unavailable there. The fresh-VPS test can use an OpenAI-compatible provider or Login with ChatGPT until TLS/tunnel support exists.
 - The current 2 GB VPS is appropriate for 1Helm and lightweight services; it is not a good Jellyfin/transcoding target.
 - `@skipper` will not claim app deployment abilities until the app catalog/tools exist. Its first welcome should be honest about the current feature set and the direction of travel.
+
+## Repository governance — 2026-07-19
+
+Formal maintainer process is defined in-repo:
+
+- `docs/GOVERNANCE.md` — authority, branch model, quality bar, naming (`1Helm` vs local `ctrl-pane`)
+- `docs/release-lifecycle.md` + `docs/release-checklist.md` — PR → CI → version → deploy verify
+- `CHANGELOG.md` — Keep a Changelog
+- GitHub Actions workflow `.github/workflows/ci.yml` on `main` and PRs
+- Draft feature work (native 1Herd on `worktree-1herd-native-spec`) stays off `main` until its own verification bar is met; it must still follow the same PR template and changelog discipline when merged
+
+Standing order unchanged: demo VPS is cold-first-run unless the product owner preserves state explicitly.

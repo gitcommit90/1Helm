@@ -18,6 +18,11 @@ const isAdmin = me.body.user.is_admin;
 // create a provider, then fetch its models
 const provRes = await api("/api/providers", { method: "POST", body: JSON.stringify({ name: "mock", base_url: MOCK, api_key: "x" }) }, tok);
 ok(provRes.status === 200 && provRes.body.provider, "create provider (admin)");
+if (!provRes.body?.provider?.id) {
+  console.error("create provider response:", provRes.status, JSON.stringify(provRes.body));
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(1);
+}
 const provId = provRes.body.provider.id;
 const models = await api(`/api/providers/${provId}/models`, {}, tok);
 ok(models.body.models?.includes("mock-large"), "provider models endpoint returns mock models");
