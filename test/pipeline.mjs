@@ -98,7 +98,10 @@ await api(`/api/channels/${cid}/messages`, { method: "POST", body: JSON.stringif
 await sleep(2500);
 const toolMsgs = events.filter((e) => e.message?.author?.kind === "bot").map((e) => e.message.body);
 const finalTool = toolMsgs.pop() || "";
-ok(/\$ whoami/.test(finalTool), "bot invoked run_command tool on the computer");
+ok(!/\$ whoami/.test(finalTool), "tool commands stay out of the chat transcript");
+const activity = await api(`/api/channels/${cid}/activity`, {}, tok);
+ok(activity.body.actions?.some((action) => action.tool === "run_command" && action.status === "complete"), "tool invocation remains visible in Activity");
+ok(!activity.body.activity?.some((item) => /whoami|\/root\//.test(item.summary || "")), "Activity uses human-readable summaries instead of raw commands and host paths");
 
 // 7) computers persist when set at CREATE time (regression: POST used to drop them)
 const created = await api("/api/bots", { method: "POST", body: JSON.stringify({ name: "builder", provider_id: provId, computers: [compId] }) }, tok);

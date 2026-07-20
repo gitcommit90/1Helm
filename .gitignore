@@ -12,3 +12,9 @@ public/app.css
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+
+# local runtime state & session artifacts
+data-refactored/
+.deploy-backups/
+.claude/
+.design/

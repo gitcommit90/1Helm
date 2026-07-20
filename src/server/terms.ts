@@ -1,16 +1,17 @@
 import type { WebSocket } from "ws";
-import { getComputer, createTerminal, connectTerminal } from "./computer.ts";
+import { getComputer, createTerminal, connectTerminal, deleteTerminal } from "./computer.ts";
 
 /**
- * Server-side terminal session manager. Each session owns ONE upstream WebSocket to
- * the computer's PTY and fans out to any number of browser clients. Because the server
- * keeps the upstream open (with pings) even when no browser is attached, sessions stay
- * alive across tab closes / reconnects — the requested keep-alive behavior.
+ * Server-side terminal session manager. Each session owns one upstream PTY and
+ * fans out only to the user who opened it. Channel ownership pins its CWD.
  */
 
 type Session = {
   id: string;
   computerId: number;
+  channelId: number;
+  ownerId: number;
+  cwd: string;
   upstreamId: string;
   upstream: WebSocket;
   clients: Set<WebSocket>;
@@ -23,28 +24,28 @@ type Session = {
 
 const SCROLLBACK_CAP = 256 * 1024;
 const sessions = new Map<string, Session>();
-const sid = (): string => "s" + Math.random().toString(36).slice(2, 10);
+const sid = (): string => "s" + Math.random().toString(36).slice(2, 12);
 
-export async function openSession(computerId: number, cols: number, rows: number): Promise<string> {
+export async function openSession(computerId: number, channelId: number, ownerId: number, cwd: string, cols: number, rows: number): Promise<string> {
   const computer = getComputer(computerId);
   if (!computer) throw new Error("computer not found");
-  const upstreamId = await createTerminal(computer, cols, rows);
+  const upstreamId = await createTerminal(computer, cols, rows, cwd);
   const upstream = connectTerminal(computer, upstreamId);
-  const s: Session = { id: sid(), computerId, upstreamId, upstream, clients: new Set(), scrollback: [], bytes: 0, cols, rows, ready: Promise.resolve() };
+  const s: Session = { id: sid(), computerId, channelId, ownerId, cwd, upstreamId, upstream, clients: new Set(), scrollback: [], bytes: 0, cols, rows, ready: Promise.resolve() };
   s.ready = new Promise((resolve) => upstream.once("open", () => resolve()));
 
   upstream.on("message", (raw: Buffer) => {
     s.scrollback.push(raw);
     s.bytes += raw.length;
     while (s.bytes > SCROLLBACK_CAP && s.scrollback.length > 1) s.bytes -= s.scrollback.shift()!.length;
-    for (const c of s.clients) if (c.readyState === c.OPEN) c.send(raw);
+    for (const client of s.clients) if (client.readyState === client.OPEN) client.send(raw);
   });
-  const stop = (): void => { for (const c of s.clients) try { c.close(); } catch { /* closed */ } sessions.delete(s.id); };
+  const stop = (): void => { for (const client of s.clients) try { client.close(); } catch { /* closed */ } sessions.delete(s.id); };
   upstream.on("close", stop);
   upstream.on("error", stop);
 
-  const ka = setInterval(() => {
-    if (!sessions.has(s.id)) { clearInterval(ka); return; }
+  const keepalive = setInterval(() => {
+    if (!sessions.has(s.id)) { clearInterval(keepalive); return; }
     if (s.upstream.readyState === s.upstream.OPEN) s.upstream.ping();
   }, 25_000);
 
@@ -52,31 +53,45 @@ export async function openSession(computerId: number, cols: number, rows: number
   return s.id;
 }
 
-export async function attachClient(sessionId: string, client: WebSocket): Promise<void> {
+export async function attachClient(sessionId: string, client: WebSocket, userId: number): Promise<void> {
   const s = sessions.get(sessionId);
-  if (!s) { client.close(4004, "Session not found"); return; }
-  await s.ready;
-  for (const chunk of s.scrollback) if (client.readyState === client.OPEN) client.send(chunk);
-  s.clients.add(client);
-  client.on("message", (raw: Buffer, isBinary: boolean) => {
-    if (s.upstream.readyState !== s.upstream.OPEN) return;
+  if (!s || s.ownerId !== userId) { client.close(4004, "Session not found"); return; }
+  const pending: { raw: Buffer; isBinary: boolean }[] = [];
+  const forward = (raw: Buffer, isBinary: boolean): void => {
     if (isBinary) { s.upstream.send(raw); return; }
     try {
       const msg = JSON.parse(raw.toString());
       if (msg.type === "resize") { s.cols = msg.cols; s.rows = msg.rows; s.upstream.send(JSON.stringify(msg)); }
       else if (msg.type === "input") s.upstream.send(Buffer.from(String(msg.data), "utf8"));
     } catch { s.upstream.send(raw); }
+  };
+  client.on("message", (raw: Buffer, isBinary: boolean) => {
+    if (s.upstream.readyState === s.upstream.OPEN) forward(raw, isBinary);
+    else pending.push({ raw: Buffer.from(raw), isBinary });
   });
   client.on("close", () => s.clients.delete(client));
+  await s.ready;
+  if (client.readyState !== client.OPEN || !sessions.has(sessionId)) return;
+  for (const chunk of s.scrollback) client.send(chunk);
+  s.clients.add(client);
+  for (const message of pending) forward(message.raw, message.isBinary);
 }
 
-export function listSessions(): { id: string; computerId: number; clients: number }[] {
-  return [...sessions.values()].map((s) => ({ id: s.id, computerId: s.computerId, clients: s.clients.size }));
+export function listSessions(userId: number, channelId?: number): { id: string; computerId: number; channelId: number; clients: number }[] {
+  return [...sessions.values()]
+    .filter((session) => session.ownerId === userId && (channelId == null || session.channelId === channelId))
+    .map((session) => ({ id: session.id, computerId: session.computerId, channelId: session.channelId, clients: session.clients.size }));
+}
+
+export function closeChannelSessions(channelId: number): void {
+  for (const session of sessions.values()) if (session.channelId === channelId) closeSession(session.id);
 }
 
 export function closeSession(sessionId: string): void {
   const s = sessions.get(sessionId);
   if (!s) return;
-  try { s.upstream.close(); } catch { /* closed */ }
   sessions.delete(sessionId);
+  try { s.upstream.close(); } catch { /* closed */ }
+  const computer = getComputer(s.computerId);
+  if (computer) void deleteTerminal(computer, s.upstreamId);
 }

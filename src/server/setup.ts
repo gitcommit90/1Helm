@@ -3,18 +3,22 @@ import { addBotToChannel, createMessage, serializeMessage } from "./store.ts";
 import { broadcastToChannel } from "./events.ts";
 import { fetchModels } from "./computer.ts";
 import { CHATGPT_KIND, listChatGPTModels } from "./chatgpt.ts";
+import { ensureChannelWorkspace, ensureSkipperAgent } from "./agents.ts";
 
 export type Workspace = {
   name: string;
   terminals_enabled: boolean;
   setup_complete: boolean;
+  photo_url: string | null;
+  theme: string;
 };
 
 const SKIPPER_PROMPT =
-  "You are Skipper, the chief of staff for this 1Helm workspace. " +
-  "Help the owner create channels, configure providers and bots, and keep the workspace organized. " +
-  "Be concrete, action-oriented, and concise. Prefer doing the next useful step over abstract advice. " +
-  "One-click apps as dedicated channels are coming next — until then, guide the owner with the tools available now.";
+  "You are Skipper, the one workspace-wide chief of staff and root operator for this 1Helm environment. " +
+  "The human owner is the Captain and final authority. Every ordinary channel has one resident agent, workspace, files, threads, and memory. " +
+  "Work across channels and at host scope when explicitly asked, provision and repair channel worlds, and broker missing capabilities or credentials. " +
+  "When invoked from a thread, use its complete context and keep every action and outcome visible in that same thread. " +
+  "Be concrete, action-oriented, and concise. Prefer doing the next useful step over abstract advice.";
 
 const FREE_MODEL_PREFS = [
   "openrouter/free",
@@ -36,6 +40,8 @@ export function workspaceView(row: Row = workspaceRow()): Workspace {
     name: String(row.name || "My Workspace"),
     terminals_enabled: Boolean(row.terminals_enabled),
     setup_complete: Boolean(row.setup_complete),
+    photo_url: row.photo_mime ? "/api/workspace/photo" : null,
+    theme: String(row.theme || "graphite"),
   };
 }
 
@@ -87,7 +93,7 @@ export function ensureMainChannel(createdBy?: number | null): number {
     return id;
   }
   const id = run(
-    "INSERT INTO channels (name, kind, topic, created_by, created) VALUES ('main','channel','Your home base with @skipper',?,?)",
+    "INSERT INTO channels (name, slug, kind, topic, purpose, status, created_by, created) VALUES ('main','main','channel','Your home base with @skipper','Workspace-wide coordination with Skipper','active',?,?)",
     createdBy ?? null,
     now(),
   ).lastInsertRowid;
@@ -113,30 +119,28 @@ export async function ensureSkipper(providerId: number, model: string, terminals
     ).lastInsertRowid;
   }
 
-  // Give Skipper the local computer when terminals are enabled so it can act on the box.
+  // Human terminal visibility does not limit Skipper's host-level authority.
   run("DELETE FROM bot_computers WHERE bot_id=?", botId);
-  if (terminalsEnabled) {
-    for (const c of q("SELECT id FROM computers")) {
-      run("INSERT OR IGNORE INTO bot_computers (bot_id, computer_id) VALUES (?,?)", botId, c.id);
-    }
+  for (const c of q("SELECT id FROM computers")) {
+    run("INSERT OR IGNORE INTO bot_computers (bot_id, computer_id) VALUES (?,?)", botId, c.id);
   }
   return botId;
 }
 
 function welcomeBody(workspaceName: string, terminalsEnabled: boolean): string {
   const terminalLine = terminalsEnabled
-    ? "Terminals are enabled in the sidebar if you want a live shell on this machine."
-    : "Terminals are turned off for this workspace — you can enable them later in Settings if you need a live shell.";
+    ? "Each channel's Terminal opens directly in that agent's workspace."
+    : "Channel terminals are hidden for now; the resident agents still keep their durable workspaces.";
   return [
-    `Hey — I'm **@skipper**, your chief of staff for **${workspaceName}**.`,
+    `Hey — I'm **@skipper**, your workspace-wide chief of staff for **${workspaceName}**.`,
     "",
-    "I can help you create channels, connect providers, and set up specialized bots for focused work. Mention me in a thread with `@skipper` whenever you want help.",
+    "Create a channel for anything. It comes with one resident agent, a durable computer workspace, files, threads, and provider-neutral memory — no bot wiring or directory setup required.",
     "",
-    "One-click apps that become their own channels are next on the roadmap. For now, this is your home base.",
+    "Mention me with `@skipper` in any channel thread when its resident agent needs host-level work, another channel, a missing capability, credentials, or Captain input. I receive the complete thread and answer there.",
     "",
     terminalLine,
     "",
-    "Welcome aboard.",
+    "One Helm. One Captain. One Skipper. Many channel worlds.",
   ].join("\n");
 }
 
@@ -160,6 +164,8 @@ export async function completeSetup(opts: {
   const channelId = ensureMainChannel(opts.userId);
   const skipperId = await ensureSkipper(Number(provider.id), model, opts.terminalsEnabled);
   addBotToChannel(skipperId, channelId);
+  ensureSkipperAgent(skipperId, channelId);
+  ensureChannelWorkspace(channelId);
 
   // Canned welcome — do not wait on an LLM for the first impression.
   let welcomeMsg = q1(
@@ -179,9 +185,11 @@ export async function completeSetup(opts: {
   }
 
   run(
-    "UPDATE workspace SET name=?, terminals_enabled=?, setup_complete=1 WHERE id=1",
+    "UPDATE workspace SET name=?, terminals_enabled=?, setup_complete=1, default_provider_id=?, default_model=? WHERE id=1",
     name,
     opts.terminalsEnabled ? 1 : 0,
+    provider.id,
+    model,
   );
 
   return {

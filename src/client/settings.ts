@@ -1,19 +1,6 @@
-import { api, type Bot, type Computer, type Provider, type User } from "./api.ts";
+import { api, getToken, workspacePhotoSrc, type Computer, type Provider, type Skill, type User, type WorkspaceDomain } from "./api.ts";
 import { h, clear, add, icon, providerMark } from "./dom.ts";
-import { S, avatar, reloadProviders } from "./app.ts";
-
-const modelCache = new Map<number, string[]>();
-async function loadModels(botId: number): Promise<string[]> {
-  if (modelCache.has(botId)) return modelCache.get(botId)!;
-  try { const r = await api<{ models: string[] }>(`/api/bots/${botId}/models`); modelCache.set(botId, r.models); return r.models; }
-  catch { return []; }
-}
-const provModelCache = new Map<number, string[]>();
-async function loadProviderModels(providerId: number): Promise<string[]> {
-  if (provModelCache.has(providerId)) return provModelCache.get(providerId)!;
-  const r = await api<{ models: string[] }>(`/api/providers/${providerId}/models`);
-  provModelCache.set(providerId, r.models); return r.models;
-}
+import { S, avatar, reloadProviders, renderApp, appAlert, appConfirm } from "./app.ts";
 
 // ============================================================ OpenRouter OAuth (PKCE)
 const b64url = (buf: ArrayBuffer): string => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -61,7 +48,7 @@ export async function finishOpenRouterOAuth(): Promise<{ connected: boolean }> {
   const verifier = takeVerifier();
   if (!verifier) {
     console.warn("OpenRouter OAuth: callback code received but no stored PKCE verifier (storage cleared or sign-in older than 30 min)");
-    alert("OpenRouter sent back an authorization code, but this browser no longer has the matching sign-in state (it may have been cleared during the redirect). Please click Connect OpenRouter and try again.");
+    void appAlert("OpenRouter sent back an authorization code, but this browser no longer has the matching sign-in state (it may have been cleared during the redirect). Please click Connect OpenRouter and try again.");
     return { connected: false };
   }
   try {
@@ -69,7 +56,7 @@ export async function finishOpenRouterOAuth(): Promise<{ connected: boolean }> {
     await reloadProviders();
     return { connected: true };
   } catch (e) {
-    alert("OpenRouter connection failed: " + (e as Error).message);
+    void appAlert("OpenRouter connection failed: " + (e as Error).message);
     return { connected: false };
   }
 }
@@ -87,19 +74,19 @@ export async function startChatGPTOAuth(): Promise<void> {
     try { await navigator.clipboard.writeText(started.userCode!); status.textContent = "Code copied — paste it into the OpenAI page."; }
     catch { code.focus(); code.select(); document.execCommand("copy"); status.textContent = "Code selected — copy it, then paste it into the OpenAI page."; }
   };
-  const modal = h("div", { class: "fixed inset-0 z-50 grid place-items-center bg-black/60 p-6", onclick: (e: MouseEvent) => { if (e.target === modal) close(); } },
-    h("div", { class: "card w-full max-w-md space-y-5 p-6 shadow-2xl" },
+  const modal = h("div", { class: "modal-overlay fixed inset-0 z-50 grid place-items-end bg-black/60 p-0 sm:place-items-center sm:p-6", onclick: (e: MouseEvent) => { if (e.target === modal) close(); } },
+    h("div", { class: "card mobile-sheet w-full max-w-md space-y-5 rounded-b-none p-5 shadow-2xl sm:rounded-xl sm:p-6" },
       h("div", { class: "flex items-start justify-between gap-4" },
-        h("div", {}, h("h2", { class: "text-lg font-bold text-fg" }, "Connect ChatGPT"), h("p", { class: "mt-1 text-sm text-muted" }, "Connect the shared admin ChatGPT account for 1Helm bots.")),
-        h("button", { class: "grid h-8 w-8 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg", title: "Cancel", onclick: close }, icon("x"))),
+        h("div", {}, h("h2", { class: "text-lg font-bold text-fg" }, "Connect ChatGPT"), h("p", { class: "mt-1 text-sm text-muted" }, "Connect the shared admin ChatGPT account to serve Skipper and resident agents.")),
+        h("button", { class: "grid h-11 w-11 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg sm:h-8 sm:w-8", title: "Cancel", onclick: close }, icon("x"))),
       h("div", { class: "space-y-2 rounded-lg border border-line bg-raised p-4" },
         h("p", { class: "text-sm text-fg" }, "1. Open the OpenAI verification page."),
-        h("a", { class: "btn-primary flex w-full justify-center text-sm", href: started.verificationUrl, target: "_blank", rel: "noopener noreferrer" }, "Open verification page"),
+        h("a", { class: "btn-primary flex min-h-11 w-full justify-center text-sm", href: started.verificationUrl, target: "_blank", rel: "noopener noreferrer" }, "Open verification page"),
         h("p", { class: "pt-2 text-sm text-fg" }, "2. Enter this one-time code:"),
         code,
-        h("button", { class: "btn-subtle w-full text-sm", onclick: () => { void copy(); } }, "Copy code")),
+        h("button", { class: "btn-subtle min-h-11 w-full text-sm", onclick: () => { void copy(); } }, "Copy code")),
       status,
-      h("div", { class: "flex justify-end" }, h("button", { class: "btn-subtle text-sm", onclick: close }, "Cancel"))));
+      h("div", { class: "flex justify-end pb-[env(safe-area-inset-bottom)]" }, h("button", { class: "btn-subtle min-h-11 text-sm sm:min-h-0", onclick: close }, "Cancel"))));
   document.body.append(modal);
   code.focus(); code.select();
 
@@ -127,89 +114,23 @@ export async function startChatGPTOAuth(): Promise<void> {
   }
 }
 
-// ============================================================ model routing
-/** Effective model + which level supplies it, mirroring server resolution. */
-function resolve(bot: Bot, channelId: number, threadId: number | null): { model: string; source: "thread" | "channel" | "global" | "none" } {
-  const t = threadId != null ? bot.prefs[`thread:${threadId}`] : "";
-  if (t) return { model: t, source: "thread" };
-  const c = bot.prefs[`channel:${channelId}`];
-  if (c) return { model: c, source: "channel" };
-  if (bot.model) return { model: bot.model, source: "global" };
-  return { model: "", source: "none" };
-}
-
-/**
- * A clear three-level model routing card: Global → Channel → Thread, with the
- * active level highlighted and inherited levels dimmed. Levels below the one
- * being viewed are shown so the override chain is obvious.
- */
-export function modelRoutingPanel(bot: Bot, channelId: number, threadId: number | null, onChange: () => Promise<void>): HTMLElement {
-  const wrap = h("div", { class: "rounded-xl border border-line bg-raised p-3" });
-  const chName = "#" + (S.channels.find((c) => c.id === channelId)?.name || "channel");
-
-  const render = async (): Promise<void> => {
-    clear(wrap);
-    const eff = resolve(bot, channelId, threadId);
-    const models = await loadModels(bot.id).catch(() => [] as string[]);
-
-    const levelRow = (level: "global" | "channel" | "thread", label: string, scope: string): HTMLElement => {
-      const value = level === "global" ? bot.model : bot.prefs[`${level}:${level === "channel" ? channelId : threadId}`] || "";
-      const active = eff.source === level;
-      const inheritsFrom = level === "channel" ? (bot.model ? `global (${bot.model})` : "global") : (bot.prefs[`channel:${channelId}`] ? `channel (${bot.prefs[`channel:${channelId}`]})` : (bot.model ? `global (${bot.model})` : "global"));
-
-      const sel = h("select", { class: "field h-8 flex-1 py-0 text-xs" }) as HTMLSelectElement;
-      if (level !== "global") sel.append(h("option", { value: "", selected: !value }, `Inherit — ${inheritsFrom}`));
-      else if (!bot.model) sel.append(h("option", { value: "", selected: true }, "Not set"));
-      const opts = models.length ? models : (value ? [value] : []);
-      for (const mdl of opts) sel.append(h("option", { value: mdl, selected: mdl === value }, mdl));
-      sel.addEventListener("change", async () => {
-        if (level === "global") await api(`/api/bots/${bot.id}`, { method: "PATCH", body: { model: sel.value } });
-        else await api("/api/model-pref", { body: { botId: bot.id, scope: level, scopeId: String(level === "channel" ? channelId : threadId), model: sel.value || null } });
-        await onChange();
-        const fresh = S.bots.find((b) => b.id === bot.id); if (fresh) { bot.model = fresh.model; bot.prefs = fresh.prefs; }
-        render();
-      });
-
-      return h("div", { class: `flex items-center gap-2 rounded-lg px-2 py-1.5 ${active ? "bg-accent-soft ring-1 ring-accent/40" : ""}` },
-        h("span", { class: `mt-0.5 h-2 w-2 shrink-0 rounded-full ${active ? "bg-accent" : "bg-line"}`, title: active ? "Active here" : "" }),
-        h("div", { class: "w-24 shrink-0" }, h("div", { class: `text-xs font-semibold ${active ? "text-accent" : "text-fg"}` }, label), h("div", { class: "truncate text-[10px] text-muted" }, scope)),
-        sel,
-        value && level !== "global"
-          ? h("button", { class: "grid h-7 w-7 shrink-0 place-items-center rounded text-muted hover:bg-hover hover:text-danger", title: "Clear override", onclick: async () => { await api("/api/model-pref", { body: { botId: bot.id, scope: level, scopeId: String(level === "channel" ? channelId : threadId), model: null } }); await onChange(); const fr = S.bots.find((b) => b.id === bot.id); if (fr) { bot.model = fr.model; bot.prefs = fr.prefs; } render(); } }, icon("x", 14))
-          : h("span", { class: "w-7 shrink-0" }));
-    };
-
-    add(wrap,
-      h("div", { class: "mb-2 flex items-center gap-2" }, avatar(bot.name, "bot", 7),
-        h("div", { class: "min-w-0 flex-1" }, h("div", { class: "truncate text-sm font-semibold text-fg" }, bot.name),
-          h("div", { class: "text-[11px] text-muted" }, "Serving here: ", h("span", { class: "font-semibold text-accent" }, eff.model || "no model"), eff.source !== "none" ? ` (from ${eff.source})` : "")),
-        !models.length ? h("button", { class: "btn-subtle h-7 text-[11px]", onclick: async () => { modelCache.delete(bot.id); await loadModels(bot.id); render(); } }, "Load models") : null),
-      h("div", { class: "space-y-1" },
-        levelRow("global", "Global", "all channels"),
-        levelRow("channel", "Channel", chName),
-        threadId != null ? levelRow("thread", "Thread", "this thread only") : null));
-  };
-  render();
-  return wrap;
-}
-
 // ============================================================ settings modal
-type Tab = "providers" | "bots" | "computers" | "members";
-export function openSettings(tab: Tab = "bots"): void {
-  const overlay = h("div", { class: "fixed inset-0 z-40 grid place-items-center bg-black/50 p-6", onclick: (e: MouseEvent) => { if (e.target === overlay) overlay.remove(); } });
-  const bodyEl = h("div", { class: "min-h-0 flex-1 overflow-y-auto p-5" });
-  const tabs: [Tab, string][] = [["providers", "Providers"], ["bots", "Bots"], ["computers", "Computers"]];
-  if (S.me.is_admin) tabs.push(["members", "Members"]);
-  const tabBar = h("div", { class: "flex gap-1 border-b border-line px-4 pt-3" });
+type Tab = "admin" | "agents" | "skills" | "domains" | "providers" | "computers" | "members";
+export function openSettings(tab: Tab = "agents"): void {
+  const overlay = h("div", { class: "modal-overlay fixed inset-0 z-40 grid place-items-end bg-black/50 p-0 sm:place-items-center sm:p-4 md:p-6", onclick: (e: MouseEvent) => { if (e.target === overlay) overlay.remove(); } });
+  const bodyEl = h("div", { class: "min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4 sm:p-5" });
+  const tabs: [Tab, string][] = S.me.is_admin ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Advanced computers"], ["members", "Members"]] : [["agents", "Agents"], ["skills", "Skills"], ["providers", "Providers"], ["computers", "Advanced computers"]];
+  const tabBar = h("div", { class: "flex gap-1 overflow-x-auto border-b border-line px-2 pt-2 sm:px-4 sm:pt-3" });
   const draw = (t: Tab): void => {
     clear(tabBar);
-    tabs.forEach(([id, label]) => tabBar.append(h("button", { class: `-mb-px rounded-t-lg border-b-2 px-4 py-2 text-sm font-medium ${t === id ? "border-accent text-fg" : "border-transparent text-muted hover:text-fg"}`, onclick: () => draw(id) }, label)));
+    tabs.forEach(([id, label]) => tabBar.append(h("button", { class: `view-tab ${t === id ? "view-tab-active" : "view-tab-idle"}`, onclick: () => draw(id) }, label)));
     clear(bodyEl);
-    bodyEl.append(t === "providers" ? providersPanel() : t === "bots" ? botsPanel() : t === "computers" ? computersPanel() : membersPanel());
+    bodyEl.append(t === "admin" ? adminPanel() : t === "agents" ? agentsPanel() : t === "skills" ? skillsPanel() : t === "domains" ? domainsPanel() : t === "providers" ? providersPanel() : t === "computers" ? computersPanel() : membersPanel());
   };
-  overlay.append(h("div", { class: "card flex h-[82vh] w-[760px] flex-col overflow-hidden shadow-2xl" },
-    h("div", { class: "flex items-center justify-between border-b border-line px-5 py-3" }, h("div", { class: "flex items-center gap-2 text-lg font-bold text-fg" }, h("span", { class: "text-accent" }, icon("gear", 18)), "Settings"),
-      h("button", { class: "grid h-8 w-8 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg", onclick: () => overlay.remove() }, icon("x"))),
+  overlay.append(h("div", { class: "card mobile-sheet flex h-[min(92dvh,100%)] w-full max-w-none flex-col overflow-hidden rounded-b-none shadow-2xl sm:h-[min(82vh,900px)] sm:max-w-[760px] sm:rounded-xl" },
+    h("div", { class: "flex items-center justify-between border-b border-line px-4 py-3 sm:px-5" },
+      h("div", { class: "font-display flex items-center gap-2.5 text-[1.4rem] leading-tight text-fg" }, h("span", { class: "text-accent" }, icon("gear", 18)), "Settings"),
+      h("button", { class: "grid h-11 w-11 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg sm:h-8 sm:w-8", "aria-label": "Close settings", onclick: () => overlay.remove() }, icon("x"))),
     tabBar, bodyEl));
   document.body.append(overlay);
   draw(tab);
@@ -217,19 +138,111 @@ export function openSettings(tab: Tab = "bots"): void {
 
 const adminNote = (): HTMLElement => h("p", { class: "rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-300" }, "Only admins can add or edit these.");
 
+function adminPanel(): HTMLElement {
+  const name = h("input", { class: "field", value: S.workspace.name, autocomplete: "organization" }) as HTMLInputElement;
+  const theme = h("select", { class: "field" }, ...[["graphite", "Signal"], ["ocean", "Ocean"], ["forest", "Forest"], ["ember", "Brass"], ["plum", "Plum"]].map(([value, label]) => h("option", { value, selected: S.workspace.theme === value }, label))) as HTMLSelectElement;
+  const status = h("p", { class: "min-h-5 text-sm text-muted" });
+  const photo = h("img", { class: "h-16 w-16 rounded-xl border border-line bg-raised object-cover", src: workspacePhotoSrc(S.workspace.photo_url, Date.now()), alt: "Workspace" }) as HTMLImageElement;
+  const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", class: "hidden" }) as HTMLInputElement;
+  const presetColors = ["#c8552f", "#4f6d7a", "#8a6b7c", "#a67c52", "#7a6a4f", "#2e7d4f", "#2166b8", "#64748b"];
+  const presetRow = h("div", { class: "mt-2 flex flex-wrap gap-2" });
+  const applyPreset = async (hex: string): Promise<void> => {
+    status.textContent = "Applying workspace color…";
+    const canvas = document.createElement("canvas");
+    canvas.width = 256; canvas.height = 256;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) { status.textContent = "Canvas unavailable."; return; }
+    ctx.fillStyle = hex; ctx.fillRect(0, 0, 256, 256);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) { status.textContent = "Could not generate image."; return; }
+    const response = await fetch("/api/workspace/photo", { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": "image/png" }, body: blob });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) { status.textContent = result.error || `HTTP ${response.status}`; return; }
+    S.workspace = result.workspace; photo.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); renderApp(); status.textContent = "Workspace photo updated.";
+  };
+  for (const hex of presetColors) presetRow.append(h("button", { class: "h-8 w-8 rounded-lg border border-line shadow-sm transition hover:scale-105", style: `background:${hex}`, title: hex, onclick: () => { void applyPreset(hex); } }));
+  file.onchange = async () => {
+    const image = file.files?.[0]; if (!image) return;
+    status.textContent = "Uploading workspace photo…";
+    const response = await fetch("/api/workspace/photo", { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": image.type }, body: image });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) { status.textContent = result.error || `HTTP ${response.status}`; return; }
+    S.workspace = result.workspace; photo.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); renderApp(); status.textContent = "Workspace photo updated.";
+  };
+  const save = async (): Promise<void> => {
+    try { S.workspace = (await api<{ workspace: typeof S.workspace }>("/api/workspace", { method: "PATCH", body: { name: name.value, theme: theme.value } })).workspace; applyWorkspaceTheme(); status.textContent = "Workspace settings saved."; renderApp(); }
+    catch (error) { status.textContent = (error as Error).message; }
+  };
+  return h("div", { class: "space-y-4" },
+    h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Workspace identity"), h("p", { class: "mt-1 text-sm text-muted" }, "Simple shared identity for everyone and every agent in this workspace."),
+      h("div", { class: "mt-4 flex flex-col gap-4 sm:flex-row sm:items-center" }, photo, h("div", { class: "flex flex-wrap gap-2" }, h("label", { class: "btn-subtle cursor-pointer text-sm" }, "Choose photo", file), S.workspace.photo_url ? h("button", { class: "btn-ghost text-sm", onclick: async () => { S.workspace = (await api<{ workspace: typeof S.workspace }>("/api/workspace/photo", { method: "DELETE" })).workspace; photo.src = "/brand/1helm.png"; renderApp(); } }, "Remove") : null)),
+      h("div", { class: "mt-3" }, h("span", { class: "mb-1 block text-xs font-semibold text-muted" }, "Default colors"), presetRow),
+      h("div", { class: "mt-4 grid gap-3 sm:grid-cols-2" }, h("label", {}, h("span", { class: "mb-1 block text-xs font-semibold text-muted" }, "Workspace name"), name), h("label", {}, h("span", { class: "mb-1 block text-xs font-semibold text-muted" }, "Color theme"), theme)),
+      h("div", { class: "mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save workspace"))));
+}
+
+function applyWorkspaceTheme(): void {
+  document.documentElement.dataset.workspaceTheme = S.workspace.theme || "graphite";
+  localStorage.setItem("ctrl.workspaceTheme", S.workspace.theme || "graphite");
+}
+
+function skillsPanel(): HTMLElement {
+  const wrap = h("div", { class: "space-y-3" }, h("p", { class: "text-sm leading-6 text-muted" }, "Every agent knows this complete catalog. Skipper starts with all skills; resident agents get a useful permanent kit and can request or propose more while they work."));
+  void api<{ skills: Skill[] }>("/api/skills").then(({ skills }) => {
+    for (const skill of skills) wrap.append(h("article", { class: "card p-4" }, h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-semibold text-fg" }, skill.name), h("span", { class: "chip" }, skill.category), h("span", { class: "ml-auto text-xs text-muted" }, `${(skill as Skill & { assigned_agents?: number }).assigned_agents || 0} agents`)), h("p", { class: "mt-2 text-sm leading-6 text-muted" }, skill.description)));
+  }).catch((error) => wrap.append(h("p", { class: "text-danger" }, (error as Error).message)));
+  return wrap;
+}
+
+function domainsPanel(): HTMLElement {
+  const hostname = h("input", { class: "field", placeholder: "agents.example.com", autocomplete: "url" }) as HTMLInputElement;
+  const token = h("input", { class: "field", type: "password", placeholder: "Cloudflare API token", autocomplete: "off" }) as HTMLInputElement;
+  const status = h("p", { class: "min-h-5 text-sm text-muted" });
+  const list = h("div", { class: "space-y-2" });
+  const load = async (): Promise<void> => {
+    clear(list);
+    const { domains } = await api<{ domains: WorkspaceDomain[] }>("/api/domains");
+    if (!domains.length) list.append(h("p", { class: "py-6 text-center text-sm text-muted" }, "No custom domain connected yet."));
+    for (const domain of domains) list.append(h("div", { class: "card flex items-center gap-3 p-3" }, h("span", { class: `h-2.5 w-2.5 rounded-full ${domain.status === "active" ? "bg-ok" : domain.status === "error" ? "bg-danger" : "bg-amber-400"}` }), h("div", { class: "min-w-0 flex-1" }, h("div", { class: "font-semibold text-fg" }, domain.hostname), h("div", { class: "text-xs text-muted" }, domain.status === "active" ? "HTTPS connected through Cloudflare" : domain.error || domain.status))));
+  };
+  const connect = async (): Promise<void> => {
+    status.textContent = "Creating the tunnel, DNS record, HTTPS route, and persistent service…";
+    try { const result = await api<{ domain: WorkspaceDomain }>("/api/domains/cloudflare", { body: { hostname: hostname.value, token: token.value } }); token.value = ""; status.textContent = `Connected https://${result.domain.hostname}. The API token was not saved.`; await load(); }
+    catch (error) { token.value = ""; status.textContent = (error as Error).message; }
+  };
+  void load();
+  return h("div", { class: "space-y-4" }, h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Connect a Cloudflare domain"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Do you have a domain on Cloudflare? Enter the hostname you want for this workspace. 1Helm creates a named tunnel, routes DNS, enables HTTPS, and keeps it running after restarts."), h("div", { class: "mt-4 grid gap-3 sm:grid-cols-2" }, hostname, token), h("p", { class: "mt-2 text-xs text-muted" }, "Create an API token with Account: Cloudflare Tunnel Edit and Zone: DNS Edit. The token is used for this connection and is never stored."), h("div", { class: "mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, h("button", { class: "btn-primary text-sm", onclick: () => { void connect(); } }, "Connect domain"))), list);
+}
+
+// ------------------------------------------------------------ native agent roster
+function agentsPanel(): HTMLElement {
+  const agents = S.channels.filter((channel) => channel.kind === "channel" && channel.agent).map((channel) => ({ channel, agent: channel.agent! }));
+  return h("div", { class: "space-y-3" },
+    h("div", { class: "rounded-lg border border-accent/25 bg-accent-soft px-4 py-3 text-sm leading-6 text-fg" }, "Agents are created by channels, not manually wired. Each ordinary channel owns one resident specialist; Skipper is the single workspace-wide exception."),
+    ...agents.map(({ channel, agent }) => h("div", { class: "card flex flex-col gap-3 p-4 sm:flex-row sm:items-center" },
+      h("div", { class: "flex min-w-0 items-start gap-3" },
+        avatar(agent.name, "bot", 9, agent.runtime?.avatar || undefined),
+        h("div", { class: "min-w-0 flex-1" },
+          h("div", { class: "flex flex-wrap items-center gap-2" }, h("span", { class: "font-semibold text-fg" }, "@" + agent.name), h("span", { class: "chip" }, agent.kind === "skipper" ? "Workspace Skipper" : `Resident of #${channel.name}`)),
+          h("div", { class: "mt-1 text-sm leading-5 text-muted" }, agent.purpose || channel.purpose),
+          h("div", { class: "mt-1 break-words text-xs text-faint" }, `${agent.status} · ${agent.provider_name || "no provider"} · ${agent.model || "no model"}`))),
+      h("button", { class: "btn-subtle min-h-11 w-full shrink-0 text-xs sm:min-h-0 sm:w-auto", onclick: () => { document.querySelector<HTMLElement>(".fixed.inset-0.z-40")?.remove(); S.channelId = channel.id; S.view = "settings"; renderApp(); } }, "Open channel"))),
+    !agents.length ? h("p", { class: "py-8 text-center text-sm text-muted" }, "Complete setup, then create a channel to provision its resident agent world.") : null);
+}
+
 // ------------------------------------------------------------ providers
 function providersPanel(): HTMLElement {
   const wrap = h("div", { class: "space-y-3" });
   const list = h("div", { class: "space-y-3" });
   const refresh = async (): Promise<void> => { await reloadProviders(); draw(); };
-  const draw = (): void => { clear(list); S.providers.forEach((pr) => list.append(providerCard(pr, refresh))); if (!S.providers.length) list.append(h("p", { class: "py-6 text-center text-sm text-muted" }, "No providers yet. Connect one, then reuse it across bots.")); };
+  const draw = (): void => { clear(list); S.providers.forEach((pr) => list.append(providerCard(pr, refresh))); if (!S.providers.length) list.append(h("p", { class: "py-6 text-center text-sm text-muted" }, "No providers yet. Connect one to serve Skipper and resident agents.")); };
   add(wrap,
-    h("div", { class: "flex items-center justify-between gap-3" },
-      h("p", { class: "text-sm text-muted" }, "Connections to OpenAI-compatible endpoints. Add once, then reuse across any number of bots."),
-      S.me.is_admin ? h("div", { class: "flex shrink-0 gap-2" },
-        h("button", { class: "btn-subtle text-sm", type: "button", onclick: () => { void startChatGPTOAuth().catch((e) => alert((e as Error).message || "ChatGPT connection failed")); } }, "Connect ChatGPT"),
-        h("button", { class: "btn-subtle text-sm", type: "button", onclick: () => { void startOpenRouterOAuth().catch((e) => alert((e as Error).message || "OpenRouter connection failed")); } }, "Connect OpenRouter"),
-        h("button", { class: "btn-primary text-sm", onclick: () => list.prepend(providerCard(null, refresh)) }, icon("plus"), "Add a provider")) : null),
+    h("div", { class: "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between" },
+      h("p", { class: "min-w-0 text-sm leading-5 text-muted" }, "Connections to model providers. Add one once, then let any number of resident agents inherit or use it."),
+      S.me.is_admin ? h("div", { class: "flex w-full flex-col gap-2 sm:w-auto sm:shrink-0 sm:flex-row sm:flex-wrap sm:justify-end" },
+        h("button", { class: "btn-subtle min-h-11 w-full text-sm sm:min-h-0 sm:w-auto", type: "button", onclick: () => { void startChatGPTOAuth().catch((e) => appAlert((e as Error).message || "ChatGPT connection failed")); } }, "Connect ChatGPT"),
+        h("button", { class: "btn-subtle min-h-11 w-full text-sm sm:min-h-0 sm:w-auto", type: "button", onclick: () => { void startOpenRouterOAuth().catch((e) => appAlert((e as Error).message || "OpenRouter connection failed")); } }, "Connect OpenRouter"),
+        h("button", { class: "btn-primary min-h-11 w-full text-sm sm:min-h-0 sm:w-auto", onclick: () => list.prepend(providerCard(null, refresh)) }, icon("plus"), "Add a provider")) : null),
     S.me.is_admin ? null : adminNote(), list);
   draw();
   return wrap;
@@ -241,7 +254,7 @@ function providerCard(prov: Provider | null, refresh: () => void): HTMLElement {
   const name = h("input", { class: "field", placeholder: "Name (e.g. OpenAI, work OpenRouter)", value: prov?.name || "", disabled: ro || isChatGPT }) as HTMLInputElement;
   const url = h("input", { class: "field", placeholder: "Base URL, e.g. https://api.openai.com/v1", value: isChatGPT ? "Login with ChatGPT (admin subscription)" : (prov?.base_url || ""), disabled: ro || isChatGPT }) as HTMLInputElement;
   const key = h("input", { class: "field", type: "password", placeholder: isChatGPT ? "Connected ChatGPT session (no API key)" : (prov?.has_key ? "•••••• (unchanged)" : "API key"), disabled: ro || isChatGPT }) as HTMLInputElement;
-  const status = h("span", { class: "text-xs text-muted" }, isChatGPT ? "Shared admin ChatGPT account for bots." : "");
+  const status = h("span", { class: "min-w-0 flex-1 break-words text-xs text-muted" }, isChatGPT ? "Shared admin ChatGPT account for agents." : "");
   const test = async (): Promise<void> => {
     status.textContent = "Testing…";
     try { const r = await api<{ models: string[] }>("/api/providers/fetch-models", { body: prov ? { providerId: prov.id } : { base_url: url.value, api_key: key.value } }); status.textContent = `✓ ${r.models.length} models available`; }
@@ -249,11 +262,11 @@ function providerCard(prov: Provider | null, refresh: () => void): HTMLElement {
   };
   const save = async (): Promise<void> => {
     const payload: Record<string, unknown> = { name: name.value, base_url: url.value }; if (key.value) payload.api_key = key.value;
-    try { await api(prov ? `/api/providers/${prov.id}` : "/api/providers", { method: prov ? "PATCH" : "POST", body: payload }); if (prov) provModelCache.delete(prov.id); refresh(); }
+    try { await api(prov ? `/api/providers/${prov.id}` : "/api/providers", { method: prov ? "PATCH" : "POST", body: payload }); refresh(); }
     catch (e) { status.textContent = (e as Error).message; }
   };
   const del = async (): Promise<void> => {
-    if (!prov || !confirm(isChatGPT ? `Disconnect ChatGPT and remove ${prov.name}?` : `Delete provider ${prov.name}?`)) return;
+    if (!prov || !(await appConfirm(isChatGPT ? `Disconnect ChatGPT and remove ${prov.name}?` : `Delete provider ${prov.name}?`))) return;
     try {
       if (isChatGPT) await api("/api/providers/chatgpt/disconnect", { body: {} });
       else await api(`/api/providers/${prov.id}`, { method: "DELETE" });
@@ -261,85 +274,21 @@ function providerCard(prov: Provider | null, refresh: () => void): HTMLElement {
     } catch (e) { status.textContent = (e as Error).message; }
   };
   const authChip = prov?.kind === "openrouter" ? "OAuth" : prov?.kind === "chatgpt" ? "ChatGPT login" : null;
-  return h("div", { class: "card p-4" },
-    h("div", { class: "mb-2 flex items-center gap-2" },
-      h("span", { class: "wizard-provider-mark h-9 w-9" }, providerMark(prov?.kind || "openai", 18)),
-      h("div", { class: "flex-1" }, name),
-      prov ? h("span", { class: "chip" }, `${prov.bots} bot${prov.bots === 1 ? "" : "s"}`) : null,
-      authChip ? h("span", { class: "chip border-accent/40 text-accent" }, authChip) : null),
-    h("div", { class: "grid grid-cols-2 gap-2" }, url, key),
-    h("div", { class: "mt-2.5 flex items-center justify-between border-t border-line pt-2.5" }, status,
-      S.me.is_admin ? h("div", { class: "flex gap-2" },
-        h("button", { class: "btn-subtle text-xs", onclick: test }, "Test"),
-        isChatGPT ? h("button", { class: "btn-subtle text-xs", onclick: () => { void startChatGPTOAuth().then(refresh).catch((e) => alert((e as Error).message || "ChatGPT connection failed")); } }, "Reconnect") : null,
-        prov ? h("button", { class: "btn-danger text-xs", onclick: del }, icon("trash", 14), isChatGPT ? "Disconnect" : "Delete") : null,
-        isChatGPT ? null : h("button", { class: "btn-primary text-xs", onclick: save }, prov ? "Save" : "Add provider")) : null));
-}
-
-// ------------------------------------------------------------ bots
-function botsPanel(): HTMLElement {
-  const wrap = h("div", { class: "space-y-3" });
-  const list = h("div", { class: "space-y-3" });
-  const refresh = async (): Promise<void> => { S.bots = (await api<{ bots: Bot[] }>("/api/bots")).bots; draw(); };
-  const draw = (): void => { clear(list); S.bots.forEach((b) => list.append(botCard(b, refresh))); if (!S.bots.length) list.append(h("p", { class: "py-6 text-center text-sm text-muted" }, "No bots yet. Add one to bring AI into your threads.")); };
-  add(wrap,
-    h("div", { class: "flex items-center justify-between gap-3" }, h("p", { class: "text-sm text-muted" }, "Pick a provider and a model, then route models per channel or thread. Add providers in the Providers tab."),
-      S.me.is_admin ? h("button", { class: "btn-primary shrink-0 text-sm", onclick: () => list.prepend(botCard(null, refresh)) }, icon("plus"), "Add a new bot") : null),
-    S.me.is_admin ? null : adminNote(),
-    S.me.is_admin && !S.providers.length ? h("p", { class: "rounded-lg border border-line bg-raised px-3 py-2 text-xs text-muted" }, "Tip: connect a provider first (Providers tab) — bots choose their model from a provider.") : null,
-    list);
-  draw();
-  return wrap;
-}
-
-function botCard(bot: Bot | null, refresh: () => void): HTMLElement {
-  const ro = !S.me.is_admin;
-  const name = h("input", { class: "field", placeholder: "Bot name (used for @mention)", value: bot?.name || "", disabled: ro }) as HTMLInputElement;
-  const promptEl = h("textarea", { class: "field min-h-[64px]", placeholder: "System prompt / persona (optional)", disabled: ro }, bot?.prompt || "") as HTMLTextAreaElement;
-  const status = h("span", { class: "text-xs text-muted" });
-
-  const providerSel = h("select", { class: "field", disabled: ro }, h("option", { value: "" }, "— choose a provider —")) as HTMLSelectElement;
-  S.providers.forEach((pr) => providerSel.append(h("option", { value: pr.id, selected: bot?.provider_id === pr.id }, `${pr.name} · ${pr.kind === "chatgpt" ? "Login with ChatGPT" : pr.base_url}`)));
-  const modelSel = h("select", { class: "field", disabled: ro }) as HTMLSelectElement;
-
-  const loadForProvider = async (keepModel: string): Promise<void> => {
-    const pid = Number(providerSel.value);
-    clear(modelSel); modelSel.append(h("option", { value: keepModel }, keepModel || "— select a provider —"));
-    if (!pid) return;
-    status.textContent = "Loading models…";
-    try { const models = await loadProviderModels(pid); clear(modelSel); modelSel.append(h("option", { value: "" }, "(no default model)")); models.forEach((mo) => modelSel.append(h("option", { value: mo, selected: mo === keepModel }, mo))); status.textContent = `${models.length} models`; }
-    catch (e) { status.textContent = (e as Error).message; }
-  };
-  providerSel.addEventListener("change", () => loadForProvider(""));
-  if (bot?.provider_id) void loadForProvider(bot.model || "");
-
-  const compBox = h("div", { class: "flex flex-wrap gap-2" });
-  const assigned = new Set(bot?.computers || []);
-  const drawComps = (): void => {
-    clear(compBox);
-    if (!S.computers.length) { compBox.append(h("span", { class: "text-xs text-muted" }, "No computers yet — add them in the Computers tab.")); return; }
-    S.computers.forEach((c) => { const on = assigned.has(c.id); compBox.append(h("button", { class: `chip py-1 ${on ? "border-accent bg-accent-soft text-accent" : ""}`, disabled: ro, onclick: () => { if (assigned.has(c.id)) assigned.delete(c.id); else assigned.add(c.id); drawComps(); } }, on ? icon("check", 12) : icon("plus", 12), c.name)); });
-  };
-  drawComps();
-
-  const save = async (): Promise<void> => {
-    const payload: Record<string, unknown> = { name: name.value, prompt: promptEl.value, model: modelSel.value, provider_id: providerSel.value ? Number(providerSel.value) : null, computers: [...assigned] };
-    try { await api(bot ? `/api/bots/${bot.id}` : "/api/bots", { method: bot ? "PATCH" : "POST", body: payload }); modelCache.delete(bot?.id ?? -1); refresh(); }
-    catch (e) { status.textContent = (e as Error).message; }
-  };
-  const del = async (): Promise<void> => { if (bot && confirm(`Delete bot ${bot.name}?`)) { await api(`/api/bots/${bot.id}`, { method: "DELETE" }); refresh(); } };
-
-  return h("div", { class: "card space-y-2.5 p-4" },
-    h("div", { class: "flex items-center gap-2" }, avatar((bot?.name || "new bot"), "bot", 9), h("div", { class: "flex-1" }, name)),
-    h("div", { class: "grid grid-cols-2 gap-2" },
-      h("div", {}, h("div", { class: "mb-1 text-xs font-semibold uppercase tracking-wide text-muted" }, "Provider"), providerSel),
-      h("div", {}, h("div", { class: "mb-1 text-xs font-semibold uppercase tracking-wide text-muted" }, "Default (global) model"), modelSel)),
-    h("div", { class: "text-[11px] text-muted" }, "Providers are shared — the same provider can back many bots. Override the model per channel/thread from the Models button in chat."),
-    promptEl,
-    h("div", {}, h("div", { class: "mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted" }, "Assigned computers"), compBox,
-      h("p", { class: "mt-1 text-[11px] text-muted" }, "The bot's system prompt lists these and grants it permission to run commands on them on your behalf.")),
-    h("div", { class: "flex items-center justify-between border-t border-line pt-2.5" }, status,
-      S.me.is_admin ? h("div", { class: "flex gap-2" }, bot ? h("button", { class: "btn-danger text-xs", onclick: del }, icon("trash", 14), "Delete") : null, h("button", { class: "btn-primary text-xs", onclick: save }, bot ? "Save changes" : "Create bot")) : null));
+  return h("div", { class: "card min-w-0 overflow-hidden p-4" },
+    h("div", { class: "mb-2 flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center" },
+      h("div", { class: "flex min-w-0 items-center gap-2" },
+        h("span", { class: "wizard-provider-mark h-9 w-9 shrink-0" }, providerMark(prov?.kind || "openai", 18)),
+        h("div", { class: "min-w-0 flex-1" }, name)),
+      h("div", { class: "flex flex-wrap gap-1.5 sm:shrink-0" },
+        prov ? h("span", { class: "chip" }, `${prov.bots} agent${prov.bots === 1 ? "" : "s"}`) : null,
+        authChip ? h("span", { class: "chip border-accent/40 text-accent" }, authChip) : null)),
+    h("div", { class: "grid grid-cols-1 gap-2 sm:grid-cols-2" }, url, key),
+    h("div", { class: "mt-2.5 flex flex-col gap-2 border-t border-line pt-2.5 sm:flex-row sm:items-center sm:justify-between" }, status,
+      S.me.is_admin ? h("div", { class: "flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-end" },
+        h("button", { class: "btn-subtle min-h-11 w-full text-xs sm:min-h-0 sm:w-auto", onclick: test }, "Test"),
+        isChatGPT ? h("button", { class: "btn-subtle min-h-11 w-full text-xs sm:min-h-0 sm:w-auto", onclick: () => { void startChatGPTOAuth().then(refresh).catch((e) => appAlert((e as Error).message || "ChatGPT connection failed")); } }, "Reconnect") : null,
+        prov ? h("button", { class: "btn-danger min-h-11 w-full text-xs sm:min-h-0 sm:w-auto", onclick: del }, icon("trash", 14), isChatGPT ? "Disconnect" : "Delete") : null,
+        isChatGPT ? null : h("button", { class: "btn-primary min-h-11 w-full text-xs sm:min-h-0 sm:w-auto", onclick: save }, prov ? "Save" : "Add provider")) : null));
 }
 
 // ------------------------------------------------------------ computers
@@ -349,8 +298,9 @@ function computersPanel(): HTMLElement {
   const refresh = async (): Promise<void> => { S.computers = (await api<{ computers: Computer[] }>("/api/computers")).computers; draw(); };
   const draw = (): void => { clear(list); S.computers.forEach((c) => list.append(computerCard(c, refresh))); if (!S.computers.length) list.append(h("p", { class: "py-6 text-center text-sm text-muted" }, "No computers yet.")); };
   add(wrap,
-    h("div", { class: "flex items-center justify-between gap-3" }, h("p", { class: "text-sm text-muted" }, "Computers are Open-Terminal endpoints (base URL + key). Open terminals to them and assign them to bots."),
-      S.me.is_admin ? h("button", { class: "btn-primary shrink-0 text-sm", onclick: () => list.prepend(computerCard(null, refresh)) }, icon("plus"), "Add a computer") : null),
+    h("div", { class: "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between" },
+      h("p", { class: "min-w-0 text-sm leading-5 text-muted" }, "Advanced: Open-Terminal endpoints (base URL + key). The embedded This Computer backs every resident agent's /workspace; add a remote computer here for Skipper host-level work."),
+      S.me.is_admin ? h("button", { class: "btn-primary min-h-11 w-full shrink-0 text-sm sm:min-h-0 sm:w-auto", onclick: () => list.prepend(computerCard(null, refresh)) }, icon("plus"), "Add a computer") : null),
     S.me.is_admin ? null : adminNote(), list);
   draw();
   return wrap;
@@ -361,18 +311,20 @@ function computerCard(comp: Computer | null, refresh: () => void): HTMLElement {
   const name = h("input", { class: "field", placeholder: "Name", value: comp?.name || "", disabled: ro }) as HTMLInputElement;
   const url = h("input", { class: "field", placeholder: "Base URL, e.g. http://localhost:8000", value: comp?.base_url || "", disabled: ro }) as HTMLInputElement;
   const key = h("input", { class: "field", type: "password", placeholder: comp?.has_key ? "•••••• (unchanged)" : "API key", disabled: ro }) as HTMLInputElement;
-  const status = h("span", { class: "text-xs text-muted" });
+  const status = h("span", { class: "min-w-0 flex-1 break-words text-xs text-muted" });
   const save = async (): Promise<void> => {
     const payload: Record<string, unknown> = { name: name.value, base_url: url.value }; if (key.value) payload.api_key = key.value;
     try { await api(comp ? `/api/computers/${comp.id}` : "/api/computers", { method: comp ? "PATCH" : "POST", body: payload }); refresh(); }
     catch (e) { status.textContent = (e as Error).message; }
   };
-  const del = async (): Promise<void> => { if (comp && confirm(`Remove computer ${comp.name}?`)) { await api(`/api/computers/${comp.id}`, { method: "DELETE" }); refresh(); } };
-  return h("div", { class: "card p-4" },
-    h("div", { class: "mb-2 flex items-center gap-2" }, h("span", { class: "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent" }, icon("terminal")), h("div", { class: "flex-1" }, name)),
-    h("div", { class: "grid grid-cols-2 gap-2" }, url, key),
-    h("div", { class: "mt-2.5 flex items-center justify-between border-t border-line pt-2.5" }, status,
-      S.me.is_admin ? h("div", { class: "flex gap-2" }, comp ? h("button", { class: "btn-danger text-xs", onclick: del }, icon("trash", 14), "Remove") : null, h("button", { class: "btn-primary text-xs", onclick: save }, comp ? "Save" : "Add computer")) : null));
+  const del = async (): Promise<void> => { if (comp && (await appConfirm(`Remove computer ${comp.name}?`))) { await api(`/api/computers/${comp.id}`, { method: "DELETE" }); refresh(); } };
+  return h("div", { class: "card min-w-0 overflow-hidden p-4" },
+    h("div", { class: "mb-2 flex min-w-0 items-center gap-2" }, h("span", { class: "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent" }, icon("terminal")), h("div", { class: "min-w-0 flex-1" }, name)),
+    h("div", { class: "grid grid-cols-1 gap-2 sm:grid-cols-2" }, url, key),
+    h("div", { class: "mt-2.5 flex flex-col gap-2 border-t border-line pt-2.5 sm:flex-row sm:items-center sm:justify-between" }, status,
+      S.me.is_admin ? h("div", { class: "flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:justify-end" },
+        comp ? h("button", { class: "btn-danger min-h-11 w-full text-xs sm:min-h-0 sm:w-auto", onclick: del }, icon("trash", 14), "Remove") : null,
+        h("button", { class: "btn-primary min-h-11 w-full text-xs sm:min-h-0 sm:w-auto", onclick: save }, comp ? "Save" : "Add computer")) : null));
 }
 
 // ------------------------------------------------------------ members
@@ -381,10 +333,25 @@ function membersPanel(): HTMLElement {
   const refresh = async (): Promise<void> => { S.users = (await api<{ users: User[] }>("/api/users")).users; draw(); };
   const draw = (): void => {
     clear(wrap);
-    S.users.forEach((u) => wrap.append(h("div", { class: "card flex items-center gap-3 p-3" },
-      avatar(u.display, "user", 9), h("div", { class: "flex-1" }, h("div", { class: "font-semibold text-fg" }, u.display), h("div", { class: "text-xs text-muted" }, "@" + u.username)),
-      h("label", { class: "flex items-center gap-1.5 text-xs text-muted" }, h("input", { type: "checkbox", class: "accent-accent", checked: u.is_admin, disabled: u.id === S.me.id, onchange: async (e: Event) => { await api(`/api/admin/users/${u.id}`, { method: "PATCH", body: { is_admin: (e.target as HTMLInputElement).checked } }); } }), "admin"),
-      u.id === S.me.id ? h("span", { class: "chip" }, "you") : h("button", { class: "btn-danger text-xs", onclick: async () => { if (confirm(`Delete ${u.display}?`)) { await api(`/api/admin/users/${u.id}`, { method: "DELETE" }); refresh(); } } }, "Delete"))));
+    const username = h("input", { class: "field", placeholder: "username", autocomplete: "off" }) as HTMLInputElement;
+    const display = h("input", { class: "field", placeholder: "Display name", autocomplete: "off" }) as HTMLInputElement;
+    const password = h("input", { class: "field", type: "password", placeholder: "Temporary password (8+ characters)", autocomplete: "new-password" }) as HTMLInputElement;
+    const status = h("p", { class: "min-h-5 min-w-0 flex-1 break-words text-xs text-muted" });
+    wrap.append(h("div", { class: "card mb-4 min-w-0 overflow-hidden p-4" },
+      h("div", { class: "mb-3" }, h("div", { class: "font-semibold text-fg" }, "Add a workspace member"), h("p", { class: "mt-1 text-xs text-muted" }, "Public registration is closed after the Captain account. Share the username and temporary password directly with this person.")),
+      h("div", { class: "grid grid-cols-1 gap-2 sm:grid-cols-3" }, username, display, password),
+      h("div", { class: "mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, h("button", { class: "btn-primary min-h-11 w-full shrink-0 text-xs sm:min-h-0 sm:w-auto", onclick: async () => {
+        status.textContent = "Adding…";
+        try { await api("/api/admin/users", { body: { username: username.value, display: display.value, password: password.value } }); await refresh(); }
+        catch (error) { status.textContent = (error as Error).message; }
+      } }, icon("plus"), "Add member"))));
+    S.users.forEach((u) => wrap.append(h("div", { class: "card flex min-w-0 flex-col gap-3 overflow-hidden p-3 sm:flex-row sm:items-center" },
+      h("div", { class: "flex min-w-0 items-center gap-3" },
+        avatar(u.display, "user", 9),
+        h("div", { class: "min-w-0 flex-1" }, h("div", { class: "truncate font-semibold text-fg" }, u.display), h("div", { class: "truncate text-xs text-muted" }, "@" + u.username))),
+      h("div", { class: "flex flex-wrap items-center gap-2 sm:shrink-0 sm:justify-end" },
+        h("label", { class: "flex min-h-11 items-center gap-1.5 text-xs text-muted sm:min-h-0" }, h("input", { type: "checkbox", class: "accent-accent", checked: u.is_admin, disabled: u.id === S.me.id, onchange: async (e: Event) => { await api(`/api/admin/users/${u.id}`, { method: "PATCH", body: { is_admin: (e.target as HTMLInputElement).checked } }); } }), "admin"),
+        u.id === S.me.id ? h("span", { class: "chip" }, "you") : h("button", { class: "btn-danger min-h-11 text-xs sm:min-h-0", onclick: async () => { if (await appConfirm(`Delete ${u.display}?`)) { await api(`/api/admin/users/${u.id}`, { method: "DELETE" }); refresh(); } } }, "Delete")))));
   };
   draw();
   return wrap;

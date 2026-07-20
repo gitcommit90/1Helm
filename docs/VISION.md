@@ -2,6 +2,45 @@
 
 This is the living product record for 1Helm. Add confirmed decisions, deployment findings, and completed slices here as the product evolves.
 
+## Direction update — 1Helm native agent workspace (2026-07-18)
+
+The product direction sharpened from "a chat app with configurable bots" into **1Helm**, the native agent workspace defined in `SPEC.md`. **1Helm is now the installed host/environment; 1Helm is the product that runs on it.** The one-sentence promise: *create a channel for anything, and it receives a persistent agent, a computer workspace, files, memory, and threads.*
+
+This supersedes the earlier framing where "channels are not apps by default" and app-catalog/Uptime-Kuma work led the roadmap. The invariant model is now first-class:
+
+- **Captain** — first user; workspace owner and final authority.
+- **Skipper** — exactly one workspace-wide, root-capable chief of staff; lives in `#main`; the deliberate exception/escalation path.
+- **Channel agent** — exactly one resident specialist per ordinary channel, bound immutably.
+- **Participation boundary** — the normal channel is Skipper plus its resident specialist; other residents may be guests in one explicit thread without gaining channel workspace, memory, or ambient membership.
+- **Skills and improvement** — Skipper owns the workspace-wide skill arsenal, provisions permanent purpose-aware kits, accepts reusable agent skill proposals, and silently reviews interaction signals for durable behavior improvements.
+- **Memory** — every resident and Skipper has an isolated Mnemosyne database for long-term retrieval in addition to canonical 1Helm records.
+- **Thread** — a durable session with status + rolling summary.
+- **Workspace / Memory** — per-channel durable filesystem and provider-neutral knowledge that survive model/provider changes and restarts.
+
+### Slice — Channel Agent World (shipped in this branch)
+
+Implements SPEC §12 end-to-end. Key decisions:
+
+- **Additive migration, not a rewrite.** `agents`, `agent_channels` (UNIQUE both columns), `agent_profiles`, `agent_capabilities`, `channel_workspaces`, `threads`, `thread_summaries`, `memory_items`, `artifacts`, `tool_actions`, `escalations`, and `channel_activity` were added. Each channel agent keeps a shadow `bots` row so the existing streaming/tool/provider runtime, model routing, and message attribution keep working unchanged. A one-time migration reconciles **every ordinary channel** to the one-resident-agent invariant (clones a shared legacy bot per extra channel, provisions a fresh agent for bot-less channels) and promotes/creates the single Skipper.
+- **Atomic provisioning.** `POST /api/channels {name, purpose}` provisions the channel, resident agent, profile, capabilities, workspace tree (`workspace/ files/ state/ memory/ profile/`), ready announcement, initial thread/summary/memory, and activity record in one SQLite transaction; retry is idempotent and never yields duplicate residents.
+- **Channel-scoped execution.** Resident `run_command` is CWD-locked to the channel's `/workspace` on the embedded local computer; terminals open there too, are owner+channel scoped, and their upstream PTYs are torn down on close/archive/delete. Workspace boundary is process-level for now with the abstraction kept explicit so container/VM isolation can slot in later (SPEC §7.2).
+- **Durable sessions + memory.** Threads carry status/summary; agent context is assembled from profile + session summary + retrieved channel memory (framed as untrusted data with provenance) + artifact list + transcript. Continuity verified across model change and server restart.
+- **Skipper escalation.** `@skipper` (human) and the resident `call_skipper` tool both route the full authoritative thread to the one workspace Skipper, which acts and records the outcome in the same thread; host-tool authority is gated to Captain-authorized invocations.
+- **Lifecycle.** Archive pauses the agent world (cancels in-flight turns, closes terminals) while preserving everything; restore reuses the same identity/workspace/memory/threads without rewriting independently-set thread status; permanent deletion is Captain-only, requires the channel be archived + typed-name confirmation, uses a filesystem tombstone for crash-safety, and removes only the target world.
+- **Native UX.** Create-channel asks name + "What is this channel all about?"; the channel header shows resident identity/status/model + Call Skipper; per-channel Chat/Threads/Files/Terminal/Memory/Activity/Settings tabs; Settings exposes editable purpose, replaceable model policy, capabilities, and lifecycle. The normal path never asks for a directory, memory backend, terminal backend, or bot-channel membership; the old "add a bot and wire it in" flow is demoted to a read-mostly Agents roster. Files are opened over an authenticated fetch (no unauthenticated content route).
+- **Authorization hardening from adversarial review:** channel-scoped file/attachment authorization, symlink-escape containment via realpath, admin gating on bot-join / model-pref / terminal-open, and pre-auth PTY data-leak fix.
+
+### Verification — 2026-07-18 (locally verified, pending VPS cold deploy)
+
+- `npm run typecheck` and `npm run build` pass.
+- New `test/native-world.mjs` (`npm run test:native`) passes **29/29**, cold-starting the server, provisioning two channel worlds, and asserting every SPEC §12 criterion plus regressions (symlink-escape rejection, archive cancelling in-flight turns, PTY teardown, authenticated Files content, thread-status preservation) — including a real server restart and DB/filesystem invariant checks.
+- Legacy `test/pipeline.mjs` still passes **16/16** on the migrated schema.
+- Headless-Chromium end-to-end pass through the real UI: cold onboarding → create-channel with purpose → resident identity/status → thread work → Files (authenticated open returns file; unauthenticated is 401) → channel-scoped Terminal cwd → Memory with provenance → Activity → model change preserving identity → Call Skipper answering in the invoking thread → archive/restore/typed-name delete. No unexpected console/page errors.
+- **Not yet done:** VPS cold-deploy confirmation (standing fresh-wipe rule still applies), and stronger per-channel container/VM isolation (SPEC Phase 5).
+- **Shipped to GitHub — 2026-07-18:** committed the native 1Helm Channel Agent World as `0513222` (`feat: native 1Helm channel-agent workspace (SPEC.md slice)`), pushed branch `worktree-1helm-native-spec`, and opened [draft PR #7](https://github.com/gitcommit90/1Helm/pull/7). The branch includes the specification, implementation, migration, verification skill, 29-case native acceptance test, adversarial-review fixes, and the successful real-browser evidence described above.
+- **Completeness pass — 2026-07-18:** a final ultracode completeness audit (3 independent critics + synthesis) flagged where the legacy configurable-bot model still leaked into the user-visible product. All major/minor gaps were fixed in `f068c6c` and re-verified: (1) channel-agent `call_skipper` escalation now authorizes Skipper host tools (SPEC §6.3 primary scenario, previously untested/broken — new test case); (2) removed the user-facing add-bot-to-channel toast/join action and refused resident-agent joins; (3) replaced the per-bot Global/Channel/Thread model-routing popover with a native single-agent Session-model control; (4) rewrote README + package.json + settings copy to 1Helm language (1Helm = installed host); (5) workspace-scope memory is now retrievable across channels; (6) boot crash-recovery resets agents stuck `working` and sweeps empty placeholder turn messages (new SIGKILL test case); (7) restore preserves a legitimately waiting/failed agent's status. Final gates: typecheck + build clean, `npm run test:native` **32/32** (added escalation + crash-recovery cases), legacy `test/pipeline.mjs` 16/16, headless-Chromium end-to-end pass.
+
+
 ## Vision
 
 **1Helm** productizes self-hosting. It gives someone who owns a computer or VPS a conversational control plane instead of requiring them to learn terminals, SSH, reverse proxies, Docker, and scattered SaaS dashboards.
@@ -21,8 +60,8 @@ The first compelling demo is simple: ask the workspace to make something useful,
 - **State:** chat and workspace state live on the user's machine in local SQLite.
 - **AI:** users bring a provider: an OpenAI-compatible base URL/key, OpenRouter OAuth, or Login with ChatGPT. OpenRouter free models should be chosen automatically during onboarding rather than forcing a beginner to choose a model name.
 - **Terminals:** optional. Users can turn the terminal workspace on during onboarding; it remains hidden unless enabled.
-- **Apps:** channels are not apps by default, but every app always receives its own dedicated channel.
-- **Isolation:** soft isolation initially. An app bot receives the context for its app/session rather than global workspace context.
+- **Channels (updated 2026-07-18):** every ordinary channel is an agent channel by default — it receives one resident agent, workspace, files, memory, and threads at creation (see the 1Helm direction update above). Apps remain a future capability that attach to the channel-agent model rather than a separate configuration surface.
+- **Isolation:** soft (process-level) isolation initially. A resident agent works CWD-locked in its channel `/workspace`; the boundary abstraction is kept explicit so container/VM isolation can be selected later without changing the product model.
 - **Authority:** 1Helm defines agent capabilities through available tools. There is no separate refusal-policy layer in this phase.
 - **First reference app:** Uptime Kuma, chosen instead of Jellyfin because it fits the current 2 GB demo VPS and exercises deploy, health, dashboard, and alert workflows.
 - **Hosted product:** a managed VPS/control-plane offering remains a future layer; this repository is the on-box workspace runtime.

@@ -9,7 +9,7 @@ type WizardOptions = {
 };
 
 type ProviderChoice = { provider: Provider; models: string[]; model: string };
-const steps = ["Owner", "AI brain", "Access", "Workspace"];
+const steps = ["Captain", "AI brain", "Computer", "Workspace", "Domain"];
 
 function setBusy(button: HTMLButtonElement, busy: boolean, label?: string): void {
   if (!button.dataset.label) button.dataset.label = button.textContent || "";
@@ -44,12 +44,12 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
 
   const brand = (): HTMLElement => h("div", { class: "mb-8 flex items-center justify-between" },
     h("div", { class: "flex items-center gap-3" },
-      h("span", { class: "logo-plate h-9 w-9 rounded-xl" }, h("img", { class: "logo-asset", src: "/brand/1helm.png", alt: "1Helm" })),
-      h("div", {}, h("div", { class: "font-display text-sm font-bold tracking-[-0.03em] text-fg" }, "1Helm"), h("div", { class: "text-[10px] font-semibold uppercase tracking-[0.16em] text-muted" }, "Private control plane"))),
-    h("div", { class: "rounded-full border border-line bg-raised px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted" }, `Step ${step + 1} / ${steps.length}`));
+      h("span", { class: "logo-plate h-9 w-9 rounded-md" }, h("img", { class: "logo-asset", src: "/brand/1helm.png", alt: "1Helm" })),
+      h("div", {}, h("div", { class: "text-sm font-semibold tracking-[-0.01em] text-fg" }, "1Helm"), h("div", { class: "eyebrow mt-0.5 text-[9px] text-muted" }, "Native agent workspace"))),
+    h("div", { class: "chip px-2 py-1" }, `Step ${step + 1} / ${steps.length}`));
 
   const progress = (): HTMLElement => h("div", { class: "mb-8" },
-    h("div", { class: "mb-2 flex justify-between text-[11px] uppercase tracking-[0.14em] text-muted" }, ...steps.map((label, index) => h("span", { class: index === step ? "text-fg" : "" }, label))),
+    h("div", { class: "mb-2.5 flex justify-between font-mono text-[10px] uppercase tracking-[0.14em] text-faint" }, ...steps.map((label, index) => h("span", { class: index === step ? "text-accent" : index < step ? "text-muted" : "" }, label))),
     h("div", { class: "wizard-progress" }, h("span", { style: `width:${((step + 1) / steps.length) * 100}%` })));
 
   const render = async (): Promise<void> => {
@@ -57,14 +57,15 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     if (step === 0) panel.append(accountStep());
     else if (step === 1) { await refreshProviders(); panel.append(brainStep()); }
     else if (step === 2) panel.append(accessStep());
-    else panel.append(workspaceStep());
+    else if (step === 3) panel.append(workspaceStep());
+    else panel.append(domainStep());
     shell.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const layout = (title: string, subtitle: string, body: HTMLElement, footer?: HTMLElement): HTMLElement =>
     h("div", { class: "wizard-panel overflow-hidden" },
       h("div", { class: "px-6 pt-6 sm:px-8 sm:pt-8" }, brand(), progress()),
-      h("div", { class: "px-6 pb-2 sm:px-8" }, h("h2", { class: "text-[1.65rem] font-semibold tracking-tight text-fg" }, title), h("p", { class: "mt-2 max-w-xl text-sm leading-6 text-muted" }, subtitle)),
+      h("div", { class: "px-6 pb-2 sm:px-8" }, h("h2", { class: "font-display text-[2rem] leading-[1.12] text-fg" }, title), h("p", { class: "mt-2.5 max-w-xl text-sm leading-6 text-muted" }, subtitle)),
       h("div", { class: "space-y-5 px-6 py-6 sm:px-8" }, body), footer || null);
 
   const footer = (back: (() => void) | null, next: (() => void), label: string, disabled = false): HTMLElement => {
@@ -90,7 +91,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     };
     password.addEventListener("keydown", (event) => { if (event.key === "Enter") void submit(); });
     queueMicrotask(() => username.focus());
-    return layout("Create the owner account", "This account owns this workspace. Add people later if you need them.",
+    return layout("Create the Captain account", "The first account is the Captain: owner and final authority for this workspace. Add people later.",
       h("div", { class: "space-y-4" }, field("Username", username, "Lowercase letters, numbers, dots, dashes, and underscores."), field("Your name", display, "How people and agents will address you."), field("Password", password), status),
       footer(null, () => { void submit(); }, "Continue"));
   };
@@ -193,8 +194,8 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
   const accessStep = (): HTMLElement => {
     const choiceButton = (enabled: boolean, label: string, copy: string): HTMLElement => h("button", { class: `wizard-choice ${terminalsEnabled === enabled ? "is-active" : ""}`, onclick: () => { terminalsEnabled = enabled; void render(); } },
       h("div", { class: "flex items-start gap-3" }, h("span", { class: "wizard-provider-mark h-10 w-10 text-muted" }, enabled ? icon("terminal", 19) : icon("x", 19)), h("div", {}, h("div", { class: "font-semibold text-fg" }, label), h("p", { class: "mt-1 text-sm leading-5 text-muted" }, copy))));
-    return layout("Do you want terminal access?", "Most people can leave this off. This only controls whether the Terminals button appears in your sidebar.",
-      h("div", { class: "space-y-3" }, choiceButton(true, "Enable terminals", "Keep a persistent shell to this machine inside 1Helm."), choiceButton(false, "Keep the workspace focused", "Hide terminals and use chat only for now.")),
+    return layout("Show channel terminals?", "Every agent already has a durable computer workspace. This controls whether humans can open its live shell view.",
+      h("div", { class: "space-y-3" }, choiceButton(true, "Show channel terminals", "Each channel gets a Terminal tab rooted directly in that agent's /workspace."), choiceButton(false, "Keep terminals hidden", "Agents retain their workspaces; humans collaborate through chat and files for now.")),
       footer(() => { step = 1; void render(); }, () => { step = 3; void render(); }, "Continue"));
   };
 
@@ -206,8 +207,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
       setBusy(button, true, "Starting workspace…");
       try {
         await api("/api/setup/complete", { body: { name: name.value.trim() || "My Workspace", terminals_enabled: terminalsEnabled, provider_id: choice?.provider.id, model: choice?.model } });
-        clear(panel); panel.append(h("div", { class: "wizard-panel px-8 py-12 text-center" }, h("div", { class: "logo-plate mx-auto grid h-14 w-14 place-items-center rounded-2xl" }, h("img", { class: "logo-asset", src: "/brand/1helm.png", alt: "1Helm" })), h("h2", { class: "mt-5 font-display text-2xl font-semibold tracking-[-0.03em] text-fg" }, "Your workspace is ready."), h("p", { class: "mx-auto mt-3 max-w-sm text-sm leading-6 text-muted" }, "Skipper is setting up your home base in #main.")));
-        setTimeout(() => { void opts.onDone(); }, 700);
+        step = 4; await render();
       } catch (error) { status.replaceChildren(h("div", { class: "wizard-status-err" }, (error as Error).message)); setBusy(button, false); }
     };
     name.addEventListener("keydown", (event) => { if (event.key === "Enter") void finish(); });
@@ -215,6 +215,26 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     return layout("Name this workspace", "This appears in the sidebar and is how Skipper greets you.",
       h("div", { class: "space-y-4" }, field("Workspace name", name, "You can rename it later."), choice ? h("div", { class: "wizard-status-ok" }, `Skipper will begin with ${choice.provider.name} · ${choice.model}.`) : null, status),
       footer(() => { step = 2; void render(); }, () => { void finish(); }, "Create workspace"));
+  };
+
+  const domainStep = (): HTMLElement => {
+    const hostname = h("input", { class: "field", placeholder: "agents.example.com", autocomplete: "url" }) as HTMLInputElement;
+    const token = h("input", { class: "field", type: "password", placeholder: "Cloudflare API token", autocomplete: "off" }) as HTMLInputElement;
+    const status = h("div");
+    const done = async (): Promise<void> => { await opts.onDone(); };
+    const connect = async (): Promise<void> => {
+      const button = panel.querySelector("button.btn-primary") as HTMLButtonElement;
+      setBusy(button, true, "Connecting domain…");
+      try {
+        const result = await api<{ domain: { hostname: string } }>("/api/domains/cloudflare", { body: { hostname: hostname.value, token: token.value } });
+        token.value = "";
+        clear(panel); panel.append(h("div", { class: "wizard-panel px-8 py-14 text-center" }, h("div", { class: "logo-plate mx-auto h-14 w-14 rounded-lg" }, h("img", { class: "logo-asset", src: "/brand/1helm.png", alt: "1Helm" })), h("h2", { class: "font-display mt-6 text-[2rem] leading-tight text-fg" }, "Your workspace is on the web."), h("a", { class: "mt-3 block font-mono text-sm text-accent underline underline-offset-2", href: `https://${result.domain.hostname}`, target: "_blank", rel: "noopener" }, `https://${result.domain.hostname}`)));
+        setTimeout(() => { void done(); }, 700);
+      } catch (error) { token.value = ""; status.replaceChildren(h("div", { class: "wizard-status-err" }, (error as Error).message)); setBusy(button, false); }
+    };
+    return layout("Connect your Cloudflare domain", "Do you have a domain on Cloudflare? 1Helm can create the tunnel, DNS record, HTTPS route, and persistent service now. You can also do this later in Settings → Domains.",
+      h("div", { class: "space-y-4" }, field("Workspace hostname", hostname, "Use a hostname such as agents.example.com."), field("Cloudflare API token", token, "Needs Account: Cloudflare Tunnel Edit and Zone: DNS Edit. It is used once and never stored."), status),
+      h("div", { class: "flex items-center justify-between border-t border-line px-6 py-4 sm:px-8" }, h("button", { class: "btn-ghost", onclick: () => { void done(); } }, "Not now"), h("button", { class: "btn-primary min-w-28 px-4 py-2", onclick: () => { void connect(); } }, "Connect domain")));
   };
 
   void render();
