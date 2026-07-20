@@ -302,8 +302,9 @@ export function relevantMemory(channelId: number, currentThreadId: number | null
 export type WorkspaceFile = { path: string; name: string; size: number; modified: number; kind: "file" | "directory" };
 
 export function listWorkspaceFiles(channelId: number): WorkspaceFile[] {
-  // Terminal / agent shell CWD is channel workspace/. Present that tree as the
-  // primary world (relative paths match `ls`). Also include sibling files/ as files/...
+  // Terminal / agent shell CWD is channel workspace/. Present that tree under
+  // workspace/... (its absolute path in the agent world, and unambiguous next
+  // to the sibling uploads tree, listed as files/...).
   const root = ensureChannelWorkspace(channelId);
   const files: WorkspaceFile[] = [];
   const walk = (dir: string, prefix: string): void => {
@@ -321,7 +322,7 @@ export function listWorkspaceFiles(channelId: number): WorkspaceFile[] {
       }
     }
   };
-  walk(join(root, "workspace"), "");
+  walk(join(root, "workspace"), "workspace");
   walk(join(root, "files"), "files");
   return files.sort((a, b) => a.path.localeCompare(b.path));
 }
