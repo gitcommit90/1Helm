@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install
+        run: PUPPETEER_SKIP_DOWNLOAD=1 npm ci
+      - name: Diff check
+        run: git diff --check
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      - name: Test pipeline
+        run: npm test
+      - name: Governance artifacts
+        run: |
+          test -f LICENSE || test -f README.md
+          test -f CHANGELOG.md
+          test -f docs/GOVERNANCE.md
+          test -f docs/release-lifecycle.md
+          test -f docs/release-checklist.md
+          node -e "const p=require('./package.json'); if(!p.version) process.exit(1)"
