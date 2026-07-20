@@ -60,6 +60,11 @@ export function startAgent(port: number, apiKey: string, host = "127.0.0.1"): Pr
       const pty = spawn(SHELL, ["-lc", command], { cols: 80, rows: 24, cwd, env: { ...process.env, ...(b.env as object || {}) } });
       const p: Proc = { id: rid("exec-"), command, buf: [], status: "running", exit_code: null, pty, waiters: [] };
       procs.set(p.id, p);
+      let responseFinished = false;
+      res.once("finish", () => { responseFinished = true; });
+      res.once("close", () => {
+        if (!responseFinished && p.status === "running") { try { pty.kill(); } catch { /* gone */ } p.status = "killed"; }
+      });
       pty.onData((d) => p.buf.push({ type: "output", data: d }));
       pty.onExit(({ exitCode }) => { p.status = "completed"; p.exit_code = exitCode; p.waiters.splice(0).forEach((w) => w()); });
       const wait = url.searchParams.get("wait");
@@ -94,7 +99,8 @@ export function startAgent(port: number, apiKey: string, host = "127.0.0.1"): Pr
 
     if (path === "/api/terminals" && req.method === "POST") {
       const b = await readBody(req);
-      const pty = spawn(SHELL, [], { name: "xterm-256color", cols: Number(b.cols) || 80, rows: Number(b.rows) || 24, cwd: process.env.HOME || process.cwd(), env: process.env });
+      const cwd = b.cwd ? String(b.cwd) : process.env.HOME || process.cwd();
+      const pty = spawn(SHELL, [], { name: "xterm-256color", cols: Number(b.cols) || 80, rows: Number(b.rows) || 24, cwd, env: process.env });
       const t: Term = { id: rid("term-"), pty, created_at: new Date().toISOString(), pid: pty.pid };
       terms.set(t.id, t);
       pty.onExit(() => terms.delete(t.id));
@@ -125,13 +131,15 @@ export function startAgent(port: number, apiKey: string, host = "127.0.0.1"): Pr
 
 function attachTerm(ws: WebSocket, t: Term, apiKey: string): void {
   let authed = !apiKey;
-  const onData = t.pty.onData((d) => ws.readyState === ws.OPEN && ws.send(d));
+  let onData: { dispose(): void } | null = null;
+  const forward = (): void => { if (!onData) onData = t.pty.onData((d) => ws.readyState === ws.OPEN && ws.send(d)); };
+  if (authed) forward();
   const timer = setTimeout(() => { if (!authed) ws.close(4001, "Auth timeout"); }, 10_000);
   ws.on("message", (raw: Buffer, isBinary: boolean) => {
     if (!authed) {
       try {
         const msg = JSON.parse(raw.toString());
-        if (msg.type === "auth" && msg.token === apiKey) { authed = true; clearTimeout(timer); return; }
+        if (msg.type === "auth" && msg.token === apiKey) { authed = true; clearTimeout(timer); forward(); return; }
       } catch { /* fallthrough */ }
       ws.close(4001, "Invalid API key");
       return;
@@ -143,5 +151,5 @@ function attachTerm(ws: WebSocket, t: Term, apiKey: string): void {
       else if (msg.type === "input") t.pty.write(String(msg.data));
     } catch { t.pty.write(raw.toString("utf8")); }
   });
-  ws.on("close", () => { clearTimeout(timer); onData.dispose(); });
+  ws.on("close", () => { clearTimeout(timer); onData?.dispose(); });
 }

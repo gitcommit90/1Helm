@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "1Helm — a self-hosted, Slack-like control plane for AI agents, apps, and terminals.",
+  "description": "1Helm — a self-hosted native agent workspace running on the 1Helm host: every channel gets one resident agent, a computer workspace, files, threads, and provider-neutral memory.",
   "scripts": {
     "build:js": "esbuild src/client/app.ts --bundle --format=esm --outfile=public/bundle.js --loader:.css=css --minify",
     "build:css": "tailwindcss -i src/client/styles.css -o public/app.css --minify",
@@ -13,7 +13,12 @@
     "dev": "npm run build && npm start",
     "watch:js": "esbuild src/client/app.ts --bundle --format=esm --outfile=public/bundle.js --loader:.css=css --watch",
     "watch:css": "tailwindcss -i src/client/styles.css -o public/app.css --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:native": "node test/native-world.mjs",
+    "test:onboarding-browser": "node test/onboarding-browser.mjs",
+    "test:brief-browser": "node test/brief-regressions-browser.mjs",
+    "test:production-browser": "node test/production-browser.mjs",
+    "test:live": "node test/live-smoke.mjs"
   },
   "dependencies": {
     "@opencoredev/loginwithchatgpt-server": "^0.2.0",

@@ -1,23 +1,62 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { readFile, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, statSync, unlinkSync } from "node:fs";
 import { join, extname } from "node:path";
 import { randomBytes } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import { db, q, q1, run, now, hashPassword, verifyPassword, newToken, seed, DATA_DIR, UPLOAD_DIR, type Row } from "./db.ts";
-import { createMessage, serializeMessage, setModelPref, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots } from "./store.ts";
+import { createMessage, deleteMessage, serializeMessage, setModelPref, setModelPolicy, resolvedModelPolicy, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots } from "./store.ts";
 import { computerRowView, fetchModels } from "./computer.ts";
-import { runBot } from "./bots.ts";
+import { cancelChannelTurns, runBot } from "./bots.ts";
 import { register, unregister, broadcastToChannel, sendToUsers } from "./events.ts";
-import { openSession, attachClient, listSessions } from "./terms.ts";
+import { openSession, attachClient, listSessions, closeChannelSessions, closeSession } from "./terms.ts";
 import { startAgent } from "./agent.ts";
+import {
+  agentForBot,
+  agentForChannel,
+  agentViewForChannel,
+  archiveChannel,
+  channelWorkspace,
+  deleteChannelWorld,
+  ensureChannelWorkspace,
+  ensureThread,
+  importAttachment,
+  listWorkspaceFiles,
+  normalizeChannelName,
+  provisionChannel,
+  recordMemory,
+  refreshThreadSummary,
+  resolveWorldFile,
+  restoreChannel,
+  syncWorkspaceArtifacts,
+  threadIdForRoot,
+  updateChannelPurpose,
+} from "./agents.ts";
 import { CHATGPT_KIND, bindChatGPTProviderFromCookie, chatgptSessionStatus, chatgptWebResponse, disconnectChatGPTProvider, listChatGPTModels, writeChatGPTWebResponse } from "./chatgpt.ts";
 import { completeSetup, setupStatus, workspaceView } from "./setup.ts";
+import { connectCloudflareDomain, domainsView } from "./cloudflare.ts";
+import { listSkills, listTemplates, provisionSkill, skillsForAgent } from "./skills.ts";
+import { ensureAgentMemory, mnemosyneAvailable, prepareMnemosyneRuntime } from "./memory.ts";
+import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
 
 const PORT = Number(process.env.PORT || 8123);
 const PUBLIC = join(process.cwd(), "public");
-const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".woff2": "font/woff2" };
+const JSON_BODY_LIMIT = 1024 * 1024;
+const UPLOAD_BODY_LIMIT = 25 * 1024 * 1024;
+const WORKSPACE_PHOTO = join(DATA_DIR, "workspace-photo");
+const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
+const MIME: Record<string, string> = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".webmanifest": "application/manifest+json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".woff2": "font/woff2",
+};
 
 seed();
 
@@ -25,27 +64,51 @@ seed();
 // TLS is terminated by the deployment's reverse proxy. Do not advertise an
 // HTTPS-only policy here: local and first-run HTTP deployments must still load
 // their relative JS and CSS assets.
-const SECURITY_HEADERS: Record<string, string> = {};
+const SECURITY_HEADERS: Record<string, string> = {
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "referrer-policy": "same-origin",
+  "permissions-policy": "camera=(), microphone=(), geolocation=()",
+};
 const json = (res: ServerResponse, code: number, body: unknown): void => {
   const s = JSON.stringify(body);
   res.writeHead(code, { "content-type": "application/json", ...SECURITY_HEADERS });
   res.end(s);
 };
-const body = (req: IncomingMessage): Promise<Buffer> => new Promise((resolve) => {
+const body = (req: IncomingMessage, limit = JSON_BODY_LIMIT): Promise<Buffer> => new Promise((resolve, reject) => {
+  const declared = Number(req.headers["content-length"] || 0);
+  if (declared > limit) { const error = new Error(`Request exceeds the ${Math.floor(limit / 1024 / 1024)} MB limit.`); error.name = "PayloadTooLargeError"; reject(error); return; }
   const chunks: Buffer[] = [];
-  req.on("data", (c) => chunks.push(c));
-  req.on("end", () => resolve(Buffer.concat(chunks)));
+  let received = 0;
+  let oversized = false;
+  req.on("data", (chunk: Buffer) => {
+    received += chunk.length;
+    if (received > limit) { oversized = true; chunks.length = 0; }
+    else if (!oversized) chunks.push(chunk);
+  });
+  req.on("end", () => {
+    if (oversized) { const error = new Error(`Request exceeds the ${Math.floor(limit / 1024 / 1024)} MB limit.`); error.name = "PayloadTooLargeError"; reject(error); }
+    else resolve(Buffer.concat(chunks));
+  });
+  req.on("error", reject);
 });
-const jbody = async (req: IncomingMessage): Promise<Record<string, unknown>> => { try { return JSON.parse((await body(req)).toString() || "{}"); } catch { return {}; } };
+const jbody = async (req: IncomingMessage): Promise<Record<string, unknown>> => { const raw = await body(req); try { return JSON.parse(raw.toString() || "{}"); } catch { return {}; } };
 
 const userFromToken = (token: string | null): Row | undefined => {
   if (!token) return undefined;
-  const s = q1("SELECT user_id FROM sessions WHERE token=?", token);
+  const s = q1("SELECT user_id, created FROM sessions WHERE token=?", token);
+  if (s && Number(s.created || 0) < now() - SESSION_MAX_AGE_MS) { run("DELETE FROM sessions WHERE token=?", token); return undefined; }
   return s ? q1("SELECT * FROM users WHERE id=?", s.user_id) : undefined;
 };
 const authUser = (req: IncomingMessage): Row | undefined => {
   const h = req.headers["authorization"];
-  return userFromToken(h && h.startsWith("Bearer ") ? h.slice(7) : null);
+  if (h && h.startsWith("Bearer ")) return userFromToken(h.slice(7));
+  try {
+    const u = new URL(req.url || "/", "http://localhost");
+    const qToken = u.searchParams.get("token");
+    if (qToken) return userFromToken(qToken);
+  } catch { /* ignore */ }
+  return undefined;
 };
 
 const canSee = (user: Row, channelId: number): boolean => {
@@ -65,23 +128,92 @@ function channelView(user: Row, c: Row): Record<string, unknown> {
   }
   const lastRead = Number(q1("SELECT last_read FROM members WHERE channel_id=? AND user_id=?", c.id, user.id)?.last_read || 0);
   const unread = Number(q1("SELECT COUNT(*) n FROM messages WHERE channel_id=? AND parent_id IS NULL AND id>? AND (user_id IS NULL OR user_id<>?)", c.id, lastRead, user.id)?.n || 0);
-  return { id: c.id, name, kind: c.kind, topic: c.topic, unread };
+  return {
+    id: c.id,
+    name,
+    slug: c.slug || String(c.id),
+    kind: c.kind,
+    topic: c.topic,
+    purpose: c.purpose || c.topic,
+    status: c.status || "active",
+    unread,
+    agent: c.kind === "channel" ? agentViewForChannel(Number(c.id)) : null,
+  };
 }
 
 function visibleChannels(user: Row): Row[] {
-  return q(`SELECT * FROM channels WHERE kind='channel'
-            UNION SELECT c.* FROM channels c JOIN members m ON m.channel_id=c.id WHERE m.user_id=? AND c.kind<>'channel'
-            ORDER BY kind, name`, user.id);
+  return q(`SELECT * FROM (
+              SELECT * FROM channels WHERE kind='channel' AND status<>'deleted'
+              UNION SELECT c.* FROM channels c JOIN members m ON m.channel_id=c.id WHERE m.user_id=? AND c.kind<>'channel' AND c.status<>'deleted'
+            ) ORDER BY CASE WHEN status='archived' THEN 1 ELSE 0 END, kind, name`, user.id);
 }
 
-/** Fire bots mentioned in a freshly posted message (or prompt the author to add them). */
+/** Fire the bound resident or workspace-wide Skipper mentioned in a message. */
 function triggerBots(channelId: number, msg: Row, authorId: number): void {
   const fresh = msg.parent_id == null;
   const threadRootId = Number(msg.parent_id ?? msg.id);
-  for (const bot of findMentionedBots(String(msg.body))) {
-    if (botIsInChannel(Number(bot.id), channelId)) void runBot(bot, channelId, Number(msg.id), threadRootId, fresh);
-    else sendToUsers([authorId], { type: "bot_prompt", botId: bot.id, botName: bot.name, channelId, triggerId: msg.id, threadRootId, fresh });
+  const mentioned = findMentionedBots(String(msg.body));
+  if (!mentioned.length && msg.parent_id != null) {
+    const participant = conversationalAgent(channelId, threadRootId, Number(msg.id));
+    if (participant?.automatic) {
+      void launchBot(participant.bot, channelId, msg, authorId, threadRootId, false);
+      return;
+    }
+    if (participant && !q1("SELECT muted FROM thread_mention_preferences WHERE thread_id=? AND user_id=? AND muted=1", participant.threadId, authorId)) {
+      sendToUsers([authorId], {
+        type: "mention_confirmation", channelId, messageId: msg.id, threadRootId,
+        botId: participant.bot.id, botName: participant.bot.name,
+      });
+    }
+    return;
   }
+  // Skipper owns an explicitly escalated request. Other @mentions in that
+  // request identify collaborators/context; they must not launch competing
+  // agent turns and duplicate the work.
+  const skipper = mentioned.find((bot) => agentForBot(Number(bot.id))?.kind === "skipper");
+  for (const bot of skipper ? [skipper] : mentioned) void launchBot(bot, channelId, msg, authorId, threadRootId, fresh);
+}
+
+function launchBot(bot: Row, channelId: number, msg: Row, authorId: number, threadRootId: number, fresh: boolean): void {
+  const agent = agentForBot(Number(bot.id));
+  if (agent?.kind === "skipper") {
+    const threadId = threadIdForRoot(threadRootId, channelId) ?? ensureThread(threadRootId, channelId);
+    const escalationId = run("INSERT INTO escalations (thread_id,channel_id,reason,status,created) VALUES (?,?,?,'open',?)",
+      threadId, channelId, String(msg.body).slice(0, 4000), now()).lastInsertRowid;
+    run("INSERT INTO channel_activity (channel_id,thread_id,kind,summary,status,actor_type,created) VALUES (?,?,'escalation',?,'open','human',?)", channelId, threadId, String(msg.body).slice(0, 500), now());
+    broadcastToChannel(channelId, { type: "escalation", channelId, escalation: { id: escalationId, thread_id: threadId, reason: msg.body, status: "open" } });
+    const hostAuthorized = Boolean(q1("SELECT is_admin FROM users WHERE id=?", authorId)?.is_admin);
+    void runBot(bot, channelId, Number(msg.id), threadRootId, fresh, escalationId, hostAuthorized);
+  } else if (agent?.kind === "channel") {
+    if (Number(agent.channel_id) === channelId) void runBot(bot, channelId, Number(msg.id), threadRootId, fresh);
+  } else if (botIsInChannel(Number(bot.id), channelId)) void runBot(bot, channelId, Number(msg.id), threadRootId, fresh);
+  else sendToUsers([authorId], { type: "bot_prompt", botId: bot.id, botName: bot.name, channelId, triggerId: msg.id, threadRootId, fresh });
+}
+
+/** A one-human/one-agent thread stays conversational until another named or
+ * participating human/agent joins it. */
+function conversationalAgent(channelId: number, threadRootId: number, beforeMessageId: number): { bot: Row; threadId: number; automatic: boolean } | null {
+  const rows = q("SELECT * FROM messages WHERE (id=? OR parent_id=?) AND id<? ORDER BY id", threadRootId, threadRootId, beforeMessageId);
+  const botIds = new Set<number>();
+  const humanIds = new Set<number>();
+  let recentBotId = 0;
+  const currentAuthor = q1("SELECT user_id FROM messages WHERE id=?", beforeMessageId);
+  if (currentAuthor?.user_id) humanIds.add(Number(currentAuthor.user_id));
+  for (const row of rows) {
+    if (row.user_id) humanIds.add(Number(row.user_id));
+    if (row.bot_id && String(row.body) !== "_Working…_") { botIds.add(Number(row.bot_id)); recentBotId = Number(row.bot_id); }
+    for (const mentioned of findMentionedBots(String(row.body))) botIds.add(Number(mentioned.id));
+    const names = new Set((String(row.body).match(/@([a-zA-Z0-9_.-]+)/g) || []).map((name) => name.slice(1).toLowerCase()));
+    if (names.size) for (const human of q("SELECT id,username FROM users")) if (names.has(String(human.username).toLowerCase())) humanIds.add(Number(human.id));
+  }
+  if (!recentBotId) return null;
+  const threadId = threadIdForRoot(threadRootId, channelId) ?? ensureThread(threadRootId, channelId);
+  for (const guest of q("SELECT a.bot_id FROM thread_agent_guests g JOIN agents a ON a.id=g.agent_id WHERE g.thread_id=? AND g.status='active'", threadId)) {
+    if (guest.bot_id) botIds.add(Number(guest.bot_id));
+  }
+  const bot = q1("SELECT * FROM bots WHERE id=?", recentBotId);
+  if (!bot) return null;
+  return { bot, threadId, automatic: botIds.size === 1 && humanIds.size === 1 };
 }
 
 function setBotComputers(botId: number, computerIds: unknown[]): void {
@@ -92,14 +224,40 @@ function setBotComputers(botId: number, computerIds: unknown[]): void {
   }
 }
 
-function postMessage(channelId: number, user: Row, text: string, parentId: number | null, uploads: { token: string; name: string; mime: string; size: number }[]): Row {
-  const id = createMessage({ channelId, parentId, userId: Number(user.id), body: text });
-  for (const u of uploads || []) {
-    if (!/^[a-f0-9]{32,}$/.test(u.token) || !existsSync(join(UPLOAD_DIR, u.token))) continue;
-    run("INSERT INTO attachments (message_id, name, mime, size, path) VALUES (?,?,?,?,?)", id, u.name, u.mime, u.size, u.token);
+function postMessage(channelId: number, user: Row, text: string, parentId: number | null, uploads: { token: string; name: string; mime: string; size: number }[], modelPolicy?: { provider_id?: number | null; model?: string | null }): Row {
+  const channel = q1("SELECT status FROM channels WHERE id=?", channelId);
+  if (!channel) throw new Error("Channel not found.");
+  if (channel.status !== "active") throw new Error("Restore this channel before starting new work.");
+  if (parentId) {
+    const parent = q1("SELECT id FROM messages WHERE id=? AND channel_id=? AND parent_id IS NULL", parentId, channelId);
+    if (!parent) throw new Error("Thread root does not belong to this channel.");
   }
+  const message = text.trim();
+  if (!message && !(uploads || []).length) throw new Error("Write a message or attach a file.");
+  if (message.length > 50_000) throw new Error("Messages are limited to 50,000 characters.");
+  if (modelPolicy?.provider_id && !q1("SELECT 1 FROM providers WHERE id=?", Number(modelPolicy.provider_id))) throw new Error("Provider not found.");
+  const id = createMessage({ channelId, parentId, userId: Number(user.id), body: message });
+  const rootId = parentId || id;
+  const threadId = ensureThread(rootId, channelId);
+  if (modelPolicy?.model) {
+    const agent = agentForChannel(channelId);
+    // Skipper always keeps its workspace-wide policy, including in #main.
+    if (agent?.bot_id && agent.kind !== "skipper") {
+      const providerId = modelPolicy.provider_id ? Number(modelPolicy.provider_id) : null;
+      setModelPolicy(Number(agent.bot_id), "thread", String(rootId), providerId, String(modelPolicy.model));
+    }
+  }
+  run("UPDATE threads SET status='open', updated_at=? WHERE id=? AND status IN ('waiting','resolved','failed')", now(), threadId);
+  const uniqueUploads = [...new Map((uploads || []).map((upload) => [upload.token, upload])).values()].slice(0, 20);
+  for (const upload of uniqueUploads) {
+    if (!/^[a-f0-9]{32,}$/.test(upload.token) || !existsSync(join(UPLOAD_DIR, upload.token))) continue;
+    const size = statSync(join(UPLOAD_DIR, upload.token)).size;
+    run("INSERT INTO attachments (message_id, name, mime, size, path) VALUES (?,?,?,?,?)", id, upload.name.slice(0, 255), upload.mime.slice(0, 255), size, upload.token);
+    importAttachment(channelId, threadId, upload.token, upload.name, "human");
+  }
+  refreshThreadSummary(rootId);
   const msg = serializeMessage(id)!;
-  broadcastToChannel(channelId, { type: "message", message: msg });
+  broadcastToChannel(channelId, { type: "message", message: msg, parent: parentId ? serializeMessage(parentId) : null });
   triggerBots(channelId, msg, Number(user.id));
   return msg;
 }
@@ -112,7 +270,7 @@ const server = createServer(async (req, res) => {
     const m = req.method || "GET";
 
     // static
-    if (m === "GET" && !p.startsWith("/api/")) {
+    if ((m === "GET" || m === "HEAD") && !p.startsWith("/api/")) {
       const rel = p === "/" ? "/index.html" : p;
       const file = join(PUBLIC, rel);
       if (file.startsWith(PUBLIC) && existsSync(file)) {
@@ -120,29 +278,31 @@ const server = createServer(async (req, res) => {
         // index.html: always revalidate so a freshly built bundle.js?v=... is picked up.
         // versioned assets (bundle.js?..., app.css?...): cached hard for a year.
         const isHtml = rel === "/index.html" || extname(file) === ".html";
+        const isSw = rel === "/sw.js" || rel.endsWith("/sw.js");
+        const isManifest = extname(file) === ".webmanifest";
         const headers: Record<string, string> = { "content-type": ct, ...SECURITY_HEADERS };
-        if (isHtml) headers["cache-control"] = "no-cache, must-revalidate";
+        if (isHtml || isSw || isManifest) headers["cache-control"] = "no-cache, must-revalidate";
         else headers["cache-control"] = "public, max-age=31536000, immutable";
         res.writeHead(200, headers);
-        res.end(await readFile(file));
+        res.end(m === "HEAD" ? undefined : await readFile(file));
         return;
       }
       res.writeHead(200, { "content-type": "text/html", "cache-control": "no-cache, must-revalidate", ...SECURITY_HEADERS });
-      res.end(await readFile(join(PUBLIC, "index.html")).catch(() => "1Helm (run npm run build)"));
+      res.end(m === "HEAD" ? undefined : await readFile(join(PUBLIC, "index.html")).catch(() => "1Helm (run npm run build)"));
       return;
     }
 
     // ---- setup and auth (no session required) ----
     if (p === "/api/setup/status" && m === "GET") return json(res, 200, setupStatus());
     if (p === "/api/auth/register" && m === "POST") {
+      if (Number(q1("SELECT COUNT(*) n FROM users")?.n || 0) > 0) return json(res, 403, { error: "Registration is closed. Ask the Captain to add you from Members." });
       const b = await jbody(req);
       const username = String(b.username || "").trim().toLowerCase();
       const password = String(b.password || "");
       const display = String(b.display || b.username || "").trim() || username;
       if (!/^[a-z0-9_.-]{2,32}$/.test(username) || password.length < 4) return json(res, 400, { error: "Invalid username or password (min 4 chars)." });
       if (q1("SELECT 1 FROM users WHERE username=?", username)) return json(res, 409, { error: "Username taken." });
-      const isAdmin = q1("SELECT COUNT(*) n FROM users")!.n === 0 ? 1 : 0;
-      const uid = run("INSERT INTO users (username, pass, display, is_admin, created) VALUES (?,?,?,?,?)", username, hashPassword(password), display, isAdmin, now()).lastInsertRowid;
+      const uid = run("INSERT INTO users (username, pass, display, is_admin, created) VALUES (?,?,?,?,?)", username, hashPassword(password), display, 1, now()).lastInsertRowid;
       for (const ch of q("SELECT id FROM channels WHERE kind='channel'")) run("INSERT OR IGNORE INTO members (channel_id, user_id) VALUES (?,?)", ch.id, uid);
       const token = newToken();
       run("INSERT INTO sessions (token, user_id, created) VALUES (?,?,?)", token, uid, now());
@@ -188,6 +348,59 @@ const server = createServer(async (req, res) => {
 
     if (p === "/api/me") return json(res, 200, { user: publicUser(user), workspace: workspaceView() });
     if (p === "/api/workspace" && m === "GET") return json(res, 200, { workspace: workspaceView() });
+    if (p === "/api/workspace" && m === "PATCH") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      const name = String(b.name || "").trim().slice(0, 100);
+      const theme = String(b.theme || "graphite");
+      if (!name) return json(res, 400, { error: "Workspace name is required." });
+      if (!["graphite", "ocean", "forest", "ember", "plum"].includes(theme)) return json(res, 400, { error: "Unknown workspace theme." });
+      run("UPDATE workspace SET name=?,theme=? WHERE id=1", name, theme);
+      return json(res, 200, { workspace: workspaceView() });
+    }
+    if (p === "/api/workspace/photo" && m === "GET") {
+      const mime = String(q1("SELECT photo_mime FROM workspace WHERE id=1")?.photo_mime || "");
+      if (!mime || !existsSync(WORKSPACE_PHOTO)) return json(res, 404, { error: "No workspace photo." });
+      res.writeHead(200, { "content-type": mime, "cache-control": "no-cache", ...SECURITY_HEADERS });
+      res.end(await readFile(WORKSPACE_PHOTO)); return;
+    }
+    if (p === "/api/workspace/photo" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const mime = String(req.headers["content-type"] || "").split(";")[0];
+      if (!/^image\/(png|jpeg|webp|gif)$/.test(mime)) return json(res, 400, { error: "Use a PNG, JPEG, WebP, or GIF image." });
+      const bytes = await body(req, 5 * 1024 * 1024);
+      if (!bytes.length) return json(res, 400, { error: "Choose an image." });
+      await writeFile(WORKSPACE_PHOTO, bytes, { mode: 0o600 });
+      run("UPDATE workspace SET photo_mime=? WHERE id=1", mime);
+      return json(res, 200, { workspace: workspaceView() });
+    }
+    if (p === "/api/workspace/photo" && m === "DELETE") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      try { unlinkSync(WORKSPACE_PHOTO); } catch { /* absent */ }
+      run("UPDATE workspace SET photo_mime='' WHERE id=1");
+      return json(res, 200, { workspace: workspaceView() });
+    }
+    if (p === "/api/agent-templates" && m === "GET") return json(res, 200, { templates: listTemplates() });
+    if (p === "/api/skills" && m === "GET") return json(res, 200, { skills: listSkills() });
+    const agentSkills = p.match(/^\/api\/agents\/(\d+)\/skills$/);
+    if (agentSkills && m === "GET") return json(res, 200, { skills: skillsForAgent(Number(agentSkills[1])) });
+    if (agentSkills && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      try { return json(res, 201, { skill: provisionSkill(Number(agentSkills[1]), String(b.skill || b.slug || ""), Number(q1("SELECT id FROM agents WHERE kind='skipper' AND status<>'deleted' LIMIT 1")?.id || 0) || null, String(b.reason || "Provisioned by the Captain.")) }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
+    if (p === "/api/improvements/run" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, { improved: runImprovementPass() });
+    }
+    if (p === "/api/domains" && m === "GET") return json(res, 200, { domains: domainsView() });
+    if (p === "/api/domains/cloudflare" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      try { return json(res, 201, { domain: await connectCloudflareDomain(String(b.hostname || ""), String(b.token || ""), PORT) }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
     if (p === "/api/setup/complete" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
       if (workspaceView().setup_complete) return json(res, 409, { error: "Setup already completed." });
@@ -213,12 +426,166 @@ const server = createServer(async (req, res) => {
     if (p === "/api/channels" && m === "GET") return json(res, 200, { channels: visibleChannels(user).map((c) => channelView(user, c)) });
     if (p === "/api/channels" && m === "POST") {
       const b = await jbody(req);
-      const name = String(b.name || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+      const name = normalizeChannelName(String(b.name || ""));
+      const purpose = String(b.purpose || b.topic || "").trim();
       if (!name) return json(res, 400, { error: "Invalid channel name." });
-      const id = run("INSERT INTO channels (name, kind, topic, created_by, created) VALUES (?, 'channel', ?, ?, ?)", name, String(b.topic || ""), user.id, now()).lastInsertRowid;
-      for (const u of q("SELECT id FROM users")) run("INSERT OR IGNORE INTO members (channel_id, user_id) VALUES (?,?)", id, u.id);
-      broadcastToChannel(id, { type: "channel_new" });
-      return json(res, 200, { channel: channelView(user, q1("SELECT * FROM channels WHERE id=?", id)!) });
+      if (!purpose) return json(res, 400, { error: "What is this channel all about?" });
+      try {
+        const provisioned = provisionChannel({ name, purpose, userId: Number(user.id), templateSlug: String(b.template || "general") });
+        const row = q1("SELECT * FROM channels WHERE id=?", provisioned.channelId)!;
+        const channel = channelView(user, row);
+        broadcastToChannel(provisioned.channelId, { type: "channel_new", channel });
+        if (provisioned.announcementId) broadcastToChannel(provisioned.channelId, { type: "message", message: serializeMessage(provisioned.announcementId) });
+        return json(res, provisioned.created ? 201 : 200, { channel, created: provisioned.created });
+      } catch (error) {
+        const message = (error as Error).message;
+        return json(res, /already exists/i.test(message) ? 409 : 400, { error: message });
+      }
+    }
+    const nativeChannel = p.match(/^\/api\/channels\/(\d+)(?:\/(archive|restore|threads|files|memory|activity|agent-policy|agent-avatar))?$/);
+    if (nativeChannel) {
+      const channelId = Number(nativeChannel[1]);
+      const action = nativeChannel[2] || "channel";
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      if (action === "channel" && m === "PATCH") {
+        const b = await jbody(req);
+        const purpose = String(b.purpose || "").trim();
+        if (!purpose) return json(res, 400, { error: "Purpose is required." });
+        try { updateChannelPurpose(channelId, purpose); }
+        catch (error) { return json(res, 400, { error: (error as Error).message }); }
+        const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
+        broadcastToChannel(channelId, { type: "channel_update", channel });
+        return json(res, 200, { channel });
+      }
+      if (action === "archive" && m === "POST") {
+        if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+        const target = q1("SELECT name FROM channels WHERE id=? AND kind='channel'", channelId);
+        if (!target || String(target.name) === "main") return json(res, 400, { error: target ? "#main cannot be archived." : "Channel not found." });
+        try {
+          cancelChannelTurns(channelId); archiveChannel(channelId); closeChannelSessions(channelId);
+          const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
+          broadcastToChannel(channelId, { type: "channel_update", channel });
+          return json(res, 200, { channel });
+        } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+      }
+      if (action === "restore" && m === "POST") {
+        if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+        try {
+          restoreChannel(channelId);
+          const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
+          broadcastToChannel(channelId, { type: "channel_update", channel });
+          return json(res, 200, { channel });
+        } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+      }
+      if (action === "channel" && m === "DELETE") {
+        if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+        const b = await jbody(req);
+        const target = q1("SELECT name, status FROM channels WHERE id=? AND kind='channel'", channelId);
+        const confirmation = String(b.confirm || "");
+        if (!target || String(target.name) === "main" || target.status !== "archived" || confirmation !== String(target.name)) {
+          return json(res, 400, { error: !target ? "Channel not found." : String(target.name) === "main" ? "#main cannot be deleted." : target.status !== "archived" ? "Archive the channel before permanent deletion." : "Type the channel name to confirm permanent deletion." });
+        }
+        try {
+          cancelChannelTurns(channelId); closeChannelSessions(channelId); deleteChannelWorld(channelId, confirmation);
+          broadcastToChannel(channelId, { type: "channel_deleted", channelId });
+          return json(res, 200, { ok: true });
+        } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+      }
+      if (action === "threads" && m === "GET") {
+        for (const root of q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL ORDER BY id", channelId)) ensureThread(Number(root.id), channelId);
+        const threads = q("SELECT * FROM threads WHERE channel_id=? ORDER BY updated_at DESC", channelId).map((thread) => ({ ...thread, root: serializeMessage(Number(thread.root_message_id)) }));
+        return json(res, 200, { threads });
+      }
+      if (action === "files" && m === "GET") {
+        const files = syncWorkspaceArtifacts(channelId, null, "agent");
+        return json(res, 200, { files, artifacts: q("SELECT * FROM artifacts WHERE channel_id=? ORDER BY modified DESC", channelId) });
+      }
+      if (action === "memory" && m === "GET") return json(res, 200, { memory: q("SELECT m.*, t.root_message_id FROM memory_items m LEFT JOIN threads t ON t.id=m.thread_id WHERE m.channel_id=? AND m.kind<>'summary' ORDER BY m.status, m.created DESC", channelId) });
+      if (action === "memory" && m === "POST") {
+        const b = await jbody(req);
+        const rootId = b.threadRootId ? Number(b.threadRootId) : null;
+        const threadId = rootId ? threadIdForRoot(rootId, channelId) : null;
+        try {
+          const id = recordMemory({ channelId, threadId, kind: String(b.kind || "fact"), content: String(b.content || ""), authorType: "human", scope: String(b.scope || "channel") });
+          return json(res, 201, { memory: q1("SELECT * FROM memory_items WHERE id=?", id) });
+        } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+      }
+      if (action === "activity" && m === "GET") return json(res, 200, {
+        activity: q("SELECT * FROM channel_activity WHERE channel_id=? ORDER BY created DESC LIMIT 200", channelId),
+        actions: q(`SELECT ta.* FROM tool_actions ta JOIN threads t ON t.id=ta.thread_id WHERE t.channel_id=? ORDER BY ta.created DESC LIMIT 100`, channelId),
+        escalations: q("SELECT * FROM escalations WHERE channel_id=? ORDER BY created DESC LIMIT 100", channelId),
+      });
+      if (action === "agent-policy" && m === "PATCH") {
+        if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+        const b = await jbody(req);
+        const agent = agentForChannel(channelId);
+        if (!agent?.bot_id) return json(res, 404, { error: "Resident agent not found." });
+        if (b.provider_id && !q1("SELECT 1 FROM providers WHERE id=?", Number(b.provider_id))) return json(res, 400, { error: "Provider not found." });
+        if ("provider_id" in b) {
+          const providerId = b.provider_id ? Number(b.provider_id) : null;
+          run("UPDATE bots SET provider_id=? WHERE id=?", providerId, agent.bot_id);
+          if (agent.kind === "skipper") {
+            run("UPDATE workspace SET default_provider_id=? WHERE id=1", providerId);
+            run("UPDATE bots SET provider_id=? WHERE id IN (SELECT bot_id FROM agents WHERE kind='channel' AND provider_inherited=1 AND status<>'deleted')", providerId);
+          } else run("UPDATE agents SET provider_inherited=0 WHERE id=?", agent.id);
+        }
+        if ("model" in b) {
+          if (agent.kind === "skipper") {
+            run("UPDATE bots SET model=? WHERE id=?", String(b.model || ""), agent.bot_id);
+            run("UPDATE workspace SET default_model=? WHERE id=1", String(b.model || ""));
+          } else setModelPref(Number(agent.bot_id), "channel", String(channelId), b.model ? String(b.model) : null);
+        }
+        const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
+        broadcastToChannel(channelId, { type: "channel_update", channel });
+        return json(res, 200, { channel });
+      }
+      if (action === "agent-avatar" && m === "PATCH") {
+        const b = await jbody(req);
+        const agent = agentForChannel(channelId);
+        if (!agent?.bot_id) return json(res, 404, { error: "Resident agent not found." });
+        const avatar = String(b.avatar || "");
+        if (avatar && !avatar.startsWith("color:") && !avatar.startsWith("data:image/") && !avatar.startsWith("/")) {
+          return json(res, 400, { error: "Invalid avatar value." });
+        }
+        if (avatar.startsWith("data:image/") && avatar.length > 1_500_000) {
+          return json(res, 400, { error: "Avatar image too large." });
+        }
+        run("UPDATE bots SET avatar=? WHERE id=?", avatar, agent.bot_id);
+        const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
+        broadcastToChannel(channelId, { type: "channel_update", channel });
+        return json(res, 200, { channel });
+      }
+    }
+    const worldFile = p.match(/^\/api\/channels\/(\d+)\/files\/content$/);
+    if (worldFile && m === "GET") {
+      const channelId = Number(worldFile[1]);
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      try {
+        const file = resolveWorldFile(channelId, url.searchParams.get("path") || "");
+        res.writeHead(200, { "content-type": MIME[extname(file)] || "application/octet-stream", "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(file.split("/").pop() || "file")}`, ...SECURITY_HEADERS });
+        return res.end(await readFile(file));
+      } catch (error) { return json(res, 404, { error: (error as Error).message }); }
+    }
+    const memoryItem = p.match(/^\/api\/memory\/(\d+)$/);
+    if (memoryItem && m === "DELETE") {
+      const item = q1("SELECT channel_id FROM memory_items WHERE id=?", Number(memoryItem[1]));
+      if (!item || !canSee(user, Number(item.channel_id))) return json(res, 404, { error: "Not found" });
+      run("UPDATE memory_items SET status='superseded' WHERE id=?", Number(memoryItem[1]));
+      return json(res, 200, { ok: true });
+    }
+    const threadState = p.match(/^\/api\/threads\/(\d+)$/);
+    if (threadState && m === "PATCH") {
+      const thread = q1("SELECT * FROM threads WHERE id=?", Number(threadState[1]));
+      if (!thread || !canSee(user, Number(thread.channel_id))) return json(res, 404, { error: "Not found" });
+      const b = await jbody(req);
+      if (b.status && !["open", "waiting", "resolved", "failed", "archived"].includes(String(b.status))) return json(res, 400, { error: "Invalid thread status." });
+      if (b.status) run("UPDATE threads SET status=?, updated_at=? WHERE id=?", String(b.status), now(), thread.id);
+      if (b.status && ["resolved", "archived"].includes(String(b.status))) {
+        run("UPDATE thread_agent_guests SET status='removed' WHERE thread_id=?", thread.id);
+        const resident = agentForChannel(Number(thread.channel_id)); if (resident) scheduleAgentReview(Number(resident.id));
+      }
+      if (b.summary != null) run("UPDATE threads SET summary=?, updated_at=? WHERE id=?", String(b.summary).slice(0, 10000), now(), thread.id);
+      return json(res, 200, { thread: q1("SELECT * FROM threads WHERE id=?", thread.id) });
     }
     if (p === "/api/dm" && m === "POST") {
       const b = await jbody(req);
@@ -242,30 +609,88 @@ const server = createServer(async (req, res) => {
         run("INSERT INTO members (channel_id, user_id, last_read) VALUES (?,?,?) ON CONFLICT(channel_id,user_id) DO UPDATE SET last_read=excluded.last_read",
           cid, user.id, Number(q1("SELECT MAX(id) x FROM messages WHERE channel_id=?", cid)?.x || 0));
         const rows = q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL ORDER BY id DESC LIMIT 100", cid).reverse();
-        return json(res, 200, { messages: rows.map((r) => serializeMessage(Number(r.id))), bots: botsInChannel(cid).map(botView) });
+        return json(res, 200, { messages: rows.map((r) => serializeMessage(Number(r.id))), bots: botsInChannel(cid).map(botView), agent: agentViewForChannel(cid) });
       }
       if (m === "POST") {
         const b = await jbody(req);
-        return json(res, 200, { message: postMessage(cid, user, String(b.body || ""), b.parentId ? Number(b.parentId) : null, (b.uploads as never[]) || []) });
+        try { return json(res, 200, { message: postMessage(cid, user, String(b.body || ""), b.parentId ? Number(b.parentId) : null, (b.uploads as never[]) || [], b.modelPolicy as never) }); }
+        catch (error) { return json(res, 409, { error: (error as Error).message }); }
       }
     }
     if ((mm = p.match(/^\/api\/messages\/(\d+)\/thread$/)) && m === "GET") {
       const root = q1("SELECT * FROM messages WHERE id=?", Number(mm[1]));
       if (!root || !canSee(user, Number(root.channel_id))) return json(res, 404, { error: "Not found" });
       const replies = q("SELECT id FROM messages WHERE parent_id=? ORDER BY id", root.id);
-      return json(res, 200, { root: serializeMessage(Number(root.id)), replies: replies.map((r) => serializeMessage(Number(r.id))) });
+      const threadId = threadIdForRoot(Number(root.id), Number(root.channel_id)) ?? ensureThread(Number(root.id), Number(root.channel_id));
+      return json(res, 200, { root: serializeMessage(Number(root.id)), replies: replies.map((r) => serializeMessage(Number(r.id))), thread: q1("SELECT * FROM threads WHERE id=?", threadId) });
+    }
+    if ((mm = p.match(/^\/api\/messages\/(\d+)\/model-policy$/))) {
+      const root = q1("SELECT * FROM messages WHERE id=? AND parent_id IS NULL", Number(mm[1]));
+      if (!root || !canSee(user, Number(root.channel_id))) return json(res, 404, { error: "Not found" });
+      const agent = agentForChannel(Number(root.channel_id));
+      if (!agent?.bot_id) return json(res, 404, { error: "Resident agent not found" });
+      if (m === "GET") return json(res, 200, { policy: resolvedModelPolicy(Number(agent.bot_id), Number(root.channel_id), Number(root.id)) });
+      if (m === "POST") {
+        if (agent.kind === "skipper") return json(res, 409, { error: "Skipper always uses the workspace-wide model policy." });
+        const b = await jbody(req);
+        const providerId = b.provider_id ? Number(b.provider_id) : null;
+        if (providerId && !q1("SELECT 1 FROM providers WHERE id=?", providerId)) return json(res, 400, { error: "Provider not found" });
+        setModelPolicy(Number(agent.bot_id), "thread", String(root.id), providerId, b.model ? String(b.model) : null);
+        return json(res, 200, { policy: resolvedModelPolicy(Number(agent.bot_id), Number(root.channel_id), Number(root.id)) });
+      }
+    }
+    if ((mm = p.match(/^\/api\/messages\/(\d+)\/mention-confirmation$/)) && m === "POST") {
+      const message = q1("SELECT * FROM messages WHERE id=? AND user_id=? AND parent_id IS NOT NULL", Number(mm[1]), user.id);
+      if (!message || !canSee(user, Number(message.channel_id))) return json(res, 404, { error: "Not found" });
+      const b = await jbody(req);
+      const threadId = threadIdForRoot(Number(message.parent_id), Number(message.channel_id)) ?? ensureThread(Number(message.parent_id), Number(message.channel_id));
+      if (!b.confirm) {
+        run(`INSERT INTO thread_mention_preferences (thread_id,user_id,muted,updated) VALUES (?,?,1,?)
+          ON CONFLICT(thread_id,user_id) DO UPDATE SET muted=1,updated=excluded.updated`, threadId, user.id, now());
+        return json(res, 200, { ok: true, muted: true });
+      }
+      const bot = q1("SELECT * FROM bots WHERE id=?", Number(b.botId));
+      if (!bot) return json(res, 404, { error: "Agent not found" });
+      const revised = `@${bot.name} ${String(message.body)}`.trim();
+      run("UPDATE messages SET body=? WHERE id=?", revised, message.id);
+      const updated = serializeMessage(Number(message.id))!;
+      broadcastToChannel(Number(message.channel_id), { type: "message_update", message: updated });
+      triggerBots(Number(message.channel_id), updated, Number(user.id));
+      return json(res, 200, { ok: true, message: updated });
+    }
+    if ((mm = p.match(/^\/api\/messages\/(\d+)$/)) && m === "DELETE") {
+      const existing = q1("SELECT channel_id FROM messages WHERE id=?", Number(mm[1]));
+      if (!existing || !canSee(user, Number(existing.channel_id))) return json(res, 404, { error: "Not found" });
+      try {
+        const result = deleteMessage(Number(mm[1]), Number(user.id), !!user.is_admin);
+        broadcastToChannel(result.channel_id, {
+          type: "message_deleted",
+          messageId: result.id,
+          channelId: result.channel_id,
+          parentId: result.parent_id,
+          deletedIds: result.deleted_ids,
+          parent: result.parent,
+        });
+        return json(res, 200, { ok: true, ...result });
+      } catch (error) {
+        const status = (error as Error & { status?: number }).status || 400;
+        return json(res, status, { error: (error as Error).message });
+      }
     }
 
     // uploads
     if (p === "/api/upload" && m === "POST") {
       const token = randomBytes(20).toString("hex");
-      await writeFile(join(UPLOAD_DIR, token), await body(req));
-      return json(res, 200, { token, name: String(req.headers["x-filename"] || "file"), mime: String(req.headers["content-type"] || "application/octet-stream") });
+      const contents = await body(req, UPLOAD_BODY_LIMIT);
+      await writeFile(join(UPLOAD_DIR, token), contents);
+      return json(res, 200, { token, name: String(req.headers["x-filename"] || "file"), mime: String(req.headers["content-type"] || "application/octet-stream"), size: contents.length });
     }
     if ((mm = p.match(/^\/api\/files\/(\d+)$/)) && m === "GET") {
-      const a = q1("SELECT * FROM attachments WHERE id=?", Number(mm[1]));
-      if (!a) return json(res, 404, { error: "Not found" });
-      res.writeHead(200, { "content-type": String(a.mime), "content-disposition": `inline; filename="${a.name}"`, ...SECURITY_HEADERS });
+      const a = q1("SELECT at.*, m.channel_id FROM attachments at JOIN messages m ON m.id=at.message_id WHERE at.id=?", Number(mm[1]));
+      if (!a || !canSee(user, Number(a.channel_id))) return json(res, 404, { error: "Not found" });
+      const mime = /^(image\/(png|jpeg|gif|webp)|application\/pdf|text\/plain)$/i.test(String(a.mime)) ? String(a.mime) : "application/octet-stream";
+      const disposition = /^(image\/|application\/pdf)/.test(mime) ? "inline" : "attachment";
+      res.writeHead(200, { "content-type": mime, "content-disposition": `${disposition}; filename*=UTF-8''${encodeURIComponent(String(a.name))}`, ...SECURITY_HEADERS });
       return res.end(await readFile(join(UPLOAD_DIR, String(a.path))));
     }
 
@@ -357,7 +782,11 @@ const server = createServer(async (req, res) => {
     if ((mm = p.match(/^\/api\/bots\/(\d+)$/)) && (m === "PATCH" || m === "DELETE")) {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
       const id = Number(mm[1]);
-      if (m === "DELETE") { run("DELETE FROM bots WHERE id=?", id); run("DELETE FROM bot_channels WHERE bot_id=?", id); run("DELETE FROM bot_computers WHERE bot_id=?", id); run("DELETE FROM model_prefs WHERE bot_id=?", id); return json(res, 200, { ok: true }); }
+      if (m === "DELETE") {
+        if (q1("SELECT 1 FROM agents WHERE bot_id=? AND status<>'deleted'", id)) return json(res, 409, { error: "Resident agents are removed through their channel lifecycle." });
+        run("DELETE FROM bot_channels WHERE bot_id=?", id); run("DELETE FROM bot_computers WHERE bot_id=?", id); run("DELETE FROM model_prefs WHERE bot_id=?", id); run("DELETE FROM bots WHERE id=?", id);
+        return json(res, 200, { ok: true });
+      }
       const b = await jbody(req);
       for (const f of ["name", "model", "prompt", "avatar"]) if (f in b) run(`UPDATE bots SET ${f}=? WHERE id=?`, String(b[f] ?? ""), id);
       if ("provider_id" in b) run("UPDATE bots SET provider_id=? WHERE id=?", b.provider_id ? Number(b.provider_id) : null, id);
@@ -365,16 +794,22 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { bot: botView(q1("SELECT * FROM bots WHERE id=?", id)!) });
     }
     if ((mm = p.match(/^\/api\/bots\/(\d+)\/join$/)) && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const b = await jbody(req);
       const botId = Number(mm[1]); const cid = Number(b.channelId);
       if (!canSee(user, cid)) return json(res, 403, { error: "No access" });
-      addBotToChannel(botId, cid);
+      if (q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", cid)) return json(res, 409, { error: "Native channels contain only Skipper and their one resident agent. Invite another resident through Skipper for one thread instead." });
+      const targetAgent = agentForBot(botId);
+      if (targetAgent?.kind === "channel") return json(res, 409, { error: "Resident agents are created by channel provisioning, not joined manually." });
+      try { addBotToChannel(botId, cid); }
+      catch (error) { return json(res, 409, { error: (error as Error).message }); }
       const bot = q1("SELECT * FROM bots WHERE id=?", botId);
       broadcastToChannel(cid, { type: "channel_bots", bots: botsInChannel(cid).map(botView) });
       if (bot && b.triggerId) void runBot(bot, cid, Number(b.triggerId), Number(b.threadRootId), Boolean(b.fresh));
       return json(res, 200, { ok: true });
     }
     if (p === "/api/model-pref" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const b = await jbody(req);
       setModelPref(Number(b.botId), String(b.scope), String(b.scopeId ?? ""), b.model ? String(b.model) : null);
       return json(res, 200, { bot: botView(q1("SELECT * FROM bots WHERE id=?", b.botId)!) });
@@ -386,6 +821,8 @@ const server = createServer(async (req, res) => {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
       const b = await jbody(req);
       const id = run("INSERT INTO computers (name, base_url, api_key, created) VALUES (?,?,?,?)", String(b.name || "computer").trim(), String(b.base_url || ""), String(b.api_key || ""), now()).lastInsertRowid;
+      const skipper = q1("SELECT bot_id FROM agents WHERE kind='skipper' AND status<>'deleted' LIMIT 1");
+      if (skipper?.bot_id) run("INSERT OR IGNORE INTO bot_computers (bot_id, computer_id) VALUES (?,?)", skipper.bot_id, id);
       return json(res, 200, { computer: computerRowView(q1("SELECT * FROM computers WHERE id=?", id)!) });
     }
     if ((mm = p.match(/^\/api\/computers\/(\d+)$/)) && (m === "PATCH" || m === "DELETE")) {
@@ -397,15 +834,44 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { computer: computerRowView(q1("SELECT * FROM computers WHERE id=?", id)!) });
     }
 
-    // terminals
+    // Channel terminals always start in the selected channel's workspace.
     if (p === "/api/term/open" && m === "POST") {
+      if (!workspaceView().terminals_enabled) return json(res, 403, { error: "Terminals are disabled for this workspace." });
       const b = await jbody(req);
-      try { return json(res, 200, { sessionId: await openSession(Number(b.computerId), Number(b.cols) || 80, Number(b.rows) || 24) }); }
-      catch (e) { return json(res, 502, { error: (e as Error).message }); }
+      const channelId = Number(b.channelId);
+      if (!channelId || !canSee(user, channelId)) return json(res, 403, { error: "No channel access" });
+      const channel = q1("SELECT status FROM channels WHERE id=?", channelId);
+      if (!channel || channel.status !== "active") return json(res, 409, { error: "Restore the channel before opening a terminal." });
+      const computer = q1("SELECT id FROM computers WHERE name='This Computer' ORDER BY id LIMIT 1");
+      if (!computer) return json(res, 503, { error: "Local computer is not ready." });
+      try {
+        ensureChannelWorkspace(channelId);
+        const cwd = channelWorkspace(channelId);
+        const sessionId = await openSession(Number(computer.id), channelId, Number(user.id), cwd, Number(b.cols) || 80, Number(b.rows) || 24);
+        if (!q1("SELECT 1 FROM channels WHERE id=? AND status='active'", channelId)) { closeSession(sessionId); return json(res, 409, { error: "Channel was archived while the terminal opened." }); }
+        return json(res, 200, { sessionId });
+      } catch (e) { return json(res, 502, { error: (e as Error).message }); }
     }
-    if (p === "/api/term/list" && m === "GET") return json(res, 200, { sessions: listSessions() });
+    if (p === "/api/term/list" && m === "GET") return json(res, 200, { sessions: listSessions(Number(user.id), url.searchParams.get("channelId") ? Number(url.searchParams.get("channelId")) : undefined) });
+    const termClose = p.match(/^\/api\/term\/([^/]+)$/);
+    if (termClose && m === "DELETE") {
+      if (!listSessions(Number(user.id)).some((session) => session.id === termClose[1])) return json(res, 404, { error: "Session not found" });
+      closeSession(termClose[1]); return json(res, 200, { ok: true });
+    }
 
     // admin
+    if (p === "/api/admin/users" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      const username = String(b.username || "").trim().toLowerCase();
+      const password = String(b.password || "");
+      const display = String(b.display || b.username || "").trim() || username;
+      if (!/^[a-z0-9_.-]{2,32}$/.test(username) || password.length < 8) return json(res, 400, { error: "Use a valid username and a temporary password of at least 8 characters." });
+      if (q1("SELECT 1 FROM users WHERE username=?", username)) return json(res, 409, { error: "Username taken." });
+      const id = run("INSERT INTO users (username, pass, display, is_admin, created) VALUES (?,?,?,?,?)", username, hashPassword(password), display, b.is_admin ? 1 : 0, now()).lastInsertRowid;
+      for (const channel of q("SELECT id FROM channels WHERE kind='channel' AND status<>'deleted'")) run("INSERT OR IGNORE INTO members (channel_id, user_id) VALUES (?,?)", channel.id, id);
+      return json(res, 201, { user: publicUser(q1("SELECT * FROM users WHERE id=?", id)!) });
+    }
     if ((mm = p.match(/^\/api\/admin\/users\/(\d+)$/)) && (m === "PATCH" || m === "DELETE")) {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
       const id = Number(mm[1]);
@@ -417,7 +883,7 @@ const server = createServer(async (req, res) => {
 
     return json(res, 404, { error: "Not found" });
   } catch (e) {
-    json(res, 500, { error: (e as Error).message });
+    json(res, (e as Error).name === "PayloadTooLargeError" ? 413 : 500, { error: (e as Error).message });
   }
 });
 
@@ -429,7 +895,7 @@ server.on("upgrade", (req, socket: Socket, head) => {
   if (!user) { socket.destroy(); return; }
   const termMatch = url.pathname.match(/^\/ws\/term\/([^/]+)$/);
   wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
-    if (termMatch) { void attachClient(termMatch[1], ws); return; }
+    if (termMatch) { void attachClient(termMatch[1], ws, Number(user.id)); return; }
     const client = register(ws, Number(user.id));
     ws.on("close", () => unregister(client));
     ws.on("message", () => { /* clients act via REST; WS is push-only */ });
@@ -439,12 +905,20 @@ server.on("upgrade", (req, socket: Socket, head) => {
 
 // ---- embedded local computer (open-terminal compatible) ----
 async function bootstrap(): Promise<void> {
+  prepareMnemosyneRuntime();
   const agentKey = newToken();
   const agentPort = await startAgent(0, agentKey);
   const url = `http://127.0.0.1:${agentPort}`;
   const existing = q1("SELECT id FROM computers WHERE name='This Computer'");
-  if (existing) run("UPDATE computers SET base_url=?, api_key=? WHERE id=?", url, agentKey, existing.id);
-  else run("INSERT INTO computers (name, base_url, api_key, created) VALUES ('This Computer',?,?,?)", url, agentKey, now());
-  server.listen(PORT, () => console.log(`1Helm → http://localhost:${PORT}  (local agent on ${agentPort})  data: ${DATA_DIR}`));
+  const computerId = existing
+    ? (run("UPDATE computers SET base_url=?, api_key=? WHERE id=?", url, agentKey, existing.id), Number(existing.id))
+    : run("INSERT INTO computers (name, base_url, api_key, created) VALUES ('This Computer',?,?,?)", url, agentKey, now()).lastInsertRowid;
+  for (const agent of q("SELECT bot_id FROM agents WHERE status<>'deleted' AND bot_id IS NOT NULL")) run("INSERT OR IGNORE INTO bot_computers (bot_id, computer_id) VALUES (?,?)", agent.bot_id, computerId);
+  for (const channel of q("SELECT id FROM channels WHERE kind='channel' AND status<>'deleted'")) {
+    ensureChannelWorkspace(Number(channel.id));
+    const agent = agentForChannel(Number(channel.id)); if (agent) ensureAgentMemory(agent);
+  }
+  startImprovementLoop();
+  server.listen(PORT, () => console.log(`1Helm on 1Helm → http://localhost:${PORT}  (local agent on ${agentPort})  data: ${DATA_DIR}`));
 }
 void bootstrap();

@@ -4,3 +4,9 @@ public/bundle.js
 public/bundle.css
 public/app.css
 *.log
+
+# local runtime state & session artifacts
+data-refactored/
+.deploy-backups/
+.claude/
+.design/

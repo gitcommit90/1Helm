@@ -245,6 +245,7 @@ export async function streamChatGPTCompletion(
   messages: { role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }[],
   tools: unknown[] | undefined,
   onDelta: (d: string) => void,
+  signal?: AbortSignal,
 ): Promise<{ content: string; toolCalls: { id: string; type: "function"; function: { name: string; arguments: string } }[] }> {
   const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
   const input = messages
@@ -293,6 +294,7 @@ export async function streamChatGPTCompletion(
     method: "POST",
     headers: { "content-type": "application/json", accept: "text/event-stream" },
     body: JSON.stringify(body),
+    signal,
   }));
   if (!response.ok || !response.body) {
     throw new Error(`ChatGPT responses failed (${response.status}): ${(await response.text().catch(() => "")).slice(0, 300)}`);
