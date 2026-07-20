@@ -10,10 +10,14 @@ export function runImprovementPass(agentId?: number): number {
     ? q("SELECT a.*,ac.channel_id FROM agents a LEFT JOIN agent_channels ac ON ac.agent_id=a.id WHERE a.id=? AND a.status<>'deleted'", agentId)
     : q("SELECT a.*,ac.channel_id FROM agents a LEFT JOIN agent_channels ac ON ac.agent_id=a.id WHERE a.kind='channel' AND a.status NOT IN ('deleted','archived')");
   let improved = 0;
+  let reviewed = 0;
+  let signalsSeen = 0;
   const skipper = q1("SELECT a.*, NULL channel_id FROM agents a WHERE a.kind='skipper' AND a.status<>'deleted' LIMIT 1");
+  const improvedNames: string[] = [];
   for (const agent of agents) {
     const channelId = Number(agent.channel_id || 0);
     if (!channelId) continue;
+    reviewed++;
     const checkpoint = q1("SELECT last_message_id,last_run FROM improvement_checkpoints WHERE agent_id=?", agent.id);
     const since = Number(checkpoint?.last_message_id || 0);
     const messages = q(`SELECT m.id,m.body,m.created,u.display FROM messages m LEFT JOIN users u ON u.id=m.user_id
@@ -21,6 +25,7 @@ export function runImprovementPass(agentId?: number): number {
     const latest = Number(messages.at(-1)?.id || since);
     if (messages.length) {
       const signals = messages.filter((message) => frustration.test(String(message.body)) || correction.test(String(message.body)));
+      signalsSeen += signals.length;
       if (signals.length) {
         const hasFrustration = signals.some((message) => frustration.test(String(message.body)));
         const instruction = hasFrustration
@@ -32,17 +37,34 @@ export function runImprovementPass(agentId?: number): number {
           run(`INSERT INTO agent_improvements (agent_id,channel_id,kind,summary,instruction,source_message_id,status,created)
             VALUES (?,?, 'interaction', ?,?,?, 'active',?)`, agent.id, channelId,
           `Skipper reviewed recent interaction signals and strengthened @${agent.name}'s response to corrections.`, instruction, source.id, now());
-          run("INSERT INTO channel_activity (channel_id,kind,summary,actor_type,created) VALUES (?,'improvement',?,'skipper',?)",
+          run("INSERT INTO channel_activity (channel_id,kind,summary,status,actor_type,created) VALUES (?,'improvement',?,'complete','skipper',?)",
             channelId, `Skipper improved @${agent.name}: future turns will adapt faster to corrections and verify the requested outcome.`, now());
           rememberForAgent(agent, instruction, { source: `skipper-improvement:message:${source.id}`, importance: 0.9, metadata: { kind: "behavior-improvement", channel_id: channelId } });
           if (skipper) rememberForAgent(skipper, `In #${String(q1("SELECT name FROM channels WHERE id=?", channelId)?.name || channelId)}, @${agent.name} was improved: ${instruction}`,
             { source: `workspace-improvement:agent:${agent.id}`, importance: 0.8, metadata: { channel_id: channelId, agent_id: agent.id } });
           improved++;
+          improvedNames.push(`@${agent.name}`);
         }
       }
     }
     run(`INSERT INTO improvement_checkpoints (agent_id,last_message_id,last_run) VALUES (?,?,?)
       ON CONFLICT(agent_id) DO UPDATE SET last_message_id=MAX(improvement_checkpoints.last_message_id,excluded.last_message_id),last_run=excluded.last_run`, agent.id, latest, now());
+  }
+
+  // Workspace breadcrumb on #main so Activity surfaces quiet/hourly Skipper reviews.
+  // Skip single-agent scheduleAgentReview noise (thread resolve triggers) when nothing changed.
+  const main = q1("SELECT id FROM channels WHERE name='main' AND kind='channel' AND status='active' LIMIT 1");
+  if (main && (!agentId || improved > 0)) {
+    const summary = improved
+      ? `Skipper improvement pass: strengthened ${improved} agent(s) (${improvedNames.slice(0, 6).join(", ")}).`
+      : `Skipper improvement pass: reviewed ${reviewed} agent(s), ${signalsSeen} correction signal(s); no new durable guidance.`;
+    run(
+      "INSERT INTO channel_activity (channel_id,kind,summary,status,actor_type,created) VALUES (?,'improvement',?,?, 'skipper',?)",
+      main.id,
+      summary.slice(0, 500),
+      improved ? "complete" : "quiet",
+      now(),
+    );
   }
   return improved;
 }

@@ -151,14 +151,12 @@ try {
   await page.click('[data-channel-view="threads"]');
   const threads = await api(`/api/channels/${channel.id}/threads`);
   const overflowThread = threads.threads.find((thread) => thread.root_message_id === overflowRoot);
-  await page.waitForSelector(`[data-thread-status="${overflowThread.id}"]`);
-  await page.click(`[data-thread-status="${overflowThread.id}"]`);
-  ok(Boolean(await page.$("#channelview")) && !await page.$("#threadmsgs"), "clicking a thread status dropdown does not open the thread");
-  await page.select(`[data-thread-status="${overflowThread.id}"]`, "waiting");
-  await waitFor(async () => (await api(`/api/channels/${channel.id}/threads`)).threads.find((thread) => thread.id === overflowThread.id)?.status === "waiting", "thread status update", 10_000);
-  const selectLayout = await page.$eval(`[data-thread-status="${overflowThread.id}"]`, (select) => ({ value: select.value, height: select.getBoundingClientRect().height, clientHeight: select.clientHeight, text: select.selectedOptions[0]?.textContent }));
-  ok(selectLayout.value === "waiting" && selectLayout.text === "waiting" && selectLayout.height >= 38 && selectLayout.clientHeight >= 36, "collapsed select label is visible and not vertically clipped");
-
+  await page.waitForSelector(`[data-thread-open="${overflowThread.id}"]`);
+  const statusPresentation = await page.$eval(`[data-thread-open="${overflowThread.id}"]`, (button) => ({
+    text: button.textContent,
+    hasSelect: Boolean(button.closest("article")?.querySelector("select")),
+  }));
+  ok(/open/i.test(statusPresentation.text) && !statusPresentation.hasSelect, "Threads presents agent-owned status as a readable path without human status controls");
   await page.click(`[data-thread-open="${overflowThread.id}"]`);
   await page.waitForSelector("#threadmsgs");
   const noOverflow = async () => page.evaluate(() => {

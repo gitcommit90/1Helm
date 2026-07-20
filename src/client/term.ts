@@ -22,7 +22,16 @@ type TerminalState = {
   columns: Pane[][];
   workspace: HTMLElement;
   grid: HTMLElement;
+  body: HTMLElement;
+  chromeTitle: HTMLElement;
+  chromeLeft: HTMLElement;
+  serversBtn: HTMLButtonElement | null;
   restored: boolean;
+  preferredComputerId: number;
+  serversListOpen: boolean;
+  docked: boolean;
+  onChromeChange?: () => void;
+  onClose?: () => void;
 };
 type ListedSession = { id: string; computerId: number; channelId: number; clients: number };
 
@@ -36,36 +45,217 @@ const themes = {
   light: { background: "#15171c", foreground: "#e6e3d9", cursor: "#fa5d3e", cursorAccent: "#15171c", selectionBackground: "#fa5d3e3d", black: "#1f2229", brightBlack: "#5c5d58", red: "#f27d95", green: "#54c893", yellow: "#dfba79", blue: "#8cadcd", magenta: "#bd9ff2", cyan: "#6fc2b3", white: "#e6e3d9", brightWhite: "#ffffff" },
 };
 const activeTheme = (): typeof themes.dark => (document.documentElement.classList.contains("light") ? themes.light : themes.dark);
-const defaultComputer = (): number => S.computers.find((computer) => computer.name === "This Computer")?.id || S.computers[0]?.id || 0;
+export const hostComputerId = (): number => S.computers.find((computer) => computer.name === "This Computer")?.id || S.computers[0]?.id || 0;
+export const remoteComputers = () => S.computers.filter((computer) => computer.name !== "This Computer");
+const defaultComputer = (): number => hostComputerId();
+const multiComputer = (): boolean => (S.computers?.length || 0) > 1;
 
-export function openTerminals(container: HTMLElement, channelId: number): void {
+export type OpenTerminalsOpts = {
+  preferredComputerId?: number;
+  serversListOpen?: boolean;
+  docked?: boolean;
+  onChromeChange?: () => void;
+  /** Docked RHS only — Back / ✕ must dismiss the overlay (critical on mobile full-screen). */
+  onClose?: () => void;
+};
+
+export function openTerminals(container: HTMLElement, channelId: number, preferredOrOpts?: number | OpenTerminalsOpts): void {
+  const opts: OpenTerminalsOpts = typeof preferredOrOpts === "number" || preferredOrOpts == null
+    ? { preferredComputerId: preferredOrOpts || undefined }
+    : preferredOrOpts;
   container.className = "flex min-h-0 flex-1 overflow-hidden";
   let state = states.get(channelId);
   if (!state) {
-    state = buildState(channelId);
+    state = buildState(channelId, opts.preferredComputerId || defaultComputer(), !!opts.docked, !!opts.serversListOpen, opts.onChromeChange, opts.onClose);
     states.set(channelId, state);
     void restoreSessions(state);
+  } else {
+    if (opts.preferredComputerId && opts.preferredComputerId !== state.preferredComputerId) {
+      // Header / Servers chose a different computer while this channel already has a workspace —
+      // open a fresh pane on that host instead of forcing a full remount.
+      state.preferredComputerId = opts.preferredComputerId;
+      if (!state.serversListOpen) {
+        state.columns.push([makePane(state, null, opts.preferredComputerId)]);
+        paintBody(state);
+      }
+    }
+    if (opts.serversListOpen != null) state.serversListOpen = !!opts.serversListOpen;
+    if (opts.docked != null) state.docked = !!opts.docked;
+    if (opts.onChromeChange) state.onChromeChange = opts.onChromeChange;
+    if (opts.onClose !== undefined) state.onClose = opts.onClose;
+    paintChrome(state);
+    paintBody(state);
   }
   if (!themeHooked) {
     themeHooked = true;
     window.addEventListener("themechange", () => states.forEach((item) => item.columns.flat().forEach((pane) => { pane.term.options.theme = activeTheme(); })));
   }
-  container.append(state.workspace);
+  if (state.workspace.parentElement !== container) {
+    clear(container);
+    container.append(state.workspace);
+  }
   requestAnimationFrame(() => refit(state!));
 }
 
-function buildState(channelId: number): TerminalState {
-  const channel = S.channels.find((item) => item.id === channelId);
+export function getTerminalChrome(channelId: number): { serversListOpen: boolean; preferredComputerId: number } | null {
+  const state = states.get(channelId);
+  if (!state) return null;
+  return { serversListOpen: state.serversListOpen, preferredComputerId: state.preferredComputerId };
+}
+
+export function setTerminalServersList(channelId: number, open: boolean): void {
+  const state = states.get(channelId);
+  if (!state) return;
+  state.serversListOpen = open;
+  paintChrome(state);
+  paintBody(state);
+  state.onChromeChange?.();
+}
+
+export function setTerminalPreferredComputer(channelId: number, computerId: number): void {
+  const state = states.get(channelId);
+  if (!state) return;
+  state.preferredComputerId = computerId || defaultComputer();
+  state.serversListOpen = false;
+  const hasPane = state.columns.flat().some((pane) => pane.computerId === state.preferredComputerId);
+  if (!hasPane) state.columns.push([makePane(state, null, state.preferredComputerId)]);
+  paintChrome(state);
+  paintBody(state);
+  state.onChromeChange?.();
+  requestAnimationFrame(() => refit(state));
+}
+
+export function refitChannelTerminals(channelId: number): void {
+  const state = states.get(channelId);
+  if (state) requestAnimationFrame(() => refit(state));
+}
+
+function buildState(
+  channelId: number,
+  preferredComputerId: number,
+  docked: boolean,
+  serversListOpen: boolean,
+  onChromeChange?: () => void,
+  onClose?: () => void,
+): TerminalState {
   const grid = h("div", { class: "flex min-h-0 flex-1 gap-2 overflow-hidden p-2" });
-  const state = { channelId, columns: [], workspace: null as unknown as HTMLElement, grid, restored: false };
-  state.workspace = h("div", { class: "flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg" },
-    h("div", { class: "flex items-center gap-3 border-b border-line bg-surface px-4 py-2.5" },
-      h("div", { class: "flex items-center gap-2 font-bold text-fg" }, h("span", { class: "text-accent" }, icon("terminal")), `#${channel?.name || "channel"} terminal`),
-      h("span", { class: "hidden text-xs text-muted md:inline" }, "Shell starts in this channel's /workspace (agent world root)"),
-      h("div", { class: "flex-1" }),
-      h("button", { class: "btn-primary text-xs", onclick: () => addColumn(state) }, icon("plus"), "New terminal")),
-    grid);
+  const body = h("div", { class: "flex min-h-0 flex-1 flex-col overflow-hidden" }, grid);
+  const chromeTitle = h("div", { class: "min-w-0" });
+  const chromeLeft = h("div", { class: "flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2" });
+  const state: TerminalState = {
+    channelId, columns: [], workspace: null as unknown as HTMLElement, grid, body, chromeTitle, chromeLeft,
+    serversBtn: null, restored: false, preferredComputerId, serversListOpen, docked, onChromeChange, onClose,
+  };
+  state.workspace = h("div", { class: "term-workspace flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg" },
+    h("div", { class: "term-chrome app-topbar flex min-h-12 items-center justify-between gap-2 border-b border-line bg-surface px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2.5" },
+      chromeLeft,
+      h("div", { class: "term-chrome-actions flex shrink-0 items-center gap-1.5" })),
+    body);
+  paintChrome(state);
   return state;
+}
+
+function paintChrome(state: TerminalState): void {
+  const actions = state.workspace.querySelector(".term-chrome-actions");
+  if (!actions) return;
+  clear(actions as HTMLElement);
+  clear(state.chromeLeft);
+  state.serversBtn = null;
+  const channel = S.channels.find((item) => item.id === state.channelId);
+  const titleText = state.serversListOpen ? "Servers" : (state.docked ? "Terminal" : `#${channel?.name || "channel"} terminal`);
+  const subtitle = state.serversListOpen
+    ? "Pick a computer"
+    : (channel?.name ? `#${channel.name}` : "Channel shell");
+
+  // Docked terminal is a full-screen overlay on mobile — always expose Back + ✕.
+  if (state.docked && state.onClose) {
+    state.chromeLeft.append(
+      h("button", {
+        type: "button",
+        class: "btn-subtle inline-flex min-h-11 shrink-0 items-center gap-1.5 px-2.5 text-sm sm:min-h-9",
+        title: "Close terminal",
+        "aria-label": "Close terminal and return to channel",
+        onclick: () => state.onClose?.(),
+      }, icon("chevronLeft", 18), h("span", { class: "font-semibold" }, "Back")),
+      h("div", { class: "min-w-0" },
+        h("div", { class: "flex items-center gap-1.5 truncate text-[15px] font-semibold text-fg" },
+          h("span", { class: "shrink-0 text-accent" }, icon("terminal", 16)),
+          h("span", { class: "truncate" }, titleText)),
+        h("div", { class: "truncate font-mono text-[10.5px] text-faint" }, subtitle)),
+    );
+  } else {
+    state.chromeLeft.append(
+      h("div", { class: "flex min-w-0 items-center gap-2 font-bold text-fg" },
+        h("span", { class: "text-accent" }, icon("terminal")),
+        h("span", { class: "truncate" }, titleText)),
+      h("span", { class: "hidden text-xs text-muted lg:inline" }, "Shell starts in this channel's /workspace"),
+    );
+  }
+
+  if (multiComputer()) {
+    const btn = h("button", {
+      class: "btn-subtle min-h-11 px-2.5 text-xs sm:min-h-9",
+      type: "button",
+      title: state.serversListOpen ? "Return to terminal" : "Choose computer",
+      onclick: () => {
+        state.serversListOpen = !state.serversListOpen;
+        paintChrome(state);
+        paintBody(state);
+        state.onChromeChange?.();
+        requestAnimationFrame(() => refit(state));
+      },
+    },
+      h("span", { class: "sm:hidden" }, state.serversListOpen ? "Return" : "Servers"),
+      h("span", { class: "hidden sm:inline" }, state.serversListOpen ? "Return to Terminal" : "Servers"),
+    ) as HTMLButtonElement;
+    state.serversBtn = btn;
+    actions.append(btn);
+  }
+  if (!state.serversListOpen) {
+    actions.append(h("button", {
+      class: "btn-primary min-h-11 px-2.5 text-xs sm:min-h-9",
+      type: "button",
+      title: "New terminal",
+      "aria-label": "New terminal",
+      onclick: () => addColumn(state),
+    }, icon("plus", 14), h("span", { class: "hidden sm:inline" }, "New")));
+  }
+  if (state.docked && state.onClose) {
+    actions.append(h("button", {
+      type: "button",
+      class: "grid h-11 w-11 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg sm:h-9 sm:w-9",
+      title: "Close terminal",
+      "aria-label": "Close terminal",
+      onclick: () => state.onClose?.(),
+    }, icon("x", 18)));
+  }
+}
+
+function paintBody(state: TerminalState): void {
+  clear(state.body);
+  if (state.serversListOpen && multiComputer()) {
+    const host = S.computers.find((c) => c.name === "This Computer") || S.computers[0];
+    const remotes = remoteComputers();
+    const ordered = [host, ...remotes].filter(Boolean) as typeof S.computers;
+    const list = h("div", { class: "flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3" });
+    for (const computer of ordered) {
+      const active = computer.id === state.preferredComputerId;
+      list.append(h("button", {
+        type: "button",
+        class: `flex min-h-12 w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition ${active ? "border-accent bg-accent-soft" : "border-line bg-surface hover:bg-hover"}`,
+        onclick: () => setTerminalPreferredComputer(state.channelId, computer.id),
+      },
+        h("span", { class: "grid h-9 w-9 shrink-0 place-items-center rounded-md bg-raised text-accent" }, icon("terminal", 16)),
+        h("div", { class: "min-w-0 flex-1" },
+          h("div", { class: "truncate text-sm font-semibold text-fg" }, computer.name),
+          h("div", { class: "truncate font-mono text-[11px] text-muted" }, computer.name === "This Computer" ? "channel /workspace" : (computer.base_url || "remote"))),
+        active ? h("span", { class: "text-xs font-medium text-accent" }, "Active") : null));
+    }
+    state.body.append(list);
+    return;
+  }
+  state.body.append(state.grid);
+  layout(state);
 }
 
 async function restoreSessions(state: TerminalState): Promise<void> {
@@ -76,21 +266,21 @@ async function restoreSessions(state: TerminalState): Promise<void> {
     const sessions = result.sessions.filter((session) => session.channelId === state.channelId);
     if (sessions.length) {
       for (const session of sessions) state.columns.push([makePane(state, session.id, session.computerId)]);
-      layout(state);
     } else addColumn(state);
+    paintBody(state);
   } catch (error) {
     state.restored = true;
     const pane = makePane(state);
     state.columns.push([pane]);
-    layout(state);
+    paintBody(state);
     pane.term.writeln(`\r\n\x1b[31m${(error as Error).message}\x1b[0m`);
   }
 }
 
 const refit = (state: TerminalState): void => state.columns.flat().forEach((pane) => { try { pane.fit.fit(); sendResize(pane); } catch { /* detached */ } });
-function addColumn(state: TerminalState): void { state.columns.push([makePane(state)]); layout(state); }
-function splitDown(pane: Pane, colIdx: number): void { pane.state.columns[colIdx].push(makePane(pane.state)); layout(pane.state); }
-function splitRight(pane: Pane, colIdx: number): void { pane.state.columns.splice(colIdx + 1, 0, [makePane(pane.state)]); layout(pane.state); }
+function addColumn(state: TerminalState): void { state.columns.push([makePane(state)]); paintBody(state); }
+function splitDown(pane: Pane, colIdx: number): void { pane.state.columns[colIdx].push(makePane(pane.state)); paintBody(pane.state); }
+function splitRight(pane: Pane, colIdx: number): void { pane.state.columns.splice(colIdx + 1, 0, [makePane(pane.state)]); paintBody(pane.state); }
 function closePane(pane: Pane): void {
   const state = pane.state;
   for (const col of state.columns) { const index = col.indexOf(pane); if (index >= 0) col.splice(index, 1); }
@@ -98,7 +288,7 @@ function closePane(pane: Pane): void {
   pane.disposed = true;
   try { pane.ro.disconnect(); pane.ws?.close(); pane.term.dispose(); } catch { /* gone */ }
   if (pane.sessionId) void api(`/api/term/${pane.sessionId}`, { method: "DELETE" }).catch(() => undefined);
-  if (!state.columns.length) addColumn(state); else layout(state);
+  if (!state.columns.length) addColumn(state); else paintBody(state);
 }
 
 function layout(state: TerminalState): void {
@@ -127,7 +317,7 @@ function paneShell(pane: Pane, columnIndex: number): HTMLElement {
   return shell;
 }
 
-function makePane(state: TerminalState, sessionId: string | null = null, computerId = defaultComputer()): Pane {
+function makePane(state: TerminalState, sessionId: string | null = null, computerId = state.preferredComputerId || defaultComputer()): Pane {
   const id = "p" + ++seq;
   const term = new Terminal({ fontFamily: '"Fragment Mono", ui-monospace, Menlo, monospace', fontSize: 13, theme: activeTheme(), cursorBlink: true, scrollback: 5000 });
   const fit = new FitAddon(); term.loadAddon(fit);
@@ -144,8 +334,11 @@ async function connect(pane: Pane): Promise<void> {
   try {
     if (!pane.sessionId) {
       pane.term.writeln("\x1b[90mStarting terminal…\x1b[0m");
-      const opened = await api<{ sessionId: string }>("/api/term/open", { body: { channelId: pane.state.channelId, cols: pane.term.cols, rows: pane.term.rows } });
+      const opened = await api<{ sessionId: string; computerId?: number }>("/api/term/open", {
+        body: { channelId: pane.state.channelId, computerId: pane.computerId || undefined, cols: pane.term.cols, rows: pane.term.rows },
+      });
       pane.sessionId = opened.sessionId;
+      if (opened.computerId) pane.computerId = opened.computerId;
       pane.el.dataset.sessionId = pane.sessionId;
     }
     if (pane.disposed) { if (pane.sessionId) await api(`/api/term/${pane.sessionId}`, { method: "DELETE" }).catch(() => undefined); return; }

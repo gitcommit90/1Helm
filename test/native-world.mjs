@@ -301,11 +301,44 @@ try {
   const modelChange = await api(`/api/channels/${launch.id}/agent-policy`, { method: "PATCH", body: { provider_id: providerId, model: "mock-small" } }, captain);
   ok(modelChange.status === 200 && modelChange.body.channel.agent.id === launch.agent.id, "model policy changes without replacing the resident identity");
 
+  // Live updates: renames/settings must land on open sockets without a page refresh.
+  const liveEvents = [];
+  const liveSocket = new WebSocket(`ws://127.0.0.1:${appPort}/ws?token=${captain}`);
+  liveSocket.on("message", (data) => liveEvents.push(JSON.parse(data.toString())));
+  await new Promise((resolve, reject) => { liveSocket.on("open", resolve); liveSocket.on("error", reject); });
+  await waitFor(() => liveEvents.find((event) => event.type === "hello"), "live socket hello");
+  liveEvents.length = 0;
+
+  const renamed = await api(`/api/channels/${launch.id}`, { method: "PATCH", body: { name: "launch-room" } }, captain);
+  ok(renamed.status === 200 && renamed.body.channel.name === "launch-room" && renamed.body.channel.slug === "launch-room", "channel rename updates name and slug");
+  const renameEvent = await waitFor(() => liveEvents.find((event) => event.type === "channel_update" && event.channel?.id === launch.id && event.channel?.name === "launch-room"), "live channel rename event");
+  ok(renameEvent.channel.slug === "launch-room" && renameEvent.channel.unread === undefined, "channel_update carries shared meta and omits per-user unread");
+
+  liveEvents.length = 0;
+  const purposeLive = await api(`/api/channels/${launch.id}`, { method: "PATCH", body: { purpose: "Coordinate launch without refresh tax." } }, captain);
+  ok(purposeLive.status === 200 && purposeLive.body.channel.purpose.includes("without refresh"), "purpose patch still works after rename");
+  await waitFor(() => liveEvents.find((event) => event.type === "channel_update" && event.channel?.id === launch.id && /without refresh/.test(event.channel?.purpose || "")), "live purpose event");
+
+  liveEvents.length = 0;
+  const workspaceLive = await api("/api/workspace", { method: "PATCH", body: { name: "Native Live Workspace", theme: "forest" } }, captain);
+  ok(workspaceLive.status === 200 && workspaceLive.body.workspace.name === "Native Live Workspace", "workspace rename returns updated identity");
+  await waitFor(() => liveEvents.find((event) => event.type === "workspace_update" && event.workspace?.name === "Native Live Workspace" && event.workspace?.theme === "forest"), "live workspace_update event");
+
+  liveEvents.length = 0;
+  const providerLive = await api(`/api/providers/${providerId}`, { method: "PATCH", body: { name: "Deterministic provider live" } }, captain);
+  ok(providerLive.status === 200, "provider rename succeeds");
+  await waitFor(() => liveEvents.find((event) => event.type === "provider_update" && event.provider?.id === providerId && event.provider?.name === "Deterministic provider live"), "live provider_update event");
+  liveSocket.close();
+  // Keep local fixtures in sync with the rename for the rest of the suite.
+  launch.name = "launch-room";
+  launch.slug = "launch-room";
+
   await stopApp();
   await launchApp();
   channels = (await api("/api/channels", {}, captain)).body.channels;
   const afterRestart = channels.find((channel) => channel.id === launch.id);
   ok(afterRestart.agent.id === launch.agent.id && afterRestart.agent.model === "mock-small", "restart preserves agent identity, workspace, and changed model policy");
+  ok(afterRestart.name === "launch-room" && afterRestart.slug === "launch-room", "renamed channel name and slug survive restart");
   ok(afterRestart.agent.skills.some((skill) => skill.slug === "self-hosting-guide") && afterRestart.agent.skills.some((skill) => skill.slug === "meeting-brief"), "newly granted and agent-created skills remain permanently in the arsenal after restart");
 
   const recall = await api(`/api/channels/${launch.id}/messages`, { body: { body: `@${afterRestart.agent.name} what launch decision do you remember?` } }, captain);
@@ -332,6 +365,56 @@ try {
   }, "channel-agent call_skipper escalation");
   ok(Boolean(escalationActivity), "a channel-agent call_skipper escalation authorizes Skipper to run the host command and resolves visibly");
 
+  // Skipper hand-back: after unblocking, Skipper must re-invoke the resident via call_agent
+  // so the Captain never has to re-tag the agent (symmetric with call_skipper).
+  const handoffRoot = await api(`/api/channels/${launch.id}/messages`, {
+    body: { body: "@skipper hand the work back to the resident with call_agent so they finish the request" },
+  }, captain);
+  await waitForAgentReply(handoffRoot.body.message.id, captain, "skipper");
+  const handoffEvidence = await waitFor(async () => {
+    const result = await api(`/api/channels/${launch.id}/activity`, {}, captain);
+    const actions = result.body.actions || [];
+    const activity = result.body.activity || [];
+    const called = actions.some((item) => item.tool === "call_agent" && item.status === "complete");
+    const handoffNote = activity.some((item) =>
+      /handed work back|call_agent|handoff/i.test(String(item.summary || item.kind || "")),
+    );
+    const thread = await api(`/api/messages/${handoffRoot.body.message.id}/thread`, {}, captain);
+    const msgs = thread.body.replies || [];
+    const callMsg = msgs.some((m) => /Calling \*\*@/i.test(String(m.body || "")) && m.author?.name === "skipper");
+    const residentAfter = msgs.find((m) =>
+      m.author?.name === afterRestart.agent.name
+      && m.body
+      && m.body !== "_Working…_"
+      && (/Answer complete/i.test(m.body) || /Error contacting model/i.test(m.body)),
+    );
+    return (called || handoffNote || callMsg) && residentAfter
+      ? { called, handoffNote, callMsg, residentBody: residentAfter.body }
+      : null;
+  }, "Skipper call_agent hand-back re-invokes resident", 20_000);
+  ok(Boolean(handoffEvidence), "Skipper call_agent re-invokes the channel resident so the Captain does not finish the loop");
+
+  // Durable follow-up: agent schedules re-entry; ending the turn without this is permanent silence.
+  const followRoot = await api(`/api/channels/${launch.id}/messages`, {
+    body: { body: `@${afterRestart.agent.name} schedule followup because an async download is still running — wake me later` },
+  }, captain);
+  await waitForAgentReply(followRoot.body.message.id, captain, afterRestart.agent.name);
+  const followEvidence = await waitFor(async () => {
+    const result = await api(`/api/channels/${launch.id}/activity`, {}, captain);
+    const actions = result.body.actions || [];
+    const scheduled = actions.some((item) => item.tool === "schedule_followup" && item.status === "complete");
+    const db = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+    let row2;
+    try {
+      row2 = db.prepare("SELECT id, status, due_at, reason FROM agent_followups ORDER BY id DESC LIMIT 1").get();
+    } catch {
+      row2 = null;
+    }
+    db.close();
+    return scheduled && row2?.status === "pending" ? { scheduled, row: row2 } : null;
+  }, "schedule_followup persists pending row", 15_000);
+  ok(Boolean(followEvidence), "resident schedule_followup creates a durable pending re-entry (no silent background promise)");
+
   await api(`/api/threads/${taskThread.id}`, { method: "PATCH", body: { status: "waiting" } }, captain);
   const archive = await api(`/api/channels/${launch.id}/archive`, { body: {} }, captain);
   const blocked = await api(`/api/channels/${launch.id}/messages`, { body: { body: `@${afterRestart.agent.name} should not run` } }, captain);
@@ -351,14 +434,34 @@ try {
   const db2 = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
   const stuckWorking = db2.prepare("SELECT count(*) n FROM agents WHERE status='working'").get().n;
   const emptyPlaceholders = db2.prepare("SELECT count(*) n FROM messages WHERE body='' AND bot_id IS NOT NULL AND parent_id IS NOT NULL").get().n;
+  // Simulate the live bug: final answer already on the message, but progress left 'running'
+  // (crash between setBody and the bulk complete UPDATE). Boot recovery must clear it.
+  const finishedReply = db2.prepare(
+    "SELECT id FROM messages WHERE bot_id IS NOT NULL AND parent_id IS NOT NULL AND body<>'' AND body<>'_Working…_' ORDER BY id DESC LIMIT 1",
+  ).get();
+  if (finishedReply?.id) {
+    const t = Date.now();
+    db2.prepare(
+      "INSERT INTO agent_progress (message_id,kind,body,status,created,updated) VALUES (?,'thinking','stale progress left running','running',?,?)",
+    ).run(finishedReply.id, t, t);
+  }
   db2.close();
+  // Re-run recovery via process restart (seed → recoverInterruptedRuns).
+  const appForRecovery = app;
+  appForRecovery.kill("SIGTERM");
+  await Promise.race([new Promise((resolve) => appForRecovery.once("exit", resolve)), sleep(2000)]);
+  await launchApp();
+  const db3 = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const stuckProgress = db3.prepare("SELECT count(*) n FROM agent_progress WHERE status='running'").get().n;
+  db3.close();
   ok(stuckWorking === 0 && emptyPlaceholders === 0, "boot recovers agents stuck working and sweeps empty placeholder turn messages after a crash");
+  ok(stuckProgress === 0, "boot clears stranded agent_progress running rows so Working… cannot stick on finished replies");
   const financeAfterCrash = (await api("/api/channels", {}, captain)).body.channels.find((channel) => channel.id === finance.id);
   ok(financeAfterCrash.agent.status === "ready", "agent returns to ready after crash recovery");
 
   await api(`/api/channels/${launch.id}/archive`, { body: {} }, captain);
   const wrongDelete = await api(`/api/channels/${launch.id}`, { method: "DELETE", body: { confirm: "wrong" } }, captain);
-  const deleted = await api(`/api/channels/${launch.id}`, { method: "DELETE", body: { confirm: "launch" } }, captain);
+  const deleted = await api(`/api/channels/${launch.id}`, { method: "DELETE", body: { confirm: "launch-room" } }, captain);
   channels = (await api("/api/channels", {}, captain)).body.channels;
   ok(wrongDelete.status === 400 && deleted.status === 200, "permanent deletion requires explicit server-verified channel-name confirmation");
   ok(!channels.some((channel) => channel.id === launch.id) && channels.some((channel) => channel.id === finance.id) && !existsSync(join(dataDir, "channels", String(launch.id))), "permanent deletion removes only the target agent world");

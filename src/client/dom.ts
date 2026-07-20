@@ -21,9 +21,11 @@ export const add = (parent: ParentNode, ...children: Child[]): void => { for (co
 export const esc = (s: string): string => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
 /** Minimal, safe Markdown → HTML (escapes first, then applies formatting). */
+export type ChannelLink = { name: string; slug: string };
+
 /** Inline formatting (applied to already HTML-escaped text). */
-function inline(s: string): string {
-  return s
+function inline(s: string, channels?: ChannelLink[]): string {
+  let out = s
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
     .replace(/__([^_]+?)__/g, "<strong>$1</strong>")
@@ -32,11 +34,39 @@ function inline(s: string): string {
     .replace(/~~([^~]+?)~~/g, "<del>$1</del>")
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
     .replace(/(^|\s)(@[a-zA-Z0-9_.-]+)/g, '$1<span class="font-medium text-accent">$2</span>');
+  if (channels?.length) out = linkifyChannelMentions(out, channels);
+  return out;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Turn known #channel / #slug tokens into SPA-friendly hyperlinks (Slack/Mattermost style). */
+export function linkifyChannelMentions(html: string, channels: ChannelLink[]): string {
+  const byKey = new Map<string, ChannelLink>();
+  for (const channel of channels) {
+    if (!channel?.name || !channel?.slug) continue;
+    byKey.set(String(channel.name).toLowerCase(), channel);
+    byKey.set(String(channel.slug).toLowerCase(), channel);
+  }
+  if (!byKey.size) return html;
+  // Longest keys first so #career-advice beats a shorter prefix if one ever appears.
+  const keys = [...byKey.keys()].sort((a, b) => b.length - a.length);
+  const pattern = new RegExp(`(^|[\\s>(])#(${keys.map(escapeRegExp).join("|")})(?![a-zA-Z0-9_-])`, "gi");
+  return html.replace(pattern, (full, pre: string, token: string) => {
+    const channel = byKey.get(token.toLowerCase());
+    if (!channel) return full;
+    const href = `/c/${encodeURIComponent(channel.slug)}/chat`;
+    return `${pre}<a href="${href}" class="channel-mention font-medium text-accent" data-channel-slug="${esc(channel.slug)}">#${esc(channel.name)}</a>`;
+  });
 }
 const splitRow = (line: string): string[] => line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
 
 /** Lightweight, safe Markdown → HTML: headings, lists (ul/ol), tables, quotes, code, hr, inline. */
-export function md(src: string): string {
+export function md(src: string, opts?: { channels?: ChannelLink[] }): string {
+  const channels = opts?.channels;
+  const fmt = (text: string): string => inline(text, channels);
   const blocks: string[] = [];
   let s = src.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, _lang, code) => { blocks.push(`<pre><code>${esc(String(code).replace(/\n$/, ""))}</code></pre>`); return `\u0000${blocks.length - 1}\u0000`; });
   s = esc(s);
@@ -45,12 +75,13 @@ export function md(src: string): string {
   let list: "ul" | "ol" | null = null;
   let para: string[] = [];
   const closeList = (): void => { if (list) { out.push(`</${list}>`); list = null; } };
-  const flushPara = (): void => { if (para.length) { out.push(`<p>${para.map(inline).join("<br>")}</p>`); para = []; } };
+  const flushPara = (): void => { if (para.length) { out.push(`<p>${para.map(fmt).join("<br>")}</p>`); para = []; } };
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (/^\u0000\d+\u0000$/.test(line)) { flushPara(); closeList(); out.push(line); continue; }
     const head = line.match(/^(#{1,6})\s+(.*)$/);
+    // Headings intentionally skip channel linkify so "# Deploy Runbook" stays a title.
     if (head) { flushPara(); closeList(); const l = head[1].length; out.push(`<h${l}>${inline(head[2])}</h${l}>`); continue; }
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); closeList(); out.push("<hr>"); continue; }
     // GFM table: header row followed by a |---|---| separator
@@ -59,15 +90,15 @@ export function md(src: string): string {
       const header = splitRow(line); i++;
       const rows: string[][] = [];
       while (i + 1 < lines.length && lines[i + 1].includes("|") && lines[i + 1].trim() !== "") rows.push(splitRow(lines[++i]));
-      out.push(`<table><thead><tr>${header.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
+      out.push(`<table><thead><tr>${header.map((c) => `<th>${fmt(c)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${fmt(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
       continue;
     }
     const ul = line.match(/^\s*[-*+]\s+(.*)$/);
-    if (ul) { flushPara(); if (list !== "ul") { closeList(); out.push("<ul>"); list = "ul"; } out.push(`<li>${inline(ul[1])}</li>`); continue; }
+    if (ul) { flushPara(); if (list !== "ul") { closeList(); out.push("<ul>"); list = "ul"; } out.push(`<li>${fmt(ul[1])}</li>`); continue; }
     const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
-    if (ol) { flushPara(); if (list !== "ol") { closeList(); out.push("<ol>"); list = "ol"; } out.push(`<li>${inline(ol[1])}</li>`); continue; }
+    if (ol) { flushPara(); if (list !== "ol") { closeList(); out.push("<ol>"); list = "ol"; } out.push(`<li>${fmt(ol[1])}</li>`); continue; }
     const bq = line.match(/^\s*&gt;\s?(.*)$/);
-    if (bq) { flushPara(); closeList(); out.push(`<blockquote>${inline(bq[1])}</blockquote>`); continue; }
+    if (bq) { flushPara(); closeList(); out.push(`<blockquote>${fmt(bq[1])}</blockquote>`); continue; }
     if (line.trim() === "") { flushPara(); closeList(); continue; }
     closeList(); para.push(line);
   }
@@ -75,8 +106,8 @@ export function md(src: string): string {
   return out.join("\n").replace(/\u0000(\d+)\u0000/g, (_m, i) => blocks[Number(i)]);
 }
 
-/* Restrained stone/ink identity tones — no candy rainbow. */
-const PALETTE = ["#c8552f", "#6b7c93", "#a67c52", "#8a6b7c", "#4f6d7a", "#7a6a4f"];
+/* Restrained stone/ink identity tones — high-contrast monogram fields. */
+const PALETTE = ["#c8552f", "#3f5f73", "#8a5a3b", "#6b4f63", "#2f6b57", "#5c5346"];
 export const color = (seed: string): string => PALETTE[[...seed].reduce((a, c) => a + c.charCodeAt(0), 0) % PALETTE.length];
 export const initials = (name: string): string => name.split(/[\s_-]+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?";
 

@@ -86,6 +86,38 @@ export function updateChannelPurpose(channelId: number, purpose: string): void {
   ensureChannelWorkspace(channelId);
 }
 
+/** Rename a channel (+ URL slug). Keeps resident @mention identity stable; only the channel label changes. */
+export function renameChannel(channelId: number, nameInput: string): void {
+  const channel = q1("SELECT id, name, kind, status FROM channels WHERE id=? AND status<>'deleted'", channelId);
+  if (!channel || channel.kind !== "channel") throw new Error("Channel not found.");
+  if (String(channel.name) === "main") throw new Error("#main cannot be renamed.");
+  if (channel.status === "archived") throw new Error("Restore the channel before renaming.");
+  const name = normalizeChannelName(nameInput);
+  if (!name) throw new Error("Invalid channel name.");
+  if (name === String(channel.name)) return;
+  const clash = q1(
+    "SELECT id FROM channels WHERE kind='channel' AND lower(name)=lower(?) AND status<>'deleted' AND id<>?",
+    name,
+    channelId,
+  );
+  if (clash) throw new Error("A channel with that name already exists.");
+  let slug = channelSlug(name) || `channel-${channelId}`;
+  for (let suffix = 2; q1("SELECT 1 FROM channels WHERE slug=? AND id<>? AND status<>'deleted'", slug, channelId); suffix++) {
+    slug = `${channelSlug(name).slice(0, Math.max(1, 55 - String(suffix).length))}-${suffix}`;
+  }
+  tx(() => {
+    run("UPDATE channels SET name=?, slug=? WHERE id=?", name, slug, channelId);
+    run(
+      "INSERT INTO channel_activity (channel_id, kind, summary, actor_type, created) VALUES (?,'lifecycle',?,?,?)",
+      channelId,
+      `Channel renamed to #${name}.`,
+      "system",
+      now(),
+    );
+  });
+  ensureChannelWorkspace(channelId);
+}
+
 export function provisionChannel(opts: { name: string; purpose: string; userId: number; templateSlug?: string }): ProvisionedChannel {
   const name = normalizeChannelName(opts.name);
   const purpose = opts.purpose.trim();
@@ -196,9 +228,9 @@ export function agentForBot(botId: number): Row | undefined {
 
 export function agentForChannel(channelId: number): Row | undefined {
   const mainId = Number(q1("SELECT id FROM channels WHERE kind='channel' AND name='main' LIMIT 1")?.id || 0);
-  if (channelId === mainId) return q1(`SELECT a.*, p.purpose, p.instructions, p.workspace_ref, p.memory_namespace, p.capability_policy
+  if (channelId === mainId) return q1(`SELECT a.*, NULL AS channel_id, p.purpose, p.instructions, p.workspace_ref, p.memory_namespace, p.capability_policy
     FROM agents a LEFT JOIN agent_profiles p ON p.agent_id=a.id WHERE a.kind='skipper' AND a.status<>'deleted' LIMIT 1`);
-  return q1(`SELECT a.*, p.purpose, p.instructions, p.workspace_ref, p.memory_namespace, p.capability_policy
+  return q1(`SELECT a.*, ac.channel_id, p.purpose, p.instructions, p.workspace_ref, p.memory_namespace, p.capability_policy
     FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id LEFT JOIN agent_profiles p ON p.agent_id=a.id
     WHERE ac.channel_id=? AND a.status<>'deleted'`, channelId);
 }
@@ -241,6 +273,34 @@ export function ensureThread(rootMessageId: number, channelId: number): number {
 export function threadIdForRoot(rootMessageId: number, channelId?: number): number | null {
   const row = q1(channelId == null ? "SELECT id FROM threads WHERE root_message_id=?" : "SELECT id FROM threads WHERE root_message_id=? AND channel_id=?", rootMessageId, ...(channelId == null ? [] : [channelId]));
   return row ? Number(row.id) : null;
+}
+
+/** Rough cumulative model usage for a thread (provider-reported when available). */
+export function threadUsage(threadId: number): { input_tokens: number; output_tokens: number } {
+  const row = q1("SELECT input_tokens, output_tokens FROM threads WHERE id=?", threadId);
+  return {
+    input_tokens: Math.max(0, Number(row?.input_tokens || 0)),
+    output_tokens: Math.max(0, Number(row?.output_tokens || 0)),
+  };
+}
+
+export function threadUsageForRoot(rootMessageId: number, channelId?: number): { input_tokens: number; output_tokens: number } {
+  const threadId = threadIdForRoot(rootMessageId, channelId);
+  if (threadId == null) return { input_tokens: 0, output_tokens: 0 };
+  return threadUsage(threadId);
+}
+
+/** Add one completion's usage onto the thread totals. Returns the new totals. */
+export function addThreadUsage(threadId: number, inputTokens: number, outputTokens: number): { input_tokens: number; output_tokens: number } {
+  const input = Math.max(0, Math.round(Number(inputTokens) || 0));
+  const output = Math.max(0, Math.round(Number(outputTokens) || 0));
+  if (input || output) {
+    run(
+      "UPDATE threads SET input_tokens=input_tokens+?, output_tokens=output_tokens+?, updated_at=? WHERE id=?",
+      input, output, now(), threadId,
+    );
+  }
+  return threadUsage(threadId);
 }
 
 export function refreshThreadSummary(rootMessageId: number): void {
@@ -533,6 +593,11 @@ export function archiveChannel(channelId: number): void {
   tx(() => {
     run("UPDATE channels SET status='archived' WHERE id=?", channelId);
     run("UPDATE agents SET status='archived' WHERE id=(SELECT agent_id FROM agent_channels WHERE channel_id=?)", channelId);
+    run(
+      "UPDATE agent_followups SET status='cancelled', updated=?, last_error='channel archived' WHERE channel_id=? AND status IN ('pending','running')",
+      now(),
+      channelId,
+    );
     run("INSERT INTO channel_activity (channel_id, kind, summary, actor_type, created) VALUES (?,'lifecycle','Channel archived; agent world preserved.','system',?)", channelId, now());
   });
 }

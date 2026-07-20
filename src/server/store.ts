@@ -2,12 +2,22 @@ import { q, q1, run, now, type Row } from "./db.ts";
 
 export type Msg = { channelId: number; parentId: number | null; userId?: number | null; botId?: number | null; body: string };
 
+/** Internal wake scaffolds are stored for model context but never shown in chat. */
+export function isInternalMessageBody(body: string): boolean {
+  const text = String(body || "").trim();
+  return /^\[scheduled-followup\b/i.test(text) || text.startsWith("⟦followup⟧");
+}
+
 export function createMessage(m: Msg): number {
   const id = run(
     "INSERT INTO messages (channel_id, parent_id, user_id, bot_id, body, created) VALUES (?,?,?,?,?,?)",
     m.channelId, m.parentId, m.userId ?? null, m.botId ?? null, m.body, now(),
   ).lastInsertRowid;
-  if (m.parentId) run("UPDATE messages SET reply_count = reply_count + 1, last_reply=? WHERE id=?", now(), m.parentId);
+  // Internal wake triggers still need a parent_id link for ordering, but must not
+  // inflate the user-visible reply count.
+  if (m.parentId && !isInternalMessageBody(m.body)) {
+    run("UPDATE messages SET reply_count = reply_count + 1, last_reply=? WHERE id=?", now(), m.parentId);
+  }
   return id;
 }
 
@@ -61,6 +71,8 @@ export function deleteMessage(id: number, actorUserId: number, isAdmin: boolean)
 export function serializeMessage(id: number): Row | undefined {
   const m = q1("SELECT * FROM messages WHERE id=?", id);
   if (!m) return undefined;
+  // Never ship internal follow-up wake scaffolds to the client.
+  if (isInternalMessageBody(String(m.body || ""))) return undefined;
   const author = m.bot_id
     ? {
       kind: "bot",
@@ -77,6 +89,8 @@ export function serializeMessage(id: number): Row | undefined {
   let lastReply = m.last_reply == null ? null : Number(m.last_reply);
   if (m.parent_id == null) {
     const replies = q(`SELECT created FROM messages r WHERE parent_id=? AND trim(body)<>'' AND body<>'_Working…_'
+      AND body NOT LIKE '[scheduled-followup%'
+      AND body NOT LIKE '⟦followup⟧%'
       AND NOT EXISTS (SELECT 1 FROM agent_progress ap WHERE ap.message_id=r.id AND ap.status='running') ORDER BY id`, id);
     replyCount = replies.length;
     lastReply = replies.length ? Number(replies[replies.length - 1].created) : null;

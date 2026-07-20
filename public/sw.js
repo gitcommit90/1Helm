@@ -1,11 +1,8 @@
-/* 1Helm shell service worker */
-const CACHE = "1helm-shell-v1";
+/* 1Helm shell service worker — offline shell only; never pin API/WS or stale JS. */
+const CACHE = "1helm-shell-v2";
 const PRECACHE = [
   "/",
   "/index.html",
-  "/app.css",
-  "/bundle.css",
-  "/bundle.js",
   "/manifest.webmanifest",
   "/icons/icon.svg",
   "/icons/icon-192.png",
@@ -35,12 +32,23 @@ function isApiOrRealtime(url) {
   return url.pathname.startsWith("/api/") || url.pathname.startsWith("/ws") || url.protocol === "ws:" || url.protocol === "wss:";
 }
 
+/** Stamped app bundles and CSS must always come from network — never long-lived Cache Storage. */
+function isVersionedAsset(url) {
+  return /\.(?:js|css)$/.test(url.pathname) || url.searchParams.has("v");
+}
+
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
   if (isApiOrRealtime(url)) return;
+  if (isVersionedAsset(url)) {
+    event.respondWith(
+      fetch(req).catch(() => caches.match(req).then((r) => r || Response.error())),
+    );
+    return;
+  }
 
   if (req.mode === "navigate" || (req.headers.get("accept") || "").includes("text/html")) {
     event.respondWith(

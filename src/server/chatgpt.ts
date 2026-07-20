@@ -246,7 +246,7 @@ export async function streamChatGPTCompletion(
   tools: unknown[] | undefined,
   onDelta: (d: string) => void,
   signal?: AbortSignal,
-): Promise<{ content: string; toolCalls: { id: string; type: "function"; function: { name: string; arguments: string } }[] }> {
+): Promise<{ content: string; toolCalls: { id: string; type: "function"; function: { name: string; arguments: string } }[]; usage: { input_tokens: number; output_tokens: number } }> {
   const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
   const input = messages
     .filter((m) => m.role !== "system")
@@ -302,6 +302,7 @@ export async function streamChatGPTCompletion(
 
   let content = "";
   const toolMap = new Map<string, { id: string; type: "function"; function: { name: string; arguments: string } }>();
+  let usage = { input_tokens: 0, output_tokens: 0 };
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -361,9 +362,16 @@ export async function streamChatGPTCompletion(
           }
         }
       }
+      // Responses API usage: response.completed / response.done carry totals.
+      const u = data.response?.usage || data.usage;
+      if (u && typeof u === "object") {
+        const input = Number(u.input_tokens ?? u.prompt_tokens ?? 0) || 0;
+        const output = Number(u.output_tokens ?? u.completion_tokens ?? 0) || 0;
+        if (input || output) usage = { input_tokens: input, output_tokens: output };
+      }
     }
   }
-  return { content, toolCalls: [...toolMap.values()].filter((t) => t.function.name) };
+  return { content, toolCalls: [...toolMap.values()].filter((t) => t.function.name), usage };
 }
 
 export function isChatGPTProvider(row: { kind?: unknown; base_url?: unknown } | null | undefined): boolean {

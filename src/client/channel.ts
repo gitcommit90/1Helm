@@ -1,8 +1,8 @@
-import { api, openAuthenticatedFile, type ActivityItem, type AgentTemplate, type Channel, type ChannelFile, type MemoryItem, type ThreadState } from "./api.ts";
-import { h, clear, icon, md, timeLabel, initials } from "./dom.ts";
+import { api, openAuthenticatedFile, type ActivityItem, type AgentTemplate, type Channel, type ChannelFile, type GlobalThread, type MemoryItem, type Message, type ThreadState } from "./api.ts";
+import { h, clear, icon, md, timeLabel } from "./dom.ts";
 import { S, avatar, appAlert, appConfirm, appPrompt } from "./app.ts";
 
-export type ChannelView = "chat" | "threads" | "files" | "terminal" | "memory" | "activity" | "settings";
+export type ChannelView = "chat" | "board" | "threads" | "files" | "terminal" | "memory" | "activity" | "settings";
 
 export function openCreateChannel(onCreated: (channel: Channel) => void): void {
   const name = h("input", { class: "field", placeholder: "launch", autocomplete: "off" }) as HTMLInputElement;
@@ -71,6 +71,100 @@ function statusPath(status: string, updatedAt: number): HTMLElement {
   return h("div", { class: "flex flex-wrap items-center gap-1.5" }, ...parts);
 }
 
+/** Real countdown from durable followup.due_at (ms epoch). Updates in place once/sec. */
+function formatCountdown(dueAt: number, nowMs = Date.now()): string {
+  const remaining = Math.max(0, Math.floor((dueAt - nowMs) / 1000));
+  if (remaining <= 0) return "due now";
+  const h = Math.floor(remaining / 3600);
+  const m = Math.floor((remaining % 3600) / 60);
+  const s = remaining % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m ${String(s).padStart(2, "0")}s`;
+  if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`;
+  return `${s}s`;
+}
+
+function followupCountdownEl(dueAt: number): HTMLElement {
+  const el = h("span", {
+    class: "board-countdown font-mono text-[11px] tabular-nums tracking-wide text-accent",
+    dataset: { dueAt: String(dueAt) },
+    title: `Wakes at ${new Date(dueAt).toLocaleString()}`,
+  }, formatCountdown(dueAt)) as HTMLElement;
+  return el;
+}
+
+function followupMeta(thread: ThreadState, opts?: { onBumped?: () => void }): HTMLElement | null {
+  const f = thread.followup;
+  if (!f?.due_at) return null;
+  const bump = h("button", {
+    class: "board-check-now btn-ghost min-h-8 shrink-0 px-2 py-1 text-[11px] font-semibold",
+    type: "button",
+    title: "Drop countdown to zero and wake the agent now (same path as the timer)",
+  }, "Check now") as HTMLButtonElement;
+  bump.onclick = (event: MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (bump.disabled) return;
+    bump.disabled = true;
+    bump.textContent = "Waking…";
+    void api<{ ok: boolean; due_at?: number; error?: string }>(`/api/threads/${thread.id}/check-now`, { method: "POST", body: {} })
+      .then(() => {
+        // Countdown → due now immediately in the open Board DOM.
+        const card = bump.closest(".board-card, article");
+        for (const node of (card || document).querySelectorAll<HTMLElement>(".board-countdown[data-due-at]")) {
+          node.dataset.dueAt = String(Date.now());
+          node.textContent = "due now";
+          node.classList.add("board-countdown-due");
+        }
+        bump.textContent = "Woke";
+        opts?.onBumped?.();
+      })
+      .catch((error) => {
+        bump.disabled = false;
+        bump.textContent = "Check now";
+        void appAlert((error as Error).message || "Could not wake the agent.");
+      });
+  };
+  return h("div", {
+    class: "board-followup mt-2.5 rounded-md border border-accent/25 bg-accent-soft/40 px-2 py-1.5",
+    onclick: (event: MouseEvent) => event.stopPropagation(),
+  },
+    h("div", { class: "flex items-center justify-between gap-2" },
+      h("span", { class: "font-mono text-[9px] uppercase tracking-[0.14em] text-muted" }, "Next check"),
+      followupCountdownEl(Number(f.due_at))),
+    f.reason
+      ? h("div", { class: "mt-1 line-clamp-2 text-[11px] leading-4 text-muted" }, f.reason)
+      : null,
+    h("div", { class: "mt-1.5 flex items-center justify-between gap-2" },
+      h("div", { class: "font-mono text-[9px] text-faint" }, `attempt ${Number(f.attempts || 0) + 1}/${f.max_attempts || "?"} · #${f.id}`),
+      bump),
+  );
+}
+
+/** Tick all .board-countdown nodes under root once per second while Board is open. */
+let boardCountdownTimer: number | null = null;
+function startBoardCountdownTicker(root: HTMLElement): void {
+  if (boardCountdownTimer != null) {
+    window.clearInterval(boardCountdownTimer);
+    boardCountdownTimer = null;
+  }
+  const tick = (): void => {
+    if (!root.isConnected) {
+      if (boardCountdownTimer != null) window.clearInterval(boardCountdownTimer);
+      boardCountdownTimer = null;
+      return;
+    }
+    const nowMs = Date.now();
+    for (const node of root.querySelectorAll<HTMLElement>(".board-countdown[data-due-at]")) {
+      const due = Number(node.dataset.dueAt || 0);
+      if (!due) continue;
+      node.textContent = formatCountdown(due, nowMs);
+      node.classList.toggle("board-countdown-due", due <= nowMs);
+    }
+  };
+  tick();
+  boardCountdownTimer = window.setInterval(tick, 1000);
+}
+
 export function renderThreads(container: HTMLElement, channelId: number, onOpen: (thread: ThreadState) => void): void {
   panelLoading(container, "Threads", "Focused sessions with durable status and rolling summaries.");
   void api<{ threads: ThreadState[] }>(`/api/channels/${channelId}/threads`).then(({ threads }) => {
@@ -82,9 +176,204 @@ export function renderThreads(container: HTMLElement, channelId: number, onOpen:
         h("button", { class: "min-w-0 flex-1 text-left", type: "button", dataset: { threadOpen: String(thread.id) }, onclick: () => onOpen(thread) },
           h("div", { class: "truncate font-semibold text-fg hover:text-accent" }, thread.title),
           h("div", { class: "md mt-1 line-clamp-2 text-sm leading-5 text-muted", html: md(thread.summary || "No summary yet.") }),
+          followupMeta(thread),
           h("div", { class: "mt-2 flex items-center gap-2 text-xs text-faint" }, statusPath(thread.status, thread.updated_at), h("span", {}, `· Updated ${timeLabel(thread.updated_at)}`)))));
     }
     panelContent(container, "Threads", "Focused sessions with durable status and rolling summaries.", list);
+    startBoardCountdownTicker(list);
+  }).catch((error) => panelError(container, error));
+}
+
+/**
+ * A read-only re-presentation of channel threads. Thread status is owned by
+ * the existing agent/system flow; the board deliberately contains no move or
+ * status controls.
+ *
+ * Full-bleed inside #channelview (not the max-w-5xl document panels) so lanes
+ * use the whole Board tab height/width.
+ *
+ * **Scheduled** is not a human-editable status — it is derived from durable
+ * `agent_followups` rows (next pending due_at). Cards with a pending wake sit
+ * only in Scheduled so the Captain can see the real countdown.
+ */
+export function renderBoard(container: HTMLElement, channelId: number, onOpen: (root: Message) => void): void {
+  clear(container);
+  container.append(h("div", { class: "board-shell" },
+    h("div", { class: "board-header" },
+      h("div", { class: "min-w-0" },
+        h("h2", { class: "font-display text-xl leading-tight text-fg sm:text-[1.45rem]" }, "Board"),
+        h("p", { class: "mt-0.5 text-xs text-muted sm:text-sm" }, "Sessions by status. Scheduled = durable agent wake with live countdown.")),
+      h("span", { class: "board-header-hint" }, "Loading…"))));
+
+  void api<{ threads: ThreadState[] }>(`/api/channels/${channelId}/threads`).then(({ threads }) => {
+    const statuses: { status: ThreadState["status"]; label: string }[] = [
+      { status: "open", label: "Open" },
+      { status: "waiting", label: "Waiting" },
+      { status: "resolved", label: "Resolved" },
+      { status: "failed", label: "Failed" },
+      { status: "archived", label: "Archived" },
+    ];
+    const hasPendingFollowup = (thread: ThreadState): boolean =>
+      Boolean(thread.followup && thread.followup.status === "pending" && Number(thread.followup.due_at) > 0);
+
+    const scheduled = threads
+      .filter(hasPendingFollowup)
+      .slice()
+      .sort((a, b) => Number(a.followup!.due_at) - Number(b.followup!.due_at));
+
+    const grouped = new Map<ThreadState["status"], ThreadState[]>();
+    for (const { status } of statuses) grouped.set(status, []);
+    for (const thread of threads.slice().sort((a, b) => b.updated_at - a.updated_at)) {
+      // Exclusive: pending wakes live only in Scheduled (not also Open/Waiting).
+      if (hasPendingFollowup(thread)) continue;
+      grouped.get(thread.status)?.push(thread);
+    }
+
+    const threadCard = (thread: ThreadState): HTMLElement => h("button", {
+      class: `board-card${hasPendingFollowup(thread) ? " board-card-scheduled" : ""}`,
+      type: "button",
+      dataset: { threadOpen: String(thread.id) },
+      onclick: () => onOpen(thread.root),
+    },
+    h("div", { class: "truncate font-semibold text-fg" }, thread.title || "Untitled session"),
+    h("div", { class: "md mt-1 line-clamp-3 text-sm leading-5 text-muted", html: md(thread.summary || "No summary yet.") }),
+    followupMeta(thread),
+    h("div", { class: "mt-3 flex flex-wrap items-center gap-2 text-xs text-faint" },
+      statusPath(thread.status, thread.updated_at),
+      h("span", {}, `· Updated ${timeLabel(thread.updated_at)}`)));
+
+    const incoming = h("section", { class: "board-lane board-lane-incoming" },
+      h("div", { class: "board-lane-heading" },
+        h("div", { class: "min-w-0" }, h("h3", { class: "font-semibold text-fg" }, "Incoming"), h("p", { class: "mt-0.5 text-[11px] text-muted" }, "Compose only")),
+        h("span", { class: "font-mono text-[10px] text-faint" }, "—")),
+      h("div", { class: "board-lane-incoming-body" },
+        h("p", { class: "text-sm leading-5 text-muted" }, "Start work here. Sending creates an Open session."),
+        h("button", { class: "btn-primary min-h-11 w-full px-4 text-sm", type: "button", onclick: () => openBoardComposer(channelId, onOpen) }, icon("plus", 16), "New")));
+
+    const scheduledLane = h("section", { class: "board-lane board-lane-scheduled", dataset: { boardStatus: "scheduled" } },
+      h("div", { class: "board-lane-heading" },
+        h("div", { class: "min-w-0" },
+          h("h3", { class: "font-semibold text-fg" }, "Scheduled"),
+          h("p", { class: "mt-0.5 text-[11px] text-muted" }, "Agent wake · live countdown")),
+        h("span", { class: "font-mono text-[10px] text-faint" }, String(scheduled.length))),
+      h("div", { class: "board-lane-cards" }, ...scheduled.map(threadCard),
+        scheduled.length ? null : h("p", { class: "px-1 py-6 text-center text-xs leading-5 text-faint" }, "No scheduled wakes")));
+
+    const lanes = statuses.map(({ status, label }) => {
+      const laneThreads = grouped.get(status) || [];
+      return h("section", { class: `board-lane board-lane-${status}`, dataset: { boardStatus: status } },
+        h("div", { class: "board-lane-heading" },
+          h("h3", { class: "font-semibold text-fg" }, label),
+          h("span", { class: "font-mono text-[10px] text-faint" }, String(laneThreads.length))),
+        h("div", { class: "board-lane-cards" }, ...laneThreads.map(threadCard),
+          laneThreads.length ? null : h("p", { class: "px-1 py-6 text-center text-xs leading-5 text-faint" }, "No sessions")));
+    });
+
+    clear(container);
+    const shell = h("div", { class: "board-shell" },
+      h("div", { class: "board-header" },
+        h("div", { class: "min-w-0" },
+          h("h2", { class: "font-display text-xl leading-tight text-fg sm:text-[1.45rem]" }, "Board"),
+          h("p", { class: "mt-0.5 text-xs text-muted sm:text-sm" }, "Sessions by status. Scheduled = durable agent wake with live countdown.")),
+        h("span", { class: "board-header-hint" }, `${threads.length} session${threads.length === 1 ? "" : "s"}${scheduled.length ? ` · ${scheduled.length} scheduled` : ""}`)),
+      h("div", { class: "board-scroll" }, h("div", { class: "board-lanes" }, incoming, scheduledLane, ...lanes)));
+    container.append(shell);
+    startBoardCountdownTicker(shell);
+  }).catch((error) => panelError(container, error));
+}
+
+function openBoardComposer(channelId: number, onOpen: (root: Message) => void): void {
+  const input = h("textarea", {
+    class: "field min-h-32 resize-y", rows: 5,
+    placeholder: "Describe the work you want to start…",
+    "aria-label": "New session message",
+  }) as HTMLTextAreaElement;
+  const status = h("p", { class: "min-h-5 text-sm text-danger", role: "status" });
+  const close = (): void => overlay.remove();
+  const send = h("button", { class: "btn-primary min-h-11 px-4 text-sm", type: "button" }, icon("send", 15), "Send") as HTMLButtonElement;
+  const submit = async (): Promise<void> => {
+    const body = input.value.trim();
+    if (!body) { status.textContent = "Write a message before starting a session."; input.focus(); return; }
+    status.textContent = "";
+    send.disabled = true; send.textContent = "Starting…";
+    try {
+      const result = await api<{ message: Message }>(`/api/channels/${channelId}/messages`, { body: { body } });
+      close();
+      onOpen(result.message);
+    } catch (error) {
+      status.textContent = (error as Error).message || "Could not start a session.";
+      send.disabled = false; send.replaceChildren(icon("send", 15), "Send");
+    }
+  };
+  send.onclick = () => { void submit(); };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { close(); return; }
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); void submit(); }
+  });
+  const overlay = h("div", {
+    class: "modal-overlay fixed inset-0 z-50 grid place-items-end bg-black/55 p-0 sm:place-items-center sm:p-6",
+    onclick: (event: MouseEvent) => { if (event.target === overlay) close(); },
+  },
+  h("section", { class: "card mobile-sheet w-full max-w-lg overflow-hidden rounded-b-none shadow-2xl sm:rounded-xl" },
+    h("div", { class: "flex items-start justify-between gap-3 border-b border-line px-4 py-4 sm:px-6" },
+      h("div", {}, h("h2", { class: "font-display text-[1.4rem] leading-tight text-fg" }, "Start a session"), h("p", { class: "mt-1.5 text-sm text-muted" }, "Your first message opens a new thread in the Open lane.")),
+      h("button", { class: "grid h-11 w-11 place-items-center rounded text-muted hover:bg-hover sm:h-8 sm:w-8", type: "button", "aria-label": "Close", onclick: close }, icon("x"))),
+    h("div", { class: "space-y-3 p-4 sm:p-6" }, input, status),
+    h("div", { class: "flex items-center justify-end gap-2 border-t border-line px-4 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-6" },
+      h("button", { class: "btn-ghost min-h-11 px-4 text-sm sm:min-h-0", type: "button", onclick: close }, "Cancel"), send)));
+  document.body.append(overlay);
+  input.focus();
+}
+
+/** Workspace-wide threads inbox (sidebar Threads control). */
+export function renderGlobalThreads(
+  container: HTMLElement,
+  opts: { unreadOnly: boolean; onToggleUnread: (next: boolean) => void; onOpen: (thread: GlobalThread) => void },
+): void {
+  panelLoading(container, "Threads", "Sessions across every agent channel. Filter to only unread activity.");
+  const path = opts.unreadOnly ? "/api/threads?unread=1" : "/api/threads";
+  void api<{ threads: GlobalThread[] }>(path).then(({ threads }) => {
+    const filter = h("button", {
+      type: "button",
+      class: `btn-subtle min-h-11 shrink-0 text-sm sm:min-h-0 ${opts.unreadOnly ? "border-accent/40 bg-accent-soft text-accent" : ""}`,
+      "aria-pressed": String(opts.unreadOnly),
+      onclick: () => opts.onToggleUnread(!opts.unreadOnly),
+    }, opts.unreadOnly ? "Unread only · on" : "Unread only · off");
+    const toolbar = h("div", { class: "mb-4 flex flex-wrap items-center justify-between gap-3" },
+      h("p", { class: "text-sm text-muted" }, opts.unreadOnly ? "Showing threads with new activity since you last read the channel." : "All focused sessions, newest first."),
+      filter);
+    const list = h("div", { class: "space-y-2" });
+    if (!threads.length) {
+      list.append(empty(
+        opts.unreadOnly ? "No unread threads" : "No sessions yet",
+        opts.unreadOnly ? "Catch up is clear. Turn off the Unread filter to browse everything." : "Start a top-level message in any agent channel to open a focused session.",
+      ));
+    }
+    for (const thread of threads) {
+      list.append(h("article", {
+        class: `card flex w-full min-w-0 items-start gap-3 p-4 ${thread.unread ? "border-accent/35 bg-accent-soft/30" : ""}`,
+      },
+        h("span", { class: "mt-0.5 shrink-0 text-accent" }, icon("thread")),
+        h("button", {
+          class: "min-w-0 flex-1 text-left", type: "button",
+          dataset: { globalThreadOpen: String(thread.id) },
+          onclick: () => opts.onOpen(thread),
+        },
+          h("div", { class: "flex min-w-0 items-center gap-2" },
+            h("span", { class: `truncate ${thread.unread ? "font-semibold text-fg" : "font-semibold text-fg hover:text-accent"}` }, thread.title || "Untitled session"),
+            thread.unread ? h("span", { class: "shrink-0 rounded-full bg-danger px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white" }, "Unread") : null),
+          h("div", { class: "mt-1 flex flex-wrap items-center gap-2 text-xs text-muted" },
+            h("span", { class: "font-mono text-accent" }, `#${thread.channel_name}`),
+            h("span", {}, `· Updated ${timeLabel(thread.updated_at)}`)),
+          h("div", { class: "md mt-1 line-clamp-2 text-sm leading-5 text-muted", html: md(thread.summary || "No summary yet.") }),
+          h("div", { class: "mt-2 flex items-center gap-2 text-xs text-faint" }, statusPath(thread.status, thread.updated_at)))));
+    }
+    clear(container);
+    container.append(h("div", { class: "mx-auto w-full max-w-5xl p-6" },
+      h("div", { class: "mb-2" },
+        h("h2", { class: "font-display text-[1.75rem] leading-tight text-fg" }, "Threads"),
+        h("p", { class: "mt-1.5 text-sm text-muted" }, "Sessions across every agent channel. Filter to only unread activity.")),
+      toolbar, list));
   }).catch((error) => panelError(container, error));
 }
 
@@ -133,19 +422,169 @@ async function addMemory(channelId: number, onDone: () => void): Promise<void> {
   void api(`/api/channels/${channelId}/memory`, { body: { kind: kind.trim(), content: content.trim() } }).then(onDone).catch((error) => appAlert((error as Error).message));
 }
 
+/** Activity is the ops log for a channel — not chat. Group + label kinds so Skipper's
+ * background passes (audits, improvements, skills) are readable instead of a raw dump. */
+const ACTIVITY_SKIPPER = new Set(["thread_audit", "improvement", "skill", "collaboration", "handoff"]);
+const ACTIVITY_WORK = new Set(["tool", "tool_result", "escalation", "followup", "memory"]);
+const ACTIVITY_SYSTEM = new Set(["agent_status", "lifecycle", "profile"]);
+
+type ActivityFilter = "all" | "skipper" | "work" | "system";
+
+function activityBucket(kind: string): ActivityFilter {
+  if (ACTIVITY_SKIPPER.has(kind)) return "skipper";
+  if (ACTIVITY_WORK.has(kind)) return "work";
+  if (ACTIVITY_SYSTEM.has(kind)) return "system";
+  return "work";
+}
+
+function activityKindLabel(kind: string): string {
+  const labels: Record<string, string> = {
+    thread_audit: "Thread audit",
+    improvement: "Behavior improvement",
+    skill: "Skill",
+    collaboration: "Collaboration",
+    handoff: "Hand-back",
+    tool: "Tool started",
+    tool_result: "Tool finished",
+    escalation: "Escalation",
+    followup: "Follow-up",
+    memory: "Memory",
+    agent_status: "Agent status",
+    lifecycle: "Lifecycle",
+    profile: "Profile",
+  };
+  return labels[kind] || kind.replace(/_/g, " ");
+}
+
+function activityActorLabel(actor: string): string {
+  if (actor === "skipper") return "Skipper";
+  if (actor === "agent") return "Resident";
+  if (actor === "human") return "Captain";
+  if (actor === "system") return "System";
+  return actor;
+}
+
+function activityStatusTone(status: string): string {
+  if (status === "failed") return "bg-danger";
+  if (status === "running" || status === "open" || status === "pending" || status === "working" || status === "waiting") return "bg-amber-400";
+  if (status === "quiet") return "bg-line";
+  return "bg-ok";
+}
+
+function activityStatusLabel(status: string): string {
+  if (!status || status === "complete") return "";
+  if (status === "quiet") return "quiet check";
+  return status.replace(/_/g, " ");
+}
+
+function activityCard(item: ActivityItem): HTMLElement {
+  const bucket = activityBucket(item.kind);
+  const statusExtra = activityStatusLabel(item.status);
+  const meta = [
+    activityKindLabel(item.kind),
+    activityActorLabel(item.actor_type),
+    statusExtra,
+    timeLabel(item.created),
+  ].filter(Boolean).join(" · ");
+  const border = bucket === "skipper"
+    ? "border-accent/25 bg-accent-soft/20"
+    : "border-line bg-surface";
+  return h("div", { class: `flex gap-3 rounded-lg border ${border} px-4 py-3` },
+    h("span", { class: `mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${activityStatusTone(item.status)}`, title: item.status || "complete" }),
+    h("div", { class: "min-w-0 flex-1" },
+      h("div", { class: "text-sm leading-5 text-fg" }, item.summary),
+      h("div", { class: "mt-1 text-xs text-muted" }, meta)));
+}
+
+function activitySection(title: string, copy: string, items: ActivityItem[]): HTMLElement {
+  const body = h("div", { class: "space-y-2" });
+  if (!items.length) {
+    body.append(h("p", { class: "rounded-lg border border-dashed border-line px-4 py-6 text-center text-sm text-muted" }, "Nothing in this section yet."));
+  } else {
+    for (const item of items) body.append(activityCard(item));
+  }
+  return h("section", { class: "space-y-3" },
+    h("div", {},
+      h("h3", { class: "text-sm font-semibold tracking-wide text-fg" }, title),
+      h("p", { class: "mt-0.5 text-xs text-muted" }, copy)),
+    body);
+}
+
 export function renderActivity(container: HTMLElement, channelId: number): void {
-  panelLoading(container, "Activity", "Agent work, tool actions, lifecycle changes, and Skipper interventions.");
+  panelLoading(container, "Activity", "Ops log for this channel — tools, escalations, and Skipper's background checks (not the chat stream).");
   void api<{ activity: ActivityItem[] }>(`/api/channels/${channelId}/activity`).then(({ activity }) => {
-    const list = h("div", { class: "space-y-1" });
-    if (!activity.length) list.append(empty("No activity yet", "Tool use and lifecycle changes will appear here."));
-    for (const item of activity) list.append(h("div", { class: "flex gap-3 rounded-lg border border-line bg-surface px-4 py-3" },
-      h("span", { class: `mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${item.status === "failed" ? "bg-danger" : item.status === "running" || item.status === "open" ? "bg-amber-400" : "bg-ok"}` }),
-      h("div", { class: "min-w-0 flex-1" }, h("div", { class: "text-sm text-fg" }, item.summary), h("div", { class: "mt-1 text-xs text-muted" }, `${item.kind} · ${item.actor_type} · ${timeLabel(item.created)}`))));
-    panelContent(container, "Activity", "Agent work, tool actions, lifecycle changes, and Skipper interventions.", list);
+    let filter: ActivityFilter = "all";
+    const root = h("div", { class: "space-y-5" });
+
+    const paint = (): void => {
+      clear(root);
+      const counts = { all: activity.length, skipper: 0, work: 0, system: 0 };
+      for (const item of activity) counts[activityBucket(item.kind)]++;
+
+      const filters: { id: ActivityFilter; label: string }[] = [
+        { id: "all", label: `All · ${counts.all}` },
+        { id: "skipper", label: `Skipper · ${counts.skipper}` },
+        { id: "work", label: `Work · ${counts.work}` },
+        { id: "system", label: `System · ${counts.system}` },
+      ];
+      const chips = h("div", { class: "flex flex-wrap gap-2" },
+        ...filters.map((item) => h("button", {
+          type: "button",
+          class: `btn-subtle min-h-11 shrink-0 text-sm sm:min-h-0 ${filter === item.id ? "border-accent/40 bg-accent-soft text-accent" : ""}`,
+          "aria-pressed": String(filter === item.id),
+          onclick: () => { filter = item.id; paint(); },
+        }, item.label)));
+
+      const blurb = h("p", { class: "text-sm leading-6 text-muted" },
+        "Chat is conversation. Activity is the machine log: when tools run, when agents wake, and when Skipper quietly audits threads, improves behavior, or grants skills. On #main, Skipper also posts workspace-wide pass summaries (including quiet checks that changed nothing).");
+
+      if (!activity.length) {
+        root.append(blurb, chips, empty("No activity yet", "Tool use, escalations, and Skipper background passes will show up here."));
+        return;
+      }
+
+      const skipperItems = activity.filter((item) => activityBucket(item.kind) === "skipper");
+      const workItems = activity.filter((item) => activityBucket(item.kind) === "work");
+      const systemItems = activity.filter((item) => activityBucket(item.kind) === "system");
+
+      root.append(blurb, chips);
+
+      if (filter === "all" || filter === "skipper") {
+        root.append(activitySection(
+          "Skipper · background",
+          "Periodic thread-status audits, silent behavior improvements, skill grants, and hand-backs. Quiet checks mean Skipper looked and left things alone.",
+          skipperItems,
+        ));
+      }
+      if (filter === "all" || filter === "work") {
+        root.append(activitySection(
+          "Work · tools & escalations",
+          "What agents actually did in this channel — tool starts/results, follow-ups, memory writes, and @skipper escalations.",
+          workItems,
+        ));
+      }
+      if (filter === "all" || filter === "system") {
+        root.append(activitySection(
+          "System · lifecycle",
+          "Agent ready/working flips, channel archive/restore, and profile edits. Usually noise compared to Skipper and Work.",
+          systemItems,
+        ));
+      }
+    };
+
+    paint();
+    panelContent(container, "Activity", "Ops log for this channel — tools, escalations, and Skipper's background checks (not the chat stream).", root);
   }).catch((error) => panelError(container, error));
 }
 
 export function renderChannelSettings(container: HTMLElement, channel: Channel, onChanged: (deleted?: boolean) => void): void {
+  const nameField = h("input", {
+    class: "field font-mono",
+    value: channel.name,
+    autocomplete: "off",
+    spellcheck: "false",
+    disabled: channel.name === "main" || !S.me.is_admin ? true : undefined,
+  }) as HTMLInputElement;
   const purpose = h("textarea", { class: "field min-h-24" }, channel.purpose || "") as HTMLTextAreaElement;
   const provider = h("select", { class: "field" }, h("option", { value: "" }, "No provider")) as HTMLSelectElement;
   for (const item of S.providers) provider.append(h("option", { value: item.id, selected: item.id === channel.agent?.provider_id }, item.name));
@@ -173,6 +612,15 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
     }
   };
   provider.onchange = () => { void loadModels(); };
+  const saveName = async (): Promise<void> => {
+    if (channel.name === "main") { status.textContent = "#main cannot be renamed."; return; }
+    if (!S.me.is_admin) { status.textContent = "Only the Captain can rename channels."; return; }
+    try {
+      await api(`/api/channels/${channel.id}`, { method: "PATCH", body: { name: nameField.value } });
+      status.textContent = "Channel renamed.";
+      onChanged();
+    } catch (error) { status.textContent = (error as Error).message; }
+  };
   const savePurpose = async (): Promise<void> => {
     try { await api(`/api/channels/${channel.id}`, { method: "PATCH", body: { purpose: purpose.value } }); status.textContent = "Purpose saved."; onChanged(); }
     catch (error) { status.textContent = (error as Error).message; }
@@ -194,9 +642,10 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
   const drawAvatarPreview = (value: string): void => {
     clear(avatarPreview);
     if (value.startsWith("color:")) {
-      avatarPreview.append(h("div", { class: "h-12 w-12 rounded-xl flex items-center justify-center text-white font-bold text-sm", style: `background:${value.slice(6)}` }, initials(channel.agent?.name || "A")));
+      // Solid color is the entire avatar plate — no initials on top.
+      avatarPreview.append(h("div", { class: "h-12 w-12 rounded-xl identity-solid", style: `background:${value.slice(6)}`, title: channel.agent?.name || "Agent" }));
     } else if (value.startsWith("data:image/") || value.startsWith("/")) {
-      avatarPreview.append(h("img", { class: "h-12 w-12 rounded-xl object-cover", src: value, alt: "Agent" }));
+      avatarPreview.append(h("img", { class: "h-12 w-12 rounded-xl object-cover identity-photo", src: value, alt: "Agent" }));
     } else {
       avatarPreview.append(avatar(channel.agent?.name || "A", "bot", 12));
     }
@@ -207,6 +656,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
       await api(`/api/channels/${channel.id}/agent-avatar`, { method: "PATCH", body: { avatar: value } });
       drawAvatarPreview(value);
       status.textContent = "Agent avatar saved.";
+      // Refresh channel + bot state so chat avatars update without a page reload.
       onChanged();
     } catch (error) { status.textContent = (error as Error).message; }
   };
@@ -233,7 +683,14 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
       } }, icon("trash", 14), "Delete permanently") : null));
 
   const assignedSkills = h("div", { class: "mt-3 flex flex-wrap gap-2" }, ...((channel.agent?.skills || []).map((skill) => h("span", { class: "chip border-accent/25" }, skill.name))));
-  panelContent(container, "Channel settings", "Purpose, replaceable model policy, permanent skills, scoped capabilities, and lifecycle.", h("div", { class: "space-y-4" },
+  panelContent(container, "Channel settings", "Name, purpose, replaceable model policy, permanent skills, scoped capabilities, and lifecycle.", h("div", { class: "space-y-4" },
+    h("div", { class: "card space-y-3 p-4" },
+      h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Channel name"), h("p", { class: "mt-1 text-sm text-muted" }, channel.name === "main" ? "#main is fixed." : "Sidebar label and URL slug. The resident @mention stays the same.")),
+      h("div", { class: "flex flex-col gap-2 sm:flex-row sm:items-center" },
+        h("div", { class: "flex min-w-0 flex-1 items-center gap-1" }, h("span", { class: "text-muted" }, "#"), nameField),
+        channel.name === "main" || !S.me.is_admin
+          ? null
+          : h("button", { class: "btn-primary text-sm", onclick: () => { void saveName(); } }, "Rename"))),
     h("div", { class: "card space-y-3 p-4" }, h("h3", { class: "font-semibold text-fg" }, "Purpose"), purpose, h("div", { class: "flex justify-end" }, h("button", { class: "btn-primary text-sm", onclick: () => { void savePurpose(); } }, "Save purpose"))),
     h("div", { class: "card space-y-3 p-4" },
       h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Agent avatar"), h("p", { class: "mt-1 text-sm text-muted" }, "Pick a flat color or upload a custom image for this resident agent.")),

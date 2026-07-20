@@ -34,3 +34,16 @@ export function sendToUsers(userIds: number[], payload: unknown): void {
   const data = JSON.stringify(payload);
   for (const c of clients) if (set.has(c.userId) && c.ws.readyState === c.ws.OPEN) c.ws.send(data);
 }
+
+/** Workspace-wide fan-out (settings, providers, computers, membership) — every open client. */
+export function broadcastAll(payload: unknown): void {
+  const data = JSON.stringify(payload);
+  for (const c of clients) if (c.ws.readyState === c.ws.OPEN) c.ws.send(data);
+}
+
+/** Distinct user ids currently connected over the app event socket. */
+export function connectedUserIds(): number[] {
+  const ids = new Set<number>();
+  for (const c of clients) if (c.ws.readyState === c.ws.OPEN) ids.add(c.userId);
+  return [...ids];
+}

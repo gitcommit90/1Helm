@@ -1,6 +1,7 @@
-import { api, getToken, workspacePhotoSrc, type Computer, type Provider, type Skill, type User, type WorkspaceDomain } from "./api.ts";
-import { h, clear, add, icon, providerMark } from "./dom.ts";
+import { api, getToken, workspacePhotoSrc, type Computer, type Skill, type User, type WorkspaceDomain } from "./api.ts";
+import { h, clear, add, icon } from "./dom.ts";
 import { S, avatar, reloadProviders, renderApp, appAlert, appConfirm } from "./app.ts";
+import { connectRoutingOauth, routingPanel } from "./routing.ts";
 
 // ============================================================ OpenRouter OAuth (PKCE)
 const b64url = (buf: ArrayBuffer): string => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -63,55 +64,7 @@ export async function finishOpenRouterOAuth(): Promise<{ connected: boolean }> {
 
 /** Start the shared admin Login-with-ChatGPT device flow and show its code in-app. */
 export async function startChatGPTOAuth(): Promise<void> {
-  const started = await api<{ status: string; userCode?: string; verificationUrl?: string; interval?: number; expiresAt?: number }>("/api/chatgpt/login", { body: {} });
-  if (!started.userCode || !started.verificationUrl) throw new Error("ChatGPT did not return a verification code.");
-
-  let cancelled = false;
-  const code = h("input", { class: "field w-full text-center font-mono text-xl font-bold tracking-[0.18em]", value: started.userCode, readOnly: true }) as HTMLInputElement;
-  const status = h("p", { class: "text-center text-sm text-muted" }, "Waiting for approval…");
-  const close = (): void => { cancelled = true; modal.remove(); };
-  const copy = async (): Promise<void> => {
-    try { await navigator.clipboard.writeText(started.userCode!); status.textContent = "Code copied — paste it into the OpenAI page."; }
-    catch { code.focus(); code.select(); document.execCommand("copy"); status.textContent = "Code selected — copy it, then paste it into the OpenAI page."; }
-  };
-  const modal = h("div", { class: "modal-overlay fixed inset-0 z-50 grid place-items-end bg-black/60 p-0 sm:place-items-center sm:p-6", onclick: (e: MouseEvent) => { if (e.target === modal) close(); } },
-    h("div", { class: "card mobile-sheet w-full max-w-md space-y-5 rounded-b-none p-5 shadow-2xl sm:rounded-xl sm:p-6" },
-      h("div", { class: "flex items-start justify-between gap-4" },
-        h("div", {}, h("h2", { class: "text-lg font-bold text-fg" }, "Connect ChatGPT"), h("p", { class: "mt-1 text-sm text-muted" }, "Connect the shared admin ChatGPT account to serve Skipper and resident agents.")),
-        h("button", { class: "grid h-11 w-11 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg sm:h-8 sm:w-8", title: "Cancel", onclick: close }, icon("x"))),
-      h("div", { class: "space-y-2 rounded-lg border border-line bg-raised p-4" },
-        h("p", { class: "text-sm text-fg" }, "1. Open the OpenAI verification page."),
-        h("a", { class: "btn-primary flex min-h-11 w-full justify-center text-sm", href: started.verificationUrl, target: "_blank", rel: "noopener noreferrer" }, "Open verification page"),
-        h("p", { class: "pt-2 text-sm text-fg" }, "2. Enter this one-time code:"),
-        code,
-        h("button", { class: "btn-subtle min-h-11 w-full text-sm", onclick: () => { void copy(); } }, "Copy code")),
-      status,
-      h("div", { class: "flex justify-end pb-[env(safe-area-inset-bottom)]" }, h("button", { class: "btn-subtle min-h-11 text-sm sm:min-h-0", onclick: close }, "Cancel"))));
-  document.body.append(modal);
-  code.focus(); code.select();
-
-  const deadline = started.expiresAt || Date.now() + 15 * 60 * 1000;
-  const every = Math.max(2_000, (started.interval || 5) * 1_000);
-  while (!cancelled && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, every));
-    if (cancelled) return;
-    try {
-      const state = await api<{ status: string }>("/api/chatgpt/status", { method: "GET" });
-      if (state.status !== "authenticated") continue;
-      status.textContent = "Connected — saving the shared provider…";
-      await api("/api/providers/chatgpt/complete", { body: {} });
-      await reloadProviders();
-      modal.remove();
-      const setup = await api<{ setup_complete: boolean }>("/api/setup/status");
-      if (setup.setup_complete) openSettings("providers");
-      return;
-    } catch (e) {
-      if (!cancelled) status.textContent = `Still waiting: ${(e as Error).message}`;
-    }
-  }
-  if (!cancelled) {
-    status.textContent = "This code expired. Close this dialog and connect ChatGPT again.";
-  }
+  return connectRoutingOauth("chatgpt", async () => { await reloadProviders(); });
 }
 
 // ============================================================ settings modal
@@ -119,19 +72,23 @@ type Tab = "admin" | "agents" | "skills" | "domains" | "providers" | "computers"
 export function openSettings(tab: Tab = "agents"): void {
   const overlay = h("div", { class: "modal-overlay fixed inset-0 z-40 grid place-items-end bg-black/50 p-0 sm:place-items-center sm:p-4 md:p-6", onclick: (e: MouseEvent) => { if (e.target === overlay) overlay.remove(); } });
   const bodyEl = h("div", { class: "min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4 sm:p-5" });
+  const modal = h("div", { class: "card mobile-sheet flex h-[min(96dvh,100%)] w-full max-w-none flex-col overflow-hidden rounded-b-none shadow-2xl transition-[max-width] sm:h-[min(90vh,980px)] sm:rounded-xl" });
   const tabs: [Tab, string][] = S.me.is_admin ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Advanced computers"], ["members", "Members"]] : [["agents", "Agents"], ["skills", "Skills"], ["providers", "Providers"], ["computers", "Advanced computers"]];
   const tabBar = h("div", { class: "flex gap-1 overflow-x-auto border-b border-line px-2 pt-2 sm:px-4 sm:pt-3" });
   const draw = (t: Tab): void => {
+    modal.classList.toggle("sm:max-w-[1120px]", t === "providers");
+    modal.classList.toggle("sm:max-w-[760px]", t !== "providers");
     clear(tabBar);
     tabs.forEach(([id, label]) => tabBar.append(h("button", { class: `view-tab ${t === id ? "view-tab-active" : "view-tab-idle"}`, onclick: () => draw(id) }, label)));
     clear(bodyEl);
     bodyEl.append(t === "admin" ? adminPanel() : t === "agents" ? agentsPanel() : t === "skills" ? skillsPanel() : t === "domains" ? domainsPanel() : t === "providers" ? providersPanel() : t === "computers" ? computersPanel() : membersPanel());
   };
-  overlay.append(h("div", { class: "card mobile-sheet flex h-[min(92dvh,100%)] w-full max-w-none flex-col overflow-hidden rounded-b-none shadow-2xl sm:h-[min(82vh,900px)] sm:max-w-[760px] sm:rounded-xl" },
+  modal.append(
     h("div", { class: "flex items-center justify-between border-b border-line px-4 py-3 sm:px-5" },
       h("div", { class: "font-display flex items-center gap-2.5 text-[1.4rem] leading-tight text-fg" }, h("span", { class: "text-accent" }, icon("gear", 18)), "Settings"),
       h("button", { class: "grid h-11 w-11 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg sm:h-8 sm:w-8", "aria-label": "Close settings", onclick: () => overlay.remove() }, icon("x"))),
-    tabBar, bodyEl));
+    tabBar, bodyEl);
+  overlay.append(modal);
   document.body.append(overlay);
   draw(tab);
 }
@@ -232,63 +189,7 @@ function agentsPanel(): HTMLElement {
 
 // ------------------------------------------------------------ providers
 function providersPanel(): HTMLElement {
-  const wrap = h("div", { class: "space-y-3" });
-  const list = h("div", { class: "space-y-3" });
-  const refresh = async (): Promise<void> => { await reloadProviders(); draw(); };
-  const draw = (): void => { clear(list); S.providers.forEach((pr) => list.append(providerCard(pr, refresh))); if (!S.providers.length) list.append(h("p", { class: "py-6 text-center text-sm text-muted" }, "No providers yet. Connect one to serve Skipper and resident agents.")); };
-  add(wrap,
-    h("div", { class: "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between" },
-      h("p", { class: "min-w-0 text-sm leading-5 text-muted" }, "Connections to model providers. Add one once, then let any number of resident agents inherit or use it."),
-      S.me.is_admin ? h("div", { class: "flex w-full flex-col gap-2 sm:w-auto sm:shrink-0 sm:flex-row sm:flex-wrap sm:justify-end" },
-        h("button", { class: "btn-subtle min-h-11 w-full text-sm sm:min-h-0 sm:w-auto", type: "button", onclick: () => { void startChatGPTOAuth().catch((e) => appAlert((e as Error).message || "ChatGPT connection failed")); } }, "Connect ChatGPT"),
-        h("button", { class: "btn-subtle min-h-11 w-full text-sm sm:min-h-0 sm:w-auto", type: "button", onclick: () => { void startOpenRouterOAuth().catch((e) => appAlert((e as Error).message || "OpenRouter connection failed")); } }, "Connect OpenRouter"),
-        h("button", { class: "btn-primary min-h-11 w-full text-sm sm:min-h-0 sm:w-auto", onclick: () => list.prepend(providerCard(null, refresh)) }, icon("plus"), "Add a provider")) : null),
-    S.me.is_admin ? null : adminNote(), list);
-  draw();
-  return wrap;
-}
-
-function providerCard(prov: Provider | null, refresh: () => void): HTMLElement {
-  const ro = !S.me.is_admin;
-  const isChatGPT = prov?.kind === "chatgpt";
-  const name = h("input", { class: "field", placeholder: "Name (e.g. OpenAI, work OpenRouter)", value: prov?.name || "", disabled: ro || isChatGPT }) as HTMLInputElement;
-  const url = h("input", { class: "field", placeholder: "Base URL, e.g. https://api.openai.com/v1", value: isChatGPT ? "Login with ChatGPT (admin subscription)" : (prov?.base_url || ""), disabled: ro || isChatGPT }) as HTMLInputElement;
-  const key = h("input", { class: "field", type: "password", placeholder: isChatGPT ? "Connected ChatGPT session (no API key)" : (prov?.has_key ? "•••••• (unchanged)" : "API key"), disabled: ro || isChatGPT }) as HTMLInputElement;
-  const status = h("span", { class: "min-w-0 flex-1 break-words text-xs text-muted" }, isChatGPT ? "Shared admin ChatGPT account for agents." : "");
-  const test = async (): Promise<void> => {
-    status.textContent = "Testing…";
-    try { const r = await api<{ models: string[] }>("/api/providers/fetch-models", { body: prov ? { providerId: prov.id } : { base_url: url.value, api_key: key.value } }); status.textContent = `✓ ${r.models.length} models available`; }
-    catch (e) { status.textContent = (e as Error).message; }
-  };
-  const save = async (): Promise<void> => {
-    const payload: Record<string, unknown> = { name: name.value, base_url: url.value }; if (key.value) payload.api_key = key.value;
-    try { await api(prov ? `/api/providers/${prov.id}` : "/api/providers", { method: prov ? "PATCH" : "POST", body: payload }); refresh(); }
-    catch (e) { status.textContent = (e as Error).message; }
-  };
-  const del = async (): Promise<void> => {
-    if (!prov || !(await appConfirm(isChatGPT ? `Disconnect ChatGPT and remove ${prov.name}?` : `Delete provider ${prov.name}?`))) return;
-    try {
-      if (isChatGPT) await api("/api/providers/chatgpt/disconnect", { body: {} });
-      else await api(`/api/providers/${prov.id}`, { method: "DELETE" });
-      refresh();
-    } catch (e) { status.textContent = (e as Error).message; }
-  };
-  const authChip = prov?.kind === "openrouter" ? "OAuth" : prov?.kind === "chatgpt" ? "ChatGPT login" : null;
-  return h("div", { class: "card min-w-0 overflow-hidden p-4" },
-    h("div", { class: "mb-2 flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center" },
-      h("div", { class: "flex min-w-0 items-center gap-2" },
-        h("span", { class: "wizard-provider-mark h-9 w-9 shrink-0" }, providerMark(prov?.kind || "openai", 18)),
-        h("div", { class: "min-w-0 flex-1" }, name)),
-      h("div", { class: "flex flex-wrap gap-1.5 sm:shrink-0" },
-        prov ? h("span", { class: "chip" }, `${prov.bots} agent${prov.bots === 1 ? "" : "s"}`) : null,
-        authChip ? h("span", { class: "chip border-accent/40 text-accent" }, authChip) : null)),
-    h("div", { class: "grid grid-cols-1 gap-2 sm:grid-cols-2" }, url, key),
-    h("div", { class: "mt-2.5 flex flex-col gap-2 border-t border-line pt-2.5 sm:flex-row sm:items-center sm:justify-between" }, status,
-      S.me.is_admin ? h("div", { class: "flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-end" },
-        h("button", { class: "btn-subtle min-h-11 w-full text-xs sm:min-h-0 sm:w-auto", onclick: test }, "Test"),
-        isChatGPT ? h("button", { class: "btn-subtle min-h-11 w-full text-xs sm:min-h-0 sm:w-auto", onclick: () => { void startChatGPTOAuth().then(refresh).catch((e) => appAlert((e as Error).message || "ChatGPT connection failed")); } }, "Reconnect") : null,
-        prov ? h("button", { class: "btn-danger min-h-11 w-full text-xs sm:min-h-0 sm:w-auto", onclick: del }, icon("trash", 14), isChatGPT ? "Disconnect" : "Delete") : null,
-        isChatGPT ? null : h("button", { class: "btn-primary min-h-11 w-full text-xs sm:min-h-0 sm:w-auto", onclick: save }, prov ? "Save" : "Add provider")) : null));
+  return routingPanel(!!S.me.is_admin, appConfirm);
 }
 
 // ------------------------------------------------------------ computers

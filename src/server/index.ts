@@ -9,7 +9,7 @@ import { db, q, q1, run, now, hashPassword, verifyPassword, newToken, seed, DATA
 import { createMessage, deleteMessage, serializeMessage, setModelPref, setModelPolicy, resolvedModelPolicy, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots } from "./store.ts";
 import { computerRowView, fetchModels } from "./computer.ts";
 import { cancelChannelTurns, runBot } from "./bots.ts";
-import { register, unregister, broadcastToChannel, sendToUsers } from "./events.ts";
+import { register, unregister, broadcastToChannel, broadcastAll, sendToUsers } from "./events.ts";
 import { openSession, attachClient, listSessions, closeChannelSessions, closeSession } from "./terms.ts";
 import { startAgent } from "./agent.ts";
 import {
@@ -27,6 +27,7 @@ import {
   provisionChannel,
   recordMemory,
   refreshThreadSummary,
+  renameChannel,
   resolveWorldFile,
   restoreChannel,
   syncWorkspaceArtifacts,
@@ -39,6 +40,19 @@ import { connectCloudflareDomain, domainsView } from "./cloudflare.ts";
 import { listSkills, listTemplates, provisionSkill, skillsForAgent } from "./skills.ts";
 import { ensureAgentMemory, mnemosyneAvailable, prepareMnemosyneRuntime } from "./memory.ts";
 import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
+import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
+import { startFollowupLoop, threadFollowupView, bumpThreadFollowup } from "./followups.ts";
+import {
+  internalRoutingProviderId,
+  isInternalRoutingProvider,
+  proxyRoutingRequest,
+  routingInvoke,
+  routingCredentials,
+  routingModels,
+  routingState,
+  startRoutingEngine,
+  stopRoutingEngine,
+} from "./routing.ts";
 
 const PORT = Number(process.env.PORT || 8123);
 const PUBLIC = join(process.cwd(), "public");
@@ -120,14 +134,13 @@ const canSee = (user: Row, channelId: number): boolean => {
 
 const publicUser = (r: Row): Record<string, unknown> => ({ id: r.id, username: r.username, display: r.display, is_admin: Boolean(r.is_admin) });
 
-function channelView(user: Row, c: Row): Record<string, unknown> {
+/** Shared channel fields for live fan-out — never includes per-user unread. */
+function channelMetaView(c: Row, viewer?: Row | null): Record<string, unknown> {
   let name = c.name as string;
-  if (c.kind === "dm") {
-    const other = q1("SELECT u.* FROM members m JOIN users u ON u.id=m.user_id WHERE m.channel_id=? AND m.user_id<>?", c.id, user.id);
+  if (c.kind === "dm" && viewer) {
+    const other = q1("SELECT u.* FROM members m JOIN users u ON u.id=m.user_id WHERE m.channel_id=? AND m.user_id<>?", c.id, viewer.id);
     name = other ? (other.display as string) : "Direct message";
   }
-  const lastRead = Number(q1("SELECT last_read FROM members WHERE channel_id=? AND user_id=?", c.id, user.id)?.last_read || 0);
-  const unread = Number(q1("SELECT COUNT(*) n FROM messages WHERE channel_id=? AND parent_id IS NULL AND id>? AND (user_id IS NULL OR user_id<>?)", c.id, lastRead, user.id)?.n || 0);
   return {
     id: c.id,
     name,
@@ -136,9 +149,66 @@ function channelView(user: Row, c: Row): Record<string, unknown> {
     topic: c.topic,
     purpose: c.purpose || c.topic,
     status: c.status || "active",
-    unread,
     agent: c.kind === "channel" ? agentViewForChannel(Number(c.id)) : null,
   };
+}
+
+/** True when a message is durable activity the Captain should see as unread.
+ *  Agent turns reuse one row: create `_Working…_` then stream into the same id.
+ *  Marking that placeholder as last_read made finished turns invisible forever. */
+function messageIsSettledSql(alias = "m"): string {
+  return `(
+    ${alias}.user_id IS NOT NULL
+    OR (
+      trim(coalesce(${alias}.body,'')) <> ''
+      AND ${alias}.body <> '_Working…_'
+      AND ${alias}.body NOT LIKE '[scheduled-followup%'
+      AND ${alias}.body NOT LIKE '⟦followup⟧%'
+      AND NOT EXISTS (
+        SELECT 1 FROM agent_progress ap
+        WHERE ap.message_id = ${alias}.id AND ap.status = 'running'
+      )
+    )
+  )`;
+}
+
+function maxSettledMessageId(channelId: number): number {
+  return Number(q1(
+    `SELECT MAX(m.id) x FROM messages m
+     WHERE m.channel_id=? AND ${messageIsSettledSql("m")}`,
+    channelId,
+  )?.x || 0);
+}
+
+function channelUnreadCount(userId: number, channelId: number, lastRead: number): number {
+  return Number(q1(
+    `SELECT COUNT(*) n FROM messages m
+     WHERE m.channel_id=? AND m.id>? AND (m.user_id IS NULL OR m.user_id<>?)
+       AND ${messageIsSettledSql("m")}`,
+    channelId, lastRead, userId,
+  )?.n || 0);
+}
+
+function channelView(user: Row, c: Row): Record<string, unknown> {
+  const lastRead = Number(q1("SELECT last_read FROM members WHERE channel_id=? AND user_id=?", c.id, user.id)?.last_read || 0);
+  // Settled roots + replies only — never count in-flight Working placeholders.
+  const unread = channelUnreadCount(Number(user.id), Number(c.id), lastRead);
+  return { ...channelMetaView(c, user), unread };
+}
+
+function broadcastChannelMeta(channelId: number, type: "channel_update" | "channel_new" = "channel_update"): void {
+  const row = q1("SELECT * FROM channels WHERE id=?", channelId);
+  if (!row) return;
+  // Public agent channels: one shared payload. DMs keep membership-scoped name resolution.
+  if (row.kind === "channel") {
+    broadcastToChannel(channelId, { type, channel: channelMetaView(row) });
+    return;
+  }
+  for (const member of q("SELECT user_id FROM members WHERE channel_id=?", channelId)) {
+    const viewer = q1("SELECT * FROM users WHERE id=?", member.user_id);
+    if (!viewer) continue;
+    sendToUsers([Number(member.user_id)], { type, channel: channelMetaView(row, viewer) });
+  }
 }
 
 function visibleChannels(user: Row): Row[] {
@@ -201,10 +271,23 @@ function conversationalAgent(channelId: number, threadRootId: number, beforeMess
   if (currentAuthor?.user_id) humanIds.add(Number(currentAuthor.user_id));
   for (const row of rows) {
     if (row.user_id) humanIds.add(Number(row.user_id));
-    if (row.bot_id && String(row.body) !== "_Working…_") { botIds.add(Number(row.bot_id)); recentBotId = Number(row.bot_id); }
-    for (const mentioned of findMentionedBots(String(row.body))) botIds.add(Number(mentioned.id));
-    const names = new Set((String(row.body).match(/@([a-zA-Z0-9_.-]+)/g) || []).map((name) => name.slice(1).toLowerCase()));
-    if (names.size) for (const human of q("SELECT id,username FROM users")) if (names.has(String(human.username).toLowerCase())) humanIds.add(Number(human.id));
+    if (row.bot_id && String(row.body) !== "_Working…_") {
+      botIds.add(Number(row.bot_id));
+      recentBotId = Number(row.bot_id);
+    }
+    // Only human-authored @mentions expand the participant set.
+    // Agent replies (especially Skipper in #main) often name other bots like
+    // "Resident @oss-scout-agent" without inviting them into this thread — that
+    // must not force "Did you mean to tag @skipper?" on every follow-up.
+    if (row.user_id) {
+      for (const mentioned of findMentionedBots(String(row.body))) botIds.add(Number(mentioned.id));
+      const names = new Set((String(row.body).match(/@([a-zA-Z0-9_.-]+)/g) || []).map((name) => name.slice(1).toLowerCase()));
+      if (names.size) {
+        for (const human of q("SELECT id,username FROM users")) {
+          if (names.has(String(human.username).toLowerCase())) humanIds.add(Number(human.id));
+        }
+      }
+    }
   }
   if (!recentBotId) return null;
   const threadId = threadIdForRoot(threadRootId, channelId) ?? ensureThread(threadRootId, channelId);
@@ -269,6 +352,11 @@ const server = createServer(async (req, res) => {
     const p = url.pathname;
     const m = req.method || "GET";
 
+    // The unified provider gateway is public by URL and authenticates with its
+    // own generated gateway keys. It intentionally does not use a 1Helm web
+    // session so editors, CLIs, and other machines can use the same endpoint.
+    if (p === "/health" || p === "/v1" || p.startsWith("/v1/")) return proxyRoutingRequest(req, res);
+
     // static
     if ((m === "GET" || m === "HEAD") && !p.startsWith("/api/")) {
       const rel = p === "/" ? "/index.html" : p;
@@ -321,6 +409,37 @@ const server = createServer(async (req, res) => {
     const user = authUser(req);
     if (!user) return json(res, 401, { error: "Not authenticated" });
 
+    // 1Helm-native control-plane facade over the embedded routing engine.
+    // Account credentials and gateway keys are workspace-admin material.
+    if (p === "/api/routing/state" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, await routingState());
+    }
+    if (p === "/api/routing/credentials" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, await routingCredentials());
+    }
+    if (p === "/api/routing/models" && m === "GET") {
+      return json(res, 200, { models: await routingModels() });
+    }
+    if (p === "/api/routing/action" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      const action = String(b.action || "");
+      const allowed = new Set([
+        "app:oauth-start", "app:oauth-status", "app:oauth-cancel", "app:oauth-complete",
+        "app:add-keyed-provider", "app:test-keyed-provider", "app:remove-provider",
+        "app:set-provider-enabled", "app:usage", "app:quota-get", "app:quota-refresh",
+        "app:save-combo", "app:delete-combo", "app:create-api-key", "app:revoke-api-key",
+        "app:set-api-key-enabled", "app:set-model-enabled", "app:set-all-models-enabled",
+        "app:add-model", "app:remove-model", "app:logs-get", "app:logs-clear", "app:set-bind-host",
+      ]);
+      if (!allowed.has(action)) return json(res, 400, { error: "Unsupported routing action." });
+      const result = await routingInvoke(action, b.payload);
+      if (result.ok !== false) broadcastAll({ type: "routing_changed", action });
+      return json(res, result.ok === false ? 400 : 200, result);
+    }
+
     // Login-with-ChatGPT device flow. Every route is admin-only because this
     // session becomes the shared provider used by all ChatGPT-backed bots.
     if (p === "/api/chatgpt" || p.startsWith("/api/chatgpt/")) {
@@ -337,16 +456,67 @@ const server = createServer(async (req, res) => {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
       try {
         const r = await bindChatGPTProviderFromCookie(req.headers.cookie);
-        return json(res, 200, { provider: providerView(q1("SELECT * FROM providers WHERE id=?", r.providerId)!), user: r.user });
+        const provider = providerView(q1("SELECT * FROM providers WHERE id=?", r.providerId)!);
+        broadcastAll({ type: "provider_update", provider });
+        return json(res, 200, { provider, user: r.user });
       } catch (e) { return json(res, 400, { error: (e as Error).message }); }
     }
     if (p === "/api/providers/chatgpt/disconnect" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
-      try { await disconnectChatGPTProvider(); return json(res, 200, { ok: true }); }
+      try {
+        await disconnectChatGPTProvider();
+        // Clients resync providers on reconnect; push a soft notice so open UIs refresh lists.
+        broadcastAll({ type: "providers_changed" });
+        return json(res, 200, { ok: true });
+      }
       catch (e) { return json(res, 502, { error: (e as Error).message }); }
     }
 
     if (p === "/api/me") return json(res, 200, { user: publicUser(user), workspace: workspaceView() });
+    // Profile-bound UI layout (docked terminal, preferred computer, per-channel view). Not browser cache.
+    if (p === "/api/me/ui-state" && m === "GET") {
+      const rows = q("SELECT key, value, updated FROM user_ui_state WHERE user_id=?", user.id);
+      const state: Record<string, unknown> = {};
+      for (const row of rows) {
+        try { state[String(row.key)] = JSON.parse(String(row.value || "{}")); }
+        catch { state[String(row.key)] = String(row.value || ""); }
+      }
+      return json(res, 200, { state });
+    }
+    if (p === "/api/me/ui-state" && (m === "PUT" || m === "PATCH")) {
+      const b = await jbody(req);
+      const entries: { key: string; value: unknown }[] = [];
+      if (b && typeof b === "object" && b.state && typeof b.state === "object" && !Array.isArray(b.state)) {
+        for (const [key, value] of Object.entries(b.state as Record<string, unknown>)) entries.push({ key, value });
+      } else if (b && typeof b === "object" && typeof (b as { key?: unknown }).key === "string") {
+        entries.push({ key: String((b as { key: string }).key), value: (b as { value?: unknown }).value });
+      } else if (Array.isArray((b as { entries?: unknown }).entries)) {
+        for (const item of (b as { entries: unknown[] }).entries) {
+          if (!item || typeof item !== "object") continue;
+          const key = String((item as { key?: unknown }).key || "").trim();
+          if (!key) continue;
+          entries.push({ key, value: (item as { value?: unknown }).value });
+        }
+      }
+      if (!entries.length) return json(res, 400, { error: "Provide { key, value }, { entries }, or { state }." });
+      const ts = now();
+      for (const entry of entries) {
+        const key = entry.key.trim().slice(0, 200);
+        if (!key) continue;
+        const value = JSON.stringify(entry.value === undefined ? null : entry.value);
+        if (value.length > 100_000) return json(res, 400, { error: `UI state value for ${key} is too large.` });
+        run(`INSERT INTO user_ui_state (user_id, key, value, updated) VALUES (?,?,?,?)
+          ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated=excluded.updated`,
+          user.id, key, value, ts);
+      }
+      const rows = q("SELECT key, value FROM user_ui_state WHERE user_id=?", user.id);
+      const state: Record<string, unknown> = {};
+      for (const row of rows) {
+        try { state[String(row.key)] = JSON.parse(String(row.value || "{}")); }
+        catch { state[String(row.key)] = String(row.value || ""); }
+      }
+      return json(res, 200, { state });
+    }
     if (p === "/api/workspace" && m === "GET") return json(res, 200, { workspace: workspaceView() });
     if (p === "/api/workspace" && m === "PATCH") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
@@ -356,7 +526,9 @@ const server = createServer(async (req, res) => {
       if (!name) return json(res, 400, { error: "Workspace name is required." });
       if (!["graphite", "ocean", "forest", "ember", "plum"].includes(theme)) return json(res, 400, { error: "Unknown workspace theme." });
       run("UPDATE workspace SET name=?,theme=? WHERE id=1", name, theme);
-      return json(res, 200, { workspace: workspaceView() });
+      const workspace = workspaceView();
+      broadcastAll({ type: "workspace_update", workspace });
+      return json(res, 200, { workspace });
     }
     if (p === "/api/workspace/photo" && m === "GET") {
       const mime = String(q1("SELECT photo_mime FROM workspace WHERE id=1")?.photo_mime || "");
@@ -372,13 +544,17 @@ const server = createServer(async (req, res) => {
       if (!bytes.length) return json(res, 400, { error: "Choose an image." });
       await writeFile(WORKSPACE_PHOTO, bytes, { mode: 0o600 });
       run("UPDATE workspace SET photo_mime=? WHERE id=1", mime);
-      return json(res, 200, { workspace: workspaceView() });
+      const workspace = workspaceView();
+      broadcastAll({ type: "workspace_update", workspace });
+      return json(res, 200, { workspace });
     }
     if (p === "/api/workspace/photo" && m === "DELETE") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       try { unlinkSync(WORKSPACE_PHOTO); } catch { /* absent */ }
       run("UPDATE workspace SET photo_mime='' WHERE id=1");
-      return json(res, 200, { workspace: workspaceView() });
+      const workspace = workspaceView();
+      broadcastAll({ type: "workspace_update", workspace });
+      return json(res, 200, { workspace });
     }
     if (p === "/api/agent-templates" && m === "GET") return json(res, 200, { templates: listTemplates() });
     if (p === "/api/skills" && m === "GET") return json(res, 200, { skills: listSkills() });
@@ -393,6 +569,10 @@ const server = createServer(async (req, res) => {
     if (p === "/api/improvements/run" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       return json(res, 200, { improved: runImprovementPass() });
+    }
+    if (p === "/api/thread-audit/run" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, await runThreadAuditPass());
     }
     if (p === "/api/domains" && m === "GET") return json(res, 200, { domains: domainsView() });
     if (p === "/api/domains/cloudflare" && m === "POST") {
@@ -424,6 +604,39 @@ const server = createServer(async (req, res) => {
 
     // channels
     if (p === "/api/channels" && m === "GET") return json(res, 200, { channels: visibleChannels(user).map((c) => channelView(user, c)) });
+    // Global thread inbox (cross-channel) for the sidebar Threads control.
+    if (p === "/api/threads" && m === "GET") {
+      const unreadOnly = url.searchParams.get("unread") === "1" || url.searchParams.get("unread") === "true";
+      const channels = visibleChannels(user).filter((c) => c.kind === "channel" && String(c.status || "active") !== "deleted");
+      const threads: Record<string, unknown>[] = [];
+      for (const channel of channels) {
+        const channelId = Number(channel.id);
+        for (const root of q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL ORDER BY id", channelId)) {
+          ensureThread(Number(root.id), channelId);
+        }
+        const lastRead = Number(q1("SELECT last_read FROM members WHERE channel_id=? AND user_id=?", channelId, user.id)?.last_read || 0);
+        for (const thread of q("SELECT * FROM threads WHERE channel_id=? ORDER BY updated_at DESC", channelId)) {
+          const rootId = Number(thread.root_message_id);
+          const unread = Number(q1(
+            `SELECT COUNT(*) n FROM messages m
+             WHERE (m.id=? OR m.parent_id=?) AND m.id>? AND (m.user_id IS NULL OR m.user_id<>?)
+               AND ${messageIsSettledSql("m")}`,
+            rootId, rootId, lastRead, user.id,
+          )?.n || 0) > 0;
+          if (unreadOnly && !unread) continue;
+          threads.push({
+            ...thread,
+            channel_name: channel.name,
+            channel_slug: channel.slug || String(channel.id),
+            unread,
+            followup: threadFollowupView(Number(thread.id)),
+            root: serializeMessage(rootId),
+          });
+        }
+      }
+      threads.sort((a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0));
+      return json(res, 200, { threads });
+    }
     if (p === "/api/channels" && m === "POST") {
       const b = await jbody(req);
       const name = normalizeChannelName(String(b.name || ""));
@@ -434,7 +647,7 @@ const server = createServer(async (req, res) => {
         const provisioned = provisionChannel({ name, purpose, userId: Number(user.id), templateSlug: String(b.template || "general") });
         const row = q1("SELECT * FROM channels WHERE id=?", provisioned.channelId)!;
         const channel = channelView(user, row);
-        broadcastToChannel(provisioned.channelId, { type: "channel_new", channel });
+        broadcastChannelMeta(provisioned.channelId, "channel_new");
         if (provisioned.announcementId) broadcastToChannel(provisioned.channelId, { type: "message", message: serializeMessage(provisioned.announcementId) });
         return json(res, provisioned.created ? 201 : 200, { channel, created: provisioned.created });
       } catch (error) {
@@ -449,12 +662,22 @@ const server = createServer(async (req, res) => {
       if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
       if (action === "channel" && m === "PATCH") {
         const b = await jbody(req);
-        const purpose = String(b.purpose || "").trim();
-        if (!purpose) return json(res, 400, { error: "Purpose is required." });
-        try { updateChannelPurpose(channelId, purpose); }
-        catch (error) { return json(res, 400, { error: (error as Error).message }); }
+        const purposeIn = "purpose" in b || "topic" in b;
+        const nameIn = "name" in b;
+        if (!purposeIn && !nameIn) return json(res, 400, { error: "Nothing to update." });
+        try {
+          if (nameIn) {
+            if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+            renameChannel(channelId, String(b.name || ""));
+          }
+          if (purposeIn) {
+            const purpose = String(b.purpose ?? b.topic ?? "").trim();
+            if (!purpose) return json(res, 400, { error: "Purpose is required." });
+            updateChannelPurpose(channelId, purpose);
+          }
+        } catch (error) { return json(res, 400, { error: (error as Error).message }); }
         const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
-        broadcastToChannel(channelId, { type: "channel_update", channel });
+        broadcastChannelMeta(channelId);
         return json(res, 200, { channel });
       }
       if (action === "archive" && m === "POST") {
@@ -464,7 +687,7 @@ const server = createServer(async (req, res) => {
         try {
           cancelChannelTurns(channelId); archiveChannel(channelId); closeChannelSessions(channelId);
           const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
-          broadcastToChannel(channelId, { type: "channel_update", channel });
+          broadcastChannelMeta(channelId);
           return json(res, 200, { channel });
         } catch (error) { return json(res, 400, { error: (error as Error).message }); }
       }
@@ -473,7 +696,7 @@ const server = createServer(async (req, res) => {
         try {
           restoreChannel(channelId);
           const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
-          broadcastToChannel(channelId, { type: "channel_update", channel });
+          broadcastChannelMeta(channelId);
           return json(res, 200, { channel });
         } catch (error) { return json(res, 400, { error: (error as Error).message }); }
       }
@@ -493,7 +716,11 @@ const server = createServer(async (req, res) => {
       }
       if (action === "threads" && m === "GET") {
         for (const root of q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL ORDER BY id", channelId)) ensureThread(Number(root.id), channelId);
-        const threads = q("SELECT * FROM threads WHERE channel_id=? ORDER BY updated_at DESC", channelId).map((thread) => ({ ...thread, root: serializeMessage(Number(thread.root_message_id)) }));
+        const threads = q("SELECT * FROM threads WHERE channel_id=? ORDER BY updated_at DESC", channelId).map((thread) => ({
+          ...thread,
+          followup: threadFollowupView(Number(thread.id)),
+          root: serializeMessage(Number(thread.root_message_id)),
+        }));
         return json(res, 200, { threads });
       }
       if (action === "files" && m === "GET") {
@@ -536,7 +763,7 @@ const server = createServer(async (req, res) => {
           } else setModelPref(Number(agent.bot_id), "channel", String(channelId), b.model ? String(b.model) : null);
         }
         const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
-        broadcastToChannel(channelId, { type: "channel_update", channel });
+        broadcastChannelMeta(channelId);
         return json(res, 200, { channel });
       }
       if (action === "agent-avatar" && m === "PATCH") {
@@ -552,7 +779,7 @@ const server = createServer(async (req, res) => {
         }
         run("UPDATE bots SET avatar=? WHERE id=?", avatar, agent.bot_id);
         const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
-        broadcastToChannel(channelId, { type: "channel_update", channel });
+        broadcastChannelMeta(channelId);
         return json(res, 200, { channel });
       }
     }
@@ -602,12 +829,38 @@ const server = createServer(async (req, res) => {
     }
 
     let mm: RegExpMatchArray | null;
+    // Captain "Check now": zero countdown + fire the same durable wake as the timer.
+    if ((mm = p.match(/^\/api\/threads\/(\d+)\/check-now$/)) && m === "POST") {
+      const thread = q1("SELECT * FROM threads WHERE id=?", Number(mm[1]));
+      if (!thread || !canSee(user, Number(thread.channel_id))) return json(res, 404, { error: "Not found" });
+      const channel = q1("SELECT status FROM channels WHERE id=?", Number(thread.channel_id));
+      if (!channel || channel.status !== "active") return json(res, 409, { error: "Channel is not active." });
+      const result = bumpThreadFollowup(Number(thread.id));
+      if (!result.ok) return json(res, 409, { error: result.error });
+      return json(res, 200, {
+        ok: true,
+        followup_id: result.followup_id,
+        due_at: result.due_at,
+        followup: threadFollowupView(Number(thread.id)),
+        thread: { ...thread, followup: threadFollowupView(Number(thread.id)) },
+      });
+    }
+    // Lightweight mark-read so live viewing + Threads/sidebar stay aligned without a full message fetch.
+    if ((mm = p.match(/^\/api\/channels\/(\d+)\/read$/)) && m === "POST") {
+      const cid = Number(mm[1]);
+      if (!canSee(user, cid)) return json(res, 403, { error: "No access" });
+      // Never advance past an in-flight Working placeholder — that ate finished agent turns.
+      const maxId = maxSettledMessageId(cid);
+      run("INSERT INTO members (channel_id, user_id, last_read) VALUES (?,?,?) ON CONFLICT(channel_id,user_id) DO UPDATE SET last_read=excluded.last_read",
+        cid, user.id, maxId);
+      return json(res, 200, { ok: true, last_read: maxId });
+    }
     if ((mm = p.match(/^\/api\/channels\/(\d+)\/messages$/))) {
       const cid = Number(mm[1]);
       if (!canSee(user, cid)) return json(res, 403, { error: "No access" });
       if (m === "GET") {
         run("INSERT INTO members (channel_id, user_id, last_read) VALUES (?,?,?) ON CONFLICT(channel_id,user_id) DO UPDATE SET last_read=excluded.last_read",
-          cid, user.id, Number(q1("SELECT MAX(id) x FROM messages WHERE channel_id=?", cid)?.x || 0));
+          cid, user.id, maxSettledMessageId(cid));
         const rows = q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL ORDER BY id DESC LIMIT 100", cid).reverse();
         return json(res, 200, { messages: rows.map((r) => serializeMessage(Number(r.id))), bots: botsInChannel(cid).map(botView), agent: agentViewForChannel(cid) });
       }
@@ -622,7 +875,16 @@ const server = createServer(async (req, res) => {
       if (!root || !canSee(user, Number(root.channel_id))) return json(res, 404, { error: "Not found" });
       const replies = q("SELECT id FROM messages WHERE parent_id=? ORDER BY id", root.id);
       const threadId = threadIdForRoot(Number(root.id), Number(root.channel_id)) ?? ensureThread(Number(root.id), Number(root.channel_id));
-      return json(res, 200, { root: serializeMessage(Number(root.id)), replies: replies.map((r) => serializeMessage(Number(r.id))), thread: q1("SELECT * FROM threads WHERE id=?", threadId) });
+      const thread = q1("SELECT * FROM threads WHERE id=?", threadId);
+      return json(res, 200, {
+        root: serializeMessage(Number(root.id)),
+        replies: replies.map((r) => serializeMessage(Number(r.id))).filter(Boolean),
+        thread,
+        usage: {
+          input_tokens: Math.max(0, Number(thread?.input_tokens || 0)),
+          output_tokens: Math.max(0, Number(thread?.output_tokens || 0)),
+        },
+      });
     }
     if ((mm = p.match(/^\/api\/messages\/(\d+)\/model-policy$/))) {
       const root = q1("SELECT * FROM messages WHERE id=? AND parent_id IS NULL", Number(mm[1]));
@@ -695,13 +957,16 @@ const server = createServer(async (req, res) => {
     }
 
     // providers (reusable, bot-agnostic connections)
-    if (p === "/api/providers" && m === "GET") return json(res, 200, { providers: q("SELECT * FROM providers ORDER BY name").map(providerView) });
+    if (p === "/api/providers" && m === "GET") return json(res, 200, { providers: q("SELECT * FROM providers WHERE kind='routing' ORDER BY name").map(providerView) });
     if (p === "/api/providers/fetch-models" && m === "POST") {
       const b = await jbody(req);
       const prov = b.providerId ? q1("SELECT * FROM providers WHERE id=?", b.providerId) : undefined;
       if (prov && String(prov.kind) === CHATGPT_KIND) {
         try { return json(res, 200, { models: await listChatGPTModels() }); }
         catch (e) { return json(res, 502, { error: (e as Error).message }); }
+      }
+      if (prov && String(prov.kind) === "routing") {
+        return json(res, 200, { models: (await routingModels()).map((model) => model.id) });
       }
       const base = prov ? String(prov.base_url || "") : String(b.base_url || "");
       const key = prov ? String(prov.api_key || "") : String(b.api_key || "");
@@ -712,6 +977,7 @@ const server = createServer(async (req, res) => {
       const prov = q1("SELECT * FROM providers WHERE id=?", Number(mm[1]));
       if (!prov) return json(res, 404, { error: "Not found" });
       try {
+        if (String(prov.kind) === "routing") return json(res, 200, { models: (await routingModels()).map((model) => model.id) });
         if (String(prov.kind) === CHATGPT_KIND) return json(res, 200, { models: await listChatGPTModels() });
         return json(res, 200, { models: await fetchModels(String(prov.base_url), String(prov.api_key)) });
       }
@@ -720,9 +986,26 @@ const server = createServer(async (req, res) => {
     if (p === "/api/providers" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
       const b = await jbody(req);
-      const id = run("INSERT INTO providers (name, base_url, api_key, kind, created) VALUES (?,?,?,?,?)",
-        String(b.name || "Provider").trim(), String(b.base_url || "").trim(), String(b.api_key || ""), String(b.kind || "openai"), now()).lastInsertRowid;
-      return json(res, 200, { provider: providerView(q1("SELECT * FROM providers WHERE id=?", id)!) });
+      const baseUrl = String(b.base_url || "").trim();
+      const apiKey = String(b.api_key || "");
+      const tested = await routingInvoke("app:test-keyed-provider", { baseUrl, apiKey, providerType: "openai-compat" });
+      if (tested.ok === false) return json(res, 502, { error: String(tested.error || "Provider test failed") });
+      const added = await routingInvoke("app:add-keyed-provider", {
+        name: String(b.name || "Provider").trim(), baseUrl, apiKey, models: tested.models || [],
+      });
+      if (added.ok === false) return json(res, 400, { error: String(added.error || "Could not add provider") });
+      const id = await internalRoutingProviderId();
+      const provider = providerView(q1("SELECT * FROM providers WHERE id=?", id)!);
+      const routing = await routingState() as {
+        providers?: Array<{ id?: string; models?: Array<{ gatewayId?: string; id?: string; name?: string; enabled?: boolean }> }>;
+      };
+      const source = (routing.providers || []).find((item) => item.id === added.id);
+      const models = (source?.models || [])
+        .filter((model) => model.enabled !== false)
+        .map((model) => ({ id: String(model.gatewayId || model.id || ""), name: String(model.name || model.id || "") }))
+        .filter((model) => model.id);
+      broadcastAll({ type: "routing_changed", action: "provider_added" });
+      return json(res, 200, { provider, models });
     }
     if ((mm = p.match(/^\/api\/providers\/(\d+)$/)) && (m === "PATCH" || m === "DELETE")) {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
@@ -731,12 +1014,15 @@ const server = createServer(async (req, res) => {
         const inUse = Number(q1("SELECT COUNT(*) n FROM bots WHERE provider_id=?", id)?.n || 0);
         if (inUse) return json(res, 409, { error: `In use by ${inUse} bot(s). Reassign them first.` });
         run("DELETE FROM providers WHERE id=?", id);
+        broadcastAll({ type: "provider_deleted", providerId: id });
         return json(res, 200, { ok: true });
       }
       const b = await jbody(req);
       for (const f of ["name", "base_url", "kind"]) if (f in b) run(`UPDATE providers SET ${f}=? WHERE id=?`, String(b[f] ?? ""), id);
       if (b.api_key) run("UPDATE providers SET api_key=? WHERE id=?", String(b.api_key), id);
-      return json(res, 200, { provider: providerView(q1("SELECT * FROM providers WHERE id=?", id)!) });
+      const provider = providerView(q1("SELECT * FROM providers WHERE id=?", id)!);
+      broadcastAll({ type: "provider_update", provider });
+      return json(res, 200, { provider });
     }
     // OpenRouter OAuth (PKCE): exchange the returned code for a user-controlled key → a provider
     if (p === "/api/oauth/openrouter/exchange" && m === "POST") {
@@ -747,13 +1033,14 @@ const server = createServer(async (req, res) => {
         if (!r.ok) return json(res, 502, { error: `OpenRouter exchange failed (${r.status}): ${(await r.text()).slice(0, 200)}` });
         const key = (await r.json() as { key?: string }).key;
         if (!key) return json(res, 502, { error: "No key returned by OpenRouter" });
-        const name = String(b.name || "OpenRouter").trim();
-        // Re-authorizing refreshes the existing OAuth provider's key instead of stacking duplicates.
-        const existing = q1("SELECT id FROM providers WHERE kind='openrouter' ORDER BY id LIMIT 1");
-        const id = existing
-          ? (run("UPDATE providers SET api_key=?, name=? WHERE id=?", key, name, existing.id), Number(existing.id))
-          : run("INSERT INTO providers (name, base_url, api_key, kind, created) VALUES (?,?,?,?,?)", name, "https://openrouter.ai/api/v1", key, "openrouter", now()).lastInsertRowid;
-        return json(res, 200, { provider: providerView(q1("SELECT * FROM providers WHERE id=?", id)!) });
+        const tested = await routingInvoke("app:test-keyed-provider", { baseUrl: "https://openrouter.ai/api/v1", apiKey: key, providerType: "openrouter" });
+        if (tested.ok === false) return json(res, 502, { error: String(tested.error || "OpenRouter model discovery failed") });
+        const added = await routingInvoke("app:add-keyed-provider", { preset: "openrouter", name: String(b.name || "OpenRouter").trim(), apiKey: key, models: tested.models || [] });
+        if (added.ok === false) return json(res, 400, { error: String(added.error || "Could not save OpenRouter") });
+        const id = await internalRoutingProviderId();
+        const provider = providerView(q1("SELECT * FROM providers WHERE id=?", id)!);
+        broadcastAll({ type: "routing_changed", action: "openrouter_connected" });
+        return json(res, 200, { provider });
       } catch (e) { return json(res, 502, { error: (e as Error).message }); }
     }
 
@@ -777,7 +1064,9 @@ const server = createServer(async (req, res) => {
       const id = run("INSERT INTO bots (name, provider_id, model, prompt, avatar, base_url, api_key, created) VALUES (?,?,?,?,?,'','',?)",
         String(b.name || "bot").trim(), b.provider_id ? Number(b.provider_id) : null, String(b.model || ""), String(b.prompt || ""), String(b.avatar || ""), now()).lastInsertRowid;
       if (Array.isArray(b.computers)) setBotComputers(id, b.computers as unknown[]);
-      return json(res, 200, { bot: botView(q1("SELECT * FROM bots WHERE id=?", id)!) });
+      const bot = botView(q1("SELECT * FROM bots WHERE id=?", id)!);
+      broadcastAll({ type: "bot_update", bot });
+      return json(res, 200, { bot });
     }
     if ((mm = p.match(/^\/api\/bots\/(\d+)$/)) && (m === "PATCH" || m === "DELETE")) {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
@@ -785,13 +1074,22 @@ const server = createServer(async (req, res) => {
       if (m === "DELETE") {
         if (q1("SELECT 1 FROM agents WHERE bot_id=? AND status<>'deleted'", id)) return json(res, 409, { error: "Resident agents are removed through their channel lifecycle." });
         run("DELETE FROM bot_channels WHERE bot_id=?", id); run("DELETE FROM bot_computers WHERE bot_id=?", id); run("DELETE FROM model_prefs WHERE bot_id=?", id); run("DELETE FROM bots WHERE id=?", id);
+        broadcastAll({ type: "bot_deleted", botId: id });
         return json(res, 200, { ok: true });
       }
       const b = await jbody(req);
       for (const f of ["name", "model", "prompt", "avatar"]) if (f in b) run(`UPDATE bots SET ${f}=? WHERE id=?`, String(b[f] ?? ""), id);
       if ("provider_id" in b) run("UPDATE bots SET provider_id=? WHERE id=?", b.provider_id ? Number(b.provider_id) : null, id);
       if (Array.isArray(b.computers)) setBotComputers(id, b.computers as unknown[]);
-      return json(res, 200, { bot: botView(q1("SELECT * FROM bots WHERE id=?", id)!) });
+      const bot = botView(q1("SELECT * FROM bots WHERE id=?", id)!);
+      broadcastAll({ type: "bot_update", bot });
+      // Resident channel header/agent faces should update live when the shadow bot changes.
+      const resident = agentForBot(id);
+      if (resident?.kind === "channel") {
+        const bound = q1("SELECT channel_id FROM agent_channels WHERE agent_id=?", resident.id);
+        if (bound?.channel_id) broadcastChannelMeta(Number(bound.channel_id));
+      }
+      return json(res, 200, { bot });
     }
     if ((mm = p.match(/^\/api\/bots\/(\d+)\/join$/)) && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
@@ -823,15 +1121,23 @@ const server = createServer(async (req, res) => {
       const id = run("INSERT INTO computers (name, base_url, api_key, created) VALUES (?,?,?,?)", String(b.name || "computer").trim(), String(b.base_url || ""), String(b.api_key || ""), now()).lastInsertRowid;
       const skipper = q1("SELECT bot_id FROM agents WHERE kind='skipper' AND status<>'deleted' LIMIT 1");
       if (skipper?.bot_id) run("INSERT OR IGNORE INTO bot_computers (bot_id, computer_id) VALUES (?,?)", skipper.bot_id, id);
-      return json(res, 200, { computer: computerRowView(q1("SELECT * FROM computers WHERE id=?", id)!) });
+      const computer = computerRowView(q1("SELECT * FROM computers WHERE id=?", id)!);
+      broadcastAll({ type: "computer_update", computer });
+      return json(res, 200, { computer });
     }
     if ((mm = p.match(/^\/api\/computers\/(\d+)$/)) && (m === "PATCH" || m === "DELETE")) {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
       const id = Number(mm[1]);
-      if (m === "DELETE") { run("DELETE FROM computers WHERE id=?", id); run("DELETE FROM bot_computers WHERE computer_id=?", id); return json(res, 200, { ok: true }); }
+      if (m === "DELETE") {
+        run("DELETE FROM computers WHERE id=?", id); run("DELETE FROM bot_computers WHERE computer_id=?", id);
+        broadcastAll({ type: "computer_deleted", computerId: id });
+        return json(res, 200, { ok: true });
+      }
       const b = await jbody(req);
       for (const f of ["name", "base_url", "api_key"]) if (f in b) run(`UPDATE computers SET ${f}=? WHERE id=?`, String(b[f] ?? ""), id);
-      return json(res, 200, { computer: computerRowView(q1("SELECT * FROM computers WHERE id=?", id)!) });
+      const computer = computerRowView(q1("SELECT * FROM computers WHERE id=?", id)!);
+      broadcastAll({ type: "computer_update", computer });
+      return json(res, 200, { computer });
     }
 
     // Channel terminals always start in the selected channel's workspace.
@@ -842,14 +1148,20 @@ const server = createServer(async (req, res) => {
       if (!channelId || !canSee(user, channelId)) return json(res, 403, { error: "No channel access" });
       const channel = q1("SELECT status FROM channels WHERE id=?", channelId);
       if (!channel || channel.status !== "active") return json(res, 409, { error: "Restore the channel before opening a terminal." });
-      const computer = q1("SELECT id FROM computers WHERE name='This Computer' ORDER BY id LIMIT 1");
+      const requestedComputerId = b.computerId != null ? Number(b.computerId) : 0;
+      const computer = requestedComputerId
+        ? q1("SELECT id, name FROM computers WHERE id=?", requestedComputerId)
+        : q1("SELECT id, name FROM computers WHERE name='This Computer' ORDER BY id LIMIT 1")
+          || q1("SELECT id, name FROM computers ORDER BY id LIMIT 1");
       if (!computer) return json(res, 503, { error: "Local computer is not ready." });
       try {
-        ensureChannelWorkspace(channelId);
-        const cwd = channelWorkspace(channelId);
-        const sessionId = await openSession(Number(computer.id), channelId, Number(user.id), cwd, Number(b.cols) || 80, Number(b.rows) || 24);
+        // Host computer stays rooted in the channel workspace; remotes open at their default shell cwd.
+        const isHost = String(computer.name) === "This Computer";
+        if (isHost) ensureChannelWorkspace(channelId);
+        const cwd = isHost ? channelWorkspace(channelId) : undefined;
+        const sessionId = await openSession(Number(computer.id), channelId, Number(user.id), cwd || "", Number(b.cols) || 80, Number(b.rows) || 24);
         if (!q1("SELECT 1 FROM channels WHERE id=? AND status='active'", channelId)) { closeSession(sessionId); return json(res, 409, { error: "Channel was archived while the terminal opened." }); }
-        return json(res, 200, { sessionId });
+        return json(res, 200, { sessionId, computerId: Number(computer.id) });
       } catch (e) { return json(res, 502, { error: (e as Error).message }); }
     }
     if (p === "/api/term/list" && m === "GET") return json(res, 200, { sessions: listSessions(Number(user.id), url.searchParams.get("channelId") ? Number(url.searchParams.get("channelId")) : undefined) });
@@ -870,15 +1182,24 @@ const server = createServer(async (req, res) => {
       if (q1("SELECT 1 FROM users WHERE username=?", username)) return json(res, 409, { error: "Username taken." });
       const id = run("INSERT INTO users (username, pass, display, is_admin, created) VALUES (?,?,?,?,?)", username, hashPassword(password), display, b.is_admin ? 1 : 0, now()).lastInsertRowid;
       for (const channel of q("SELECT id FROM channels WHERE kind='channel' AND status<>'deleted'")) run("INSERT OR IGNORE INTO members (channel_id, user_id) VALUES (?,?)", channel.id, id);
-      return json(res, 201, { user: publicUser(q1("SELECT * FROM users WHERE id=?", id)!) });
+      const created = publicUser(q1("SELECT * FROM users WHERE id=?", id)!);
+      broadcastAll({ type: "user_update", user: created });
+      return json(res, 201, { user: created });
     }
     if ((mm = p.match(/^\/api\/admin\/users\/(\d+)$/)) && (m === "PATCH" || m === "DELETE")) {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
       const id = Number(mm[1]);
-      if (m === "DELETE") { if (id === Number(user.id)) return json(res, 400, { error: "Cannot delete yourself" }); run("DELETE FROM users WHERE id=?", id); run("DELETE FROM sessions WHERE user_id=?", id); return json(res, 200, { ok: true }); }
+      if (m === "DELETE") {
+        if (id === Number(user.id)) return json(res, 400, { error: "Cannot delete yourself" });
+        run("DELETE FROM users WHERE id=?", id); run("DELETE FROM sessions WHERE user_id=?", id);
+        broadcastAll({ type: "user_deleted", userId: id });
+        return json(res, 200, { ok: true });
+      }
       const b = await jbody(req);
       if ("is_admin" in b) run("UPDATE users SET is_admin=? WHERE id=?", b.is_admin ? 1 : 0, id);
-      return json(res, 200, { user: publicUser(q1("SELECT * FROM users WHERE id=?", id)!) });
+      const updated = publicUser(q1("SELECT * FROM users WHERE id=?", id)!);
+      broadcastAll({ type: "user_update", user: updated });
+      return json(res, 200, { user: updated });
     }
 
     return json(res, 404, { error: "Not found" });
@@ -906,6 +1227,8 @@ server.on("upgrade", (req, socket: Socket, head) => {
 // ---- embedded local computer (open-terminal compatible) ----
 async function bootstrap(): Promise<void> {
   prepareMnemosyneRuntime();
+  await startRoutingEngine(() => broadcastAll({ type: "routing_activity" }));
+  await internalRoutingProviderId();
   const agentKey = newToken();
   const agentPort = await startAgent(0, agentKey);
   const url = `http://127.0.0.1:${agentPort}`;
@@ -919,6 +1242,19 @@ async function bootstrap(): Promise<void> {
     const agent = agentForChannel(Number(channel.id)); if (agent) ensureAgentMemory(agent);
   }
   startImprovementLoop();
+  startThreadAuditLoop();
+  startFollowupLoop();
   server.listen(PORT, () => console.log(`1Helm on 1Helm → http://localhost:${PORT}  (local agent on ${agentPort})  data: ${DATA_DIR}`));
 }
 void bootstrap();
+
+let shuttingDown = false;
+const shutdown = async (): Promise<void> => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  await stopRoutingEngine().catch(() => undefined);
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 12_000).unref();
+};
+process.once("SIGTERM", () => { void shutdown(); });
+process.once("SIGINT", () => { void shutdown(); });

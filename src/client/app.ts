@@ -1,18 +1,124 @@
-import { api, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress } from "./api.ts";
-import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, beep, icon, helmMark } from "./dom.ts";
+import { api, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type ThreadUsage } from "./api.ts";
+import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, beep, icon, helmMark, type ChannelLink } from "./dom.ts";
 import { openSettings, finishOpenRouterOAuth } from "./settings.ts";
 import { openOnboarding } from "./onboarding.ts";
-import { openTerminals } from "./term.ts";
-import { openCreateChannel, renderActivity, renderChannelSettings, renderFiles, renderMemory, renderThreads, type ChannelView } from "./channel.ts";
+import { hostComputerId, openTerminals, refitChannelTerminals, getTerminalChrome } from "./term.ts";
+import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderThreads, type ChannelView } from "./channel.ts";
 
+/** Per-channel layout bound to the user profile (server user_ui_state). */
+type ChannelUiView = {
+  terminalOpen: boolean;
+  serversListOpen: boolean;
+  preferredComputerId: number | null;
+  threadRootId: number | null;
+};
 type State = {
   me: User; users: User[]; channels: Channel[]; bots: Bot[]; computers: Computer[]; providers: Provider[];
   workspace: Workspace;
   channelId: number; channelBots: Bot[]; messages: Message[];
   threadRoot: Message | null; threadReplies: Message[]; view: ChannelView;
+  /** Live rough model usage for the open thread (provider-reported). */
+  threadUsage: ThreadUsage;
   mobileMenuOpen: boolean;
+  preferredTerminalComputerId: number | null;
+  /** Docked RHS terminal for the current channel (header Terminals button). */
+  terminalOpen: boolean;
+  serversListOpen: boolean;
+  /** Profile-bound per-channel layout: key = channelId. */
+  channelViews: Record<number, ChannelUiView>;
+  /** Workspace-wide Threads inbox (sidebar), not the per-channel Threads tab. */
+  globalThreadsOpen: boolean;
+  globalThreadsUnreadOnly: boolean;
 };
-export const S = { mobileMenuOpen: false } as State;
+export const S = {
+  mobileMenuOpen: false,
+  preferredTerminalComputerId: null,
+  terminalOpen: false,
+  serversListOpen: false,
+  channelViews: {},
+  globalThreadsOpen: false,
+  globalThreadsUnreadOnly: false,
+  threadUsage: { input_tokens: 0, output_tokens: 0 },
+} as State;
+
+/** One-shot: next chat/thread paint must land on latest messages (channel open / hop). */
+let forceMsgsScrollBottom = false;
+let forceThreadScrollBottom = false;
+/** Carry channel scroll across shell rebuilds (open/close thread destroys #msgs). */
+let pendingMsgsScroll: { top: number; stick: boolean } | null = null;
+/** Last successful channel stick state — survives same-turn re-render before rAF pin lands. */
+let lastMsgsStick = true;
+
+/** After layout settles, pin a scroller to the end (fresh #msgs often has clientHeight before flex height). */
+function pinScrollBottom(id: string, frames = 2): void {
+  const run = (left: number): void => {
+    const box = document.getElementById(id);
+    if (box) box.scrollTop = box.scrollHeight;
+    if (left > 0) requestAnimationFrame(() => run(left - 1));
+  };
+  requestAnimationFrame(() => run(Math.max(0, frames - 1)));
+}
+
+const defaultChannelView = (): ChannelUiView => ({
+  terminalOpen: false,
+  serversListOpen: false,
+  preferredComputerId: null,
+  threadRootId: null,
+});
+function channelViewKey(channelId: number): string { return `channel_view:${channelId}`; }
+function getChannelView(channelId: number): ChannelUiView {
+  return S.channelViews[channelId] || defaultChannelView();
+}
+function applyChannelViewToState(channelId: number): void {
+  const view = getChannelView(channelId);
+  S.terminalOpen = !!view.terminalOpen;
+  S.serversListOpen = !!view.serversListOpen;
+  S.preferredTerminalComputerId = view.preferredComputerId;
+}
+let uiStateSaveTimer: ReturnType<typeof setTimeout> | null = null;
+function schedulePersistChannelView(channelId: number): void {
+  if (!channelId || !S.me?.id) return;
+  const snapshot: ChannelUiView = channelId === S.channelId
+    ? {
+        terminalOpen: !!S.terminalOpen,
+        serversListOpen: !!S.serversListOpen,
+        preferredComputerId: S.preferredTerminalComputerId,
+        threadRootId: S.threadRoot?.id ?? null,
+      }
+    : { ...getChannelView(channelId) };
+  S.channelViews[channelId] = snapshot;
+  if (uiStateSaveTimer) clearTimeout(uiStateSaveTimer);
+  uiStateSaveTimer = setTimeout(() => {
+    uiStateSaveTimer = null;
+    void api("/api/me/ui-state", {
+      method: "PATCH",
+      body: { key: channelViewKey(channelId), value: snapshot },
+    }).catch(() => undefined);
+  }, 300);
+}
+function persistCurrentChannelView(): void {
+  if (S.channelId) schedulePersistChannelView(S.channelId);
+}
+async function loadUiState(): Promise<void> {
+  try {
+    const result = await api<{ state: Record<string, unknown> }>("/api/me/ui-state");
+    const next: Record<number, ChannelUiView> = {};
+    for (const [key, value] of Object.entries(result.state || {})) {
+      const match = /^channel_view:(\d+)$/.exec(key);
+      if (!match || !value || typeof value !== "object") continue;
+      const raw = value as Partial<ChannelUiView>;
+      next[Number(match[1])] = {
+        terminalOpen: !!raw.terminalOpen,
+        serversListOpen: !!raw.serversListOpen,
+        preferredComputerId: raw.preferredComputerId == null ? null : Number(raw.preferredComputerId) || null,
+        threadRootId: raw.threadRootId == null ? null : Number(raw.threadRootId) || null,
+      };
+    }
+    S.channelViews = next;
+  } catch {
+    // Fresh profile / offline — keep defaults.
+  }
+}
 const root = document.getElementById("app")!;
 const pending: { token: string; name: string; mime: string; size: number }[] = [];
 
@@ -28,7 +134,7 @@ export function toggleTheme(): void {
 }
 
 type AppRoute = { slug: string | null; view: ChannelView; threadRootId: number | null };
-const VIEWS = new Set<ChannelView>(["chat", "threads", "files", "terminal", "memory", "activity", "settings"]);
+const VIEWS = new Set<ChannelView>(["chat", "board", "threads", "files", "terminal", "memory", "activity", "settings"]);
 function readRoute(): AppRoute {
   const parts = location.pathname.split("/").filter(Boolean);
   if (parts[0] !== "c" || !parts[1]) return { slug: null, view: "chat", threadRootId: null };
@@ -69,7 +175,15 @@ async function enterWorkspace(preferredChannelId?: number): Promise<void> {
     catch { S.workspace = { name: "My Workspace", terminals_enabled: true, setup_complete: true, photo_url: null, theme: "graphite" }; }
   }
   await loadWorkspace();
-  connectEvents(onEvent);
+  await loadUiState();
+  let eventSocketReady = false;
+  connectEvents(onEvent, {
+    // After reconnect (not the first open), silently pull authoritative lists so no hard refresh is needed.
+    onOpen: () => {
+      if (!eventSocketReady) { eventSocketReady = true; return; }
+      void resyncAfterReconnect();
+    },
+  });
   const route = readRoute();
   if (preferredChannelId) S.channelId = preferredChannelId;
   else if (route.slug) S.channelId = S.channels.find((channel) => channel.slug === route.slug)?.id || 0;
@@ -77,6 +191,50 @@ async function enterWorkspace(preferredChannelId?: number): Promise<void> {
   if (!S.channelId && main) S.channelId = main.id;
   if (S.channelId) await openChannel(S.channelId, route.view, route.threadRootId, true);
   else renderApp();
+}
+
+/** Merge channel meta from the server without clobbering local per-user unread. */
+function mergeChannelMeta(incoming: Partial<Channel> & { id: number }): void {
+  if (!incoming?.id) return;
+  const index = S.channels.findIndex((channel) => channel.id === incoming.id);
+  if (index < 0) {
+    S.channels = [...S.channels, { unread: 0, agent: null, purpose: "", topic: "", status: "active", slug: String(incoming.id), name: "", kind: "channel", ...incoming } as Channel];
+    return;
+  }
+  const prev = S.channels[index];
+  S.channels[index] = {
+    ...prev,
+    ...incoming,
+    // Live payloads intentionally omit unread — keep the client's own counter.
+    unread: typeof incoming.unread === "number" ? incoming.unread : prev.unread,
+    agent: incoming.agent !== undefined ? incoming.agent : prev.agent,
+  };
+}
+
+let resyncInFlight: Promise<void> | null = null;
+async function resyncAfterReconnect(): Promise<void> {
+  if (!getToken() || !S.me) return;
+  if (resyncInFlight) return resyncInFlight;
+  resyncInFlight = (async () => {
+    try {
+      const previousId = S.channelId;
+      await loadWorkspace();
+      // Keep the open channel's message list fresh if we were mid-view.
+      if (previousId && S.channels.some((c) => c.id === previousId) && S.view === "chat") {
+        const data = await api<{ messages: Message[]; bots: Bot[] }>(`/api/channels/${previousId}/messages`);
+        if (S.channelId === previousId) {
+          S.messages = data.messages;
+          S.channelBots = data.bots;
+        }
+      }
+      renderApp();
+    } catch {
+      // Offline / auth blip — next reconnect retries.
+    } finally {
+      resyncInFlight = null;
+    }
+  })();
+  return resyncInFlight;
 }
 
 async function loadWorkspace(): Promise<void> {
@@ -97,15 +255,29 @@ async function loadWorkspace(): Promise<void> {
 }
 
 async function openChannel(id: number, view: ChannelView = "chat", threadRootId: number | null = null, replaceRoute = false): Promise<void> {
-  S.channelId = id; S.threadRoot = null; S.view = view;
+  // Persist the channel we're leaving so terminal/thread docks survive hops.
+  if (S.channelId && S.channelId !== id) persistCurrentChannelView();
+  S.channelId = id; S.threadRoot = null; S.threadUsage = { input_tokens: 0, output_tokens: 0 }; S.view = view; S.globalThreadsOpen = false;
+  applyChannelViewToState(id);
+  // Full Terminal tab is separate from the docked header terminal.
+  if (view === "terminal") S.terminalOpen = false;
   const data = await api<{ messages: Message[]; bots: Bot[] }>(`/api/channels/${id}/messages`);
   S.messages = data.messages; S.channelBots = data.bots;
+  // GET /messages already advances last_read server-side; keep client badge in sync.
   const c = S.channels.find((x) => x.id === id); if (c) c.unread = 0;
+  // Channel hop: always land on latest. Clear leftover work-log open flags from the previous channel.
+  forceMsgsScrollBottom = view === "chat";
+  forceThreadScrollBottom = false;
+  lastMsgsStick = true;
+  progressOpenByMessage.clear();
   renderApp();
   writeRoute(c, view, threadRootId, replaceRoute);
-  if (threadRootId) {
-    const root = S.messages.find((message) => message.id === threadRootId && message.parent_id == null);
-    if (root) await openThread(root, replaceRoute);
+  // Explicit URL/threadRootId wins; otherwise restore profile-saved thread on channel hop.
+  const savedThreadId = getChannelView(id).threadRootId;
+  const openId = threadRootId != null ? threadRootId : (view === "chat" ? savedThreadId : null);
+  if (openId) {
+    const root = S.messages.find((message) => message.id === openId && message.parent_id == null);
+    if (root) await openThread(root, replaceRoute || threadRootId == null);
   }
 }
 export async function reloadBots(): Promise<void> {
@@ -121,29 +293,96 @@ window.addEventListener("popstate", () => {
 });
 
 // ---------------- events ----------------
+/** Agent turns mutate one message id (Working… → final). Only settled payloads badge unread. */
+function messageIsSettled(msg: Message): boolean {
+  if (!msg) return false;
+  if (msg.author?.kind === "user") return true;
+  const body = String(msg.body || "").trim();
+  if (!body || body === "_Working…_") return false;
+  // Any running work-log step means the turn is still live — even if body already has sticky text.
+  if (msg.progress?.some((p) => p.status === "running")) return false;
+  return true;
+}
+
+function markChannelRead(channelId: number): void {
+  const c = S.channels.find((x) => x.id === channelId);
+  if (c) c.unread = 0;
+  // Fire-and-forget server last_read advance so Threads + sidebar stay aligned.
+  void api(`/api/channels/${channelId}/read`, { method: "POST" }).catch(() => undefined);
+}
+
+function bumpChannelUnread(channelId: number): void {
+  const c = S.channels.find((x) => x.id === channelId);
+  if (!c) return;
+  c.unread = Math.max(0, Number(c.unread) || 0) + 1;
+  renderSidebar();
+}
+
+/** Message ids already counted for a live unread badge (agent reuses one id across stream ticks). */
+const unreadBadgeCounted = new Set<number>();
+
 function onEvent(e: any): void {
   if (e.type === "message" || e.type === "message_update") {
     const msg = e.message as Message;
-    const mine = msg.author.kind === "user" && msg.author.id === S.me.id;
-    const mentionsMe = new RegExp(`@${S.me.username}\\b`, "i").test(msg.body);
-    if (msg.channel_id === S.channelId) {
+    if (!msg?.channel_id) return;
+    const mine = msg.author?.kind === "user" && msg.author.id === S.me.id;
+    const mentionsMe = new RegExp(`@${S.me.username}\\b`, "i").test(msg.body || "");
+    // Only "viewing" a channel when its chat surface is open — not while sitting in global Threads.
+    const viewingThisChannel = !S.globalThreadsOpen && msg.channel_id === S.channelId;
+    if (viewingThisChannel) {
       applyMessage(msg, e.type === "message_update", e.parent as Message | undefined);
+      // Advance last_read only for settled activity so in-flight Working never eats the final turn.
+      if (messageIsSettled(msg) || (e.type === "message" && msg.author?.kind === "user")) {
+        markChannelRead(msg.channel_id);
+        unreadBadgeCounted.add(msg.id);
+      }
       if (e.type === "message" && !mine) beep(mentionsMe ? "mention" : "msg");
       renderMessages(); if (S.threadRoot) renderThread();
-    } else if (e.type === "message" && !mine) {
-      const c = S.channels.find((x) => x.id === msg.channel_id); if (c && msg.parent_id == null) c.unread++;
-      beep(mentionsMe ? "mention" : "msg"); renderSidebar();
+      renderSidebar();
+    } else if (!mine && messageIsSettled(msg)) {
+      // Finished agent reply (or human message) while you're elsewhere → white name badge.
+      // Count each message id once — stream ticks reuse the same Working… row.
+      if (!unreadBadgeCounted.has(msg.id)) {
+        unreadBadgeCounted.add(msg.id);
+        bumpChannelUnread(msg.channel_id);
+        beep(mentionsMe ? "mention" : "msg");
+      }
+    } else if (e.type === "message" && !mine && !messageIsSettled(msg)) {
+      // Working… started in another channel — amber dots come from agent_status; no badge yet.
+      beep(mentionsMe ? "mention" : "msg");
     }
   } else if (e.type === "message_deleted") {
     applyMessageDeleted(e);
   } else if (e.type === "mention_confirmation") {
     mentionConfirmation(e);
   } else if (e.type === "bot_prompt") botPrompt(e);
-  else if (e.type === "channel_new") loadWorkspace().then(() => { renderSidebar(); if (e.channel?.id === S.channelId) renderHeader(); });
+  else if (e.type === "channel_new") {
+    if (e.channel?.id) mergeChannelMeta(e.channel);
+    void loadWorkspace().then(() => {
+      renderSidebar();
+      if (e.channel?.id === S.channelId) renderHeader();
+    });
+  }
   else if (e.type === "channel_update") {
-    const index = S.channels.findIndex((channel) => channel.id === e.channel?.id);
-    if (index >= 0) S.channels[index] = e.channel;
-    renderSidebar(); if (e.channel?.id === S.channelId) { renderHeader(); if (S.view === "settings") renderChannelView(); }
+    if (e.channel?.id) mergeChannelMeta(e.channel);
+    renderSidebar();
+    if (e.channel?.id === S.channelId) {
+      // Avatar / agent runtime changes land here — refresh chat faces without a full reload.
+      const runtime = e.channel?.agent?.runtime;
+      if (runtime?.id) {
+        const applyBot = (list: Bot[] | undefined): Bot[] | undefined => {
+          if (!list) return list;
+          return list.map((bot) => bot.id === runtime.id ? { ...bot, ...runtime } : bot);
+        };
+        S.bots = applyBot(S.bots) || S.bots;
+        S.channelBots = applyBot(S.channelBots) || S.channelBots;
+      }
+      // Keep the URL slug in sync after rename without a hard navigation.
+      writeRoute(S.channels.find((c) => c.id === S.channelId), S.view, S.threadRoot?.id ?? null, true);
+      renderHeader();
+      if (S.view === "settings") renderChannelView();
+      else if (S.view === "chat") { renderMessages(); if (S.threadRoot) renderThread(); }
+    }
   } else if (e.type === "channel_deleted") {
     S.channels = S.channels.filter((channel) => channel.id !== e.channelId);
     if (S.channelId === e.channelId) {
@@ -153,10 +392,67 @@ function onEvent(e: any): void {
   } else if (e.type === "agent_status") {
     const channel = S.channels.find((item) => item.id === e.channelId);
     if (channel?.agent) channel.agent.status = e.status;
+    // Sidebar shows bouncing working dots on every channel row — always refresh.
+    renderSidebar();
     if (e.channelId === S.channelId) renderHeader();
   } else if (e.type === "activity" || e.type === "escalation") {
     if (e.channelId === S.channelId && (S.view === "activity" || S.view === "memory")) renderChannelView();
+  } else if (e.type === "thread_update") {
+    // Skipper (or API) changed durable session status — refresh board/threads/activity surfaces.
+    if (S.globalThreadsOpen) renderMain();
+    else if (Number(e.channelId) === Number(S.channelId) && (S.view === "board" || S.view === "threads" || S.view === "activity")) {
+      renderChannelView();
+    }
+  } else if (e.type === "followup") {
+    // Durable agent wake scheduled/cleared — Board Scheduled lane + countdown need a refresh.
+    if (Number(e.channelId) === Number(S.channelId) && (S.view === "board" || S.view === "threads")) {
+      renderChannelView();
+    }
   } else if (e.type === "channel_bots") { if (S.channelBots) { S.channelBots = e.bots; renderHeader(); } }
+  else if (e.type === "thread_usage") {
+    if (Number(e.channelId) !== Number(S.channelId)) return;
+    if (!S.threadRoot || Number(e.rootMessageId) !== Number(S.threadRoot.id)) return;
+    S.threadUsage = {
+      input_tokens: Math.max(0, Number(e.input_tokens || 0)),
+      output_tokens: Math.max(0, Number(e.output_tokens || 0)),
+    };
+    // Surgical DOM update — no full thread rebuild (keeps scroll / work-log open state).
+    paintThreadCtx();
+  } else if (e.type === "workspace_update" && e.workspace) {
+    S.workspace = e.workspace;
+    document.documentElement.dataset.workspaceTheme = S.workspace.theme || "graphite";
+    localStorage.setItem("ctrl.workspaceTheme", S.workspace.theme || "graphite");
+    renderSidebar();
+    renderHeader();
+  } else if (e.type === "provider_update" && e.provider) {
+    const i = S.providers.findIndex((p) => p.id === e.provider.id);
+    if (i >= 0) S.providers[i] = e.provider; else S.providers = [...S.providers, e.provider];
+    if (S.view === "settings") renderChannelView();
+  } else if (e.type === "provider_deleted") {
+    S.providers = S.providers.filter((p) => p.id !== e.providerId);
+    if (S.view === "settings") renderChannelView();
+  } else if (e.type === "providers_changed") {
+    void reloadProviders().then(() => { if (S.view === "settings") renderChannelView(); });
+  } else if (e.type === "bot_update" && e.bot) {
+    const i = S.bots.findIndex((b) => b.id === e.bot.id);
+    if (i >= 0) S.bots[i] = e.bot; else S.bots = [...S.bots, e.bot];
+    S.channelBots = S.channelBots.map((b) => b.id === e.bot.id ? e.bot : b);
+    if (S.channelId) renderHeader();
+  } else if (e.type === "bot_deleted") {
+    S.bots = S.bots.filter((b) => b.id !== e.botId);
+    S.channelBots = S.channelBots.filter((b) => b.id !== e.botId);
+  } else if (e.type === "computer_update" && e.computer) {
+    const i = S.computers.findIndex((c) => c.id === e.computer.id);
+    if (i >= 0) S.computers[i] = e.computer; else S.computers = [...S.computers, e.computer];
+  } else if (e.type === "computer_deleted") {
+    S.computers = S.computers.filter((c) => c.id !== e.computerId);
+  } else if (e.type === "user_update" && e.user) {
+    const i = S.users.findIndex((u) => u.id === e.user.id);
+    if (i >= 0) S.users[i] = e.user; else S.users = [...S.users, e.user];
+    if (e.user.id === S.me.id) S.me = { ...S.me, ...e.user };
+  } else if (e.type === "user_deleted") {
+    S.users = S.users.filter((u) => u.id !== e.userId);
+  }
 }
 
 function applyMessage(msg: Message, isUpdate: boolean, authoritativeParent?: Message): void {
@@ -169,14 +465,21 @@ function applyMessage(msg: Message, isUpdate: boolean, authoritativeParent?: Mes
       parent.last_reply = authoritativeParent.last_reply;
     } else if (parent && !isUpdate && i < 0 && msg.body && msg.body !== "_Working…_") parent.reply_count++;
     // Surface agent Working on the channel root without opening the thread.
+    // Prefer real thought/tool progress from the reply so the root chip stays sticky
+    // with the latest statement instead of a synthetic "Working…".
     if (parent && messageIsWorking(msg)) {
-      parent.progress = parent.progress?.length ? parent.progress : [{ id: -1, body: "Working…", status: "running", created: Date.now() } as any];
-      if (!parent.progress.some((p) => p.status === "running")) {
-        parent.progress = [...parent.progress, { id: -1, body: "Working…", status: "running", created: Date.now() } as any];
+      if (msg.progress?.length) {
+        parent.progress = msg.progress;
+      } else {
+        parent.progress = parent.progress?.length ? parent.progress : [{ id: -1, kind: "status", body: "Working…", status: "running", created: Date.now(), updated: Date.now() } as any];
+        if (!parent.progress.some((p) => p.status === "running")) {
+          parent.progress = [...parent.progress, { id: -1, kind: "status", body: "Working…", status: "running", created: Date.now(), updated: Date.now() } as any];
+        }
       }
     }
     if (parent && isUpdate && !messageIsWorking(msg) && parent.progress) {
-      parent.progress = parent.progress.filter((p) => p.id !== -1);
+      // Drop synthetic root markers; prefer the finished reply's progress snapshot.
+      parent.progress = msg.progress?.length ? msg.progress : parent.progress.filter((p) => p.id !== -1);
     }
     if (S.threadRoot?.id === msg.parent_id && authoritativeParent) {
       S.threadRoot.reply_count = authoritativeParent.reply_count;
@@ -188,8 +491,9 @@ function applyMessage(msg: Message, isUpdate: boolean, authoritativeParent?: Mes
     if (msg.parent_id != null) {
       const parent = S.messages.find((m) => m.id === msg.parent_id);
       if (parent && messageIsWorking(msg)) {
-        if (!parent.progress?.some((p) => p.status === "running")) {
-          parent.progress = [...(parent.progress || []), { id: -1, body: "Working…", status: "running", created: Date.now() } as any];
+        if (msg.progress?.length) parent.progress = msg.progress;
+        else if (!parent.progress?.some((p) => p.status === "running")) {
+          parent.progress = [...(parent.progress || []), { id: -1, kind: "status", body: "Working…", status: "running", created: Date.now(), updated: Date.now() } as any];
         }
       }
     }
@@ -302,16 +606,31 @@ function mobileNavigation(): HTMLElement {
 
 function sidebar(drawer = false): HTMLElement {
   const chan = (c: Channel): HTMLElement => {
-    const active = c.id === S.channelId;
+    const active = c.id === S.channelId && !S.globalThreadsOpen;
+    const unread = Number(c.unread) > 0;
+    const working = c.agent?.status === "working";
+    const labels = [c.name, working ? "working" : "", unread ? "unread" : ""].filter(Boolean);
+    // Name carries the iOS-style unread badge on its upper-right corner (on the text, not the row end).
+    const name = h("span", { class: "channel-nav-label min-w-0 flex-1" },
+      h("span", { class: "channel-nav-name truncate" }, c.name),
+      unread && h("span", { class: "channel-unread-badge", "aria-hidden": "true" }),
+    );
     return h("button", {
-      class: `nav-item ${active ? "nav-item-active" : "nav-item-idle"} ${c.unread ? "font-semibold text-white" : ""}`,
+      class: `nav-item ${active ? "nav-item-active" : "nav-item-idle"} ${unread || working ? "font-semibold text-white" : ""}`,
+      title: labels.join(" · "),
+      "aria-label": labels.join(", "),
       onclick: () => { closeMobileMenu(); void openChannel(c.id); },
     },
       c.kind === "dm"
         ? h("span", { class: "relative grid h-4 w-4 shrink-0 place-items-center rounded-sm border border-white/10 text-[9px] font-semibold", style: `background:${color(c.name)};color:#f4f7fb` }, initials(c.name))
         : h("span", { class: "shrink-0 text-sidebar-muted" }, icon("hash", 14)),
-      h("span", { class: "flex-1 truncate" }, c.name),
-      c.unread > 0 && h("span", { class: "min-w-5 rounded-full bg-danger px-1.5 text-center text-[11px] font-bold text-white" }, String(c.unread)));
+      name,
+      // Live agent turn — three bouncing dots after the name.
+      working && h("span", {
+        class: "channel-working-dots shrink-0",
+        title: "Agent working",
+        "aria-hidden": "true",
+      }, h("span"), h("span"), h("span")));
   };
   const channels = S.channels.filter((c) => c.kind === "channel" && c.status !== "archived");
   const archived = S.channels.filter((c) => c.kind === "channel" && c.status === "archived");
@@ -331,6 +650,16 @@ function sidebar(drawer = false): HTMLElement {
         h("button", { class: "grid h-9 w-9 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: theme === "light" ? "Switch to dark" : "Switch to light", onclick: toggleTheme }, icon(theme === "light" ? "moon" : "sun")),
         drawer ? h("button", { class: "grid h-11 w-11 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: "Close navigation", "aria-label": "Close navigation", dataset: { drawerClose: "" }, onclick: closeMobileMenu }, icon("x", 20)) : null)),
     h("div", { class: "flex-1 space-y-5 overflow-y-auto px-2 py-3" },
+      h("div", { class: "px-1 pb-1" },
+        h("button", {
+          type: "button",
+          class: `nav-item w-full ${S.globalThreadsOpen ? "nav-item-active" : "nav-item-idle"}`,
+          title: "All threads across agent channels",
+          "aria-pressed": String(Boolean(S.globalThreadsOpen)),
+          onclick: () => { closeMobileMenu(); openGlobalThreads(); },
+        },
+          h("span", { class: "shrink-0 text-sidebar-muted" }, icon("thread", 14)),
+          h("span", { class: "flex-1 truncate text-left" }, "Threads"))),
       h("div", {}, sbSection("Agent channels", () => newChannel()), h("div", { class: "space-y-px" }, ...channels.map(chan))),
       archived.length ? h("div", {}, h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Archived"), h("div", { class: "space-y-px opacity-65" }, ...archived.map(chan))) : null,
       h("div", {}, sbSection("Direct messages", () => newDM()), h("div", { class: "space-y-px" }, ...dms.map(chan), dms.length === 0 && h("p", { class: "px-2 py-1 text-[13px] text-sidebar-muted" }, "No conversations yet")))),
@@ -360,25 +689,166 @@ function newDM(): void {
 }
 
 // ---------------- main chat ----------------
+function openGlobalThreads(): void {
+  S.globalThreadsOpen = true;
+  S.threadRoot = null;
+  // Resync unread badges from server — Threads inbox and channel list must agree.
+  void loadWorkspace().then(() => renderApp()).catch(() => renderApp());
+}
+
 function renderMain(): void {
-  const main = document.getElementById("main")!; clear(main);
+  const main = document.getElementById("main")!;
+  // #msgs is destroyed on every shell rebuild. Capture scroll *before* clear so
+  // open/close thread doesn't dump the user at the oldest message.
+  const priorMsgs = document.getElementById("msgs");
+  if (forceMsgsScrollBottom) {
+    pendingMsgsScroll = { top: 0, stick: true };
+  } else if (priorMsgs) {
+    let stick = shouldStickScroll(priorMsgs);
+    // Same-turn re-render (openThread right after openChannel) can still see scrollTop 0
+    // before the rAF pin lands. Keep stick if the previous paint was stick-to-bottom.
+    if (!stick && lastMsgsStick && priorMsgs.scrollTop === 0 && priorMsgs.scrollHeight > priorMsgs.clientHeight + 80) {
+      stick = true;
+    }
+    pendingMsgsScroll = { top: priorMsgs.scrollTop, stick };
+  } else {
+    // First chat paint (boot / non-chat → chat): land on latest.
+    pendingMsgsScroll = { top: 0, stick: true };
+  }
+  clear(main);
+  if (S.globalThreadsOpen) {
+    main.append(h("section", { class: "flex min-w-0 flex-1 flex-col" },
+      h("div", { id: "hdr" }),
+      h("div", { id: "channelview", class: "min-h-0 flex-1 overflow-y-auto" })));
+    renderGlobalThreadsHeader();
+    renderGlobalThreads(document.getElementById("channelview")!, {
+      unreadOnly: S.globalThreadsUnreadOnly,
+      onToggleUnread: (next) => { S.globalThreadsUnreadOnly = next; renderMain(); },
+      onOpen: (thread) => {
+        S.globalThreadsOpen = false;
+        void openChannel(thread.channel_id, "chat", thread.root_message_id);
+      },
+    });
+    return;
+  }
   const channel = S.channels.find((item) => item.id === S.channelId);
-  if (channel?.kind !== "channel") S.view = "chat";
+  if (channel?.kind !== "channel") { S.view = "chat"; S.terminalOpen = false; }
   if (S.view !== "chat") {
     main.append(h("section", { class: "flex min-w-0 flex-1 flex-col" }, h("div", { id: "hdr" }), channelTabs(), h("div", { id: "channelview", class: "min-h-0 flex-1 overflow-y-auto" })));
     renderHeader(); renderChannelView();
     return;
   }
-  main.append(
+  const showRhs = !!(S.threadRoot || (S.terminalOpen && channel?.kind === "channel" && S.workspace?.terminals_enabled !== false));
+  const split = !!(S.threadRoot && S.terminalOpen);
+  const parts: HTMLElement[] = [
     h("section", { class: "flex min-w-0 flex-1 flex-col" }, h("div", { id: "hdr" }), channel?.kind === "channel" ? channelTabs() : null, h("div", { id: "msgs", class: "flex-1 overflow-y-auto py-3" }), composer(null)),
-    h("aside", { id: "thread", class: "thread-pane hidden shrink-0 flex-col border-l border-line bg-surface" }),
-  );
-  renderHeader(); renderMessages(); if (S.threadRoot) renderThread();
+  ];
+  if (showRhs) {
+    parts.push(h("aside", {
+      id: "thread",
+      class: `thread-pane flex shrink-0 flex-col border-l border-line bg-surface ${split ? "rhs-split" : ""}`,
+    }));
+  }
+  main.append(...parts);
+  renderHeader(); renderMessages();
+  if (showRhs) renderRhs();
+}
+
+function renderRhs(): void {
+  const el = document.getElementById("thread");
+  if (!el) return;
+  const split = !!(S.threadRoot && S.terminalOpen);
+  const priorThread = document.getElementById("threadmsgs");
+  const priorTop = priorThread?.scrollTop ?? 0;
+  const forceBottom = forceThreadScrollBottom;
+  const stickThread = forceBottom || (priorThread ? shouldStickScroll(priorThread) : true);
+  if (forceBottom) forceThreadScrollBottom = false;
+  snapshotProgressOpenState(el);
+  snapshotProgressOpenState(document.getElementById("msgs"));
+  clear(el);
+  el.className = `thread-pane flex shrink-0 flex-col border-l border-line bg-surface ${split ? "rhs-split" : ""}`;
+  // Shared width resizer for the whole RHS (thread and/or terminal).
+  const resizeHandle = h("div", {
+    class: "thread-resizer absolute inset-y-0 left-0 z-10 hidden w-2 -translate-x-1/2 cursor-col-resize sm:block",
+    role: "separator", tabindex: 0, "aria-label": "Resize side panel", "aria-orientation": "vertical",
+  });
+  const resize = (width: number): void => {
+    const safe = Math.max(400, Math.min(width, Math.min(840, window.innerWidth - 420)));
+    el.style.width = safe + "px";
+    if (S.me?.id) localStorage.setItem(`1helm.threadWidth.${S.me.id}`, String(safe));
+  };
+  const storedWidth = Number(localStorage.getItem(`1helm.threadWidth.${S.me?.id || 0}`) || 520);
+  if (window.innerWidth > 900) resize(storedWidth);
+  resizeHandle.addEventListener("pointerdown", (event: PointerEvent) => {
+    event.preventDefault(); resizeHandle.setPointerCapture(event.pointerId);
+    const move = (next: PointerEvent): void => resize(window.innerWidth - next.clientX);
+    const stop = (): void => { resizeHandle.removeEventListener("pointermove", move); resizeHandle.removeEventListener("pointerup", stop); };
+    resizeHandle.addEventListener("pointermove", move); resizeHandle.addEventListener("pointerup", stop);
+  });
+  resizeHandle.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); resize(el.getBoundingClientRect().width + (event.key === "ArrowLeft" ? 24 : -24)); }
+  });
+  el.append(resizeHandle);
+
+  if (S.threadRoot) {
+    const threadBox = h("div", {
+      id: "thread-panel",
+      class: `flex min-h-0 min-w-0 flex-col ${split ? "flex-1 border-b border-line" : "min-h-0 flex-1"}`,
+    });
+    el.append(threadBox);
+    paintThreadPanel(threadBox, priorTop, stickThread, forceBottom);
+  }
+  if (S.terminalOpen) {
+    const termBox = h("div", {
+      id: "term-dock",
+      class: `term-dock flex min-h-0 min-w-0 flex-col ${split ? "flex-1" : "min-h-0 flex-1"}`,
+    });
+    el.append(termBox);
+    paintDockedTerminal(termBox);
+  }
+}
+
+function paintDockedTerminal(container: HTMLElement): void {
+  const preferred = S.preferredTerminalComputerId || hostComputerId();
+  openTerminals(container, S.channelId, {
+    preferredComputerId: preferred || undefined,
+    serversListOpen: S.serversListOpen,
+    docked: true,
+    onClose: closeDockedTerminal,
+    onChromeChange: () => {
+      const chrome = getTerminalChrome(S.channelId);
+      if (!chrome) return;
+      S.serversListOpen = chrome.serversListOpen;
+      S.preferredTerminalComputerId = chrome.preferredComputerId || null;
+      persistCurrentChannelView();
+    },
+  });
+  requestAnimationFrame(() => refitChannelTerminals(S.channelId));
+}
+
+function renderGlobalThreadsHeader(): void {
+  const el = document.getElementById("hdr"); if (!el) return;
+  clear(el);
+  el.className = "app-topbar flex min-h-12 items-center justify-between gap-2 border-b border-line bg-surface px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2.5";
+  add(el,
+    h("div", { class: "flex min-w-0 items-center gap-2" },
+      mobileMenuButton(),
+      h("span", { class: "shrink-0 text-accent" }, icon("thread", 18)),
+      h("div", { class: "min-w-0" },
+        h("div", { class: "truncate font-semibold text-fg" }, "Threads"),
+        h("div", { class: "truncate text-xs text-muted" }, "Across all agent channels"))),
+    h("div", { class: "flex shrink-0 items-center gap-1" },
+      h("button", {
+        type: "button",
+        class: `btn-subtle min-h-11 text-xs sm:min-h-0 ${S.globalThreadsUnreadOnly ? "border-accent/40 bg-accent-soft text-accent" : ""}`,
+        "aria-pressed": String(S.globalThreadsUnreadOnly),
+        onclick: () => { S.globalThreadsUnreadOnly = !S.globalThreadsUnreadOnly; renderMain(); },
+      }, S.globalThreadsUnreadOnly ? "Unread · on" : "Unread · off")));
 }
 
 function channelTabs(): HTMLElement {
   const tabs: [ChannelView, string][] = [
-    ["chat", "Chat"], ["threads", "Threads"], ["files", "Files"],
+    ["chat", "Chat"], ["board", "Board"], ["threads", "Threads"], ["files", "Files"],
     ["terminal", "Terminal"], ["memory", "Memory"], ["activity", "Activity"], ["settings", "Settings"],
   ];
   return h("nav", { class: "flex shrink-0 gap-2 overflow-x-auto border-b border-line bg-surface px-3" }, ...tabs
@@ -387,26 +857,89 @@ function channelTabs(): HTMLElement {
 }
 
 export function navigateChannelView(view: ChannelView): void {
-  S.view = view; S.threadRoot = null; renderApp();
+  S.view = view; S.threadRoot = null; S.globalThreadsOpen = false;
+  if (view === "terminal") {
+    S.terminalOpen = false;
+    S.preferredTerminalComputerId = S.preferredTerminalComputerId || getChannelView(S.channelId).preferredComputerId || hostComputerId();
+  }
+  persistCurrentChannelView();
+  renderApp();
   writeRoute(S.channels.find((channel) => channel.id === S.channelId), view, null);
+}
+
+/** Header Terminals — dock RHS like a thread. Never pops computer picker. */
+export function openTerminalsFromHeader(): void {
+  if (S.workspace?.terminals_enabled === false) {
+    void appAlert("Terminals are disabled for this workspace.");
+    return;
+  }
+  const channel = S.channels.find((item) => item.id === S.channelId);
+  if (!channel || channel.kind !== "channel") {
+    void appAlert("Open an agent channel to use terminals.");
+    return;
+  }
+  if (channel.status === "archived") {
+    void appAlert("Restore the channel before opening a terminal.");
+    return;
+  }
+  // Toggle docked terminal on this channel. Stay on chat (or current non-terminal tab → chat).
+  if (S.view === "terminal") S.view = "chat";
+  if (S.view !== "chat") {
+    S.view = "chat";
+  }
+  S.terminalOpen = !S.terminalOpen;
+  if (S.terminalOpen && !S.preferredTerminalComputerId) {
+    S.preferredTerminalComputerId = getChannelView(channel.id).preferredComputerId || hostComputerId();
+  }
+  if (!S.terminalOpen) S.serversListOpen = false;
+  persistCurrentChannelView();
+  renderApp();
+  writeRoute(channel, "chat", S.threadRoot?.id ?? null);
+}
+
+function openTerminalOnComputer(computerId: number): void {
+  // Full-tab path (channel Terminal tab / legacy).
+  S.preferredTerminalComputerId = computerId || hostComputerId();
+  S.view = "terminal";
+  S.terminalOpen = false;
+  S.threadRoot = null;
+  persistCurrentChannelView();
+  renderApp();
+  writeRoute(S.channels.find((channel) => channel.id === S.channelId), "terminal", null);
 }
 
 export function renderChannelView(): void {
   const container = document.getElementById("channelview");
   const channel = S.channels.find((item) => item.id === S.channelId);
   if (!container || !channel) return;
-  if (S.view === "threads") renderThreads(container, channel.id, (thread) => { S.view = "chat"; renderApp(); void openThread(thread.root); });
+  if (S.view === "board") renderBoard(container, channel.id, (root) => {
+    if (!S.messages.some((message) => message.id === root.id)) S.messages.push(root);
+    S.messages.sort((a, b) => a.id - b.id);
+    S.view = "chat";
+    renderApp();
+    void openThread(root);
+  });
+  else if (S.view === "threads") renderThreads(container, channel.id, (thread) => { S.view = "chat"; renderApp(); void openThread(thread.root); });
   else if (S.view === "files") renderFiles(container, channel.id);
   else if (S.view === "memory") renderMemory(container, channel.id);
   else if (S.view === "activity") renderActivity(container, channel.id);
-  else if (S.view === "terminal") openTerminals(container, channel.id);
+  else if (S.view === "terminal") openTerminals(container, channel.id, S.preferredTerminalComputerId || undefined);
   else if (S.view === "settings") renderChannelSettings(container, channel, async (deleted) => {
     await loadWorkspace();
     if (deleted || !S.channels.some((item) => item.id === S.channelId)) {
       S.channelId = S.channels.find((item) => item.name === "main" && item.kind === "channel")?.id || S.channels[0]?.id || 0;
       S.view = "chat";
       if (S.channelId) await openChannel(S.channelId); else renderApp();
-    } else renderApp();
+    } else {
+      // Keep channel settings live (avatar / model) without a hard page reload.
+      await reloadBots();
+      if (S.channelId) {
+        const data = await api<{ messages: Message[]; bots: Bot[] }>(`/api/channels/${S.channelId}/messages`);
+        S.messages = data.messages;
+        S.channelBots = data.bots;
+      }
+      renderApp();
+    }
   });
 }
 
@@ -425,6 +958,7 @@ function renderHeader(): void {
       if (input) { input.value = "@skipper "; input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
     });
   };
+  const terminalsEnabled = S.workspace?.terminals_enabled !== false;
   add(el,
     h("div", { class: "flex min-w-0 items-center gap-2" },
       mobileMenuButton(),
@@ -435,6 +969,10 @@ function renderHeader(): void {
       agent ? h("button", { class: "flex min-h-11 items-center gap-2 rounded-md border border-transparent px-2 py-1 font-mono text-[11px] text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:min-h-0", title: `${agent.display_name || agent.name} · ${agent.status} · ${agent.provider_name || "no provider"} · ${agent.model || "no model"}`, onclick: () => navigateChannelView("settings") },
         h("span", { class: `h-1.5 w-1.5 rounded-full ${statusTone}` }), "@" + agent.name,
         h("span", { class: "hidden max-w-36 truncate text-faint xl:inline" }, agent.model || "no model")) : null,
+      terminalsEnabled ? h("button", {
+        class: `grid h-11 w-11 place-items-center rounded-md border border-transparent text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:h-9 sm:w-9 ${S.terminalOpen || S.view === "terminal" ? "border-line bg-hover text-fg" : ""}`,
+        title: "Terminals", "aria-label": "Open terminals", onclick: openTerminalsFromHeader,
+      }, icon("terminal", 18)) : null,
       channel?.kind === "channel" ? h("button", { class: "btn-subtle min-h-11 px-2.5 text-xs sm:min-h-0 sm:px-3", onclick: callSkipper }, helmMark(14), h("span", { class: "hidden sm:inline" }, "Call Skipper")) : null));
 }
 
@@ -442,17 +980,74 @@ function progressOpenIn(root: ParentNode | null): boolean {
   return !!root?.querySelector("details.agent-progress[open]");
 }
 
-function shouldStickScroll(box: HTMLElement | null): boolean {
+function progressOpenSticky(): boolean {
+  // Live DOM first (still present until clear()). Then Map for currently visible
+  // messages only — never treat another channel's leftover open state as sticky.
+  if (progressOpenIn(document.getElementById("msgs")) || progressOpenIn(document.getElementById("thread"))) return true;
+  for (const message of S.messages || []) if (progressOpenByMessage.get(message.id)) return true;
+  if (S.threadRoot) {
+    if (progressOpenByMessage.get(S.threadRoot.id)) return true;
+    for (const reply of S.threadReplies || []) if (progressOpenByMessage.get(reply.id)) return true;
+  }
+  return false;
+}
+
+function shouldStickScroll(box: HTMLElement | null, forceBottom = false): boolean {
   if (!box) return false;
-  if (progressOpenIn(box) || progressOpenIn(document.getElementById("thread"))) return false;
+  // Fresh channel/thread open always lands on latest — ignore prior scrollTop (0 on new #msgs)
+  // and leftover work-log open state from another channel.
+  if (forceBottom) return true;
+  // Never pin-to-bottom while a work log is open (channel or thread). Also block when
+  // the Map says a disclosure is open even if the live node was just cleared.
+  if (progressOpenSticky()) return false;
   return box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+}
+
+/** Keep the viewport stable across full list rebuilds when stick-to-bottom is off. */
+function restoreScroll(box: HTMLElement | null, priorTop: number, stick: boolean): void {
+  if (!box) return;
+  if (stick) {
+    box.scrollTop = box.scrollHeight;
+    return;
+  }
+  // Clamping avoids jump-to-top when content shrinks, and keeps the same message
+  // under the user's eyes when Working expands/collapses mid-stream.
+  const max = Math.max(0, box.scrollHeight - box.clientHeight);
+  box.scrollTop = Math.min(Math.max(0, priorTop), max);
+}
+
+function channelLinks(): ChannelLink[] {
+  return (S.channels || [])
+    .filter((channel) => channel.kind === "channel" && channel.status !== "archived")
+    .map((channel) => ({ name: channel.name, slug: channel.slug || String(channel.id) }));
+}
+
+function renderMessageBody(body: string): HTMLElement {
+  const el = h("div", { class: "md min-w-0 max-w-full text-fg", html: md(body, { channels: channelLinks() }) });
+  el.querySelectorAll("a.channel-mention[data-channel-slug]").forEach((node) => {
+    node.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const slug = (node as HTMLElement).dataset.channelSlug || "";
+      const channel = S.channels.find((item) => item.slug === slug || item.name === slug);
+      if (channel) void openChannel(channel.id);
+    });
+  });
+  return el;
 }
 
 function renderMessages(): void {
   const box = document.getElementById("msgs"); if (!box) return;
-  const stick = shouldStickScroll(box);
   snapshotProgressOpenState(box);
   snapshotProgressOpenState(document.getElementById("thread"));
+  // Prefer handoff from renderMain (shell rebuild) over live #msgs (often brand-new, scrollTop 0).
+  const pending = pendingMsgsScroll;
+  pendingMsgsScroll = null;
+  // Channel hop / first paint: forceMsgsScrollBottom. Shell rebuild: pending.stick from prior #msgs.
+  const useForce = forceMsgsScrollBottom;
+  forceMsgsScrollBottom = false;
+  const priorTop = pending ? pending.top : box.scrollTop;
+  const stick = useForce ? true : (pending ? pending.stick : shouldStickScroll(box));
   clear(box);
   if (!S.messages.length) { box.append(emptyState(S.channels.find((c) => c.id === S.channelId))); return; }
   let prev: Message | null = null;
@@ -469,7 +1064,11 @@ function renderMessages(): void {
     daySection!.append(messageRow(m, { grouped, inThread: false }));
     prev = m;
   }
-  if (stick) box.scrollTop = box.scrollHeight;
+  restoreScroll(box, priorTop, stick);
+  lastMsgsStick = stick;
+  // Re-pin after flex layout settles. Channel hop needs an extra frame; live stick is 1.
+  if (useForce) pinScrollBottom("msgs", 2);
+  else if (stick) pinScrollBottom("msgs", 1);
 }
 
 function emptyState(c: Channel | undefined): HTMLElement {
@@ -545,6 +1144,7 @@ function wireMessageActionReveal(row: HTMLElement, actions: HTMLElement, moreBtn
 
 function messageIsWorking(m: Message): boolean {
   if (m.progress?.some((item) => item.status === "running")) return true;
+  // Placeholder body only — sticky interim thoughts keep real body text while progress is running.
   if (m.author.kind === "bot" && (!m.body || m.body === "_Working…_")) return true;
   return false;
 }
@@ -559,9 +1159,10 @@ function rootHasWorkingActivity(root: Message): boolean {
 
 function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): HTMLElement {
   const isBot = m.author.kind === "bot";
-  const body = m.body || (isBot ? "_Working…_" : "");
-  const bodyHtml = h("div", { class: "md min-w-0 max-w-full text-fg", html: md(body) });
   const running = opts.inThread ? messageIsWorking(m) : (m.parent_id == null ? rootHasWorkingActivity(m) : messageIsWorking(m));
+  // Sticky thought: show real interim text instead of flashing "_Working…_" between tools.
+  const body = isBot && running ? workingDisplayBody(m) : (m.body || (isBot ? "_Working…_" : ""));
+  const bodyHtml = renderMessageBody(body);
   const canDelete = S.me.is_admin || (!isBot && m.author.kind === "user" && m.author.id === S.me.id);
   const replyBtn = h("button", {
     class: "message-action grid h-11 w-11 place-items-center rounded text-muted hover:bg-hover hover:text-fg sm:h-7 sm:w-7",
@@ -597,9 +1198,14 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
     "aria-label": "Message actions",
   }, moreBtn, replyBtn, deleteBtn);
 
+  const chipText = running ? workingChipLabel(m) : "";
   const workingChip = running && !opts.inThread
-    ? h("span", { class: "chip inline-flex items-center gap-1.5 border-amber-400/30 bg-amber-400/10 text-amber-600 dark:text-amber-300" },
-        h("span", { class: "h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" }), "Working…")
+    ? h("span", {
+      class: "chip inline-flex max-w-[min(100%,28rem)] items-center gap-1.5 border-amber-400/30 bg-amber-400/10 text-amber-600 dark:text-amber-300",
+      title: chipText,
+    },
+        h("span", { class: "h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-amber-400" }),
+        h("span", { class: "min-w-0 truncate" }, chipText))
     : null;
 
   const content = h("div", { class: "min-w-0 flex-1 pr-12" },
@@ -637,12 +1243,21 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
 // <details open> is already gone when progressDisclosure runs.
 const progressOpenByMessage = new Map<number, boolean>();
 const progressStepOpen = new Map<string, boolean>(); // `${messageId}:${progressId}`
+// Inner work-log scroller (`.progress-timeline`). Full rebuilds reset scrollTop to 0
+// unless we snapshot + restore — that felt like "auto-scroll up" on every tick.
+const progressTimelineScroll = new Map<number, { top: number; stick: boolean }>();
 
 function snapshotProgressOpenState(root: ParentNode | null = document): void {
   root?.querySelectorAll("details.agent-progress[data-progress-for]").forEach((node) => {
     const el = node as HTMLDetailsElement;
     const id = Number(el.dataset.progressFor);
-    if (Number.isFinite(id)) progressOpenByMessage.set(id, el.open);
+    if (!Number.isFinite(id)) return;
+    progressOpenByMessage.set(id, el.open);
+    const timeline = el.querySelector(".progress-timeline") as HTMLElement | null;
+    if (timeline) {
+      const nearBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 48;
+      progressTimelineScroll.set(id, { top: timeline.scrollTop, stick: nearBottom });
+    }
   });
   root?.querySelectorAll("details.progress-step[data-step-key]").forEach((node) => {
     const el = node as HTMLDetailsElement;
@@ -683,17 +1298,52 @@ function parseToolBody(body: string): { title: string; input: string; output: st
 }
 
 function progressPreviewLine(items: AgentProgress[]): string {
-  const running = [...items].reverse().find((item) => item.status === "running") || items[items.length - 1];
-  if (!running) return "";
-  if (running.kind === "tool") {
+  // Prefer the most recent real thought (even if complete) over a bare status "Starting…"
+  // so the collapsed summary doesn't flip back to Working… between tools.
+  const latestThought = [...items].reverse().find((item) => item.kind === "thinking" && item.body.trim());
+  const running = [...items].reverse().find((item) => item.status === "running");
+  if (running?.kind === "tool") {
     const { title, input } = parseToolBody(running.body);
     return input ? `${title} · ${input.slice(0, 72)}` : title;
   }
-  if (running.kind === "thinking") {
+  if (running?.kind === "thinking") {
     const line = running.body.trim().split(/\n+/).find(Boolean) || "Thinking…";
     return line.slice(0, 80) + (line.length > 80 ? "…" : "");
   }
-  return (running.body || "Working…").slice(0, 80);
+  if (latestThought) {
+    const line = latestThought.body.trim().split(/\n+/).find(Boolean) || "Thinking…";
+    return line.slice(0, 80) + (line.length > 80 ? "…" : "");
+  }
+  if (running) return (running.body || "Working…").slice(0, 80);
+  const last = items[items.length - 1];
+  return last ? (last.body || "Working…").slice(0, 80) : "";
+}
+
+function stickyThoughtFromProgress(items: AgentProgress[] | undefined): string {
+  if (!items?.length) return "";
+  const thought = [...items].reverse().find((item) => item.kind === "thinking" && item.body.trim());
+  return thought?.body.trim() || "";
+}
+
+/** Body shown while an agent turn is mid-flight — keep last real thought sticky. */
+function workingDisplayBody(m: Message): string {
+  if (m.body && m.body !== "_Working…_") return m.body;
+  const sticky = stickyThoughtFromProgress(m.progress);
+  return sticky || m.body || "_Working…_";
+}
+
+function workingChipLabel(m: Message): string {
+  if (m.body && m.body !== "_Working…_") {
+    const line = m.body.trim().split(/\n+/).find(Boolean) || "Working…";
+    return line.length > 72 ? `${line.slice(0, 72)}…` : line;
+  }
+  const sticky = stickyThoughtFromProgress(m.progress);
+  if (sticky) {
+    const line = sticky.split(/\n+/).find(Boolean) || sticky;
+    return line.length > 72 ? `${line.slice(0, 72)}…` : line;
+  }
+  const preview = progressPreviewLine(m.progress || []);
+  return preview || "Working…";
 }
 
 function progressCounts(items: AgentProgress[]): string {
@@ -810,6 +1460,20 @@ function progressDisclosure(message: Message): HTMLElement | null {
   const open = prev ? prev.open : (progressOpenByMessage.get(message.id) === true);
   progressOpenByMessage.set(message.id, open);
   const preview = progressPreviewLine(items);
+  // Prefer live DOM scroll (still present until parent clear), else sticky Map.
+  let timelineScroll = progressTimelineScroll.get(message.id);
+  if (prev) {
+    const live = prev.querySelector(".progress-timeline") as HTMLElement | null;
+    if (live) {
+      const nearBottom = live.scrollHeight - live.scrollTop - live.clientHeight < 48;
+      timelineScroll = { top: live.scrollTop, stick: nearBottom };
+      progressTimelineScroll.set(message.id, timelineScroll);
+    }
+  }
+  const timeline = h("div", {
+    class: "progress-timeline space-y-2 border-t border-line/80 px-3 py-3",
+    dataset: { progressTimelineFor: String(message.id) },
+  }, ...items.map((item) => progressStepCard(message.id, item)));
   const details = h("details", {
     class: "agent-progress mt-2 overflow-hidden rounded-lg border border-line bg-raised/50 shadow-sm",
     dataset: { progressFor: String(message.id) },
@@ -817,14 +1481,34 @@ function progressDisclosure(message: Message): HTMLElement | null {
   },
     h("summary", { class: "flex cursor-pointer select-none items-center gap-2 px-3 py-2.5 text-xs font-semibold text-muted hover:bg-hover/60 hover:text-fg" },
       h("span", { class: `h-2 w-2 shrink-0 rounded-full ${running ? "animate-pulse bg-amber-400" : "bg-ok"}` }),
-      h("span", { class: "shrink-0" }, running ? "Working…" : "Work log"),
-      h("span", { class: "hidden min-w-0 flex-1 truncate font-normal text-faint sm:inline" }, preview),
+      // Sticky: keep the latest real thought/tool preview visible; only fall back to Working…
+      // when we have no real step text yet.
+      h("span", { class: "min-w-0 flex-1 truncate" }, running ? (preview || "Working…") : "Work log"),
       h("span", { class: "shrink-0 font-normal text-faint" }, progressCounts(items))),
-    h("div", { class: "progress-timeline space-y-2 border-t border-line/80 px-3 py-3" },
-      ...items.map((item) => progressStepCard(message.id, item)))) as HTMLDetailsElement;
+    timeline) as HTMLDetailsElement;
   details.addEventListener("toggle", () => {
     progressOpenByMessage.set(message.id, details.open);
   });
+  // Restore after paint so scrollHeight is real. Stick only if the user was already
+  // at the bottom of this box; otherwise keep their place (no snap-to-top).
+  if (timelineScroll) {
+    const saved = timelineScroll;
+    requestAnimationFrame(() => {
+      const max = Math.max(0, timeline.scrollHeight - timeline.clientHeight);
+      if (saved.stick) timeline.scrollTop = timeline.scrollHeight;
+      else timeline.scrollTop = Math.min(Math.max(0, saved.top), max);
+      progressTimelineScroll.set(message.id, {
+        top: timeline.scrollTop,
+        stick: timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 48,
+      });
+    });
+  }
+  timeline.addEventListener("scroll", () => {
+    progressTimelineScroll.set(message.id, {
+      top: timeline.scrollTop,
+      stick: timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 48,
+    });
+  }, { passive: true });
   return details;
 }
 
@@ -881,47 +1565,74 @@ function attachments(m: Message): HTMLElement | null {
 
 // ---------------- thread panel ----------------
 async function openThread(root: Message, replaceRoute = false): Promise<void> {
-  const data = await api<{ root: Message; replies: Message[] }>(`/api/messages/${root.id}/thread`);
-  S.threadRoot = data.root; S.threadReplies = data.replies; renderThread();
+  const data = await api<{ root: Message; replies: Message[]; usage?: ThreadUsage }>(`/api/messages/${root.id}/thread`);
+  S.threadRoot = data.root;
+  S.threadReplies = data.replies;
+  S.threadUsage = {
+    input_tokens: Math.max(0, Number(data.usage?.input_tokens || 0)),
+    output_tokens: Math.max(0, Number(data.usage?.output_tokens || 0)),
+  };
+  // Ensure chat shell + RHS (thread may split with docked terminal).
+  if (S.view !== "chat") S.view = "chat";
+  // Fresh thread open always lands on latest replies (same class of bug as channel hop).
+  forceThreadScrollBottom = true;
+  renderMain();
+  persistCurrentChannelView();
   writeRoute(S.channels.find((channel) => channel.id === S.channelId), "chat", root.id, replaceRoute);
 }
 function closeThread(): void {
   S.threadRoot = null;
+  S.threadUsage = { input_tokens: 0, output_tokens: 0 };
+  persistCurrentChannelView();
   renderMain();
   writeRoute(S.channels.find((channel) => channel.id === S.channelId), "chat", null);
 }
+function closeDockedTerminal(): void {
+  S.terminalOpen = false;
+  S.serversListOpen = false;
+  persistCurrentChannelView();
+  renderMain();
+}
 
-function renderThread(): void {
-  const el = document.getElementById("thread"); if (!el || !S.threadRoot) return;
-  const prior = document.getElementById("threadmsgs");
-  const stickThread = prior ? shouldStickScroll(prior) : true;
-  snapshotProgressOpenState(el);
-  snapshotProgressOpenState(document.getElementById("msgs"));
-  el.className = "thread-pane flex shrink-0 flex-col border-l border-line bg-surface";
-  clear(el);
+/** Compact rough token count for the thread header (1.2k, 340, …). */
+function formatRoughTokens(n: number): string {
+  const v = Math.max(0, Math.round(Number(n) || 0));
+  if (v >= 1_000_000) {
+    const m = v / 1_000_000;
+    return `${m >= 10 ? Math.round(m) : m.toFixed(1).replace(/\.0$/, "")}M`;
+  }
+  if (v >= 1000) {
+    const k = v / 1000;
+    return `${k >= 10 ? Math.round(k) : k.toFixed(1).replace(/\.0$/, "")}k`;
+  }
+  return String(v);
+}
+
+function threadCtxLabel(usage: ThreadUsage = S.threadUsage): string {
+  return `Ctx ${formatRoughTokens(usage.input_tokens)}/${formatRoughTokens(usage.output_tokens)}`;
+}
+
+function paintThreadCtx(): void {
+  const el = document.getElementById("thread-ctx");
+  if (!el) return;
+  const label = threadCtxLabel();
+  el.textContent = label;
+  el.setAttribute("title", `Rough model usage for this thread · ${S.threadUsage.input_tokens} in / ${S.threadUsage.output_tokens} out`);
+  el.classList.toggle("hidden", !(S.threadUsage.input_tokens || S.threadUsage.output_tokens));
+}
+
+/** Fill the thread half (or full RHS) inside an already-built #thread shell. */
+function paintThreadPanel(box: HTMLElement, priorTop = 0, stickThread = true, forceBottom = false): void {
+  if (!S.threadRoot) return;
+  clear(box);
   const channelName = S.channels.find((c) => c.id === S.channelId)?.name || "";
-  const resizeHandle = h("div", {
-    class: "thread-resizer absolute inset-y-0 left-0 z-10 hidden w-2 -translate-x-1/2 cursor-col-resize sm:block",
-    role: "separator", tabindex: 0, "aria-label": "Resize thread panel", "aria-orientation": "vertical",
-  });
-  const resize = (width: number): void => {
-    const safe = Math.max(400, Math.min(width, Math.min(840, window.innerWidth - 420)));
-    el.style.width = safe + "px";
-    localStorage.setItem(`1helm.threadWidth.${S.me.id}`, String(safe));
-  };
-  const storedWidth = Number(localStorage.getItem(`1helm.threadWidth.${S.me.id}`) || 520);
-  if (window.innerWidth > 900) resize(storedWidth);
-  resizeHandle.addEventListener("pointerdown", (event: PointerEvent) => {
-    event.preventDefault(); resizeHandle.setPointerCapture(event.pointerId);
-    const move = (next: PointerEvent): void => resize(window.innerWidth - next.clientX);
-    const stop = (): void => { resizeHandle.removeEventListener("pointermove", move); resizeHandle.removeEventListener("pointerup", stop); };
-    resizeHandle.addEventListener("pointermove", move); resizeHandle.addEventListener("pointerup", stop);
-  });
-  resizeHandle.addEventListener("keydown", (event: KeyboardEvent) => {
-    if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); resize(el.getBoundingClientRect().width + (event.key === "ArrowLeft" ? 24 : -24)); }
-  });
-  el.append(
-    resizeHandle,
+  const hasUsage = !!(S.threadUsage.input_tokens || S.threadUsage.output_tokens);
+  const ctxChip = h("span", {
+    id: "thread-ctx",
+    class: `thread-ctx select-none font-mono text-[10px] font-normal tracking-tight text-faint tabular-nums ${hasUsage ? "" : "hidden"}`,
+    title: `Rough model usage for this thread · ${S.threadUsage.input_tokens} in / ${S.threadUsage.output_tokens} out`,
+  }, threadCtxLabel());
+  box.append(
     h("div", { class: "app-topbar thread-topbar flex min-h-12 items-center justify-between gap-2 border-b border-line px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2.5" },
       h("div", { class: "flex min-w-0 items-center gap-1.5 sm:gap-2" },
         h("button", {
@@ -933,7 +1644,8 @@ function renderThread(): void {
         h("div", { class: "min-w-0" },
           h("div", { class: "truncate text-[15px] font-semibold text-fg" }, "Thread"),
           h("div", { class: "truncate font-mono text-[10.5px] text-faint" }, channelName ? `#${channelName}` : "Channel chat"))),
-      h("div", { class: "flex shrink-0 items-center gap-1" },
+      h("div", { class: "flex shrink-0 items-center gap-1.5 sm:gap-2" },
+        ctxChip,
         h("button", {
           class: "grid h-11 w-11 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg sm:h-9 sm:w-9",
           title: "Close thread",
@@ -945,7 +1657,32 @@ function renderThread(): void {
       h("div", { class: "eyebrow mx-4 my-2 flex items-center gap-3 text-faint" }, h("span", {}, `${S.threadReplies.length} ${S.threadReplies.length === 1 ? "reply" : "replies"}`), h("div", { class: "h-px flex-1 bg-line" })),
       ...S.threadReplies.map((r) => messageRow(r, { grouped: false, inThread: true }))),
     composer(S.threadRoot.id));
-  const tm = document.getElementById("threadmsgs"); if (tm && stickThread) tm.scrollTop = tm.scrollHeight;
+  const tm = document.getElementById("threadmsgs");
+  restoreScroll(tm, priorTop, stickThread);
+  if (forceBottom) pinScrollBottom("threadmsgs");
+}
+
+/** Live message updates while thread is open — surgically refresh thread half when possible. */
+function renderThread(): void {
+  if (!S.threadRoot) return;
+  const panel = document.getElementById("thread-panel");
+  const el = document.getElementById("thread");
+  if (!el) {
+    renderMain();
+    return;
+  }
+  if (panel) {
+    const prior = document.getElementById("threadmsgs");
+    const priorTop = prior?.scrollTop ?? 0;
+    snapshotProgressOpenState(panel);
+    const forceBottom = forceThreadScrollBottom;
+    const stickThread = forceBottom || (prior ? shouldStickScroll(prior) : true);
+    if (forceBottom) forceThreadScrollBottom = false;
+    paintThreadPanel(panel, priorTop, stickThread, forceBottom);
+    return;
+  }
+  // RHS missing thread half (e.g. only terminal was open) — rebuild shell.
+  renderMain();
 }
 
 // ---------------- composer ----------------
@@ -982,10 +1719,10 @@ function composer(parentId: number | null): HTMLElement {
       input.value = ""; input.style.height = "auto"; localStorage.removeItem(draftKey);
     } catch (error) { void appAlert((error as Error).message || "Could not send message"); }
   };
-  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 176) + "px"; localStorage.setItem(draftKey, input.value); mentionAutocomplete(input, mentionBox); });
+  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 176) + "px"; localStorage.setItem(draftKey, input.value); composerAutocomplete(input, mentionBox); });
   input.addEventListener("keydown", (ev) => {
     const k = ev as KeyboardEvent;
-    if (!mentionBox.classList.contains("hidden") && ["Enter", "Tab", "ArrowDown", "ArrowUp"].includes(k.key)) { if (handleMentionKey(k, mentionBox, input)) { k.preventDefault(); return; } }
+    if (!mentionBox.classList.contains("hidden") && ["Enter", "Tab", "ArrowDown", "ArrowUp"].includes(k.key)) { if (handleComposerSuggestKey(k, mentionBox, input)) { k.preventDefault(); return; } }
     if (k.key === "Escape") mentionBox.classList.add("hidden");
     if (k.key === "Enter" && !k.shiftKey) { k.preventDefault(); send(); }
   });
@@ -1068,34 +1805,82 @@ async function composerModelPopover(event: MouseEvent, threadRootId: number | nu
   if (current?.provider_id) void load();
 }
 
-// ---------------- @mention autocomplete ----------------
-const currentMention = (input: HTMLTextAreaElement): string | null => { const m = input.value.slice(0, input.selectionStart).match(/@([a-zA-Z0-9_.-]*)$/); return m ? m[1].toLowerCase() : null; };
-function mentionAutocomplete(input: HTMLTextAreaElement, box: HTMLElement): void {
-  const term = currentMention(input);
-  if (term == null) return box.classList.add("hidden");
-  const channel = S.channels.find((item) => item.id === S.channelId);
-  const allowed = new Set<number>();
-  if (channel?.agent?.bot_id) allowed.add(channel.agent.bot_id);
-  const skipper = S.bots.find((bot) => bot.agent_kind === "skipper"); if (skipper) allowed.add(skipper.id);
-  const matches = S.bots.filter((bot) => allowed.has(bot.id) && bot.name.toLowerCase().startsWith(term)).slice(0, 6);
-  if (!matches.length) return box.classList.add("hidden");
+// ---------------- @mention / #channel autocomplete ----------------
+type ComposerSuggest = { kind: "agent" | "channel"; token: string; label: string; detail: string };
+
+const currentAtMention = (input: HTMLTextAreaElement): string | null => {
+  const m = input.value.slice(0, input.selectionStart).match(/(^|[\s([{])@([a-zA-Z0-9_.-]*)$/);
+  return m ? m[2].toLowerCase() : null;
+};
+const currentHashMention = (input: HTMLTextAreaElement): string | null => {
+  // Do not treat Markdown headings ("# Title") as channel mentions: require a
+  // word-boundary-ish left context, not start-of-line alone with a space after.
+  const m = input.value.slice(0, input.selectionStart).match(/(^|[\s([{])#([a-zA-Z0-9_.-]*)$/);
+  return m ? m[2].toLowerCase() : null;
+};
+
+function composerAutocomplete(input: HTMLTextAreaElement, box: HTMLElement): void {
+  const at = currentAtMention(input);
+  if (at != null) {
+    const channel = S.channels.find((item) => item.id === S.channelId);
+    const allowed = new Set<number>();
+    if (channel?.agent?.bot_id) allowed.add(channel.agent.bot_id);
+    const skipper = S.bots.find((bot) => bot.agent_kind === "skipper"); if (skipper) allowed.add(skipper.id);
+    const matches: ComposerSuggest[] = S.bots
+      .filter((bot) => allowed.has(bot.id) && bot.name.toLowerCase().startsWith(at))
+      .slice(0, 6)
+      .map((bot) => ({ kind: "agent", token: bot.name, label: bot.name, detail: bot.model || "no model" }));
+    return drawComposerSuggest(box, input, matches, "Channel agents", "agent");
+  }
+  const hash = currentHashMention(input);
+  if (hash != null) {
+    const matches: ComposerSuggest[] = channelLinks()
+      .filter((channel) => channel.name.toLowerCase().startsWith(hash) || channel.slug.toLowerCase().startsWith(hash))
+      .slice(0, 8)
+      .map((channel) => ({ kind: "channel", token: channel.name, label: channel.name, detail: channel.slug !== channel.name ? channel.slug : "channel" }));
+    return drawComposerSuggest(box, input, matches, "Channels", "channel");
+  }
+  box.classList.add("hidden");
+}
+
+function drawComposerSuggest(box: HTMLElement, input: HTMLTextAreaElement, matches: ComposerSuggest[], title: string, kind: "agent" | "channel"): void {
+  if (!matches.length) { box.classList.add("hidden"); return; }
   clear(box); box.classList.remove("hidden");
-  box.append(h("div", { class: "eyebrow px-3 pt-2.5 pb-1 text-faint" }, "Channel agents"));
-  matches.forEach((b, i) => box.append(h("button", { class: `flex min-h-11 w-full items-center gap-2 px-3 py-2.5 text-left text-sm ${i === 0 ? "bg-accent-soft" : "hover:bg-hover"}`, dataset: { name: b.name }, onclick: () => applyMention(input, b.name, box) },
-    avatar(b.name, "bot", 6), h("span", { class: "font-medium text-fg" }, b.name), h("span", { class: "text-xs text-muted" }, b.model || "no model"))));
+  box.append(h("div", { class: "eyebrow px-3 pt-2.5 pb-1 text-faint" }, title));
+  matches.forEach((item, i) => box.append(h("button", {
+    class: `flex min-h-11 w-full items-center gap-2 px-3 py-2.5 text-left text-sm ${i === 0 ? "bg-accent-soft" : "hover:bg-hover"}`,
+    dataset: { kind: item.kind, token: item.token },
+    onclick: () => applyComposerSuggest(input, item.kind, item.token, box),
+  },
+    kind === "agent" ? avatar(item.label, "bot", 6) : h("span", { class: "grid h-6 w-6 place-items-center rounded bg-raised text-muted" }, icon("hash", 14)),
+    h("span", { class: "font-medium text-fg" }, kind === "channel" ? `#${item.label}` : item.label),
+    h("span", { class: "text-xs text-muted" }, item.detail))));
 }
-function applyMention(input: HTMLTextAreaElement, name: string, box: HTMLElement): void {
-  const before = input.value.slice(0, input.selectionStart).replace(/@[a-zA-Z0-9_.-]*$/, "@" + name + " ");
-  input.value = before + input.value.slice(input.selectionStart); input.selectionStart = input.selectionEnd = before.length; box.classList.add("hidden"); input.focus();
+
+function applyComposerSuggest(input: HTMLTextAreaElement, kind: "agent" | "channel", token: string, box: HTMLElement): void {
+  const beforeCursor = input.value.slice(0, input.selectionStart);
+  const after = input.value.slice(input.selectionStart);
+  const replaced = kind === "agent"
+    ? beforeCursor.replace(/@[a-zA-Z0-9_.-]*$/, `@${token} `)
+    : beforeCursor.replace(/#[a-zA-Z0-9_.-]*$/, `#${token} `);
+  input.value = replaced + after;
+  input.selectionStart = input.selectionEnd = replaced.length;
+  box.classList.add("hidden");
+  input.focus();
+  input.dispatchEvent(new Event("input"));
 }
-function handleMentionKey(k: KeyboardEvent, box: HTMLElement, input: HTMLTextAreaElement): boolean {
+
+function handleComposerSuggestKey(k: KeyboardEvent, box: HTMLElement, input: HTMLTextAreaElement): boolean {
   const items = Array.from(box.querySelectorAll("button")) as HTMLElement[];
   if (!items.length) return false;
   let idx = items.findIndex((b) => b.classList.contains("bg-accent-soft"));
   if (k.key === "ArrowDown") idx = (idx + 1) % items.length;
   else if (k.key === "ArrowUp") idx = (idx - 1 + items.length) % items.length;
-  else if (k.key === "Enter" || k.key === "Tab") { applyMention(input, items[Math.max(0, idx)].dataset.name!, box); return true; }
-  else return false;
+  else if (k.key === "Enter" || k.key === "Tab") {
+    const chosen = items[Math.max(0, idx)];
+    applyComposerSuggest(input, (chosen.dataset.kind as "agent" | "channel") || "agent", chosen.dataset.token!, box);
+    return true;
+  } else return false;
   items.forEach((b, i) => b.classList.toggle("bg-accent-soft", i === idx));
   return true;
 }
@@ -1169,17 +1954,42 @@ export function appPrompt(message: string, defaultValue = ""): Promise<string | 
 
 export function avatar(name: string, kind: "user" | "bot", size = 8, avatarValue?: string): HTMLElement {
   const px = size * 4;
+  // Custom or default image fills the whole plate — never layer initials on top of it.
+  if (avatarValue?.startsWith("data:image/") || avatarValue?.startsWith("/")) {
+    return h("img", {
+      class: `${kind === "bot" ? "identity-bot" : "identity-user"} identity-photo rounded-md object-cover`,
+      style: `width:${px}px;height:${px}px`,
+      src: avatarValue,
+      alt: name,
+      title: name,
+    });
+  }
   if (kind === "bot") {
     if (avatarValue?.startsWith("color:")) {
       const hex = avatarValue.slice(6);
-      return h("div", { class: "identity-bot rounded-md flex items-center justify-center text-white font-bold", style: `width:${px}px;height:${px}px;font-size:${Math.max(9, px / 3.2)}px;background:${hex}` }, initials(name));
+      // Solid color tile is the entire avatar — no monogram over a muddy field.
+      return h("div", {
+        class: "identity-bot identity-solid rounded-md",
+        style: `width:${px}px;height:${px}px;background:${hex}`,
+        title: name,
+        "aria-label": name,
+      });
     }
-    if (avatarValue?.startsWith("data:image/") || avatarValue?.startsWith("/")) {
-      return h("img", { class: "identity-bot rounded-md object-cover", style: `width:${px}px;height:${px}px`, src: avatarValue, alt: name });
-    }
-    return h("div", { class: "identity-bot rounded-md", style: `width:${px}px;height:${px}px;font-size:${Math.max(9, px / 3.2)}px` }, helmMark(Math.max(12, px * .52)));
+    return h("div", {
+      class: "identity-bot rounded-md",
+      style: `width:${px}px;height:${px}px`,
+      title: name,
+      "aria-label": name,
+    }, helmMark(Math.max(12, px * .52)));
   }
-  return h("div", { class: "identity-user rounded-lg", style: `width:${px}px;height:${px}px;font-size:${Math.max(8, px / 2.8)}px` }, initials(name));
+  // People: high-contrast solid swatch from seed, monogram only when no photo.
+  const bg = color(name);
+  return h("div", {
+    class: "identity-user identity-initials rounded-lg",
+    style: `width:${px}px;height:${px}px;font-size:${Math.max(10, px / 2.5)}px;background:${bg};color:#f7f4ec;border-color:transparent`,
+    title: name,
+    "aria-label": name,
+  }, initials(name));
 }
 export function pickList(title: string, items: { id: number; label: string }[], onPick: (id: number) => void): void {
   const overlay = h("div", { class: "modal-overlay fixed inset-0 z-50 grid place-items-end bg-black/45 p-0 sm:place-items-center sm:p-6", onclick: (e: MouseEvent) => { if (e.target === overlay) overlay.remove(); } },
@@ -1199,6 +2009,9 @@ const fmtSize = (n: number): string => n < 1024 ? n + " B" : n < 1048576 ? (n / 
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (S.mobileMenuOpen) { closeMobileMenu(); return; }
+  // Close terminal first when both are open (thread stays).
+  if (S.terminalOpen && S.threadRoot) { closeDockedTerminal(); return; }
+  if (S.terminalOpen) { closeDockedTerminal(); return; }
   if (S.threadRoot) closeThread();
 });
 window.matchMedia("(min-width: 768px)").addEventListener("change", (event) => { if (event.matches && S.mobileMenuOpen) closeMobileMenu(); });
@@ -1206,6 +2019,17 @@ window.matchMedia("(min-width: 768px)").addEventListener("change", (event) => { 
 function registerServiceWorker(): void {
   if (!("serviceWorker" in navigator)) return;
   void navigator.serviceWorker.register("/sw.js", { scope: "/", updateViaCache: "none" })
+    .then((reg) => {
+      // Pick up a new SW when the host ships a build — no manual hard refresh.
+      void reg.update().catch(() => {});
+      setInterval(() => { void reg.update().catch(() => {}); }, 60 * 60_000);
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        // One soft reload after SW takeover so the stamped index/bundle bind.
+        if ((window as any).__1helmSwReloaded) return;
+        (window as any).__1helmSwReloaded = true;
+        location.reload();
+      });
+    })
     .catch((error) => console.warn("1Helm service worker registration failed", error));
 }
 if (document.readyState === "complete") registerServiceWorker();

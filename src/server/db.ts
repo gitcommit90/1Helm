@@ -344,6 +344,40 @@ export function migrate(): void {
     updated INTEGER NOT NULL,
     PRIMARY KEY (thread_id, user_id)
   );
+  -- Per-user client layout (docked terminal open, preferred computer, etc.)
+  CREATE TABLE IF NOT EXISTS user_ui_state (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL DEFAULT '{}',
+    updated INTEGER NOT NULL,
+    PRIMARY KEY (user_id, key)
+  );
+  `);
+  // Per-thread rough model usage (sum of provider-reported prompt/completion tokens).
+  addColumn("threads", "input_tokens", "input_tokens INTEGER NOT NULL DEFAULT 0");
+  addColumn("threads", "output_tokens", "output_tokens INTEGER NOT NULL DEFAULT 0");
+
+  // Durable agent re-entry: models cannot promise "I'll update later" without this.
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS agent_followups (
+    id INTEGER PRIMARY KEY,
+    agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    bot_id INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    thread_id INTEGER NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    root_message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    due_at INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    check_hint TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed','cancelled')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 48,
+    last_error TEXT NOT NULL DEFAULT '',
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_followups_due ON agent_followups(status, due_at);
+  CREATE INDEX IF NOT EXISTS idx_followups_thread ON agent_followups(thread_id, status);
   `);
 
   tx(() => {
@@ -517,6 +551,11 @@ export function recoverInterruptedRuns(): void {
     UNION SELECT t.id FROM threads t JOIN messages m ON m.parent_id=t.root_message_id
       WHERE m.bot_id IS NOT NULL AND trim(m.body) IN ('','thinking…','_Working…_'))`, now());
   run("UPDATE messages SET body='_This turn was interrupted by a server restart. Please retry._' WHERE body IN ('','_Working…_') AND bot_id IS NOT NULL AND parent_id IS NOT NULL AND id NOT IN (SELECT root_message_id FROM threads)");
+  // Progress rows stay on the finished bot message. Client "Working…" is driven by
+  // any agent_progress.status='running' — if a crash/restart lands after the final
+  // body is written but before the bulk complete UPDATE, the UI stays stuck forever
+  // even though agents are ready and the reply body is real. Always clear those.
+  run("UPDATE agent_progress SET status='complete', updated=? WHERE status='running'", now());
   // Early native builds copied raw transcript snippets into Memory under the
   // summary kind. Session recaps belong to threads; they are not knowledge.
   run("DELETE FROM memory_items WHERE kind='summary' AND author_type='system'");

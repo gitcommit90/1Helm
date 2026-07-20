@@ -2,6 +2,82 @@
 
 This is the living product record for 1Helm. Add confirmed decisions, deployment findings, and completed slices here as the product evolves.
 
+## Slice — Unified provider fabric inside 1Helm (2026-07-20)
+
+1Helm's simple one-base-URL/one-key Providers form has become a native multi-account routing control plane backed by the version-pinned ReRouted headless engine.
+
+- **One source of truth:** OAuth accounts, API keys, enabled models, named routes, gateway keys, usage, quota, and routing logs live in the 1Helm-owned `CTRL_DATA_DIR/routing` tree. ReRouted's Electron/dashboard UI is not embedded.
+- **Accounts:** ChatGPT, Claude, Antigravity, and xAI OAuth; OpenRouter, NVIDIA NIM, Cloudflare, GLM, and custom OpenAI-compatible keys; multiple accounts per provider with stable account pools.
+- **Routes:** provider/model fallback and round-robin routes. Standard providers exhaust eligible same-provider accounts before advancing; custom endpoints remain connection-specific.
+- **Inside + outside:** the same connected direct models and named routes power Skipper, residents, channel/thread model selection, and external clients through 1Helm's authenticated `/v1` gateway.
+- **Operations:** local request/token history, account attribution, supported subscription quota windows, redacted logs, and revocable gateway keys are first-class 1Helm screens under Settings → Providers.
+- **Migration:** legacy provider rows are imported only when their endpoint is routable, existing model names become compatibility routes, and resident policies move to the one internal router without changing agent identity, memory, files, or threads.
+- **Verification:** focused integration coverage starts a real 1Helm server + embedded engine + mock upstream, exercises OAuth initiation/cancellation, keyed discovery, route creation, gateway authentication/completion, usage recording, credential redaction, legacy assignment migration, and engine-owned persistence. A disposable production-data clone also completed a real external request and a real resident-agent turn through the same migrated compatibility route, with both recorded in Activity. Desktop and 390 px Chromium checks cover Sources, Routes/editor, Activity, Quota, Logs, and Endpoint with no browser errors or horizontal overflow; long route IDs wrap without widening the mobile content rail.
+
+## Slice — Channel open lands on latest messages (2026-07-20)
+
+Clicking a channel (or opening a thread) left the chat scroller at the **oldest** messages; users had to scroll to the bottom every hop.
+
+- **Cause:** fresh `#msgs` / shell rebuilds started at `scrollTop=0`; near-bottom stick failed before flex layout settled; leftover work-log open state from another channel blocked stick.
+- **Fix (client only):** one-shot force-bottom on `openChannel` / `openThread`, clear work-log open map on hop, carry scroll across `renderMain` rebuilds, re-pin after layout frames.
+- Verified: `npm run typecheck` + `npm run build` (stamped bundle). Client-only — no server restart.
+
+## Slice — Activity as ops log + Skipper background visibility (2026-07-20)
+
+Activity was a flat dump of every tool tick + agent_status flip, so Skipper's background loops (thread audit ~10m, improvement reviews ~1h, skills, hand-backs) were unreadable or invisible when quiet.
+
+- **UI:** per-channel Activity is now sectioned — **Skipper · background**, **Work · tools & escalations**, **System · lifecycle** — with All/Skipper/Work/System filters, human kind/actor labels, and quiet-check styling. Subtitle clarifies Activity is the ops log, not chat.
+- **Server:** every thread-audit pass writes a `#main` breadcrumb (including zero candidates and "looked, no changes"). Full improvement passes write the same on `#main` (quiet when no durable guidance); single-agent `scheduleAgentReview` only logs when it actually improves.
+- Status `quiet` means Skipper ran and left things alone. Per-channel change rows still appear on the channel that moved.
+- Verified: `npm run typecheck` + build, `npm run test:thread-audit` 15/15, forced audit/improvement against live demo DB produced quiet + complete rows on `#main`.
+
+## Slice — Docked terminal + profile view state (2026-07-20)
+
+Header **Terminals** no longer opens a computer-choice modal or forces the full Terminal tab.
+
+- Click = docked RHS panel for the **current channel** (same spatial idea as opening a thread).
+- Thread already open → RHS vertical split: thread top half, terminal bottom half.
+- **Servers** button appears in the terminal chrome only when more than one computer is configured; toggles an in-panel computer list vs **Return to Terminal** (no modal).
+- Per-channel layout (`terminalOpen`, `serversListOpen`, `preferredComputerId`, `threadRootId`) is saved on the **user profile** via `user_ui_state` / `GET|PATCH /api/me/ui-state` — not browser cache. Channel hops restore that channel’s docks.
+
+## Slice — Durable agent follow-ups (2026-07-20)
+
+Agents used to promise later updates ("I'll message when Downloaded") and then go silent: a turn ends when the model stops, and prose is not a background job. Skipper's ~10m thread-status audit only flips Board status; it does not re-run the resident.
+
+- New tool: **`schedule_followup`** (channel residents, home channel only) — durable `agent_followups` row with `due_at`, reason, optional check hint, attempt budget.
+- Server loop (`src/server/followups.ts`, started with improvement + thread-audit) claims due rows, posts a wake trigger on the same thread, and `runBot`s the resident. Survives process restart.
+- System prompt rule: never promise a later update without a successful `schedule_followup` in that turn.
+- `#jellyfin-requests` skill updated: schedule while grabbing; user-facing replies stay **Downloaded** / **Blocked**.
+- Verified in `test/native-world.mjs` (mock forces the tool; asserts pending DB row).
+
+### Board — Scheduled lane + live countdown
+
+Pending wakes are a first-class Board swim lane (**Scheduled**), not a human-editable status:
+
+- Threads API attaches `followup: { id, due_at, reason, attempts, max_attempts, status }` from the next pending `agent_followups` row.
+- Board places those cards **only** in Scheduled (exclusive of Open/Waiting) sorted by soonest `due_at`.
+- Cards show a **live countdown** (`h m s` / `due now`) from real `due_at` (1s ticker while Board/Threads is open), plus reason + attempt budget.
+- WS `followup` events refresh Board/Threads when a wake is scheduled or cleared.
+- **Check now** on Scheduled cards: `POST /api/threads/:id/check-now` sets `due_at=now` and runs the same wake path as the timer (countdown → 0, agent re-invoked).
+
+## Slice — Skipper ↔ resident hand-back (2026-07-20)
+
+Resident agents could already escalate with `call_skipper`, but Skipper had no symmetric way to re-invoke the resident after unblocking work (credentials, host ops). Models fell back to prose `@mentions`, which **do not** launch agent turns (only human-authored mentions and tools do). That left the Captain finishing the loop.
+
+- New Skipper tool: **`call_agent`** — re-invokes this channel's resident (or invites another specialist) on the same thread with a concrete handoff reason. Always available to Skipper (not host-gated).
+- Prompt contract: help → hand back → step out; do not absorb resident reply-style prefs.
+- Verified in `test/native-world.mjs` (mock provider forces `call_agent`, asserts resident reply after handoff).
+
+## Slice — Skipper thread-status audit (2026-07-20)
+
+Skipper now owns a workspace-wide **thread status audit** loop (~every 10 minutes, overridable via `THREAD_AUDIT_INTERVAL_MS`):
+
+- Candidates: durable threads in active channels still `open` / `waiting` / `failed`, idle for at least `THREAD_AUDIT_MIN_IDLE_MS` (default 2m), with no running tool/agent turn.
+- Judgment: Skipper model reads each thread's rolling summary + recent messages + tool journal and returns structured status decisions. Conservative heuristics run if the model is unavailable.
+- Writes: only clear moves (`resolved` / `waiting` / `failed` / reopen `open`); ambiguous work stays put. Resolving a thread drops its guest experts and records `thread_audit` activity + WS `thread_update` so Board/Threads refresh live.
+- Captain can force a pass with `POST /api/thread-audit/run` (admin only). Background loop starts with the server alongside the existing improvement loop.
+- Verified with focused `npm run test:thread-audit` (mock provider decisions + activity/status assertions).
+
 ## Direction update — 1Helm native agent workspace (2026-07-18)
 
 The product direction sharpened from "a chat app with configurable bots" into **1Helm**, the native agent workspace defined in `SPEC.md`. **1Helm is now the installed host/environment; 1Helm is the product that runs on it.** The one-sentence promise: *create a channel for anything, and it receives a persistent agent, a computer workspace, files, memory, and threads.*
@@ -25,7 +101,7 @@ Implements SPEC §12 end-to-end. Key decisions:
 - **Atomic provisioning.** `POST /api/channels {name, purpose}` provisions the channel, resident agent, profile, capabilities, workspace tree (`workspace/ files/ state/ memory/ profile/`), ready announcement, initial thread/summary/memory, and activity record in one SQLite transaction; retry is idempotent and never yields duplicate residents.
 - **Channel-scoped execution.** Resident `run_command` is CWD-locked to the channel's `/workspace` on the embedded local computer; terminals open there too, are owner+channel scoped, and their upstream PTYs are torn down on close/archive/delete. Workspace boundary is process-level for now with the abstraction kept explicit so container/VM isolation can slot in later (SPEC §7.2).
 - **Durable sessions + memory.** Threads carry status/summary; agent context is assembled from profile + session summary + retrieved channel memory (framed as untrusted data with provenance) + artifact list + transcript. Continuity verified across model change and server restart.
-- **Skipper escalation.** `@skipper` (human) and the resident `call_skipper` tool both route the full authoritative thread to the one workspace Skipper, which acts and records the outcome in the same thread; host-tool authority is gated to Captain-authorized invocations.
+- **Skipper escalation.** `@skipper` (human) and the resident `call_skipper` tool both route the full authoritative thread to the one workspace Skipper, which acts and records the outcome in the same thread; host-tool authority is gated to Captain-authorized invocations. After unblocking, Skipper uses **`call_agent`** to re-invoke the resident with a handoff so the Captain never re-tags them.
 - **Lifecycle.** Archive pauses the agent world (cancels in-flight turns, closes terminals) while preserving everything; restore reuses the same identity/workspace/memory/threads without rewriting independently-set thread status; permanent deletion is Captain-only, requires the channel be archived + typed-name confirmation, uses a filesystem tombstone for crash-safety, and removes only the target world.
 - **Native UX.** Create-channel asks name + "What is this channel all about?"; the channel header shows resident identity/status/model + Call Skipper; per-channel Chat/Threads/Files/Terminal/Memory/Activity/Settings tabs; Settings exposes editable purpose, replaceable model policy, capabilities, and lifecycle. The normal path never asks for a directory, memory backend, terminal backend, or bot-channel membership; the old "add a bot and wire it in" flow is demoted to a read-mostly Agents roster. Files are opened over an authenticated fetch (no unauthenticated content route).
 - **Authorization hardening from adversarial review:** channel-scoped file/attachment authorization, symlink-escape containment via realpath, admin gating on bot-join / model-pref / terminal-open, and pre-auth PTY data-leak fix.
@@ -156,3 +232,14 @@ Formal maintainer process is defined in-repo:
 - Draft feature work (native 1Herd on `worktree-1herd-native-spec`) stays off `main` until its own verification bar is met; it must still follow the same PR template and changelog discipline when merged
 
 Standing order unchanged: demo VPS is cold-first-run unless the product owner preserves state explicitly.
+
+## Board (Kanban) — visual Threads surface (2026-07-20)
+
+Product decision from operator feedback: add a per-channel **Board** tab between **Chat** and **Threads**.
+
+- Board is **only a visualization** of existing channel threads (`GET /api/channels/:id/threads`). No new domain object, no parallel status store.
+- Lanes: **Incoming** (compose-only, not a DB status) → **Open** → **Waiting** → **Resolved** → **Failed** → **Archived**.
+- Humans **cannot** drag cards or set status. Status remains system/agent-driven; Threads tab stays display-only path UI.
+- Incoming **New** opens a mobile-sheet composer and `POST`s a normal root message (same as Chat). That creates/ensures a thread at `open`, then opens the session.
+- Card click opens the thread in Chat (same continuity as the Threads list).
+- Implementation: `renderBoard` / `openBoardComposer` in `src/client/channel.ts`; tab + route `"board"` in `src/client/app.ts`; lane styles in `src/client/styles.css`.

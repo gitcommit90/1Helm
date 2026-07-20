@@ -1,5 +1,5 @@
 import { q, q1, run, now, type Row } from "./db.ts";
-import { createMessage, serializeMessage, resolveModel, resolveProviderId, botEndpoint } from "./store.ts";
+import { createMessage, serializeMessage, resolveModel, resolveProviderId, botEndpoint, isInternalMessageBody } from "./store.ts";
 import { getComputer, execOnComputer } from "./computer.ts";
 import { broadcastToChannel } from "./events.ts";
 import { isChatGPTProvider, streamChatGPTCompletion } from "./chatgpt.ts";
@@ -22,7 +22,9 @@ import {
   setAgentStatus,
   syncWorkspaceArtifacts,
   threadIdForRoot,
+  addThreadUsage,
 } from "./agents.ts";
+import { scheduleAgentFollowup } from "./followups.ts";
 
 type ChatMsg = { role: string; content: string; tool_calls?: ToolCall[]; tool_call_id?: string; name?: string };
 type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
@@ -58,7 +60,7 @@ function completedToolAnswer(tool: string, result: string): string {
       return `Created a Gmail draft in **${parsed.account || "the granted account"}**${parsed.draft_id ? ` (draft ${parsed.draft_id})` : ""}. It was not sent.`;
     } catch { return "Created the Gmail draft. It was not sent."; }
   }
-  if (["grant_gmail_access", "create_channel", "remember", "call_skipper", "request_skill", "propose_skill", "create_skill", "invite_agent", "attach_file"].includes(tool)) return result;
+  if (["grant_gmail_access", "create_channel", "remember", "call_skipper", "call_agent", "request_skill", "propose_skill", "create_skill", "invite_agent", "attach_file", "schedule_followup"].includes(tool)) return result;
   if (tool === "gmail_list_accounts") {
     try {
       const parsed = JSON.parse(result) as { accounts?: string[] };
@@ -98,6 +100,8 @@ function systemPrompt(bot: Row, agent: RuntimeAgent | undefined, channelId: numb
       hostAuthorized
         ? "For channel creation, use create_channel directly. Never inspect the host or run shell commands to discover how channels are provisioned."
         : "Do not create, restore, remove, or change channels without Captain authorization.",
+      "You oversee and unblock. Do not absorb a resident agent's reply style, silence rules, or channel preferences as your own. Help, hand the work back, then step out.",
+      "After you unblock a resident (credentials, host work, missing capability, or cross-channel help), you MUST use call_agent to re-invoke that agent with a concrete handoff so they finish the original request. Never leave the Captain to re-tag the agent or finish the job.",
       "Be opportunity-aware for people new to self-hosting. When their goal could benefit from owning a private alternative (for example files, photos, passwords, or documents), briefly offer an approachable option and the help to provision it; do not derail unrelated work.",
       "Use Markdown. Be concrete and useful.",
       "When you create a file the Captain should see in chat (image, PDF, report, export), use attach_file with a path under the channel workspace—not only a path string.",
@@ -116,6 +120,7 @@ function systemPrompt(bot: Row, agent: RuntimeAgent | undefined, channelId: numb
     visiting ? "Use only the authoritative invoking thread context. Do not carry this one-off collaboration into unrelated work." : "This channel's threads, files, memory, and tools are your normal world. Use remember for durable decisions, facts, preferences, and useful references. When you produce a file, image, PDF, or other artifact the user should see in chat, call attach_file with its workspace path so it appears as a real attachment (inline images, downloadable files)—do not only paste a path.",
     visiting ? "" : "When a user's real need presents a useful self-hosting opportunity, explain the option in newcomer-friendly language and offer to call Skipper to provision it. Keep suggestions relevant and non-pushy.",
     "If work needs host-level authority, another channel, a missing capability, or credentials, use call_skipper with a concise reason. Do not silently assume broader access.",
+    visiting ? "" : "CRITICAL — no silent background work: this turn ends when you stop. There is no hidden watcher after you reply. If external work is still running (downloads, imports, long jobs) and you will need to report later, you MUST call schedule_followup before ending. Never promise \"I'll update when done\" / \"next message will be Downloaded or Blocked\" / \"I'll let you know\" without a successful schedule_followup in this turn. If you cannot schedule, say Blocked with the reason.",
     "Use Markdown. Keep answers focused and useful.",
     agent?.id ? agentSkillContext(Number(agent.id)) : "",
   ].filter(Boolean).join("\n\n");
@@ -127,6 +132,25 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
   const skipper = agent?.kind === "skipper";
   const visiting = agent?.kind === "channel" && Number(agent.channel_id || 0) !== channelId;
   if (visiting) return undefined;
+  if (skipper) {
+    // Hand-back always available: after Skipper unblocks work, re-invoke the
+    // resident (or another specialist) so the Captain never has to finish the loop.
+    tools.push({
+      type: "function",
+      function: {
+        name: "call_agent",
+        description: "Re-invoke a channel resident or specialist on this same thread with a concrete handoff. Use this after you unblock work (credentials, host ops, missing capability) so the agent finishes the original request. Omit agent to call this channel's resident. Do not leave the Captain to re-tag anyone.",
+        parameters: {
+          type: "object",
+          properties: {
+            agent: { type: "string", description: "Agent mention name. Omit to call this channel's resident specialist." },
+            reason: { type: "string", description: "What you unblocked and what the agent should do next." },
+          },
+          required: ["reason"],
+        },
+      },
+    });
+  }
   if (skipper && hostAuthorized) {
     tools.push({
       type: "function",
@@ -256,6 +280,26 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       },
     },
   });
+  // Durable re-entry for async work (downloads, long jobs). Home residents only.
+  if (agent?.kind === "channel" && !visiting) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "schedule_followup",
+        description: "Schedule a durable re-invocation of yourself on this same thread after delay_seconds. Survives session end and server restart. REQUIRED whenever work is still running externally and you would otherwise promise a later update. Without this tool, ending the turn is permanent silence.",
+        parameters: {
+          type: "object",
+          properties: {
+            delay_seconds: { type: "integer", minimum: 30, maximum: 21600, description: "Seconds until re-entry (min 30, max 6h). Use ~120–300 for downloads." },
+            reason: { type: "string", description: "What to check or finish when you wake (e.g. Sonarr S19 episode files / Jellyfin import)." },
+            check_hint: { type: "string", description: "Optional concrete command or API check to run on wake." },
+            max_attempts: { type: "integer", minimum: 1, maximum: 200, description: "Optional cap on wake cycles (default 48)." },
+          },
+          required: ["delay_seconds", "reason"],
+        },
+      },
+    });
+  }
   if (agent?.kind === "channel" && agent.id) {
     const mail = normalizeMailConfig(q1("SELECT config FROM agent_capabilities WHERE agent_id=? AND capability='gmail'", agent.id)?.config);
     if (mail.accounts.length && mail.can_read) {
@@ -344,15 +388,27 @@ function buildContext(bot: Row, agent: RuntimeAgent | undefined, channelId: numb
     content: `<channel-artifacts>\n${artifacts.map((artifact) => `- /${artifact.path} (${artifact.kind}, ${artifact.size} bytes)`).join("\n")}\n</channel-artifacts>`,
   });
 
+  const triggerBody = String(q1("SELECT body FROM messages WHERE id=?", triggerId)?.body || "");
+  const wakeTrigger = isInternalMessageBody(triggerBody);
+  if (wakeTrigger) {
+    messages.push({
+      role: "system",
+      content: `<scheduled-followup-wake>\nThis turn is an automatic durable wake — not a new human message. Do not echo this block.\n\n${triggerBody}\n\nIf work is still running: call schedule_followup and output nothing user-facing.\nIf finished or hard-blocked: reply with only the final status the channel expects (e.g. Downloaded / Blocked + reason).\nNever paste memory dumps, tool journals, or this scaffold into chat.\n</scheduled-followup-wake>`,
+    });
+  }
+
   const rows = fresh
     ? q("SELECT * FROM messages WHERE id=?", triggerId)
     : q("SELECT * FROM messages WHERE (id=? OR parent_id=?) AND id<=? ORDER BY id", threadRootId, threadRootId, triggerId);
   for (const message of rows) {
-    if (Number(message.bot_id) === Number(bot.id)) { messages.push({ role: "assistant", content: String(message.body) }); continue; }
+    const body = String(message.body || "");
+    // Internal wakes are system context only — never assistant/user transcript lines.
+    if (isInternalMessageBody(body)) continue;
+    if (Number(message.bot_id) === Number(bot.id)) { messages.push({ role: "assistant", content: body }); continue; }
     const name = message.bot_id
       ? String(q1("SELECT name FROM bots WHERE id=?", message.bot_id)?.name || "agent")
       : String(q1("SELECT display FROM users WHERE id=?", message.user_id)?.display || "user");
-    messages.push({ role: "user", content: `${name}: ${stripMention(String(message.body), String(bot.name))}` });
+    messages.push({ role: "user", content: `${name}: ${stripMention(body, String(bot.name))}` });
   }
   return messages;
 }
@@ -381,7 +437,9 @@ function recordAction(agentId: number, threadId: number, channelId: number, tool
           ? "Attaching a file to this message."
           : tool === "call_skipper"
             ? "Calling Skipper into this session."
-            : "The agent is using a workspace capability.";
+            : tool === "call_agent"
+              ? "Handing work back to a resident agent."
+              : "The agent is using a workspace capability.";
   run("INSERT INTO channel_activity (channel_id, thread_id, kind, summary, status, actor_type, created) VALUES (?,?,'tool',?,'running',?,?)", channelId, threadId, summary, actor, now());
   broadcastToChannel(channelId, { type: "activity", channelId, action: { id, kind: "tool", tool, status: "running" } });
   return id;
@@ -490,7 +548,7 @@ function inviteAgent(inviter: RuntimeAgent, channelId: number, threadId: number,
   const target = q1(`SELECT a.*,ac.channel_id FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id
     WHERE a.kind='channel' AND a.status NOT IN ('deleted','archived','paused') AND lower(a.name)=lower(?)`, agentName.replace(/^@/, "").trim());
   if (!target?.bot_id) return `Error: @${agentName.replace(/^@/, "")} is not an available resident specialist.`;
-  if (Number(target.channel_id) === channelId) return `Error: @${target.name} is already the resident expert in this channel.`;
+  if (Number(target.channel_id) === channelId) return `Error: @${target.name} is already the resident expert in this channel. Use call_agent to hand work back to them.`;
   run(`INSERT INTO thread_agent_guests (thread_id,agent_id,invited_by,status,created) VALUES (?,?,?,'active',?)
     ON CONFLICT(thread_id,agent_id) DO UPDATE SET invited_by=excluded.invited_by,status='active'`, threadId, target.id, inviter.id, now());
   const invitationId = createMessage({ channelId, parentId: threadRootId, botId: Number(inviter.bot_id), body: `Inviting **@${target.name}** into this thread for one focused contribution: ${reason}` });
@@ -500,6 +558,46 @@ function inviteAgent(inviter: RuntimeAgent, channelId: number, threadId: number,
   const targetBot = q1("SELECT * FROM bots WHERE id=?", target.bot_id)!;
   setTimeout(() => { void runBot(targetBot, channelId, invitationId, threadRootId, false, undefined, false); }, 0);
   return `@${target.name} was invited into this thread only. Its home channel, workspace, memory, and normal context remain isolated.`;
+}
+
+/** Skipper hand-back: re-invoke this channel's resident (or invite another specialist) so work finishes without the Captain. */
+function callAgent(invoker: RuntimeAgent, channelId: number, threadId: number, threadRootId: number, agentName: string, reason: string, hostAuthorized: boolean): string {
+  const clean = agentName.replace(/^@/, "").trim();
+  const resident = agentForChannel(channelId) as RuntimeAgent | undefined;
+  const target = clean
+    ? q1(`SELECT a.*,ac.channel_id FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id
+        WHERE a.kind='channel' AND a.status NOT IN ('deleted','archived','paused') AND lower(a.name)=lower(?)`, clean) as RuntimeAgent | undefined
+    : resident;
+  if (!target?.bot_id) {
+    if (!clean && !resident) return "Error: this channel has no resident agent to call back.";
+    return `Error: @${clean || "agent"} is not an available resident specialist.`;
+  }
+  if (String(target.name).toLowerCase() === "skipper" || target.kind === "skipper") {
+    return "Error: call_agent is for resident specialists, not Skipper.";
+  }
+  // Cross-channel specialist: guest invitation (same isolation as invite_agent; host-gated).
+  // agentForChannel always binds to this channel; treat missing channel_id as home too.
+  const targetHome = Number(target.channel_id ?? 0);
+  if (targetHome && targetHome !== channelId) {
+    if (!hostAuthorized) {
+      return "Error: inviting another channel's specialist requires Captain-authorized host scope. Omit agent to hand back to this channel's resident.";
+    }
+    return inviteAgent(invoker, channelId, threadId, threadRootId, String(target.name), reason);
+  }
+  const handoffId = createMessage({
+    channelId,
+    parentId: threadRootId,
+    botId: Number(invoker.bot_id),
+    body: `Calling **@${target.name}**: ${reason}`,
+  });
+  run(
+    "INSERT INTO channel_activity (channel_id,thread_id,kind,summary,actor_type,created) VALUES (?,?,'handoff',?,'skipper',?)",
+    channelId, threadId, `Skipper handed work back to @${target.name}.`, now(),
+  );
+  broadcastToChannel(channelId, { type: "message", message: serializeMessage(handoffId) });
+  const targetBot = q1("SELECT * FROM bots WHERE id=?", target.bot_id)!;
+  setTimeout(() => { void runBot(targetBot, channelId, handoffId, threadRootId, false, undefined, false); }, 0);
+  return `@${target.name} was re-invoked on this thread with the handoff. They keep their channel workspace, tools, and memory.`;
 }
 
 /** Serialize turns per resident identity so concurrent mentions cannot race tool/workspace state. */
@@ -551,11 +649,29 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
     run("UPDATE agent_progress SET body=?,status=?,updated=? WHERE id=?", body.slice(0, 20_000), status, now(), id);
     emit();
   };
+  // responseBody = committed final answer only. liveThought is sticky interim text shown
+  // until the next thought replaces it or the turn finishes with a real answer.
   let responseBody = "";
+  let liveThought = "";
   let lastCompletedTool: { name: string; result: string } | null = null;
+  const paintBody = (text: string): void => {
+    if (!turnIsActive(channelId, controller.signal) || !q1("SELECT 1 FROM messages WHERE id=?", msgId)) return;
+    run("UPDATE messages SET body=? WHERE id=?", text, msgId);
+    emit();
+  };
   const setBody = (text: string): void => {
     if (!turnIsActive(channelId, controller.signal) || !q1("SELECT 1 FROM messages WHERE id=?", msgId)) return;
-    responseBody = text; run("UPDATE messages SET body=? WHERE id=?", responseBody, msgId); emit();
+    responseBody = text;
+    paintBody(responseBody);
+  };
+  /** Body while tools/thinking are mid-flight: keep last real thought, never flash back to Working… */
+  const paintStickyWorkingBody = (): void => {
+    if (responseBody.trim()) {
+      paintBody(responseBody);
+      return;
+    }
+    const sticky = liveThought.trim();
+    paintBody(sticky || "_Working…_");
   };
   const failEscalation = (): void => {
     if (!escalationId) return;
@@ -572,7 +688,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
     setBody(`_No model configured for **${bot.name}**. Ask @skipper or the Captain to choose one._`);
     failEscalation(); setStatus(agent, channelId, "waiting"); turns.delete(controller); if (!turns.size) activeTurns.delete(channelId); return;
   }
-  run("INSERT INTO agent_progress (message_id,kind,body,status,created,updated) VALUES (?,'status','Starting agent turn…','running',?,?)", msgId, now(), now());
+  let startProgressId = addProgress("status", "Starting agent turn…", "running");
   broadcastToChannel(channelId, { type: "message", message: serializeMessage(msgId), parent: serializeMessage(threadRootId) });
 
   const messages = buildContext(bot, agent, channelId, triggerId, threadRootId, fresh, hostAuthorized);
@@ -587,24 +703,49 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
       requireActiveTurn(channelId, controller.signal);
       const finalRound = round === MAX_TOOL_ROUNDS;
       if (finalRound) messages.push({ role: "system", content: "Tool budget is exhausted. Give the user a concise final answer now using the tool results already available. Do not request another tool." });
-      const roundStartBody = responseBody;
       let streamedBody = "";
       let thoughtId = 0;
       const onDelta = (delta: string): void => {
         streamedBody += delta;
-        if (!thoughtId) thoughtId = addProgress("thinking", streamedBody);
-        else updateProgress(thoughtId, streamedBody, "running");
-        setBody(roundStartBody + streamedBody);
+        if (!thoughtId) {
+          // Starting… is done once real model text arrives — leave the thought sticky instead.
+          if (startProgressId) {
+            updateProgress(startProgressId, "Starting agent turn…", "complete");
+            startProgressId = 0;
+          }
+          thoughtId = addProgress("thinking", streamedBody);
+        } else {
+          updateProgress(thoughtId, streamedBody, "running");
+        }
+        liveThought = streamedBody;
+        // Do not commit interim stream into responseBody — tool rounds would otherwise
+        // treat planning text as the answer. Paint it as sticky live thought instead.
+        paintStickyWorkingBody();
       };
-      const { content, toolCalls } = isChatGPT
+      const result = isChatGPT
         ? await streamChatGPTCompletion(model, messages, finalRound ? undefined : tools, onDelta, turnSignal)
         : await streamCompletion(endpoint!, model, messages, finalRound ? undefined : tools, onDelta, turnSignal);
+      const content = result.content;
+      const toolCalls = result.toolCalls;
+      // Rough live totals: sum provider-reported prompt/completion tokens per round.
+      if (result.usage && (result.usage.input_tokens || result.usage.output_tokens)) {
+        const totals = addThreadUsage(threadId, result.usage.input_tokens, result.usage.output_tokens);
+        broadcastToChannel(channelId, {
+          type: "thread_usage",
+          channelId,
+          rootMessageId: threadRootId,
+          threadId,
+          input_tokens: totals.input_tokens,
+          output_tokens: totals.output_tokens,
+        });
+      }
       requireActiveTurn(channelId, controller.signal);
       if (toolCalls.length && !finalRound) {
-        // Text emitted before a tool call is transient planning, not a user-facing
-        // answer. Keep it in model context, but never persist it in chat.
-        setBody(roundStartBody);
-        if (thoughtId) updateProgress(thoughtId, streamedBody, "complete");
+        // Planning text before tools is not the final answer, but keep it sticky on the
+        // message until the next thought replaces it or the turn finishes.
+        if (thoughtId) updateProgress(thoughtId, streamedBody || liveThought, "complete");
+        if (streamedBody.trim()) liveThought = streamedBody;
+        paintStickyWorkingBody();
         messages.push({ role: "assistant", content: content || "", tool_calls: toolCalls });
         for (const toolCall of toolCalls) {
           requireActiveTurn(channelId, controller.signal);
@@ -628,8 +769,10 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                           ? "List channel-scoped Gmail accounts"
                           : name === "request_skill" ? `${String(args.skill || "")}: ${String(args.reason || "")}`
                             : name === "propose_skill" || name === "create_skill" ? `${String(args.name || "")}: ${String(args.description || "")}`
-                  : name === "invite_agent" ? `@${String(args.agent || "")}: ${String(args.reason || "")}`
+                  : name === "invite_agent" || name === "call_agent" ? `@${String(args.agent || "resident")}: ${String(args.reason || "")}`
                   : name === "attach_file" ? String(args.path || args.name || "")
+                  : name === "schedule_followup"
+                    ? `in ${String(args.delay_seconds || "?")}s: ${String(args.reason || "")}`
                 : String(args.content || "");
           const actionId = recordAction(Number(agent?.id || 0), threadId, channelId, name, input, actor);
           const progressId = addProgress("tool", `${name.replaceAll("_", " ")}: ${input || "running"}`);
@@ -653,12 +796,31 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
             } else if (name === "remember") {
               const memoryId = recordMemory({ channelId, threadId, kind: String(args.kind || "fact"), content: input, sourceMessageId: msgId, authorType: actor });
               result = `Recorded channel memory ${memoryId}.`;
+            } else if (name === "schedule_followup" && agent?.kind === "channel" && !visiting) {
+              try {
+                const scheduled = scheduleAgentFollowup({
+                  agentId: Number(agent.id),
+                  botId: Number(bot.id),
+                  channelId,
+                  threadId,
+                  rootMessageId: threadRootId,
+                  delaySeconds: Number(args.delay_seconds) || 120,
+                  reason: String(args.reason || ""),
+                  checkHint: args.check_hint ? String(args.check_hint) : "",
+                  maxAttempts: args.max_attempts != null ? Number(args.max_attempts) : undefined,
+                });
+                result = `Scheduled durable follow-up #${scheduled.id} in ${scheduled.delay_seconds}s (due_at=${scheduled.due_at}). You will be re-invoked on this thread automatically; no silent wait exists without this.`;
+              } catch (error) {
+                result = `Error: ${(error as Error).message}`;
+              }
             } else if (name === "create_channel" && agent?.kind === "skipper" && hostAuthorized) {
               result = createNativeChannel(String(args.name || ""), String(args.purpose || ""), requestUserId);
             } else if (name === "grant_gmail_access" && agent?.kind === "skipper" && hostAuthorized) {
               result = grantGmail(channelId, args.accounts);
             } else if (name === "invite_agent" && agent?.kind === "skipper" && hostAuthorized) {
               result = inviteAgent(agent, channelId, threadId, threadRootId, String(args.agent || ""), String(args.reason || ""));
+            } else if (name === "call_agent" && agent?.kind === "skipper") {
+              result = callAgent(agent, channelId, threadId, threadRootId, String(args.agent || ""), String(args.reason || ""), hostAuthorized);
             } else if (name === "create_skill" && agent?.kind === "skipper" && hostAuthorized) {
               const skill = createSkill({ name: String(args.name || ""), description: String(args.description || ""), instructions: String(args.instructions || ""), source: "skipper" });
               const targetName = String(args.assign_to_agent || "").replace(/^@/, "").trim();
@@ -697,16 +859,97 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
           if (actionStatus === "complete") lastCompletedTool = { name, result };
           messages.push({ role: "tool", tool_call_id: toolCall.id, name, content: result });
         }
+        // Keep a running status between tool rounds so the UI never drops Working while
+        // only a sticky thought remains (no running progress rows).
+        if (startProgressId) {
+          updateProgress(startProgressId, "Working…", "running");
+        } else {
+          startProgressId = addProgress("status", "Working…", "running");
+        }
+        paintStickyWorkingBody();
         continue;
       }
-      if (thoughtId) { run("DELETE FROM agent_progress WHERE id=?", thoughtId); emit(); }
+      // Final answer path: keep the last thought in the work log as complete history
+      // (do not wipe it — sticky thoughts stay until replaced or the turn ends).
+      if (thoughtId) updateProgress(thoughtId, streamedBody || liveThought, "complete");
+      if (startProgressId) {
+        updateProgress(startProgressId, "Starting agent turn…", "complete");
+        startProgressId = 0;
+      }
       if (content && !responseBody.trim()) setBody(content);
+      const wakeTurn = isInternalMessageBody(String(q1("SELECT body FROM messages WHERE id=?", triggerId)?.body || ""));
+      const silentReschedule = lastCompletedTool?.name === "schedule_followup" && !String(lastCompletedTool.result || "").startsWith("Error:");
+      const echoedScaffold = wakeTurn && (
+        /^\[scheduled-followup\b/i.test(responseBody.trim())
+        || /<memory-context>|Mnemosyne Context|You were re-invoked by a durable/i.test(responseBody)
+      );
+      // Wake turns that only re-schedule (or that echo the internal scaffold) must not pollute chat.
+      if (silentReschedule || echoedScaffold) {
+        run("DELETE FROM agent_progress WHERE message_id=?", msgId);
+        run("DELETE FROM messages WHERE id=?", msgId);
+        if (threadRootId) {
+          const remaining = q(
+            `SELECT created FROM messages WHERE parent_id=?
+             AND body NOT LIKE '[scheduled-followup%'
+             AND body NOT LIKE '⟦followup⟧%'
+             AND body <> '_Working…_'
+             ORDER BY id`,
+            threadRootId,
+          );
+          const last = remaining.length ? Number(remaining[remaining.length - 1].created) : null;
+          run("UPDATE messages SET reply_count=?, last_reply=? WHERE id=?", remaining.length, last, threadRootId);
+          broadcastToChannel(channelId, {
+            type: "message_deleted",
+            channelId,
+            id: msgId,
+            deleted_ids: [msgId],
+            parent_id: threadRootId,
+            parent: { id: threadRootId, reply_count: remaining.length, last_reply: last },
+          });
+        }
+        refreshThreadSummary(threadRootId);
+        setStatus(agent, channelId, "ready");
+        turns.delete(controller);
+        if (!turns.size) activeTurns.delete(channelId);
+        return;
+      }
       if (!meaningfulAnswer(responseBody) && lastCompletedTool) setBody(completedToolAnswer(lastCompletedTool.name, lastCompletedTool.result));
       if (!meaningfulAnswer(responseBody)) throw new Error("The model returned no usable answer. Please retry; no work was lost.");
       break;
     }
     requireActiveTurn(channelId, controller.signal);
-    if (!meaningfulAnswer(responseBody) && lastCompletedTool) setBody(completedToolAnswer(lastCompletedTool.name, lastCompletedTool.result));
+    if (!meaningfulAnswer(responseBody) && lastCompletedTool) {
+      if (lastCompletedTool.name === "schedule_followup" && !lastCompletedTool.result.startsWith("Error:")) {
+        run("DELETE FROM agent_progress WHERE message_id=?", msgId);
+        run("DELETE FROM messages WHERE id=?", msgId);
+        if (threadRootId) {
+          const remaining = q(
+            `SELECT created FROM messages WHERE parent_id=?
+             AND body NOT LIKE '[scheduled-followup%'
+             AND body NOT LIKE '⟦followup⟧%'
+             AND body <> '_Working…_'
+             ORDER BY id`,
+            threadRootId,
+          );
+          const last = remaining.length ? Number(remaining[remaining.length - 1].created) : null;
+          run("UPDATE messages SET reply_count=?, last_reply=? WHERE id=?", remaining.length, last, threadRootId);
+          broadcastToChannel(channelId, {
+            type: "message_deleted",
+            channelId,
+            id: msgId,
+            deleted_ids: [msgId],
+            parent_id: threadRootId,
+            parent: { id: threadRootId, reply_count: remaining.length, last_reply: last },
+          });
+        }
+        refreshThreadSummary(threadRootId);
+        setStatus(agent, channelId, "ready");
+        turns.delete(controller);
+        if (!turns.size) activeTurns.delete(channelId);
+        return;
+      }
+      setBody(completedToolAnswer(lastCompletedTool.name, lastCompletedTool.result));
+    }
     if (!meaningfulAnswer(responseBody)) throw new Error("The agent reached its tool limit without a usable final answer. Please retry with a narrower request.");
     if (escalationId && agent?.kind === "skipper") {
       run("UPDATE escalations SET status='resolved', resolved_by=? WHERE id=?", agent.id, escalationId);
@@ -748,18 +991,35 @@ const safeParse = (value: string): Record<string, unknown> => { try { return JSO
 /** Stream an OpenAI-compatible chat completion, invoking onDelta for content tokens. */
 async function streamCompletion(
   endpoint: { base_url: string; api_key: string }, model: string, messages: ChatMsg[], tools: unknown[] | undefined, onDelta: (delta: string) => void, signal?: AbortSignal,
-): Promise<{ content: string; toolCalls: ToolCall[] }> {
+): Promise<{ content: string; toolCalls: ToolCall[]; usage: { input_tokens: number; output_tokens: number } }> {
   const base = endpoint.base_url.replace(/\/$/, "");
-  const response = await fetch(`${base}/chat/completions`, {
+  const headers = { "content-type": "application/json", ...(endpoint.api_key ? { authorization: `Bearer ${endpoint.api_key}` } : {}) };
+  const bodyBase = { model, messages, stream: true as const, ...(tools ? { tools, tool_choice: "auto" as const } : {}) };
+  // Prefer stream_options.include_usage (OpenAI/OpenRouter). Fall back if a peer rejects the field.
+  let response = await fetch(`${base}/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json", ...(endpoint.api_key ? { authorization: `Bearer ${endpoint.api_key}` } : {}) },
-    body: JSON.stringify({ model, messages, stream: true, ...(tools ? { tools, tool_choice: "auto" } : {}) }),
+    headers,
+    body: JSON.stringify({ ...bodyBase, stream_options: { include_usage: true } }),
     signal,
   });
+  if (!response.ok) {
+    const errText = await response.text().catch(() => "");
+    if (response.status === 400 && /stream_options|unknown|unrecognized|include_usage/i.test(errText)) {
+      response = await fetch(`${base}/chat/completions`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(bodyBase),
+        signal,
+      });
+    } else {
+      throw new Error(`${response.status} ${errText.slice(0, 200)}`);
+    }
+  }
   if (!response.ok || !response.body) throw new Error(`${response.status} ${(await response.text().catch(() => "")).slice(0, 200)}`);
 
   let content = "";
   const toolMap = new Map<number, ToolCall>();
+  let usage = { input_tokens: 0, output_tokens: 0 };
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -774,8 +1034,16 @@ async function streamCompletion(
       if (!text.startsWith("data:")) continue;
       const payload = text.slice(5).trim();
       if (payload === "[DONE]") continue;
-      let chunk: { choices?: { delta?: { content?: string; tool_calls?: { index: number; id?: string; function?: { name?: string; arguments?: string } }[] } }[] };
+      let chunk: {
+        choices?: { delta?: { content?: string; tool_calls?: { index: number; id?: string; function?: { name?: string; arguments?: string } }[] } }[];
+        usage?: { prompt_tokens?: number; completion_tokens?: number; input_tokens?: number; output_tokens?: number };
+      };
       try { chunk = JSON.parse(payload); } catch { continue; }
+      if (chunk.usage) {
+        const input = Number(chunk.usage.prompt_tokens ?? chunk.usage.input_tokens ?? 0) || 0;
+        const output = Number(chunk.usage.completion_tokens ?? chunk.usage.output_tokens ?? 0) || 0;
+        if (input || output) usage = { input_tokens: input, output_tokens: output };
+      }
       const delta = chunk.choices?.[0]?.delta;
       if (!delta) continue;
       if (delta.content) { content += delta.content; onDelta(delta.content); }
@@ -788,5 +1056,5 @@ async function streamCompletion(
       }
     }
   }
-  return { content, toolCalls: [...toolMap.values()].filter((toolCall) => toolCall.function.name) };
+  return { content, toolCalls: [...toolMap.values()].filter((toolCall) => toolCall.function.name), usage };
 }

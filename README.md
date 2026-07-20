@@ -16,7 +16,7 @@ The invariant model:
 
 > One Helm. One Captain. One Skipper. Many channels. Many agents. Every thread is a session.
 
-Distribution is fully OSS and self-hosted. State lives on your machine in local SQLite. You bring your own AI provider (OpenAI-compatible, OpenRouter OAuth, or Login with ChatGPT). A managed hosted offering is a future layer; this repository is the on-box runtime.
+Distribution is fully OSS and self-hosted. State lives on your machine. Connect subscription accounts or API keys once; 1Helm routes its own agents and external clients through the same local model fabric. A managed hosted offering is a future layer; this repository is the on-box runtime.
 
 Living product record and direction history: [`docs/VISION.md`](docs/VISION.md). Full specification: [`SPEC.md`](SPEC.md).
 
@@ -34,10 +34,11 @@ Living product record and direction history: [`docs/VISION.md`](docs/VISION.md).
 - **Cloudflare custom domains** — onboarding and Settings → Domains create a named tunnel, DNS route, HTTPS hostname, and persistent service from a one-time token that is never stored.
 - **Silent improvement reviews** — Skipper periodically examines recent interaction signals, adds durable behavior guidance after missed corrections or frustration, and leaves a concise Activity note.
 - **Thread-only expert guests** — the ordinary channel stays Skipper plus its resident expert. Skipper may invite another resident into one thread; the guest is never added to the channel and receives neither its workspace nor memory.
-- **Skipper escalation** — `@skipper` (or a resident agent's `call_skipper`) routes the full invoking thread to the one workspace Skipper, which can take the broader action and records the outcome in that same thread.
+- **Skipper escalation** — `@skipper` (or a resident agent's `call_skipper`) routes the full invoking thread to the one workspace Skipper, which can take the broader action and records the outcome in that same thread. Skipper hands work back with `call_agent` so the resident finishes without the Captain re-tagging.
 - **Channel-native UI** — per-channel Chat, Threads, Files, Terminal, Memory, Activity, and Settings. The header shows the resident agent's identity, status, and serving model; a `Call Skipper` affordance is always one click away.
 - **Lifecycle** — archive pauses an agent world (cancels in-flight work, closes terminals) while preserving everything; restore reuses the same identity, workspace, memory, and threads; permanent deletion is Captain-only with typed-name confirmation.
-- **AI providers** — OpenAI-compatible base URL/key, OpenRouter OAuth (HTTPS/localhost), Login with ChatGPT. The model is a replaceable implementation detail; changing it never creates a new agent or discards channel-owned state.
+- **Unified model fabric** — connect ChatGPT, Claude, Antigravity/Gemini, and xAI OAuth accounts; OpenRouter, NVIDIA NIM, Cloudflare, GLM, or custom API keys; pool multiple accounts; enable exact models; create fallback or round-robin routes; and use all of them inside 1Helm or through one `/v1` endpoint.
+- **Local operations** — request activity, token usage, account attribution, supported subscription quotas, redacted routing/OAuth logs, and revocable gateway keys live in Settings → Providers. Changing a model or route never replaces an agent or discards channel-owned state.
 - **Channel terminals** — optional. Each channel's Terminal opens directly in that agent's `/workspace`; its screen and server session survive tab navigation and page reload, and sessions are owner- and channel-scoped and torn down on archive/delete.
 - **Scoped Gmail handoff** — when Gmail OAuth accounts already exist on the 1Helm host, Captain-authorized Skipper can grant a resident account-specific search/read/draft access without exposing tokens. Sending remains disabled by default.
 
@@ -94,7 +95,7 @@ Compact Node/TypeScript app — no Electron, no server transpile step:
 | Piece | How |
 |---|---|
 | **Runtime** | Official Node 22 runs server TypeScript directly (native type-stripping). |
-| **Database** | `node:sqlite` — no ORM, no external DB. |
+| **Database** | `node:sqlite` — workspace state plus uncapped routed-usage history; no external DB. |
 | **Server** | `node:http` + `ws`. |
 | **Client** | Vanilla TypeScript via esbuild + Tailwind CSS. |
 | **Terminals** | `node-pty` + embedded Open-Terminal-compatible agent. |
@@ -122,7 +123,7 @@ src/
     api.ts        REST + WebSocket client
 ```
 
-Runtime deps: `ws`, `node-pty`, and the optional ChatGPT login package.
+Runtime deps include `ws`, `node-pty`, and the version-pinned ReRouted headless engine that supplies provider adapters, account pools, retries, routes, quota probes, and the local API gateway. ReRouted's dashboard is not embedded; 1Helm owns the product UI and lifecycle.
 
 ---
 
@@ -139,6 +140,14 @@ Every resident agent works in its channel's `/workspace` on the embedded "This C
 
 ### Admin
 First user is the Captain (admin). The Captain manages workspace name/photo/theme, the Cloudflare domain, providers, members, channel lifecycle, and Skipper. The normal path never asks anyone to choose a directory, memory backend, terminal backend, or bot-channel membership.
+
+### Providers, routes, and the shared endpoint
+
+Settings → Providers is 1Helm's native control plane for all model access. Connected accounts and API keys immediately populate channel and thread model pickers. Standard-provider routes select provider + model and try every eligible account in that provider pool before moving to the next fallback member; custom OpenAI-compatible connections remain connection-specific.
+
+Named routes can use ordered fallback or round-robin starting positions. The same direct model IDs and route names are exposed at the workspace's `/v1` base URL for external OpenAI- or Anthropic-compatible tools. Supported endpoints are model discovery, Chat Completions, Responses, Anthropic Messages, and Anthropic token counting. Gateway keys are separate from 1Helm login sessions and can be created, disabled, copied, and revoked independently.
+
+Provider configuration lives under `CTRL_DATA_DIR/routing`: restrictive local config, uncapped SQLite usage history, and a redacted operational log. Existing pre-fabric 1Helm provider assignments migrate into compatibility routes on first start so current resident model names continue to resolve.
 
 ---
 

@@ -22,9 +22,53 @@ createServer(async (req, res) => {
     const wantsRequestSkill = reqBody.tools?.some((tool) => tool.function?.name === "request_skill") && /request the self-hosting-guide skill/i.test(latestUser) && !hasToolResult;
     const wantsProposeSkill = reqBody.tools?.some((tool) => tool.function?.name === "propose_skill") && /propose a reusable meeting brief skill/i.test(latestUser) && !hasToolResult;
     const wantsInviteAgent = reqBody.tools?.some((tool) => tool.function?.name === "invite_agent") && /invite @?finance-agent/i.test(latestUser) && !hasToolResult;
+    // Match the Captain/user turn only — system prompts now mention call_agent/hand-back and must not steal other tool paths.
+    const wantsCallAgent = reqBody.tools?.some((tool) => tool.function?.name === "call_agent")
+      && /hand (?:the )?work back|call_agent|re-invoke|handoff to resident/i.test(latestUser)
+      && !hasToolResult
+      && /You are @skipper/i.test(serialized);
+    // Durable follow-up: resident must schedule when async work continues after the turn.
+    const wantsScheduleFollowup = reqBody.tools?.some((tool) => tool.function?.name === "schedule_followup")
+      && /schedule[_ ]followup|check later|still downloading|async download|wake me/i.test(latestUser)
+      && !hasToolResult
+      && /You are @\S+-agent/.test(serialized);
     const wantsCallSkipper = reqBody.tools && /call skipper to run whoami/i.test(serialized) && !hasToolResult && /You are @\S+-agent/.test(serialized);
     const wantsCreateChannel = reqBody.tools?.some((tool) => tool.function?.name === "create_channel") && /create (?:a )?(?:new )?channel/i.test(serialized) && !hasToolResult;
-    const wantsTool = reqBody.tools && /run|exec|whoami|command|create .*file|launch-plan/i.test(serialized) && (!hasToolResult || repeatsTools) && !wantsCallSkipper;
+    const wantsTool = reqBody.tools && /run|exec|whoami|command|create .*file|launch-plan/i.test(serialized) && (!hasToolResult || repeatsTools) && !wantsCallSkipper && !wantsCallAgent && !wantsCreateChannel && !wantsScheduleFollowup;
+    const auditMode = /silent thread-status audit/i.test(serialized);
+
+    // Non-stream path used by Skipper thread-audit.
+    if (reqBody.stream === false) {
+      let content = "Answer complete.";
+      if (auditMode) {
+        const dossiers = (() => {
+          try {
+            const user = [...reqBody.messages].reverse().find((message) => message.role === "user")?.content || "";
+            const jsonStart = user.indexOf("[");
+            return jsonStart >= 0 ? JSON.parse(user.slice(jsonStart)) : [];
+          } catch { return []; }
+        })();
+        content = JSON.stringify((Array.isArray(dossiers) ? dossiers : []).map((dossier) => {
+          const blob = `${dossier.title || ""}\n${dossier.summary || ""}\n${(dossier.recent_messages || []).map((m) => m.body).join("\n")}`.toLowerCase();
+          if (/\b(still gathering|more work remains|keep this open|still exploring)\b/.test(blob)) {
+            return { thread_id: dossier.thread_id, status: "keep", reason: "Mock Skipper: work still open." };
+          }
+          if (/\b(done|complete|finished|resolved|all set|answer complete)\b/.test(blob) && !/\b(still need|waiting|blocked|more work)\b/.test(blob)) {
+            return { thread_id: dossier.thread_id, status: "resolved", reason: "Mock Skipper: outcome is clearly complete." };
+          }
+          if (/\b(waiting (on|for)|need your|please confirm|blocked)\b/.test(blob)) {
+            return { thread_id: dossier.thread_id, status: "waiting", reason: "Mock Skipper: blocked on human input." };
+          }
+          return { thread_id: dossier.thread_id, status: "keep", reason: "Mock Skipper: leave as-is." };
+        }));
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(JSON.stringify({
+        choices: [{ message: { role: "assistant", content }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 32, completion_tokens: 16, total_tokens: 48 },
+      }));
+    }
+
     res.writeHead(200, { "content-type": "text/event-stream" });
     if (wantsRequestSkill) {
       const args = { skill: "self-hosting-guide", reason: "The current work benefits from approachable self-hosting guidance." };
@@ -37,6 +81,14 @@ createServer(async (req, res) => {
     } else if (wantsInviteAgent) {
       const args = { agent: "finance-agent", reason: "Review the financial implications in this one thread." };
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "invite_agent_1", type: "function", function: { name: "invite_agent", arguments: JSON.stringify(args) } }] } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+    } else if (wantsCallAgent) {
+      const args = { reason: "Credentials are ready in /workspace/.secrets/media-stack.env. Continue the original request and finish it." };
+      sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_agent_1", type: "function", function: { name: "call_agent", arguments: JSON.stringify(args) } }] } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+    } else if (wantsScheduleFollowup) {
+      const args = { delay_seconds: 30, reason: "Check whether the async download finished and report Downloaded or Blocked." };
+      sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "schedule_followup_1", type: "function", function: { name: "schedule_followup", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else if (wantsCallSkipper) {
       const toolName = "call_skipper", args = { reason: "need host whoami" };
@@ -56,12 +108,38 @@ createServer(async (req, res) => {
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ command }).slice(0, -1) } }] } }] });
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "}" } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+    } else if (auditMode) {
+      // Stream path for audit (fallback).
+      const dossiers = (() => {
+        try {
+          const user = [...reqBody.messages].reverse().find((message) => message.role === "user")?.content || "";
+          const jsonStart = user.indexOf("[");
+          return jsonStart >= 0 ? JSON.parse(user.slice(jsonStart)) : [];
+        } catch { return []; }
+      })();
+      const decisions = (Array.isArray(dossiers) ? dossiers : []).map((dossier) => {
+        const blob = `${dossier.title || ""}\n${dossier.summary || ""}\n${(dossier.recent_messages || []).map((m) => m.body).join("\n")}`.toLowerCase();
+        if (/\b(done|complete|finished|resolved|all set|answer complete)\b/.test(blob) && !/\b(still need|waiting|blocked)\b/.test(blob)) {
+          return { thread_id: dossier.thread_id, status: "resolved", reason: "Mock Skipper: outcome is clearly complete." };
+        }
+        if (/\b(waiting (on|for)|need your|please confirm|blocked)\b/.test(blob)) {
+          return { thread_id: dossier.thread_id, status: "waiting", reason: "Mock Skipper: blocked on human input." };
+        }
+        return { thread_id: dossier.thread_id, status: "keep", reason: "Mock Skipper: leave as-is." };
+      });
+      const text = JSON.stringify(decisions);
+      for (const tok of text.match(/.{1,24}/g) || [text]) sse(res, { choices: [{ delta: { content: tok } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "stop" }] });
     } else {
       const memory = /launch-on-monday/i.test(serialized) ? " I remember the decision: launch-on-monday." : "";
       const text = `Model **${reqBody.model}** here.${memory} `;
       for (const tok of (text + "Answer complete.").match(/.{1,6}/g)) sse(res, { choices: [{ delta: { content: tok } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "stop" }] });
     }
+    // Rough usage for stream_options.include_usage consumers (OpenAI-compatible).
+    const approxIn = Math.max(12, Math.ceil(serialized.length / 4));
+    const approxOut = Math.max(4, Math.ceil(String(reqBody.model || "").length + 24));
+    sse(res, { choices: [], usage: { prompt_tokens: approxIn, completion_tokens: approxOut, total_tokens: approxIn + approxOut } });
     res.write("data: [DONE]\n\n");
     return res.end();
   }

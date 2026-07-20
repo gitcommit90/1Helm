@@ -29,7 +29,8 @@ const sid = (): string => "s" + Math.random().toString(36).slice(2, 12);
 export async function openSession(computerId: number, channelId: number, ownerId: number, cwd: string, cols: number, rows: number): Promise<string> {
   const computer = getComputer(computerId);
   if (!computer) throw new Error("computer not found");
-  const upstreamId = await createTerminal(computer, cols, rows, cwd);
+  // Empty cwd means let the remote Open Terminal instance pick its default shell root.
+  const upstreamId = await createTerminal(computer, cols, rows, cwd || undefined);
   const upstream = connectTerminal(computer, upstreamId);
   const s: Session = { id: sid(), computerId, channelId, ownerId, cwd, upstreamId, upstream, clients: new Set(), scrollback: [], bytes: 0, cols, rows, ready: Promise.resolve() };
   s.ready = new Promise((resolve) => upstream.once("open", () => resolve()));

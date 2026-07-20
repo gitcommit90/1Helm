@@ -60,5 +60,17 @@ ok(/<pre><code>echo hi &amp;&amp; ls<\/code><\/pre>/.test(html), "fenced code bl
 ok(/<hr>/.test(html), "horizontal rule rendered");
 ok(!/<script>/.test(md("<script>alert(1)</script>")), "HTML is escaped (XSS-safe)");
 
+const channels = [
+  { name: "main", slug: "main" },
+  { name: "oss-scout", slug: "oss-scout" },
+  { name: "career-advice", slug: "career-advice" },
+];
+const linked = md("See #oss-scout and #career-advice with @skipper", { channels });
+ok(/data-channel-slug="oss-scout"/.test(linked) && /#oss-scout/.test(linked), "known #channel becomes a hyperlink", linked);
+ok(/data-channel-slug="career-advice"/.test(linked), "multi-segment channel slug links");
+ok(!/data-channel-slug="skipper"/.test(linked), "@mentions stay agent spans, not channel links");
+const heading = md("# Deploy Runbook\n\nBody with #oss-scout", { channels });
+ok(/<h1>Deploy Runbook<\/h1>/.test(heading) && /data-channel-slug="oss-scout"/.test(heading), "headings stay titles; body #channel still links");
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

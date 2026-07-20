@@ -2,6 +2,7 @@ export type User = { id: number; username: string; display: string; is_admin: bo
 export type Author = { kind: "user" | "bot"; id: number; name: string };
 export type Attachment = { id: number; name: string; mime: string; size: number };
 export type AgentProgress = { id: number; kind: "thinking" | "tool" | "status"; body: string; status: "running" | "complete" | "failed"; created: number; updated: number };
+export type ThreadUsage = { input_tokens: number; output_tokens: number };
 export type Message = { id: number; channel_id: number; parent_id: number | null; body: string; created: number; reply_count: number; last_reply: number | null; author: Author; attachments: Attachment[]; progress?: AgentProgress[] };
 export type ModelPolicy = { provider_id: number | null; provider_name: string | null; provider_kind: string | null; model: string; overridden: boolean; editable: boolean };
 export type ResidentAgent = {
@@ -12,12 +13,69 @@ export type ResidentAgent = {
 };
 export type Channel = { id: number; name: string; slug: string; kind: string; topic: string; purpose: string; status: "active" | "archived"; unread: number; agent: ResidentAgent | null };
 export type Bot = { id: number; name: string; model: string; prompt: string; avatar: string; provider_id: number | null; provider_name: string | null; provider_kind: string | null; computers: number[]; prefs: Record<string, string>; agent_id?: number | null; agent_kind?: string | null; agent_status?: string | null; resident_channel_id?: number | null };
-export type ThreadState = { id: number; root_message_id: number; channel_id: number; status: "open" | "waiting" | "resolved" | "failed" | "archived"; title: string; summary: string; opened_at: number; updated_at: number; root: Message };
+export type ThreadFollowup = {
+  id: number;
+  due_at: number;
+  reason: string;
+  attempts: number;
+  max_attempts: number;
+  status: string;
+  check_hint?: string;
+};
+export type ThreadState = {
+  id: number;
+  root_message_id: number;
+  channel_id: number;
+  status: "open" | "waiting" | "resolved" | "failed" | "archived";
+  title: string;
+  summary: string;
+  opened_at: number;
+  updated_at: number;
+  root: Message;
+  /** Next pending durable agent wake, if any (Board Scheduled lane + countdown). */
+  followup?: ThreadFollowup | null;
+};
+export type GlobalThread = ThreadState & { channel_name: string; channel_slug: string; unread: boolean };
 export type ChannelFile = { path: string; name: string; size: number; modified: number; kind: "file" | "directory" };
 export type MemoryItem = { id: number; channel_id: number; thread_id: number | null; root_message_id?: number | null; kind: "summary" | "decision" | "fact" | "preference" | "artifact_ref"; content: string; author_type: string; scope: string; status: "current" | "superseded"; created: number };
 export type ActivityItem = { id: number; channel_id: number; thread_id: number | null; kind: string; summary: string; status: string; actor_type: string; created: number };
 export type Computer = { id: number; name: string; base_url: string; has_key: boolean };
 export type Provider = { id: number; name: string; base_url: string; kind: string; has_key: boolean; bots: number };
+export type RoutingProviderModel = { id: string; gatewayId: string; name: string; enabled: boolean };
+export type RoutingModel = { id: string; name: string; kind: "model" | "route"; providerType?: string; providerName?: string; accountCount?: number };
+export type RoutingProvider = {
+  id: string; type: string; name: string; accountAlias?: string | null; email?: string | null;
+  profileName?: string | null; enabled: boolean; hasToken: boolean; baseUrl?: string;
+  models: RoutingProviderModel[];
+};
+export type RoutingComboMember = { providerType?: string; providerId?: string; model: string };
+export type RoutingCombo = { id: string; storageId?: string | null; name: string; strategy: "fallback" | "round-robin"; members: RoutingComboMember[] };
+export type RoutingUsageEntry = {
+  at?: number; model?: string; provider?: string; providerName?: string; providerType?: string;
+  accountAlias?: string | null; status?: number; requests?: number; prompt_tokens?: number;
+  completion_tokens?: number; cached_tokens?: number; total_tokens?: number; error?: unknown;
+};
+export type RoutingUsage = {
+  requests: number; ok: number; errors: number; prompt_tokens: number; completion_tokens: number;
+  cached_tokens: number; total_tokens: number; byModel: RoutingUsageEntry[];
+  byProvider: RoutingUsageEntry[]; recent: RoutingUsageEntry[];
+};
+export type RoutingQuotaWindow = { id: string; label: string; usedPercent: number; remainingPercent: number; resetsAt?: number | null };
+export type RoutingQuotaAccount = {
+  providerId: string; providerType?: string; type?: string; name?: string; accountAlias?: string | null; email?: string | null;
+  supported?: boolean; status?: string; note?: string; error?: string; plan?: string | null; windows?: RoutingQuotaWindow[];
+};
+export type RoutingState = {
+  appVersion: string; endpoint: string; bindHost: string; port: number; serverListening: boolean;
+  apiKey: string; apiKeys: Array<{ id: string; name: string; key: string; enabled: boolean; createdAt: number }>;
+  providers: RoutingProvider[]; combos: RoutingCombo[]; usage: RoutingUsage;
+  activeRequests: unknown[]; oauthProviders: Array<{ id: string; name: string }>;
+  keyedPresets: Array<{ id: string; name: string; baseUrl: string; needsAccountId?: boolean }>;
+};
+
+export async function routingAction<T = Record<string, unknown>>(action: string, payload?: unknown): Promise<T> {
+  return api<T>("/api/routing/action", { body: { action, payload } });
+}
 export type Skill = { id?: number; slug: string; name: string; description: string; category: string; instructions?: string; assigned?: boolean };
 export type AgentTemplate = { id: number; slug: string; name: string; description: string; purpose_hint: string; skill_slugs: string[]; icon: string };
 export type WorkspaceDomain = { id: number; hostname: string; provider: "cloudflare"; status: "connecting" | "active" | "error"; error: string; verified: number | null };
@@ -73,10 +131,20 @@ export async function uploadFile(file: File): Promise<{ token: string; name: str
 }
 
 type Handler = (msg: any) => void;
-export function connectEvents(onMessage: Handler): WebSocket {
+export type EventSocketHooks = {
+  onOpen?: () => void;
+  onClose?: () => void;
+};
+
+/** Single app-event socket with auto-reconnect. onOpen fires on every successful (re)connect so the UI can resync. */
+export function connectEvents(onMessage: Handler, hooks: EventSocketHooks = {}): WebSocket {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws?token=${token}`);
   ws.onmessage = (e) => { try { onMessage(JSON.parse(e.data)); } catch { /* ignore */ } };
-  ws.onclose = () => setTimeout(() => connectEvents(onMessage), 1500);
+  ws.onopen = () => { hooks.onOpen?.(); };
+  ws.onclose = () => {
+    hooks.onClose?.();
+    setTimeout(() => connectEvents(onMessage, hooks), 1500);
+  };
   return ws;
 }

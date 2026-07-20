@@ -1,4 +1,4 @@
-import { api, getToken, setToken, type Provider } from "./api.ts";
+import { api, getToken, setToken, type Provider, type RoutingModel } from "./api.ts";
 import { h, clear, icon, helmMark, providerMark } from "./dom.ts";
 import { startChatGPTOAuth, startOpenRouterOAuth } from "./settings.ts";
 
@@ -29,12 +29,21 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
   stage.append(panel); shell.append(stage); clear(root); root.append(shell);
 
   const refreshProviders = async (): Promise<void> => {
-    if (getToken()) providers = (await api<{ providers: Provider[] }>("/api/providers")).providers;
+    if (!getToken()) return;
+    providers = (await api<{ providers: Provider[] }>("/api/providers")).providers;
+    if (providers.some((provider) => provider.kind === "routing")) {
+      const available = (await api<{ models: RoutingModel[] }>("/api/routing/models")).models;
+      if (!available.length) providers = providers.filter((provider) => provider.kind !== "routing");
+    }
   };
 
   const setChoice = async (provider: Provider): Promise<void> => {
     let models: string[] = [];
-    try { models = (await api<{ models: string[] }>(`/api/providers/${provider.id}/models`)).models; }
+    try {
+      models = provider.kind === "routing"
+        ? (await api<{ models: RoutingModel[] }>("/api/routing/models")).models.map((model) => model.id)
+        : (await api<{ models: string[] }>(`/api/providers/${provider.id}/models`)).models;
+    }
     catch { /* The UI will show the provider and ask user to retry models. */ }
     const preferred = provider.kind === "openrouter"
       ? models.find((model) => /:free$/i.test(model)) || models[0] || ""
@@ -122,7 +131,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
       }
       providerChoices.replaceChildren(
         ...providers.map((provider) => h("button", { class: `wizard-choice flex items-center justify-between gap-3 ${provider.id === selected ? "is-active" : ""}`, onclick: () => { void selectExisting(provider); } },
-          h("div", { class: "min-w-0" }, h("div", { class: "flex items-center gap-2.5" }, h("span", { class: "wizard-provider-mark" }, providerMark(provider.kind, 18)), h("span", { class: "truncate font-semibold text-fg" }, provider.name)), h("div", { class: "mt-1 truncate text-xs text-muted" }, provider.kind === "chatgpt" ? "Login with ChatGPT" : provider.base_url)),
+          h("div", { class: "min-w-0" }, h("div", { class: "flex items-center gap-2.5" }, h("span", { class: "wizard-provider-mark" }, providerMark(provider.kind, 18)), h("span", { class: "truncate font-semibold text-fg" }, provider.kind === "routing" ? "Connected models & routes" : provider.name)), h("div", { class: "mt-1 truncate text-xs text-muted" }, provider.kind === "routing" ? "Everything connected to this 1Helm" : provider.kind === "chatgpt" ? "Login with ChatGPT" : provider.base_url)),
           provider.id === selected ? h("span", { class: "text-ok" }, icon("check", 18)) : h("span", { class: "text-muted" }, "Select"))));
     };
 
@@ -149,9 +158,13 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     const saveCustom = async (): Promise<void> => {
       setBusy(useCustom, true, "Saving provider…");
       try {
-        const result = await api<{ provider: Provider }>("/api/providers", { body: { name: name.value.trim() || "My provider", base_url: baseUrl.value.trim(), api_key: apiKey.value } });
+        const result = await api<{ provider: Provider; models?: Array<{ id: string; name?: string }> }>("/api/providers", { body: { name: name.value.trim() || "My provider", base_url: baseUrl.value.trim(), api_key: apiKey.value } });
+        const routableModels = (result.models || []).map((model) => model.id).filter(Boolean);
+        if (!routableModels.length) throw new Error("The provider connected, but 1Helm could not expose any routed model IDs.");
         providers.push(result.provider);
-        choice = { provider: result.provider, models: testedModels, model: modelSelect.value };
+        const selectedUpstream = modelSelect.value;
+        const selectedRouted = result.models?.find((model) => model.name === selectedUpstream || model.id === selectedUpstream)?.id || routableModels[0];
+        choice = { provider: result.provider, models: routableModels, model: selectedRouted };
         renderChoice();
       } catch (error) { status.replaceChildren(h("div", { class: "wizard-status-err" }, (error as Error).message)); }
       finally { setBusy(useCustom, false); }
