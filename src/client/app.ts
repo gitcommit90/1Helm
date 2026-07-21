@@ -1298,31 +1298,33 @@ function parseToolBody(body: string): { title: string; input: string; output: st
 }
 
 function progressPreviewLine(items: AgentProgress[]): string {
-  // Prefer the most recent real thought (even if complete) over a bare status "Starting…"
-  // so the collapsed summary doesn't flip back to Working… between tools.
-  const latestThought = [...items].reverse().find((item) => item.kind === "thinking" && item.body.trim());
-  const running = [...items].reverse().find((item) => item.status === "running");
-  if (running?.kind === "tool") {
+  // Live current step only (running tool / thinking / status). Do NOT fall back to a
+  // completed thought — that forced the summary preview to snap after every tool tick.
+  const running = [...items].reverse().find((item) => item.status === "running") || items[items.length - 1];
+  if (!running) return "";
+  if (running.kind === "tool") {
     const { title, input } = parseToolBody(running.body);
     return input ? `${title} · ${input.slice(0, 72)}` : title;
   }
-  if (running?.kind === "thinking") {
+  if (running.kind === "thinking") {
     const line = running.body.trim().split(/\n+/).find(Boolean) || "Thinking…";
     return line.slice(0, 80) + (line.length > 80 ? "…" : "");
   }
-  if (latestThought) {
-    const line = latestThought.body.trim().split(/\n+/).find(Boolean) || "Thinking…";
-    return line.slice(0, 80) + (line.length > 80 ? "…" : "");
-  }
-  if (running) return (running.body || "Working…").slice(0, 80);
-  const last = items[items.length - 1];
-  return last ? (last.body || "Working…").slice(0, 80) : "";
+  return (running.body || "Working…").slice(0, 80);
 }
 
 function stickyThoughtFromProgress(items: AgentProgress[] | undefined): string {
   if (!items?.length) return "";
   const thought = [...items].reverse().find((item) => item.kind === "thinking" && item.body.trim());
   return thought?.body.trim() || "";
+}
+
+/** Replace only the literal "Working…" label — not the whole summary row. */
+function stickyWorkingLabel(items: AgentProgress[] | undefined): string {
+  const sticky = stickyThoughtFromProgress(items);
+  if (!sticky) return "Working…";
+  const line = sticky.split(/\n+/).find(Boolean) || sticky;
+  return line.length > 72 ? `${line.slice(0, 72)}…` : line;
 }
 
 /** Body shown while an agent turn is mid-flight — keep last real thought sticky. */
@@ -1333,17 +1335,13 @@ function workingDisplayBody(m: Message): string {
 }
 
 function workingChipLabel(m: Message): string {
+  // Same rule as the work-log left label: sticky thought, else Working…
+  if (m.progress?.length) return stickyWorkingLabel(m.progress);
   if (m.body && m.body !== "_Working…_") {
     const line = m.body.trim().split(/\n+/).find(Boolean) || "Working…";
     return line.length > 72 ? `${line.slice(0, 72)}…` : line;
   }
-  const sticky = stickyThoughtFromProgress(m.progress);
-  if (sticky) {
-    const line = sticky.split(/\n+/).find(Boolean) || sticky;
-    return line.length > 72 ? `${line.slice(0, 72)}…` : line;
-  }
-  const preview = progressPreviewLine(m.progress || []);
-  return preview || "Working…";
+  return "Working…";
 }
 
 function progressCounts(items: AgentProgress[]): string {
@@ -1481,9 +1479,13 @@ function progressDisclosure(message: Message): HTMLElement | null {
   },
     h("summary", { class: "flex cursor-pointer select-none items-center gap-2 px-3 py-2.5 text-xs font-semibold text-muted hover:bg-hover/60 hover:text-fg" },
       h("span", { class: `h-2 w-2 shrink-0 rounded-full ${running ? "animate-pulse bg-amber-400" : "bg-ok"}` }),
-      // Sticky: keep the latest real thought/tool preview visible; only fall back to Working…
-      // when we have no real step text yet.
-      h("span", { class: "min-w-0 flex-1 truncate" }, running ? (preview || "Working…") : "Work log"),
+      // Left label only: sticky thought replaces literal "Working…". Layout unchanged —
+      // secondary preview (current step) + counts stay separate.
+      h("span", {
+        class: "max-w-[min(100%,18rem)] shrink-0 truncate",
+        title: running ? stickyWorkingLabel(items) : "Work log",
+      }, running ? stickyWorkingLabel(items) : "Work log"),
+      h("span", { class: "hidden min-w-0 flex-1 truncate font-normal text-faint sm:inline" }, preview),
       h("span", { class: "shrink-0 font-normal text-faint" }, progressCounts(items))),
     timeline) as HTMLDetailsElement;
   details.addEventListener("toggle", () => {
