@@ -59,10 +59,17 @@ function accountName(account: RoutingProvider): string {
   return account.email || account.profileName || account.name || account.accountAlias || account.type;
 }
 
-function accountCard(account: RoutingProvider, refresh: () => Promise<void>, confirm: Dialog): HTMLElement {
+function accountCard(account: RoutingProvider, refresh: () => Promise<void>, confirm: Dialog, expandedAccounts: Set<string>): HTMLElement {
   const models = account.models || [];
-  const enabled = models.filter((model) => model.enabled !== false).length;
-  const details = h("div", { class: "hidden border-t border-line px-4 pb-4 pt-3" });
+  const enabledCount = (): number => models.filter((model) => model.enabled !== false).length;
+  const details = h("div", { class: `${expandedAccounts.has(account.id) ? "" : "hidden "}border-t border-line px-4 pb-4 pt-3`, dataset: { accountDetails: "" } });
+  const count = h("span", { class: "text-xs text-muted" });
+  let accountMeta: HTMLSpanElement | null = null;
+  const syncCount = (): void => {
+    const enabled = enabledCount();
+    count.textContent = `${enabled} of ${models.length} models enabled`;
+    if (accountMeta) accountMeta.textContent = `${account.name}${account.accountAlias ? ` · ${account.accountAlias}` : ""} · ${enabled}/${models.length} models`;
+  };
   const toggle = h("input", { type: "checkbox", checked: account.enabled !== false, class: "accent-accent" }) as HTMLInputElement;
   toggle.onchange = async () => {
     const result = await routingAction<{ ok: boolean }>("app:set-provider-enabled", { id: account.id, enabled: toggle.checked }).catch(() => ({ ok: false }));
@@ -70,15 +77,36 @@ function accountCard(account: RoutingProvider, refresh: () => Promise<void>, con
     await refresh();
   };
   const modelList = h("div", { class: "space-y-1" });
+  const modelToggles: Array<{ model: RoutingProvider["models"][number]; input: HTMLInputElement }> = [];
   for (const model of models) {
-    const modelToggle = h("input", { type: "checkbox", checked: model.enabled !== false, class: "accent-accent" }) as HTMLInputElement;
+    const modelToggle = h("input", { type: "checkbox", checked: model.enabled !== false, class: "accent-accent", dataset: { modelToggle: model.id } }) as HTMLInputElement;
+    modelToggles.push({ model, input: modelToggle });
     modelToggle.onchange = async () => {
-      await routingAction("app:set-model-enabled", { providerId: account.id, modelId: model.id, enabled: modelToggle.checked });
-      await refresh();
+      const requested = modelToggle.checked;
+      modelToggle.disabled = true;
+      const result = await routingAction<{ ok: boolean }>("app:set-model-enabled", { providerId: account.id, modelId: model.id, enabled: requested }).catch(() => ({ ok: false }));
+      modelToggle.disabled = false;
+      if (!result.ok) { modelToggle.checked = !requested; return; }
+      model.enabled = requested;
+      syncCount();
     };
     modelList.append(h("label", { class: "routing-model-row" },
       h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block truncate text-sm font-semibold text-fg" }, model.name || model.id), h("span", { class: "block truncate font-mono text-[10px] text-faint" }, model.gatewayId || model.id)), modelToggle));
   }
+  const setAllModels = async (requested: boolean, buttons: HTMLButtonElement[]): Promise<void> => {
+    buttons.forEach((button) => { button.disabled = true; });
+    modelToggles.forEach(({ input }) => { input.disabled = true; });
+    const result = await routingAction<{ ok: boolean }>("app:set-all-models-enabled", { providerId: account.id, enabled: requested }).catch(() => ({ ok: false }));
+    buttons.forEach((button) => { button.disabled = false; });
+    modelToggles.forEach(({ input }) => { input.disabled = false; });
+    if (!result.ok) return;
+    modelToggles.forEach(({ model, input }) => { model.enabled = requested; input.checked = requested; });
+    syncCount();
+  };
+  const allOn = h("button", { class: "btn-ghost text-xs", dataset: { modelsAll: "on" } }, "All on") as HTMLButtonElement;
+  const allOff = h("button", { class: "btn-ghost text-xs", dataset: { modelsAll: "off" } }, "All off") as HTMLButtonElement;
+  allOn.onclick = () => { void setAllModels(true, [allOn, allOff]); };
+  allOff.onclick = () => { void setAllModels(false, [allOn, allOff]); };
   const exact = h("input", { class: "field", placeholder: "Exact provider model ID" }) as HTMLInputElement;
   const addStatus = statusLine();
   const addModel = h("button", { class: "btn-subtle min-h-10 text-xs", onclick: async () => {
@@ -90,10 +118,8 @@ function accountCard(account: RoutingProvider, refresh: () => Promise<void>, con
   } }, "Test & add model");
   add(details,
     h("div", { class: "mb-3 flex flex-wrap items-center justify-between gap-2" },
-      h("span", { class: "text-xs text-muted" }, `${enabled} of ${models.length} models enabled`),
-      h("div", { class: "flex gap-2" },
-        h("button", { class: "btn-ghost text-xs", onclick: async () => { await routingAction("app:set-all-models-enabled", { providerId: account.id, enabled: true }); await refresh(); } }, "All on"),
-        h("button", { class: "btn-ghost text-xs", onclick: async () => { await routingAction("app:set-all-models-enabled", { providerId: account.id, enabled: false }); await refresh(); } }, "All off"))),
+      count,
+      h("div", { class: "flex gap-2" }, allOn, allOff)),
     models.length ? modelList : h("p", { class: "py-4 text-sm text-muted" }, "No models are configured for this account yet."),
     h("div", { class: "mt-3 grid gap-2 sm:grid-cols-[1fr_auto]" }, exact, addModel), addStatus,
     h("div", { class: "mt-3 flex flex-wrap justify-end gap-2" },
@@ -104,17 +130,20 @@ function accountCard(account: RoutingProvider, refresh: () => Promise<void>, con
         await routingAction("app:remove-provider", account.id); await refresh();
       } }, "Disconnect")));
 
-  const chevron = h("span", { class: "w-5 text-center font-mono text-muted" }, "+");
+  const chevron = h("span", { class: "w-5 text-center font-mono text-muted" }, expandedAccounts.has(account.id) ? "−" : "+");
+  accountMeta = h("span", { class: "block truncate text-xs text-muted" }) as HTMLSpanElement;
+  syncCount();
   const head = h("button", { class: "routing-account-head", type: "button", onclick: () => {
     details.classList.toggle("hidden");
+    if (details.classList.contains("hidden")) expandedAccounts.delete(account.id); else expandedAccounts.add(account.id);
     chevron.textContent = details.classList.contains("hidden") ? "+" : "−";
   } },
     h("span", { class: "wizard-provider-mark h-10 w-10" }, providerMark(providerFamily(account), 18)),
-    h("span", { class: "min-w-0 flex-1 text-left" }, h("span", { class: "block truncate font-semibold text-fg" }, accountName(account)), h("span", { class: "block truncate text-xs text-muted" }, `${account.name}${account.accountAlias ? ` · ${account.accountAlias}` : ""} · ${enabled}/${models.length} models`)),
+    h("span", { class: "min-w-0 flex-1 text-left" }, h("span", { class: "block truncate font-semibold text-fg" }, accountName(account)), accountMeta),
     h("span", { class: `routing-live-dot ${account.enabled === false ? "is-off" : ""}` }),
     h("span", { class: "flex min-h-10 items-center px-2", onclick: (event: MouseEvent) => event.stopPropagation() }, toggle),
     chevron);
-  return h("article", { class: "routing-account" }, head, details);
+  return h("article", { class: "routing-account", dataset: { providerAccount: account.id } }, head, details);
 }
 
 async function openOauth(type: string, refresh: () => Promise<void>, providerId?: string): Promise<void> {
@@ -152,7 +181,7 @@ export async function connectRoutingOauth(type: string, onConnected: () => Promi
   await openOauth(type, onConnected);
 }
 
-function sourceCatalog(state: RoutingState, refresh: () => Promise<void>, confirm: Dialog): HTMLElement {
+function sourceCatalog(state: RoutingState, refresh: () => Promise<void>, confirm: Dialog, expandedAccounts: Set<string>, expandedGroups: Set<string>): HTMLElement {
   const groups = new Map<string, { id: string; name: string; kind: "oauth" | "keyed" | "custom"; accounts: RoutingProvider[]; preset?: RoutingState["keyedPresets"][number] }>();
   for (const oauth of state.oauthProviders || []) groups.set(oauth.id, { id: oauth.id, name: oauth.name, kind: "oauth", accounts: [] });
   for (const preset of state.keyedPresets || []) groups.set(preset.id, { id: preset.id, name: preset.name, kind: "keyed", accounts: [], preset });
@@ -164,51 +193,105 @@ function sourceCatalog(state: RoutingState, refresh: () => Promise<void>, confir
   }
   const list = h("div", { class: "routing-provider-grid" });
   for (const group of groups.values()) {
-    const accounts = h("div", { class: "mt-3 space-y-2" }, ...group.accounts.map((account) => accountCard(account, refresh, confirm)));
-    const body = h("div", { class: "hidden border-t border-line px-4 pb-4 pt-3" }, accounts);
+    const accounts = h("div", { class: "mt-3 space-y-2" }, ...group.accounts.map((account) => accountCard(account, refresh, confirm, expandedAccounts)));
+    const body = h("div", { class: `${expandedGroups.has(group.id) ? "" : "hidden "}border-t border-line px-4 pb-4 pt-3`, dataset: { providerGroupBody: group.id } }, accounts);
     const add = h("button", { class: "btn-subtle mt-3 min-h-10 w-full text-xs" }, group.kind === "oauth" ? "Add account" : "Add key");
     add.onclick = () => {
       if (group.kind === "oauth") { void openOauth(group.id, refresh).catch((error: Error) => { add.textContent = error.message; }); return; }
       body.prepend(keyedForm(group.id, group.name, group.preset, refresh));
     };
     body.append(add);
-    const caret = h("span", { class: "w-5 font-mono text-muted" }, "+");
-    const open = h("button", { class: "routing-provider-head", onclick: () => { body.classList.toggle("hidden"); caret.textContent = body.classList.contains("hidden") ? "+" : "−"; } },
+    const caret = h("span", { class: "w-5 font-mono text-muted" }, expandedGroups.has(group.id) ? "−" : "+");
+    const open = h("button", { class: "routing-provider-head" },
       h("span", { class: "wizard-provider-mark" }, providerMark(group.id, 19)),
       h("span", { class: "min-w-0 flex-1 text-left" }, h("span", { class: "block font-semibold text-fg" }, group.name), h("span", { class: "block truncate text-xs text-muted" }, providerCopy[group.id] || "Connected model source")),
       h("span", { class: `chip ${group.accounts.length ? "border-accent/40 text-accent" : ""}` }, group.accounts.length ? `${group.accounts.length} connected` : "available"),
       caret);
+    open.onclick = () => {
+      body.classList.toggle("hidden");
+      if (body.classList.contains("hidden")) expandedGroups.delete(group.id); else expandedGroups.add(group.id);
+      caret.textContent = body.classList.contains("hidden") ? "+" : "−";
+    };
     list.append(h("section", { class: "routing-provider" }, open, body));
   }
   return h("div", {}, heading("Provider fabric", "Accounts & keys", "Connect subscriptions and API keys once. Every enabled model becomes available to Skipper, resident agents, named routes, and the shared endpoint."), list);
 }
 
 function keyedForm(id: string, label: string, preset: RoutingState["keyedPresets"][number] | undefined, refresh: () => Promise<void>): HTMLElement {
-  const wrap = h("div", { class: "mb-3 rounded-lg border border-accent/30 bg-accent-soft p-3" });
-  const name = h("input", { class: "field", value: label, placeholder: "Connection name" }) as HTMLInputElement;
-  const baseUrl = h("input", { class: "field", value: preset?.baseUrl || "", placeholder: "https://provider.example/v1" }) as HTMLInputElement;
-  const accountId = h("input", { class: "field", placeholder: "Cloudflare account ID" }) as HTMLInputElement;
-  const key = h("input", { class: "field", type: "password", placeholder: "API key", autocomplete: "off" }) as HTMLInputElement;
-  const model = h("input", { class: "field", placeholder: "Exact model ID (optional)" }) as HTMLInputElement;
+  const wrap = h("div", { class: "mb-3 rounded-lg border border-accent/30 bg-accent-soft p-3", dataset: { keyedForm: id } });
+  const name = h("input", { class: "field", value: label, placeholder: "Connection name", dataset: { keyedField: "name" } }) as HTMLInputElement;
+  const baseUrl = h("input", { class: "field", value: preset?.baseUrl || "", placeholder: "https://provider.example/v1", readOnly: !!preset, dataset: { keyedField: "base" } }) as HTMLInputElement;
+  const accountId = h("input", { class: "field", placeholder: "Cloudflare account ID", dataset: { keyedField: "account" } }) as HTMLInputElement;
+  const key = h("input", { class: "field", type: "password", placeholder: "API key", autocomplete: "off", dataset: { keyedField: "key" } }) as HTMLInputElement;
+  const model = h("input", { class: "field", placeholder: "Exact model ID (optional)", dataset: { keyedField: "model" } }) as HTMLInputElement;
   const status = statusLine();
+  status.dataset.keyedStatus = "";
   const payload = (): Record<string, unknown> => ({ providerType: id === "custom" ? "openai-compat" : id, baseUrl: baseUrl.value.trim().replace("{account_id}", accountId.value.trim()), apiKey: key.value.trim(), modelId: model.value.trim() });
-  const test = h("button", { class: "btn-subtle text-xs", onclick: async () => {
+  const testFingerprint = (): string => JSON.stringify([id, baseUrl.value.trim(), accountId.value.trim(), key.value.trim(), model.value.trim()]);
+  const saveFingerprint = (): string => JSON.stringify([name.value.trim(), testFingerprint()]);
+  const inputs = [name, baseUrl, accountId, key, model];
+  let testedFingerprint: string | null = null;
+  let testedSaveFingerprint: string | null = null;
+  let testedModels: Array<{ id: string; name?: string }> | null = null;
+  let testGeneration = 0;
+  let testing = false;
+  let adding = false;
+  const invalidate = (message = "Changes need to be tested again."): void => {
+    testGeneration += 1;
+    testedFingerprint = null;
+    testedSaveFingerprint = null;
+    testedModels = null;
+    save.disabled = true;
+    if (status.textContent) status.textContent = message;
+  };
+  const test = h("button", { class: "btn-subtle text-xs", dataset: { keyedAction: "test" }, onclick: async () => {
+    if (testing || adding) return;
+    testing = true;
+    const generation = ++testGeneration;
+    const currentFingerprint = testFingerprint();
+    const currentSaveFingerprint = saveFingerprint();
+    testedFingerprint = null;
+    testedSaveFingerprint = null;
+    testedModels = null;
+    test.disabled = true;
+    save.disabled = true;
     status.textContent = "Discovering and testing…";
     const result: { ok: boolean; models?: Array<{ id: string; name?: string }>; error?: string } = await routingAction<{ ok: boolean; models?: Array<{ id: string; name?: string }>; error?: string }>("app:test-keyed-provider", payload()).catch((error: Error) => ({ ok: false, error: error.message }));
-    status.textContent = result.ok ? `${result.models?.length || 0} model${result.models?.length === 1 ? "" : "s"} ready.` : result.error || "Connection failed.";
-    if (result.ok && !model.value && result.models?.length) model.dataset.discovered = JSON.stringify(result.models);
+    testing = false;
+    test.disabled = false;
+    if (generation !== testGeneration || currentFingerprint !== testFingerprint() || currentSaveFingerprint !== saveFingerprint()) return;
+    if (!result.ok) { status.textContent = result.error || "Connection failed."; return; }
+    testedFingerprint = currentFingerprint;
+    testedSaveFingerprint = currentSaveFingerprint;
+    testedModels = result.models || [];
+    status.textContent = `${testedModels.length} model${testedModels.length === 1 ? "" : "s"} ready.`;
+    save.disabled = false;
   } }, "Test connection");
-  const save = h("button", { class: "btn-primary text-xs", onclick: async () => {
+  const save = h("button", { class: "btn-primary text-xs", disabled: true, dataset: { keyedAction: "add" }, onclick: async () => {
+    if (adding) return;
+    if (!testedModels || testedFingerprint !== testFingerprint() || testedSaveFingerprint !== saveFingerprint()) { invalidate("Test the current settings before connecting."); return; }
+    adding = true;
+    test.disabled = true;
+    save.disabled = true;
+    inputs.forEach((input) => { input.disabled = true; });
     status.textContent = "Connecting…";
-    let models: Array<{ id: string; name?: string }> = [];
-    try { models = JSON.parse(model.dataset.discovered || "[]"); } catch { /* no discovery */ }
-    if (model.value.trim()) models = [{ id: model.value.trim(), name: model.value.trim() }];
     const result = await routingAction<{ ok: boolean; error?: string }>("app:add-keyed-provider", {
-      preset: id === "custom" ? undefined : id, name: name.value.trim(), baseUrl: baseUrl.value.trim(), apiKey: key.value.trim(), accountId: accountId.value.trim(), models,
+      preset: id === "custom" ? undefined : id, name: name.value.trim(), baseUrl: baseUrl.value.trim(), apiKey: key.value.trim(), accountId: accountId.value.trim(), models: testedModels,
     }).catch((error: Error) => ({ ok: false, error: error.message }));
-    if (!result.ok) { status.textContent = result.error || "Could not connect."; return; }
+    if (!result.ok) {
+      adding = false;
+      test.disabled = false;
+      save.disabled = testedFingerprint !== testFingerprint() || testedSaveFingerprint !== saveFingerprint();
+      inputs.forEach((input) => { input.disabled = false; });
+      status.textContent = result.error || "Could not connect.";
+      return;
+    }
+    testedModels = null;
+    testedFingerprint = null;
+    testedSaveFingerprint = null;
     key.value = ""; wrap.remove(); await refresh();
   } }, "Connect");
+  inputs.forEach((input) => input.addEventListener("input", () => invalidate()));
   add(wrap,
     h("div", { class: "mb-2 flex items-center justify-between" }, h("strong", { class: "text-sm text-fg" }, `New ${label} connection`), h("button", { class: "btn-ghost", onclick: () => wrap.remove() }, icon("x", 14))),
     h("div", { class: "grid gap-2 sm:grid-cols-2" }, name, baseUrl, preset?.needsAccountId ? accountId : null, key, model),
@@ -368,6 +451,8 @@ export function routingPanel(isAdmin: boolean, confirm: Dialog): HTMLElement {
   const content = h("div", { class: "routing-content" });
   let state: RoutingState | null = null;
   let current: RoutingView = "sources";
+  const expandedAccounts = new Set<string>();
+  const expandedGroups = new Set<string>();
   const views: Array<[RoutingView, string]> = [["sources", "Sources"], ["routes", "Routes"], ["activity", "Activity"], ["quota", "Quota"], ["logs", "Logs"], ["endpoint", "Endpoint"]];
   const loadState = async (): Promise<RoutingState> => api<RoutingState>("/api/routing/state");
   const draw = async (): Promise<void> => {
@@ -376,7 +461,7 @@ export function routingPanel(isAdmin: boolean, confirm: Dialog): HTMLElement {
       state = await loadState();
       clear(content);
       const refresh = async (): Promise<void> => { state = await loadState(); await draw(); };
-      if (current === "sources") content.append(sourceCatalog(state, refresh, confirm));
+      if (current === "sources") content.append(sourceCatalog(state, refresh, confirm, expandedAccounts, expandedGroups));
       else if (current === "routes") content.append(routesView(state, refresh, confirm));
       else if (current === "activity") content.append(await activityView(state));
       else if (current === "quota") content.append(await quotaView());

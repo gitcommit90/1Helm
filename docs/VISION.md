@@ -2,6 +2,18 @@
 
 This is the living product record for 1Helm. Add confirmed decisions, deployment findings, and completed slices here as the product evolves.
 
+## Parity hardening — provider fabric 1.1.1 (2026-07-21)
+
+The post-1.1 audit exercised the provider fabric as a control plane rather than accepting only the original happy path. The resulting contracts are now explicit:
+
+- **Internal access is independent:** resident agents use a durable private embedded-gateway credential. It is absent from routine provider state, Endpoint credentials, and key-mutation responses. Disabling or revoking every external client key leaves Skipper and resident agents online; restart preserves the separation.
+- **One authoritative catalog:** 1Helm's agent/model pickers consume the same router catalog as `/v1/models`, including shared fill-first model IDs for same-provider accounts and named routes.
+- **Stable model controls:** individual toggles and All on / All off update in place. Provider groups and account editors remain expanded instead of closing after every mutation.
+- **Tested keyed connections:** Connect is disabled until the exact visible name, endpoint, account ID, key, and optional model have passed a current test. Field edits invalidate stale results; overlapping tests are sequenced; Connect is single-flight; failures restore controls; exact-model validation works when `/models` is unavailable.
+- **Parity contract:** the disposable integration suite now covers all four OAuth start/status/cancel paths, source and model enable/add/remove operations, route create/edit/delete, real upstream fallback and round-robin rotation, multi-account shared catalog behavior, external key create/disable/revoke, quota read/refresh, redacted/clearable logs, bind mutation/restoration, permissions, non-HTTP migration exclusion, migration idempotence, credential persistence, and real resident-agent turns across key shutdown and process restart. Browser assertions cover the no-collapse interaction and keyed-form safety.
+
+Release and live deployment evidence is appended after the exact merged commit passes CI and production-data verification.
+
 ## Slice — Unified provider fabric inside 1Helm (2026-07-20)
 
 1Helm's simple one-base-URL/one-key Providers form has become a native multi-account routing control plane backed by the version-pinned ReRouted headless engine.
