@@ -59,10 +59,9 @@ npm start          # http://localhost:8123
 Open `http://localhost:8123`. On a fresh data directory you see the setup wizard, not a login screen:
 
 1. Create the Captain account (first user is admin).
-2. Connect an AI provider.
-3. On macOS, approve Apple's verified channel-computer runtime once; choose whether channel terminals are visible.
-4. Name the workspace.
-5. Land in `#main` with Skipper, then create your first agent channel.
+2. Connect one or several provider accounts or keys through the shared provider fabric.
+3. Name the workspace. If macOS still needs Apple's verified container runtime, approve it inline once.
+4. Land in `#main` with Skipper, then create your first agent channel.
 
 ### Configuration
 
@@ -71,7 +70,7 @@ Open `http://localhost:8123`. On a fresh data directory you see the setup wizard
 | `PORT` | `8123` | HTTP/WebSocket port. |
 | `CTRL_DATA_DIR` | `./data` | SQLite control-plane state + narrow host workspace mirrors and uploaded files (internal path name kept for compatibility). |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `native` elsewhere | Explicit backend override for development/testing. The macOS product uses `apple`. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:1.1.2` | Versioned OCI machine image built from `container/Containerfile`. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:1.1.3` | Versioned OCI machine image built from `container/Containerfile`. |
 
 On first boot 1Helm starts a private loopback Open-Terminal agent and registers it as **"This Computer"** for Skipper's native-Mac work. Ordinary residents are never assigned that host computer.
 
