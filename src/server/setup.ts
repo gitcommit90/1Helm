@@ -4,6 +4,7 @@ import { broadcastToChannel } from "./events.ts";
 import { fetchModels } from "./computer.ts";
 import { CHATGPT_KIND, listChatGPTModels } from "./chatgpt.ts";
 import { ensureChannelWorkspace, ensureSkipperAgent } from "./agents.ts";
+import { internalRoutingProviderId, routingModels } from "./routing.ts";
 
 export type Workspace = {
   name: string;
@@ -153,15 +154,24 @@ export async function completeSetup(opts: {
   model?: string;
 }): Promise<{ workspace: Workspace; channelId: number; skipperId: number; welcome: Row }> {
   const name = opts.name.trim() || "My Workspace";
-  const provider = opts.providerId
-    ? q1("SELECT * FROM providers WHERE id=?", opts.providerId)
-    : q1("SELECT * FROM providers ORDER BY id LIMIT 1");
+  let selectedProviderId = opts.providerId;
+  let selectedModel = opts.model?.trim() || "";
+  if (!selectedProviderId) {
+    const models = await routingModels();
+    if (!models.length) throw new Error("Connect a provider with at least one enabled model before finishing setup.");
+    const existingDefault = String(workspaceRow().default_model || "");
+    selectedModel = models.find((model) => model.id === existingDefault)?.id
+      || models.find((model) => model.kind === "route")?.id
+      || models[0].id;
+    selectedProviderId = await internalRoutingProviderId();
+  }
+  const provider = q1("SELECT * FROM providers WHERE id=?", selectedProviderId);
   if (!provider) throw new Error("Connect an AI provider before finishing setup.");
 
-  const model = opts.model?.trim()
+  const model = selectedModel
     || (await pickDefaultModel(Number(provider.id)))
     || String(provider.kind === "chatgpt" ? "gpt-5.4" : "");
-  if (!model) throw new Error("Choose a model before finishing setup.");
+  if (!model) throw new Error("The connected provider does not expose an enabled model yet.");
   const channelId = ensureMainChannel(opts.userId);
   const skipperId = await ensureSkipper(Number(provider.id), model, opts.terminalsEnabled);
   addBotToChannel(skipperId, channelId);

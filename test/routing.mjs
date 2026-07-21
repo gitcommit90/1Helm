@@ -151,6 +151,18 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
       });
       assert.equal(cancelled.active, false, `${type} OAuth cancellation clears pending state`);
     }
+    const objectOauth = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
+      method: "POST", body: JSON.stringify({ action: "app:oauth-start", payload: { type: "chatgpt", providerId: "existing-account" } }),
+    });
+    assert.equal(objectOauth.ok, true, "1Helm accepts native OAuth metadata while passing only the provider type to the embedded engine");
+    assert.equal(new URL(objectOauth.authUrl).origin, oauthOrigins.chatgpt);
+    const objectOauthStatus = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
+      method: "POST", body: JSON.stringify({ action: "app:oauth-status", payload: "chatgpt" }),
+    });
+    assert.equal(objectOauthStatus.active, true, "server-side OAuth completion watcher preserves observable pending status");
+    await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
+      method: "POST", body: JSON.stringify({ action: "app:oauth-cancel", payload: "chatgpt" }),
+    });
     const oauthLogs = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
       method: "POST", body: JSON.stringify({ action: "app:logs-get", payload: 200 }),
     });

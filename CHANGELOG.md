@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-07-21
+
+### Changed
+
+- First-run onboarding is now Captain → Providers → Workspace and uses the same multi-account OAuth/key provider fabric as Settings; it no longer asks users to choose one AI brain or starter model.
+- Per-channel Linux computers are presented as Skipper-managed infrastructure. The only unavoidable Apple runtime approval appears inline while creating the workspace, with terminals enabled by default.
+- Cloudflare domains remain available in Settings instead of appearing as a first-run requirement, while optional owner-supplied machines are clarified as Skipper computers.
+
+### Fixed
+
+- OAuth callbacks are completed by the native server even while the desktop renderer is backgrounded, so returning from ChatGPT and other providers automatically finishes the connection.
+
 ## [1.1.2] - 2026-07-21
 
 ### Added
@@ -83,7 +95,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Native **1Herd** channel-agent workspace (SPEC.md slice) is developed on branch `worktree-1herd-native-spec` (draft PR #7) and is **not** fully merged to `main` as of this changelog baseline. Track progress there and in `docs/VISION.md` on that branch.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.3...HEAD
+[1.1.3]: https://github.com/gitcommit90/1Helm/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/gitcommit90/1Helm/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/gitcommit90/1Helm/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/gitcommit90/1Helm/compare/v1.0.0...v1.1.0

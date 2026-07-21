@@ -89,6 +89,57 @@ let runtime: RoutingRuntime | null = null;
 let starting: Promise<RoutingRuntime> | null = null;
 let activityUnsubscribe: (() => void) | null = null;
 let onActivity: (() => void) | null = null;
+type OauthCompletion = { connected: boolean; account?: Record<string, unknown>; error?: string };
+const oauthWatchers = new Map<string, NodeJS.Timeout>();
+const oauthCompletions = new Map<string, OauthCompletion>();
+const oauthFinalizing = new Map<string, Promise<Record<string, unknown>>>();
+
+function oauthType(payload: unknown): string {
+  return typeof payload === "string" ? payload : String((payload as { type?: unknown } | null)?.type || "");
+}
+
+function stopOauthWatcher(type: string): void {
+  const timer = oauthWatchers.get(type);
+  if (timer) clearInterval(timer);
+  oauthWatchers.delete(type);
+}
+
+async function finishOauth(target: RoutingRuntime, payload: Record<string, unknown>, automatic = false): Promise<Record<string, unknown>> {
+  const type = oauthType(payload);
+  const completed = oauthCompletions.get(type);
+  if (completed?.connected) return { ok: true, account: completed.account, connected: true };
+  const existing = oauthFinalizing.get(type);
+  if (existing) return existing;
+  const pending = (async () => {
+    const result = publicControlPlaneResult(await target.controlPlane.invoke("app:oauth-complete", [payload], { harness: true }));
+    if (result.ok !== false) {
+      stopOauthWatcher(type);
+      oauthCompletions.set(type, { connected: true, account: result.account as Record<string, unknown> | undefined });
+      ensureInternalProvider(target);
+      onActivity?.();
+    } else if (automatic) {
+      stopOauthWatcher(type);
+      oauthCompletions.set(type, { connected: false, error: String(result.error || "Connection failed.") });
+    }
+    return result;
+  })().finally(() => { oauthFinalizing.delete(type); });
+  oauthFinalizing.set(type, pending);
+  return pending;
+}
+
+function watchOauth(target: RoutingRuntime, type: string, providerId?: string): void {
+  stopOauthWatcher(type);
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    if (oauthFinalizing.has(type)) return;
+    void target.controlPlane.invoke("app:oauth-status", [type], { harness: true }).then((status) => {
+      if (status.hasCode) return finishOauth(target, { type, providerId, pasteCode: "" }, true);
+      if (!status.active || Date.now() - startedAt > 20 * 60_000) stopOauthWatcher(type);
+    }).catch(() => undefined);
+  }, 750);
+  timer.unref();
+  oauthWatchers.set(type, timer);
+}
 
 function legacyRows(): Array<Record<string, unknown>> {
   return q("SELECT id,name,base_url,api_key,kind,created FROM providers WHERE kind<>? ORDER BY id", INTERNAL_PROVIDER_KIND);
@@ -333,6 +384,9 @@ export async function stopRoutingEngine(): Promise<void> {
   runtime = null;
   activityUnsubscribe?.();
   activityUnsubscribe = null;
+  for (const type of oauthWatchers.keys()) stopOauthWatcher(type);
+  oauthCompletions.clear();
+  oauthFinalizing.clear();
   if (target) await target.close({ drainMs: 10_000 });
 }
 
@@ -348,8 +402,31 @@ export async function routingInvoke(action: string, payload?: unknown): Promise<
   ) {
     return { ok: false, error: "The private workspace credential cannot be changed." };
   }
-  const args = payload === undefined ? [] : [payload];
-  const result = await target.controlPlane.invoke(action, args, { harness: true });
+  let result: Record<string, unknown>;
+  if (action === "app:oauth-start") {
+    const type = oauthType(payload);
+    const providerId = typeof payload === "object" && payload ? String((payload as { providerId?: unknown }).providerId || "") : "";
+    stopOauthWatcher(type);
+    oauthCompletions.delete(type);
+    result = await target.controlPlane.invoke(action, [type], { harness: true });
+    if (result.ok !== false) watchOauth(target, type, providerId || undefined);
+  } else if (action === "app:oauth-status") {
+    const type = oauthType(payload);
+    const completion = oauthCompletions.get(type);
+    if (completion) return completion;
+    result = await target.controlPlane.invoke(action, [type], { harness: true });
+    if (oauthFinalizing.has(type)) result = { ...result, completing: true };
+  } else if (action === "app:oauth-cancel") {
+    const type = oauthType(payload);
+    stopOauthWatcher(type);
+    oauthCompletions.delete(type);
+    result = await target.controlPlane.invoke(action, [type], { harness: true });
+  } else if (action === "app:oauth-complete") {
+    result = await finishOauth(target, (payload || {}) as Record<string, unknown>);
+  } else {
+    const args = payload === undefined ? [] : [payload];
+    result = await target.controlPlane.invoke(action, args, { harness: true });
+  }
   // Key and bind changes can alter the endpoint used by 1Helm agents.
   ensureInternalProvider(target);
   return publicControlPlaneResult(result);
