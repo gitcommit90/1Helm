@@ -135,6 +135,40 @@ Implements SPEC §12 end-to-end. Key decisions:
 
 **1Helm** productizes self-hosting. It gives someone who owns a computer or VPS a conversational control plane instead of requiring them to learn terminals, SSH, reverse proxies, Docker, and scattered SaaS dashboards.
 
+## Native macOS host — 2026-07-21
+
+The Apple Silicon macOS app is the consumer installation path for the same
+on-box product, not a shell around the hosted demo. The app starts the native
+1Helm control plane and Skipper on loopback. Every ordinary channel receives a
+separate persistent Apple `container machine`: agent shell tools and the human
+Terminal execute inside that channel's Linux VM, while **This Computer** is
+reserved for Captain-authorized Skipper work on the native Mac.
+
+Channel machines always use `home-mount=none` and an explicit automatic CPU/RAM
+policy. Their Linux disks are canonical and survive stop/start; a narrow
+streamed workspace bridge supports Files, uploads, backups, and portability
+without mounting the Captain's home. Native scheduled obligations wake stopped
+machines. Guest services, cron, systemd timers, background work, active turns,
+and terminals keep them running; if quiescence cannot be proved, Skipper does
+not stop the machine. Resizing is drain, sync, stop, configure, start, verify,
+resume—not imaginary process hibernation.
+
+Skipper also applies unattended Linux package updates only while a machine is
+quiescent, retries transient failures later, restarts when the guest requires
+it, and verifies the same no-home-mount security boundary afterward.
+
+Databases, provider credentials, host-side mirrors, files, and memory persist
+under `~/Library/Application Support/1Helm` and are never stored inside the
+replaceable signed app bundle. The app remains a native background scheduler
+when its window closes and launches at login so due work can wake its computer.
+
+The desktop window keeps Node integration disabled, uses context isolation and
+renderer sandboxing, denies runtime permission requests, and sends ordinary
+external links to the system browser. Distribution is a Developer ID signed,
+Apple-notarized, stapled arm64 app inside a signed/notarized/stapled DMG with an
+Applications shortcut. The stable bundle identifier is
+`com.gitcommit90.1helm`.
+
 The workspace is Slack-like, but channels are operational objects:
 
 - People can create unlimited ordinary channels.
@@ -146,12 +180,12 @@ The first compelling demo is simple: ask the workspace to make something useful,
 
 ## Product decisions
 
-- **Distribution, for now:** fully OSS and self-hosted. A user clones the repo onto their own Mac, PC, or VPS.
+- **Distribution, for now:** fully OSS and self-hosted. Apple Silicon Mac users install the native app; Linux/PC/VPS deployments use the source runtime until native installers exist for those platforms.
 - **State:** chat and workspace state live on the user's machine in local SQLite.
 - **AI:** users bring a provider: an OpenAI-compatible base URL/key, OpenRouter OAuth, or Login with ChatGPT. OpenRouter free models should be chosen automatically during onboarding rather than forcing a beginner to choose a model name.
 - **Terminals:** optional. Users can turn the terminal workspace on during onboarding; it remains hidden unless enabled.
 - **Channels (updated 2026-07-18):** every ordinary channel is an agent channel by default — it receives one resident agent, workspace, files, memory, and threads at creation (see the 1Helm direction update above). Apps remain a future capability that attach to the channel-agent model rather than a separate configuration surface.
-- **Isolation:** soft (process-level) isolation initially. A resident agent works CWD-locked in its channel `/workspace`; the boundary abstraction is kept explicit so container/VM isolation can be selected later without changing the product model.
+- **Isolation:** one Apple `container machine` VM per ordinary channel in the macOS product, with `home-mount=none`. Non-macOS source/CI deployments expose an explicit compatibility backend and must not claim VM isolation.
 - **Authority:** 1Helm defines agent capabilities through available tools. There is no separate refusal-policy layer in this phase.
 - **First reference app:** Uptime Kuma, chosen instead of Jellyfin because it fits the current 2 GB demo VPS and exercises deploy, health, dashboard, and alert workflows.
 - **Hosted product:** a managed VPS/control-plane offering remains a future layer; this repository is the on-box workspace runtime.
@@ -162,8 +196,9 @@ The starting codebase is a compact Node/TypeScript application:
 
 - Server: Node HTTP + WebSocket, direct TypeScript execution, SQLite via `node:sqlite`.
 - Client: vanilla TypeScript bundled by esbuild with Tailwind CSS.
-- Terminals: embedded Open-Terminal-compatible agent plus `node-pty`.
+- Terminals: `node-pty` spawning Apple `container machine run -it` for ordinary channels; the embedded Open-Terminal-compatible endpoint remains Skipper's native-host path.
 - AI: reusable providers, bots, thread/channel model routing, and bot-to-computer command access.
+- macOS host: a sandboxed Electron window boots the native Skipper/control plane on loopback, keeps scheduling alive in the background, and manages a persistent Linux VM fleet with durable state in Application Support.
 
 Development happens on the primary development machine. The private source repository is [`gitcommit90/1Helm`](https://github.com/gitcommit90/1Helm). The isolated fresh-user sandbox is the Hetzner VPS accessed with `ssh demo1helm`, publicly reachable at `http://167.233.229.141:8123` during early HTTP-only development.
 
@@ -224,7 +259,7 @@ These findings are inputs to a future `install.sh`, not user-facing requirements
 
 ### Next slices
 
-1. Consumer-grade installer and managed service startup.
+1. Native installers for the remaining desktop platforms and managed service startup for headless hosts.
 2. App catalog and deployment lifecycle.
 3. Uptime Kuma as the first app/channel integration.
 4. HTTPS/tunnel and public route story.

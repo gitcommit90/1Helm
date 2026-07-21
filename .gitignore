@@ -12,6 +12,7 @@ public/app.css
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+dist/
 
 # local runtime state & session artifacts
 data-refactored/

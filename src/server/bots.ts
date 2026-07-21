@@ -15,7 +15,7 @@ import {
   ensureChannelWorkspace,
   ensureThread,
   normalizeChannelName,
-  provisionChannel,
+  provisionChannelWithComputer,
   recordMemory,
   refreshThreadSummary,
   relevantMemory,
@@ -25,6 +25,7 @@ import {
   addThreadUsage,
 } from "./agents.ts";
 import { scheduleAgentFollowup } from "./followups.ts";
+import { prepareChannelWorkspaceArtifact, runChannelCommand } from "./channel-computers.ts";
 
 type ChatMsg = { role: string; content: string; tool_calls?: ToolCall[]; tool_call_id?: string; name?: string };
 type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
@@ -199,7 +200,8 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       },
     });
   }
-  if (computers.length && (!skipper || hostAuthorized)) {
+  const hasResidentComputer = agent?.kind === "channel" && Boolean(q1("SELECT 1 FROM channel_computers WHERE channel_id=? AND desired_state<>'deleted'", channelId));
+  if ((computers.length || hasResidentComputer) && (!skipper || hostAuthorized)) {
     tools.push({
       type: "function",
       function: {
@@ -477,6 +479,15 @@ function grantGmail(channelId: number, requested: unknown): string {
 }
 
 async function runCommand(bot: Row, agent: RuntimeAgent | undefined, channelId: number, command: string, requestedComputerId: number, signal: AbortSignal): Promise<string> {
+  if (agent?.kind === "channel") {
+    try {
+      const result = await runChannelCommand(channelId, command, signal);
+      return `status=${result.status}\nexit_code=${result.exit_code}\n${result.output || "(no output)"}`.slice(0, 8000);
+    } catch (error) {
+      if ((error as Error).name === "AbortError") throw error;
+      return `Error running command: ${(error as Error).message}`;
+    }
+  }
   const assignedRows = q(`SELECT c.id, c.name FROM computers c JOIN bot_computers bc ON bc.computer_id=c.id WHERE bc.bot_id=? ORDER BY c.id`, bot.id);
   const assigned = assignedRows.map((row) => Number(row.id));
   const local = assignedRows.find((row) => String(row.name) === "This Computer");
@@ -506,7 +517,7 @@ async function runCommand(bot: Row, agent: RuntimeAgent | undefined, channelId: 
   }
 }
 
-function createNativeChannel(nameInput: string, purposeInput: string, userId: number): string {
+async function createNativeChannel(nameInput: string, purposeInput: string, userId: number): Promise<string> {
   if (!userId) return "Error: a Captain could not be identified for this request.";
   const name = normalizeChannelName(nameInput);
   if (!name) return "Error: provide a valid channel name.";
@@ -514,7 +525,8 @@ function createNativeChannel(nameInput: string, purposeInput: string, userId: nu
   if (existing) return `#${name} already exists and is ${existing.status === "archived" ? "archived" : "ready"}.`;
 
   const purpose = purposeInput.trim() || `Own and coordinate work related to ${name.replace(/[-_]+/g, " ")}.`;
-  const provisioned = provisionChannel({ name, purpose, userId });
+  const provisioned = await provisionChannelWithComputer({ name, purpose, userId });
+  if (!provisioned.computerReady) return `Created #${name}, but its isolated computer still needs Skipper's attention: ${provisioned.computerError || "provisioning will retry"}`;
   const resident = agentForChannel(provisioned.channelId);
   broadcastToChannel(provisioned.channelId, {
     type: "channel_new",
@@ -523,7 +535,7 @@ function createNativeChannel(nameInput: string, purposeInput: string, userId: nu
   if (provisioned.announcementId) {
     broadcastToChannel(provisioned.channelId, { type: "message", message: serializeMessage(provisioned.announcementId) });
   }
-  return `Created #${name}. Its resident agent @${resident?.name || `${name}-agent`} and durable workspace are ready.`;
+  return `Created #${name}. Its resident agent @${resident?.name || `${name}-agent`} and private persistent Linux computer are ready.`;
 }
 
 function callSkipper(agent: RuntimeAgent, channelId: number, threadRootId: number, reason: string): string {
@@ -783,6 +795,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               requireActiveTurn(channelId, controller.signal);
               if (agent?.kind === "channel") syncWorkspaceArtifacts(channelId, threadId, "agent");
             } else if (name === "attach_file" && !visiting) {
+              await prepareChannelWorkspaceArtifact(channelId);
               const attached = attachWorkspaceFileToMessage(
                 channelId,
                 msgId,
@@ -814,7 +827,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                 result = `Error: ${(error as Error).message}`;
               }
             } else if (name === "create_channel" && agent?.kind === "skipper" && hostAuthorized) {
-              result = createNativeChannel(String(args.name || ""), String(args.purpose || ""), requestUserId);
+              result = await createNativeChannel(String(args.name || ""), String(args.purpose || ""), requestUserId);
             } else if (name === "grant_gmail_access" && agent?.kind === "skipper" && hostAuthorized) {
               result = grantGmail(channelId, args.accounts);
             } else if (name === "invite_agent" && agent?.kind === "skipper" && hostAuthorized) {

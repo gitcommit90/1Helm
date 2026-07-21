@@ -116,11 +116,39 @@ function accountCard(account: RoutingProvider, refresh: () => Promise<void>, con
     addStatus.textContent = result.ok ? `${modelId} is ready.` : result.error || "The model test failed.";
     if (result.ok) await refresh();
   } }, "Test & add model");
+  const isChatGptFamily = ["chatgpt", "codex"].includes(account.type) || providerFamily(account) === "chatgpt";
+  const imageGenEnabled = Boolean((account as RoutingProvider & { imageGenerationEnabled?: boolean }).imageGenerationEnabled);
+  const imageToggle = h("input", { type: "checkbox", class: "accent-accent", checked: imageGenEnabled, title: "When on, Image Generation enters the skill arsenal for Skipper to provision." }) as HTMLInputElement;
+  imageToggle.onchange = async () => {
+    const requested = imageToggle.checked;
+    imageToggle.disabled = true;
+    try {
+      await api("/api/routing/image-generation", { method: "POST", body: { providerId: account.id, enabled: requested } });
+      await refresh();
+    } catch (error) {
+      imageToggle.checked = !requested;
+      addStatus.textContent = (error as Error).message;
+    } finally {
+      imageToggle.disabled = false;
+    }
+  };
+  const imageRow = isChatGptFamily
+    ? h("label", {
+        class: "mt-3 flex items-start gap-3 rounded-lg border border-line bg-raised/40 px-3 py-2.5",
+        title: "Off by default. Turn on to add Image Generation to the workspace skill arsenal while this ChatGPT OAuth account is connected.",
+      },
+      imageToggle,
+      h("span", { class: "min-w-0 flex-1" },
+        h("span", { class: "block text-sm font-semibold text-fg" }, "Image Generation"),
+        h("span", { class: "mt-0.5 block text-xs leading-5 text-muted" }, "Activate Image Generation as a skill Skipper can provision. Requires healthy ChatGPT OAuth. Default is off.")))
+    : null;
+
   add(details,
     h("div", { class: "mb-3 flex flex-wrap items-center justify-between gap-2" },
       count,
       h("div", { class: "flex gap-2" }, allOn, allOff)),
     models.length ? modelList : h("p", { class: "py-4 text-sm text-muted" }, "No models are configured for this account yet."),
+    imageRow,
     h("div", { class: "mt-3 grid gap-2 sm:grid-cols-[1fr_auto]" }, exact, addModel), addStatus,
     h("div", { class: "mt-3 flex flex-wrap justify-end gap-2" },
       ["chatgpt", "claude", "antigravity", "xai", "codex"].includes(account.type)
@@ -181,6 +209,78 @@ export async function connectRoutingOauth(type: string, onConnected: () => Promi
   await openOauth(type, onConnected);
 }
 
+
+function familyLabel(family: string, state: RoutingState): string {
+  const oauth = (state.oauthProviders || []).find((item) => item.id === family);
+  if (oauth?.name) return oauth.name;
+  const preset = (state.keyedPresets || []).find((item) => item.id === family);
+  if (preset?.name) return preset.name;
+  const account = (state.providers || []).find((item) => (isCustom(item) ? "custom" : providerFamily(item)) === family);
+  return account?.name || family;
+}
+
+function providerFamilies(state: RoutingState): Array<{ id: string; name: string; models: Array<{ id: string; name: string }> }> {
+  const map = new Map<string, { id: string; name: string; models: Map<string, string> }>();
+  for (const account of (state.providers || []).filter((item) => item.enabled !== false)) {
+    const id = isCustom(account) ? `custom:${account.id}` : providerFamily(account);
+    const name = isCustom(account) ? (account.name || "Custom") : familyLabel(providerFamily(account), state);
+    const entry = map.get(id) || { id, name, models: new Map<string, string>() };
+    for (const model of account.models || []) {
+      if (model.enabled === false) continue;
+      const mid = model.id;
+      if (!entry.models.has(mid)) entry.models.set(mid, model.name || model.id);
+    }
+    map.set(id, entry);
+  }
+  return [...map.values()].map((entry) => ({ id: entry.id, name: entry.name, models: [...entry.models.entries()].map(([id, name]) => ({ id, name })) }));
+}
+
+function familyRouteMember(familyId: string, model: string, state: RoutingState): RoutingComboMember {
+  if (familyId.startsWith("custom:")) {
+    const providerId = familyId.slice("custom:".length);
+    return { providerId, model };
+  }
+  // Multi-account agnostic: type + model lets the engine pool all accounts.
+  return { providerType: familyId, model };
+}
+
+function routingFabric(state: RoutingState): HTMLElement {
+  const families = [...new Set((state.providers || []).filter((p) => p.enabled !== false).map((p) => isCustom(p) ? "custom" : providerFamily(p)))].slice(0, 8);
+  const nodes = families.length ? families : ["chatgpt", "claude", "openrouter"];
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 320 120");
+  svg.setAttribute("class", "routing-fabric-svg");
+  svg.setAttribute("aria-hidden", "true");
+  const cx = 160, cy = 60;
+  nodes.forEach((family, index) => {
+    const angle = (Math.PI * 2 * index) / nodes.length - Math.PI / 2;
+    const x = cx + Math.cos(angle) * 96;
+    const y = cy + Math.sin(angle) * 38;
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", `M ${cx} ${cy} Q ${(cx + x) / 2} ${(cy + y) / 2 - 12} ${x} ${y}`);
+    path.setAttribute("class", "routing-fabric-path");
+    path.style.animationDelay = `${index * 0.18}s`;
+    svg.append(path);
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    circle.setAttribute("cx", String(x)); circle.setAttribute("cy", String(y)); circle.setAttribute("r", "8");
+    circle.setAttribute("class", "routing-fabric-node");
+    g.append(circle);
+    svg.append(g);
+  });
+  const hub = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  hub.setAttribute("cx", String(cx)); hub.setAttribute("cy", String(cy)); hub.setAttribute("r", "14");
+  hub.setAttribute("class", "routing-fabric-hub");
+  svg.append(hub);
+  const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  label.setAttribute("x", String(cx)); label.setAttribute("y", String(cy + 4));
+  label.setAttribute("text-anchor", "middle"); label.setAttribute("class", "routing-fabric-hub-label");
+  label.textContent = "1H";
+  svg.append(label);
+  return h("div", { class: "routing-fabric", title: "Live routing fabric — accounts pool under each provider family" }, svg,
+    h("div", { class: "routing-fabric-legend" }, ...nodes.map((id) => h("span", { class: "routing-fabric-chip" }, providerMark(id, 14), familyLabel(id, state)))));
+}
+
 function sourceCatalog(state: RoutingState, refresh: () => Promise<void>, confirm: Dialog, expandedAccounts: Set<string>, expandedGroups: Set<string>): HTMLElement {
   const groups = new Map<string, { id: string; name: string; kind: "oauth" | "keyed" | "custom"; accounts: RoutingProvider[]; preset?: RoutingState["keyedPresets"][number] }>();
   for (const oauth of state.oauthProviders || []) groups.set(oauth.id, { id: oauth.id, name: oauth.name, kind: "oauth", accounts: [] });
@@ -214,7 +314,7 @@ function sourceCatalog(state: RoutingState, refresh: () => Promise<void>, confir
     };
     list.append(h("section", { class: "routing-provider" }, open, body));
   }
-  return h("div", {}, heading("Provider fabric", "Accounts & keys", "Connect subscriptions and API keys once. Every enabled model becomes available to Skipper, resident agents, named routes, and the shared endpoint."), list);
+  return h("div", {}, heading("Provider fabric", "Accounts & keys", "Connect subscriptions and API keys once. Every enabled model becomes available to Skipper, resident agents, named routes, and the shared endpoint."), routingFabric(state), list);
 }
 
 function keyedForm(id: string, label: string, preset: RoutingState["keyedPresets"][number] | undefined, refresh: () => Promise<void>): HTMLElement {
@@ -303,7 +403,8 @@ function routeEditor(state: RoutingState, refresh: () => Promise<void>, existing
   const wrap = h("section", { class: "routing-route-editor" });
   const name = h("input", { class: "field font-mono", value: existing?.name || "", placeholder: "coding" }) as HTMLInputElement;
   const strategy = h("select", { class: "field" }, h("option", { value: "fallback", selected: existing?.strategy !== "round-robin" }, "Fallback — use preferred order"), h("option", { value: "round-robin", selected: existing?.strategy === "round-robin" }, "Round robin — rotate starting source")) as HTMLSelectElement;
-  const provider = h("select", { class: "field" }, h("option", { value: "" }, "Choose provider"), ...state.providers.filter((item) => item.enabled !== false).map((item) => h("option", { value: item.id }, item.name))) as HTMLSelectElement;
+  const families = providerFamilies(state);
+  const provider = h("select", { class: "field" }, h("option", { value: "" }, "Choose provider"), ...families.map((item) => h("option", { value: item.id }, item.name))) as HTMLSelectElement;
   const model = h("select", { class: "field", disabled: true }, h("option", { value: "" }, "Choose model")) as HTMLSelectElement;
   const members: RoutingComboMember[] = (existing?.members || []).map((member) => ({ ...member }));
   const memberList = h("div", { class: "space-y-2" });
@@ -311,10 +412,13 @@ function routeEditor(state: RoutingState, refresh: () => Promise<void>, existing
   const redraw = (): void => {
     clear(memberList);
     members.forEach((member, index) => {
-      const account = state.providers.find((item) => member.providerId ? item.id === member.providerId : providerFamily(item) === member.providerType);
+      const family = member.providerId ? `custom:${member.providerId}` : String(member.providerType || "");
+      const label = family.startsWith("custom:")
+        ? (state.providers.find((item) => item.id === member.providerId)?.name || "Custom")
+        : familyLabel(family, state);
       memberList.append(h("div", { class: "routing-route-member" },
         h("span", { class: "routing-route-index" }, String(index + 1)),
-        h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block truncate text-sm font-semibold text-fg" }, `${account?.name || member.providerType || "Provider"} · ${member.model}`), h("span", { class: "block text-xs text-muted" }, index === 0 ? "Preferred destination" : "Fallback destination")),
+        h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block truncate text-sm font-semibold text-fg" }, `${label} · ${member.model}`), h("span", { class: "block text-xs text-muted" }, index === 0 ? "Preferred destination · account pool" : "Fallback destination · account pool")),
         h("button", { class: "btn-ghost p-2", disabled: index === 0, onclick: () => { [members[index - 1], members[index]] = [members[index], members[index - 1]]; redraw(); } }, "↑"),
         h("button", { class: "btn-ghost p-2", disabled: index === members.length - 1, onclick: () => { [members[index + 1], members[index]] = [members[index], members[index + 1]]; redraw(); } }, "↓"),
         h("button", { class: "btn-ghost p-2 text-danger", onclick: () => { members.splice(index, 1); redraw(); } }, icon("x", 13))));
@@ -323,18 +427,19 @@ function routeEditor(state: RoutingState, refresh: () => Promise<void>, existing
   };
   provider.onchange = () => {
     clear(model); model.append(h("option", { value: "" }, "Choose model"));
-    const account = state.providers.find((item) => item.id === provider.value);
-    for (const item of account?.models.filter((entry) => entry.enabled !== false) || []) model.append(h("option", { value: item.id }, item.name || item.id));
-    model.disabled = !account;
+    const family = families.find((item) => item.id === provider.value);
+    for (const item of family?.models || []) model.append(h("option", { value: item.id }, item.name || item.id));
+    model.disabled = !family;
   };
   redraw();
   add(wrap,
     h("div", { class: "grid gap-2 sm:grid-cols-2" }, h("label", {}, h("span", { class: "mb-1 block text-xs font-semibold text-muted" }, "Route name / model ID"), name), h("label", {}, h("span", { class: "mb-1 block text-xs font-semibold text-muted" }, "Routing strategy"), strategy)),
     h("div", { class: "mt-4" }, h("div", { class: "mb-2 text-xs font-semibold text-muted" }, "Destinations"), memberList),
     h("div", { class: "mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]" }, provider, model, h("button", { class: "btn-subtle min-h-10 text-xs", onclick: () => {
-      const account = state.providers.find((item) => item.id === provider.value); if (!account || !model.value) return;
-      const candidate = routeMember(account, model.value);
-      if (!members.some((item) => (item.providerId || item.providerType) === (candidate.providerId || candidate.providerType) && item.model === candidate.model)) members.push(candidate);
+      if (!provider.value || !model.value) return;
+      const candidate = familyRouteMember(provider.value, model.value, state);
+      const key = `${candidate.providerId || candidate.providerType}::${candidate.model}`;
+      if (!members.some((item) => `${item.providerId || item.providerType}::${item.model}` === key)) members.push(candidate);
       redraw();
     } }, "Add destination")),
     h("div", { class: "mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, h("div", { class: "flex gap-2" }, h("button", { class: "btn-ghost text-xs", onclick: () => wrap.remove() }, "Cancel"), h("button", { class: "btn-primary text-xs", onclick: async () => {

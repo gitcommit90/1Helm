@@ -101,7 +101,9 @@ async function exerciseScenario(kind, mockPort, cloudflarePort, cloudflareReques
       candidate.textContent?.trim() === "Continue" && candidate instanceof HTMLButtonElement && !candidate.disabled));
     await clickButton(page, "Continue");
 
-    await waitForHeading(page, "Show channel terminals?");
+    await waitForHeading(page, "Set up channel computers");
+    const computerCopy = await page.evaluate(() => document.querySelector(".wizard-panel")?.textContent || "");
+    ok(/never need to choose CPU, RAM, disk size, or sleep settings/i.test(computerCopy), `${kind}: Skipper owns channel-computer provisioning choices`);
     await clickButton(page, "Continue");
     await waitForHeading(page, "Name this workspace");
     const workspaceName = `Fresh ${kind} workspace`;

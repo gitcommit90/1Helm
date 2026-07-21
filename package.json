@@ -1,9 +1,11 @@
 {
   "name": "1helm",
-  "version": "1.1.1",
+  "productName": "1Helm",
+  "version": "1.1.2",
   "private": true,
   "type": "module",
   "description": "1Helm — a self-hosted native agent workspace running on the 1Helm host: every channel gets one resident agent, a computer workspace, files, threads, and provider-neutral memory.",
+  "main": "desktop/main.cjs",
   "scripts": {
     "build:js": "esbuild src/client/app.ts --bundle --format=esm --outfile=public/bundle.js --loader:.css=css --minify",
     "build:css": "tailwindcss -i src/client/styles.css -o public/app.css --minify",
@@ -21,9 +23,14 @@
     "test:brief-browser": "node test/brief-regressions-browser.mjs",
     "test:production-browser": "node test/production-browser.mjs",
     "test:live": "node test/live-smoke.mjs",
-    "test": "node test/native-world.mjs && node --test test/routing.mjs",
+    "test": "node test/native-world.mjs && node --test test/routing.mjs test/desktop.mjs test/channel-computers.mjs",
     "ci": "npm run typecheck && npm run build && npm test",
-    "test:pipeline": "node test/pipeline.mjs"
+    "test:pipeline": "node test/pipeline.mjs",
+    "desktop": "electron .",
+    "package:mac": "node scripts/package-mac-dmg.cjs",
+    "package:dmg:release": "HELM_REQUIRE_NOTARIZATION=1 node scripts/package-mac-dmg.cjs",
+    "test:desktop": "node --test test/desktop.mjs",
+    "test:channel-computers:mac": "node scripts/mac-channel-computer-acceptance.mjs"
   },
   "dependencies": {
     "@gitcommit90/rerouted": "https://github.com/gitcommit90/rerouted/releases/download/v0.5.7/ReRouted-0.5.7-linux-node.tgz",
@@ -32,11 +39,14 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@electron/osx-sign": "2.6.0",
+    "@electron/packager": "20.0.3",
     "@tailwindcss/cli": "^4.3.2",
     "@types/node": "^26.1.1",
     "@types/ws": "^8.18.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "electron": "43.1.1",
     "esbuild": "^0.28.1",
     "puppeteer": "^25.3.0",
     "typescript": "^7.0.2"

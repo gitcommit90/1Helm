@@ -427,6 +427,68 @@ select.field {
 .routing-log-line time { color: #6f6e66; }
 .routing-log-line code { grid-column: 3; overflow-wrap: anywhere; color: #85847b; }
 .routing-endpoint-hero, .routing-network-row, .routing-key-row { padding: 1rem; }
+.routing-fabric {
+  margin: 0 0 1rem;
+  padding: .75rem .85rem;
+  border: 1px solid var(--c-line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--c-raised) 45%, var(--c-surface));
+}
+.routing-fabric-svg { display: block; width: 100%; max-height: 7.5rem; }
+.routing-fabric-path {
+  fill: none;
+  stroke: color-mix(in srgb, var(--c-accent) 55%, var(--c-line));
+  stroke-width: 1.4;
+  stroke-dasharray: 4 6;
+  stroke-linecap: round;
+  animation: routing-dash 1.8s linear infinite;
+  opacity: .85;
+}
+.routing-fabric-hub {
+  fill: color-mix(in srgb, var(--c-accent) 22%, var(--c-surface));
+  stroke: var(--c-accent);
+  stroke-width: 1.5;
+}
+.routing-fabric-hub-label {
+  fill: var(--c-fg);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+.routing-fabric-node {
+  fill: var(--c-surface);
+  stroke: color-mix(in srgb, var(--c-accent) 50%, var(--c-line));
+  stroke-width: 1.2;
+}
+.routing-fabric-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  margin-top: .55rem;
+}
+.routing-fabric-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  padding: .2rem .5rem;
+  border: 1px solid var(--c-line);
+  border-radius: 999px;
+  color: var(--c-muted);
+  font-size: 11px;
+}
+@keyframes routing-dash {
+  to { stroke-dashoffset: -40; }
+}
+.channel-purpose-fade {
+  position: relative;
+  overflow: hidden;
+  white-space: nowrap;
+  mask-image: linear-gradient(90deg, #000 0%, #000 72%, transparent 100%);
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 72%, transparent 100%);
+}
+.provider-brand-mark { border-radius: 4px; }
+
 .routing-endpoint-hero { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-color: color-mix(in srgb, var(--c-accent) 40%, var(--c-line)); background: color-mix(in srgb, var(--c-accent-soft) 30%, var(--c-surface)); }
 .routing-key-row { margin-bottom: .5rem; }
 
@@ -680,11 +742,11 @@ html.light .channel-unread-badge {
   display: block;
   width: 100%;
   flex-shrink: 0;
-  min-height: 5.25rem;
-  padding: 0.8rem;
+  min-height: 4.1rem;
+  padding: 0.55rem 0.65rem;
   overflow: hidden;
   border: 1px solid var(--c-line);
-  border-radius: 0.625rem;
+  border-radius: 0.5rem;
   background: var(--c-surface);
   text-align: left;
   transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
@@ -694,13 +756,13 @@ html.light .channel-unread-badge {
 
 /* Markdown */
 .md {
-  @apply min-w-0 max-w-full text-[15px] leading-relaxed;
+  @apply min-w-0 max-w-full text-[13.5px] leading-snug sm:text-[14.5px] sm:leading-relaxed;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 .md > :first-child { @apply mt-0; }
 .md > :last-child { @apply mb-0; }
-.md p { @apply my-1.5; }
+.md p { @apply my-1; }
 .md a { @apply text-accent underline underline-offset-2; }
 .md code { @apply max-w-full rounded bg-raised px-1.5 py-0.5 font-mono text-[0.82em] text-fg; overflow-wrap: anywhere; word-break: break-word; box-shadow: inset 0 0 0 1px var(--c-line); }
 .md pre { @apply my-2 max-w-full overflow-x-hidden whitespace-pre-wrap rounded-md border border-line bg-raised p-3; overflow-wrap: anywhere; word-break: break-word; }

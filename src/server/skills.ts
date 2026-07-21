@@ -1,12 +1,70 @@
-import { now, q, q1, run, tx, type Row } from "./db.ts";
+import { join } from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { DATA_DIR, now, q, q1, run, tx, type Row } from "./db.ts";
 
 export const skillSlug = (value: string): string => value.trim().toLowerCase()
   .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
 
-export function listSkills(): Row[] {
-  return q(`SELECT s.*, COUNT(ask.agent_id) assigned_agents FROM skills s
+const IMAGE_GEN_META = join(DATA_DIR, "image-generation.json");
+
+export function imageGenerationEnabledIds(): string[] {
+  try {
+    if (!existsSync(IMAGE_GEN_META)) return [];
+    const data = JSON.parse(readFileSync(IMAGE_GEN_META, "utf8")) as { enabledProviderIds?: string[] };
+    return Array.isArray(data.enabledProviderIds) ? data.enabledProviderIds.map(String) : [];
+  } catch { return []; }
+}
+
+export function setImageGenerationEnabled(providerId: string, enabled: boolean): { enabledProviderIds: string[] } {
+  const set = new Set(imageGenerationEnabledIds());
+  if (enabled) set.add(String(providerId)); else set.delete(String(providerId));
+  const payload = { enabledProviderIds: [...set] };
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(IMAGE_GEN_META, JSON.stringify(payload, null, 2), { mode: 0o600 });
+  return payload;
+}
+
+/** ChatGPT OAuth connected + at least one account has Image Generation toggled on. */
+export function imageGenerationAvailable(): boolean {
+  const enabled = new Set(imageGenerationEnabledIds());
+  if (!enabled.size) return false;
+  // Prefer routing engine store if present under DATA_DIR/routing
+  try {
+    const cfgPath = join(DATA_DIR, "routing", "config.json");
+    if (existsSync(cfgPath)) {
+      const cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as { providers?: Array<{ id?: string; type?: string; enabled?: boolean }> };
+      for (const p of cfg.providers || []) {
+        if (p.enabled === false) continue;
+        const type = String(p.type || "");
+        if ((type === "chatgpt" || type === "codex") && enabled.has(String(p.id))) return true;
+      }
+    }
+  } catch { /* fall through */ }
+  // Legacy ChatGPT provider row
+  const row = q1("SELECT id FROM providers WHERE kind='chatgpt' LIMIT 1");
+  if (row && enabled.has(String(row.id))) return true;
+  // Any enabled id present counts if chatgpt oauth session exists
+  const session = q1("SELECT 1 FROM chatgpt_sessions LIMIT 1");
+  return Boolean(session && enabled.size);
+}
+
+export function listSkills(opts?: { includeLocked?: boolean }): Row[] {
+  const rows = q(`SELECT s.*, COUNT(ask.agent_id) assigned_agents FROM skills s
     LEFT JOIN agent_skills ask ON ask.skill_id=s.id WHERE s.status='active'
     GROUP BY s.id ORDER BY s.category, s.name`);
+  const available = imageGenerationAvailable();
+  return rows.map((skill) => {
+    if (String(skill.slug) !== "image-generation") return skill;
+    return {
+      ...skill,
+      arsenal_locked: available ? 0 : 1,
+      arsenal_reason: available ? "" : "Connect ChatGPT OAuth and turn on Image Generation under that account in Providers.",
+    };
+  }).filter((skill) => {
+    if (String(skill.slug) !== "image-generation") return true;
+    if (opts?.includeLocked) return true;
+    return !skill.arsenal_locked;
+  });
 }
 
 export function listTemplates(): Row[] {
@@ -17,15 +75,26 @@ export function listTemplates(): Row[] {
 }
 
 export function skillsForAgent(agentId: number): Row[] {
+  const available = imageGenerationAvailable();
   return q(`SELECT s.*, ask.reason, ask.permanent, ask.created provisioned_at
     FROM skills s JOIN agent_skills ask ON ask.skill_id=s.id
-    WHERE ask.agent_id=? AND s.status='active' ORDER BY s.category,s.name`, agentId);
+    WHERE ask.agent_id=? AND s.status='active' ORDER BY s.category,s.name`, agentId).map((skill) => {
+    if (String(skill.slug) !== "image-generation") return skill;
+    return {
+      ...skill,
+      arsenal_locked: available ? 0 : 1,
+      arsenal_reason: available ? "" : "Image Generation is assigned but inactive until ChatGPT OAuth is connected and the Providers toggle is on.",
+    };
+  });
 }
 
 export function provisionSkill(agentId: number, slugInput: string, provisionedBy: number | null, reason = "Provisioned by Skipper."): Row {
   const slug = skillSlug(slugInput);
   const skill = q1("SELECT * FROM skills WHERE slug=? AND status='active'", slug);
   if (!skill) throw new Error(`Skill ${slug || slugInput} is not in the workspace arsenal.`);
+  if (slug === "image-generation" && !imageGenerationAvailable()) {
+    throw new Error("Image Generation is not active. Connect ChatGPT OAuth and enable Image Generation on a ChatGPT account in Providers.");
+  }
   const agent = q1("SELECT id FROM agents WHERE id=? AND status<>'deleted'", agentId);
   if (!agent) throw new Error("Agent not found.");
   run(`INSERT INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) VALUES (?,?,?,?,1,?)
@@ -96,7 +165,7 @@ export function requestSkill(agentId: number, channelId: number, threadId: numbe
 
 export function agentSkillContext(agentId: number): string {
   const assigned = skillsForAgent(agentId);
-  const catalog = listSkills();
+  const catalog = listSkills(); // image-generation only when arsenal gate is open
   const assignedSlugs = new Set(assigned.map((skill) => String(skill.slug)));
   const improvements = q("SELECT summary,instruction,created FROM agent_improvements WHERE agent_id=? AND status='active' ORDER BY created DESC LIMIT 8", agentId);
   return [

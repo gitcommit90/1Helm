@@ -359,7 +359,19 @@ export async function routingState(): Promise<Record<string, unknown>> {
   const state = await routingInvoke("app:get-state");
   // Credential values are needed only on the dedicated Endpoint screen. Keep
   // routine polling and the rest of the provider UI free of copyable secrets.
-  return { ...state, apiKey: state.apiKey ? "" : state.apiKey, apiKeys: undefined };
+  let imageIds: string[] = [];
+  try {
+    const { imageGenerationEnabledIds } = await import("./skills.ts");
+    imageIds = imageGenerationEnabledIds();
+  } catch { imageIds = []; }
+  const enabled = new Set(imageIds);
+  const providers = Array.isArray((state as { providers?: unknown[] }).providers)
+    ? ((state as { providers: Array<Record<string, unknown>> }).providers).map((provider) => ({
+      ...provider,
+      imageGenerationEnabled: enabled.has(String(provider.id || "")),
+    }))
+    : (state as { providers?: unknown }).providers;
+  return { ...state, providers, apiKey: state.apiKey ? "" : state.apiKey, apiKeys: undefined };
 }
 
 export async function routingCredentials(): Promise<Record<string, unknown>> {

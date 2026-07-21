@@ -1,4 +1,4 @@
-import { api, getToken, workspacePhotoSrc, type Computer, type Skill, type User, type WorkspaceDomain } from "./api.ts";
+import { api, getToken, workspacePhotoSrc, type ChannelRuntime, type Computer, type Skill, type User, type WorkspaceDomain } from "./api.ts";
 import { h, clear, add, icon } from "./dom.ts";
 import { S, avatar, reloadProviders, renderApp, appAlert, appConfirm } from "./app.ts";
 import { connectRoutingOauth, routingPanel } from "./routing.ts";
@@ -145,8 +145,8 @@ function applyWorkspaceTheme(): void {
 
 function skillsPanel(): HTMLElement {
   const wrap = h("div", { class: "space-y-3" }, h("p", { class: "text-sm leading-6 text-muted" }, "Every agent knows this complete catalog. Skipper starts with all skills; resident agents get a useful permanent kit and can request or propose more while they work."));
-  void api<{ skills: Skill[] }>("/api/skills").then(({ skills }) => {
-    for (const skill of skills) wrap.append(h("article", { class: "card p-4" }, h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-semibold text-fg" }, skill.name), h("span", { class: "chip" }, skill.category), h("span", { class: "ml-auto text-xs text-muted" }, `${(skill as Skill & { assigned_agents?: number }).assigned_agents || 0} agents`)), h("p", { class: "mt-2 text-sm leading-6 text-muted" }, skill.description)));
+  void api<{ skills: Array<Skill & { arsenal_locked?: number; arsenal_reason?: string; assigned_agents?: number }> }>("/api/skills").then(({ skills }) => {
+    for (const skill of skills) wrap.append(h("article", { class: `card p-4 ${skill.arsenal_locked ? "opacity-80" : ""}` }, h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-semibold text-fg" }, skill.name), h("span", { class: "chip" }, skill.category), skill.arsenal_locked ? h("span", { class: "chip border-amber-400/40 text-amber-600 dark:text-amber-300" }, "locked") : null, h("span", { class: "ml-auto text-xs text-muted" }, `${skill.assigned_agents || 0} agents`)), h("p", { class: "mt-2 text-sm leading-6 text-muted" }, skill.description), skill.arsenal_locked && skill.arsenal_reason ? h("p", { class: "mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300" }, skill.arsenal_reason) : null));
   }).catch((error) => wrap.append(h("p", { class: "text-danger" }, (error as Error).message)));
   return wrap;
 }
@@ -195,15 +195,48 @@ function providersPanel(): HTMLElement {
 // ------------------------------------------------------------ computers
 function computersPanel(): HTMLElement {
   const wrap = h("div", { class: "space-y-3" });
+  const runtimeBox = h("div", { class: "card p-4" }, h("p", { class: "text-sm text-muted" }, "Checking channel computer runtime…"));
   const list = h("div", { class: "space-y-3" });
   const refresh = async (): Promise<void> => { S.computers = (await api<{ computers: Computer[] }>("/api/computers")).computers; draw(); };
   const draw = (): void => { clear(list); S.computers.forEach((c) => list.append(computerCard(c, refresh))); if (!S.computers.length) list.append(h("p", { class: "py-6 text-center text-sm text-muted" }, "No computers yet.")); };
   add(wrap,
+    runtimeBox,
     h("div", { class: "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between" },
-      h("p", { class: "min-w-0 text-sm leading-5 text-muted" }, "Advanced: Open-Terminal endpoints (base URL + key). The embedded This Computer backs every resident agent's /workspace; add a remote computer here for Skipper host-level work."),
+      h("p", { class: "min-w-0 text-sm leading-5 text-muted" }, "Advanced: native and remote Open-Terminal endpoints are available to Captain-authorized Skipper work. Ordinary residents always use their own channel computer."),
       S.me.is_admin ? h("button", { class: "btn-primary min-h-11 w-full shrink-0 text-sm sm:min-h-0 sm:w-auto", onclick: () => list.prepend(computerCard(null, refresh)) }, icon("plus"), "Add a computer") : null),
     S.me.is_admin ? null : adminNote(), list);
   draw();
+  const paintRuntime = (runtime: ChannelRuntime): void => {
+    clear(runtimeBox);
+    if (runtime.backend !== "apple") {
+      runtimeBox.append(h("h3", { class: "font-semibold text-fg" }, "Channel computers · development compatibility"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "This non-macOS source runtime uses an explicit compatibility backend. It does not claim Apple VM isolation."));
+      return;
+    }
+    const actionStatus = h("p", { class: "mt-2 text-sm text-muted" });
+    const action = !runtime.supported
+      ? null
+      : !runtime.cli
+      ? h("button", { class: "btn-primary mt-3 text-sm", onclick: async () => {
+        actionStatus.textContent = "Downloading and verifying Apple's signed installer…";
+        try { await api("/api/channel-computers/runtime/install", { body: {} }); actionStatus.textContent = "macOS Installer is open. Approve it once, then choose Finish setup."; }
+        catch (error) { actionStatus.textContent = (error as Error).message; }
+      } }, "Install verified Apple runtime")
+      : !runtime.ready
+        ? h("button", { class: "btn-primary mt-3 text-sm", onclick: async () => {
+          actionStatus.textContent = "Starting Apple's runtime and checking its health…";
+          try { const result = await api<{ runtime: ChannelRuntime }>("/api/channel-computers/runtime/start", { body: {} }); paintRuntime(result.runtime); }
+          catch (error) { actionStatus.textContent = (error as Error).message; }
+        } }, "Finish setup")
+        : null;
+    runtimeBox.append(
+      h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-semibold text-fg" }, "Channel computers"), h("span", { class: "chip border-accent/25" }, runtime.ready ? "Ready" : runtime.supported ? "One-time setup" : "Unsupported Mac")),
+      h("p", { class: "mt-1 text-sm leading-6 text-muted" }, runtime.ready
+        ? "Apple's VM runtime is healthy. Skipper creates and manages one persistent isolated Linux computer per ordinary channel—no CPU or RAM decisions required."
+        : "1Helm verifies and opens Apple's signed installer. macOS asks for administrator approval once; Skipper manages everything after that."),
+      ...(action ? [action] : []), actionStatus,
+    );
+  };
+  void api<{ runtime: ChannelRuntime }>("/api/channel-computers/runtime").then(({ runtime }) => paintRuntime(runtime)).catch((error) => { runtimeBox.textContent = (error as Error).message; });
   return wrap;
 }
 

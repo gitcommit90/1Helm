@@ -14,7 +14,7 @@ export function openCreateChannel(onCreated: (channel: Channel) => void): void {
   const close = (): void => overlay.remove();
   const create = async (): Promise<void> => {
     status.textContent = "";
-    submit.disabled = true; submit.textContent = "Provisioning agent world…";
+      submit.disabled = true; submit.textContent = "Preparing agent and private computer…";
     try {
       const result = await api<{ channel: Channel }>("/api/channels", { body: { name: name.value, purpose: purpose.value, template: selectedTemplate } });
       close(); onCreated(result.channel);
@@ -28,7 +28,7 @@ export function openCreateChannel(onCreated: (channel: Channel) => void): void {
   const overlay = h("div", { class: "modal-overlay fixed inset-0 z-50 grid place-items-end bg-black/55 p-0 sm:place-items-center sm:p-6", onclick: (event: MouseEvent) => { if (event.target === overlay) close(); } },
     h("section", { class: "card mobile-sheet w-full max-w-lg overflow-hidden rounded-b-none shadow-2xl sm:rounded-xl" },
       h("div", { class: "flex items-start justify-between gap-3 border-b border-line px-4 py-4 sm:px-6" },
-        h("div", {}, h("h2", { class: "font-display text-[1.4rem] leading-tight text-fg" }, "Create an agent channel"), h("p", { class: "mt-1.5 text-sm text-muted" }, "It comes with one resident agent, a computer workspace, files, threads, and memory.")),
+        h("div", {}, h("h2", { class: "font-display text-[1.4rem] leading-tight text-fg" }, "Create an agent channel"), h("p", { class: "mt-1.5 text-sm text-muted" }, "It comes with one resident agent, its own private Linux computer, files, threads, and memory. Skipper handles the infrastructure.")),
         h("button", { class: "grid h-11 w-11 place-items-center rounded text-muted hover:bg-hover sm:h-8 sm:w-8", "aria-label": "Close", onclick: close }, icon("x"))),
       h("div", { class: "max-h-[70dvh] space-y-4 overflow-y-auto p-4 sm:p-6" },
         h("div", {}, h("span", { class: "eyebrow mb-2 block text-muted" }, "Start from a lightweight role"), templates, h("span", { class: "mt-1 block text-xs text-muted" }, "Templates are only a starting kit. The agent keeps learning, gaining skills, and growing with this channel.")),
@@ -171,11 +171,11 @@ export function renderThreads(container: HTMLElement, channelId: number, onOpen:
     const list = h("div", { class: "space-y-2" });
     if (!threads.length) list.append(empty("No sessions yet", "Start a top-level message in Chat to open a focused session."));
     for (const thread of threads) {
-      list.append(h("article", { class: "card flex w-full min-w-0 items-start gap-3 p-4" },
+      list.append(h("article", { class: "card flex w-full min-w-0 items-start gap-2.5 p-3" },
         h("span", { class: "mt-0.5 shrink-0 text-accent" }, icon("thread")),
         h("button", { class: "min-w-0 flex-1 text-left", type: "button", dataset: { threadOpen: String(thread.id) }, onclick: () => onOpen(thread) },
           h("div", { class: "truncate font-semibold text-fg hover:text-accent" }, thread.title),
-          h("div", { class: "md mt-1 line-clamp-2 text-sm leading-5 text-muted", html: md(thread.summary || "No summary yet.") }),
+          h("div", { class: "md mt-0.5 line-clamp-2 text-[13px] leading-snug text-muted", html: md(thread.summary || "No summary yet.") }),
           followupMeta(thread),
           h("div", { class: "mt-2 flex items-center gap-2 text-xs text-faint" }, statusPath(thread.status, thread.updated_at), h("span", {}, `· Updated ${timeLabel(thread.updated_at)}`)))));
     }
@@ -235,10 +235,10 @@ export function renderBoard(container: HTMLElement, channelId: number, onOpen: (
       dataset: { threadOpen: String(thread.id) },
       onclick: () => onOpen(thread.root),
     },
-    h("div", { class: "truncate font-semibold text-fg" }, thread.title || "Untitled session"),
-    h("div", { class: "md mt-1 line-clamp-3 text-sm leading-5 text-muted", html: md(thread.summary || "No summary yet.") }),
+    h("div", { class: "truncate text-[13px] font-semibold leading-snug text-fg" }, thread.title || "Untitled session"),
+    h("div", { class: "md mt-1 line-clamp-2 text-[13px] leading-snug text-muted", html: md(thread.summary || "No summary yet.") }),
     followupMeta(thread),
-    h("div", { class: "mt-3 flex flex-wrap items-center gap-2 text-xs text-faint" },
+    h("div", { class: "mt-2 flex flex-wrap items-center gap-2 text-[11px] text-faint" },
       statusPath(thread.status, thread.updated_at),
       h("span", {}, `· Updated ${timeLabel(thread.updated_at)}`)));
 
@@ -333,15 +333,8 @@ export function renderGlobalThreads(
   panelLoading(container, "Threads", "Sessions across every agent channel. Filter to only unread activity.");
   const path = opts.unreadOnly ? "/api/threads?unread=1" : "/api/threads";
   void api<{ threads: GlobalThread[] }>(path).then(({ threads }) => {
-    const filter = h("button", {
-      type: "button",
-      class: `btn-subtle min-h-11 shrink-0 text-sm sm:min-h-0 ${opts.unreadOnly ? "border-accent/40 bg-accent-soft text-accent" : ""}`,
-      "aria-pressed": String(opts.unreadOnly),
-      onclick: () => opts.onToggleUnread(!opts.unreadOnly),
-    }, opts.unreadOnly ? "Unread only · on" : "Unread only · off");
-    const toolbar = h("div", { class: "mb-4 flex flex-wrap items-center justify-between gap-3" },
-      h("p", { class: "text-sm text-muted" }, opts.unreadOnly ? "Showing threads with new activity since you last read the channel." : "All focused sessions, newest first."),
-      filter);
+    const toolbar = h("div", { class: "mb-3" },
+      h("p", { class: "text-sm text-muted" }, opts.unreadOnly ? "Showing threads with new activity since you last read the channel. Use the top-bar Unread control to change the filter." : "All focused sessions, newest first."));
     const list = h("div", { class: "space-y-2" });
     if (!threads.length) {
       list.append(empty(
@@ -351,7 +344,7 @@ export function renderGlobalThreads(
     }
     for (const thread of threads) {
       list.append(h("article", {
-        class: `card flex w-full min-w-0 items-start gap-3 p-4 ${thread.unread ? "border-accent/35 bg-accent-soft/30" : ""}`,
+        class: `card flex w-full min-w-0 items-start gap-2.5 p-3 ${thread.unread ? "border-accent/35 bg-accent-soft/30" : ""}`,
       },
         h("span", { class: "mt-0.5 shrink-0 text-accent" }, icon("thread")),
         h("button", {
@@ -365,7 +358,7 @@ export function renderGlobalThreads(
           h("div", { class: "mt-1 flex flex-wrap items-center gap-2 text-xs text-muted" },
             h("span", { class: "font-mono text-accent" }, `#${thread.channel_name}`),
             h("span", {}, `· Updated ${timeLabel(thread.updated_at)}`)),
-          h("div", { class: "md mt-1 line-clamp-2 text-sm leading-5 text-muted", html: md(thread.summary || "No summary yet.") }),
+          h("div", { class: "md mt-0.5 line-clamp-2 text-[13px] leading-snug text-muted", html: md(thread.summary || "No summary yet.") }),
           h("div", { class: "mt-2 flex items-center gap-2 text-xs text-faint" }, statusPath(thread.status, thread.updated_at)))));
     }
     clear(container);
@@ -427,6 +420,7 @@ async function addMemory(channelId: number, onDone: () => void): Promise<void> {
 const ACTIVITY_SKIPPER = new Set(["thread_audit", "improvement", "skill", "collaboration", "handoff"]);
 const ACTIVITY_WORK = new Set(["tool", "tool_result", "escalation", "followup", "memory"]);
 const ACTIVITY_SYSTEM = new Set(["agent_status", "lifecycle", "profile"]);
+ACTIVITY_SKIPPER.add("computer");
 
 type ActivityFilter = "all" | "skipper" | "work" | "system";
 
@@ -452,6 +446,7 @@ function activityKindLabel(kind: string): string {
     agent_status: "Agent status",
     lifecycle: "Lifecycle",
     profile: "Profile",
+    computer: "Computer care",
   };
   return labels[kind] || kind.replace(/_/g, " ");
 }
@@ -677,12 +672,25 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
         ? h("button", { class: "btn-primary text-sm", onclick: async () => { await api(`/api/channels/${channel.id}/restore`, { body: {} }); onChanged(); } }, "Restore same world")
         : h("button", { class: "btn-subtle text-sm", onclick: async () => { if (await appConfirm(`Archive #${channel.name}? Its agent world will be preserved and paused.`)) { await api(`/api/channels/${channel.id}/archive`, { body: {} }); onChanged(); } } }, "Archive channel"),
       channel.status === "archived" ? h("button", { class: "btn-danger text-sm", onclick: async () => {
-        const confirmation = await appPrompt(`Permanent deletion removes the agent, workspace, files, memory, sessions, and channel. Type ${channel.name} to confirm:`);
+        const confirmation = await appPrompt(`Permanent deletion removes the agent, workspace, files, memory, sessions, and channel.\n\nType **${channel.name}** to confirm:`);
         if (confirmation !== channel.name) return;
         await api(`/api/channels/${channel.id}`, { method: "DELETE", body: { confirm: confirmation } }); onChanged(true);
       } }, icon("trash", 14), "Delete permanently") : null));
 
   const assignedSkills = h("div", { class: "mt-3 flex flex-wrap gap-2" }, ...((channel.agent?.skills || []).map((skill) => h("span", { class: "chip border-accent/25" }, skill.name))));
+  const computer = channel.computer;
+  const computerCard = computer ? h("div", { class: "card p-4" },
+    h("div", { class: "flex flex-wrap items-center gap-2" },
+      h("h3", { class: "font-semibold text-fg" }, "This channel's computer"),
+      h("span", { class: "chip border-accent/25" }, computer.backend === "apple" ? "Isolated Linux VM" : "Development compatibility"),
+      h("span", { class: "chip" }, computer.observed_state)),
+    h("p", { class: "mt-2 text-sm leading-6 text-muted" }, "Skipper provisions, wakes, monitors, updates, repairs, and sizes this computer automatically. You never need to choose CPU or RAM."),
+    h("div", { class: "mt-3 grid gap-2 text-xs text-muted sm:grid-cols-3" },
+      h("div", {}, h("span", { class: "block font-semibold text-fg" }, `${computer.cpus} CPU${computer.cpus === 1 ? "" : "s"}`), "Automatically managed"),
+      h("div", {}, h("span", { class: "block font-semibold text-fg" }, `${Math.max(1, Math.round(computer.memory_bytes / 1073741824))} GiB RAM`), "Automatically managed"),
+      h("div", {}, h("span", { class: "block font-semibold text-fg" }, computer.home_mount === "none" ? "Mac home private" : "Needs attention"), "No whole-home mount")),
+    computer.obligations?.length ? h("p", { class: "mt-3 text-xs text-muted" }, `${computer.obligations.length} active obligation${computer.obligations.length === 1 ? "" : "s"}; Skipper will keep or wake the computer as needed.`) : null,
+    computer.last_error ? h("p", { class: "mt-3 text-sm text-danger" }, computer.last_error) : null) : null;
   panelContent(container, "Channel settings", "Name, purpose, replaceable model policy, permanent skills, scoped capabilities, and lifecycle.", h("div", { class: "space-y-4" },
     h("div", { class: "card space-y-3 p-4" },
       h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Channel name"), h("p", { class: "mt-1 text-sm text-muted" }, channel.name === "main" ? "#main is fixed." : "Sidebar label and URL slug. The resident @mention stays the same.")),
@@ -701,6 +709,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
       h("div", { class: "flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, S.me.is_admin ? changeModelButton : null)),
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Permanent skill arsenal"), h("p", { class: "mt-1 text-sm text-muted" }, "Skipper provisioned these skills for this agent. New grants stay permanently, and the agent still knows what else exists in the workspace catalog."), assignedSkills),
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Capabilities"), h("div", { class: "mt-3 flex flex-wrap gap-2" }, ...(channel.agent?.capabilities || []).map((capability) => h("span", { class: "chip" }, capability))), h("p", { class: "mt-3 text-xs text-muted" }, "The resident agent is channel-scoped. It calls @skipper for host-level, cross-channel, credential, guest-expert, or missing-capability work.")),
+    computerCard,
     lifecycle));
   if (channel.agent?.provider_id) void loadModels();
 }

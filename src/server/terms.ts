@@ -1,5 +1,13 @@
 import type { WebSocket } from "ws";
 import { getComputer, createTerminal, connectTerminal, deleteTerminal } from "./computer.ts";
+import {
+  attachChannelTerminal,
+  closeChannelComputerTerminals,
+  closeChannelTerminal,
+  hasChannelComputerTerminal,
+  listChannelTerminals,
+  openChannelTerminal,
+} from "./channel-computers.ts";
 
 /**
  * Server-side terminal session manager. Each session owns one upstream PTY and
@@ -55,6 +63,7 @@ export async function openSession(computerId: number, channelId: number, ownerId
 }
 
 export async function attachClient(sessionId: string, client: WebSocket, userId: number): Promise<void> {
+  if (hasChannelComputerTerminal(sessionId)) { await attachChannelTerminal(sessionId, client, userId); return; }
   const s = sessions.get(sessionId);
   if (!s || s.ownerId !== userId) { client.close(4004, "Session not found"); return; }
   const pending: { raw: Buffer; isBinary: boolean }[] = [];
@@ -81,18 +90,26 @@ export async function attachClient(sessionId: string, client: WebSocket, userId:
 export function listSessions(userId: number, channelId?: number): { id: string; computerId: number; channelId: number; clients: number }[] {
   return [...sessions.values()]
     .filter((session) => session.ownerId === userId && (channelId == null || session.channelId === channelId))
-    .map((session) => ({ id: session.id, computerId: session.computerId, channelId: session.channelId, clients: session.clients.size }));
+    .map((session) => ({ id: session.id, computerId: session.computerId, channelId: session.channelId, clients: session.clients.size }))
+    .concat(listChannelTerminals(userId, channelId));
 }
 
 export function closeChannelSessions(channelId: number): void {
   for (const session of sessions.values()) if (session.channelId === channelId) closeSession(session.id);
+  closeChannelComputerTerminals(channelId);
 }
 
 export function closeSession(sessionId: string): void {
+  if (hasChannelComputerTerminal(sessionId)) { closeChannelTerminal(sessionId); return; }
   const s = sessions.get(sessionId);
   if (!s) return;
   sessions.delete(sessionId);
   try { s.upstream.close(); } catch { /* closed */ }
   const computer = getComputer(s.computerId);
   if (computer) void deleteTerminal(computer, s.upstreamId);
+}
+
+/** Ordinary channel Terminal: opens inside that channel's persistent Linux computer. */
+export async function openChannelSession(channelId: number, _ownerId: number, cols: number, rows: number): Promise<string> {
+  return openChannelTerminal(channelId, _ownerId, cols, rows);
 }

@@ -2,6 +2,7 @@ import { q, q1, run, now, type Row } from "./db.ts";
 import { createMessage } from "./store.ts";
 import { broadcastToChannel } from "./events.ts";
 import { agentForBot, ensureThread, refreshThreadSummary, threadIdForRoot } from "./agents.ts";
+import { ensureChannelComputerRunning, satisfyObligation, upsertObligation } from "./channel-computers.ts";
 
 /** Poll due follow-ups often enough for media downloads without burning CPU. */
 const CHECK_EVERY_MS = Number(process.env.FOLLOWUP_INTERVAL_MS || 15_000);
@@ -70,6 +71,7 @@ export function scheduleAgentFollowup(opts: ScheduleOpts): { id: number; due_at:
     now(),
     now(),
   ).lastInsertRowid;
+  upsertObligation(opts.channelId, "followup", String(id), "wakeable", reason, dueAt);
 
   if (opts.markWaiting !== false) {
     run("UPDATE threads SET status='waiting', updated_at=? WHERE id=? AND status IN ('open','failed')", now(), opts.threadId);
@@ -188,6 +190,7 @@ export function bumpThreadFollowup(threadId: number): {
 }
 
 export function cancelThreadFollowups(threadId: number, reason = "cancelled"): number {
+  for (const row of q("SELECT id,channel_id FROM agent_followups WHERE thread_id=? AND status IN ('pending','running')", threadId)) satisfyObligation(Number(row.channel_id), "followup", String(row.id));
   return run(
     "UPDATE agent_followups SET status='cancelled', updated=?, last_error=? WHERE thread_id=? AND status IN ('pending','running')",
     now(),
@@ -197,6 +200,7 @@ export function cancelThreadFollowups(threadId: number, reason = "cancelled"): n
 }
 
 export function cancelChannelFollowups(channelId: number, reason = "channel archived"): number {
+  for (const row of q("SELECT id FROM agent_followups WHERE channel_id=? AND status IN ('pending','running')", channelId)) satisfyObligation(channelId, "followup", String(row.id));
   return run(
     "UPDATE agent_followups SET status='cancelled', updated=?, last_error=? WHERE channel_id=? AND status IN ('pending','running')",
     now(),
@@ -266,18 +270,21 @@ async function fireFollowup(row: Row): Promise<void> {
   const channel = q1("SELECT status FROM channels WHERE id=?", channelId);
   if (!channel || channel.status !== "active") {
     finishFollowup(id, "cancelled", "channel inactive");
+    satisfyObligation(channelId, "followup", String(id));
     broadcastToChannel(channelId, { type: "followup", channelId, threadId, rootMessageId, followup: null });
     return;
   }
   const thread = q1("SELECT status, root_message_id FROM threads WHERE id=?", threadId);
   if (!thread || String(thread.status) === "archived") {
     finishFollowup(id, "cancelled", "thread gone or archived");
+    satisfyObligation(channelId, "followup", String(id));
     broadcastToChannel(channelId, { type: "followup", channelId, threadId, rootMessageId, followup: null });
     return;
   }
   // If Captain already resolved the thread, stop polling.
   if (String(thread.status) === "resolved") {
     finishFollowup(id, "done", "thread already resolved");
+    satisfyObligation(channelId, "followup", String(id));
     broadcastToChannel(channelId, { type: "followup", channelId, threadId, rootMessageId, followup: null });
     return;
   }
@@ -286,6 +293,7 @@ async function fireFollowup(row: Row): Promise<void> {
   const agent = agentForBot(botId);
   if (!bot || !agent || ["archived", "paused", "deleted"].includes(String(agent.status))) {
     finishFollowup(id, "failed", "agent unavailable");
+    satisfyObligation(channelId, "followup", String(id));
     broadcastToChannel(channelId, { type: "followup", channelId, threadId, rootMessageId, followup: null });
     return;
   }
@@ -295,6 +303,7 @@ async function fireFollowup(row: Row): Promise<void> {
     createMessage({ channelId, parentId: rootMessageId, botId, body });
     run("UPDATE threads SET status='failed', updated_at=? WHERE id=?", now(), threadId);
     finishFollowup(id, "failed", "max attempts exceeded");
+    satisfyObligation(channelId, "followup", String(id));
     refreshThreadSummary(rootMessageId);
     const updated = q1("SELECT * FROM threads WHERE id=?", threadId);
     if (updated) broadcastToChannel(channelId, { type: "thread_update", channelId, thread: updated });
@@ -337,10 +346,12 @@ async function fireFollowup(row: Row): Promise<void> {
   // No WS message broadcast — wakes are invisible; only the agent's final reply (if any) is public.
 
   try {
+    await ensureChannelComputerRunning(channelId, `scheduled follow-up #${id}`);
     // Dynamic import avoids a static cycle with bots.ts (which imports scheduleAgentFollowup).
     const { runBot } = await import("./bots.ts");
     await runBot(bot, channelId, triggerId, rootMessageId, false, undefined, false);
     finishFollowup(id, "done");
+    satisfyObligation(channelId, "followup", String(id));
     broadcastToChannel(channelId, {
       type: "followup",
       channelId,
@@ -351,9 +362,12 @@ async function fireFollowup(row: Row): Promise<void> {
   } catch (error) {
     const msg = (error as Error).message || "wake failed";
     if (attempts < maxAttempts) {
-      finishFollowup(id, "pending", msg, now() + 60_000);
+      const retryAt = now() + 60_000;
+      finishFollowup(id, "pending", msg, retryAt);
+      upsertObligation(channelId, "followup", String(id), "wakeable", reason, retryAt);
     } else {
       finishFollowup(id, "failed", msg);
+      satisfyObligation(channelId, "followup", String(id));
     }
     broadcastToChannel(channelId, {
       type: "followup",
