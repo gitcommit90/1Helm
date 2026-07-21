@@ -47,7 +47,7 @@ export type RoutingProvider = {
   id: string; type: string; name: string; accountAlias?: string | null; email?: string | null;
   profileName?: string | null; enabled: boolean; hasToken: boolean; baseUrl?: string;
   models: RoutingProviderModel[];
-};
+ imageGenerationEnabled?: boolean; };
 export type RoutingComboMember = { providerType?: string; providerId?: string; model: string };
 export type RoutingCombo = { id: string; storageId?: string | null; name: string; strategy: "fallback" | "round-robin"; members: RoutingComboMember[] };
 export type RoutingUsageEntry = {

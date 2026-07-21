@@ -960,15 +960,15 @@ function renderHeader(): void {
   };
   const terminalsEnabled = S.workspace?.terminals_enabled !== false;
   add(el,
-    h("div", { class: "flex min-w-0 items-center gap-2" },
+    h("div", { class: "flex min-w-0 flex-1 items-center gap-2 overflow-hidden" },
       mobileMenuButton(),
-      h("div", { class: "flex items-center gap-1 text-[16px] font-semibold tracking-[-0.01em] text-fg" }, channel?.kind === "dm" ? null : h("span", { class: "font-normal text-faint" }, "#"), h("span", { class: "truncate" }, channel?.name || "")),
-      channel?.purpose ? h("span", { class: "hidden max-w-xl truncate border-l border-line pl-2.5 text-[13px] text-muted lg:inline" }, channel.purpose) : null,
-      channel?.status === "archived" ? h("span", { class: "chip" }, "Paused") : null),
-    h("div", { class: "flex shrink-0 items-center gap-2" },
-      agent ? h("button", { class: "flex min-h-11 items-center gap-2 rounded-md border border-transparent px-2 py-1 font-mono text-[11px] text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:min-h-0", title: `${agent.display_name || agent.name} · ${agent.status} · ${agent.provider_name || "no provider"} · ${agent.model || "no model"}`, onclick: () => navigateChannelView("settings") },
-        h("span", { class: `h-1.5 w-1.5 rounded-full ${statusTone}` }), "@" + agent.name,
-        h("span", { class: "hidden max-w-36 truncate text-faint xl:inline" }, agent.model || "no model")) : null,
+      h("div", { class: "flex min-w-0 max-w-[46%] shrink items-center gap-1 text-[15px] font-semibold tracking-[-0.01em] text-fg sm:max-w-none sm:text-[16px]" }, channel?.kind === "dm" ? null : h("span", { class: "shrink-0 font-normal text-faint" }, "#"), h("span", { class: "min-w-0 truncate" }, channel?.name || "")),
+      channel?.purpose ? h("span", { class: "channel-purpose-fade hidden min-w-0 max-w-[28vw] border-l border-line pl-2.5 text-[12px] leading-5 text-muted xl:inline", title: channel.purpose }, channel.purpose) : null,
+      channel?.status === "archived" ? h("span", { class: "chip shrink-0" }, "Paused") : null),
+    h("div", { class: "flex max-w-[52%] shrink-0 items-center justify-end gap-1.5 sm:max-w-none sm:gap-2" },
+      agent ? h("button", { class: "flex min-h-11 max-w-full items-center gap-1.5 rounded-md border border-transparent px-1.5 py-1 font-mono text-[10px] text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:min-h-0 sm:max-w-[14rem] sm:gap-2 sm:px-2 sm:text-[11px]", title: `${agent.display_name || agent.name} · ${agent.status} · ${agent.provider_name || "no provider"} · ${agent.model || "no model"}`, onclick: () => navigateChannelView("settings") },
+        h("span", { class: `h-1.5 w-1.5 shrink-0 rounded-full ${statusTone}` }), h("span", { class: "min-w-0 truncate" }, "@" + agent.name),
+        h("span", { class: "hidden max-w-28 truncate text-faint 2xl:inline" }, agent.model || "no model")) : null,
       terminalsEnabled ? h("button", {
         class: `grid h-11 w-11 place-items-center rounded-md border border-transparent text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:h-9 sm:w-9 ${S.terminalOpen || S.view === "terminal" ? "border-line bg-hover text-fg" : ""}`,
         title: "Terminals", "aria-label": "Open terminals", onclick: openTerminalsFromHeader,
@@ -1210,7 +1210,7 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
 
   const content = h("div", { class: "min-w-0 flex-1 pr-12" },
     opts.grouped ? null : h("div", { class: "flex items-baseline gap-2" },
-      h("span", { class: "text-[15px] font-semibold text-fg hover:underline" }, m.author.name),
+      h("span", { class: "text-[13.5px] font-semibold text-fg hover:underline sm:text-[14.5px]" }, m.author.name),
       isBot ? h("span", { class: "font-mono text-[9px] uppercase tracking-[0.16em] text-accent" }, "Agent") : null,
       h("span", { class: "font-mono text-[10.5px] text-faint" }, timeLabel(m.created)),
       workingChip),
@@ -1218,10 +1218,10 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
 
   const botAvatar = (bot: Bot | undefined) => bot?.avatar || undefined;
   const row = opts.grouped
-    ? h("div", { class: "group relative flex min-w-0 max-w-full items-start gap-3 px-4 py-0.5 hover:bg-hover" },
+    ? h("div", { class: "group relative flex min-w-0 max-w-full items-start gap-2.5 px-3 py-0.5 hover:bg-hover sm:px-4" },
       h("span", { class: "w-9 shrink-0 pt-0.5 text-right font-mono text-[9.5px] leading-5 text-transparent group-hover:text-faint" }, new Date(m.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }).replace(/\s?[AP]M/i, "")),
       content, actions)
-    : h("div", { class: "group relative flex min-w-0 max-w-full items-start gap-3 px-4 py-1 hover:bg-hover" },
+    : h("div", { class: "group relative flex min-w-0 max-w-full items-start gap-2.5 px-3 py-0.5 hover:bg-hover sm:px-4" },
       avatar(m.author.name, m.author.kind, 9, isBot ? botAvatar(S.channelBots.find((b) => b.name === m.author.name)) : undefined),
       content, actions);
 
@@ -1942,10 +1942,13 @@ export function appConfirm(message: string): Promise<boolean> {
   });
 }
 
-export function appPrompt(message: string, defaultValue = ""): Promise<string | null> {
+export function appPrompt(message: string | Node, defaultValue = ""): Promise<string | null> {
   return new Promise((resolve) => {
     const input = h("input", { class: "field", value: defaultValue, autocomplete: "off" }) as HTMLInputElement;
-    appModal("Input", h("div", { class: "space-y-3" }, h("p", { class: "text-sm leading-6 text-muted" }, message), input), [
+    const body = typeof message === "string"
+      ? h("p", { class: "text-sm leading-6 text-muted", html: message.replace(/\*\*([^*]+)\*\*/g, "<strong class=\"font-semibold text-fg\">$1</strong>").replace(/\n/g, "<br>") })
+      : message;
+    appModal("Input", h("div", { class: "space-y-3" }, body, input), [
       { label: "Cancel", onClick: () => resolve(null) },
       { label: "OK", primary: true, onClick: () => resolve(input.value) },
     ]);

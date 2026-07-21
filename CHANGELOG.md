@@ -1,3 +1,11 @@
+## 1.1.2
+
+- Image Generation skill gated on ChatGPT OAuth + per-account Providers toggle (default off).
+- Route builder is multi-account agnostic (one entry per provider family).
+- Real provider brand logos; routing fabric animation on Sources.
+- Mobile channel top bar no longer overlaps long agent names; purpose uses soft fade + tooltip.
+- Denser Board/Threads/chat; remove duplicate Threads unread toggle; clearer delete-channel confirm.
+
 # Changelog
 
 All notable changes to 1Helm are documented in this file.

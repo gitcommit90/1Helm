@@ -116,11 +116,38 @@ export function helmMark(size = 18): SVGElement {
   return icon("helm", size);
 }
 
-/** Provider kind mark used in onboarding + settings (no OR/GPT letter tiles). */
-export function providerMark(kind: string, size = 16): SVGElement {
-  if (kind === "openrouter") return icon("openrouter", size);
-  if (kind === "chatgpt") return icon("chatgpt", size);
-  return icon("api", size);
+/** Provider brand mark — real logos from /brand/providers when available. */
+export function providerMark(kind: string, size = 16): HTMLElement {
+  const key = String(kind || "custom").toLowerCase();
+  const map: Record<string, string> = {
+    chatgpt: "chatgpt", codex: "chatgpt", openai: "chatgpt",
+    claude: "claude", anthropic: "claude",
+    antigravity: "antigravity", gemini: "antigravity", google: "antigravity",
+    xai: "xai", grok: "xai",
+    openrouter: "openrouter",
+    nvidia: "nvidia", cloudflare: "cloudflare", glm: "glm",
+    custom: "custom", "openai-compat": "custom", routing: "custom",
+  };
+  const file = map[key] || "custom";
+  const img = document.createElement("img");
+  img.src = `/brand/providers/${file}.svg`;
+  img.alt = key;
+  img.width = size;
+  img.height = size;
+  img.decoding = "async";
+  img.className = "provider-brand-mark";
+  img.style.width = `${size}px`;
+  img.style.height = `${size}px`;
+  img.style.objectFit = "contain";
+  img.style.display = "block";
+  // Fallback drawn glyph if asset 404s
+  img.onerror = () => {
+    img.onerror = null;
+    const wrap = img.parentElement;
+    const fallback = icon(key === "openrouter" ? "openrouter" : key === "chatgpt" || key === "codex" ? "chatgpt" : "api", size);
+    if (wrap) { img.replaceWith(fallback); }
+  };
+  return img;
 }
 
 export function timeLabel(ts: number): string {

@@ -3,14 +3,15 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR, q1, type Row } from "./db.ts";
 
-const BRIDGE = join(process.cwd(), "scripts", "mnemosyne-bridge.py");
+const APP_ROOT = process.env.HELM_APP_ROOT || process.cwd();
+const BRIDGE = join(APP_ROOT, "scripts", "mnemosyne-bridge.py");
 const CONFIG_DIR = join(DATA_DIR, "mnemosyne-runtime", "config");
 
 function pythonRuntime(): string | null {
   const candidates = [
     process.env.MNEMOSYNE_PYTHON || "",
     join(DATA_DIR, "mnemosyne-runtime", "venv", "bin", "python"),
-    join(process.cwd(), "data-refactored", "mnemosyne-runtime", "venv", "bin", "python"),
+    join(APP_ROOT, "data-refactored", "mnemosyne-runtime", "venv", "bin", "python"),
   ];
   return candidates.find((candidate) => candidate && existsSync(candidate)) || null;
 }

@@ -37,7 +37,7 @@ import {
 import { CHATGPT_KIND, bindChatGPTProviderFromCookie, chatgptSessionStatus, chatgptWebResponse, disconnectChatGPTProvider, listChatGPTModels, writeChatGPTWebResponse } from "./chatgpt.ts";
 import { completeSetup, setupStatus, workspaceView } from "./setup.ts";
 import { connectCloudflareDomain, domainsView } from "./cloudflare.ts";
-import { listSkills, listTemplates, provisionSkill, skillsForAgent } from "./skills.ts";
+import { listSkills, listTemplates, provisionSkill, skillsForAgent, setImageGenerationEnabled, imageGenerationAvailable, imageGenerationEnabledIds } from "./skills.ts";
 import { ensureAgentMemory, mnemosyneAvailable, prepareMnemosyneRuntime } from "./memory.ts";
 import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
@@ -55,7 +55,9 @@ import {
 } from "./routing.ts";
 
 const PORT = Number(process.env.PORT || 8123);
-const PUBLIC = join(process.cwd(), "public");
+const HOST = process.env.HELM_HOST || "0.0.0.0";
+const APP_ROOT = process.env.HELM_APP_ROOT || process.cwd();
+const PUBLIC = join(APP_ROOT, "public");
 const JSON_BODY_LIMIT = 1024 * 1024;
 const UPLOAD_BODY_LIMIT = 25 * 1024 * 1024;
 const WORKSPACE_PHOTO = join(DATA_DIR, "workspace-photo");
@@ -557,7 +559,22 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { workspace });
     }
     if (p === "/api/agent-templates" && m === "GET") return json(res, 200, { templates: listTemplates() });
-    if (p === "/api/skills" && m === "GET") return json(res, 200, { skills: listSkills() });
+    if (p === "/api/skills" && m === "GET") {
+      const includeLocked = Boolean(user.is_admin);
+      return json(res, 200, { skills: listSkills({ includeLocked }), image_generation_available: imageGenerationAvailable() });
+    }
+    if (p === "/api/routing/image-generation" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Admin only" });
+      const b = await jbody(req);
+      const providerId = String(b.providerId || "").trim();
+      if (!providerId) return json(res, 400, { error: "providerId required" });
+      const result = setImageGenerationEnabled(providerId, Boolean(b.enabled));
+      broadcastAll({ type: "routing_changed", action: "image_generation" });
+      return json(res, 200, { ok: true, ...result, available: imageGenerationAvailable() });
+    }
+    if (p === "/api/routing/image-generation" && m === "GET") {
+      return json(res, 200, { enabledProviderIds: imageGenerationEnabledIds(), available: imageGenerationAvailable() });
+    }
     const agentSkills = p.match(/^\/api\/agents\/(\d+)\/skills$/);
     if (agentSkills && m === "GET") return json(res, 200, { skills: skillsForAgent(Number(agentSkills[1])) });
     if (agentSkills && m === "POST") {
@@ -1244,7 +1261,11 @@ async function bootstrap(): Promise<void> {
   startImprovementLoop();
   startThreadAuditLoop();
   startFollowupLoop();
-  server.listen(PORT, () => console.log(`1Helm on 1Helm → http://localhost:${PORT}  (local agent on ${agentPort})  data: ${DATA_DIR}`));
+  server.listen(PORT, HOST, () => {
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : PORT;
+    console.log(`1Helm on 1Helm → http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${port}  (local agent on ${agentPort})  data: ${DATA_DIR}`);
+  });
 }
 void bootstrap();
 

@@ -145,8 +145,8 @@ function applyWorkspaceTheme(): void {
 
 function skillsPanel(): HTMLElement {
   const wrap = h("div", { class: "space-y-3" }, h("p", { class: "text-sm leading-6 text-muted" }, "Every agent knows this complete catalog. Skipper starts with all skills; resident agents get a useful permanent kit and can request or propose more while they work."));
-  void api<{ skills: Skill[] }>("/api/skills").then(({ skills }) => {
-    for (const skill of skills) wrap.append(h("article", { class: "card p-4" }, h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-semibold text-fg" }, skill.name), h("span", { class: "chip" }, skill.category), h("span", { class: "ml-auto text-xs text-muted" }, `${(skill as Skill & { assigned_agents?: number }).assigned_agents || 0} agents`)), h("p", { class: "mt-2 text-sm leading-6 text-muted" }, skill.description)));
+  void api<{ skills: Array<Skill & { arsenal_locked?: number; arsenal_reason?: string; assigned_agents?: number }> }>("/api/skills").then(({ skills }) => {
+    for (const skill of skills) wrap.append(h("article", { class: `card p-4 ${skill.arsenal_locked ? "opacity-80" : ""}` }, h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-semibold text-fg" }, skill.name), h("span", { class: "chip" }, skill.category), skill.arsenal_locked ? h("span", { class: "chip border-amber-400/40 text-amber-600 dark:text-amber-300" }, "locked") : null, h("span", { class: "ml-auto text-xs text-muted" }, `${skill.assigned_agents || 0} agents`)), h("p", { class: "mt-2 text-sm leading-6 text-muted" }, skill.description), skill.arsenal_locked && skill.arsenal_reason ? h("p", { class: "mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300" }, skill.arsenal_reason) : null));
   }).catch((error) => wrap.append(h("p", { class: "text-danger" }, (error as Error).message)));
   return wrap;
 }

@@ -171,11 +171,11 @@ export function renderThreads(container: HTMLElement, channelId: number, onOpen:
     const list = h("div", { class: "space-y-2" });
     if (!threads.length) list.append(empty("No sessions yet", "Start a top-level message in Chat to open a focused session."));
     for (const thread of threads) {
-      list.append(h("article", { class: "card flex w-full min-w-0 items-start gap-3 p-4" },
+      list.append(h("article", { class: "card flex w-full min-w-0 items-start gap-2.5 p-3" },
         h("span", { class: "mt-0.5 shrink-0 text-accent" }, icon("thread")),
         h("button", { class: "min-w-0 flex-1 text-left", type: "button", dataset: { threadOpen: String(thread.id) }, onclick: () => onOpen(thread) },
           h("div", { class: "truncate font-semibold text-fg hover:text-accent" }, thread.title),
-          h("div", { class: "md mt-1 line-clamp-2 text-sm leading-5 text-muted", html: md(thread.summary || "No summary yet.") }),
+          h("div", { class: "md mt-0.5 line-clamp-2 text-[13px] leading-snug text-muted", html: md(thread.summary || "No summary yet.") }),
           followupMeta(thread),
           h("div", { class: "mt-2 flex items-center gap-2 text-xs text-faint" }, statusPath(thread.status, thread.updated_at), h("span", {}, `· Updated ${timeLabel(thread.updated_at)}`)))));
     }
@@ -235,10 +235,10 @@ export function renderBoard(container: HTMLElement, channelId: number, onOpen: (
       dataset: { threadOpen: String(thread.id) },
       onclick: () => onOpen(thread.root),
     },
-    h("div", { class: "truncate font-semibold text-fg" }, thread.title || "Untitled session"),
-    h("div", { class: "md mt-1 line-clamp-3 text-sm leading-5 text-muted", html: md(thread.summary || "No summary yet.") }),
+    h("div", { class: "truncate text-[13px] font-semibold leading-snug text-fg" }, thread.title || "Untitled session"),
+    h("div", { class: "md mt-1 line-clamp-2 text-[13px] leading-snug text-muted", html: md(thread.summary || "No summary yet.") }),
     followupMeta(thread),
-    h("div", { class: "mt-3 flex flex-wrap items-center gap-2 text-xs text-faint" },
+    h("div", { class: "mt-2 flex flex-wrap items-center gap-2 text-[11px] text-faint" },
       statusPath(thread.status, thread.updated_at),
       h("span", {}, `· Updated ${timeLabel(thread.updated_at)}`)));
 
@@ -333,15 +333,8 @@ export function renderGlobalThreads(
   panelLoading(container, "Threads", "Sessions across every agent channel. Filter to only unread activity.");
   const path = opts.unreadOnly ? "/api/threads?unread=1" : "/api/threads";
   void api<{ threads: GlobalThread[] }>(path).then(({ threads }) => {
-    const filter = h("button", {
-      type: "button",
-      class: `btn-subtle min-h-11 shrink-0 text-sm sm:min-h-0 ${opts.unreadOnly ? "border-accent/40 bg-accent-soft text-accent" : ""}`,
-      "aria-pressed": String(opts.unreadOnly),
-      onclick: () => opts.onToggleUnread(!opts.unreadOnly),
-    }, opts.unreadOnly ? "Unread only · on" : "Unread only · off");
-    const toolbar = h("div", { class: "mb-4 flex flex-wrap items-center justify-between gap-3" },
-      h("p", { class: "text-sm text-muted" }, opts.unreadOnly ? "Showing threads with new activity since you last read the channel." : "All focused sessions, newest first."),
-      filter);
+    const toolbar = h("div", { class: "mb-3" },
+      h("p", { class: "text-sm text-muted" }, opts.unreadOnly ? "Showing threads with new activity since you last read the channel. Use the top-bar Unread control to change the filter." : "All focused sessions, newest first."));
     const list = h("div", { class: "space-y-2" });
     if (!threads.length) {
       list.append(empty(
@@ -351,7 +344,7 @@ export function renderGlobalThreads(
     }
     for (const thread of threads) {
       list.append(h("article", {
-        class: `card flex w-full min-w-0 items-start gap-3 p-4 ${thread.unread ? "border-accent/35 bg-accent-soft/30" : ""}`,
+        class: `card flex w-full min-w-0 items-start gap-2.5 p-3 ${thread.unread ? "border-accent/35 bg-accent-soft/30" : ""}`,
       },
         h("span", { class: "mt-0.5 shrink-0 text-accent" }, icon("thread")),
         h("button", {
@@ -365,7 +358,7 @@ export function renderGlobalThreads(
           h("div", { class: "mt-1 flex flex-wrap items-center gap-2 text-xs text-muted" },
             h("span", { class: "font-mono text-accent" }, `#${thread.channel_name}`),
             h("span", {}, `· Updated ${timeLabel(thread.updated_at)}`)),
-          h("div", { class: "md mt-1 line-clamp-2 text-sm leading-5 text-muted", html: md(thread.summary || "No summary yet.") }),
+          h("div", { class: "md mt-0.5 line-clamp-2 text-[13px] leading-snug text-muted", html: md(thread.summary || "No summary yet.") }),
           h("div", { class: "mt-2 flex items-center gap-2 text-xs text-faint" }, statusPath(thread.status, thread.updated_at)))));
     }
     clear(container);
@@ -677,7 +670,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
         ? h("button", { class: "btn-primary text-sm", onclick: async () => { await api(`/api/channels/${channel.id}/restore`, { body: {} }); onChanged(); } }, "Restore same world")
         : h("button", { class: "btn-subtle text-sm", onclick: async () => { if (await appConfirm(`Archive #${channel.name}? Its agent world will be preserved and paused.`)) { await api(`/api/channels/${channel.id}/archive`, { body: {} }); onChanged(); } } }, "Archive channel"),
       channel.status === "archived" ? h("button", { class: "btn-danger text-sm", onclick: async () => {
-        const confirmation = await appPrompt(`Permanent deletion removes the agent, workspace, files, memory, sessions, and channel. Type ${channel.name} to confirm:`);
+        const confirmation = await appPrompt(`Permanent deletion removes the agent, workspace, files, memory, sessions, and channel.\n\nType **${channel.name}** to confirm:`);
         if (confirmation !== channel.name) return;
         await api(`/api/channels/${channel.id}`, { method: "DELETE", body: { confirm: confirmation } }); onChanged(true);
       } }, icon("trash", 14), "Delete permanently") : null));

@@ -490,6 +490,7 @@ export function migrate(): void {
       ["home-ops", "Home operations", "Help run household services, routines, inventories, and self-hosted home tools.", "personal", "Use approachable language for household workflows. Suggest automation or self-hosted services only when they reduce real friction, and involve Skipper for installation or credentials."],
       ["inbox-triage", "Inbox triage", "Organize inbound work while preserving user control over sending and deletion.", "communication", "Summarize and prioritize inbound items, draft next actions, and preserve explicit human approval for sending, deleting, or other irreversible actions."],
       ["quality-verification", "Quality verification", "Verify requested outcomes before claiming completion.", "quality", "Match verification to the user's actual request. Run relevant checks, inspect resulting state, call out uncertainty, and never claim completion from intent alone."],
+      ["image-generation", "Image Generation", "Create images when ChatGPT OAuth is connected and Image Generation is enabled on that account.", "media", "Use only when Image Generation is active in the workspace arsenal (ChatGPT OAuth connected and the Captain enabled Image Generation on a ChatGPT account). When asked to generate or illustrate: write a precise visual prompt, call the workspace image path via ChatGPT-backed tooling (prefer dedicated image models / generations when the connected ChatGPT session exposes them; otherwise use the best available ChatGPT multimodal path), save the result into the channel workspace, and attach it to the message with attach_file so the Captain sees the image in chat — never only a host path. Do not invent credentials. If the skill is locked or generation fails, say so plainly and ask Skipper only if host/provider setup is broken."],
     ];
     for (const skill of shippedSkills) run(`INSERT INTO skills (slug,name,description,category,instructions,source,status,created,updated)
       VALUES (?,?,?,?,?,'shipped','active',?,?) ON CONFLICT(slug) DO UPDATE SET name=excluded.name,description=excluded.description,category=excluded.category,instructions=excluded.instructions,updated=excluded.updated`, ...skill, now(), now());
@@ -505,7 +506,10 @@ export function migrate(): void {
       VALUES (?,?,?,?,?,?,?,?,'active') ON CONFLICT(slug) DO UPDATE SET name=excluded.name,description=excluded.description,purpose_hint=excluded.purpose_hint,instructions=excluded.instructions,skill_slugs=excluded.skill_slugs,icon=excluded.icon,sort_order=excluded.sort_order`, ...template);
 
     const skipper = q1("SELECT id FROM agents WHERE kind='skipper' AND status<>'deleted' LIMIT 1");
-    if (skipper) for (const skill of q("SELECT id FROM skills WHERE status='active'")) run("INSERT OR IGNORE INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) VALUES (?,?,?,'Skipper has the full workspace skill arsenal.',1,?)", skipper.id, skill.id, skipper.id, now());
+    if (skipper) for (const skill of q("SELECT id,slug FROM skills WHERE status='active'")) {
+      if (String(skill.slug) === "image-generation") continue; // gated: only when ChatGPT OAuth + Providers toggle
+      run("INSERT OR IGNORE INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) VALUES (?,?,?,'Skipper has the full workspace skill arsenal.',1,?)", skipper.id, skill.id, skipper.id, now());
+    }
     for (const agent of q("SELECT a.id,p.purpose FROM agents a LEFT JOIN agent_profiles p ON p.agent_id=a.id WHERE a.kind='channel' AND a.status<>'deleted'")) {
       const core = ["capability-discovery", "durable-memory", "workspace-artifacts", "quality-verification"];
       const purpose = String(agent.purpose || "").toLowerCase();

@@ -89,7 +89,8 @@ try {
   const templates = await api("/api/agent-templates", {}, captain);
   const catalog = await api("/api/skills", {}, captain);
   ok(templates.body.templates?.length >= 5 && templates.body.templates.some((template) => template.slug === "home"), "bare-bones growing-agent templates ship in the product");
-  ok(catalog.body.skills?.some((skill) => skill.slug === "self-hosting-guide") && main.agent.skills.length === catalog.body.skills.length, "Skipper starts with the complete shipped skill arsenal");
+  const arsenal = (catalog.body.skills || []).filter((skill) => !skill.arsenal_locked);
+  ok(arsenal.some((skill) => skill.slug === "self-hosting-guide") && main.agent.skills.length === arsenal.length, "Skipper starts with the complete shipped skill arsenal");
   ok(channels.every((channel) => channel.kind !== "channel" || channel.slug), "every channel has a stable URL slug");
 
   const workspaceUpdate = await api("/api/workspace", { method: "PATCH", body: { name: "Native Test Renamed", theme: "ocean" } }, captain);
