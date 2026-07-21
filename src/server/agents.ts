@@ -4,7 +4,8 @@ import { basename, join, relative, resolve, sep } from "node:path";
 import { DATA_DIR, UPLOAD_DIR, now, q, q1, run, tx, type Row } from "./db.ts";
 import { botView, resolveModel } from "./store.ts";
 import { ensureAgentMemory, rememberForAgent } from "./memory.ts";
-import { provisionInitialSkills, provisionSkill, skillsForAgent, templateForSlug } from "./skills.ts";
+import { listSkills, provisionInitialSkills, provisionSkill, skillsForAgent, templateForSlug } from "./skills.ts";
+import { archiveChannelComputer, deleteChannelComputer, ensureChannelComputerRecord, markWorkspaceDirty, provisionChannelComputer, restoreChannelComputer } from "./channel-computers.ts";
 
 const CHANNELS_DIR = join(DATA_DIR, "channels");
 const WORLD_DIRS = ["workspace", "files", "state", "memory", "profile"];
@@ -17,6 +18,8 @@ export type ProvisionedChannel = {
   announcementId: number;
   created: boolean;
 };
+
+export type ProvisionedChannelComputer = ProvisionedChannel & { computerReady: boolean; computerError?: string };
 
 export const normalizeChannelName = (value: string): string => value.trim().toLowerCase()
   .replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
@@ -150,8 +153,6 @@ export function provisionChannel(opts: { name: string; purpose: string; userId: 
         "INSERT INTO bots (name, provider_id, model, prompt, avatar, base_url, api_key, created) VALUES (?,?,?,?,?,'','',?)",
         mentionName, defaults.providerId, defaults.model, instructions, "", now(),
       ).lastInsertRowid;
-      const local = q1("SELECT id FROM computers WHERE name='This Computer' ORDER BY id LIMIT 1");
-      if (local) run("INSERT OR IGNORE INTO bot_computers (bot_id, computer_id) VALUES (?,?)", botId, local.id);
       const agentId = run(
         "INSERT INTO agents (bot_id, kind, name, display_name, status, created) VALUES (?,'channel',?,?, 'ready', ?)",
         botId, mentionName, mentionName, now(),
@@ -171,6 +172,8 @@ export function provisionChannel(opts: { name: string; purpose: string; userId: 
       const root = channelRoot(channelId);
       for (const dir of WORLD_DIRS) mkdirSync(join(root, dir), { recursive: true });
       writeFileSync(join(root, "profile", "agent.json"), JSON.stringify({ name: mentionName, purpose, template: template?.slug || "general", workspace: "/workspace", memory_namespace: `channel:${channelId}` }, null, 2));
+      ensureChannelComputerRecord(channelId);
+      markWorkspaceDirty(channelId, "*", "full");
       const announcement = [
         `I'm **@${mentionName}**, the resident agent for **#${name}**.`,
         "",
@@ -199,6 +202,20 @@ export function provisionChannel(opts: { name: string; purpose: string; userId: 
   }
 }
 
+/** Product path: a channel is ready only after its computer is provisioned. */
+export async function provisionChannelWithComputer(opts: { name: string; purpose: string; userId: number; templateSlug?: string }): Promise<ProvisionedChannelComputer> {
+  const provisioned = provisionChannel(opts);
+  try {
+    await provisionChannelComputer(provisioned.channelId);
+    return { ...provisioned, computerReady: true };
+  } catch (error) {
+    const message = (error as Error).message || "channel computer provisioning failed";
+    run("UPDATE agents SET status='waiting' WHERE id=?", provisioned.agentId);
+    run("INSERT INTO channel_activity (channel_id,kind,summary,status,actor_type,created) VALUES (?,'computer',?,'failed','skipper',?)", provisioned.channelId, `Channel computer provisioning needs attention: ${message}`.slice(0, 500), now());
+    return { ...provisioned, computerReady: false, computerError: message };
+  }
+}
+
 export function ensureSkipperAgent(botId: number, mainChannelId: number): number {
   const bot = q1("SELECT * FROM bots WHERE id=?", botId);
   if (!bot) throw new Error("Skipper runtime not found.");
@@ -214,7 +231,10 @@ export function ensureSkipperAgent(botId: number, mainChannelId: number): number
     agent.id, "Workspace-wide chief of staff and root operator", bot.prompt, "skipper", "workspace", JSON.stringify({ boundary: "workspace", authority: "host" }), now(),
   );
   for (const capability of ["shell", "files", "memory", "cross_channel", "host"]) run("INSERT OR IGNORE INTO agent_capabilities (agent_id, capability, created) VALUES (?,?,?)", agent.id, capability, now());
-  for (const skill of q("SELECT slug FROM skills WHERE status='active'")) provisionSkill(Number(agent.id), String(skill.slug), Number(agent.id), "Skipper has the full workspace skill arsenal.");
+  // Gated skills are omitted from listSkills() until their backing provider
+  // capability is enabled. Setup must not fail just because an optional
+  // capability (for example Image Generation) is still locked.
+  for (const skill of listSkills()) provisionSkill(Number(agent.id), String(skill.slug), Number(agent.id), "Skipper has the full workspace skill arsenal.");
   ensureChannelWorkspace(mainChannelId);
   ensureAgentMemory({ ...agent, channel_id: null });
   return Number(agent.id);
@@ -433,6 +453,7 @@ export function importAttachment(channelId: number, threadId: number | null, tok
   const rel = relative(channelRoot(channelId), target).split(sep).join("/");
   const stat = statSync(target);
   run("INSERT INTO artifacts (channel_id, thread_id, path, kind, created_by, size, modified, created) VALUES (?,?,?,'upload',?,?,?,?)", channelId, threadId, rel, createdBy, stat.size, stat.mtimeMs, now());
+  markWorkspaceDirty(channelId, rel, "upsert");
   return rel;
 }
 
@@ -586,10 +607,11 @@ export function setAgentStatus(agentId: number, status: string, channelId: numbe
   run("INSERT INTO channel_activity (channel_id, kind, summary, status, actor_type, created) VALUES (?,'agent_status',?,?, 'system',?)", channelId, `Agent is ${status}.`, status, now());
 }
 
-export function archiveChannel(channelId: number): void {
+export async function archiveChannel(channelId: number): Promise<void> {
   const channel = q1("SELECT name, status FROM channels WHERE id=? AND kind='channel'", channelId);
   if (!channel) throw new Error("Channel not found.");
   if (String(channel.name) === "main") throw new Error("#main cannot be archived.");
+  await archiveChannelComputer(channelId);
   tx(() => {
     run("UPDATE channels SET status='archived' WHERE id=?", channelId);
     run("UPDATE agents SET status='archived' WHERE id=(SELECT agent_id FROM agent_channels WHERE channel_id=?)", channelId);
@@ -598,11 +620,12 @@ export function archiveChannel(channelId: number): void {
       now(),
       channelId,
     );
+    run("UPDATE channel_computer_obligations SET status='cancelled',updated=? WHERE channel_id=? AND kind='followup' AND status='active'", now(), channelId);
     run("INSERT INTO channel_activity (channel_id, kind, summary, actor_type, created) VALUES (?,'lifecycle','Channel archived; agent world preserved.','system',?)", channelId, now());
   });
 }
 
-export function restoreChannel(channelId: number): void {
+export async function restoreChannel(channelId: number): Promise<void> {
   const channel = q1("SELECT name FROM channels WHERE id=? AND status='archived'", channelId);
   if (!channel) throw new Error("Archived channel not found.");
   tx(() => {
@@ -612,9 +635,10 @@ export function restoreChannel(channelId: number): void {
     run("INSERT INTO channel_activity (channel_id, kind, summary, actor_type, created) VALUES (?,'lifecycle','Channel restored with the same agent world.','system',?)", channelId, now());
   });
   ensureChannelWorkspace(channelId);
+  await restoreChannelComputer(channelId);
 }
 
-export function deleteChannelWorld(channelId: number, confirmation: string): void {
+export async function deleteChannelWorld(channelId: number, confirmation: string): Promise<void> {
   const channel = q1("SELECT * FROM channels WHERE id=? AND kind='channel'", channelId);
   if (!channel) throw new Error("Channel not found.");
   if (String(channel.name) === "main") throw new Error("#main cannot be deleted.");
@@ -625,6 +649,11 @@ export function deleteChannelWorld(channelId: number, confirmation: string): voi
   const root = channelRoot(channelId);
   const tombstone = `${root}.deleting-${now()}`;
   if (existsSync(root)) renameSync(root, tombstone);
+  try { await deleteChannelComputer(channelId); }
+  catch (error) {
+    if (existsSync(tombstone) && !existsSync(root)) renameSync(tombstone, root);
+    throw error;
+  }
   try { tx(() => {
     run("DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE channel_id=?)", channelId);
     run("DELETE FROM tool_actions WHERE thread_id IN (SELECT id FROM threads WHERE channel_id=?)", channelId);

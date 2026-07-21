@@ -1,4 +1,4 @@
-import { api, getToken, setToken, type Provider, type RoutingModel } from "./api.ts";
+import { api, getToken, setToken, type ChannelRuntime, type Provider, type RoutingModel } from "./api.ts";
 import { h, clear, icon, helmMark, providerMark } from "./dom.ts";
 import { startChatGPTOAuth, startOpenRouterOAuth } from "./settings.ts";
 
@@ -65,7 +65,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     clear(panel);
     if (step === 0) panel.append(accountStep());
     else if (step === 1) { await refreshProviders(); panel.append(brainStep()); }
-    else if (step === 2) panel.append(accessStep());
+    else if (step === 2) panel.append(await accessStep());
     else if (step === 3) panel.append(workspaceStep());
     else panel.append(domainStep());
     shell.scrollTo({ top: 0, behavior: "smooth" });
@@ -204,12 +204,63 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     return layout("Connect an AI brain", "Choose where Skipper gets its model. The connection stays on this machine and can be changed later.", body, brainFooter);
   };
 
-  const accessStep = (): HTMLElement => {
+  const accessStep = async (): Promise<HTMLElement> => {
+    let runtime: ChannelRuntime;
+    try { runtime = (await api<{ runtime: ChannelRuntime }>("/api/channel-computers/runtime")).runtime; }
+    catch (error) {
+      return layout("Set up channel computers", "1Helm could not verify the computer runtime yet.",
+        h("div", { class: "wizard-status-err" }, (error as Error).message),
+        footer(() => { step = 1; void render(); }, () => { void render(); }, "Retry"));
+    }
+
+    const runtimeStatus = h("div");
+    const finishRuntime = async (button: HTMLButtonElement): Promise<void> => {
+      setBusy(button, true, "Checking Apple runtime…");
+      try {
+        const result = await api<{ runtime: ChannelRuntime }>("/api/channel-computers/runtime/start", { body: {} });
+        if (!result.runtime.ready) throw new Error("Apple's runtime started but did not pass its health check.");
+        await render();
+      } catch (error) {
+        runtimeStatus.replaceChildren(h("div", { class: "wizard-status-err" }, (error as Error).message));
+        setBusy(button, false);
+      }
+    };
+    const installRuntime = async (button: HTMLButtonElement): Promise<void> => {
+      setBusy(button, true, "Verifying Apple installer…");
+      try {
+        await api("/api/channel-computers/runtime/install", { body: {} });
+        runtimeStatus.replaceChildren(h("div", { class: "wizard-status-warn" }, "macOS Installer is open. Approve it once, then return here and finish setup."));
+        button.dataset.label = "I approved it — finish setup";
+        button.textContent = button.dataset.label;
+        button.onclick = () => { void finishRuntime(button); };
+        button.disabled = false;
+      } catch (error) {
+        runtimeStatus.replaceChildren(h("div", { class: "wizard-status-err" }, (error as Error).message));
+        setBusy(button, false);
+      }
+    };
+
+    const runtimeCard = runtime.backend === "apple"
+      ? h("div", { class: "card p-4" },
+        h("div", { class: "flex flex-wrap items-center gap-2" }, h("div", { class: "font-semibold text-fg" }, "Private Linux computers"), h("span", { class: "chip border-accent/25" }, runtime.ready ? "Ready" : runtime.supported ? "One-time approval" : "Unsupported Mac")),
+        h("p", { class: "mt-2 text-sm leading-6 text-muted" }, runtime.ready
+          ? "Apple's VM runtime is healthy. Every ordinary channel will receive a separate persistent Linux computer with no access to your Mac home folder."
+          : runtime.supported
+            ? "1Helm verifies and opens Apple's signed installer. macOS asks for administrator approval once; Skipper silently manages resources, sleep, wake, repair, and updates after that."
+            : "Channel computers require Apple Silicon and macOS 26 or newer."),
+        !runtime.supported || runtime.ready ? null : h("button", {
+          class: "btn-primary mt-3 w-full py-2 sm:w-auto",
+          onclick: (event: Event) => { const button = event.currentTarget as HTMLButtonElement; void (runtime.cli ? finishRuntime(button) : installRuntime(button)); },
+        }, runtime.cli ? "Finish computer setup" : "Install verified Apple runtime"),
+        runtimeStatus)
+      : h("div", { class: "wizard-status-ok" }, "Computer workspace ready. Skipper will manage each channel's durable workspace automatically.");
+
     const choiceButton = (enabled: boolean, label: string, copy: string): HTMLElement => h("button", { class: `wizard-choice ${terminalsEnabled === enabled ? "is-active" : ""}`, onclick: () => { terminalsEnabled = enabled; void render(); } },
       h("div", { class: "flex items-start gap-3" }, h("span", { class: "wizard-provider-mark h-10 w-10 text-muted" }, enabled ? icon("terminal", 19) : icon("x", 19)), h("div", {}, h("div", { class: "font-semibold text-fg" }, label), h("p", { class: "mt-1 text-sm leading-5 text-muted" }, copy))));
-    return layout("Show channel terminals?", "Every agent already has a durable computer workspace. This controls whether humans can open its live shell view.",
-      h("div", { class: "space-y-3" }, choiceButton(true, "Show channel terminals", "Each channel gets a Terminal tab rooted directly in that agent's /workspace."), choiceButton(false, "Keep terminals hidden", "Agents retain their workspaces; humans collaborate through chat and files for now.")),
-      footer(() => { step = 1; void render(); }, () => { step = 3; void render(); }, "Continue"));
+    return layout("Set up channel computers", "Every agent gets a durable computer. You never need to choose CPU, RAM, disk size, or sleep settings.",
+      h("div", { class: "space-y-5" }, runtimeCard,
+        h("div", { class: "space-y-3" }, h("div", { class: "text-sm font-semibold text-fg" }, "Human terminal access"), choiceButton(true, "Show channel terminals", "Each channel gets a Terminal tab rooted directly in that agent's /workspace."), choiceButton(false, "Keep terminals hidden", "Agents retain their computers; humans collaborate through chat and files for now."))),
+      footer(() => { step = 1; void render(); }, () => { step = 3; void render(); }, runtime.backend === "apple" && !runtime.ready ? "Approve Apple runtime first" : "Continue", runtime.backend === "apple" && !runtime.ready));
   };
 
   const workspaceStep = (): HTMLElement => {

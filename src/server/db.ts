@@ -105,6 +105,7 @@ export function migrate(): void {
   addColumn("workspace", "default_model", "default_model TEXT NOT NULL DEFAULT ''");
   addColumn("workspace", "photo_mime", "photo_mime TEXT NOT NULL DEFAULT ''");
   addColumn("workspace", "theme", "theme TEXT NOT NULL DEFAULT 'graphite'");
+  addColumn("workspace", "installation_id", "installation_id TEXT NOT NULL DEFAULT ''");
 
   // A prerelease branch used bot-scoped skill/improvement schemas under the
   // same table names. Preserve those rows and migrate them into the canonical
@@ -378,9 +379,64 @@ export function migrate(): void {
   );
   CREATE INDEX IF NOT EXISTS idx_followups_due ON agent_followups(status, due_at);
   CREATE INDEX IF NOT EXISTS idx_followups_thread ON agent_followups(thread_id, status);
+  CREATE TABLE IF NOT EXISTS channel_computers (
+    channel_id INTEGER PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
+    backend TEXT NOT NULL CHECK (backend IN ('apple','native','mock')),
+    machine_id TEXT NOT NULL UNIQUE,
+    image TEXT NOT NULL DEFAULT '',
+    desired_state TEXT NOT NULL DEFAULT 'auto' CHECK (desired_state IN ('auto','running','stopped','deleted')),
+    observed_state TEXT NOT NULL DEFAULT 'unknown',
+    cpus INTEGER NOT NULL,
+    memory_bytes INTEGER NOT NULL,
+    disk_bytes INTEGER NOT NULL DEFAULT 0,
+    home_mount TEXT NOT NULL DEFAULT 'none' CHECK (home_mount='none'),
+    provision_status TEXT NOT NULL DEFAULT 'pending' CHECK (provision_status IN ('pending','provisioning','ready','repairing','error','deleted')),
+    maintenance_state TEXT NOT NULL DEFAULT 'idle',
+    host_revision INTEGER NOT NULL DEFAULT 0,
+    synced_host_revision INTEGER NOT NULL DEFAULT 0,
+    guest_revision INTEGER NOT NULL DEFAULT 0,
+    pressure_json TEXT NOT NULL DEFAULT '{}',
+    low_pressure_streak INTEGER NOT NULL DEFAULT 0,
+    last_update INTEGER NOT NULL DEFAULT 0,
+    last_update_attempt INTEGER NOT NULL DEFAULT 0,
+    last_health INTEGER NOT NULL DEFAULT 0,
+    last_used INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_channel_computers_state ON channel_computers(desired_state, observed_state, provision_status);
+  CREATE TABLE IF NOT EXISTS channel_computer_obligations (
+    channel_id INTEGER NOT NULL REFERENCES channel_computers(channel_id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'resident' CHECK (mode IN ('resident','wakeable')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','satisfied','cancelled')),
+    details TEXT NOT NULL DEFAULT '',
+    due_at INTEGER,
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL,
+    PRIMARY KEY (channel_id, kind, ref)
+  );
+  CREATE INDEX IF NOT EXISTS idx_computer_obligations_active ON channel_computer_obligations(channel_id, status, mode, due_at);
+  CREATE TABLE IF NOT EXISTS channel_workspace_changes (
+    channel_id INTEGER NOT NULL REFERENCES channel_computers(channel_id) ON DELETE CASCADE,
+    relative_path TEXT NOT NULL,
+    operation TEXT NOT NULL DEFAULT 'upsert' CHECK (operation IN ('upsert','delete','full')),
+    created INTEGER NOT NULL,
+    PRIMARY KEY (channel_id, relative_path)
+  );
   `);
+  addColumn("channel_computers", "low_pressure_streak", "low_pressure_streak INTEGER NOT NULL DEFAULT 0");
+  addColumn("channel_computers", "last_update", "last_update INTEGER NOT NULL DEFAULT 0");
+  addColumn("channel_computers", "last_update_attempt", "last_update_attempt INTEGER NOT NULL DEFAULT 0");
 
   tx(() => {
+    let installationId = String(q1("SELECT installation_id FROM workspace WHERE id=1")?.installation_id || "");
+    if (!/^[a-f0-9]{16}$/.test(installationId)) {
+      installationId = randomBytes(8).toString("hex");
+      run("UPDATE workspace SET installation_id=? WHERE id=1", installationId);
+    }
     if (tableColumns("skills_legacy_v1").length) {
       for (const skill of q("SELECT * FROM skills_legacy_v1")) run(`INSERT OR IGNORE INTO skills (id,slug,name,description,category,instructions,source,status,created,updated)
         VALUES (?,?,?,?,?,?,?,'active',?,?)`, skill.id, skill.slug, skill.name, skill.description, skill.category || "general", skill.instructions, skill.source || "migrated", skill.created, skill.updated);
@@ -431,7 +487,6 @@ export function migrate(): void {
           || q1("SELECT model FROM model_prefs WHERE bot_id=? AND scope='global' AND scope_id=''", runtime.id)?.model || runtime.model || "");
         const clonedId = run("INSERT INTO bots (name, provider_id, model, prompt, avatar, base_url, api_key, created) VALUES (?,?,?,?,?,?,?,?)",
           name, runtime.provider_id ?? null, model, runtime.prompt || "", runtime.avatar || "", runtime.base_url || "", runtime.api_key || "", now()).lastInsertRowid;
-        for (const computer of q("SELECT computer_id FROM bot_computers WHERE bot_id=?", runtime.id)) run("INSERT OR IGNORE INTO bot_computers (bot_id, computer_id) VALUES (?,?)", clonedId, computer.computer_id);
         runtime = q1("SELECT * FROM bots WHERE id=?", clonedId)!;
         agent = undefined;
       }
@@ -446,6 +501,25 @@ export function migrate(): void {
       const agentId = agent ? Number(agent.id) : run("INSERT INTO agents (bot_id, kind, name, display_name, status, created) VALUES (?,'channel',?,?, 'ready', ?)", runtime.id, runtime.name, runtime.name, runtime.created || now()).lastInsertRowid;
       run("INSERT INTO agent_channels (agent_id, channel_id, bound_at) VALUES (?,?,?)", agentId, channel.id, now());
     }
+
+    // Existing ordinary channels gain a durable computer control-plane row.
+    // The backend is explicit: macOS uses Apple container machines unless a
+    // developer deliberately opts into the native compatibility backend.
+    const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || (process.platform === "darwin" ? "apple" : "native"));
+    const backend = ["apple", "native", "mock"].includes(configuredBackend) ? configuredBackend : "native";
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.2");
+    for (const channel of q(`SELECT c.id FROM channels c JOIN agent_channels ac ON ac.channel_id=c.id
+      WHERE c.kind='channel' AND c.status<>'deleted'`)) {
+      const channelId = Number(channel.id);
+      run(`INSERT OR IGNORE INTO channel_computers
+        (channel_id,backend,machine_id,image,desired_state,observed_state,cpus,memory_bytes,home_mount,provision_status,last_used,created,updated)
+        VALUES (?,?,?,?,?,'unknown',2,2147483648,'none','pending',?,?,?)`,
+      channelId, backend, `1helm-${installationId}-channel-${channelId}`, image,
+      String(q1("SELECT status FROM channels WHERE id=?", channelId)?.status) === "archived" ? "stopped" : "auto",
+      now(), now(), now());
+      run("INSERT OR IGNORE INTO channel_workspace_changes (channel_id,relative_path,operation,created) VALUES (?,'*','full',?)", channelId, now());
+    }
+    run("DELETE FROM bot_computers WHERE bot_id IN (SELECT bot_id FROM agents WHERE kind='channel')");
 
     for (const unbound of q("SELECT id FROM agents WHERE kind='channel' AND NOT EXISTS (SELECT 1 FROM agent_channels WHERE agent_id=agents.id)")) {
       run("DELETE FROM agent_profiles WHERE agent_id=?", unbound.id);
@@ -574,5 +648,7 @@ export function seed(): void {
   if (!q1("SELECT id FROM channels WHERE kind='channel' LIMIT 1")) {
     run("INSERT INTO channels (name, slug, kind, topic, purpose, status, created) VALUES ('main','main','channel','Your home base with @skipper','Workspace-wide coordination with Skipper','active',?)", now());
   }
+  const installationId = String(q1("SELECT installation_id FROM workspace WHERE id=1")?.installation_id || "");
+  if (!/^[a-f0-9]{16}$/.test(installationId)) run("UPDATE workspace SET installation_id=? WHERE id=1", randomBytes(8).toString("hex"));
   recoverInterruptedRuns();
 }

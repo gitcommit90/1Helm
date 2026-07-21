@@ -1,11 +1,3 @@
-## 1.1.2
-
-- Image Generation skill gated on ChatGPT OAuth + per-account Providers toggle (default off).
-- Route builder is multi-account agnostic (one entry per provider family).
-- Real provider brand logos; routing fabric animation on Sources.
-- Mobile channel top bar no longer overlaps long agent names; purpose uses soft fade + tooltip.
-- Denser Board/Threads/chat; remove duplicate Threads unread toggle; clearer delete-channel confirm.
-
 # Changelog
 
 All notable changes to 1Helm are documented in this file.
@@ -14,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [1.1.2] - 2026-07-21
+
+### Added
+
+- Native Apple Silicon macOS app that runs the complete 1Helm control plane, Skipper, terminals, agents, and durable workspace data on the installed Mac.
+- One persistent Apple `container machine` per ordinary channel, with `home-mount=none`, automatic resource policy, guest command/terminal routing, narrow workspace sync, exact lifecycle, obligation-aware wake/sleep, and Skipper fleet reconciliation.
+- Developer ID signing, Apple notarization, stapling, DMG packaging, and mounted-artifact verification for direct distribution.
+
+### Changed
+
+- First-run Computer setup handles Apple's one-time verified runtime approval before users create agent channels; Skipper owns all CPU, RAM, sleep, repair, and update decisions afterward.
+- Image Generation is gated on ChatGPT OAuth plus a per-account Providers toggle that is off by default.
+- Route building is multi-account agnostic, with one entry per provider family, real provider marks, and a routing-fabric Sources animation.
+- Board, Threads, and chat are denser; the duplicate Threads unread toggle is removed and delete-channel confirmation is clearer.
+
+### Fixed
+
+- Long resident names no longer overlap the mobile channel header; long channel purposes use a soft fade and tooltip.
 
 ## [1.1.1] - 2026-07-21
 
@@ -73,6 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native **1Herd** channel-agent workspace (SPEC.md slice) is developed on branch `worktree-1herd-native-spec` (draft PR #7) and is **not** fully merged to `main` as of this changelog baseline. Track progress there and in `docs/VISION.md` on that branch.
 
 [Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.1...HEAD
+[1.1.2]: https://github.com/gitcommit90/1Helm/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/gitcommit90/1Helm/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/gitcommit90/1Helm/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/gitcommit90/1Helm/commits/main

@@ -47,8 +47,10 @@ const themes = {
 const activeTheme = (): typeof themes.dark => (document.documentElement.classList.contains("light") ? themes.light : themes.dark);
 export const hostComputerId = (): number => S.computers.find((computer) => computer.name === "This Computer")?.id || S.computers[0]?.id || 0;
 export const remoteComputers = () => S.computers.filter((computer) => computer.name !== "This Computer");
-const defaultComputer = (): number => hostComputerId();
-const multiComputer = (): boolean => (S.computers?.length || 0) > 1;
+// Zero is the channel's own persistent computer. Explicit IDs are advanced
+// Skipper/remote computers and never become a resident channel's default.
+export const defaultTerminalComputer = (channelId: number): number => S.channels.find((channel) => channel.id === channelId)?.agent?.kind === "skipper" ? hostComputerId() : 0;
+const multiComputer = (channelId: number): boolean => S.channels.find((channel) => channel.id === channelId)?.agent?.kind === "skipper" && (S.computers?.length || 0) > 1;
 
 export type OpenTerminalsOpts = {
   preferredComputerId?: number;
@@ -66,11 +68,11 @@ export function openTerminals(container: HTMLElement, channelId: number, preferr
   container.className = "flex min-h-0 flex-1 overflow-hidden";
   let state = states.get(channelId);
   if (!state) {
-    state = buildState(channelId, opts.preferredComputerId || defaultComputer(), !!opts.docked, !!opts.serversListOpen, opts.onChromeChange, opts.onClose);
+    state = buildState(channelId, opts.preferredComputerId ?? defaultTerminalComputer(channelId), !!opts.docked, !!opts.serversListOpen, opts.onChromeChange, opts.onClose);
     states.set(channelId, state);
     void restoreSessions(state);
   } else {
-    if (opts.preferredComputerId && opts.preferredComputerId !== state.preferredComputerId) {
+    if (opts.preferredComputerId != null && opts.preferredComputerId !== state.preferredComputerId) {
       // Header / Servers chose a different computer while this channel already has a workspace —
       // open a fresh pane on that host instead of forcing a full remount.
       state.preferredComputerId = opts.preferredComputerId;
@@ -115,7 +117,7 @@ export function setTerminalServersList(channelId: number, open: boolean): void {
 export function setTerminalPreferredComputer(channelId: number, computerId: number): void {
   const state = states.get(channelId);
   if (!state) return;
-  state.preferredComputerId = computerId || defaultComputer();
+  state.preferredComputerId = Number.isFinite(computerId) ? computerId : defaultTerminalComputer(channelId);
   state.serversListOpen = false;
   const hasPane = state.columns.flat().some((pane) => pane.computerId === state.preferredComputerId);
   if (!hasPane) state.columns.push([makePane(state, null, state.preferredComputerId)]);
@@ -192,7 +194,7 @@ function paintChrome(state: TerminalState): void {
     );
   }
 
-  if (multiComputer()) {
+  if (multiComputer(state.channelId)) {
     const btn = h("button", {
       class: "btn-subtle min-h-11 px-2.5 text-xs sm:min-h-9",
       type: "button",
@@ -233,10 +235,11 @@ function paintChrome(state: TerminalState): void {
 
 function paintBody(state: TerminalState): void {
   clear(state.body);
-  if (state.serversListOpen && multiComputer()) {
+  if (state.serversListOpen && multiComputer(state.channelId)) {
+    const channelComputer = { id: 0, name: "This channel's computer", base_url: "persistent Linux /workspace", has_key: false };
     const host = S.computers.find((c) => c.name === "This Computer") || S.computers[0];
     const remotes = remoteComputers();
-    const ordered = [host, ...remotes].filter(Boolean) as typeof S.computers;
+    const ordered = [channelComputer, host, ...remotes].filter(Boolean) as typeof S.computers;
     const list = h("div", { class: "flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3" });
     for (const computer of ordered) {
       const active = computer.id === state.preferredComputerId;
@@ -248,7 +251,7 @@ function paintBody(state: TerminalState): void {
         h("span", { class: "grid h-9 w-9 shrink-0 place-items-center rounded-md bg-raised text-accent" }, icon("terminal", 16)),
         h("div", { class: "min-w-0 flex-1" },
           h("div", { class: "truncate text-sm font-semibold text-fg" }, computer.name),
-          h("div", { class: "truncate font-mono text-[11px] text-muted" }, computer.name === "This Computer" ? "channel /workspace" : (computer.base_url || "remote"))),
+          h("div", { class: "truncate font-mono text-[11px] text-muted" }, computer.id === 0 ? "isolated Linux /workspace" : computer.name === "This Computer" ? "Skipper's Mac" : (computer.base_url || "remote"))),
         active ? h("span", { class: "text-xs font-medium text-accent" }, "Active") : null));
     }
     state.body.append(list);
@@ -308,7 +311,7 @@ function paneShell(pane: Pane, columnIndex: number): HTMLElement {
   const shell = h("div", { class: "flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-line" },
     h("div", { class: "flex items-center gap-2 border-b border-line bg-surface px-2.5 py-1.5" },
       h("span", { class: "h-2.5 w-2.5 rounded-full bg-ok shadow-[0_0_0_3px_var(--c-accent-soft)]" }),
-      h("span", { class: "text-xs font-medium text-fg" }, computer?.name || "This Computer"),
+      h("span", { class: "text-xs font-medium text-fg" }, pane.computerId === 0 ? "This channel's computer" : (computer?.name || "Computer")),
       h("div", { class: "flex-1" }),
       button("splitDown", "Split down", () => splitDown(pane, columnIndex)),
       button("splitRight", "Split right", () => splitRight(pane, columnIndex)),
@@ -317,7 +320,7 @@ function paneShell(pane: Pane, columnIndex: number): HTMLElement {
   return shell;
 }
 
-function makePane(state: TerminalState, sessionId: string | null = null, computerId = state.preferredComputerId || defaultComputer()): Pane {
+function makePane(state: TerminalState, sessionId: string | null = null, computerId = state.preferredComputerId): Pane {
   const id = "p" + ++seq;
   const term = new Terminal({ fontFamily: '"Fragment Mono", ui-monospace, Menlo, monospace', fontSize: 13, theme: activeTheme(), cursorBlink: true, scrollback: 5000 });
   const fit = new FitAddon(); term.loadAddon(fit);
@@ -335,7 +338,7 @@ async function connect(pane: Pane): Promise<void> {
     if (!pane.sessionId) {
       pane.term.writeln("\x1b[90mStarting terminal…\x1b[0m");
       const opened = await api<{ sessionId: string; computerId?: number }>("/api/term/open", {
-        body: { channelId: pane.state.channelId, computerId: pane.computerId || undefined, cols: pane.term.cols, rows: pane.term.rows },
+        body: { channelId: pane.state.channelId, ...(pane.computerId ? { computerId: pane.computerId } : {}), cols: pane.term.cols, rows: pane.term.rows },
       });
       pane.sessionId = opened.sessionId;
       if (opened.computerId) pane.computerId = opened.computerId;

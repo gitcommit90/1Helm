@@ -1,0 +1,31 @@
+FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+
+ENV container=container DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash build-essential ca-certificates coreutils cron curl dbus file findutils \
+    git gzip iproute2 iputils-ping jq less locales man-db nano openssh-client \
+    procps python3 python3-pip rsync sudo systemd systemd-sysv tar tzdata unzip \
+    vim-tiny wget zip \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/* \
+  && : > /etc/machine-id \
+  && mkdir -p /var/lib/dbus /workspace/files /var/lib/1helm \
+  && : > /var/lib/dbus/machine-id \
+  && printf '%s\n' '1helm-channel-machine-v1' > /var/lib/1helm/image-contract \
+  && systemctl set-default multi-user.target \
+  && systemctl mask \
+      apt-daily.service apt-daily.timer apt-daily-upgrade.service apt-daily-upgrade.timer \
+      console-getty.service dev-hugepages.mount getty@.service man-db.timer systemd-logind.service \
+      dpkg-db-backup.timer e2scrub_all.timer e2scrub_reap.service fstrim.timer motd-news.timer \
+      systemd-ask-password-console.path systemd-ask-password-wall.path systemd-pstore.service \
+      systemd-sysext.service systemd-sysext.socket systemd-tmpfiles-clean.service \
+      systemd-tmpfiles-clean.timer systemd-tmpfiles-setup.service systemd-update-utmp.service \
+      sys-fs-fuse-connections.mount \
+  && (systemctl disable cron.service || true)
+
+COPY create-user.sh /etc/machine/create-user.sh
+RUN chmod 0755 /etc/machine/create-user.sh
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

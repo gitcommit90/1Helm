@@ -24,7 +24,7 @@ Living product record and direction history: [`docs/VISION.md`](docs/VISION.md).
 
 ## What works today
 
-- **First-run wizard** — create the Captain account, connect an AI brain, choose terminal visibility, name the workspace, land in `#main` with Skipper.
+- **First-run wizard** — create the Captain account, connect an AI brain, approve Apple's verified channel-computer runtime once on macOS, choose terminal visibility, name the workspace, and land in `#main` with Skipper.
 - **Create a channel** — name it and describe what it's for. 1Helm atomically provisions its resident agent, computer workspace (`/workspace`), files, memory namespace, and model policy — no bot wiring or directory setup.
 - **Resident agents** — one durable specialist per channel; shell commands and files stay in that channel's `/workspace`; curated decisions, facts, preferences, and artifact references are retained across threads, model changes, and server restarts. Session recaps remain in Threads rather than being mislabeled as Memory.
 - **Hermes-style skill arsenal** — a useful suite ships in the workspace, including approachable self-hosting guidance. Skipper has the complete catalog. New agents receive a purpose-aware permanent starter kit, know every unassigned skill they can request, and can propose reusable skills that Skipper approves into the shared arsenal.
@@ -39,10 +39,11 @@ Living product record and direction history: [`docs/VISION.md`](docs/VISION.md).
 - **Lifecycle** — archive pauses an agent world (cancels in-flight work, closes terminals) while preserving everything; restore reuses the same identity, workspace, memory, and threads; permanent deletion is Captain-only with typed-name confirmation.
 - **Unified model fabric** — connect ChatGPT, Claude, Antigravity/Gemini, and xAI OAuth accounts; OpenRouter, NVIDIA NIM, Cloudflare, GLM, or custom API keys; pool multiple accounts; enable exact models; create fallback or round-robin routes; and use all of them inside 1Helm or through one `/v1` endpoint.
 - **Local operations** — request activity, token usage, account attribution, supported subscription quotas, redacted routing/OAuth logs, and revocable gateway keys live in Settings → Providers. Changing a model or route never replaces an agent or discards channel-owned state.
-- **Channel terminals** — optional. Each channel's Terminal opens directly in that agent's `/workspace`; its screen and server session survive tab navigation and page reload, and sessions are owner- and channel-scoped and torn down on archive/delete.
+- **A computer per channel on macOS** — every ordinary channel gets a persistent Apple `container machine`: a separate lightweight Linux VM with its own filesystem, shell, services, and `/workspace`. Skipper chooses CPU/RAM automatically, keeps the Mac home directory unmounted, wakes scheduled work, and conservatively leaves machines running when services or timers make sleep unsafe.
+- **Channel terminals** — optional. Each ordinary channel's Terminal and resident shell tools execute inside that channel's Linux computer; its screen and server session survive tab navigation and page reload, and sessions are owner- and channel-scoped and torn down on archive/delete. Skipper's `#main` terminal remains native on the Mac.
 - **Scoped Gmail handoff** — when Gmail OAuth accounts already exist on the 1Helm host, Captain-authorized Skipper can grant a resident account-specific search/read/draft access without exposing tokens. Sending remains disabled by default.
 
-Not yet shipped: stronger per-channel container/VM isolation (process-level boundary today, abstraction kept explicit), an app catalog and one-click deploy, and a consumer installer. The legacy "configure a bot and add it to a room" flow is retained only as migration compatibility for existing installs and is not the normal product path.
+On Apple Silicon macOS 26, per-channel VM isolation is the product backend. Linux/CI source deployments deliberately use a compatibility backend until Apple makes its runtime available there; 1Helm never labels that fallback as VM isolation. Not yet shipped: an app catalog and one-click deploy. The legacy "configure a bot and add it to a room" flow is retained only as migration compatibility for existing installs and is not the normal product path.
 
 ---
 
@@ -59,7 +60,7 @@ Open `http://localhost:8123`. On a fresh data directory you see the setup wizard
 
 1. Create the Captain account (first user is admin).
 2. Connect an AI provider.
-3. Choose whether channel terminals are visible.
+3. On macOS, approve Apple's verified channel-computer runtime once; choose whether channel terminals are visible.
 4. Name the workspace.
 5. Land in `#main` with Skipper, then create your first agent channel.
 
@@ -68,9 +69,11 @@ Open `http://localhost:8123`. On a fresh data directory you see the setup wizard
 | Env var | Default | Meaning |
 |---|---|---|
 | `PORT` | `8123` | HTTP/WebSocket port. |
-| `CTRL_DATA_DIR` | `./data` | SQLite DB + channel workspaces + uploaded files (internal path name kept for compatibility). |
+| `CTRL_DATA_DIR` | `./data` | SQLite control-plane state + narrow host workspace mirrors and uploaded files (internal path name kept for compatibility). |
+| `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `native` elsewhere | Explicit backend override for development/testing. The macOS product uses `apple`. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:1.1.2` | Versioned OCI machine image built from `container/Containerfile`. |
 
-On first boot 1Helm starts a private loopback Open-Terminal agent and registers it as **"This Computer"** so resident agent shells and channel terminals work.
+On first boot 1Helm starts a private loopback Open-Terminal agent and registers it as **"This Computer"** for Skipper's native-Mac work. Ordinary residents are never assigned that host computer.
 
 ### Dev mode
 
@@ -80,17 +83,36 @@ npm run watch:css  # terminal 2
 npm start          # terminal 3
 ```
 
-### Desktop-app feel
+### macOS app
 
 ```bash
-google-chrome --app=http://localhost:8123
+npm run desktop
 ```
+
+The native Apple Silicon app carries the complete on-box 1Helm control plane.
+It is not a remote view of demo.1helm.com: Skipper runs natively on that Mac,
+while each ordinary channel gets its own persistent Linux computer through
+Apple's `container` runtime. 1Helm uses `--home-mount none`, so a resident never
+receives the Captain's whole Mac home. Durable control-plane data, provider
+credentials, uploads, and narrow Files UI mirrors live at
+`~/Library/Application Support/1Helm`; the canonical Linux filesystem lives in
+the channel machine and survives stop/start.
+
+Apple's runtime currently requires one administrator-approved installation.
+1Helm downloads only the pinned Apple 1.1.0 signed installer, verifies its
+published SHA-256, and opens the macOS approval UI. After that, Skipper manages
+machine creation, health, wake/sleep, repair, unattended guest updates, and
+resource sizing without asking the user infrastructure questions.
+
+The direct-distribution release adapter is `npm run package:dmg:release`; it
+requires the activated Developer ID and notarization environment described in
+the maintainer release runbook.
 
 ---
 
 ## Architecture
 
-Compact Node/TypeScript app — no Electron, no server transpile step:
+Compact Node/TypeScript app with a native Electron host on macOS and no server transpile step:
 
 | Piece | How |
 |---|---|
@@ -98,7 +120,9 @@ Compact Node/TypeScript app — no Electron, no server transpile step:
 | **Database** | `node:sqlite` — workspace state plus uncapped routed-usage history; no external DB. |
 | **Server** | `node:http` + `ws`. |
 | **Client** | Vanilla TypeScript via esbuild + Tailwind CSS. |
-| **Terminals** | `node-pty` + embedded Open-Terminal-compatible agent. |
+| **Terminals** | `node-pty`; ordinary channels spawn `container machine run -it`, while Skipper can use the native loopback computer. |
+| **Channel computers** | Apple `container machine`, one persistent Linux VM per ordinary channel, controlled through a defensive argv-only CLI backend. |
+| **macOS** | Electron hosts the native Skipper/control plane on loopback, persists state in Application Support, and remains available for scheduling after its window closes. |
 
 ```
 src/
@@ -110,6 +134,7 @@ src/
     store.ts      messages, model policy, agent/bot views
     bots.ts       agent-turn engine (streaming, tools, escalation)
     computer.ts   Open-Terminal client
+    channel-computers.ts  per-channel VM provisioning, execution, sync, obligations, and fleet reconciliation
     terms.ts      channel-scoped keep-alive terminal sessions
     events.ts     live event fan-out
     agent.ts      embedded local terminal agent
@@ -136,7 +161,7 @@ Create a channel with a name and a plain-language purpose. 1Helm provisions one 
 Session summaries are channel-owned Thread/session records. Decisions, facts, preferences, and artifact references are separately stored as curated Memory records with provenance (author, source thread, time). Each identity also owns a local Mnemosyne SQLite database for long-term episode and knowledge recall. The resident agent's context is assembled from its profile, session summary, curated records, Mnemosyne recall, artifact list, and transcript — so continuity survives a model or provider change and a server restart without presenting raw chat as memory.
 
 ### Computers and terminals
-Every resident agent works in its channel's `/workspace` on the embedded "This Computer". Channel terminals open there too, are scoped to the user and channel, and are torn down on archive or delete. The execution boundary is process-level for now; the abstraction is kept explicit so container/VM isolation can be selected per deployment later without changing the product model. Skipper has workspace-wide authority; host-level action is gated to Captain-authorized invocations.
+On Apple Silicon macOS 26, every ordinary resident works inside a distinct persistent Linux VM. Agent commands and the human Terminal share its `/workspace`; separate channel machines cannot see one another or the Mac home. A narrow streamed tar bridge mirrors Files UI/uploads without bind-mounting broad host paths. Native follow-ups are wakeable obligations; guest services, systemd timers, cron, interactive terminals, agent turns, and uncertain quiescence prevent unsafe stopping. Resource changes use drain → sync → stop → set → start → verify. Skipper remains native and has workspace-wide authority; host-level action is gated to Captain-authorized invocations.
 
 ### Admin
 First user is the Captain (admin). The Captain manages workspace name/photo/theme, the Cloudflare domain, providers, members, channel lifecycle, and Skipper. The normal path never asks anyone to choose a directory, memory backend, terminal backend, or bot-channel membership.
@@ -166,7 +191,7 @@ node test/ui.mjs
 
 ## Security notes
 - Passwords: scrypt. Sessions: random bearer tokens.
-- Resident agents run shell commands CWD-locked in their channel `/workspace`; workspace file access is channel-scoped and symlink-contained.
+- On macOS, resident agents run inside separate Linux VMs created with `--home-mount none`; no resident is assigned the native "This Computer" endpoint. Workspace file mirrors remain channel-scoped and symlink-contained.
 - Skipper's host-level tools are gated to Captain-authorized turns; escalations from resident agents carry the full invoking thread and record their outcome visibly.
 - Public registration closes after the Captain account. The Captain adds later workspace members from Settings → Members.
 - JSON requests are bounded to 1 MB, uploads to 25 MB, and bearer sessions expire after 30 days.

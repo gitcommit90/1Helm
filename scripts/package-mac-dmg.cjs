@@ -19,12 +19,17 @@ const TEAM_ID = String(process.env.APPLE_TEAM_ID || "").trim().toUpperCase();
 const NOTARY_PROFILE = String(process.env.APPLE_NOTARY_PROFILE || "").trim();
 const CONFIGURED_IDENTITY = String(process.env.APPLE_SIGN_IDENTITY || "").trim();
 const IGNORE_NON_RUNTIME_ROOTS =
-  /^\/(?!package\.json$|LICENSE$|desktop(?:$|\/)|src(?:$|\/)|public(?:$|\/)|scripts\/mnemosyne-bridge\.py$|node_modules(?:$|\/))/;
+  /^\/(?!package\.json$|LICENSE$|desktop(?:$|\/)|container(?:$|\/)|src(?:$|\/)|public(?:$|\/)|scripts\/mnemosyne-bridge\.py$|node_modules(?:$|\/))/;
 
 if (!VERSION) throw new Error("package.json must define a version");
 
 function run(command, args, options = {}) {
-  console.log(`$ ${command} ${args.join(" ")}`);
+  const displayArgs = args.map((arg, index) => {
+    if (command === "codesign" && args[index - 1] === "--sign") return "<signing-identity>";
+    if (command === "xcrun" && args[index - 1] === "--keychain-profile") return "<notary-profile>";
+    return arg;
+  });
+  console.log(`$ ${command} ${displayArgs.join(" ")}`);
   const result = spawnSync(command, args, { stdio: "inherit", encoding: "utf8", ...options });
   if (result.status !== 0) throw new Error(`Command failed (${result.status}): ${command}`);
   return result;
@@ -85,6 +90,22 @@ function createIcon() {
   return { icon, iconRoot };
 }
 
+function installProductIcon(appPath, icon) {
+  const resources = path.join(appPath, "Contents", "Resources");
+  const plist = path.join(appPath, "Contents", "Info.plist");
+  fs.copyFileSync(icon, path.join(resources, "1Helm.icns"));
+  run("plutil", ["-replace", "CFBundleIconFile", "-string", "1Helm.icns", plist]);
+}
+
+function verifyProductIcon(appPath) {
+  const plist = path.join(appPath, "Contents", "Info.plist");
+  const iconFile = capture("plutil", ["-extract", "CFBundleIconFile", "raw", plist]);
+  const iconPath = path.join(appPath, "Contents", "Resources", iconFile);
+  if (iconFile !== "1Helm.icns" || !fs.existsSync(iconPath) || fs.statSync(iconPath).size === 0) {
+    throw new Error("Packaged app is missing the 1Helm product icon");
+  }
+}
+
 function verifyApp(appPath, expectTicket) {
   run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath]);
   const plist = path.join(appPath, "Contents", "Info.plist");
@@ -94,6 +115,7 @@ function verifyApp(appPath, expectTicket) {
   if (!executableInfo.includes("arm64")) throw new Error(`Packaged app is not arm64: ${executableInfo}`);
   const nativePty = capture("find", [path.join(appPath, "Contents", "Resources"), "-path", "*/node-pty/prebuilds/darwin-arm64/pty.node", "-print", "-quit"]);
   if (!nativePty || !capture("file", [nativePty]).includes("arm64")) throw new Error("Packaged app is missing the darwin-arm64 terminal module");
+  verifyProductIcon(appPath);
   if (expectTicket) {
     run("xcrun", ["stapler", "validate", appPath]);
     run("spctl", ["--assess", "--type", "execute", "--verbose=4", appPath]);
@@ -104,7 +126,7 @@ function verifyApp(appPath, expectTicket) {
 
 async function main() {
   if (process.platform !== "darwin" || process.arch !== ARCH) throw new Error("macOS packaging must run on an Apple Silicon Mac");
-  for (const command of ["hdiutil", "codesign", "sips", "iconutil", "ditto", "spctl", "xcrun"]) {
+  for (const command of ["hdiutil", "codesign", "sips", "iconutil", "plutil", "ditto", "spctl", "xcrun"]) {
     if (!commandExists(command)) throw new Error(`${command} is required`);
   }
   if (REQUIRE_NOTARIZATION && (!TEAM_ID || !NOTARY_PROFILE)) {
@@ -135,7 +157,6 @@ async function main() {
       overwrite: true,
       prune: true,
       asar: false,
-      icon,
       ignore: [IGNORE_NON_RUNTIME_ROOTS, /\.DS_Store$/, /\.log$/],
       extendInfo: {
         CFBundleDisplayName: PRODUCT,
@@ -146,9 +167,11 @@ async function main() {
     });
     appPath = path.join(appDir, `${PRODUCT}.app`);
     if (!fs.existsSync(appPath)) throw new Error(`App not found at ${appPath}`);
+    installProductIcon(appPath, icon);
+    verifyProductIcon(appPath);
 
     if (identity) {
-      console.log(`Signing 1Helm with the Developer ID identity for team ${TEAM_ID}.`);
+      console.log("Signing 1Helm with the matching Developer ID Application identity.");
       const { sign } = require("@electron/osx-sign");
       await sign({ app: appPath, identity: identity.hash, platform: "darwin" });
     } else {
@@ -183,8 +206,10 @@ async function main() {
       run("hdiutil", ["create", "-volname", `${PRODUCT} ${VERSION}`, "-srcfolder", stage, "-ov", "-format", "UDZO", candidate]);
       if (identity) {
         run("codesign", ["--force", "--sign", identity.hash, "--timestamp", candidate]);
-        run("codesign", ["--verify", "--strict", "--verbose=2", candidate]);
+      } else {
+        run("codesign", ["--force", "--sign", "-", candidate]);
       }
+      run("codesign", ["--verify", "--strict", "--verbose=2", candidate]);
       if (identity && NOTARY_PROFILE) {
         notarize(candidate);
         run("xcrun", ["stapler", "staple", candidate]);

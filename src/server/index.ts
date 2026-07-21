@@ -10,7 +10,7 @@ import { createMessage, deleteMessage, serializeMessage, setModelPref, setModelP
 import { computerRowView, fetchModels } from "./computer.ts";
 import { cancelChannelTurns, runBot } from "./bots.ts";
 import { register, unregister, broadcastToChannel, broadcastAll, sendToUsers } from "./events.ts";
-import { openSession, attachClient, listSessions, closeChannelSessions, closeSession } from "./terms.ts";
+import { openChannelSession, openSession, attachClient, listSessions, closeChannelSessions, closeSession } from "./terms.ts";
 import { startAgent } from "./agent.ts";
 import {
   agentForBot,
@@ -22,9 +22,8 @@ import {
   ensureChannelWorkspace,
   ensureThread,
   importAttachment,
-  listWorkspaceFiles,
   normalizeChannelName,
-  provisionChannel,
+  provisionChannelWithComputer,
   recordMemory,
   refreshThreadSummary,
   renameChannel,
@@ -53,6 +52,16 @@ import {
   startRoutingEngine,
   stopRoutingEngine,
 } from "./routing.ts";
+import {
+  channelComputerView,
+  runtimeReadiness,
+  refreshChannelWorkspaceMirror,
+  prepareAppleRuntimeInstaller,
+  startAppleRuntime,
+  wakeDueChannelComputers,
+  shutdownChannelComputers,
+  startChannelComputerReconciler,
+} from "./channel-computers.ts";
 
 const PORT = Number(process.env.PORT || 8123);
 const HOST = process.env.HELM_HOST || "0.0.0.0";
@@ -62,6 +71,7 @@ const JSON_BODY_LIMIT = 1024 * 1024;
 const UPLOAD_BODY_LIMIT = 25 * 1024 * 1024;
 const WORKSPACE_PHOTO = join(DATA_DIR, "workspace-photo");
 const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
+const INTERNAL_WAKE_TOKEN = String(process.env.HELM_INTERNAL_WAKE_TOKEN || "");
 const MIME: Record<string, string> = {
   ".html": "text/html",
   ".js": "text/javascript",
@@ -152,6 +162,7 @@ function channelMetaView(c: Row, viewer?: Row | null): Record<string, unknown> {
     purpose: c.purpose || c.topic,
     status: c.status || "active",
     agent: c.kind === "channel" ? agentViewForChannel(Number(c.id)) : null,
+    computer: c.kind === "channel" ? channelComputerView(Number(c.id)) : null,
   };
 }
 
@@ -406,6 +417,11 @@ const server = createServer(async (req, res) => {
       run("INSERT INTO sessions (token, user_id, created) VALUES (?,?,?)", token, u.id, now());
       return json(res, 200, { token, user: publicUser(u) });
     }
+    if (p === "/api/internal/channel-computers/wake" && m === "POST") {
+      const supplied = String(req.headers["x-1helm-wake-token"] || "");
+      if (!INTERNAL_WAKE_TOKEN || supplied !== INTERNAL_WAKE_TOKEN) return json(res, 404, { error: "Not found" });
+      return json(res, 200, await wakeDueChannelComputers());
+    }
 
     // ---- everything below requires a session ----
     const user = authUser(req);
@@ -601,6 +617,8 @@ const server = createServer(async (req, res) => {
     if (p === "/api/setup/complete" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
       if (workspaceView().setup_complete) return json(res, 409, { error: "Setup already completed." });
+      const runtime = runtimeReadiness();
+      if (runtime.backend === "apple" && !runtime.ready) return json(res, 409, { error: "Approve and finish the verified Apple channel-computer runtime before creating this workspace." });
       const b = await jbody(req);
       try {
         const result = await completeSetup({
@@ -661,7 +679,7 @@ const server = createServer(async (req, res) => {
       if (!name) return json(res, 400, { error: "Invalid channel name." });
       if (!purpose) return json(res, 400, { error: "What is this channel all about?" });
       try {
-        const provisioned = provisionChannel({ name, purpose, userId: Number(user.id), templateSlug: String(b.template || "general") });
+        const provisioned = await provisionChannelWithComputer({ name, purpose, userId: Number(user.id), templateSlug: String(b.template || "general") });
         const row = q1("SELECT * FROM channels WHERE id=?", provisioned.channelId)!;
         const channel = channelView(user, row);
         broadcastChannelMeta(provisioned.channelId, "channel_new");
@@ -702,7 +720,7 @@ const server = createServer(async (req, res) => {
         const target = q1("SELECT name FROM channels WHERE id=? AND kind='channel'", channelId);
         if (!target || String(target.name) === "main") return json(res, 400, { error: target ? "#main cannot be archived." : "Channel not found." });
         try {
-          cancelChannelTurns(channelId); archiveChannel(channelId); closeChannelSessions(channelId);
+          cancelChannelTurns(channelId); closeChannelSessions(channelId); await archiveChannel(channelId);
           const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
           broadcastChannelMeta(channelId);
           return json(res, 200, { channel });
@@ -711,7 +729,7 @@ const server = createServer(async (req, res) => {
       if (action === "restore" && m === "POST") {
         if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
         try {
-          restoreChannel(channelId);
+          await restoreChannel(channelId);
           const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
           broadcastChannelMeta(channelId);
           return json(res, 200, { channel });
@@ -726,7 +744,7 @@ const server = createServer(async (req, res) => {
           return json(res, 400, { error: !target ? "Channel not found." : String(target.name) === "main" ? "#main cannot be deleted." : target.status !== "archived" ? "Archive the channel before permanent deletion." : "Type the channel name to confirm permanent deletion." });
         }
         try {
-          cancelChannelTurns(channelId); closeChannelSessions(channelId); deleteChannelWorld(channelId, confirmation);
+          cancelChannelTurns(channelId); closeChannelSessions(channelId); await deleteChannelWorld(channelId, confirmation);
           broadcastToChannel(channelId, { type: "channel_deleted", channelId });
           return json(res, 200, { ok: true });
         } catch (error) { return json(res, 400, { error: (error as Error).message }); }
@@ -741,6 +759,7 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { threads });
       }
       if (action === "files" && m === "GET") {
+        await refreshChannelWorkspaceMirror(channelId);
         const files = syncWorkspaceArtifacts(channelId, null, "agent");
         return json(res, 200, { files, artifacts: q("SELECT * FROM artifacts WHERE channel_id=? ORDER BY modified DESC", channelId) });
       }
@@ -805,6 +824,7 @@ const server = createServer(async (req, res) => {
       const channelId = Number(worldFile[1]);
       if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
       try {
+        await refreshChannelWorkspaceMirror(channelId);
         const file = resolveWorldFile(channelId, url.searchParams.get("path") || "");
         res.writeHead(200, { "content-type": MIME[extname(file)] || "application/octet-stream", "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(file.split("/").pop() || "file")}`, ...SECURITY_HEADERS });
         return res.end(await readFile(file));
@@ -1131,7 +1151,22 @@ const server = createServer(async (req, res) => {
     }
 
     // computers
-    if (p === "/api/computers" && m === "GET") return json(res, 200, { computers: q("SELECT * FROM computers ORDER BY id").map(computerRowView) });
+    if (p === "/api/computers" && m === "GET") return json(res, 200, { computers: q("SELECT * FROM computers ORDER BY id").map(computerRowView), runtime: runtimeReadiness() });
+    if (p === "/api/channel-computers/runtime" && m === "GET") return json(res, 200, { runtime: runtimeReadiness() });
+    if (p === "/api/channel-computers/runtime/install" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const installer = await prepareAppleRuntimeInstaller();
+      return json(res, 200, { ok: true, installer: { sha256: installer.sha256, opened: installer.opened }, runtime: runtimeReadiness() });
+    }
+    if (p === "/api/channel-computers/runtime/start" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, { ok: true, runtime: await startAppleRuntime() });
+    }
+    if ((mm = p.match(/^\/api\/channels\/(\d+)\/computer$/)) && m === "GET") {
+      const channelId = Number(mm[1]);
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      return json(res, 200, { computer: channelComputerView(channelId), runtime: runtimeReadiness() });
+    }
     if (p === "/api/computers" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
       const b = await jbody(req);
@@ -1166,6 +1201,16 @@ const server = createServer(async (req, res) => {
       const channel = q1("SELECT status FROM channels WHERE id=?", channelId);
       if (!channel || channel.status !== "active") return json(res, 409, { error: "Restore the channel before opening a terminal." });
       const requestedComputerId = b.computerId != null ? Number(b.computerId) : 0;
+      const channelAgent = agentForChannel(channelId);
+      const ordinaryChannel = channelAgent?.kind === "channel";
+      if (ordinaryChannel && requestedComputerId) return json(res, 403, { error: "Ordinary channel terminals always run inside that channel's isolated computer." });
+      if (ordinaryChannel) {
+        try {
+          const sessionId = await openChannelSession(channelId, Number(user.id), Number(b.cols) || 80, Number(b.rows) || 24);
+          if (!q1("SELECT 1 FROM channels WHERE id=? AND status='active'", channelId)) { closeSession(sessionId); return json(res, 409, { error: "Channel was archived while the terminal opened." }); }
+          return json(res, 200, { sessionId, computerId: 0 });
+        } catch (e) { return json(res, 502, { error: (e as Error).message }); }
+      }
       const computer = requestedComputerId
         ? q1("SELECT id, name FROM computers WHERE id=?", requestedComputerId)
         : q1("SELECT id, name FROM computers WHERE name='This Computer' ORDER BY id LIMIT 1")
@@ -1253,7 +1298,10 @@ async function bootstrap(): Promise<void> {
   const computerId = existing
     ? (run("UPDATE computers SET base_url=?, api_key=? WHERE id=?", url, agentKey, existing.id), Number(existing.id))
     : run("INSERT INTO computers (name, base_url, api_key, created) VALUES ('This Computer',?,?,?)", url, agentKey, now()).lastInsertRowid;
-  for (const agent of q("SELECT bot_id FROM agents WHERE status<>'deleted' AND bot_id IS NOT NULL")) run("INSERT OR IGNORE INTO bot_computers (bot_id, computer_id) VALUES (?,?)", agent.bot_id, computerId);
+  const skipper = q1("SELECT bot_id FROM agents WHERE kind='skipper' AND status<>'deleted' AND bot_id IS NOT NULL LIMIT 1");
+  if (skipper?.bot_id) run("INSERT OR IGNORE INTO bot_computers (bot_id, computer_id) VALUES (?,?)", skipper.bot_id, computerId);
+  // Resident agents own their Linux machine, never the Captain's native Mac.
+  run("DELETE FROM bot_computers WHERE computer_id=? AND bot_id IN (SELECT bot_id FROM agents WHERE kind='channel')", computerId);
   for (const channel of q("SELECT id FROM channels WHERE kind='channel' AND status<>'deleted'")) {
     ensureChannelWorkspace(Number(channel.id));
     const agent = agentForChannel(Number(channel.id)); if (agent) ensureAgentMemory(agent);
@@ -1261,6 +1309,7 @@ async function bootstrap(): Promise<void> {
   startImprovementLoop();
   startThreadAuditLoop();
   startFollowupLoop();
+  startChannelComputerReconciler();
   server.listen(PORT, HOST, () => {
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : PORT;
@@ -1274,6 +1323,7 @@ const shutdown = async (): Promise<void> => {
   if (shuttingDown) return;
   shuttingDown = true;
   await stopRoutingEngine().catch(() => undefined);
+  await shutdownChannelComputers().catch(() => undefined);
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 12_000).unref();
 };

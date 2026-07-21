@@ -2,7 +2,7 @@ import { api, uploadFile, connectEvents, getToken, setToken, clearToken, workspa
 import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, beep, icon, helmMark, type ChannelLink } from "./dom.ts";
 import { openSettings, finishOpenRouterOAuth } from "./settings.ts";
 import { openOnboarding } from "./onboarding.ts";
-import { hostComputerId, openTerminals, refitChannelTerminals, getTerminalChrome } from "./term.ts";
+import { defaultTerminalComputer, openTerminals, refitChannelTerminals, getTerminalChrome } from "./term.ts";
 import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderThreads, type ChannelView } from "./channel.ts";
 
 /** Per-channel layout bound to the user profile (server user_ui_state). */
@@ -809,7 +809,7 @@ function renderRhs(): void {
 }
 
 function paintDockedTerminal(container: HTMLElement): void {
-  const preferred = S.preferredTerminalComputerId || hostComputerId();
+  const preferred = S.preferredTerminalComputerId ?? defaultTerminalComputer(S.channelId);
   openTerminals(container, S.channelId, {
     preferredComputerId: preferred || undefined,
     serversListOpen: S.serversListOpen,
@@ -819,7 +819,7 @@ function paintDockedTerminal(container: HTMLElement): void {
       const chrome = getTerminalChrome(S.channelId);
       if (!chrome) return;
       S.serversListOpen = chrome.serversListOpen;
-      S.preferredTerminalComputerId = chrome.preferredComputerId || null;
+      S.preferredTerminalComputerId = chrome.preferredComputerId;
       persistCurrentChannelView();
     },
   });
@@ -860,7 +860,7 @@ export function navigateChannelView(view: ChannelView): void {
   S.view = view; S.threadRoot = null; S.globalThreadsOpen = false;
   if (view === "terminal") {
     S.terminalOpen = false;
-    S.preferredTerminalComputerId = S.preferredTerminalComputerId || getChannelView(S.channelId).preferredComputerId || hostComputerId();
+    S.preferredTerminalComputerId = S.preferredTerminalComputerId ?? getChannelView(S.channelId).preferredComputerId ?? defaultTerminalComputer(S.channelId);
   }
   persistCurrentChannelView();
   renderApp();
@@ -889,7 +889,7 @@ export function openTerminalsFromHeader(): void {
   }
   S.terminalOpen = !S.terminalOpen;
   if (S.terminalOpen && !S.preferredTerminalComputerId) {
-    S.preferredTerminalComputerId = getChannelView(channel.id).preferredComputerId || hostComputerId();
+    S.preferredTerminalComputerId = getChannelView(channel.id).preferredComputerId ?? defaultTerminalComputer(channel.id);
   }
   if (!S.terminalOpen) S.serversListOpen = false;
   persistCurrentChannelView();
@@ -899,7 +899,7 @@ export function openTerminalsFromHeader(): void {
 
 function openTerminalOnComputer(computerId: number): void {
   // Full-tab path (channel Terminal tab / legacy).
-  S.preferredTerminalComputerId = computerId || hostComputerId();
+  S.preferredTerminalComputerId = computerId;
   S.view = "terminal";
   S.terminalOpen = false;
   S.threadRoot = null;

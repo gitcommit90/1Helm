@@ -256,6 +256,9 @@ try {
 
   const termOpen = await api("/api/term/open", { body: { channelId: launch.id, cols: 90, rows: 28 } }, captain);
   ok(termOpen.status === 200 && termOpen.body.sessionId, "channel terminal session opens without choosing a computer or directory");
+  const hostComputerId = (await api("/api/computers", {}, captain)).body.computers.find((computer) => computer.name === "This Computer")?.id;
+  const rejectedHostTerm = await api("/api/term/open", { body: { channelId: launch.id, computerId: hostComputerId, cols: 90, rows: 28 } }, captain);
+  ok(rejectedHostTerm.status === 403, "ordinary channel terminal rejects an explicit native host computer");
   const expectedWorkspace = join(dataDir, "channels", String(launch.id), "workspace");
   const terminalOutput = await new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${appPort}/ws/term/${termOpen.body.sessionId}?token=${captain}`);
@@ -420,6 +423,10 @@ try {
   const archive = await api(`/api/channels/${launch.id}/archive`, { body: {} }, captain);
   const blocked = await api(`/api/channels/${launch.id}/messages`, { body: { body: `@${afterRestart.agent.name} should not run` } }, captain);
   ok(archive.body.channel.status === "archived" && archive.body.channel.agent.id === launch.agent.id && blocked.status === 409, "archive pauses work while preserving the same agent world");
+  const archivedObligationDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const activeArchivedFollowups = archivedObligationDb.prepare("SELECT COUNT(*) n FROM channel_computer_obligations WHERE channel_id=? AND kind='followup' AND status='active'").get(launch.id).n;
+  archivedObligationDb.close();
+  ok(activeArchivedFollowups === 0, "archiving cancels native follow-up wake obligations instead of treating archive like idle sleep");
 
   const restore = await api(`/api/channels/${launch.id}/restore`, { body: {} }, captain);
   const restoredThread = (await api(`/api/channels/${launch.id}/threads`, {}, captain)).body.threads.find((thread) => thread.id === taskThread.id);

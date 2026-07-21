@@ -14,7 +14,7 @@ export function openCreateChannel(onCreated: (channel: Channel) => void): void {
   const close = (): void => overlay.remove();
   const create = async (): Promise<void> => {
     status.textContent = "";
-    submit.disabled = true; submit.textContent = "Provisioning agent world…";
+      submit.disabled = true; submit.textContent = "Preparing agent and private computer…";
     try {
       const result = await api<{ channel: Channel }>("/api/channels", { body: { name: name.value, purpose: purpose.value, template: selectedTemplate } });
       close(); onCreated(result.channel);
@@ -28,7 +28,7 @@ export function openCreateChannel(onCreated: (channel: Channel) => void): void {
   const overlay = h("div", { class: "modal-overlay fixed inset-0 z-50 grid place-items-end bg-black/55 p-0 sm:place-items-center sm:p-6", onclick: (event: MouseEvent) => { if (event.target === overlay) close(); } },
     h("section", { class: "card mobile-sheet w-full max-w-lg overflow-hidden rounded-b-none shadow-2xl sm:rounded-xl" },
       h("div", { class: "flex items-start justify-between gap-3 border-b border-line px-4 py-4 sm:px-6" },
-        h("div", {}, h("h2", { class: "font-display text-[1.4rem] leading-tight text-fg" }, "Create an agent channel"), h("p", { class: "mt-1.5 text-sm text-muted" }, "It comes with one resident agent, a computer workspace, files, threads, and memory.")),
+        h("div", {}, h("h2", { class: "font-display text-[1.4rem] leading-tight text-fg" }, "Create an agent channel"), h("p", { class: "mt-1.5 text-sm text-muted" }, "It comes with one resident agent, its own private Linux computer, files, threads, and memory. Skipper handles the infrastructure.")),
         h("button", { class: "grid h-11 w-11 place-items-center rounded text-muted hover:bg-hover sm:h-8 sm:w-8", "aria-label": "Close", onclick: close }, icon("x"))),
       h("div", { class: "max-h-[70dvh] space-y-4 overflow-y-auto p-4 sm:p-6" },
         h("div", {}, h("span", { class: "eyebrow mb-2 block text-muted" }, "Start from a lightweight role"), templates, h("span", { class: "mt-1 block text-xs text-muted" }, "Templates are only a starting kit. The agent keeps learning, gaining skills, and growing with this channel.")),
@@ -420,6 +420,7 @@ async function addMemory(channelId: number, onDone: () => void): Promise<void> {
 const ACTIVITY_SKIPPER = new Set(["thread_audit", "improvement", "skill", "collaboration", "handoff"]);
 const ACTIVITY_WORK = new Set(["tool", "tool_result", "escalation", "followup", "memory"]);
 const ACTIVITY_SYSTEM = new Set(["agent_status", "lifecycle", "profile"]);
+ACTIVITY_SKIPPER.add("computer");
 
 type ActivityFilter = "all" | "skipper" | "work" | "system";
 
@@ -445,6 +446,7 @@ function activityKindLabel(kind: string): string {
     agent_status: "Agent status",
     lifecycle: "Lifecycle",
     profile: "Profile",
+    computer: "Computer care",
   };
   return labels[kind] || kind.replace(/_/g, " ");
 }
@@ -676,6 +678,19 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
       } }, icon("trash", 14), "Delete permanently") : null));
 
   const assignedSkills = h("div", { class: "mt-3 flex flex-wrap gap-2" }, ...((channel.agent?.skills || []).map((skill) => h("span", { class: "chip border-accent/25" }, skill.name))));
+  const computer = channel.computer;
+  const computerCard = computer ? h("div", { class: "card p-4" },
+    h("div", { class: "flex flex-wrap items-center gap-2" },
+      h("h3", { class: "font-semibold text-fg" }, "This channel's computer"),
+      h("span", { class: "chip border-accent/25" }, computer.backend === "apple" ? "Isolated Linux VM" : "Development compatibility"),
+      h("span", { class: "chip" }, computer.observed_state)),
+    h("p", { class: "mt-2 text-sm leading-6 text-muted" }, "Skipper provisions, wakes, monitors, updates, repairs, and sizes this computer automatically. You never need to choose CPU or RAM."),
+    h("div", { class: "mt-3 grid gap-2 text-xs text-muted sm:grid-cols-3" },
+      h("div", {}, h("span", { class: "block font-semibold text-fg" }, `${computer.cpus} CPU${computer.cpus === 1 ? "" : "s"}`), "Automatically managed"),
+      h("div", {}, h("span", { class: "block font-semibold text-fg" }, `${Math.max(1, Math.round(computer.memory_bytes / 1073741824))} GiB RAM`), "Automatically managed"),
+      h("div", {}, h("span", { class: "block font-semibold text-fg" }, computer.home_mount === "none" ? "Mac home private" : "Needs attention"), "No whole-home mount")),
+    computer.obligations?.length ? h("p", { class: "mt-3 text-xs text-muted" }, `${computer.obligations.length} active obligation${computer.obligations.length === 1 ? "" : "s"}; Skipper will keep or wake the computer as needed.`) : null,
+    computer.last_error ? h("p", { class: "mt-3 text-sm text-danger" }, computer.last_error) : null) : null;
   panelContent(container, "Channel settings", "Name, purpose, replaceable model policy, permanent skills, scoped capabilities, and lifecycle.", h("div", { class: "space-y-4" },
     h("div", { class: "card space-y-3 p-4" },
       h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Channel name"), h("p", { class: "mt-1 text-sm text-muted" }, channel.name === "main" ? "#main is fixed." : "Sidebar label and URL slug. The resident @mention stays the same.")),
@@ -694,6 +709,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
       h("div", { class: "flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, S.me.is_admin ? changeModelButton : null)),
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Permanent skill arsenal"), h("p", { class: "mt-1 text-sm text-muted" }, "Skipper provisioned these skills for this agent. New grants stay permanently, and the agent still knows what else exists in the workspace catalog."), assignedSkills),
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Capabilities"), h("div", { class: "mt-3 flex flex-wrap gap-2" }, ...(channel.agent?.capabilities || []).map((capability) => h("span", { class: "chip" }, capability))), h("p", { class: "mt-3 text-xs text-muted" }, "The resident agent is channel-scoped. It calls @skipper for host-level, cross-channel, credential, guest-expert, or missing-capability work.")),
+    computerCard,
     lifecycle));
   if (channel.agent?.provider_id) void loadModels();
 }

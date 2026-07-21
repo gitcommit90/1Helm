@@ -11,7 +11,13 @@ export type ResidentAgent = {
   purpose: string; model: string; provider_id: number | null; provider_name: string | null; provider_kind: string | null;
   capabilities: string[]; skills: Skill[]; runtime?: Bot;
 };
-export type Channel = { id: number; name: string; slug: string; kind: string; topic: string; purpose: string; status: "active" | "archived"; unread: number; agent: ResidentAgent | null };
+export type ChannelComputer = {
+  backend: "apple" | "native" | "mock"; machine_id: string; desired_state: string; observed_state: string;
+  cpus: number; memory_bytes: number; disk_bytes: number; home_mount: "none"; provision_status: string;
+  maintenance_state: string; last_health: number; last_used: number; last_error: string;
+  obligations: Array<{ kind: string; ref: string; mode: "resident" | "wakeable"; details: string; due_at?: number | null }>;
+};
+export type Channel = { id: number; name: string; slug: string; kind: string; topic: string; purpose: string; status: "active" | "archived"; unread: number; agent: ResidentAgent | null; computer?: ChannelComputer | null };
 export type Bot = { id: number; name: string; model: string; prompt: string; avatar: string; provider_id: number | null; provider_name: string | null; provider_kind: string | null; computers: number[]; prefs: Record<string, string>; agent_id?: number | null; agent_kind?: string | null; agent_status?: string | null; resident_channel_id?: number | null };
 export type ThreadFollowup = {
   id: number;
@@ -40,6 +46,10 @@ export type ChannelFile = { path: string; name: string; size: number; modified: 
 export type MemoryItem = { id: number; channel_id: number; thread_id: number | null; root_message_id?: number | null; kind: "summary" | "decision" | "fact" | "preference" | "artifact_ref"; content: string; author_type: string; scope: string; status: "current" | "superseded"; created: number };
 export type ActivityItem = { id: number; channel_id: number; thread_id: number | null; kind: string; summary: string; status: string; actor_type: string; created: number };
 export type Computer = { id: number; name: string; base_url: string; has_key: boolean };
+export type ChannelRuntime = {
+  backend: "apple" | "native" | "mock"; supported: boolean; darwin: boolean; arm64: boolean; macos_version?: string | null;
+  cli: string | null; version?: unknown; system: unknown; runtime_version: string; installer_url: string; installer_sha256: string; ready: boolean;
+};
 export type Provider = { id: number; name: string; base_url: string; kind: string; has_key: boolean; bots: number };
 export type RoutingProviderModel = { id: string; gatewayId: string; name: string; enabled: boolean };
 export type RoutingModel = { id: string; name: string; kind: "model" | "route"; providerType?: string; providerName?: string; accountCount?: number };
