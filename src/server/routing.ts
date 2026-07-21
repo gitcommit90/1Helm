@@ -19,7 +19,11 @@ type RoutingRuntime = {
     save: (config: RoutingConfig) => void;
     update: (fn: (config: RoutingConfig) => void) => unknown;
   };
-  router: { usageAggregate: (period: string) => unknown; stats: () => unknown };
+  router: {
+    usageAggregate: (period: string) => unknown;
+    stats: () => unknown;
+    listModels: () => { data?: Array<{ id?: string; name?: string; combo?: boolean; providerId?: string | null; owned_by?: string; accountAliases?: string[] }> };
+  };
   gateway: {
     getAddress: () => string | null;
     getListeningAddress?: () => { host: string; port: number } | null;
@@ -61,7 +65,7 @@ type RoutingConfig = {
   bindHost: string;
   serverEnabled: boolean;
   apiKey: string;
-  apiKeys: Array<{ id: string; key: string; name: string; enabled: boolean; createdAt: number }>;
+  apiKeys: Array<{ id: string; key: string; name: string; enabled: boolean; createdAt: number; internal?: boolean; scope?: string }>;
   providers: RoutingProvider[];
   combos: RoutingCombo[];
   [key: string]: unknown;
@@ -79,6 +83,8 @@ export type RoutingModel = {
 const ROUTING_DIR = join(DATA_DIR, "routing");
 const INTERNAL_PROVIDER_KIND = "routing";
 const INTERNAL_PROVIDER_NAME = "1Helm Router";
+const INTERNAL_GATEWAY_KEY_ID = "key_1helm_internal";
+const INTERNAL_GATEWAY_KEY_SCOPE = "1helm-internal";
 let runtime: RoutingRuntime | null = null;
 let starting: Promise<RoutingRuntime> | null = null;
 let activityUnsubscribe: (() => void) | null = null;
@@ -107,6 +113,69 @@ function routableBaseUrl(value: string): boolean {
 function routeNameAvailable(config: RoutingConfig, name: string): boolean {
   const key = name.trim().toLowerCase();
   return !!key && !config.combos.some((combo) => String(combo.name || "").trim().toLowerCase() === key);
+}
+
+function isInternalGatewayKey(entry: { id?: unknown; internal?: unknown; scope?: unknown } | null | undefined): boolean {
+  return !!entry && (
+    entry.id === INTERNAL_GATEWAY_KEY_ID
+    || entry.internal === true
+    || entry.scope === INTERNAL_GATEWAY_KEY_SCOPE
+  );
+}
+
+/**
+ * 1Helm agents authenticate to the embedded gateway with a private, durable
+ * credential. Public Endpoint keys can therefore all be disabled or revoked
+ * without taking resident agents offline. The marker is stored only in the
+ * host-owned routing config and is stripped from every control-plane result.
+ */
+function ensureInternalGatewayKey(target: RoutingRuntime): string {
+  const current = target.store.load();
+  const existing = (current.apiKeys || []).find(isInternalGatewayKey);
+  if (
+    existing
+    && existing.id === INTERNAL_GATEWAY_KEY_ID
+    && existing.name === "1Helm internal"
+    && existing.enabled === true
+    && existing.internal === true
+    && existing.scope === INTERNAL_GATEWAY_KEY_SCOPE
+    && String(existing.key || "").trim()
+  ) return String(existing.key);
+
+  let internalKey = "";
+  target.store.update((config) => {
+    if (!Array.isArray(config.apiKeys)) config.apiKeys = [];
+    let entry = config.apiKeys.find(isInternalGatewayKey);
+    if (!entry) {
+      entry = {
+        id: INTERNAL_GATEWAY_KEY_ID,
+        key: `rr-${randomBytes(16).toString("hex")}`,
+        name: "1Helm internal",
+        enabled: true,
+        createdAt: now(),
+        internal: true,
+        scope: INTERNAL_GATEWAY_KEY_SCOPE,
+      };
+      config.apiKeys.push(entry);
+    }
+    entry.id = INTERNAL_GATEWAY_KEY_ID;
+    entry.name = "1Helm internal";
+    entry.enabled = true;
+    entry.internal = true;
+    entry.scope = INTERNAL_GATEWAY_KEY_SCOPE;
+    if (!String(entry.key || "").trim()) entry.key = `rr-${randomBytes(16).toString("hex")}`;
+    internalKey = String(entry.key);
+  });
+  return internalKey;
+}
+
+function externalGatewayKeys(config: RoutingConfig): RoutingConfig["apiKeys"] {
+  return (config.apiKeys || []).filter((entry) => !isInternalGatewayKey(entry));
+}
+
+function publicControlPlaneResult(result: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(result.apiKeys)) return result;
+  return { ...result, apiKeys: result.apiKeys.filter((entry) => !isInternalGatewayKey(entry as never)) };
 }
 
 /**
@@ -157,14 +226,14 @@ function ensureInternalProvider(target: RoutingRuntime): number {
   const config = target.store.load();
   const listening = target.gateway.getListeningAddress?.();
   const port = listening?.port || Number(config.port || 4949);
-  const primary = config.apiKeys.find((key) => key.enabled !== false)?.key || config.apiKey;
+  const privateKey = ensureInternalGatewayKey(target);
   let row = q1("SELECT id FROM providers WHERE kind=? ORDER BY id LIMIT 1", INTERNAL_PROVIDER_KIND);
   if (!row) {
     const id = run(
       "INSERT INTO providers (name,base_url,api_key,kind,created) VALUES (?,?,?,?,?)",
       INTERNAL_PROVIDER_NAME,
       `http://127.0.0.1:${port}/v1`,
-      primary,
+      privateKey,
       INTERNAL_PROVIDER_KIND,
       now(),
     ).lastInsertRowid;
@@ -174,7 +243,7 @@ function ensureInternalProvider(target: RoutingRuntime): number {
       "UPDATE providers SET name=?,base_url=?,api_key=? WHERE id=?",
       INTERNAL_PROVIDER_NAME,
       `http://127.0.0.1:${port}/v1`,
-      primary,
+      privateKey,
       row.id,
     );
   }
@@ -245,6 +314,7 @@ export async function startRoutingEngine(activityCallback?: () => void): Promise
     });
     await initializeEngineConfig(target);
     migrateLegacyProviders(target);
+    ensureInternalGatewayKey(target);
     const config = target.store.load();
     const host = String(config.bindHost || "127.0.0.1");
     const port = await choosePort(Number(config.port || 4949), host);
@@ -272,11 +342,17 @@ export function routingReady(): boolean {
 
 export async function routingInvoke(action: string, payload?: unknown): Promise<Record<string, unknown>> {
   const target = await startRoutingEngine(onActivity || undefined);
+  if (
+    ["app:revoke-api-key", "app:set-api-key-enabled"].includes(action)
+    && (typeof payload === "string" ? payload : String((payload as { id?: unknown } | null)?.id || "")) === INTERNAL_GATEWAY_KEY_ID
+  ) {
+    return { ok: false, error: "The private workspace credential cannot be changed." };
+  }
   const args = payload === undefined ? [] : [payload];
   const result = await target.controlPlane.invoke(action, args, { harness: true });
   // Key and bind changes can alter the endpoint used by 1Helm agents.
   ensureInternalProvider(target);
-  return result;
+  return publicControlPlaneResult(result);
 }
 
 export async function routingState(): Promise<Record<string, unknown>> {
@@ -288,40 +364,37 @@ export async function routingState(): Promise<Record<string, unknown>> {
 
 export async function routingCredentials(): Promise<Record<string, unknown>> {
   const state = await routingInvoke("app:get-state");
+  const target = await startRoutingEngine(onActivity || undefined);
+  const apiKeys = externalGatewayKeys(target.store.load()).map(({ id, key, name, enabled, createdAt }) => ({ id, key, name, enabled, createdAt }));
   return {
     endpoint: state.endpoint,
     bindHost: state.bindHost,
     port: state.port,
     serverListening: state.serverListening,
-    apiKey: state.apiKey,
-    apiKeys: state.apiKeys,
+    apiKey: apiKeys.find((entry) => entry.enabled !== false)?.key || "",
+    apiKeys,
   };
 }
 
 export async function routingModels(): Promise<RoutingModel[]> {
-  const state = await routingState() as {
-    providers?: Array<{ type: string; name: string; enabled?: boolean; models?: Array<{ gatewayId: string; id: string; name: string; enabled?: boolean }> }>;
-    combos?: Array<{ id?: string; name?: string; strategy?: string; members?: unknown[] }>;
-  };
-  const models: RoutingModel[] = [];
-  for (const provider of state.providers || []) {
-    if (provider.enabled === false) continue;
-    for (const model of provider.models || []) {
-      if (model.enabled === false) continue;
-      models.push({
-        id: String(model.gatewayId || model.id),
-        name: String(model.name || model.id),
-        kind: "model",
-        providerType: String(provider.type || ""),
-        providerName: String(provider.name || provider.type || "Provider"),
-      });
-    }
-  }
-  for (const combo of state.combos || []) {
-    const id = String(combo.name || combo.id || "").trim();
-    if (!id) continue;
-    models.push({ id, name: id, kind: "route", accountCount: Array.isArray(combo.members) ? combo.members.length : 0 });
-  }
+  const target = await startRoutingEngine(onActivity || undefined);
+  const config = target.store.load();
+  const providers = new Map(config.providers.map((provider) => [provider.id, provider]));
+  const models = (target.router.listModels().data || []).map((model): RoutingModel => {
+    const id = String(model.id || "").trim();
+    const provider = model.providerId ? providers.get(model.providerId) : null;
+    const family = String(model.owned_by || provider?.type || "");
+    return {
+      id,
+      name: String(model.name || id),
+      kind: model.combo ? "route" : "model",
+      providerType: model.combo ? undefined : family,
+      providerName: model.combo ? undefined : String(provider?.name || family || "Provider"),
+      accountCount: model.combo
+        ? config.combos.find((combo) => combo.name === id || combo.id === id)?.members.length || 0
+        : Array.isArray(model.accountAliases) ? model.accountAliases.length : undefined,
+    };
+  }).filter((model) => model.id);
   return models.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "route" ? -1 : 1));
 }
 
@@ -335,7 +408,7 @@ export function routingEndpoint(): { base_url: string; api_key: string } | null 
   const config = runtime.store.load();
   const listening = runtime.gateway.getListeningAddress?.();
   const port = listening?.port || Number(config.port || 4949);
-  const key = config.apiKeys.find((entry) => entry.enabled !== false)?.key || config.apiKey;
+  const key = ensureInternalGatewayKey(runtime);
   return key ? { base_url: `http://127.0.0.1:${port}/v1`, api_key: key } : null;
 }
 

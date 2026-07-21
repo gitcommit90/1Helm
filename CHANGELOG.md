@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-07-21
+
+### Changed
+
+- Resident-agent model pickers now use the embedded router's authoritative catalog, including shared fill-first model IDs across same-provider accounts.
+- Keyed-source connections must pass a current credential/model test before Connect; edits invalidate stale results and Connect is single-flight.
+
+### Fixed
+
+- Selecting one model or using All on / All off updates the open account in place instead of rebuilding and collapsing the Providers interface.
+- 1Helm agents now use a durable private gateway credential that is never listed on Endpoint, so disabling or revoking every external key cannot take resident agents offline.
+- Provider groups and account editors retain their expanded state across the remaining actions that legitimately refresh provider state.
+
+### Security
+
+- Private workspace authentication is filtered from routine state, Captain credentials, and key-mutation responses while public keys remain independently revocable.
+- Expanded integration coverage verifies credential redaction, OAuth initiation/cancellation, provider/model lifecycle, real fallback and round-robin routing, quota, logs, bind changes, migration idempotence, restart persistence, and Captain-only mutations.
+
 ## [1.1.0] - 2026-07-20
 
 ### Added
@@ -46,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Native **1Herd** channel-agent workspace (SPEC.md slice) is developed on branch `worktree-1herd-native-spec` (draft PR #7) and is **not** fully merged to `main` as of this changelog baseline. Track progress there and in `docs/VISION.md` on that branch.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/gitcommit90/1Helm/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/gitcommit90/1Helm/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/gitcommit90/1Helm/commits/main

@@ -7,6 +7,10 @@ const sse = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
 createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
+  if (url.pathname === "/no-models/models") {
+    res.writeHead(404, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ error: { message: "Model discovery is unavailable" } }));
+  }
   if (url.pathname.endsWith("/models")) {
     res.writeHead(200, { "content-type": "application/json" });
     return res.end(JSON.stringify({ data: [{ id: "mock-large" }, { id: "mock-small" }] }));
@@ -14,6 +18,11 @@ createServer(async (req, res) => {
   if (url.pathname.endsWith("/chat/completions")) {
     let raw = ""; for await (const c of req) raw += c;
     const reqBody = JSON.parse(raw || "{}");
+    if (url.pathname.includes("/always-fail/")) {
+      res.writeHead(503, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ error: { message: "Mock upstream unavailable", type: "api_error" } }));
+    }
+    const routeMarker = ["fallback-backup", "round-a", "round-b"].find((marker) => url.pathname.includes(`/${marker}/`));
     const serialized = JSON.stringify(reqBody.messages);
     const latestUser = [...reqBody.messages].reverse().find((message) => message.role === "user")?.content || "";
     if (/slow-turn/i.test(serialized)) await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -39,7 +48,7 @@ createServer(async (req, res) => {
 
     // Non-stream path used by Skipper thread-audit.
     if (reqBody.stream === false) {
-      let content = "Answer complete.";
+      let content = `Answer complete.${routeMarker ? ` via ${routeMarker}` : ""}`;
       if (auditMode) {
         const dossiers = (() => {
           try {
