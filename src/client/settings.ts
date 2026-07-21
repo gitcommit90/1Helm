@@ -73,7 +73,7 @@ export function openSettings(tab: Tab = "agents"): void {
   const overlay = h("div", { class: "modal-overlay fixed inset-0 z-40 grid place-items-end bg-black/50 p-0 sm:place-items-center sm:p-4 md:p-6", onclick: (e: MouseEvent) => { if (e.target === overlay) overlay.remove(); } });
   const bodyEl = h("div", { class: "min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4 sm:p-5" });
   const modal = h("div", { class: "card mobile-sheet flex h-[min(96dvh,100%)] w-full max-w-none flex-col overflow-hidden rounded-b-none shadow-2xl transition-[max-width] sm:h-[min(90vh,980px)] sm:rounded-xl" });
-  const tabs: [Tab, string][] = S.me.is_admin ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Advanced computers"], ["members", "Members"]] : [["agents", "Agents"], ["skills", "Skills"], ["providers", "Providers"], ["computers", "Advanced computers"]];
+  const tabs: [Tab, string][] = S.me.is_admin ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]] : [["agents", "Agents"], ["skills", "Skills"], ["providers", "Providers"], ["computers", "Skipper computers"]];
   const tabBar = h("div", { class: "flex gap-1 overflow-x-auto border-b border-line px-2 pt-2 sm:px-4 sm:pt-3" });
   const draw = (t: Tab): void => {
     modal.classList.toggle("sm:max-w-[1120px]", t === "providers");
@@ -202,7 +202,7 @@ function computersPanel(): HTMLElement {
   add(wrap,
     runtimeBox,
     h("div", { class: "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between" },
-      h("p", { class: "min-w-0 text-sm leading-5 text-muted" }, "Advanced: native and remote Open-Terminal endpoints are available to Captain-authorized Skipper work. Ordinary residents always use their own channel computer."),
+      h("p", { class: "min-w-0 text-sm leading-5 text-muted" }, "Optional computers you own for Captain-authorized Skipper work. These do not replace the private Linux computer each ordinary channel receives automatically."),
       S.me.is_admin ? h("button", { class: "btn-primary min-h-11 w-full shrink-0 text-sm sm:min-h-0 sm:w-auto", onclick: () => list.prepend(computerCard(null, refresh)) }, icon("plus"), "Add a computer") : null),
     S.me.is_admin ? null : adminNote(), list);
   draw();

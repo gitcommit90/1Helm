@@ -175,7 +175,7 @@ function accountCard(account: RoutingProvider, refresh: () => Promise<void>, con
 }
 
 async function openOauth(type: string, refresh: () => Promise<void>, providerId?: string): Promise<void> {
-  const started = await routingAction<{ ok: boolean; authUrl?: string; needsPaste?: boolean; error?: string }>("app:oauth-start", type);
+  const started = await routingAction<{ ok: boolean; authUrl?: string; needsPaste?: boolean; error?: string }>("app:oauth-start", { type, providerId });
   if (!started.ok || !started.authUrl) throw new Error(started.error || "Could not start sign-in.");
   let closed = false;
   const paste = h("input", { class: "field font-mono text-xs", placeholder: type === "xai" ? "Paste the code or full callback URL" : "Paste the full callback URL if the browser cannot return here" }) as HTMLInputElement;
@@ -198,9 +198,10 @@ async function openOauth(type: string, refresh: () => Promise<void>, providerId?
   for (let attempt = 0; attempt < 240 && !closed; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     if (closed) break;
-    const state: { active?: boolean; hasCode?: boolean; error?: string } = await routingAction<{ active?: boolean; hasCode?: boolean; error?: string }>("app:oauth-status", type).catch(() => ({}));
+    const state: { active?: boolean; hasCode?: boolean; connected?: boolean; error?: string } = await routingAction<{ active?: boolean; hasCode?: boolean; connected?: boolean; error?: string }>("app:oauth-status", type).catch(() => ({}));
     if (state.error) status.textContent = state.error;
-    if (state.hasCode) { await finish(); break; }
+    if (state.connected) { closed = true; modal.remove(); await refresh(); break; }
+    if (state.hasCode) status.textContent = "Authorization received. 1Helm is finishing the connection…";
   }
 }
 
@@ -397,6 +398,82 @@ function keyedForm(id: string, label: string, preset: RoutingState["keyedPresets
     h("div", { class: "grid gap-2 sm:grid-cols-2" }, name, baseUrl, preset?.needsAccountId ? accountId : null, key, model),
     h("div", { class: "mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, h("div", { class: "flex gap-2" }, test, save)));
   return wrap;
+}
+
+function hasEnabledSource(state: RoutingState): boolean {
+  return (state.providers || []).some((provider) => provider.enabled !== false
+    && (provider.models || []).some((model) => model.enabled !== false));
+}
+
+/**
+ * Focused first-run surface over the same OAuth and keyed-provider actions as
+ * Settings. Provider cards connect directly; successful accounts are rendered
+ * with the same account controls used by the full provider control plane.
+ */
+export function onboardingProviderPicker(onState: (state: RoutingState, ready: boolean) => void): HTMLElement {
+  const shell = h("div", { class: "space-y-4" });
+  const expandedAccounts = new Set<string>();
+  let state: RoutingState | null = null;
+
+  const refresh = async (): Promise<void> => {
+    state = await api<RoutingState>("/api/routing/state");
+    onState(state, hasEnabledSource(state));
+    draw();
+  };
+
+  const draw = (): void => {
+    if (!state) return;
+    clear(shell);
+    const formMount = h("div");
+    const cards = h("div", { class: "grid gap-2 sm:grid-cols-2" });
+    const sources: Array<{ id: string; name: string; kind: "oauth" | "keyed"; preset?: RoutingState["keyedPresets"][number] }> = [
+      ...(state.oauthProviders || []).map((provider) => ({ ...provider, kind: "oauth" as const })),
+      ...(state.keyedPresets || []).map((preset) => ({ id: preset.id, name: preset.name, kind: "keyed" as const, preset })),
+      { id: "custom", name: "Custom endpoint", kind: "keyed" as const },
+    ];
+    for (const source of sources) {
+      const familyAccounts = (state.providers || []).filter((provider) => (isCustom(provider) ? "custom" : providerFamily(provider)) === source.id);
+      const card = h("button", {
+        class: "wizard-choice flex items-center gap-3 text-left",
+        dataset: { providerSource: source.id },
+      },
+      h("span", { class: "wizard-provider-mark" }, providerMark(source.id, 20)),
+      h("span", { class: "min-w-0 flex-1" },
+        h("span", { class: "block font-semibold text-fg" }, source.name),
+        h("span", { class: "mt-0.5 block text-xs leading-5 text-muted" }, providerCopy[source.id] || "Any compatible OpenAI-style endpoint")),
+      h("span", { class: `chip shrink-0 ${familyAccounts.length ? "border-accent/40 text-accent" : ""}` }, familyAccounts.length ? `${familyAccounts.length} connected` : source.kind === "oauth" ? "Sign in" : "Add key")) as HTMLButtonElement;
+      card.onclick = async () => {
+        if (source.kind === "oauth") {
+          card.disabled = true;
+          try { await openOauth(source.id, refresh); }
+          catch (error) { clear(formMount); formMount.append(h("div", { class: "wizard-status-err" }, (error as Error).message)); }
+          finally { card.disabled = false; }
+          return;
+        }
+        clear(formMount);
+        formMount.append(keyedForm(source.id, source.name, source.preset, refresh));
+        formMount.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      };
+      cards.append(card);
+    }
+
+    const accounts = state.providers || [];
+    shell.append(cards, formMount);
+    if (accounts.length) shell.append(
+      h("div", { class: "border-t border-line pt-4" },
+        h("div", { class: "mb-2 flex items-center justify-between gap-3" },
+          h("div", { class: "text-sm font-semibold text-fg" }, "Connected accounts & keys"),
+          h("span", { class: "text-xs text-muted" }, "Connect as many as you use")),
+        h("div", { class: "space-y-2" }, ...accounts.map((account) => accountCard(account, refresh, async (message) => window.confirm(message), expandedAccounts)))),
+    );
+  };
+
+  shell.append(h("div", { class: "routing-loading" }, "Reading available providers…"));
+  void refresh().catch((error) => {
+    clear(shell);
+    shell.append(h("div", { class: "wizard-status-err" }, (error as Error).message));
+  });
+  return shell;
 }
 
 function routeEditor(state: RoutingState, refresh: () => Promise<void>, existing?: RoutingCombo): HTMLElement {
