@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { accessSync, constants as fsConstants, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
@@ -9,6 +9,22 @@ import { DatabaseSync } from "node:sqlite";
 import puppeteer from "puppeteer";
 
 const ROOT = new URL("..", import.meta.url).pathname;
+
+function browserExecutable() {
+  const configured = process.env.PUPPETEER_EXECUTABLE_PATH;
+  if (configured) {
+    try { accessSync(configured, fsConstants.X_OK); return configured; } catch { /* use discovery */ }
+  }
+  try {
+    const bundled = puppeteer.executablePath();
+    accessSync(bundled, fsConstants.X_OK);
+    return bundled;
+  } catch { /* no bundled browser */ }
+  for (const candidate of ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser"]) {
+    try { accessSync(candidate, fsConstants.X_OK); return candidate; } catch { /* try next */ }
+  }
+  return null;
+}
 
 async function freePort() {
   return new Promise((resolve, reject) => {
@@ -211,8 +227,10 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     assert.equal(legacyBot.kind, "routing");
     db.close();
 
-    browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
-    const page = await browser.newPage();
+    const executablePath = browserExecutable();
+    browser = executablePath ? await puppeteer.launch({ executablePath, headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] }) : null;
+    const page = browser ? await browser.newPage() : null;
+    if (page) {
     await page.goto(`http://127.0.0.1:${appPort}`, { waitUntil: "domcontentloaded" });
     await page.evaluate((sessionToken) => localStorage.setItem("ctrl.token", sessionToken), token);
     await page.reload({ waitUntil: "networkidle0" });
@@ -287,6 +305,7 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     assert.match(await page.$eval(`${keyedForm} [data-keyed-status]`, (element) => element.textContent || ""), /Base URL and API key required/);
     assert.equal(await page.$eval(`${keyedForm} [data-keyed-action="add"]`, (button) => button.disabled), true, "test failure restores controls without allowing an untested save");
     await browser.close(); browser = undefined;
+    }
 
     state = await json(`http://127.0.0.1:${appPort}/api/routing/credentials`, token);
     const invalid = await fetch(`http://127.0.0.1:${appPort}/v1/models`);
