@@ -17,7 +17,7 @@ const valueAfter = (flag) => {
   const index = args.indexOf(flag);
   return index >= 0 ? args[index + 1] : "";
 };
-const machineName = () => valueAfter("-n") || valueAfter("--name") || (args[1] === "inspect" || args[1] === "stop" || args[1] === "rm" ? args[2] : "");
+const machineName = () => valueAfter("-n") || valueAfter("--name") || (["inspect", "stop", "rm", "delete"].includes(args[1]) ? args[2] : "");
 const fail = (message, code = 1) => { process.stderr.write(`${message}\n`); process.exit(code); };
 
 if (args[0] === "system" && args[1] === "version") {
@@ -80,7 +80,7 @@ if (action === "set") {
   writeConfig(name, config);
   process.exit(0);
 }
-if (action === "rm") {
+if (action === "rm" || action === "delete") {
   rmSync(machineDir(name), { recursive: true, force: true });
   process.exit(0);
 }

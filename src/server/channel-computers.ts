@@ -67,7 +67,7 @@ const APPLE_RUNTIME_VERSION = "1.1.0";
 export const APPLE_RUNTIME_PACKAGE = `container-${APPLE_RUNTIME_VERSION}-installer-signed.pkg`;
 export const APPLE_RUNTIME_URL = `https://github.com/apple/container/releases/download/${APPLE_RUNTIME_VERSION}/${APPLE_RUNTIME_PACKAGE}`;
 export const APPLE_RUNTIME_SHA256 = "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714";
-export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.11";
+export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.12";
 const CONTAINER_CANDIDATES = [process.env.HELM_CONTAINER_CLI, "/usr/local/bin/container", "/opt/homebrew/bin/container", "container"].filter(Boolean) as string[];
 const COMMAND_TIMEOUT_MS = Math.max(5_000, Number(process.env.HELM_MACHINE_COMMAND_TIMEOUT_MS || 120_000));
 const IDLE_AFTER_MS = Math.max(60_000, Number(process.env.HELM_MACHINE_IDLE_MS || 15 * 60_000));
@@ -718,7 +718,7 @@ export async function deleteChannelComputer(channelId: number): Promise<void> {
         }
         const stopped = await apple(["machine", "stop", computer.machine_id], { timeoutMs: 90_000 });
         if (stopped.code !== 0 && !/not running|stopped/i.test(stopped.stderr.toString("utf8"))) throw new Error(stopped.stderr.toString("utf8").trim() || "machine stop before deletion failed");
-        const deleted = await apple(["machine", "rm", computer.machine_id], { timeoutMs: 90_000 });
+        const deleted = await apple(["machine", "delete", computer.machine_id], { timeoutMs: 90_000 });
         if (deleted.code !== 0) throw new Error(deleted.stderr.toString("utf8").trim() || "machine deletion failed");
       }
     }
@@ -779,7 +779,7 @@ export async function prepareAppRemoval(): Promise<{ backend: ChannelComputerBac
     if (stopped.code !== 0 && !/not running|stopped/i.test(Buffer.concat([stopped.stderr, stopped.stdout]).toString("utf8"))) {
       throw new Error(stopped.stderr.toString("utf8").trim() || `Could not stop ${machineId}.`);
     }
-    const removed = await apple(["machine", "rm", machineId], { timeoutMs: 90_000 });
+    const removed = await apple(["machine", "delete", machineId], { timeoutMs: 90_000 });
     if (removed.code !== 0) throw new Error(removed.stderr.toString("utf8").trim() || `Could not delete ${machineId}.`);
     run("UPDATE channel_computers SET desired_state='deleted',observed_state='deleted',provision_status='deleted',updated=? WHERE machine_id=?", now(), machineId);
     deleted++;
