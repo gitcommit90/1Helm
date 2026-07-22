@@ -123,11 +123,10 @@ try {
   ok(/Step 3 \/ 3/.test(workspaceCopy) && /private Linux computer for every ordinary channel/i.test(workspaceCopy), "workspace creation explains automatic per-channel computers without a computer decision step");
   ok(!/Cloudflare API token|human terminal access|CPU|RAM|disk size/i.test(workspaceCopy), "onboarding contains no domain, terminal, or resource-sizing ceremony");
   const workspaceName = "Fresh provider fabric";
-  await page.click('input[autocomplete="organization"]');
-  await page.keyboard.down("Control");
-  await page.keyboard.press("A");
-  await page.keyboard.up("Control");
-  await page.type('input[autocomplete="organization"]', workspaceName);
+  await page.$eval('input[autocomplete="organization"]', (input, value) => {
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }, workspaceName);
   await clickButton(page, "Create workspace");
   await page.waitForSelector("aside", { timeout: 20_000 });
   await page.waitForSelector("#welcome-tour", { timeout: 20_000 });
