@@ -6,8 +6,28 @@ on stdin so memories never appear in process listings.
 """
 
 import json
+import builtins
 import sys
+from itertools import zip_longest
 from pathlib import Path
+
+# Mnemosyne 3.14's local SQLite core runs on the system Python 3.9 shipped by
+# supported Macs, but uses Python 3.10's zip(strict=True) during recall. Keep
+# the strict length check on 3.9 instead of silently truncating either input.
+if sys.version_info < (3, 10):
+    _native_zip = builtins.zip
+
+    def _strict_zip(iterables):
+        missing = object()
+        for values in zip_longest(*iterables, fillvalue=missing):
+            if missing in values:
+                raise ValueError("zip() arguments have different lengths")
+            yield values
+
+    def _compatible_zip(*iterables, strict=False):
+        return _strict_zip(iterables) if strict else _native_zip(*iterables)
+
+    builtins.zip = _compatible_zip
 
 from mnemosyne import Mnemosyne
 
