@@ -139,10 +139,14 @@ function verifyApp(appPath, expectTicket) {
     throw new Error("Packaged app is missing an executable darwin-arm64 terminal spawn helper");
   }
   const cloudflared = path.join(appPath, "Contents", "Resources", "cloudflared");
-  if (!fs.existsSync(cloudflared) || !capture("file", [cloudflared]).includes("arm64") || capture("shasum", ["-a", "256", cloudflared]).split(/\s+/)[0] !== CLOUDFLARED_BINARY_SHA256) {
+  if (!fs.existsSync(cloudflared) || !capture("file", [cloudflared]).includes("arm64")) {
     throw new Error("Packaged app is missing the pinned arm64 Cloudflared connector");
   }
-  if (expectTicket) run("codesign", ["--verify", "--strict", "--verbose=2", cloudflared]);
+  // The exact upstream SHA-256 is verified in prepareCloudflared before this
+  // executable enters the bundle. Developer ID signing then changes the
+  // Mach-O bytes, so the sealed app must verify its signature—not the
+  // pre-signing whole-file hash.
+  run("codesign", ["--verify", "--strict", "--verbose=2", cloudflared]);
   verifyProductIcon(appPath);
   if (expectTicket) {
     run("xcrun", ["stapler", "validate", appPath]);
