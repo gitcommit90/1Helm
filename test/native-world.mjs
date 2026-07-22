@@ -237,7 +237,9 @@ try {
   symlinkSync("/etc", escapedLink);
   const escapedFile = await fetch(`${base}/api/channels/${launch.id}/files/content?path=${encodeURIComponent("workspace/outside/passwd")}`, { headers: { authorization: `Bearer ${captain}` } });
   ok(escapedFile.status === 404, "workspace file endpoint rejects intermediate symlink escapes");
-  rmSync(escapedLink);
+  // macOS may report the rejected intermediate symlink as already absent after
+  // the security probe; cleanup must not turn a passing assertion into ENOENT.
+  rmSync(escapedLink, { force: true });
 
   const slowTurn = await api(`/api/channels/${finance.id}/messages`, { body: { body: `@${finance.agent.name} slow-turn run command` } }, captain);
   await api(`/api/channels/${finance.id}/archive`, { body: {} }, captain);
