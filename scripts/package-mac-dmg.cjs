@@ -12,6 +12,7 @@ const PRODUCT = "1Helm";
 const APP_ID = "com.gitcommit90.1helm";
 const EXECUTABLE = "1Helm";
 const ARCH = "arm64";
+const MACOS_APP_ICON_SOURCE = path.join(ROOT, "desktop", "icons", "1helm-macos-app-logo.jpg");
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
 const VERSION = String(pkg.version || "").trim();
 const REQUIRE_NOTARIZATION = process.env.HELM_REQUIRE_NOTARIZATION === "1";
@@ -72,8 +73,8 @@ function notarize(file) {
 }
 
 function createIcon() {
-  const source = path.join(ROOT, "public", "icons", "icon-512.png");
-  if (!fs.existsSync(source)) throw new Error("public/icons/icon-512.png is required");
+  const source = MACOS_APP_ICON_SOURCE;
+  if (!fs.existsSync(source)) throw new Error("desktop/icons/1helm-macos-app-logo.jpg is required");
   const iconRoot = fs.mkdtempSync(path.join(os.tmpdir(), "1helm-icon-"));
   const iconset = path.join(iconRoot, "1Helm.iconset");
   fs.mkdirSync(iconset);

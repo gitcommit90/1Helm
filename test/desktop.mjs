@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -104,6 +104,10 @@ test("server can run from an immutable app root with state elsewhere on loopback
 
 test("release packaging is fail-closed and records stable product identity", async () => {
   const source = await readFile(join(root, "scripts", "package-mac-dmg.cjs"), "utf8");
+  const suppliedMacosIcon = join(root, "desktop", "icons", "1helm-macos-app-logo.jpg");
+  const iconRoot = await mkdtemp(join(tmpdir(), "1helm-macos-icon-test-"));
+  const macosIcon = join(iconRoot, "1helm-macos-app-logo.jpg");
+  await copyFile(suppliedMacosIcon, macosIcon);
   assert.match(source, /const APP_ID = "com\.gitcommit90\.1helm"/);
   assert.match(source, /const ARCH = "arm64"/);
   assert.match(source, /Release builds require APPLE_TEAM_ID and APPLE_NOTARY_PROFILE/);
@@ -118,6 +122,12 @@ test("release packaging is fail-closed and records stable product identity", asy
   assert.match(source, /Library\/LaunchAgents/, "release packaging rejects legacy background-agent payloads");
   assert.match(source, /Library\/Application Support\/1Helm/);
   assert.match(source, /installProductIcon/);
+  assert.match(source, /desktop", "icons", "1helm-macos-app-logo\.jpg/);
+  try {
+    assert.ok((await stat(macosIcon)).size > 0, "the dedicated macOS app-icon artwork is present for ICNS generation");
+  } finally {
+    await rm(iconRoot, { recursive: true, force: true });
+  }
   assert.match(source, /CFBundleIconFile", "-string", "1Helm\.icns/);
   assert.match(source, /missing the 1Helm product icon/);
 });
