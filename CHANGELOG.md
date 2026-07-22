@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.5] - 2026-07-22
+
+### Fixed
+
+- macOS now uses only the signed 1Helm main-app login service and removes the legacy per-minute LaunchAgent, so background-item notices and Login Items use the product app instead of exposing the Developer ID publisher as “Software from Bible Tiles.” 1Helm still stays available after its window closes and starts hidden at login.
+
+### Notes
+
+- Desktop updates remain manual DMG replacements from GitHub Releases; 1Helm does not yet ship an automatic updater or update feed.
+
 ## [1.1.4] - 2026-07-22
 
 ### Added
@@ -120,7 +130,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Native **1Herd** channel-agent workspace (SPEC.md slice) is developed on branch `worktree-1herd-native-spec` (draft PR #7) and is **not** fully merged to `main` as of this changelog baseline. Track progress there and in `docs/VISION.md` on that branch.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.4...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.5...HEAD
+[1.1.5]: https://github.com/gitcommit90/1Helm/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/gitcommit90/1Helm/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/gitcommit90/1Helm/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/gitcommit90/1Helm/compare/v1.1.1...v1.1.2

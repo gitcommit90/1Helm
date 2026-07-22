@@ -71,7 +71,7 @@ Open `http://localhost:8123`. On a fresh data directory you see the setup wizard
 | `PORT` | `8123` | HTTP/WebSocket port. |
 | `CTRL_DATA_DIR` | `./data` | SQLite control-plane state + narrow host workspace mirrors and uploaded files (internal path name kept for compatibility). |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `native` elsewhere | Explicit backend override for development/testing. The macOS product uses `apple`. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:1.1.4` | Versioned OCI machine image built from `container/Containerfile`. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:1.1.5` | Versioned OCI machine image built from `container/Containerfile`. |
 
 On first boot 1Helm starts a private loopback Open-Terminal agent and registers it as **"This Computer"** for Skipper's native-Mac work. Ordinary residents are never assigned that host computer.
 
@@ -107,6 +107,10 @@ resource sizing without asking the user infrastructure questions.
 The direct-distribution release adapter is `npm run package:dmg:release`; it
 requires the activated Developer ID and notarization environment described in
 the maintainer release runbook.
+
+1Helm does not yet have an in-app update feed or automatic updater. Desktop
+updates are currently manual DMG replacements from GitHub Releases; replacing
+the app preserves `~/Library/Application Support/1Helm`.
 
 ---
 
