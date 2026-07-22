@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
+const packageVersion = JSON.parse(await readFile(join(root, "package.json"), "utf8")).version;
 
 async function freePort() {
   return new Promise((resolvePort, reject) => {
@@ -107,7 +108,7 @@ test("server can run from an immutable app root with state elsewhere on loopback
   assert.equal(status.needs_setup, true);
   assert.equal(status.has_users, false);
   const updateManifest = await (await fetch(`http://127.0.0.1:${port}/api/app/update/latest`)).json();
-  assert.equal(updateManifest.version, "1.1.7", "the public update manifest reports this exact desktop build version");
+  assert.equal(updateManifest.version, packageVersion, "the public update manifest reports this exact desktop build version");
   const html = await (await fetch(`http://127.0.0.1:${port}/`)).text();
   assert.match(html, /1Helm/);
   assert.match(logs, new RegExp(`http://127\\.0\\.0\\.1:${port}`));
