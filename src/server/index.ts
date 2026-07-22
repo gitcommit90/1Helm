@@ -9,7 +9,7 @@ import { db, q, q1, run, now, hashPassword, verifyPassword, newToken, seed, DATA
 import { createMessage, deleteMessage, serializeMessage, setModelPref, setModelPolicy, resolvedModelPolicy, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots } from "./store.ts";
 import { computerRowView, fetchModels } from "./computer.ts";
 import { cancelChannelTurns, runBot, stopThreadTurn } from "./bots.ts";
-import { register, unregister, broadcastToChannel, broadcastAll, sendToUsers } from "./events.ts";
+import { register, unregister, broadcastToChannel, broadcastAll, broadcastAdmins, sendToUsers } from "./events.ts";
 import { openChannelSession, openSession, attachClient, listSessions, closeChannelSessions, closeSession } from "./terms.ts";
 import { startAgent } from "./agent.ts";
 import {
@@ -35,7 +35,23 @@ import {
 } from "./agents.ts";
 import { CHATGPT_KIND, bindChatGPTProviderFromCookie, chatgptSessionStatus, chatgptWebResponse, disconnectChatGPTProvider, listChatGPTModels, writeChatGPTWebResponse } from "./chatgpt.ts";
 import { completeSetup, setupStatus, workspaceView } from "./setup.ts";
-import { connectCloudflareDomain, domainsView } from "./cloudflare.ts";
+import { connectCloudflareDomain, domainsView, startCustomDomainConnectors } from "./cloudflare.ts";
+import {
+  accessRequestByToken,
+  claimApprovedAccess,
+  claimWorkspace,
+  collaborationView,
+  createAccessRequest,
+  ensureCollabChannel,
+  pendingAccessRequests,
+  publicWorkspaceStatus,
+  reviewAccessRequest,
+  setAcceptNewRequests,
+  setCollaborationEnabled,
+  slugAvailability,
+  startCollaborationConnector,
+} from "./collaboration.ts";
+import { stopAllConnectors } from "./connectors.ts";
 import { listSkills, listTemplates, provisionSkill, skillsForAgent, setImageGenerationEnabled, imageGenerationAvailable, imageGenerationEnabledIds } from "./skills.ts";
 import { ensureAgentMemory, mnemosyneAvailable, prepareMnemosyneRuntime } from "./memory.ts";
 import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
@@ -95,6 +111,7 @@ seed();
 // HTTPS-only policy here: local and first-run HTTP deployments must still load
 // their relative JS and CSS assets.
 const SECURITY_HEADERS: Record<string, string> = {
+  "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self' ws: wss: https:; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'",
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
   "referrer-policy": "same-origin",
@@ -123,6 +140,25 @@ const body = (req: IncomingMessage, limit = JSON_BODY_LIMIT): Promise<Buffer> =>
   req.on("error", reject);
 });
 const jbody = async (req: IncomingMessage): Promise<Record<string, unknown>> => { const raw = await body(req); try { return JSON.parse(raw.toString() || "{}"); } catch { return {}; } };
+const requestAddress = (req: IncomingMessage): string => {
+  const forwarded = String(req.headers["cf-connecting-ip"] || "").trim();
+  return /^[a-f0-9:.]{3,64}$/i.test(forwarded) ? forwarded : String(req.socket.remoteAddress || "unknown");
+};
+const requestLimits = new Map<string, { count: number; reset: number }>();
+const rateLimited = (key: string, limit: number, windowMs: number): boolean => {
+  if (requestLimits.size >= 5000 && !requestLimits.has(key)) {
+    const time = now();
+    for (const [candidate, value] of requestLimits) if (value.reset <= time) requestLimits.delete(candidate);
+    while (requestLimits.size >= 5000) requestLimits.delete(requestLimits.keys().next().value as string);
+  }
+  const current = requestLimits.get(key);
+  if (!current || current.reset <= now()) {
+    requestLimits.set(key, { count: 1, reset: now() + windowMs });
+    return false;
+  }
+  current.count++;
+  return current.count > limit;
+};
 
 const userFromToken = (token: string | null): Row | undefined => {
   if (!token) return undefined;
@@ -142,11 +178,10 @@ const authUser = (req: IncomingMessage): Row | undefined => {
 };
 
 const canSee = (user: Row, channelId: number): boolean => {
-  const ch = q1("SELECT kind FROM channels WHERE id=?", channelId);
-  if (!ch) return false;
-  if (ch.kind === "channel") return true;
   return !!q1("SELECT 1 FROM members WHERE channel_id=? AND user_id=?", channelId, user.id);
 };
+const canUseAgentSurfaces = (user: Row): boolean => Boolean(user.is_admin || q1(`SELECT 1 FROM members m
+  JOIN channels c ON c.id=m.channel_id WHERE m.user_id=? AND c.kind='channel' AND c.status<>'deleted' LIMIT 1`, user.id));
 
 const publicUser = (r: Row): Record<string, unknown> => ({
   id: r.id,
@@ -238,14 +273,14 @@ function broadcastChannelMeta(channelId: number, type: "channel_update" | "chann
 }
 
 function visibleChannels(user: Row): Row[] {
-  return q(`SELECT * FROM (
-              SELECT * FROM channels WHERE kind='channel' AND status<>'deleted'
-              UNION SELECT c.* FROM channels c JOIN members m ON m.channel_id=c.id WHERE m.user_id=? AND c.kind<>'channel' AND c.status<>'deleted'
-            ) ORDER BY CASE WHEN status='archived' THEN 1 ELSE 0 END, kind, name`, user.id);
+  return q(`SELECT c.* FROM channels c JOIN members m ON m.channel_id=c.id
+    WHERE m.user_id=? AND c.status<>'deleted'
+    ORDER BY CASE WHEN c.status='archived' THEN 1 ELSE 0 END, c.kind, c.name`, user.id);
 }
 
 /** Fire the bound resident or workspace-wide Skipper mentioned in a message. */
 function triggerBots(channelId: number, msg: Row, authorId: number): void {
+  if (q1("SELECT kind FROM channels WHERE id=?", channelId)?.kind === "collab") return;
   const fresh = msg.parent_id == null;
   const threadRootId = Number(msg.parent_id ?? msg.id);
   const mentioned = findMentionedBots(String(msg.body));
@@ -268,6 +303,26 @@ function triggerBots(channelId: number, msg: Row, authorId: number): void {
   // agent turns and duplicate the work.
   const skipper = mentioned.find((bot) => agentForBot(Number(bot.id))?.kind === "skipper");
   for (const bot of skipper ? [skipper] : mentioned) void launchBot(bot, channelId, msg, authorId, threadRootId, fresh);
+}
+
+function offerHumanMemberships(channelId: number, msg: Row, author: Row): void {
+  if (!author.is_admin) return;
+  const channel = q1("SELECT kind FROM channels WHERE id=?", channelId);
+  if (!channel || !["channel", "collab"].includes(String(channel.kind))) return;
+  const names = new Set((String(msg.body).match(/@([a-zA-Z0-9_.-]+)/g) || []).map((value) => value.slice(1).toLowerCase()));
+  if (!names.size) return;
+  for (const candidate of q("SELECT id,username,display FROM users WHERE id<>?", author.id)) {
+    if (!names.has(String(candidate.username).toLowerCase())) continue;
+    if (q1("SELECT 1 FROM members WHERE channel_id=? AND user_id=?", channelId, candidate.id)) continue;
+    sendToUsers([Number(author.id)], {
+      type: "member_add_confirmation",
+      channelId,
+      messageId: msg.id,
+      userId: candidate.id,
+      username: candidate.username,
+      display: candidate.display,
+    });
+  }
 }
 
 function launchBot(bot: Row, channelId: number, msg: Row, authorId: number, threadRootId: number, fresh: boolean): void {
@@ -334,7 +389,7 @@ function setBotComputers(botId: number, computerIds: unknown[]): void {
 }
 
 function postMessage(channelId: number, user: Row, text: string, parentId: number | null, uploads: { token: string; name: string; mime: string; size: number }[], modelPolicy?: { provider_id?: number | null; model?: string | null }): Row {
-  const channel = q1("SELECT status FROM channels WHERE id=?", channelId);
+  const channel = q1("SELECT status,kind FROM channels WHERE id=?", channelId);
   if (!channel) throw new Error("Channel not found.");
   if (channel.status !== "active") throw new Error("Restore this channel before starting new work.");
   if (parentId) {
@@ -369,11 +424,12 @@ function postMessage(channelId: number, user: Row, text: string, parentId: numbe
     if (!/^[a-f0-9]{32,}$/.test(upload.token) || !existsSync(join(UPLOAD_DIR, upload.token))) continue;
     const size = statSync(join(UPLOAD_DIR, upload.token)).size;
     run("INSERT INTO attachments (message_id, name, mime, size, path) VALUES (?,?,?,?,?)", id, upload.name.slice(0, 255), upload.mime.slice(0, 255), size, upload.token);
-    importAttachment(channelId, threadId, upload.token, upload.name, "human");
+    if (channel.kind !== "collab") importAttachment(channelId, threadId, upload.token, upload.name, "human");
   }
   refreshThreadSummary(actualRootId);
   const msg = serializeMessage(id)!;
   broadcastToChannel(channelId, { type: "message", message: msg, parent: parentId ? serializeMessage(parentId) : null });
+  offerHumanMemberships(channelId, msg, user);
   triggerBots(channelId, msg, Number(user.id));
   return msg;
 }
@@ -418,6 +474,34 @@ const server = createServer(async (req, res) => {
 
     // ---- setup and auth (no session required) ----
     if (p === "/api/setup/status" && m === "GET") return json(res, 200, setupStatus());
+    if (p === "/api/collaboration/public" && m === "GET") return json(res, 200, { workspace: publicWorkspaceStatus() });
+    if (p === "/api/access-requests" && m === "POST") {
+      if (rateLimited(`access:${requestAddress(req)}`, 5, 60 * 60_000)) return json(res, 429, { error: "Too many access requests. Try again later." });
+      const b = await jbody(req);
+      try {
+        const created = createAccessRequest(String(b.email || ""), String(b.display || ""));
+        const main = q1("SELECT id FROM channels WHERE name='main' AND kind='channel' LIMIT 1");
+        if (main) {
+          const id = run("INSERT INTO messages (channel_id,body,system_message,created) VALUES (?,?,1,?)", main.id, `${created.request.email} has requested access to the workspace. To accept, open **Settings → Members**.`, now()).lastInsertRowid;
+          broadcastToChannel(Number(main.id), { type: "message", message: serializeMessage(id), parent: null });
+        }
+        return json(res, 201, { request: created.request, claim_token: created.token });
+      } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
+    const publicAccess = p.match(/^\/api\/access-requests\/([a-f0-9]{64})$/);
+    if (publicAccess && m === "GET") {
+      const request = accessRequestByToken(publicAccess[1]);
+      return request ? json(res, 200, { request }) : json(res, 404, { error: "Access request not found." });
+    }
+    if (publicAccess && m === "POST") {
+      const b = await jbody(req);
+      try {
+        const result = claimApprovedAccess(publicAccess[1], String(b.username || ""), String(b.password || ""), String(b.display || ""));
+        const collab = q1("SELECT id FROM channels WHERE kind='collab' AND status='active' LIMIT 1");
+        if (collab) broadcastChannelMeta(Number(collab.id), "channel_new");
+        return json(res, 200, { token: result.token, user: publicUser(result.user) });
+      } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
     if (p === "/api/auth/register" && m === "POST") {
       if (Number(q1("SELECT COUNT(*) n FROM users")?.n || 0) > 0) return json(res, 403, { error: "Registration is closed. Ask the Captain to add you from Members." });
       const b = await jbody(req);
@@ -434,8 +518,12 @@ const server = createServer(async (req, res) => {
     }
     if (p === "/api/auth/login" && m === "POST") {
       const b = await jbody(req);
-      const u = q1("SELECT * FROM users WHERE username=?", String(b.username || "").trim().toLowerCase());
+      const username = String(b.username || "").trim().toLowerCase();
+      const loginKey = `login:${requestAddress(req)}:${username}`;
+      if (rateLimited(loginKey, 12, 15 * 60_000)) return json(res, 429, { error: "Too many sign-in attempts. Try again later." });
+      const u = q1("SELECT * FROM users WHERE username=?", username);
       if (!u || !verifyPassword(String(b.password || ""), String(u.pass))) return json(res, 401, { error: "Wrong username or password." });
+      requestLimits.delete(loginKey);
       const token = newToken();
       run("INSERT INTO sessions (token, user_id, created) VALUES (?,?,?)", token, u.id, now());
       return json(res, 200, { token, user: publicUser(u) });
@@ -461,6 +549,7 @@ const server = createServer(async (req, res) => {
       return json(res, 200, await routingCredentials());
     }
     if (p === "/api/routing/models" && m === "GET") {
+      if (!canUseAgentSurfaces(user)) return json(res, 403, { error: "Join an agent channel to use model controls." });
       return json(res, 200, { models: await routingModels() });
     }
     if (p === "/api/routing/action" && m === "POST") {
@@ -477,7 +566,7 @@ const server = createServer(async (req, res) => {
       ]);
       if (!allowed.has(action)) return json(res, 400, { error: "Unsupported routing action." });
       const result = await routingInvoke(action, b.payload);
-      if (result.ok !== false) broadcastAll({ type: "routing_changed", action });
+      if (result.ok !== false) broadcastAdmins({ type: "routing_changed", action });
       return json(res, result.ok === false ? 400 : 200, result);
     }
 
@@ -498,7 +587,7 @@ const server = createServer(async (req, res) => {
       try {
         const r = await bindChatGPTProviderFromCookie(req.headers.cookie);
         const provider = providerView(q1("SELECT * FROM providers WHERE id=?", r.providerId)!);
-        broadcastAll({ type: "provider_update", provider });
+        broadcastAdmins({ type: "provider_update", provider });
         return json(res, 200, { provider, user: r.user });
       } catch (e) { return json(res, 400, { error: (e as Error).message }); }
     }
@@ -507,7 +596,7 @@ const server = createServer(async (req, res) => {
       try {
         await disconnectChatGPTProvider();
         // Clients resync providers on reconnect; push a soft notice so open UIs refresh lists.
-        broadcastAll({ type: "providers_changed" });
+        broadcastAdmins({ type: "providers_changed" });
         return json(res, 200, { ok: true });
       }
       catch (e) { return json(res, 502, { error: (e as Error).message }); }
@@ -605,6 +694,7 @@ const server = createServer(async (req, res) => {
     }
     if (p === "/api/workspace" && m === "GET") return json(res, 200, { workspace: workspaceView() });
     if (p === "/api/workspace/model-policy" && m === "GET") {
+      if (!canUseAgentSurfaces(user)) return json(res, 403, { error: "Join an agent channel to use model controls." });
       const current = String(q1("SELECT default_model FROM workspace WHERE id=1")?.default_model || "");
       return json(res, 200, { model: current, models: await routingModels() });
     }
@@ -619,7 +709,7 @@ const server = createServer(async (req, res) => {
       run("UPDATE bots SET provider_id=? WHERE id IN (SELECT bot_id FROM agents WHERE status<>'deleted')", internalId);
       const skipper = q1("SELECT bot_id FROM agents WHERE kind='skipper' AND status<>'deleted' LIMIT 1");
       if (skipper?.bot_id) run("UPDATE bots SET model=? WHERE id=?", model, skipper.bot_id);
-      broadcastAll({ type: "workspace_model_update", model });
+      broadcastAdmins({ type: "workspace_model_update", model });
       return json(res, 200, { ok: true, model, models: available });
     }
     if (p === "/api/workspace" && m === "PATCH") {
@@ -660,8 +750,12 @@ const server = createServer(async (req, res) => {
       broadcastAll({ type: "workspace_update", workspace });
       return json(res, 200, { workspace });
     }
-    if (p === "/api/agent-templates" && m === "GET") return json(res, 200, { templates: listTemplates() });
+    if (p === "/api/agent-templates" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, { templates: listTemplates() });
+    }
     if (p === "/api/skills" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const includeLocked = Boolean(user.is_admin);
       return json(res, 200, { skills: listSkills({ includeLocked }), image_generation_available: imageGenerationAvailable() });
     }
@@ -693,14 +787,18 @@ const server = createServer(async (req, res) => {
       const providerId = String(b.providerId || "").trim();
       if (!providerId) return json(res, 400, { error: "providerId required" });
       const result = setImageGenerationEnabled(providerId, Boolean(b.enabled));
-      broadcastAll({ type: "routing_changed", action: "image_generation" });
+      broadcastAdmins({ type: "routing_changed", action: "image_generation" });
       return json(res, 200, { ok: true, ...result, available: imageGenerationAvailable() });
     }
     if (p === "/api/routing/image-generation" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       return json(res, 200, { enabledProviderIds: imageGenerationEnabledIds(), available: imageGenerationAvailable() });
     }
     const agentSkills = p.match(/^\/api\/agents\/(\d+)\/skills$/);
-    if (agentSkills && m === "GET") return json(res, 200, { skills: skillsForAgent(Number(agentSkills[1])) });
+    if (agentSkills && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, { skills: skillsForAgent(Number(agentSkills[1])) });
+    }
     if (agentSkills && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const b = await jbody(req);
@@ -715,11 +813,51 @@ const server = createServer(async (req, res) => {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       return json(res, 200, await runThreadAuditPass());
     }
-    if (p === "/api/domains" && m === "GET") return json(res, 200, { domains: domainsView() });
+    if (p === "/api/domains" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, { domains: domainsView() });
+    }
     if (p === "/api/domains/cloudflare" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const b = await jbody(req);
       try { return json(res, 201, { domain: await connectCloudflareDomain(String(b.hostname || ""), String(b.token || ""), PORT) }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
+    if (p === "/api/collaboration" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, { collaboration: collaborationView() });
+    }
+    if (p === "/api/collaboration/slug" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      try { return json(res, 200, await slugAvailability(String(url.searchParams.get("slug") || ""))); }
+      catch (error) { return json(res, 502, { error: (error as Error).message }); }
+    }
+    if (p === "/api/collaboration/claim" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      try { return json(res, 201, { collaboration: await claimWorkspace(String(b.slug || ""), String(b.workspace_name || q1("SELECT name FROM workspace WHERE id=1")?.name || "My Workspace"), PORT) }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
+    if (p === "/api/collaboration/enabled" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      try { return json(res, 200, { collaboration: await setCollaborationEnabled(b.enabled !== false) }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
+    if (p === "/api/collaboration/requests-enabled" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      return json(res, 200, { collaboration: setAcceptNewRequests(b.enabled !== false) });
+    }
+    if (p === "/api/access-requests" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, { requests: pendingAccessRequests() });
+    }
+    const accessReview = p.match(/^\/api\/access-requests\/(\d+)$/);
+    if (accessReview && m === "PATCH") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      try { return json(res, 200, { request: reviewAccessRequest(Number(accessReview[1]), b.approved === true, Number(user.id)) }); }
       catch (error) { return json(res, 400, { error: (error as Error).message }); }
     }
     if (p === "/api/setup/complete" && m === "POST") {
@@ -781,6 +919,7 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { threads });
     }
     if (p === "/api/channels" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Only the Captain can create an agent channel." });
       const b = await jbody(req);
       const name = normalizeChannelName(String(b.name || ""));
       const purpose = String(b.purpose || b.topic || "").trim();
@@ -803,7 +942,10 @@ const server = createServer(async (req, res) => {
       const channelId = Number(nativeChannel[1]);
       const action = nativeChannel[2] || "channel";
       if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      const channelKind = String(q1("SELECT kind FROM channels WHERE id=?", channelId)?.kind || "");
+      if (channelKind !== "channel") return json(res, 404, { error: "Agent-channel surface not found." });
       if (action === "channel" && m === "PATCH") {
+        if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
         const b = await jbody(req);
         const purposeIn = "purpose" in b || "topic" in b;
         const nameIn = "name" in b;
@@ -932,6 +1074,7 @@ const server = createServer(async (req, res) => {
     if (worldFile && m === "GET") {
       const channelId = Number(worldFile[1]);
       if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      if (!q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", channelId)) return json(res, 404, { error: "Agent-channel file not found." });
       try {
         await refreshChannelWorkspaceMirror(channelId);
         const file = resolveWorldFile(channelId, url.searchParams.get("path") || "");
@@ -963,6 +1106,13 @@ const server = createServer(async (req, res) => {
     if (p === "/api/dm" && m === "POST") {
       const b = await jbody(req);
       const otherId = Number(b.userId);
+      const other = q1("SELECT id FROM users WHERE id=?", otherId);
+      if (!other) return json(res, 404, { error: "Member not found." });
+      const collab = q1("SELECT id FROM channels WHERE kind='collab' AND status='active' LIMIT 1");
+      if (!collab || !q1("SELECT 1 FROM members WHERE channel_id=? AND user_id=?", collab.id, user.id)
+        || !q1("SELECT 1 FROM members WHERE channel_id=? AND user_id=?", collab.id, otherId)) {
+        return json(res, 403, { error: "Direct messages are available to Collab members." });
+      }
       const existing = q1(`SELECT c.id FROM channels c JOIN members m1 ON m1.channel_id=c.id AND m1.user_id=?
                            JOIN members m2 ON m2.channel_id=c.id AND m2.user_id=? WHERE c.kind='dm'`, user.id, otherId);
       let id = existing ? Number(existing.id) : 0;
@@ -1012,6 +1162,7 @@ const server = createServer(async (req, res) => {
       }
       if (m === "POST") {
         const b = await jbody(req);
+        if (b.modelPolicy && !user.is_admin) return json(res, 403, { error: "Only the Captain can choose a thread model." });
         try { return json(res, 200, { message: postMessage(cid, user, String(b.body || ""), b.parentId ? Number(b.parentId) : null, (b.uploads as never[]) || [], b.modelPolicy as never) }); }
         catch (error) { return json(res, 409, { error: (error as Error).message }); }
       }
@@ -1039,6 +1190,7 @@ const server = createServer(async (req, res) => {
       if (!agent?.bot_id) return json(res, 404, { error: "Resident agent not found" });
       if (m === "GET") return json(res, 200, { policy: resolvedModelPolicy(Number(agent.bot_id), Number(root.channel_id), Number(root.id)) });
       if (m === "POST") {
+        if (!user.is_admin) return json(res, 403, { error: "Only the Captain can change a thread model." });
         if (agent.kind === "skipper") return json(res, 409, { error: "Skipper always uses the workspace-wide model policy." });
         const b = await jbody(req);
         const providerId = b.provider_id ? Number(b.provider_id) : null;
@@ -1125,6 +1277,18 @@ const server = createServer(async (req, res) => {
       await writeFile(join(UPLOAD_DIR, token), contents);
       return json(res, 200, { token, name: String(req.headers["x-filename"] || "file"), mime: String(req.headers["content-type"] || "application/octet-stream"), size: contents.length });
     }
+    if ((mm = p.match(/^\/api\/channels\/(\d+)\/files\/upload$/)) && m === "POST") {
+      const channelId = Number(mm[1]);
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      if (!q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", channelId)) return json(res, 404, { error: "Agent-channel file surface not found." });
+      const upload = await jbody(req);
+      const token = String(upload.token || "");
+      if (!/^[a-f0-9]{32,}$/.test(token) || !existsSync(join(UPLOAD_DIR, token))) return json(res, 400, { error: "Upload not found." });
+      const path = importAttachment(channelId, null, token, String(upload.name || "file"), "human");
+      if (!path) return json(res, 400, { error: "The file could not be imported." });
+      await refreshChannelWorkspaceMirror(channelId);
+      return json(res, 201, { path });
+    }
     if ((mm = p.match(/^\/api\/files\/(\d+)$/)) && m === "GET") {
       const a = q1("SELECT at.*, m.channel_id FROM attachments at JOIN messages m ON m.id=at.message_id WHERE at.id=?", Number(mm[1]));
       if (!a || !canSee(user, Number(a.channel_id))) return json(res, 404, { error: "Not found" });
@@ -1135,8 +1299,12 @@ const server = createServer(async (req, res) => {
     }
 
     // providers (reusable, bot-agnostic connections)
-    if (p === "/api/providers" && m === "GET") return json(res, 200, { providers: q("SELECT * FROM providers WHERE kind='routing' ORDER BY name").map(providerView) });
+    if (p === "/api/providers" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, { providers: q("SELECT * FROM providers WHERE kind='routing' ORDER BY name").map(providerView) });
+    }
     if (p === "/api/providers/fetch-models" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const b = await jbody(req);
       const prov = b.providerId ? q1("SELECT * FROM providers WHERE id=?", b.providerId) : undefined;
       if (prov && String(prov.kind) === CHATGPT_KIND) {
@@ -1152,6 +1320,7 @@ const server = createServer(async (req, res) => {
       catch (e) { return json(res, 502, { error: (e as Error).message }); }
     }
     if ((mm = p.match(/^\/api\/providers\/(\d+)\/models$/)) && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const prov = q1("SELECT * FROM providers WHERE id=?", Number(mm[1]));
       if (!prov) return json(res, 404, { error: "Not found" });
       try {
@@ -1182,7 +1351,7 @@ const server = createServer(async (req, res) => {
         .filter((model) => model.enabled !== false)
         .map((model) => ({ id: String(model.gatewayId || model.id || ""), name: String(model.name || model.id || "") }))
         .filter((model) => model.id);
-      broadcastAll({ type: "routing_changed", action: "provider_added" });
+      broadcastAdmins({ type: "routing_changed", action: "provider_added" });
       return json(res, 200, { provider, models });
     }
     if ((mm = p.match(/^\/api\/providers\/(\d+)$/)) && (m === "PATCH" || m === "DELETE")) {
@@ -1192,14 +1361,14 @@ const server = createServer(async (req, res) => {
         const inUse = Number(q1("SELECT COUNT(*) n FROM bots WHERE provider_id=?", id)?.n || 0);
         if (inUse) return json(res, 409, { error: `In use by ${inUse} bot(s). Reassign them first.` });
         run("DELETE FROM providers WHERE id=?", id);
-        broadcastAll({ type: "provider_deleted", providerId: id });
+        broadcastAdmins({ type: "provider_deleted", providerId: id });
         return json(res, 200, { ok: true });
       }
       const b = await jbody(req);
       for (const f of ["name", "base_url", "kind"]) if (f in b) run(`UPDATE providers SET ${f}=? WHERE id=?`, String(b[f] ?? ""), id);
       if (b.api_key) run("UPDATE providers SET api_key=? WHERE id=?", String(b.api_key), id);
       const provider = providerView(q1("SELECT * FROM providers WHERE id=?", id)!);
-      broadcastAll({ type: "provider_update", provider });
+      broadcastAdmins({ type: "provider_update", provider });
       return json(res, 200, { provider });
     }
     // OpenRouter OAuth (PKCE): exchange the returned code for a user-controlled key → a provider
@@ -1217,14 +1386,27 @@ const server = createServer(async (req, res) => {
         if (added.ok === false) return json(res, 400, { error: String(added.error || "Could not save OpenRouter") });
         const id = await internalRoutingProviderId();
         const provider = providerView(q1("SELECT * FROM providers WHERE id=?", id)!);
-        broadcastAll({ type: "routing_changed", action: "openrouter_connected" });
+        broadcastAdmins({ type: "routing_changed", action: "openrouter_connected" });
         return json(res, 200, { provider });
       } catch (e) { return json(res, 502, { error: (e as Error).message }); }
     }
 
     // bots
-    if (p === "/api/bots" && m === "GET") return json(res, 200, { bots: q("SELECT * FROM bots ORDER BY name").map(botView) });
+    if (p === "/api/bots" && m === "GET") {
+      if (user.is_admin) return json(res, 200, { bots: q("SELECT * FROM bots ORDER BY name").map(botView) });
+      const rows = q(`SELECT DISTINCT b.* FROM bots b
+        JOIN bot_channels bc ON bc.bot_id=b.id
+        JOIN members m ON m.channel_id=bc.channel_id
+        WHERE m.user_id=?
+        UNION SELECT b.* FROM bots b JOIN agents a ON a.bot_id=b.id
+        WHERE a.kind='skipper' AND a.status<>'deleted' AND EXISTS (
+          SELECT 1 FROM members m JOIN channels c ON c.id=m.channel_id
+          WHERE m.user_id=? AND c.kind='channel' AND c.status<>'deleted')
+        ORDER BY name`, user.id, user.id);
+      return json(res, 200, { bots: rows.map(botView) });
+    }
     if ((mm = p.match(/^\/api\/bots\/(\d+)\/models$/)) && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const bot = q1("SELECT * FROM bots WHERE id=?", Number(mm[1]));
       if (!bot) return json(res, 404, { error: "Not found" });
       const prov = bot.provider_id ? q1("SELECT * FROM providers WHERE id=?", bot.provider_id) : undefined;
@@ -1243,7 +1425,7 @@ const server = createServer(async (req, res) => {
         String(b.name || "bot").trim(), b.provider_id ? Number(b.provider_id) : null, String(b.model || ""), String(b.prompt || ""), String(b.avatar || ""), now()).lastInsertRowid;
       if (Array.isArray(b.computers)) setBotComputers(id, b.computers as unknown[]);
       const bot = botView(q1("SELECT * FROM bots WHERE id=?", id)!);
-      broadcastAll({ type: "bot_update", bot });
+      broadcastAdmins({ type: "bot_update", bot });
       return json(res, 200, { bot });
     }
     if ((mm = p.match(/^\/api\/bots\/(\d+)$/)) && (m === "PATCH" || m === "DELETE")) {
@@ -1252,7 +1434,7 @@ const server = createServer(async (req, res) => {
       if (m === "DELETE") {
         if (q1("SELECT 1 FROM agents WHERE bot_id=? AND status<>'deleted'", id)) return json(res, 409, { error: "Resident agents are removed through their channel lifecycle." });
         run("DELETE FROM bot_channels WHERE bot_id=?", id); run("DELETE FROM bot_computers WHERE bot_id=?", id); run("DELETE FROM model_prefs WHERE bot_id=?", id); run("DELETE FROM bots WHERE id=?", id);
-        broadcastAll({ type: "bot_deleted", botId: id });
+        broadcastAdmins({ type: "bot_deleted", botId: id });
         return json(res, 200, { ok: true });
       }
       const b = await jbody(req);
@@ -1260,7 +1442,7 @@ const server = createServer(async (req, res) => {
       if ("provider_id" in b) run("UPDATE bots SET provider_id=? WHERE id=?", b.provider_id ? Number(b.provider_id) : null, id);
       if (Array.isArray(b.computers)) setBotComputers(id, b.computers as unknown[]);
       const bot = botView(q1("SELECT * FROM bots WHERE id=?", id)!);
-      broadcastAll({ type: "bot_update", bot });
+      broadcastAdmins({ type: "bot_update", bot });
       // Resident channel header/agent faces should update live when the shadow bot changes.
       const resident = agentForBot(id);
       if (resident?.kind === "channel") {
@@ -1274,6 +1456,7 @@ const server = createServer(async (req, res) => {
       const b = await jbody(req);
       const botId = Number(mm[1]); const cid = Number(b.channelId);
       if (!canSee(user, cid)) return json(res, 403, { error: "No access" });
+      if (q1("SELECT 1 FROM channels WHERE id=? AND kind='collab'", cid)) return json(res, 409, { error: "Collab is human-only." });
       if (q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", cid)) return json(res, 409, { error: "Native channels contain only Skipper and their one resident agent. Invite another resident through Skipper for one thread instead." });
       const targetAgent = agentForBot(botId);
       if (targetAgent?.kind === "channel") return json(res, 409, { error: "Resident agents are created by channel provisioning, not joined manually." });
@@ -1292,8 +1475,14 @@ const server = createServer(async (req, res) => {
     }
 
     // computers
-    if (p === "/api/computers" && m === "GET") return json(res, 200, { computers: q("SELECT * FROM computers ORDER BY id").map(computerRowView), runtime: runtimeReadiness() });
-    if (p === "/api/channel-computers/runtime" && m === "GET") return json(res, 200, { runtime: runtimeReadiness() });
+    if (p === "/api/computers" && m === "GET") {
+      if (!user.is_admin) return json(res, 200, { computers: [], runtime: { ready: true } });
+      return json(res, 200, { computers: q("SELECT * FROM computers ORDER BY id").map(computerRowView), runtime: runtimeReadiness() });
+    }
+    if (p === "/api/channel-computers/runtime" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, { runtime: runtimeReadiness() });
+    }
     if (p === "/api/channel-computers/runtime/install" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const installer = await prepareAppleRuntimeInstaller();
@@ -1315,7 +1504,7 @@ const server = createServer(async (req, res) => {
       const skipper = q1("SELECT bot_id FROM agents WHERE kind='skipper' AND status<>'deleted' LIMIT 1");
       if (skipper?.bot_id) run("INSERT OR IGNORE INTO bot_computers (bot_id, computer_id) VALUES (?,?)", skipper.bot_id, id);
       const computer = computerRowView(q1("SELECT * FROM computers WHERE id=?", id)!);
-      broadcastAll({ type: "computer_update", computer });
+      broadcastAdmins({ type: "computer_update", computer });
       return json(res, 200, { computer });
     }
     if ((mm = p.match(/^\/api\/computers\/(\d+)$/)) && (m === "PATCH" || m === "DELETE")) {
@@ -1323,13 +1512,13 @@ const server = createServer(async (req, res) => {
       const id = Number(mm[1]);
       if (m === "DELETE") {
         run("DELETE FROM computers WHERE id=?", id); run("DELETE FROM bot_computers WHERE computer_id=?", id);
-        broadcastAll({ type: "computer_deleted", computerId: id });
+        broadcastAdmins({ type: "computer_deleted", computerId: id });
         return json(res, 200, { ok: true });
       }
       const b = await jbody(req);
       for (const f of ["name", "base_url", "api_key"]) if (f in b) run(`UPDATE computers SET ${f}=? WHERE id=?`, String(b[f] ?? ""), id);
       const computer = computerRowView(q1("SELECT * FROM computers WHERE id=?", id)!);
-      broadcastAll({ type: "computer_update", computer });
+      broadcastAdmins({ type: "computer_update", computer });
       return json(res, 200, { computer });
     }
 
@@ -1339,8 +1528,9 @@ const server = createServer(async (req, res) => {
       const b = await jbody(req);
       const channelId = Number(b.channelId);
       if (!channelId || !canSee(user, channelId)) return json(res, 403, { error: "No channel access" });
-      const channel = q1("SELECT status FROM channels WHERE id=?", channelId);
+      const channel = q1("SELECT status,kind FROM channels WHERE id=?", channelId);
       if (!channel || channel.status !== "active") return json(res, 409, { error: "Restore the channel before opening a terminal." });
+      if (channel.kind !== "channel") return json(res, 403, { error: "Terminals belong to agent channels." });
       const requestedComputerId = b.computerId != null ? Number(b.computerId) : 0;
       const channelAgent = agentForChannel(channelId);
       const ordinaryChannel = channelAgent?.kind === "channel";
@@ -1384,9 +1574,10 @@ const server = createServer(async (req, res) => {
       if (!/^[a-z0-9_.-]{2,32}$/.test(username) || password.length < 8) return json(res, 400, { error: "Use a valid username and a temporary password of at least 8 characters." });
       if (q1("SELECT 1 FROM users WHERE username=?", username)) return json(res, 409, { error: "Username taken." });
       const id = run("INSERT INTO users (username, pass, display, is_admin, created) VALUES (?,?,?,?,?)", username, hashPassword(password), display, b.is_admin ? 1 : 0, now()).lastInsertRowid;
-      for (const channel of q("SELECT id FROM channels WHERE kind='channel' AND status<>'deleted'")) run("INSERT OR IGNORE INTO members (channel_id, user_id) VALUES (?,?)", channel.id, id);
+      const collabId = ensureCollabChannel(id);
       const created = publicUser(q1("SELECT * FROM users WHERE id=?", id)!);
       broadcastAll({ type: "user_update", user: created });
+      broadcastChannelMeta(collabId, "channel_new");
       return json(res, 201, { user: created });
     }
     if ((mm = p.match(/^\/api\/admin\/users\/(\d+)$/)) && (m === "PATCH" || m === "DELETE")) {
@@ -1403,6 +1594,27 @@ const server = createServer(async (req, res) => {
       const updated = publicUser(q1("SELECT * FROM users WHERE id=?", id)!);
       broadcastAll({ type: "user_update", user: updated });
       return json(res, 200, { user: updated });
+    }
+
+    if ((mm = p.match(/^\/api\/channels\/(\d+)\/members\/(\d+)$/)) && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const channelId = Number(mm[1]);
+      const userId = Number(mm[2]);
+      const channel = q1("SELECT id,name,kind,status FROM channels WHERE id=?", channelId);
+      const addedUser = q1("SELECT id,username,display FROM users WHERE id=?", userId);
+      if (!channel || channel.status !== "active" || !addedUser) return json(res, 404, { error: "Channel or member not found." });
+      if (channel.kind === "dm") return json(res, 409, { error: "Use direct messages for private conversations." });
+      if (channel.kind === "channel") {
+        const b = await jbody(req);
+        const messageId = Number(b.messageId);
+        const invitation = messageId ? q1("SELECT body,user_id FROM messages WHERE id=? AND channel_id=?", messageId, channelId) : undefined;
+        const mentioned = invitation && Number(invitation.user_id) === Number(user.id)
+          && new RegExp(`(^|[^a-zA-Z0-9_.-])@${String(addedUser.username).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-zA-Z0-9_.-])`, "i").test(String(invitation.body || ""));
+        if (!mentioned) return json(res, 409, { error: `Tag @${addedUser.username} in this channel and confirm the invitation.` });
+      }
+      run("INSERT OR IGNORE INTO members (channel_id,user_id) VALUES (?,?)", channelId, userId);
+      sendToUsers([userId], { type: "channel_new", channel: channelMetaView(channel, addedUser) });
+      return json(res, 200, { channel: channelView(addedUser, channel), user: publicUser(addedUser) });
     }
 
     return json(res, 404, { error: "Not found" });
@@ -1431,7 +1643,7 @@ server.on("upgrade", (req, socket: Socket, head) => {
 async function bootstrap(): Promise<void> {
   reactivateComputersAfterPreparedRemoval();
   prepareMnemosyneRuntime();
-  await startRoutingEngine((activity) => broadcastAll({ type: "routing_activity", activity }));
+  await startRoutingEngine((activity) => broadcastAdmins({ type: "routing_activity", activity }));
   await internalRoutingProviderId();
   const agentKey = newToken();
   const agentPort = await startAgent(0, agentKey);
@@ -1452,6 +1664,8 @@ async function bootstrap(): Promise<void> {
   startThreadAuditLoop();
   startFollowupLoop();
   startChannelComputerReconciler();
+  startCollaborationConnector(PORT);
+  startCustomDomainConnectors(PORT);
   server.listen(PORT, HOST, () => {
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : PORT;
@@ -1465,6 +1679,7 @@ const shutdown = async (): Promise<void> => {
   if (shuttingDown) return;
   shuttingDown = true;
   await stopRoutingEngine().catch(() => undefined);
+  stopAllConnectors();
   await shutdownChannelComputers().catch(() => undefined);
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 12_000).unref();

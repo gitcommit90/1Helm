@@ -21,6 +21,11 @@ export function setImageGenerationEnabled(_providerId: string, enabled: boolean)
   const payload = { enabled: Boolean(enabled), enabledProviderIds: enabled ? ["chatgpt"] : [] };
   mkdirSync(DATA_DIR, { recursive: true });
   writeFileSync(IMAGE_GEN_META, JSON.stringify(payload, null, 2), { mode: 0o600 });
+  if (enabled && imageGenerationAvailable()) {
+    const skipper = q1("SELECT id FROM agents WHERE kind='skipper' AND status<>'deleted' LIMIT 1");
+    const skill = q1("SELECT id FROM skills WHERE slug='image-generation' AND status='active'");
+    if (skipper && skill) run("INSERT OR IGNORE INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) VALUES (?,?,?,'Enabled with the workspace ChatGPT image-generation switch.',1,?)", skipper.id, skill.id, skipper.id, now());
+  }
   return payload;
 }
 

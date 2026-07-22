@@ -1,4 +1,4 @@
-import { api, getToken, workspacePhotoSrc, type ChannelRuntime, type Computer, type Skill, type User, type WorkspaceDomain } from "./api.ts";
+import { api, getToken, workspacePhotoSrc, type AccessRequest, type ChannelRuntime, type Collaboration, type Computer, type Skill, type User, type WorkspaceDomain } from "./api.ts";
 import { h, clear, add, icon } from "./dom.ts";
 import { S, avatar, reloadProviders, renderApp, appAlert, appConfirm, appPrompt } from "./app.ts";
 import { connectRoutingOauth, routingPanel } from "./routing.ts";
@@ -73,7 +73,8 @@ export function openSettings(tab: Tab = "agents"): void {
   const overlay = h("div", { class: "modal-overlay fixed inset-0 z-40 grid place-items-end bg-black/50 p-0 sm:place-items-center sm:p-4 md:p-6", onclick: (e: MouseEvent) => { if (e.target === overlay) overlay.remove(); } });
   const bodyEl = h("div", { class: "min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4 sm:p-5" });
   const modal = h("div", { class: "card mobile-sheet flex h-[min(96dvh,100%)] w-full max-w-none flex-col overflow-hidden rounded-b-none shadow-2xl transition-[max-width] sm:h-[min(90vh,980px)] sm:rounded-xl" });
-  const tabs: [Tab, string][] = S.me.is_admin ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]] : [["agents", "Agents"], ["skills", "Skills"], ["providers", "Providers"], ["computers", "Skipper computers"]];
+  const tabs: [Tab, string][] = S.me.is_admin ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]] : [];
+  if (!tabs.length) return;
   const tabBar = h("div", { class: "flex gap-1 overflow-x-auto border-b border-line px-2 pt-2 sm:px-4 sm:pt-3" });
   const draw = (t: Tab): void => {
     modal.classList.toggle("sm:max-w-[1120px]", t === "providers");
@@ -216,7 +217,36 @@ function domainsPanel(): HTMLElement {
     catch (error) { token.value = ""; status.textContent = (error as Error).message; }
   };
   void load();
-  return h("div", { class: "space-y-4" }, h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Connect a Cloudflare domain"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Do you have a domain on Cloudflare? Enter the hostname you want for this workspace. 1Helm creates a named tunnel, routes DNS, enables HTTPS, and keeps it running after restarts."), h("div", { class: "mt-4 grid gap-3 sm:grid-cols-2" }, hostname, token), h("p", { class: "mt-2 text-xs text-muted" }, "Create an API token with Account: Cloudflare Tunnel Edit and Zone: DNS Edit. The token is used for this connection and is never stored."), h("div", { class: "mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, h("button", { class: "btn-primary text-sm", onclick: () => { void connect(); } }, "Connect domain"))), list);
+  return h("div", { class: "space-y-4" }, collaborationPanel(), h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Connect a Cloudflare domain"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Do you have a domain on Cloudflare? Enter the hostname you want for this workspace. Once active it becomes the displayed primary address; your reserved 1helm.com address remains yours."), h("div", { class: "mt-4 grid gap-3 sm:grid-cols-2" }, hostname, token), h("p", { class: "mt-2 text-xs text-muted" }, "Create an API token with Account: Cloudflare Tunnel Edit and Zone: DNS Edit. The token is used for this connection and is never stored."), h("div", { class: "mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, h("button", { class: "btn-primary text-sm", onclick: () => { void connect(); } }, "Connect domain"))), list);
+}
+
+function collaborationPanel(): HTMLElement {
+  const box = h("div", { class: "card p-4" }, h("p", { class: "text-sm text-muted" }, "Loading collaboration…"));
+  const draw = async (): Promise<void> => {
+    try {
+      const { collaboration } = await api<{ collaboration: Collaboration }>("/api/collaboration");
+      clear(box);
+      const status = h("p", { class: "min-h-5 text-xs text-muted" }, collaboration.error || (collaboration.enabled ? "This Mac is serving the workspace through its secure tunnel." : collaboration.slug ? "The address remains reserved while its connector is off." : "Choose a permanent workspace address."));
+      if (!collaboration.slug) {
+        const slug = h("input", { class: "field", placeholder: "your-team", autocomplete: "off" }) as HTMLInputElement;
+        const availability = h("p", { class: "min-h-5 text-xs text-muted" });
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        slug.oninput = () => {
+          slug.value = slug.value.toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 48);
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => { void api<{ available: boolean; hostname: string }>(`/api/collaboration/slug?slug=${encodeURIComponent(slug.value)}`).then((result) => { availability.textContent = result.available ? `${result.hostname} is available.` : `${result.hostname} is not available.`; availability.className = `min-h-5 text-xs ${result.available ? "text-ok" : "text-danger"}`; }).catch((error) => { availability.textContent = (error as Error).message; }); }, 350);
+        };
+        box.append(h("h3", { class: "font-semibold text-fg" }, "Collaborate from this Mac"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Reserve a unique 1helm.com address for this local headless workspace. This installed Mac remains the only server."), h("div", { class: "mt-4" }, slug, availability), h("div", { class: "mt-3 flex items-center justify-between gap-3" }, status, h("button", { class: "btn-primary text-sm", onclick: async () => { try { await api("/api/collaboration/claim", { body: { slug: slug.value, workspace_name: S.workspace.name } }); await draw(); } catch (error) { status.textContent = (error as Error).message; } } }, "Reserve and enable")));
+        return;
+      }
+      const enabled = h("input", { type: "checkbox", class: "accent-accent", checked: collaboration.enabled }) as HTMLInputElement;
+      enabled.onchange = async () => { enabled.disabled = true; try { await api("/api/collaboration/enabled", { body: { enabled: enabled.checked } }); await draw(); } catch (error) { status.textContent = (error as Error).message; enabled.checked = !enabled.checked; enabled.disabled = false; } };
+      box.append(h("div", { class: "flex flex-wrap items-start justify-between gap-3" }, h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Collaboration address"), h("a", { class: "mt-1 block break-all text-sm text-accent hover:underline", href: `https://${collaboration.hostname}`, target: "_blank", rel: "noopener noreferrer" }, collaboration.hostname), collaboration.custom_domain ? h("p", { class: "mt-1 text-xs text-muted" }, `Primary: ${collaboration.custom_domain}`) : null), h("label", { class: "flex items-center gap-2 text-sm text-fg" }, enabled, "Collaborate")), status,
+        h("p", { class: "mt-2 text-xs leading-5 text-muted" }, "Switching this off stops the connector; the address and tunnel remain reserved for this workspace."));
+    } catch (error) { box.textContent = (error as Error).message; }
+  };
+  void draw();
+  return box;
 }
 
 // ------------------------------------------------------------ native agent roster
@@ -319,6 +349,20 @@ function membersPanel(): HTMLElement {
     const display = h("input", { class: "field", placeholder: "Display name", autocomplete: "off" }) as HTMLInputElement;
     const password = h("input", { class: "field", type: "password", placeholder: "Temporary password (8+ characters)", autocomplete: "new-password" }) as HTMLInputElement;
     const status = h("p", { class: "min-h-5 min-w-0 flex-1 break-words text-xs text-muted" });
+    const requests = h("div", { class: "space-y-2" });
+    const requestToggle = h("input", { type: "checkbox", class: "accent-accent" }) as HTMLInputElement;
+    void Promise.all([
+      api<{ collaboration: Collaboration }>("/api/collaboration"),
+      api<{ requests: AccessRequest[] }>("/api/access-requests"),
+    ]).then(([collaborationState, requestState]) => {
+      requestToggle.checked = collaborationState.collaboration.accept_new_requests;
+      for (const request of requestState.requests) requests.append(h("div", { class: "card flex flex-col gap-3 p-3 sm:flex-row sm:items-center" },
+        h("div", { class: "min-w-0 flex-1" }, h("div", { class: "truncate font-semibold text-fg" }, request.display || request.email), h("div", { class: "truncate text-xs text-muted" }, request.email), h("div", { class: "mt-1 text-xs text-faint" }, request.status)),
+        request.status === "pending" ? h("div", { class: "flex gap-2" }, h("button", { class: "btn-subtle text-xs", onclick: async () => { await api(`/api/access-requests/${request.id}`, { method: "PATCH", body: { approved: false } }); await refresh(); } }, "Deny"), h("button", { class: "btn-primary text-xs", onclick: async () => { await api(`/api/access-requests/${request.id}`, { method: "PATCH", body: { approved: true } }); await refresh(); } }, "Approve")) : h("span", { class: "chip" }, request.status)));
+      if (!requestState.requests.length) requests.append(h("p", { class: "py-3 text-center text-xs text-muted" }, "No access requests yet."));
+    }).catch((error) => requests.append(h("p", { class: "text-xs text-danger" }, (error as Error).message)));
+    requestToggle.onchange = () => { void api("/api/collaboration/requests-enabled", { body: { enabled: requestToggle.checked } }).catch((error) => { status.textContent = (error as Error).message; requestToggle.checked = !requestToggle.checked; }); };
+    wrap.append(h("div", { class: "card mb-4 p-4" }, h("div", { class: "flex items-start justify-between gap-3" }, h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Access requests"), h("p", { class: "mt-1 text-xs leading-5 text-muted" }, "Approved coworkers create their account and land in the human-only #Collab space.")), h("label", { class: "flex shrink-0 items-center gap-2 text-xs text-fg" }, requestToggle, "Accept new requests")), h("div", { class: "mt-3" }, requests)));
     wrap.append(h("div", { class: "card mb-4 min-w-0 overflow-hidden p-4" },
       h("div", { class: "mb-3" }, h("div", { class: "font-semibold text-fg" }, "Add a workspace member"), h("p", { class: "mt-1 text-xs text-muted" }, "Public registration is closed after the Captain account. Share the username and temporary password directly with this person.")),
       h("div", { class: "grid grid-cols-1 gap-2 sm:grid-cols-3" }, username, display, password),

@@ -13,6 +13,21 @@ let mainWindow = null;
 let authWindow = null;
 let localOrigin = "";
 let quitting = false;
+const remoteWorkspacePath = () => path.join(app.getPath("userData"), "remote-workspace");
+
+function preferredWorkspaceOrigin() {
+  try {
+    const value = fs.readFileSync(remoteWorkspacePath(), "utf8").trim();
+    return allowedTeamUrl(value) ? new URL(value).origin : localOrigin;
+  } catch {
+    return localOrigin;
+  }
+}
+
+function rememberTeamUrl(raw) {
+  if (!allowedTeamUrl(raw)) return;
+  fs.writeFileSync(remoteWorkspacePath(), new URL(raw).origin + "\n", { mode: 0o600 });
+}
 
 process.on("1helm-removal-prepared", () => {
   // Prevent a cleaned installation from relaunching at login and recreating
@@ -53,6 +68,7 @@ async function startLocalRuntime() {
   const port = await freePort();
   process.env.HELM_DESKTOP = "1";
   process.env.HELM_APP_ROOT = appRoot;
+  process.env.HELM_RESOURCES_PATH = process.resourcesPath;
   process.env.HELM_HOST = LOOPBACK;
   process.env.PORT = String(port);
   process.env.CTRL_DATA_DIR = app.getPath("userData");
@@ -88,6 +104,17 @@ function allowedLocalUrl(raw) {
   }
 }
 
+function allowedTeamUrl(raw) {
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" && /^[a-z0-9](?:[a-z0-9-]{1,46}[a-z0-9])?\.1helm\.com$/i.test(url.hostname) && !["demo.1helm.com", "provision.1helm.com"].includes(url.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+const allowedAppUrl = (raw) => allowedLocalUrl(raw) || allowedTeamUrl(raw);
+
 function openAuthWindow(url) {
   if (authWindow && !authWindow.isDestroyed()) authWindow.close();
   const window = new BrowserWindow({
@@ -98,7 +125,7 @@ function openAuthWindow(url) {
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   const returnToApp = (event, nextUrl) => {
-    if (!allowedLocalUrl(nextUrl)) return;
+    if (!allowedAppUrl(nextUrl)) return;
     event.preventDefault();
     void mainWindow?.loadURL(nextUrl);
     window.close();
@@ -134,11 +161,12 @@ function createWindow(showWhenReady = true) {
   });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (allowedLocalUrl(url)) return { action: "allow" };
+    if (allowedAppUrl(url)) return { action: "allow" };
     if (/^https?:/i.test(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
   window.webContents.on("will-navigate", (event, url) => {
+    if (allowedTeamUrl(url)) { rememberTeamUrl(url); return; }
     if (allowedLocalUrl(url)) return;
     event.preventDefault();
     // The legacy OpenRouter PKCE flow performs a full-page navigation and
@@ -147,7 +175,7 @@ function createWindow(showWhenReady = true) {
   });
   if (showWhenReady) window.once("ready-to-show", () => window.show());
   window.on("closed", () => { if (mainWindow === window) mainWindow = null; });
-  void window.loadURL(localOrigin);
+  void window.loadURL(preferredWorkspaceOrigin());
   mainWindow = window;
 }
 

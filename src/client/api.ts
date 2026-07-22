@@ -2,7 +2,7 @@ export type User = {
   id: number; username: string; display: string; is_admin: boolean;
   description: string; job_title: string; avatar: string; tour_complete: boolean;
 };
-export type Author = { kind: "user" | "bot"; id: number; name: string };
+export type Author = { kind: "user" | "bot" | "system"; id: number; name: string };
 export type Attachment = { id: number; name: string; mime: string; size: number };
 export type AgentProgress = { id: number; kind: "thinking" | "tool" | "status"; body: string; status: "running" | "complete" | "failed"; created: number; updated: number };
 export type ThreadUsage = { input_tokens: number; output_tokens: number };
@@ -28,7 +28,7 @@ export type ChannelComputer = {
   obligations: Array<{ kind: string; ref: string; mode: "resident" | "wakeable"; details: string; due_at?: number | null }>;
 };
 export type Channel = { id: number; name: string; slug: string; kind: string; topic: string; purpose: string; status: "active" | "archived"; unread: number; agent: ResidentAgent | null; computer?: ChannelComputer | null };
-export type Bot = { id: number; name: string; model: string; prompt: string; avatar: string; provider_id: number | null; provider_name: string | null; provider_kind: string | null; computers: number[]; prefs: Record<string, string>; agent_id?: number | null; agent_kind?: string | null; agent_status?: string | null; resident_channel_id?: number | null };
+export type Bot = { id: number; name: string; model: string; avatar: string; provider_id: number | null; provider_name: string | null; provider_kind: string | null; computers: number[]; prefs: Record<string, string>; agent_id?: number | null; agent_kind?: string | null; agent_status?: string | null; resident_channel_id?: number | null };
 export type ThreadFollowup = {
   id: number;
   due_at: number;
@@ -99,6 +99,11 @@ export async function routingAction<T = Record<string, unknown>>(action: string,
 export type Skill = { id?: number; slug: string; name: string; description: string; category: string; instructions?: string; assigned?: boolean };
 export type AgentTemplate = { id: number; slug: string; name: string; description: string; purpose_hint: string; skill_slugs: string[]; icon: string };
 export type WorkspaceDomain = { id: number; hostname: string; provider: "cloudflare"; status: "connecting" | "active" | "error"; error: string; verified: number | null };
+export type Collaboration = {
+  enabled: boolean; slug: string; hostname: string; status: "off" | "provisioning" | "active" | "error";
+  error: string; accept_new_requests: boolean; custom_domain: string; primary_url: string; connector_available: boolean;
+};
+export type AccessRequest = { id: number; email: string; display: string; status: "pending" | "approved" | "denied" | "claimed"; requested_at: number; reviewed_at: number | null };
 export type Workspace = { name: string; terminals_enabled: boolean; setup_complete: boolean; photo_url: string | null; theme: "graphite" | "ocean" | "forest" | "ember" | "plum" };
 
 let token = localStorage.getItem("ctrl.token") || "";

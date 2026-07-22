@@ -1,4 +1,4 @@
-import { api, openAuthenticatedFile, type ActivityItem, type AgentTemplate, type Channel, type ChannelFile, type GlobalThread, type MemoryItem, type Message, type ThreadState, type RoutingModel } from "./api.ts";
+import { api, openAuthenticatedFile, uploadFile, type ActivityItem, type AgentTemplate, type Channel, type ChannelFile, type GlobalThread, type MemoryItem, type Message, type ThreadState, type RoutingModel } from "./api.ts";
 import { h, clear, icon, md, timeLabel } from "./dom.ts";
 import { S, avatar, appAlert, appConfirm, appPrompt } from "./app.ts";
 
@@ -385,7 +385,22 @@ export function renderFiles(container: HTMLElement, channelId: number): void {
         file.kind === "file" ? h("button", { class: "btn-subtle text-xs", onclick: () => { void openAuthenticatedFile(`/api/channels/${channelId}/files/content?path=${encodeURIComponent(file.path)}`).catch((error) => appAlert((error as Error).message)); } }, "Open") : null);
       list.append(row);
     }
-    panelContent(container, "Files", "Same tree the channel terminal sees as /workspace. Uploads also appear under files/.", list);
+    const fileInput = h("input", { type: "file", multiple: true, class: "hidden" }) as HTMLInputElement;
+    const uploadStatus = h("span", { class: "text-xs text-muted" });
+    const uploadButton = h("button", { class: "btn-primary text-sm", onclick: () => fileInput.click() }, icon("plus"), "Upload");
+    fileInput.onchange = async () => {
+      const chosen = Array.from(fileInput.files || []);
+      if (!chosen.length) return;
+      uploadButton.setAttribute("disabled", "true"); uploadStatus.textContent = `Uploading ${chosen.length} file${chosen.length === 1 ? "" : "s"}…`;
+      try {
+        for (const file of chosen) {
+          const upload = await uploadFile(file);
+          await api(`/api/channels/${channelId}/files/upload`, { body: upload });
+        }
+        renderFiles(container, channelId);
+      } catch (error) { uploadStatus.textContent = (error as Error).message; uploadButton.removeAttribute("disabled"); }
+    };
+    panelContent(container, "Files", "Same tree the channel terminal sees as /workspace. Uploads also appear under files/.", h("div", {}, h("div", { class: "mb-4 flex items-center justify-end gap-3" }, uploadStatus, uploadButton, fileInput), list));
   }).catch((error) => panelError(container, error));
 }
 

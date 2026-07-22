@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.13] - 2026-07-22
+
+### Added
+
+- Local-first collaboration for the native Mac app: Captains can reserve a unique `workspace.1helm.com` address that tunnels to the same headless web UI and ephemeral loopback server already running on their Mac. The Mac remains the sole workspace server, so sleep, shutdown, or lost connectivity makes the workspace unavailable by design.
+- A deployed Cloudflare Worker and D1 registry atomically reserve up to 1,000 beta workspace slugs, provision one exact DNS record and locally managed tunnel per workspace, recover connector credentials only for the owning installation, and clean up partial provisioning failures. Distributed apps never contain the account-wide Cloudflare credentials.
+- **Join team?**, request-access, Captain approval/denial, account claim, and Settings → Members controls including **Accept new requests**. Requests create an LLM-agnostic 1Helm notice in `#main`.
+- A human-only `Collab` holding channel for the Captain and accepted coworkers. It never receives a resident agent, bot, computer, terminal, model policy, or Files workspace. Coworkers gain an agent channel only when the Captain tags them there and confirms **Add @user**; HTTP, file, terminal, and WebSocket access all enforce membership server-side.
+- Direct Files-tab uploads, ChatGPT OAuth-backed image generation that saves and attaches PNG results through the `generate_image` agent tool, flat-color Skipper/resident avatars, and bundled pinned Cloudflared `2026.3.0` for signed Apple Silicon releases.
+
+### Changed
+
+- Board lanes now use a responsive wrapping grid instead of horizontal overflow; chat composition clears optimistically and restores the draft/attachments on failure; streaming message fan-out is coalesced; and native Skipper commands/terminals prefer Homebrew paths.
+- Custom Cloudflare domains use the same in-process connector manager as collaboration, allowing the native app to run them without Linux systemd while migrating the prior single-domain connector state.
+- Workspace/PWA artwork consistently uses the 1Helm logo, and enabled ChatGPT image generation assigns the corresponding capability to Skipper.
+
+### Security
+
+- Remote collaboration pages keep Electron context isolation, renderer sandboxing, disabled Node integration, explicit exact `*.1helm.com` navigation checks, CSP, expiring sessions, bounded requests, and rate-limited public sign-in/access-request endpoints.
+
 ## [1.1.12] - 2026-07-22
 
 ### Fixed
@@ -163,7 +183,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Native **1Herd** channel-agent workspace (SPEC.md slice) is developed on branch `worktree-1herd-native-spec` (draft PR #7) and is **not** fully merged to `main` as of this changelog baseline. Track progress there and in `docs/VISION.md` on that branch.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.12...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.13...HEAD
+[1.1.13]: https://github.com/gitcommit90/1Helm/compare/v1.1.12...v1.1.13
 [1.1.12]: https://github.com/gitcommit90/1Helm/compare/v1.1.11...v1.1.12
 [1.1.11]: https://github.com/gitcommit90/1Helm/compare/v1.1.10...v1.1.11
 [1.1.10]: https://github.com/gitcommit90/1Helm/compare/v1.1.9...v1.1.10

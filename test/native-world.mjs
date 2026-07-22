@@ -148,6 +148,9 @@ try {
   ok(/mock-small/.test(conversational.body), "a one-human/one-agent thread remains conversational without repeated @mentions and keeps its thread model");
 
   await api("/api/admin/users", { body: { username: "thread-guest", password: "secret-pass", display: "Thread Guest" } }, captain);
+  const threadGuest = (await api("/api/users", {}, captain)).body.users.find((user) => user.username === "thread-guest");
+  const threadGuestInvite = await api(`/api/channels/${launch.id}/messages`, { body: { body: "@thread-guest join this agent channel" } }, captain);
+  await api(`/api/channels/${launch.id}/members/${threadGuest.id}`, { body: { messageId: threadGuestInvite.body.message.id } }, captain);
   const guestUser = (await api("/api/auth/login", { body: { username: "thread-guest", password: "secret-pass" } })).body.token;
   const guestEvents = [];
   const guestSocket = new WebSocket(`ws://127.0.0.1:${appPort}/ws?token=${guestUser}`);
@@ -328,10 +331,86 @@ try {
 
   const publicRegistration = await api("/api/auth/register", { body: { username: "intruder", password: "secret-pass", display: "Intruder" } });
   ok(publicRegistration.status === 403, "public registration closes after the Captain account");
+
+  // Collaboration access is request/approval based. A new coworker starts in
+  // the human-only Collab holding space and cannot see an agent channel until
+  // the Captain tags and confirms them in that exact channel.
+  const collaborationDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  collaborationDb.prepare("UPDATE workspace SET collaboration_enabled=1,collaboration_slug='native-test',collaboration_hostname='native-test.1helm.com',collaboration_status='active'").run();
+  collaborationDb.close();
+  await api("/api/collaboration/requests-enabled", { body: { enabled: false } }, captain);
+  const closedRequest = await api("/api/access-requests", { body: { email: "requester@example.com", display: "Requester" } });
+  ok(closedRequest.status === 400 && closedRequest.body.error === "Native Test Renamed isn’t accepting requests right now", "the Captain's request toggle returns the workspace-specific closed-request message");
+  await api("/api/collaboration/requests-enabled", { body: { enabled: true } }, captain);
+  const accessRequest = await api("/api/access-requests", { body: { email: "requester@example.com", display: "Requester" } });
+  const mainMessages = await api(`/api/channels/${main.id}/messages`, {}, captain);
+  const requestNotice = mainMessages.body.messages.find((message) => message.author?.kind === "system" && /requester@example\.com has requested access/.test(message.body));
+  const requested = (await api("/api/access-requests", {}, captain)).body.requests.find((request) => request.email === "requester@example.com");
+  ok(accessRequest.status === 201 && requested?.status === "pending" && requestNotice?.author.name === "1Helm", "an access request creates an LLM-agnostic 1Helm notice in #main and appears in Settings → Members");
+  await api(`/api/access-requests/${requested.id}`, { method: "PATCH", body: { approved: true } }, captain);
+  const accessClaim = await api(`/api/access-requests/${accessRequest.body.claim_token}`, { body: { username: "requester", password: "request-pass", display: "Requester" } });
+  const requester = accessClaim.body.token;
+  const requesterChannelsBefore = (await api("/api/channels", {}, requester)).body.channels;
+  const collab = requesterChannelsBefore.find((channel) => channel.kind === "collab" && channel.name === "Collab");
+  const hiddenBots = await api("/api/bots", {}, requester);
+  const hiddenProviders = await api("/api/providers", {}, requester);
+  const hiddenComputers = await api("/api/computers", {}, requester);
+  const hiddenRouting = await api("/api/routing/state", {}, requester);
+  const hiddenSkills = await api("/api/skills", {}, requester);
+  const hiddenCollaboration = await api("/api/collaboration", {}, requester);
+  const holdingDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const collabRuntime = holdingDb.prepare(`SELECT
+    (SELECT COUNT(*) FROM agent_channels WHERE channel_id=c.id) agents,
+    (SELECT COUNT(*) FROM channel_computers WHERE channel_id=c.id) computers,
+    (SELECT COUNT(*) FROM bot_channels WHERE channel_id=c.id) bots
+    FROM channels c WHERE c.kind='collab'`).get();
+  holdingDb.close();
+  ok(accessClaim.status === 200 && requesterChannelsBefore.length === 1 && collab && collabRuntime.agents === 0 && collabRuntime.computers === 0 && collabRuntime.bots === 0
+    && hiddenBots.body.bots.length === 0 && hiddenProviders.status === 403 && hiddenComputers.body.computers.length === 0
+    && hiddenRouting.status === 403 && hiddenSkills.status === 403 && hiddenCollaboration.status === 403,
+  "an approved coworker lands only in human-only Collab with no agent, provider, computer, or Captain control-plane surface");
+  const collabUploadResponse = await fetch(`${base}/api/upload`, { method: "POST", headers: { authorization: `Bearer ${requester}`, "content-type": "text/plain", "x-filename": "coworker-note.txt" }, body: "human-only attachment" });
+  const collabUpload = await collabUploadResponse.json();
+  const collabMessage = await api(`/api/channels/${collab.id}/messages`, { body: { body: "Shared with the human team", uploads: [collabUpload] } }, requester);
+  const collabMessages = await api(`/api/channels/${collab.id}/messages`, {}, captain);
+  const sharedAttachment = collabMessages.body.messages.find((message) => message.id === collabMessage.body.message.id)?.attachments?.[0];
+  const sharedAttachmentResponse = await fetch(`${base}/api/files/${sharedAttachment.id}`, { headers: { authorization: `Bearer ${captain}` } });
+  ok(await sharedAttachmentResponse.text() === "human-only attachment" && !existsSync(join(dataDir, "channels", String(collab.id))), "Collab supports human messages and attachments without creating an agent workspace tree");
+  const deniedMessages = await api(`/api/channels/${launch.id}/messages`, {}, requester);
+  const deniedFiles = await api(`/api/channels/${launch.id}/files`, {}, requester);
+  const deniedTerminal = await api("/api/term/open", { body: { channelId: launch.id } }, requester);
+  const deniedAdd = await api(`/api/channels/${launch.id}/members/${accessClaim.body.user.id}`, { body: {} }, captain);
+  ok(deniedMessages.status === 403 && deniedFiles.status === 403 && deniedTerminal.status === 403 && deniedAdd.status === 409, "agent-channel messages, files, terminals, and direct membership are server-locked until the Captain's confirmed tag");
+  const requesterEvents = [];
+  const requesterSocket = new WebSocket(`ws://127.0.0.1:${appPort}/ws?token=${requester}`);
+  requesterSocket.on("message", (data) => requesterEvents.push(JSON.parse(data.toString())));
+  await new Promise((resolve, reject) => { requesterSocket.on("open", resolve); requesterSocket.on("error", reject); });
+  await waitFor(() => requesterEvents.find((event) => event.type === "hello"), "requester socket hello");
+  requesterEvents.length = 0;
+  const captainInviteEvents = [];
+  const captainInviteSocket = new WebSocket(`ws://127.0.0.1:${appPort}/ws?token=${captain}`);
+  captainInviteSocket.on("message", (data) => captainInviteEvents.push(JSON.parse(data.toString())));
+  await new Promise((resolve, reject) => { captainInviteSocket.on("open", resolve); captainInviteSocket.on("error", reject); });
+  const privateBeforeInvite = await api(`/api/channels/${launch.id}/messages`, { body: { body: "private-before-confirmed-membership" } }, captain);
+  await sleep(200);
+  ok(!requesterEvents.some((event) => event.message?.id === privateBeforeInvite.body.message.id), "unauthorized coworkers receive no agent-channel WebSocket fan-out");
+  const requesterInvite = await api(`/api/channels/${launch.id}/messages`, { body: { body: "@requester join this agent channel" } }, captain);
+  const addConfirmation = await waitFor(() => captainInviteEvents.find((event) => event.type === "member_add_confirmation" && event.messageId === requesterInvite.body.message.id), "human membership confirmation");
+  const addRequester = await api(`/api/channels/${launch.id}/members/${accessClaim.body.user.id}`, { body: { messageId: requesterInvite.body.message.id } }, captain);
+  await waitFor(() => requesterEvents.find((event) => event.type === "channel_new" && event.channel?.id === launch.id), "new member channel event");
+  const requesterChannelsAfter = (await api("/api/channels", {}, requester)).body.channels;
+  const requesterAgentMessages = await api(`/api/channels/${launch.id}/messages`, {}, requester);
+  ok(addConfirmation.username === "requester" && addRequester.status === 200 && requesterChannelsAfter.some((channel) => channel.id === launch.id)
+    && requesterAgentMessages.body.bots.length > 0 && requesterAgentMessages.body.bots.every((bot) => !("prompt" in bot)),
+  "tagging a coworker prompts Add @user and confirmation grants that one agent channel without exposing agent instructions");
+  requesterSocket.close(); captainInviteSocket.close();
+
   const collaboratorCreate = await api("/api/admin/users", { body: { username: "collaborator", password: "secret-pass", display: "Collaborator" } }, captain);
   const collaboratorLogin = await api("/api/auth/login", { body: { username: "collaborator", password: "secret-pass" } });
   const collaborator = collaboratorLogin.body.token;
   ok(collaboratorCreate.status === 201 && collaborator, "Captain can add a workspace member who can sign in");
+  const collaboratorInvite = await api(`/api/channels/${launch.id}/messages`, { body: { body: "@collaborator join this agent channel" } }, captain);
+  await api(`/api/channels/${launch.id}/members/${collaboratorCreate.body.user.id}`, { body: { messageId: collaboratorInvite.body.message.id } }, captain);
   const removalStatus = await api("/api/app/removal", {}, captain);
   const forbiddenRemoval = await api("/api/app/removal", {}, collaborator);
   const unconfirmedRemoval = await api("/api/app/removal", { body: { confirmation: "wrong" } }, captain);
@@ -342,7 +421,7 @@ try {
   const collaboratorLaunch = (await api("/api/channels", {}, collaborator)).body.channels.find((channel) => channel.id === launch.id);
   const collaboratorThread = await api(`/api/messages/${taskRoot}/thread`, {}, collaborator);
   const collaboratorFiles = await api(`/api/channels/${launch.id}/files`, {}, collaborator);
-  ok(collaboratorLaunch.agent.id === launch.agent.id && collaboratorThread.body.replies.length > 0 && collaboratorFiles.body.files.some((file) => file.path === "workspace/launch-plan.md"), "a second human sees the same agent, transcript, session, and files");
+  ok(collaboratorLaunch.agent.id === launch.agent.id && collaboratorThread.body.replies.length > 0 && collaboratorFiles.body.files.some((file) => file.path === "workspace/launch-plan.md"), "a Captain-added coworker sees the same agent, transcript, session, and files");
 
   const modelChange = await api(`/api/channels/${launch.id}/agent-policy`, { method: "PATCH", body: { provider_id: providerId, model: primarySmallModel } }, captain);
   ok(modelChange.status === 200 && modelChange.body.channel.agent.id === launch.agent.id, "model policy changes without replacing the resident identity");

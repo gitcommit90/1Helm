@@ -626,45 +626,38 @@ html.light .channel-unread-badge {
 .board-scroll {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  overscroll-behavior-x: contain;
+  overflow: auto;
   padding: 0.75rem 0.85rem 0.85rem;
 }
 .board-lanes {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
   align-items: stretch;
   gap: 0.75rem;
-  width: max-content;
-  min-width: 100%;
-  height: 100%;
+  width: 100%;
   min-height: 100%;
 }
 .board-lane {
   display: flex;
-  flex: 1 0 16rem;
   flex-direction: column;
-  width: 16rem;
-  min-width: 16rem;
-  max-width: 22rem;
-  height: 100%;
-  min-height: 0;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  min-height: 18rem;
   overflow: hidden;
   border: 1px solid var(--c-line);
   border-radius: 0.75rem;
   background: color-mix(in srgb, var(--c-raised) 50%, var(--c-surface));
 }
 .board-lane-archived {
-  flex-basis: 14rem;
-  width: 14rem;
-  min-width: 14rem;
-  max-width: 16rem;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
 }
 .board-lane-scheduled {
-  flex: 0 0 17rem;
-  width: 17rem;
-  min-width: 17rem;
-  max-width: 19rem;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
   border-color: color-mix(in srgb, var(--c-accent) 35%, var(--c-line));
   background: color-mix(in srgb, var(--c-accent-soft) 45%, var(--c-surface));
 }
@@ -700,10 +693,9 @@ html.light .channel-unread-badge {
   50% { opacity: 0.55; }
 }
 .board-lane-incoming {
-  flex: 0 0 14.5rem;
-  width: 14.5rem;
-  min-width: 14.5rem;
-  max-width: 15.5rem;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
   background: color-mix(in srgb, var(--c-accent-soft) 30%, var(--c-surface));
 }
 .board-lane-heading {

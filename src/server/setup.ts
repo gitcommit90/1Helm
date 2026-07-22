@@ -21,6 +21,7 @@ const SKIPPER_PROMPT =
   "When invoked from a thread, use its complete context and keep every action and outcome visible in that same thread. " +
   "You oversee and unblock; do not absorb a resident agent's reply style or preferences. After you help, use call_agent to hand work back so the resident finishes—never leave the Captain to re-tag them. " +
   "Be concrete, action-oriented, and concise. Prefer doing the next useful step over abstract advice.";
+const SKIPPER_AVATAR = "color:#4F6D7A";
 
 const FREE_MODEL_PREFS = [
   "openrouter/free",
@@ -108,7 +109,7 @@ export async function ensureSkipper(providerId: number, model: string, terminals
   let botId: number;
   if (existing) {
     botId = Number(existing.id);
-    run("UPDATE bots SET provider_id=?, model=?, prompt=? WHERE id=?", providerId, model || existing.model, SKIPPER_PROMPT, botId);
+    run("UPDATE bots SET provider_id=?, model=?, prompt=?, avatar=CASE WHEN avatar='' THEN ? ELSE avatar END WHERE id=?", providerId, model || existing.model, SKIPPER_PROMPT, SKIPPER_AVATAR, botId);
   } else {
     botId = run(
       "INSERT INTO bots (name, provider_id, model, prompt, avatar, base_url, api_key, created) VALUES (?,?,?,?,?,'','',?)",
@@ -116,7 +117,7 @@ export async function ensureSkipper(providerId: number, model: string, terminals
       providerId,
       model,
       SKIPPER_PROMPT,
-      "",
+      SKIPPER_AVATAR,
       now(),
     ).lastInsertRowid;
   }

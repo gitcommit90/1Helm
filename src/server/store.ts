@@ -73,7 +73,9 @@ export function serializeMessage(id: number): Row | undefined {
   if (!m) return undefined;
   // Never ship internal follow-up wake scaffolds to the client.
   if (isInternalMessageBody(String(m.body || ""))) return undefined;
-  const author = m.bot_id
+  const author = m.system_message
+    ? { kind: "system", id: 0, name: "1Helm" }
+    : m.bot_id
     ? {
       kind: "bot",
       id: m.bot_id,
@@ -194,7 +196,7 @@ export function botView(r: Row): Record<string, unknown> {
   const agent = q1(`SELECT a.id, a.kind, a.display_name, a.status, ac.channel_id
     FROM agents a LEFT JOIN agent_channels ac ON ac.agent_id=a.id WHERE a.bot_id=? AND a.status<>'deleted'`, r.id);
   return {
-    id: r.id, name: r.name, model: r.model, prompt: r.prompt, avatar: r.avatar,
+    id: r.id, name: r.name, model: r.model, avatar: r.avatar,
     provider_id: provider ? Number(r.provider_id) : null,
     provider_name: provider ? String(provider.name) : null,
     provider_kind: provider ? String(provider.kind) : null,
