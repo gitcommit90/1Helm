@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.8] - 2026-07-22
+
+### Fixed
+
+- The terminal integration test now verifies the correct private workspace path for both native compatibility terminals and real Apple channel machines. Apple machines execute in their intentional guest-only `/workspace` mount while native development runs use the matching host mirror.
+
 ## [1.1.7] - 2026-07-22
 
 ### Added
@@ -142,7 +148,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Native **1Herd** channel-agent workspace (SPEC.md slice) is developed on branch `worktree-1herd-native-spec` (draft PR #7) and is **not** fully merged to `main` as of this changelog baseline. Track progress there and in `docs/VISION.md` on that branch.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.7...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.8...HEAD
+[1.1.8]: https://github.com/gitcommit90/1Helm/compare/v1.1.7...v1.1.8
 [1.1.7]: https://github.com/gitcommit90/1Helm/compare/v1.1.6...v1.1.7
 [1.1.6]: https://github.com/gitcommit90/1Helm/compare/v1.1.5...v1.1.6
 [1.1.5]: https://github.com/gitcommit90/1Helm/compare/v1.1.4...v1.1.5
