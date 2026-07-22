@@ -40,14 +40,13 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(source, /nodeIntegration: false/);
   assert.match(source, /sandbox: true/);
   assert.match(source, /requestSingleInstanceLock/);
-  assert.match(source, /setLoginItemSettings\(\{ openAtLogin: true, openAsHidden: true \}\)/);
-  assert.match(source, /getLoginItemSettings\(\)\.wasOpenedAsHidden/);
-  assert.match(source, /--1helm-background/);
+  assert.match(source, /setLoginItemSettings\(\{ openAtLogin: true, type: "mainAppService" \}\)/);
+  assert.match(source, /getLoginItemSettings\(\{ type: "mainAppService" \}\)/);
+  assert.match(source, /login\.wasOpenedAtLogin/);
   assert.match(source, /window-all-closed/);
   assert.match(source, /com\.gitcommit90\.1helm\.wake\.plist/);
-  assert.match(source, /StartInterval/);
-  assert.match(source, /<string>--1helm-background<\/string>/);
-  assert.doesNotMatch(source, /<string>\/bin\/sh<\/string>/, "background scheduler launches the signed 1Helm executable, never generic sh");
+  assert.match(source, /removeLegacyWakeLaunchAgent\(\)/);
+  assert.doesNotMatch(source, /StartInterval|launchctl", \["bootstrap"|ProgramArguments/, "1Helm migrates away from the legacy LaunchAgent that macOS attributes to the certificate publisher");
   assert.match(source, /if \(!allowedLocalUrl\(details\.url\)\)/);
   assert.match(source, /process\.emit\("SIGTERM"/);
   const helperInstall = await readFile(join(root, "scripts", "ensure-node-pty-helper.cjs"), "utf8");
@@ -116,6 +115,7 @@ test("release packaging is fail-closed and records stable product identity", asy
   assert.match(source, /Applications/);
   assert.match(source, /candidate\.dmg/);
   assert.match(source, /"--sign", "-", candidate/);
+  assert.match(source, /Library\/LaunchAgents/, "release packaging rejects legacy background-agent payloads");
   assert.match(source, /Library\/Application Support\/1Helm/);
   assert.match(source, /installProductIcon/);
   assert.match(source, /CFBundleIconFile", "-string", "1Helm\.icns/);

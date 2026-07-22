@@ -58,41 +58,7 @@ async function startLocalRuntime() {
   await waitForServer(localOrigin);
 }
 
-function installWakeLaunchAgent() {
-  if (process.platform !== "darwin") return;
-  const agentsDir = path.join(app.getPath("home"), "Library", "LaunchAgents");
-  const plistPath = path.join(agentsDir, "com.gitcommit90.1helm.wake.plist");
-  const xmlEscape = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-  // Launch the signed 1Helm executable directly. macOS now presents 1Helm—not
-  // the generic /bin/sh interpreter—as the background item. A running app's
-  // single-instance lock makes this a cheap no-op; a stopped app wakes hidden.
-  const executable = process.execPath;
-  const plist = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-    '<plist version="1.0"><dict>',
-    '<key>Label</key><string>com.gitcommit90.1helm.wake</string>',
-    '<key>ProgramArguments</key><array>',
-    `<string>${xmlEscape(executable)}</string>`, '<string>--1helm-background</string>',
-    '</array>',
-    '<key>StartInterval</key><integer>60</integer>',
-    '<key>RunAtLoad</key><true/>',
-    '<key>ProcessType</key><string>Background</string>',
-    '</dict></plist>',
-  ].join("\n");
-  fs.mkdirSync(agentsDir, { recursive: true });
-  fs.writeFileSync(plistPath, plist, { mode: 0o600 });
-  fs.chmodSync(plistPath, 0o600);
-  // Refresh the job on every boot because the loopback port and local wake
-  // token are intentionally ephemeral. A failed bootout only means there was
-  // no prior instance; bootstrap itself must succeed.
-  const domain = `gui/${process.getuid()}`;
-  spawnSync("/bin/launchctl", ["bootout", `${domain}/com.gitcommit90.1helm.wake`], { stdio: "ignore" });
-  const loaded = spawnSync("/bin/launchctl", ["bootstrap", domain, plistPath], { encoding: "utf8" });
-  if (loaded.status !== 0) throw new Error(`Could not install 1Helm's native wake scheduler: ${(loaded.stderr || loaded.stdout || "launchctl bootstrap failed").trim()}`);
-}
-
-function removeWakeLaunchAgent() {
+function removeLegacyWakeLaunchAgent() {
   if (process.platform !== "darwin") return;
   const plistPath = path.join(app.getPath("home"), "Library", "LaunchAgents", "com.gitcommit90.1helm.wake.plist");
   const domain = `gui/${process.getuid()}`;
@@ -101,9 +67,10 @@ function removeWakeLaunchAgent() {
 }
 
 function keepSkipperAvailable() {
-  // Scheduling and fleet care are native control-plane responsibilities. The
-  // window may be closed while Skipper continues to wake channel computers.
-  app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true });
+  // The signed main app appears under its 1Helm app identity and icon in Login
+  // Items. The separately registered legacy LaunchAgent was the component
+  // macOS exposed as software from the certificate publisher.
+  app.setLoginItemSettings({ openAtLogin: true, type: "mainAppService" });
 }
 
 function allowedLocalUrl(raw) {
@@ -206,12 +173,11 @@ if (!app.requestSingleInstanceLock()) {
       });
     });
     try {
+      removeLegacyWakeLaunchAgent();
       keepSkipperAvailable();
       await startLocalRuntime();
-      installWakeLaunchAgent();
-      // A login-item launch keeps Skipper and native schedules available
-      // without surprising the user with a window at sign-in.
-      createWindow(!app.getLoginItemSettings().wasOpenedAsHidden && !process.argv.includes("--1helm-background"));
+      const login = app.getLoginItemSettings({ type: "mainAppService" });
+      createWindow(!login.wasOpenedAtLogin && !process.argv.includes("--1helm-background"));
     } catch (error) {
       await dialog.showMessageBox({
         type: "error",
@@ -231,9 +197,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on("before-quit", () => {
     if (quitting) return;
     quitting = true;
-    // Explicit Quit is respected. A crash leaves the agent installed so it can
-    // relaunch the background control plane; login starts it again next time.
-    removeWakeLaunchAgent();
+    // Explicit Quit is respected; the signed main-app login service starts the
+    // local control plane hidden again at the next user login.
     process.emit("SIGTERM", "SIGTERM");
   });
 }

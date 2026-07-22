@@ -126,6 +126,8 @@ function verifyApp(appPath, expectTicket) {
   }
   const forbidden = capture("find", [appPath, "-name", "AGENTS.md", "-print", "-quit"]);
   if (forbidden) throw new Error("Host-local instruction files must not ship in the app");
+  const launchAgent = capture("find", [path.join(appPath, "Contents"), "-path", "*/Library/LaunchAgents/*", "-print", "-quit"]);
+  if (launchAgent) throw new Error("1Helm must not ship a legacy LaunchAgent that macOS attributes to the certificate publisher");
 }
 
 async function main() {
