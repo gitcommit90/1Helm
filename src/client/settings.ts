@@ -1,6 +1,6 @@
 import { api, getToken, workspacePhotoSrc, type ChannelRuntime, type Computer, type Skill, type User, type WorkspaceDomain } from "./api.ts";
 import { h, clear, add, icon } from "./dom.ts";
-import { S, avatar, reloadProviders, renderApp, appAlert, appConfirm } from "./app.ts";
+import { S, avatar, reloadProviders, renderApp, appAlert, appConfirm, appPrompt } from "./app.ts";
 import { connectRoutingOauth, routingPanel } from "./routing.ts";
 
 // ============================================================ OpenRouter OAuth (PKCE)
@@ -130,12 +130,31 @@ function adminPanel(): HTMLElement {
     try { S.workspace = (await api<{ workspace: typeof S.workspace }>("/api/workspace", { method: "PATCH", body: { name: name.value, theme: theme.value } })).workspace; applyWorkspaceTheme(); document.querySelectorAll<HTMLElement>(".workspace-sidebar .truncate.text-\\[15px\\]").forEach((node) => { node.textContent = S.workspace.name; }); status.textContent = "Workspace settings saved."; }
     catch (error) { status.textContent = (error as Error).message; }
   };
+  const removalStatus = h("p", { class: "min-h-5 text-sm text-muted" }, "Checking for 1Helm channel computers…");
+  const prepareRemoval = async (): Promise<void> => {
+    const confirmation = await appPrompt("This deletes every verified 1Helm-owned channel computer from Apple's VM runtime. Your 1Helm Application Support data remains intact.\n\nType **REMOVE 1HELM** to continue:");
+    if (confirmation !== "REMOVE 1HELM") { if (confirmation != null) removalStatus.textContent = "Removal preparation cancelled; confirmation did not match."; return; }
+    removalStatus.textContent = "Preserving the latest channel files and deleting owned virtual machines…";
+    try {
+      const result = await api<{ deleted: number; remaining: number }>("/api/app/removal", { body: { confirmation } });
+      removalStatus.textContent = `Ready to remove. Deleted ${result.deleted} channel computer${result.deleted === 1 ? "" : "s"}; ${result.remaining} remain. Quit 1Helm, then move the app to Trash.`;
+    } catch (error) { removalStatus.textContent = (error as Error).message; }
+  };
+  void api<{ backend: string; machines: number }>("/api/app/removal").then((result) => {
+    removalStatus.textContent = result.backend === "apple"
+      ? `${result.machines} 1Helm-owned channel computer${result.machines === 1 ? "" : "s"} will be removed before uninstall.`
+      : "No Apple channel computers are managed by this installation.";
+  }).catch((error) => { removalStatus.textContent = (error as Error).message; });
   return h("div", { class: "space-y-4" },
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Workspace identity"), h("p", { class: "mt-1 text-sm text-muted" }, "Simple shared identity for everyone and every agent in this workspace."),
       h("div", { class: "mt-4 flex flex-col gap-4 sm:flex-row sm:items-center" }, photo, h("div", { class: "flex flex-wrap gap-2" }, h("label", { class: "btn-subtle cursor-pointer text-sm" }, "Choose photo", file), S.workspace.photo_url ? h("button", { class: "btn-ghost text-sm", onclick: async () => { S.workspace = (await api<{ workspace: typeof S.workspace }>("/api/workspace/photo", { method: "DELETE" })).workspace; photo.src = "/brand/1helm.png"; document.querySelectorAll<HTMLImageElement>(".logo-asset").forEach((image) => { image.src = "/brand/1helm.png"; }); } }, "Remove") : null)),
       h("div", { class: "mt-3" }, h("span", { class: "mb-1 block text-xs font-semibold text-muted" }, "Default colors"), presetRow),
       h("div", { class: "mt-4 grid gap-3 sm:grid-cols-2" }, h("label", {}, h("span", { class: "mb-1 block text-xs font-semibold text-muted" }, "Workspace name"), name), h("label", {}, h("span", { class: "mb-1 block text-xs font-semibold text-muted" }, "Color theme"), theme)),
-      h("div", { class: "mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save workspace"))));
+      h("div", { class: "mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save workspace"))),
+    h("div", { class: "card border-danger/30 p-4" },
+      h("h3", { class: "font-semibold text-fg" }, "Remove 1Helm"),
+      h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Before moving 1Helm to Trash, remove its isolated Linux channel computers so Apple’s container runtime does not leave virtual machines running. This keeps your Application Support data in case you reinstall."),
+      h("div", { class: "mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, removalStatus, h("button", { class: "btn-danger shrink-0 text-sm", onclick: () => { void prepareRemoval(); } }, "Prepare to remove 1Helm"))));
 }
 
 function applyWorkspaceTheme(): void {

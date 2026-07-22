@@ -62,6 +62,9 @@ import {
   wakeDueChannelComputers,
   shutdownChannelComputers,
   startChannelComputerReconciler,
+  appRemovalStatus,
+  prepareAppRemoval,
+  reactivateComputersAfterPreparedRemoval,
 } from "./channel-computers.ts";
 
 const PORT = Number(process.env.PORT || 8123);
@@ -514,6 +517,18 @@ const server = createServer(async (req, res) => {
     if (p === "/api/app/update" && m === "GET") {
       try { return json(res, 200, await appUpdateStatus(APP_ROOT)); }
       catch (error) { return json(res, 502, { error: (error as Error).message }); }
+    }
+    if (p === "/api/app/removal" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, await appRemovalStatus());
+    }
+    if (p === "/api/app/removal" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      if (String(b.confirmation || "") !== "REMOVE 1HELM") return json(res, 400, { error: "Type REMOVE 1HELM to confirm." });
+      const result = await prepareAppRemoval();
+      process.emit("1helm-removal-prepared");
+      return json(res, 200, result);
     }
     if (p === "/api/me/profile" && m === "PATCH") {
       const b = await jbody(req);
@@ -1414,6 +1429,7 @@ server.on("upgrade", (req, socket: Socket, head) => {
 
 // ---- embedded local computer (open-terminal compatible) ----
 async function bootstrap(): Promise<void> {
+  reactivateComputersAfterPreparedRemoval();
   prepareMnemosyneRuntime();
   await startRoutingEngine((activity) => broadcastAll({ type: "routing_activity", activity }));
   await internalRoutingProviderId();

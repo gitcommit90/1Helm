@@ -102,17 +102,33 @@ export function prepareMnemosyneRuntime(): boolean {
   if (pythonRuntime()) return true;
   const venv = join(DATA_DIR, "mnemosyne-runtime", "venv");
   mkdirSync(join(DATA_DIR, "mnemosyne-runtime"), { recursive: true });
-  try {
+  // Homebrew Python can be preferred in a user's PATH but occasionally lacks
+  // a working ensurepip installation. macOS always includes its own Python
+  // runtime, which Mnemosyne supports through the bridge's Python 3.9 shim.
+  // Try each explicitly rather than leaving durable memory unavailable merely
+  // because the first interpreter cannot create an app-owned venv.
+  const installers = [...new Set([
+    process.env.PYTHON || "",
+    "python3",
+    ...(process.platform === "darwin" ? ["/usr/bin/python3"] : []),
+  ].filter(Boolean))];
+  for (const python of installers) {
     // A failed venv or pip run may still leave an executable Python behind.
     // Replace only this app-managed runtime after proving it cannot import the
     // pinned package; agent databases and all other Application Support remain.
     if (existsSync(venv)) rmSync(venv, { recursive: true, force: true });
-    execFileSync(process.env.PYTHON || "python3", ["-m", "venv", venv], { timeout: 60_000, stdio: "ignore" });
-    execFileSync(join(venv, "bin", "python"), ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--ignore-requires-python", `mnemosyne-memory==${MNEMOSYNE_VERSION}`], { timeout: 180_000, stdio: "ignore" });
-    validatedPython = undefined;
-    return Boolean(pythonRuntime());
-  } catch (error) {
-    console.warn("Could not prepare Mnemosyne runtime:", (error as Error).message);
-    return false;
+    try {
+      execFileSync(python, ["-m", "venv", venv], { timeout: 60_000, stdio: "ignore" });
+      execFileSync(join(venv, "bin", "python"), ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--ignore-requires-python", `mnemosyne-memory==${MNEMOSYNE_VERSION}`], { timeout: 180_000, stdio: "ignore" });
+      validatedPython = undefined;
+      if (pythonRuntime()) return true;
+    } catch (error) {
+      console.warn(`Could not prepare Mnemosyne runtime with ${python}:`, (error as Error).message);
+    }
   }
+  // Do not leave a partial virtual environment looking like an available
+  // runtime. Agent-owned Mnemosyne databases remain untouched.
+  if (existsSync(venv)) rmSync(venv, { recursive: true, force: true });
+  validatedPython = undefined;
+  return false;
 }

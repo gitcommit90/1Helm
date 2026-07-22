@@ -67,7 +67,7 @@ const APPLE_RUNTIME_VERSION = "1.1.0";
 export const APPLE_RUNTIME_PACKAGE = `container-${APPLE_RUNTIME_VERSION}-installer-signed.pkg`;
 export const APPLE_RUNTIME_URL = `https://github.com/apple/container/releases/download/${APPLE_RUNTIME_VERSION}/${APPLE_RUNTIME_PACKAGE}`;
 export const APPLE_RUNTIME_SHA256 = "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714";
-export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.8";
+export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.10";
 const CONTAINER_CANDIDATES = [process.env.HELM_CONTAINER_CLI, "/usr/local/bin/container", "/opt/homebrew/bin/container", "container"].filter(Boolean) as string[];
 const COMMAND_TIMEOUT_MS = Math.max(5_000, Number(process.env.HELM_MACHINE_COMMAND_TIMEOUT_MS || 120_000));
 const IDLE_AFTER_MS = Math.max(60_000, Number(process.env.HELM_MACHINE_IDLE_MS || 15 * 60_000));
@@ -724,6 +724,77 @@ export async function deleteChannelComputer(channelId: number): Promise<void> {
     }
     run("UPDATE channel_computers SET desired_state='deleted',observed_state='deleted',provision_status='deleted',updated=? WHERE channel_id=?", now(), channelId);
   });
+}
+
+function listedAppleMachineIds(output: Buffer): string[] {
+  try {
+    const parsed = JSON.parse(output.toString("utf8"));
+    const rows = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.machines) ? parsed.machines : [];
+    return rows.map((row: { id?: unknown; name?: unknown }) => String(row?.id || row?.name || "")).filter(Boolean);
+  } catch { throw new Error("Apple container returned an unreadable machine list."); }
+}
+
+async function ownedInstallationMachineIds(): Promise<string[]> {
+  if (configuredChannelBackend() !== "apple") return [];
+  const listed = await apple(["machine", "list", "--format", "json"], { timeoutMs: 30_000 });
+  if (listed.code !== 0) throw new Error(listed.stderr.toString("utf8").trim() || "Could not list Apple channel machines.");
+  const prefix = `1helm-${installationId()}-channel-`;
+  return listedAppleMachineIds(listed.stdout).filter((id) => id.startsWith(prefix) && /^\d+$/.test(id.slice(prefix.length)));
+}
+
+/** Count exact installation-owned VMs that would survive moving the app to Trash. */
+export async function appRemovalStatus(): Promise<{ backend: ChannelComputerBackend; machines: number }> {
+  const backend = configuredChannelBackend();
+  return { backend, machines: backend === "apple" ? (await ownedInstallationMachineIds()).length : 0 };
+}
+
+/**
+ * Prepare for uninstall by deleting every VM carrying this installation's
+ * exact name and in-guest ownership marker. Application Support is preserved
+ * so an accidental app removal never destroys credentials or workspace data.
+ */
+export async function prepareAppRemoval(): Promise<{ backend: ChannelComputerBackend; deleted: number; remaining: number }> {
+  const backend = configuredChannelBackend();
+  if (backend !== "apple") return { backend, deleted: 0, remaining: 0 };
+  const install = installationId();
+  const prefix = `1helm-${install}-channel-`;
+  const machineIds = await ownedInstallationMachineIds();
+  let deleted = 0;
+  for (const machineId of machineIds) {
+    const channelId = Number(machineId.slice(prefix.length));
+    const inspection = await inspectApple(machineId);
+    if (!inspection) continue;
+    if (inspection.homeMount !== "none") throw new Error(`Refusing to remove ${machineId}: its Mac home isolation invariant no longer holds.`);
+    const ownership = await apple(["machine", "run", "-n", machineId, "--", ...guestWords("/bin/cat", "/var/lib/1helm/owner")], { timeoutMs: 30_000 });
+    if (ownership.code !== 0 || ownership.stdout.toString("utf8").trim() !== `${install}:${channelId}`) {
+      throw new Error(`Refusing to remove ${machineId}: its 1Helm ownership marker does not match exactly.`);
+    }
+    const tracked = q1("SELECT channel_id FROM channel_computers WHERE machine_id=?", machineId);
+    if (tracked) {
+      await deleteChannelComputer(Number(tracked.channel_id));
+      deleted++;
+      continue;
+    }
+    const stopped = await apple(["machine", "stop", machineId], { timeoutMs: 90_000 });
+    if (stopped.code !== 0 && !/not running|stopped/i.test(Buffer.concat([stopped.stderr, stopped.stdout]).toString("utf8"))) {
+      throw new Error(stopped.stderr.toString("utf8").trim() || `Could not stop ${machineId}.`);
+    }
+    const removed = await apple(["machine", "rm", machineId], { timeoutMs: 90_000 });
+    if (removed.code !== 0) throw new Error(removed.stderr.toString("utf8").trim() || `Could not delete ${machineId}.`);
+    run("UPDATE channel_computers SET desired_state='deleted',observed_state='deleted',provision_status='deleted',updated=? WHERE machine_id=?", now(), machineId);
+    deleted++;
+  }
+  const remaining = (await ownedInstallationMachineIds()).length;
+  if (remaining) throw new Error(`${remaining} 1Helm channel computer${remaining === 1 ? "" : "s"} remained after cleanup.`);
+  return { backend, deleted, remaining };
+}
+
+/** A reinstall intentionally rebuilds VMs from the preserved host mirrors. */
+export function reactivateComputersAfterPreparedRemoval(): void {
+  run(`UPDATE channel_computers SET
+    desired_state=CASE WHEN channel_id IN (SELECT id FROM channels WHERE status='archived') THEN 'stopped' ELSE 'auto' END,
+    observed_state='missing',provision_status='pending',last_error='',updated=?
+    WHERE desired_state='deleted' AND channel_id IN (SELECT id FROM channels WHERE kind='channel')`, now());
 }
 
 export function upsertObligation(channelId: number, kind: string, ref: string, mode: "resident" | "wakeable", details = "", dueAt?: number): void {

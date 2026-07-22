@@ -224,15 +224,21 @@ try {
 
   process.stdout.write(`REAL_APPLE_ACCEPTANCE_OK assertions=${assertions}\n`);
 } finally {
+  const cleanupFailures = [];
   for (const channelId of created) {
     try {
       const computer = fleet.channelComputer(channelId);
       if (!computer || computer.observed_state === "deleted") continue;
       const installationId = String(db.q1("SELECT installation_id FROM workspace WHERE id=1")?.installation_id || "");
       container(["machine", "run", "--root", "-n", computer.machine_id, "--", "'/bin/bash'", "'-lc'", `'test -e /usr/bin/systemctl || mv /usr/bin/systemctl.1helm-acceptance /usr/bin/systemctl; printf "%s\\n" "${installationId}:${channelId}" > /var/lib/1helm/owner'`], true);
-      await fleet.deleteChannelComputer(channelId).catch(() => undefined);
-    } catch { /* leave only the randomly namespaced acceptance VM for diagnosis */ }
+      await fleet.deleteChannelComputer(channelId);
+      const residual = container(["machine", "inspect", computer.machine_id], true);
+      if (residual.status === 0) throw new Error(`acceptance cleanup left ${computer.machine_id} behind`);
+    } catch (error) {
+      cleanupFailures.push(`channel ${channelId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   try { db.db.close(); } catch { /* already closed */ }
   rmSync(acceptanceRoot, { recursive: true, force: true });
+  if (cleanupFailures.length) throw new Error(`Real Apple acceptance cleanup failed:\n${cleanupFailures.join("\n")}`);
 }

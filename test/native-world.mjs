@@ -18,6 +18,7 @@ const mockPort = await freePort();
 const base = `http://127.0.0.1:${appPort}`;
 let app;
 let mock;
+let captain = "";
 let pass = 0;
 let fail = 0;
 
@@ -73,7 +74,7 @@ try {
   await launchApp();
 
   const registration = await api("/api/auth/register", { body: { username: "captain", password: "secret-pass", display: "Captain" } });
-  const captain = registration.body.token;
+  captain = registration.body.token;
   ok(registration.status === 200 && captain && registration.body.user.is_admin, "first user becomes Captain/admin");
 
   const provider = await api("/api/providers", { body: { name: "Deterministic provider", base_url: `http://127.0.0.1:${mockPort}/v1`, api_key: "test" } }, captain);
@@ -331,6 +332,10 @@ try {
   const collaboratorLogin = await api("/api/auth/login", { body: { username: "collaborator", password: "secret-pass" } });
   const collaborator = collaboratorLogin.body.token;
   ok(collaboratorCreate.status === 201 && collaborator, "Captain can add a workspace member who can sign in");
+  const removalStatus = await api("/api/app/removal", {}, captain);
+  const forbiddenRemoval = await api("/api/app/removal", {}, collaborator);
+  const unconfirmedRemoval = await api("/api/app/removal", { body: { confirmation: "wrong" } }, captain);
+  ok(removalStatus.status === 200 && removalStatus.body.backend === "native" && removalStatus.body.machines === 0 && forbiddenRemoval.status === 403 && unconfirmedRemoval.status === 400, "app-removal preparation is Captain-only, typed-confirmed, and reports the exact backend-owned VM count");
   const collaboratorLaunch = (await api("/api/channels", {}, collaborator)).body.channels.find((channel) => channel.id === launch.id);
   const collaboratorThread = await api(`/api/messages/${taskRoot}/thread`, {}, collaborator);
   const collaboratorFiles = await api(`/api/channels/${launch.id}/files`, {}, collaborator);
@@ -511,6 +516,15 @@ try {
   fail++;
   console.error("\nNative world test crashed:", error);
 } finally {
+  if (process.platform === "darwin" && captain && app?.exitCode == null) {
+    try {
+      const removal = await api("/api/app/removal", { body: { confirmation: "REMOVE 1HELM" } }, captain);
+      if (removal.body.remaining !== 0) throw new Error(`${removal.body.remaining} test channel VMs remained`);
+    } catch (error) {
+      fail++;
+      console.error("\nNative world Apple VM cleanup failed:", error);
+    }
+  }
   await stopApp();
   if (mock && mock.exitCode == null) mock.kill("SIGTERM");
   rmSync(dataDir, { recursive: true, force: true });

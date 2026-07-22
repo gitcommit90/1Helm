@@ -14,6 +14,12 @@ let authWindow = null;
 let localOrigin = "";
 let quitting = false;
 
+process.on("1helm-removal-prepared", () => {
+  // Prevent a cleaned installation from relaunching at login and recreating
+  // its channel VMs before the user moves the app to Trash.
+  app.setLoginItemSettings({ openAtLogin: false, type: "mainAppService" });
+});
+
 function freePort() {
   return new Promise((resolve, reject) => {
     const probe = createServer();
