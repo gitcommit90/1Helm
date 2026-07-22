@@ -205,7 +205,7 @@ try {
 
   // Simulate external loss. Reconciliation must recreate the same owned ID,
   // replay the host mirror, and never duplicate a machine.
-  container(["machine", "rm", betaComputer.machine_id]);
+  container(["machine", "delete", betaComputer.machine_id]);
   await fleet.reconcileChannelComputers();
   betaComputer = fleet.channelComputer(beta.channelId);
   result = await fleet.runChannelCommand(beta.channelId, "cat beta.txt");

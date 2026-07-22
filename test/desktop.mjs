@@ -66,6 +66,8 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(settingsClient, /REMOVE 1HELM/, "full app removal requires an explicit typed confirmation before deleting owned VMs");
   assert.match(server, /prepareAppRemoval\(\)/, "the control plane performs and verifies the owned-VM cleanup before uninstall");
   assert.match(server, /process\.emit\("1helm-removal-prepared"\)/, "successful cleanup notifies the native shell to disable automatic relaunch");
+  const channelComputers = await readFile(join(root, "src", "server", "channel-computers.ts"), "utf8");
+  assert.match(channelComputers, /\["machine", "delete", computer\.machine_id\]/, "uninstall cleanup uses Apple's complete machine deletion operation");
   const helperInstall = await readFile(join(root, "scripts", "ensure-node-pty-helper.cjs"), "utf8");
   assert.match(helperInstall, /process\.platform === "darwin"/);
   assert.match(helperInstall, /chmodSync\(helper, 0o755\)/, "Mac installs restore node-pty's executable spawn helper before terminals open");
