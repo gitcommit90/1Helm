@@ -138,12 +138,19 @@ test("Apple channel-computer contract preserves isolation, files, wakes, archive
   assert.equal(db.q1("SELECT disk_bytes FROM channel_computers WHERE channel_id=?", beta.channelId).disk_bytes, computers.MANAGED_CHANNEL_DISK_BYTES, "reported storage is the managed writable allocation, not Apple's host-backed virtual capacity");
   const backend = await readFile(join(root, "src", "server", "channel-computers.ts"), "utf8");
   assert.match(backend, /machine", "run", "-it"[\s\S]*guestWords\("\/bin\/bash", "-l"\)/, "interactive Apple terminals request an explicit guest login shell");
+
+  const removal = await computers.prepareAppRemoval();
+  assert.equal(removal.deleted, 1, "uninstall preparation deletes every remaining VM owned by this exact 1Helm installation");
+  assert.equal(removal.remaining, 0);
+  assert.equal(existsSync(join(fakeState, "machines", betaComputer.machine_id)), false, "no owned channel VM survives uninstall preparation");
+  computers.reactivateComputersAfterPreparedRemoval();
+  assert.equal(db.q1("SELECT desired_state FROM channel_computers WHERE channel_id=?", beta.channelId).desired_state, "auto", "a later reinstall can rebuild the removed VM from its preserved host mirror");
 });
 
 test("runtime digest and packaged image recipe stay pinned", async () => {
   assert.equal(computers.APPLE_RUNTIME_SHA256, "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714");
   assert.match(computers.APPLE_RUNTIME_URL, /\/1\.1\.0\/container-1\.1\.0-installer-signed\.pkg$/);
-  assert.equal(computers.DEFAULT_CHANNEL_IMAGE, "local/1helm-channel-machine:1.1.9");
+  assert.equal(computers.DEFAULT_CHANNEL_IMAGE, "local/1helm-channel-machine:1.1.10");
   const packaging = await readFile(join(root, "scripts", "package-mac-dmg.cjs"), "utf8");
   assert.match(packaging, /container\(\?:\$\|\\\/\)/, "release packaging includes container/ image assets");
   const image = await readFile(join(root, "container", "Containerfile"), "utf8");
@@ -154,4 +161,8 @@ test("runtime digest and packaged image recipe stay pinned", async () => {
   assert.match(backend, /pkgutil.*--check-signature/s);
   assert.match(backend, /spctl.*--type.*install/s);
   assert.doesNotMatch(backend, /command -v \$\{candidate\}/, "container CLI discovery never interpolates an environment value into a shell command");
+  const acceptance = await readFile(join(root, "scripts", "mac-channel-computer-acceptance.mjs"), "utf8");
+  assert.match(acceptance, /acceptance cleanup left/, "the real Apple acceptance test fails instead of silently leaking channel VMs");
+  assert.doesNotMatch(acceptance, /deleteChannelComputer\(channelId\)\.catch\(\(\) => undefined\)/, "acceptance cleanup never suppresses a failed VM deletion");
+
 });

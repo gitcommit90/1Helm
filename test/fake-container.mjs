@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
 const stateRoot = process.env.FAKE_CONTAINER_STATE;
@@ -40,6 +40,12 @@ if (args[0] === "build") process.exit(0);
 
 if (args[0] !== "machine") fail(`unsupported fake container command: ${args.join(" ")}`);
 const action = args[1];
+if (action === "list" || action === "ls") {
+  const machinesRoot = join(stateRoot, "machines");
+  const rows = existsSync(machinesRoot) ? readdirSync(machinesRoot).map((entry) => readConfig(entry)).filter(Boolean) : [];
+  process.stdout.write(JSON.stringify(rows));
+  process.exit(0);
+}
 const name = machineName();
 if (action === "create") {
   if (!name || readConfig(name)) fail("machine already exists");

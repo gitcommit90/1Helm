@@ -50,6 +50,8 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.doesNotMatch(source, /StartInterval|launchctl", \["bootstrap"|ProgramArguments/, "1Helm migrates away from the legacy LaunchAgent that macOS attributes to the certificate publisher");
   assert.match(source, /if \(!allowedLocalUrl\(details\.url\)\)/);
   assert.match(source, /process\.emit\("SIGTERM"/);
+  assert.match(source, /1helm-removal-prepared/);
+  assert.match(source, /setLoginItemSettings\(\{ openAtLogin: false, type: "mainAppService" \}\)/, "uninstall preparation disables the Login Item so cleaned VMs are not recreated at next login");
   const updates = await readFile(join(root, "src", "server", "updates.ts"), "utf8");
   assert.match(updates, /demo\.1helm\.com\/api\/app\/update\/latest/);
   assert.match(updates, /AbortSignal\.timeout\(15_000\)/, "manual update checks time out instead of holding the local app open");
@@ -59,6 +61,11 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   const appClient = await readFile(join(root, "src", "client", "app.ts"), "utf8");
   assert.match(appClient, /Check for updates/);
   assert.match(appClient, /1Herd v\$\{update\.current_version\}/, "Profile displays the installed version beside the update control");
+  const settingsClient = await readFile(join(root, "src", "client", "settings.ts"), "utf8");
+  assert.match(settingsClient, /Prepare to remove 1Helm/);
+  assert.match(settingsClient, /REMOVE 1HELM/, "full app removal requires an explicit typed confirmation before deleting owned VMs");
+  assert.match(server, /prepareAppRemoval\(\)/, "the control plane performs and verifies the owned-VM cleanup before uninstall");
+  assert.match(server, /process\.emit\("1helm-removal-prepared"\)/, "successful cleanup notifies the native shell to disable automatic relaunch");
   const helperInstall = await readFile(join(root, "scripts", "ensure-node-pty-helper.cjs"), "utf8");
   assert.match(helperInstall, /process\.platform === "darwin"/);
   assert.match(helperInstall, /chmodSync\(helper, 0o755\)/, "Mac installs restore node-pty's executable spawn helper before terminals open");
