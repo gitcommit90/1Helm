@@ -106,6 +106,14 @@ export function migrate(): void {
   addColumn("workspace", "photo_mime", "photo_mime TEXT NOT NULL DEFAULT ''");
   addColumn("workspace", "theme", "theme TEXT NOT NULL DEFAULT 'graphite'");
   addColumn("workspace", "installation_id", "installation_id TEXT NOT NULL DEFAULT ''");
+  addColumn("workspace", "collaboration_enabled", "collaboration_enabled INTEGER NOT NULL DEFAULT 0");
+  addColumn("workspace", "collaboration_slug", "collaboration_slug TEXT NOT NULL DEFAULT ''");
+  addColumn("workspace", "collaboration_hostname", "collaboration_hostname TEXT NOT NULL DEFAULT ''");
+  addColumn("workspace", "collaboration_status", "collaboration_status TEXT NOT NULL DEFAULT 'off'");
+  addColumn("workspace", "collaboration_error", "collaboration_error TEXT NOT NULL DEFAULT ''");
+  addColumn("workspace", "accept_new_requests", "accept_new_requests INTEGER NOT NULL DEFAULT 1");
+  addColumn("users", "email", "email TEXT NOT NULL DEFAULT ''");
+  addColumn("messages", "system_message", "system_message INTEGER NOT NULL DEFAULT 0");
 
   // A prerelease branch used bot-scoped skill/improvement schemas under the
   // same table names. Preserve those rows and migrate them into the canonical
@@ -307,6 +315,19 @@ export function migrate(): void {
     created INTEGER NOT NULL,
     updated INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS access_requests (
+    id INTEGER PRIMARY KEY,
+    email TEXT NOT NULL,
+    display TEXT NOT NULL DEFAULT '',
+    request_token_hash TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','denied','claimed')),
+    requested_at INTEGER NOT NULL,
+    reviewed_at INTEGER,
+    reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    claimed_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_access_requests_pending_email
+    ON access_requests(lower(email)) WHERE status IN ('pending','approved');
   CREATE TRIGGER IF NOT EXISTS trg_agent_channel_ordinary
   BEFORE INSERT ON agent_channels
   WHEN (SELECT kind FROM channels WHERE id=NEW.channel_id) <> 'channel'
@@ -483,6 +504,13 @@ export function migrate(): void {
     }
 
     const main = q1("SELECT id FROM channels WHERE kind='channel' AND name='main' ORDER BY id LIMIT 1");
+    run(`UPDATE bots SET avatar='color:#4F6D7A' WHERE avatar='' AND id IN (
+      SELECT bot_id FROM agents WHERE kind='skipper' AND status<>'deleted')`);
+    const migrationColors = ["#C8552F", "#2166B8", "#2E7D4F", "#8A6B7C", "#A67C52", "#4F6D7A", "#7A6A4F", "#64748B"];
+    for (const resident of q(`SELECT b.id FROM bots b JOIN agents a ON a.bot_id=b.id
+      WHERE a.kind='channel' AND a.status<>'deleted' AND b.avatar='' ORDER BY b.id`)) {
+      run("UPDATE bots SET avatar=? WHERE id=?", `color:${migrationColors[Number(resident.id) % migrationColors.length]}`, resident.id);
+    }
     if (main && !q1("SELECT 1 FROM agents WHERE kind='skipper' AND status<>'deleted'")) {
       let skipperBot = q1(`SELECT b.* FROM bots b JOIN bot_channels bc ON bc.bot_id=b.id
         WHERE bc.channel_id=? AND lower(b.name)='skipper' ORDER BY b.id LIMIT 1`, main.id);
@@ -530,7 +558,7 @@ export function migrate(): void {
     // developer deliberately opts into the native compatibility backend.
     const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || (process.platform === "darwin" ? "apple" : "native"));
     const backend = ["apple", "native", "mock"].includes(configuredBackend) ? configuredBackend : "native";
-    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.12");
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.13");
     for (const channel of q(`SELECT c.id FROM channels c JOIN agent_channels ac ON ac.channel_id=c.id
       WHERE c.kind='channel' AND c.status<>'deleted'`)) {
       const channelId = Number(channel.id);

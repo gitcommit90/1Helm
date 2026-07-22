@@ -123,7 +123,7 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     const guestToken = (await json(`http://127.0.0.1:${appPort}/api/auth/login`, "", {
       method: "POST", body: JSON.stringify({ username: "crew", password: "crew-password" }),
     })).token;
-    assert.equal((await fetch(`http://127.0.0.1:${appPort}/api/routing/models`, { headers: { authorization: `Bearer ${guestToken}` } })).status, 200, "non-admin members can read the model catalog used by agents");
+    assert.equal((await fetch(`http://127.0.0.1:${appPort}/api/routing/models`, { headers: { authorization: `Bearer ${guestToken}` } })).status, 403, "Collab-only members cannot read the model catalog used by agents");
     assert.equal((await fetch(`http://127.0.0.1:${appPort}/api/routing/state`, { headers: { authorization: `Bearer ${guestToken}` } })).status, 403, "non-admin members cannot read provider credentials or control state");
     assert.equal((await fetch(`http://127.0.0.1:${appPort}/api/routing/action`, { method: "POST", headers: { authorization: `Bearer ${guestToken}`, "content-type": "application/json" }, body: JSON.stringify({ action: "app:logs-clear" }) })).status, 403, "non-admin members cannot mutate the provider fabric");
 

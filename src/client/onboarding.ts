@@ -62,9 +62,10 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     };
     password.addEventListener("keydown", (event) => { if (event.key === "Enter") void submit(); });
     queueMicrotask(() => username.focus());
+    const joinTeam = h("button", { class: "btn-subtle", onclick: () => { void joinExistingTeam(); } }, "Join team?");
     return layout("Create the Captain account", "The first account is the Captain: owner and final authority for this workspace. Add people later.",
       h("div", { class: "grid gap-3 sm:grid-cols-3" }, field("Username", username, "Lowercase letters, numbers, dots, dashes, and underscores."), field("Your name", display, "How people and agents will address you."), field("Password", password), h("div", { class: "sm:col-span-3" }, status)),
-      footer(null, () => { void submit(); }, "Continue"));
+      h("div", { class: "flex shrink-0 items-center justify-between border-t border-line px-5 py-3 sm:px-7" }, joinTeam, h("button", { class: "btn-primary min-w-28 px-4 py-2", onclick: () => { void submit(); } }, "Continue")));
   };
 
   const providersStep = (): HTMLElement => {
@@ -88,12 +89,32 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
 
   const workspaceStep = (): HTMLElement => {
     const name = h("input", { class: "field text-lg", value: "My Workspace", autocomplete: "organization" }) as HTMLInputElement;
+    const collaborate = h("input", { type: "checkbox", class: "accent-accent" }) as HTMLInputElement;
+    const slug = h("input", { class: "field", placeholder: "your-team", autocomplete: "off", disabled: true }) as HTMLInputElement;
+    const slugStatus = h("p", { class: "min-h-5 text-xs text-muted" }, "Your Mac remains the only server. When it is offline, this address is offline.");
+    let availabilityTimer: ReturnType<typeof setTimeout> | null = null;
+    collaborate.onchange = () => { slug.disabled = !collaborate.checked; if (collaborate.checked) slug.focus(); };
+    slug.oninput = () => {
+      slug.value = slug.value.toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 48);
+      if (availabilityTimer) clearTimeout(availabilityTimer);
+      if (!slug.value) { slugStatus.textContent = "Choose the unique address your team will use."; return; }
+      slugStatus.textContent = "Checking address…";
+      availabilityTimer = setTimeout(() => { void api<{ available: boolean; hostname: string; reason: string }>(`/api/collaboration/slug?slug=${encodeURIComponent(slug.value)}`).then((result) => {
+        slugStatus.textContent = result.available ? `${result.hostname} is available.` : result.reason === "taken" ? `${result.hostname} is already taken.` : "Use 3–48 lowercase letters, numbers, or hyphens.";
+        slugStatus.className = `min-h-5 text-xs ${result.available ? "text-ok" : "text-danger"}`;
+      }).catch((error) => { slugStatus.textContent = (error as Error).message; slugStatus.className = "min-h-5 text-xs text-danger"; }); }, 350);
+    };
     const status = h("div");
     const runtimeMount = h("div");
 
     const completeWorkspace = async (button: HTMLButtonElement): Promise<void> => {
       setBusy(button, true, "Creating workspace…");
       try {
+        if (collaborate.checked) {
+          if (!slug.value) throw new Error("Choose a workspace address before enabling collaboration.");
+          setBusy(button, true, "Provisioning team address…");
+          await api("/api/collaboration/claim", { body: { slug: slug.value, workspace_name: name.value.trim() || "My Workspace" } });
+        }
         await api("/api/setup/complete", { body: { name: name.value.trim() || "My Workspace", terminals_enabled: true } });
         sessionStorage.setItem("1helm.justOnboarded", "1");
         await opts.onDone();
@@ -167,7 +188,11 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     name.addEventListener("keydown", (event) => { if (event.key === "Enter") void prepare(); });
     queueMicrotask(() => { name.focus(); name.select(); });
     return layout("Name this workspace", "Skipper will prepare the workspace and automatically manage a private Linux computer for every ordinary channel.",
-      h("div", { class: "grid items-start gap-3 sm:grid-cols-[minmax(240px,.7fr)_1.3fr]" }, field("Workspace name", name, "This appears in the sidebar. You can rename it later."), h("div", {}, runtimeMount, status)),
+      h("div", { class: "grid items-start gap-3 sm:grid-cols-[minmax(240px,.7fr)_1.3fr]" },
+        h("div", { class: "space-y-3" }, field("Workspace name", name, "This appears in the sidebar. You can rename it later."),
+          h("label", { class: "flex items-start gap-2 rounded-lg border border-line p-3" }, collaborate, h("span", {}, h("span", { class: "block text-sm font-semibold text-fg" }, "Collaborate"), h("span", { class: "mt-1 block text-xs leading-5 text-muted" }, "Give this Mac a private 1helm.com address so teammates can reach its headless web app from anywhere."))),
+          field("Team address", slug, "Your permanent reserved address, even when Collaborate is switched off."), slugStatus),
+        h("div", {}, runtimeMount, status)),
       footer(() => { step = 1; void render(); }, () => { void prepare(); }, "Create workspace"));
   };
 
@@ -180,4 +205,15 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
 
   if (!getToken() && step > 0) step = 0;
   void render();
+}
+
+async function joinExistingTeam(): Promise<void> {
+  const raw = window.prompt("Enter the team address, for example acme.1helm.com");
+  if (raw == null) return;
+  const host = raw.trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0].replace(/\.$/, "");
+  if (!/^[a-z0-9](?:[a-z0-9-]{1,46}[a-z0-9])?\.1helm\.com$/.test(host)) {
+    window.alert("Enter a workspace address ending in .1helm.com.");
+    return;
+  }
+  location.assign(`https://${host}`);
 }

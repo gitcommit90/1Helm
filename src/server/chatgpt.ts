@@ -240,6 +240,58 @@ export async function listChatGPTModels(): Promise<string[]> {
   return models;
 }
 
+/** Invoke ChatGPT's native Responses image-generation tool and return the
+ * final PNG bytes. The OAuth session stays local; no API key is required. */
+export async function generateChatGPTImage(prompt: string, signal?: AbortSignal): Promise<Buffer> {
+  const models = await listChatGPTModels();
+  return generateChatGPTImageWith(chatgptHandler, models, prompt, signal);
+}
+
+export async function generateChatGPTImageWith(
+  handler: Pick<ChatGPTHandler, "handler">,
+  models: string[],
+  prompt: string,
+  signal?: AbortSignal,
+  requestFor: (path: string, init?: RequestInit) => Request = chatgptSessionRequest,
+): Promise<Buffer> {
+  const preferred = ["gpt-5.6", "gpt-5.5", ...models.filter((model) => /^gpt-5/i.test(model)), ...models];
+  const candidates = [...new Set(preferred.filter((model) => models.includes(model)))];
+  if (!candidates.length) throw new Error("The connected ChatGPT account has no model available for image generation.");
+  let lastError = "Image generation is unavailable for the connected ChatGPT account.";
+  for (const model of candidates) {
+    const response = await handler.handler(requestFor("/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ model, input: prompt, tools: [{ type: "image_generation", action: "generate" }] }),
+      signal,
+    }));
+    if (!response.ok) { lastError = (await response.text().catch(() => "")).slice(0, 500) || `HTTP ${response.status}`; continue; }
+    const raw = await response.text();
+    const payloads: unknown[] = [];
+    try { payloads.push(JSON.parse(raw)); } catch { /* Responses normally streams SSE. */ }
+    for (const line of raw.split("\n")) {
+      const value = line.trim();
+      if (!value.startsWith("data:") || value.slice(5).trim() === "[DONE]") continue;
+      try { payloads.push(JSON.parse(value.slice(5).trim())); } catch { /* ignore malformed event */ }
+    }
+    let encoded = "";
+    const inspect = (value: unknown): void => {
+      if (!value || typeof value !== "object") return;
+      const item = value as Record<string, unknown>;
+      if (/image_generation/i.test(String(item.type || "")) && typeof item.result === "string") encoded = item.result;
+      for (const child of [item.item, item.output, (item.response as Record<string, unknown> | undefined)?.output]) {
+        if (Array.isArray(child)) child.forEach(inspect); else inspect(child);
+      }
+    };
+    payloads.forEach(inspect);
+    if (!encoded) { lastError = `ChatGPT ${model} returned no image output.`; continue; }
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.length < 100 || bytes.subarray(1, 4).toString("ascii") !== "PNG") { lastError = `ChatGPT ${model} returned invalid image data.`; continue; }
+    return bytes;
+  }
+  throw new Error(lastError);
+}
+
 export async function streamChatGPTCompletion(
   model: string,
   messages: { role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }[],

@@ -2,6 +2,38 @@
 
 This is the living product record for 1Helm. Add confirmed decisions, deployment findings, and completed slices here as the product evolves.
 
+## Local-first collaboration and headless workspace access (2026-07-22)
+
+Collaboration exposes the existing installed workspace; it does not introduce a
+hosted copy. The Mac app remains the only server and continues running its
+loopback web control plane after the window closes. An opted-in Captain reserves
+one unique `workspace.1helm.com` hostname. A locally managed Cloudflare Tunnel
+routes that exact hostname to the app's current ephemeral loopback port. Sleep,
+shutdown, loss of power, or loss of connectivity makes the workspace unavailable
+by design.
+
+Slug reservation and provisioning are owned by a small Cloudflare Worker with a
+D1 uniqueness registry and a 1,000-workspace beta admission limit. The Worker
+creates the exact DNS record and tunnel atomically, returns only that workspace's
+connector credential, authenticates later enable/disable calls with an
+installation-specific management secret, and removes partial resources when a
+claim fails. The signed app bundles a pinned arm64 Cloudflared connector; global
+Cloudflare credentials do not enter the app bundle or Application Support.
+
+Coworker access is request/approval based. Settings → Members controls whether
+requests are accepted and lets the Captain approve or deny them. Accepted people
+create a local workspace account and initially see only `Collab`: a people-only
+holding channel with no agent, bot, VM, workspace, memory, or terminal. Access to
+an agent channel is granted only when the Captain tags the coworker in that
+channel and confirms `Add @user`. Membership scopes REST responses, Files,
+terminals, messages, and WebSocket fan-out on the server.
+
+The production provisioner was deployed at `provision.1helm.com` with its D1
+registry. A disposable real claim created a tunnel and exact DNS record, connected
+a local HTTP service through Cloudflare, and returned the marker from the public
+workspace URL. The disposable connector, DNS record, tunnel, and registry row
+were removed after verification.
+
 ## Parity hardening — provider fabric 1.1.1 (2026-07-21)
 
 The post-1.1 audit exercised the provider fabric as a control plane rather than accepting only the original happy path. The resulting contracts are now explicit:

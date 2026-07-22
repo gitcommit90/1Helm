@@ -2,10 +2,10 @@ import { q, q1, run, now, type Row } from "./db.ts";
 import { createMessage, serializeMessage, resolveModel, resolveProviderId, botEndpoint, isInternalMessageBody } from "./store.ts";
 import { getComputer, execOnComputer } from "./computer.ts";
 import { broadcastToChannel } from "./events.ts";
-import { isChatGPTProvider, streamChatGPTCompletion } from "./chatgpt.ts";
+import { generateChatGPTImage, isChatGPTProvider, streamChatGPTCompletion } from "./chatgpt.ts";
 import { availableGoogleAccounts, createGmailDraft, getGmailMessage, normalizeMailConfig, searchGmail } from "./gmail.ts";
 import { recallForAgent, rememberForAgent } from "./memory.ts";
-import { agentSkillContext, createSkill, listSkills, proposeSkill, provisionSkill, requestSkill } from "./skills.ts";
+import { agentSkillContext, createSkill, imageGenerationAvailable, listSkills, proposeSkill, provisionSkill, requestSkill } from "./skills.ts";
 import {
   agentForBot,
   agentForChannel,
@@ -69,7 +69,7 @@ function completedToolAnswer(tool: string, result: string): string {
       return `Created a Gmail draft in **${parsed.account || "the granted account"}**${parsed.draft_id ? ` (draft ${parsed.draft_id})` : ""}. It was not sent.`;
     } catch { return "Created the Gmail draft. It was not sent."; }
   }
-  if (["grant_gmail_access", "create_channel", "remember", "call_skipper", "call_agent", "request_skill", "propose_skill", "create_skill", "invite_agent", "attach_file", "schedule_followup"].includes(tool)) return result;
+  if (["grant_gmail_access", "create_channel", "remember", "call_skipper", "call_agent", "request_skill", "propose_skill", "create_skill", "invite_agent", "attach_file", "generate_image", "schedule_followup"].includes(tool)) return result;
   if (tool === "gmail_list_accounts") {
     try {
       const parsed = JSON.parse(result) as { accounts?: string[] };
@@ -273,6 +273,16 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
     },
   });
   if (!visiting) {
+    const imageSkill = agent?.id && q1(`SELECT 1 FROM agent_skills ask JOIN skills s ON s.id=ask.skill_id
+      WHERE ask.agent_id=? AND s.slug='image-generation' AND s.status='active'`, agent.id);
+    if (imageSkill && imageGenerationAvailable()) tools.push({
+      type: "function",
+      function: {
+        name: "generate_image",
+        description: "Generate a new image through the workspace's connected ChatGPT account, save it in this channel, and attach it to the current reply. Use this whenever the user asks you to create or draw an image.",
+        parameters: { type: "object", properties: { prompt: { type: "string" }, name: { type: "string", description: "Optional PNG filename." } }, required: ["prompt"] },
+      },
+    });
     tools.push({
       type: "function",
       function: {
@@ -722,11 +732,21 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
   const turns = activeTurns.get(channelId) || new Set<ActiveTurn>();
   const activeTurn: ActiveTurn = { controller, threadRootId, messageId: msgId, agentId: Number(agent?.id || 0) };
   turns.add(activeTurn); activeTurns.set(channelId, turns);
-  const emit = (): void => broadcastToChannel(channelId, {
-    type: "message_update",
-    message: serializeMessage(msgId),
-    parent: serializeMessage(threadRootId),
-  });
+  let emitTimer: ReturnType<typeof setTimeout> | null = null;
+  const emitNow = (): void => {
+    if (emitTimer) clearTimeout(emitTimer);
+    emitTimer = null;
+    broadcastToChannel(channelId, {
+      type: "message_update",
+      message: serializeMessage(msgId),
+      parent: serializeMessage(threadRootId),
+    });
+  };
+  const emit = (): void => {
+    if (emitTimer) return;
+    emitTimer = setTimeout(emitNow, 75);
+    emitTimer.unref();
+  };
   const addProgress = (kind: "thinking" | "tool" | "status", body: string, status: "running" | "complete" | "failed" = "running"): number => {
     const id = run("INSERT INTO agent_progress (message_id,kind,body,status,created,updated) VALUES (?,?,?,?,?,?)", msgId, kind, body.slice(0, 20_000), status, now(), now()).lastInsertRowid;
     emit();
@@ -777,6 +797,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
     failEscalation(); setStatus(agent, channelId, "waiting"); turns.delete(activeTurn); if (!turns.size) activeTurns.delete(channelId); return;
   }
   let startProgressId = addProgress("status", "Starting agent turn…", "running");
+  emitNow();
   broadcastToChannel(channelId, { type: "message", message: serializeMessage(msgId), parent: serializeMessage(threadRootId) });
 
   const messages = buildContext(bot, agent, channelId, triggerId, threadRootId, fresh, hostAuthorized);
@@ -859,6 +880,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                             : name === "propose_skill" || name === "create_skill" ? `${String(args.name || "")}: ${String(args.description || "")}`
                   : name === "invite_agent" || name === "call_agent" ? `@${String(args.agent || "resident")}: ${String(args.reason || "")}`
                   : name === "attach_file" ? String(args.path || args.name || "")
+                  : name === "generate_image" ? String(args.prompt || "")
                   : name === "schedule_followup"
                     ? `in ${String(args.delay_seconds || "?")}s: ${String(args.reason || "")}`
                   : name === "ask_user"
@@ -884,6 +906,18 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               );
               emit();
               result = `Attached ${attached.name} (${attached.mime}, ${attached.size} bytes) from /${attached.path} to this message.`;
+            } else if (name === "generate_image" && !visiting && imageGenerationAvailable()) {
+              const requested = String(args.name || "generated-image.png").replace(/[^a-zA-Z0-9._ -]+/g, "-").replace(/\.[^.]+$/, "").slice(0, 100) || "generated-image";
+              const fileName = `${requested}-${Date.now().toString(36)}.png`;
+              const relativePath = `files/${fileName}`;
+              const root = ensureChannelWorkspace(channelId);
+              const { join } = await import("node:path");
+              const { writeFileSync } = await import("node:fs");
+              writeFileSync(join(root, relativePath), await generateChatGPTImage(String(args.prompt || ""), turnSignal));
+              syncWorkspaceArtifacts(channelId, threadId, actor);
+              const attached = attachWorkspaceFileToMessage(channelId, msgId, threadId, relativePath, actor, fileName);
+              emit();
+              result = `Generated and attached ${attached.name}.`;
             } else if (name === "remember") {
               const memoryId = recordMemory({ channelId, threadId, kind: String(args.kind || "fact"), content: input, sourceMessageId: msgId, authorType: actor });
               result = `Recorded channel memory ${memoryId}.`;

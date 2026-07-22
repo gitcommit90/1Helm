@@ -1,14 +1,10 @@
-import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR, now, q, q1, run, type Row } from "./db.ts";
+import { connectorConfigured, connectorCredential, saveTunnelConnector, startTunnelConnector, type TunnelCredential } from "./connectors.ts";
 
 const CLOUDFLARE_API = (process.env.CLOUDFLARE_API_BASE || "https://api.cloudflare.com/client/v4").replace(/\/$/, "");
-const DOMAIN_DIR = join(DATA_DIR, "cloudflare");
-const CONFIG_PATH = join(DOMAIN_DIR, "config.yml");
-const CREDENTIAL_PATH = join(DOMAIN_DIR, "tunnel.json");
-const UNIT_PATH = process.env.CLOUDFLARE_UNIT_PATH || "/etc/systemd/system/1helm-cloudflare-domain.service";
 
 const normalizeHostname = (value: string): string => value.trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0].replace(/\.$/, "");
 
@@ -54,7 +50,9 @@ export async function connectCloudflareDomain(hostnameInput: string, token: stri
       if (!records.length) throw error;
       await cf(token, `/zones/${zone.id}/dns_records/${records[0].id}`, { method: "PUT", body: JSON.stringify({ type: "CNAME", name: hostname, content: `${tunnel.id}.cfargotunnel.com`, proxied: true, ttl: 1, comment: "Connected by 1Helm" }) });
     });
-    installTunnel({ accountId, tunnelId: tunnel.id, secret, hostname, port });
+    const connectorId = `custom-${id}`;
+    saveTunnelConnector(connectorId, { account_tag: accountId, tunnel_id: tunnel.id, tunnel_secret: secret }, [hostname], port);
+    startTunnelConnector(connectorId);
     run("UPDATE workspace_domains SET status='active',tunnel_id=?,verified=?,updated=? WHERE id=?", tunnel.id, now(), now(), id);
     return q1("SELECT * FROM workspace_domains WHERE id=?", id)!;
   } catch (error) {
@@ -64,39 +62,21 @@ export async function connectCloudflareDomain(hostnameInput: string, token: stri
   }
 }
 
-function installTunnel(opts: { accountId: string; tunnelId: string; secret: string; hostname: string; port: number }): void {
-  mkdirSync(DOMAIN_DIR, { recursive: true });
-  writeFileSync(CREDENTIAL_PATH, JSON.stringify({ AccountTag: opts.accountId, TunnelSecret: opts.secret, TunnelID: opts.tunnelId }), { mode: 0o600 });
-  chmodSync(CREDENTIAL_PATH, 0o600);
-  writeFileSync(CONFIG_PATH, [
-    `tunnel: ${opts.tunnelId}`,
-    `credentials-file: ${CREDENTIAL_PATH}`,
-    "",
-    "ingress:",
-    `  - hostname: ${opts.hostname}`,
-    `    service: http://127.0.0.1:${opts.port}`,
-    "  - service: http_status:404",
-    "",
-  ].join("\n"));
-  const cloudflared = process.env.CLOUDFLARED_BIN || (existsSync("/usr/bin/cloudflared") ? "/usr/bin/cloudflared" : "/usr/local/bin/cloudflared");
-  writeFileSync(UNIT_PATH, [
-    "[Unit]",
-    "Description=1Helm Cloudflare custom domain",
-    // The live deployment retains this legacy systemd unit identifier. It is
-    // an infrastructure compatibility name, not product branding.
-    "After=network-online.target 1herd-refactored.service",
-    "Wants=network-online.target",
-    "",
-    "[Service]",
-    `ExecStart=${cloudflared} --no-autoupdate --config ${CONFIG_PATH} tunnel run`,
-    "Restart=on-failure",
-    "RestartSec=5s",
-    "",
-    "[Install]",
-    "WantedBy=multi-user.target",
-    "",
-  ].join("\n"));
-  const systemctl = process.env.CLOUDFLARE_SYSTEMCTL_BIN || "systemctl";
-  execFileSync(systemctl, ["daemon-reload"], { timeout: 15_000 });
-  execFileSync(systemctl, ["enable", "--now", "1helm-cloudflare-domain.service"], { timeout: 30_000 });
+export function startCustomDomainConnectors(port: number): void {
+  const active = q("SELECT id,hostname FROM workspace_domains WHERE status='active'");
+  for (const domain of active) {
+    const id = `custom-${domain.id}`;
+    let credential = connectorCredential(id);
+    // Migrate the single-domain layout used by earlier releases into the
+    // per-connector layout without asking the Captain to reconnect it.
+    const legacy = join(DATA_DIR, "cloudflare", "tunnel.json");
+    if (!credential && active.length === 1 && existsSync(legacy)) {
+      try {
+        const parsed = JSON.parse(readFileSync(legacy, "utf8")) as Record<string, string>;
+        credential = { account_tag: parsed.AccountTag, tunnel_id: parsed.TunnelID, tunnel_secret: parsed.TunnelSecret } as TunnelCredential;
+      } catch { /* malformed legacy state remains visibly disconnected */ }
+    }
+    if (credential) saveTunnelConnector(id, credential, [String(domain.hostname)], port);
+    if (connectorConfigured(id)) startTunnelConnector(id);
+  }
 }

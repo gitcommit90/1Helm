@@ -31,7 +31,8 @@ Living product record and direction history: [`docs/VISION.md`](docs/VISION.md).
 - **Mnemosyne memory per identity** — Skipper and every resident agent own a distinct local Mnemosyne SQLite database. Curated knowledge and completed session outcomes feed long-term retrieval; memory never collapses to a profile Markdown file.
 - **Growing templates** — start from a Blank slate, Project, Research, Home, or Inbox role. These are lightweight starting kits; the resident keeps learning preferences, receiving skills, and improving with the user.
 - **Stable channel URLs** — channel tabs and threads have durable slug routes such as `/c/product-launch/memory` and `/c/product-launch/thread/42`.
-- **Cloudflare custom domains** — Settings → Domains creates a named tunnel, DNS route, HTTPS hostname, and persistent service from a one-time token that is never stored.
+- **Local-first collaboration** — opt in to a unique `workspace.1helm.com` address for the same headless web app running on the installed Mac. Coworkers request access, create an account after Captain approval, land in the human-only `Collab` space, and gain an agent channel only after the Captain tags and confirms them there. When the host Mac is asleep, off, or offline, the workspace is unavailable by design.
+- **Cloudflare custom domains** — Settings → Domains can also create a named tunnel, DNS route, HTTPS hostname, and persistent connector from a one-time token that is never stored.
 - **Silent improvement reviews** — Skipper periodically examines recent interaction signals, adds durable behavior guidance after missed corrections or frustration, and leaves a concise Activity note.
 - **Thread-only expert guests** — the ordinary channel stays Skipper plus its resident expert. Skipper may invite another resident into one thread; the guest is never added to the channel and receives neither its workspace nor memory.
 - **Skipper escalation** — `@skipper` (or a resident agent's `call_skipper`) routes the full invoking thread to the one workspace Skipper, which can take the broader action and records the outcome in that same thread. Skipper hands work back with `call_agent` so the resident finishes without the Captain re-tagging.
@@ -71,7 +72,7 @@ Open `http://localhost:8123`. On a fresh data directory you see the setup wizard
 | `PORT` | `8123` | HTTP/WebSocket port. |
 | `CTRL_DATA_DIR` | `./data` | SQLite control-plane state + narrow host workspace mirrors and uploaded files (internal path name kept for compatibility). |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `native` elsewhere | Explicit backend override for development/testing. The macOS product uses `apple`. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:1.1.12` | Versioned OCI machine image built from `container/Containerfile`. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:1.1.13` | Versioned OCI machine image built from `container/Containerfile`. |
 
 On first boot 1Helm starts a private loopback Open-Terminal agent and registers it as **"This Computer"** for Skipper's native-Mac work. Ordinary residents are never assigned that host computer.
 
@@ -113,6 +114,25 @@ public update service and opens the current GitHub Release's Apple Silicon DMG
 when a newer version is available. Desktop updates remain manual DMG
 replacements; replacing the app preserves `~/Library/Application Support/1Helm`.
 
+### Collaboration and headless access
+
+The native app always starts its local web control plane on loopback and keeps it
+running after the window closes. During onboarding—or later in Settings →
+Domains—the Captain can enable **Collaborate** and reserve one unique
+`workspace.1helm.com` slug. 1Helm provisions an exact Cloudflare DNS record and
+a tunnel whose connector runs inside the signed app against that app instance's
+ephemeral loopback port. Workspace data and provider credentials remain on the
+Captain's Mac; the public hostname is a route to that machine, not a hosted copy.
+
+The app's **Join team?** path accepts another `*.1helm.com` workspace. Someone
+without an account can request access when the Captain has **Accept new
+requests** enabled. Approval happens in Settings → Members. The first coworker
+creates `Collab`, a holding space containing people only—no resident agent, bot,
+VM, terminal, Files workspace, or model policy. Coworkers see no agent channel
+until the Captain writes `@username` in that channel and confirms **Add
+@username**. These channel boundaries are enforced by the HTTP, file, terminal,
+and WebSocket server paths, not only hidden in the client.
+
 ---
 
 ## Architecture
@@ -128,6 +148,7 @@ Compact Node/TypeScript app with a native Electron host on macOS and no server t
 | **Terminals** | `node-pty`; ordinary channels spawn `container machine run -it`, while Skipper can use the native loopback computer. |
 | **Channel computers** | Apple `container machine`, one persistent Linux VM per ordinary channel, controlled through a defensive argv-only CLI backend. |
 | **macOS** | Electron hosts the native Skipper/control plane on loopback, persists state in Application Support, and remains available for scheduling after its window closes. |
+| **Collaboration** | A Cloudflare Worker + D1 registry atomically reserves unique slugs and provisions one locally managed tunnel per opted-in workspace; the signed app bundles the pinned arm64 connector. |
 
 ```
 src/
@@ -199,6 +220,7 @@ node test/ui.mjs
 - On macOS, resident agents run inside separate Linux VMs created with `--home-mount none`; no resident is assigned the native "This Computer" endpoint. Workspace file mirrors remain channel-scoped and symlink-contained.
 - Skipper's host-level tools are gated to Captain-authorized turns; escalations from resident agents carry the full invoking thread and record their outcome visibly.
 - Public registration closes after the Captain account. The Captain adds later workspace members from Settings → Members.
+- Collaboration sign-in and access-request endpoints are rate-limited. Coworker channel membership is server-side, and `Collab` is kept outside agent, computer, terminal, memory, and Files surfaces.
 - JSON requests are bounded to 1 MB, uploads to 25 MB, and bearer sessions expire after 30 days.
 - The embedded agent binds to `127.0.0.1` only.
 

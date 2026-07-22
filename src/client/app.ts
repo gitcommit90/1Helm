@@ -291,8 +291,8 @@ async function loadWorkspace(): Promise<void> {
     api<{ channels: Channel[] }>("/api/channels"),
     api<{ users: User[] }>("/api/users"),
     api<{ bots: Bot[] }>("/api/bots"),
-    api<{ computers: Computer[] }>("/api/computers"),
-    api<{ providers: Provider[] }>("/api/providers"),
+    S.me.is_admin ? api<{ computers: Computer[] }>("/api/computers") : Promise.resolve({ computers: [] }),
+    S.me.is_admin ? api<{ providers: Provider[] }>("/api/providers") : Promise.resolve({ providers: [] }),
     api<{ workspace: Workspace }>("/api/workspace").catch(() => ({ workspace: S.workspace })),
   ]);
   S.channels = ch.channels; S.users = us.users; S.bots = bots.bots; S.computers = comps.computers; S.providers = provs.providers;
@@ -404,6 +404,8 @@ function onEvent(e: any): void {
     applyMessageDeleted(e);
   } else if (e.type === "mention_confirmation") {
     mentionConfirmation(e);
+  } else if (e.type === "member_add_confirmation") {
+    memberAddConfirmation(e);
   } else if (e.type === "bot_prompt") botPrompt(e);
   else if (e.type === "channel_new") {
     if (e.channel?.id) mergeChannelMeta(e.channel);
@@ -602,7 +604,8 @@ function renderAuth(): void {
     try { const r = await api<{ token: string; user: User }>("/api/auth/login", { body: { username: u.value, password: pw.value } }); setToken(r.token); boot(); }
     catch (e) { err.textContent = (e as Error).message; }
   };
-  root.append(h("div", { class: "auth-stage grid h-full place-items-center p-6" },
+  const access = h("div", { class: "space-y-3" });
+  root.append(h("div", { class: "auth-stage grid h-full place-items-center overflow-y-auto p-6" },
     h("div", { class: "w-full max-w-[380px]" },
       h("div", { class: "mb-10 flex flex-col items-center text-center" },
         h("div", { class: "logo-plate h-14 w-14 rounded-lg" }, h("img", { class: "logo-asset", src: "/brand/1helm.png", alt: "1Helm" })),
@@ -611,9 +614,64 @@ function renderAuth(): void {
       h("div", { class: "card space-y-3 p-7" },
         h("div", { class: "mb-3" }, h("h2", { class: "font-display text-[1.55rem] leading-tight text-fg" }, "Enter the bridge"), h("p", { class: "mt-1.5 text-sm text-muted" }, "Sign in to your workspace.")),
         u, pw, err,
-        h("button", { class: "btn-primary w-full py-2.5", onclick: submit }, "Sign in")))));
+        h("button", { class: "btn-primary w-full py-2.5", onclick: submit }, "Sign in"), access))));
   pw.addEventListener("keydown", (ev) => { if ((ev as KeyboardEvent).key === "Enter") submit(); });
   u.focus();
+  void renderAccessRequest(access);
+}
+
+async function renderAccessRequest(container: HTMLElement): Promise<void> {
+  const key = `1helm.access-request.${location.host}`;
+  const claimToken = localStorage.getItem(key) || "";
+  let workspace: { name: string; collaboration_enabled: boolean; accept_new_requests: boolean };
+  try { workspace = (await api<{ workspace: typeof workspace }>("/api/collaboration/public")).workspace; }
+  catch { return; }
+  if (!workspace.collaboration_enabled) return;
+  clear(container);
+  if (claimToken) {
+    try {
+      const { request } = await api<{ request: { email: string; display: string; status: string } }>(`/api/access-requests/${claimToken}`);
+      if (request.status === "pending") {
+        container.append(h("div", { class: "border-t border-line pt-3 text-center" }, h("p", { class: "text-sm font-semibold text-fg" }, "Access requested"), h("p", { class: "mt-1 text-xs leading-5 text-muted" }, `The Captain will review ${request.email} in Settings → Members.`), h("button", { class: "btn-ghost mt-2 text-xs", onclick: () => { void renderAccessRequest(container); } }, "Check again")));
+        return;
+      }
+      if (request.status === "denied") {
+        localStorage.removeItem(key);
+        container.append(h("p", { class: "border-t border-line pt-3 text-center text-xs text-danger" }, "This access request was not approved."));
+        return;
+      }
+      if (request.status === "approved") {
+        const display = h("input", { class: "field", value: request.display || "", placeholder: "Your name", autocomplete: "name" }) as HTMLInputElement;
+        const username = h("input", { class: "field", placeholder: "Choose a username", autocomplete: "username" }) as HTMLInputElement;
+        const password = h("input", { class: "field", type: "password", placeholder: "Password (8+ characters)", autocomplete: "new-password" }) as HTMLInputElement;
+        const status = h("p", { class: "min-h-5 text-xs text-danger" });
+        const finish = async (): Promise<void> => {
+          try {
+            const result = await api<{ token: string }>(`/api/access-requests/${claimToken}`, { body: { display: display.value, username: username.value, password: password.value } });
+            localStorage.removeItem(key); setToken(result.token); void boot();
+          } catch (error) { status.textContent = (error as Error).message; }
+        };
+        container.append(h("div", { class: "space-y-2 border-t border-line pt-3" }, h("p", { class: "text-sm font-semibold text-fg" }, "You’re approved"), h("p", { class: "text-xs text-muted" }, "Create your local account for this workspace."), display, username, password, status, h("button", { class: "btn-primary w-full", onclick: () => { void finish(); } }, "Create account and sign in")));
+        return;
+      }
+      if (request.status === "claimed") localStorage.removeItem(key);
+    } catch { localStorage.removeItem(key); }
+  }
+  const open = (): void => {
+    clear(container);
+    const email = h("input", { class: "field", type: "email", placeholder: "you@company.com", autocomplete: "email" }) as HTMLInputElement;
+    const display = h("input", { class: "field", placeholder: "Your name", autocomplete: "name" }) as HTMLInputElement;
+    const status = h("p", { class: "min-h-5 text-xs text-danger" });
+    container.append(h("div", { class: "space-y-2 border-t border-line pt-3" }, h("p", { class: "text-sm font-semibold text-fg" }, `Request access to ${workspace.name}`), display, email, status,
+      h("button", { class: "btn-primary w-full", onclick: async () => {
+        try {
+          const result = await api<{ claim_token: string }>("/api/access-requests", { body: { email: email.value, display: display.value } });
+          localStorage.setItem(key, result.claim_token); await renderAccessRequest(container);
+        } catch (error) { status.textContent = (error as Error).message; }
+      } }, "Send request"), h("button", { class: "btn-ghost w-full text-xs", onclick: () => { void renderAccessRequest(container); } }, "Back to sign in")));
+    display.focus();
+  };
+  container.append(h("div", { class: "border-t border-line pt-3 text-center" }, h("button", { class: "btn-ghost text-sm", onclick: open }, "Request access")));
 }
 
 // ---------------- layout ----------------
@@ -685,6 +743,7 @@ function sidebar(drawer = false): HTMLElement {
   };
   const channels = S.channels.filter((c) => c.kind === "channel" && c.status !== "archived");
   const archived = S.channels.filter((c) => c.kind === "channel" && c.status === "archived");
+  const collab = S.channels.filter((c) => c.kind === "collab");
   const dms = S.channels.filter((c) => c.kind === "dm");
   const theme = currentTheme();
 
@@ -701,7 +760,7 @@ function sidebar(drawer = false): HTMLElement {
         h("button", { class: "grid h-9 w-9 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: theme === "light" ? "Switch to dark" : "Switch to light", onclick: toggleTheme }, icon(theme === "light" ? "moon" : "sun")),
         drawer ? h("button", { class: "grid h-11 w-11 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: "Close navigation", "aria-label": "Close navigation", dataset: { drawerClose: "" }, onclick: closeMobileMenu }, icon("x", 20)) : null)),
     h("div", { class: "flex-1 space-y-5 overflow-y-auto px-2 py-3" },
-      h("div", { class: "px-1 pb-1" },
+      channels.length ? h("div", { class: "px-1 pb-1" },
         h("button", {
           type: "button",
           class: `nav-item w-full ${S.globalThreadsOpen ? "nav-item-active" : "nav-item-idle"}`,
@@ -710,15 +769,16 @@ function sidebar(drawer = false): HTMLElement {
           onclick: () => { closeMobileMenu(); openGlobalThreads(); },
         },
           h("span", { class: "shrink-0 text-sidebar-muted" }, icon("thread", 14)),
-          h("span", { class: "flex-1 truncate text-left" }, "Threads"))),
-      h("div", {}, sbSection("Agent channels", () => newChannel()), h("div", { class: "space-y-px" }, ...channels.map(chan))),
+          h("span", { class: "flex-1 truncate text-left" }, "Threads"))) : null,
+      channels.length || S.me.is_admin ? h("div", {}, sbSection("Agent channels", S.me.is_admin ? () => newChannel() : undefined), h("div", { class: "space-y-px" }, ...channels.map(chan))) : null,
       archived.length ? h("div", {}, h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Archived"), h("div", { class: "space-y-px opacity-65" }, ...archived.map(chan))) : null,
+      collab.length ? h("div", {}, h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Human space"), h("div", { class: "space-y-px" }, ...collab.map(chan))) : null,
       h("div", {}, sbSection("Direct messages", () => newDM()), h("div", { class: "space-y-px" }, ...dms.map(chan), dms.length === 0 && h("p", { class: "px-2 py-1 text-[13px] text-sidebar-muted" }, "No conversations yet")))),
     h("div", { class: "flex items-center gap-1 border-t border-white/10 p-1.5" },
       h("button", { class: "flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-sidebar-hover", title: "Open profile", onclick: (event: MouseEvent) => { closeMobileMenu(); openProfile(event.currentTarget as HTMLElement); } },
         avatar(S.me.display, "user", 8, S.me.avatar),
         h("div", { class: "min-w-0 flex-1" }, h("div", { class: "truncate text-sm font-semibold text-white" }, S.me.display), h("div", { class: "flex items-center gap-1.5 truncate font-mono text-[10.5px] text-sidebar-muted" }, h("span", { class: "h-1.5 w-1.5 rounded-full bg-ok" }), "@" + S.me.username + (S.me.is_admin ? " · admin" : "")))),
-      h("button", { class: "grid h-10 w-10 shrink-0 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: "Settings", "aria-label": "Open settings", onclick: () => { closeMobileMenu(); openSettings(); } }, icon("gear"))));
+      S.me.is_admin ? h("button", { class: "grid h-10 w-10 shrink-0 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: "Settings", "aria-label": "Open settings", onclick: () => { closeMobileMenu(); openSettings(); } }, icon("gear")) : null));
 }
 
 function openProfile(anchor: HTMLElement): void {
@@ -793,10 +853,10 @@ function openProfile(anchor: HTMLElement): void {
   setTimeout(() => { document.addEventListener("mousedown", outside); document.addEventListener("keydown", keydown); }, 0);
 }
 
-const sbSection = (label: string, onAdd: () => void): HTMLElement =>
+const sbSection = (label: string, onAdd?: () => void): HTMLElement =>
   h("div", { class: "flex items-center justify-between px-2 pb-1" },
     h("span", { class: "eyebrow text-sidebar-muted" }, label),
-    h("button", { class: "grid h-5 w-5 place-items-center rounded text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: "Add", onclick: onAdd }, "+"));
+    onAdd ? h("button", { class: "grid h-5 w-5 place-items-center rounded text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: "Add", onclick: onAdd }, "+") : null);
 
 function newChannel(): void {
   openCreateChannel(async (created) => {
@@ -977,6 +1037,7 @@ function channelTabs(): HTMLElement {
   ];
   return h("nav", { class: "flex shrink-0 gap-2 overflow-x-auto border-b border-line bg-surface px-3" }, ...tabs
     .filter(([id]) => id !== "terminal" || S.workspace?.terminals_enabled !== false)
+    .filter(([id]) => id !== "settings" || S.me.is_admin)
     .map(([id, label]) => h("button", { class: `view-tab ${S.view === id ? "view-tab-active" : "view-tab-idle"}`, dataset: { channelView: id }, onclick: () => navigateChannelView(id) }, label)));
 }
 
@@ -1868,14 +1929,16 @@ function renderThread(): void {
 
 // ---------------- composer ----------------
 function composer(parentId: number | null): HTMLElement {
+  const channel = S.channels.find((item) => item.id === S.channelId);
+  const humanOnly = channel?.kind === "collab";
   const attachBar = h("div", { class: "flex flex-wrap gap-2 px-1 pt-1 empty:hidden" });
-  const input = h("textarea", { class: "max-h-44 min-h-[24px] w-full resize-none bg-transparent px-1 py-1 text-[15px] text-fg outline-none placeholder:text-faint", rows: 1, dataset: { composerParent: parentId == null ? "root" : String(parentId) }, placeholder: parentId ? "Reply to this session…" : "Start a session — mention the resident agent or @skipper" }) as HTMLTextAreaElement;
+  const input = h("textarea", { class: "max-h-44 min-h-[24px] w-full resize-none bg-transparent px-1 py-1 text-[15px] text-fg outline-none placeholder:text-faint", rows: 1, dataset: { composerParent: parentId == null ? "root" : String(parentId) }, placeholder: parentId ? "Reply…" : humanOnly ? "Message your coworkers…" : "Start a session — mention the resident agent or @skipper" }) as HTMLTextAreaElement;
   const mentionBox = h("div", { class: "absolute bottom-full left-0 right-0 z-20 mb-2 hidden max-h-[50vh] w-full max-w-sm overflow-y-auto overflow-hidden rounded-lg border border-line bg-surface shadow-xl sm:right-auto sm:w-72" });
   const draftKey = `1helm.draft.${S.me.id}.${S.channelId}.${parentId == null ? "root" : parentId}`;
   const savedDraft = localStorage.getItem(draftKey);
   if (savedDraft) input.value = savedDraft;
   let selectedPolicy: ModelPolicy | null = null;
-  const agent = S.channels.find((channel) => channel.id === S.channelId)?.agent;
+  const agent = channel?.agent;
   const modelButton = h("button", {
     class: "model-picker-button btn-subtle min-h-11 min-w-0 max-w-[48%] gap-1.5 px-2.5 text-xs sm:min-h-8 sm:max-w-[240px]",
     title: "Choose the provider and model for this thread",
@@ -1894,11 +1957,16 @@ function composer(parentId: number | null): HTMLElement {
   const send = async (): Promise<void> => {
     const body = input.value.trim(); if (!body && !pending.length) return;
     const uploads = pending.slice();
+    const originalValue = input.value;
+    input.value = ""; input.style.height = "auto"; localStorage.removeItem(draftKey);
+    pending.splice(0, uploads.length); drawAttach();
     try {
       await api(`/api/channels/${S.channelId}/messages`, { body: { body, parentId, uploads, modelPolicy: selectedPolicy && !parentId ? { provider_id: selectedPolicy.provider_id, model: selectedPolicy.model } : undefined } });
-      pending.splice(0, uploads.length); drawAttach();
-      input.value = ""; input.style.height = "auto"; localStorage.removeItem(draftKey);
-    } catch (error) { void appAlert((error as Error).message || "Could not send message"); }
+    } catch (error) {
+      if (!input.value) { input.value = originalValue; input.dispatchEvent(new Event("input")); }
+      pending.unshift(...uploads); drawAttach();
+      void appAlert((error as Error).message || "Could not send message");
+    }
   };
   input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 176) + "px"; localStorage.setItem(draftKey, input.value); composerAutocomplete(input, mentionBox); });
   input.addEventListener("keydown", (ev) => {
@@ -1914,7 +1982,7 @@ function composer(parentId: number | null): HTMLElement {
     h("div", { class: "flex items-center justify-between gap-1 px-1.5 pb-1.5" },
       h("label", { class: "grid h-11 w-11 cursor-pointer place-items-center rounded-md text-muted hover:bg-hover hover:text-fg sm:h-8 sm:w-8", title: "Attach files" }, icon("paperclip"),
         h("input", { type: "file", multiple: true, class: "hidden", onchange: async (ev: Event) => { for (const f of Array.from((ev.target as HTMLInputElement).files || [])) pending.push(await uploadFile(f)); drawAttach(); } })),
-      h("div", { class: "flex min-w-0 flex-1 justify-end gap-1.5" }, modelButton,
+      h("div", { class: "flex min-w-0 flex-1 justify-end gap-1.5" }, humanOnly || !S.me.is_admin ? null : modelButton,
         h("button", { class: "btn-primary min-h-11 shrink-0 px-3 text-sm sm:min-h-8", onclick: send }, icon("send"), "Send"))));
   const wrap = h("div", { class: "composer-wrap shrink-0 bg-bg px-3 pb-3 pt-1 sm:px-4 sm:pb-4" }, box);
 
@@ -1994,7 +2062,7 @@ async function composerModelPopover(event: MouseEvent, threadRootId: number | nu
 }
 
 // ---------------- @mention / #channel autocomplete ----------------
-type ComposerSuggest = { kind: "agent" | "channel"; token: string; label: string; detail: string };
+type ComposerSuggest = { kind: "agent" | "human" | "channel"; token: string; label: string; detail: string };
 
 const currentAtMention = (input: HTMLTextAreaElement): string | null => {
   const m = input.value.slice(0, input.selectionStart).match(/(^|[\s([{])@([a-zA-Z0-9_.-]*)$/);
@@ -2014,11 +2082,15 @@ function composerAutocomplete(input: HTMLTextAreaElement, box: HTMLElement): voi
     const allowed = new Set<number>();
     if (channel?.agent?.bot_id) allowed.add(channel.agent.bot_id);
     const skipper = S.bots.find((bot) => bot.agent_kind === "skipper"); if (skipper) allowed.add(skipper.id);
-    const matches: ComposerSuggest[] = S.bots
+    const agentMatches: ComposerSuggest[] = S.bots
       .filter((bot) => allowed.has(bot.id) && bot.name.toLowerCase().startsWith(at))
       .slice(0, 6)
       .map((bot) => ({ kind: "agent", token: bot.name, label: bot.name, detail: bot.model || "no model" }));
-    return drawComposerSuggest(box, input, matches, "Channel agents", "agent");
+    const humanMatches: ComposerSuggest[] = S.users
+      .filter((user) => user.id !== S.me.id && (user.username.toLowerCase().startsWith(at) || user.display.toLowerCase().startsWith(at)))
+      .slice(0, 6)
+      .map((user) => ({ kind: "human", token: user.username, label: user.display || user.username, detail: `@${user.username}` }));
+    return drawComposerSuggest(box, input, [...humanMatches, ...agentMatches].slice(0, 8), "People and agents", "agent");
   }
   const hash = currentHashMention(input);
   if (hash != null) {
@@ -2040,14 +2112,14 @@ function drawComposerSuggest(box: HTMLElement, input: HTMLTextAreaElement, match
     dataset: { kind: item.kind, token: item.token },
     onclick: () => applyComposerSuggest(input, item.kind, item.token, box),
   },
-    kind === "agent" ? avatar(item.label, "bot", 6) : h("span", { class: "grid h-6 w-6 place-items-center rounded bg-raised text-muted" }, icon("hash", 14)),
+    item.kind === "agent" ? avatar(item.label, "bot", 6) : item.kind === "human" ? avatar(item.label, "user", 6) : h("span", { class: "grid h-6 w-6 place-items-center rounded bg-raised text-muted" }, icon("hash", 14)),
     h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block truncate font-medium text-fg" }, kind === "channel" ? `#${item.label}` : item.label), h("span", { class: "block break-all text-[11px] leading-4 text-muted", title: item.detail }, item.detail)))));
 }
 
-function applyComposerSuggest(input: HTMLTextAreaElement, kind: "agent" | "channel", token: string, box: HTMLElement): void {
+function applyComposerSuggest(input: HTMLTextAreaElement, kind: "agent" | "human" | "channel", token: string, box: HTMLElement): void {
   const beforeCursor = input.value.slice(0, input.selectionStart);
   const after = input.value.slice(input.selectionStart);
-  const replaced = kind === "agent"
+  const replaced = kind !== "channel"
     ? beforeCursor.replace(/@[a-zA-Z0-9_.-]*$/, `@${token} `)
     : beforeCursor.replace(/#[a-zA-Z0-9_.-]*$/, `#${token} `);
   input.value = replaced + after;
@@ -2093,6 +2165,21 @@ function mentionConfirmation(event: { channelId: number; messageId: number; thre
     h("div", { class: "mt-3 flex justify-end gap-2" },
       h("button", { class: "btn-subtle min-h-10 px-3 text-sm", onclick: async () => { await api(`/api/messages/${event.messageId}/mention-confirmation`, { body: { confirm: false, botId: event.botId } }); toast.remove(); } }, "No, don't ask again"),
       h("button", { class: "btn-primary min-h-10 px-3 text-sm", onclick: async () => { await api(`/api/messages/${event.messageId}/mention-confirmation`, { body: { confirm: true, botId: event.botId } }); toast.remove(); } }, `Yes, tag @${event.botName}`)));
+  document.body.append(toast);
+}
+
+function memberAddConfirmation(event: { channelId: number; messageId: number; userId: number; username: string; display: string }): void {
+  if (event.channelId !== S.channelId || !S.me.is_admin) return;
+  const channel = S.channels.find((item) => item.id === event.channelId);
+  const toast = h("div", { class: "card app-toast fixed bottom-6 left-1/2 z-50 w-[calc(100%-1.5rem)] max-w-[520px] -translate-x-1/2 p-4 shadow-2xl" },
+    h("div", { class: "font-semibold text-fg" }, `Add @${event.username}?`),
+    h("p", { class: "mt-1 text-sm leading-5 text-muted" }, `${event.display || `@${event.username}`} will be able to see and participate in #${channel?.name || "this channel"}.`),
+    h("div", { class: "mt-3 flex justify-end gap-2" },
+      h("button", { class: "btn-subtle min-h-10 px-3 text-sm", onclick: () => toast.remove() }, "Cancel"),
+      h("button", { class: "btn-primary min-h-10 px-3 text-sm", onclick: async () => {
+        await api(`/api/channels/${event.channelId}/members/${event.userId}`, { body: { messageId: event.messageId } });
+        toast.remove();
+      } }, `Add @${event.username}`)));
   document.body.append(toast);
 }
 
@@ -2142,7 +2229,7 @@ export function appPrompt(message: string | Node, defaultValue = ""): Promise<st
   });
 }
 
-export function avatar(name: string, kind: "user" | "bot", size = 8, avatarValue?: string): HTMLElement {
+export function avatar(name: string, kind: "user" | "bot" | "system", size = 8, avatarValue?: string): HTMLElement {
   const px = size * 4;
   // Custom or default image fills the whole plate — never layer initials on top of it.
   if (avatarValue?.startsWith("data:image/") || avatarValue?.startsWith("/")) {

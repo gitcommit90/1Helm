@@ -13,6 +13,10 @@ const APP_ID = "com.gitcommit90.1helm";
 const EXECUTABLE = "1Helm";
 const ARCH = "arm64";
 const MACOS_APP_ICON_SOURCE = path.join(ROOT, "desktop", "icons", "1helm-macos-app-logo.jpg");
+const CLOUDFLARED_VERSION = "2026.3.0";
+const CLOUDFLARED_ARCHIVE_URL = `https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-darwin-arm64.tgz`;
+const CLOUDFLARED_ARCHIVE_SHA256 = "2aae4f69b0fc1c671b8353b4f594cbd902cd1e360c8eed2b8cad4602cb1546fb";
+const CLOUDFLARED_BINARY_SHA256 = "633cee0fd41fd2020e17498beecc54811bf4fc99f891c080dc9343eb0f449c60";
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
 const VERSION = String(pkg.version || "").trim();
 const REQUIRE_NOTARIZATION = process.env.HELM_REQUIRE_NOTARIZATION === "1";
@@ -107,6 +111,20 @@ function verifyProductIcon(appPath) {
   }
 }
 
+function prepareCloudflared() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "1helm-cloudflared-"));
+  const archive = path.join(root, "cloudflared.tgz");
+  run("curl", ["--fail", "--location", "--retry", "3", "--output", archive, CLOUDFLARED_ARCHIVE_URL]);
+  if (capture("shasum", ["-a", "256", archive]).split(/\s+/)[0] !== CLOUDFLARED_ARCHIVE_SHA256) throw new Error("Cloudflared archive checksum does not match the release pin");
+  run("tar", ["-xzf", archive, "-C", root]);
+  const binary = path.join(root, "cloudflared");
+  if (!fs.existsSync(binary)) throw new Error("Cloudflared archive did not contain the connector binary");
+  if (capture("shasum", ["-a", "256", binary]).split(/\s+/)[0] !== CLOUDFLARED_BINARY_SHA256) throw new Error("Cloudflared binary checksum does not match the release pin");
+  if (!capture("file", [binary]).includes("arm64")) throw new Error("Cloudflared connector is not Apple Silicon arm64");
+  fs.chmodSync(binary, 0o755);
+  return { binary, root };
+}
+
 function verifyApp(appPath, expectTicket) {
   run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath]);
   const plist = path.join(appPath, "Contents", "Info.plist");
@@ -120,6 +138,11 @@ function verifyApp(appPath, expectTicket) {
   if (!ptyHelper || !capture("file", [ptyHelper]).includes("arm64") || !fs.statSync(ptyHelper).mode.toString(8).endsWith("755")) {
     throw new Error("Packaged app is missing an executable darwin-arm64 terminal spawn helper");
   }
+  const cloudflared = path.join(appPath, "Contents", "Resources", "cloudflared");
+  if (!fs.existsSync(cloudflared) || !capture("file", [cloudflared]).includes("arm64") || capture("shasum", ["-a", "256", cloudflared]).split(/\s+/)[0] !== CLOUDFLARED_BINARY_SHA256) {
+    throw new Error("Packaged app is missing the pinned arm64 Cloudflared connector");
+  }
+  if (expectTicket) run("codesign", ["--verify", "--strict", "--verbose=2", cloudflared]);
   verifyProductIcon(appPath);
   if (expectTicket) {
     run("xcrun", ["stapler", "validate", appPath]);
@@ -148,6 +171,7 @@ async function main() {
   for (const target of [dmg, candidate]) if (fs.existsSync(target)) fs.unlinkSync(target);
 
   const { icon, iconRoot } = createIcon();
+  const cloudflared = prepareCloudflared();
   let appPath = "";
   try {
     console.log("Packaging the complete local 1Helm runtime…");
@@ -175,6 +199,8 @@ async function main() {
     appPath = path.join(appDir, `${PRODUCT}.app`);
     if (!fs.existsSync(appPath)) throw new Error(`App not found at ${appPath}`);
     installProductIcon(appPath, icon);
+    fs.copyFileSync(cloudflared.binary, path.join(appPath, "Contents", "Resources", "cloudflared"));
+    fs.chmodSync(path.join(appPath, "Contents", "Resources", "cloudflared"), 0o755);
     verifyProductIcon(appPath);
 
     if (identity) {
@@ -248,6 +274,7 @@ async function main() {
     console.log(`SHA-256: ${digest}`);
   } finally {
     fs.rmSync(iconRoot, { recursive: true, force: true });
+    fs.rmSync(cloudflared.root, { recursive: true, force: true });
   }
 }
 

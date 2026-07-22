@@ -40,6 +40,13 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(source, /contextIsolation: true/);
   assert.match(source, /nodeIntegration: false/);
   assert.match(source, /sandbox: true/);
+  assert.match(source, /HELM_RESOURCES_PATH = process\.resourcesPath/, "the local runtime resolves the connector bundled in the signed app");
+  assert.match(source, /allowedTeamUrl/);
+  assert.match(source, /url\.protocol === "https:"/);
+  assert.match(source, /\.1helm\\\.com/);
+  assert.match(source, /!\["demo\.1helm\.com", "provision\.1helm\.com"\]\.includes/, "only exact customer workspace subdomains may load inside the sandboxed renderer");
+  assert.match(source, /remoteWorkspacePath/);
+  assert.match(source, /preferredWorkspaceOrigin\(\)/, "the app remembers a selected team workspace while its own local headless runtime keeps running");
   assert.match(source, /requestSingleInstanceLock/);
   assert.match(source, /setLoginItemSettings\(\{ openAtLogin: true, type: "mainAppService" \}\)/);
   assert.match(source, /getLoginItemSettings\(\{ type: "mainAppService" \}\)/);
@@ -153,4 +160,8 @@ test("release packaging is fail-closed and records stable product identity", asy
   }
   assert.match(source, /CFBundleIconFile", "-string", "1Helm\.icns/);
   assert.match(source, /missing the 1Helm product icon/);
+  assert.match(source, /const CLOUDFLARED_VERSION = "2026\.3\.0"/);
+  assert.match(source, /2aae4f69b0fc1c671b8353b4f594cbd902cd1e360c8eed2b8cad4602cb1546fb/);
+  assert.match(source, /633cee0fd41fd2020e17498beecc54811bf4fc99f891c080dc9343eb0f449c60/);
+  assert.match(source, /missing the pinned arm64 Cloudflared connector/, "release packaging verifies the exact bundled tunnel connector");
 });

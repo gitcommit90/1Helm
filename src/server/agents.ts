@@ -10,6 +10,8 @@ import { archiveChannelComputer, deleteChannelComputer, ensureChannelComputerRec
 const CHANNELS_DIR = join(DATA_DIR, "channels");
 const WORLD_DIRS = ["workspace", "files", "state", "memory", "profile"];
 const MEMORY_KINDS = new Set(["summary", "decision", "fact", "preference", "artifact_ref"]);
+const AGENT_COLORS = ["#C8552F", "#2166B8", "#2E7D4F", "#8A6B7C", "#A67C52", "#4F6D7A", "#7A6A4F", "#64748B"];
+const randomAgentAvatar = (): string => `color:${AGENT_COLORS[randomBytes(1)[0] % AGENT_COLORS.length]}`;
 
 export type ProvisionedChannel = {
   channelId: number;
@@ -147,11 +149,13 @@ export function provisionChannel(opts: { name: string; purpose: string; userId: 
         "INSERT INTO channels (name, slug, kind, topic, purpose, status, created_by, created) VALUES (?,?,'channel',? ,?,'active',?,?)",
         name, channelSlug(name), purpose, purpose, opts.userId, now(),
       ).lastInsertRowid;
-      for (const user of q("SELECT id FROM users")) run("INSERT OR IGNORE INTO members (channel_id, user_id) VALUES (?,?)", channelId, user.id);
+      run("INSERT OR IGNORE INTO members (channel_id, user_id) VALUES (?,?)", channelId, opts.userId);
+      const captain = q1("SELECT id FROM users WHERE is_admin=1 ORDER BY id LIMIT 1");
+      if (captain?.id) run("INSERT OR IGNORE INTO members (channel_id,user_id) VALUES (?,?)", channelId, captain.id);
       const instructions = agentInstructions(mentionName, purpose, String(template?.instructions || ""));
       const botId = run(
         "INSERT INTO bots (name, provider_id, model, prompt, avatar, base_url, api_key, created) VALUES (?,?,?,?,?,'','',?)",
-        mentionName, defaults.providerId, defaults.model, instructions, "", now(),
+        mentionName, defaults.providerId, defaults.model, instructions, randomAgentAvatar(), now(),
       ).lastInsertRowid;
       const agentId = run(
         "INSERT INTO agents (bot_id, kind, name, display_name, status, created) VALUES (?,'channel',?,?, 'ready', ?)",
