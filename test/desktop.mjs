@@ -66,6 +66,7 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(memoryRuntime, /assert mnemosyne\.__version__/);
   assert.match(memoryRuntime, /--ignore-requires-python/);
   assert.match(memoryRuntime, /rmSync\(venv, \{ recursive: true, force: true \}\)/, "an invalid partial app-managed memory venv is repaired without touching agent databases");
+  assert.match(memoryRuntime, /process\.platform === "darwin" \? \["\/usr\/bin\/python3"\]/, "macOS retries its bundled Python when a preferred interpreter cannot create the app-managed memory runtime");
   const memoryBridge = await readFile(join(root, "scripts", "mnemosyne-bridge.py"), "utf8");
   assert.match(memoryBridge, /sys\.version_info < \(3, 10\)/);
   assert.match(memoryBridge, /zip_longest/);

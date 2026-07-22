@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.9] - 2026-07-22
+
+### Fixed
+
+- macOS now retries its bundled Python when a preferred interpreter cannot create the app-managed Mnemosyne virtual environment, so durable on-device agent memory remains available instead of silently falling back to the canonical record alone.
+
 ## [1.1.8] - 2026-07-22
 
 ### Fixed
@@ -148,7 +154,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Native **1Herd** channel-agent workspace (SPEC.md slice) is developed on branch `worktree-1herd-native-spec` (draft PR #7) and is **not** fully merged to `main` as of this changelog baseline. Track progress there and in `docs/VISION.md` on that branch.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.8...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.9...HEAD
+[1.1.9]: https://github.com/gitcommit90/1Helm/compare/v1.1.8...v1.1.9
 [1.1.8]: https://github.com/gitcommit90/1Helm/compare/v1.1.7...v1.1.8
 [1.1.7]: https://github.com/gitcommit90/1Helm/compare/v1.1.6...v1.1.7
 [1.1.6]: https://github.com/gitcommit90/1Helm/compare/v1.1.5...v1.1.6
