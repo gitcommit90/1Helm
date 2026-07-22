@@ -1,19 +1,32 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR, q1, type Row } from "./db.ts";
 
 const APP_ROOT = process.env.HELM_APP_ROOT || process.cwd();
 const BRIDGE = join(APP_ROOT, "scripts", "mnemosyne-bridge.py");
 const CONFIG_DIR = join(DATA_DIR, "mnemosyne-runtime", "config");
+const MNEMOSYNE_VERSION = "3.14.0";
+let validatedPython: string | null | undefined;
+
+function hasPinnedRuntime(candidate: string): boolean {
+  if (!candidate || !existsSync(candidate)) return false;
+  const result = spawnSync(candidate, ["-c", `import mnemosyne; assert mnemosyne.__version__ == "${MNEMOSYNE_VERSION}"`], {
+    timeout: 10_000,
+    stdio: "ignore",
+  });
+  return result.status === 0;
+}
 
 function pythonRuntime(): string | null {
+  if (validatedPython !== undefined) return validatedPython;
   const candidates = [
     process.env.MNEMOSYNE_PYTHON || "",
     join(DATA_DIR, "mnemosyne-runtime", "venv", "bin", "python"),
     join(APP_ROOT, "data-refactored", "mnemosyne-runtime", "venv", "bin", "python"),
   ];
-  return candidates.find((candidate) => candidate && existsSync(candidate)) || null;
+  validatedPython = candidates.find(hasPinnedRuntime) || null;
+  return validatedPython;
 }
 
 export function memoryPathForAgent(agent: Row): string {
@@ -90,8 +103,13 @@ export function prepareMnemosyneRuntime(): boolean {
   const venv = join(DATA_DIR, "mnemosyne-runtime", "venv");
   mkdirSync(join(DATA_DIR, "mnemosyne-runtime"), { recursive: true });
   try {
+    // A failed venv or pip run may still leave an executable Python behind.
+    // Replace only this app-managed runtime after proving it cannot import the
+    // pinned package; agent databases and all other Application Support remain.
+    if (existsSync(venv)) rmSync(venv, { recursive: true, force: true });
     execFileSync(process.env.PYTHON || "python3", ["-m", "venv", venv], { timeout: 60_000, stdio: "ignore" });
-    execFileSync(join(venv, "bin", "python"), ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "mnemosyne-memory==3.14.0"], { timeout: 180_000, stdio: "ignore" });
+    execFileSync(join(venv, "bin", "python"), ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--ignore-requires-python", `mnemosyne-memory==${MNEMOSYNE_VERSION}`], { timeout: 180_000, stdio: "ignore" });
+    validatedPython = undefined;
     return Boolean(pythonRuntime());
   } catch (error) {
     console.warn("Could not prepare Mnemosyne runtime:", (error as Error).message);

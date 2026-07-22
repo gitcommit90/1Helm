@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Apple channel terminals now run an explicit `/bin/bash -l` in `/workspace`, and installs repair `node-pty`'s non-executable arm64 spawn helper so new-channel and `#main` terminals no longer stall or fail with `posix_spawnp failed`.
+- Fresh macOS profiles now validate and repair the pinned Mnemosyne runtime instead of mistaking a partial Python environment for working memory support; the system Python fallback retains strict recall checks.
 - The native wake LaunchAgent starts the signed 1Helm executable directly, so macOS identifies the background item as 1Helm instead of `sh`; background wakes no longer force the window open.
 - Router startup rotates through nearby ports when 4949 is occupied, LAN/Tailscale changes apply the confirmed host and port once, and failures restore the previous selection.
 - Custom OpenAI-compatible endpoints genuinely accept an empty API key and omit Authorization headers. Image toggles no longer jump to the top, connected accounts stay compact, and routine saves avoid full-screen redraw flicker.

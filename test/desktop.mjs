@@ -53,6 +53,14 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   const helperInstall = await readFile(join(root, "scripts", "ensure-node-pty-helper.cjs"), "utf8");
   assert.match(helperInstall, /process\.platform === "darwin"/);
   assert.match(helperInstall, /chmodSync\(helper, 0o755\)/, "Mac installs restore node-pty's executable spawn helper before terminals open");
+  const memoryRuntime = await readFile(join(root, "src", "server", "memory.ts"), "utf8");
+  assert.match(memoryRuntime, /assert mnemosyne\.__version__/);
+  assert.match(memoryRuntime, /--ignore-requires-python/);
+  assert.match(memoryRuntime, /rmSync\(venv, \{ recursive: true, force: true \}\)/, "an invalid partial app-managed memory venv is repaired without touching agent databases");
+  const memoryBridge = await readFile(join(root, "scripts", "mnemosyne-bridge.py"), "utf8");
+  assert.match(memoryBridge, /sys\.version_info < \(3, 10\)/);
+  assert.match(memoryBridge, /zip_longest/);
+  assert.match(memoryBridge, /different lengths/, "the Python 3.9 bridge preserves strict zip length checking");
 });
 
 test("server can run from an immutable app root with state elsewhere on loopback", async (t) => {
