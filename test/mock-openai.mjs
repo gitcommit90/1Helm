@@ -30,6 +30,7 @@ createServer(async (req, res) => {
     const serialized = JSON.stringify(reqBody.messages);
     const latestUser = [...reqBody.messages].reverse().find((message) => message.role === "user")?.content || "";
     if (/slow-turn/i.test(serialized)) await new Promise((resolve) => setTimeout(resolve, 1200));
+    if (/live-ui-stream/i.test(latestUser)) await new Promise((resolve) => setTimeout(resolve, 250));
     const hasToolResult = reqBody.messages.some((m) => m.role === "tool");
     const repeatsTools = /repeat-tool-limit/i.test(serialized);
     const wantsRequestSkill = reqBody.tools?.some((tool) => tool.function?.name === "request_skill") && /request the self-hosting-guide skill/i.test(latestUser) && !hasToolResult;
@@ -159,8 +160,13 @@ createServer(async (req, res) => {
       sse(res, { choices: [{ delta: {}, finish_reason: "stop" }] });
     } else {
       const memory = /launch-on-monday/i.test(serialized) ? " I remember the decision: launch-on-monday." : "";
-      const text = `Model **${reqBody.model}** here.${memory} `;
-      for (const tok of (text + "Answer complete.").match(/.{1,6}/g)) sse(res, { choices: [{ delta: { content: tok } }] });
+      const text = /live-ui-stream/i.test(latestUser)
+        ? "Live stream update keeps the active composer stable while progress arrives. Answer complete."
+        : `Model **${reqBody.model}** here.${memory} Answer complete.`;
+      for (const tok of text.match(/.{1,6}/g)) {
+        sse(res, { choices: [{ delta: { content: tok } }] });
+        if (/live-ui-stream/i.test(latestUser)) await new Promise((resolve) => setTimeout(resolve, 90));
+      }
       sse(res, { choices: [{ delta: {}, finish_reason: "stop" }] });
     }
     // Rough usage for stream_options.include_usage consumers (OpenAI-compatible).

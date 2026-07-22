@@ -20,8 +20,8 @@ const SHELL = requestedShell.startsWith("/") && existsSync(requestedShell)
   : ["/bin/zsh", "/bin/bash", "/bin/sh"].find(existsSync) || "/bin/sh";
 const nativeEnv = (extra: Record<string, unknown> = {}): Record<string, string> => {
   const preferred = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
-  const path = [...preferred, ...String(process.env.PATH || "").split(":")].filter((item, index, all) => item && all.indexOf(item) === index).join(":");
-  const values = { ...process.env, PATH: path, ...extra };
+  const path = [...preferred, ...String(extra.PATH || process.env.PATH || "").split(":")].filter((item, index, all) => item && all.indexOf(item) === index).join(":");
+  const values = { ...process.env, ...extra, PATH: path, HELM_NATIVE_PATH: path };
   return Object.fromEntries(Object.entries(values).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
 };
 const rid = (p: string): string => p + Math.random().toString(36).slice(2, 8);
@@ -67,7 +67,9 @@ export function startAgent(port: number, apiKey: string, host = "127.0.0.1"): Pr
       const b = await readBody(req);
       const command = String(b.command || "");
       const cwd = b.cwd ? String(b.cwd) : process.env.HOME || process.cwd();
-      const pty = spawn(SHELL, ["-lc", command], { cols: 80, rows: 24, cwd, env: nativeEnv((b.env as Record<string, unknown>) || {}) });
+      // Login shells can replace the inherited PATH from /etc/zprofile. Export
+      // it again after shell startup so Homebrew CLIs work without profile edits.
+      const pty = spawn(SHELL, ["-lc", `export PATH="$HELM_NATIVE_PATH"; unset HELM_NATIVE_PATH; ${command}`], { cols: 80, rows: 24, cwd, env: nativeEnv((b.env as Record<string, unknown>) || {}) });
       const p: Proc = { id: rid("exec-"), command, buf: [], status: "running", exit_code: null, pty, waiters: [] };
       procs.set(p.id, p);
       let responseFinished = false;
@@ -111,6 +113,9 @@ export function startAgent(port: number, apiKey: string, host = "127.0.0.1"): Pr
       const b = await readBody(req);
       const cwd = b.cwd ? String(b.cwd) : process.env.HOME || process.cwd();
       const pty = spawn(SHELL, [], { name: "xterm-256color", cols: Number(b.cols) || 80, rows: Number(b.rows) || 24, cwd, env: nativeEnv() });
+      // Interactive startup files may also replace PATH. Apply the native path
+      // inside the live shell before a browser attaches to this PTY.
+      pty.write(`export PATH="$HELM_NATIVE_PATH"; unset HELM_NATIVE_PATH\r`);
       const t: Term = { id: rid("term-"), pty, created_at: new Date().toISOString(), pid: pty.pid };
       terms.set(t.id, t);
       pty.onExit(() => terms.delete(t.id));

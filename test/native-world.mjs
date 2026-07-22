@@ -87,9 +87,36 @@ try {
   const setup = await api("/api/setup/complete", { body: { name: "Native Test", terminals_enabled: true, provider_id: providerId, model: primaryLargeModel } }, captain);
   ok(setup.status === 200, "first-run setup completes with Skipper");
 
+  const hostDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const hostComputer = hostDb.prepare("SELECT base_url,api_key FROM computers WHERE name='This Computer' LIMIT 1").get();
+  hostDb.close();
+  const hostPathResponse = await fetch(`${hostComputer.base_url}/execute?wait=5`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${hostComputer.api_key}`, "content-type": "application/json" },
+    body: JSON.stringify({ command: `printf '%s' "$PATH"` }),
+  });
+  const hostPathResult = await hostPathResponse.json();
+  const hostPath = (hostPathResult.output || []).map((entry) => entry.data).join("");
+  ok(hostPath.startsWith("/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:"), "Skipper host commands restore Homebrew paths after login-shell startup");
+
   let channels = (await api("/api/channels", {}, captain)).body.channels;
   const main = channels.find((channel) => channel.name === "main");
   ok(main?.agent?.kind === "skipper" && main.agent.name === "skipper", "#main exposes the one workspace-wide Skipper");
+  ok(main.agent.runtime.avatar === "color:#4F6D7A", "Skipper starts with the customizable flat-color avatar");
+  const skipperTerm = await api("/api/term/open", { body: { channelId: main.id, cols: 90, rows: 28 } }, captain);
+  const skipperTermPath = await new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${appPort}/ws/term/${skipperTerm.body.sessionId}?token=${captain}`);
+    let output = "";
+    const timer = setTimeout(() => { ws.close(); reject(new Error("Skipper terminal PATH timeout: " + output)); }, 8000);
+    ws.on("open", () => ws.send(JSON.stringify({ type: "input", data: `printf 'HELM_PATH=%s\\n' "$PATH"\r` })));
+    ws.on("message", (chunk) => {
+      output += chunk.toString();
+      const match = output.match(/HELM_PATH=(\/[^\r\n]+)/);
+      if (match) { clearTimeout(timer); ws.close(); resolve(match[1]); }
+    });
+    ws.on("error", reject);
+  });
+  ok(String(skipperTermPath).startsWith("/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:"), "new Skipper terminal sessions inherit Homebrew command paths");
   const templates = await api("/api/agent-templates", {}, captain);
   const catalog = await api("/api/skills", {}, captain);
   ok(templates.body.templates?.length >= 5 && templates.body.templates.some((template) => template.slug === "home"), "bare-bones growing-agent templates ship in the product");
@@ -121,6 +148,7 @@ try {
   const launch = launchCreate.body.channel;
   ok(launchCreate.status === 201 && launch.agent?.kind === "channel", "creating a channel atomically provisions its resident agent");
   ok(launch.agent?.name === "launch-agent" && launch.agent.status === "ready", "resident identity is ready and derived from channel purpose");
+  ok(/^color:#[0-9A-F]{6}$/.test(launch.agent.runtime.avatar), "new resident agents receive a customizable random flat-color avatar");
   ok(launch.slug === "launch" && launch.agent.skills.some((skill) => skill.slug === "project-planning"), "template provisions a useful permanent starter skill kit while preserving a normal channel identity");
   const deepRoute = await fetch(`${base}/c/${launch.slug}/memory`);
   ok(deepRoute.status === 200 && /id="app"/.test(await deepRoute.text()), "slug-based channel deep links serve the application shell");
@@ -337,7 +365,14 @@ try {
   // the Captain tags and confirms them in that exact channel.
   const collaborationDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
   collaborationDb.prepare("UPDATE workspace SET collaboration_enabled=1,collaboration_slug='native-test',collaboration_hostname='native-test.1helm.com',collaboration_status='active'").run();
+  collaborationDb.prepare("INSERT INTO workspace_domains (hostname,provider,status,tunnel_id,verified,created,updated) VALUES (?,'cloudflare','active','custom-tunnel',?,?,?)")
+    .run("helm.example.com", Date.now(), Date.now(), Date.now());
   collaborationDb.close();
+  const customPrimary = await api("/api/collaboration", {}, captain);
+  ok(customPrimary.body.collaboration.hostname === "native-test.1helm.com"
+    && customPrimary.body.collaboration.custom_domain === "helm.example.com"
+    && customPrimary.body.collaboration.primary_url === "https://helm.example.com",
+  "an active custom domain becomes primary while the reserved 1helm.com hostname remains assigned");
   await api("/api/collaboration/requests-enabled", { body: { enabled: false } }, captain);
   const closedRequest = await api("/api/access-requests", { body: { email: "requester@example.com", display: "Requester" } });
   ok(closedRequest.status === 400 && closedRequest.body.error === "Native Test Renamed isn’t accepting requests right now", "the Captain's request toggle returns the workspace-specific closed-request message");
