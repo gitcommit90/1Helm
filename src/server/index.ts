@@ -41,6 +41,7 @@ import { ensureAgentMemory, mnemosyneAvailable, prepareMnemosyneRuntime } from "
 import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
 import { startFollowupLoop, threadFollowupView, bumpThreadFollowup } from "./followups.ts";
+import { appUpdateStatus, installedAppVersion } from "./updates.ts";
 import {
   internalRoutingProviderId,
   isInternalRoutingProvider,
@@ -385,6 +386,9 @@ const server = createServer(async (req, res) => {
     // own generated gateway keys. It intentionally does not use a 1Helm web
     // session so editors, CLIs, and other machines can use the same endpoint.
     if (p === "/health" || p === "/v1" || p.startsWith("/v1/")) return proxyRoutingRequest(req, res);
+    if (p === "/api/app/update/latest" && m === "GET") {
+      return json(res, 200, { version: installedAppVersion(APP_ROOT) });
+    }
 
     // static
     if ((m === "GET" || m === "HEAD") && !p.startsWith("/api/")) {
@@ -507,6 +511,10 @@ const server = createServer(async (req, res) => {
     }
 
     if (p === "/api/me") return json(res, 200, { user: publicUser(user), workspace: workspaceView() });
+    if (p === "/api/app/update" && m === "GET") {
+      try { return json(res, 200, await appUpdateStatus(APP_ROOT)); }
+      catch (error) { return json(res, 502, { error: (error as Error).message }); }
+    }
     if (p === "/api/me/profile" && m === "PATCH") {
       const b = await jbody(req);
       const display = String(b.display ?? user.display ?? "").trim().slice(0, 100);
