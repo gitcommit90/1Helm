@@ -49,6 +49,15 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.doesNotMatch(source, /StartInterval|launchctl", \["bootstrap"|ProgramArguments/, "1Helm migrates away from the legacy LaunchAgent that macOS attributes to the certificate publisher");
   assert.match(source, /if \(!allowedLocalUrl\(details\.url\)\)/);
   assert.match(source, /process\.emit\("SIGTERM"/);
+  const updates = await readFile(join(root, "src", "server", "updates.ts"), "utf8");
+  assert.match(updates, /demo\.1helm\.com\/api\/app\/update\/latest/);
+  assert.match(updates, /AbortSignal\.timeout\(15_000\)/, "manual update checks time out instead of holding the local app open");
+  assert.match(updates, /1Helm-\$\{latestVersion\}-arm64\.dmg/, "a release check resolves the exact Apple Silicon DMG when one is published");
+  const server = await readFile(join(root, "src", "server", "index.ts"), "utf8");
+  assert.match(server, /appUpdateStatus\(APP_ROOT\)/, "the local control plane owns the GitHub release check");
+  const appClient = await readFile(join(root, "src", "client", "app.ts"), "utf8");
+  assert.match(appClient, /Check for updates/);
+  assert.match(appClient, /1Herd v\$\{update\.current_version\}/, "Profile displays the installed version beside the update control");
   const helperInstall = await readFile(join(root, "scripts", "ensure-node-pty-helper.cjs"), "utf8");
   assert.match(helperInstall, /process\.platform === "darwin"/);
   assert.match(helperInstall, /chmodSync\(helper, 0o755\)/, "Mac installs restore node-pty's executable spawn helper before terminals open");
@@ -97,6 +106,8 @@ test("server can run from an immutable app root with state elsewhere on loopback
   const status = await (await waitFor(`http://127.0.0.1:${port}/api/setup/status`)).json();
   assert.equal(status.needs_setup, true);
   assert.equal(status.has_users, false);
+  const updateManifest = await (await fetch(`http://127.0.0.1:${port}/api/app/update/latest`)).json();
+  assert.equal(updateManifest.version, "1.1.7", "the public update manifest reports this exact desktop build version");
   const html = await (await fetch(`http://127.0.0.1:${port}/`)).text();
   assert.match(html, /1Helm/);
   assert.match(logs, new RegExp(`http://127\\.0\\.0\\.1:${port}`));

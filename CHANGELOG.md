@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.7] - 2026-07-22
+
+### Added
+
+- The Profile popover now shows the installed 1Helm version and a compact manual **Check for updates** control. It checks 1Helm's public update service, reports whether the app is current, and opens the versioned Apple Silicon DMG when a newer release is available.
+
 ## [1.1.6] - 2026-07-22
 
 ### Changed
@@ -136,7 +142,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Native **1Herd** channel-agent workspace (SPEC.md slice) is developed on branch `worktree-1herd-native-spec` (draft PR #7) and is **not** fully merged to `main` as of this changelog baseline. Track progress there and in `docs/VISION.md` on that branch.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.6...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.7...HEAD
+[1.1.7]: https://github.com/gitcommit90/1Helm/compare/v1.1.6...v1.1.7
 [1.1.6]: https://github.com/gitcommit90/1Helm/compare/v1.1.5...v1.1.6
 [1.1.5]: https://github.com/gitcommit90/1Helm/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/gitcommit90/1Helm/compare/v1.1.3...v1.1.4

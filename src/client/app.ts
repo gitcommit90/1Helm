@@ -730,6 +730,32 @@ function openProfile(anchor: HTMLElement): void {
   const photo = avatar(S.me.display, "user", 16, S.me.avatar);
   const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", class: "hidden" }) as HTMLInputElement;
   const status = h("p", { class: "min-h-5 text-xs text-muted" });
+  const updateLabel = h("p", { class: "text-right font-mono text-[10px] leading-4 text-faint" }, "1Herd");
+  const updateButton = h("button", { class: "btn-ghost -mr-1 px-1.5 py-1 text-[11px] text-muted hover:text-fg" }, "Check for updates") as HTMLButtonElement;
+  const checkForUpdates = async (openAvailableRelease = false): Promise<void> => {
+    updateButton.disabled = true;
+    updateButton.textContent = "Checking…";
+    try {
+      const update = await api<{ current_version: string; latest_version: string; status: "latest" | "available"; release_url: string; download_url: string }>("/api/app/update");
+      if (update.status === "latest") {
+        updateLabel.textContent = `1Herd v${update.current_version} · latest`;
+        status.textContent = "You're up to date.";
+      } else {
+        updateLabel.textContent = `1Herd v${update.current_version} · v${update.latest_version} available`;
+        status.textContent = `1Helm v${update.latest_version} is ready to download.`;
+        updateButton.textContent = "View update";
+        updateButton.onclick = () => { window.open(update.download_url || update.release_url, "_blank", "noopener,noreferrer"); };
+        if (openAvailableRelease) window.open(update.download_url || update.release_url, "_blank", "noopener,noreferrer");
+      }
+    } catch (error) {
+      status.textContent = (error as Error).message;
+      updateLabel.textContent = "1Herd · update check unavailable";
+    } finally {
+      updateButton.disabled = false;
+      if (updateButton.textContent === "Checking…") updateButton.textContent = "Check for updates";
+    }
+  };
+  updateButton.onclick = () => { void checkForUpdates(true); };
   const pop = h("div", { id: "profile-popover", class: "card fixed bottom-3 left-3 z-50 w-[min(420px,calc(100vw-1.5rem))] space-y-4 p-4 shadow-2xl" });
   const close = (): void => { pop.remove(); document.removeEventListener("mousedown", outside); document.removeEventListener("keydown", keydown); };
   const outside = (event: MouseEvent): void => { if (!pop.contains(event.target as Node) && !anchor.contains(event.target as Node)) close(); };
@@ -756,8 +782,14 @@ function openProfile(anchor: HTMLElement): void {
     h("div", { class: "flex items-center gap-3" }, photo, h("div", { class: "flex flex-wrap gap-2" }, h("label", { class: "btn-subtle cursor-pointer text-xs" }, "Choose photo", file), S.me.avatar ? h("button", { class: "btn-ghost text-xs", onclick: async () => { acceptUser((await api<{ user: User }>("/api/me/avatar", { method: "DELETE" })).user); close(); renderSidebar(); renderHeader(); } }, "Remove") : null)),
     h("div", { class: "grid gap-3 sm:grid-cols-2" }, h("label", { class: "space-y-1 text-xs font-semibold text-fg" }, "Display name", display), h("label", { class: "space-y-1 text-xs font-semibold text-fg" }, "Job title", jobTitle)),
     h("label", { class: "block space-y-1 text-xs font-semibold text-fg" }, "Description", description),
-    h("div", { class: "flex items-center justify-between gap-3" }, status, h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save profile")));
+    h("div", { class: "flex items-center justify-between gap-3" },
+      status,
+      h("div", { class: "flex shrink-0 items-center gap-3" },
+        h("div", { class: "hidden flex-col items-end sm:flex" }, updateLabel, updateButton),
+        h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save profile"))),
+    h("div", { class: "flex items-center justify-between border-t border-line pt-2 sm:hidden" }, h("div", {}, updateLabel, updateButton)));
   document.body.append(pop);
+  void checkForUpdates();
   setTimeout(() => { document.addEventListener("mousedown", outside); document.addEventListener("keydown", keydown); }, 0);
 }
 
