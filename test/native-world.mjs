@@ -46,7 +46,7 @@ const api = async (path, opts = {}, token = "") => {
 const launchApp = async () => {
   app = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/server/index.ts"], {
     cwd: root,
-    env: { ...process.env, CTRL_DATA_DIR: dataDir, PORT: String(appPort), CLOUDFLARE_MOCK: "1", IMPROVEMENT_INTERVAL_MS: "600000" },
+    env: { ...process.env, CTRL_DATA_DIR: dataDir, PORT: String(appPort), CLOUDFLARE_MOCK: "1", IMPROVEMENT_INTERVAL_MS: "600000", CTRL_MAX_TOOL_ROUNDS: "6" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let diagnostics = "";
@@ -78,9 +78,12 @@ try {
 
   const provider = await api("/api/providers", { body: { name: "Deterministic provider", base_url: `http://127.0.0.1:${mockPort}/v1`, api_key: "test" } }, captain);
   const providerId = provider.body.provider.id;
+  const primaryLargeModel = provider.body.models.find((model) => model.name === "mock-large").id;
+  const primarySmallModel = provider.body.models.find((model) => model.name === "mock-small").id;
   const alternateProvider = await api("/api/providers", { body: { name: "Alternate deterministic provider", base_url: `http://127.0.0.1:${mockPort}/v1`, api_key: "test-2" } }, captain);
   const alternateProviderId = alternateProvider.body.provider.id;
-  const setup = await api("/api/setup/complete", { body: { name: "Native Test", terminals_enabled: true, provider_id: providerId, model: "mock-large" } }, captain);
+  const alternateSmallModel = alternateProvider.body.models.find((model) => model.name === "mock-small").id;
+  const setup = await api("/api/setup/complete", { body: { name: "Native Test", terminals_enabled: true, provider_id: providerId, model: primaryLargeModel } }, captain);
   ok(setup.status === 200, "first-run setup completes with Skipper");
 
   let channels = (await api("/api/channels", {}, captain)).body.channels;
@@ -91,6 +94,10 @@ try {
   ok(templates.body.templates?.length >= 5 && templates.body.templates.some((template) => template.slug === "home"), "bare-bones growing-agent templates ship in the product");
   const arsenal = (catalog.body.skills || []).filter((skill) => !skill.arsenal_locked);
   ok(arsenal.some((skill) => skill.slug === "self-hosting-guide") && main.agent.skills.length === arsenal.length, "Skipper starts with the complete shipped skill arsenal");
+  const learned = await api("/api/skills/learn", { body: { notes: "Turn our incident notes into a reusable postmortem skill." } }, captain);
+  ok(learned.status === 202 && learned.body.channelId === main.id && /@skipper[\s\S]*create_skill/i.test(learned.body.message.body), "Learn a new skill opens a visible Skipper thread that gathers sources and authors through create_skill");
+  await waitFor(async () => (await api("/api/skills", {}, captain)).body.skills?.some((skill) => skill.slug === "incident-postmortem"), "learned skill creation");
+  ok(true, "Skipper completes the learning thread by adding the reusable skill to the shared arsenal");
   ok(channels.every((channel) => channel.kind !== "channel" || channel.slug), "every channel has a stable URL slug");
 
   const workspaceUpdate = await api("/api/workspace", { method: "PATCH", body: { name: "Native Test Renamed", theme: "ocean" } }, captain);
@@ -121,14 +128,14 @@ try {
 
   const policyRootResult = await api(`/api/channels/${launch.id}/messages`, { body: {
     body: `@${launch.agent.name} use the selected thread model`,
-    modelPolicy: { provider_id: alternateProviderId, model: "mock-small" },
+    modelPolicy: { provider_id: alternateProviderId, model: alternateSmallModel },
   } }, captain);
   const policyRoot = policyRootResult.body.message.id;
   ok(policyRootResult.body.message.reply_count === 0, "sending a message does not report a phantom reply while the agent is only Working");
   const policyReply = await waitForAgentReply(policyRoot, captain, launch.agent.name);
   const threadPolicy = await api(`/api/messages/${policyRoot}/model-policy`, {}, captain);
   const countedThread = await api(`/api/messages/${policyRoot}/thread`, {}, captain);
-  ok(/mock-small/.test(policyReply.body) && threadPolicy.body.policy.provider_id === alternateProviderId && threadPolicy.body.policy.model === "mock-small" && threadPolicy.body.policy.overridden,
+  ok(/mock-small/.test(policyReply.body) && threadPolicy.body.policy.provider_id === alternateProviderId && threadPolicy.body.policy.model === alternateSmallModel && threadPolicy.body.policy.overridden,
     "a composer-selected provider and model persist together for the thread and serve its agent replies");
   ok(countedThread.body.root.reply_count === 1, "a completed agent answer counts exactly once despite streaming message updates");
   const beforeConversational = (await api(`/api/messages/${policyRoot}/thread`, {}, captain)).body.replies.length;
@@ -158,6 +165,27 @@ try {
   const progressRoot = (await api(`/api/channels/${launch.id}/messages`, { body: { body: `@${launch.agent.name} run whoami and explain` } }, captain)).body.message.id;
   const progressReply = await waitForAgentReply(progressRoot, captain, launch.agent.name);
   ok(progressReply.progress?.some((item) => item.kind === "tool" && item.status === "complete"), "agent working updates are persisted as a chronological disclosure log");
+
+  const interviewRoot = (await api(`/api/channels/${launch.id}/messages`, { body: { body: `@${launch.agent.name} ask me a structured interview with multiple choice` } }, captain)).body.message.id;
+  const interviewReply = await waitFor(async () => {
+    const replies = (await api(`/api/messages/${interviewRoot}/thread`, {}, captain)).body.replies || [];
+    return replies.find((reply) => reply.author?.name === launch.agent.name && reply.questions?.status === "pending");
+  }, "structured interview");
+  ok(interviewReply.questions.questions[0].options.length === 2, "agent questions persist as structured message metadata with pre-filled choices");
+  const interviewAnswer = await api(`/api/messages/${interviewReply.id}/questions/answer`, { body: { answers: [{ question_id: "q1", values: ["Thorough"], custom: "" }] } }, captain);
+  ok(interviewAnswer.status === 200 && /Thorough/.test(interviewAnswer.body.message.body), "structured interview buttons submit a visible conversational follow-up");
+
+  const stopRoot = (await api(`/api/channels/${launch.id}/messages`, { body: { body: `@${launch.agent.name} slow-turn run command` } }, captain)).body.message.id;
+  await waitFor(async () => (await api(`/api/messages/${stopRoot}/thread`, {}, captain)).body.replies?.some((reply) => reply.progress?.some((item) => item.status === "running")), "stoppable turn start");
+  const stopped = await api(`/api/messages/${stopRoot}/stop`, { body: {} }, captain);
+  await sleep(100);
+  const stopDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const stoppedThread = stopDb.prepare("SELECT stopped_followup_pending FROM threads WHERE root_message_id=?").get(stopRoot);
+  ok(stopped.status === 200 && stoppedThread.stopped_followup_pending === 1, "Stop immediately aborts only the active thread turn and arms hidden continuation context");
+  await api(`/api/channels/${launch.id}/messages`, { body: { body: "continue carefully", parentId: stopRoot } }, captain);
+  const hiddenFollowup = stopDb.prepare("SELECT stopped_followup,body FROM messages WHERE parent_id=? AND user_id IS NOT NULL ORDER BY id DESC LIMIT 1").get(stopRoot);
+  stopDb.close();
+  ok(hiddenFollowup.stopped_followup === 1 && hiddenFollowup.body === "continue carefully", "the next follow-up consumes hidden stop context without altering visible text");
 
   const retry = await api("/api/channels", { body: { name: "Launch", purpose: "Plan and coordinate the product launch." } }, captain);
   ok(retry.status === 200 && retry.body.channel.id === launch.id && retry.body.created === false, "safe retry returns the same world without duplicates");
@@ -302,7 +330,7 @@ try {
   const collaboratorFiles = await api(`/api/channels/${launch.id}/files`, {}, collaborator);
   ok(collaboratorLaunch.agent.id === launch.agent.id && collaboratorThread.body.replies.length > 0 && collaboratorFiles.body.files.some((file) => file.path === "workspace/launch-plan.md"), "a second human sees the same agent, transcript, session, and files");
 
-  const modelChange = await api(`/api/channels/${launch.id}/agent-policy`, { method: "PATCH", body: { provider_id: providerId, model: "mock-small" } }, captain);
+  const modelChange = await api(`/api/channels/${launch.id}/agent-policy`, { method: "PATCH", body: { provider_id: providerId, model: primarySmallModel } }, captain);
   ok(modelChange.status === 200 && modelChange.body.channel.agent.id === launch.agent.id, "model policy changes without replacing the resident identity");
 
   // Live updates: renames/settings must land on open sockets without a page refresh.
@@ -341,7 +369,7 @@ try {
   await launchApp();
   channels = (await api("/api/channels", {}, captain)).body.channels;
   const afterRestart = channels.find((channel) => channel.id === launch.id);
-  ok(afterRestart.agent.id === launch.agent.id && afterRestart.agent.model === "mock-small", "restart preserves agent identity, workspace, and changed model policy");
+  ok(afterRestart.agent.id === launch.agent.id && afterRestart.agent.model === primarySmallModel, "restart preserves agent identity, workspace, and changed model policy");
   ok(afterRestart.name === "launch-room" && afterRestart.slug === "launch-room", "renamed channel name and slug survive restart");
   ok(afterRestart.agent.skills.some((skill) => skill.slug === "self-hosting-guide") && afterRestart.agent.skills.some((skill) => skill.slug === "meeting-brief"), "newly granted and agent-created skills remain permanently in the arsenal after restart");
 

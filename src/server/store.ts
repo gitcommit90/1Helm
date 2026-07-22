@@ -96,7 +96,21 @@ export function serializeMessage(id: number): Row | undefined {
     lastReply = replies.length ? Number(replies[replies.length - 1].created) : null;
   }
   const progress = q("SELECT id, kind, body, status, created, updated FROM agent_progress WHERE message_id=? ORDER BY id", id);
-  return { ...m, reply_count: replyCount, last_reply: lastReply, author, attachments, progress };
+  const questionRow = q1("SELECT payload,answers,status,answered FROM agent_questions WHERE message_id=?", id);
+  let questions: unknown = null;
+  if (questionRow) {
+    try {
+      questions = {
+        ...JSON.parse(String(questionRow.payload || "{}")),
+        status: String(questionRow.status),
+        answers: questionRow.answers ? JSON.parse(String(questionRow.answers)) : null,
+        answered: questionRow.answered == null ? null : Number(questionRow.answered),
+      };
+    } catch { questions = null; }
+  }
+  // stopped_followup is backend-only prompt context and must never be exposed.
+  const { stopped_followup: _stoppedFollowup, ...publicMessage } = m;
+  return { ...publicMessage, reply_count: replyCount, last_reply: lastReply, author, attachments, progress, questions };
 }
 
 /**

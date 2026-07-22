@@ -7,6 +7,10 @@ const sse = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
 createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
+  if (url.pathname.startsWith("/no-auth/") && req.headers.authorization) {
+    res.writeHead(400, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ error: { message: "Authorization must be absent" } }));
+  }
   if (url.pathname === "/no-models/models") {
     res.writeHead(404, { "content-type": "application/json" });
     return res.end(JSON.stringify({ error: { message: "Model discovery is unavailable" } }));
@@ -41,6 +45,12 @@ createServer(async (req, res) => {
       && /schedule[_ ]followup|check later|still downloading|async download|wake me/i.test(latestUser)
       && !hasToolResult
       && /You are @\S+-agent/.test(serialized);
+    const wantsAskUser = reqBody.tools?.some((tool) => tool.function?.name === "ask_user")
+      && /structured interview|ask me structured|multiple choice/i.test(latestUser)
+      && !hasToolResult;
+    const wantsLearnSkill = reqBody.tools?.some((tool) => tool.function?.name === "create_skill")
+      && /Learn one new reusable workspace skill/i.test(latestUser)
+      && !hasToolResult;
     const wantsCallSkipper = reqBody.tools && /call skipper to run whoami/i.test(serialized) && !hasToolResult && /You are @\S+-agent/.test(serialized);
     const wantsCreateChannel = reqBody.tools?.some((tool) => tool.function?.name === "create_channel") && /create (?:a )?(?:new )?channel/i.test(serialized) && !hasToolResult;
     const wantsTool = reqBody.tools && /run|exec|whoami|command|create .*file|launch-plan/i.test(serialized) && (!hasToolResult || repeatsTools) && !wantsCallSkipper && !wantsCallAgent && !wantsCreateChannel && !wantsScheduleFollowup;
@@ -79,7 +89,15 @@ createServer(async (req, res) => {
     }
 
     res.writeHead(200, { "content-type": "text/event-stream" });
-    if (wantsRequestSkill) {
+    if (wantsLearnSkill) {
+      const args = { name: "Incident postmortem", description: "Turn incident evidence into reusable postmortems.", instructions: "Gather the timeline, contributing factors, corrective actions, owners, and follow-up dates." };
+      sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "create_skill_1", type: "function", function: { name: "create_skill", arguments: JSON.stringify(args) } }] } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+    } else if (wantsAskUser) {
+      const args = { intro: "Choose how I should proceed.", questions: [{ header: "Approach", question: "Which approach should I use?", options: [{ label: "Fast", description: "Prefer speed." }, { label: "Thorough", description: "Prefer depth." }] }] };
+      sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "ask_user_1", type: "function", function: { name: "ask_user", arguments: JSON.stringify(args) } }] } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+    } else if (wantsRequestSkill) {
       const args = { skill: "self-hosting-guide", reason: "The current work benefits from approachable self-hosting guidance." };
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "request_skill_1", type: "function", function: { name: "request_skill", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });

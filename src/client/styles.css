@@ -277,7 +277,7 @@ select.field {
 .auth-stage { overflow: auto; }
 
 /* Setup wizard — install ritual, same instrument system as the workspace. */
-.wizard-shell { overflow-y: auto; }
+.wizard-shell { overflow: hidden; }
 .wizard-label {
   @apply mb-2 block text-muted;
   font-family: var(--font-mono);
@@ -291,8 +291,12 @@ select.field {
   border-radius: 12px;
   box-shadow: var(--c-panel-shadow);
 }
+@media (max-height: 680px) {
+  .wizard-panel .field { min-height: 2.25rem; padding-top: .4rem; padding-bottom: .4rem; }
+  .wizard-help { margin-top: .2rem; line-height: 1rem; }
+}
 .wizard-choice {
-  @apply w-full border border-line bg-surface p-4 text-left transition;
+  @apply w-full border border-line bg-surface p-3 text-left transition;
   border-radius: 8px;
 }
 .wizard-choice:hover { border-color: color-mix(in srgb, var(--c-fg) 25%, var(--c-line)); }
@@ -444,6 +448,8 @@ select.field {
   animation: routing-dash 1.8s linear infinite;
   opacity: .85;
 }
+.routing-fabric-path.is-idle { animation: none; opacity: .16; }
+.routing-fabric-path.is-live { animation: routing-flow .7s linear infinite; opacity: 1; stroke: var(--c-accent); }
 .routing-fabric-hub {
   fill: color-mix(in srgb, var(--c-accent) 22%, var(--c-surface));
   stroke: var(--c-accent);
@@ -479,13 +485,6 @@ select.field {
 }
 @keyframes routing-dash {
   to { stroke-dashoffset: -40; }
-}
-.channel-purpose-fade {
-  position: relative;
-  overflow: hidden;
-  white-space: nowrap;
-  mask-image: linear-gradient(90deg, #000 0%, #000 72%, transparent 100%);
-  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 72%, transparent 100%);
 }
 .provider-brand-mark { border-radius: 4px; }
 

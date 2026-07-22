@@ -74,13 +74,18 @@ try {
 
   browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
   const page = await browser.newPage();
-  await page.setViewport({ width: 1200, height: 1000 });
+  await page.setViewport({
+    width: Number(process.env.ONBOARDING_VIEWPORT_WIDTH || 1200),
+    height: Number(process.env.ONBOARDING_VIEWPORT_HEIGHT || 1000),
+  });
   const browserErrors = [];
   page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
   page.on("pageerror", (error) => browserErrors.push(error.message));
   await page.goto(base, { waitUntil: "networkidle0" });
 
   await waitForHeading(page, "Create the Captain account");
+  const captainGeometry = await page.evaluate(() => ({ shell: document.querySelector(".wizard-shell")?.scrollHeight, client: document.querySelector(".wizard-shell")?.clientHeight, panel: document.querySelector(".wizard-panel")?.scrollHeight, panelClient: document.querySelector(".wizard-panel")?.clientHeight }));
+  ok(captainGeometry.shell === captainGeometry.client && captainGeometry.panel === captainGeometry.panelClient, "Captain onboarding fits without page or panel scrolling");
   await page.type('input[autocomplete="username"]', "captain");
   await page.type('input[autocomplete="name"]', "Captain");
   await page.type('input[autocomplete="new-password"]', "onboarding-test-pass");
@@ -91,6 +96,8 @@ try {
   ok(/Step 2 \/ 3/.test(providerCopy) && /one or several accounts or keys/i.test(providerCopy) && /no single AI brain/i.test(providerCopy), "provider onboarding teaches the multi-provider fabric");
   ok(!/starter model|choose a model/i.test(providerCopy) && !await page.$("select.field"), "provider onboarding does not ask for a starter model");
   ok(Boolean(await page.$('[data-provider-source="chatgpt"]')) && Boolean(await page.$('[data-provider-source="claude"]')) && Boolean(await page.$('[data-provider-source="custom"]')), "provider onboarding exposes OAuth and keyed sources from the routing control plane");
+  const providerGeometry = await page.evaluate(() => ({ shell: document.querySelector(".wizard-shell")?.scrollHeight, client: document.querySelector(".wizard-shell")?.clientHeight, panel: document.querySelector(".wizard-panel")?.scrollHeight, panelClient: document.querySelector(".wizard-panel")?.clientHeight }));
+  ok(providerGeometry.shell === providerGeometry.client && providerGeometry.panel === providerGeometry.panelClient, "provider onboarding uses horizontal space and does not scroll");
 
   await page.click('[data-provider-source="custom"]');
   await page.waitForSelector('[data-keyed-form="custom"]');
@@ -110,6 +117,8 @@ try {
   await clickButton(page, "Continue");
 
   await waitForHeading(page, "Name this workspace");
+  const workspaceGeometry = await page.evaluate(() => ({ shell: document.querySelector(".wizard-shell")?.scrollHeight, client: document.querySelector(".wizard-shell")?.clientHeight, panel: document.querySelector(".wizard-panel")?.scrollHeight, panelClient: document.querySelector(".wizard-panel")?.clientHeight }));
+  ok(workspaceGeometry.shell === workspaceGeometry.client && workspaceGeometry.panel === workspaceGeometry.panelClient, "workspace onboarding fits without scrolling");
   const workspaceCopy = await page.$eval(".wizard-panel", (element) => element.textContent || "");
   ok(/Step 3 \/ 3/.test(workspaceCopy) && /private Linux computer for every ordinary channel/i.test(workspaceCopy), "workspace creation explains automatic per-channel computers without a computer decision step");
   ok(!/Cloudflare API token|human terminal access|CPU|RAM|disk size/i.test(workspaceCopy), "onboarding contains no domain, terminal, or resource-sizing ceremony");
@@ -121,15 +130,37 @@ try {
   await page.type('input[autocomplete="organization"]', workspaceName);
   await clickButton(page, "Create workspace");
   await page.waitForSelector("aside", { timeout: 20_000 });
+  await page.waitForSelector("#welcome-tour", { timeout: 20_000 });
+  const welcomeTour = await page.$eval("#welcome-tour", (element) => element.textContent || "");
+  ok(/Which model should be primary/i.test(welcomeTour) && /30-second tour/i.test(welcomeTour) && /Channels are private worlds/i.test(welcomeTour), "fresh onboarding lands on the optional primary-model choice and product tour");
+  ok(await page.$$eval("#welcome-tour select.field", (selects) => selects.length === 2 && selects.every((select) => select.options.length > 0)), "primary model choice uses provider and model selectors instead of exposing 1Helm Router");
+  await page.evaluate(() => [...document.querySelectorAll("#welcome-tour button")].find((button) => button.textContent?.trim() === "Keep current")?.click());
+  await page.waitForFunction(() => !document.querySelector("#welcome-tour"));
+
+  await page.click('button[title="Open profile"]');
+  await page.waitForSelector("#profile-popover");
+  await page.$eval('#profile-popover input[placeholder="Job title"]', (input) => { input.value = "Product captain"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.$eval('#profile-popover textarea', (input) => { input.value = "Builds calm native products."; input.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.evaluate(() => [...document.querySelectorAll("#profile-popover button")].find((button) => button.textContent?.trim() === "Save profile")?.click());
+  await page.waitForFunction(() => !document.querySelector("#profile-popover"));
+  ok(await page.evaluate(() => document.querySelector('button[title="Open profile"]')?.textContent?.includes("Captain")), "bottom-left identity opens and saves the Profile popover without replacing Settings");
+
+  await page.click('button[aria-label="Open settings"]');
+  await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Skills")?.click());
+  await page.waitForFunction(() => [...document.querySelectorAll("button")].some((button) => button.textContent?.includes("Learn a new skill")));
+  ok(true, "Settings Skills exposes the visible Learn a new skill workflow");
+  await page.click('button[aria-label="Close settings"]');
 
   const status = await fetch(`${base}/api/setup/status`).then((response) => response.json());
   ok(status.setup_complete && status.workspace.name === workspaceName && status.workspace.terminals_enabled, "workspace completes with terminals available by default");
   const database = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
   const workspace = database.prepare("SELECT default_provider_id,default_model FROM workspace WHERE id=1").get();
+  const captainProfile = database.prepare("SELECT job_title,description,tour_complete FROM users WHERE username='captain'").get();
   const provider = database.prepare("SELECT kind,name FROM providers WHERE id=?").get(workspace.default_provider_id);
   database.close();
   const routingConfig = JSON.parse(readFileSync(join(dataDir, "routing", "config.json"), "utf8"));
   ok(provider?.kind === "routing" && provider?.name === "1Helm Router" && workspace.default_model, "setup assigns Skipper to the provider-neutral internal router without asking for a model");
+  ok(captainProfile.tour_complete === 1 && captainProfile.job_title === "Product captain" && /calm native products/.test(captainProfile.description), "tour completion and profile fields persist in the native workspace database");
   ok(routingConfig.providers.some((item) => item.name === "Deterministic provider" && item.type === "openai-compat"), "the onboarding connection is persisted in the authoritative routing store");
   ok(new URL(page.url()).pathname === "/c/main/chat", "completion opens the workspace directly without a Domain step");
   ok(browserErrors.length === 0, `onboarding browser flow has no console or page errors (${browserErrors.join("; ")})`);

@@ -201,6 +201,17 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     assert.equal(tested.ok, true);
     assert.deepEqual(tested.models.map((model) => model.id), ["mock-large", "mock-small"]);
 
+    const noAuthTest = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
+      method: "POST",
+      body: JSON.stringify({ action: "app:test-keyed-provider", payload: { providerType: "openai-compat", baseUrl: `http://127.0.0.1:${mockPort}/no-auth`, apiKey: "" } }),
+    });
+    assert.deepEqual(noAuthTest.models.map((model) => model.id), ["mock-large", "mock-small"], "custom endpoints can be tested without an API key or Authorization header");
+    const noAuthAdded = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
+      method: "POST",
+      body: JSON.stringify({ action: "app:add-keyed-provider", payload: { name: "No auth source", baseUrl: `http://127.0.0.1:${mockPort}/no-auth`, apiKey: "", models: noAuthTest.models } }),
+    });
+    assert(noAuthAdded.id, "an unauthenticated custom endpoint is stored without inventing a credential");
+
     const added = await json(`http://127.0.0.1:${appPort}/api/providers`, token, {
       method: "POST",
       body: JSON.stringify({ name: "Test source", base_url: `http://127.0.0.1:${mockPort}`, api_key: "mock-key" }),
@@ -210,7 +221,7 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     const directModel = added.models.find((model) => model.name === "mock-large").id;
     let state = await json(`http://127.0.0.1:${appPort}/api/routing/state`, token);
     assert.equal(Object.hasOwn(state, "apiKeys"), false, "routine control-plane state omits gateway credentials");
-    assert.equal(state.providers.length, 2);
+    assert.equal(state.providers.length, 3);
     assert.equal(state.providers.some((provider) => provider.name === "Non-HTTP local provider"), false, "migration excludes non-HTTP host providers");
     assert(state.combos.some((combo) => combo.name === "legacy-model"), "legacy model assignment becomes a compatibility route");
     const addedProvider = state.providers.find((provider) => provider.name === "Test source");
@@ -313,9 +324,16 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     assert.match(await page.$eval(`${keyedForm} [data-keyed-status]`, (element) => element.textContent || ""), /1 model ready/);
     await page.$eval(`${keyedForm} [data-keyed-field="key"]`, (input) => { input.value = ""; input.dispatchEvent(new Event("input", { bubbles: true })); });
     await page.click(`${keyedForm} [data-keyed-action="test"]`);
-    await page.waitForFunction((selector) => !document.querySelector(`${selector} [data-keyed-action="test"]`)?.disabled, {}, keyedForm);
-    assert.match(await page.$eval(`${keyedForm} [data-keyed-status]`, (element) => element.textContent || ""), /Base URL and API key required/);
-    assert.equal(await page.$eval(`${keyedForm} [data-keyed-action="add"]`, (button) => button.disabled), true, "test failure restores controls without allowing an untested save");
+    await page.waitForFunction((selector) => !document.querySelector(`${selector} [data-keyed-action="add"]`)?.disabled, {}, keyedForm);
+    assert.match(await page.$eval(`${keyedForm} [data-keyed-status]`, (element) => element.textContent || ""), /1 model ready/);
+    assert.equal(await page.$eval(`${keyedForm} [data-keyed-action="add"]`, (button) => button.disabled), false, "an empty custom API key remains a valid tested configuration");
+    const liveCredentials = await json(`http://127.0.0.1:${appPort}/api/routing/credentials`, token);
+    await json(`http://127.0.0.1:${appPort}/v1/chat/completions`, liveCredentials.apiKey, {
+      method: "POST",
+      body: JSON.stringify({ model: directModel, stream: false, messages: [{ role: "user", content: "Render this live" }] }),
+    });
+    await page.waitForFunction(() => /Test source/.test(document.querySelector(".routing-fabric")?.textContent || "") && /mock-large/.test(document.querySelector(".routing-fabric")?.textContent || ""));
+    assert.equal(Boolean(await page.$(".routing-fabric")), true, "Sources renders real request routing activity in place from the workspace WebSocket");
     await browser.close(); browser = undefined;
     }
 
@@ -331,6 +349,12 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
       body: JSON.stringify({ model: directModel, stream: false, messages: [{ role: "user", content: "Answer directly" }] }),
     });
     assert.match(directCompletion.choices[0].message.content, /Answer complete/);
+    const noAuthModel = (await json(`http://127.0.0.1:${appPort}/api/routing/models`, token)).models.find((model) => model.providerName === "No auth source").id;
+    const noAuthCompletion = await json(`http://127.0.0.1:${appPort}/v1/chat/completions`, state.apiKey, {
+      method: "POST",
+      body: JSON.stringify({ model: noAuthModel, stream: false, messages: [{ role: "user", content: "No auth please" }] }),
+    });
+    assert.match(noAuthCompletion.choices[0].message.content, /Answer complete/, "custom endpoint requests omit Authorization when its key is empty");
 
     const completion = await json(`http://127.0.0.1:${appPort}/v1/chat/completions`, state.apiKey, {
       method: "POST",
@@ -340,7 +364,7 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     const activity = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
       method: "POST", body: JSON.stringify({ action: "app:usage", payload: "all" }),
     });
-    assert.equal(activity.usage.requests, 2);
+    assert(activity.usage.requests >= 3, "direct, unauthenticated, and named-route requests are recorded in usage");
     assert.equal(activity.usage.recent[0].model, "workspace-coding");
 
     const addSource = async (name, baseUrl, models = [{ id: "mock-large", name: "mock-large", enabled: true }]) => {
@@ -382,10 +406,16 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     controlState = await json(`http://127.0.0.1:${appPort}/api/routing/state`, token);
     assert.equal(controlState.combos.some((combo) => combo.name === "round-contract-edited" && combo.strategy === "fallback"), true, "routes can be edited in place");
     const editedRoundRoute = controlState.combos.find((combo) => combo.name === "round-contract-edited");
+    await json(`http://127.0.0.1:${appPort}/api/workspace/model-policy`, token, {
+      method: "PATCH", body: JSON.stringify({ model: editedRoundRoute.name }),
+    });
     await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
       method: "POST", body: JSON.stringify({ action: "app:delete-combo", payload: editedRoundRoute.id }),
     });
     assert.equal((await json(`http://127.0.0.1:${appPort}/api/routing/state`, token)).combos.some((combo) => combo.name === "round-contract-edited"), false, "routes can be deleted");
+    const reconciledWorkspace = await json(`http://127.0.0.1:${appPort}/api/workspace/model-policy`, token);
+    assert.notEqual(reconciledWorkspace.model, editedRoundRoute.name, "deleting a selected route immediately reconciles stale workspace and agent policy");
+    assert(reconciledWorkspace.models.some((model) => model.id === reconciledWorkspace.model), "reconciled model policy always names a live catalog entry");
 
     await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
       method: "POST", body: JSON.stringify({ action: "app:set-provider-enabled", payload: { id: backupProvider, enabled: false } }),

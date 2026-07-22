@@ -115,7 +115,7 @@ function adminPanel(): HTMLElement {
     const response = await fetch("/api/workspace/photo", { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": "image/png" }, body: blob });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) { status.textContent = result.error || `HTTP ${response.status}`; return; }
-    S.workspace = result.workspace; photo.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); renderApp(); status.textContent = "Workspace photo updated.";
+    S.workspace = result.workspace; photo.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); document.querySelectorAll<HTMLImageElement>(".logo-asset").forEach((image) => { image.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); }); status.textContent = "Workspace photo updated.";
   };
   for (const hex of presetColors) presetRow.append(h("button", { class: "h-8 w-8 rounded-lg border border-line shadow-sm transition hover:scale-105", style: `background:${hex}`, title: hex, onclick: () => { void applyPreset(hex); } }));
   file.onchange = async () => {
@@ -124,15 +124,15 @@ function adminPanel(): HTMLElement {
     const response = await fetch("/api/workspace/photo", { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": image.type }, body: image });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) { status.textContent = result.error || `HTTP ${response.status}`; return; }
-    S.workspace = result.workspace; photo.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); renderApp(); status.textContent = "Workspace photo updated.";
+    S.workspace = result.workspace; photo.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); document.querySelectorAll<HTMLImageElement>(".logo-asset").forEach((image) => { image.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); }); status.textContent = "Workspace photo updated.";
   };
   const save = async (): Promise<void> => {
-    try { S.workspace = (await api<{ workspace: typeof S.workspace }>("/api/workspace", { method: "PATCH", body: { name: name.value, theme: theme.value } })).workspace; applyWorkspaceTheme(); status.textContent = "Workspace settings saved."; renderApp(); }
+    try { S.workspace = (await api<{ workspace: typeof S.workspace }>("/api/workspace", { method: "PATCH", body: { name: name.value, theme: theme.value } })).workspace; applyWorkspaceTheme(); document.querySelectorAll<HTMLElement>(".workspace-sidebar .truncate.text-\\[15px\\]").forEach((node) => { node.textContent = S.workspace.name; }); status.textContent = "Workspace settings saved."; }
     catch (error) { status.textContent = (error as Error).message; }
   };
   return h("div", { class: "space-y-4" },
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Workspace identity"), h("p", { class: "mt-1 text-sm text-muted" }, "Simple shared identity for everyone and every agent in this workspace."),
-      h("div", { class: "mt-4 flex flex-col gap-4 sm:flex-row sm:items-center" }, photo, h("div", { class: "flex flex-wrap gap-2" }, h("label", { class: "btn-subtle cursor-pointer text-sm" }, "Choose photo", file), S.workspace.photo_url ? h("button", { class: "btn-ghost text-sm", onclick: async () => { S.workspace = (await api<{ workspace: typeof S.workspace }>("/api/workspace/photo", { method: "DELETE" })).workspace; photo.src = "/brand/1helm.png"; renderApp(); } }, "Remove") : null)),
+      h("div", { class: "mt-4 flex flex-col gap-4 sm:flex-row sm:items-center" }, photo, h("div", { class: "flex flex-wrap gap-2" }, h("label", { class: "btn-subtle cursor-pointer text-sm" }, "Choose photo", file), S.workspace.photo_url ? h("button", { class: "btn-ghost text-sm", onclick: async () => { S.workspace = (await api<{ workspace: typeof S.workspace }>("/api/workspace/photo", { method: "DELETE" })).workspace; photo.src = "/brand/1helm.png"; document.querySelectorAll<HTMLImageElement>(".logo-asset").forEach((image) => { image.src = "/brand/1helm.png"; }); } }, "Remove") : null)),
       h("div", { class: "mt-3" }, h("span", { class: "mb-1 block text-xs font-semibold text-muted" }, "Default colors"), presetRow),
       h("div", { class: "mt-4 grid gap-3 sm:grid-cols-2" }, h("label", {}, h("span", { class: "mb-1 block text-xs font-semibold text-muted" }, "Workspace name"), name), h("label", {}, h("span", { class: "mb-1 block text-xs font-semibold text-muted" }, "Color theme"), theme)),
       h("div", { class: "mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save workspace"))));
@@ -144,11 +144,40 @@ function applyWorkspaceTheme(): void {
 }
 
 function skillsPanel(): HTMLElement {
-  const wrap = h("div", { class: "space-y-3" }, h("p", { class: "text-sm leading-6 text-muted" }, "Every agent knows this complete catalog. Skipper starts with all skills; resident agents get a useful permanent kit and can request or propose more while they work."));
+  const wrap = h("div", { class: "space-y-3" },
+    h("div", { class: "flex flex-col gap-3 rounded-lg border border-accent/30 bg-accent-soft p-4 sm:flex-row sm:items-center sm:justify-between" },
+      h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Teach 1Helm from your own material"), h("p", { class: "mt-1 text-sm leading-5 text-muted" }, "Give Skipper a folder or file, a web page, pasted notes, or any combination. It will inspect the sources and author one reusable workspace skill in a visible #main thread.")),
+      h("button", { class: "btn-primary shrink-0 text-sm", onclick: learnSkillDialog }, icon("sparkles", 15), "Learn a new skill")),
+    h("p", { class: "text-sm leading-6 text-muted" }, "Every agent knows this complete catalog. Skipper starts with all skills; resident agents get a useful permanent kit and can request or propose more while they work."));
   void api<{ skills: Array<Skill & { arsenal_locked?: number; arsenal_reason?: string; assigned_agents?: number }> }>("/api/skills").then(({ skills }) => {
     for (const skill of skills) wrap.append(h("article", { class: `card p-4 ${skill.arsenal_locked ? "opacity-80" : ""}` }, h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-semibold text-fg" }, skill.name), h("span", { class: "chip" }, skill.category), skill.arsenal_locked ? h("span", { class: "chip border-amber-400/40 text-amber-600 dark:text-amber-300" }, "locked") : null, h("span", { class: "ml-auto text-xs text-muted" }, `${skill.assigned_agents || 0} agents`)), h("p", { class: "mt-2 text-sm leading-6 text-muted" }, skill.description), skill.arsenal_locked && skill.arsenal_reason ? h("p", { class: "mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300" }, skill.arsenal_reason) : null));
   }).catch((error) => wrap.append(h("p", { class: "text-danger" }, (error as Error).message)));
   return wrap;
+}
+
+function learnSkillDialog(): void {
+  const overlay = h("div", { class: "modal-overlay fixed inset-0 z-50 grid place-items-end bg-black/50 sm:place-items-center sm:p-5" });
+  const path = h("input", { class: "field", placeholder: "/workspace/research or /path/to/file", autocomplete: "off" }) as HTMLInputElement;
+  const url = h("input", { class: "field", type: "url", placeholder: "https://example.com/guide", autocomplete: "url" }) as HTMLInputElement;
+  const notes = h("textarea", { class: "field min-h-32 resize-y", placeholder: "Paste notes, describe the current workflow, and say what the reusable skill should focus on." }) as HTMLTextAreaElement;
+  const status = h("p", { class: "min-h-5 text-sm text-muted" });
+  const close = (): void => overlay.remove();
+  const learn = async (): Promise<void> => {
+    status.textContent = "Opening a Skipper learning thread…";
+    try {
+      const result = await api<{ channelId: number; rootMessageId: number }>("/api/skills/learn", { body: { path: path.value, url: url.value, notes: notes.value } });
+      close();
+      location.assign(`/c/main/thread/${result.rootMessageId}`);
+    } catch (error) { status.textContent = (error as Error).message; }
+  };
+  const modal = h("div", { class: "card mobile-sheet w-full max-w-[660px] space-y-4 rounded-b-none p-5 shadow-2xl sm:rounded-xl" },
+    h("div", { class: "flex items-start justify-between gap-3" }, h("div", {}, h("h2", { class: "font-display text-xl text-fg" }, "Learn a new skill"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Add any sources you have. Skipper can combine them and will use its normal tools while you watch.")), h("button", { class: "grid h-9 w-9 place-items-center rounded text-muted hover:bg-hover", "aria-label": "Close", onclick: close }, icon("x"))),
+    h("div", { class: "grid gap-3 sm:grid-cols-2" }, h("label", { class: "space-y-1 text-xs font-semibold text-fg" }, "Local source (optional)", path), h("label", { class: "space-y-1 text-xs font-semibold text-fg" }, "Web URL (optional)", url)),
+    h("label", { class: "block space-y-1 text-xs font-semibold text-fg" }, "Notes and requirements (optional)", notes),
+    status,
+    h("div", { class: "flex justify-end gap-2" }, h("button", { class: "btn-subtle", onclick: close }, "Cancel"), h("button", { class: "btn-primary", onclick: () => { void learn(); } }, "Start learning")));
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
+  overlay.append(modal); document.body.append(overlay); notes.focus();
 }
 
 function domainsPanel(): HTMLElement {
@@ -182,7 +211,7 @@ function agentsPanel(): HTMLElement {
         h("div", { class: "min-w-0 flex-1" },
           h("div", { class: "flex flex-wrap items-center gap-2" }, h("span", { class: "font-semibold text-fg" }, "@" + agent.name), h("span", { class: "chip" }, agent.kind === "skipper" ? "Workspace Skipper" : `Resident of #${channel.name}`)),
           h("div", { class: "mt-1 text-sm leading-5 text-muted" }, agent.purpose || channel.purpose),
-          h("div", { class: "mt-1 break-words text-xs text-faint" }, `${agent.status} · ${agent.provider_name || "no provider"} · ${agent.model || "no model"}`))),
+          h("div", { class: "mt-1 break-words text-xs text-faint" }, `${agent.status} · ${agent.provider_kind === "routing" ? "Model fabric" : agent.provider_name || "no provider"} · ${agent.model || "no model"}`))),
       h("button", { class: "btn-subtle min-h-11 w-full shrink-0 text-xs sm:min-h-0 sm:w-auto", onclick: () => { document.querySelector<HTMLElement>(".fixed.inset-0.z-40")?.remove(); S.channelId = channel.id; S.view = "settings"; renderApp(); } }, "Open channel"))),
     !agents.length ? h("p", { class: "py-8 text-center text-sm text-muted" }, "Complete setup, then create a channel to provision its resident agent world.") : null);
 }

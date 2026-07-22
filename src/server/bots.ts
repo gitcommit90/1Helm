@@ -31,8 +31,16 @@ type ChatMsg = { role: string; content: string; tool_calls?: ToolCall[]; tool_ca
 type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
 type RuntimeAgent = Row & { kind?: string; channel_id?: number; purpose?: string; instructions?: string };
 
-const MAX_TOOL_ROUNDS = 6;
-const activeTurns = new Map<number, Set<AbortController>>();
+/** Production residents can complete substantial work in one turn. Tests may
+ * lower the ceiling explicitly so deterministic repeat-tool coverage is fast. */
+export const MAX_TOOL_ROUNDS = Math.max(1, Number(process.env.CTRL_MAX_TOOL_ROUNDS || 150));
+type ActiveTurn = {
+  controller: AbortController;
+  threadRootId: number;
+  messageId: number;
+  agentId: number;
+};
+const activeTurns = new Map<number, Set<ActiveTurn>>();
 const meaningfulAnswer = (value: string): boolean => value.replace(/[\s*_~`#>\-[\](){}|.!?,:;]+/g, "").length > 0;
 
 function completedToolAnswer(tool: string, result: string): string {
@@ -73,8 +81,36 @@ function completedToolAnswer(tool: string, result: string): string {
 }
 
 export function cancelChannelTurns(channelId: number): void {
-  for (const controller of activeTurns.get(channelId) || []) controller.abort();
+  for (const turn of activeTurns.get(channelId) || []) turn.controller.abort("channel-lifecycle");
   activeTurns.delete(channelId);
+}
+
+/** Stop only the active turn in one thread, preserving everything streamed so
+ * far and arming a one-shot, backend-only continuation hint. */
+export function stopThreadTurn(channelId: number, threadRootId: number): { stopped: boolean; messageId?: number } {
+  const turns = activeTurns.get(channelId);
+  const turn = [...(turns || [])].find((candidate) => candidate.threadRootId === threadRootId && !candidate.controller.signal.aborted);
+  if (!turn) return { stopped: false };
+  turn.controller.abort("user-stop");
+  const current = q1("SELECT body FROM messages WHERE id=?", turn.messageId);
+  if (current) {
+    const body = String(current.body || "").trim();
+    if (!meaningfulAnswer(body) || body === "_Working…_") run("UPDATE messages SET body='_Turn stopped._' WHERE id=?", turn.messageId);
+    run("UPDATE agent_progress SET status='complete',updated=? WHERE message_id=? AND status='running'", now(), turn.messageId);
+  }
+  const threadId = threadIdForRoot(threadRootId, channelId) ?? ensureThread(threadRootId, channelId);
+  run("UPDATE threads SET stopped_followup_pending=1,status='open',updated_at=? WHERE id=?", now(), threadId);
+  if (turn.agentId) {
+    setAgentStatus(turn.agentId, "ready", channelId);
+    broadcastToChannel(channelId, { type: "agent_status", channelId, agentId: turn.agentId, status: "ready" });
+  }
+  broadcastToChannel(channelId, {
+    type: "message_update",
+    message: serializeMessage(turn.messageId),
+    parent: serializeMessage(threadRootId),
+  });
+  broadcastToChannel(channelId, { type: "agent_turn_stopped", channelId, rootMessageId: threadRootId, messageId: turn.messageId });
+  return { stopped: true, messageId: turn.messageId };
 }
 
 const turnIsActive = (channelId: number, signal: AbortSignal): boolean =>
@@ -120,6 +156,7 @@ function systemPrompt(bot: Row, agent: RuntimeAgent | undefined, channelId: numb
     visiting ? "Contribute only the expertise requested in this thread. You have no shell or durable-memory tools here, and this invitation ends with the thread." : "Your durable computer workspace is /workspace. Shell commands always start there; use relative paths and refer to it as /workspace, never by a host path.",
     visiting ? "Use only the authoritative invoking thread context. Do not carry this one-off collaboration into unrelated work." : "This channel's threads, files, memory, and tools are your normal world. Use remember for durable decisions, facts, preferences, and useful references. When you produce a file, image, PDF, or other artifact the user should see in chat, call attach_file with its workspace path so it appears as a real attachment (inline images, downloadable files)—do not only paste a path.",
     visiting ? "" : "When a user's real need presents a useful self-hosting opportunity, explain the option in newcomer-friendly language and offer to call Skipper to provision it. Keep suggestions relevant and non-pushy.",
+    visiting ? "" : "Your computer has a 2 GiB 1Helm-managed writable workspace allocation. Apple’s guest filesystem may report a much larger host-backed virtual capacity; never present that virtual ceiling as storage the channel owns.",
     "If work needs host-level authority, another channel, a missing capability, or credentials, use call_skipper with a concise reason. Do not silently assume broader access.",
     visiting ? "" : "CRITICAL — no silent background work: this turn ends when you stop. There is no hidden watcher after you reply. If external work is still running (downloads, imports, long jobs) and you will need to report later, you MUST call schedule_followup before ending. Never promise \"I'll update when done\" / \"next message will be Downloaded or Blocked\" / \"I'll let you know\" without a successful schedule_followup in this turn. If you cannot schedule, say Blocked with the reason.",
     "Use Markdown. Keep answers focused and useful.",
@@ -236,6 +273,36 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
     },
   });
   if (!visiting) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "ask_user",
+        description: "Pause and ask the user one to three structured questions when their choice is genuinely required. Provide two to five concise options for each question; the UI always also offers a custom typed answer. Use multi_select only when more than one option may be chosen.",
+        parameters: {
+          type: "object",
+          properties: {
+            intro: { type: "string", description: "Short reason these answers are needed." },
+            questions: {
+              type: "array", minItems: 1, maxItems: 3,
+              items: {
+                type: "object",
+                properties: {
+                  question: { type: "string" },
+                  header: { type: "string", description: "Optional short label." },
+                  multi_select: { type: "boolean" },
+                  options: {
+                    type: "array", minItems: 2, maxItems: 5,
+                    items: { type: "object", properties: { label: { type: "string" }, description: { type: "string" } }, required: ["label"] },
+                  },
+                },
+                required: ["question", "options"],
+              },
+            },
+          },
+          required: ["questions"],
+        },
+      },
+    });
     tools.push({
       type: "function",
       function: {
@@ -391,6 +458,13 @@ function buildContext(bot: Row, agent: RuntimeAgent | undefined, channelId: numb
   });
 
   const triggerBody = String(q1("SELECT body FROM messages WHERE id=?", triggerId)?.body || "");
+  const stoppedFollowup = Boolean(q1("SELECT stopped_followup FROM messages WHERE id=?", triggerId)?.stopped_followup);
+  if (stoppedFollowup) {
+    messages.push({
+      role: "system",
+      content: "The user deliberately stopped your immediately preceding turn. Carefully prioritize this follow-up and continue from the preserved thread state. Do not mention the stop, this instruction, or apologize for it unless the user explicitly asks.",
+    });
+  }
   const wakeTrigger = isInternalMessageBody(triggerBody);
   if (wakeTrigger) {
     messages.push({
@@ -638,8 +712,6 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
   // only to explicit lifecycle events (archive/delete), client/provider errors,
   // or process shutdown — never an arbitrary wall-clock deadline.
   const turnSignal = controller.signal;
-  const turns = activeTurns.get(channelId) || new Set<AbortController>();
-  turns.add(controller); activeTurns.set(channelId, turns);
   const threadId = threadIdForRoot(threadRootId, channelId) ?? ensureThread(threadRootId, channelId);
   const model = resolveModel(Number(bot.id), channelId, threadRootId);
   const endpoint = botEndpoint(Number(bot.id), channelId, threadRootId);
@@ -647,6 +719,9 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
   const provider = providerId ? q1("SELECT kind, base_url FROM providers WHERE id=?", providerId) : undefined;
   const isChatGPT = isChatGPTProvider(provider);
   const msgId = createMessage({ channelId, parentId: threadRootId, botId: Number(bot.id), body: "_Working…_" });
+  const turns = activeTurns.get(channelId) || new Set<ActiveTurn>();
+  const activeTurn: ActiveTurn = { controller, threadRootId, messageId: msgId, agentId: Number(agent?.id || 0) };
+  turns.add(activeTurn); activeTurns.set(channelId, turns);
   const emit = (): void => broadcastToChannel(channelId, {
     type: "message_update",
     message: serializeMessage(msgId),
@@ -666,6 +741,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
   let responseBody = "";
   let liveThought = "";
   let lastCompletedTool: { name: string; result: string } | null = null;
+  let awaitingQuestions = false;
   const paintBody = (text: string): void => {
     if (!turnIsActive(channelId, controller.signal) || !q1("SELECT 1 FROM messages WHERE id=?", msgId)) return;
     run("UPDATE messages SET body=? WHERE id=?", text, msgId);
@@ -694,11 +770,11 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
   setStatus(agent, channelId, "working");
   if (!endpoint && !isChatGPT) {
     setBody(`_No provider connected for **${bot.name}**. Ask @skipper or the Captain to connect one._`);
-    failEscalation(); setStatus(agent, channelId, "waiting"); turns.delete(controller); if (!turns.size) activeTurns.delete(channelId); return;
+    failEscalation(); setStatus(agent, channelId, "waiting"); turns.delete(activeTurn); if (!turns.size) activeTurns.delete(channelId); return;
   }
   if (!model) {
     setBody(`_No model configured for **${bot.name}**. Ask @skipper or the Captain to choose one._`);
-    failEscalation(); setStatus(agent, channelId, "waiting"); turns.delete(controller); if (!turns.size) activeTurns.delete(channelId); return;
+    failEscalation(); setStatus(agent, channelId, "waiting"); turns.delete(activeTurn); if (!turns.size) activeTurns.delete(channelId); return;
   }
   let startProgressId = addProgress("status", "Starting agent turn…", "running");
   broadcastToChannel(channelId, { type: "message", message: serializeMessage(msgId), parent: serializeMessage(threadRootId) });
@@ -785,6 +861,8 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                   : name === "attach_file" ? String(args.path || args.name || "")
                   : name === "schedule_followup"
                     ? `in ${String(args.delay_seconds || "?")}s: ${String(args.reason || "")}`
+                  : name === "ask_user"
+                    ? `${Array.isArray(args.questions) ? args.questions.length : 0} structured question(s)`
                 : String(args.content || "");
           const actionId = recordAction(Number(agent?.id || 0), threadId, channelId, name, input, actor);
           const progressId = addProgress("tool", `${name.replaceAll("_", " ")}: ${input || "running"}`);
@@ -809,6 +887,30 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
             } else if (name === "remember") {
               const memoryId = recordMemory({ channelId, threadId, kind: String(args.kind || "fact"), content: input, sourceMessageId: msgId, authorType: actor });
               result = `Recorded channel memory ${memoryId}.`;
+            } else if (name === "ask_user" && !visiting) {
+              const rawQuestions = Array.isArray(args.questions) ? args.questions.slice(0, 3) : [];
+              const questions = rawQuestions.map((raw, index) => {
+                const item = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+                const options = (Array.isArray(item.options) ? item.options : []).slice(0, 5).map((rawOption) => {
+                  const option = rawOption && typeof rawOption === "object" ? rawOption as Record<string, unknown> : {};
+                  return { label: String(option.label || "").trim().slice(0, 120), description: String(option.description || "").trim().slice(0, 300) };
+                }).filter((option) => option.label);
+                return {
+                  id: `q${index + 1}`,
+                  header: String(item.header || "").trim().slice(0, 40),
+                  question: String(item.question || "").trim().slice(0, 1000),
+                  multi_select: Boolean(item.multi_select),
+                  options,
+                };
+              }).filter((question) => question.question && question.options.length >= 2);
+              if (!questions.length) result = "Error: ask_user requires at least one question with two valid options.";
+              else {
+                const payload = { intro: String(args.intro || "").trim().slice(0, 1000), questions };
+                run("INSERT INTO agent_questions (message_id,payload,status,created) VALUES (?,?,'pending',?)", msgId, JSON.stringify(payload), now());
+                awaitingQuestions = true;
+                result = `Displayed ${questions.length} structured question${questions.length === 1 ? "" : "s"} and paused for the user's answers.`;
+                emit();
+              }
             } else if (name === "schedule_followup" && agent?.kind === "channel" && !visiting) {
               try {
                 const scheduled = scheduleAgentFollowup({
@@ -872,6 +974,15 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
           if (actionStatus === "complete") lastCompletedTool = { name, result };
           messages.push({ role: "tool", tool_call_id: toolCall.id, name, content: result });
         }
+        if (awaitingQuestions) {
+          if (!meaningfulAnswer(responseBody)) setBody("I need a few details before I continue.");
+          run("UPDATE agent_progress SET status='complete',updated=? WHERE message_id=? AND status='running'", now(), msgId);
+          run("UPDATE threads SET status='waiting',updated_at=? WHERE id=?", now(), threadId);
+          refreshThreadSummary(threadRootId);
+          emit();
+          setStatus(agent, channelId, "waiting");
+          return;
+        }
         // Keep a running status between tool rounds so the UI never drops Working while
         // only a sticky thought remains (no running progress rows).
         if (startProgressId) {
@@ -922,7 +1033,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
         }
         refreshThreadSummary(threadRootId);
         setStatus(agent, channelId, "ready");
-        turns.delete(controller);
+        turns.delete(activeTurn);
         if (!turns.size) activeTurns.delete(channelId);
         return;
       }
@@ -957,7 +1068,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
         }
         refreshThreadSummary(threadRootId);
         setStatus(agent, channelId, "ready");
-        turns.delete(controller);
+        turns.delete(activeTurn);
         if (!turns.size) activeTurns.delete(channelId);
         return;
       }
@@ -985,8 +1096,14 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
     emit();
     setStatus(agent, channelId, "ready");
   } catch (error) {
-    const cancelledByLifecycle = controller.signal.aborted;
-    if (!cancelledByLifecycle && q1("SELECT 1 FROM channels WHERE id=?", channelId)) {
+    const cancelled = controller.signal.aborted;
+    const userStopped = cancelled && controller.signal.reason === "user-stop";
+    if (userStopped) {
+      run("UPDATE agent_progress SET status='complete',updated=? WHERE message_id=? AND status='running'", now(), msgId);
+      refreshThreadSummary(threadRootId);
+      setStatus(agent, channelId, "ready");
+      emit();
+    } else if (!cancelled && q1("SELECT 1 FROM channels WHERE id=?", channelId)) {
       const detail = (error as Error).message;
       run("UPDATE agent_progress SET status='failed',updated=? WHERE message_id=? AND status='running'", now(), msgId);
       setBody(responseBody ? `${responseBody}\n\n_${detail}_` : `_${detail}_`);
@@ -994,7 +1111,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
       failEscalation(); setStatus(agent, channelId, "waiting");
     }
   } finally {
-    turns.delete(controller);
+    turns.delete(activeTurn);
     if (!turns.size) activeTurns.delete(channelId);
   }
 }

@@ -24,20 +24,21 @@ Living product record and direction history: [`docs/VISION.md`](docs/VISION.md).
 
 ## What works today
 
-- **First-run wizard** — create the Captain account, connect an AI brain, approve Apple's verified channel-computer runtime once on macOS, choose terminal visibility, name the workspace, and land in `#main` with Skipper.
+- **First-run wizard** — create the Captain account, connect one or several provider accounts or keys, and name the workspace. If needed, approve Apple's verified channel-computer runtime inline once; terminals default on. After setup, choose an optional primary model and take a short product tour.
 - **Create a channel** — name it and describe what it's for. 1Helm atomically provisions its resident agent, computer workspace (`/workspace`), files, memory namespace, and model policy — no bot wiring or directory setup.
 - **Resident agents** — one durable specialist per channel; shell commands and files stay in that channel's `/workspace`; curated decisions, facts, preferences, and artifact references are retained across threads, model changes, and server restarts. Session recaps remain in Threads rather than being mislabeled as Memory.
-- **Hermes-style skill arsenal** — a useful suite ships in the workspace, including approachable self-hosting guidance. Skipper has the complete catalog. New agents receive a purpose-aware permanent starter kit, know every unassigned skill they can request, and can propose reusable skills that Skipper approves into the shared arsenal.
+- **Hermes-style skill arsenal** — a useful suite ships in the workspace, including approachable self-hosting guidance. Skipper has the complete catalog. New agents receive a purpose-aware permanent starter kit, know every unassigned skill they can request, and can propose reusable skills that Skipper approves into the shared arsenal. Settings → Skills can also open a visible Skipper learning thread from local sources, URLs, or notes.
 - **Mnemosyne memory per identity** — Skipper and every resident agent own a distinct local Mnemosyne SQLite database. Curated knowledge and completed session outcomes feed long-term retrieval; memory never collapses to a profile Markdown file.
 - **Growing templates** — start from a Blank slate, Project, Research, Home, or Inbox role. These are lightweight starting kits; the resident keeps learning preferences, receiving skills, and improving with the user.
 - **Stable channel URLs** — channel tabs and threads have durable slug routes such as `/c/product-launch/memory` and `/c/product-launch/thread/42`.
-- **Cloudflare custom domains** — onboarding and Settings → Domains create a named tunnel, DNS route, HTTPS hostname, and persistent service from a one-time token that is never stored.
+- **Cloudflare custom domains** — Settings → Domains creates a named tunnel, DNS route, HTTPS hostname, and persistent service from a one-time token that is never stored.
 - **Silent improvement reviews** — Skipper periodically examines recent interaction signals, adds durable behavior guidance after missed corrections or frustration, and leaves a concise Activity note.
 - **Thread-only expert guests** — the ordinary channel stays Skipper plus its resident expert. Skipper may invite another resident into one thread; the guest is never added to the channel and receives neither its workspace nor memory.
 - **Skipper escalation** — `@skipper` (or a resident agent's `call_skipper`) routes the full invoking thread to the one workspace Skipper, which can take the broader action and records the outcome in that same thread. Skipper hands work back with `call_agent` so the resident finishes without the Captain re-tagging.
 - **Channel-native UI** — per-channel Chat, Threads, Files, Terminal, Memory, Activity, and Settings. The header shows the resident agent's identity, status, and serving model; a `Call Skipper` affordance is always one click away.
 - **Lifecycle** — archive pauses an agent world (cancels in-flight work, closes terminals) while preserving everything; restore reuses the same identity, workspace, memory, and threads; permanent deletion is Captain-only with typed-name confirmation.
 - **Unified model fabric** — connect ChatGPT, Claude, Antigravity/Gemini, and xAI OAuth accounts; OpenRouter, NVIDIA NIM, Cloudflare, GLM, or custom API keys; pool multiple accounts; enable exact models; create fallback or round-robin routes; and use all of them inside 1Helm or through one `/v1` endpoint.
+- **In-chat controls** — agents can pause for one to three structured multiple-choice questions with custom answers, and each active thread turn has a Stop control that preserves partial work and resumes cleanly from the user's next message.
 - **Local operations** — request activity, token usage, account attribution, supported subscription quotas, redacted routing/OAuth logs, and revocable gateway keys live in Settings → Providers. Changing a model or route never replaces an agent or discards channel-owned state.
 - **A computer per channel on macOS** — every ordinary channel gets a persistent Apple `container machine`: a separate lightweight Linux VM with its own filesystem, shell, services, and `/workspace`. Skipper chooses CPU/RAM automatically, keeps the Mac home directory unmounted, wakes scheduled work, and conservatively leaves machines running when services or timers make sleep unsafe.
 - **Channel terminals** — optional. Each ordinary channel's Terminal and resident shell tools execute inside that channel's Linux computer; its screen and server session survive tab navigation and page reload, and sessions are owner- and channel-scoped and torn down on archive/delete. Skipper's `#main` terminal remains native on the Mac.
@@ -70,7 +71,7 @@ Open `http://localhost:8123`. On a fresh data directory you see the setup wizard
 | `PORT` | `8123` | HTTP/WebSocket port. |
 | `CTRL_DATA_DIR` | `./data` | SQLite control-plane state + narrow host workspace mirrors and uploaded files (internal path name kept for compatibility). |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `native` elsewhere | Explicit backend override for development/testing. The macOS product uses `apple`. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:1.1.3` | Versioned OCI machine image built from `container/Containerfile`. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:1.1.4` | Versioned OCI machine image built from `container/Containerfile`. |
 
 On first boot 1Helm starts a private loopback Open-Terminal agent and registers it as **"This Computer"** for Skipper's native-Mac work. Ordinary residents are never assigned that host computer.
 
@@ -169,7 +170,7 @@ First user is the Captain (admin). The Captain manages workspace name/photo/them
 
 Settings → Providers is 1Helm's native control plane for all model access. Connected accounts and API keys immediately populate channel and thread model pickers. Standard-provider routes select provider + model and try every eligible account in that provider pool before moving to the next fallback member; custom OpenAI-compatible connections remain connection-specific.
 
-Named routes can use ordered fallback or round-robin starting positions. The same direct model IDs and route names are exposed at the workspace's `/v1` base URL for external OpenAI- or Anthropic-compatible tools. Supported endpoints are model discovery, Chat Completions, Responses, Anthropic Messages, and Anthropic token counting. Gateway keys are separate from 1Helm login sessions and can be created, disabled, copied, and revoked independently.
+Named routes can use ordered fallback or round-robin starting positions. Custom OpenAI-compatible endpoints may omit an API key when the upstream requires no authentication; 1Helm then sends no Authorization header. The same direct model IDs and route names are exposed at the workspace's `/v1` base URL for external OpenAI- or Anthropic-compatible tools. Supported endpoints are model discovery, Chat Completions, Responses, Anthropic Messages, and Anthropic token counting. Gateway keys are separate from 1Helm login sessions and can be created, disabled, copied, and revoked independently.
 
 Provider configuration lives under `CTRL_DATA_DIR/routing`: restrictive local config, uncapped SQLite usage history, and a redacted operational log. Existing pre-fabric 1Helm provider assignments migrate into compatibility routes on first start so current resident model names continue to resolve.
 

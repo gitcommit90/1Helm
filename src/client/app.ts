@@ -1,6 +1,7 @@
-import { api, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type ThreadUsage } from "./api.ts";
+import { api, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type ThreadUsage, type RoutingModel } from "./api.ts";
 import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, beep, icon, helmMark, type ChannelLink } from "./dom.ts";
 import { openSettings, finishOpenRouterOAuth } from "./settings.ts";
+import { pushRoutingActivity } from "./routing.ts";
 import { openOnboarding } from "./onboarding.ts";
 import { defaultTerminalComputer, openTerminals, refitChannelTerminals, getTerminalChrome } from "./term.ts";
 import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderThreads, type ChannelView } from "./channel.ts";
@@ -191,6 +192,54 @@ async function enterWorkspace(preferredChannelId?: number): Promise<void> {
   if (!S.channelId && main) S.channelId = main.id;
   if (S.channelId) await openChannel(S.channelId, route.view, route.threadRootId, true);
   else renderApp();
+  if (!S.me.tour_complete && sessionStorage.getItem("1helm.justOnboarded") === "1") {
+    sessionStorage.removeItem("1helm.justOnboarded");
+    void openWelcomeTour();
+  }
+}
+
+async function openWelcomeTour(): Promise<void> {
+  if (document.getElementById("welcome-tour")) return;
+  let data: { model: string; models: RoutingModel[] };
+  try { data = await api<{ model: string; models: RoutingModel[] }>("/api/workspace/model-policy"); }
+  catch { return; }
+  const overlay = h("div", { id: "welcome-tour", class: "modal-overlay fixed inset-0 z-[80] grid place-items-center bg-black/65 p-4 backdrop-blur-sm" });
+  const provider = h("select", { class: "field" }) as HTMLSelectElement;
+  const model = h("select", { class: "field" }) as HTMLSelectElement;
+  const families = new Map<string, { label: string; models: RoutingModel[] }>();
+  for (const candidate of data.models || []) {
+    const id = candidate.kind === "route" ? "routes" : String(candidate.providerType || candidate.providerName || "models");
+    const label = candidate.kind === "route" ? "Named routes" : String(candidate.providerName || candidate.providerType || "Provider");
+    const group = families.get(id) || { label, models: [] }; group.models.push(candidate); families.set(id, group);
+  }
+  for (const [id, group] of families) provider.append(h("option", { value: id, selected: group.models.some((candidate) => candidate.id === data.model) }, group.label));
+  const drawModels = (): void => {
+    clear(model); const group = families.get(provider.value);
+    for (const candidate of group?.models || []) model.append(h("option", { value: candidate.id, selected: candidate.id === data.model }, candidate.name || candidate.id));
+    if (!model.value && model.options.length) model.selectedIndex = 0;
+  };
+  provider.onchange = drawModels; drawModels();
+  const status = h("p", { class: "min-h-5 text-sm text-muted" });
+  const finish = async (saveModel: boolean): Promise<void> => {
+    status.textContent = saveModel ? "Saving your primary model…" : "Opening your workspace…";
+    try {
+      if (saveModel && model.value) await api("/api/workspace/model-policy", { method: "PATCH", body: { model: model.value } });
+      S.me = (await api<{ user: User }>("/api/me/profile", { method: "PATCH", body: { tour_complete: true } })).user;
+      await loadWorkspace(); renderApp(); overlay.remove();
+    } catch (error) { status.textContent = (error as Error).message; }
+  };
+  overlay.append(h("section", { class: "card w-full max-w-[820px] overflow-hidden shadow-2xl" },
+    h("div", { class: "grid md:grid-cols-[1.15fr_.85fr]" },
+      h("div", { class: "p-6 sm:p-8" }, h("div", { class: "eyebrow text-accent" }, "Welcome aboard"), h("h1", { class: "font-display mt-2 text-3xl text-fg" }, "Which model should be primary?"), h("p", { class: "mt-2 text-sm leading-6 text-muted" }, "1Helm already chose a working default so setup could finish. Pick the provider family and model you prefer now; you can change this anytime in #main settings."),
+        h("div", { class: "mt-5 grid gap-3 sm:grid-cols-2" }, h("label", { class: "space-y-1 text-xs font-semibold text-fg" }, "Provider", provider), h("label", { class: "space-y-1 text-xs font-semibold text-fg" }, "Model", model)), status,
+        h("div", { class: "mt-5 flex flex-wrap justify-end gap-2" }, h("button", { class: "btn-subtle", onclick: () => { void finish(false); } }, "Keep current"), h("button", { class: "btn-primary", onclick: () => { void finish(true); } }, "Use as primary"))),
+      h("aside", { class: "border-t border-line bg-raised/50 p-6 md:border-l md:border-t-0 sm:p-8" }, h("div", { class: "eyebrow text-muted" }, "A 30-second tour"),
+        ...[
+          ["Channels are private worlds", "Every ordinary channel owns one resident agent, Linux computer, terminal, files, threads, and memory."],
+          ["Skipper crosses boundaries", "Call @skipper when work needs another channel, a host operation, credentials, or a missing capability."],
+          ["Providers work together", "Accounts and keys form one model fabric. Pick direct models or named routes without choosing one permanent AI brain."],
+        ].map(([title, copy], index) => h("div", { class: "mt-5 flex gap-3" }, h("span", { class: "grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent-soft font-mono text-xs text-accent" }, String(index + 1)), h("div", {}, h("h3", { class: "text-sm font-semibold text-fg" }, title), h("p", { class: "mt-1 text-xs leading-5 text-muted" }, copy))))))));
+  document.body.append(overlay);
 }
 
 /** Merge channel meta from the server without clobbering local per-user unread. */
@@ -424,6 +473,8 @@ function onEvent(e: any): void {
     localStorage.setItem("ctrl.workspaceTheme", S.workspace.theme || "graphite");
     renderSidebar();
     renderHeader();
+  } else if (e.type === "routing_activity") {
+    pushRoutingActivity(e.activity);
   } else if (e.type === "provider_update" && e.provider) {
     const i = S.providers.findIndex((p) => p.id === e.provider.id);
     if (i >= 0) S.providers[i] = e.provider; else S.providers = [...S.providers, e.provider];
@@ -449,7 +500,7 @@ function onEvent(e: any): void {
   } else if (e.type === "user_update" && e.user) {
     const i = S.users.findIndex((u) => u.id === e.user.id);
     if (i >= 0) S.users[i] = e.user; else S.users = [...S.users, e.user];
-    if (e.user.id === S.me.id) S.me = { ...S.me, ...e.user };
+    if (e.user.id === S.me.id) { S.me = { ...S.me, ...e.user }; renderSidebar(); }
   } else if (e.type === "user_deleted") {
     S.users = S.users.filter((u) => u.id !== e.userId);
   }
@@ -663,10 +714,51 @@ function sidebar(drawer = false): HTMLElement {
       h("div", {}, sbSection("Agent channels", () => newChannel()), h("div", { class: "space-y-px" }, ...channels.map(chan))),
       archived.length ? h("div", {}, h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Archived"), h("div", { class: "space-y-px opacity-65" }, ...archived.map(chan))) : null,
       h("div", {}, sbSection("Direct messages", () => newDM()), h("div", { class: "space-y-px" }, ...dms.map(chan), dms.length === 0 && h("p", { class: "px-2 py-1 text-[13px] text-sidebar-muted" }, "No conversations yet")))),
-    h("button", { class: "flex items-center gap-2 border-t border-white/10 px-3 py-2 text-left hover:bg-sidebar-hover", title: "Settings", onclick: () => { closeMobileMenu(); openSettings(); } },
-      avatar(S.me.display, "user"),
-      h("div", { class: "min-w-0 flex-1" }, h("div", { class: "truncate text-sm font-semibold text-white" }, S.me.display), h("div", { class: "flex items-center gap-1.5 truncate font-mono text-[10.5px] text-sidebar-muted" }, h("span", { class: "h-1.5 w-1.5 rounded-full bg-ok" }), "@" + S.me.username + (S.me.is_admin ? " · admin" : ""))),
-      h("span", { class: "text-sidebar-muted" }, icon("gear"))));
+    h("div", { class: "flex items-center gap-1 border-t border-white/10 p-1.5" },
+      h("button", { class: "flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-sidebar-hover", title: "Open profile", onclick: (event: MouseEvent) => { closeMobileMenu(); openProfile(event.currentTarget as HTMLElement); } },
+        avatar(S.me.display, "user", 8, S.me.avatar),
+        h("div", { class: "min-w-0 flex-1" }, h("div", { class: "truncate text-sm font-semibold text-white" }, S.me.display), h("div", { class: "flex items-center gap-1.5 truncate font-mono text-[10.5px] text-sidebar-muted" }, h("span", { class: "h-1.5 w-1.5 rounded-full bg-ok" }), "@" + S.me.username + (S.me.is_admin ? " · admin" : "")))),
+      h("button", { class: "grid h-10 w-10 shrink-0 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: "Settings", "aria-label": "Open settings", onclick: () => { closeMobileMenu(); openSettings(); } }, icon("gear"))));
+}
+
+function openProfile(anchor: HTMLElement): void {
+  document.getElementById("profile-popover")?.remove();
+  const display = h("input", { class: "field", value: S.me.display, maxlength: 100 }) as HTMLInputElement;
+  const jobTitle = h("input", { class: "field", value: S.me.job_title || "", placeholder: "Job title", maxlength: 160 }) as HTMLInputElement;
+  const description = h("textarea", { class: "field min-h-24 resize-y", placeholder: "A little about you and how you work", maxlength: 1000 }, S.me.description || "") as HTMLTextAreaElement;
+  description.value = S.me.description || "";
+  const photo = avatar(S.me.display, "user", 16, S.me.avatar);
+  const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", class: "hidden" }) as HTMLInputElement;
+  const status = h("p", { class: "min-h-5 text-xs text-muted" });
+  const pop = h("div", { id: "profile-popover", class: "card fixed bottom-3 left-3 z-50 w-[min(420px,calc(100vw-1.5rem))] space-y-4 p-4 shadow-2xl" });
+  const close = (): void => { pop.remove(); document.removeEventListener("mousedown", outside); document.removeEventListener("keydown", keydown); };
+  const outside = (event: MouseEvent): void => { if (!pop.contains(event.target as Node) && !anchor.contains(event.target as Node)) close(); };
+  const keydown = (event: KeyboardEvent): void => { if (event.key === "Escape") close(); };
+  const acceptUser = (user: User): void => { S.me = user; const index = S.users.findIndex((item) => item.id === user.id); if (index >= 0) S.users[index] = user; };
+  const save = async (): Promise<void> => {
+    status.textContent = "Saving…";
+    try {
+      acceptUser((await api<{ user: User }>("/api/me/profile", { method: "PATCH", body: { display: display.value, job_title: jobTitle.value, description: description.value } })).user);
+      status.textContent = "Profile saved.";
+      close(); renderSidebar(); renderHeader();
+    } catch (error) { status.textContent = (error as Error).message; }
+  };
+  file.onchange = async () => {
+    const image = file.files?.[0]; if (!image) return;
+    status.textContent = "Uploading photo…";
+    const response = await fetch("/api/me/avatar", { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": image.type }, body: image });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) { status.textContent = result.error || `HTTP ${response.status}`; return; }
+    acceptUser(result.user); photo.replaceWith(avatar(S.me.display, "user", 16, S.me.avatar)); status.textContent = "Photo updated.";
+  };
+  pop.append(
+    h("div", { class: "flex items-start justify-between gap-3" }, h("div", {}, h("h2", { class: "font-display text-xl text-fg" }, "Profile"), h("p", { class: "mt-1 text-xs text-muted" }, `@${S.me.username}`)), h("button", { class: "grid h-8 w-8 place-items-center rounded text-muted hover:bg-hover", "aria-label": "Close profile", onclick: close }, icon("x"))),
+    h("div", { class: "flex items-center gap-3" }, photo, h("div", { class: "flex flex-wrap gap-2" }, h("label", { class: "btn-subtle cursor-pointer text-xs" }, "Choose photo", file), S.me.avatar ? h("button", { class: "btn-ghost text-xs", onclick: async () => { acceptUser((await api<{ user: User }>("/api/me/avatar", { method: "DELETE" })).user); close(); renderSidebar(); renderHeader(); } }, "Remove") : null)),
+    h("div", { class: "grid gap-3 sm:grid-cols-2" }, h("label", { class: "space-y-1 text-xs font-semibold text-fg" }, "Display name", display), h("label", { class: "space-y-1 text-xs font-semibold text-fg" }, "Job title", jobTitle)),
+    h("label", { class: "block space-y-1 text-xs font-semibold text-fg" }, "Description", description),
+    h("div", { class: "flex items-center justify-between gap-3" }, status, h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save profile")));
+  document.body.append(pop);
+  setTimeout(() => { document.addEventListener("mousedown", outside); document.addEventListener("keydown", keydown); }, 0);
 }
 
 const sbSection = (label: string, onAdd: () => void): HTMLElement =>
@@ -829,7 +921,7 @@ function paintDockedTerminal(container: HTMLElement): void {
 function renderGlobalThreadsHeader(): void {
   const el = document.getElementById("hdr"); if (!el) return;
   clear(el);
-  el.className = "app-topbar flex min-h-12 items-center justify-between gap-2 border-b border-line bg-surface px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2.5";
+  el.className = "app-topbar flex min-h-12 flex-wrap items-start justify-between gap-2 border-b border-line bg-surface px-2 py-1.5 sm:items-center sm:gap-3 sm:px-4 sm:py-2.5";
   add(el,
     h("div", { class: "flex min-w-0 items-center gap-2" },
       mobileMenuButton(),
@@ -960,13 +1052,13 @@ function renderHeader(): void {
   };
   const terminalsEnabled = S.workspace?.terminals_enabled !== false;
   add(el,
-    h("div", { class: "flex min-w-0 flex-1 items-center gap-2 overflow-hidden" },
+    h("div", { class: "flex min-w-0 flex-1 items-start gap-2" },
       mobileMenuButton(),
       h("div", { class: "flex min-w-0 max-w-[46%] shrink items-center gap-1 text-[15px] font-semibold tracking-[-0.01em] text-fg sm:max-w-none sm:text-[16px]" }, channel?.kind === "dm" ? null : h("span", { class: "shrink-0 font-normal text-faint" }, "#"), h("span", { class: "min-w-0 truncate" }, channel?.name || "")),
-      channel?.purpose ? h("span", { class: "channel-purpose-fade hidden min-w-0 max-w-[28vw] border-l border-line pl-2.5 text-[12px] leading-5 text-muted xl:inline", title: channel.purpose }, channel.purpose) : null,
+      channel?.purpose ? h("span", { class: "hidden min-w-0 max-w-[38vw] whitespace-normal break-words border-l border-line pl-2.5 text-[12px] leading-4 text-muted xl:inline", title: channel.purpose }, channel.purpose) : null,
       channel?.status === "archived" ? h("span", { class: "chip shrink-0" }, "Paused") : null),
     h("div", { class: "flex max-w-[52%] shrink-0 items-center justify-end gap-1.5 sm:max-w-none sm:gap-2" },
-      agent ? h("button", { class: "flex min-h-11 max-w-full items-center gap-1.5 rounded-md border border-transparent px-1.5 py-1 font-mono text-[10px] text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:min-h-0 sm:max-w-[14rem] sm:gap-2 sm:px-2 sm:text-[11px]", title: `${agent.display_name || agent.name} · ${agent.status} · ${agent.provider_name || "no provider"} · ${agent.model || "no model"}`, onclick: () => navigateChannelView("settings") },
+      agent ? h("button", { class: "flex min-h-11 max-w-full items-center gap-1.5 rounded-md border border-transparent px-1.5 py-1 font-mono text-[10px] text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:min-h-0 sm:max-w-[14rem] sm:gap-2 sm:px-2 sm:text-[11px]", title: `${agent.display_name || agent.name} · ${agent.status} · ${agent.provider_kind === "routing" ? "Model fabric" : agent.provider_name || "no provider"} · ${agent.model || "no model"}`, onclick: () => navigateChannelView("settings") },
         h("span", { class: `h-1.5 w-1.5 shrink-0 rounded-full ${statusTone}` }), h("span", { class: "min-w-0 truncate" }, "@" + agent.name),
         h("span", { class: "hidden max-w-28 truncate text-faint 2xl:inline" }, agent.model || "no model")) : null,
       terminalsEnabled ? h("button", {
@@ -1185,6 +1277,17 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
       },
     }, icon("trash", 14))
     : null;
+  const stopBtn = running ? h("button", {
+    class: "message-action grid h-11 w-11 place-items-center rounded text-danger hover:bg-danger/10 sm:h-7 sm:w-7",
+    title: "Stop this agent turn now",
+    "aria-label": "Stop agent turn",
+    onclick: async () => {
+      closeOpenMessageActions();
+      const rootId = Number(m.parent_id || m.id);
+      try { await api(`/api/messages/${rootId}/stop`, { body: {} }); }
+      catch (error) { void appAlert((error as Error).message); }
+    },
+  }, h("span", { class: "h-2.5 w-2.5 rounded-[2px] bg-current", "aria-hidden": "true" })) : null;
   // Sticky right rail (not absolute top-right) so long messages keep controls in frame.
   const moreBtn = h("button", {
     class: "message-more grid h-11 w-11 place-items-center rounded text-muted hover:bg-hover hover:text-fg sm:h-7 sm:w-7",
@@ -1196,7 +1299,7 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
     class: "message-actions",
     role: "toolbar",
     "aria-label": "Message actions",
-  }, moreBtn, replyBtn, deleteBtn);
+  }, moreBtn, stopBtn, replyBtn, deleteBtn);
 
   const chipText = running ? workingChipLabel(m) : "";
   const workingChip = running && !opts.inThread
@@ -1214,7 +1317,7 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
       isBot ? h("span", { class: "font-mono text-[9px] uppercase tracking-[0.16em] text-accent" }, "Agent") : null,
       h("span", { class: "font-mono text-[10.5px] text-faint" }, timeLabel(m.created)),
       workingChip),
-    bodyHtml, progressDisclosure(m), attachments(m), threadFooter(m, opts.inThread));
+    bodyHtml, structuredQuestions(m), progressDisclosure(m), attachments(m), threadFooter(m, opts.inThread));
 
   const botAvatar = (bot: Bot | undefined) => bot?.avatar || undefined;
   const row = opts.grouped
@@ -1236,6 +1339,50 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
 
   wireMessageActionReveal(row, actions, moreBtn);
   return row;
+}
+
+function structuredQuestions(message: Message): HTMLElement | null {
+  const interview = message.questions;
+  if (!interview?.questions?.length) return null;
+  if (interview.status !== "pending") {
+    return h("div", { class: "mt-3 rounded-lg border border-line bg-raised/40 p-3" },
+      h("div", { class: "flex items-center gap-2 text-xs font-semibold text-fg" }, icon("check", 14), "Interview answered"),
+      ...(interview.answers || []).map((answer) => h("div", { class: "mt-2 text-xs leading-5 text-muted" }, h("span", { class: "font-semibold text-fg" }, answer.question + " "), [...answer.values, answer.custom].filter(Boolean).join(", "))));
+  }
+  const state = new Map<string, { values: Set<string>; custom: string }>();
+  const body = h("div", { class: "mt-3 space-y-3 rounded-xl border border-accent/30 bg-accent-soft p-3.5" });
+  body.append(h("div", {}, h("div", { class: "flex items-center gap-2 font-semibold text-fg" }, icon("help", 16), "A few choices before I continue"), interview.intro ? h("p", { class: "mt-1 text-sm leading-5 text-muted" }, interview.intro) : null));
+  for (const question of interview.questions) {
+    const current = { values: new Set<string>(), custom: "" }; state.set(question.id, current);
+    const options = h("div", { class: "mt-2 flex flex-wrap gap-2" });
+    const custom = h("input", { class: "field mt-2 hidden", placeholder: "Type something…", maxlength: 4000 }) as HTMLInputElement;
+    const buttons: HTMLButtonElement[] = [];
+    const repaint = (): void => buttons.forEach((button) => button.classList.toggle("border-accent", current.values.has(button.dataset.value || "")));
+    for (const option of question.options) {
+      const button = h("button", {
+        class: "rounded-lg border border-line bg-surface px-3 py-2 text-left text-sm text-fg transition hover:border-accent/60 hover:bg-hover",
+        dataset: { value: option.label }, title: option.description || option.label,
+        onclick: () => {
+          if (question.multi_select) current.values.has(option.label) ? current.values.delete(option.label) : current.values.add(option.label);
+          else { current.values.clear(); current.values.add(option.label); }
+          repaint();
+        },
+      }, h("span", { class: "font-semibold" }, option.label), option.description ? h("span", { class: "mt-0.5 block text-xs text-muted" }, option.description) : null) as HTMLButtonElement;
+      buttons.push(button); options.append(button);
+    }
+    options.append(h("button", { class: "rounded-lg border border-dashed border-line bg-transparent px-3 py-2 text-sm text-muted hover:border-accent hover:text-fg", onclick: () => { custom.classList.toggle("hidden"); if (!custom.classList.contains("hidden")) custom.focus(); } }, "Type something"));
+    custom.addEventListener("input", () => { current.custom = custom.value.trim(); });
+    body.append(h("section", { class: "rounded-lg border border-line/70 bg-surface/70 p-3" }, question.header ? h("div", { class: "eyebrow text-accent" }, question.header) : null, h("p", { class: "mt-1 text-sm font-semibold leading-5 text-fg" }, question.question), options, custom));
+  }
+  const status = h("p", { class: "min-h-5 text-xs text-muted" });
+  const submit = h("button", { class: "btn-primary text-sm", onclick: async () => {
+    status.textContent = "Sending answers…"; (submit as HTMLButtonElement).disabled = true;
+    try {
+      await api(`/api/messages/${message.id}/questions/answer`, { body: { answers: interview.questions.map((question) => ({ question_id: question.id, values: [...(state.get(question.id)?.values || [])], custom: state.get(question.id)?.custom || "" })) } });
+    } catch (error) { status.textContent = (error as Error).message; (submit as HTMLButtonElement).disabled = false; }
+  } }, "Continue") as HTMLButtonElement;
+  body.append(h("div", { class: "flex items-center justify-between gap-3" }, status, submit));
+  return body;
 }
 
 // Survives full message-list re-renders. DOM query alone fails because
@@ -1759,20 +1906,22 @@ async function composerModelPopover(event: MouseEvent, threadRootId: number | nu
   const outside = (next: MouseEvent): void => { if (!pop.contains(next.target as Node)) close(); };
   const keydown = (next: KeyboardEvent): void => { if (next.key === "Escape") close(); };
   const provider = h("select", { class: "field text-xs" }, h("option", { value: "" }, "Inherit channel provider")) as HTMLSelectElement;
-  for (const item of S.providers) provider.append(h("option", { value: item.id, selected: item.id === current?.provider_id }, item.name));
   const model = h("select", { class: "field text-xs" }, h("option", { value: "" }, "Inherit channel model")) as HTMLSelectElement;
   const status = h("p", { class: "min-h-5 text-xs text-muted" }, threadRootId ? "Changes persist for this thread." : "Your choice will be saved when this new thread is sent.");
   let sequence = 0;
+  let routedModels: RoutingModel[] = [];
+  const providerKey = (item: RoutingModel): string => item.kind === "route" ? "routes" : String(item.providerType || item.providerName || "models");
   const load = async (): Promise<void> => {
     const active = ++sequence;
     clear(model); model.disabled = true;
-    model.append(h("option", { value: "" }, provider.value ? "Loading models…" : "Inherit channel model"));
+    model.append(h("option", { value: "" }, provider.value ? "Choose a model" : "Inherit channel model"));
     if (!provider.value) { model.disabled = false; return; }
     try {
-      const models = (await api<{ models: string[] }>(`/api/providers/${provider.value}/models`)).models;
+      if (!routedModels.length) routedModels = (await api<{ models: RoutingModel[] }>("/api/workspace/model-policy")).models;
+      const models = routedModels.filter((item) => providerKey(item) === provider.value);
       if (active !== sequence) return;
       clear(model); model.append(h("option", { value: "" }, "Choose a model"));
-      for (const item of models) model.append(h("option", { value: item, selected: item === current?.model }, item));
+      for (const item of models) model.append(h("option", { value: item.id, selected: item.id === current?.model }, item.name || item.id));
       status.textContent = `${models.length} models available.`;
     } catch (error) { status.textContent = (error as Error).message; }
     finally { if (active === sequence) model.disabled = false; }
@@ -1780,8 +1929,7 @@ async function composerModelPopover(event: MouseEvent, threadRootId: number | nu
   provider.addEventListener("change", () => { void load(); });
   const save = async (): Promise<void> => {
     if (!provider.value || !model.value) { status.textContent = "Choose both a provider and a model, or use Inherit."; return; }
-    const selectedProvider = S.providers.find((item) => item.id === Number(provider.value));
-    let policy: ModelPolicy = { provider_id: Number(provider.value), provider_name: selectedProvider?.name || null, provider_kind: selectedProvider?.kind || null, model: model.value, overridden: true, editable: true };
+    let policy: ModelPolicy = { provider_id: agent.provider_id, provider_name: provider.selectedOptions[0]?.textContent || null, provider_kind: "routing", model: model.value, overridden: true, editable: true };
     try {
       if (threadRootId) policy = (await api<{ policy: ModelPolicy }>(`/api/messages/${threadRootId}/model-policy`, { body: { provider_id: policy.provider_id, model: policy.model } })).policy;
       onChange(policy); close();
@@ -1804,7 +1952,13 @@ async function composerModelPopover(event: MouseEvent, threadRootId: number | nu
     h("div", { class: "flex justify-end gap-2" }, h("button", { class: "btn-subtle min-h-9 px-3 text-xs", onclick: () => { void inherit(); } }, "Inherit"), h("button", { class: "btn-primary min-h-9 px-3 text-xs", onclick: () => { void save(); } }, "Use for thread")));
   document.body.append(pop);
   setTimeout(() => { document.addEventListener("mousedown", outside); document.addEventListener("keydown", keydown); }, 0);
-  if (current?.provider_id) void load();
+  void api<{ models: RoutingModel[] }>("/api/workspace/model-policy").then(({ models }) => {
+    routedModels = models; const groups = new Map<string, string>();
+    for (const item of models) groups.set(providerKey(item), item.kind === "route" ? "Named routes" : String(item.providerName || item.providerType || "Provider"));
+    const selected = models.find((item) => item.id === current?.model);
+    provider.append(...[...groups].map(([value, label]) => h("option", { value, selected: selected ? providerKey(selected) === value : false }, label)));
+    if (selected) void load();
+  }).catch((error) => { status.textContent = (error as Error).message; });
 }
 
 // ---------------- @mention / #channel autocomplete ----------------
@@ -1855,8 +2009,7 @@ function drawComposerSuggest(box: HTMLElement, input: HTMLTextAreaElement, match
     onclick: () => applyComposerSuggest(input, item.kind, item.token, box),
   },
     kind === "agent" ? avatar(item.label, "bot", 6) : h("span", { class: "grid h-6 w-6 place-items-center rounded bg-raised text-muted" }, icon("hash", 14)),
-    h("span", { class: "font-medium text-fg" }, kind === "channel" ? `#${item.label}` : item.label),
-    h("span", { class: "text-xs text-muted" }, item.detail))));
+    h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block truncate font-medium text-fg" }, kind === "channel" ? `#${item.label}` : item.label), h("span", { class: "block break-all text-[11px] leading-4 text-muted", title: item.detail }, item.detail)))));
 }
 
 function applyComposerSuggest(input: HTMLTextAreaElement, kind: "agent" | "channel", token: string, box: HTMLElement): void {

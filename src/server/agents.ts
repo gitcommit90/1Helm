@@ -333,6 +333,12 @@ export function refreshThreadSummary(rootMessageId: number): void {
   const humans = messages.filter((message) => message.user_id != null);
   const agents = messages.filter((message) => message.bot_id != null);
   const compact = (value: unknown, limit: number): string => String(value || "").replace(/\s+/g, " ").trim().slice(0, limit);
+  const plainTitle = (value: unknown): string => compact(value, 240)
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/[*_~`>#]+/g, "")
+    .replace(/^[-+\d.)\s]+/, "")
+    .replace(/\s+/g, " ").trim().slice(0, 100);
   const firstRequest = humans[0];
   const latestRequest = humans.at(-1);
   const latestOutcome = agents.at(-1);
@@ -344,7 +350,7 @@ export function refreshThreadSummary(rootMessageId: number): void {
     `**Session status:** ${String(thread?.status || "open")}.`,
   ].filter(Boolean);
   const summary = parts.join("\n\n").slice(0, 5000);
-  const title = compact(firstRequest?.body || messages[0]?.body || "New session", 100);
+  const title = plainTitle(firstRequest?.body || messages[0]?.body || "New session");
   run("UPDATE threads SET title=?, summary=?, updated_at=? WHERE id=?", title || "New session", summary, now(), threadId);
   run("INSERT INTO thread_summaries (thread_id, content, created) VALUES (?,?,?)", threadId, summary, now());
 }
