@@ -10,15 +10,15 @@ const IMAGE_GEN_META = join(DATA_DIR, "image-generation.json");
 export function imageGenerationEnabledIds(): string[] {
   try {
     if (!existsSync(IMAGE_GEN_META)) return [];
-    const data = JSON.parse(readFileSync(IMAGE_GEN_META, "utf8")) as { enabledProviderIds?: string[] };
-    return Array.isArray(data.enabledProviderIds) ? data.enabledProviderIds.map(String) : [];
+    const data = JSON.parse(readFileSync(IMAGE_GEN_META, "utf8")) as { enabled?: boolean; enabledProviderIds?: string[] };
+    // Migrate the former per-account setting into one workspace-wide ChatGPT
+    // family switch without making an existing enabled workspace opt in again.
+    return data.enabled === true || (Array.isArray(data.enabledProviderIds) && data.enabledProviderIds.length) ? ["chatgpt"] : [];
   } catch { return []; }
 }
 
-export function setImageGenerationEnabled(providerId: string, enabled: boolean): { enabledProviderIds: string[] } {
-  const set = new Set(imageGenerationEnabledIds());
-  if (enabled) set.add(String(providerId)); else set.delete(String(providerId));
-  const payload = { enabledProviderIds: [...set] };
+export function setImageGenerationEnabled(_providerId: string, enabled: boolean): { enabled: boolean; enabledProviderIds: string[] } {
+  const payload = { enabled: Boolean(enabled), enabledProviderIds: enabled ? ["chatgpt"] : [] };
   mkdirSync(DATA_DIR, { recursive: true });
   writeFileSync(IMAGE_GEN_META, JSON.stringify(payload, null, 2), { mode: 0o600 });
   return payload;
@@ -26,8 +26,7 @@ export function setImageGenerationEnabled(providerId: string, enabled: boolean):
 
 /** ChatGPT OAuth connected + at least one account has Image Generation toggled on. */
 export function imageGenerationAvailable(): boolean {
-  const enabled = new Set(imageGenerationEnabledIds());
-  if (!enabled.size) return false;
+  if (!imageGenerationEnabledIds().length) return false;
   // Prefer routing engine store if present under DATA_DIR/routing
   try {
     const cfgPath = join(DATA_DIR, "routing", "config.json");
@@ -36,16 +35,16 @@ export function imageGenerationAvailable(): boolean {
       for (const p of cfg.providers || []) {
         if (p.enabled === false) continue;
         const type = String(p.type || "");
-        if ((type === "chatgpt" || type === "codex") && enabled.has(String(p.id))) return true;
+        if (type === "chatgpt" || type === "codex") return true;
       }
     }
   } catch { /* fall through */ }
   // Legacy ChatGPT provider row
   const row = q1("SELECT id FROM providers WHERE kind='chatgpt' LIMIT 1");
-  if (row && enabled.has(String(row.id))) return true;
-  // Any enabled id present counts if chatgpt oauth session exists
+  if (row) return true;
+  // The workspace switch is useful as soon as any ChatGPT session exists.
   const session = q1("SELECT 1 FROM chatgpt_sessions LIMIT 1");
-  return Boolean(session && enabled.size);
+  return Boolean(session);
 }
 
 export function listSkills(opts?: { includeLocked?: boolean }): Row[] {
@@ -58,7 +57,7 @@ export function listSkills(opts?: { includeLocked?: boolean }): Row[] {
     return {
       ...skill,
       arsenal_locked: available ? 0 : 1,
-      arsenal_reason: available ? "" : "Connect ChatGPT OAuth and turn on Image Generation under that account in Providers.",
+      arsenal_reason: available ? "" : "Connect ChatGPT OAuth and turn on the workspace-wide Image Generation switch in Providers.",
     };
   }).filter((skill) => {
     if (String(skill.slug) !== "image-generation") return true;

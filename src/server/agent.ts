@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { Socket } from "node:net";
 import { spawn, type IPty } from "node-pty";
 import { WebSocketServer, type WebSocket } from "ws";
+import { existsSync } from "node:fs";
 
 /**
  * Embedded, open-terminal-compatible agent (https://github.com/open-webui/open-terminal).
@@ -13,7 +14,10 @@ type Entry = { type: string; data: string };
 type Proc = { id: string; command: string; buf: Entry[]; status: string; exit_code: number | null; pty: IPty; waiters: (() => void)[] };
 type Term = { id: string; pty: IPty; created_at: string; pid: number };
 
-const SHELL = process.env.SHELL || "bash";
+const requestedShell = process.env.SHELL || "/bin/bash";
+const SHELL = requestedShell.startsWith("/") && existsSync(requestedShell)
+  ? requestedShell
+  : ["/bin/zsh", "/bin/bash", "/bin/sh"].find(existsSync) || "/bin/sh";
 const rid = (p: string): string => p + Math.random().toString(36).slice(2, 8);
 
 export function startAgent(port: number, apiKey: string, host = "127.0.0.1"): Promise<number> {

@@ -46,9 +46,13 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(source, /window-all-closed/);
   assert.match(source, /com\.gitcommit90\.1helm\.wake\.plist/);
   assert.match(source, /StartInterval/);
-  assert.match(source, /HELM_INTERNAL_WAKE_TOKEN/);
+  assert.match(source, /<string>--1helm-background<\/string>/);
+  assert.doesNotMatch(source, /<string>\/bin\/sh<\/string>/, "background scheduler launches the signed 1Helm executable, never generic sh");
   assert.match(source, /if \(!allowedLocalUrl\(details\.url\)\)/);
   assert.match(source, /process\.emit\("SIGTERM"/);
+  const helperInstall = await readFile(join(root, "scripts", "ensure-node-pty-helper.cjs"), "utf8");
+  assert.match(helperInstall, /process\.platform === "darwin"/);
+  assert.match(helperInstall, /chmodSync\(helper, 0o755\)/, "Mac installs restore node-pty's executable spawn helper before terminals open");
 });
 
 test("server can run from an immutable app root with state elsewhere on loopback", async (t) => {

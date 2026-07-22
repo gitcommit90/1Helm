@@ -1,4 +1,4 @@
-import { api, openAuthenticatedFile, type ActivityItem, type AgentTemplate, type Channel, type ChannelFile, type GlobalThread, type MemoryItem, type Message, type ThreadState } from "./api.ts";
+import { api, openAuthenticatedFile, type ActivityItem, type AgentTemplate, type Channel, type ChannelFile, type GlobalThread, type MemoryItem, type Message, type ThreadState, type RoutingModel } from "./api.ts";
 import { h, clear, icon, md, timeLabel } from "./dom.ts";
 import { S, avatar, appAlert, appConfirm, appPrompt } from "./app.ts";
 
@@ -581,24 +581,25 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
     disabled: channel.name === "main" || !S.me.is_admin ? true : undefined,
   }) as HTMLInputElement;
   const purpose = h("textarea", { class: "field min-h-24" }, channel.purpose || "") as HTMLTextAreaElement;
-  const provider = h("select", { class: "field" }, h("option", { value: "" }, "No provider")) as HTMLSelectElement;
-  for (const item of S.providers) provider.append(h("option", { value: item.id, selected: item.id === channel.agent?.provider_id }, item.name));
+  const provider = h("select", { class: "field" }, h("option", { value: "" }, "Loading providers…")) as HTMLSelectElement;
   const model = h("select", { class: "field" }, h("option", { value: channel.agent?.model || "" }, channel.agent?.model || "Choose a model")) as HTMLSelectElement;
   const status = h("p", { class: "min-h-5 text-sm text-muted" });
   let loadSequence = 0;
   let modelLoading = false;
   let changeModelButton: HTMLButtonElement | null = null;
+  let routedModels: RoutingModel[] = [];
+  const providerKey = (item: RoutingModel): string => item.kind === "route" ? "routes" : String(item.providerType || item.providerName || "models");
   const loadModels = async (): Promise<void> => {
-    const providerId = provider.value;
+    const family = provider.value;
     const sequence = ++loadSequence;
-    clear(model); model.append(h("option", { value: "" }, providerId ? "Loading models…" : "Choose a provider"));
-    model.disabled = true; modelLoading = Boolean(providerId); if (changeModelButton) changeModelButton.disabled = modelLoading;
-    if (!providerId) return;
-    status.textContent = "Loading models…";
+    clear(model); model.append(h("option", { value: "" }, family ? "Choose a model" : "Choose a provider"));
+    model.disabled = !family; modelLoading = false; if (changeModelButton) changeModelButton.disabled = !family;
+    if (!family) return;
     try {
-      const models = (await api<{ models: string[] }>(`/api/providers/${providerId}/models`)).models;
-      if (sequence !== loadSequence || provider.value !== providerId) return;
-      clear(model); model.append(...models.map((item) => h("option", { value: item, selected: item === channel.agent?.model }, item)));
+      if (!routedModels.length) routedModels = (await api<{ models: RoutingModel[] }>("/api/workspace/model-policy")).models;
+      if (sequence !== loadSequence || provider.value !== family) return;
+      const models = routedModels.filter((item) => providerKey(item) === family);
+      clear(model); model.append(...models.map((item) => h("option", { value: item.id, selected: item.id === channel.agent?.model }, item.name || item.id)));
       status.textContent = `${models.length} models available.`;
     } catch (error) {
       if (sequence === loadSequence) status.textContent = (error as Error).message;
@@ -607,6 +608,14 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
     }
   };
   provider.onchange = () => { void loadModels(); };
+  void api<{ models: RoutingModel[] }>("/api/workspace/model-policy").then(({ models }) => {
+    routedModels = models;
+    const groups = new Map<string, string>();
+    for (const item of models) groups.set(providerKey(item), item.kind === "route" ? "Named routes" : String(item.providerName || item.providerType || "Provider"));
+    const current = models.find((item) => item.id === channel.agent?.model);
+    clear(provider); provider.append(h("option", { value: "" }, "Choose a provider"), ...[...groups].map(([value, label]) => h("option", { value, selected: current ? providerKey(current) === value : false }, label)));
+    void loadModels();
+  }).catch((error) => { status.textContent = (error as Error).message; });
   const saveName = async (): Promise<void> => {
     if (channel.name === "main") { status.textContent = "#main cannot be renamed."; return; }
     if (!S.me.is_admin) { status.textContent = "Only the Captain can rename channels."; return; }
@@ -622,7 +631,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
   };
   const saveModel = async (): Promise<void> => {
     if (modelLoading) { status.textContent = "Wait for this provider's models to finish loading."; return; }
-    try { await api(`/api/channels/${channel.id}/agent-policy`, { method: "PATCH", body: { provider_id: provider.value ? Number(provider.value) : null, model: model.value } }); status.textContent = "Future turns will use the new model. Identity, files, threads, and memory are unchanged."; onChanged(); }
+    try { await api(`/api/channels/${channel.id}/agent-policy`, { method: "PATCH", body: { provider_id: channel.agent?.provider_id || S.providers[0]?.id || null, model: model.value } }); status.textContent = "Future turns will use the new model. Identity, files, threads, and memory are unchanged."; onChanged(); }
     catch (error) { status.textContent = (error as Error).message; }
   };
   changeModelButton = h("button", { class: "btn-primary text-sm", onclick: () => { void saveModel(); } }, "Change model") as HTMLButtonElement;
@@ -684,10 +693,11 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
       h("h3", { class: "font-semibold text-fg" }, "This channel's computer"),
       h("span", { class: "chip border-accent/25" }, computer.backend === "apple" ? "Isolated Linux VM" : "Development compatibility"),
       h("span", { class: "chip" }, computer.observed_state)),
-    h("p", { class: "mt-2 text-sm leading-6 text-muted" }, "Skipper provisions, wakes, monitors, updates, repairs, and sizes this computer automatically. You never need to choose CPU or RAM."),
-    h("div", { class: "mt-3 grid gap-2 text-xs text-muted sm:grid-cols-3" },
+    h("p", { class: "mt-2 text-sm leading-6 text-muted" }, "Skipper provisions, wakes, monitors, updates, repairs, and sizes this computer automatically. The storage figure is 1Helm's managed writable allocation; Apple's guest filesystem may show the Mac-backed virtual ceiling instead."),
+    h("div", { class: "mt-3 grid gap-2 text-xs text-muted sm:grid-cols-4" },
       h("div", {}, h("span", { class: "block font-semibold text-fg" }, `${computer.cpus} CPU${computer.cpus === 1 ? "" : "s"}`), "Automatically managed"),
       h("div", {}, h("span", { class: "block font-semibold text-fg" }, `${Math.max(1, Math.round(computer.memory_bytes / 1073741824))} GiB RAM`), "Automatically managed"),
+      h("div", {}, h("span", { class: "block font-semibold text-fg" }, `${Math.max(1, Math.round(computer.disk_bytes / 1073741824))} GiB storage`), "Managed writable allocation"),
       h("div", {}, h("span", { class: "block font-semibold text-fg" }, computer.home_mount === "none" ? "Mac home private" : "Needs attention"), "No whole-home mount")),
     computer.obligations?.length ? h("p", { class: "mt-3 text-xs text-muted" }, `${computer.obligations.length} active obligation${computer.obligations.length === 1 ? "" : "s"}; Skipper will keep or wake the computer as needed.`) : null,
     computer.last_error ? h("p", { class: "mt-3 text-sm text-danger" }, computer.last_error) : null) : null;

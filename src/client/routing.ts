@@ -33,6 +33,13 @@ const routeMember = (provider: RoutingProvider, model: string): RoutingComboMemb
   ? { providerId: provider.id, model }
   : { providerType: providerFamily(provider), model };
 
+let liveRoutingActivity: unknown = null;
+const routingActivityListeners = new Set<(activity: unknown) => void>();
+export function pushRoutingActivity(activity: unknown): void {
+  liveRoutingActivity = activity;
+  for (const listener of routingActivityListeners) listener(activity);
+}
+
 async function copyText(text: string): Promise<void> {
   try { await navigator.clipboard.writeText(text); }
   catch {
@@ -116,39 +123,11 @@ function accountCard(account: RoutingProvider, refresh: () => Promise<void>, con
     addStatus.textContent = result.ok ? `${modelId} is ready.` : result.error || "The model test failed.";
     if (result.ok) await refresh();
   } }, "Test & add model");
-  const isChatGptFamily = ["chatgpt", "codex"].includes(account.type) || providerFamily(account) === "chatgpt";
-  const imageGenEnabled = Boolean((account as RoutingProvider & { imageGenerationEnabled?: boolean }).imageGenerationEnabled);
-  const imageToggle = h("input", { type: "checkbox", class: "accent-accent", checked: imageGenEnabled, title: "When on, Image Generation enters the skill arsenal for Skipper to provision." }) as HTMLInputElement;
-  imageToggle.onchange = async () => {
-    const requested = imageToggle.checked;
-    imageToggle.disabled = true;
-    try {
-      await api("/api/routing/image-generation", { method: "POST", body: { providerId: account.id, enabled: requested } });
-      await refresh();
-    } catch (error) {
-      imageToggle.checked = !requested;
-      addStatus.textContent = (error as Error).message;
-    } finally {
-      imageToggle.disabled = false;
-    }
-  };
-  const imageRow = isChatGptFamily
-    ? h("label", {
-        class: "mt-3 flex items-start gap-3 rounded-lg border border-line bg-raised/40 px-3 py-2.5",
-        title: "Off by default. Turn on to add Image Generation to the workspace skill arsenal while this ChatGPT OAuth account is connected.",
-      },
-      imageToggle,
-      h("span", { class: "min-w-0 flex-1" },
-        h("span", { class: "block text-sm font-semibold text-fg" }, "Image Generation"),
-        h("span", { class: "mt-0.5 block text-xs leading-5 text-muted" }, "Activate Image Generation as a skill Skipper can provision. Requires healthy ChatGPT OAuth. Default is off.")))
-    : null;
-
   add(details,
     h("div", { class: "mb-3 flex flex-wrap items-center justify-between gap-2" },
       count,
       h("div", { class: "flex gap-2" }, allOn, allOff)),
     models.length ? modelList : h("p", { class: "py-4 text-sm text-muted" }, "No models are configured for this account yet."),
-    imageRow,
     h("div", { class: "mt-3 grid gap-2 sm:grid-cols-[1fr_auto]" }, exact, addModel), addStatus,
     h("div", { class: "mt-3 flex flex-wrap justify-end gap-2" },
       ["chatgpt", "claude", "antigravity", "xai", "codex"].includes(account.type)
@@ -248,6 +227,11 @@ function familyRouteMember(familyId: string, model: string, state: RoutingState)
 function routingFabric(state: RoutingState): HTMLElement {
   const families = [...new Set((state.providers || []).filter((p) => p.enabled !== false).map((p) => isCustom(p) ? "custom" : providerFamily(p)))].slice(0, 8);
   const nodes = families.length ? families : ["chatgpt", "claude", "openrouter"];
+  if (liveRoutingActivity) state.recentActivity = [liveRoutingActivity, ...(state.recentActivity || []).filter((item) => item !== liveRoutingActivity)].slice(0, 30);
+  const rawEvents = Array.isArray(state.recentActivity) ? state.recentActivity as Array<Record<string, unknown>> : [];
+  const latest = rawEvents[0] || ((state.activeRequests || [])[0] ? { type: "routed", request: (state.activeRequests || [])[0] } : null);
+  const request = latest?.request && typeof latest.request === "object" ? latest.request as Record<string, unknown> : null;
+  const activeFamily = String(request?.providerType || "").replace(/^codex$/, "chatgpt");
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 320 120");
   svg.setAttribute("class", "routing-fabric-svg");
@@ -259,8 +243,7 @@ function routingFabric(state: RoutingState): HTMLElement {
     const y = cy + Math.sin(angle) * 38;
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
     path.setAttribute("d", `M ${cx} ${cy} Q ${(cx + x) / 2} ${(cy + y) / 2 - 12} ${x} ${y}`);
-    path.setAttribute("class", "routing-fabric-path");
-    path.style.animationDelay = `${index * 0.18}s`;
+    path.setAttribute("class", `routing-fabric-path ${activeFamily && activeFamily === family ? "is-live" : "is-idle"}`);
     svg.append(path);
     const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
     const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
@@ -278,8 +261,13 @@ function routingFabric(state: RoutingState): HTMLElement {
   label.setAttribute("text-anchor", "middle"); label.setAttribute("class", "routing-fabric-hub-label");
   label.textContent = "1H";
   svg.append(label);
-  return h("div", { class: "routing-fabric", title: "Live routing fabric — accounts pool under each provider family" }, svg,
-    h("div", { class: "routing-fabric-legend" }, ...nodes.map((id) => h("span", { class: "routing-fabric-chip" }, providerMark(id, 14), familyLabel(id, state)))));
+  const status = !request
+    ? h("p", { class: "mt-2 text-center text-xs text-muted" }, "Waiting for the next routed request…")
+    : h("div", { class: "mt-2 grid gap-1 rounded-lg border border-line bg-surface px-3 py-2 text-xs sm:grid-cols-[1fr_auto]" },
+      h("div", { class: "min-w-0" }, h("span", { class: "font-semibold text-fg" }, String(request.model || "Request")), h("span", { class: "ml-2 text-muted" }, request.providerName ? `→ ${String(request.providerName)}` : latest?.type === "started" ? "choosing a destination…" : "routing…")),
+      h("span", { class: `font-mono ${latest?.type === "finished" && Number(request.status || 200) >= 400 ? "text-danger" : "text-accent"}` }, latest?.type === "finished" ? `${String(request.outcome || "finished")} · ${Math.max(0, Number(request.finishedAt || Date.now()) - Number(request.startedAt || Date.now()))}ms` : String(latest?.type || "active")));
+  return h("div", { class: "routing-fabric", title: "Live requests routed by this workspace" }, svg,
+    h("div", { class: "routing-fabric-legend" }, ...nodes.map((id) => h("span", { class: `routing-fabric-chip ${activeFamily === id ? "border-accent text-accent" : ""}` }, providerMark(id, 14), familyLabel(id, state)))), status);
 }
 
 function sourceCatalog(state: RoutingState, refresh: () => Promise<void>, confirm: Dialog, expandedAccounts: Set<string>, expandedGroups: Set<string>): HTMLElement {
@@ -315,7 +303,21 @@ function sourceCatalog(state: RoutingState, refresh: () => Promise<void>, confir
     };
     list.append(h("section", { class: "routing-provider" }, open, body));
   }
-  return h("div", {}, heading("Provider fabric", "Accounts & keys", "Connect subscriptions and API keys once. Every enabled model becomes available to Skipper, resident agents, named routes, and the shared endpoint."), routingFabric(state), list);
+  const chatgptConnected = (state.providers || []).some((provider) => provider.enabled !== false && providerFamily(provider) === "chatgpt");
+  const imageToggle = h("input", { type: "checkbox", class: "accent-accent", checked: Boolean(state.imageGenerationEnabled), disabled: !chatgptConnected }) as HTMLInputElement;
+  const imageStatus = statusLine();
+  imageToggle.onchange = async () => {
+    const requested = imageToggle.checked; imageToggle.disabled = true;
+    try {
+      await api("/api/routing/image-generation", { method: "POST", body: { providerId: "chatgpt", enabled: requested } });
+      state.imageGenerationEnabled = requested;
+      imageStatus.textContent = requested ? "Image Generation is available workspace-wide." : "Image Generation is off.";
+    } catch (error) { imageToggle.checked = !requested; imageStatus.textContent = (error as Error).message; }
+    finally { imageToggle.disabled = !chatgptConnected; }
+  };
+  const imageRow = h("label", { class: "mb-4 flex items-start gap-3 rounded-lg border border-line bg-raised/40 px-4 py-3" }, imageToggle,
+    h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block text-sm font-semibold text-fg" }, "Image Generation · ChatGPT family"), h("span", { class: "mt-0.5 block text-xs leading-5 text-muted" }, chatgptConnected ? "One workspace-wide switch shared by every healthy ChatGPT account." : "Connect a ChatGPT subscription account to enable this workspace capability."), imageStatus));
+  return h("div", {}, heading("Provider fabric", "Accounts & keys", "Connect subscriptions and API keys once. Every enabled model becomes available to Skipper, resident agents, named routes, and the shared endpoint."), routingFabric(state), imageRow, list);
 }
 
 function keyedForm(id: string, label: string, preset: RoutingState["keyedPresets"][number] | undefined, refresh: () => Promise<void>): HTMLElement {
@@ -323,7 +325,7 @@ function keyedForm(id: string, label: string, preset: RoutingState["keyedPresets
   const name = h("input", { class: "field", value: label, placeholder: "Connection name", dataset: { keyedField: "name" } }) as HTMLInputElement;
   const baseUrl = h("input", { class: "field", value: preset?.baseUrl || "", placeholder: "https://provider.example/v1", readOnly: !!preset, dataset: { keyedField: "base" } }) as HTMLInputElement;
   const accountId = h("input", { class: "field", placeholder: "Cloudflare account ID", dataset: { keyedField: "account" } }) as HTMLInputElement;
-  const key = h("input", { class: "field", type: "password", placeholder: "API key", autocomplete: "off", dataset: { keyedField: "key" } }) as HTMLInputElement;
+  const key = h("input", { class: "field", type: "password", placeholder: id === "custom" ? "API key (optional)" : "API key", autocomplete: "off", dataset: { keyedField: "key" } }) as HTMLInputElement;
   const model = h("input", { class: "field", placeholder: "Exact model ID (optional)", dataset: { keyedField: "model" } }) as HTMLInputElement;
   const status = statusLine();
   status.dataset.keyedStatus = "";
@@ -425,7 +427,7 @@ export function onboardingProviderPicker(onState: (state: RoutingState, ready: b
     if (!state) return;
     clear(shell);
     const formMount = h("div");
-    const cards = h("div", { class: "grid gap-2 sm:grid-cols-2" });
+    const cards = h("div", { class: "grid gap-2 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4" });
     const sources: Array<{ id: string; name: string; kind: "oauth" | "keyed"; preset?: RoutingState["keyedPresets"][number] }> = [
       ...(state.oauthProviders || []).map((provider) => ({ ...provider, kind: "oauth" as const })),
       ...(state.keyedPresets || []).map((preset) => ({ id: preset.id, name: preset.name, kind: "keyed" as const, preset })),
@@ -437,10 +439,10 @@ export function onboardingProviderPicker(onState: (state: RoutingState, ready: b
         class: "wizard-choice flex items-center gap-3 text-left",
         dataset: { providerSource: source.id },
       },
-      h("span", { class: "wizard-provider-mark" }, providerMark(source.id, 20)),
+      h("span", { class: "wizard-provider-mark" }, providerMark(source.id, 18)),
       h("span", { class: "min-w-0 flex-1" },
         h("span", { class: "block font-semibold text-fg" }, source.name),
-        h("span", { class: "mt-0.5 block text-xs leading-5 text-muted" }, providerCopy[source.id] || "Any compatible OpenAI-style endpoint")),
+        h("span", { class: "mt-0.5 hidden text-[11px] leading-4 text-muted xl:block" }, providerCopy[source.id] || "Any compatible OpenAI-style endpoint")),
       h("span", { class: `chip shrink-0 ${familyAccounts.length ? "border-accent/40 text-accent" : ""}` }, familyAccounts.length ? `${familyAccounts.length} connected` : source.kind === "oauth" ? "Sign in" : "Add key")) as HTMLButtonElement;
       card.onclick = async () => {
         if (source.kind === "oauth") {
@@ -451,8 +453,11 @@ export function onboardingProviderPicker(onState: (state: RoutingState, ready: b
           return;
         }
         clear(formMount);
-        formMount.append(keyedForm(source.id, source.name, source.preset, refresh));
-        formMount.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        const overlay = h("div", { class: "modal-overlay fixed inset-0 z-[70] grid place-items-center bg-black/60 p-4" });
+        const form = keyedForm(source.id, source.name, source.preset, async () => { overlay.remove(); await refresh(); });
+        form.classList.remove("mb-3"); form.classList.add("card", "w-full", "max-w-[680px]", "shadow-2xl");
+        overlay.addEventListener("click", (event) => { if (event.target === overlay) overlay.remove(); });
+        overlay.append(form); document.body.append(overlay);
       };
       cards.append(card);
     }
@@ -460,11 +465,11 @@ export function onboardingProviderPicker(onState: (state: RoutingState, ready: b
     const accounts = state.providers || [];
     shell.append(cards, formMount);
     if (accounts.length) shell.append(
-      h("div", { class: "border-t border-line pt-4" },
+      h("div", { class: "border-t border-line pt-3" },
         h("div", { class: "mb-2 flex items-center justify-between gap-3" },
           h("div", { class: "text-sm font-semibold text-fg" }, "Connected accounts & keys"),
           h("span", { class: "text-xs text-muted" }, "Connect as many as you use")),
-        h("div", { class: "space-y-2" }, ...accounts.map((account) => accountCard(account, refresh, async (message) => window.confirm(message), expandedAccounts)))),
+        h("div", { class: "flex flex-wrap gap-2" }, ...accounts.map((account) => h("span", { class: "chip max-w-[15rem] gap-1.5", dataset: { providerAccount: account.id }, title: `${accountName(account)} · ${(account.models || []).filter((model) => model.enabled !== false).length} models` }, h("span", { class: `routing-live-dot ${account.enabled === false ? "is-off" : ""}` }), h("span", { class: "truncate" }, accountName(account)))))),
     );
   };
 
@@ -575,14 +580,19 @@ async function quotaView(): Promise<HTMLElement> {
       ...(account.windows || []).map((window) => h("div", { class: "mt-4" }, h("div", { class: "mb-1 flex justify-between gap-3 text-xs" }, h("span", { class: "font-semibold text-fg" }, window.label), h("span", { class: "font-mono text-muted" }, `${Math.round(window.remainingPercent)}% left${window.resetsAt ? ` · resets ${timeLabel(window.resetsAt)}` : ""}`)), h("div", { class: "routing-quota-track" }, h("i", { style: `width:${Math.max(0, Math.min(100, window.remainingPercent))}%` }))))));
     if (!accounts.length) body.append(empty("No OAuth accounts connected", "Quota windows are available for supported ChatGPT, Claude, and Antigravity accounts."));
   };
-  const load = async (force = false): Promise<void> => {
-    refresh.setAttribute("disabled", "true"); refresh.textContent = force ? "Refreshing…" : "Loading…";
-    const result = await routingAction<{ quota?: { accounts?: RoutingQuotaAccount[] } }>(force ? "app:quota-refresh" : "app:quota-get");
-    draw(result.quota?.accounts || []); refresh.removeAttribute("disabled"); refresh.textContent = "Refresh quotas";
+  let loading = false;
+  const load = async (): Promise<void> => {
+    if (loading || !wrap.isConnected && wrap.dataset.mounted === "1") return;
+    loading = true;
+    refresh.setAttribute("disabled", "true"); refresh.textContent = "Refreshing…";
+    try { const result = await routingAction<{ quota?: { accounts?: RoutingQuotaAccount[] } }>("app:quota-refresh"); draw(result.quota?.accounts || []); }
+    finally { loading = false; refresh.removeAttribute("disabled"); refresh.textContent = "Refresh quotas"; }
   };
-  refresh.onclick = () => { void load(true); };
+  refresh.onclick = () => { void load(); };
   add(wrap, heading("Subscription capacity", "Quota", "Check remaining supported subscription windows and reset times without leaving the workspace.", refresh), body);
-  await load(); return wrap;
+  await load(); wrap.dataset.mounted = "1";
+  const timer = window.setInterval(() => { if (!wrap.isConnected) { clearInterval(timer); return; } void load(); }, 60_000);
+  return wrap;
 }
 
 async function logsView(): Promise<HTMLElement> {
@@ -623,7 +633,19 @@ function endpointView(state: RoutingState, refresh: () => Promise<void>, confirm
     h("div", { class: "routing-section-title" }, "Gateway keys"), keys,
     h("div", { class: "mt-3 grid gap-2 sm:grid-cols-[1fr_auto]" }, name, h("button", { class: "btn-primary min-h-10 text-xs", onclick: async () => { await routingAction("app:create-api-key", name.value.trim() || "1Helm client"); await refresh(); } }, icon("plus", 14), "Create key")),
     h("div", { class: "routing-section-title" }, "Network"),
-    h("div", { class: "routing-network-row" }, h("div", { class: "min-w-0 flex-1" }, h("div", { class: "font-semibold text-fg" }, "Direct router port"), h("p", { class: "mt-1 text-xs leading-5 text-muted" }, "The 1Helm URL above works wherever your workspace is reachable. Optionally expose the engine's direct port to LAN or Tailscale clients.")), h("select", { class: "field max-w-[190px]", onchange: async (event: Event) => { await routingAction("app:set-bind-host", (event.currentTarget as HTMLSelectElement).value); await refresh(); } }, h("option", { value: "127.0.0.1", selected: state.bindHost !== "0.0.0.0" }, "Localhost only"), h("option", { value: "0.0.0.0", selected: state.bindHost === "0.0.0.0" }, "LAN / Tailscale"))));
+    h("div", { class: "routing-network-row" }, h("div", { class: "min-w-0 flex-1" }, h("div", { class: "font-semibold text-fg" }, "Direct router port"), h("p", { class: "mt-1 text-xs leading-5 text-muted" }, "The 1Helm URL above works wherever your workspace is reachable. Optionally expose the engine's direct port to LAN or Tailscale clients.")), (() => {
+      const select = h("select", { class: "field max-w-[190px]" }, h("option", { value: "127.0.0.1", selected: state.bindHost !== "0.0.0.0" }, "Localhost only"), h("option", { value: "0.0.0.0", selected: state.bindHost === "0.0.0.0" }, "LAN / Tailscale")) as HTMLSelectElement;
+      select.onchange = async () => {
+        const previous = state.bindHost; select.disabled = true;
+        try {
+          const result = await routingAction<{ ok: boolean; bindHost?: string; port?: number }>("app:set-bind-host", select.value);
+          state.bindHost = result.bindHost || select.value; if (result.port) state.port = result.port;
+          select.value = state.bindHost === "0.0.0.0" ? "0.0.0.0" : "127.0.0.1";
+        } catch (error) { select.value = previous === "0.0.0.0" ? "0.0.0.0" : "127.0.0.1"; alert((error as Error).message); }
+        finally { select.disabled = false; }
+      };
+      return select;
+    })()));
 }
 
 export function routingPanel(isAdmin: boolean, confirm: Dialog): HTMLElement {
@@ -633,6 +655,7 @@ export function routingPanel(isAdmin: boolean, confirm: Dialog): HTMLElement {
   const content = h("div", { class: "routing-content" });
   let state: RoutingState | null = null;
   let current: RoutingView = "sources";
+  let shellActivityListener: ((activity: unknown) => void) | null = null;
   const expandedAccounts = new Set<string>();
   const expandedGroups = new Set<string>();
   const views: Array<[RoutingView, string]> = [["sources", "Sources"], ["routes", "Routes"], ["activity", "Activity"], ["quota", "Quota"], ["logs", "Logs"], ["endpoint", "Endpoint"]];
@@ -649,6 +672,15 @@ export function routingPanel(isAdmin: boolean, confirm: Dialog): HTMLElement {
       else if (current === "quota") content.append(await quotaView());
       else if (current === "logs") content.append(await logsView());
       else content.append(endpointView(state, refresh, confirm));
+      if (shellActivityListener) routingActivityListeners.delete(shellActivityListener);
+      shellActivityListener = (activity) => {
+        if (!shell.isConnected) { routingActivityListeners.delete(shellActivityListener!); return; }
+        if (!state || current !== "sources") return;
+        state.recentActivity = [activity, ...(state.recentActivity || [])].slice(0, 30);
+        const old = content.querySelector(".routing-fabric");
+        if (old) old.replaceWith(routingFabric(state));
+      };
+      routingActivityListeners.add(shellActivityListener);
     } catch (error) {
       clear(content); content.append(empty("The model fabric is unavailable", (error as Error).message));
     }

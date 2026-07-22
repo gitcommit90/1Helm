@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-07-22
+
+### Added
+
+- Structured in-chat interviews with prefilled choices, multi-select support, and a typed-answer path, plus a thread-scoped Stop control that preserves partial work and injects one-shot continuation context on the next user reply.
+- Settings → Skills now teaches Skipper from local files or folders, web URLs, and notes in a normal visible thread, finishing through the existing reusable `create_skill` workflow.
+- Captain profiles now include display name, job title, description, and avatar controls from the bottom-left identity, and fresh workspaces receive an optional primary-model choice with a short post-onboarding tour.
+- The Sources screen now visualizes real started, routed, and finished provider requests; quota refreshes immediately and every 60 seconds while visible.
+
+### Changed
+
+- Production agent tool rounds increase from 6 to 150. Channel, thread, and workspace model controls now use user-facing provider-family → model selectors, while the internal 1Helm Router remains an implementation detail.
+- Onboarding uses a wider, height-bounded layout that fits Captain → Providers → Workspace without shell or panel scrolling, including the minimum 820×600 desktop window.
+- Image Generation is one workspace-wide ChatGPT-family capability instead of a per-account switch. Provider/model/route edits reconcile stale workspace, channel, and thread selections immediately.
+- Apple channel storage now reports the honest 2 GiB 1Helm-managed writable allocation rather than the host-backed virtual filesystem ceiling.
+
+### Fixed
+
+- Apple channel terminals now run an explicit `/bin/bash -l` in `/workspace`, and installs repair `node-pty`'s non-executable arm64 spawn helper so new-channel and `#main` terminals no longer stall or fail with `posix_spawnp failed`.
+- The native wake LaunchAgent starts the signed 1Helm executable directly, so macOS identifies the background item as 1Helm instead of `sh`; background wakes no longer force the window open.
+- Router startup rotates through nearby ports when 4949 is occupied, LAN/Tailscale changes apply the confirmed host and port once, and failures restore the previous selection.
+- Custom OpenAI-compatible endpoints genuinely accept an empty API key and omit Authorization headers. Image toggles no longer jump to the top, connected accounts stay compact, and routine saves avoid full-screen redraw flicker.
+- Thread titles strip Markdown markers, long mention-model names and channel descriptions wrap cleanly, and channel descriptions no longer use a fade mask.
+
 ## [1.1.3] - 2026-07-21
 
 ### Changed
@@ -95,7 +119,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Native **1Herd** channel-agent workspace (SPEC.md slice) is developed on branch `worktree-1herd-native-spec` (draft PR #7) and is **not** fully merged to `main` as of this changelog baseline. Track progress there and in `docs/VISION.md` on that branch.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.3...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.4...HEAD
+[1.1.4]: https://github.com/gitcommit90/1Helm/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/gitcommit90/1Helm/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/gitcommit90/1Helm/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/gitcommit90/1Helm/compare/v1.1.0...v1.1.1

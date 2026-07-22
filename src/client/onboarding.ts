@@ -18,30 +18,30 @@ function setBusy(button: HTMLButtonElement, busy: boolean, label?: string): void
 
 export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
   let step = opts.resume ? Math.min(Math.max(opts.resumeStep || 1, 1), steps.length - 1) : 0;
-  const shell = h("div", { class: "wizard-shell h-full" });
-  const stage = h("div", { class: "mx-auto flex min-h-full w-full max-w-[680px] items-start px-4 py-8 sm:items-center sm:px-6" });
-  const panel = h("section", { class: "w-full" });
+  const shell = h("div", { class: "wizard-shell h-full overflow-hidden" });
+  const stage = h("div", { class: "mx-auto flex h-full min-h-0 w-full max-w-[1120px] items-center px-3 py-3 sm:px-5 sm:py-5" });
+  const panel = h("section", { class: "flex h-full min-h-0 w-full items-center" });
   stage.append(panel); shell.append(stage); clear(root); root.append(shell);
 
-  const brand = (): HTMLElement => h("div", { class: "mb-8 flex items-center justify-between" },
+  const brand = (): HTMLElement => h("div", { class: "mb-4 flex items-center justify-between" },
     h("div", { class: "flex items-center gap-3" },
       h("span", { class: "logo-plate h-9 w-9 rounded-md" }, h("img", { class: "logo-asset", src: "/brand/1helm.png", alt: "1Helm" })),
       h("div", {}, h("div", { class: "text-sm font-semibold tracking-[-0.01em] text-fg" }, "1Helm"), h("div", { class: "eyebrow mt-0.5 text-[9px] text-muted" }, "Native agent workspace"))),
     h("div", { class: "chip px-2 py-1" }, `Step ${step + 1} / ${steps.length}`));
 
-  const progress = (): HTMLElement => h("div", { class: "mb-8" },
+  const progress = (): HTMLElement => h("div", { class: "mb-4" },
     h("div", { class: "mb-2.5 flex justify-between font-mono text-[10px] uppercase tracking-[0.14em] text-faint" }, ...steps.map((label, index) => h("span", { class: index === step ? "text-accent" : index < step ? "text-muted" : "" }, label))),
     h("div", { class: "wizard-progress" }, h("span", { style: `width:${((step + 1) / steps.length) * 100}%` })));
 
   const layout = (title: string, subtitle: string, body: HTMLElement, footer?: HTMLElement): HTMLElement =>
-    h("div", { class: "wizard-panel overflow-hidden" },
-      h("div", { class: "px-6 pt-6 sm:px-8 sm:pt-8" }, brand(), progress()),
-      h("div", { class: "px-6 pb-2 sm:px-8" }, h("h2", { class: "font-display text-[2rem] leading-[1.12] text-fg" }, title), h("p", { class: "mt-2.5 max-w-xl text-sm leading-6 text-muted" }, subtitle)),
-      h("div", { class: "space-y-5 px-6 py-6 sm:px-8" }, body), footer || null);
+    h("div", { class: "wizard-panel flex max-h-full w-full flex-col overflow-hidden" },
+      h("div", { class: "px-5 pt-4 sm:px-7 sm:pt-5" }, brand(), progress()),
+      h("div", { class: "px-5 pb-1 sm:px-7" }, h("h2", { class: "font-display text-[clamp(1.55rem,3.2vh,2rem)] leading-[1.12] text-fg" }, title), h("p", { class: "mt-1.5 max-w-3xl text-sm leading-5 text-muted" }, subtitle)),
+      h("div", { class: "min-h-0 flex-1 space-y-3 overflow-hidden px-5 py-3 sm:px-7" }, body), footer || null);
 
   const footer = (back: (() => void) | null, next: (() => void), label: string, disabled = false): HTMLElement => {
     const nextButton = h("button", { class: "btn-primary min-w-28 px-4 py-2", disabled, onclick: next }, label) as HTMLButtonElement;
-    return h("div", { class: "flex items-center justify-between border-t border-line px-6 py-4 sm:px-8" },
+    return h("div", { class: "flex shrink-0 items-center justify-between border-t border-line px-5 py-3 sm:px-7" },
       back ? h("button", { class: "btn-ghost px-2", onclick: back }, "Back") : h("span"), nextButton);
   };
 
@@ -63,7 +63,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     password.addEventListener("keydown", (event) => { if (event.key === "Enter") void submit(); });
     queueMicrotask(() => username.focus());
     return layout("Create the Captain account", "The first account is the Captain: owner and final authority for this workspace. Add people later.",
-      h("div", { class: "space-y-4" }, field("Username", username, "Lowercase letters, numbers, dots, dashes, and underscores."), field("Your name", display, "How people and agents will address you."), field("Password", password), status),
+      h("div", { class: "grid gap-3 sm:grid-cols-3" }, field("Username", username, "Lowercase letters, numbers, dots, dashes, and underscores."), field("Your name", display, "How people and agents will address you."), field("Password", password), h("div", { class: "sm:col-span-3" }, status)),
       footer(null, () => { void submit(); }, "Continue"));
   };
 
@@ -80,8 +80,8 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     const providersFooter = footer(() => { step = 0; void render(); }, () => { step = 2; void render(); }, "Continue", true);
     continueButton = providersFooter.querySelector("button.btn-primary") as HTMLButtonElement;
     return layout("Connect the providers you use", "Add one or several accounts or keys. 1Helm pools what you connect and makes enabled models available to Skipper and every resident. There is no single AI brain.",
-      h("div", { class: "space-y-4" },
-        h("div", { class: "rounded-lg border border-accent/25 bg-accent-soft px-4 py-3 text-sm leading-6 text-fg" }, "Do you have any of the following providers? Choose each one you use. You can connect multiple accounts from the same provider, too."),
+      h("div", { class: "space-y-3" },
+        h("div", { class: "rounded-lg border border-accent/25 bg-accent-soft px-3 py-2 text-sm leading-5 text-fg" }, "Choose every provider you use. You can connect multiple accounts from the same provider."),
         picker, connectionStatus),
       providersFooter);
   };
@@ -95,6 +95,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
       setBusy(button, true, "Creating workspace…");
       try {
         await api("/api/setup/complete", { body: { name: name.value.trim() || "My Workspace", terminals_enabled: true } });
+        sessionStorage.setItem("1helm.justOnboarded", "1");
         await opts.onDone();
       } catch (error) {
         status.replaceChildren(h("div", { class: "wizard-status-err" }, (error as Error).message));
@@ -166,7 +167,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     name.addEventListener("keydown", (event) => { if (event.key === "Enter") void prepare(); });
     queueMicrotask(() => { name.focus(); name.select(); });
     return layout("Name this workspace", "Skipper will prepare the workspace and automatically manage a private Linux computer for every ordinary channel.",
-      h("div", { class: "space-y-4" }, field("Workspace name", name, "This appears in the sidebar. You can rename it later."), runtimeMount, status),
+      h("div", { class: "grid items-start gap-3 sm:grid-cols-[minmax(240px,.7fr)_1.3fr]" }, field("Workspace name", name, "This appears in the sidebar. You can rename it later."), h("div", {}, runtimeMount, status)),
       footer(() => { step = 1; void render(); }, () => { void prepare(); }, "Create workspace"));
   };
 
@@ -175,7 +176,6 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     if (step === 0) panel.append(accountStep());
     else if (step === 1) panel.append(providersStep());
     else panel.append(workspaceStep());
-    shell.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   if (!getToken() && step > 0) step = 0;

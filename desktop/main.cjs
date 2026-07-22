@@ -59,25 +59,21 @@ async function startLocalRuntime() {
 }
 
 function installWakeLaunchAgent() {
-  if (process.platform !== "darwin" || !localOrigin || !process.env.HELM_INTERNAL_WAKE_TOKEN) return;
+  if (process.platform !== "darwin") return;
   const agentsDir = path.join(app.getPath("home"), "Library", "LaunchAgents");
   const plistPath = path.join(agentsDir, "com.gitcommit90.1helm.wake.plist");
   const xmlEscape = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-  const shellQuote = (value) => `'${String(value).replaceAll("'", `'"'"'`)}'`;
-  const wakeUrl = `${localOrigin}/api/internal/channel-computers/wake`;
-  const header = `X-1Helm-Wake-Token: ${process.env.HELM_INTERNAL_WAKE_TOKEN}`;
-  const appBundle = path.resolve(path.dirname(process.execPath), "../..");
-  const command = [
-    `/usr/bin/curl -fsS --max-time 20 -X POST -H ${shellQuote(header)} ${shellQuote(wakeUrl)} >/dev/null 2>&1`,
-    app.isPackaged ? `/usr/bin/open -gj -a ${shellQuote(appBundle)} --args --1helm-background` : "true",
-  ].join(" || ");
+  // Launch the signed 1Helm executable directly. macOS now presents 1Helm—not
+  // the generic /bin/sh interpreter—as the background item. A running app's
+  // single-instance lock makes this a cheap no-op; a stopped app wakes hidden.
+  const executable = process.execPath;
   const plist = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
     '<plist version="1.0"><dict>',
     '<key>Label</key><string>com.gitcommit90.1helm.wake</string>',
     '<key>ProgramArguments</key><array>',
-    '<string>/bin/sh</string>', '<string>-c</string>', `<string>${xmlEscape(command)}</string>`,
+    `<string>${xmlEscape(executable)}</string>`, '<string>--1helm-background</string>',
     '</array>',
     '<key>StartInterval</key><integer>60</integer>',
     '<key>RunAtLoad</key><true/>',
@@ -185,7 +181,8 @@ function createWindow(showWhenReady = true) {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, argv) => {
+    if (argv.includes("--1helm-background")) return;
     if (!mainWindow) createWindow();
     if (mainWindow?.isMinimized()) mainWindow.restore();
     mainWindow?.show();

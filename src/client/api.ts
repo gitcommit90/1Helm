@@ -1,9 +1,19 @@
-export type User = { id: number; username: string; display: string; is_admin: boolean };
+export type User = {
+  id: number; username: string; display: string; is_admin: boolean;
+  description: string; job_title: string; avatar: string; tour_complete: boolean;
+};
 export type Author = { kind: "user" | "bot"; id: number; name: string };
 export type Attachment = { id: number; name: string; mime: string; size: number };
 export type AgentProgress = { id: number; kind: "thinking" | "tool" | "status"; body: string; status: "running" | "complete" | "failed"; created: number; updated: number };
 export type ThreadUsage = { input_tokens: number; output_tokens: number };
-export type Message = { id: number; channel_id: number; parent_id: number | null; body: string; created: number; reply_count: number; last_reply: number | null; author: Author; attachments: Attachment[]; progress?: AgentProgress[] };
+export type AgentQuestionOption = { label: string; description?: string };
+export type AgentQuestion = { id: string; header?: string; question: string; multi_select?: boolean; options: AgentQuestionOption[] };
+export type AgentQuestions = {
+  intro?: string; questions: AgentQuestion[]; status: "pending" | "answered" | "cancelled";
+  answers?: Array<{ question_id: string; question: string; values: string[]; custom: string }> | null;
+  answered?: number | null;
+};
+export type Message = { id: number; channel_id: number; parent_id: number | null; body: string; created: number; reply_count: number; last_reply: number | null; author: Author; attachments: Attachment[]; progress?: AgentProgress[]; questions?: AgentQuestions | null };
 export type ModelPolicy = { provider_id: number | null; provider_name: string | null; provider_kind: string | null; model: string; overridden: boolean; editable: boolean };
 export type ResidentAgent = {
   id: number; bot_id: number; kind: "channel" | "skipper"; name: string; display_name: string;
@@ -79,7 +89,7 @@ export type RoutingState = {
   appVersion: string; endpoint: string; bindHost: string; port: number; serverListening: boolean;
   apiKey: string; apiKeys: Array<{ id: string; name: string; key: string; enabled: boolean; createdAt: number }>;
   providers: RoutingProvider[]; combos: RoutingCombo[]; usage: RoutingUsage;
-  activeRequests: unknown[]; oauthProviders: Array<{ id: string; name: string }>;
+  activeRequests: unknown[]; recentActivity?: unknown[]; imageGenerationEnabled?: boolean; oauthProviders: Array<{ id: string; name: string }>;
   keyedPresets: Array<{ id: string; name: string; baseUrl: string; needsAccountId?: boolean }>;
 };
 

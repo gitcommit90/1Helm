@@ -115,6 +115,10 @@ function verifyApp(appPath, expectTicket) {
   if (!executableInfo.includes("arm64")) throw new Error(`Packaged app is not arm64: ${executableInfo}`);
   const nativePty = capture("find", [path.join(appPath, "Contents", "Resources"), "-path", "*/node-pty/prebuilds/darwin-arm64/pty.node", "-print", "-quit"]);
   if (!nativePty || !capture("file", [nativePty]).includes("arm64")) throw new Error("Packaged app is missing the darwin-arm64 terminal module");
+  const ptyHelper = capture("find", [path.join(appPath, "Contents", "Resources"), "-path", "*/node-pty/prebuilds/darwin-arm64/spawn-helper", "-print", "-quit"]);
+  if (!ptyHelper || !capture("file", [ptyHelper]).includes("arm64") || !fs.statSync(ptyHelper).mode.toString(8).endsWith("755")) {
+    throw new Error("Packaged app is missing an executable darwin-arm64 terminal spawn helper");
+  }
   verifyProductIcon(appPath);
   if (expectTicket) {
     run("xcrun", ["stapler", "validate", appPath]);

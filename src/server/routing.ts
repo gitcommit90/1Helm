@@ -11,6 +11,13 @@ const require = createRequire(import.meta.url);
 const { createHeadlessRuntime } = require("@gitcommit90/rerouted/src/lib/headless-runtime.js") as {
   createHeadlessRuntime: (options: Record<string, unknown>) => RoutingRuntime;
 };
+const openaiCompat = require("@gitcommit90/rerouted/src/lib/providers/openai-compat.js") as {
+  listModels: (provider: RoutingProvider, options?: Record<string, unknown>) => Promise<Array<{ id: string; name?: string }>>;
+  chat: (provider: RoutingProvider, options?: Record<string, unknown>) => Promise<Response>;
+};
+const { runProviderModelTest } = require("@gitcommit90/rerouted/src/lib/model-test.js") as {
+  runProviderModelTest: (options: Record<string, unknown>) => Promise<Record<string, unknown>>;
+};
 const enginePackage = require("@gitcommit90/rerouted/package.json") as { version: string };
 
 type RoutingRuntime = {
@@ -71,6 +78,20 @@ type RoutingConfig = {
   [key: string]: unknown;
 };
 
+// ReRouted's generic OpenAI-compatible adapter historically assumed every
+// custom endpoint had a bearer key. 1Helm explicitly supports endpoints with
+// no authentication: keep the upstream adapter, but strip its empty
+// `Authorization: Bearer ` header for discovery, tests, and real requests.
+const originalCompatListModels = openaiCompat.listModels.bind(openaiCompat);
+const originalCompatChat = openaiCompat.chat.bind(openaiCompat);
+const withoutEmptyBearer = (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
+  const headers = new Headers(init.headers);
+  if (headers.get("authorization")?.trim().toLowerCase() === "bearer") headers.delete("authorization");
+  return fetch(input, { ...init, headers });
+};
+openaiCompat.listModels = (provider, options = {}) => originalCompatListModels(provider, { ...options, fetchImpl: withoutEmptyBearer });
+openaiCompat.chat = (provider, options = {}) => originalCompatChat(provider, { ...options, fetchImpl: withoutEmptyBearer });
+
 export type RoutingModel = {
   id: string;
   name: string;
@@ -88,7 +109,8 @@ const INTERNAL_GATEWAY_KEY_SCOPE = "1helm-internal";
 let runtime: RoutingRuntime | null = null;
 let starting: Promise<RoutingRuntime> | null = null;
 let activityUnsubscribe: (() => void) | null = null;
-let onActivity: (() => void) | null = null;
+let onActivity: ((activity?: unknown) => void) | null = null;
+const recentActivity: unknown[] = [];
 type OauthCompletion = { connected: boolean; account?: Record<string, unknown>; error?: string };
 const oauthWatchers = new Map<string, NodeJS.Timeout>();
 const oauthCompletions = new Map<string, OauthCompletion>();
@@ -229,6 +251,49 @@ function publicControlPlaneResult(result: Record<string, unknown>): Record<strin
   return { ...result, apiKeys: result.apiKeys.filter((entry) => !isInternalGatewayKey(entry as never)) };
 }
 
+function unauthenticatedCustomPayload(payload: unknown): Record<string, unknown> | null {
+  const value = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+  const custom = !String(value.apiKey || "").trim()
+    && (String(value.providerType || "") === "openai-compat" || (!value.preset && "models" in value));
+  return custom ? value : null;
+}
+
+async function testUnauthenticatedCustom(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const baseUrl = normalizeBaseUrl(payload.baseUrl);
+  const modelId = String(payload.modelId || "").trim();
+  if (!baseUrl || !routableBaseUrl(baseUrl)) return { ok: false, error: "Valid HTTP or HTTPS base URL required" };
+  const provider: RoutingProvider = { id: "test", type: "openai-compat", name: "Custom", baseUrl, apiKey: "" };
+  if (modelId) {
+    const tested = await runProviderModelTest({ adapter: openaiCompat, provider, model: modelId });
+    if (tested.ok === false) return tested;
+    return { ok: true, models: [{ id: modelId, name: modelId }], validation: "chat-completions" };
+  }
+  try { return { ok: true, models: await openaiCompat.listModels(provider), validation: "models" }; }
+  catch (error) { return { ok: false, error: (error as Error).message }; }
+}
+
+function addUnauthenticatedCustom(target: RoutingRuntime, payload: Record<string, unknown>): Record<string, unknown> {
+  const baseUrl = normalizeBaseUrl(payload.baseUrl);
+  const name = String(payload.name || "").trim();
+  const models = Array.isArray(payload.models) ? payload.models as RoutingProvider["models"] : [];
+  if (!baseUrl || !routableBaseUrl(baseUrl)) return { ok: false, error: "Valid HTTP or HTTPS base URL required" };
+  if (!name) return { ok: false, error: "Custom connection name required" };
+  if (name.includes("/")) return { ok: false, error: "Custom connection names cannot contain /" };
+  const current = target.store.load();
+  if (current.providers.some((provider) => ["custom", "openai-compat"].includes(provider.type) && provider.name.trim().toLowerCase() === name.toLowerCase())) {
+    return { ok: false, error: `A custom connection named ${name} already exists` };
+  }
+  const routeNames = new Set(current.combos.map((combo) => String(combo.name || combo.id).trim().toLowerCase()));
+  const conflict = (models || []).find((model) => {
+    const modelId = typeof model === "string" ? model : model.id;
+    return routeNames.has(`${name}/custom/${modelId}`.toLowerCase());
+  });
+  if (conflict) return { ok: false, error: `A route named ${name}/custom/${typeof conflict === "string" ? conflict : conflict.id} already exists` };
+  const id = `prov_${randomBytes(6).toString("hex")}`;
+  target.store.update((config) => { config.providers.push({ id, type: "openai-compat", name, baseUrl, apiKey: "", models, enabled: true, createdAt: Date.now() }); });
+  return { ok: true, id };
+}
+
 /**
  * Import every pre-router 1Helm connection once. Existing agents keep their
  * exact model IDs through named compatibility routes, so the migration is
@@ -321,6 +386,25 @@ function ensureInternalProvider(target: RoutingRuntime): number {
   return internalId;
 }
 
+/** Remove selections that no longer exist after an account/model/route edit.
+ * Policies then inherit the current workspace choice instead of displaying a
+ * ghost model that the gateway can never serve. */
+function reconcileModelPolicies(target: RoutingRuntime): void {
+  const available = new Set((target.router.listModels().data || []).map((model) => String(model.id || "").trim()).filter(Boolean));
+  const workspace = q1("SELECT default_model FROM workspace WHERE id=1");
+  let fallback = String(workspace?.default_model || "");
+  if (!available.has(fallback)) {
+    fallback = [...available][0] || "";
+    run("UPDATE workspace SET default_model=? WHERE id=1", fallback);
+  }
+  for (const pref of q("SELECT bot_id,scope,scope_id,model FROM model_prefs")) {
+    if (!available.has(String(pref.model || ""))) run("DELETE FROM model_prefs WHERE bot_id=? AND scope=? AND scope_id=?", pref.bot_id, pref.scope, pref.scope_id);
+  }
+  for (const bot of q("SELECT id,model FROM bots")) {
+    if (String(bot.model || "") && !available.has(String(bot.model))) run("UPDATE bots SET model=? WHERE id=?", fallback, bot.id);
+  }
+}
+
 async function initializeEngineConfig(target: RoutingRuntime): Promise<void> {
   let config = target.store.load();
   if (!config.adminPasswordHash) {
@@ -335,23 +419,21 @@ async function initializeEngineConfig(target: RoutingRuntime): Promise<void> {
 
 async function choosePort(preferred: number, host: string): Promise<number> {
   const requested = Number(process.env.HELM_ROUTER_PORT || preferred || 4949);
-  return new Promise((resolve, reject) => {
+  const candidates = process.env.HELM_ROUTER_PORT ? [requested] : [...Array(20)].map((_, index) => requested + index);
+  const available = (port: number): Promise<boolean> => new Promise((resolve, reject) => {
     const probe = createNetServer();
-    probe.once("error", (error: NodeJS.ErrnoException) => {
-      if (error.code !== "EADDRINUSE" || process.env.HELM_ROUTER_PORT) { reject(error); return; }
-      const fallback = createNetServer();
-      fallback.once("error", reject);
-      fallback.listen(0, host, () => {
-        const address = fallback.address();
-        const port = typeof address === "object" && address ? address.port : 0;
-        fallback.close(() => resolve(port));
-      });
-    });
-    probe.listen(requested, host, () => probe.close(() => resolve(requested)));
+    probe.once("error", (error: NodeJS.ErrnoException) => error.code === "EADDRINUSE" ? resolve(false) : reject(error));
+    probe.listen(port, host, () => probe.close(() => resolve(true)));
+  });
+  for (const candidate of candidates) if (await available(candidate)) return candidate;
+  if (process.env.HELM_ROUTER_PORT) throw new Error(`Router port ${requested} is unavailable.`);
+  return new Promise((resolve, reject) => {
+    const fallback = createNetServer(); fallback.once("error", reject);
+    fallback.listen(0, host, () => { const address = fallback.address(); const port = typeof address === "object" && address ? address.port : 0; fallback.close(() => resolve(port)); });
   });
 }
 
-export async function startRoutingEngine(activityCallback?: () => void): Promise<RoutingRuntime> {
+export async function startRoutingEngine(activityCallback?: (activity?: unknown) => void): Promise<RoutingRuntime> {
   if (runtime) return runtime;
   if (starting) return starting;
   onActivity = activityCallback || null;
@@ -372,7 +454,11 @@ export async function startRoutingEngine(activityCallback?: () => void): Promise
     if (port !== Number(config.port || 4949)) target.store.update((current) => { current.port = port; });
     await target.start({ port, host });
     ensureInternalProvider(target);
-    activityUnsubscribe = target.requestActivity.subscribe(() => onActivity?.());
+    activityUnsubscribe = target.requestActivity.subscribe((activity) => {
+      recentActivity.unshift(activity);
+      if (recentActivity.length > 30) recentActivity.length = 30;
+      onActivity?.(activity);
+    });
     runtime = target;
     return target;
   })().finally(() => { starting = null; });
@@ -423,12 +509,28 @@ export async function routingInvoke(action: string, payload?: unknown): Promise<
     result = await target.controlPlane.invoke(action, [type], { harness: true });
   } else if (action === "app:oauth-complete") {
     result = await finishOauth(target, (payload || {}) as Record<string, unknown>);
+  } else if (action === "app:test-keyed-provider" && unauthenticatedCustomPayload(payload)) {
+    result = await testUnauthenticatedCustom(unauthenticatedCustomPayload(payload)!);
+  } else if (action === "app:add-keyed-provider" && unauthenticatedCustomPayload(payload)) {
+    result = addUnauthenticatedCustom(target, unauthenticatedCustomPayload(payload)!);
+  } else if (action === "app:set-bind-host") {
+    const desiredHost = payload === "0.0.0.0" ? "0.0.0.0" : "127.0.0.1";
+    result = await target.controlPlane.invoke(action, [desiredHost], { harness: true });
+    if (result.ok === false && /EADDRINUSE/i.test(String(result.error || ""))) {
+      const current = target.store.load();
+      const port = await choosePort(Number(current.port || 4949) + 1, desiredHost);
+      target.store.update((config) => { config.bindHost = desiredHost; config.port = port; });
+      result = await target.controlPlane.invoke("app:set-bind-host", [desiredHost], { harness: true });
+    }
+    const listening = target.gateway.getListeningAddress?.();
+    if (result.ok !== false && listening) result = { ...result, bindHost: desiredHost, port: listening.port, serverListening: true };
   } else {
     const args = payload === undefined ? [] : [payload];
     result = await target.controlPlane.invoke(action, args, { harness: true });
   }
   // Key and bind changes can alter the endpoint used by 1Helm agents.
   ensureInternalProvider(target);
+  if (/provider|model|combo|oauth/i.test(action)) reconcileModelPolicies(target);
   return publicControlPlaneResult(result);
 }
 
@@ -441,14 +543,14 @@ export async function routingState(): Promise<Record<string, unknown>> {
     const { imageGenerationEnabledIds } = await import("./skills.ts");
     imageIds = imageGenerationEnabledIds();
   } catch { imageIds = []; }
-  const enabled = new Set(imageIds);
+  const enabled = imageIds.length > 0;
   const providers = Array.isArray((state as { providers?: unknown[] }).providers)
     ? ((state as { providers: Array<Record<string, unknown>> }).providers).map((provider) => ({
       ...provider,
-      imageGenerationEnabled: enabled.has(String(provider.id || "")),
+      imageGenerationEnabled: enabled && ["chatgpt", "codex"].includes(String(provider.type || "")),
     }))
     : (state as { providers?: unknown }).providers;
-  return { ...state, providers, apiKey: state.apiKey ? "" : state.apiKey, apiKeys: undefined };
+  return { ...state, providers, activeRequests: runtime?.requestActivity.snapshot() || [], recentActivity, imageGenerationEnabled: enabled, apiKey: state.apiKey ? "" : state.apiKey, apiKeys: undefined };
 }
 
 export async function routingCredentials(): Promise<Record<string, unknown>> {

@@ -67,7 +67,7 @@ const APPLE_RUNTIME_VERSION = "1.1.0";
 export const APPLE_RUNTIME_PACKAGE = `container-${APPLE_RUNTIME_VERSION}-installer-signed.pkg`;
 export const APPLE_RUNTIME_URL = `https://github.com/apple/container/releases/download/${APPLE_RUNTIME_VERSION}/${APPLE_RUNTIME_PACKAGE}`;
 export const APPLE_RUNTIME_SHA256 = "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714";
-export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.3";
+export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.4";
 const CONTAINER_CANDIDATES = [process.env.HELM_CONTAINER_CLI, "/usr/local/bin/container", "/opt/homebrew/bin/container", "container"].filter(Boolean) as string[];
 const COMMAND_TIMEOUT_MS = Math.max(5_000, Number(process.env.HELM_MACHINE_COMMAND_TIMEOUT_MS || 120_000));
 const IDLE_AFTER_MS = Math.max(60_000, Number(process.env.HELM_MACHINE_IDLE_MS || 15 * 60_000));
@@ -75,6 +75,10 @@ const RECONCILE_EVERY_MS = Math.max(15_000, Number(process.env.HELM_FLEET_INTERV
 const UPDATE_EVERY_MS = Math.max(24 * 60 * 60_000, Number(process.env.HELM_MACHINE_UPDATE_MS || 7 * 24 * 60 * 60_000));
 const UPDATE_RETRY_MS = Math.max(60 * 60_000, Number(process.env.HELM_MACHINE_UPDATE_RETRY_MS || 6 * 60 * 60_000));
 const MAX_WORKSPACE_SYNC_BYTES = Math.max(64 * 1024 ** 2, Number(process.env.HELM_WORKSPACE_SYNC_MAX_BYTES || 2 * 1024 ** 3));
+// Apple's machine runtime exposes a host-backed filesystem capacity in `df`
+// and does not offer a disk-size creation flag. This is the honest writable
+// allocation 1Helm manages and mirrors for a channel, not that virtual ceiling.
+export const MANAGED_CHANNEL_DISK_BYTES = MAX_WORKSPACE_SYNC_BYTES;
 const MAX_WORKSPACE_SYNC_ENTRIES = Math.max(10_000, Number(process.env.HELM_WORKSPACE_SYNC_MAX_ENTRIES || 200_000));
 const SCROLLBACK_CAP = 256 * 1024;
 const terminalSessions = new Map<string, MachineTerminal>();
@@ -160,10 +164,10 @@ export function ensureChannelComputerRecord(channelId: number): ChannelComputer 
   const resources = automaticResources();
   const stamp = now();
   run(`INSERT INTO channel_computers
-    (channel_id,backend,machine_id,image,desired_state,observed_state,cpus,memory_bytes,home_mount,provision_status,last_used,created,updated)
-    VALUES (?,?,?,?,?,'unknown',?,?,'none','pending',?,?,?)`,
+    (channel_id,backend,machine_id,image,desired_state,observed_state,cpus,memory_bytes,disk_bytes,home_mount,provision_status,last_used,created,updated)
+    VALUES (?,?,?,?,?,'unknown',?,?,?,'none','pending',?,?,?)`,
   channelId, configuredChannelBackend(), explicitComputerId(channelId), DEFAULT_CHANNEL_IMAGE,
-  String(channel.status) === "archived" ? "stopped" : "auto", resources.cpus, resources.memoryBytes, stamp, stamp, stamp);
+  String(channel.status) === "archived" ? "stopped" : "auto", resources.cpus, resources.memoryBytes, MANAGED_CHANNEL_DISK_BYTES, stamp, stamp, stamp);
   markWorkspaceDirty(channelId, "*", "full");
   return channelComputer(channelId)!;
 }
@@ -304,7 +308,7 @@ function recordObserved(computer: ChannelComputer, inspection: AppleInspection |
   }
   run(`UPDATE channel_computers SET observed_state=?,cpus=?,memory_bytes=?,disk_bytes=?,home_mount='none',provision_status='ready',last_health=?,last_error='',updated=? WHERE channel_id=?`,
     String(inspection.status || "unknown"), Number(inspection.cpus || computer.cpus), Number(inspection.memory || computer.memory_bytes),
-    Number(inspection.diskSize || computer.disk_bytes || 0), now(), now(), computer.channel_id);
+    MANAGED_CHANNEL_DISK_BYTES, now(), now(), computer.channel_id);
 }
 
 async function ensureAppleProvisioned(computer: ChannelComputer): Promise<void> {
@@ -489,9 +493,10 @@ export async function openChannelTerminal(channelId: number, ownerId: number, co
   try { computer = await ensureChannelComputerRunning(channelId, "an interactive terminal"); }
   catch (error) { satisfyObligation(channelId, "terminal", id); throw error; }
   const args = computer.backend === "apple"
-    ? ["machine", "run", "-it", "-n", computer.machine_id, "-w", "/workspace"]
+    ? ["machine", "run", "-it", "-n", computer.machine_id, "-w", "/workspace", "--", ...guestWords("/bin/bash", "-l")]
     : [];
-  const executable = computer.backend === "apple" ? resolveContainerCli() : (process.env.SHELL || "/bin/bash");
+  const requestedShell = process.env.SHELL || "/bin/bash";
+  const executable = computer.backend === "apple" ? resolveContainerCli() : (requestedShell.startsWith("/") && existsSync(requestedShell) ? requestedShell : "/bin/bash");
   let pty: IPty;
   try {
     pty = spawnPty(executable, args, {

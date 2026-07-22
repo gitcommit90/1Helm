@@ -357,6 +357,29 @@ export function migrate(): void {
   // Per-thread rough model usage (sum of provider-reported prompt/completion tokens).
   addColumn("threads", "input_tokens", "input_tokens INTEGER NOT NULL DEFAULT 0");
   addColumn("threads", "output_tokens", "output_tokens INTEGER NOT NULL DEFAULT 0");
+  addColumn("threads", "stopped_followup_pending", "stopped_followup_pending INTEGER NOT NULL DEFAULT 0");
+  addColumn("messages", "stopped_followup", "stopped_followup INTEGER NOT NULL DEFAULT 0");
+  addColumn("users", "description", "description TEXT NOT NULL DEFAULT ''");
+  addColumn("users", "job_title", "job_title TEXT NOT NULL DEFAULT ''");
+  addColumn("users", "avatar", "avatar TEXT NOT NULL DEFAULT ''");
+  addColumn("users", "tour_complete", "tour_complete INTEGER NOT NULL DEFAULT 0");
+  // Existing workspaces are already onboarded; only the newly registered
+  // Captain in a not-yet-complete workspace should receive the landing tour.
+  if (q1("SELECT setup_complete FROM workspace WHERE id=1")?.setup_complete) run("UPDATE users SET tour_complete=1");
+
+  // Structured agent interviews are first-class message metadata. They are
+  // not parsed out of Markdown, so choices remain stable across model changes.
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS agent_questions (
+    id INTEGER PRIMARY KEY,
+    message_id INTEGER NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+    payload TEXT NOT NULL,
+    answers TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','answered','cancelled')),
+    created INTEGER NOT NULL,
+    answered INTEGER
+  );
+  `);
 
   // Durable agent re-entry: models cannot promise "I'll update later" without this.
   db.exec(`
@@ -507,7 +530,7 @@ export function migrate(): void {
     // developer deliberately opts into the native compatibility backend.
     const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || (process.platform === "darwin" ? "apple" : "native"));
     const backend = ["apple", "native", "mock"].includes(configuredBackend) ? configuredBackend : "native";
-    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.3");
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.4");
     for (const channel of q(`SELECT c.id FROM channels c JOIN agent_channels ac ON ac.channel_id=c.id
       WHERE c.kind='channel' AND c.status<>'deleted'`)) {
       const channelId = Number(channel.id);
