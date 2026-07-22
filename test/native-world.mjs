@@ -290,6 +290,10 @@ try {
   const rejectedHostTerm = await api("/api/term/open", { body: { channelId: launch.id, computerId: hostComputerId, cols: 90, rows: 28 } }, captain);
   ok(rejectedHostTerm.status === 403, "ordinary channel terminal rejects an explicit native host computer");
   const expectedWorkspace = join(dataDir, "channels", String(launch.id), "workspace");
+  // Native compatibility terminals run directly in the channel's host mirror.
+  // On a real Apple container machine, that same private channel workspace is
+  // intentionally mounted at the stable guest-only path `/workspace`.
+  const expectedTerminalWorkspace = process.platform === "darwin" ? "/workspace" : expectedWorkspace;
   const terminalOutput = await new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${appPort}/ws/term/${termOpen.body.sessionId}?token=${captain}`);
     let output = "";
@@ -297,11 +301,11 @@ try {
     ws.on("open", () => ws.send(JSON.stringify({ type: "input", data: "pwd; printf 'terminal note\\n' > terminal-note.txt; echo TERM_DONE\r" })));
     ws.on("message", (chunk) => {
       output += chunk.toString();
-      if (output.includes("TERM_DONE") && output.includes(expectedWorkspace)) { clearTimeout(timer); ws.close(); resolve(output); }
+      if (output.includes("TERM_DONE") && output.includes(expectedTerminalWorkspace)) { clearTimeout(timer); ws.close(); resolve(output); }
     });
     ws.on("error", reject);
   });
-  ok(String(terminalOutput).includes(expectedWorkspace), "terminal starts in the selected channel's exact workspace");
+  ok(String(terminalOutput).includes(expectedTerminalWorkspace), "terminal starts in the selected channel's exact workspace");
   await waitFor(async () => (await api(`/api/channels/${launch.id}/files`, {}, captain)).body.files?.some((file) => file.path === "workspace/terminal-note.txt"), "terminal file indexing");
   ok(true, "terminal-created file is visible through the same channel Files surface");
 
