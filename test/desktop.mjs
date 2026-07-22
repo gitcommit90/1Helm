@@ -163,5 +163,6 @@ test("release packaging is fail-closed and records stable product identity", asy
   assert.match(source, /const CLOUDFLARED_VERSION = "2026\.3\.0"/);
   assert.match(source, /2aae4f69b0fc1c671b8353b4f594cbd902cd1e360c8eed2b8cad4602cb1546fb/);
   assert.match(source, /633cee0fd41fd2020e17498beecc54811bf4fc99f891c080dc9343eb0f449c60/);
-  assert.match(source, /missing the pinned arm64 Cloudflared connector/, "release packaging verifies the exact bundled tunnel connector");
+  assert.match(source, /Cloudflared binary checksum does not match the release pin/, "release packaging verifies the exact upstream tunnel connector before signing");
+  assert.match(source, /codesign", \["--verify", "--strict", "--verbose=2", cloudflared\]/, "release packaging verifies the bundled connector's post-signing seal");
 });
