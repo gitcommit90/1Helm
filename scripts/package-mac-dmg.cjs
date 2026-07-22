@@ -85,7 +85,7 @@ function createIcon() {
     ["icon_256x256.png", 256], ["icon_256x256@2x.png", 512],
     ["icon_512x512.png", 512], ["icon_512x512@2x.png", 1024],
   ];
-  for (const [name, size] of sizes) run("sips", ["-z", String(size), String(size), source, "--setProperty", "format", "png", "--out", path.join(iconset, name)]);
+  for (const [name, size] of sizes) run("sips", ["-z", String(size), String(size), source, "--out", path.join(iconset, name)]);
   const icon = path.join(iconRoot, "1Helm.icns");
   run("iconutil", ["-c", "icns", iconset, "-o", icon]);
   return { icon, iconRoot };

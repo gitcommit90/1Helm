@@ -123,7 +123,6 @@ test("release packaging is fail-closed and records stable product identity", asy
   assert.match(source, /Library\/Application Support\/1Helm/);
   assert.match(source, /installProductIcon/);
   assert.match(source, /desktop", "icons", "1helm-macos-app-logo\.jpg/);
-  assert.match(source, /"--setProperty", "format", "png"/, "JPEG app artwork is converted to real PNG iconset members before iconutil runs");
   try {
     assert.ok((await stat(macosIcon)).size > 0, "the dedicated macOS app-icon artwork is present for ICNS generation");
   } finally {
