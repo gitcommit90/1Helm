@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.1.10] - 2026-07-22
+## [1.1.11] - 2026-07-22
 
 ### Fixed
 
@@ -157,7 +157,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Native **1Herd** channel-agent workspace (SPEC.md slice) is developed on branch `worktree-1herd-native-spec` (draft PR #7) and is **not** fully merged to `main` as of this changelog baseline. Track progress there and in `docs/VISION.md` on that branch.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.10...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.11...HEAD
+[1.1.11]: https://github.com/gitcommit90/1Helm/compare/v1.1.10...v1.1.11
 [1.1.10]: https://github.com/gitcommit90/1Helm/compare/v1.1.9...v1.1.10
 [1.1.9]: https://github.com/gitcommit90/1Helm/compare/v1.1.8...v1.1.9
 [1.1.8]: https://github.com/gitcommit90/1Helm/compare/v1.1.7...v1.1.8

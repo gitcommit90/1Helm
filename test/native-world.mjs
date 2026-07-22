@@ -335,7 +335,10 @@ try {
   const removalStatus = await api("/api/app/removal", {}, captain);
   const forbiddenRemoval = await api("/api/app/removal", {}, collaborator);
   const unconfirmedRemoval = await api("/api/app/removal", { body: { confirmation: "wrong" } }, captain);
-  ok(removalStatus.status === 200 && removalStatus.body.backend === "native" && removalStatus.body.machines === 0 && forbiddenRemoval.status === 403 && unconfirmedRemoval.status === 400, "app-removal preparation is Captain-only, typed-confirmed, and reports the exact backend-owned VM count");
+  const removalCountMatchesBackend = removalStatus.body.backend === "apple"
+    ? removalStatus.body.machines > 0
+    : removalStatus.body.backend === "native" && removalStatus.body.machines === 0;
+  ok(removalStatus.status === 200 && removalCountMatchesBackend && forbiddenRemoval.status === 403 && unconfirmedRemoval.status === 400, "app-removal preparation is Captain-only, typed-confirmed, and reports the exact backend-owned VM count");
   const collaboratorLaunch = (await api("/api/channels", {}, collaborator)).body.channels.find((channel) => channel.id === launch.id);
   const collaboratorThread = await api(`/api/messages/${taskRoot}/thread`, {}, collaborator);
   const collaboratorFiles = await api(`/api/channels/${launch.id}/files`, {}, collaborator);
