@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.6] - 2026-07-22
+
+### Changed
+
+- The native macOS app now uses the new 1Helm sailboat artwork as its Finder, Dock, and Login Items icon. The web icon remains unchanged.
+
 ## [1.1.5] - 2026-07-22
 
 ### Fixed
@@ -130,7 +136,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Native **1Herd** channel-agent workspace (SPEC.md slice) is developed on branch `worktree-1herd-native-spec` (draft PR #7) and is **not** fully merged to `main` as of this changelog baseline. Track progress there and in `docs/VISION.md` on that branch.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.5...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.6...HEAD
+[1.1.6]: https://github.com/gitcommit90/1Helm/compare/v1.1.5...v1.1.6
 [1.1.5]: https://github.com/gitcommit90/1Helm/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/gitcommit90/1Helm/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/gitcommit90/1Helm/compare/v1.1.2...v1.1.3
