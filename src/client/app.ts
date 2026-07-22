@@ -386,8 +386,10 @@ function onEvent(e: any): void {
         unreadBadgeCounted.add(msg.id);
       }
       if (e.type === "message" && !mine) beep(mentionsMe ? "mention" : "msg");
-      renderMessages(); if (S.threadRoot) renderThread();
-      renderSidebar();
+      // Stream ticks mutate one or two message rows. Rebuilding the whole thread
+      // panel here used to destroy the focused composer every 75 ms while an
+      // agent was working, which also reset selection and made scrolling jump.
+      paintLiveMessage(msg);
     } else if (!mine && messageIsSettled(msg)) {
       // Finished agent reply (or human message) while you're elsewhere → white name badge.
       // Count each message id once — stream ticks reuse the same Working… row.
@@ -553,6 +555,7 @@ function applyMessage(msg: Message, isUpdate: boolean, authoritativeParent?: Mes
     return;
   }
   if (i >= 0) list[i] = msg; else list.push(msg);
+  if (msg.parent_id == null && S.threadRoot?.id === msg.id) S.threadRoot = msg;
 }
 
 function applyMessageDeleted(e: {
@@ -1241,7 +1244,7 @@ function renderMessages(): void {
   let daySection: HTMLElement | null = null;
   for (const m of S.messages) {
     if (!prev || !sameDay(prev.created, m.created)) {
-      daySection = h("div", { class: "msg-day-section" });
+      daySection = h("div", { class: "msg-day-section", dataset: { messageDay: new Date(m.created).toDateString() } });
       daySection.append(dateDivider(m.created));
       box.append(daySection);
     }
@@ -1254,6 +1257,111 @@ function renderMessages(): void {
   // Re-pin after flex layout settles. Channel hop needs an extra frame; live stick is 1.
   if (useForce) pinScrollBottom("msgs", 2);
   else if (stick) pinScrollBottom("msgs", 1);
+}
+
+function messageGroupedAt(messages: Message[], index: number): boolean {
+  const current = messages[index];
+  const previous = index > 0 ? messages[index - 1] : null;
+  return !!previous && sameDay(previous.created, current.created)
+    && previous.author.kind === current.author.kind
+    && previous.author.id === current.author.id
+    && current.created - previous.created < 5 * 60 * 1000
+    && !current.attachments?.length;
+}
+
+function messageRowSelector(surface: "channel" | "thread", id: number): string {
+  return `[data-message-surface="${surface}"][data-message-id="${id}"]`;
+}
+
+/** Refresh the active channel and thread message rows without touching either composer. */
+function paintLiveMessage(message: Message): void {
+  const channelMessageId = Number(message.parent_id ?? message.id);
+  paintLiveChannelMessage(channelMessageId);
+  if (S.threadRoot && (Number(message.id) === Number(S.threadRoot.id) || Number(message.parent_id) === Number(S.threadRoot.id))) {
+    paintLiveThreadMessage(message);
+  }
+}
+
+function paintLiveChannelMessage(messageId: number): void {
+  const box = document.getElementById("msgs");
+  const index = S.messages.findIndex((message) => Number(message.id) === Number(messageId));
+  if (!box || index < 0) return;
+  const priorTop = box.scrollTop;
+  const stick = shouldStickScroll(box);
+  const replaceAt = (at: number): boolean => {
+    const message = S.messages[at];
+    if (!message) return false;
+    const prior = box.querySelector<HTMLElement>(messageRowSelector("channel", message.id));
+    if (!prior) return false;
+    snapshotProgressOpenState(prior);
+    prior.replaceWith(messageRow(message, { grouped: messageGroupedAt(S.messages, at), inThread: false }));
+    return true;
+  };
+
+  if (!replaceAt(index)) {
+    // Live messages normally arrive in chronological order. If a reconnect
+    // supplies an older insertion, use the scroll-preserving list renderer.
+    if (index !== S.messages.length - 1) {
+      renderMessages();
+      return;
+    }
+    if (box.querySelector(":scope > :not(.msg-day-section)")) clear(box);
+    const message = S.messages[index];
+    const previous = index > 0 ? S.messages[index - 1] : null;
+    let section = previous && sameDay(previous.created, message.created)
+      ? box.querySelector<HTMLElement>(`:scope > .msg-day-section:last-of-type`)
+      : null;
+    if (!section) {
+      section = h("div", { class: "msg-day-section", dataset: { messageDay: new Date(message.created).toDateString() } });
+      section.append(dateDivider(message.created));
+      box.append(section);
+    }
+    section.append(messageRow(message, { grouped: messageGroupedAt(S.messages, index), inThread: false }));
+  }
+  // Grouping of the immediately following row depends on the updated row.
+  replaceAt(index + 1);
+  restoreScroll(box, priorTop, stick);
+  lastMsgsStick = stick;
+  if (stick) pinScrollBottom("msgs", 1);
+}
+
+function fillThreadMessages(box: HTMLElement): void {
+  if (!S.threadRoot) return;
+  clear(box);
+  box.append(
+    messageRow(S.threadRoot, { grouped: false, inThread: true }),
+    h("div", { class: "eyebrow mx-4 my-2 flex items-center gap-3 text-faint", dataset: { threadReplyCount: "1" } },
+      h("span", {}, `${S.threadReplies.length} ${S.threadReplies.length === 1 ? "reply" : "replies"}`),
+      h("div", { class: "h-px flex-1 bg-line" })),
+    ...S.threadReplies.map((reply) => messageRow(reply, { grouped: false, inThread: true })),
+  );
+}
+
+function paintLiveThreadMessage(message: Message): void {
+  const box = document.getElementById("threadmsgs");
+  if (!box || !S.threadRoot) return;
+  const priorTop = box.scrollTop;
+  const stick = shouldStickScroll(box);
+  const target = Number(message.id) === Number(S.threadRoot.id)
+    ? S.threadRoot
+    : S.threadReplies.find((reply) => Number(reply.id) === Number(message.id));
+  if (target) {
+    const prior = box.querySelector<HTMLElement>(messageRowSelector("thread", target.id));
+    if (prior) {
+      snapshotProgressOpenState(prior);
+      prior.replaceWith(messageRow(target, { grouped: false, inThread: true }));
+    } else if (Number(target.parent_id) === Number(S.threadRoot.id)
+      && S.threadReplies.at(-1)?.id === target.id) {
+      box.append(messageRow(target, { grouped: false, inThread: true }));
+    } else {
+      snapshotProgressOpenState(box);
+      fillThreadMessages(box);
+    }
+  }
+  const count = box.querySelector<HTMLElement>("[data-thread-reply-count] span");
+  if (count) count.textContent = `${S.threadReplies.length} ${S.threadReplies.length === 1 ? "reply" : "replies"}`;
+  restoreScroll(box, priorTop, stick);
+  if (stick) pinScrollBottom("threadmsgs", 1);
 }
 
 function emptyState(c: Channel | undefined): HTMLElement {
@@ -1420,6 +1528,9 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
     : h("div", { class: "group relative flex min-w-0 max-w-full items-start gap-2.5 px-3 py-0.5 hover:bg-hover sm:px-4" },
       avatar(m.author.name, m.author.kind, 9, isBot ? botAvatar(S.channelBots.find((b) => b.name === m.author.name)) : undefined),
       content, actions);
+
+  row.dataset.messageId = String(m.id);
+  row.dataset.messageSurface = opts.inThread ? "thread" : "channel";
 
   if (!opts.inThread) {
     row.classList.add("cursor-pointer");
@@ -1894,12 +2005,10 @@ function paintThreadPanel(box: HTMLElement, priorTop = 0, stickThread = true, fo
           "aria-label": "Close thread",
           onclick: closeThread,
         }, icon("x", 18)))),
-    h("div", { id: "threadmsgs", class: "thread-messages min-w-0 flex-1 overflow-y-auto overflow-x-hidden py-2" },
-      messageRow(S.threadRoot, { grouped: false, inThread: true }),
-      h("div", { class: "eyebrow mx-4 my-2 flex items-center gap-3 text-faint" }, h("span", {}, `${S.threadReplies.length} ${S.threadReplies.length === 1 ? "reply" : "replies"}`), h("div", { class: "h-px flex-1 bg-line" })),
-      ...S.threadReplies.map((r) => messageRow(r, { grouped: false, inThread: true }))),
+    h("div", { id: "threadmsgs", class: "thread-messages min-w-0 flex-1 overflow-y-auto overflow-x-hidden py-2" }),
     composer(S.threadRoot.id));
   const tm = document.getElementById("threadmsgs");
+  if (tm) fillThreadMessages(tm);
   restoreScroll(tm, priorTop, stickThread);
   if (forceBottom) pinScrollBottom("threadmsgs");
 }

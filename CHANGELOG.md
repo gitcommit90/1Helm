@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.14] - 2026-07-22
+
+### Fixed
+
+- Live agent progress now replaces only the affected message rows. Streaming no longer rebuilds the thread panel or active composer, so typed drafts, focus, selection, open work logs, and user-controlled scroll positions stay stable while an agent works.
+- Skipper host commands and newly opened native terminals restore the full Homebrew path after shell startup files run, so installed Apple Silicon CLI tools remain directly callable without profile edits.
+
+### Tests
+
+- Added browser regressions for immediate composer clearing, stable focused thread input during streamed updates, direct Files upload, and Board viewport containment, plus native integration checks for Homebrew paths, flat-color agent avatars, and custom-domain-primary fallback behavior.
+
 ## [1.1.13] - 2026-07-22
 
 ### Added
@@ -183,7 +194,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Native **1Herd** channel-agent workspace (SPEC.md slice) is developed on branch `worktree-1herd-native-spec` (draft PR #7) and is **not** fully merged to `main` as of this changelog baseline. Track progress there and in `docs/VISION.md` on that branch.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.13...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.14...HEAD
+[1.1.14]: https://github.com/gitcommit90/1Helm/compare/v1.1.13...v1.1.14
 [1.1.13]: https://github.com/gitcommit90/1Helm/compare/v1.1.12...v1.1.13
 [1.1.12]: https://github.com/gitcommit90/1Helm/compare/v1.1.11...v1.1.12
 [1.1.11]: https://github.com/gitcommit90/1Helm/compare/v1.1.10...v1.1.11

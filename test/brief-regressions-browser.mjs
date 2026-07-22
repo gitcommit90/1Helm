@@ -50,6 +50,9 @@ try {
     const thread = await api(`/api/messages/${rootMessage.id}/thread`, {}, token);
     return thread.replies?.find((reply) => reply.author.name === channel.agent.name && /Answer complete/.test(reply.body || ""));
   }, "agent reply");
+  for (let index = 0; index < 10; index++) {
+    await api(`/api/channels/${channel.id}/messages`, { body: { body: `Scroll fixture ${index + 1}: ${"stable viewport words ".repeat(32)}`, parentId: rootMessage.id } }, token);
+  }
 
   browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
   const page = await browser.newPage();
@@ -61,8 +64,15 @@ try {
   await page.evaluate((value) => localStorage.setItem("ctrl.token", value), token);
   await page.goto(`${base}/c/${channel.slug}/thread/${rootMessage.id}`, { waitUntil: "networkidle0" });
   await page.waitForSelector("#thread:not(.hidden)");
-  const brand = await page.evaluate(() => ({ title: document.title, body: document.body.innerText, appName: document.querySelector('meta[name="application-name"]')?.getAttribute("content") }));
+  const brand = await page.evaluate(() => ({
+    title: document.title,
+    body: document.body.innerText,
+    appName: document.querySelector('meta[name="application-name"]')?.getAttribute("content"),
+    favicon: document.querySelector('link[rel="icon"]')?.getAttribute("href"),
+    workspaceLogo: document.querySelector(".logo-asset")?.getAttribute("src"),
+  }));
   ok(brand.title.includes("1Helm") && brand.appName === "1Helm" && !brand.body.includes("1Herd"), "the browser presents the product as 1Helm throughout");
+  ok(brand.favicon === "/brand/1helm.png" && brand.workspaceLogo === "/brand/1helm.png", "the app logo is the web favicon and default customizable workspace image");
   const initialWidth = await page.$eval("#thread", (element) => element.getBoundingClientRect().width);
   ok(initialWidth >= 500, "thread panel opens at the wider default size");
   const handle = await page.$(".thread-resizer");
@@ -76,14 +86,87 @@ try {
   ok(modelPickers.length === 2, "both the channel and thread input boxes expose a model picker beside Send");
   ok(Boolean(await page.$("details.agent-progress")), "agent progress is available from a collapsible disclosure");
 
+  const streamState = await page.evaluate((parentId) => {
+    const input = document.querySelector(`textarea[data-composer-parent="${parentId}"]`);
+    const scroller = document.getElementById("threadmsgs");
+    if (!input || !scroller) return null;
+    scroller.scrollTop = Math.max(1, Math.floor((scroller.scrollHeight - scroller.clientHeight) / 2));
+    window.__briefThreadComposer = input;
+    return { scrollTop: scroller.scrollTop, maxScroll: scroller.scrollHeight - scroller.clientHeight };
+  }, rootMessage.id);
+  ok(streamState?.maxScroll > 100 && streamState.scrollTop > 0, "thread fixture provides a real mid-history scroll position");
+  const threadComposer = await page.$(`textarea[data-composer-parent="${rootMessage.id}"]`);
+  await threadComposer.type(`@${channel.agent.name} live-ui-stream`);
+  await threadComposer.press("Enter");
+  await sleep(25);
+  const clearedImmediately = await page.evaluate((parentId) => {
+    const input = document.querySelector(`textarea[data-composer-parent="${parentId}"]`);
+    return input === window.__briefThreadComposer && input?.value === "";
+  }, rootMessage.id);
+  ok(clearedImmediately, "thread composer clears synchronously when Send is pressed");
+  await threadComposer.type("draft remains focused during stream");
+  await page.evaluate((parentId) => {
+    const input = document.querySelector(`textarea[data-composer-parent="${parentId}"]`);
+    input.focus(); input.setSelectionRange(6, 13);
+  }, rootMessage.id);
+  await page.waitForFunction(() => document.getElementById("threadmsgs")?.innerText.includes("Live stream update"), { timeout: 5000 });
+  await sleep(450);
+  const stableStream = await page.evaluate(({ parentId, priorTop }) => {
+    const input = document.querySelector(`textarea[data-composer-parent="${parentId}"]`);
+    const scroller = document.getElementById("threadmsgs");
+    return {
+      sameNode: input === window.__briefThreadComposer,
+      connected: input?.isConnected,
+      focused: document.activeElement === input,
+      value: input?.value,
+      selectionStart: input?.selectionStart,
+      selectionEnd: input?.selectionEnd,
+      scrollTop: scroller?.scrollTop,
+      priorTop,
+      visible: scroller?.innerText.includes("Live stream update"),
+    };
+  }, { parentId: rootMessage.id, priorTop: streamState.scrollTop });
+  ok(stableStream.sameNode && stableStream.connected && stableStream.focused
+    && stableStream.value === "draft remains focused during stream"
+    && stableStream.selectionStart === 6 && stableStream.selectionEnd === 13
+    && Math.abs(stableStream.scrollTop - stableStream.priorTop) <= 1 && stableStream.visible,
+  "streaming agent updates preserve the exact focused composer, selection, draft, and scroll position");
+  await waitFor(async () => {
+    const thread = await api(`/api/messages/${rootMessage.id}/thread`, {}, token);
+    return thread.replies?.find((reply) => /Live stream update[\s\S]*Answer complete/.test(reply.body || ""));
+  }, "live UI stream completion");
+
   const rootComposer = await page.$('textarea[data-composer-parent="root"]');
   await rootComposer.type("draft survives navigation");
   await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Files"))?.click());
   await page.waitForSelector("#channelview");
+  const fileInput = await page.waitForSelector('#channelview input[type="file"]');
+  await fileInput.uploadFile(join(root, "README.md"));
+  await page.waitForFunction(() => document.getElementById("channelview")?.innerText.includes("/files/README.md"), { timeout: 5000 });
+  ok(true, "Files upload imports a selected file directly into the channel workspace");
   await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Chat"))?.click());
   await page.waitForSelector('textarea[data-composer-parent="root"]');
   const restoredDraft = await page.$eval('textarea[data-composer-parent="root"]', (element) => element.value);
   ok(restoredDraft === "draft survives navigation", "user/channel/thread-scoped drafts survive navigation");
+
+  await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Board"))?.click());
+  await page.waitForSelector(".board-lanes");
+  const boardGeometry = await page.evaluate(() => {
+    const viewport = document.documentElement;
+    const channelView = document.getElementById("channelview");
+    const scroller = document.querySelector(".board-scroll");
+    const lanes = document.querySelector(".board-lanes");
+    const laneRects = [...document.querySelectorAll(".board-lane")].map((lane) => lane.getBoundingClientRect());
+    const scrollRect = scroller.getBoundingClientRect();
+    return {
+      pageFits: viewport.scrollWidth <= viewport.clientWidth,
+      viewFits: channelView.scrollWidth <= channelView.clientWidth,
+      lanesFit: lanes.getBoundingClientRect().right <= scrollRect.right + 1,
+      everyLaneFits: laneRects.every((rect) => rect.left >= scrollRect.left - 1 && rect.right <= scrollRect.right + 1),
+    };
+  });
+  ok(boardGeometry.pageFits && boardGeometry.viewFits && boardGeometry.lanesFit && boardGeometry.everyLaneFits,
+    "Board lanes wrap within the viewport without horizontal spill");
 
   await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Terminal"))?.click());
   await page.waitForSelector(".xterm");
@@ -93,7 +176,7 @@ try {
   ok(browserErrors.length === 0, "the regression browser flow has no console or page errors");
 } catch (error) {
   fail++;
-  console.error("  FAIL-", error.message);
+  console.error("  FAIL-", error.stack || error.message);
 } finally {
   await browser?.close().catch(() => undefined);
   for (const child of [app, mock]) if (child && child.exitCode == null) child.kill("SIGTERM");
