@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { Spectrum, text as spectrumText } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
+import { createPhotonInboundQueue } from "./photon-queue.mjs";
 
 const projectId = String(process.env.PHOTON_PROJECT_ID || "");
 const projectSecret = String(process.env.PHOTON_PROJECT_SECRET || "");
@@ -13,8 +14,7 @@ if (!projectId || !projectSecret || !sharedToken || !port) throw new Error("Phot
 const app = await Spectrum({ projectId, projectSecret, providers: [imessage.config()], options: { flattenGroups: true }, telemetry: false });
 const provider = imessage(app);
 const spaces = new Map();
-const inbound = [];
-const waiters = [];
+const inbound = createPhotonInboundQueue(maxInbound);
 
 function rememberSpace(space) {
   if (space?.id) spaces.set(String(space.id), space);
@@ -42,9 +42,7 @@ function pushInbound(space, message) {
     timestamp: message?.timestamp instanceof Date ? message.timestamp.toISOString() : String(message?.timestamp || ""),
   };
   if (!entry.id || !entry.space_id) return;
-  const waiter = waiters.shift();
-  if (waiter) waiter(entry);
-  else { inbound.push(entry); while (inbound.length > maxInbound) inbound.shift(); }
+  inbound.push(entry);
 }
 
 void (async () => {
@@ -87,13 +85,12 @@ async function resolveSpace(id) {
 const server = createServer(async (req, res) => {
   if (!tokenOk(req.headers["x-1helm-photon-token"])) return respond(res, 401, { ok: false, error: "unauthorized" });
   try {
-    if (req.method === "POST" && req.url === "/health") return respond(res, 200, { ok: true, queued: inbound.length });
+    if (req.method === "POST" && req.url === "/health") return respond(res, 200, { ok: true, queued: inbound.size });
     if (req.method === "GET" && req.url?.startsWith("/next")) {
-      if (inbound.length) return respond(res, 200, { ok: true, event: inbound.shift() });
-      const event = await Promise.race([
-        new Promise((resolve) => waiters.push(resolve)),
-        new Promise((resolve) => setTimeout(() => resolve(null), 25_000)),
-      ]);
+      const controller = new AbortController();
+      res.once("close", () => controller.abort());
+      const event = await inbound.next(25_000, controller.signal);
+      if (res.destroyed) return;
       return respond(res, 200, { ok: true, event });
     }
     if (req.method === "POST" && req.url === "/send") {

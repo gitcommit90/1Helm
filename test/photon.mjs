@@ -38,6 +38,7 @@ process.stdin.resume(); process.stdin.on("end",()=>process.exit(0));
 const { db, now, q, q1, run, seed } = await import("../src/server/db.ts");
 const photon = await import("../src/server/photon.ts");
 const photonAuth = await import("../src/server/photon-auth.ts");
+const { createPhotonInboundQueue } = await import("../src/server/photon-queue.mjs");
 
 function residentFixture() {
   seed();
@@ -96,6 +97,21 @@ test("packaged Electron starts the Photon sidecar as Node and backs off transien
   const source = await import("node:fs/promises").then(({ readFile }) => readFile(new URL("../src/server/photon.ts", import.meta.url), "utf8"));
   assert.match(source, /ELECTRON_RUN_AS_NODE:\s*"1"/);
   assert.match(source, /retryDelay = Math\.min\(5000, retryDelay \* 2\)/);
+});
+
+test("Photon long-poll timeouts remove stale waiters instead of swallowing the next message", async () => {
+  const queue = createPhotonInboundQueue(10);
+  assert.equal(await queue.next(5), null);
+  assert.equal(queue.waiting, 0);
+  const event = { id: "after-idle" };
+  queue.push(event);
+  assert.deepEqual(await queue.next(5), event);
+  assert.equal(queue.size, 0);
+  const controller = new AbortController();
+  const cancelled = queue.next(1000, controller.signal);
+  controller.abort();
+  assert.equal(await cancelled, null);
+  assert.equal(queue.waiting, 0);
 });
 
 test.after(async () => {

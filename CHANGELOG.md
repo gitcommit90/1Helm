@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
-- Expanded native autonomy/Skipper-return coverage; catalog quarantine and procedure-quality tests; Photon configuration, authorization, allowlist, deduplication, redaction, packaging, and backoff tests; workflow wake/archive tests; standalone-site and installer tests; connector race stress coverage; real configured-provider/Gmail browser acceptance; and a public 5/5 autonomy invariant report.
+- Expanded native autonomy/Skipper-return coverage; catalog quarantine and procedure-quality tests; Photon configuration, authorization, allowlist, deduplication, stale-waiter recovery, redaction, packaging, and backoff tests; workflow wake/archive tests; standalone-site and installer tests; connector fast-restart stress coverage; real configured-provider/Gmail browser acceptance; and a public 5/5 autonomy invariant report with an explicit machine-readable scope and limitations.
 
 ## [1.1.15] - 2026-07-23
 

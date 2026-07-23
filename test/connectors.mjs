@@ -8,7 +8,16 @@ test("stopping a connector cancels automatic relaunch while preserving its crede
   const root = await mkdtemp(join(tmpdir(), "1helm-connector-test-"));
   const binary = join(root, "cloudflared");
   const log = join(root, "launches.log");
-  await writeFile(binary, "#!/bin/sh\nprintf 'launch\\n' >> \"$HELM_CONNECTOR_TEST_LOG\"\nexit 1\n");
+  await writeFile(binary, [
+    "#!/bin/sh",
+    "printf 'launch\\n' >> \"$HELM_CONNECTOR_TEST_LOG\"",
+    "if [ \"${HELM_CONNECTOR_TEST_HOLD:-0}\" = 1 ]; then",
+    "  trap 'sleep 0.15; exit 0' TERM",
+    "  while :; do sleep 0.05; done",
+    "fi",
+    "exit 1",
+    "",
+  ].join("\n"));
   await chmod(binary, 0o755);
   Object.assign(process.env, {
     CTRL_DATA_DIR: join(root, "data"),
@@ -30,4 +39,26 @@ test("stopping a connector cancels automatic relaunch while preserving its crede
   const afterStop = (await readFile(log, "utf8")).trim().split("\n").length;
   assert.equal(afterStop, beforeStop, "disabled connector does not relaunch");
   assert.ok(connectors.connectorCredential("workspace"), "disabling leaves the reserved connector credential available for re-enable");
+
+  process.env.HELM_CONNECTOR_TEST_HOLD = "1";
+  connectors.startTunnelConnector("workspace");
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const beforeDuplicateStart = (await readFile(log, "utf8")).trim().split("\n").length;
+  connectors.startTunnelConnector("workspace");
+  connectors.startTunnelConnector("workspace");
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const afterDuplicateStart = (await readFile(log, "utf8")).trim().split("\n").length;
+  assert.equal(afterDuplicateStart, beforeDuplicateStart, "starting a healthy desired connector is idempotent");
+
+  const beforeRestart = (await readFile(log, "utf8")).trim().split("\n").length;
+  connectors.restartTunnelConnector("workspace");
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  const afterRestart = (await readFile(log, "utf8")).trim().split("\n").length;
+  assert.equal(afterRestart, beforeRestart + 1, "a fast stop/start creates exactly one replacement after the shutting-down connector exits");
+
+  connectors.restartTunnelConnector("workspace");
+  connectors.stopTunnelConnector("workspace");
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  const afterCancelledRestart = (await readFile(log, "utf8")).trim().split("\n").length;
+  assert.equal(afterCancelledRestart, afterRestart, "stopping during a restart cancels the pending replacement");
 });

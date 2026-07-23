@@ -73,9 +73,25 @@ const passed = checks.filter((check) => check.passed).length;
 const report = {
   schema: "https://1helm.com/schemas/autonomy-benchmark-v1.json",
   product: "1Helm",
+  kind: "deterministic_runtime_contract",
   started_at: startedAt,
   finished_at: new Date().toISOString(),
   deterministic: true,
+  scope: {
+    validates: [
+      "shipped built-in playbook completeness",
+      "structured human-blocker validation",
+      "resident autonomy tool availability",
+      "wakeable recurring-work persistence",
+      "audit-chain integrity for the executed fixture",
+    ],
+    does_not_validate: [
+      "task success rates for a live model or provider",
+      "behavior on code paths this benchmark did not execute",
+      "external connector availability or end-to-end service reliability",
+      "security beyond the named runtime invariants",
+    ],
+  },
   summary: { passed, failed: checks.length - passed, total: checks.length },
   checks,
 };

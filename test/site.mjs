@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { accessSync, constants, readFileSync } from "node:fs";
 import test from "node:test";
@@ -19,11 +19,14 @@ test("standalone 1helm.com website serves independent product and documentation 
     assert.match(home, /Your AI should finish the work/);
     assert.match(home, /demo\.1helm\.com.*separate public sandbox/is);
     assert.doesNotMatch(home, /signed-source metadata/);
-    for (const path of ["/product", "/manifesto", "/security", "/faq", "/docs", "/docs/install/macos", "/docs/install/linux", "/docs/install/windows-wsl", "/docs/skills", "/docs/connections"]) {
+    for (const path of ["/product", "/manifesto", "/security", "/faq", "/docs", "/docs/install/macos", "/docs/install/linux", "/docs/install/windows-wsl", "/docs/skills", "/docs/verification", "/docs/connections"]) {
       const response = await fetch(base + path); assert.equal(response.status, 200, path);
       assert.match(response.headers.get("content-security-policy") || "", /default-src 'self'/);
     }
     assert.equal((await fetch(`${base}/assets/site.css`)).status, 200);
+    const benchmarkSchema = await (await fetch(`${base}/schemas/autonomy-benchmark-v1.json`)).json();
+    assert.equal(benchmarkSchema.$id, "https://1helm.com/schemas/autonomy-benchmark-v1.json");
+    assert.deepEqual(benchmarkSchema.required, ["schema", "product", "kind", "started_at", "finished_at", "deterministic", "scope", "summary", "checks"]);
     assert.equal((await fetch(`${base}/install.sh`)).status, 200);
     assert.equal((await fetch(`${base}/../../package.json`)).status, 404);
     const sitemap = await (await fetch(`${base}/sitemap.xml`)).text();
@@ -43,4 +46,14 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(installer, /mv -Tf .*current/);
   assert.match(installer, /previous release was restored/i);
   assert.match(readFileSync(`${root}/site/public/install-wsl.ps1`, "utf8"), /systemd=true/);
+});
+
+test("autonomy report names its deterministic scope and live-system limits", () => {
+  const report = JSON.parse(execFileSync(process.execPath, ["scripts/autonomy-benchmark.mjs"], { cwd: root, encoding: "utf8" }));
+  assert.equal(report.schema, "https://1helm.com/schemas/autonomy-benchmark-v1.json");
+  assert.equal(report.kind, "deterministic_runtime_contract");
+  assert.equal(report.deterministic, true);
+  assert.equal(report.summary.failed, 0);
+  assert.match(report.scope.validates.join(" "), /wakeable recurring-work persistence/);
+  assert.match(report.scope.does_not_validate.join(" "), /live model or provider/);
 });
