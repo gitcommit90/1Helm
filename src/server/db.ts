@@ -101,6 +101,7 @@ export function migrate(): void {
   addColumn("channels", "purpose", "purpose TEXT NOT NULL DEFAULT ''");
   addColumn("channels", "status", "status TEXT NOT NULL DEFAULT 'active'");
   addColumn("channels", "slug", "slug TEXT NOT NULL DEFAULT ''");
+  addColumn("channels", "personal_main_owner_id", "personal_main_owner_id INTEGER");
   addColumn("workspace", "default_provider_id", "default_provider_id INTEGER");
   addColumn("workspace", "default_model", "default_model TEXT NOT NULL DEFAULT ''");
   addColumn("workspace", "photo_mime", "photo_mime TEXT NOT NULL DEFAULT ''");
@@ -486,6 +487,31 @@ export function migrate(): void {
         VALUES (?,?,?,?,?,?,?,'active',?,?)`, skill.id, skill.slug, skill.name, skill.description, skill.category || "general", skill.instructions, skill.source || "migrated", skill.created, skill.updated);
     }
     run("UPDATE channels SET purpose=topic WHERE purpose='' AND topic<>''");
+    const captain = q1("SELECT id FROM users WHERE is_admin=1 ORDER BY id LIMIT 1");
+    const legacyMain = captain?.id
+      ? q1(`SELECT id FROM channels WHERE kind='channel' AND name='main'
+        AND (personal_main_owner_id=? OR personal_main_owner_id IS NULL)
+        ORDER BY personal_main_owner_id IS NULL,id LIMIT 1`, captain.id)
+      : q1("SELECT id FROM channels WHERE kind='channel' AND name='main' ORDER BY id LIMIT 1");
+    if (captain?.id && legacyMain?.id) {
+      run("UPDATE channels SET personal_main_owner_id=?,created_by=COALESCE(created_by,?) WHERE id=?", captain.id, captain.id, legacyMain.id);
+      run("DELETE FROM members WHERE channel_id=? AND user_id<>?", legacyMain.id, captain.id);
+      run("INSERT OR IGNORE INTO members (channel_id,user_id) VALUES (?,?)", legacyMain.id, captain.id);
+    }
+    for (const user of q(`SELECT id,username FROM users u WHERE NOT EXISTS (
+      SELECT 1 FROM channels c WHERE c.personal_main_owner_id=u.id AND c.status<>'deleted') ORDER BY id`)) {
+      const stem = String(user.username || `member-${user.id}`).toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `member-${user.id}`;
+      let slug = Number(user.id) === Number(captain?.id) && !q1("SELECT 1 FROM channels WHERE slug='main' AND status<>'deleted'")
+        ? "main"
+        : `main-${stem}`.slice(0, 64);
+      for (let suffix = 2; q1("SELECT 1 FROM channels WHERE slug=? AND status<>'deleted'", slug); suffix++) {
+        slug = `main-${stem}`.slice(0, Math.max(1, 63 - String(suffix).length)) + `-${suffix}`;
+      }
+      const id = run(`INSERT INTO channels (name,slug,kind,topic,purpose,status,created_by,personal_main_owner_id,created)
+        VALUES ('main',?,'channel','Your private home base with @skipper','Private coordination with Skipper','active',?,?,?)`, slug, user.id, user.id, now()).lastInsertRowid;
+      run("INSERT OR IGNORE INTO members (channel_id,user_id) VALUES (?,?)", id, user.id);
+    }
     const usedSlugs = new Set<string>();
     for (const channel of q("SELECT id, name, slug FROM channels ORDER BY id")) {
       let base = String(channel.slug || channel.name || `channel-${channel.id}`).trim().toLowerCase()
@@ -503,7 +529,8 @@ export function migrate(): void {
       run("UPDATE bots SET provider_id=? WHERE id=?", providerId, bot.id);
     }
 
-    const main = q1("SELECT id FROM channels WHERE kind='channel' AND name='main' ORDER BY id LIMIT 1");
+    const main = q1(`SELECT c.id FROM channels c LEFT JOIN users u ON u.id=c.personal_main_owner_id
+      WHERE c.kind='channel' AND c.name='main' ORDER BY u.is_admin DESC,c.id LIMIT 1`);
     run(`UPDATE bots SET avatar='color:#4F6D7A' WHERE avatar='' AND id IN (
       SELECT bot_id FROM agents WHERE kind='skipper' AND status<>'deleted')`);
     const migrationColors = ["#C8552F", "#2166B8", "#2E7D4F", "#8A6B7C", "#A67C52", "#4F6D7A", "#7A6A4F", "#64748B"];
@@ -524,8 +551,8 @@ export function migrate(): void {
       run("INSERT INTO agents (bot_id, kind, name, display_name, status, created) VALUES (?,'skipper','skipper','Skipper','ready',?)", skipperBot.id, skipperBot.created || now());
     }
 
-    for (const channel of q(`SELECT * FROM channels c WHERE c.kind='channel' AND c.id<>COALESCE(?, -1)
-      AND NOT EXISTS (SELECT 1 FROM agent_channels ac WHERE ac.channel_id=c.id) ORDER BY c.id`, main?.id ?? null)) {
+    for (const channel of q(`SELECT * FROM channels c WHERE c.kind='channel' AND c.name<>'main' AND c.personal_main_owner_id IS NULL
+      AND NOT EXISTS (SELECT 1 FROM agent_channels ac WHERE ac.channel_id=c.id) ORDER BY c.id`)) {
       let runtime = q1(`SELECT b.* FROM bots b JOIN bot_channels bc ON bc.bot_id=b.id
         WHERE bc.channel_id=? AND lower(b.name)<>'skipper' ORDER BY b.id LIMIT 1`, channel.id);
       let agent = runtime ? q1("SELECT * FROM agents WHERE bot_id=? AND kind='channel' AND status<>'deleted'", runtime.id) : undefined;
@@ -558,7 +585,7 @@ export function migrate(): void {
     // developer deliberately opts into the native compatibility backend.
     const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || (process.platform === "darwin" ? "apple" : "native"));
     const backend = ["apple", "native", "mock"].includes(configuredBackend) ? configuredBackend : "native";
-    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.14");
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.15");
     for (const channel of q(`SELECT c.id FROM channels c JOIN agent_channels ac ON ac.channel_id=c.id
       WHERE c.kind='channel' AND c.status<>'deleted'`)) {
       const channelId = Number(channel.id);
@@ -615,7 +642,7 @@ export function migrate(): void {
       ["home-ops", "Home operations", "Help run household services, routines, inventories, and self-hosted home tools.", "personal", "Use approachable language for household workflows. Suggest automation or self-hosted services only when they reduce real friction, and involve Skipper for installation or credentials."],
       ["inbox-triage", "Inbox triage", "Organize inbound work while preserving user control over sending and deletion.", "communication", "Summarize and prioritize inbound items, draft next actions, and preserve explicit human approval for sending, deleting, or other irreversible actions."],
       ["quality-verification", "Quality verification", "Verify requested outcomes before claiming completion.", "quality", "Match verification to the user's actual request. Run relevant checks, inspect resulting state, call out uncertainty, and never claim completion from intent alone."],
-      ["image-generation", "Image Generation", "Create images when ChatGPT OAuth is connected and Image Generation is enabled on that account.", "media", "Use only when Image Generation is active in the workspace arsenal (ChatGPT OAuth connected and the Captain enabled Image Generation on a ChatGPT account). When asked to generate or illustrate: write a precise visual prompt, call the workspace image path via ChatGPT-backed tooling (prefer dedicated image models / generations when the connected ChatGPT session exposes them; otherwise use the best available ChatGPT multimodal path), save the result into the channel workspace, and attach it to the message with attach_file so the Captain sees the image in chat — never only a host path. Do not invent credentials. If the skill is locked or generation fails, say so plainly and ask Skipper only if host/provider setup is broken."],
+      ["image-generation", "Image Generation", "Create images automatically whenever a healthy ChatGPT subscription account is connected.", "media", "Use when Image Generation is active through a connected ChatGPT account. When asked to generate or illustrate: write a precise visual prompt, call the ChatGPT-backed image tool, save the result into the channel workspace, and attach it to the message so the human sees the image in chat — never only a host path. Do not invent credentials. If generation fails, report the concrete provider error and ask Skipper only if host/provider setup is broken."],
     ];
     for (const skill of shippedSkills) run(`INSERT INTO skills (slug,name,description,category,instructions,source,status,created,updated)
       VALUES (?,?,?,?,?,'shipped','active',?,?) ON CONFLICT(slug) DO UPDATE SET name=excluded.name,description=excluded.description,category=excluded.category,instructions=excluded.instructions,updated=excluded.updated`, ...skill, now(), now());
@@ -664,6 +691,7 @@ export function migrate(): void {
     }
   });
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_slug ON channels(slug) WHERE status<>'deleted';");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_personal_main_owner ON channels(personal_main_owner_id) WHERE personal_main_owner_id IS NOT NULL AND status<>'deleted';");
 }
 migrate();
 

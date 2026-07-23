@@ -1,14 +1,13 @@
 /* 1Helm shell service worker — offline shell only; never pin API/WS or stale JS. */
-const CACHE = "1helm-shell-v2";
+const CACHE = "1helm-shell-v3";
 const PRECACHE = [
   "/",
   "/index.html",
   "/manifest.webmanifest",
-  "/icons/icon.svg",
-  "/icons/icon-192.png",
-  "/icons/icon-512.png",
-  "/icons/icon-512-maskable.png",
-  "/brand/1helm.png",
+  "/icons/icon-sailboat-192.png",
+  "/icons/icon-sailboat-512.png",
+  "/icons/icon-sailboat-512-maskable.png",
+  "/brand/1helm-sailboat.png",
 ];
 
 self.addEventListener("install", (event) => {

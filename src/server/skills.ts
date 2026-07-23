@@ -1,55 +1,32 @@
-import { join } from "node:path";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { DATA_DIR, now, q, q1, run, tx, type Row } from "./db.ts";
+import { routingChatGPTImageAvailable } from "./routing.ts";
 
 export const skillSlug = (value: string): string => value.trim().toLowerCase()
   .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
 
-const IMAGE_GEN_META = join(DATA_DIR, "image-generation.json");
+/** A healthy ChatGPT OAuth account is the capability switch. There is no
+ * second workspace toggle that can silently disable a connected account. */
+export function imageGenerationAvailable(): boolean {
+  return routingChatGPTImageAvailable();
+}
 
 export function imageGenerationEnabledIds(): string[] {
-  try {
-    if (!existsSync(IMAGE_GEN_META)) return [];
-    const data = JSON.parse(readFileSync(IMAGE_GEN_META, "utf8")) as { enabled?: boolean; enabledProviderIds?: string[] };
-    // Migrate the former per-account setting into one workspace-wide ChatGPT
-    // family switch without making an existing enabled workspace opt in again.
-    return data.enabled === true || (Array.isArray(data.enabledProviderIds) && data.enabledProviderIds.length) ? ["chatgpt"] : [];
-  } catch { return []; }
+  return imageGenerationAvailable() ? ["chatgpt"] : [];
 }
 
-export function setImageGenerationEnabled(_providerId: string, enabled: boolean): { enabled: boolean; enabledProviderIds: string[] } {
-  const payload = { enabled: Boolean(enabled), enabledProviderIds: enabled ? ["chatgpt"] : [] };
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(IMAGE_GEN_META, JSON.stringify(payload, null, 2), { mode: 0o600 });
-  if (enabled && imageGenerationAvailable()) {
-    const skipper = q1("SELECT id FROM agents WHERE kind='skipper' AND status<>'deleted' LIMIT 1");
-    const skill = q1("SELECT id FROM skills WHERE slug='image-generation' AND status='active'");
-    if (skipper && skill) run("INSERT OR IGNORE INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) VALUES (?,?,?,'Enabled with the workspace ChatGPT image-generation switch.',1,?)", skipper.id, skill.id, skipper.id, now());
-  }
-  return payload;
+/** Compatibility for older clients: image generation follows connectivity,
+ * so a requested toggle value is intentionally not persisted. */
+export function setImageGenerationEnabled(_providerId: string, _enabled: boolean): { enabled: boolean; enabledProviderIds: string[] } {
+  const enabled = imageGenerationAvailable();
+  if (enabled) ensureImageGenerationSkill();
+  return { enabled, enabledProviderIds: enabled ? ["chatgpt"] : [] };
 }
 
-/** ChatGPT OAuth connected + at least one account has Image Generation toggled on. */
-export function imageGenerationAvailable(): boolean {
-  if (!imageGenerationEnabledIds().length) return false;
-  // Prefer routing engine store if present under DATA_DIR/routing
-  try {
-    const cfgPath = join(DATA_DIR, "routing", "config.json");
-    if (existsSync(cfgPath)) {
-      const cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as { providers?: Array<{ id?: string; type?: string; enabled?: boolean }> };
-      for (const p of cfg.providers || []) {
-        if (p.enabled === false) continue;
-        const type = String(p.type || "");
-        if (type === "chatgpt" || type === "codex") return true;
-      }
-    }
-  } catch { /* fall through */ }
-  // Legacy ChatGPT provider row
-  const row = q1("SELECT id FROM providers WHERE kind='chatgpt' LIMIT 1");
-  if (row) return true;
-  // The workspace switch is useful as soon as any ChatGPT session exists.
-  const session = q1("SELECT 1 FROM chatgpt_sessions LIMIT 1");
-  return Boolean(session);
+export function ensureImageGenerationSkill(): void {
+  if (!imageGenerationAvailable()) return;
+  const skipper = q1("SELECT id FROM agents WHERE kind='skipper' AND status<>'deleted' LIMIT 1");
+  const skill = q1("SELECT id FROM skills WHERE slug='image-generation' AND status='active'");
+  if (skipper && skill) run("INSERT OR IGNORE INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) VALUES (?,?,?,'Available through the connected ChatGPT account.',1,?)", skipper.id, skill.id, skipper.id, now());
 }
 
 export function listSkills(opts?: { includeLocked?: boolean }): Row[] {
@@ -62,7 +39,7 @@ export function listSkills(opts?: { includeLocked?: boolean }): Row[] {
     return {
       ...skill,
       arsenal_locked: available ? 0 : 1,
-      arsenal_reason: available ? "" : "Connect ChatGPT OAuth and turn on the workspace-wide Image Generation switch in Providers.",
+      arsenal_reason: available ? "" : "Connect a ChatGPT subscription account in Providers.",
     };
   }).filter((skill) => {
     if (String(skill.slug) !== "image-generation") return true;
@@ -87,7 +64,7 @@ export function skillsForAgent(agentId: number): Row[] {
     return {
       ...skill,
       arsenal_locked: available ? 0 : 1,
-      arsenal_reason: available ? "" : "Image Generation is assigned but inactive until ChatGPT OAuth is connected and the Providers toggle is on.",
+      arsenal_reason: available ? "" : "Image Generation is inactive until a ChatGPT subscription account is connected.",
     };
   });
 }
@@ -97,7 +74,7 @@ export function provisionSkill(agentId: number, slugInput: string, provisionedBy
   const skill = q1("SELECT * FROM skills WHERE slug=? AND status='active'", slug);
   if (!skill) throw new Error(`Skill ${slug || slugInput} is not in the workspace arsenal.`);
   if (slug === "image-generation" && !imageGenerationAvailable()) {
-    throw new Error("Image Generation is not active. Connect ChatGPT OAuth and enable Image Generation on a ChatGPT account in Providers.");
+    throw new Error("Image Generation is not active. Connect a ChatGPT subscription account in Providers.");
   }
   const agent = q1("SELECT id FROM agents WHERE id=? AND status<>'deleted'", agentId);
   if (!agent) throw new Error("Agent not found.");

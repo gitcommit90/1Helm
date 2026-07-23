@@ -314,7 +314,8 @@ function applyDecision(dossier: ThreadDossier, decision: AuditDecision): boolean
  */
 export async function runThreadAuditPass(): Promise<{ examined: number; changed: number; source: string }> {
   const dossiers = collectCandidates(MAX_THREADS_PER_PASS);
-  const main = q1("SELECT id FROM channels WHERE name='main' AND kind='channel' AND status='active' LIMIT 1");
+  const main = q1(`SELECT c.id FROM channels c JOIN users u ON u.id=c.personal_main_owner_id
+    WHERE c.name='main' AND c.kind='channel' AND c.status='active' AND u.is_admin=1 ORDER BY u.id,c.id LIMIT 1`);
   if (!dossiers.length) {
     if (main) {
       run(

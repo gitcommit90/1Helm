@@ -25,7 +25,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
 
   const brand = (): HTMLElement => h("div", { class: "mb-4 flex items-center justify-between" },
     h("div", { class: "flex items-center gap-3" },
-      h("span", { class: "logo-plate h-9 w-9 rounded-md" }, h("img", { class: "logo-asset", src: "/brand/1helm.png", alt: "1Helm" })),
+      h("span", { class: "logo-plate h-9 w-9 rounded-md" }, h("img", { class: "logo-asset", src: "/brand/1helm-sailboat.png", alt: "1Helm" })),
       h("div", {}, h("div", { class: "text-sm font-semibold tracking-[-0.01em] text-fg" }, "1Helm"), h("div", { class: "eyebrow mt-0.5 text-[9px] text-muted" }, "Native agent workspace"))),
     h("div", { class: "chip px-2 py-1" }, `Step ${step + 1} / ${steps.length}`));
 

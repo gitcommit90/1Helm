@@ -611,7 +611,7 @@ function renderAuth(): void {
   root.append(h("div", { class: "auth-stage grid h-full place-items-center overflow-y-auto p-6" },
     h("div", { class: "w-full max-w-[380px]" },
       h("div", { class: "mb-10 flex flex-col items-center text-center" },
-        h("div", { class: "logo-plate h-14 w-14 rounded-lg" }, h("img", { class: "logo-asset", src: "/brand/1helm.png", alt: "1Helm" })),
+        h("div", { class: "logo-plate h-14 w-14 rounded-lg" }, h("img", { class: "logo-asset", src: "/brand/1helm-sailboat.png", alt: "1Helm" })),
         h("h1", { class: "mt-5 text-[2rem] font-bold leading-none tracking-[-0.03em] text-fg" }, "1Helm"),
         h("p", { class: "eyebrow mt-3 text-muted" }, "Native agent workspace")),
       h("div", { class: "card space-y-3 p-7" },
@@ -773,7 +773,7 @@ function sidebar(drawer = false): HTMLElement {
         },
           h("span", { class: "shrink-0 text-sidebar-muted" }, icon("thread", 14)),
           h("span", { class: "flex-1 truncate text-left" }, "Threads"))) : null,
-      channels.length || S.me.is_admin ? h("div", {}, sbSection("Agent channels", S.me.is_admin ? () => newChannel() : undefined), h("div", { class: "space-y-px" }, ...channels.map(chan))) : null,
+      channels.length || S.me.is_admin ? h("div", {}, sbSection("Agent channels", () => newChannel()), h("div", { class: "space-y-px" }, ...channels.map(chan))) : null,
       archived.length ? h("div", {}, h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Archived"), h("div", { class: "space-y-px opacity-65" }, ...archived.map(chan))) : null,
       collab.length ? h("div", {}, h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Human space"), h("div", { class: "space-y-px" }, ...collab.map(chan))) : null,
       h("div", {}, sbSection("Direct messages", () => newDM()), h("div", { class: "space-y-px" }, ...dms.map(chan), dms.length === 0 && h("p", { class: "px-2 py-1 text-[13px] text-sidebar-muted" }, "No conversations yet")))),
@@ -793,26 +793,36 @@ function openProfile(anchor: HTMLElement): void {
   const photo = avatar(S.me.display, "user", 16, S.me.avatar);
   const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", class: "hidden" }) as HTMLInputElement;
   const status = h("p", { class: "min-h-5 text-xs text-muted" });
-  const updateLabel = h("p", { class: "text-right font-mono text-[10px] leading-4 text-faint" }, "1Herd");
-  const updateButton = h("button", { class: "btn-ghost -mr-1 px-1.5 py-1 text-[11px] text-muted hover:text-fg" }, "Check for updates") as HTMLButtonElement;
+  const updateStatus = h("p", { class: "mt-1 min-h-4 text-xs leading-5 text-muted", dataset: { profileUpdateStatus: "" } });
+  const updateLabel = h("p", { class: "font-mono text-[10px] leading-4 text-faint" }, "1Helm");
+  const updateButton = h("button", {
+    class: "btn-subtle min-h-9 shrink-0 px-3 text-xs",
+    dataset: { profileUpdateAction: "" },
+  }, "Check for updates") as HTMLButtonElement;
   const checkForUpdates = async (openAvailableRelease = false): Promise<void> => {
     updateButton.disabled = true;
     updateButton.textContent = "Checking…";
     try {
       const update = await api<{ current_version: string; latest_version: string; status: "latest" | "available"; release_url: string; download_url: string }>("/api/app/update");
       if (update.status === "latest") {
-        updateLabel.textContent = `1Herd v${update.current_version} · latest`;
-        status.textContent = "You're up to date.";
+        updateLabel.textContent = `1Helm v${update.current_version} · latest`;
+        updateStatus.textContent = "You're up to date.";
+        updateButton.className = "btn-subtle min-h-9 shrink-0 px-3 text-xs";
+        updateButton.textContent = "Check again";
+        updateButton.onclick = () => { void checkForUpdates(); };
       } else {
-        updateLabel.textContent = `1Herd v${update.current_version} · v${update.latest_version} available`;
-        status.textContent = `1Helm v${update.latest_version} is ready to download.`;
-        updateButton.textContent = "View update";
-        updateButton.onclick = () => { window.open(update.download_url || update.release_url, "_blank", "noopener,noreferrer"); };
-        if (openAvailableRelease) window.open(update.download_url || update.release_url, "_blank", "noopener,noreferrer");
+        const target = update.download_url || update.release_url;
+        updateLabel.textContent = `1Helm v${update.current_version} · v${update.latest_version} available`;
+        updateStatus.textContent = `1Helm v${update.latest_version} is ready to download.`;
+        updateButton.className = "btn-primary min-h-9 shrink-0 px-3 text-xs";
+        updateButton.textContent = `Download v${update.latest_version}`;
+        updateButton.dataset.updateUrl = target;
+        updateButton.onclick = () => { window.open(target, "_blank", "noopener,noreferrer"); };
+        if (openAvailableRelease) window.open(target, "_blank", "noopener,noreferrer");
       }
     } catch (error) {
-      status.textContent = (error as Error).message;
-      updateLabel.textContent = "1Herd · update check unavailable";
+      updateStatus.textContent = (error as Error).message;
+      updateLabel.textContent = "1Helm · update check unavailable";
     } finally {
       updateButton.disabled = false;
       if (updateButton.textContent === "Checking…") updateButton.textContent = "Check for updates";
@@ -847,10 +857,10 @@ function openProfile(anchor: HTMLElement): void {
     h("label", { class: "block space-y-1 text-xs font-semibold text-fg" }, "Description", description),
     h("div", { class: "flex items-center justify-between gap-3" },
       status,
-      h("div", { class: "flex shrink-0 items-center gap-3" },
-        h("div", { class: "hidden flex-col items-end sm:flex" }, updateLabel, updateButton),
-        h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save profile"))),
-    h("div", { class: "flex items-center justify-between border-t border-line pt-2 sm:hidden" }, h("div", {}, updateLabel, updateButton)));
+      h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save profile")),
+    h("section", { class: "flex items-center justify-between gap-3 border-t border-line pt-3", dataset: { profileUpdate: "" } },
+      h("div", { class: "min-w-0" }, updateLabel, updateStatus),
+      updateButton));
   document.body.append(pop);
   void checkForUpdates();
   setTimeout(() => { document.addEventListener("mousedown", outside); document.addEventListener("keydown", keydown); }, 0);
@@ -1034,13 +1044,15 @@ function renderGlobalThreadsHeader(): void {
 }
 
 function channelTabs(): HTMLElement {
+  const currentChannel = S.channels.find((channel) => channel.id === S.channelId);
   const tabs: [ChannelView, string][] = [
     ["chat", "Chat"], ["board", "Board"], ["threads", "Threads"], ["files", "Files"],
     ["terminal", "Terminal"], ["memory", "Memory"], ["activity", "Activity"], ["settings", "Settings"],
   ];
   return h("nav", { class: "flex shrink-0 gap-2 overflow-x-auto border-b border-line bg-surface px-3" }, ...tabs
     .filter(([id]) => id !== "terminal" || S.workspace?.terminals_enabled !== false)
-    .filter(([id]) => id !== "settings" || S.me.is_admin)
+    .filter(([id]) => id !== "terminal" || currentChannel?.agent?.kind === "channel" || S.me.is_admin)
+    .filter(([id]) => id !== "settings" || Boolean(currentChannel?.can_manage))
     .map(([id, label]) => h("button", { class: `view-tab ${S.view === id ? "view-tab-active" : "view-tab-idle"}`, dataset: { channelView: id }, onclick: () => navigateChannelView(id) }, label)));
 }
 
@@ -1146,7 +1158,7 @@ function renderHeader(): void {
       if (input) { input.value = "@skipper "; input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
     });
   };
-  const terminalsEnabled = S.workspace?.terminals_enabled !== false;
+  const terminalsEnabled = S.workspace?.terminals_enabled !== false && (agent?.kind === "channel" || S.me.is_admin);
   add(el,
     h("div", { class: "flex min-w-0 flex-1 items-start gap-2" },
       mobileMenuButton(),
@@ -1154,7 +1166,7 @@ function renderHeader(): void {
       channel?.purpose ? h("span", { class: "hidden min-w-0 max-w-[38vw] whitespace-normal break-words border-l border-line pl-2.5 text-[12px] leading-4 text-muted xl:inline", title: channel.purpose }, channel.purpose) : null,
       channel?.status === "archived" ? h("span", { class: "chip shrink-0" }, "Paused") : null),
     h("div", { class: "flex max-w-[52%] shrink-0 items-center justify-end gap-1.5 sm:max-w-none sm:gap-2" },
-      agent ? h("button", { class: "flex min-h-11 max-w-full items-center gap-1.5 rounded-md border border-transparent px-1.5 py-1 font-mono text-[10px] text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:min-h-0 sm:max-w-[14rem] sm:gap-2 sm:px-2 sm:text-[11px]", title: `${agent.display_name || agent.name} · ${agent.status} · ${agent.provider_kind === "routing" ? "Model fabric" : agent.provider_name || "no provider"} · ${agent.model || "no model"}`, onclick: () => navigateChannelView("settings") },
+      agent ? h("button", { class: "flex min-h-11 max-w-full items-center gap-1.5 rounded-md border border-transparent px-1.5 py-1 font-mono text-[10px] text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:min-h-0 sm:max-w-[14rem] sm:gap-2 sm:px-2 sm:text-[11px]", title: `${agent.display_name || agent.name} · ${agent.status} · ${agent.provider_kind === "routing" ? "Model fabric" : agent.provider_name || "no provider"} · ${agent.model || "no model"}`, onclick: channel?.can_manage ? () => navigateChannelView("settings") : undefined },
         h("span", { class: `h-1.5 w-1.5 shrink-0 rounded-full ${statusTone}` }), h("span", { class: "min-w-0 truncate" }, "@" + agent.name),
         h("span", { class: "hidden max-w-28 truncate text-faint 2xl:inline" }, agent.model || "no model")) : null,
       terminalsEnabled ? h("button", {

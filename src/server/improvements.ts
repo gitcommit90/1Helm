@@ -53,7 +53,8 @@ export function runImprovementPass(agentId?: number): number {
 
   // Workspace breadcrumb on #main so Activity surfaces quiet/hourly Skipper reviews.
   // Skip single-agent scheduleAgentReview noise (thread resolve triggers) when nothing changed.
-  const main = q1("SELECT id FROM channels WHERE name='main' AND kind='channel' AND status='active' LIMIT 1");
+  const main = q1(`SELECT c.id FROM channels c JOIN users u ON u.id=c.personal_main_owner_id
+    WHERE c.name='main' AND c.kind='channel' AND c.status='active' AND u.is_admin=1 ORDER BY u.id,c.id LIMIT 1`);
   if (main && (!agentId || improved > 0)) {
     const summary = improved
       ? `Skipper improvement pass: strengthened ${improved} agent(s) (${improvedNames.slice(0, 6).join(", ")}).`

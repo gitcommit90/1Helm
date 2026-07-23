@@ -265,8 +265,17 @@ export async function generateChatGPTImageWith(
       body: JSON.stringify({ model, input: prompt, tools: [{ type: "image_generation", action: "generate" }] }),
       signal,
     }));
-    if (!response.ok) { lastError = (await response.text().catch(() => "")).slice(0, 500) || `HTTP ${response.status}`; continue; }
+    try { return await imageBytesFromChatGPTResponse(response); }
+    catch (error) { lastError = (error as Error).message; }
+  }
+  throw new Error(lastError);
+}
+
+/** Decode the native Responses image-generation result returned by either the
+ * legacy Login-with-ChatGPT handler or the authoritative provider fabric. */
+export async function imageBytesFromChatGPTResponse(response: Response): Promise<Buffer> {
     const raw = await response.text();
+    if (!response.ok) throw new Error(raw.slice(0, 500) || `HTTP ${response.status}`);
     const payloads: unknown[] = [];
     try { payloads.push(JSON.parse(raw)); } catch { /* Responses normally streams SSE. */ }
     for (const line of raw.split("\n")) {
@@ -284,12 +293,10 @@ export async function generateChatGPTImageWith(
       }
     };
     payloads.forEach(inspect);
-    if (!encoded) { lastError = `ChatGPT ${model} returned no image output.`; continue; }
+    if (!encoded) throw new Error("ChatGPT returned no image output.");
     const bytes = Buffer.from(encoded, "base64");
-    if (bytes.length < 100 || bytes.subarray(1, 4).toString("ascii") !== "PNG") { lastError = `ChatGPT ${model} returned invalid image data.`; continue; }
+    if (bytes.length < 100 || bytes.subarray(1, 4).toString("ascii") !== "PNG") throw new Error("ChatGPT returned invalid image data.");
     return bytes;
-  }
-  throw new Error(lastError);
 }
 
 export async function streamChatGPTCompletion(

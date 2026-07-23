@@ -65,6 +65,7 @@ try {
       CTRL_DATA_DIR: dataDir,
       PORT: String(appPort),
       IMPROVEMENT_INTERVAL_MS: "600000",
+      HELM_UPDATE_MANIFEST_URL: `http://127.0.0.1:${mockPort}/update-manifest`,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -138,6 +139,27 @@ try {
 
   await page.click('button[title="Open profile"]');
   await page.waitForSelector("#profile-popover");
+  await page.waitForFunction(() => document.querySelector("[data-profile-update-status]")?.textContent?.includes("ready to download"));
+  const updateAction = await page.evaluate(() => {
+    const section = document.querySelector("[data-profile-update]");
+    const status = section?.querySelector("[data-profile-update-status]");
+    const button = section?.querySelector("[data-profile-update-action]");
+    if (!(button instanceof HTMLButtonElement)) return null;
+    const rect = button.getBoundingClientRect();
+    const style = getComputedStyle(button);
+    return {
+      status: status?.textContent || "",
+      text: button.textContent || "",
+      url: button.dataset.updateUrl || "",
+      visible: rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden",
+      sameSection: Boolean(section && status && section.contains(button)),
+    };
+  });
+  ok(updateAction?.visible && updateAction.sameSection
+    && updateAction.status === "1Helm v9.9.9 is ready to download."
+    && updateAction.text === "Download v9.9.9"
+    && updateAction.url.endsWith("/v9.9.9/1Helm-9.9.9-arm64.dmg"),
+  "an available update keeps a visible download button beside its ready message");
   await page.$eval('#profile-popover input[placeholder="Job title"]', (input) => { input.value = "Product captain"; input.dispatchEvent(new Event("input", { bubbles: true })); });
   await page.$eval('#profile-popover textarea', (input) => { input.value = "Builds calm native products."; input.dispatchEvent(new Event("input", { bubbles: true })); });
   await page.evaluate(() => [...document.querySelectorAll("#profile-popover button")].find((button) => button.textContent?.trim() === "Save profile")?.click());

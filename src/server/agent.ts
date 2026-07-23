@@ -112,10 +112,13 @@ export function startAgent(port: number, apiKey: string, host = "127.0.0.1"): Pr
     if (path === "/api/terminals" && req.method === "POST") {
       const b = await readBody(req);
       const cwd = b.cwd ? String(b.cwd) : process.env.HOME || process.cwd();
-      const pty = spawn(SHELL, [], { name: "xterm-256color", cols: Number(b.cols) || 80, rows: Number(b.rows) || 24, cwd, env: nativeEnv() });
-      // Interactive startup files may also replace PATH. Apply the native path
-      // inside the live shell before a browser attaches to this PTY.
-      pty.write(`export PATH="$HELM_NATIVE_PATH"; unset HELM_NATIVE_PATH\r`);
+      // Start the interactive shell with the complete native PATH already in
+      // its environment. Skip startup files here because they can replace the
+      // inherited PATH; nothing is typed into the live PTY or its history.
+      const shellArgs = SHELL.endsWith("/zsh") ? ["-f"]
+        : SHELL.endsWith("/bash") ? ["--noprofile", "--norc", "-i"]
+          : ["-i"];
+      const pty = spawn(SHELL, shellArgs, { name: "xterm-256color", cols: Number(b.cols) || 80, rows: Number(b.rows) || 24, cwd, env: nativeEnv() });
       const t: Term = { id: rid("term-"), pty, created_at: new Date().toISOString(), pid: pty.pid };
       terms.set(t.id, t);
       pty.onExit(() => terms.delete(t.id));

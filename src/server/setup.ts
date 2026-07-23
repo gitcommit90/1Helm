@@ -89,18 +89,26 @@ export async function pickDefaultModel(providerId: number): Promise<string> {
 }
 
 export function ensureMainChannel(createdBy?: number | null): number {
-  const existing = q1("SELECT id FROM channels WHERE kind='channel' AND name='main' LIMIT 1");
+  const existing = createdBy
+    ? q1(`SELECT id FROM channels WHERE kind='channel' AND name='main'
+      AND (personal_main_owner_id=? OR personal_main_owner_id IS NULL) ORDER BY personal_main_owner_id IS NULL DESC,id LIMIT 1`, createdBy)
+    : q1("SELECT id FROM channels WHERE kind='channel' AND name='main' ORDER BY id LIMIT 1");
   if (existing) {
     const id = Number(existing.id);
-    if (createdBy) run("INSERT OR IGNORE INTO members (channel_id, user_id) VALUES (?,?)", id, createdBy);
+    if (createdBy) {
+      run("UPDATE channels SET personal_main_owner_id=?,created_by=COALESCE(created_by,?) WHERE id=?", createdBy, createdBy, id);
+      run("DELETE FROM members WHERE channel_id=? AND user_id<>?", id, createdBy);
+      run("INSERT OR IGNORE INTO members (channel_id, user_id) VALUES (?,?)", id, createdBy);
+    }
     return id;
   }
   const id = run(
-    "INSERT INTO channels (name, slug, kind, topic, purpose, status, created_by, created) VALUES ('main','main','channel','Your home base with @skipper','Workspace-wide coordination with Skipper','active',?,?)",
+    "INSERT INTO channels (name, slug, kind, topic, purpose, status, created_by, personal_main_owner_id, created) VALUES ('main','main','channel','Your private home base with @skipper','Private coordination with Skipper','active',?,?,?)",
+    createdBy ?? null,
     createdBy ?? null,
     now(),
   ).lastInsertRowid;
-  for (const u of q("SELECT id FROM users")) run("INSERT OR IGNORE INTO members (channel_id, user_id) VALUES (?,?)", id, u.id);
+  if (createdBy) run("INSERT OR IGNORE INTO members (channel_id, user_id) VALUES (?,?)", id, createdBy);
   return id;
 }
 

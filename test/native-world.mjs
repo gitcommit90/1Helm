@@ -104,7 +104,7 @@ try {
   ok(main?.agent?.kind === "skipper" && main.agent.name === "skipper", "#main exposes the one workspace-wide Skipper");
   ok(main.agent.runtime.avatar === "color:#4F6D7A", "Skipper starts with the customizable flat-color avatar");
   const skipperTerm = await api("/api/term/open", { body: { channelId: main.id, cols: 90, rows: 28 } }, captain);
-  const skipperTermPath = await new Promise((resolve, reject) => {
+  const skipperTermState = await new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${appPort}/ws/term/${skipperTerm.body.sessionId}?token=${captain}`);
     let output = "";
     const timer = setTimeout(() => { ws.close(); reject(new Error("Skipper terminal PATH timeout: " + output)); }, 8000);
@@ -112,11 +112,13 @@ try {
     ws.on("message", (chunk) => {
       output += chunk.toString();
       const match = output.match(/HELM_PATH=(\/[^\r\n]+)/);
-      if (match) { clearTimeout(timer); ws.close(); resolve(match[1]); }
+      if (match) { clearTimeout(timer); ws.close(); resolve({ path: match[1], output }); }
     });
     ws.on("error", reject);
   });
-  ok(String(skipperTermPath).startsWith("/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:"), "new Skipper terminal sessions inherit Homebrew command paths");
+  ok(String(skipperTermState.path).startsWith("/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:")
+    && !/HELM_NATIVE_PATH|export PATH=|unset HELM|Starting terminal/.test(String(skipperTermState.output)),
+  "new Skipper terminal sessions inherit Homebrew paths without surfacing bootstrap commands");
   const templates = await api("/api/agent-templates", {}, captain);
   const catalog = await api("/api/skills", {}, captain);
   ok(templates.body.templates?.length >= 5 && templates.body.templates.some((template) => template.slug === "home"), "bare-bones growing-agent templates ship in the product");
@@ -224,6 +226,7 @@ try {
 
   const finance = (await api("/api/channels", { body: { name: "Finance", purpose: "Own finance planning and records." } }, captain)).body.channel;
   ok(finance.agent.id !== launch.agent.id && finance.agent.bot_id !== launch.agent.bot_id, "each channel receives a distinct resident agent");
+  ok(finance.agent.runtime.avatar !== launch.agent.runtime.avatar, "new resident agents start with distinct random avatar colors while unused palette colors remain");
   const legacyBot = (await api("/api/bots", { body: { name: "ambient-third-agent", provider_id: providerId, model: "mock-large" } }, captain)).body.bot;
   const rejectedJoin = await api(`/api/bots/${legacyBot.id}/join`, { body: { channelId: launch.id } }, captain);
   const membershipDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
@@ -387,6 +390,7 @@ try {
   const requester = accessClaim.body.token;
   const requesterChannelsBefore = (await api("/api/channels", {}, requester)).body.channels;
   const collab = requesterChannelsBefore.find((channel) => channel.kind === "collab" && channel.name === "Collab");
+  const requesterMain = requesterChannelsBefore.find((channel) => channel.kind === "channel" && channel.name === "main" && channel.personal_main);
   const hiddenBots = await api("/api/bots", {}, requester);
   const hiddenProviders = await api("/api/providers", {}, requester);
   const hiddenComputers = await api("/api/computers", {}, requester);
@@ -400,10 +404,36 @@ try {
     (SELECT COUNT(*) FROM bot_channels WHERE channel_id=c.id) bots
     FROM channels c WHERE c.kind='collab'`).get();
   holdingDb.close();
-  ok(accessClaim.status === 200 && requesterChannelsBefore.length === 1 && collab && collabRuntime.agents === 0 && collabRuntime.computers === 0 && collabRuntime.bots === 0
-    && hiddenBots.body.bots.length === 0 && hiddenProviders.status === 403 && hiddenComputers.body.computers.length === 0
+  const captainDeniedRequesterMain = await api(`/api/channels/${requesterMain.id}/messages`, {}, captain);
+  ok(accessClaim.status === 200 && requesterChannelsBefore.length === 2 && collab && requesterMain?.agent?.kind === "skipper" && requesterMain.computer === null
+    && collabRuntime.agents === 0 && collabRuntime.computers === 0 && collabRuntime.bots === 0
+    && hiddenBots.body.bots.some((bot) => bot.name === "skipper") && hiddenProviders.status === 403 && hiddenComputers.body.computers.length === 0
     && hiddenRouting.status === 403 && hiddenSkills.status === 403 && hiddenCollaboration.status === 403,
-  "an approved coworker lands only in human-only Collab with no agent, provider, computer, or Captain control-plane surface");
+  "an approved coworker lands in human-only Collab plus a private Skipper #main without provider, computer, or Captain control-plane access");
+  ok(captainDeniedRequesterMain.status === 403, "the Captain cannot read a coworker's private personal #main");
+  const requesterChannelRequest = await api(`/api/channels/${requesterMain.id}/messages`, { body: { body: '@skipper create a new channel called "requester-notes"' } }, requester);
+  await waitForAgentReply(requesterChannelRequest.body.message.id, requester, "skipper");
+  const requesterNotes = (await api("/api/channels", {}, requester)).body.channels.find((channel) => channel.name === "requester-notes");
+  const captainDeniedRequesterNotes = await api(`/api/channels/${requesterNotes.id}/messages`, {}, captain);
+  const privateChannelDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const requesterNotesMembers = privateChannelDb.prepare("SELECT user_id FROM members WHERE channel_id=? ORDER BY user_id").all(requesterNotes.id);
+  privateChannelDb.close();
+  ok(requesterNotes?.agent?.kind === "channel" && requesterNotesMembers.length === 1
+    && Number(requesterNotesMembers[0].user_id) === Number(accessClaim.body.user.id) && captainDeniedRequesterNotes.status === 403,
+  "a coworker's Skipper creates a private agent channel for that coworker without Captain approval or automatic Captain access");
+  const autonomousInstall = await api(`/api/channels/${requesterNotes.id}/messages`, { body: { body: `@${requesterNotes.agent.name} download openai codex for your machine` } }, requester);
+  await waitForAgentReply(autonomousInstall.body.message.id, requester, requesterNotes.agent.name);
+  const installActivity = (await api(`/api/channels/${requesterNotes.id}/activity`, {}, requester)).body.actions;
+  ok(installActivity.some((action) => action.tool === "run_command" && action.status === "complete")
+    && !installActivity.some((action) => action.tool === "ask_user")
+    && existsSync(join(dataDir, "channels", String(requesterNotes.id), "workspace", "codex-install.txt")),
+  "a resident treats install/download work as autonomous action on its own machine instead of asking the user for permission");
+  const captainUser = (await api("/api/users", {}, requester)).body.users.find((candidate) => candidate.username === "captain");
+  const captainInvitation = await api(`/api/channels/${requesterNotes.id}/messages`, { body: { body: "@captain join my private notes channel" } }, requester);
+  const addCaptain = await api(`/api/channels/${requesterNotes.id}/members/${captainUser.id}`, { body: { messageId: captainInvitation.body.message.id } }, requester);
+  const captainAfterInvitation = await api(`/api/channels/${requesterNotes.id}/messages`, {}, captain);
+  ok(addCaptain.status === 200 && captainAfterInvitation.status === 200,
+    "a coworker can explicitly tag and confirm the Captain into a coworker-owned private channel");
   const collabUploadResponse = await fetch(`${base}/api/upload`, { method: "POST", headers: { authorization: `Bearer ${requester}`, "content-type": "text/plain", "x-filename": "coworker-note.txt" }, body: "human-only attachment" });
   const collabUpload = await collabUploadResponse.json();
   const collabMessage = await api(`/api/channels/${collab.id}/messages`, { body: { body: "Shared with the human team", uploads: [collabUpload] } }, requester);

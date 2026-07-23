@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.15] - 2026-07-23
+
+### Added
+
+- Every human receives a private personal `#main` shared only with Skipper. Coworkers can ask Skipper there to create their own private agent channels without Captain approval; the creator is added automatically, and the Captain gains access only after the creator tags and confirms them.
+- Approved coworkers also join the human-only `Collab` holding space. Channel creators can tag and confirm coworkers into only the channels they own, while HTTP, file, terminal, and WebSocket membership boundaries stay enforced.
+
+### Changed
+
+- Resident agents now receive an explicit ownership contract for their isolated Linux computer: installs, downloads, setup, commands, configuration, and file work inside that machine happen autonomously without permission loops or repeated questions.
+- A connected ChatGPT subscription account now makes image generation available automatically. Skipper's production tool set exposes `generate_image` directly from capability health, executes it through that same multi-account provider fabric, saves the PNG into the channel, and attaches it to chat without a second hidden toggle, stale skill assignment, or separate legacy login.
+- New resident agents randomly choose an unused palette color while one remains, preventing every new agent from starting with the same avatar color.
+- Every web, PWA, login, favicon, and default workspace-logo surface now derives from the sole sailboat artwork used by the macOS app; retired numeral assets and references are removed.
+
+### Fixed
+
+- Crowded Board swim lanes now own their vertical overflow and can scroll all the way to the final task without expanding the whole Board past its viewport.
+- Native terminal bootstrap is silent: the UI no longer prints `Starting terminal…`, and PATH setup is applied before the interactive shell instead of being typed into visible scrollback.
+- The Profile update notice and its explicit versioned DMG download button now stay together in one always-visible section.
+- Captain-created coworkers and approved requesters receive their private `#main` immediately; legacy members are migrated without leaking those channels to the Captain or accidentally provisioning resident computers for them.
+
+### Tests
+
+- Added native privacy, coworker channel-ownership/invitation, autonomous install, distinct-avatar, and silent-terminal coverage; image capability/tool/PNG attachment integration coverage; and a browser regression that proves a crowded swim lane physically scrolls to its last card.
+
 ## [1.1.14] - 2026-07-22
 
 ### Fixed
@@ -194,7 +219,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Native **1Herd** channel-agent workspace (SPEC.md slice) is developed on branch `worktree-1herd-native-spec` (draft PR #7) and is **not** fully merged to `main` as of this changelog baseline. Track progress there and in `docs/VISION.md` on that branch.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.14...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.15...HEAD
+[1.1.15]: https://github.com/gitcommit90/1Helm/compare/v1.1.14...v1.1.15
 [1.1.14]: https://github.com/gitcommit90/1Helm/compare/v1.1.13...v1.1.14
 [1.1.13]: https://github.com/gitcommit90/1Helm/compare/v1.1.12...v1.1.13
 [1.1.12]: https://github.com/gitcommit90/1Helm/compare/v1.1.11...v1.1.12

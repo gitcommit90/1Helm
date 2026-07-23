@@ -43,6 +43,7 @@ import {
   collaborationView,
   createAccessRequest,
   ensureCollabChannel,
+  ensurePersonalMainChannel,
   pendingAccessRequests,
   publicWorkspaceStatus,
   reviewAccessRequest,
@@ -52,7 +53,7 @@ import {
   startCollaborationConnector,
 } from "./collaboration.ts";
 import { stopAllConnectors } from "./connectors.ts";
-import { listSkills, listTemplates, provisionSkill, skillsForAgent, setImageGenerationEnabled, imageGenerationAvailable, imageGenerationEnabledIds } from "./skills.ts";
+import { ensureImageGenerationSkill, listSkills, listTemplates, provisionSkill, skillsForAgent, setImageGenerationEnabled, imageGenerationAvailable, imageGenerationEnabledIds } from "./skills.ts";
 import { ensureAgentMemory, mnemosyneAvailable, prepareMnemosyneRuntime } from "./memory.ts";
 import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
@@ -182,6 +183,21 @@ const canSee = (user: Row, channelId: number): boolean => {
 };
 const canUseAgentSurfaces = (user: Row): boolean => Boolean(user.is_admin || q1(`SELECT 1 FROM members m
   JOIN channels c ON c.id=m.channel_id WHERE m.user_id=? AND c.kind='channel' AND c.status<>'deleted' LIMIT 1`, user.id));
+const canManageChannel = (user: Row, channelId: number): boolean => Boolean(q1(
+  `SELECT 1 FROM channels WHERE id=? AND kind='channel' AND status<>'deleted' AND (
+    (name<>'main' AND (created_by=? OR (created_by IS NULL AND ?=1)))
+    OR (name='main' AND personal_main_owner_id=? AND ?=1)
+  )`,
+  channelId,
+  user.id,
+  user.is_admin ? 1 : 0,
+  user.id,
+  user.is_admin ? 1 : 0,
+));
+const captainMainChannel = (): Row | undefined => q1(`SELECT c.* FROM channels c
+  JOIN users u ON u.id=c.personal_main_owner_id
+  WHERE c.kind='channel' AND c.name='main' AND c.status='active' AND u.is_admin=1
+  ORDER BY u.id,c.id LIMIT 1`);
 
 const publicUser = (r: Row): Record<string, unknown> => ({
   id: r.id,
@@ -211,6 +227,8 @@ function channelMetaView(c: Row, viewer?: Row | null): Record<string, unknown> {
     status: c.status || "active",
     agent: c.kind === "channel" ? agentViewForChannel(Number(c.id)) : null,
     computer: c.kind === "channel" ? channelComputerView(Number(c.id)) : null,
+    personal_main: c.kind === "channel" && c.name === "main" && c.personal_main_owner_id != null,
+    ...(viewer ? { can_manage: canManageChannel(viewer, Number(c.id)) } : {}),
   };
 }
 
@@ -260,11 +278,8 @@ function channelView(user: Row, c: Row): Record<string, unknown> {
 function broadcastChannelMeta(channelId: number, type: "channel_update" | "channel_new" = "channel_update"): void {
   const row = q1("SELECT * FROM channels WHERE id=?", channelId);
   if (!row) return;
-  // Public agent channels: one shared payload. DMs keep membership-scoped name resolution.
-  if (row.kind === "channel") {
-    broadcastToChannel(channelId, { type, channel: channelMetaView(row) });
-    return;
-  }
+  // Channel management is creator-scoped, so every member receives their own
+  // metadata view. The transcript itself remains membership-scoped below.
   for (const member of q("SELECT user_id FROM members WHERE channel_id=?", channelId)) {
     const viewer = q1("SELECT * FROM users WHERE id=?", member.user_id);
     if (!viewer) continue;
@@ -306,9 +321,9 @@ function triggerBots(channelId: number, msg: Row, authorId: number): void {
 }
 
 function offerHumanMemberships(channelId: number, msg: Row, author: Row): void {
-  if (!author.is_admin) return;
   const channel = q1("SELECT kind FROM channels WHERE id=?", channelId);
   if (!channel || !["channel", "collab"].includes(String(channel.kind))) return;
+  if (channel.kind === "channel" && !canManageChannel(author, channelId)) return;
   const names = new Set((String(msg.body).match(/@([a-zA-Z0-9_.-]+)/g) || []).map((value) => value.slice(1).toLowerCase()));
   if (!names.size) return;
   for (const candidate of q("SELECT id,username,display FROM users WHERE id<>?", author.id)) {
@@ -480,7 +495,7 @@ const server = createServer(async (req, res) => {
       const b = await jbody(req);
       try {
         const created = createAccessRequest(String(b.email || ""), String(b.display || ""));
-        const main = q1("SELECT id FROM channels WHERE name='main' AND kind='channel' LIMIT 1");
+        const main = captainMainChannel();
         if (main) {
           const id = run("INSERT INTO messages (channel_id,body,system_message,created) VALUES (?,?,1,?)", main.id, `${created.request.email} has requested access to the workspace. To accept, open **Settings → Members**.`, now()).lastInsertRowid;
           broadcastToChannel(Number(main.id), { type: "message", message: serializeMessage(id), parent: null });
@@ -499,6 +514,8 @@ const server = createServer(async (req, res) => {
         const result = claimApprovedAccess(publicAccess[1], String(b.username || ""), String(b.password || ""), String(b.display || ""));
         const collab = q1("SELECT id FROM channels WHERE kind='collab' AND status='active' LIMIT 1");
         if (collab) broadcastChannelMeta(Number(collab.id), "channel_new");
+        const personalMain = q1("SELECT id FROM channels WHERE personal_main_owner_id=? AND status='active' LIMIT 1", result.user.id);
+        if (personalMain) broadcastChannelMeta(Number(personalMain.id), "channel_new");
         return json(res, 200, { token: result.token, user: publicUser(result.user) });
       } catch (error) { return json(res, 400, { error: (error as Error).message }); }
     }
@@ -586,6 +603,7 @@ const server = createServer(async (req, res) => {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
       try {
         const r = await bindChatGPTProviderFromCookie(req.headers.cookie);
+        ensureImageGenerationSkill();
         const provider = providerView(q1("SELECT * FROM providers WHERE id=?", r.providerId)!);
         broadcastAdmins({ type: "provider_update", provider });
         return json(res, 200, { provider, user: r.user });
@@ -751,7 +769,7 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { workspace });
     }
     if (p === "/api/agent-templates" && m === "GET") {
-      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      if (!canUseAgentSurfaces(user)) return json(res, 403, { error: "Join your private #main to create an agent channel." });
       return json(res, 200, { templates: listTemplates() });
     }
     if (p === "/api/skills" && m === "GET") {
@@ -770,7 +788,7 @@ const server = createServer(async (req, res) => {
         try { const parsed = new URL(sourceUrl); if (!["http:", "https:"].includes(parsed.protocol)) throw new Error(); }
         catch { return json(res, 400, { error: "Use a valid HTTP or HTTPS source URL." }); }
       }
-      const main = q1("SELECT id FROM channels WHERE kind='channel' AND name='main' AND status='active' LIMIT 1");
+      const main = captainMainChannel();
       if (!main) return json(res, 409, { error: "#main and Skipper must be ready before learning a skill." });
       const sources = [path ? `- Local source: ${path}` : "", sourceUrl ? `- URL: ${sourceUrl}` : "", notes ? `- Notes and requirements:\n${notes}` : ""].filter(Boolean).join("\n");
       const request = [
@@ -919,7 +937,7 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { threads });
     }
     if (p === "/api/channels" && m === "POST") {
-      if (!user.is_admin) return json(res, 403, { error: "Only the Captain can create an agent channel." });
+      if (!canUseAgentSurfaces(user)) return json(res, 403, { error: "Join your private #main before creating an agent channel." });
       const b = await jbody(req);
       const name = normalizeChannelName(String(b.name || ""));
       const purpose = String(b.purpose || b.topic || "").trim();
@@ -945,14 +963,13 @@ const server = createServer(async (req, res) => {
       const channelKind = String(q1("SELECT kind FROM channels WHERE id=?", channelId)?.kind || "");
       if (channelKind !== "channel") return json(res, 404, { error: "Agent-channel surface not found." });
       if (action === "channel" && m === "PATCH") {
-        if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+        if (!canManageChannel(user, channelId)) return json(res, 403, { error: "Only this channel's creator can manage it." });
         const b = await jbody(req);
         const purposeIn = "purpose" in b || "topic" in b;
         const nameIn = "name" in b;
         if (!purposeIn && !nameIn) return json(res, 400, { error: "Nothing to update." });
         try {
           if (nameIn) {
-            if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
             renameChannel(channelId, String(b.name || ""));
           }
           if (purposeIn) {
@@ -966,7 +983,7 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { channel });
       }
       if (action === "archive" && m === "POST") {
-        if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+        if (!canManageChannel(user, channelId)) return json(res, 403, { error: "Only this channel's creator can manage it." });
         const target = q1("SELECT name FROM channels WHERE id=? AND kind='channel'", channelId);
         if (!target || String(target.name) === "main") return json(res, 400, { error: target ? "#main cannot be archived." : "Channel not found." });
         try {
@@ -977,7 +994,7 @@ const server = createServer(async (req, res) => {
         } catch (error) { return json(res, 400, { error: (error as Error).message }); }
       }
       if (action === "restore" && m === "POST") {
-        if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+        if (!canManageChannel(user, channelId)) return json(res, 403, { error: "Only this channel's creator can manage it." });
         try {
           await restoreChannel(channelId);
           const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
@@ -986,7 +1003,7 @@ const server = createServer(async (req, res) => {
         } catch (error) { return json(res, 400, { error: (error as Error).message }); }
       }
       if (action === "channel" && m === "DELETE") {
-        if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+        if (!canManageChannel(user, channelId)) return json(res, 403, { error: "Only this channel's creator can manage it." });
         const b = await jbody(req);
         const target = q1("SELECT name, status FROM channels WHERE id=? AND kind='channel'", channelId);
         const confirmation = String(b.confirm || "");
@@ -1054,6 +1071,7 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { channel });
       }
       if (action === "agent-avatar" && m === "PATCH") {
+        if (!canManageChannel(user, channelId)) return json(res, 403, { error: "Only this channel's creator can manage its resident." });
         const b = await jbody(req);
         const agent = agentForChannel(channelId);
         if (!agent?.bot_id) return json(res, 404, { error: "Resident agent not found." });
@@ -1534,6 +1552,7 @@ const server = createServer(async (req, res) => {
       const requestedComputerId = b.computerId != null ? Number(b.computerId) : 0;
       const channelAgent = agentForChannel(channelId);
       const ordinaryChannel = channelAgent?.kind === "channel";
+      if (!ordinaryChannel && !user.is_admin) return json(res, 403, { error: "Host terminals are Captain-only. Your agent channels each have their own computer." });
       if (ordinaryChannel && requestedComputerId) return json(res, 403, { error: "Ordinary channel terminals always run inside that channel's isolated computer." });
       if (ordinaryChannel) {
         try {
@@ -1575,9 +1594,11 @@ const server = createServer(async (req, res) => {
       if (q1("SELECT 1 FROM users WHERE username=?", username)) return json(res, 409, { error: "Username taken." });
       const id = run("INSERT INTO users (username, pass, display, is_admin, created) VALUES (?,?,?,?,?)", username, hashPassword(password), display, b.is_admin ? 1 : 0, now()).lastInsertRowid;
       const collabId = ensureCollabChannel(id);
+      const personalMainId = ensurePersonalMainChannel(id);
       const created = publicUser(q1("SELECT * FROM users WHERE id=?", id)!);
       broadcastAll({ type: "user_update", user: created });
       broadcastChannelMeta(collabId, "channel_new");
+      broadcastChannelMeta(personalMainId, "channel_new");
       return json(res, 201, { user: created });
     }
     if ((mm = p.match(/^\/api\/admin\/users\/(\d+)$/)) && (m === "PATCH" || m === "DELETE")) {
@@ -1597,12 +1618,13 @@ const server = createServer(async (req, res) => {
     }
 
     if ((mm = p.match(/^\/api\/channels\/(\d+)\/members\/(\d+)$/)) && m === "POST") {
-      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const channelId = Number(mm[1]);
       const userId = Number(mm[2]);
       const channel = q1("SELECT id,name,kind,status FROM channels WHERE id=?", channelId);
       const addedUser = q1("SELECT id,username,display FROM users WHERE id=?", userId);
       if (!channel || channel.status !== "active" || !addedUser) return json(res, 404, { error: "Channel or member not found." });
+      if (channel.kind === "channel" && !canManageChannel(user, channelId)) return json(res, 403, { error: "Only this channel's creator can invite members." });
+      if (channel.kind === "collab" && !user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       if (channel.kind === "dm") return json(res, 409, { error: "Use direct messages for private conversations." });
       if (channel.kind === "channel") {
         const b = await jbody(req);
@@ -1644,6 +1666,7 @@ async function bootstrap(): Promise<void> {
   reactivateComputersAfterPreparedRemoval();
   prepareMnemosyneRuntime();
   await startRoutingEngine((activity) => broadcastAdmins({ type: "routing_activity", activity }));
+  ensureImageGenerationSkill();
   await internalRoutingProviderId();
   const agentKey = newToken();
   const agentPort = await startAgent(0, agentKey);

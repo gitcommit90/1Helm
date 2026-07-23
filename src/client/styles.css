@@ -205,17 +205,17 @@ select.field {
   color: var(--c-accent-fg);
   box-shadow: 0 10px 30px -18px var(--c-glow);
 }
-/* The "1" flies on a warm paper flag — same plate in both modes. */
+/* The sailboat artwork uses the same pale-blue plate in both modes. */
 .logo-plate {
   display: grid;
   place-items: center;
   flex-shrink: 0;
   overflow: hidden;
-  background: #efece3;
+  background: #b7cedb;
   box-shadow: inset 0 0 0 1px rgba(31, 28, 20, .08), 0 10px 24px -18px rgba(0, 0, 0, .7);
 }
-/* Default brand mark sits inset so the plate reads as a signal flag. */
-.logo-asset { display: block; height: 78%; width: 78%; object-fit: contain; }
+/* Default sailboat and custom workspace photos fill the plate edge-to-edge. */
+.logo-asset { display: block; height: 100%; width: 100%; object-fit: cover; object-position: center; }
 /* Custom workspace photo / solid color fills the plate edge-to-edge. */
 .logo-plate-photo {
   background: transparent;
@@ -626,16 +626,19 @@ html.light .channel-unread-badge {
 .board-scroll {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
   padding: 0.75rem 0.85rem 0.85rem;
 }
 .board-lanes {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
+  grid-auto-rows: minmax(0, 1fr);
   align-items: stretch;
   gap: 0.75rem;
+  height: 100%;
   width: 100%;
-  min-height: 100%;
+  min-height: 0;
 }
 .board-lane {
   display: flex;
@@ -643,7 +646,8 @@ html.light .channel-unread-badge {
   width: 100%;
   min-width: 0;
   max-width: none;
-  min-height: 18rem;
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid var(--c-line);
   border-radius: 0.75rem;
@@ -881,7 +885,11 @@ html, body { height: 100%; width: 100%; overflow: hidden; overscroll-behavior: n
   }
   .board-header { padding: 0.75rem 0.75rem 0.55rem; }
   .board-scroll { padding: 0.65rem 0.65rem 0.75rem; }
-  .board-lanes { gap: 0.6rem; }
+  .board-lanes {
+    display: flex;
+    gap: 0.6rem;
+    width: max-content;
+  }
   .board-lane {
     flex: 0 0 min(82vw, 18.5rem);
     width: min(82vw, 18.5rem);

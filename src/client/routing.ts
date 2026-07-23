@@ -304,19 +304,9 @@ function sourceCatalog(state: RoutingState, refresh: () => Promise<void>, confir
     list.append(h("section", { class: "routing-provider" }, open, body));
   }
   const chatgptConnected = (state.providers || []).some((provider) => provider.enabled !== false && providerFamily(provider) === "chatgpt");
-  const imageToggle = h("input", { type: "checkbox", class: "accent-accent", checked: Boolean(state.imageGenerationEnabled), disabled: !chatgptConnected }) as HTMLInputElement;
-  const imageStatus = statusLine();
-  imageToggle.onchange = async () => {
-    const requested = imageToggle.checked; imageToggle.disabled = true;
-    try {
-      await api("/api/routing/image-generation", { method: "POST", body: { providerId: "chatgpt", enabled: requested } });
-      state.imageGenerationEnabled = requested;
-      imageStatus.textContent = requested ? "Image Generation is available workspace-wide." : "Image Generation is off.";
-    } catch (error) { imageToggle.checked = !requested; imageStatus.textContent = (error as Error).message; }
-    finally { imageToggle.disabled = !chatgptConnected; }
-  };
-  const imageRow = h("label", { class: "mb-4 flex items-start gap-3 rounded-lg border border-line bg-raised/40 px-4 py-3" }, imageToggle,
-    h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block text-sm font-semibold text-fg" }, "Image Generation · ChatGPT family"), h("span", { class: "mt-0.5 block text-xs leading-5 text-muted" }, chatgptConnected ? "One workspace-wide switch shared by every healthy ChatGPT account." : "Connect a ChatGPT subscription account to enable this workspace capability."), imageStatus));
+  const imageRow = h("div", { class: "mb-4 flex items-start gap-3 rounded-lg border border-line bg-raised/40 px-4 py-3" },
+    h("span", { class: `mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${chatgptConnected ? "bg-ok" : "bg-faint"}` }),
+    h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block text-sm font-semibold text-fg" }, "Image Generation · ChatGPT family"), h("span", { class: "mt-0.5 block text-xs leading-5 text-muted" }, chatgptConnected ? "Available automatically through the connected ChatGPT account." : "Connect a ChatGPT subscription account to make this workspace capability available.")));
   return h("div", {}, heading("Provider fabric", "Accounts & keys", "Connect subscriptions and API keys once. Every enabled model becomes available to Skipper, resident agents, named routes, and the shared endpoint."), routingFabric(state), imageRow, list);
 }
 
