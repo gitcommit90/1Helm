@@ -27,7 +27,7 @@ Living product record and direction history: [`docs/VISION.md`](docs/VISION.md).
 - **First-run wizard** — create the Captain account, connect one or several provider accounts or keys, and name the workspace. If needed, approve Apple's verified channel-computer runtime inline once; terminals default on. After setup, choose an optional primary model and take a short product tour.
 - **Create a channel** — name it and describe what it's for. 1Helm atomically provisions its resident agent, computer workspace (`/workspace`), files, memory namespace, and model policy — no bot wiring or directory setup.
 - **Resident agents** — one durable specialist per channel; shell commands and files stay in that channel's `/workspace`; curated decisions, facts, preferences, and artifact references are retained across threads, model changes, and server restarts. Session recaps remain in Threads rather than being mislabeled as Memory.
-- **Hermes-style skill arsenal** — a useful suite ships in the workspace, including approachable self-hosting guidance. Skipper has the complete catalog. New agents receive a purpose-aware permanent starter kit, know every unassigned skill they can request, and can propose reusable skills that Skipper approves into the shared arsenal. Settings → Skills can also open a visible Skipper learning thread from local sources, URLs, or notes.
+- **Durable operating arsenal** — 34+ substantive playbooks ship to every resident, activate automatically by task, and cover outcome ownership, escalation/return, obligations, tool/package management, research, communications, documents, software, infrastructure, security, and everyday operations. Skipper can search 90,000+ external metadata records, immutably pin and scan curated skills, and quarantine community content. Residents crystallize only complete procedures backed by concrete completion evidence; generic snippets are rejected.
 - **Mnemosyne memory per identity** — Skipper and every resident agent own a distinct local Mnemosyne SQLite database. Curated knowledge and completed session outcomes feed long-term retrieval; memory never collapses to a profile Markdown file.
 - **Growing templates** — start from a Blank slate, Project, Research, Home, or Inbox role. These are lightweight starting kits; the resident keeps learning preferences, receiving skills, and improving with the user.
 - **Stable channel URLs** — channel tabs and threads have durable slug routes such as `/c/product-launch/memory` and `/c/product-launch/thread/42`.
@@ -44,8 +44,12 @@ Living product record and direction history: [`docs/VISION.md`](docs/VISION.md).
 - **A computer per channel on macOS** — every ordinary channel gets a persistent Apple `container machine`: a separate lightweight Linux VM with its own filesystem, shell, services, and `/workspace`. Skipper chooses CPU/RAM automatically, keeps the Mac home directory unmounted, wakes scheduled work, and conservatively leaves machines running when services or timers make sleep unsafe.
 - **Channel terminals** — optional. Each ordinary channel's Terminal and resident shell tools execute inside that channel's Linux computer; its screen and server session survive tab navigation and page reload, and sessions are owner- and channel-scoped and torn down on archive/delete. Skipper's `#main` terminal remains native on the Mac.
 - **Scoped Gmail handoff** — when Gmail OAuth accounts already exist on the 1Helm host, Captain-authorized Skipper can grant a resident account-specific search/read/draft access without exposing tokens. Sending remains disabled by default.
+- **Recurring workflows and agent CLI** — durable interval workflows open a real thread and invoke the same resident on every due run, survive restarts, and can be paused, resumed, or bounded by run count. `npm run helm -- ...` is a JSON-in/JSON-out surface for status, channels, messages, workflows, and audit verification.
+- **Photon/iMessage broker** — Settings → Connections starts Photon's device login, creates/reuses a 1Helm project, rotates its secret, registers an allowlisted phone, discovers its assigned line, and supervises a loopback `spectrum-ts` stream. Inbound text becomes a real resident thread; narrow replies are allowed only to that delivered conversation unless Skipper grants new outbound sending. Rich attachment fidelity remains under verification.
+- **Tamper-evident new activity** — tool starts/results, new operational activity, and external skill decisions enter an append-only SHA-256 chain with Settings/API verification. Pre-chain history is not backfilled and the chain is not a remote transparency log.
+- **Public autonomy contract** — `npm run benchmark:autonomy` emits deterministic machine-readable JSON proving the shipped arsenal, narrow human-blocker gate, resident tool surface, wakeable recurring work, and audit-chain invariants without depending on one model's self-description.
 
-On Apple Silicon macOS 26, per-channel VM isolation is the product backend. Linux/CI source deployments deliberately use a compatibility backend until Apple makes its runtime available there; 1Helm never labels that fallback as VM isolation. Not yet shipped: an app catalog and one-click deploy. The legacy "configure a bot and add it to a room" flow is retained only as migration compatibility for existing installs and is not the normal product path.
+On Apple Silicon macOS 26, per-channel VM isolation is the product backend. Linux/CI/WSL source deployments deliberately use a compatibility backend; 1Helm never labels that fallback as VM isolation. Not yet shipped: a native Windows app, native Linux package, mobile clients, Linux resident VM isolation, blind community-skill execution, or a hosted control plane. The legacy "configure a bot and add it to a room" flow is retained only as migration compatibility for existing installs and is not the normal product path.
 
 ---
 
@@ -72,7 +76,7 @@ Open `http://localhost:8123`. On a fresh data directory you see the setup wizard
 | `PORT` | `8123` | HTTP/WebSocket port. |
 | `CTRL_DATA_DIR` | `./data` | SQLite control-plane state + narrow host workspace mirrors and uploaded files (internal path name kept for compatibility). |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `native` elsewhere | Explicit backend override for development/testing. The macOS product uses `apple`. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:1.1.15` | Versioned OCI machine image built from `container/Containerfile`. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:1.1.16` | Versioned OCI machine image built from `container/Containerfile`. |
 
 On first boot 1Helm starts a private loopback Open-Terminal agent and registers it as **"This Computer"** for Skipper's native-Mac work. Ordinary residents are never assigned that host computer.
 
@@ -215,6 +219,17 @@ npm i -D puppeteer && npx puppeteer browsers install chrome
 node test/ui.mjs
 ```
 
+### Agent-first JSON CLI
+
+```bash
+export HELM_URL=http://127.0.0.1:8123
+export HELM_TOKEN='a 1Helm session token'
+npm run helm -- channels
+printf '%s\n' '{"channel_id":2,"body":"Own this outcome and verify it."}' | npm run helm -- message
+printf '%s\n' '{"channel_id":2,"name":"Weekly evidence","prompt":"Audit the launch and publish a verified status.","interval_seconds":604800}' | npm run helm -- workflow-create
+npm run helm -- audit-verify
+```
+
 ## Security notes
 - Passwords: scrypt. Sessions: random bearer tokens.
 - On macOS, resident agents run inside separate Linux VMs created with `--home-mount none`; no resident is assigned the native "This Computer" endpoint. Workspace file mirrors remain channel-scoped and symlink-contained.
@@ -236,6 +251,5 @@ MIT
 - Release process: [`docs/release-lifecycle.md`](docs/release-lifecycle.md) · checklist [`docs/release-checklist.md`](docs/release-checklist.md)
 - Changes: [`CHANGELOG.md`](CHANGELOG.md) · maintainer notes [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
-**Local directory naming:** the GitHub repository is `1Helm`. Some maintainer hosts still use a historical folder name `ctrl-pane` for the same remote — treat that path as a clone of this repo, not a different product. New clones should use `1Helm` as the directory name.
-
-**CI:** every PR and push to `main` runs typecheck, production build, and `test/pipeline.mjs`.
+**CI:** every PR and push to `main` runs typecheck, production build, and the
+complete `npm test` contract.

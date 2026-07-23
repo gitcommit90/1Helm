@@ -1,13 +1,15 @@
 import { DatabaseSync } from "node:sqlite";
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { BUILTIN_SKILLS } from "./builtin-skills.ts";
 
 export const DATA_DIR = process.env.CTRL_DATA_DIR || join(process.cwd(), "data");
 export const UPLOAD_DIR = join(DATA_DIR, "uploads");
 mkdirSync(UPLOAD_DIR, { recursive: true });
 
 export const db = new DatabaseSync(join(DATA_DIR, "ctrl-pane.db"));
+db.function("sha256", { deterministic: true }, (value: unknown) => createHash("sha256").update(String(value ?? "")).digest("hex"));
 db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
 
 db.exec(`
@@ -269,6 +271,48 @@ export function migrate(): void {
     created INTEGER NOT NULL,
     reviewed INTEGER
   );
+  CREATE TABLE IF NOT EXISTS skill_catalog_state (
+    source TEXT PRIMARY KEY,
+    url TEXT NOT NULL,
+    generated_at TEXT NOT NULL DEFAULT '',
+    refreshed_at INTEGER NOT NULL DEFAULT 0,
+    skill_count INTEGER NOT NULL DEFAULT 0,
+    index_sha256 TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT ''
+  );
+  CREATE TABLE IF NOT EXISTS skill_catalog_installs (
+    identifier TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    trust_level TEXT NOT NULL,
+    repo TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    revision TEXT NOT NULL DEFAULT '',
+    content_sha256 TEXT NOT NULL DEFAULT '',
+    scan_status TEXT NOT NULL DEFAULT 'pending' CHECK (scan_status IN ('pending','clean','blocked')),
+    scan_findings TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','installed','quarantined','removed')),
+    skill_id INTEGER REFERENCES skills(id) ON DELETE SET NULL,
+    installed_at INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS photon_channel_mappings (
+    channel_id INTEGER PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
+    allowed_users TEXT NOT NULL DEFAULT '[]',
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS photon_messages (
+    id INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    external_id TEXT NOT NULL,
+    space_id TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    direction TEXT NOT NULL CHECK (direction IN ('inbound','outbound')),
+    body TEXT NOT NULL,
+    received_at INTEGER NOT NULL,
+    message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_photon_external ON photon_messages(external_id) WHERE external_id<>'';
+  CREATE INDEX IF NOT EXISTS idx_photon_channel_time ON photon_messages(channel_id,received_at DESC);
   CREATE TABLE IF NOT EXISTS agent_templates (
     id INTEGER PRIMARY KEY,
     slug TEXT NOT NULL UNIQUE,
@@ -292,6 +336,36 @@ export function migrate(): void {
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','superseded')),
     created INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS audit_events (
+    sequence INTEGER PRIMARY KEY,
+    source_table TEXT NOT NULL,
+    source_id INTEGER NOT NULL,
+    channel_id INTEGER,
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created INTEGER NOT NULL,
+    previous_hash TEXT NOT NULL,
+    hash TEXT NOT NULL UNIQUE
+  );
+  CREATE INDEX IF NOT EXISTS idx_audit_channel_sequence ON audit_events(channel_id,sequence);
+  CREATE TABLE IF NOT EXISTS agent_workflows (
+    id INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    interval_seconds INTEGER NOT NULL CHECK (interval_seconds BETWEEN 60 AND 31536000),
+    next_run INTEGER NOT NULL,
+    last_run INTEGER,
+    last_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    run_count INTEGER NOT NULL DEFAULT 0,
+    max_runs INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','complete','failed')),
+    last_error TEXT NOT NULL DEFAULT '',
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_agent_workflows_due ON agent_workflows(status,next_run);
   CREATE TABLE IF NOT EXISTS improvement_checkpoints (
     agent_id INTEGER PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
     last_message_id INTEGER NOT NULL DEFAULT 0,
@@ -381,6 +455,13 @@ export function migrate(): void {
   addColumn("threads", "output_tokens", "output_tokens INTEGER NOT NULL DEFAULT 0");
   addColumn("threads", "stopped_followup_pending", "stopped_followup_pending INTEGER NOT NULL DEFAULT 0");
   addColumn("messages", "stopped_followup", "stopped_followup INTEGER NOT NULL DEFAULT 0");
+  addColumn("skills", "provenance_url", "provenance_url TEXT NOT NULL DEFAULT ''");
+  addColumn("skills", "provenance_identifier", "provenance_identifier TEXT NOT NULL DEFAULT ''");
+  addColumn("skills", "provenance_revision", "provenance_revision TEXT NOT NULL DEFAULT ''");
+  addColumn("skills", "content_sha256", "content_sha256 TEXT NOT NULL DEFAULT ''");
+  addColumn("skills", "trust_level", "trust_level TEXT NOT NULL DEFAULT 'workspace'");
+  addColumn("skills", "scan_status", "scan_status TEXT NOT NULL DEFAULT 'clean'");
+  addColumn("skills", "installed_at", "installed_at INTEGER NOT NULL DEFAULT 0");
   addColumn("users", "description", "description TEXT NOT NULL DEFAULT ''");
   addColumn("users", "job_title", "job_title TEXT NOT NULL DEFAULT ''");
   addColumn("users", "avatar", "avatar TEXT NOT NULL DEFAULT ''");
@@ -471,6 +552,40 @@ export function migrate(): void {
     created INTEGER NOT NULL,
     PRIMARY KEY (channel_id, relative_path)
   );
+  `);
+  // Append-only cryptographic continuity for the operational surfaces that
+  // matter when reconstructing delegated work. SQLite triggers ensure events
+  // are chained even when a future code path writes the source table directly.
+  db.exec(`
+  CREATE TRIGGER IF NOT EXISTS audit_channel_activity_insert AFTER INSERT ON channel_activity BEGIN
+    INSERT INTO audit_events (source_table,source_id,channel_id,event_type,payload,created,previous_hash,hash)
+    SELECT 'channel_activity',NEW.id,NEW.channel_id,'activity:' || NEW.kind,
+      json_object('thread_id',NEW.thread_id,'summary',NEW.summary,'status',NEW.status,'actor_type',NEW.actor_type),NEW.created,
+      COALESCE((SELECT hash FROM audit_events ORDER BY sequence DESC LIMIT 1),''),
+      sha256(COALESCE((SELECT hash FROM audit_events ORDER BY sequence DESC LIMIT 1),'') || '|channel_activity|' || NEW.id || '|' || NEW.channel_id || '|activity:' || NEW.kind || '|' || json_object('thread_id',NEW.thread_id,'summary',NEW.summary,'status',NEW.status,'actor_type',NEW.actor_type) || '|' || NEW.created);
+  END;
+  CREATE TRIGGER IF NOT EXISTS audit_tool_action_insert AFTER INSERT ON tool_actions BEGIN
+    INSERT INTO audit_events (source_table,source_id,channel_id,event_type,payload,created,previous_hash,hash)
+    SELECT 'tool_actions',NEW.id,(SELECT channel_id FROM threads WHERE id=NEW.thread_id),'tool:' || NEW.tool,
+      json_object('agent_id',NEW.agent_id,'thread_id',NEW.thread_id,'input_summary',NEW.input_summary,'status',NEW.status),NEW.created,
+      COALESCE((SELECT hash FROM audit_events ORDER BY sequence DESC LIMIT 1),''),
+      sha256(COALESCE((SELECT hash FROM audit_events ORDER BY sequence DESC LIMIT 1),'') || '|tool_actions|' || NEW.id || '|' || COALESCE((SELECT channel_id FROM threads WHERE id=NEW.thread_id),'') || '|tool:' || NEW.tool || '|' || json_object('agent_id',NEW.agent_id,'thread_id',NEW.thread_id,'input_summary',NEW.input_summary,'status',NEW.status) || '|' || NEW.created);
+  END;
+  CREATE TRIGGER IF NOT EXISTS audit_tool_action_update AFTER UPDATE OF status,result_summary ON tool_actions
+    WHEN OLD.status<>NEW.status OR OLD.result_summary<>NEW.result_summary BEGIN
+    INSERT INTO audit_events (source_table,source_id,channel_id,event_type,payload,created,previous_hash,hash)
+    SELECT 'tool_actions',NEW.id,(SELECT channel_id FROM threads WHERE id=NEW.thread_id),'tool-result:' || NEW.tool,
+      json_object('agent_id',NEW.agent_id,'thread_id',NEW.thread_id,'result_summary',NEW.result_summary,'status',NEW.status),CAST(unixepoch('subsec')*1000 AS INTEGER),
+      COALESCE((SELECT hash FROM audit_events ORDER BY sequence DESC LIMIT 1),''),
+      sha256(COALESCE((SELECT hash FROM audit_events ORDER BY sequence DESC LIMIT 1),'') || '|tool_actions|' || NEW.id || '|' || COALESCE((SELECT channel_id FROM threads WHERE id=NEW.thread_id),'') || '|tool-result:' || NEW.tool || '|' || json_object('agent_id',NEW.agent_id,'thread_id',NEW.thread_id,'result_summary',NEW.result_summary,'status',NEW.status) || '|' || CAST(unixepoch('subsec')*1000 AS INTEGER));
+  END;
+  CREATE TRIGGER IF NOT EXISTS audit_skill_install AFTER INSERT ON skill_catalog_installs BEGIN
+    INSERT INTO audit_events (source_table,source_id,channel_id,event_type,payload,created,previous_hash,hash)
+    SELECT 'skill_catalog_installs',NEW.rowid,NULL,'skill-install:' || NEW.status,
+      json_object('identifier',NEW.identifier,'source',NEW.source,'trust_level',NEW.trust_level,'revision',NEW.revision,'content_sha256',NEW.content_sha256,'scan_status',NEW.scan_status,'scan_findings',NEW.scan_findings),NEW.installed_at,
+      COALESCE((SELECT hash FROM audit_events ORDER BY sequence DESC LIMIT 1),''),
+      sha256(COALESCE((SELECT hash FROM audit_events ORDER BY sequence DESC LIMIT 1),'') || '|skill_catalog_installs|' || NEW.rowid || '||skill-install:' || NEW.status || '|' || json_object('identifier',NEW.identifier,'source',NEW.source,'trust_level',NEW.trust_level,'revision',NEW.revision,'content_sha256',NEW.content_sha256,'scan_status',NEW.scan_status,'scan_findings',NEW.scan_findings) || '|' || NEW.installed_at);
+  END;
   `);
   addColumn("channel_computers", "low_pressure_streak", "low_pressure_streak INTEGER NOT NULL DEFAULT 0");
   addColumn("channel_computers", "last_update", "last_update INTEGER NOT NULL DEFAULT 0");
@@ -585,7 +700,7 @@ export function migrate(): void {
     // developer deliberately opts into the native compatibility backend.
     const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || (process.platform === "darwin" ? "apple" : "native"));
     const backend = ["apple", "native", "mock"].includes(configuredBackend) ? configuredBackend : "native";
-    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.15");
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.16");
     for (const channel of q(`SELECT c.id FROM channels c JOIN agent_channels ac ON ac.channel_id=c.id
       WHERE c.kind='channel' AND c.status<>'deleted'`)) {
       const channelId = Number(channel.id);
@@ -632,27 +747,22 @@ export function migrate(): void {
     }
 
     const shippedSkills = [
-      ["self-hosting-guide", "Self-hosting guide", "Recognize opportunities for private, user-owned alternatives and walk newcomers through them.", "self-hosting", "Proactively notice when a user could benefit from owning a service or their data. Offer a plain-language self-hosted option (for example Nextcloud for Drive, Immich for Photos, Vaultwarden for passwords, or Paperless-ngx for documents), explain the benefit without assuming prior server knowledge, and offer to let Skipper provision it. Do not derail unrelated work or pressure the user."],
-      ["capability-discovery", "Capability discovery", "Use the global skill catalog and request durable capability upgrades from Skipper.", "meta", "You know the complete workspace skill catalog even when a skill is not assigned to you. When a listed skill would materially help, use request_skill. Provisioned skills are permanent. When no listed skill fits a reusable solved problem, use propose_skill so Skipper can turn it into a shared capability."],
-      ["skill-creator", "Skill creator", "Turn a repeatable solution into a safe, reusable workspace skill.", "meta", "Identify repeatable workflows after solving them. Propose a concise name, when-to-use description, and durable behavioral instructions. Skills are workspace-visible and must never contain secrets or user-specific credentials."],
-      ["durable-memory", "Durable memory", "Capture useful facts, decisions, preferences, and lessons in Mnemosyne-backed memory.", "memory", "Recall relevant durable memory before acting. Record decisions, stable facts, preferences, artifact references, and learned interaction guidance with provenance. Do not save secrets or dump raw transcripts as memory."],
-      ["workspace-artifacts", "Workspace artifacts", "Create inspectable files and artifacts in the channel workspace.", "computer", "Prefer durable, inspectable artifacts in /workspace for substantive outputs. Keep paths clear and link results back to the conversation."],
-      ["research", "Research", "Plan evidence-driven research and preserve sources and conclusions.", "knowledge", "For research tasks, separate claims from evidence, preserve useful source references, identify uncertainty, and produce an actionable synthesis."],
-      ["project-planning", "Project planning", "Break goals into owned milestones, risks, and next actions.", "productivity", "Translate broad goals into a lightweight plan with concrete outcomes, dependencies, risks, and next actions. Update the plan as reality changes."],
-      ["home-ops", "Home operations", "Help run household services, routines, inventories, and self-hosted home tools.", "personal", "Use approachable language for household workflows. Suggest automation or self-hosted services only when they reduce real friction, and involve Skipper for installation or credentials."],
-      ["inbox-triage", "Inbox triage", "Organize inbound work while preserving user control over sending and deletion.", "communication", "Summarize and prioritize inbound items, draft next actions, and preserve explicit human approval for sending, deleting, or other irreversible actions."],
-      ["quality-verification", "Quality verification", "Verify requested outcomes before claiming completion.", "quality", "Match verification to the user's actual request. Run relevant checks, inspect resulting state, call out uncertainty, and never claim completion from intent alone."],
-      ["image-generation", "Image Generation", "Create images automatically whenever a healthy ChatGPT subscription account is connected.", "media", "Use when Image Generation is active through a connected ChatGPT account. When asked to generate or illustrate: write a precise visual prompt, call the ChatGPT-backed image tool, save the result into the channel workspace, and attach it to the message so the human sees the image in chat — never only a host path. Do not invent credentials. If generation fails, report the concrete provider error and ask Skipper only if host/provider setup is broken."],
+      ...BUILTIN_SKILLS.map((entry) => [entry.slug, entry.name, entry.description, entry.category, entry.instructions]),
+      ["image-generation", "Image Generation", "Create images automatically whenever a healthy ChatGPT subscription account is connected.", "media", "Use when Image Generation is active through a connected ChatGPT account. When asked to generate or illustrate: write a precise visual prompt, call the ChatGPT-backed image tool, save the result into the channel workspace, and attach it to the message so the human sees the image in chat — never only a host path. Do not invent credentials. If generation fails, report the concrete provider error and call Skipper directly only if host/provider setup is broken."],
     ];
     for (const skill of shippedSkills) run(`INSERT INTO skills (slug,name,description,category,instructions,source,status,created,updated)
       VALUES (?,?,?,?,?,'shipped','active',?,?) ON CONFLICT(slug) DO UPDATE SET name=excluded.name,description=excluded.description,category=excluded.category,instructions=excluded.instructions,updated=excluded.updated`, ...skill, now(), now());
+    // Superseded prerelease prompt snippets stay in history but no longer
+    // appear as active arsenal entries. Their complete operational successors
+    // above are installed for every resident.
+    run("UPDATE skills SET status='retired',updated=? WHERE slug IN ('home-ops','inbox-triage')", now());
 
     const templates = [
-      ["general", "Blank slate", "A minimal resident specialist that grows around this channel.", "Own and coordinate this area of work.", "Start lightweight. Learn the user's vocabulary, standards, and preferred workflow over time.", '["capability-discovery","durable-memory","workspace-artifacts","quality-verification"]', "helm", 0],
-      ["project", "Project partner", "Plans, builds, tracks decisions, and improves with the project.", "Plan and deliver a project from idea through verified outcomes.", "Keep a current view of goals, milestones, risks, decisions, and artifacts without imposing ceremony.", '["capability-discovery","durable-memory","workspace-artifacts","project-planning","quality-verification"]', "sliders", 10],
-      ["research", "Research partner", "Investigates a subject and builds durable, sourced understanding.", "Research this subject and turn evidence into useful decisions.", "Track open questions, source quality, findings, and changing conclusions.", '["capability-discovery","durable-memory","workspace-artifacts","research","quality-verification"]', "search", 20],
-      ["home", "Home operator", "Helps with household systems and approachable self-hosting.", "Help run a household area, its routines, services, and information.", "Assume no self-hosting expertise. Explain options plainly and learn which tradeoffs matter to this household.", '["capability-discovery","durable-memory","workspace-artifacts","home-ops","self-hosting-guide"]', "home", 30],
-      ["inbox", "Inbox partner", "Triages inbound work and drafts actions without taking control away.", "Triage incoming messages and turn them into clear priorities and drafts.", "Learn the user's priorities and voice. Require human approval for sending or destructive actions.", '["capability-discovery","durable-memory","inbox-triage","quality-verification"]', "mail", 40],
+      ["general", "Blank slate", "A capable resident operator that specializes around this channel over time.", "Own and coordinate this area of work.", "Learn the user's vocabulary, standards, preferences, tools, and proven procedures. Own requested outcomes and compound that knowledge over the lifetime of the channel.", '["outcome-ownership","blocker-resolution","skipper-escalation","capability-discovery","durable-memory","workspace-artifacts","quality-verification"]', "helm", 0],
+      ["project", "Project partner", "Plans, builds, tracks decisions, and improves with the project.", "Plan and deliver a project from idea through verified outcomes.", "Keep a current view of goals, milestones, risks, decisions, obligations, and artifacts without imposing ceremony.", '["outcome-ownership","project-planning","durable-obligations","durable-memory","workspace-artifacts","quality-verification"]', "sliders", 10],
+      ["research", "Research partner", "Investigates a subject and builds durable, sourced understanding.", "Research this subject and turn evidence into useful decisions.", "Track open questions, source quality, findings, changing conclusions, and reusable evidence.", '["outcome-ownership","research","browser-operations","durable-memory","workspace-artifacts","quality-verification"]', "search", 20],
+      ["home", "Home operator", "Runs household systems, recurring life administration, and approachable self-hosting.", "Help run a household area, its routines, services, obligations, and information.", "Assume no self-hosting expertise. Explain options plainly, learn the household's preferences, and carry accepted work through deployment and verification.", '["outcome-ownership","personal-operations","durable-obligations","self-hosting-guide","durable-memory","quality-verification"]', "home", 30],
+      ["inbox", "Inbox partner", "Triages correspondence and turns it into drafts, decisions, and durable follow-through.", "Triage incoming messages and carry the resulting work to completion.", "Learn the user's priorities and voice. Use brokered access, create drafts autonomously, and preserve human judgment for consequential sending or deletion.", '["outcome-ownership","email-operations","message-operations","durable-obligations","durable-memory","quality-verification"]', "mail", 40],
     ];
     for (const template of templates) run(`INSERT INTO agent_templates (slug,name,description,purpose_hint,instructions,skill_slugs,icon,sort_order,status)
       VALUES (?,?,?,?,?,?,?,?,'active') ON CONFLICT(slug) DO UPDATE SET name=excluded.name,description=excluded.description,purpose_hint=excluded.purpose_hint,instructions=excluded.instructions,skill_slugs=excluded.skill_slugs,icon=excluded.icon,sort_order=excluded.sort_order`, ...template);
@@ -663,15 +773,9 @@ export function migrate(): void {
       run("INSERT OR IGNORE INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) VALUES (?,?,?,'Skipper has the full workspace skill arsenal.',1,?)", skipper.id, skill.id, skipper.id, now());
     }
     for (const agent of q("SELECT a.id,p.purpose FROM agents a LEFT JOIN agent_profiles p ON p.agent_id=a.id WHERE a.kind='channel' AND a.status<>'deleted'")) {
-      const core = ["capability-discovery", "durable-memory", "workspace-artifacts", "quality-verification"];
-      const purpose = String(agent.purpose || "").toLowerCase();
-      if (/research|investigat|evidence|study/.test(purpose)) core.push("research");
-      if (/project|launch|build|plan|product|campaign/.test(purpose)) core.push("project-planning");
-      if (/home|house|family|photo|document|drive|storage|server|self.?host/.test(purpose)) core.push("home-ops", "self-hosting-guide");
-      if (/mail|email|inbox|message|support/.test(purpose)) core.push("inbox-triage");
-      for (const slug of new Set(core)) {
+      for (const slug of BUILTIN_SKILLS.map((entry) => entry.slug)) {
         const skill = q1("SELECT id FROM skills WHERE slug=?", slug);
-        if (skill) run("INSERT OR IGNORE INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) VALUES (?,?,?,'Provisioned from the agent purpose.',1,?)", agent.id, skill.id, skipper?.id ?? null, now());
+        if (skill) run("INSERT OR IGNORE INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) VALUES (?,?,?,'Part of the safe built-in resident arsenal.',1,?)", agent.id, skill.id, skipper?.id ?? null, now());
       }
     }
     if (tableColumns("bot_skills").length && tableColumns("skills_legacy_v1").length) {

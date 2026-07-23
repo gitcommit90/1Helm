@@ -80,12 +80,12 @@ curl -fsS "http://127.0.0.1:18123/api/setup/status"
 
 Expect first-run / needs_setup on empty data dir.
 
-## 7. Cold VPS verify (when shipping install path)
+## 7. Clean deployment verify (when shipping install path)
 
 ```bash
-./scripts/deploy-vps-fresh.sh
-# confirm public URL setup status needs_setup: true
-# walk wizard once if this cut changes onboarding
+# use the maintainer's host-local deployment procedure
+# confirm the clean endpoint reports needs_setup: true
+# walk the wizard once if this cut changes onboarding
 ```
 
 ## 8. Evidence block
@@ -95,6 +95,6 @@ Version:        <package version>
 Merged commit:  <origin/main SHA>
 Tag/Release:    <if any>
 Local setup:    needs_setup verified on clean CTRL_DATA_DIR
-VPS cold:       <pass / skipped + reason>
+Clean deploy:   <pass / skipped + reason>
 CI:             Actions green on main
 ```

@@ -1,0 +1,10 @@
+# Copy to /etc/cloudflared/config-1helm-site.yml after creating a dedicated
+# named tunnel. Keep the generated credentials file host-local.
+tunnel: REPLACE_WITH_DEDICATED_TUNNEL_UUID
+credentials-file: /etc/cloudflared/REPLACE_WITH_DEDICATED_TUNNEL_UUID.json
+ingress:
+  - hostname: 1helm.com
+    service: http://127.0.0.1:8130
+  - hostname: www.1helm.com
+    service: http://127.0.0.1:8130
+  - service: http_status:404

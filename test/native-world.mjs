@@ -123,7 +123,13 @@ try {
   const catalog = await api("/api/skills", {}, captain);
   ok(templates.body.templates?.length >= 5 && templates.body.templates.some((template) => template.slug === "home"), "bare-bones growing-agent templates ship in the product");
   const arsenal = (catalog.body.skills || []).filter((skill) => !skill.arsenal_locked);
-  ok(arsenal.some((skill) => skill.slug === "self-hosting-guide") && main.agent.skills.length === arsenal.length, "Skipper starts with the complete shipped skill arsenal");
+  ok(arsenal.length >= 30 && arsenal.some((skill) => skill.slug === "outcome-ownership")
+    && arsenal.some((skill) => skill.slug === "email-operations")
+    && arsenal.some((skill) => skill.slug === "message-operations")
+    && arsenal.some((skill) => skill.slug === "software-delivery")
+    && arsenal.every((skill) => String(skill.instructions || "").length >= 300)
+    && main.agent.skills.length === arsenal.length,
+  "Skipper starts with a substantial complete operational arsenal rather than generic prompt snippets");
   const learned = await api("/api/skills/learn", { body: { notes: "Turn our incident notes into a reusable postmortem skill." } }, captain);
   ok(learned.status === 202 && learned.body.channelId === main.id && /@skipper[\s\S]*create_skill/i.test(learned.body.message.body), "Learn a new skill opens a visible Skipper thread that gathers sources and authors through create_skill");
   await waitFor(async () => (await api("/api/skills", {}, captain)).body.skills?.some((skill) => skill.slug === "incident-postmortem"), "learned skill creation");
@@ -151,7 +157,10 @@ try {
   ok(launchCreate.status === 201 && launch.agent?.kind === "channel", "creating a channel atomically provisions its resident agent");
   ok(launch.agent?.name === "launch-agent" && launch.agent.status === "ready", "resident identity is ready and derived from channel purpose");
   ok(/^color:#[0-9A-F]{6}$/.test(launch.agent.runtime.avatar), "new resident agents receive a customizable random flat-color avatar");
-  ok(launch.slug === "launch" && launch.agent.skills.some((skill) => skill.slug === "project-planning"), "template provisions a useful permanent starter skill kit while preserving a normal channel identity");
+  ok(launch.slug === "launch" && launch.agent.skills.length === arsenal.length
+    && launch.agent.skills.some((skill) => skill.slug === "outcome-ownership")
+    && launch.agent.skills.some((skill) => skill.slug === "project-planning"),
+  "every resident permanently owns the safe built-in arsenal while preserving a normal channel identity");
   const deepRoute = await fetch(`${base}/c/${launch.slug}/memory`);
   ok(deepRoute.status === 200 && /id="app"/.test(await deepRoute.text()), "slug-based channel deep links serve the application shell");
   const deepRouteHead = await fetch(`${base}/c/${launch.slug}/thread/123`, { method: "HEAD" });
@@ -554,6 +563,14 @@ try {
     return result.body.escalations?.some((item) => /need host whoami/i.test(item.reason) && item.status === "resolved") && result.body.actions?.some((item) => item.tool === "run_command" && item.status === "complete") ? result.body : null;
   }, "channel-agent call_skipper escalation");
   ok(Boolean(escalationActivity), "a channel-agent call_skipper escalation authorizes Skipper to run the host command and resolves visibly");
+  const automaticReturn = await waitFor(async () => {
+    const thread = await api(`/api/messages/${escalationRoot.body.message.id}/thread`, {}, captain);
+    const replies = thread.body.replies || [];
+    const residentReplies = replies.filter((message) => message.author?.name === afterRestart.agent.name && message.body !== "_Working…_");
+    const handoff = replies.some((message) => message.author?.name === "skipper" && /Calling \*\*@.*-agent/i.test(String(message.body || "")));
+    return residentReplies.length >= 2 && handoff ? { residentReplies: residentReplies.length, handoff } : null;
+  }, "automatic Skipper-to-resident return", 20_000);
+  ok(Boolean(automaticReturn), "runtime automatically returns a resident escalation after Skipper unblocks it even when the Skipper model omits call_agent");
 
   // Skipper hand-back: after unblocking, Skipper must re-invoke the resident via call_agent
   // so the Captain never has to re-tag the agent (symmetric with call_skipper).

@@ -96,7 +96,19 @@ export type RoutingState = {
 export async function routingAction<T = Record<string, unknown>>(action: string, payload?: unknown): Promise<T> {
   return api<T>("/api/routing/action", { body: { action, payload } });
 }
-export type Skill = { id?: number; slug: string; name: string; description: string; category: string; instructions?: string; assigned?: boolean };
+export type Skill = {
+  id?: number; slug: string; name: string; description: string; category: string; instructions?: string; assigned?: boolean;
+  source?: string; trust_level?: string; provenance_url?: string; provenance_identifier?: string; provenance_revision?: string;
+  content_sha256?: string; scan_status?: string; installed_at?: number;
+};
+export type SkillCatalogStatus = {
+  available: boolean; source: string; generated_at: string; refreshed_at: number; skill_count: number;
+  builtin: number; trusted: number; community: number; error: string;
+};
+export type SkillCatalogResult = {
+  name: string; description: string; source: string; identifier: string; trust_level: string;
+  repo?: string; path?: string; tags?: string[];
+};
 export type AgentTemplate = { id: number; slug: string; name: string; description: string; purpose_hint: string; skill_slugs: string[]; icon: string };
 export type WorkspaceDomain = { id: number; hostname: string; provider: "cloudflare"; status: "connecting" | "active" | "error"; error: string; verified: number | null };
 export type Collaboration = {

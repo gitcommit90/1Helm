@@ -1,14 +1,13 @@
 # Project governance — 1Helm
 
-1Helm is a private, maintainer-driven product repository (`gitcommit90/1Helm`). This document defines how changes land so the project is not treated as a throwaway side checkout.
+1Helm is an open-source, maintainer-led product repository. This document
+defines how changes land and how release evidence is preserved.
 
 ## Product names
 
 | Name | Meaning |
 | --- | --- |
 | **1Helm** | Product and GitHub repository (`1Helm`). The installed host / control plane. |
-| **1Herd** | Product surface for the native agent workspace (channel-resident agents, computers, memory) evolving on feature branches / draft PRs. |
-| **ctrl-pane** | Historical local directory name on ProxUI (`/root/ctrl-pane`). Prefer cloning as `1Helm` going forward; do not rename a dirty worktree without an explicit plan. |
 
 npm package name remains `1helm` (lowercase).
 
@@ -17,8 +16,8 @@ npm package name remains `1helm` (lowercase).
 | Role | Who | Authority |
 | --- | --- | --- |
 | Maintainer | Repository owner (`gitcommit90`) | Merge to `main`, deploy demo VPS, tags/releases, policy |
-| Agents / automation | Hermes, Codex, CI | Branch, test, open PRs; no silent production restarts without approval |
-| External contributors | N/A while private | Repo is private; no external PR process yet |
+| Agents / automation | Resident tools and CI | Branch, test, open PRs, and report verifiable evidence within granted authority |
+| Contributors | GitHub contributors | Issues and focused pull requests under the repository policy |
 
 ## Source of truth
 
@@ -29,9 +28,8 @@ npm package name remains `1helm` (lowercase).
 | Native agent-workspace spec (when present on branch) | `SPEC.md` |
 | User-facing history | `CHANGELOG.md` + GitHub Releases (when used) |
 | Ship / deploy procedure | `docs/release-lifecycle.md`, `docs/release-checklist.md` |
-| Maintainer agent notes | `CLAUDE.md` (in-repo); Mattermost **#1helm** for ops chat |
-
-Host-local Hermes notes (`/root/AGENTS.md`) are **ReRouted**, not 1Helm. Do not follow them in this repo.
+Host-local machine aliases, credentials, signing setup, live data paths, and
+operator-only deployment procedures are not repository artifacts.
 
 ## Branch model
 
@@ -43,7 +41,9 @@ Host-local Hermes notes (`/root/AGENTS.md`) are **ReRouted**, not 1Helm. Do not 
 - **Delete head branches on merge.**
 - No force-push to `main`.
 
-Large vertical slices (e.g. native 1Herd) may sit as **draft PRs** until verification is complete. Draft ≠ abandoned: update `CHANGELOG.md` Unreleased and `docs/VISION.md` as the slice hardens.
+Large vertical slices may sit as **draft PRs** until verification is complete.
+Draft does not mean abandoned: update `CHANGELOG.md` and the public product
+contract as the slice hardens.
 
 ## Quality bar (every change to `main`)
 
@@ -51,7 +51,7 @@ Large vertical slices (e.g. native 1Herd) may sit as **draft PRs** until verific
 2. `npm run typecheck` and `npm run build` green.
 3. Relevant automated tests green (`npm test` = pipeline suite on `main`; feature branches add their suites when introduced).
 4. `git diff --check` clean.
-5. No secrets, private VPS credentials in README, real provider keys, or `data/` SQLite dumps.
+5. No secrets, operator hosts/paths, real provider keys, or `data/` SQLite dumps.
 6. Significant product decisions recorded in `docs/VISION.md`.
 7. User-visible changes noted under `CHANGELOG.md` → `## [Unreleased]`.
 
@@ -59,25 +59,19 @@ Large vertical slices (e.g. native 1Herd) may sit as **draft PRs** until verific
 
 - Semantic versioning on `package.json`.
 - **Do not** reuse a published version tag for different bits.
-- Until consumer installers exist, a “release” is: version bump + changelog section + optional git tag + verified deploy path (local and/or cold VPS).
+- A release requires a unique version, changelog, exact tag, verified public
+  artifact, and platform-appropriate clean installation evidence.
 
-## Deploy surfaces
-
-| Surface | Role |
-| --- | --- |
-| ProxUI `/root/ctrl-pane` (and worktrees) | Primary development; ports **8123** (main tree / systemd `1helm.service`) and often **8124** (feature worktree) |
-| `ssh demo1helm` VPS | Fresh-user sandbox only — cold wipe by default (`scripts/deploy-vps-fresh.sh`) |
-
-Never hand-edit product files only on the VPS to “fix prod.” Fix in git, redeploy.
+Never hand-edit only a deployment target to fix the product. Fix in git,
+review, merge, and redeploy the exact source commit.
 
 ## Repository settings (expected)
 
-- Private until an explicit open-source decision.
 - Delete head branches on merge: **on**
 - Squash merge: **on**
 - Wiki/projects: off unless needed
 - GitHub Actions: typecheck + build + pipeline tests on `main` and PRs
-- Branch protection: enable when the GitHub plan allows (private free orgs may block it)
+- Required CI status checks protect `main`.
 
 ## Policy changes
 

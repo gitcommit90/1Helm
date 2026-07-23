@@ -638,7 +638,9 @@ export async function archiveChannel(channelId: number): Promise<void> {
       now(),
       channelId,
     );
+    run("UPDATE agent_workflows SET status='paused',updated=?,last_error='channel archived' WHERE channel_id=? AND status='active'", now(), channelId);
     run("UPDATE channel_computer_obligations SET status='cancelled',updated=? WHERE channel_id=? AND kind='followup' AND status='active'", now(), channelId);
+    run("UPDATE channel_computer_obligations SET status='cancelled',updated=? WHERE channel_id=? AND kind='workflow' AND status='active'", now(), channelId);
     run("INSERT INTO channel_activity (channel_id, kind, summary, actor_type, created) VALUES (?,'lifecycle','Channel archived; agent world preserved.','system',?)", channelId, now());
   });
 }

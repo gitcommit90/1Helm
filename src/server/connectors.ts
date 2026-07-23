@@ -9,6 +9,7 @@ const ROOT = join(DATA_DIR, "cloudflare");
 const processes = new Map<string, ChildProcess>();
 const desired = new Set<string>();
 const relaunchTimers = new Map<string, NodeJS.Timeout>();
+const generations = new Map<string, number>();
 const RELAUNCH_MS = Math.max(25, Number(process.env.HELM_CONNECTOR_RELAUNCH_MS) || 5000);
 let shuttingDown = false;
 
@@ -60,12 +61,14 @@ export function connectorConfigured(id: string): boolean {
 
 export function startTunnelConnector(id: string): void {
   if (shuttingDown) return;
+  const generation = (generations.get(id) || 0) + 1;
+  generations.set(id, generation);
   desired.add(id);
   if (processes.get(id)?.exitCode == null && processes.has(id)) return;
   const config = join(connectorDir(id), "config.yml");
   if (!existsSync(config)) throw new Error("The workspace connector is not configured.");
   const schedule = (): void => {
-    if (shuttingDown || !desired.has(id) || relaunchTimers.has(id)) return;
+    if (shuttingDown || !desired.has(id) || generations.get(id) !== generation || relaunchTimers.has(id)) return;
     const timer = setTimeout(() => {
       relaunchTimers.delete(id);
       launch();
@@ -74,25 +77,30 @@ export function startTunnelConnector(id: string): void {
     relaunchTimers.set(id, timer);
   };
   const launch = (): void => {
-    if (shuttingDown || !desired.has(id) || processes.has(id)) return;
+    if (shuttingDown || !desired.has(id) || generations.get(id) !== generation || processes.has(id)) return;
     const child = spawn(connectorBinary(), ["--no-autoupdate", "--config", config, "tunnel", "run"], {
       stdio: ["ignore", "ignore", "pipe"],
       env: process.env,
     });
     let stderr = "";
+    let settled = false;
     child.stderr?.on("data", (chunk) => { stderr = (stderr + String(chunk)).slice(-4000); });
     processes.set(id, child);
-    child.once("error", () => { processes.delete(id); schedule(); });
-    child.once("exit", () => {
-      processes.delete(id);
+    const finished = (): void => {
+      if (settled) return;
+      settled = true;
+      if (processes.get(id) === child) processes.delete(id);
       schedule();
       if (stderr) console.warn(`1Helm Cloudflare connector ${id} stopped: ${stderr.split("\n").filter(Boolean).at(-1) || "unknown error"}`);
-    });
+    };
+    child.once("error", finished);
+    child.once("exit", finished);
   };
   launch();
 }
 
 export function stopTunnelConnector(id: string): void {
+  generations.set(id, (generations.get(id) || 0) + 1);
   desired.delete(id);
   const timer = relaunchTimers.get(id);
   if (timer) clearTimeout(timer);

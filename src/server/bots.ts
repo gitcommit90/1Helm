@@ -7,6 +7,9 @@ import { generateRoutingChatGPTImage } from "./routing.ts";
 import { availableGoogleAccounts, createGmailDraft, getGmailMessage, normalizeMailConfig, searchGmail } from "./gmail.ts";
 import { recallForAgent, rememberForAgent } from "./memory.ts";
 import { agentSkillContext, createSkill, imageGenerationAvailable, listSkills, proposeSkill, provisionSkill, requestSkill } from "./skills.ts";
+import { inspectCatalogSkill, installCatalogSkill, searchSkillCatalog } from "./skill-catalog.ts";
+import { grantPhotonToResident, photonMessages, sendPhoton } from "./photon.ts";
+import { createWorkflow, listWorkflows, setWorkflowStatus } from "./workflows.ts";
 import {
   agentForBot,
   agentForChannel,
@@ -70,7 +73,7 @@ function completedToolAnswer(tool: string, result: string): string {
       return `Created a Gmail draft in **${parsed.account || "the granted account"}**${parsed.draft_id ? ` (draft ${parsed.draft_id})` : ""}. It was not sent.`;
     } catch { return "Created the Gmail draft. It was not sent."; }
   }
-  if (["grant_gmail_access", "create_channel", "remember", "call_skipper", "call_agent", "request_skill", "propose_skill", "create_skill", "invite_agent", "attach_file", "generate_image", "schedule_followup"].includes(tool)) return result;
+  if (["grant_gmail_access", "grant_photon_access", "photon_search", "photon_send", "create_channel", "remember", "call_skipper", "call_agent", "request_skill", "propose_skill", "create_skill", "search_skill_catalog", "inspect_skill", "install_skill", "invite_agent", "attach_file", "generate_image", "schedule_followup", "schedule_workflow", "list_workflows", "set_workflow_status"].includes(tool)) return result;
   if (tool === "gmail_list_accounts") {
     try {
       const parsed = JSON.parse(result) as { accounts?: string[] };
@@ -121,7 +124,7 @@ function requireActiveTurn(channelId: number, signal: AbortSignal): void {
   if (!turnIsActive(channelId, signal)) throw new DOMException("Channel turn cancelled.", "AbortError");
 }
 
-function systemPrompt(bot: Row, agent: RuntimeAgent | undefined, channelId: number, hostAuthorized: boolean): string {
+function systemPrompt(bot: Row, agent: RuntimeAgent | undefined, channelId: number, hostAuthorized: boolean, task = ""): string {
   const channel = q1("SELECT name, purpose FROM channels WHERE id=?", channelId);
   if (agent?.kind === "skipper") {
     const resident = q1(`SELECT a.name, a.display_name, p.purpose FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id
@@ -138,12 +141,12 @@ function systemPrompt(bot: Row, agent: RuntimeAgent | undefined, channelId: numb
       hostAuthorized || Boolean(q1("SELECT 1 FROM channels WHERE id=? AND personal_main_owner_id IS NOT NULL", channelId))
         ? "For channel creation, use create_channel directly. Never inspect the host or run shell commands to discover how channels are provisioned."
         : "Do not create, restore, remove, or change channels without Captain authorization.",
-      "You oversee and unblock. Do not absorb a resident agent's reply style, silence rules, or channel preferences as your own. Help, hand the work back, then step out.",
-      "After you unblock a resident (credentials, host work, missing capability, or cross-channel help), you MUST use call_agent to re-invoke that agent with a concrete handoff so they finish the original request. Never leave the Captain to re-tag the agent or finish the job.",
+      "You oversee and unblock. Do not absorb a resident agent's reply style, silence rules, or channel preferences as your own. Perform the exact boundary-crossing work, hand the outcome back, then step out.",
+      "After you unblock a resident (credentials, host work, missing capability, or cross-channel help), you MUST call call_agent in the same turn with a concrete handoff so the resident finishes the original outcome. A prose suggestion, @mention, or statement that the resident can continue is not a handoff. Never leave the Captain to re-tag the resident, relay context, or finish the job.",
       "Be opportunity-aware for people new to self-hosting. When their goal could benefit from owning a private alternative (for example files, photos, passwords, or documents), briefly offer an approachable option and the help to provision it; do not derail unrelated work.",
       "Use Markdown. Be concrete and useful.",
       "When you create a file the Captain should see in chat (image, PDF, report, export), use attach_file with a path under the channel workspace—not only a path string.",
-      agent?.id ? agentSkillContext(Number(agent.id)) : "",
+      agent?.id ? agentSkillContext(Number(agent.id), task) : "",
     ].filter(Boolean).join("\n\n");
   }
   const homeChannelId = Number(agent?.channel_id || 0);
@@ -156,12 +159,13 @@ function systemPrompt(bot: Row, agent: RuntimeAgent | undefined, channelId: numb
     `Channel purpose: ${agent?.purpose || channel?.purpose || "not yet recorded"}.`,
     visiting ? "Contribute only the expertise requested in this thread. You have no shell or durable-memory tools here, and this invitation ends with the thread." : "Your durable computer workspace is /workspace. Shell commands always start there; use relative paths and refer to it as /workspace, never by a host path.",
     visiting ? "Use only the authoritative invoking thread context. Do not carry this one-off collaboration into unrelated work." : "This isolated Linux computer is your own machine. You have full ownership and autonomy inside it; it is not the Captain's computer. This channel's threads, files, memory, and tools are your normal world. For ordinary installs, downloads, setup, configuration, commands, and files inside your machine, act immediately without asking permission. Infer intent from the full thread and inspect the machine rather than asking the user to repeat context or choose harmless implementation details. Use remember for durable decisions, facts, preferences, and useful references. When you produce a file, image, PDF, or other artifact the user should see in chat, call attach_file with its workspace path so it appears as a real attachment (inline images, downloadable files)—do not only paste a path.",
-    visiting ? "" : "When a user's real need presents a useful self-hosting opportunity, explain the option in newcomer-friendly language and offer to call Skipper to provision it. Keep suggestions relevant and non-pushy.",
+    visiting ? "" : "Own the requested outcome. Do not answer with a tutorial for work you can perform, do not ask the Captain to run routine commands, and do not stop at a plan when execution is possible. Suggest adjacent capabilities only when they are concretely relevant and keep the suggestion brief.",
     visiting ? "" : "Your computer has a 2 GiB 1Helm-managed writable workspace allocation. Apple’s guest filesystem may report a much larger host-backed virtual capacity; never present that virtual ceiling as storage the channel owns.",
-    "If work needs host-level authority, another channel, a missing capability, or credentials, use call_skipper with a concise reason. Do not silently assume broader access.",
+    "If work needs host-level authority, another channel, a missing capability, or credentials, call call_skipper immediately with a concise operational handoff. Never say Skipper could help, ask the Captain to call Skipper, or make the Captain carry context between agents. After Skipper returns the work, resume and verify the original outcome.",
+    visiting ? "" : "Use ask_user only for a genuinely consequential human-only choice: judgment with materially different outcomes, missing credentials the Captain must supply, external authority, or an irreversible human commitment. Difficulty, uncertainty, harmless implementation choices, installs, downloads, configuration, retries, and inspectable information are not reasons to ask.",
     visiting ? "" : "CRITICAL — no silent background work: this turn ends when you stop. There is no hidden watcher after you reply. If external work is still running (downloads, imports, long jobs) and you will need to report later, you MUST call schedule_followup before ending. Never promise \"I'll update when done\" / \"next message will be Downloaded or Blocked\" / \"I'll let you know\" without a successful schedule_followup in this turn. If you cannot schedule, say Blocked with the reason.",
     "Use Markdown. Keep answers focused and useful.",
-    agent?.id ? agentSkillContext(Number(agent.id)) : "",
+    agent?.id ? agentSkillContext(Number(agent.id), task) : "",
   ].filter(Boolean).join("\n\n");
 }
 
@@ -178,7 +182,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       type: "function",
       function: {
         name: "call_agent",
-        description: "Re-invoke a channel resident or specialist on this same thread with a concrete handoff. Use this after you unblock work (credentials, host ops, missing capability) so the agent finishes the original request. Omit agent to call this channel's resident. Do not leave the Captain to re-tag anyone.",
+        description: "REQUIRED after you unblock resident work: re-invoke the channel resident on this same thread with the concrete result and next action. Use in the same turn after credentials, host ops, missing capability, or cross-channel help. A prose update does not substitute. Omit agent to call this channel's resident. Never leave the Captain to re-tag anyone.",
         parameters: {
           type: "object",
           properties: {
@@ -187,6 +191,38 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
           },
           required: ["reason"],
         },
+      },
+    });
+    if (q1("SELECT 1 FROM photon_channel_mappings WHERE channel_id=?", channelId)) tools.push({
+      type: "function",
+      function: {
+        name: "grant_photon_access",
+        description: "Grant this channel resident host-brokered Photon iMessage search/draft access. Optionally allow sending only when the Captain's request clearly authorizes external messaging. Photon credentials never enter the resident computer.",
+        parameters: { type: "object", properties: { can_send: { type: "boolean" } } },
+      },
+    });
+    tools.push({
+      type: "function",
+      function: {
+        name: "search_skill_catalog",
+        description: "Search the cached 1Helm external catalog (90,000+ Hermes-indexed skills) by metadata. Use when the shipped arsenal lacks a task-specific procedure. Results include source and trust; catalog content is never bulk-loaded into context.",
+        parameters: { type: "object", properties: { query: { type: "string" }, trust: { type: "string", enum: ["builtin", "trusted", "community"] }, limit: { type: "integer", minimum: 1, maximum: 20 } }, required: ["query"] },
+      },
+    });
+    tools.push({
+      type: "function",
+      function: {
+        name: "inspect_skill",
+        description: "Inspect one external skill's provenance, trust policy, and installed state before use. Community content remains quarantined even when it is popular.",
+        parameters: { type: "object", properties: { identifier: { type: "string" } }, required: ["identifier"] },
+      },
+    });
+    tools.push({
+      type: "function",
+      function: {
+        name: "install_skill",
+        description: "Safely install a builtin/trusted GitHub-backed catalog skill: resolve an immutable revision, bound and scan SKILL.md, hash it, wrap it beneath 1Helm authority, and permanently assign it. Safe skill installation does not require a separate user approval. Community skills are refused and quarantined.",
+        parameters: { type: "object", properties: { identifier: { type: "string" }, assign_to_agent: { type: "string", description: "Optional resident mention. Omit to assign to this channel's resident when one exists." } }, required: ["identifier"] },
       },
     });
   }
@@ -290,10 +326,16 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       type: "function",
       function: {
         name: "ask_user",
-        description: "Pause only for a genuinely consequential choice that cannot be inferred from the full thread, the requested outcome, or your own machine. Never use this for ordinary installs, downloads, setup, commands, file operations, harmless implementation details, or information you can inspect yourself. Provide two to five concise options; the UI also offers a custom typed answer.",
+        description: "LAST RESORT: pause only for consequential human judgment, missing credentials the human must supply, external authority, or an irreversible human commitment that cannot be inferred from the full thread. Never use for ordinary installs, downloads, setup, commands, retries, file operations, harmless implementation details, difficulty, or information you or Skipper can inspect. Provide two to five concise options; the UI also offers a custom typed answer.",
         parameters: {
           type: "object",
           properties: {
+            blocker_kind: {
+              type: "string",
+              enum: ["human_judgment", "missing_credentials", "external_authority", "irreversible_commitment"],
+              description: "The narrow human-only boundary. If none applies, do not call ask_user; act, inspect, or call Skipper instead.",
+            },
+            evidence: { type: "string", description: "What you inspected or attempted and why neither your private computer nor Skipper can resolve this without a human answer." },
             intro: { type: "string", description: "Short reason these answers are needed." },
             questions: {
               type: "array", minItems: 1, maxItems: 3,
@@ -312,7 +354,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
               },
             },
           },
-          required: ["questions"],
+          required: ["blocker_kind", "evidence", "questions"],
         },
       },
     });
@@ -345,8 +387,8 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       type: "function",
       function: {
         name: "propose_skill",
-        description: "Silently suggest a new reusable skill to Skipper after solving a repeatable problem that the workspace catalog does not cover.",
-        parameters: { type: "object", properties: { name: { type: "string" }, description: { type: "string" }, rationale: { type: "string" } }, required: ["name", "description", "rationale"] },
+        description: "Silently crystallize a reusable skill only after solving and verifying a repeatable workflow that the workspace catalog does not cover. Supply the complete operational procedure and concrete evidence; generic prompt snippets are rejected.",
+        parameters: { type: "object", properties: { name: { type: "string" }, description: { type: "string" }, instructions: { type: "string", description: "Complete activation cues, steps, boundaries, retained state, recovery, and verification procedure." }, evidence: { type: "string", description: "Concrete artifact, command, test, or observable result proving this workflow just worked." }, rationale: { type: "string" } }, required: ["name", "description", "instructions", "evidence", "rationale"] },
       },
     });
   }
@@ -354,7 +396,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
     type: "function",
     function: {
       name: "call_skipper",
-      description: "Call the workspace-wide Skipper into this thread when work needs broader authority, another channel, credentials, or a missing capability.",
+      description: "Directly call the workspace-wide Skipper when work needs broader authority, another channel, credentials, a host connector, or a missing capability. Use the tool—never merely tell the Captain that Skipper could help. Skipper will perform the boundary work and automatically hand this thread back so you finish the outcome.",
       parameters: {
         type: "object",
         properties: { reason: { type: "string", description: "What is needed and why it is outside this channel world." } },
@@ -364,6 +406,31 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
   });
   // Durable re-entry for async work (downloads, long jobs). Home residents only.
   if (agent?.kind === "channel" && !visiting) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "schedule_workflow",
+        description: "Create a durable recurring workflow in this channel when the user's request explicitly calls for repeated work. 1Helm will open a new thread and invoke you at every due run, across server restarts.",
+        parameters: { type: "object", properties: { name: { type: "string" }, prompt: { type: "string", description: "Self-contained outcome and verification contract for every run." }, interval_seconds: { type: "integer", minimum: 60, maximum: 31536000 }, start_in_seconds: { type: "integer", minimum: 1 }, max_runs: { type: "integer", minimum: 0, maximum: 100000, description: "0 repeats indefinitely." } }, required: ["name", "prompt", "interval_seconds"] },
+      },
+    }, {
+      type: "function",
+      function: { name: "list_workflows", description: "List this channel's durable recurring workflows and their next/last run state.", parameters: { type: "object", properties: {} } },
+    }, {
+      type: "function",
+      function: {
+        name: "set_workflow_status",
+        description: "Pause, resume, or complete one durable recurring workflow in this channel.",
+        parameters: {
+          type: "object",
+          properties: {
+            workflow_id: { type: "integer" },
+            status: { type: "string", enum: ["active", "paused", "complete"] },
+          },
+          required: ["workflow_id", "status"],
+        },
+      },
+    });
     tools.push({
       type: "function",
       function: {
@@ -439,6 +506,29 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
         },
       });
     }
+    const photon = q1("SELECT config FROM agent_capabilities WHERE agent_id=? AND capability='photon'", agent.id);
+    if (photon) {
+      let config: Record<string, unknown> = {};
+      try { config = JSON.parse(String(photon.config || "{}")); } catch { /* disabled */ }
+      if (config.can_read !== false) tools.push({
+        type: "function",
+        function: {
+          name: "photon_search",
+          description: "Search task-scoped Photon iMessage history already brokered into this channel. No Photon credentials or unrelated conversations are returned.",
+          parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 50 } } },
+        },
+      });
+      if (config.can_send === true || config.can_reply === true) tools.push({
+        type: "function",
+        function: {
+          name: "photon_send",
+          description: config.can_send === true
+            ? "Send an iMessage through the channel's host-scoped Photon connector. Use only when the user's intent authorizes sending; resolve the destination carefully and verify the returned message id."
+            : "Reply through Photon only to a conversation already delivered from an allowlisted sender into this channel. New outbound conversations remain disabled.",
+          parameters: { type: "object", properties: { space_id: { type: "string", description: "Existing Photon conversation id or an E.164 number." }, text: { type: "string" } }, required: ["space_id", "text"] },
+        },
+      });
+    }
   }
   return tools.length ? tools : undefined;
 }
@@ -451,6 +541,21 @@ export function runtimeToolNamesForChannel(botId: number, channelId: number, hos
   const agent = agentForBot(botId) as RuntimeAgent | undefined;
   return (toolsFor(bot, agent, hostAuthorized, channelId) || []).map((tool) =>
     String((tool as { function?: { name?: string } }).function?.name || "")).filter(Boolean);
+}
+
+export function validateAskUserInput(args: Record<string, unknown>): { valid: boolean; error: string } {
+  const blockerKind = String(args.blocker_kind || "");
+  const evidence = String(args.evidence || "").trim();
+  const allowedKinds = new Set(["human_judgment", "missing_credentials", "external_authority", "irreversible_commitment"]);
+  const rawQuestions = Array.isArray(args.questions) ? args.questions.slice(0, 3) : [];
+  const validQuestions = rawQuestions.filter((raw) => {
+    const item = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+    const options = Array.isArray(item.options) ? item.options.filter((option) => option && typeof option === "object" && String((option as Record<string, unknown>).label || "").trim()).slice(0, 5) : [];
+    return String(item.question || "").trim() && options.length >= 2;
+  });
+  if (!allowedKinds.has(blockerKind) || evidence.length < 40) return { valid: false, error: "ask_user is restricted to an evidenced human-only blocker." };
+  if (!validQuestions.length) return { valid: false, error: "ask_user requires at least one question with two valid options." };
+  return { valid: true, error: "" };
 }
 
 export async function generateAndAttachImage(
@@ -475,7 +580,8 @@ export async function generateAndAttachImage(
 }
 
 function buildContext(bot: Row, agent: RuntimeAgent | undefined, channelId: number, triggerId: number, threadRootId: number, fresh: boolean, hostAuthorized: boolean): ChatMsg[] {
-  const messages: ChatMsg[] = [{ role: "system", content: systemPrompt(bot, agent, channelId, hostAuthorized) }];
+  const currentTask = String(q1("SELECT body FROM messages WHERE id=?", triggerId)?.body || "");
+  const messages: ChatMsg[] = [{ role: "system", content: systemPrompt(bot, agent, channelId, hostAuthorized, currentTask) }];
   const threadId = threadIdForRoot(threadRootId, channelId) ?? ensureThread(threadRootId, channelId);
   const thread = q1("SELECT status, summary FROM threads WHERE id=?", threadId);
   const memories = relevantMemory(channelId, threadId).filter((memory) => Number(memory.thread_id || 0) !== threadId || String(memory.kind) !== "summary");
@@ -799,6 +905,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
   let liveThought = "";
   let lastCompletedTool: { name: string; result: string } | null = null;
   let awaitingQuestions = false;
+  let handedBack = false;
   const paintBody = (text: string): void => {
     if (!turnIsActive(channelId, controller.signal) || !q1("SELECT 1 FROM messages WHERE id=?", msgId)) return;
     run("UPDATE messages SET body=? WHERE id=?", text, msgId);
@@ -905,6 +1012,9 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                 ? `#${normalizeChannelName(String(args.name || ""))}${args.purpose ? ` — ${String(args.purpose)}` : ""}`
                 : name === "grant_gmail_access"
                   ? `Grant Gmail read/search/draft access for ${Array.isArray(args.accounts) && args.accounts.length ? args.accounts.join(", ") : "all connected accounts"}`
+                  : name === "grant_photon_access" ? `Grant Photon access${args.can_send ? " with sending" : " for search/drafts"}`
+                  : name === "photon_search" ? String(args.query || "")
+                  : name === "photon_send" ? `${String(args.space_id || "")}: ${String(args.text || "").slice(0, 200)}`
                   : name === "gmail_search"
                     ? `${String(args.account || "")}: ${String(args.query || "")}`
                     : name === "gmail_get"
@@ -913,7 +1023,9 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                         ? `${String(args.account || "")}: draft to ${String(args.to || "")} — ${String(args.subject || "")}`
                         : name === "gmail_list_accounts"
                           ? "List channel-scoped Gmail accounts"
-                          : name === "request_skill" ? `${String(args.skill || "")}: ${String(args.reason || "")}`
+                  : name === "request_skill" ? `${String(args.skill || "")}: ${String(args.reason || "")}`
+                    : name === "search_skill_catalog" ? String(args.query || "")
+                      : name === "inspect_skill" || name === "install_skill" ? String(args.identifier || "")
                             : name === "propose_skill" || name === "create_skill" ? `${String(args.name || "")}: ${String(args.description || "")}`
                   : name === "invite_agent" || name === "call_agent" ? `@${String(args.agent || "resident")}: ${String(args.reason || "")}`
                   : name === "attach_file" ? String(args.path || args.name || "")
@@ -951,6 +1063,9 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               const memoryId = recordMemory({ channelId, threadId, kind: String(args.kind || "fact"), content: input, sourceMessageId: msgId, authorType: actor });
               result = `Recorded channel memory ${memoryId}.`;
             } else if (name === "ask_user" && !visiting) {
+              const blockerKind = String(args.blocker_kind || "");
+              const blockerEvidence = String(args.evidence || "").trim();
+              const allowedKinds = new Set(["human_judgment", "missing_credentials", "external_authority", "irreversible_commitment"]);
               const rawQuestions = Array.isArray(args.questions) ? args.questions.slice(0, 3) : [];
               const questions = rawQuestions.map((raw, index) => {
                 const item = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
@@ -966,9 +1081,12 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                   options,
                 };
               }).filter((question) => question.question && question.options.length >= 2);
-              if (!questions.length) result = "Error: ask_user requires at least one question with two valid options.";
+              const askUserValidation = validateAskUserInput(args);
+              if (!askUserValidation.valid && askUserValidation.error.startsWith("ask_user is restricted")) {
+                result = "Error: ask_user is restricted to an evidenced human-only blocker. Continue autonomously, inspect the missing information, or call Skipper directly.";
+              } else if (!askUserValidation.valid || !questions.length) result = "Error: ask_user requires at least one question with two valid options.";
               else {
-                const payload = { intro: String(args.intro || "").trim().slice(0, 1000), questions };
+                const payload = { blocker_kind: blockerKind, evidence: blockerEvidence.slice(0, 2000), intro: String(args.intro || "").trim().slice(0, 1000), questions };
                 run("INSERT INTO agent_questions (message_id,payload,status,created) VALUES (?,?,'pending',?)", msgId, JSON.stringify(payload), now());
                 awaitingQuestions = true;
                 result = `Displayed ${questions.length} structured question${questions.length === 1 ? "" : "s"} and paused for the user's answers.`;
@@ -991,14 +1109,26 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               } catch (error) {
                 result = `Error: ${(error as Error).message}`;
               }
+            } else if (name === "schedule_workflow" && agent?.kind === "channel" && !visiting) {
+              const workflow = createWorkflow({ channelId, name: String(args.name || ""), prompt: String(args.prompt || ""), intervalSeconds: Number(args.interval_seconds), startInSeconds: args.start_in_seconds == null ? undefined : Number(args.start_in_seconds), maxRuns: Number(args.max_runs || 0) });
+              result = `Scheduled durable recurring workflow #${workflow.id} (${workflow.name}); next_run=${workflow.next_run}.`;
+            } else if (name === "list_workflows" && agent?.kind === "channel" && !visiting) {
+              result = JSON.stringify({ workflows: listWorkflows(channelId) });
+            } else if (name === "set_workflow_status" && agent?.kind === "channel" && !visiting) {
+              const status = String(args.status || "") as "active" | "paused" | "complete";
+              if (!["active", "paused", "complete"].includes(status)) result = "Error: workflow status must be active, paused, or complete.";
+              else result = JSON.stringify(setWorkflowStatus(Number(args.workflow_id), channelId, status));
             } else if (name === "create_channel" && agent?.kind === "skipper" && (hostAuthorized || Boolean(q1("SELECT 1 FROM channels WHERE id=? AND personal_main_owner_id=?", channelId, requestUserId)))) {
               result = await createNativeChannel(String(args.name || ""), String(args.purpose || ""), requestUserId);
             } else if (name === "grant_gmail_access" && agent?.kind === "skipper" && hostAuthorized) {
               result = grantGmail(channelId, args.accounts);
+            } else if (name === "grant_photon_access" && agent?.kind === "skipper" && hostAuthorized) {
+              result = grantPhotonToResident(channelId, Boolean(args.can_send));
             } else if (name === "invite_agent" && agent?.kind === "skipper" && hostAuthorized) {
               result = inviteAgent(agent, channelId, threadId, threadRootId, String(args.agent || ""), String(args.reason || ""));
             } else if (name === "call_agent" && agent?.kind === "skipper") {
               result = callAgent(agent, channelId, threadId, threadRootId, String(args.agent || ""), String(args.reason || ""), hostAuthorized);
+              if (!result.startsWith("Error:")) handedBack = true;
             } else if (name === "create_skill" && agent?.kind === "skipper" && hostAuthorized) {
               const skill = createSkill({ name: String(args.name || ""), description: String(args.description || ""), instructions: String(args.instructions || ""), source: "skipper" });
               const targetName = String(args.assign_to_agent || "").replace(/^@/, "").trim();
@@ -1006,11 +1136,23 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               if (target) provisionSkill(Number(target.id), String(skill.slug), Number(agent.id), "Created and assigned by Skipper for the current problem.");
               result = `Created the ${skill.name} skill in the workspace arsenal${target ? ` and permanently assigned it to @${target.name}` : ""}.`;
               run("INSERT INTO channel_activity (channel_id,thread_id,kind,summary,actor_type,created) VALUES (?,?,'skill',?,'skipper',?)", channelId, threadId, result, now());
+            } else if (name === "search_skill_catalog" && agent?.kind === "skipper" && hostAuthorized) {
+              const found = await searchSkillCatalog(String(args.query || ""), { trust: String(args.trust || ""), limit: Number(args.limit || 10) });
+              result = JSON.stringify({ catalog: found.status, results: found.results.map((entry) => ({ name: entry.name, description: entry.description, identifier: entry.identifier, trust_level: entry.trust_level, source: entry.source, repo: entry.repo, path: entry.path, tags: entry.tags })) });
+            } else if (name === "inspect_skill" && agent?.kind === "skipper" && hostAuthorized) {
+              result = JSON.stringify(await inspectCatalogSkill(String(args.identifier || "")));
+            } else if (name === "install_skill" && agent?.kind === "skipper" && hostAuthorized) {
+              const targetName = String(args.assign_to_agent || "").replace(/^@/, "").trim();
+              const currentResident = agentForChannel(channelId);
+              const target = targetName ? q1("SELECT id,name FROM agents WHERE lower(name)=lower(?) AND kind='channel' AND status<>'deleted'", targetName) : currentResident;
+              const skill = await installCatalogSkill(String(args.identifier || ""), target?.id ? Number(target.id) : null);
+              result = `Installed trusted catalog skill ${skill.name} with immutable provenance and a clean security scan${target?.name ? `; permanently assigned it to @${target.name}` : ""}.`;
+              run("INSERT INTO channel_activity (channel_id,thread_id,kind,summary,actor_type,created) VALUES (?,?,'skill',?,'skipper',?)", channelId, threadId, result, now());
             } else if (name === "request_skill" && agent?.kind === "channel") {
               const skill = requestSkill(Number(agent.id), channelId, threadId, String(args.skill || ""), String(args.reason || ""));
               result = `Skipper permanently provisioned ${skill.name}. It is now part of my arsenal.`;
             } else if (name === "propose_skill" && agent?.kind === "channel") {
-              const proposal = proposeSkill({ agentId: Number(agent.id), channelId, threadId, name: String(args.name || ""), description: String(args.description || ""), rationale: String(args.rationale || "") });
+              const proposal = proposeSkill({ agentId: Number(agent.id), channelId, threadId, name: String(args.name || ""), description: String(args.description || ""), instructions: String(args.instructions || ""), evidence: String(args.evidence || ""), rationale: String(args.rationale || "") });
               result = `Skipper approved the proposed ${proposal.name} skill, added it to the shared arsenal, and permanently assigned it to me.`;
             } else if (name === "gmail_list_accounts" && agent?.kind === "channel") {
               const config = normalizeMailConfig(q1("SELECT config FROM agent_capabilities WHERE agent_id=? AND capability='gmail'", agent.id)?.config);
@@ -1025,6 +1167,10 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               const { account, config } = grantedGmail(agent, args.account);
               if (!config.can_draft) result = "Error: Gmail draft access is not granted to this channel.";
               else result = JSON.stringify(await createGmailDraft(account, String(args.to || ""), String(args.subject || ""), String(args.body || ""), turnSignal));
+            } else if (name === "photon_search" && agent?.kind === "channel") {
+              result = JSON.stringify(await photonMessages(channelId, String(args.query || ""), Number(args.limit || 20)));
+            } else if (name === "photon_send" && agent?.kind === "channel") {
+              result = JSON.stringify(await sendPhoton(channelId, String(args.space_id || ""), String(args.text || "")));
             } else if (name === "call_skipper" && agent?.kind === "channel") result = callSkipper(agent, channelId, threadRootId, input);
             else result = `Error: tool ${name} is not available.`;
           } catch (error) {
@@ -1139,6 +1285,25 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
     }
     if (!meaningfulAnswer(responseBody)) throw new Error("The agent reached its tool limit without a usable final answer. Please retry with a narrower request.");
     if (escalationId && agent?.kind === "skipper") {
+      // Hand-back is a runtime invariant, not merely a prompt preference. If a
+      // Skipper model completes the boundary work but forgets call_agent, the
+      // harness re-enters the resident automatically with the concrete result.
+      const residentEscalation = Boolean(q1("SELECT from_agent_id FROM escalations WHERE id=? AND from_agent_id IS NOT NULL", escalationId));
+      if (residentEscalation && !handedBack && agentForChannel(channelId)?.kind === "channel") {
+        const evidence = lastCompletedTool && lastCompletedTool.name !== "call_agent"
+          ? `${lastCompletedTool.name}: ${lastCompletedTool.result}`
+          : responseBody;
+        const automatic = callAgent(
+          agent,
+          channelId,
+          threadId,
+          threadRootId,
+          "",
+          `Skipper completed the boundary work. Continue the original request from the preserved thread and verify the final outcome. Result: ${String(evidence || "unblocked").slice(0, 1800)}`,
+          hostAuthorized,
+        );
+        handedBack = !automatic.startsWith("Error:");
+      }
       run("UPDATE escalations SET status='resolved', resolved_by=? WHERE id=?", agent.id, escalationId);
       run("INSERT INTO channel_activity (channel_id, thread_id, kind, summary, status, actor_type, created) VALUES (?,?,'escalation','Skipper resolved the escalation.','resolved','skipper',?)", channelId, threadId, now());
       broadcastToChannel(channelId, { type: "escalation", channelId, escalation: { id: escalationId, status: "resolved" } });
