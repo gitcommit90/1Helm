@@ -231,11 +231,13 @@ export function migrate(): void {
     id INTEGER PRIMARY KEY,
     channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
     thread_id INTEGER REFERENCES threads(id) ON DELETE SET NULL,
+    action_id INTEGER REFERENCES tool_actions(id) ON DELETE SET NULL,
     kind TEXT NOT NULL,
     summary TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'complete',
     actor_type TEXT NOT NULL DEFAULT 'system',
-    created INTEGER NOT NULL
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS skills (
     id INTEGER PRIMARY KEY,
@@ -455,6 +457,9 @@ export function migrate(): void {
   addColumn("threads", "output_tokens", "output_tokens INTEGER NOT NULL DEFAULT 0");
   addColumn("threads", "stopped_followup_pending", "stopped_followup_pending INTEGER NOT NULL DEFAULT 0");
   addColumn("messages", "stopped_followup", "stopped_followup INTEGER NOT NULL DEFAULT 0");
+  addColumn("channel_activity", "action_id", "action_id INTEGER REFERENCES tool_actions(id) ON DELETE SET NULL");
+  addColumn("channel_activity", "updated", "updated INTEGER NOT NULL DEFAULT 0");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_activity_action ON channel_activity(action_id) WHERE action_id IS NOT NULL");
   addColumn("skills", "provenance_url", "provenance_url TEXT NOT NULL DEFAULT ''");
   addColumn("skills", "provenance_identifier", "provenance_identifier TEXT NOT NULL DEFAULT ''");
   addColumn("skills", "provenance_revision", "provenance_revision TEXT NOT NULL DEFAULT ''");
@@ -700,7 +705,7 @@ export function migrate(): void {
     // developer deliberately opts into the native compatibility backend.
     const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || (process.platform === "darwin" ? "apple" : "native"));
     const backend = ["apple", "native", "mock"].includes(configuredBackend) ? configuredBackend : "native";
-    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.19");
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.20");
     for (const channel of q(`SELECT c.id FROM channels c JOIN agent_channels ac ON ac.channel_id=c.id
       WHERE c.kind='channel' AND c.status<>'deleted'`)) {
       const channelId = Number(channel.id);

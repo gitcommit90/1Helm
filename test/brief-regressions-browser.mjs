@@ -158,6 +158,18 @@ try {
   await fileInput.uploadFile(join(root, "README.md"));
   await page.waitForFunction(() => document.getElementById("channelview")?.innerText.includes("/files/README.md"), { timeout: 5000 });
   ok(true, "Files upload imports a selected file directly into the channel workspace");
+  await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Activity"))?.click());
+  await page.waitForFunction(() => document.getElementById("channelview")?.innerText.includes("Ran work in the resident workspace → complete."));
+  const activityApi = await api(`/api/channels/${channel.id}/activity`, {}, token);
+  const actionId = activityApi.actions.find((action) => action.tool === "run_command")?.id;
+  const activityEvidence = await page.evaluate((expectedActionId) => {
+    const rows = [...document.querySelectorAll(`#channelview details[data-action-id="${expectedActionId}"]`)];
+    const element = rows[0];
+    element?.querySelector("summary")?.click();
+    return { rows: rows.length, text: element?.textContent || "", open: element?.open };
+  }, actionId);
+  ok(activityEvidence.rows === 1 && activityEvidence.open && /Input/.test(activityEvidence.text) && /Outcome evidence/.test(activityEvidence.text) && /status=completed/.test(activityEvidence.text),
+    "Activity mutates one outcome-first row and expands to the retained input and outcome evidence");
   await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Chat"))?.click());
   await page.waitForSelector('textarea[data-composer-parent="root"]');
   const restoredDraft = await page.$eval('textarea[data-composer-parent="root"]', (element) => element.value);

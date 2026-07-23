@@ -47,6 +47,53 @@ type ActiveTurn = {
 const activeTurns = new Map<number, Set<ActiveTurn>>();
 const meaningfulAnswer = (value: string): boolean => value.replace(/[\s*_~`#>\-[\](){}|.!?,:;]+/g, "").length > 0;
 
+const OPERATIONAL_REQUEST = /\b(add|build|change|configure|connect|create|delete|deploy|download|draft|finish|fix|host|implement|install|make|monitor|move|publish|release|remove|repair|run|schedule|send|set up|ship|test|tunnel|update|upload|write)\b/i;
+const READ_ONLY_REQUEST = /^\s*(?:can you |could you |please )?(?:analy[sz]e|compare|describe|diagnose|explain|investigate|review|summarize|tell me|what|why|how)\b/i;
+const DEFLECTED_WORK = /\b(?:you (?:can|could|should|need to|will need to)|(?:ask|tell|have) @?skipper\b|skipper (?:can|could|should|will)\b|would you like me to|should i (?:go ahead|proceed|do that)|can i (?:go ahead|proceed)|i (?:can|could) (?:help|guide|walk you)|here(?:'s| is) how you)\b/i;
+const UNEVIDENCED_BLOCKER = /\b(?:i (?:can(?:not|'t)|am unable to)|i need you to (?:provide|choose|decide|approve|authorize|run)|please (?:provide|choose|decide|approve|authorize|run))\b/i;
+const FUTURE_PROMISE = /^\s*(?:i(?:'ll| will)|next i(?:'ll| will))\b/i;
+const BOUNDARY_TOOLS = new Set(["ask_user", "call_skipper", "schedule_followup"]);
+const OUTCOME_TOOLS = new Set([
+  ...BOUNDARY_TOOLS,
+  "run_command", "create_channel", "remember", "attach_file", "call_agent", "invite_agent",
+  "request_skill", "propose_skill", "create_skill", "install_skill", "grant_gmail_access",
+  "gmail_create_draft", "grant_photon_access", "photon_send", "schedule_workflow",
+  "set_workflow_status", "generate_image",
+]);
+
+export type OutcomeGateInput = {
+  request: string;
+  response: string;
+  successfulTools?: Iterable<string>;
+  failedTools?: Iterable<string>;
+};
+
+/** Runtime stop objection inspired by Buzz's bounded `_Stop` hook. This is
+ * deliberately narrow and deterministic: it catches observable hand-holding
+ * and unresolved execution failures, but never asks a second model to grade
+ * the first model's prose. The caller enforces a rejection budget so this gate
+ * cannot trap a turn forever. */
+export function outcomeGateObjection(input: OutcomeGateInput): string {
+  const request = String(input.request || "").trim();
+  const response = String(input.response || "").trim();
+  const successes = new Set([...(input.successfulTools || [])]);
+  const failures = [...(input.failedTools || [])].filter((tool) => !successes.has(tool));
+  const hasBoundary = [...BOUNDARY_TOOLS].some((tool) => successes.has(tool));
+  const hasOutcomeAction = [...OUTCOME_TOOLS].some((tool) => successes.has(tool));
+
+  if (failures.length && !hasBoundary) {
+    return `The runtime outcome gate found unresolved failed capabilities: ${failures.join(", ")}. Retry or use another path; if the boundary is outside this computer, call Skipper directly. Do not stop with advice.`;
+  }
+  if (!OPERATIONAL_REQUEST.test(request) || READ_ONLY_REQUEST.test(request)) return "";
+  if (/\b(?:ask|tell|have) @?skipper\b|\bskipper (?:can|could|should|will)\b/i.test(response) && !successes.has("call_skipper")) {
+    return "The runtime outcome gate rejected a Skipper suggestion without a Skipper call. Call Skipper directly and continue the original outcome after hand-back.";
+  }
+  if (!hasOutcomeAction && (DEFLECTED_WORK.test(response) || UNEVIDENCED_BLOCKER.test(response) || FUTURE_PROMISE.test(response))) {
+    return "The runtime outcome gate rejected an operational reply that stopped at instructions, permission-seeking, a promise, or an unevidenced blocker. Act with the available tools, call Skipper for a real boundary, or use ask_user only for an evidenced human-only decision.";
+  }
+  return "";
+}
+
 function completedToolAnswer(tool: string, result: string): string {
   if (tool === "gmail_search") {
     try {
@@ -650,23 +697,67 @@ function setStatus(agent: RuntimeAgent | undefined, channelId: number, status: s
   broadcastToChannel(channelId, { type: "agent_status", channelId, agentId: agent.id, status });
 }
 
+function actionObject(tool: string, input: string, actor: string): string {
+  const clean = input.replace(/\s+/g, " ").trim();
+  if (tool === "create_channel") return clean.split(" — ")[0] || "a channel";
+  if (tool === "attach_file") return clean.split(/[\\/]/).at(-1) || "a file";
+  if (tool === "call_skipper") return "the host boundary";
+  if (tool === "call_agent") return clean.split(":")[0] || "the resident";
+  if (tool === "gmail_search") return "granted Gmail";
+  if (tool === "gmail_get") return "a granted Gmail message";
+  if (tool === "gmail_create_draft") return "a Gmail draft";
+  if (tool === "photon_search") return "granted iMessage history";
+  if (tool === "photon_send") return "an authorized iMessage conversation";
+  if (tool === "run_command") return actor === "skipper" ? "the host workspace" : "the resident workspace";
+  if (tool === "schedule_followup") return "a durable wake";
+  if (tool === "schedule_workflow") return "a recurring workflow";
+  if (tool === "install_skill") return clean || "a trusted skill";
+  return clean.length && clean.length <= 96 ? clean : tool.replaceAll("_", " ");
+}
+
+function actionVerb(tool: string): string {
+  const verbs: Record<string, string> = {
+    run_command: "Ran work in",
+    create_channel: "Created",
+    remember: "Recorded",
+    attach_file: "Attached",
+    call_skipper: "Called Skipper across",
+    call_agent: "Handed work back to",
+    invite_agent: "Invited",
+    request_skill: "Requested",
+    propose_skill: "Crystallized",
+    create_skill: "Created",
+    search_skill_catalog: "Searched",
+    inspect_skill: "Inspected",
+    install_skill: "Installed",
+    grant_gmail_access: "Granted",
+    gmail_list_accounts: "Listed",
+    gmail_search: "Searched",
+    gmail_get: "Read",
+    gmail_create_draft: "Created",
+    grant_photon_access: "Granted",
+    photon_search: "Searched",
+    photon_send: "Sent to",
+    schedule_followup: "Scheduled",
+    schedule_workflow: "Scheduled",
+    list_workflows: "Listed",
+    set_workflow_status: "Updated",
+    generate_image: "Generated",
+    ask_user: "Opened",
+  };
+  return verbs[tool] || "Used";
+}
+
+function actionSummary(tool: string, input: string, status: string, actor: string): string {
+  const outcome = status === "failed" ? "failed" : status === "running" ? "working" : "complete";
+  return `${actionVerb(tool)} ${actionObject(tool, input, actor)} → ${outcome}.`;
+}
+
 function recordAction(agentId: number, threadId: number, channelId: number, tool: string, input: string, actor: string): number {
   if (!agentId) return 0;
   const id = run("INSERT INTO tool_actions (agent_id, thread_id, tool, input_summary, status, created) VALUES (?,?,?,?,'running',?)", agentId, threadId, tool, input.slice(0, 1000), now()).lastInsertRowid;
-  const summary = tool === "create_channel"
-    ? `Creating ${input.split(" — ")[0] || "a channel"}.`
-    : tool === "run_command"
-      ? actor === "skipper" ? "Skipper is performing a host operation." : "The resident agent is working in its workspace."
-      : tool === "remember"
-        ? "Updating durable channel memory."
-        : tool === "attach_file"
-          ? "Attaching a file to this message."
-          : tool === "call_skipper"
-            ? "Calling Skipper into this session."
-            : tool === "call_agent"
-              ? "Handing work back to a resident agent."
-              : "The agent is using a workspace capability.";
-  run("INSERT INTO channel_activity (channel_id, thread_id, kind, summary, status, actor_type, created) VALUES (?,?,'tool',?,'running',?,?)", channelId, threadId, summary, actor, now());
+  const created = now();
+  run("INSERT INTO channel_activity (channel_id, thread_id, action_id, kind, summary, status, actor_type, created, updated) VALUES (?,?,?,'tool',?,'running',?,?,?)", channelId, threadId, id, actionSummary(tool, input, "running", actor), actor, created, created);
   broadcastToChannel(channelId, { type: "activity", channelId, action: { id, kind: "tool", tool, status: "running" } });
   return id;
 }
@@ -678,8 +769,11 @@ function finishAction(actionId: number, threadId: number, channelId: number, res
     ? status === "failed" ? "Gmail action failed; details were returned only in the invoking session." : "Gmail action completed; mailbox content is not copied into Activity."
     : result.slice(0, 2000);
   run("UPDATE tool_actions SET result_summary=?, status=? WHERE id=?", storedResult, status, actionId);
-  const summary = status === "failed" ? `${tool} failed.` : status === "running" ? `${tool} is still running.` : `${tool} completed.`;
-  run("INSERT INTO channel_activity (channel_id, thread_id, kind, summary, status, actor_type, created) VALUES (?,?,'tool_result',?,?,?,?)", channelId, threadId, summary, status, actor, now());
+  const input = String(q1("SELECT input_summary FROM tool_actions WHERE id=?", actionId)?.input_summary || "");
+  const updated = now();
+  const changed = run("UPDATE channel_activity SET summary=?,status=?,updated=? WHERE action_id=?", actionSummary(tool.replaceAll(" ", "_"), input, status, actor), status, updated, actionId).changes;
+  // Old/migrated actions have no linked activity row; retain an honest fallback.
+  if (!changed) run("INSERT INTO channel_activity (channel_id, thread_id, action_id, kind, summary, status, actor_type, created, updated) VALUES (?,?,?,'tool',?,?,?,?,?)", channelId, threadId, actionId, actionSummary(tool.replaceAll(" ", "_"), input, status, actor), status, actor, updated, updated);
   broadcastToChannel(channelId, { type: "activity", channelId, action: { id: actionId, status } });
 }
 
@@ -904,6 +998,10 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
   let responseBody = "";
   let liveThought = "";
   let lastCompletedTool: { name: string; result: string } | null = null;
+  const successfulTools = new Set<string>();
+  const failedTools = new Set<string>();
+  let outcomeGateRejections = 0;
+  const outcomeRequest = String(q1("SELECT body FROM messages WHERE id=?", triggerId)?.body || "");
   let awaitingQuestions = false;
   let handedBack = false;
   const paintBody = (text: string): void => {
@@ -1180,7 +1278,15 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
           const actionStatus = result.startsWith("Error:") ? "failed" : result.startsWith("status=running") ? "running" : "complete";
           finishAction(actionId, threadId, channelId, result, actionStatus, actor);
           updateProgress(progressId, `${name.replaceAll("_", " ")}: ${input || "action"}\n${result}`.trim(), actionStatus === "failed" ? "failed" : actionStatus === "running" ? "running" : "complete");
-          if (actionStatus === "complete") lastCompletedTool = { name, result };
+          if (actionStatus === "failed") {
+            successfulTools.delete(name);
+            failedTools.add(name);
+          }
+          if (actionStatus === "complete") {
+            successfulTools.add(name);
+            failedTools.delete(name);
+            lastCompletedTool = { name, result };
+          }
           messages.push({ role: "tool", tool_call_id: toolCall.id, name, content: result });
         }
         if (awaitingQuestions) {
@@ -1211,6 +1317,20 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
       }
       if (content && !responseBody.trim()) setBody(content);
       const wakeTurn = isInternalMessageBody(String(q1("SELECT body FROM messages WHERE id=?", triggerId)?.body || ""));
+      const outcomeObjection = !wakeTurn && !finalRound && outcomeGateRejections < 3
+        ? outcomeGateObjection({ request: outcomeRequest, response: responseBody, successfulTools, failedTools })
+        : "";
+      if (outcomeObjection) {
+        outcomeGateRejections++;
+        addProgress("status", `Outcome gate kept the turn open (${outcomeGateRejections}/3): ${outcomeObjection}`, "complete");
+        messages.push({ role: "assistant", content: content || responseBody });
+        messages.push({ role: "system", content: outcomeObjection });
+        responseBody = "";
+        liveThought = "";
+        paintBody("_Working…_");
+        startProgressId = addProgress("status", "Continuing toward a verified outcome…", "running");
+        continue;
+      }
       const silentReschedule = lastCompletedTool?.name === "schedule_followup" && !String(lastCompletedTool.result || "").startsWith("Error:");
       const echoedScaffold = wakeTurn && (
         /^\[scheduled-followup\b/i.test(responseBody.trim())

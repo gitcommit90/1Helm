@@ -54,7 +54,11 @@ export type ThreadState = {
 export type GlobalThread = ThreadState & { channel_name: string; channel_slug: string; unread: boolean };
 export type ChannelFile = { path: string; name: string; size: number; modified: number; kind: "file" | "directory" };
 export type MemoryItem = { id: number; channel_id: number; thread_id: number | null; root_message_id?: number | null; kind: "summary" | "decision" | "fact" | "preference" | "artifact_ref"; content: string; author_type: string; scope: string; status: "current" | "superseded"; created: number };
-export type ActivityItem = { id: number; channel_id: number; thread_id: number | null; kind: string; summary: string; status: string; actor_type: string; created: number };
+export type ActivityItem = {
+  id: number; channel_id: number; thread_id: number | null; action_id?: number | null;
+  kind: string; summary: string; status: string; actor_type: string; created: number; updated?: number;
+  action_tool?: string | null; action_input?: string | null; action_result?: string | null;
+};
 export type Computer = { id: number; name: string; base_url: string; has_key: boolean };
 export type ChannelRuntime = {
   backend: "apple" | "native" | "mock"; supported: boolean; darwin: boolean; arm64: boolean; macos_version?: string | null;

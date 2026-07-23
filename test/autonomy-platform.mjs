@@ -9,13 +9,24 @@ process.env.CTRL_DATA_DIR = dataDir;
 const dbModule = await import("../src/server/db.ts");
 const { db, q1, run, now, seed } = dbModule;
 const { verifyAuditChain } = await import("../src/server/audit.ts");
-const { validateAskUserInput } = await import("../src/server/bots.ts");
+const { outcomeGateObjection, validateAskUserInput } = await import("../src/server/bots.ts");
 const catalog = await import("../src/server/skill-catalog.ts");
 
 test("ask_user rejects routine ambiguity and accepts only evidenced human blockers", () => {
   assert.equal(validateAskUserInput({ questions: [{ question: "Which?", options: [{ label: "A" }, { label: "B" }] }] }).valid, false);
   assert.equal(validateAskUserInput({ blocker_kind: "human_judgment", evidence: "I am not sure", questions: [{ question: "Which?", options: [{ label: "A" }, { label: "B" }] }] }).valid, false);
   assert.equal(validateAskUserInput({ blocker_kind: "external_authority", evidence: "The vendor requires the account owner to accept its binding contract.", questions: [{ question: "Authorize it?", options: [{ label: "Authorize" }, { label: "Stop" }] }] }).valid, true);
+});
+
+test("outcome gate objects to operational hand-holding and unresolved tool failure without trapping answers", () => {
+  assert.match(outcomeGateObjection({ request: "Install the CLI", response: "You can run npm install yourself." }), /operational reply/i);
+  assert.match(outcomeGateObjection({ request: "Fix the server", response: "Skipper could help with that." }), /Skipper suggestion/i);
+  assert.match(outcomeGateObjection({ request: "Deploy the site", response: "I could not deploy it.", failedTools: ["run_command"] }), /unresolved failed/i);
+  assert.equal(outcomeGateObjection({ request: "Explain how routing works", response: "Routing pools the connected providers." }), "");
+  assert.equal(outcomeGateObjection({ request: "How do I install the CLI?", response: "You can install it with npm." }), "");
+  assert.equal(outcomeGateObjection({ request: "Install the CLI", response: "Installed and verified it.", successfulTools: ["run_command"] }), "");
+  assert.equal(outcomeGateObjection({ request: "Deploy the site", response: "I need the account owner to authorize production.", successfulTools: ["ask_user"] }), "");
+  assert.match(outcomeGateObjection({ request: "Install the CLI", response: "You can install it yourself.", successfulTools: ["gmail_search"] }), /operational reply/i);
 });
 
 test("procedure crystallization rejects generic snippets and retains complete verified procedures", async () => {

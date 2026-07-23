@@ -1,7 +1,7 @@
 {
   "name": "1helm",
   "productName": "1Helm",
-  "version": "1.1.19",
+  "version": "1.1.20",
   "private": false,
   "type": "module",
   "description": "1Helm is the self-hosted home for durable AI employees: one resident, one private computer, compounding memory and skills, and Skipper for every boundary.",

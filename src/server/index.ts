@@ -1126,7 +1126,9 @@ const server = createServer(async (req, res) => {
         } catch (error) { return json(res, 400, { error: (error as Error).message }); }
       }
       if (action === "activity" && m === "GET") return json(res, 200, {
-        activity: q("SELECT * FROM channel_activity WHERE channel_id=? ORDER BY created DESC LIMIT 200", channelId),
+        activity: q(`SELECT ca.*, ta.tool AS action_tool, ta.input_summary AS action_input, ta.result_summary AS action_result
+          FROM channel_activity ca LEFT JOIN tool_actions ta ON ta.id=ca.action_id
+          WHERE ca.channel_id=? ORDER BY CASE WHEN ca.updated>0 THEN ca.updated ELSE ca.created END DESC LIMIT 200`, channelId),
         actions: q(`SELECT ta.* FROM tool_actions ta JOIN threads t ON t.id=ta.thread_id WHERE t.channel_id=? ORDER BY ta.created DESC LIMIT 100`, channelId),
         escalations: q("SELECT * FROM escalations WHERE channel_id=? ORDER BY created DESC LIMIT 100", channelId),
       });

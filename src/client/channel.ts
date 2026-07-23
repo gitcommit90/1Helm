@@ -453,7 +453,7 @@ function activityKindLabel(kind: string): string {
     skill: "Skill",
     collaboration: "Collaboration",
     handoff: "Hand-back",
-    tool: "Tool started",
+    tool: "Action",
     tool_result: "Tool finished",
     escalation: "Escalation",
     followup: "Follow-up",
@@ -499,11 +499,24 @@ function activityCard(item: ActivityItem): HTMLElement {
   const border = bucket === "skipper"
     ? "border-accent/25 bg-accent-soft/20"
     : "border-line bg-surface";
-  return h("div", { class: `flex gap-3 rounded-lg border ${border} px-4 py-3` },
+  const headline = h("div", { class: `flex gap-3 ${item.action_id ? "px-4 py-3" : "rounded-lg px-4 py-3"}` },
     h("span", { class: `mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${activityStatusTone(item.status)}`, title: item.status || "complete" }),
     h("div", { class: "min-w-0 flex-1" },
       h("div", { class: "text-sm leading-5 text-fg" }, item.summary),
       h("div", { class: "mt-1 text-xs text-muted" }, meta)));
+  if (!item.action_id) return h("div", { class: `rounded-lg border ${border}` }, headline);
+
+  const evidence: HTMLElement[] = [];
+  if (item.action_input) evidence.push(
+    h("div", {}, h("div", { class: "mb-1 font-mono text-[9.5px] uppercase tracking-[0.16em] text-faint" }, "Input"),
+      h("pre", { class: "m-0 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-4 text-muted" }, item.action_input)));
+  if (item.action_result) evidence.push(
+    h("div", {}, h("div", { class: "mb-1 font-mono text-[9.5px] uppercase tracking-[0.16em] text-faint" }, "Outcome evidence"),
+      h("pre", { class: "m-0 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-4 text-muted" }, item.action_result)));
+  return h("details", { class: `overflow-hidden rounded-lg border ${border}`, dataset: { actionId: String(item.action_id) } },
+    h("summary", { class: "cursor-pointer select-none list-none" }, headline),
+    h("div", { class: "space-y-3 border-t border-line/70 bg-raised/30 px-4 py-3" },
+      ...(evidence.length ? evidence : [h("p", { class: "text-xs text-muted" }, item.status === "running" ? "The action is still running; evidence will appear here when it settles." : "No additional output was retained for this action.")])));
 }
 
 function activitySection(title: string, copy: string, items: ActivityItem[]): HTMLElement {
@@ -569,7 +582,7 @@ export function renderActivity(container: HTMLElement, channelId: number): void 
       if (filter === "all" || filter === "work") {
         root.append(activitySection(
           "Work · tools & escalations",
-          "What agents actually did in this channel — tool starts/results, follow-ups, memory writes, and @skipper escalations.",
+          "What agents actually did in this channel — one outcome-first row per action, expandable evidence, follow-ups, memory writes, and direct Skipper escalations.",
           workItems,
         ));
       }
