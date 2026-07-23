@@ -605,7 +605,6 @@ try {
   const followRoot = await api(`/api/channels/${launch.id}/messages`, {
     body: { body: `@${afterRestart.agent.name} schedule followup because an async download is still running — wake me later` },
   }, captain);
-  await waitForAgentReply(followRoot.body.message.id, captain, afterRestart.agent.name);
   const followEvidence = await waitFor(async () => {
     const result = await api(`/api/channels/${launch.id}/activity`, {}, captain);
     const actions = result.body.actions || [];
@@ -620,7 +619,9 @@ try {
     db.close();
     return scheduled && row2?.status === "pending" ? { scheduled, row: row2 } : null;
   }, "schedule_followup persists pending row", 15_000);
-  ok(Boolean(followEvidence), "resident schedule_followup creates a durable pending re-entry (no silent background promise)");
+  const followThread = await api(`/api/messages/${followRoot.body.message.id}/thread`, {}, captain);
+  const visibleFollowupReply = followThread.body.replies?.some((message) => message.author?.name === afterRestart.agent.name && message.body && message.body !== "_Working…_");
+  ok(Boolean(followEvidence) && !visibleFollowupReply, "resident schedule_followup creates a durable pending re-entry without a fake user-facing completion");
 
   await api(`/api/threads/${taskThread.id}`, { method: "PATCH", body: { status: "waiting" } }, captain);
   const archive = await api(`/api/channels/${launch.id}/archive`, { body: {} }, captain);
