@@ -48,6 +48,19 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(readFileSync(`${root}/site/public/install-wsl.ps1`, "utf8"), /systemd=true/);
 });
 
+test("standalone deployment runs the website and tunnel without root process authority", () => {
+  const siteUnit = readFileSync(`${root}/deploy/1helm-site.service`, "utf8");
+  const tunnelUnit = readFileSync(`${root}/deploy/1helm-site-cloudflared.service`, "utf8");
+  const tunnelConfig = readFileSync(`${root}/deploy/config-1helm-site.yml.example`, "utf8");
+  assert.match(siteUnit, /DynamicUser=yes/);
+  assert.match(siteUnit, /ProtectHome=yes/);
+  assert.match(tunnelUnit, /DynamicUser=yes/);
+  assert.match(tunnelUnit, /LoadCredential=1helm-site-tunnel\.json:\/etc\/cloudflared\/1helm-site-tunnel\.json/);
+  assert.match(tunnelUnit, /tunnel run --credentials-file \$\{CREDENTIALS_DIRECTORY\}\/1helm-site-tunnel\.json/);
+  assert.doesNotMatch(tunnelConfig, /^credentials-file:/m);
+  assert.match(tunnelConfig, /127\.0\.0\.1:8130/);
+});
+
 test("autonomy report names its deterministic scope and live-system limits", () => {
   const report = JSON.parse(execFileSync(process.execPath, ["scripts/autonomy-benchmark.mjs"], { cwd: root, encoding: "utf8" }));
   assert.equal(report.schema, "https://1helm.com/schemas/autonomy-benchmark-v1.json");

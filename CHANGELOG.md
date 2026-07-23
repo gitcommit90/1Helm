@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The Linux installer now verifies an exact official Node release against its published checksum manifest, builds in an immutable versioned release directory, atomically switches `/opt/1helm/current`, health-checks startup, and restores the prior release link on failure.
+- The standalone website and its dedicated Cloudflare connector run as separate unprivileged dynamic systemd users; the tunnel credential is delivered read-only through systemd's credential channel instead of granting either process root execution.
 - Cloudflare connector lifecycle uses generation fencing and single-settlement child handling, so a connector stopped by its owner cannot race an already-queued automatic relaunch.
 - Photon sidecars launched from the packaged Electron runtime explicitly use Node mode, redact bearer/basic/token/secret material from errors, and back off boundedly when long polling fails.
 - Direct Sharp and WebSocket dependencies, including transitive development consumers, are overridden to fixed current releases. The production audit still reports 17 moderate advisories in Spectrum's OpenTelemetry dependency tree; no high or critical advisory remains.
