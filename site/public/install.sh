@@ -77,7 +77,7 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$TEMP_ROOT/source"
 runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH="$NODE_LINK/bin:/usr/bin:/bin" PUPPETEER_SKIP_DOWNLOAD=1 "$NODE_LINK/bin/npm" --prefix "$TEMP_ROOT/source" ci
 runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH="$NODE_LINK/bin:/usr/bin:/bin" "$NODE_LINK/bin/npm" --prefix "$TEMP_ROOT/source" run build
 if [[ -e "$RELEASE_ROOT" ]]; then
-  EXISTING_SHA="$(git -C "$RELEASE_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  EXISTING_SHA="$(runuser -u "$SERVICE_USER" -- git -C "$RELEASE_ROOT" rev-parse HEAD 2>/dev/null || true)"
   [[ "$EXISTING_SHA" == "$RELEASE_SHA" ]] || { echo "Existing release directory does not match v$VERSION." >&2; exit 1; }
 else
   mv "$TEMP_ROOT/source" "$RELEASE_ROOT"
