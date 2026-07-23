@@ -417,7 +417,7 @@ footer{border-top:1px solid var(--line);padding:32px 0 40px;background:var(--ink
     <div class="nav-links">
       <a href="#routing">The how</a>
       <a href="#anatomy">Inside a channel</a>
-      <a href="#handoff">For the skeptics</a>
+      <a href="#handoff">The handoff</a>
       <a href="https://github.com/gitcommit90/1Helm">GitHub</a>
     </div>
     <a class="btn btn-solid btn-sm nav-cta" href="https://1helm.com/download/macos">Download</a>
@@ -543,10 +543,6 @@ footer{border-top:1px solid var(--line);padding:32px 0 40px;background:var(--ink
       <div class="fabric-bar">
         <span class="title">1HELM ROUTER · <span style="color:var(--cyan)">per-channel routes</span> · live</span>
         <span class="fabric-hint">click a provider to knock it <b>offline</b></span>
-        <div class="seg" role="group" aria-label="Routing strategy">
-          <button id="segFb" class="on">FALLBACK</button>
-          <button id="segRr">ROUND-ROBIN</button>
-        </div>
       </div>
       <svg id="fabricSvg" viewBox="0 0 1080 640" aria-label="Live routing simulation: a message flows into the 1Helm router, out to the first healthy provider, and lands in its channel"></svg>
       <div class="fabric-log-shell">
@@ -652,7 +648,7 @@ footer{border-top:1px solid var(--line);padding:32px 0 40px;background:var(--ink
 <!-- ============ HANDOFF ============ -->
 <section id="handoff">
   <div class="wrap">
-    <div class="sec-kicker reveal"><b>03</b>For the skeptics</div>
+    <div class="sec-kicker reveal"><b>03</b>The boundary</div>
     <h2 class="reveal">The handoff you never have to make.</h2>
     <p class="lede reveal">Most agent products make <strong>you</strong> the router: copy context here, grant
     permission there, paste the result back. In 1Helm the resident calls Skipper itself — and the
@@ -974,10 +970,16 @@ el("circle", {cx:RX, cy:RY, r:9, fill:"#9BCBEE"}, rg);
 const routerPulse = el("circle", {cx:RX, cy:RY, r:46, fill:"none", stroke:"#FF7A7A", "stroke-width":1.5, opacity:0});
 el("text", {x:RX, y:RY+74, "text-anchor":"middle", fill:"#93A9C7", "font-size":"10.5"}).textContent = "1HELM ROUTER";
 el("text", {x:RX, y:RY+92, "text-anchor":"middle", fill:"#8098B8", "font-size":"9.5"}).textContent = "picks the route · quotas · logs";
-/* column labels */
-el("text", {x:MX+MW/2, y:24, fill:"#93A9C7", "font-size":"10.5", "letter-spacing":"2", "text-anchor":"middle"}).textContent = "MESSAGES";
-el("text", {x:AX+AW/2, y:24, fill:"#93A9C7", "font-size":"10.5", "letter-spacing":"2", "text-anchor":"middle"}).textContent = "PROVIDERS";
-el("text", {x:CX+CW/2, y:24, fill:"#93A9C7", "font-size":"10.5", "letter-spacing":"2", "text-anchor":"middle"}).textContent = "CHANNELS";
+/* column labels — stage-header chips, not background captions */
+function columnLabel(cx, text){
+  const w = text.length * 9.2 + 32;
+  const g = el("g", {});
+  el("rect", {x:cx - w/2, y:6, width:w, height:28, rx:14, fill:"#2E466C", stroke:"rgba(173,203,238,.5)"}, g);
+  el("text", {x:cx, y:24.5, "text-anchor":"middle", fill:"#DCEBF8", "font-size":"11", "letter-spacing":"2.5", "font-weight":"600"}, g).textContent = text;
+}
+columnLabel(MX+MW/2, "MESSAGES");
+columnLabel(AX+AW/2, "PROVIDERS");
+columnLabel(CX+CW/2, "CHANNELS");
 /* provider nodes */
 const acctEls = {};
 accounts.forEach((a, i) => {
@@ -1013,18 +1015,6 @@ channels.forEach((c, i) => {
   chanEls[c.id] = c;
 });
 
-/* strategy */
-let strategy = "fallback";
-const segFb = document.getElementById("segFb"), segRr = document.getElementById("segRr");
-const setStrat = s => {
-  strategy = s;
-  segFb.classList.toggle("on", s === "fallback");
-  segRr.classList.toggle("on", s === "rr");
-  logLine(`<span class="ts">${ts()}</span> all routes → strategy <span class="rt">${s === "rr" ? "round-robin" : "fallback"}</span>`);
-};
-segFb.addEventListener("click", () => setStrat("fallback"));
-segRr.addEventListener("click", () => setStrat("rr"));
-
 /* log */
 const logEl = document.getElementById("fabricLog");
 const servedEl = document.getElementById("fabricServed");
@@ -1049,10 +1039,7 @@ function eligibleFor(chan){
 }
 function pickAccount(chan){
   const pool = eligibleFor(chan);
-  if (!pool.length) return null;
-  if (strategy === "fallback") return pool[0];
-  chan.rr = ((chan.rr || 0) + 1) % pool.length;
-  return pool[chan.rr];
+  return pool.length ? pool[0] : null;
 }
 
 /* dots */
@@ -1136,9 +1123,8 @@ function launchSlot(i){
     setTimeout(() => { if (slots[i] === s) s.state = "waiting"; }, 2600);
     return;
   }
-  const attempt = strategy === "fallback"
-    ? `fallback[${eligibleFor(chan).indexOf(acct) + 1}]`
-    : "round-robin";
+  const idx = eligibleFor(chan).indexOf(acct);
+  const attempt = idx > 0 ? ` · fallback[${idx + 1}]` : "";
   s.box.style.stroke = "#9BCBEE";
   launchDot(slotPaths[i], "#9BCBEE", 750, "in", () => {
     launchDot(flyToAcct[acct.id], "#9BCBEE", 1000, "lin", () => {
@@ -1147,7 +1133,7 @@ function launchSlot(i){
         pulse(chan.lamp, 5.5);
         served++;
         servedEl.textContent = served;
-        logLine(`<span class="ts">${ts()}</span> <span class="rt">${chan.route}</span> → <span class="ac">${acct.label}</span> → ${chan.label} · ${attempt}`);
+        logLine(`<span class="ts">${ts()}</span> <span class="rt">${chan.route}</span> → <span class="ac">${acct.label}</span> → ${chan.label}${attempt}`);
         completeSlot(i);
       });
     });
