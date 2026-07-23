@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.19] - 2026-07-23
+
+### Fixed
+
+- Repeat Linux installs now inspect an existing service-owned release as the `1helm` service account. Git's ownership safety check no longer makes an unchanged, valid release look corrupt when the root installer is run again.
+
+### Tests
+
+- Added a repeat-install ownership regression and verified that the service, `/var/lib/1helm` inode, and an exact state sentinel survive a second installer run on the disposable Ubuntu host.
+
 ## [1.1.18] - 2026-07-23
 
 ### Fixed
@@ -262,7 +272,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The native channel-agent workspace began as a separately reviewed specification slice before becoming the normal 1Helm product path.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.18...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.19...HEAD
+[1.1.19]: https://github.com/gitcommit90/1Helm/compare/v1.1.18...v1.1.19
 [1.1.18]: https://github.com/gitcommit90/1Helm/compare/v1.1.17...v1.1.18
 [1.1.17]: https://github.com/gitcommit90/1Helm/compare/v1.1.16...v1.1.17
 [1.1.16]: https://github.com/gitcommit90/1Helm/compare/v1.1.15...v1.1.16
