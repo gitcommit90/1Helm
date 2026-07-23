@@ -20,6 +20,13 @@ resident, which verifies the original end-to-end outcome. The Captain is
 involved only for consequential human judgment, credentials that only they can
 provide, external authority, or an irreversible commitment.
 
+Prompting is not the only enforcement layer. For operational requests, a
+bounded deterministic outcome gate objects when a model tries to stop at a
+tutorial, an unevidenced blocker, an unresolved tool failure, or a suggestion
+that the Captain call Skipper. It keeps the turn open at most three times,
+leaves the objection in the work log, and yields normally for explanatory
+questions or a genuine structured human boundary.
+
 If work depends on time passing, it becomes a persisted obligation. 1Helm does
 not equate a model ending a turn with background execution. Follow-ups and
 recurring workflows have due times, retry state, computer wake obligations,
@@ -73,8 +80,9 @@ verification.
 Hermes demonstrates the value of a capable built-in skill library and agents
 that act before escalating. Buzz demonstrates the value of honest capability
 matrices, screenshot-led explanation, agent-first JSON interfaces, first-class
-workflows, auditable operations, and public benchmarks. 1Helm adopts those
-durability patterns where they strengthen outcome ownership.
+workflows, bounded stop hooks, outcome-first activity, auditable operations,
+and public benchmarks. 1Helm adopts those durability patterns where they
+strengthen outcome ownership.
 
 1Helm does not adopt a protocol, event model, media feature, or git substrate
 merely for parity. Its core bet is the compounding resident world: one identity,

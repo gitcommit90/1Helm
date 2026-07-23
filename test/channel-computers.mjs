@@ -150,7 +150,7 @@ test("Apple channel-computer contract preserves isolation, files, wakes, archive
 test("runtime digest and packaged image recipe stay pinned", async () => {
   assert.equal(computers.APPLE_RUNTIME_SHA256, "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714");
   assert.match(computers.APPLE_RUNTIME_URL, /\/1\.1\.0\/container-1\.1\.0-installer-signed\.pkg$/);
-  assert.equal(computers.DEFAULT_CHANNEL_IMAGE, "local/1helm-channel-machine:1.1.19");
+  assert.equal(computers.DEFAULT_CHANNEL_IMAGE, "local/1helm-channel-machine:1.1.20");
   const packaging = await readFile(join(root, "scripts", "package-mac-dmg.cjs"), "utf8");
   assert.match(packaging, /container\(\?:\$\|\\\/\)/, "release packaging includes container/ image assets");
   const image = await readFile(join(root, "container", "Containerfile"), "utf8");

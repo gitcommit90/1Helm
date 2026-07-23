@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.20] - 2026-07-23
+
+### Added
+
+- A bounded deterministic outcome gate now objects when an operational model turn tries to stop at a tutorial, permission loop, unevidenced blocker, unresolved tool failure, or a suggestion that the Captain call Skipper. The same turn continues toward action or direct escalation, with a hard three-objection budget so the gate cannot trap an agent.
+- Activity now presents one mutable verb → object → outcome row per tool action. The row changes from working to complete/failed in place and expands to retained input and outcome evidence, while the in-chat Work log remains the chronological live rail.
+
+### Changed
+
+- The public autonomy contract now includes the bounded outcome gate as a sixth named deterministic invariant. It remains explicitly distinct from live-model/provider reliability.
+- Product documentation now credits Buzz's bounded stop-hook and outcome-first supervision ideas, and distinguishes proven Linux fresh/repeat/rollback acceptance from still-unverified real Windows/WSL end-to-end acceptance.
+
+### Tests
+
+- Added deterministic outcome-gate unit coverage and a full resident integration in which an intentionally hand-holding model is rejected, uses its computer on the next round, completes the work, and leaves exactly one evidence-bearing Activity row.
+
 ## [1.1.19] - 2026-07-23
 
 ### Fixed
@@ -272,7 +288,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The native channel-agent workspace began as a separately reviewed specification slice before becoming the normal 1Helm product path.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.19...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.20...HEAD
+[1.1.20]: https://github.com/gitcommit90/1Helm/compare/v1.1.19...v1.1.20
 [1.1.19]: https://github.com/gitcommit90/1Helm/compare/v1.1.18...v1.1.19
 [1.1.18]: https://github.com/gitcommit90/1Helm/compare/v1.1.17...v1.1.18
 [1.1.17]: https://github.com/gitcommit90/1Helm/compare/v1.1.16...v1.1.17

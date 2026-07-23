@@ -17,7 +17,7 @@ try {
   db = database.db;
   const { q1, run, now, seed } = database;
   const { BUILTIN_SKILLS } = await import("../src/server/builtin-skills.ts");
-  const { validateAskUserInput, runtimeToolNamesForChannel } = await import("../src/server/bots.ts");
+  const { outcomeGateObjection, validateAskUserInput, runtimeToolNamesForChannel } = await import("../src/server/bots.ts");
   const { createWorkflow, setWorkflowStatus, stopWorkflowLoop } = await import("../src/server/workflows.ts");
   const { verifyAuditChain } = await import("../src/server/audit.ts");
 
@@ -44,6 +44,14 @@ try {
     questions: [{ question: "Accept the agreement?", options: [{ label: "Accept" }, { label: "Stop" }] }],
   });
   record("structured_human_boundary", !routine.valid && realBoundary.valid, { routine, real_boundary: realBoundary });
+
+  const handHolding = outcomeGateObjection({ request: "Install and verify the CLI", response: "You can run npm install yourself." });
+  const directBoundary = outcomeGateObjection({ request: "Deploy the site", response: "Skipper completed the host change.", successfulTools: ["call_skipper"] });
+  record("bounded_outcome_gate", /rejected an operational reply/i.test(handHolding) && directBoundary === "", {
+    hand_holding_objection: handHolding,
+    completed_boundary_objection: directBoundary,
+    rejection_budget: 3,
+  });
 
   const toolNames = runtimeToolNamesForChannel(botId, channelId);
   const requiredTools = ["run_command", "call_skipper", "schedule_followup", "schedule_workflow", "request_skill", "propose_skill"];
@@ -81,6 +89,7 @@ const report = {
     validates: [
       "shipped built-in playbook completeness",
       "structured human-blocker validation",
+      "bounded runtime objection to operational hand-holding",
       "resident autonomy tool availability",
       "wakeable recurring-work persistence",
       "audit-chain integrity for the executed fixture",

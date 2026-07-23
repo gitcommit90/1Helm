@@ -36,6 +36,8 @@ createServer(async (req, res) => {
     if (/slow-turn/i.test(serialized)) await new Promise((resolve) => setTimeout(resolve, 1200));
     if (/live-ui-stream/i.test(latestUser)) await new Promise((resolve) => setTimeout(resolve, 250));
     const hasToolResult = reqBody.messages.some((m) => m.role === "tool");
+    const outcomeGateRecovery = /deflect-operational-work/i.test(latestUser) && /runtime outcome gate/i.test(serialized) && !hasToolResult;
+    const outcomeGateDeflection = /deflect-operational-work/i.test(latestUser) && !/runtime outcome gate/i.test(serialized) && !hasToolResult;
     const repeatsTools = /repeat-tool-limit/i.test(serialized);
     const wantsRequestSkill = reqBody.tools?.some((tool) => tool.function?.name === "request_skill") && /request the self-hosting-guide skill/i.test(latestUser) && !hasToolResult;
     const wantsProposeSkill = reqBody.tools?.some((tool) => tool.function?.name === "propose_skill") && /propose a reusable meeting brief skill/i.test(latestUser) && !hasToolResult;
@@ -98,7 +100,14 @@ createServer(async (req, res) => {
     }
 
     res.writeHead(200, { "content-type": "text/event-stream" });
-    if (wantsLearnSkill) {
+    if (outcomeGateRecovery) {
+      const args = { command: "printf 'outcome gate recovered\\n' > outcome-gate.txt" };
+      sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "outcome_gate_recovery_1", type: "function", function: { name: "run_command", arguments: JSON.stringify(args) } }] } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+    } else if (outcomeGateDeflection) {
+      sse(res, { choices: [{ delta: { content: "You can run the command yourself, or ask Skipper to help." } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "stop" }] });
+    } else if (wantsLearnSkill) {
       const args = { name: "Incident postmortem", description: "Turn incident evidence into reusable postmortems.", instructions: "Gather the timeline, contributing factors, corrective actions, owners, and follow-up dates." };
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "create_skill_1", type: "function", function: { name: "create_skill", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
