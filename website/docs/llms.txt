@@ -1,0 +1,293 @@
+# 1Helm — complete documentation (agent-readable)
+
+> 1Helm gives each ongoing job a permanent resident AI, a persistent private Linux
+> computer, durable memory, files, threads, skills, and scheduled obligations.
+> Self-hosted, open source (MIT), Apple Silicon native.
+> Source: https://github.com/gitcommit90/1Helm · Site: https://1helm.com
+> Human-readable docs: https://1helm.com/docs
+
+## Operating model
+
+- Captain — the workspace owner and final human authority. Sets outcomes, supplies
+  judgment/credentials when genuinely required, manages the workspace.
+- Skipper — the one workspace-wide chief of staff, in the Captain's private #main.
+  Inventories and manages channels, residents, computers, obligations, audits,
+  connectors, and host-authorized work. Has native control-plane actions; it should
+  not inspect directories to guess 1Helm state. Ask it in plain language.
+- Residents — permanent specialists. Every ordinary channel has exactly one resident
+  and one isolated persistent Linux computer. Changing a model or starting a new
+  thread never replaces the identity or its world.
+- Coworkers — invited humans. Each gets a private Skipper #main and the human-only
+  Collab space. A coworker-created channel stays private until its owner explicitly
+  tags and confirms another member; the Captain does not silently inherit it.
+
+Outcome contract: a resident owns the requested outcome. Routine inspection,
+research, downloads, installs, configuration, commands, retries, file work, and
+reversible implementation choices happen autonomously inside its computer. When work
+crosses the channel boundary, the resident calls Skipper directly; Skipper performs
+the boundary operation and returns the same thread; the resident verifies
+end-to-end. The Captain is needed only for consequential judgment, credentials,
+external authority, or irreversible commitments.
+
+Outcome gate: for operational requests, a bounded deterministic gate objects when a
+model tries to stop at a tutorial, an unevidenced blocker, an unresolved tool
+failure, or a suggestion that the Captain call Skipper. It keeps the turn open at
+most three times, logs each objection, and yields normally for explanatory questions
+or a genuine structured human boundary.
+
+## Install & first run
+
+Apple Silicon (native product):
+1. Download the signed DMG: https://1helm.com/download/macos
+2. Drag 1Helm to Applications, launch; Gatekeeper verifies Developer ID signature +
+   notarization ticket.
+3. Complete Captain -> Providers -> Workspace onboarding; approve Apple's signed
+   container runtime once if prompted.
+
+App state lives in `~/Library/Application Support/1Helm` (databases, credentials,
+workspaces, resident state). Replacing the app with a newer signed DMG preserves it.
+Never delete it during upgrades; never bypass Gatekeeper with ad-hoc builds.
+
+Source / headless (Node 22):
+    PUPPETEER_SKIP_DOWNLOAD=1 npm install
+    npm run build
+    npm start          # http://127.0.0.1:8123
+
+Env vars: PORT (8123) · CTRL_DATA_DIR (./data) · HELM_CHANNEL_COMPUTER_BACKEND
+(apple on macOS, native elsewhere) · HELM_CHANNEL_MACHINE_IMAGE (versioned image).
+Fresh data dir opens first-run setup; don't point development at production data.
+
+Platform truth:
+- macOS 26 Apple Silicon: native desktop product; one real isolated Linux VM per
+  resident (Apple `container machine`, home-mount=none).
+- Linux / CI: durable headless compatibility backend; NOT per-resident VM isolation.
+- Windows + WSL: headless compatibility path; not a native Windows app.
+Not yet shipped: native Windows/Linux desktop packages, mobile clients, hosted
+control plane, Linux per-resident VM isolation, rich Photon attachment fidelity,
+blind execution of community skills.
+
+## Channels & lifecycle
+
+Create a channel per durable job (product, launch, inbox, household, client,
+research stream). The channel owns its resident, computer, /workspace, files,
+threads, memory, skills, and scheduled obligations.
+
+Skipper lifecycle commands (plain language in #main):
+    @skipper what channels exist
+    @skipper inspect #product-launch
+    @skipper sunset #ideas
+    @skipper sunset and delete #ideas
+    @skipper inspect the computer fleet and due obligations
+
+- Archive = safe sunset: preserves the resident world and disk; pauses active
+  workflows; cancels unsafe wake obligations. Restore reuses the exact world.
+- Permanent deletion requires an already-archived non-main channel; removes only
+  that named private world. #main can never be archived or deleted.
+- The sidebar updates immediately after Skipper lifecycle work.
+
+## Chat, attachments, structured questions
+
+- Mention the resident to start a job; in a one-human/one-agent thread, later
+  messages stay conversational without repeated mentions.
+- Mention Skipper for boundaries; residents can also call Skipper themselves and the
+  runtime returns the unblocked thread automatically.
+- Replies stream into one stable message; draft text, focus, selection, scroll, and
+  open work logs stay stable. Stop interrupts only the active turn; the next reply
+  gets hidden continuation context.
+- Attachments: from the composer or Files. Every attachment has explicit Open and
+  Download. Safe image/text/PDF/audio/video formats preview in-app.
+- Structured questions: allowed only for evidenced human judgment, missing
+  credentials, external authority, or irreversible commitment. Routine setup,
+  installs, downloads, retries, and inspectable facts are not interview material.
+  Consecutive interview rounds are rejected without intervening action or new
+  evidence. Click a choice, confirm highlight, Continue; the answer is stored once
+  and the thread resumes.
+
+## Threads & Board
+
+A thread is a durable work session inside the resident's identity: status, summary,
+model override where allowed, usage, replies, follow-up, optional guest expert.
+Resolving a thread revokes thread-only guests without changing channel membership.
+Threads = list view; Board = the same sessions in status lanes; a workspace-wide
+Threads entry gives a cross-channel view.
+
+## Files & Terminal
+
+Two views of the same channel computer; both agent commands and the human Terminal
+start in the channel's persistent /workspace. Files created either way appear in
+Files after reconciliation. The prompt shows the live path and follows `cd`.
+Ordinary residents cannot select or enter the Captain's Mac. Host paths are not a
+resident workspace.
+
+## Memory, Activity, Audit
+
+- Memory: curated facts, decisions, corrections, preferences, procedures with
+  provenance — not a transcript dump. Each resident and Skipper also has an isolated
+  Mnemosyne SQLite store for long-term recall.
+- Activity: outcome-first rows that mutate working -> complete/failed; expand for
+  retained input and outcome evidence.
+- Audit: new tool/activity events enter an append-only SHA-256 hash chain. Settings
+  -> Audit verifies continuity and identifies the first invalid sequence after
+  exact-payload tampering. Local tamper evidence only — not a remote transparency
+  log; cannot prevent a host admin replacing the database.
+
+## Providers, models & routes
+
+Accounts and keys form one fabric:
+- OAuth: multiple ChatGPT, Claude, Gemini/Antigravity, and xAI accounts.
+- Keys: OpenRouter, NVIDIA NIM, Cloudflare, GLM, custom OpenAI-compatible endpoints
+  (unauthenticated custom endpoints are supported).
+- Enable accounts and models independently; use a direct model or a named
+  fallback / round-robin route.
+- Disabled or exhausted accounts are excluded from attempts and logs; one disabled
+  account never blocks a healthy account serving the same model.
+- Changing a route NEVER replaces the resident or discards computer, memory, skills,
+  files, obligations, or thread history.
+- Quotas and Logs give account-aware evidence for every request.
+- Endpoint: authenticated OpenAI- and Anthropic-compatible /v1 for external tools.
+  External gateway keys are separate; 1Helm agents use a private internal credential
+  that cannot be disabled or revoked with external keys.
+
+## Skills
+
+- 34 complete built-in playbooks owned permanently by every resident: outcome
+  ownership, Skipper handoff, obligations, skill discovery, memory, research, email,
+  calendar, contacts, messaging, documents, spreadsheets, PDFs, meetings, projects,
+  personal operations, travel, finance, support, software delivery, data, media,
+  infrastructure, security, and more. Only task-relevant playbooks activate.
+- External installs (SkillsMD catalog of GitHub-backed repos) pipeline: resolve
+  immutable revision pin -> bound selected docs -> scan (unsafe content blocked) ->
+  SHA-256 hash + provenance stored -> wrap beneath runtime authority. Community
+  popularity is not trust; community entries are quarantined.
+- Learn a new skill: when no ready repo-specific procedure exists, Skipper inspects
+  supplied local sources, web URLs, and notes in a visible thread and authors a
+  workspace-specific procedure.
+- Crystallization: a resident can turn a proven, repeatable real workflow into a
+  reusable procedure with activation cues, authority boundaries, recovery, retained
+  state, verification, and completion evidence. Generic advice, unverified guesses,
+  secrets, incident-specific personal data, and runtime-weakening instructions are
+  rejected.
+- "Do we have a calendar skill?" is read-only: must not install anything or open an
+  interview.
+
+## Gmail connection
+
+Settings -> Connections -> Gmail (host-owned):
+1. Once per Google Cloud project: create a Desktop-app OAuth client, enable the
+   Gmail API, choose the downloaded JSON in 1Helm.
+2. Connect Gmail: state-protected PKCE authorization, loopback callback.
+3. Return after Google confirms.
+Or: `@skipper can we set up Gmail` — the native connector runs directly.
+Scopes: account inventory, search, read, draft creation. SENDING IS DISABLED.
+Skipper can use connected accounts in the Captain's authorized thread; in an
+ordinary channel it can grant only named accounts to that resident. OAuth tokens
+stay in host-owned storage — never in chat, Activity evidence, or resident
+computers. Loopback callback belongs to the installed host; a remote demo cannot
+authorize Gmail elsewhere.
+
+## Photon / iMessage connection
+
+Connections guides device authorization, project setup, secret rotation, phone
+registration, sidecar health, and conversation mapping (first mapping defaults to
+#main + Skipper). An allowlisted inbound text creates a real 1Helm thread, invokes
+the mapped agent, retains the reply, and sends that final reply back to the exact
+inbound conversation once. Explicit `photon_send` suppresses the automatic
+duplicate. New unrelated outbound destinations are blocked unless explicitly
+granted. Text is the reliable contract; rich attachments not yet verified.
+
+## Workflows, follow-ups, computer care
+
+- Follow-up: one-shot durable wake on an existing thread.
+- Workflow: recurring obligation with interval, next run, status, run count,
+  optional maximum. Settings -> Workflows: pause/resume, run counts, failures.
+- Obligations survive restarts and wake sleeping resident computers when due.
+- Skipper reconciles computer state, obligations, CPU/RAM/disk pressure, sleep,
+  wake, resize, update, repair, archive, restore, deletion safety. Users don't
+  manually size routine resident machines. Archive pauses workflows; never silently
+  discards scheduled state.
+- Settings -> Skipper computers: optional Captain-owned endpoints (This Computer,
+  remote Open-Terminal) for authorized host-level Skipper work. Residents never
+  receive these.
+
+## Domains, collaboration, members, privacy
+
+- The installed Mac can reserve a local-first 1helm.com workspace address and
+  optionally connect a Cloudflare domain. The Mac is the only workspace server;
+  workspace state and provider credentials remain on it.
+- Public registration closes after the Captain account. Access requests appear in
+  Settings -> Members and post an LLM-independent notice in the Captain's #main.
+- Collab is human-only: no resident, bot, terminal, computer, model policy, or
+  Files world.
+- Channel membership gates HTTP, files, terminals, messages, WebSocket fan-out.
+  Private coworker channels are not Captain-readable without invitation.
+
+## Updates, removal, recovery
+
+- Signed releases are unique patch versions; upgrades preserve Application Support.
+- Removal: use the removal-preparation flow (Captain-only, typed confirmation,
+  reports backend-owned resident machines, prepares safe deletion). Export
+  irreplaceable channel files first.
+- Recovery: restore archived channels instead of recreating; retry after provider
+  health returns (identity persists); Skipper fleet inspection for unhealthy
+  computers; verify Settings -> Audit after suspected tampering; preserve
+  Application Support before reinstalling; never bypass signature/notarization/
+  Gatekeeper failures.
+
+## Troubleshooting
+
+- Button highlights but Continue does nothing: every visible question needs one
+  selected option or typed answer; selection should survive live repaints.
+- Skipper reports only #main: ask "what channels exist" — inventory comes from the
+  native control plane, includes archived channels when requested.
+- Gmail asks repeated questions: use `@skipper can we set up Gmail` or Connections
+  -> Gmail; the native path must not open consecutive interviews.
+- Model uses a disabled account: confirm disabled in Providers, reproduce one
+  request, inspect Logs — disabled accounts should be absent, not merely fail
+  first.
+- Terminal and Files disagree: confirm prompt under /workspace; refresh Files after
+  the command completes.
+- Scheduled job didn't run: inspect Workflows/Board; ask Skipper to list
+  obligations and reconcile the fleet; archived channels pause workflows.
+- PDF preview blank: retry Open, then Download (authoritative fallback).
+
+## Security summary
+
+- Per-resident Apple Linux VMs, no Mac home mount (macOS native only).
+- Skipper owns host/fleet/credential-broker/cross-channel authority; residents get
+  task-scoped tools, never raw host credentials.
+- Credentials and connectors are host-owned and minimally brokered.
+- Workspace file mirrors are channel-scoped, size-bounded, symlink-contained.
+- Agent interviews follow a narrow human-only policy.
+- External skills: revision-pinned, bounded, scanned, hashed, wrapped.
+- Operational history is locally tamper-evident (append-only SHA-256 chain).
+- Releases are Developer ID signed, notarized, stapled, Gatekeeper verified.
+- Report vulnerabilities privately via GitHub's "Report a vulnerability" on
+  gitcommit90/1Helm. Only the latest release receives security fixes.
+
+## Agent-first JSON CLI
+
+    export HELM_URL=http://127.0.0.1:8123
+    export HELM_TOKEN='a 1Helm session token'
+
+    npm run helm -- channels
+    printf '%s\n' '{"channel_id":2,"body":"Own this outcome and verify it."}' \
+      | npm run helm -- message
+    printf '%s\n' '{"channel_id":2,"name":"Weekly evidence","prompt":"Audit the launch and publish a verified status.","interval_seconds":604800}' \
+      | npm run helm -- workflow-create
+    npm run helm -- audit-verify
+
+## FAQ (short answers)
+
+- Free? MIT-licensed, open source, self-hosted; bring your own model accounts/keys.
+- Data leaves the Mac? No hosted control plane; credentials host-owned; residents
+  never receive tokens.
+- Switching models? Identity, computer, memory, skills, files, obligations, threads
+  all survive.
+- Residents read my Mac? No — isolated VMs, no home mount (macOS native).
+- Send email/texts? Gmail drafts only (send disabled); iMessage replies only within
+  allowlisted conversations.
+- Tutorial answers? Bounded outcome gate objects (max 3x, logged).
+- App closed? Obligations persist and wake computers, but the Mac must be on.
+- Windows/Linux? Headless compatibility only today; no native packages yet.
+- Use the fabric from other tools? Yes — OpenAI/Anthropic-compatible /v1 endpoint
+  with separate external keys.

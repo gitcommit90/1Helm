@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1Helm Docs — every feature, how-to, and answer</title>
+<meta name="description" content="Complete 1Helm documentation: the operating model, channels, threads, files, terminal, memory, providers and routing, skills, Gmail and iMessage connections, workflows, collaboration, troubleshooting, and FAQ. Human-readable and agent-readable.">
+<link rel="icon" type="image/png" href="../assets/logo-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink0:#152238; --ink1:#1B2C48; --ink2:#243858; --ink3:#2E466C;
+  --line:rgba(173,203,238,.26); --line2:rgba(173,203,238,.44);
+  --fg:#F4F8FC; --mut:#BCCCE2; --dim:#93A9C7;
+  --cyan:#9BCBEE; --foam:#DCEBF8; --amber:#FFB35C; --amber2:#FF9736;
+  --green:#5CE49B; --red:#FF7A7A;
+  --disp:"Fraunces",Georgia,serif;
+  --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--ink0);color:var(--fg);font-family:var(--sans);font-size:16px;line-height:1.7;-webkit-font-smoothing:antialiased;position:relative}
+::selection{background:rgba(155,203,238,.28);color:#fff}
+a{color:var(--cyan);text-decoration:none}
+a:hover{text-decoration:underline}
+img{display:block;max-width:100%}
+body::after{
+  content:"";position:absolute;inset:0;pointer-events:none;z-index:60;opacity:.03;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+}
+.mono{font-family:var(--mono)}
+
+/* nav pill */
+nav{
+  position:fixed;top:16px;left:50%;transform:translate3d(-50%,0,0);z-index:50;
+  width:min(1080px, calc(100% - 32px));border-radius:999px;
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  background:rgba(36,56,88,.85);border:1px solid rgba(173,203,238,.28);
+  box-shadow:0 10px 40px rgba(6,12,24,.45), inset 0 1px 0 rgba(220,235,248,.14);
+}
+.nav-in{padding:0 12px 0 24px;height:58px;display:flex;align-items:center;gap:30px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:17px;color:var(--fg)}
+.brand:hover{text-decoration:none}
+.brand img{width:26px;height:26px;border-radius:7px}
+.nav-links{display:flex;gap:24px;margin-left:auto;font-size:13.5px;color:var(--mut)}
+.nav-links a{color:var(--mut)}
+.nav-links a:hover{color:var(--fg);text-decoration:none}
+.nav-links a.active{color:var(--fg);font-weight:600}
+.btn{display:inline-flex;align-items:center;gap:8px;border-radius:999px;padding:9px 16px;font-size:13px;font-weight:600;background:var(--amber);color:#241303;margin-left:6px}
+.btn:hover{background:var(--amber2);text-decoration:none}
+@media(max-width:860px){.nav-links{display:none}.btn{margin-left:auto}}
+
+.wrap{max-width:1180px;margin:0 auto;padding:0 28px}
+
+/* header */
+header{padding:132px 0 30px}
+.kicker{font-family:var(--mono);font-size:11.5px;letter-spacing:.22em;color:var(--cyan);text-transform:uppercase}
+h1{font-family:var(--disp);font-weight:430;font-variation-settings:"opsz" 100;font-size:clamp(32px,4vw,50px);line-height:1.1;letter-spacing:-.01em;margin:14px 0 14px}
+h1 em{font-style:italic;color:var(--foam)}
+.lede{max-width:640px;color:var(--mut);font-size:16px}
+
+/* agent card */
+.agentcard{
+  margin-top:26px;border:1px solid var(--line2);border-radius:16px;background:var(--ink1);
+  padding:18px 22px;display:flex;flex-wrap:wrap;align-items:center;gap:16px;max-width:820px;
+}
+.agentcard .ic{width:38px;height:38px;border-radius:10px;background:var(--ink3);border:1px solid var(--line2);display:grid;place-items:center;font-family:var(--mono);color:var(--cyan);font-size:15px}
+.agentcard b{display:block;font-size:14.5px}
+.agentcard p{font-size:13px;color:var(--mut);margin:0}
+.agentcard .grow{flex:1;min-width:220px}
+.copybtn{font-family:var(--mono);font-size:12px;border:1px solid var(--line2);border-radius:10px;padding:9px 14px;color:var(--foam);background:var(--ink2);cursor:pointer;font-weight:500}
+.copybtn:hover{border-color:var(--cyan)}
+
+/* layout */
+.layout{display:grid;grid-template-columns:230px 1fr;gap:56px;padding:34px 0 100px;align-items:start}
+@media(max-width:960px){.layout{grid-template-columns:1fr}aside.toc{display:none}}
+aside.toc{position:sticky;top:96px;max-height:calc(100vh - 120px);overflow-y:auto;scrollbar-width:thin}
+.toc .toc-head{font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;color:var(--dim);margin-bottom:10px}
+.toc a{display:block;padding:6px 12px;font-size:13px;color:var(--mut);border-left:2px solid var(--line);transition:color .15s,border-color .15s}
+.toc a:hover{color:var(--fg);text-decoration:none}
+.toc a.on{color:var(--foam);border-left-color:var(--cyan)}
+.toc .gap{height:12px}
+
+main{min-width:0;max-width:780px}
+section.doc{padding:26px 0 30px;border-top:1px solid var(--line);scroll-margin-top:96px}
+section.doc:first-child{border-top:0;padding-top:0}
+h2{font-family:var(--disp);font-weight:450;font-size:28px;line-height:1.2;margin-bottom:6px;letter-spacing:-.008em}
+h2 .n{font-family:var(--mono);font-size:12px;color:var(--cyan);letter-spacing:.1em;display:block;margin-bottom:8px;font-weight:500}
+h3{font-size:16.5px;font-weight:600;margin:26px 0 8px}
+p{color:var(--mut);margin:10px 0;font-size:15px}
+p b, li b{color:var(--fg)}
+ul,ol{margin:10px 0 10px 22px;color:var(--mut);font-size:15px;display:flex;flex-direction:column;gap:6px}
+li::marker{color:var(--dim)}
+code{font-family:var(--mono);font-size:12.5px;color:var(--foam);background:var(--ink2);border-radius:6px;padding:2px 7px}
+pre{background:var(--ink1);border:1px solid var(--line);border-radius:12px;padding:14px 18px;overflow-x:auto;margin:14px 0}
+pre code{background:none;padding:0;font-size:12.5px;line-height:1.8;color:var(--foam)}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);text-align:left;padding:8px 14px 8px 0;border-bottom:1px solid var(--line2);font-weight:500}
+td{padding:9px 14px 9px 0;border-bottom:1px solid var(--line);color:var(--mut);vertical-align:top}
+td:first-child{color:var(--foam);font-family:var(--mono);font-size:12.5px;white-space:nowrap}
+figure{margin:18px 0}
+figure img{border:1px solid var(--line2);border-radius:12px;box-shadow:0 20px 60px rgba(6,12,24,.4);width:100%;aspect-ratio:1512/982;object-fit:cover;background:var(--ink1)}
+figcaption{font-family:var(--mono);font-size:11px;color:var(--dim);margin-top:8px;letter-spacing:.04em}
+.callout{border:1px solid var(--line2);border-left:3px solid var(--cyan);border-radius:10px;background:var(--ink1);padding:12px 16px;margin:14px 0;font-size:14px;color:var(--mut)}
+.callout.warn{border-left-color:var(--amber)}
+.callout.good{border-left-color:var(--green)}
+.callout b{color:var(--fg)}
+.qa{border:1px solid var(--line);border-radius:12px;background:var(--ink1);margin:10px 0;overflow:hidden}
+.qa summary{cursor:pointer;padding:13px 18px;font-size:14.5px;font-weight:600;color:var(--fg);list-style:none;display:flex;justify-content:space-between;gap:12px}
+.qa summary::after{content:"+";font-family:var(--mono);color:var(--cyan)}
+.qa[open] summary::after{content:"–"}
+.qa .a{padding:0 18px 14px;font-size:14px;color:var(--mut)}
+.qa .a p{font-size:14px}
+footer{border-top:1px solid var(--line);padding:30px 0 40px;font-family:var(--mono);font-size:12px;color:var(--dim)}
+footer .wrap{display:flex;flex-wrap:wrap;gap:20px;justify-content:space-between}
+footer a{color:var(--mut)}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-in">
+    <a class="brand" href="../"><img src="../assets/logo-64.png" alt="1Helm logo">1Helm</a>
+    <div class="nav-links">
+      <a href="../">Home</a>
+      <a href="./" class="active">Docs</a>
+      <a href="llms.txt">For agents</a>
+      <a href="https://github.com/gitcommit90/1Helm">GitHub</a>
+    </div>
+    <a class="btn" href="https://1helm.com/download/macos">Download</a>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <div class="kicker">Documentation · covers the shipped product</div>
+    <h1>Everything the crew can do — <em>and how to ask for it.</em></h1>
+    <p class="lede">The complete guide to 1Helm: the operating model, every surface, every connection,
+    and every question we've been asked. Read it yourself, or hand the whole thing to an agent.</p>
+
+    <div class="agentcard">
+      <div class="ic">&gt;_</div>
+      <div class="grow">
+        <b>Reading this with an agent?</b>
+        <p>The entire documentation is published as one plain-text file. Point any agent at it.</p>
+      </div>
+      <button class="copybtn" id="copyAgent" data-copy="Read https://1helm.com/docs/llms.txt — the complete 1Helm documentation in one plain-text file — then help me with my question.">copy agent prompt</button>
+      <a class="copybtn" href="llms.txt" style="text-decoration:none">open llms.txt</a>
+    </div>
+  </div>
+</header>
+
+<div class="wrap layout">
+  <aside class="toc" id="toc">
+    <div class="toc-head">GET ORIENTED</div>
+    <a href="#start">Start here</a>
+    <a href="#install">Install &amp; first run</a>
+    <a href="#channels">Channels &amp; lifecycle</a>
+    <div class="gap"></div>
+    <div class="toc-head">DAILY WORK</div>
+    <a href="#chat">Chat &amp; structured questions</a>
+    <a href="#threads">Threads &amp; Board</a>
+    <a href="#files">Files &amp; Terminal</a>
+    <a href="#memory">Memory, Activity &amp; Audit</a>
+    <div class="gap"></div>
+    <div class="toc-head">POWER</div>
+    <a href="#providers">Providers, models &amp; routes</a>
+    <a href="#skills">Skills</a>
+    <a href="#gmail">Gmail</a>
+    <a href="#photon">Photon / iMessage</a>
+    <a href="#obligations">Workflows &amp; follow-ups</a>
+    <div class="gap"></div>
+    <div class="toc-head">WORKSPACE</div>
+    <a href="#collab">Domains, members &amp; privacy</a>
+    <a href="#updates">Updates, removal &amp; recovery</a>
+    <div class="gap"></div>
+    <div class="toc-head">WHEN STUCK</div>
+    <a href="#troubleshooting">Troubleshooting</a>
+    <a href="#faq">FAQ</a>
+    <a href="#cli">CLI for agents</a>
+  </aside>
+
+  <main>
+
+  <section class="doc" id="start">
+    <h2><span class="n">01 · GET ORIENTED</span>Start here</h2>
+    <p>1Helm gives each ongoing job a <b>resident AI</b>, a persistent <b>private Linux computer</b>,
+    durable <b>memory</b>, files, sessions, skills, and scheduled obligations. You create a channel for
+    anything that deserves an owner — a product, an inbox, a client, a household — and 1Helm provisions
+    a complete world around it.</p>
+    <h3>The four roles</h3>
+    <ul>
+      <li><b>Captain</b> — the workspace owner and final human authority. Sets outcomes, supplies judgment
+      and credentials when genuinely required, and can manage the whole workspace.</li>
+      <li><b>Skipper</b> — the one workspace-wide chief of staff, living in your private <code>#main</code>.
+      It inventories and manages channels, residents, computers, obligations, audits, connectors, and
+      host-authorized work. Ask in plain language.</li>
+      <li><b>Residents</b> — permanent specialists. Every ordinary channel gets exactly one resident and one
+      isolated persistent Linux computer. Changing a model or starting a new thread never replaces that
+      identity or its world.</li>
+      <li><b>Coworkers</b> — invited humans. Each gets a private Skipper <code>#main</code> and the human-only
+      Collab space. A coworker's channel stays private until they explicitly add someone.</li>
+    </ul>
+    <figure>
+      <img src="assets/workspace-chat.png" alt="The 1Helm workspace: a resident channel with chat, board, threads, files, terminal, memory, activity and settings tabs" loading="lazy">
+      <figcaption>A resident channel. Tabs along the top are all views of the same world.</figcaption>
+    </figure>
+    <h3>Your first ten minutes</h3>
+    <ol>
+      <li>Create a channel for a real job — say <code>#product-launch</code>. A resident and its computer appear with it.</li>
+      <li>Mention the resident and hand it an outcome: <i>"Own the launch plan and draft the release notes."</i>
+      In a one-on-one thread you don't need to keep re-mentioning it.</li>
+      <li>Ask Skipper in <code>#main</code> for anything workspace-wide: <code>@skipper what channels exist</code>.</li>
+    </ol>
+    <div class="callout good"><b>The core promise:</b> the resident inspects, installs, edits, runs, retries,
+    waits, and verifies inside its own computer — autonomously. When work crosses its boundary it calls
+    Skipper itself, and the thread comes back on its own. You're only needed for real judgment, credentials,
+    external authority, or irreversible commitments.</div>
+  </section>
+
+  <section class="doc" id="install">
+    <h2><span class="n">02 · GET ORIENTED</span>Install &amp; first run</h2>
+    <h3>Apple Silicon (the native product)</h3>
+    <ol>
+      <li>Download the current signed DMG from <a href="https://1helm.com/download/macos">1helm.com/download/macos</a>.</li>
+      <li>Open it and drag <b>1Helm</b> to Applications.</li>
+      <li>Launch. Gatekeeper verifies the Developer ID signature and Apple notarization ticket.</li>
+      <li>Complete onboarding: <b>Captain → Providers → Workspace</b>. If prompted, approve Apple's signed
+      container runtime once during workspace creation.</li>
+    </ol>
+    <p>Application state lives under <code>~/Library/Application Support/1Helm</code> — databases, credentials,
+    workspaces, resident state, and files. Installing a newer 1Helm app preserves this directory.</p>
+    <div class="callout warn"><b>Don't delete Application Support</b> while replacing the app, and never work
+    around a failed signature or Gatekeeper result with an ad-hoc build.</div>
+    <h3>Running from source (development / headless)</h3>
+    <p>The Mac app is the complete consumer product. For development and headless compatibility deployments,
+    use Node 22:</p>
+    <pre><code>PUPPETEER_SKIP_DOWNLOAD=1 npm install
+npm run build
+npm start                 # http://127.0.0.1:8123</code></pre>
+    <table>
+      <tr><th>Variable</th><th>Default</th><th>Meaning</th></tr>
+      <tr><td>PORT</td><td>8123</td><td>HTTP/WebSocket control-plane port.</td></tr>
+      <tr><td>CTRL_DATA_DIR</td><td>./data</td><td>Databases, routing state, uploads, workspace mirrors.</td></tr>
+      <tr><td>HELM_CHANNEL_COMPUTER_BACKEND</td><td>apple / native</td><td>Explicit computer-backend override (apple on macOS, native elsewhere).</td></tr>
+      <tr><td>HELM_CHANNEL_MACHINE_IMAGE</td><td>versioned</td><td>Apple channel-machine image tag.</td></tr>
+    </table>
+    <h3>Platform truth</h3>
+    <table>
+      <tr><th>Platform</th><th>Contract</th></tr>
+      <tr><td>macOS 26 · Apple Silicon</td><td><b>Native product.</b> One real isolated Linux VM per resident, no Mac home mount.</td></tr>
+      <tr><td>Linux / CI</td><td>Durable headless compatibility backend — not per-resident VM isolation.</td></tr>
+      <tr><td>Windows + WSL</td><td>Headless compatibility path — not a native Windows app.</td></tr>
+    </table>
+    <p>Not yet shipped: native Windows/Linux desktop packages, mobile clients, a hosted control plane,
+    Linux per-resident VM isolation, rich Photon attachment fidelity, blind execution of community skills.</p>
+  </section>
+
+  <section class="doc" id="channels">
+    <h2><span class="n">03 · GET ORIENTED</span>Channels &amp; lifecycle</h2>
+    <p>Create a channel for a durable area of responsibility. The channel owns its resident, computer,
+    <code>/workspace</code>, files, threads, memory, skills, and scheduled obligations.</p>
+    <h3>Manage the fleet through Skipper</h3>
+    <pre><code>@skipper what channels exist
+@skipper inspect #product-launch
+@skipper sunset #ideas
+@skipper sunset and delete #ideas
+@skipper inspect the computer fleet and due obligations</code></pre>
+    <ul>
+      <li><b>Archive</b> is the safe sunset: it preserves the resident world and disk while pausing active
+      workflows and cancelling unsafe wake obligations.</li>
+      <li><b>Restore</b> reuses that exact world — prefer it over recreating a channel.</li>
+      <li><b>Permanent deletion</b> requires an already-archived, non-main channel, and removes only that
+      named private world.</li>
+      <li><code>#main</code> can never be archived or deleted.</li>
+    </ul>
+    <div class="callout"><b>Tip:</b> the sidebar updates immediately when Skipper performs lifecycle work —
+    no refresh needed.</div>
+  </section>
+
+  <section class="doc" id="chat">
+    <h2><span class="n">04 · DAILY WORK</span>Chat, attachments &amp; structured questions</h2>
+    <ul>
+      <li><b>Start a job</b> by mentioning the resident. In a one-human/one-agent thread, later messages stay
+      conversational without repeated mentions.</li>
+      <li><b>Cross a boundary</b> by mentioning Skipper — or let the resident call Skipper itself; the runtime
+      returns the unblocked thread automatically.</li>
+      <li><b>Streaming:</b> agent replies stream into one stable message. Your draft text, focus, selection,
+      and scroll position stay put while updates arrive.</li>
+      <li><b>Stop</b> interrupts only the active turn; the next reply picks up hidden continuation context.</li>
+      <li><b>Attachments:</b> attach from the composer or upload in Files. Every attachment has explicit
+      <b>Open</b> and <b>Download</b> actions; safe image, text, PDF, audio, and video formats preview in-app.</li>
+    </ul>
+    <h3>Structured questions</h3>
+    <figure>
+      <img src="assets/structured-questions.png" alt="A structured question in a thread with a selected choice and Continue button" loading="lazy">
+      <figcaption>Click a choice, confirm it's highlighted, then Continue. The answer is stored once and the thread resumes.</figcaption>
+    </figure>
+    <p>Agents may interview you <b>only</b> for evidenced human judgment, missing credentials, external
+    authority, or an irreversible commitment. Routine setup, installs, downloads, retries, and inspectable
+    facts are not interview material — and consecutive interview rounds are rejected unless real action or
+    new evidence happened in between.</p>
+  </section>
+
+  <section class="doc" id="threads">
+    <h2><span class="n">05 · DAILY WORK</span>Threads &amp; Board</h2>
+    <p>A thread is a durable work session inside a resident's larger identity. Each has its own status,
+    summary, model override where allowed, usage, replies, follow-up, and optional guest expert. Resolving
+    a thread revokes thread-only guests without touching channel membership.</p>
+    <figure>
+      <img src="assets/board.png" alt="Board view with real channel sessions organized into status lanes" loading="lazy">
+      <figcaption>Board organizes the same durable sessions into status lanes; crowded lanes scroll.</figcaption>
+    </figure>
+    <ul>
+      <li><b>Threads</b> lists sessions for focused review.</li>
+      <li><b>Board</b> shows them as status lanes.</li>
+      <li>The workspace-wide Threads entry gives a cross-channel view.</li>
+    </ul>
+  </section>
+
+  <section class="doc" id="files">
+    <h2><span class="n">06 · DAILY WORK</span>Files &amp; Terminal</h2>
+    <p>Files and Terminal are two views of the <b>same channel computer</b>. Agent commands and your Terminal
+    both start in the channel's persistent <code>/workspace</code>; files created through either path appear
+    in Files after reconciliation.</p>
+    <figure>
+      <img src="assets/terminal.png" alt="Full-height channel terminal inside the persistent workspace" loading="lazy">
+      <figcaption>The prompt shows the live path and follows <code>cd</code>. You are inside the resident's world.</figcaption>
+    </figure>
+    <ul>
+      <li>On supported Apple Silicon Macs, each resident runs in its own Apple <code>container machine</code>
+      VM with <code>home-mount=none</code> — ordinary residents cannot see or enter your Mac.</li>
+      <li>Source/CI compatibility backends do not claim equivalent VM isolation.</li>
+      <li>Host paths are not a resident workspace — if Terminal and Files seem to disagree, confirm you're
+      under <code>/workspace</code> and refresh Files after the command completes.</li>
+    </ul>
+  </section>
+
+  <section class="doc" id="memory">
+    <h2><span class="n">07 · DAILY WORK</span>Memory, Activity &amp; Audit</h2>
+    <h3>Memory</h3>
+    <p><b>Memory</b> holds curated facts, decisions, corrections, preferences, and procedures with
+    provenance — not a transcript dump. Each resident and Skipper also has an isolated <b>Mnemosyne</b>
+    store for longer-term recall.</p>
+    <h3>Activity</h3>
+    <figure>
+      <img src="assets/activity.png" alt="Outcome-first Activity rows with retained evidence" loading="lazy">
+      <figcaption>Rows mutate from working → complete or failed. Expand one for retained input and outcome evidence.</figcaption>
+    </figure>
+    <h3>Audit</h3>
+    <p>New tool and activity events enter a <b>SHA-256 hash chain</b>. Settings → Audit verifies continuity
+    and pinpoints the first invalid sequence after exact-payload tampering.</p>
+    <div class="callout warn"><b>Honest label:</b> this is local tamper <i>evidence</i>, not a remotely
+    witnessed transparency log — it can't stop a host administrator from replacing the whole database.</div>
+  </section>
+
+  <section class="doc" id="providers">
+    <h2><span class="n">08 · POWER</span>Providers, models &amp; routes</h2>
+    <p>Accounts and keys form <b>one fabric</b>. Connect multiple ChatGPT, Claude, Gemini/Antigravity, and
+    xAI OAuth accounts plus keyed OpenRouter, NVIDIA NIM, Cloudflare, GLM, or custom OpenAI-compatible
+    endpoints. Enable accounts and models independently, then use a direct model or a named
+    fallback/round-robin route.</p>
+    <figure>
+      <img src="assets/providers.png" alt="Live requests-in-flight visualization from 1Helm to providers" loading="lazy">
+      <figcaption>Providers shows live requests and their selected destination, with Quotas and Logs for evidence.</figcaption>
+    </figure>
+    <ul>
+      <li><b>Disabled or exhausted accounts are excluded</b> from eligible attempts — one dead account never
+      blocks a healthy account serving the same model, and disabled accounts must not appear in logs.</li>
+      <li><b>Changing a route never replaces the resident</b> or discards its computer, memory, skills, files,
+      obligations, or thread history.</li>
+      <li><b>Endpoint:</b> the same fabric exposes an authenticated OpenAI- and Anthropic-compatible
+      <code>/v1</code> endpoint for external tools. External gateway keys are managed in the Endpoint
+      section; 1Helm's own agents use a private internal credential that isn't exposed or revocable there —
+      revoke every external key and the crew stays online.</li>
+    </ul>
+  </section>
+
+  <section class="doc" id="skills">
+    <h2><span class="n">09 · POWER</span>Skills</h2>
+    <p>Every resident permanently owns the safe built-in arsenal — <b>34 complete playbooks</b> covering
+    outcome ownership, Skipper handoff, obligations, memory, research, email, calendar, contacts, messaging,
+    documents, spreadsheets, PDFs, meetings, projects, personal operations, travel, finance, support,
+    software delivery, data, media, infrastructure, security, and more. The runtime activates only what the
+    task needs; routine tool use is not an approval ritual.</p>
+    <figure>
+      <img src="assets/skills.png" alt="Built-in skills and the searchable SkillsMD catalog" loading="lazy">
+      <figcaption>Settings → Skills: the built-in arsenal, the SkillsMD catalog, installed skills, and Learn a new skill.</figcaption>
+    </figure>
+    <h3>Installing external skills</h3>
+    <p>Settings searches the focused SkillsMD catalog of ready GitHub-backed repositories. Every install goes
+    through the same pipeline:</p>
+    <p><code>resolve immutable revision</code> → <code>bound selected docs</code> → <code>scan</code> →
+    <code>SHA-256 hash + provenance</code> → <code>wrap under runtime authority</code></p>
+    <p>Unsafe content is blocked. Community popularity is not trust.</p>
+    <h3>Learn a new skill &amp; crystallization</h3>
+    <ul>
+      <li>When no ready repository-specific procedure exists, choose <b>Learn a new skill</b> — Skipper
+      inspects your local sources, web URLs, and notes in a visible thread and authors a workspace-specific
+      procedure.</li>
+      <li>When a resident completes a repeatable workflow the arsenal doesn't cover, it can
+      <b>crystallize</b> the proven procedure — activation cues, authority boundaries, recovery, retained
+      state, verification, and concrete completion evidence. Generic advice, guesses, secrets, and
+      runtime-weakening instructions are rejected.</li>
+    </ul>
+    <div class="callout"><b>Read-only means read-only:</b> asking "do we have a calendar skill?" must never
+    install a package, install a skill, or open an interview.</div>
+  </section>
+
+  <section class="doc" id="gmail">
+    <h2><span class="n">10 · POWER</span>Gmail</h2>
+    <p>Settings → Connections → Gmail owns the connection on the 1Helm host. Setup:</p>
+    <ol>
+      <li>Once per Google Cloud project: create a <b>Desktop app</b> OAuth client, enable the Gmail API,
+      and choose the downloaded JSON in 1Helm.</li>
+      <li>Choose <b>Connect Gmail</b>. 1Helm opens a state-protected PKCE authorization and receives the
+      callback on loopback.</li>
+      <li>Return to 1Helm after Google confirms the account.</li>
+    </ol>
+    <figure>
+      <img src="assets/connections.png" alt="Gmail and Photon as native host-brokered connections" loading="lazy">
+      <figcaption>Connections are host-owned brokers — residents get narrow operations, never tokens.</figcaption>
+    </figure>
+    <ul>
+      <li>Or just say <code>@skipper can we set up Gmail</code> — Skipper calls the native connector directly,
+      without a chain of redundant access questions.</li>
+      <li><b>Scopes:</b> account inventory, search, read, and draft creation. <b>Sending stays disabled.</b></li>
+      <li>In an ordinary channel, Skipper can grant only <i>named</i> accounts to that resident.</li>
+      <li>OAuth tokens live in host-owned storage and never enter chat, Activity evidence, or a resident
+      computer. A remotely viewed demo cannot authorize Gmail on a different machine.</li>
+    </ul>
+  </section>
+
+  <section class="doc" id="photon">
+    <h2><span class="n">11 · POWER</span>Photon / iMessage</h2>
+    <p>Connections guides Photon device authorization, project setup, secret rotation, phone registration,
+    sidecar health, and conversation mapping. The first mapping defaults to your <code>#main</code> and
+    Skipper.</p>
+    <ul>
+      <li>An <b>allowlisted inbound text</b> creates a real 1Helm thread, invokes the mapped agent, retains
+      the reply in 1Helm, and sends that final reply to the exact inbound conversation — once.</li>
+      <li>If the agent explicitly uses <code>photon_send</code>, the automatic return suppresses the duplicate.</li>
+      <li>New, unrelated outbound destinations remain blocked unless explicitly granted.</li>
+      <li>Text is the reliable contract today; rich attachment fidelity is not yet verified.</li>
+    </ul>
+  </section>
+
+  <section class="doc" id="obligations">
+    <h2><span class="n">12 · POWER</span>Workflows, follow-ups &amp; computer care</h2>
+    <p>1Helm never equates "the model stopped talking" with background execution. If work depends on time
+    passing, it becomes a <b>persisted obligation</b> with a due time, retry state, and observable completion
+    or failure.</p>
+    <ul>
+      <li><b>Follow-up</b> — a one-shot durable wake on an existing thread ("check the deploy in two hours").</li>
+      <li><b>Workflow</b> — a recurring obligation with an interval, next run, status, run count, and optional
+      maximum. Manage them in Settings → Workflows (pause/resume, failures).</li>
+      <li>Obligations survive restarts and <b>wake a sleeping resident computer</b> when due.</li>
+    </ul>
+    <figure>
+      <img src="assets/computers.png" alt="Channel computer runtime and optional Skipper computers" loading="lazy">
+      <figcaption>Skipper reconciles fleet state: CPU/RAM/disk pressure, sleep, wake, resize, repair, archive, restore.</figcaption>
+    </figure>
+    <p>You never manually size routine resident machines. Settings → Skipper computers lists optional
+    Captain-owned endpoints for authorized host-level Skipper work (including This Computer); residents never
+    receive these.</p>
+  </section>
+
+  <section class="doc" id="collab">
+    <h2><span class="n">13 · WORKSPACE</span>Domains, members &amp; privacy</h2>
+    <ul>
+      <li>The installed Mac can reserve a local-first <code>1helm.com</code> workspace address and optionally
+      connect a Cloudflare domain. <b>Your Mac remains the only workspace server</b> — sleeping or shutting it
+      down makes the workspace unavailable.</li>
+      <li>Public registration closes after the Captain account. Access requests appear in Settings → Members
+      and post an LLM-independent notice to your <code>#main</code>.</li>
+      <li><b>Collab</b> is human-only: no resident, bot, terminal, computer, model policy, or Files world.</li>
+      <li>Channel membership gates HTTP, files, terminals, messages, and WebSocket fan-out. Private coworker
+      channels are not Captain-readable without invitation.</li>
+    </ul>
+  </section>
+
+  <section class="doc" id="updates">
+    <h2><span class="n">14 · WORKSPACE</span>Updates, removal &amp; recovery</h2>
+    <p>Signed desktop releases are unique patch versions. Installing a newer app preserves
+    <code>~/Library/Application Support/1Helm</code> — credentials, databases, workspaces, resident state.</p>
+    <h3>Removing 1Helm</h3>
+    <p>Use the removal-preparation flow first. It's Captain-only, requires typed confirmation, reports
+    backend-owned resident machines, and prepares them for safe deletion. Export irreplaceable channel files
+    first.</p>
+    <h3>Recovery principles</h3>
+    <ul>
+      <li>Restore an archived channel rather than recreating it.</li>
+      <li>Retry after provider/account health returns — the resident identity stays.</li>
+      <li>Use Skipper fleet inspection for stopped or unhealthy computers.</li>
+      <li>Verify Settings → Audit after suspected retained-state tampering.</li>
+      <li>Preserve Application Support before reinstalling or moving the app.</li>
+      <li>Never bypass a failed signature, notarization ticket, or Gatekeeper result.</li>
+    </ul>
+  </section>
+
+  <section class="doc" id="troubleshooting">
+    <h2><span class="n">15 · WHEN STUCK</span>Troubleshooting</h2>
+    <details class="qa"><summary>A button highlights but Continue does nothing</summary><div class="a">
+      <p>Ensure every visible question has one selected option or a typed answer. If it still fails, capture
+      the thread and app version — selection and the submitted answer should survive live repaints.</p></div></details>
+    <details class="qa"><summary>Skipper reports only #main</summary><div class="a">
+      <p>Ask <code>@skipper what channels exist</code>. Inventory comes from the native control plane and
+      should include every channel in your authorized scope — including archived channels when requested.</p></div></details>
+    <details class="qa"><summary>Gmail asks repeated setup questions</summary><div class="a">
+      <p>Start with <code>@skipper can we set up Gmail</code> or Connections → Gmail. The native connector
+      path runs directly and must not open consecutive interviews.</p></div></details>
+    <details class="qa"><summary>A model keeps using a disabled account</summary><div class="a">
+      <p>Confirm the account is disabled in Providers, reproduce one request, then inspect Logs. Disabled
+      accounts should be absent — not merely fail first. Preserve the log and app version for support.</p></div></details>
+    <details class="qa"><summary>Terminal and Files disagree</summary><div class="a">
+      <p>Refresh Files after the command completes and confirm the prompt is under <code>/workspace</code>.
+      Agent commands, Terminal, and Files share the channel computer; host paths aren't a resident workspace.</p></div></details>
+    <details class="qa"><summary>A scheduled job did not run</summary><div class="a">
+      <p>Inspect Workflows/Board and ask Skipper to list obligations and reconcile the fleet. An archived
+      channel intentionally pauses workflow execution.</p></div></details>
+    <details class="qa"><summary>PDF preview is blank</summary><div class="a">
+      <p>Retry Open, then Download. In-app PDFs use a narrowly allowed same-origin/blob frame; the downloaded
+      file is the authoritative fallback.</p></div></details>
+  </section>
+
+  <section class="doc" id="faq">
+    <h2><span class="n">16 · WHEN STUCK</span>FAQ</h2>
+    <details class="qa"><summary>Is 1Helm free? Where's the code?</summary><div class="a">
+      <p>1Helm is open source under the MIT license and fully self-hosted — you bring your own model accounts
+      and keys. Source: <a href="https://github.com/gitcommit90/1Helm">github.com/gitcommit90/1Helm</a>.</p></div></details>
+    <details class="qa"><summary>Do my credentials or data leave my Mac?</summary><div class="a">
+      <p>Provider, Gmail, and Photon credentials stay in host-owned storage on your machine. Residents receive
+      narrow, scoped operations — never raw OAuth tokens, project secrets, or the host database. There is no
+      hosted control plane; your Mac is the only workspace server.</p></div></details>
+    <details class="qa"><summary>What happens when I switch models or providers?</summary><div class="a">
+      <p>Nothing is lost. The resident identity, its computer, memory, skills, files, obligations, and thread
+      history all survive model and route changes, app restarts, and provider outages.</p></div></details>
+    <details class="qa"><summary>Can a resident read my Mac's files?</summary><div class="a">
+      <p>No. On supported Apple Silicon Macs each resident runs in its own Apple container-machine Linux VM
+      with no Mac home mount. Skipper's host tools require Captain-authorized provenance.</p></div></details>
+    <details class="qa"><summary>Can 1Helm send email or text people?</summary><div class="a">
+      <p>Gmail supports listing, search, read, and <i>draft creation</i> — sending is disabled by default.
+      Photon/iMessage replies only within allowlisted, already-authorized conversations; new outbound
+      destinations stay blocked unless explicitly granted.</p></div></details>
+    <details class="qa"><summary>What stops the model from answering with a tutorial instead of doing the work?</summary><div class="a">
+      <p>A bounded, deterministic <b>outcome gate</b>. For operational requests it objects when a turn tries
+      to end at a tutorial, an unevidenced blocker, an unresolved tool failure, or "you could ask Skipper" —
+      keeping the turn open at most three times, logging each objection, and yielding normally for
+      explanatory questions or a genuine structured human boundary.</p></div></details>
+    <details class="qa"><summary>Does closing the app kill scheduled work?</summary><div class="a">
+      <p>Obligations are persisted with due times and retry state; they survive restarts and can wake a
+      sleeping resident computer. The workspace does require your Mac to be on — there's no hosted runner.</p></div></details>
+    <details class="qa"><summary>Windows or Linux?</summary><div class="a">
+      <p>Both run the durable headless compatibility deployment (Windows via WSL). Neither has a native
+      desktop package yet, and neither claims per-resident VM isolation.</p></div></details>
+    <details class="qa"><summary>Can I use 1Helm's accounts from other tools?</summary><div class="a">
+      <p>Yes — the router exposes an authenticated OpenAI- and Anthropic-compatible <code>/v1</code> endpoint.
+      Create an external key in Settings → Providers → Endpoint and point your tool at your own gateway.</p></div></details>
+    <details class="qa"><summary>How do I report a security issue?</summary><div class="a">
+      <p>Use GitHub's <b>Report a vulnerability</b> flow on the repository — privately, without credentials or
+      personal data in the report. Only the latest release receives security fixes.</p></div></details>
+  </section>
+
+  <section class="doc" id="cli">
+    <h2><span class="n">17 · WHEN STUCK</span>CLI for agents</h2>
+    <p>1Helm ships an agent-first JSON CLI, ideal for scripting or letting an external agent drive a
+    workspace:</p>
+    <pre><code>export HELM_URL=http://127.0.0.1:8123
+export HELM_TOKEN='a 1Helm session token'
+
+npm run helm -- channels
+printf '%s\n' '{"channel_id":2,"body":"Own this outcome and verify it."}' \
+  | npm run helm -- message
+printf '%s\n' '{"channel_id":2,"name":"Weekly evidence","prompt":"Audit the launch and publish a verified status.","interval_seconds":604800}' \
+  | npm run helm -- workflow-create
+npm run helm -- audit-verify</code></pre>
+    <p>And remember: the complete documentation is mirrored at <a href="llms.txt"><code>/docs/llms.txt</code></a>
+    for any agent that reads plain text.</p>
+  </section>
+
+  </main>
+</div>
+
+<footer>
+  <div class="wrap">
+    <span>1HELM · MIT LICENSE · SELF-HOSTED</span>
+    <span>
+      <a href="../">Home</a> &nbsp;·&nbsp;
+      <a href="llms.txt">llms.txt</a> &nbsp;·&nbsp;
+      <a href="https://github.com/gitcommit90/1Helm">GitHub</a> &nbsp;·&nbsp;
+      <a href="https://github.com/gitcommit90/1Helm/blob/main/SECURITY.md">Security</a>
+    </span>
+  </div>
+</footer>
+
+<script>
+(() => {
+"use strict";
+/* copy agent prompt */
+const btn = document.getElementById("copyAgent");
+btn.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(btn.dataset.copy);
+    const prev = btn.textContent;
+    btn.textContent = "copied ✓";
+    setTimeout(() => { btn.textContent = prev; }, 1600);
+  } catch { location.href = "llms.txt"; }
+});
+/* scrollspy */
+const links = [...document.querySelectorAll(".toc a")];
+const byId = Object.fromEntries(links.map(a => [a.getAttribute("href").slice(1), a]));
+const spy = new IntersectionObserver(entries => {
+  for (const e of entries){
+    if (e.isIntersecting){
+      links.forEach(a => a.classList.remove("on"));
+      byId[e.target.id]?.classList.add("on");
+    }
+  }
+}, {rootMargin: "-15% 0px -70% 0px"});
+document.querySelectorAll("section.doc").forEach(s => spy.observe(s));
+})();
+</script>
+</body>
+</html>
