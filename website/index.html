@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>1Helm — AI that keeps the job</title>
-<meta name="description" content="1Helm gives every job a permanent resident AI with its own private Linux computer, memory that compounds, durable obligations, and a chief of staff at the boundary. Self-hosted, open source, Apple Silicon native.">
-<meta property="og:title" content="1Helm — AI that keeps the job">
+<title>1Helm — The end of disposable intelligence</title>
+<meta name="description" content="Stop throwing your AI away with every chat. 1Helm gives you permanent AI employees with their own private computers, memory that compounds, and a chief of staff handling every boundary. Self-hosted, open source, Apple Silicon native.">
+<meta property="og:title" content="1Helm — The end of disposable intelligence">
 <meta property="og:description" content="One resident per job. One private computer. Memory that compounds. Skipper at the boundary. Let them cook. Keep the helm.">
 <meta property="og:type" content="website">
 <link rel="icon" type="image/png" href="assets/logo-192.png">
@@ -82,21 +82,22 @@ header.hero{position:relative;min-height:100svh;display:flex;flex-direction:colu
   radial-gradient(1100px 560px at 68% 8%, rgba(111,214,255,.09), transparent 60%),
   linear-gradient(180deg, rgba(11,18,31,.2) 0%, rgba(11,18,31,0) 30%, rgba(11,18,31,.9) 94%);
   pointer-events:none}
-.hero-art{
-  position:absolute;top:50%;right:6vw;transform:translateY(-56%);
-  width:min(400px,28vw);border-radius:8%;pointer-events:none;z-index:1;
-  box-shadow:0 40px 120px rgba(0,0,0,.55), 0 0 0 1px rgba(191,232,255,.22), 0 0 90px rgba(111,214,255,.18);
-  animation:bob 9s ease-in-out infinite;
-}
-@keyframes bob{0%,100%{transform:translateY(-56%) rotate(.4deg)}50%{transform:translateY(-53%) rotate(-.6deg)}}
-@media (prefers-reduced-motion:reduce){.hero-art{animation:none}}
-@media(max-width:1120px){.hero-art{display:none}}
-.hero-in{position:relative;z-index:2;padding:140px 0 90px}
+.hero-org{position:relative;z-index:2;padding-bottom:76px}
+.org-card{border:1px solid var(--line2);border-radius:22px;background:rgba(16,24,40,.78);backdrop-filter:blur(6px);padding:30px 34px 28px;box-shadow:0 30px 90px rgba(0,0,0,.4)}
+.org-card-grid{display:grid;grid-template-columns:1.08fr .92fr;gap:44px;align-items:center;margin-top:8px}
+@media(max-width:980px){.org-card-grid{grid-template-columns:1fr}}
+.hero-org .orgviz{position:static;border:0;background:transparent;padding:0}
+.roles-mini{display:flex;flex-direction:column;gap:20px}
+.roles-mini h4{font-family:var(--mono);font-size:12px;letter-spacing:.16em;font-weight:500}
+.roles-mini p{color:var(--mut);font-size:15px;margin-top:5px;line-height:1.6}
+.resonance{margin-top:28px;padding-top:24px;border-top:1px solid var(--line);font-family:var(--disp);font-size:clamp(17px,1.8vw,21px);line-height:1.65;color:var(--mut)}
+.resonance em{color:var(--foam)}
+.hero-in{position:relative;z-index:2;padding:130px 0 56px}
 .kicker{font-family:var(--mono);font-size:12.5px;letter-spacing:.22em;color:var(--cyan);text-transform:uppercase}
 .kicker .dot{color:var(--dim)}
 h1{
   font-family:var(--disp);font-weight:420;font-variation-settings:"opsz" 144;
-  font-size:clamp(52px,8.4vw,118px);line-height:1.02;letter-spacing:-.015em;
+  font-size:clamp(44px,6.8vw,96px);line-height:1.04;letter-spacing:-.015em;
   margin:26px 0 30px;
 }
 h1 em{font-style:italic;color:var(--foam)}
@@ -368,6 +369,11 @@ h2 em{font-style:italic;color:var(--foam)}
 #cta{padding:170px 0 150px;text-align:center;background:
   radial-gradient(800px 420px at 50% 118%, rgba(111,214,255,.14), transparent 70%),var(--ink0)}
 #cta .kicker{justify-content:center}
+.receipts{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:16px;overflow:hidden;margin:64px auto 0;text-align:left;max-width:1100px}
+.receipts div{background:var(--ink1);padding:20px 22px;font-size:13px;color:var(--mut);line-height:1.6}
+.receipts b{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;color:var(--cyan);margin-bottom:8px;font-weight:500}
+@media(max-width:900px){.receipts{grid-template-columns:1fr 1fr}}
+@media(max-width:560px){.receipts{grid-template-columns:1fr}}
 .cta-logo{width:86px;height:86px;border-radius:20px;margin:0 auto 34px;box-shadow:0 18px 60px rgba(0,0,0,.5), 0 0 0 1px rgba(191,232,255,.25), 0 0 60px rgba(111,214,255,.2)}
 #cta h2{margin:26px auto 0;max-width:14ch;font-size:clamp(46px,6.6vw,92px)}
 #cta .lede{margin:26px auto 0;text-align:center}
@@ -394,12 +400,10 @@ footer{border-top:1px solid var(--line);padding:44px 0 60px;background:var(--ink
       1Helm
     </a>
     <div class="nav-links">
-      <a href="#problem">Why</a>
-      <a href="#model">The crew</a>
-      <a href="#handoff">The handoff</a>
-      <a href="#routing">Routing</a>
-      <a href="#skills">Skills</a>
-      <a href="#truth">Truth</a>
+      <a href="#routing">The how</a>
+      <a href="#anatomy">Inside a channel</a>
+      <a href="#handoff">For the skeptics</a>
+      <a href="https://github.com/gitcommit90/1Helm">GitHub</a>
     </div>
     <a class="btn btn-solid btn-sm nav-cta" href="https://1helm.com/download/macos">Download</a>
   </div>
@@ -409,16 +413,16 @@ footer{border-top:1px solid var(--line);padding:44px 0 60px;background:var(--ink
   <canvas id="sea" aria-hidden="true"></canvas>
   <div class="hero-fade" aria-hidden="true"></div>
 
-  <img class="hero-art" src="assets/logo-hero.png" alt="" aria-hidden="true">
 
   <div class="wrap hero-in">
     <div class="kicker">Open source <span class="dot">·</span> Self-hosted <span class="dot">·</span> Apple Silicon native</div>
-    <h1>AI that <em>keeps</em><br>the job.</h1>
+    <h1>The end of <em>disposable</em> intelligence.</h1>
     <p class="hero-sub">
-      1Helm gives every job a <strong>permanent resident AI</strong> with its own
-      <strong>private Linux computer</strong>, memory that compounds, and a chief of staff
-      at every boundary. You set the outcome. The crew finishes the work — and gets
-      better every time.
+      One chat. One context window. One scramble to get anything done before the tab
+      closes and everything you built together gets thrown away.
+      <strong>1Helm is how AI should have worked from day one:</strong> permanent AI
+      employees with their own computers, memory that compounds, and a chief of staff
+      handling every boundary. You keep the helm.
     </p>
     <div class="hero-ctas">
       <a class="btn btn-solid" href="https://1helm.com/download/macos">Download for Apple Silicon</a>
@@ -427,102 +431,12 @@ footer{border-top:1px solid var(--line);padding:44px 0 60px;background:var(--ink
     </div>
   </div>
 
-  <div class="hero-stats">
-    <div class="wrap">
-      <div class="stat"><b>1</b><span>resident per channel — permanent</span></div>
-      <div class="stat"><b>1</b><span>private Linux computer each</span></div>
-      <div class="stat"><b>34</b><span>complete built-in playbooks</span></div>
-      <div class="stat"><b>SHA-256</b><span>tamper-evident audit chain</span></div>
-    </div>
-  </div>
-</header>
-
-<div class="ticker" aria-hidden="true">
-  <div class="ticker-track" id="tickTrack">
-    <span><i>✦</i>ONE RESIDENT PER CHANNEL</span>
-    <span><i>✦</i>THREADS ARE SESSIONS, NOT IDENTITIES</span>
-    <span><i>✦</i>MEMORY WITH PROVENANCE</span>
-    <span><i>✦</i>OBLIGATIONS WAKE SLEEPING COMPUTERS</span>
-    <span><i>✦</i>SKIPPER AT THE BOUNDARY</span>
-    <span><i>✦</i>FALLBACK &amp; ROUND-ROBIN ROUTES</span>
-    <span><i>✦</i>OPENAI + ANTHROPIC COMPATIBLE /v1</span>
-    <span><i>✦</i>SIGNED · NOTARIZED · STAPLED</span>
-  </div>
-</div>
-
-<!-- ============ PROBLEM ============ -->
-<section id="problem">
-  <div class="wrap">
-    <div class="sec-kicker reveal"><b>01</b>The problem</div>
-    <h2 class="reveal">Chat sessions are brilliant <em>temps</em>. Jobs need employees.</h2>
-    <p class="lede reveal">Every new chat is a new hire on day one: no memory of last week's decisions,
-    no files, no tools installed, nothing owed to anyone. Close the tab and the employee evaporates.
-    <strong>1Helm inverts this.</strong> The job is the durable unit — threads are just sessions inside
-    a permanent identity.</p>
-
-    <div class="compare">
-      <div class="pane amnesia reveal">
-        <div class="pane-head"><span class="lamp" style="background:var(--red)"></span>A CHAT SESSION · DAY 1, FOREVER</div>
-        <div class="pane-body">
-          <div class="chatline chat-u">Here's our launch plan, our naming rules, and the staging server again…</div>
-          <div class="chatline chat-a">Got it! Could you re-share the API schema from last time?</div>
-          <div class="chatline chat-u">…I pasted that yesterday. And Monday.</div>
-          <div class="gone">SESSION ENDED — CONTEXT DESTROYED</div>
-        </div>
-        <div class="pane-foot bad">memory: 0 · computer: none · owes you: nothing</div>
-      </div>
-
-      <div class="pane reveal">
-        <div class="pane-head"><span class="lamp" style="background:var(--green)"></span>A 1HELM RESIDENT · #product-launch</div>
-        <div class="pane-body">
-          <ul class="ledger">
-            <li><span class="d">day 3</span><span class="t">decision</span>ship behind the beta flag; GA on the 14th</li>
-            <li><span class="d">day 9</span><span class="t">correction</span>never auto-publish the changelog — Captain reviews first</li>
-            <li><span class="d">day 17</span><span class="t">skill</span>crystallized: release-notes procedure, with verification</li>
-            <li><span class="d">day 24</span><span class="t">obligation</span>weekly launch audit — wakes the computer itself</li>
-            <li><span class="d">day 61</span><span class="t">artifact</span>/workspace/launch — every script and draft, still there</li>
-          </ul>
-        </div>
-        <div class="pane-foot good">memory: compounding · computer: persistent · owes you: outcomes</div>
-      </div>
-    </div>
-
-    <p class="problem-pull reveal">Switch the model, restart the app, open a new thread —
-    <em>the resident, its computer, its memory, and its obligations all survive.</em></p>
-  </div>
-</section>
-
-<!-- ============ MODEL / CREW ============ -->
-<section id="model">
-  <div class="wrap">
-    <div class="sec-kicker reveal"><b>02</b>The operating model</div>
-    <h2 class="reveal">A company, not a pile of chat tabs.</h2>
-    <p class="lede reveal">Three roles, sharply drawn. The whole product falls out of keeping them honest.</p>
-
-    <div class="org">
-      <div class="roles">
-        <div class="role reveal">
-          <h3>The Captain <span class="who">that's you</span></h3>
-          <p>Workspace owner and final human authority. Sets outcomes; brings judgment, taste,
-          credentials, and real-world authority. <b style="color:var(--fg)">Not</b> the package manager,
-          retry loop, permission dialog, or message bus between agents.</p>
-        </div>
-        <div class="role reveal">
-          <h3>Skipper <span class="who">chief of staff</span></h3>
-          <p>One workspace-wide operator living in your private <span class="mono" style="color:var(--cyan)">#main</span>.
-          Handles the host, credentials, connections, the computer fleet, lifecycle, audits, and
-          anything that crosses a channel boundary. Residents call Skipper directly — you don't relay.</p>
-        </div>
-        <div class="role reveal">
-          <h3>Residents <span class="who">permanent specialists</span></h3>
-          <p>Exactly one per ordinary channel. Each owns its outcome and works autonomously inside
-          its own computer: inspects, installs, edits, runs, retries, waits, verifies. Threads come
-          and go; the employee stays.</p>
-        </div>
-      </div>
-
-      <div class="orgviz reveal" aria-label="Diagram: Captain sets outcomes, residents execute in private computers, Skipper crosses boundaries">
-        <svg viewBox="0 0 520 460">
+  <div class="wrap hero-org">
+    <div class="org-card">
+      <div class="schem-title"><span>THE WHOLE PLATFORM · <b>ONE GLANCE</b></span><span>YOU → SKIPPER → CREW</span></div>
+      <div class="org-card-grid">
+        <div class="orgviz" aria-label="Diagram: the Captain sets outcomes, Skipper crosses boundaries, permanent residents execute in private computers">
+          <svg viewBox="0 0 520 460">
           <!-- captain -->
           <rect class="nodebox cap" x="155" y="18" width="210" height="52" rx="12"/>
           <text x="260" y="41" text-anchor="middle" fill="#FFB35C">CAPTAIN</text>
@@ -562,6 +476,88 @@ footer{border-top:1px solid var(--line);padding:44px 0 60px;background:var(--ink
           <path class="flow" d="M290 182 C350 215 410 235 426 268"/>
           <path class="edge" stroke="rgba(148,184,226,.25)" fill="none" d="M94 320 V376 M260 320 V376 M426 320 V376" stroke-dasharray="2 4"/>
         </svg>
+        </div>
+        <div class="roles-mini">
+          <div><h4 style="color:var(--amber)">THE CAPTAIN — YOU</h4>
+            <p>Set the outcome. Keep the judgment, the credentials, the authority. Never the message bus.</p></div>
+          <div><h4 style="color:var(--cyan)">SKIPPER — YOUR CHIEF OF STAFF</h4>
+            <p>One operator for the host, credentials, computers, and every boundary. Your AI employees call it directly — you never relay.</p></div>
+          <div><h4 style="color:var(--green)">RESIDENTS — YOUR AI EMPLOYEES</h4>
+            <p>Permanent specialists, one per job, each on its own private Linux computer — remembering everything, owing you outcomes.</p></div>
+        </div>
+      </div>
+      <p class="resonance">For the student with five ChatGPT tabs open. For the founder wearing five hats.
+      For everyone who's ever thought <em>&ldquo;I just wish I could hire employees that are AI.&rdquo;</em></p>
+    </div>
+  </div>
+
+  <div class="hero-stats">
+    <div class="wrap">
+      <div class="stat"><b>1</b><span>resident per channel — permanent</span></div>
+      <div class="stat"><b>1</b><span>private Linux computer each</span></div>
+      <div class="stat"><b>34</b><span>complete built-in playbooks</span></div>
+      <div class="stat"><b>SHA-256</b><span>tamper-evident audit chain</span></div>
+    </div>
+  </div>
+</header>
+
+<div class="ticker" aria-hidden="true">
+  <div class="ticker-track" id="tickTrack">
+    <span><i>✦</i>ONE RESIDENT PER CHANNEL</span>
+    <span><i>✦</i>THREADS ARE SESSIONS, NOT IDENTITIES</span>
+    <span><i>✦</i>MEMORY WITH PROVENANCE</span>
+    <span><i>✦</i>OBLIGATIONS WAKE SLEEPING COMPUTERS</span>
+    <span><i>✦</i>SKIPPER AT THE BOUNDARY</span>
+    <span><i>✦</i>FALLBACK &amp; ROUND-ROBIN ROUTES</span>
+    <span><i>✦</i>OPENAI + ANTHROPIC COMPATIBLE /v1</span>
+    <span><i>✦</i>SIGNED · NOTARIZED · STAPLED</span>
+  </div>
+</div>
+
+<!-- ============ ROUTING ============ -->
+<section id="routing">
+  <div class="wrap">
+    <div class="sec-kicker reveal"><b>01</b>The how</div>
+    <h2 class="reveal">Every account you have. One fabric. <em>Zero ceremony.</em></h2>
+    <p class="lede reveal">Connect multiple ChatGPT, Claude, Gemini and xAI accounts by OAuth; add
+    OpenRouter, NVIDIA NIM, Cloudflare, GLM, or any custom endpoint by key. Enable exact models, compose
+    named routes, and every resident rides the fabric through a private local gateway.
+    <strong>This is a live simulation — click an account to knock it offline.</strong></p>
+
+    <div class="fabric-shell reveal">
+      <div class="fabric-bar">
+        <span class="title">1HELM ROUTER · <span style="color:var(--cyan)">per-channel routes</span> · live</span>
+        <span class="fabric-hint">click an account to take it <b>offline</b></span>
+        <div class="seg" role="group" aria-label="Routing strategy">
+          <button id="segFb" class="on">FALLBACK</button>
+          <button id="segRr">ROUND-ROBIN</button>
+        </div>
+      </div>
+      <svg id="fabricSvg" viewBox="0 0 1080 640" aria-label="Live routing simulation: requests from channels flow through the 1Helm router to the first healthy account"></svg>
+      <div class="fabric-log-shell">
+        <ul id="fabricLog"></ul>
+        <div class="fabric-count">requests served<br><b id="fabricServed">0</b><br><span id="fabricFailed" style="color:var(--red)"></span></div>
+      </div>
+    </div>
+
+    <div class="routing-points">
+      <div class="rpoint reveal">
+        <h4>Routes, not roulette</h4>
+        <p>A route is a named, ordered policy — <code>fallback</code> tries the next healthy account;
+        <code>round-robin</code> spreads load. Disabled or exhausted accounts are excluded from attempts
+        and from logs. One dead account never blocks a healthy one serving the same model.</p>
+      </div>
+      <div class="rpoint reveal">
+        <h4>Identity outlives the route</h4>
+        <p>Changing a model or route <strong style="color:var(--fg)">never</strong> replaces a resident or
+        discards its computer, memory, skills, files, obligations, or thread history. Agents authenticate
+        with a private internal credential — revoke every external key and the crew stays online.</p>
+      </div>
+      <div class="rpoint reveal">
+        <h4>Your gateway, for everything</h4>
+        <p>The same fabric exposes an authenticated OpenAI- and Anthropic-compatible <code>/v1</code>
+        endpoint. Point external tools at your own router: your accounts, your quotas, your logs, your
+        machine.</p>
       </div>
     </div>
   </div>
@@ -570,7 +566,7 @@ footer{border-top:1px solid var(--line);padding:44px 0 60px;background:var(--ink
 <!-- ============ ANATOMY ============ -->
 <section id="anatomy">
   <div class="wrap">
-    <div class="sec-kicker reveal"><b>03</b>Anatomy of a channel</div>
+    <div class="sec-kicker reveal"><b>02</b>The details</div>
     <h2 class="reveal">One channel. One <em>world.</em></h2>
     <p class="lede reveal">Create a channel for anything that deserves an owner — a product, an inbox,
     a client, a household. 1Helm provisions a complete world around it. Hover the parts.</p>
@@ -641,7 +637,7 @@ footer{border-top:1px solid var(--line);padding:44px 0 60px;background:var(--ink
 <!-- ============ HANDOFF ============ -->
 <section id="handoff">
   <div class="wrap">
-    <div class="sec-kicker reveal"><b>04</b>The boundary</div>
+    <div class="sec-kicker reveal"><b>03</b>For the skeptics</div>
     <h2 class="reveal">The handoff you never have to make.</h2>
     <p class="lede reveal">Most agent products make <strong>you</strong> the router: copy context here, grant
     permission there, paste the result back. In 1Helm the resident calls Skipper itself — and the
@@ -710,279 +706,6 @@ footer{border-top:1px solid var(--line);padding:44px 0 60px;background:var(--ink
   </div>
 </section>
 
-<!-- ============ OUTCOME GATE ============ -->
-<section id="gate">
-  <div class="wrap">
-    <div class="sec-kicker reveal"><b>05</b>The outcome gate</div>
-    <h2 class="reveal">Ending the turn is not <em>finishing the job.</em></h2>
-
-    <div class="gate-grid">
-      <div class="gate-copy reveal">
-        <p>Every model has the same bad habit: when work gets long, it writes you a tutorial and calls
-        it done. Prompting alone doesn't fix that — so 1Helm doesn't rely on prompting alone.</p>
-        <p>For operational requests, a <strong>bounded, deterministic outcome gate</strong> inspects how a
-        turn tries to end. It objects when a model stops at:</p>
-        <ul class="gate-list">
-          <li><b>TUTORIAL</b> “Here are the steps you could follow…” — it has a computer; it should run them.</li>
-          <li><b>UNEVIDENCED BLOCKER</b> “This probably won't work because…” — with nothing tried and nothing shown.</li>
-          <li><b>UNRESOLVED FAILURE</b> A tool call failed and the turn just… ends there.</li>
-          <li><b>DEFLECTION</b> “You could ask Skipper to…” — the resident can call Skipper itself.</li>
-        </ul>
-        <p>The gate keeps the turn open <strong>at most three times</strong>, leaves every objection in the
-        work log, and yields normally for explanatory questions or a genuine structured human boundary.
-        It's a guardrail with a receipt — not an invisible hand.</p>
-      </div>
-
-      <div class="chatmock reveal">
-        <div class="chatmock-head"><span class="lamp"></span>#infra · thread: “rotate the TLS certs”</div>
-        <div class="chatmock-body">
-          <div class="msg user"><span class="who">Captain</span>Rotate the staging TLS certs and prove they're valid.</div>
-          <div class="msg bot"><span class="who">Resident</span><span class="strike">Here's a step-by-step guide you can follow: 1) SSH into the box, 2) run certbot renew…</span></div>
-          <div class="objection"><b>OUTCOME GATE · OBJECTION 1/3</b><br>Executable work must be executed. You own a computer — run it, retry it, or show the evidenced blocker.</div>
-          <div class="worklog">
-            <span class="cmd">$ certbot renew --cert-name staging.example.com</span><br>
-            <span class="cmd">$ systemctl reload nginx</span> <span class="ok">· ok</span><br>
-            <span class="cmd">$ echo | openssl s_client -connect staging:443 | openssl x509 -noout -dates</span><br>
-            notAfter = Oct 21 2026 <span class="ok">· verified</span>
-          </div>
-          <div class="evidence">✓ OUTCOME COMPLETE — EVIDENCE RETAINED · SHA-256 CHAINED</div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ============ TIME ============ -->
-<section id="time">
-  <div class="wrap">
-    <div class="sec-kicker reveal"><b>06</b>Obligations</div>
-    <h2 class="reveal">Time is a real dependency. So it's a real <em>object.</em></h2>
-    <p class="lede reveal">1Helm never equates “the model stopped talking” with “work is happening in the
-    background.” If work depends on time passing, it becomes a persisted obligation with a due time,
-    retry state, and observable completion or failure.</p>
-
-    <div class="time-cards">
-      <div class="tcard reveal">
-        <span class="mono-tag">one-shot</span>
-        <h3>Follow-ups</h3>
-        <p>A durable wake on an existing thread. “Check the deploy in two hours” survives restarts,
-        sleep, and your attention span.</p>
-      </div>
-      <div class="tcard reveal">
-        <span class="mono-tag">recurring</span>
-        <h3>Workflows</h3>
-        <p>Interval, next run, run count, pause/resume, and failure history. Weekly audits that actually
-        happen weekly.</p>
-      </div>
-      <div class="tcard reveal">
-        <span class="mono-tag">fleet care</span>
-        <h3>Wake reconciliation</h3>
-        <p>A sleeping computer is not an excuse. Due obligations wake the resident's machine; Skipper
-        reconciles CPU, memory, disk, repair, and update pressure.</p>
-      </div>
-    </div>
-
-    <div class="timeline reveal" aria-label="Timeline of durable obligations">
-      <div class="tl-track">
-        <div class="tl-line"></div>
-        <div class="tl-ev" style="left:8%"><span class="when">now</span><div class="pin"></div><div class="lab">thread: “migrate the DB”<br>resident working</div></div>
-        <div class="tl-ev" style="left:30%"><span class="when">+2 h</span><div class="pin"></div><div class="lab">follow-up fires<br>verify migration</div></div>
-        <div class="tl-ev wake" style="left:52%"><span class="when">+3 d</span><div class="pin"></div><div class="lab">computer asleep →<br>obligation wakes it</div></div>
-        <div class="tl-ev" style="left:74%"><span class="when">weekly</span><div class="pin"></div><div class="lab">workflow: audit &amp;<br>publish verified status</div></div>
-        <div class="tl-ev" style="left:93%"><span class="when">always</span><div class="pin"></div><div class="lab">completion or failure —<br>observable, never implied</div></div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ============ ROUTING ============ -->
-<section id="routing">
-  <div class="wrap">
-    <div class="sec-kicker reveal"><b>07</b>The model fabric</div>
-    <h2 class="reveal">Every account you have. One fabric. <em>Zero ceremony.</em></h2>
-    <p class="lede reveal">Connect multiple ChatGPT, Claude, Gemini and xAI accounts by OAuth; add
-    OpenRouter, NVIDIA NIM, Cloudflare, GLM, or any custom endpoint by key. Enable exact models, compose
-    named routes, and every resident rides the fabric through a private local gateway.
-    <strong>This is a live simulation — click an account to knock it offline.</strong></p>
-
-    <div class="fabric-shell reveal">
-      <div class="fabric-bar">
-        <span class="title">1HELM ROUTER · <span style="color:var(--cyan)">per-channel routes</span> · live</span>
-        <span class="fabric-hint">click an account to take it <b>offline</b></span>
-        <div class="seg" role="group" aria-label="Routing strategy">
-          <button id="segFb" class="on">FALLBACK</button>
-          <button id="segRr">ROUND-ROBIN</button>
-        </div>
-      </div>
-      <svg id="fabricSvg" viewBox="0 0 1080 640" aria-label="Live routing simulation: requests from channels flow through the 1Helm router to the first healthy account"></svg>
-      <div class="fabric-log-shell">
-        <ul id="fabricLog"></ul>
-        <div class="fabric-count">requests served<br><b id="fabricServed">0</b><br><span id="fabricFailed" style="color:var(--red)"></span></div>
-      </div>
-    </div>
-
-    <div class="routing-points">
-      <div class="rpoint reveal">
-        <h4>Routes, not roulette</h4>
-        <p>A route is a named, ordered policy — <code>fallback</code> tries the next healthy account;
-        <code>round-robin</code> spreads load. Disabled or exhausted accounts are excluded from attempts
-        and from logs. One dead account never blocks a healthy one serving the same model.</p>
-      </div>
-      <div class="rpoint reveal">
-        <h4>Identity outlives the route</h4>
-        <p>Changing a model or route <strong style="color:var(--fg)">never</strong> replaces a resident or
-        discards its computer, memory, skills, files, obligations, or thread history. Agents authenticate
-        with a private internal credential — revoke every external key and the crew stays online.</p>
-      </div>
-      <div class="rpoint reveal">
-        <h4>Your gateway, for everything</h4>
-        <p>The same fabric exposes an authenticated OpenAI- and Anthropic-compatible <code>/v1</code>
-        endpoint. Point external tools at your own router: your accounts, your quotas, your logs, your
-        machine.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ============ SKILLS ============ -->
-<section id="skills">
-  <div class="wrap">
-    <div class="sec-kicker reveal"><b>08</b>Skills</div>
-    <h2 class="reveal">Ready on day one. <em>Specialized</em> by day one hundred.</h2>
-    <p class="lede reveal">Every resident permanently owns a library of 34 complete playbooks — activation
-    cues, execution, authority boundaries, recovery, and verification, not prompt snippets. 1Helm activates
-    only what the task needs.</p>
-
-    <div class="skillgrid reveal" aria-label="Playbook domains">
-      <span>outcome ownership</span><span>skipper handoff</span><span>obligations</span><span>memory</span>
-      <span>research</span><span>email</span><span>calendar</span><span>contacts</span><span>messaging</span>
-      <span>documents</span><span>spreadsheets</span><span>PDFs</span><span>meetings</span><span>projects</span>
-      <span>personal ops</span><span>travel</span><span>finance</span><span>support</span>
-      <span>software delivery</span><span>data</span><span>media</span><span>infrastructure</span>
-      <span>security</span><span>skill discovery</span><span>+ 10 more</span>
-    </div>
-
-    <div class="pipeline reveal" aria-label="External skill install pipeline">
-      <div class="pipe">RESOLVE<small>immutable revision pin</small></div><span class="pipe-arrow">→</span>
-      <div class="pipe">BOUND<small>selected docs only</small></div><span class="pipe-arrow">→</span>
-      <div class="pipe">SCAN<small>unsafe content blocked</small></div><span class="pipe-arrow">→</span>
-      <div class="pipe">HASH<small>SHA-256 + provenance</small></div><span class="pipe-arrow">→</span>
-      <div class="pipe">WRAP<small>under runtime authority</small></div>
-    </div>
-
-    <div class="skills-cols">
-      <div class="skillcard reveal">
-        <h3>The catalog, without the leap of faith</h3>
-        <p>Residents can search the focused SkillsMD catalog of ready, GitHub-backed procedures and
-        install them automatically — but only through the pipeline above. Nothing executes blind.</p>
-        <span class="notrust">COMMUNITY POPULARITY ≠ TRUST</span>
-      </div>
-      <div class="skillcard reveal">
-        <h3>Crystallize what actually worked</h3>
-        <p>When a resident completes a repeatable workflow the arsenal doesn't cover, it can
-        <b>crystallize</b> the proven procedure — activation cues, boundaries, recovery, retained state,
-        and concrete completion evidence.</p>
-        <p>Generic advice, unverified guesses, secrets, and runtime-weakening instructions are rejected.
-        Skills compound; slop doesn't.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ============ CONNECTIONS ============ -->
-<section id="connections">
-  <div class="wrap">
-    <div class="sec-kicker reveal"><b>09</b>Connections</div>
-    <h2 class="reveal">Brokers, not copied secrets.</h2>
-    <p class="lede reveal">Connections are host-owned. Residents receive narrow, scoped operations — never
-    raw OAuth tokens, project secrets, or the host database. A prompt saying “use this service” is not
-    a connector here; connectors earn their place with scoping, recovery, dedup, tests, and an audit trail.</p>
-
-    <div class="conn-grid">
-      <div class="conn-cards">
-        <div class="conncard reveal">
-          <h3><span class="ic">@</span>Gmail</h3>
-          <p>State-protected PKCE OAuth on the host's loopback. Skipper can use connected accounts in your
-          authorized thread and grant only <i>named</i> accounts to a resident.</p>
-          <div class="scope">
-            <span>list accounts</span><span>search</span><span>read</span><span>create drafts</span><span class="no">send</span>
-          </div>
-        </div>
-        <div class="conncard reveal">
-          <h3><span class="ic">✉</span>Photon · iMessage</h3>
-          <p>Allowlisted inbound texts become real 1Helm threads for the mapped resident; the reply returns
-          to that exact conversation, once. New outbound destinations stay blocked unless explicitly granted.</p>
-          <div class="scope">
-            <span>allowlisted inbound</span><span>mapped threads</span><span>narrow replies</span><span class="no">cold outbound</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="vault reveal" aria-label="Diagram: credentials stay on the host; residents get narrow operations only">
-        <svg viewBox="0 0 480 360">
-          <rect x="20" y="20" width="440" height="130" rx="14" fill="rgba(111,214,255,.05)" stroke="rgba(111,214,255,.4)"/>
-          <text x="40" y="50" fill="#6FD6FF">HOST · YOUR MAC</text>
-          <rect x="40" y="66" width="190" height="62" rx="10" fill="#1A2740" stroke="rgba(148,184,226,.3)"/>
-          <text x="56" y="92" fill="#F2F6FC">OAuth tokens · secrets</text>
-          <text x="56" y="112" fill="#7B90B0">host-owned storage</text>
-          <rect x="250" y="66" width="190" height="62" rx="10" fill="#1A2740" stroke="rgba(148,184,226,.3)"/>
-          <text x="266" y="92" fill="#F2F6FC">Broker · audit trail</text>
-          <text x="266" y="112" fill="#7B90B0">scoped operations only</text>
-          <rect x="20" y="230" width="440" height="110" rx="14" fill="#1A2740" stroke="rgba(148,184,226,.3)"/>
-          <text x="40" y="260" fill="#F2F6FC">RESIDENT COMPUTER</text>
-          <text x="40" y="282" fill="#7B90B0">receives: “search inbox X”, “draft reply Y”</text>
-          <text x="40" y="304" fill="#7B90B0">never receives: tokens, secrets, host DB</text>
-          <path d="M345 150 V230" stroke="#5CE49B" stroke-width="1.6" stroke-dasharray="6 6" fill="none"/>
-          <text x="358" y="196" fill="#5CE49B">narrow ops ↓</text>
-          <path d="M135 150 V230" stroke="rgba(255,122,122,.8)" stroke-width="1.4" fill="none"/>
-          <line x1="120" y1="180" x2="150" y2="200" stroke="#FF7A7A" stroke-width="2"/>
-          <line x1="150" y1="180" x2="120" y2="200" stroke="#FF7A7A" stroke-width="2"/>
-          <text x="52" y="196" fill="#FF7A7A">tokens ✕</text>
-        </svg>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ============ TRUTH ============ -->
-<section id="truth">
-  <div class="wrap">
-    <div class="sec-kicker reveal"><b>10</b>Platform truth</div>
-    <h2 class="reveal">We'd rather be believed than sound impressive.</h2>
-    <p class="lede reveal">Honest capability beats vague promise. Here is exactly what runs where — and
-    what doesn't exist yet.</p>
-
-    <div class="truth-table reveal">
-      <div class="trow">
-        <div class="plat">Apple Silicon · macOS 26</div>
-        <div class="what"><b>The native product.</b> Signed, notarized, stapled DMG. One real isolated
-        Linux VM per resident with no Mac home mount.</div>
-      </div>
-      <div class="trow">
-        <div class="plat">Linux / CI</div>
-        <div class="what"><b>Durable headless compatibility backend.</b> Same control plane and tests —
-        not per-resident VM isolation.</div>
-      </div>
-      <div class="trow">
-        <div class="plat">Windows + WSL</div>
-        <div class="what"><b>Headless compatibility path.</b> Not a native Windows app.</div>
-      </div>
-    </div>
-
-    <div class="notyet reveal">
-      <b>NOT YET SHIPPED — ON PURPOSE, SAID OUT LOUD</b>
-      Native Windows/Linux desktop packages · mobile clients · a hosted control plane ·
-      Linux per-resident VM isolation · rich Photon attachment fidelity · blind execution of community skills.
-    </div>
-
-    <div class="sec-strip reveal">
-      <div class="sec-cell"><h4><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg>Isolation that's real</h4><p>Per-resident Apple VMs, home-mount=none. Workspace mirrors are channel-scoped, size-bounded, symlink-contained.</p></div>
-      <div class="sec-cell"><h4><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>Credentials stay home</h4><p>Provider, Gmail, and Photon secrets live in host-owned storage. They never enter chat, evidence, or a resident computer.</p></div>
-      <div class="sec-cell"><h4><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M4 12h4l2-6 4 12 2-6h4"/></svg>History you can check</h4><p>New operational events enter an append-only SHA-256 chain. Local tamper evidence — honestly labeled, not oversold as a transparency log.</p></div>
-    </div>
-  </div>
-</section>
-
 <!-- ============ CTA ============ -->
 <section id="cta">
   <div class="wrap">
@@ -994,6 +717,13 @@ footer{border-top:1px solid var(--line);padding:44px 0 60px;background:var(--ink
       <a class="btn btn-solid" href="https://1helm.com/download/macos">Download for Apple Silicon</a>
       <a class="btn btn-ghost" href="https://github.com/gitcommit90/1Helm">Star on GitHub</a>
     </div>
+    <div class="receipts reveal">
+      <div><b>OUTCOME GATE</b>Models don't get to end a turn with a tutorial — a bounded, deterministic gate objects, and it's logged.</div>
+      <div><b>DURABLE OBLIGATIONS</b>Follow-ups and recurring workflows with real due times — they wake sleeping computers.</div>
+      <div><b>SKILLS WITH PROVENANCE</b>34 built-in playbooks; external skills are revision-pinned, scanned, and SHA-256 hashed.</div>
+      <div><b>HONEST BOUNDARIES</b>Tamper-evident audit chain. Credentials never leave your Mac. Signed &amp; notarized.</div>
+    </div>
+    <p class="reveal" style="margin-top:16px;font-family:var(--mono);font-size:12px;color:var(--dim)">the repo does the heavy lifting → <a href="https://github.com/gitcommit90/1Helm" style="color:var(--cyan)">github.com/gitcommit90/1Helm</a></p>
     <div class="install reveal">
       <div class="install-head">INSTALL · SIGNED &amp; NOTARIZED</div>
       <ol>
