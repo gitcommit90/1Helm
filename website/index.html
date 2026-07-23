@@ -950,6 +950,18 @@ accounts.forEach((a, i) => {
     mesh[a.id][c.id] = el("path", {class:"wire faint", d:`M ${AX+AW} ${ay} C ${AX+AW+56} ${ay}, ${CX-56} ${cy}, ${CX} ${cy}`});
   });
 });
+/* invisible flight paths so a dot travels THROUGH the router hub and
+   across the provider card — no edge-to-edge teleporting */
+const flyToAcct = {}, flyToChan = {};
+accounts.forEach((a, i) => {
+  const y = acctY(i) + 25;
+  flyToAcct[a.id] = el("path", {fill:"none", stroke:"none", d:`M ${RX-56} ${RY} H ${RX+56} C ${RX+128} ${RY}, ${AX-84} ${y}, ${AX} ${y}`});
+  flyToChan[a.id] = {};
+  channels.forEach((c, j) => {
+    const cy = rowY(j) + 25;
+    flyToChan[a.id][c.id] = el("path", {fill:"none", stroke:"none", d:`M ${AX} ${y} H ${AX+AW} C ${AX+AW+56} ${y}, ${CX-56} ${cy}, ${CX} ${cy}`});
+  });
+});
 /* router */
 const rg = el("g", {});
 el("circle", {cx:RX, cy:RY, r:46, class:"router-ring", opacity:.35}, rg);
@@ -1045,10 +1057,15 @@ function pickAccount(chan){
 
 /* dots */
 const dots = [];
-function launchDot(path, color, dur, done){
+const EASES = {
+  in:  p => p * p,
+  lin: p => p,
+  out: p => 1 - (1 - p) * (1 - p),
+};
+function launchDot(path, color, dur, ease, done){
   const p0 = path.getPointAtLength(0);
   const c = el("circle", {r:4.5, fill:color, opacity:.95, cx:p0.x, cy:p0.y});
-  dots.push({c, path, dur, t0:performance.now(), done});
+  dots.push({c, path, dur, ease, t0:performance.now(), done});
 }
 function pulse(lamp, r){
   lamp.setAttribute("r", String(r));
@@ -1063,7 +1080,7 @@ function dotLoop(now){
       d.done && d.done();
       continue;
     }
-    p = p < .5 ? 2*p*p : 1 - Math.pow(-2*p + 2, 2)/2;
+    p = (EASES[d.ease] || EASES.lin)(p);
     const L = d.path.getTotalLength();
     const pt = d.path.getPointAtLength(p * L);
     d.c.setAttribute("cx", pt.x); d.c.setAttribute("cy", pt.y);
@@ -1123,10 +1140,10 @@ function launchSlot(i){
     ? `fallback[${eligibleFor(chan).indexOf(acct) + 1}]`
     : "round-robin";
   s.box.style.stroke = "#9BCBEE";
-  launchDot(slotPaths[i], "#9BCBEE", 850, () => {
-    launchDot(acctPaths[acct.id], "#9BCBEE", 950, () => {
+  launchDot(slotPaths[i], "#9BCBEE", 750, "in", () => {
+    launchDot(flyToAcct[acct.id], "#9BCBEE", 1000, "lin", () => {
       pulse(acct.lamp, 5.5);
-      launchDot(mesh[acct.id][chan.id], "#FFB35C", 900, () => {
+      launchDot(flyToChan[acct.id][chan.id], "#FFB35C", 1000, "out", () => {
         pulse(chan.lamp, 5.5);
         served++;
         servedEl.textContent = served;
