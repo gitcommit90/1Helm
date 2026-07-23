@@ -125,4 +125,3 @@ process.on("SIGTERM", () => void shutdown());
 process.on("SIGINT", () => void shutdown());
 process.stdin.resume();
 process.stdin.on("end", () => void shutdown());
-

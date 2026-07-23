@@ -27,4 +27,3 @@ export function verifyAuditChain(): { valid: boolean; events: number; head: stri
   }
   return { valid: true, events: rows.length, head: previous, first_invalid_sequence: null };
 }
-
