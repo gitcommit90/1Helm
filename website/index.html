@@ -295,7 +295,7 @@ h2 em{font-style:italic;color:var(--foam)}
 .seg button.on{background:rgba(155,203,238,.14);color:var(--cyan)}
 .fabric-hint{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
 .fabric-hint b{color:var(--amber);font-weight:500}
-#fabricSvg{width:100%;height:auto;max-height:470px;display:block;margin:0 auto}
+#fabricSvg{width:100%;height:auto;max-height:470px;display:block;margin:16px auto 4px}
 #fabricSvg text{font-family:var(--mono);letter-spacing:.04em}
 .acct{cursor:pointer}
 .acct rect{fill:var(--ink2);stroke:var(--line2);transition:stroke .2s,opacity .2s}
@@ -389,7 +389,7 @@ h2 em{font-style:italic;color:var(--foam)}
 .receipts b{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;color:var(--cyan);margin-bottom:8px;font-weight:500}
 @media(max-width:900px){.receipts{grid-template-columns:1fr 1fr}}
 @media(max-width:560px){.receipts{grid-template-columns:1fr}}
-.cta-logo{width:60px;height:60px;border-radius:14px;margin:0 auto 24px;box-shadow:0 18px 60px rgba(0,0,0,.5), 0 0 0 1px rgba(205,228,248,.25), 0 0 60px rgba(155,203,238,.2)}
+.cta-logo{width:60px;height:60px;border-radius:14px;margin:0 auto 24px;box-shadow:0 14px 44px rgba(0,0,0,.45)}
 #cta h2{margin:20px auto 0;max-width:16ch;font-size:clamp(34px,4.4vw,56px)}
 #cta .lede{margin:16px auto 0;text-align:center}
 .cta-btns{display:flex;justify-content:center;gap:14px;margin-top:30px;flex-wrap:wrap}
@@ -540,10 +540,6 @@ footer{border-top:1px solid var(--line);padding:32px 0 40px;background:var(--ink
     <strong>This is a live simulation — click an account to knock it offline.</strong></p>
 
     <div class="fabric-shell reveal">
-      <div class="fabric-bar">
-        <span class="title">1HELM ROUTER · <span style="color:var(--cyan)">per-channel routes</span> · live</span>
-        <span class="fabric-hint">click a provider to knock it <b>offline</b></span>
-      </div>
       <svg id="fabricSvg" viewBox="0 0 1080 640" aria-label="Live routing simulation: a message flows into the 1Helm router, out to the first healthy provider, and lands in its channel"></svg>
       <div class="fabric-log-shell">
         <ul id="fabricLog"></ul>
@@ -924,7 +920,7 @@ const el = (name, attrs, parent) => {
   (parent || fabric).appendChild(n);
   return n;
 };
-const acctY = i => 52 + i * 70;
+const acctY = i => 60 + i * 70;
 const rowY  = i => 108 + i * 104;   /* shared by message slots and channels */
 /* wires (under nodes) */
 const slotPaths = [], acctPaths = {}, mesh = {};
@@ -977,6 +973,7 @@ function columnLabel(cx, text){
   el("rect", {x:cx - w/2, y:6, width:w, height:28, rx:14, fill:"#2E466C", stroke:"rgba(173,203,238,.5)"}, g);
   el("text", {x:cx, y:24.5, "text-anchor":"middle", fill:"#DCEBF8", "font-size":"11", "letter-spacing":"2.5", "font-weight":"600"}, g).textContent = text;
 }
+el("text", {x:AX+AW/2, y:628, "text-anchor":"middle", fill:"#8098B8", "font-size":"9.5", "letter-spacing":"1"}).textContent = "tip: click a provider to knock it offline";
 columnLabel(MX+MW/2, "MESSAGES");
 columnLabel(AX+AW/2, "PROVIDERS");
 columnLabel(CX+CW/2, "CHANNELS");
