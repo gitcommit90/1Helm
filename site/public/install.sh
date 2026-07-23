@@ -26,7 +26,7 @@ case "$(uname -m)" in
   *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-need=(curl git tar xz sha256sum)
+need=(curl git tar xz sha256sum make c++ python3)
 missing=()
 for command in "${need[@]}"; do command -v "$command" >/dev/null || missing+=("$command"); done
 if ((${#missing[@]})); then

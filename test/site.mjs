@@ -42,6 +42,7 @@ test("installer assets are explicit and syntax-valid", () => {
   const installer = readFileSync(`${root}/site/public/install.sh`, "utf8");
   assert.match(installer, /HELM_CHANNEL_COMPUTER_BACKEND=native/);
   assert.match(installer, /NODE_VERSION="22\.23\.1"/);
+  assert.match(installer, /need=\([^\n]*make[^\n]*c\+\+[^\n]*python3[^\n]*\)/, "native dependency toolchain is probed even when download prerequisites already exist");
   assert.match(installer, /RELEASES_ROOT=.*releases/);
   assert.match(installer, /mv -Tf .*current/);
   assert.match(installer, /previous release was restored/i);
