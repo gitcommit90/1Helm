@@ -36,7 +36,7 @@ server.listen(Number(process.env.PHOTON_SIDECAR_PORT),"127.0.0.1");
 process.stdin.resume(); process.stdin.on("end",()=>process.exit(0));
 `);
 
-const { db, now, q, q1, run, seed } = await import("../src/server/db.ts");
+const { db, migrate, now, q, q1, run, seed } = await import("../src/server/db.ts");
 const photon = await import("../src/server/photon.ts");
 const photonAuth = await import("../src/server/photon-auth.ts");
 const { createPhotonInboundQueue } = await import("../src/server/photon-queue.mjs");
@@ -88,16 +88,76 @@ test("Photon inbound delivery is allowlisted, deduplicated, and invokes the mapp
   assert.equal(dispatched[0].channelId, channel.id);
 });
 
+test("Photon keeps one durable sender thread until exact /new", async () => {
+  const channel = q1("SELECT id FROM channels WHERE name='messages'");
+  const dispatched = [];
+  photon.registerPhotonDispatcher((_bot, channelId, triggerId, rootId) => dispatched.push({ channelId, triggerId, rootId }));
+  const sender = "+15551234567";
+  await photon.deliverPhotonEvent({ id: "same-thread-reset", space_id: "space-persist-reset", space_type: "dm", sender, text: "/new", timestamp: new Date().toISOString() });
+  assert.equal(await photon.deliverPhotonEvent({ id: "same-thread-1", space_id: "space-persist-a", space_type: "dm", sender, text: "first", timestamp: new Date().toISOString() }), true);
+  assert.equal(await photon.deliverPhotonEvent({ id: "same-thread-2", space_id: "space-persist-b", space_type: "dm", sender, text: "second", timestamp: new Date().toISOString() }), true);
+  const first = q1("SELECT message_id FROM photon_messages WHERE external_id='same-thread-1'");
+  const second = q1("SELECT message_id FROM photon_messages WHERE external_id='same-thread-2'");
+  assert.equal(q1("SELECT parent_id FROM messages WHERE id=?", second.message_id).parent_id, first.message_id, "later texts append beneath the first root even if Photon changes space ids");
+  assert.equal(dispatched.at(-1).rootId, first.message_id);
+  const activeBefore = q1("SELECT * FROM photon_conversations WHERE channel_id=? AND sender=? AND active=1", channel.id, sender);
+  assert.equal(activeBefore.root_message_id, first.message_id);
+
+  await photon.restartPhotonConnector();
+  assert.equal(await photon.deliverPhotonEvent({ id: "same-thread-after-restart", space_id: "space-persist-restart", space_type: "dm", sender, text: "after restart", timestamp: new Date().toISOString() }), true);
+  const afterRestart = q1("SELECT message_id FROM photon_messages WHERE external_id='same-thread-after-restart'");
+  assert.equal(q1("SELECT parent_id FROM messages WHERE id=?", afterRestart.message_id).parent_id, first.message_id, "connector restarts retain the same active thread");
+
+  const dispatchCount = dispatched.length;
+  assert.equal(await photon.deliverPhotonEvent({ id: "same-thread-new", space_id: "space-persist-b", space_type: "dm", sender, text: " /new ", timestamp: new Date().toISOString() }), true);
+  assert.equal(dispatched.length, dispatchCount, "/new is a connector control and never invokes the resident");
+  assert.equal(q1("SELECT COUNT(*) n FROM photon_conversations WHERE channel_id=? AND sender=? AND active=1", channel.id, sender).n, 0);
+
+  assert.equal(await photon.deliverPhotonEvent({ id: "same-thread-3", space_id: "space-persist-c", space_type: "dm", sender, text: "fresh", timestamp: new Date().toISOString() }), true);
+  const third = q1("SELECT message_id FROM photon_messages WHERE external_id='same-thread-3'");
+  assert.equal(q1("SELECT parent_id FROM messages WHERE id=?", third.message_id).parent_id, null);
+  assert.notEqual(third.message_id, first.message_id);
+  assert.equal(q1("SELECT COUNT(*) n FROM photon_conversations WHERE channel_id=? AND sender=?", channel.id, sender).n >= 2, true, "conversation history survives the reset");
+});
+
+test("Photon accepts /new when no conversation has ever been opened", async () => {
+  const sender = "+15559876543";
+  const channel = q1("SELECT id FROM channels WHERE name='messages'");
+  photon.mapPhotonChannel(channel.id, ["+15551234567", sender]);
+  let dispatched = false;
+  photon.registerPhotonDispatcher(() => { dispatched = true; });
+  assert.equal(await photon.deliverPhotonEvent({ id: "first-ever-new", space_id: "space-first-new", space_type: "dm", sender, text: "/NEW", timestamp: new Date().toISOString() }), true);
+  assert.equal(dispatched, false);
+  assert.equal(q1("SELECT COUNT(*) n FROM photon_conversations WHERE channel_id=? AND sender=?", channel.id, sender).n, 0);
+  assert.equal(q1("SELECT source_message_id FROM connector_deliveries WHERE idempotency_key='photon:event:first-ever-new:new'").source_message_id, null);
+});
+
+test("Photon upgrades the most recent existing sender thread without splitting it", () => {
+  const sender = "+15551112222";
+  const channel = q1("SELECT id FROM channels WHERE name='messages'");
+  const stamp = now();
+  const rootId = run("INSERT INTO messages (channel_id,parent_id,body,system_message,created) VALUES (?,NULL,?,1,?)", channel.id, `[Photon iMessage from ${sender}]\nexisting conversation`, stamp).lastInsertRowid;
+  const threadId = run("INSERT INTO threads (root_message_id,channel_id,status,title,summary,opened_at,updated_at) VALUES (?,?,'open','Existing Photon conversation','',?,?)", rootId, channel.id, stamp, stamp).lastInsertRowid;
+  run("INSERT INTO photon_messages (channel_id,external_id,space_id,sender,direction,body,received_at,message_id) VALUES (?,?,?,?, 'inbound',?,?,?)", channel.id, "pre-upgrade", "space-pre-upgrade", sender, "existing conversation", stamp, rootId);
+
+  migrate();
+
+  const conversation = q1("SELECT * FROM photon_conversations WHERE channel_id=? AND sender=? AND active=1", channel.id, sender);
+  assert.equal(conversation.root_message_id, rootId);
+  assert.equal(conversation.thread_id, threadId);
+});
+
 test("Photon returns the completed 1Helm reply exactly once to the inbound conversation", async () => {
   const channel = q1("SELECT id FROM channels WHERE name='messages'");
   const bot = q1("SELECT b.id FROM bots b JOIN agents a ON a.bot_id=b.id JOIN agent_channels ac ON ac.agent_id=a.id WHERE ac.channel_id=?", channel.id);
   photon.registerPhotonDispatcher(async (_bot, channelId, _triggerId, rootId) => {
     run("INSERT INTO messages (channel_id,parent_id,bot_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, bot.id, "Automatic Photon answer", now());
   });
+  await photon.deliverPhotonEvent({ id: "reply-new-1", space_id: "space-reply", space_type: "dm", sender: "+15551234567", text: "/new", timestamp: new Date().toISOString() });
   const event = { id: "reply-1", space_id: "space-reply", space_type: "dm", sender: "+15551234567", text: "please reply", timestamp: new Date().toISOString() };
   assert.equal(await photon.deliverPhotonEvent(event), true);
-  assert.equal(q1("SELECT COUNT(*) n FROM messages WHERE channel_id=? AND parent_id=(SELECT message_id FROM photon_messages WHERE external_id='reply-1') AND bot_id=?", channel.id, bot.id).n, 1, "the agent answer is retained in its 1Helm thread");
-  assert.equal(q1("SELECT COUNT(*) n FROM photon_messages WHERE channel_id=? AND space_id='space-reply' AND direction='outbound'", channel.id).n, 1, "the completed answer is sent back once");
+  assert.equal(q1("SELECT COUNT(*) n FROM messages WHERE channel_id=? AND parent_id=(SELECT root_message_id FROM photon_conversations WHERE channel_id=? AND sender=? AND active=1) AND bot_id=?", channel.id, channel.id, "+15551234567", bot.id).n, 1, "the agent answer is retained in its 1Helm thread");
+  assert.equal(q1("SELECT COUNT(*) n FROM photon_messages WHERE channel_id=? AND space_id='space-reply' AND direction='outbound' AND body='Automatic Photon answer'", channel.id).n, 1, "the completed answer is sent back once");
 
   photon.registerPhotonDispatcher(async (_bot, channelId, _triggerId, rootId) => {
     run("INSERT INTO messages (channel_id,parent_id,bot_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, bot.id, "Tool-sent Photon answer", now());

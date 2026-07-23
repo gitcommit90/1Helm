@@ -340,6 +340,39 @@ export function migrate(): void {
   );
   CREATE UNIQUE INDEX IF NOT EXISTS idx_photon_external ON photon_messages(external_id) WHERE external_id<>'';
   CREATE INDEX IF NOT EXISTS idx_photon_channel_time ON photon_messages(channel_id,received_at DESC);
+  CREATE TABLE IF NOT EXISTS photon_conversations (
+    id INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    sender TEXT NOT NULL,
+    space_id TEXT NOT NULL,
+    root_message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    thread_id INTEGER NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+    started INTEGER NOT NULL,
+    updated INTEGER NOT NULL,
+    closed INTEGER
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_photon_conversation_active
+    ON photon_conversations(channel_id,sender) WHERE active=1;
+  CREATE INDEX IF NOT EXISTS idx_photon_conversation_history
+    ON photon_conversations(channel_id,sender,started DESC);
+  INSERT INTO photon_conversations
+    (channel_id,sender,space_id,root_message_id,thread_id,active,started,updated)
+  SELECT pm.channel_id,pm.sender,pm.space_id,COALESCE(m.parent_id,m.id),t.id,1,m.created,pm.received_at
+  FROM photon_messages pm
+  JOIN messages m ON m.id=pm.message_id AND m.channel_id=pm.channel_id
+  JOIN threads t ON t.root_message_id=COALESCE(m.parent_id,m.id) AND t.channel_id=pm.channel_id
+  WHERE pm.direction='inbound'
+    AND lower(trim(pm.body))<>'/new'
+    AND NOT EXISTS (
+      SELECT 1 FROM photon_conversations pc
+      WHERE pc.channel_id=pm.channel_id AND pc.sender=pm.sender
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM photon_messages newer
+      WHERE newer.channel_id=pm.channel_id AND newer.sender=pm.sender AND newer.direction='inbound'
+        AND (newer.received_at>pm.received_at OR (newer.received_at=pm.received_at AND newer.id>pm.id))
+    );
   CREATE TABLE IF NOT EXISTS connector_deliveries (
     id INTEGER PRIMARY KEY,
     connector TEXT NOT NULL,
@@ -746,7 +779,7 @@ export function migrate(): void {
     // developer deliberately opts into the native compatibility backend.
     const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || (process.platform === "darwin" ? "apple" : "native"));
     const backend = ["apple", "native", "mock"].includes(configuredBackend) ? configuredBackend : "native";
-    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.1");
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.2");
     for (const channel of q(`SELECT c.id FROM channels c JOIN agent_channels ac ON ac.channel_id=c.id
       WHERE c.kind='channel' AND c.status<>'deleted'`)) {
       const channelId = Number(channel.id);

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-07-23
+
+### Fixed
+
+- Photon now keeps every message from the same mapped sender in one durable
+  1Helm thread across connector restarts and Photon conversation-ID changes.
+  Sending `/new` closes that conversation without invoking the resident; the
+  sender's next text starts a new thread.
+- Existing Photon installations carry their latest sender thread forward on
+  upgrade, and completed resident replies remain deduplicated on the return
+  path.
+
 ## [0.0.1] - 2026-07-23
 
 ### Initial release
@@ -37,5 +49,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.2
 [0.0.1]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.1
