@@ -25,7 +25,11 @@
   --maxw:1180px;
 }
 *{margin:0;padding:0;box-sizing:border-box}
-html{scroll-behavior:smooth}
+html{scroll-behavior:smooth;scrollbar-color:#2E466C #152238}
+::-webkit-scrollbar{width:11px}
+::-webkit-scrollbar-track{background:#152238}
+::-webkit-scrollbar-thumb{background:#2E466C;border-radius:6px;border:2px solid #152238}
+::-webkit-scrollbar-thumb:hover{background:#3A557E}
 @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 body{
   background:var(--ink0);color:var(--fg);font-family:var(--sans);
