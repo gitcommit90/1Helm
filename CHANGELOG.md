@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.16] - 2026-07-23
+
+### Added
+
+- A complete autonomy contract for residents: routine installs, downloads, configuration, commands, retries, and reversible implementation choices are owned inside the resident computer; host/cross-channel/capability boundaries call Skipper directly; Skipper must hand the thread back so the resident finishes. `ask_user` is restricted to evidenced human judgment, missing credentials, external authority, or irreversible commitment.
+- Thirty-four substantive built-in operational playbooks, selected per task from a permanently assigned safe arsenal, plus evidence-gated procedure crystallization. A bounded Hermes metadata index supplies more than 90,000 searchable records; trusted GitHub-backed skills are revision-pinned, scanned, hashed, wrapped beneath runtime authority, and installed without a human approval ceremony, while community content remains quarantined.
+- Host-brokered Photon/iMessage connections with device-code setup, allowlisted inbound resident threads, deduplication, supervised reconnect/backoff, narrow conversation replies, and secret isolation. Text is the verified contract; rich attachment fidelity remains explicitly under verification.
+- Durable recurring resident workflows with wakeable computer obligations, pause/resume/complete controls, bounded run counts, restart persistence, and archive suppression; a JSON-in/JSON-out agent CLI; and a deterministic machine-readable autonomy benchmark.
+- An append-only SHA-256 audit chain for new activity, tool starts/results, and external-skill decisions, with verification APIs and Settings UI. This provides tamper evidence, not a remote transparency log, and does not backfill historical rows.
+- A standalone screenshot-led product and documentation website for `1helm.com`, independent from the `demo.1helm.com` sandbox, plus Linux/systemd and Windows+WSL install paths, hardened website/tunnel service definitions, `SECURITY.md`, and an honest platform/capability matrix.
+
+### Changed
+
+- The Linux installer now verifies an exact official Node release against its published checksum manifest, builds in an immutable versioned release directory, atomically switches `/opt/1helm/current`, health-checks startup, and restores the prior release link on failure.
+- Cloudflare connector lifecycle uses generation fencing and single-settlement child handling, so a connector stopped by its owner cannot race an already-queued automatic relaunch.
+- Photon sidecars launched from the packaged Electron runtime explicitly use Node mode, redact bearer/basic/token/secret material from errors, and back off boundedly when long polling fails.
+- Direct Sharp and WebSocket dependencies, including transitive development consumers, are overridden to fixed current releases. The production audit still reports 17 moderate advisories in Spectrum's OpenTelemetry dependency tree; no high or critical advisory remains.
+
+### Tests
+
+- Expanded native autonomy/Skipper-return coverage; catalog quarantine and procedure-quality tests; Photon configuration, authorization, allowlist, deduplication, stale-waiter recovery, redaction, packaging, and backoff tests; workflow wake/archive tests; standalone-site and installer tests; connector fast-restart stress coverage; real configured-provider/Gmail browser acceptance; and a public 5/5 autonomy invariant report with an explicit machine-readable scope and limitations.
+
 ## [1.1.15] - 2026-07-23
 
 ### Added
@@ -200,7 +222,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Formalized project governance, release lifecycle, PR expectations, CI, and repository hygiene for the private `gitcommit90/1Helm` repository.
+- Formalized project governance, release lifecycle, PR expectations, CI, and repository hygiene.
 
 ### Added
 
@@ -217,9 +239,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 
-- Native **1Herd** channel-agent workspace (SPEC.md slice) is developed on branch `worktree-1herd-native-spec` (draft PR #7) and is **not** fully merged to `main` as of this changelog baseline. Track progress there and in `docs/VISION.md` on that branch.
+- The native channel-agent workspace began as a separately reviewed specification slice before becoming the normal 1Helm product path.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.15...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.16...HEAD
+[1.1.16]: https://github.com/gitcommit90/1Helm/compare/v1.1.15...v1.1.16
 [1.1.15]: https://github.com/gitcommit90/1Helm/compare/v1.1.14...v1.1.15
 [1.1.14]: https://github.com/gitcommit90/1Helm/compare/v1.1.13...v1.1.14
 [1.1.13]: https://github.com/gitcommit90/1Helm/compare/v1.1.12...v1.1.13

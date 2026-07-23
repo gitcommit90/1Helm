@@ -2,7 +2,7 @@
 
 **Status:** product and implementation specification  
 **Date:** 2026-07-18  
-**Applies to:** the current `ctrl-pane` codebase, which becomes the native 1Helm runtime
+**Applies to:** the 1Helm codebase and native runtime
 
 ## 1. The product in one sentence
 

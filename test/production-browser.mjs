@@ -130,8 +130,9 @@ try {
   await page.waitForSelector('.modal-overlay input[autocomplete="organization"]');
   ok(await page.$eval('.modal-overlay input[autocomplete="organization"]', (input) => Boolean(input.value)) && Boolean(await page.$('.modal-overlay select option[value="ocean"]')), "Admin UI renders editable workspace name, photo controls, and theme options");
   await page.evaluate(() => [...document.querySelectorAll(".modal-overlay button")].find((button) => button.textContent.trim() === "Skills")?.click());
-  await page.waitForFunction(() => document.querySelector(".modal-overlay")?.textContent.includes("Self-hosting guide"));
-  ok(true, "Skills UI exposes the shipped self-hosting-aware arsenal");
+  await page.waitForFunction(() => document.querySelector(".modal-overlay")?.textContent.includes("Installed arsenal"));
+  const skillSurface = await page.$eval(".modal-overlay", (dialog) => dialog.textContent || "");
+  ok(/complete playbooks/.test(skillSurface) && /External skill library/.test(skillSurface), "Skills UI exposes the complete shipped arsenal and bounded external catalog");
   await page.evaluate(() => [...document.querySelectorAll(".modal-overlay button")].find((button) => button.textContent.trim() === "Domains")?.click());
   await page.waitForSelector('.modal-overlay input[placeholder="agents.example.com"]');
   ok(Boolean(await page.$('.modal-overlay input[placeholder="Cloudflare API token"]')), "Domains UI provides the Cloudflare hostname and one-time token connection flow");

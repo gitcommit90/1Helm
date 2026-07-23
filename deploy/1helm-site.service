@@ -1,0 +1,30 @@
+[Unit]
+Description=1Helm standalone public website (1helm.com, loopback 8130)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/1helm-site/current
+Environment=NODE_ENV=production
+Environment=SITE_HOST=127.0.0.1
+Environment=SITE_PORT=8130
+ExecStart=/usr/bin/node site/server.mjs
+Restart=always
+RestartSec=2
+KillMode=control-group
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

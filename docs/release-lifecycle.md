@@ -18,13 +18,13 @@ Process contract from intent to verified deploy. Commands: [release-checklist.md
   squash/merge · delete branch · CI green on main
        │
        v
-  version bump when shipping a named cut
+  version bump on the release branch
        │
        v
-  tag (optional) · release notes · deploy target(s)
+  tag · signed artifact · release notes · deploy target(s)
        │
        v
-  verify (local health + cold VPS when shipping install path)
+  verify (local health + clean install + public artifact)
        │
        v
   done (evidence)
@@ -75,25 +75,26 @@ Draft PRs are allowed for long slices; mark ready only when the quality bar is m
 
 1. Move Unreleased notes into `## [x.y.z] - YYYY-MM-DD`.
 2. `npm version patch|minor|major --no-git-tag-version` (or edit `package.json`).
-3. Commit on `main` (or as final squash).
-4. Optional: `git tag -a vX.Y.Z` and push tags.
-5. Optional: GitHub Release with notes (even private).
+3. Commit the versioned source on the release branch before merge.
+4. After merge, tag the exact verified `main` commit and push the tag.
+5. Publish the verified artifact and release notes through a GitHub Release.
 
 ## 7. Deploy
 
-### Local / ProxUI
+### Local service
 
 - Build in the target tree.
-- Restart only with approval when `1helm.service` or a long-running node process is involved; preserve `CTRL_DATA_DIR`.
+- Preserve the configured `CTRL_DATA_DIR`, restart the intended exact service,
+  and verify loopback health after startup.
 
-### Demo VPS (cold by default)
+### Public sandbox
 
 ```bash
-# from maintainer machine with deploy key/ssh alias configured
-./scripts/deploy-vps-fresh.sh   # or documented equivalent
+# operator-specific deployment commands live outside the public repository
 ```
 
-Confirm `/api/setup/status` → `needs_setup: true` after wipe deploys.
+Confirm `/api/setup/status` on the intended sandbox without reusing production
+workspace state.
 
 ## 8. What “done” means
 
@@ -101,7 +102,7 @@ Confirm `/api/setup/status` → `needs_setup: true` after wipe deploys.
 | --- | --- |
 | Code landed | On `origin/main`, CI green |
 | Behavior fixed | Tests + manual/API check |
-| Install path still works | Cold VPS or clean `CTRL_DATA_DIR` local boot through wizard |
-| Named release | Version + changelog section + optional tag |
+| Install path still works | Clean `CTRL_DATA_DIR` boot through the wizard plus platform acceptance |
+| Named release | Version, changelog, exact tag, verified public artifact, and clean installation |
 
 If deploy verification was skipped, say so. Do not call a ship “done.”

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1helm.com/schemas/autonomy-benchmark-v1.json",
+  "title": "1Helm deterministic autonomy contract report",
+  "description": "Machine-readable results for named runtime invariants. This is not a live-model task-success, provider-reliability, or security score.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "product",
+    "kind",
+    "started_at",
+    "finished_at",
+    "deterministic",
+    "scope",
+    "summary",
+    "checks"
+  ],
+  "properties": {
+    "schema": { "const": "https://1helm.com/schemas/autonomy-benchmark-v1.json" },
+    "product": { "const": "1Helm" },
+    "kind": { "const": "deterministic_runtime_contract" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "finished_at": { "type": "string", "format": "date-time" },
+    "deterministic": { "const": true },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["validates", "does_not_validate"],
+      "properties": {
+        "validates": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "does_not_validate": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "failed", "total"],
+      "properties": {
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "passed", "evidence"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+          "passed": { "type": "boolean" },
+          "evidence": {}
+        }
+      }
+    }
+  }
+}

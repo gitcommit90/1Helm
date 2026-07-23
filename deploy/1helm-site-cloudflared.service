@@ -1,0 +1,25 @@
+[Unit]
+Description=Cloudflare tunnel for standalone 1helm.com website
+After=network-online.target 1helm-site.service
+Wants=network-online.target 1helm-site.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config /etc/cloudflared/config-1helm-site.yml tunnel run
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

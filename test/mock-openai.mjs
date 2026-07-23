@@ -60,7 +60,7 @@ createServer(async (req, res) => {
     const wantsLearnSkill = reqBody.tools?.some((tool) => tool.function?.name === "create_skill")
       && /Learn one new reusable workspace skill/i.test(latestUser)
       && !hasToolResult;
-    const wantsCallSkipper = reqBody.tools && /call skipper to run whoami/i.test(serialized) && !hasToolResult && /You are @\S+-agent/.test(serialized);
+    const wantsCallSkipper = reqBody.tools && /call skipper to run whoami/i.test(latestUser) && !hasToolResult && /You are @\S+-agent/.test(serialized);
     const wantsCreateChannel = reqBody.tools?.some((tool) => tool.function?.name === "create_channel") && /create (?:a )?(?:new )?channel/i.test(serialized) && !hasToolResult;
     const wantsTool = reqBody.tools && /run|exec|whoami|command|create .*file|launch-plan/i.test(serialized) && (!hasToolResult || repeatsTools) && !wantsCallSkipper && !wantsCallAgent && !wantsCreateChannel && !wantsScheduleFollowup;
     const auditMode = /silent thread-status audit/i.test(serialized);
@@ -103,7 +103,7 @@ createServer(async (req, res) => {
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "create_skill_1", type: "function", function: { name: "create_skill", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else if (wantsAskUser) {
-      const args = { intro: "Choose how I should proceed.", questions: [{ header: "Approach", question: "Which approach should I use?", options: [{ label: "Fast", description: "Prefer speed." }, { label: "Thorough", description: "Prefer depth." }] }] };
+      const args = { blocker_kind: "human_judgment", evidence: "The requested interview explicitly asks the human to choose between materially different approaches.", intro: "Choose how I should proceed.", questions: [{ header: "Approach", question: "Which approach should I use?", options: [{ label: "Fast", description: "Prefer speed." }, { label: "Thorough", description: "Prefer depth." }] }] };
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "ask_user_1", type: "function", function: { name: "ask_user", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else if (wantsRequestSkill) {
@@ -111,7 +111,7 @@ createServer(async (req, res) => {
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "request_skill_1", type: "function", function: { name: "request_skill", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else if (wantsProposeSkill) {
-      const args = { name: "Meeting brief", description: "Turn meeting context into a concise pre-read, decisions, and follow-ups.", rationale: "This workflow is reusable across future meetings." };
+      const args = { name: "Meeting brief", description: "Turn meeting context into a concise pre-read, decisions, and follow-ups.", instructions: "Activate before a meeting when agenda, participants, source notes, or prior decisions are available. Gather the authoritative context and distinguish sourced facts from open questions. Produce a compact brief with objective, participants, relevant history, decision points, risks, and required preparation. After the meeting, capture decisions with owners and dates, link the source artifacts, schedule durable follow-ups for unfinished actions, and verify that every stated commitment is represented in the final record.", evidence: "The completed launch meeting brief was attached in the thread and every decision, owner, and due date matched the source notes.", rationale: "This verified workflow is reusable across future meetings." };
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "propose_skill_1", type: "function", function: { name: "propose_skill", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else if (wantsInviteAgent) {

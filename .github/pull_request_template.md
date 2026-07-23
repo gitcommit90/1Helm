@@ -9,7 +9,7 @@
 - [ ] Docs / governance
 - [ ] Refactor (no intended behavior change)
 - [ ] Chore / CI
-- [ ] Deploy / ops tooling
+- [ ] Deploy / release tooling
 
 ## Release notes
 
@@ -30,7 +30,7 @@ Paste bullets for `CHANGELOG.md` Unreleased (or N/A):
 - [ ] `npm test` (and feature suites if present on this branch)
 - [ ] `git diff --check`
 - [ ] No secrets, private keys, or `data/` dumps
-- [ ] VPS/local deploy impact considered
+- [ ] Local/sandbox/installer impact considered
 
 ## Post-merge (maintainers)
 

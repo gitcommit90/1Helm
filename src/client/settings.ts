@@ -1,4 +1,4 @@
-import { api, getToken, workspacePhotoSrc, type AccessRequest, type ChannelRuntime, type Collaboration, type Computer, type Skill, type User, type WorkspaceDomain } from "./api.ts";
+import { api, getToken, workspacePhotoSrc, type AccessRequest, type ChannelRuntime, type Collaboration, type Computer, type Skill, type SkillCatalogResult, type SkillCatalogStatus, type User, type WorkspaceDomain } from "./api.ts";
 import { h, clear, add, icon } from "./dom.ts";
 import { S, avatar, reloadProviders, renderApp, appAlert, appConfirm, appPrompt } from "./app.ts";
 import { connectRoutingOauth, routingPanel } from "./routing.ts";
@@ -68,12 +68,12 @@ export async function startChatGPTOAuth(): Promise<void> {
 }
 
 // ============================================================ settings modal
-type Tab = "admin" | "agents" | "skills" | "domains" | "providers" | "computers" | "members";
+type Tab = "admin" | "agents" | "skills" | "workflows" | "connections" | "audit" | "domains" | "providers" | "computers" | "members";
 export function openSettings(tab: Tab = "agents"): void {
   const overlay = h("div", { class: "modal-overlay fixed inset-0 z-40 grid place-items-end bg-black/50 p-0 sm:place-items-center sm:p-4 md:p-6", onclick: (e: MouseEvent) => { if (e.target === overlay) overlay.remove(); } });
   const bodyEl = h("div", { class: "min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4 sm:p-5" });
   const modal = h("div", { class: "card mobile-sheet flex h-[min(96dvh,100%)] w-full max-w-none flex-col overflow-hidden rounded-b-none shadow-2xl transition-[max-width] sm:h-[min(90vh,980px)] sm:rounded-xl" });
-  const tabs: [Tab, string][] = S.me.is_admin ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]] : [];
+  const tabs: [Tab, string][] = S.me.is_admin ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["workflows", "Workflows"], ["connections", "Connections"], ["audit", "Audit"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]] : [];
   if (!tabs.length) return;
   const tabBar = h("div", { class: "flex gap-1 overflow-x-auto border-b border-line px-2 pt-2 sm:px-4 sm:pt-3" });
   const draw = (t: Tab): void => {
@@ -82,7 +82,7 @@ export function openSettings(tab: Tab = "agents"): void {
     clear(tabBar);
     tabs.forEach(([id, label]) => tabBar.append(h("button", { class: `view-tab ${t === id ? "view-tab-active" : "view-tab-idle"}`, onclick: () => draw(id) }, label)));
     clear(bodyEl);
-    bodyEl.append(t === "admin" ? adminPanel() : t === "agents" ? agentsPanel() : t === "skills" ? skillsPanel() : t === "domains" ? domainsPanel() : t === "providers" ? providersPanel() : t === "computers" ? computersPanel() : membersPanel());
+    bodyEl.append(t === "admin" ? adminPanel() : t === "agents" ? agentsPanel() : t === "skills" ? skillsPanel() : t === "workflows" ? workflowsPanel() : t === "connections" ? connectionsPanel() : t === "audit" ? auditPanel() : t === "domains" ? domainsPanel() : t === "providers" ? providersPanel() : t === "computers" ? computersPanel() : membersPanel());
   };
   modal.append(
     h("div", { class: "flex items-center justify-between border-b border-line px-4 py-3 sm:px-5" },
@@ -168,11 +168,72 @@ function skillsPanel(): HTMLElement {
     h("div", { class: "flex flex-col gap-3 rounded-lg border border-accent/30 bg-accent-soft p-4 sm:flex-row sm:items-center sm:justify-between" },
       h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Teach 1Helm from your own material"), h("p", { class: "mt-1 text-sm leading-5 text-muted" }, "Give Skipper a folder or file, a web page, pasted notes, or any combination. It will inspect the sources and author one reusable workspace skill in a visible #main thread.")),
       h("button", { class: "btn-primary shrink-0 text-sm", onclick: learnSkillDialog }, icon("sparkles", 15), "Learn a new skill")),
-    h("p", { class: "text-sm leading-6 text-muted" }, "Every agent knows this complete catalog. Skipper starts with all skills; resident agents get a useful permanent kit and can request or propose more while they work."));
-  void api<{ skills: Array<Skill & { arsenal_locked?: number; arsenal_reason?: string; assigned_agents?: number }> }>("/api/skills").then(({ skills }) => {
-    for (const skill of skills) wrap.append(h("article", { class: `card p-4 ${skill.arsenal_locked ? "opacity-80" : ""}` }, h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-semibold text-fg" }, skill.name), h("span", { class: "chip" }, skill.category), skill.arsenal_locked ? h("span", { class: "chip border-amber-400/40 text-amber-600 dark:text-amber-300" }, "locked") : null, h("span", { class: "ml-auto text-xs text-muted" }, `${skill.assigned_agents || 0} agents`)), h("p", { class: "mt-2 text-sm leading-6 text-muted" }, skill.description), skill.arsenal_locked && skill.arsenal_reason ? h("p", { class: "mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300" }, skill.arsenal_reason) : null));
+    h("p", { class: "text-sm leading-6 text-muted" }, "Every resident permanently owns the safe built-in operational library. 1Helm activates only the playbooks relevant to the current task, creates proven new procedures silently, and can search a large external catalog without making you manage skill approvals."));
+  void api<{ skills: Array<Skill & { arsenal_locked?: number; arsenal_reason?: string; assigned_agents?: number }>; catalog: SkillCatalogStatus }>("/api/skills").then(({ skills, catalog }) => {
+    wrap.append(skillCatalogBrowser(catalog));
+    const shipped = h("section", { class: "space-y-3" },
+      h("div", { class: "flex flex-wrap items-end justify-between gap-2" }, h("div", {}, h("h3", { class: "font-display text-lg text-fg" }, "Installed arsenal"), h("p", { class: "text-sm text-muted" }, `${skills.length} complete playbooks · permanently available · selected automatically per task`))));
+    for (const skill of skills) shipped.append(h("article", { class: `card p-4 ${skill.arsenal_locked ? "opacity-80" : ""}` },
+      h("div", { class: "flex flex-wrap items-center gap-2" },
+        h("h3", { class: "font-semibold text-fg" }, skill.name),
+        h("span", { class: "chip" }, skill.category),
+        skill.source === "shipped" ? h("span", { class: "chip" }, "built in") : null,
+        skill.scan_status === "clean" && skill.provenance_identifier ? h("span", { class: "chip border-emerald-500/30 text-emerald-700 dark:text-emerald-300" }, "scanned") : null,
+        skill.arsenal_locked ? h("span", { class: "chip border-amber-400/40 text-amber-600 dark:text-amber-300" }, "locked") : null,
+        h("span", { class: "ml-auto text-xs text-muted" }, `${skill.assigned_agents || 0} agents`)),
+      h("p", { class: "mt-2 text-sm leading-6 text-muted" }, skill.description),
+      skill.provenance_identifier ? h("p", { class: "mt-2 break-all text-xs leading-5 text-muted" }, `${skill.trust_level || "external"} · ${skill.provenance_identifier}${skill.provenance_revision ? ` @ ${skill.provenance_revision.slice(0, 12)}` : ""}${skill.content_sha256 ? ` · sha256:${skill.content_sha256.slice(0, 12)}…` : ""}`) : null,
+      skill.arsenal_locked && skill.arsenal_reason ? h("p", { class: "mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300" }, skill.arsenal_reason) : null));
+    wrap.append(shipped);
   }).catch((error) => wrap.append(h("p", { class: "text-danger" }, (error as Error).message)));
   return wrap;
+}
+
+function skillCatalogBrowser(initial: SkillCatalogStatus): HTMLElement {
+  const query = h("input", { class: "field min-w-0 flex-1", placeholder: "Search 90,000+ indexed workflows — Gmail, bookkeeping, security, research…", autocomplete: "off" }) as HTMLInputElement;
+  const results = h("div", { class: "space-y-2" });
+  const status = h("p", { class: "text-xs leading-5 text-muted" });
+  const renderStatus = (state: SkillCatalogStatus): void => {
+    status.textContent = state.available
+      ? `${state.skill_count.toLocaleString()} indexed · ${state.builtin.toLocaleString()} built-in + ${state.trusted.toLocaleString()} trusted auto-installable · ${state.community.toLocaleString()} community entries quarantined by default${state.generated_at ? ` · index ${state.generated_at.slice(0, 10)}` : ""}`
+      : `Catalog not cached yet${state.error ? ` · ${state.error}` : " — first search will download the source metadata index"}`;
+  };
+  renderStatus(initial);
+  const install = async (entry: SkillCatalogResult, button: HTMLButtonElement): Promise<void> => {
+    button.disabled = true; button.textContent = "Scanning…";
+    try {
+      await api("/api/skills/catalog/install", { body: { identifier: entry.identifier } });
+      button.textContent = "Installed";
+    } catch (error) { button.disabled = false; button.textContent = "Install"; void appAlert(`Skill not installed\n\n${(error as Error).message}`); }
+  };
+  const search = async (): Promise<void> => {
+    const text = query.value.trim();
+    if (!text) return;
+    clear(results); results.append(h("p", { class: "py-4 text-sm text-muted" }, "Searching catalog metadata…"));
+    try {
+      const found = await api<{ status: SkillCatalogStatus; results: SkillCatalogResult[] }>(`/api/skills/catalog?q=${encodeURIComponent(text)}&limit=20`);
+      renderStatus(found.status); clear(results);
+      if (!found.results.length) results.append(h("p", { class: "py-4 text-sm text-muted" }, "No matching indexed skills."));
+      for (const entry of found.results) {
+        const installable = entry.trust_level === "builtin" || entry.trust_level === "trusted";
+        const button = h("button", { class: installable ? "btn-primary shrink-0 text-xs" : "btn-subtle shrink-0 text-xs", disabled: !installable }, installable ? "Install" : "Quarantined") as HTMLButtonElement;
+        if (installable) button.onclick = () => { void install(entry, button); };
+        results.append(h("article", { class: "rounded-lg border border-border bg-panel p-3" },
+          h("div", { class: "flex items-start gap-3" },
+            h("div", { class: "min-w-0 flex-1" },
+              h("div", { class: "flex flex-wrap items-center gap-2" }, h("h4", { class: "font-semibold text-fg" }, entry.name), h("span", { class: `chip ${installable ? "border-emerald-500/30 text-emerald-700 dark:text-emerald-300" : "border-amber-400/40 text-amber-700 dark:text-amber-300"}` }, entry.trust_level), h("span", { class: "chip" }, entry.source)),
+              h("p", { class: "mt-1 text-sm leading-5 text-muted" }, entry.description || "No description supplied by the index."),
+              h("p", { class: "mt-1 break-all text-xs text-muted" }, `${entry.identifier}${entry.repo ? ` · ${entry.repo}/${entry.path || ""}` : ""}`)),
+            button)));
+      }
+    } catch (error) { clear(results); results.append(h("p", { class: "text-sm text-danger" }, (error as Error).message)); }
+  };
+  query.addEventListener("keydown", (event) => { if (event.key === "Enter") void search(); });
+  return h("section", { class: "card space-y-3 p-4" },
+    h("div", {}, h("h3", { class: "font-display text-lg text-fg" }, "External skill library"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Search metadata on demand. Trusted GitHub-backed skills are revision-pinned, size-bounded, scanned, hashed, and installed beneath 1Helm's security boundary. Community scripts are visible but never blindly executed.")),
+    h("div", { class: "flex gap-2" }, query, h("button", { class: "btn-primary", onclick: () => { void search(); } }, "Search")),
+    status,
+    results);
 }
 
 function learnSkillDialog(): void {
@@ -198,6 +259,117 @@ function learnSkillDialog(): void {
     h("div", { class: "flex justify-end gap-2" }, h("button", { class: "btn-subtle", onclick: close }, "Cancel"), h("button", { class: "btn-primary", onclick: () => { void learn(); } }, "Start learning")));
   overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
   overlay.append(modal); document.body.append(overlay); notes.focus();
+}
+
+type PhotonMapping = { channel_id: number; channel_name: string; agent_name: string; allowed_users: string; updated: number };
+type PhotonStatus = { configured: boolean; connected: boolean; project_id: string; operator_phone: string; assigned_phone: string; secret: "stored" | "missing"; mappings: PhotonMapping[] };
+type PhotonSetup = { active: boolean; status?: string | PhotonStatus; operator_phone?: string; user_code?: string; verification_uri?: string; verification_uri_complete?: string; expires_at?: number; error?: string; connector?: PhotonStatus };
+
+function connectionsPanel(): HTMLElement {
+  const box = h("section", { class: "card space-y-4 p-4" }, h("p", { class: "text-sm text-muted" }, "Checking Photon…"));
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const stopPolling = (): void => { if (timer) clearTimeout(timer); timer = null; };
+  const refresh = async (): Promise<void> => {
+    try {
+      const [{ photon }, { photon: setup }] = await Promise.all([
+        api<{ photon: PhotonStatus }>("/api/connectors/photon"),
+        api<{ photon: PhotonSetup }>("/api/connectors/photon/setup"),
+      ]);
+      clear(box);
+      box.append(
+        h("div", { class: "flex flex-wrap items-start justify-between gap-3" },
+          h("div", {}, h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-display text-lg text-fg" }, "Photon · iMessage"), h("span", { class: `chip ${photon.connected ? "border-emerald-500/30 text-emerald-700 dark:text-emerald-300" : "border-amber-400/40 text-amber-700 dark:text-amber-300"}` }, photon.connected ? "Connected" : photon.configured ? "Reconnecting" : "Not configured")), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "A supervised loopback connector streams task-scoped messages into the mapped resident. Photon credentials stay on the 1Helm host; residents never receive the Mac Messages database.")),
+          photon.assigned_phone ? h("div", { class: "text-right text-xs text-muted" }, "Text 1Helm at", h("strong", { class: "mt-1 block text-sm text-fg" }, photon.assigned_phone)) : null),
+      );
+      if (!photon.configured || ["waiting", "provisioning", "failed", "expired"].includes(String(setup.status || ""))) {
+        const phone = h("input", { class: "field", type: "tel", placeholder: "+15551234567", value: setup.operator_phone || photon.operator_phone || "", autocomplete: "tel" }) as HTMLInputElement;
+        const setupStatus = h("p", { class: `min-h-5 text-sm ${setup.error ? "text-danger" : "text-muted"}` }, setup.error || (setup.status === "provisioning" ? "Login approved. Creating or reusing the 1Helm Photon project, rotating its secret, and assigning your line…" : ""));
+        const start = h("button", { class: "btn-primary text-sm", onclick: async () => {
+          start.disabled = true; setupStatus.textContent = "Starting secure device login…";
+          try { await api("/api/connectors/photon/setup", { body: { operator_phone: phone.value } }); await refresh(); }
+          catch (error) { start.disabled = false; setupStatus.textContent = (error as Error).message; }
+        } }, setup.active ? "Restart login" : "Connect Photon") as HTMLButtonElement;
+        box.append(h("div", { class: "rounded-lg border border-border bg-panel p-4" },
+          h("p", { class: "text-sm leading-6 text-muted" }, "Enter the phone allowed to text this 1Helm installation. 1Helm opens Photon's device flow, creates or reuses its project, rotates the runtime secret, registers the phone, discovers the assigned iMessage line, and verifies the live sidecar."),
+          h("div", { class: "mt-3 flex flex-col gap-2 sm:flex-row" }, phone, start), setupStatus));
+      }
+      if (setup.active && setup.user_code) {
+        const destination = setup.verification_uri_complete || setup.verification_uri || "https://app.photon.codes";
+        box.append(h("div", { class: "rounded-lg border border-accent/30 bg-accent-soft p-4" }, h("p", { class: "text-xs font-semibold uppercase tracking-wide text-muted" }, "Approve Photon login"), h("div", { class: "mt-2 flex flex-wrap items-center gap-3" }, h("code", { class: "rounded bg-panel px-3 py-2 text-lg font-bold text-fg" }, setup.user_code), h("a", { class: "btn-primary text-sm", href: destination, target: "_blank", rel: "noopener noreferrer" }, "Open Photon ↗")), h("p", { class: "mt-2 text-xs text-muted" }, "This page updates automatically after approval.")));
+      }
+      if (photon.configured) {
+        const channel = h("select", { class: "field" }, h("option", { value: "" }, "Choose resident channel"), ...S.channels.filter((entry) => entry.kind === "channel" && entry.agent).map((entry) => h("option", { value: String(entry.id) }, `#${entry.name} · @${entry.agent!.name}`))) as HTMLSelectElement;
+        const allowed = h("input", { class: "field", type: "tel", placeholder: photon.operator_phone || "+15551234567", value: photon.operator_phone || "", autocomplete: "tel" }) as HTMLInputElement;
+        const mappingStatus = h("p", { class: "min-h-5 text-sm text-muted" });
+        const map = h("button", { class: "btn-primary text-sm", onclick: async () => {
+          map.disabled = true; mappingStatus.textContent = "Applying least-privilege mapping…";
+          try { await api("/api/connectors/photon/map", { body: { channel_id: Number(channel.value), allowed_users: allowed.value.split(",").map((value) => value.trim()).filter(Boolean) } }); await refresh(); }
+          catch (error) { map.disabled = false; mappingStatus.textContent = (error as Error).message; }
+        } }, "Map conversation") as HTMLButtonElement;
+        box.append(h("div", { class: "space-y-3" }, h("div", {}, h("h4", { class: "font-semibold text-fg" }, "Resident mappings"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "An allowlisted inbound message opens a real thread and invokes that resident. The resident may reply in that exact authorized conversation; Skipper must explicitly grant new outbound conversations.")),
+          ...photon.mappings.map((mapping) => h("div", { class: "rounded-lg border border-border bg-panel p-3" }, h("div", { class: "font-semibold text-fg" }, `#${mapping.channel_name} · @${mapping.agent_name}`), h("div", { class: "mt-1 text-xs text-muted" }, `Allowlisted: ${(() => { try { return (JSON.parse(mapping.allowed_users) as string[]).join(", "); } catch { return "invalid mapping"; } })()}`))),
+          h("div", { class: "grid gap-2 sm:grid-cols-[1fr_1fr_auto]" }, channel, allowed, map), mappingStatus));
+      }
+      if (setup.active) { stopPolling(); timer = setTimeout(() => { void refresh(); }, 2000); }
+      else stopPolling();
+    } catch (error) { stopPolling(); clear(box); box.append(h("p", { class: "text-sm text-danger" }, (error as Error).message)); }
+  };
+  void refresh();
+  return h("div", { class: "space-y-4" },
+    h("div", { class: "rounded-lg border border-accent/25 bg-accent-soft px-4 py-3 text-sm leading-6 text-fg" }, "Connections are host-brokered capabilities. Residents receive the minimum task-scoped interface—not account secrets or your personal computer."),
+    box,
+    h("section", { class: "card p-4 opacity-80" }, h("h3", { class: "font-display text-lg text-fg" }, "More connections"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Gmail accounts are connected through the provider fabric and granted by Skipper per resident. Calendar, contacts, Slack, and other messaging brokers are represented by complete built-in playbooks; native host connectors are added only when 1Helm can enforce task scope, recovery, and auditability.")));
+}
+
+type AgentWorkflow = { id: number; channel_id: number; agent_id: number; name: string; prompt: string; interval_seconds: number; next_run: number; last_run: number | null; run_count: number; max_runs: number; status: "active" | "paused" | "complete" | "failed"; last_error: string };
+function workflowsPanel(): HTMLElement {
+  const wrap = h("div", { class: "space-y-4" });
+  const list = h("div", { class: "space-y-2" }, h("p", { class: "text-sm text-muted" }, "Loading recurring workflows…"));
+  const load = async (): Promise<void> => {
+    try {
+      const { workflows } = await api<{ workflows: AgentWorkflow[] }>("/api/workflows");
+      clear(list);
+      if (!workflows.length) list.append(h("p", { class: "card p-5 text-center text-sm text-muted" }, "No recurring workflows yet. Ask a resident to repeat an outcome on a schedule, or create one here."));
+      for (const workflow of workflows) {
+        const channel = S.channels.find((entry) => entry.id === workflow.channel_id);
+        const action = workflow.status === "active" ? "paused" : workflow.status === "paused" ? "active" : "complete";
+        const details = h("div", { class: "min-w-0 flex-1" },
+          h("div", { class: "flex flex-wrap items-center gap-2" },
+            h("h3", { class: "font-semibold text-fg" }, workflow.name),
+            h("span", { class: "chip" }, workflow.status),
+            channel ? h("span", { class: "chip" }, `#${channel.name}`) : null),
+          h("p", { class: "mt-2 whitespace-pre-wrap text-sm leading-6 text-muted" }, workflow.prompt),
+          h("p", { class: "mt-2 text-xs text-faint" }, `Every ${workflow.interval_seconds.toLocaleString()}s · ${workflow.run_count}${workflow.max_runs ? ` / ${workflow.max_runs}` : ""} runs · next ${new Date(workflow.next_run).toLocaleString()}${workflow.last_run ? ` · last ${new Date(workflow.last_run).toLocaleString()}` : ""}${workflow.last_error ? ` · ${workflow.last_error}` : ""}`));
+        const control = workflow.status === "active" || workflow.status === "paused"
+          ? h("button", { class: "btn-subtle shrink-0 text-xs", onclick: async () => { await api(`/api/workflows/${workflow.id}`, { method: "PATCH", body: { channel_id: workflow.channel_id, status: action } }); await load(); } }, action === "active" ? "Resume" : "Pause")
+          : null;
+        list.append(h("article", { class: "card p-4" }, h("div", { class: "flex flex-wrap items-start gap-2" }, details, control)));
+      }
+    } catch (error) { clear(list); list.append(h("p", { class: "text-danger" }, (error as Error).message)); }
+  };
+  const channel = h("select", { class: "field" }, h("option", { value: "" }, "Choose resident channel"), ...S.channels.filter((entry) => entry.kind === "channel" && entry.name !== "main" && entry.agent).map((entry) => h("option", { value: String(entry.id) }, `#${entry.name} · @${entry.agent!.name}`))) as HTMLSelectElement;
+  const name = h("input", { class: "field", placeholder: "Weekly launch evidence" }) as HTMLInputElement;
+  const prompt = h("textarea", { class: "field min-h-28 resize-y", placeholder: "Inspect the launch evidence, resolve routine gaps, and publish a verified status report with source links." }) as HTMLTextAreaElement;
+  const interval = h("input", { class: "field", type: "number", min: "60", value: "604800", title: "Interval in seconds" }) as HTMLInputElement;
+  const maxRuns = h("input", { class: "field", type: "number", min: "0", value: "0", title: "Maximum runs; 0 repeats indefinitely" }) as HTMLInputElement;
+  const status = h("p", { class: "min-h-5 text-sm text-muted" });
+  const create = async (): Promise<void> => { status.textContent = "Creating durable workflow…"; try { await api("/api/workflows", { body: { channel_id: Number(channel.value), name: name.value, prompt: prompt.value, interval_seconds: Number(interval.value), max_runs: Number(maxRuns.value) } }); name.value = ""; prompt.value = ""; status.textContent = "Workflow scheduled."; await load(); } catch (error) { status.textContent = (error as Error).message; } };
+  wrap.append(h("div", { class: "rounded-lg border border-accent/25 bg-accent-soft px-4 py-3 text-sm leading-6 text-fg" }, "Recurring workflows are durable obligations, not haunted cron jobs. Each due run opens a real thread and invokes the same resident with its computer, memory, skills, and verification contract."),
+    h("section", { class: "card space-y-3 p-4" }, h("h3", { class: "font-display text-lg text-fg" }, "Create recurring workflow"), h("div", { class: "grid gap-2 sm:grid-cols-2" }, channel, name), prompt, h("div", { class: "grid gap-2 sm:grid-cols-[1fr_1fr_auto]" }, h("label", { class: "text-xs font-semibold text-muted" }, "Interval seconds", interval), h("label", { class: "text-xs font-semibold text-muted" }, "Maximum runs · 0 forever", maxRuns), h("button", { class: "btn-primary self-end", onclick: () => { void create(); } }, "Schedule")), status), list);
+  void load(); return wrap;
+}
+
+type AuditVerification = { valid: boolean; events: number; head: string; first_invalid_sequence: number | null };
+type AuditEvent = { sequence: number; channel_id: number | null; event_type: string; payload: unknown; created: number; hash: string };
+function auditPanel(): HTMLElement {
+  const box = h("div", { class: "space-y-3" }, h("p", { class: "text-sm text-muted" }, "Verifying operational history…"));
+  void api<{ verification: AuditVerification; events: AuditEvent[] }>("/api/audit/events?limit=200").then(({ verification, events }) => {
+    clear(box);
+    box.append(h("div", { class: `rounded-lg border p-4 ${verification.valid ? "border-emerald-500/30 bg-emerald-500/10" : "border-danger/40 bg-danger/10"}` }, h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-display text-lg text-fg" }, verification.valid ? "Audit chain verified" : "Audit chain verification failed"), h("span", { class: "chip" }, `${verification.events} chained events`)), h("p", { class: "mt-1 break-all text-xs leading-5 text-muted" }, verification.valid ? `Current head sha256:${verification.head || "empty"}` : `First invalid sequence: ${verification.first_invalid_sequence}. Do not rely on subsequent history.`)),
+      h("p", { class: "text-sm leading-6 text-muted" }, "New activity, tool starts/results, and external-skill decisions enter one append-only SHA-256 chain. Historical rows created before this release are not backfilled."));
+    for (const event of events.slice().reverse()) box.append(h("article", { class: "card p-3" }, h("div", { class: "flex flex-wrap gap-2 text-xs text-muted" }, h("span", { class: "chip" }, `#${event.sequence}`), h("span", {}, event.event_type), h("span", { class: "ml-auto" }, new Date(event.created).toLocaleString())), h("pre", { class: "mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs text-fg" }, JSON.stringify(event.payload, null, 2)), h("p", { class: "mt-2 break-all text-[10px] text-faint" }, `sha256:${event.hash}`)));
+  }).catch((error) => { clear(box); box.append(h("p", { class: "text-danger" }, (error as Error).message)); });
+  return box;
 }
 
 function domainsPanel(): HTMLElement {

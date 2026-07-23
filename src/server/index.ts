@@ -54,10 +54,15 @@ import {
 } from "./collaboration.ts";
 import { stopAllConnectors } from "./connectors.ts";
 import { ensureImageGenerationSkill, listSkills, listTemplates, provisionSkill, skillsForAgent, setImageGenerationEnabled, imageGenerationAvailable, imageGenerationEnabledIds } from "./skills.ts";
+import { inspectCatalogSkill, installCatalogSkill, refreshSkillCatalog, searchSkillCatalog, skillCatalogStatus } from "./skill-catalog.ts";
+import { auditEvents, verifyAuditChain } from "./audit.ts";
+import { configurePhoton, mapPhotonChannel, photonStatus, registerPhotonDispatcher, startPhotonConnector, stopPhotonConnector } from "./photon.ts";
+import { photonSetupStatus, startPhotonSetup } from "./photon-auth.ts";
 import { ensureAgentMemory, mnemosyneAvailable, prepareMnemosyneRuntime } from "./memory.ts";
 import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
 import { startFollowupLoop, threadFollowupView, bumpThreadFollowup } from "./followups.ts";
+import { createWorkflow, listWorkflows, registerWorkflowDispatcher, setWorkflowStatus, startWorkflowLoop, stopWorkflowLoop } from "./workflows.ts";
 import { appUpdateStatus, installedAppVersion } from "./updates.ts";
 import {
   internalRoutingProviderId,
@@ -775,7 +780,33 @@ const server = createServer(async (req, res) => {
     if (p === "/api/skills" && m === "GET") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const includeLocked = Boolean(user.is_admin);
-      return json(res, 200, { skills: listSkills({ includeLocked }), image_generation_available: imageGenerationAvailable() });
+      return json(res, 200, { skills: listSkills({ includeLocked }), image_generation_available: imageGenerationAvailable(), catalog: skillCatalogStatus() });
+    }
+    if (p === "/api/skills/catalog" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const query = String(url.searchParams.get("q") || "").slice(0, 300);
+      const trust = String(url.searchParams.get("trust") || "").slice(0, 40);
+      try { return json(res, 200, await searchSkillCatalog(query, { trust, limit: Number(url.searchParams.get("limit") || 20) })); }
+      catch (error) { return json(res, 502, { error: (error as Error).message, status: skillCatalogStatus() }); }
+    }
+    if (p === "/api/skills/catalog/refresh" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      try { return json(res, 200, { status: await refreshSkillCatalog(true) }); }
+      catch (error) { return json(res, 502, { error: (error as Error).message, status: skillCatalogStatus() }); }
+    }
+    if (p === "/api/skills/catalog/inspect" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      try { return json(res, 200, await inspectCatalogSkill(String(b.identifier || ""))); }
+      catch (error) { return json(res, 404, { error: (error as Error).message }); }
+    }
+    if (p === "/api/skills/catalog/install" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      try {
+        const skill = await installCatalogSkill(String(b.identifier || ""), b.agent_id == null ? null : Number(b.agent_id));
+        return json(res, 201, { skill });
+      } catch (error) { return json(res, 400, { error: (error as Error).message }); }
     }
     if (p === "/api/skills/learn" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
@@ -827,9 +858,63 @@ const server = createServer(async (req, res) => {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       return json(res, 200, { improved: runImprovementPass() });
     }
+    if (p === "/api/audit/verify" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, { verification: verifyAuditChain() });
+    }
+    if (p === "/api/audit/events" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const requestedChannel = Number(url.searchParams.get("channel_id") || 0);
+      return json(res, 200, { events: auditEvents(requestedChannel || undefined, Number(url.searchParams.get("limit") || 200)), verification: verifyAuditChain() });
+    }
+    if (p === "/api/connectors/photon" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, { photon: photonStatus() });
+    }
+    if (p === "/api/connectors/photon" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      try { return json(res, 200, { photon: await configurePhoton({ project_id: String(b.project_id || ""), project_secret: String(b.project_secret || ""), operator_phone: String(b.operator_phone || ""), assigned_phone: String(b.assigned_phone || "") }) }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
+    if (p === "/api/connectors/photon/setup" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      try { return json(res, 202, { photon: await startPhotonSetup(String(b.operator_phone || "")) }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
+    if (p === "/api/connectors/photon/setup" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, { photon: photonSetupStatus() });
+    }
+    if (p === "/api/connectors/photon/map" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      try { return json(res, 200, { photon: mapPhotonChannel(Number(b.channel_id), Array.isArray(b.allowed_users) ? b.allowed_users.map(String) : undefined) }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
     if (p === "/api/thread-audit/run" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       return json(res, 200, await runThreadAuditPass());
+    }
+    if (p === "/api/workflows" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const channelId = Number(url.searchParams.get("channel_id") || 0);
+      return json(res, 200, { workflows: listWorkflows(channelId || undefined) });
+    }
+    if (p === "/api/workflows" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      try { return json(res, 201, { workflow: createWorkflow({ channelId: Number(b.channel_id), name: String(b.name || ""), prompt: String(b.prompt || ""), intervalSeconds: Number(b.interval_seconds), startInSeconds: b.start_in_seconds == null ? undefined : Number(b.start_in_seconds), maxRuns: Number(b.max_runs || 0) }) }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
+    const workflowRoute = p.match(/^\/api\/workflows\/(\d+)$/);
+    if (workflowRoute && m === "PATCH") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      if (!["active", "paused", "complete"].includes(String(b.status))) return json(res, 400, { error: "Use active, paused, or complete." });
+      try { return json(res, 200, { workflow: setWorkflowStatus(Number(workflowRoute[1]), Number(b.channel_id), String(b.status) as "active" | "paused" | "complete") }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
     }
     if (p === "/api/domains" && m === "GET") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
@@ -1663,6 +1748,8 @@ server.on("upgrade", (req, socket: Socket, head) => {
 
 // ---- embedded local computer (open-terminal compatible) ----
 async function bootstrap(): Promise<void> {
+  registerPhotonDispatcher((bot, channelId, triggerId, threadRootId) => runBot(bot, channelId, triggerId, threadRootId, true));
+  registerWorkflowDispatcher((bot, channelId, triggerId, threadRootId) => runBot(bot, channelId, triggerId, threadRootId, true));
   reactivateComputersAfterPreparedRemoval();
   prepareMnemosyneRuntime();
   await startRoutingEngine((activity) => broadcastAdmins({ type: "routing_activity", activity }));
@@ -1686,9 +1773,11 @@ async function bootstrap(): Promise<void> {
   startImprovementLoop();
   startThreadAuditLoop();
   startFollowupLoop();
+  startWorkflowLoop();
   startChannelComputerReconciler();
   startCollaborationConnector(PORT);
   startCustomDomainConnectors(PORT);
+  await startPhotonConnector().catch((error) => console.warn(`1Helm Photon connector is not ready: ${(error as Error).message}`));
   server.listen(PORT, HOST, () => {
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : PORT;
@@ -1703,6 +1792,8 @@ const shutdown = async (): Promise<void> => {
   shuttingDown = true;
   await stopRoutingEngine().catch(() => undefined);
   stopAllConnectors();
+  await stopPhotonConnector().catch(() => undefined);
+  stopWorkflowLoop();
   await shutdownChannelComputers().catch(() => undefined);
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 12_000).unref();

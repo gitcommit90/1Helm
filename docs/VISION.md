@@ -1,326 +1,83 @@
-# 1Helm Vision & Build Record
-
-This is the living product record for 1Helm. Add confirmed decisions, deployment findings, and completed slices here as the product evolves.
-
-## Local-first collaboration and headless workspace access (2026-07-22)
-
-Collaboration exposes the existing installed workspace; it does not introduce a
-hosted copy. The Mac app remains the only server and continues running its
-loopback web control plane after the window closes. An opted-in Captain reserves
-one unique `workspace.1helm.com` hostname. A locally managed Cloudflare Tunnel
-routes that exact hostname to the app's current ephemeral loopback port. Sleep,
-shutdown, loss of power, or loss of connectivity makes the workspace unavailable
-by design.
-
-Slug reservation and provisioning are owned by a small Cloudflare Worker with a
-D1 uniqueness registry and a 1,000-workspace beta admission limit. The Worker
-creates the exact DNS record and tunnel atomically, returns only that workspace's
-connector credential, authenticates later enable/disable calls with an
-installation-specific management secret, and removes partial resources when a
-claim fails. The signed app bundles a pinned arm64 Cloudflared connector; global
-Cloudflare credentials do not enter the app bundle or Application Support.
-
-Coworker access is request/approval based. Settings → Members controls whether
-requests are accepted and lets the Captain approve or deny them. Accepted people
-create a local workspace account and initially see only `Collab`: a people-only
-holding channel with no agent, bot, VM, workspace, memory, or terminal. Access to
-an agent channel is granted only when the Captain tags the coworker in that
-channel and confirms `Add @user`. Membership scopes REST responses, Files,
-terminals, messages, and WebSocket fan-out on the server.
-
-The production provisioner was deployed at `provision.1helm.com` with its D1
-registry. A disposable real claim created a tunnel and exact DNS record, connected
-a local HTTP service through Cloudflare, and returned the marker from the public
-workspace URL. The disposable connector, DNS record, tunnel, and registry row
-were removed after verification.
-
-## Parity hardening — provider fabric 1.1.1 (2026-07-21)
-
-The post-1.1 audit exercised the provider fabric as a control plane rather than accepting only the original happy path. The resulting contracts are now explicit:
-
-- **Internal access is independent:** resident agents use a durable private embedded-gateway credential. It is absent from routine provider state, Endpoint credentials, and key-mutation responses. Disabling or revoking every external client key leaves Skipper and resident agents online; restart preserves the separation.
-- **One authoritative catalog:** 1Helm's agent/model pickers consume the same router catalog as `/v1/models`, including shared fill-first model IDs for same-provider accounts and named routes.
-- **Stable model controls:** individual toggles and All on / All off update in place. Provider groups and account editors remain expanded instead of closing after every mutation.
-- **Tested keyed connections:** Connect is disabled until the exact visible name, endpoint, account ID, key, and optional model have passed a current test. Field edits invalidate stale results; overlapping tests are sequenced; Connect is single-flight; failures restore controls; exact-model validation works when `/models` is unavailable.
-- **Parity contract:** the disposable integration suite now covers all four OAuth start/status/cancel paths, source and model enable/add/remove operations, route create/edit/delete, real upstream fallback and round-robin rotation, multi-account shared catalog behavior, external key create/disable/revoke, quota read/refresh, redacted/clearable logs, bind mutation/restoration, permissions, non-HTTP migration exclusion, migration idempotence, credential persistence, and real resident-agent turns across key shutdown and process restart. Browser assertions cover the no-collapse interaction and keyed-form safety.
-
-- **Shipped and live:** PR #13 merged as `a0faf609dd338be5a72cd0767965a614ca4a93a2`; GitHub Actions passed on that exact merge. `1herd-refactored.service` restarted from the clean merged tree while preserving `/root/1Helm/data-refactored`, including the database and routing-config inodes. A recoverable pre-restart snapshot remains under the ignored `.deploy-backups/1.1.1-pre-restart-20260721T005906Z/` directory.
-- **Final verification:** the disposable production clone passed 18/18 real agent/browser checks. Public `https://demo.1helm.com` returned health from the embedded engine, rejected no-key model discovery with 401, exposed 168 authenticated models, and completed Chat Completions, Responses, Anthropic Messages, token counting, and a real Skipper turn through `Hermes` with Activity attribution. Live desktop/mobile Chromium reproduced individual and bulk model mutations without collapsing either interface, confirmed no horizontal overflow or product browser errors, hid the private key from Endpoint, and restored every temporary model flag to its original value.
-
-## Slice — Unified provider fabric inside 1Helm (2026-07-20)
-
-1Helm's simple one-base-URL/one-key Providers form has become a native multi-account routing control plane backed by the version-pinned ReRouted headless engine.
-
-- **One source of truth:** OAuth accounts, API keys, enabled models, named routes, gateway keys, usage, quota, and routing logs live in the 1Helm-owned `CTRL_DATA_DIR/routing` tree. ReRouted's Electron/dashboard UI is not embedded.
-- **Accounts:** ChatGPT, Claude, Antigravity, and xAI OAuth; OpenRouter, NVIDIA NIM, Cloudflare, GLM, and custom OpenAI-compatible keys; multiple accounts per provider with stable account pools.
-- **Routes:** provider/model fallback and round-robin routes. Standard providers exhaust eligible same-provider accounts before advancing; custom endpoints remain connection-specific.
-- **Inside + outside:** the same connected direct models and named routes power Skipper, residents, channel/thread model selection, and external clients through 1Helm's authenticated `/v1` gateway.
-- **Operations:** local request/token history, account attribution, supported subscription quota windows, redacted logs, and revocable gateway keys are first-class 1Helm screens under Settings → Providers.
-- **Migration:** legacy provider rows are imported only when their endpoint is routable, existing model names become compatibility routes, and resident policies move to the one internal router without changing agent identity, memory, files, or threads.
-- **Verification:** focused integration coverage starts a real 1Helm server + embedded engine + mock upstream, exercises OAuth initiation/cancellation, keyed discovery, route creation, gateway authentication/completion, usage recording, credential redaction, legacy assignment migration, and engine-owned persistence. A disposable production-data clone also completed a real external request and a real resident-agent turn through the same migrated compatibility route, with both recorded in Activity. Desktop and 390 px Chromium checks cover Sources, Routes/editor, Activity, Quota, Logs, and Endpoint with no browser errors or horizontal overflow; long route IDs wrap without widening the mobile content rail.
-- **Shipped and live:** 1Helm `1.1.0` merged through PR #10 at `87085a9`; the final work-log stability follow-up merged through PR #11 at `579936f`. GitHub Actions passed on both exact `main` commits. `1herd-refactored.service` was restarted from `579936f` with `CTRL_DATA_DIR=/root/1Helm/data-refactored` preserved. Public verification at `https://demo.1helm.com` confirmed no-key `/v1/models` rejection, keyed model discovery, Chat Completions, Responses, Anthropic Messages and token counting, one real resident-agent turn through the migrated `Hermes` route, Activity attribution, and live desktop/mobile Providers rendering without product browser errors or horizontal overflow. A recoverable pre-restart database + routing snapshot is retained under the ignored local `.deploy-backups/` tree.
-
-## Slice — Channel open lands on latest messages (2026-07-20)
-
-Clicking a channel (or opening a thread) left the chat scroller at the **oldest** messages; users had to scroll to the bottom every hop.
-
-- **Cause:** fresh `#msgs` / shell rebuilds started at `scrollTop=0`; near-bottom stick failed before flex layout settled; leftover work-log open state from another channel blocked stick.
-- **Fix (client only):** one-shot force-bottom on `openChannel` / `openThread`, clear work-log open map on hop, carry scroll across `renderMain` rebuilds, re-pin after layout frames.
-- Verified: `npm run typecheck` + `npm run build` (stamped bundle). Client-only — no server restart.
-
-## Slice — Activity as ops log + Skipper background visibility (2026-07-20)
-
-Activity was a flat dump of every tool tick + agent_status flip, so Skipper's background loops (thread audit ~10m, improvement reviews ~1h, skills, hand-backs) were unreadable or invisible when quiet.
-
-- **UI:** per-channel Activity is now sectioned — **Skipper · background**, **Work · tools & escalations**, **System · lifecycle** — with All/Skipper/Work/System filters, human kind/actor labels, and quiet-check styling. Subtitle clarifies Activity is the ops log, not chat.
-- **Server:** every thread-audit pass writes a `#main` breadcrumb (including zero candidates and "looked, no changes"). Full improvement passes write the same on `#main` (quiet when no durable guidance); single-agent `scheduleAgentReview` only logs when it actually improves.
-- Status `quiet` means Skipper ran and left things alone. Per-channel change rows still appear on the channel that moved.
-- Verified: `npm run typecheck` + build, `npm run test:thread-audit` 15/15, forced audit/improvement against live demo DB produced quiet + complete rows on `#main`.
-
-## Slice — Docked terminal + profile view state (2026-07-20)
-
-Header **Terminals** no longer opens a computer-choice modal or forces the full Terminal tab.
-
-- Click = docked RHS panel for the **current channel** (same spatial idea as opening a thread).
-- Thread already open → RHS vertical split: thread top half, terminal bottom half.
-- **Servers** button appears in the terminal chrome only when more than one computer is configured; toggles an in-panel computer list vs **Return to Terminal** (no modal).
-- Per-channel layout (`terminalOpen`, `serversListOpen`, `preferredComputerId`, `threadRootId`) is saved on the **user profile** via `user_ui_state` / `GET|PATCH /api/me/ui-state` — not browser cache. Channel hops restore that channel’s docks.
-
-## Slice — Durable agent follow-ups (2026-07-20)
-
-Agents used to promise later updates ("I'll message when Downloaded") and then go silent: a turn ends when the model stops, and prose is not a background job. Skipper's ~10m thread-status audit only flips Board status; it does not re-run the resident.
-
-- New tool: **`schedule_followup`** (channel residents, home channel only) — durable `agent_followups` row with `due_at`, reason, optional check hint, attempt budget.
-- Server loop (`src/server/followups.ts`, started with improvement + thread-audit) claims due rows, posts a wake trigger on the same thread, and `runBot`s the resident. Survives process restart.
-- System prompt rule: never promise a later update without a successful `schedule_followup` in that turn.
-- `#jellyfin-requests` skill updated: schedule while grabbing; user-facing replies stay **Downloaded** / **Blocked**.
-- Verified in `test/native-world.mjs` (mock forces the tool; asserts pending DB row).
-
-### Board — Scheduled lane + live countdown
-
-Pending wakes are a first-class Board swim lane (**Scheduled**), not a human-editable status:
-
-- Threads API attaches `followup: { id, due_at, reason, attempts, max_attempts, status }` from the next pending `agent_followups` row.
-- Board places those cards **only** in Scheduled (exclusive of Open/Waiting) sorted by soonest `due_at`.
-- Cards show a **live countdown** (`h m s` / `due now`) from real `due_at` (1s ticker while Board/Threads is open), plus reason + attempt budget.
-- WS `followup` events refresh Board/Threads when a wake is scheduled or cleared.
-- **Check now** on Scheduled cards: `POST /api/threads/:id/check-now` sets `due_at=now` and runs the same wake path as the timer (countdown → 0, agent re-invoked).
-
-## Slice — Skipper ↔ resident hand-back (2026-07-20)
-
-Resident agents could already escalate with `call_skipper`, but Skipper had no symmetric way to re-invoke the resident after unblocking work (credentials, host ops). Models fell back to prose `@mentions`, which **do not** launch agent turns (only human-authored mentions and tools do). That left the Captain finishing the loop.
-
-- New Skipper tool: **`call_agent`** — re-invokes this channel's resident (or invites another specialist) on the same thread with a concrete handoff reason. Always available to Skipper (not host-gated).
-- Prompt contract: help → hand back → step out; do not absorb resident reply-style prefs.
-- Verified in `test/native-world.mjs` (mock provider forces `call_agent`, asserts resident reply after handoff).
-
-## Slice — Skipper thread-status audit (2026-07-20)
-
-Skipper now owns a workspace-wide **thread status audit** loop (~every 10 minutes, overridable via `THREAD_AUDIT_INTERVAL_MS`):
-
-- Candidates: durable threads in active channels still `open` / `waiting` / `failed`, idle for at least `THREAD_AUDIT_MIN_IDLE_MS` (default 2m), with no running tool/agent turn.
-- Judgment: Skipper model reads each thread's rolling summary + recent messages + tool journal and returns structured status decisions. Conservative heuristics run if the model is unavailable.
-- Writes: only clear moves (`resolved` / `waiting` / `failed` / reopen `open`); ambiguous work stays put. Resolving a thread drops its guest experts and records `thread_audit` activity + WS `thread_update` so Board/Threads refresh live.
-- Captain can force a pass with `POST /api/thread-audit/run` (admin only). Background loop starts with the server alongside the existing improvement loop.
-- Verified with focused `npm run test:thread-audit` (mock provider decisions + activity/status assertions).
-
-## Direction update — 1Helm native agent workspace (2026-07-18)
-
-The product direction sharpened from "a chat app with configurable bots" into **1Helm**, the native agent workspace defined in `SPEC.md`. **1Helm is now the installed host/environment; 1Helm is the product that runs on it.** The one-sentence promise: *create a channel for anything, and it receives a persistent agent, a computer workspace, files, memory, and threads.*
-
-This supersedes the earlier framing where "channels are not apps by default" and app-catalog/Uptime-Kuma work led the roadmap. The invariant model is now first-class:
-
-- **Captain** — first user; workspace owner and final authority.
-- **Skipper** — exactly one workspace-wide, root-capable chief of staff; lives in `#main`; the deliberate exception/escalation path.
-- **Channel agent** — exactly one resident specialist per ordinary channel, bound immutably.
-- **Participation boundary** — the normal channel is Skipper plus its resident specialist; other residents may be guests in one explicit thread without gaining channel workspace, memory, or ambient membership.
-- **Skills and improvement** — Skipper owns the workspace-wide skill arsenal, provisions permanent purpose-aware kits, accepts reusable agent skill proposals, and silently reviews interaction signals for durable behavior improvements.
-- **Memory** — every resident and Skipper has an isolated Mnemosyne database for long-term retrieval in addition to canonical 1Helm records.
-- **Thread** — a durable session with status + rolling summary.
-- **Workspace / Memory** — per-channel durable filesystem and provider-neutral knowledge that survive model/provider changes and restarts.
-
-### Slice — Channel Agent World (shipped in this branch)
-
-Implements SPEC §12 end-to-end. Key decisions:
-
-- **Additive migration, not a rewrite.** `agents`, `agent_channels` (UNIQUE both columns), `agent_profiles`, `agent_capabilities`, `channel_workspaces`, `threads`, `thread_summaries`, `memory_items`, `artifacts`, `tool_actions`, `escalations`, and `channel_activity` were added. Each channel agent keeps a shadow `bots` row so the existing streaming/tool/provider runtime, model routing, and message attribution keep working unchanged. A one-time migration reconciles **every ordinary channel** to the one-resident-agent invariant (clones a shared legacy bot per extra channel, provisions a fresh agent for bot-less channels) and promotes/creates the single Skipper.
-- **Atomic provisioning.** `POST /api/channels {name, purpose}` provisions the channel, resident agent, profile, capabilities, workspace tree (`workspace/ files/ state/ memory/ profile/`), ready announcement, initial thread/summary/memory, and activity record in one SQLite transaction; retry is idempotent and never yields duplicate residents.
-- **Channel-scoped execution.** Resident `run_command` is CWD-locked to the channel's `/workspace` on the embedded local computer; terminals open there too, are owner+channel scoped, and their upstream PTYs are torn down on close/archive/delete. Workspace boundary is process-level for now with the abstraction kept explicit so container/VM isolation can slot in later (SPEC §7.2).
-- **Durable sessions + memory.** Threads carry status/summary; agent context is assembled from profile + session summary + retrieved channel memory (framed as untrusted data with provenance) + artifact list + transcript. Continuity verified across model change and server restart.
-- **Skipper escalation.** `@skipper` (human) and the resident `call_skipper` tool both route the full authoritative thread to the one workspace Skipper, which acts and records the outcome in the same thread; host-tool authority is gated to Captain-authorized invocations. After unblocking, Skipper uses **`call_agent`** to re-invoke the resident with a handoff so the Captain never re-tags them.
-- **Lifecycle.** Archive pauses the agent world (cancels in-flight turns, closes terminals) while preserving everything; restore reuses the same identity/workspace/memory/threads without rewriting independently-set thread status; permanent deletion is Captain-only, requires the channel be archived + typed-name confirmation, uses a filesystem tombstone for crash-safety, and removes only the target world.
-- **Native UX.** Create-channel asks name + "What is this channel all about?"; the channel header shows resident identity/status/model + Call Skipper; per-channel Chat/Threads/Files/Terminal/Memory/Activity/Settings tabs; Settings exposes editable purpose, replaceable model policy, capabilities, and lifecycle. The normal path never asks for a directory, memory backend, terminal backend, or bot-channel membership; the old "add a bot and wire it in" flow is demoted to a read-mostly Agents roster. Files are opened over an authenticated fetch (no unauthenticated content route).
-- **Authorization hardening from adversarial review:** channel-scoped file/attachment authorization, symlink-escape containment via realpath, admin gating on bot-join / model-pref / terminal-open, and pre-auth PTY data-leak fix.
-
-### Verification — 2026-07-18 (locally verified, pending VPS cold deploy)
-
-- `npm run typecheck` and `npm run build` pass.
-- New `test/native-world.mjs` (`npm run test:native`) passes **29/29**, cold-starting the server, provisioning two channel worlds, and asserting every SPEC §12 criterion plus regressions (symlink-escape rejection, archive cancelling in-flight turns, PTY teardown, authenticated Files content, thread-status preservation) — including a real server restart and DB/filesystem invariant checks.
-- Legacy `test/pipeline.mjs` still passes **16/16** on the migrated schema.
-- Headless-Chromium end-to-end pass through the real UI: cold onboarding → create-channel with purpose → resident identity/status → thread work → Files (authenticated open returns file; unauthenticated is 401) → channel-scoped Terminal cwd → Memory with provenance → Activity → model change preserving identity → Call Skipper answering in the invoking thread → archive/restore/typed-name delete. No unexpected console/page errors.
-- **Not yet done:** VPS cold-deploy confirmation (standing fresh-wipe rule still applies), and stronger per-channel container/VM isolation (SPEC Phase 5).
-- **Shipped to GitHub — 2026-07-18:** committed the native 1Helm Channel Agent World as `0513222` (`feat: native 1Helm channel-agent workspace (SPEC.md slice)`), pushed branch `worktree-1helm-native-spec`, and opened [draft PR #7](https://github.com/gitcommit90/1Helm/pull/7). The branch includes the specification, implementation, migration, verification skill, 29-case native acceptance test, adversarial-review fixes, and the successful real-browser evidence described above.
-- **Completeness pass — 2026-07-18:** a final ultracode completeness audit (3 independent critics + synthesis) flagged where the legacy configurable-bot model still leaked into the user-visible product. All major/minor gaps were fixed in `f068c6c` and re-verified: (1) channel-agent `call_skipper` escalation now authorizes Skipper host tools (SPEC §6.3 primary scenario, previously untested/broken — new test case); (2) removed the user-facing add-bot-to-channel toast/join action and refused resident-agent joins; (3) replaced the per-bot Global/Channel/Thread model-routing popover with a native single-agent Session-model control; (4) rewrote README + package.json + settings copy to 1Helm language (1Helm = installed host); (5) workspace-scope memory is now retrievable across channels; (6) boot crash-recovery resets agents stuck `working` and sweeps empty placeholder turn messages (new SIGKILL test case); (7) restore preserves a legitimately waiting/failed agent's status. Final gates: typecheck + build clean, `npm run test:native` **32/32** (added escalation + crash-recovery cases), legacy `test/pipeline.mjs` 16/16, headless-Chromium end-to-end pass.
-
-
-## Vision
-
-**1Helm** productizes self-hosting. It gives someone who owns a computer or VPS a conversational control plane instead of requiring them to learn terminals, SSH, reverse proxies, Docker, and scattered SaaS dashboards.
-
-## Native macOS host — 2026-07-21
-
-The Apple Silicon macOS app is the consumer installation path for the same
-on-box product, not a shell around the hosted demo. The app starts the native
-1Helm control plane and Skipper on loopback. Every ordinary channel receives a
-separate persistent Apple `container machine`: agent shell tools and the human
-Terminal execute inside that channel's Linux VM, while **This Computer** is
-reserved for Captain-authorized Skipper work on the native Mac.
-
-Channel machines always use `home-mount=none` and an explicit automatic CPU/RAM
-policy. Their Linux disks are canonical and survive stop/start; a narrow
-streamed workspace bridge supports Files, uploads, backups, and portability
-without mounting the Captain's home. Native scheduled obligations wake stopped
-machines. Guest services, cron, systemd timers, background work, active turns,
-and terminals keep them running; if quiescence cannot be proved, Skipper does
-not stop the machine. Resizing is drain, sync, stop, configure, start, verify,
-resume—not imaginary process hibernation.
-
-Skipper also applies unattended Linux package updates only while a machine is
-quiescent, retries transient failures later, restarts when the guest requires
-it, and verifies the same no-home-mount security boundary afterward.
-
-Databases, provider credentials, host-side mirrors, files, and memory persist
-under `~/Library/Application Support/1Helm` and are never stored inside the
-replaceable signed app bundle. The app remains a native background scheduler
-when its window closes and launches at login so due work can wake its computer.
-
-The desktop window keeps Node integration disabled, uses context isolation and
-renderer sandboxing, denies runtime permission requests, and sends ordinary
-external links to the system browser. Distribution is a Developer ID signed,
-Apple-notarized, stapled arm64 app inside a signed/notarized/stapled DMG with an
-Applications shortcut. The stable bundle identifier is
-`com.gitcommit90.1helm`.
-
-The workspace is Slack-like, but channels are operational objects:
-
-- People can create unlimited ordinary channels.
-- Each deployed app gets a dedicated channel and a dedicated agent.
-- App agents are scoped by their session/context so an app channel can focus on its own service.
-- `@skipper` in `#main` is the chief of staff: the workspace-level assistant that coordinates the system.
-
-The first compelling demo is simple: ask the workspace to make something useful, then open the resulting service from another device.
-
-## Product decisions
-
-- **Distribution, for now:** fully OSS and self-hosted. Apple Silicon Mac users install the native app; Linux/PC/VPS deployments use the source runtime until native installers exist for those platforms.
-- **State:** chat and workspace state live on the user's machine in local SQLite.
-- **AI:** users bring a provider: an OpenAI-compatible base URL/key, OpenRouter OAuth, or Login with ChatGPT. OpenRouter free models should be chosen automatically during onboarding rather than forcing a beginner to choose a model name.
-- **Terminals:** optional. Users can turn the terminal workspace on during onboarding; it remains hidden unless enabled.
-- **Channels (updated 2026-07-18):** every ordinary channel is an agent channel by default — it receives one resident agent, workspace, files, memory, and threads at creation (see the 1Helm direction update above). Apps remain a future capability that attach to the channel-agent model rather than a separate configuration surface.
-- **Isolation:** one Apple `container machine` VM per ordinary channel in the macOS product, with `home-mount=none`. Non-macOS source/CI deployments expose an explicit compatibility backend and must not claim VM isolation.
-- **Authority:** 1Helm defines agent capabilities through available tools. There is no separate refusal-policy layer in this phase.
-- **First reference app:** Uptime Kuma, chosen instead of Jellyfin because it fits the current 2 GB demo VPS and exercises deploy, health, dashboard, and alert workflows.
-- **Hosted product:** a managed VPS/control-plane offering remains a future layer; this repository is the on-box workspace runtime.
-
-## Current architecture
-
-The starting codebase is a compact Node/TypeScript application:
-
-- Server: Node HTTP + WebSocket, direct TypeScript execution, SQLite via `node:sqlite`.
-- Client: vanilla TypeScript bundled by esbuild with Tailwind CSS.
-- Terminals: `node-pty` spawning Apple `container machine run -it` for ordinary channels; the embedded Open-Terminal-compatible endpoint remains Skipper's native-host path.
-- AI: reusable providers, bots, thread/channel model routing, and bot-to-computer command access.
-- macOS host: a sandboxed Electron window boots the native Skipper/control plane on loopback, keeps scheduling alive in the background, and manages a persistent Linux VM fleet with durable state in Application Support.
-
-Development happens on the primary development machine. The private source repository is [`gitcommit90/1Helm`](https://github.com/gitcommit90/1Helm). The isolated fresh-user sandbox is the Hetzner VPS accessed with `ssh demo1helm`, publicly reachable at `http://167.233.229.141:8123` during early HTTP-only development.
-
-### VPS deploy rule (standing order)
-The demo VPS is a **fresh-user sandbox**. Every deploy/update there is a cold first-run by default:
-
-1. Pull the target branch
-2. Wipe `/root/1helm/data`
-3. Rebuild and restart
-4. Confirm `/api/setup/status` reports `needs_setup: true` with no users/providers
-
-Preserve VPS state only when the product owner explicitly says so. Use `scripts/deploy-vps-fresh.sh`.
-
-## Cold-install baseline — 2026-07-10
-
-The first fresh VPS install established the gap between a developer checkout and a consumer install:
-
-1. Ubuntu 26.04 did not include Node/npm or Docker.
-2. The Hetzner Ubuntu package mirror timed out while fetching dependencies; switching to Ubuntu's archive mirror allowed installation.
-3. Ubuntu's Node 22 package was built without TypeScript stripping, so `node src/server/index.ts` failed with `ERR_NO_TYPESCRIPT`.
-4. The official Node 22 binary from nodejs.org worked.
-5. Plain `npm install` attempted Puppeteer's Chrome download and failed without `unzip`; `PUPPETEER_SKIP_DOWNLOAD=1 npm install` succeeded.
-6. A global `upgrade-insecure-requests` CSP made browsers rewrite HTTP JS/CSS asset requests to HTTPS, resulting in a blank page. This was fixed in PR #1 by removing the unconditional HTTPS-upgrade policy.
-7. The private GitHub repo needs a read-only deploy key on the test VPS.
-
-These findings are inputs to a future `install.sh`, not user-facing requirements.
-
-## Slice status
-
-### Slice 0 — baseline and reachability
-
-- Private `gitcommit90/1Helm` repository created.
-- Fresh VPS cloned and started with official Node 22.
-- Plain-HTTP asset loading repaired in PR #1.
-
-### Slice 1 — 1Helm front door
-
-- User-facing rename from CTRL PANE to 1Helm.
-- First-run setup wizard: account, AI provider, terminal preference, workspace name.
-- `#main` and a preconfigured `@skipper` welcome message.
-- Wizard UX repair (`b7bdcaf`): scroll-safe layout, tested custom-provider model selection, async click locks.
-- Visual redesign (quiet monochrome): no gradients, no purple/green provider badges, centered single-column surface, thin progress bar, neutral marks for OpenRouter/ChatGPT/API.
-- Standing VPS rule: always redeploy as a wiped first-run unless told to preserve state.
-- **Confirmed public cold-install deployment — 2026-07-10:** deployed `worktree-fix-http-assets` at commit `3fec1d3` to `http://167.233.229.141:8123` using `scripts/deploy-vps-fresh.sh`. The wipe was verified from the public endpoint: `needs_setup: true`, `has_users: false`, `setup_complete: false`, and `provider_count: 0`. This URL must open at **Create the owner account** until someone completes the wizard.
-- **Product-record operating rule:** before reporting any completed implementation, verification, VPS deployment, or material product decision, update this document with the confirmed result. The record update is part of completing the work, not a later cleanup task.
-- **README rewrite — 2026-07-10:** `README.md` now leads with the 1Helm product vision (self-hosting control plane, channels as operational objects, `@skipper` as chief of staff), current shipped surface, honest not-yet-shipped list, cold-install notes, and the VPS fresh-deploy rule. The completed scan found no remaining `CTRL PANE`, `CTRL-PANE`, `Slack clone`, or `agent cockpit` framing in the README.
-- **Ship rule — 2026-07-10:** local work is not delivered until it is committed and pushed to the private GitHub branch/PR (`worktree-fix-http-assets` / PR #1). Reporting local file edits as “done” without push is a process failure; finish means GitHub reflects the result.
-- **README/product-record shipped — 2026-07-10:** committed and pushed the README rewrite, public fresh-deploy record, and asset-stamp update as `c3d75e4` (`docs: align README with 1Helm vision`) to [draft PR #1](https://github.com/gitcommit90/1Helm/pull/1). The follow-up product-record commit carries this shipping confirmation.
-- **Release-state resolved — 2026-07-10:** PR #1 was marked ready and merged into `main` as merge commit `4887e0d`. GitHub’s default branch now contains the 1Helm product vision, README, onboarding, fresh-deploy rule, and product record.
-
-- **Public README hygiene — 2026-07-10:** removed the Demo VPS / sandbox / private-deploy section from `README.md`. Public-facing docs must not publish private VPS hostnames, IPs, SSH aliases, or internal wipe/deploy procedure. Those stay in this product record and operator tooling only.
-- **VPS state check — 2026-07-10:** the public sandbox was found **not fresh**: direct `GET /api/setup/status` reported `needs_setup: false`, `has_users: true`, `setup_complete: true`, workspace `1HelmDemo`, `terminals_enabled: true`, and `provider_count: 1`. It retained a completed workspace and existing login/session state.
-- **Confirmed cold redeploy — 2026-07-10:** after an explicit owner request, deployed `main` with `scripts/deploy-vps-fresh.sh`, discarding only a generated `public/index.html` stamp that had blocked the VPS branch checkout. The live public endpoint now reports `needs_setup: true`, `has_users: false`, `setup_complete: false`, and `provider_count: 0`; title is `1Helm`, and index/CSS/JS each return HTTP 200. This is a real fresh first-run until someone completes onboarding.
-- **Visual identity overhaul — 2026-07-10 (locally verified):** replaced the generic AI/Slack-clone surface with a graphite and teal precision-instrument system across the workspace, Settings, terminal chrome, sign-in, and four-step first-run wizard. The user-supplied transparent PNG logo is now the browser favicon and the real 1Helm mark in auth, sidebar, and onboarding. The old purple numeral tile, Slack-purple sidebar, robot-emoji/gradient bots, rainbow identity palette, and OR/GPT text tiles are removed; bots now use a helm-derived agent mark and providers use icon marks. `npm run typecheck`, `npm run build`, and a separate cold `CTRL_DATA_DIR` browser smoke test passed: logo/CSS/JS all returned HTTP 200 and `/api/setup/status` reported a pristine first-run (`needs_setup: true`, no users/providers). Pending ship: commit, push, merge, wiped VPS reinstall, and public cold-install confirmation.
-- **End-to-end visual verification — 2026-07-10:** a newly wiped local data directory was exercised in Chromium from the real first-run surface through all four onboarding stages. A mock OpenAI-compatible endpoint returned two models; the selected provider was saved, terminal access was enabled, and workspace completion rendered `#main` with the new logo, `AGENT` chip, teal token system, and `@skipper` welcome. The interactive check then posted a message, toggled light/dark, opened Settings (including the saved provider/models), and mounted the live terminal. `/`, `/app.css`, `/bundle.js`, and `/brand/1helm.png` each returned HTTP 200; the browser emitted no console or page errors. The same server was first confirmed cold with no users or providers.
-- **Confirmed visual cold deployment — 2026-07-10:** merged the visual identity overhaul in PR #2 (merge commit `d93fa30`) and redeployed `main` with a forced cold restart. The public endpoint at `http://167.233.229.141:8123` now reports `needs_setup: true`, `has_users: false`, `setup_complete: false`, and `provider_count: 0` on commit `4b9e399`. A public Chromium session rendered **Create the owner account** with title `1Helm`, the new `/brand/1helm.png` mark (`image/png`), no legacy CTRL PANE / Slack-clone copy, no purple numeral tile, and no console/page errors. `/`, `/app.css`, `/bundle.js`, and `/brand/1helm.png` each returned HTTP 200.
-- **Fresh-deploy restart fix — 2026-07-10:** the previous `scripts/deploy-vps-fresh.sh` stop step only pidfile-killed and then `pkill`ed an absolute `$REMOTE_DIR/src/server/index.ts` path. Node’s argv is relative (`src/server/index.ts`), so an old completed-workspace process could keep port `8123` and answer `/api/setup/status` after the data wipe. The helper now hard-stops the listener on port `8123` and refuses to continue if the port remains occupied. PR #4 merged this repair as `f0b4cfe`; the fixed helper was then run against `main`, restarting the listener and yielding a final public verification of `needs_setup: true`, no users/providers, correct 200 assets, and the real first-run browser surface.
-
-### Next slices
-
-1. Native installers for the remaining desktop platforms and managed service startup for headless hosts.
-2. App catalog and deployment lifecycle.
-3. Uptime Kuma as the first app/channel integration.
-4. HTTPS/tunnel and public route story.
-
-## Known constraints
-
-- **OpenRouter OAuth needs a secure browser context.** It works on `localhost` and HTTPS deployments. It cannot complete on the current plain `http://VPS-IP` test URL because Web Crypto is unavailable there. The fresh-VPS test can use an OpenAI-compatible provider or Login with ChatGPT until TLS/tunnel support exists.
-- The current 2 GB VPS is appropriate for 1Helm and lightweight services; it is not a good Jellyfin/transcoding target.
-- `@skipper` will not claim app deployment abilities until the app catalog/tools exist. Its first welcome should be honest about the current feature set and the direction of travel.
-
-## Repository governance — 2026-07-19
-
-Formal maintainer process is defined in-repo:
-
-- `docs/GOVERNANCE.md` — authority, branch model, quality bar, naming (`1Helm` vs local `ctrl-pane`)
-- `docs/release-lifecycle.md` + `docs/release-checklist.md` — PR → CI → version → deploy verify
-- `CHANGELOG.md` — Keep a Changelog
-- GitHub Actions workflow `.github/workflows/ci.yml` on `main` and PRs
-- Draft feature work (native 1Herd on `worktree-1herd-native-spec`) stays off `main` until its own verification bar is met; it must still follow the same PR template and changelog discipline when merged
-
-Standing order unchanged: demo VPS is cold-first-run unless the product owner preserves state explicitly.
-
-## Board (Kanban) — visual Threads surface (2026-07-20)
-
-Product decision from operator feedback: add a per-channel **Board** tab between **Chat** and **Threads**.
-
-- Board is **only a visualization** of existing channel threads (`GET /api/channels/:id/threads`). No new domain object, no parallel status store.
-- Lanes: **Incoming** (compose-only, not a DB status) → **Open** → **Waiting** → **Resolved** → **Failed** → **Archived**.
-- Humans **cannot** drag cards or set status. Status remains system/agent-driven; Threads tab stays display-only path UI.
-- Incoming **New** opens a mobile-sheet composer and `POST`s a normal root message (same as Chat). That creates/ensures a thread at `open`, then opens the session.
-- Card click opens the thread in Chat (same continuity as the Threads list).
-- Implementation: `renderBoard` / `openBoardComposer` in `src/client/channel.ts`; tab + route `"board"` in `src/client/app.ts`; lane styles in `src/client/styles.css`.
+# 1Helm product vision
+
+1Helm gives an AI employee a place to work, not merely a chat box in which to
+describe work. Every ordinary channel owns exactly one resident identity, one
+durable workspace, one memory namespace, and—on supported Apple Silicon
+Macs—one persistent private Linux computer. The human is the Captain. Skipper
+is the workspace-wide operator for host, fleet, credentials, connections, and
+cross-channel boundaries.
+
+## The outcome contract
+
+A resident owns the user's requested outcome. Routine inspection, research,
+downloads, package installation, configuration, commands, retries, file work,
+and reversible implementation choices happen autonomously inside its computer.
+It does not turn executable work into a tutorial for the user.
+
+When work crosses the channel boundary, the resident calls Skipper directly.
+Skipper performs the boundary operation and returns the same thread to the
+resident, which verifies the original end-to-end outcome. The Captain is
+involved only for consequential human judgment, credentials that only they can
+provide, external authority, or an irreversible commitment.
+
+If work depends on time passing, it becomes a persisted obligation. 1Helm does
+not equate a model ending a turn with background execution. Follow-ups and
+recurring workflows have due times, retry state, computer wake obligations,
+and observable completion or failure.
+
+## Durable growth
+
+Residents start with a substantive safe operational arsenal selected by task,
+not a handful of generic prompt snippets. Skills define activation, execution,
+authority boundaries, recovery, retained state, and verification. Trusted
+external procedures may be discovered and installed automatically only through
+bounded, provenance-pinned, scanned, hashed ingestion beneath runtime policy.
+Community popularity is not trust.
+
+When a resident completes a repeatable workflow that the arsenal does not
+cover, it can crystallize the proven procedure with concrete evidence. Generic
+advice, unverified guesses, secrets, incident-specific personal data, and
+instructions that weaken the runtime are rejected. Corrections, curated memory,
+skills, artifacts, and obligations compound without binding the identity to one
+model provider.
+
+## Computer and connection boundaries
+
+On supported Macs, each resident computer is a real Apple container machine
+with the Mac home directory unmounted. The resident's command tools and the
+channel Terminal share the same `/workspace`. Skipper manages CPU, memory,
+disk, wake/sleep, repair, update, archive, restore, and deletion safety.
+
+Provider accounts and native connections remain host-owned brokers. Residents
+receive narrow operations, never raw OAuth tokens, Photon project secrets, or a
+private host database. Gmail currently supports scoped account listing, search,
+message retrieval, and draft creation. Photon/iMessage currently treats text
+as the reliable contract; richer attachment fidelity remains under
+verification.
+
+## Product truth
+
+- `https://1helm.com` is the standalone product and documentation site.
+- `https://demo.1helm.com` is a separate public sandbox, not the product site
+  and not a dependency of an installed workspace.
+- The native consumer product targets Apple Silicon macOS and provides one
+  isolated Linux computer per ordinary resident.
+- Linux and Windows + WSL run a durable systemd compatibility deployment today.
+  They do not yet claim per-resident VM isolation or native desktop packaging.
+- 1Helm is self-hosted and open source. A hosted control plane, mobile clients,
+  blind community-skill execution, and native Windows/Linux desktop apps are
+  not shipped.
+
+## What 1Helm borrows—and what it does not
+
+Hermes demonstrates the value of a capable built-in skill library and agents
+that act before escalating. Buzz demonstrates the value of honest capability
+matrices, screenshot-led explanation, agent-first JSON interfaces, first-class
+workflows, auditable operations, and public benchmarks. 1Helm adopts those
+durability patterns where they strengthen outcome ownership.
+
+1Helm does not adopt a protocol, event model, media feature, or git substrate
+merely for parity. Its core bet is the compounding resident world: one identity,
+one private computer, one workspace, and years of accumulated memory, skills,
+corrections, artifacts, and obligations—with Skipper automatically handling
+every boundary.
