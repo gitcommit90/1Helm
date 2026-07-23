@@ -7,6 +7,10 @@ const sse = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
 createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
+  if (url.pathname === "/update-manifest") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ version: process.env.MOCK_UPDATE_VERSION || "9.9.9" }));
+  }
   if (url.pathname.startsWith("/no-auth/") && req.headers.authorization) {
     res.writeHead(400, { "content-type": "application/json" });
     return res.end(JSON.stringify({ error: { message: "Authorization must be absent" } }));
@@ -48,6 +52,10 @@ createServer(async (req, res) => {
       && /You are @\S+-agent/.test(serialized);
     const wantsAskUser = reqBody.tools?.some((tool) => tool.function?.name === "ask_user")
       && /structured interview|ask me structured|multiple choice/i.test(latestUser)
+      && !hasToolResult;
+    const wantsAutonomousInstall = reqBody.tools?.some((tool) => tool.function?.name === "run_command")
+      && /(?:download|install|set up) (?:openai )?codex/i.test(latestUser)
+      && /own machine[\s\S]*act immediately without asking permission/i.test(serialized)
       && !hasToolResult;
     const wantsLearnSkill = reqBody.tools?.some((tool) => tool.function?.name === "create_skill")
       && /Learn one new reusable workspace skill/i.test(latestUser)
@@ -118,6 +126,10 @@ createServer(async (req, res) => {
       const args = { delay_seconds: 30, reason: "Check whether the async download finished and report Downloaded or Blocked." };
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "schedule_followup_1", type: "function", function: { name: "schedule_followup", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+    } else if (wantsAutonomousInstall) {
+      const args = { command: "printf 'codex installed\\n' > codex-install.txt" };
+      sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "install_codex_1", type: "function", function: { name: "run_command", arguments: JSON.stringify(args) } }] } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else if (wantsCallSkipper) {
       const toolName = "call_skipper", args = { reason: "need host whoami" };
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_skip", type: "function", function: { name: toolName, arguments: "" } }] } }] });
@@ -125,7 +137,8 @@ createServer(async (req, res) => {
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "}" } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else if (wantsCreateChannel) {
-      const toolName = "create_channel", args = { name: "emails" };
+      const requestedName = latestUser.match(/(?:called|named)\s+["']?([a-z0-9_-]+)/i)?.[1] || "emails";
+      const toolName = "create_channel", args = { name: requestedName };
       sse(res, { choices: [{ delta: { content: "I'll inspect /root and run commands to figure this out. " } }] });
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "create_channel_1", type: "function", function: { name: toolName, arguments: "" } }] } }] });
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(args) } }] } }] });

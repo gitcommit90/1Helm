@@ -336,7 +336,6 @@ function makePane(state: TerminalState, sessionId: string | null = null, compute
 async function connect(pane: Pane): Promise<void> {
   try {
     if (!pane.sessionId) {
-      pane.term.writeln("\x1b[90mStarting terminal…\x1b[0m");
       const opened = await api<{ sessionId: string; computerId?: number }>("/api/term/open", {
         body: { channelId: pane.state.channelId, ...(pane.computerId ? { computerId: pane.computerId } : {}), cols: pane.term.cols, rows: pane.term.rows },
       });

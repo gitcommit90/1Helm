@@ -593,7 +593,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
     value: channel.name,
     autocomplete: "off",
     spellcheck: "false",
-    disabled: channel.name === "main" || !S.me.is_admin ? true : undefined,
+    disabled: channel.name === "main" || !channel.can_manage ? true : undefined,
   }) as HTMLInputElement;
   const purpose = h("textarea", { class: "field min-h-24" }, channel.purpose || "") as HTMLTextAreaElement;
   const provider = h("select", { class: "field" }, h("option", { value: "" }, "Loading providers…")) as HTMLSelectElement;
@@ -633,7 +633,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
   }).catch((error) => { status.textContent = (error as Error).message; });
   const saveName = async (): Promise<void> => {
     if (channel.name === "main") { status.textContent = "#main cannot be renamed."; return; }
-    if (!S.me.is_admin) { status.textContent = "Only the Captain can rename channels."; return; }
+    if (!channel.can_manage) { status.textContent = "Only this channel's creator can rename it."; return; }
     try {
       await api(`/api/channels/${channel.id}`, { method: "PATCH", body: { name: nameField.value } });
       status.textContent = "Channel renamed.";
@@ -688,7 +688,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
   };
   agentAvatar.append(avatarPreview, h("div", { class: "flex flex-wrap gap-2" }, h("label", { class: "btn-subtle cursor-pointer text-sm" }, "Upload", avatarFile), currentAvatar ? h("button", { class: "btn-ghost text-sm", onclick: () => { void saveAvatar(""); } }, "Reset") : null));
 
-  const lifecycle = channel.name === "main" ? null : h("div", { class: "card border-danger/30 p-4" },
+  const lifecycle = channel.name === "main" || !channel.can_manage ? null : h("div", { class: "card border-danger/30 p-4" },
     h("h3", { class: "font-semibold text-fg" }, "Lifecycle"),
     h("p", { class: "mt-1 text-sm leading-5 text-muted" }, channel.status === "archived" ? "This agent world is paused. Restore reuses the same identity, workspace, memory, and threads." : "Archive pauses work while preserving the complete agent world."),
     h("div", { class: "mt-4 flex flex-wrap gap-2" },
@@ -721,7 +721,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
       h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Channel name"), h("p", { class: "mt-1 text-sm text-muted" }, channel.name === "main" ? "#main is fixed." : "Sidebar label and URL slug. The resident @mention stays the same.")),
       h("div", { class: "flex flex-col gap-2 sm:flex-row sm:items-center" },
         h("div", { class: "flex min-w-0 flex-1 items-center gap-1" }, h("span", { class: "text-muted" }, "#"), nameField),
-        channel.name === "main" || !S.me.is_admin
+        channel.name === "main" || !channel.can_manage
           ? null
           : h("button", { class: "btn-primary text-sm", onclick: () => { void saveName(); } }, "Rename"))),
     h("div", { class: "card space-y-3 p-4" }, h("h3", { class: "font-semibold text-fg" }, "Purpose"), purpose, h("div", { class: "flex justify-end" }, h("button", { class: "btn-primary text-sm", onclick: () => { void savePurpose(); } }, "Save purpose"))),

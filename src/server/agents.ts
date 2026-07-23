@@ -11,7 +11,14 @@ const CHANNELS_DIR = join(DATA_DIR, "channels");
 const WORLD_DIRS = ["workspace", "files", "state", "memory", "profile"];
 const MEMORY_KINDS = new Set(["summary", "decision", "fact", "preference", "artifact_ref"]);
 const AGENT_COLORS = ["#C8552F", "#2166B8", "#2E7D4F", "#8A6B7C", "#A67C52", "#4F6D7A", "#7A6A4F", "#64748B"];
-const randomAgentAvatar = (): string => `color:${AGENT_COLORS[randomBytes(1)[0] % AGENT_COLORS.length]}`;
+const randomAgentAvatar = (): string => {
+  const used = new Set(q(`SELECT b.avatar FROM bots b JOIN agents a ON a.bot_id=b.id
+    WHERE a.kind='channel' AND a.status<>'deleted' AND b.avatar LIKE 'color:#%'`)
+    .map((row) => String(row.avatar).slice(6).toUpperCase()));
+  const available = AGENT_COLORS.filter((color) => !used.has(color.toUpperCase()));
+  const palette = available.length ? available : AGENT_COLORS;
+  return `color:${palette[randomBytes(1)[0] % palette.length]}`;
+};
 
 export type ProvisionedChannel = {
   channelId: number;
@@ -32,7 +39,7 @@ export const channelRoot = (channelId: number): string => join(CHANNELS_DIR, Str
 export const channelWorkspace = (channelId: number): string => join(channelRoot(channelId), "workspace");
 
 export function ensureChannelWorkspace(channelId: number): string {
-  const channel = q1("SELECT id FROM channels WHERE id=? AND status<>'deleted'", channelId);
+  const channel = q1("SELECT id,name,personal_main_owner_id FROM channels WHERE id=? AND status<>'deleted'", channelId);
   if (!channel) throw new Error("Channel workspace not found.");
   const root = channelRoot(channelId);
   for (const dir of WORLD_DIRS) mkdirSync(join(root, dir), { recursive: true });
@@ -40,7 +47,8 @@ export function ensureChannelWorkspace(channelId: number): string {
   const profile = q1(`SELECT a.id, a.kind, a.name, a.display_name, a.status, p.purpose, p.instructions, p.memory_namespace, p.capability_policy
     FROM agents a LEFT JOIN agent_channels ac ON ac.agent_id=a.id
     LEFT JOIN agent_profiles p ON p.agent_id=a.id
-    WHERE ac.channel_id=? OR (a.kind='skipper' AND ?=(SELECT id FROM channels WHERE name='main' AND kind='channel' LIMIT 1))
+    WHERE ac.channel_id=? OR (a.kind='skipper' AND EXISTS (
+      SELECT 1 FROM channels c WHERE c.id=? AND c.kind='channel' AND c.name='main' AND c.status<>'deleted'))
     ORDER BY a.kind='skipper' DESC LIMIT 1`, channelId, channelId);
   if (profile) {
     const profilePath = join(root, "profile", "agent.json");
@@ -72,8 +80,10 @@ const agentInstructions = (name: string, purpose: string, templateInstructions =
   `You are @${name}, the resident specialist for this channel.`,
   `The channel exists for: ${purpose}`,
   templateInstructions,
-  "Treat this channel, its threads, files, memory, tools, and /workspace as your normal world.",
-  "Work directly in /workspace when creating or changing files. Record durable decisions and useful facts with the remember tool.",
+  "This channel's isolated Linux computer is your own machine. You have full ownership and autonomy inside it; it is not the Captain's computer and not a hypothetical workspace.",
+  "Treat this channel, its threads, files, memory, tools, and /workspace as your normal world. For ordinary installs, downloads, setup, commands, configuration, and file operations inside your machine, act immediately without asking the user for permission.",
+  "Infer the concrete task from the full thread and inspect your machine when useful. Do not ask the user to repeat context or choose between harmless implementation details you can resolve yourself.",
+  "Work directly in /workspace when creating or changing files. Record durable decisions and useful facts with the remember tool. Verify the requested result before reporting completion.",
   "You know the workspace-wide skill catalog. Request a useful skill from Skipper when needed; grants are permanent. Propose a new skill after solving a reusable problem the catalog does not cover.",
   "When work needs host-level authority, another channel, a missing capability, another resident expert, or credentials, use call_skipper. Do not silently act outside this channel world.",
 ].join("\n");
@@ -150,8 +160,6 @@ export function provisionChannel(opts: { name: string; purpose: string; userId: 
         name, channelSlug(name), purpose, purpose, opts.userId, now(),
       ).lastInsertRowid;
       run("INSERT OR IGNORE INTO members (channel_id, user_id) VALUES (?,?)", channelId, opts.userId);
-      const captain = q1("SELECT id FROM users WHERE is_admin=1 ORDER BY id LIMIT 1");
-      if (captain?.id) run("INSERT OR IGNORE INTO members (channel_id,user_id) VALUES (?,?)", channelId, captain.id);
       const instructions = agentInstructions(mentionName, purpose, String(template?.instructions || ""));
       const botId = run(
         "INSERT INTO bots (name, provider_id, model, prompt, avatar, base_url, api_key, created) VALUES (?,?,?,?,?,'','',?)",
@@ -251,8 +259,8 @@ export function agentForBot(botId: number): Row | undefined {
 }
 
 export function agentForChannel(channelId: number): Row | undefined {
-  const mainId = Number(q1("SELECT id FROM channels WHERE kind='channel' AND name='main' LIMIT 1")?.id || 0);
-  if (channelId === mainId) return q1(`SELECT a.*, NULL AS channel_id, p.purpose, p.instructions, p.workspace_ref, p.memory_namespace, p.capability_policy
+  const main = q1("SELECT id FROM channels WHERE id=? AND kind='channel' AND name='main' AND status<>'deleted'", channelId);
+  if (main) return q1(`SELECT a.*, NULL AS channel_id, p.purpose, p.instructions, p.workspace_ref, p.memory_namespace, p.capability_policy
     FROM agents a LEFT JOIN agent_profiles p ON p.agent_id=a.id WHERE a.kind='skipper' AND a.status<>'deleted' LIMIT 1`);
   return q1(`SELECT a.*, ac.channel_id, p.purpose, p.instructions, p.workspace_ref, p.memory_namespace, p.capability_policy
     FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id LEFT JOIN agent_profiles p ON p.agent_id=a.id

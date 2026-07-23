@@ -2,7 +2,8 @@ import { q, q1, run, now, type Row } from "./db.ts";
 import { createMessage, serializeMessage, resolveModel, resolveProviderId, botEndpoint, isInternalMessageBody } from "./store.ts";
 import { getComputer, execOnComputer } from "./computer.ts";
 import { broadcastToChannel } from "./events.ts";
-import { generateChatGPTImage, isChatGPTProvider, streamChatGPTCompletion } from "./chatgpt.ts";
+import { isChatGPTProvider, streamChatGPTCompletion } from "./chatgpt.ts";
+import { generateRoutingChatGPTImage } from "./routing.ts";
 import { availableGoogleAccounts, createGmailDraft, getGmailMessage, normalizeMailConfig, searchGmail } from "./gmail.ts";
 import { recallForAgent, rememberForAgent } from "./memory.ts";
 import { agentSkillContext, createSkill, imageGenerationAvailable, listSkills, proposeSkill, provisionSkill, requestSkill } from "./skills.ts";
@@ -134,7 +135,7 @@ function systemPrompt(bot: Row, agent: RuntimeAgent | undefined, channelId: numb
       hostAuthorized
         ? "The Captain authorized this invocation to use host-level tools when required. Keep actions and outcomes visible in this thread."
         : "This invocation is not Captain-authorized for host changes. Help within the thread, but request explicit Captain approval before any host-level or cross-channel action.",
-      hostAuthorized
+      hostAuthorized || Boolean(q1("SELECT 1 FROM channels WHERE id=? AND personal_main_owner_id IS NOT NULL", channelId))
         ? "For channel creation, use create_channel directly. Never inspect the host or run shell commands to discover how channels are provisioned."
         : "Do not create, restore, remove, or change channels without Captain authorization.",
       "You oversee and unblock. Do not absorb a resident agent's reply style, silence rules, or channel preferences as your own. Help, hand the work back, then step out.",
@@ -154,7 +155,7 @@ function systemPrompt(bot: Row, agent: RuntimeAgent | undefined, channelId: numb
     String(agent?.instructions || bot.prompt || ""),
     `Channel purpose: ${agent?.purpose || channel?.purpose || "not yet recorded"}.`,
     visiting ? "Contribute only the expertise requested in this thread. You have no shell or durable-memory tools here, and this invitation ends with the thread." : "Your durable computer workspace is /workspace. Shell commands always start there; use relative paths and refer to it as /workspace, never by a host path.",
-    visiting ? "Use only the authoritative invoking thread context. Do not carry this one-off collaboration into unrelated work." : "This channel's threads, files, memory, and tools are your normal world. Use remember for durable decisions, facts, preferences, and useful references. When you produce a file, image, PDF, or other artifact the user should see in chat, call attach_file with its workspace path so it appears as a real attachment (inline images, downloadable files)—do not only paste a path.",
+    visiting ? "Use only the authoritative invoking thread context. Do not carry this one-off collaboration into unrelated work." : "This isolated Linux computer is your own machine. You have full ownership and autonomy inside it; it is not the Captain's computer. This channel's threads, files, memory, and tools are your normal world. For ordinary installs, downloads, setup, configuration, commands, and files inside your machine, act immediately without asking permission. Infer intent from the full thread and inspect the machine rather than asking the user to repeat context or choose harmless implementation details. Use remember for durable decisions, facts, preferences, and useful references. When you produce a file, image, PDF, or other artifact the user should see in chat, call attach_file with its workspace path so it appears as a real attachment (inline images, downloadable files)—do not only paste a path.",
     visiting ? "" : "When a user's real need presents a useful self-hosting opportunity, explain the option in newcomer-friendly language and offer to call Skipper to provision it. Keep suggestions relevant and non-pushy.",
     visiting ? "" : "Your computer has a 2 GiB 1Helm-managed writable workspace allocation. Apple’s guest filesystem may report a much larger host-backed virtual capacity; never present that virtual ceiling as storage the channel owns.",
     "If work needs host-level authority, another channel, a missing capability, or credentials, use call_skipper with a concise reason. Do not silently assume broader access.",
@@ -189,7 +190,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       },
     });
   }
-  if (skipper && hostAuthorized) {
+  if (skipper && (hostAuthorized || Boolean(q1("SELECT 1 FROM channels WHERE id=? AND personal_main_owner_id IS NOT NULL", channelId)))) {
     tools.push({
       type: "function",
       function: {
@@ -205,6 +206,8 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
         },
       },
     });
+  }
+  if (skipper && hostAuthorized) {
     const googleAccounts = availableGoogleAccounts();
     const resident = agentForChannel(channelId);
     if (googleAccounts.length && resident?.kind === "channel") tools.push({
@@ -245,7 +248,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
         name: "run_command",
         description: skipper
           ? "Run a shell command on an assigned computer with workspace-wide authority."
-          : "Run a shell command in this channel's durable /workspace and return its output.",
+          : "Run a shell command on your own isolated Linux computer in its durable /workspace and return the output. Ordinary installs, downloads, setup, configuration, and file operations inside this machine are fully authorized; act without asking the user for permission.",
         parameters: {
           type: "object",
           properties: {
@@ -275,7 +278,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
   if (!visiting) {
     const imageSkill = agent?.id && q1(`SELECT 1 FROM agent_skills ask JOIN skills s ON s.id=ask.skill_id
       WHERE ask.agent_id=? AND s.slug='image-generation' AND s.status='active'`, agent.id);
-    if (imageSkill && imageGenerationAvailable()) tools.push({
+    if ((skipper || imageSkill) && imageGenerationAvailable()) tools.push({
       type: "function",
       function: {
         name: "generate_image",
@@ -287,7 +290,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       type: "function",
       function: {
         name: "ask_user",
-        description: "Pause and ask the user one to three structured questions when their choice is genuinely required. Provide two to five concise options for each question; the UI always also offers a custom typed answer. Use multi_select only when more than one option may be chosen.",
+        description: "Pause only for a genuinely consequential choice that cannot be inferred from the full thread, the requested outcome, or your own machine. Never use this for ordinary installs, downloads, setup, commands, file operations, harmless implementation details, or information you can inspect yourself. Provide two to five concise options; the UI also offers a custom typed answer.",
         parameters: {
           type: "object",
           properties: {
@@ -438,6 +441,37 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
     }
   }
   return tools.length ? tools : undefined;
+}
+
+/** Narrow diagnostic surface used by integration coverage to prove the exact
+ * production tool set without duplicating its capability rules. */
+export function runtimeToolNamesForChannel(botId: number, channelId: number, hostAuthorized = false): string[] {
+  const bot = q1("SELECT * FROM bots WHERE id=?", botId);
+  if (!bot) return [];
+  const agent = agentForBot(botId) as RuntimeAgent | undefined;
+  return (toolsFor(bot, agent, hostAuthorized, channelId) || []).map((tool) =>
+    String((tool as { function?: { name?: string } }).function?.name || "")).filter(Boolean);
+}
+
+export async function generateAndAttachImage(
+  channelId: number,
+  messageId: number,
+  threadId: number | null,
+  prompt: string,
+  requestedName: string,
+  actor: string,
+  generator: (prompt: string, signal?: AbortSignal) => Promise<Buffer> = generateRoutingChatGPTImage,
+  signal?: AbortSignal,
+): Promise<{ id: number; name: string; mime: string; size: number; path: string }> {
+  const requested = String(requestedName || "generated-image.png").replace(/[^a-zA-Z0-9._ -]+/g, "-").replace(/\.[^.]+$/, "").slice(0, 100) || "generated-image";
+  const fileName = `${requested}-${Date.now().toString(36)}.png`;
+  const relativePath = `files/${fileName}`;
+  const root = ensureChannelWorkspace(channelId);
+  const { join } = await import("node:path");
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(join(root, relativePath), await generator(prompt, signal));
+  syncWorkspaceArtifacts(channelId, threadId, actor);
+  return attachWorkspaceFileToMessage(channelId, messageId, threadId, relativePath, actor, fileName);
 }
 
 function buildContext(bot: Row, agent: RuntimeAgent | undefined, channelId: number, triggerId: number, threadRootId: number, fresh: boolean, hostAuthorized: boolean): ChatMsg[] {
@@ -635,8 +669,11 @@ function callSkipper(agent: RuntimeAgent, channelId: number, threadRootId: numbe
   broadcastToChannel(channelId, { type: "message", message: serializeMessage(mentionId) });
   broadcastToChannel(channelId, { type: "escalation", channelId, escalation: { id: escalationId, thread_id: threadId, reason, status: "open" } });
   refreshThreadSummary(threadRootId);
-  // Skipper is the deliberate exception path (SPEC §4): a channel-agent escalation authorizes host-level tools.
-  setTimeout(() => { void runBot(skipper, channelId, mentionId, threadRootId, false, escalationId, true); }, 0);
+  const latestHuman = q1(`SELECT u.is_admin FROM messages m JOIN users u ON u.id=m.user_id
+    WHERE (m.id=? OR m.parent_id=?) AND m.user_id IS NOT NULL ORDER BY m.id DESC LIMIT 1`, threadRootId, threadRootId);
+  // Skipper may enter any thread to coordinate, but only a Captain-authored
+  // request grants host-level or cross-channel tools.
+  setTimeout(() => { void runBot(skipper, channelId, mentionId, threadRootId, false, escalationId, Boolean(latestHuman?.is_admin)); }, 0);
   return `Skipper was called into this thread (escalation ${escalationId}).`;
 }
 
@@ -907,15 +944,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               emit();
               result = `Attached ${attached.name} (${attached.mime}, ${attached.size} bytes) from /${attached.path} to this message.`;
             } else if (name === "generate_image" && !visiting && imageGenerationAvailable()) {
-              const requested = String(args.name || "generated-image.png").replace(/[^a-zA-Z0-9._ -]+/g, "-").replace(/\.[^.]+$/, "").slice(0, 100) || "generated-image";
-              const fileName = `${requested}-${Date.now().toString(36)}.png`;
-              const relativePath = `files/${fileName}`;
-              const root = ensureChannelWorkspace(channelId);
-              const { join } = await import("node:path");
-              const { writeFileSync } = await import("node:fs");
-              writeFileSync(join(root, relativePath), await generateChatGPTImage(String(args.prompt || ""), turnSignal));
-              syncWorkspaceArtifacts(channelId, threadId, actor);
-              const attached = attachWorkspaceFileToMessage(channelId, msgId, threadId, relativePath, actor, fileName);
+              const attached = await generateAndAttachImage(channelId, msgId, threadId, String(args.prompt || ""), String(args.name || "generated-image.png"), actor, generateRoutingChatGPTImage, turnSignal);
               emit();
               result = `Generated and attached ${attached.name}.`;
             } else if (name === "remember") {
@@ -962,7 +991,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               } catch (error) {
                 result = `Error: ${(error as Error).message}`;
               }
-            } else if (name === "create_channel" && agent?.kind === "skipper" && hostAuthorized) {
+            } else if (name === "create_channel" && agent?.kind === "skipper" && (hostAuthorized || Boolean(q1("SELECT 1 FROM channels WHERE id=? AND personal_main_owner_id=?", channelId, requestUserId)))) {
               result = await createNativeChannel(String(args.name || ""), String(args.purpose || ""), requestUserId);
             } else if (name === "grant_gmail_access" && agent?.kind === "skipper" && hostAuthorized) {
               result = grantGmail(channelId, args.accounts);

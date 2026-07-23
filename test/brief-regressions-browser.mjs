@@ -53,6 +53,9 @@ try {
   for (let index = 0; index < 10; index++) {
     await api(`/api/channels/${channel.id}/messages`, { body: { body: `Scroll fixture ${index + 1}: ${"stable viewport words ".repeat(32)}`, parentId: rootMessage.id } }, token);
   }
+  for (let index = 0; index < 14; index++) {
+    await api(`/api/channels/${channel.id}/messages`, { body: { body: `Board overflow fixture ${index + 1}` } }, token);
+  }
 
   browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
   const page = await browser.newPage();
@@ -61,6 +64,17 @@ try {
   page.on("pageerror", (error) => browserErrors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") browserErrors.push(message.text()); });
   await page.goto(base, { waitUntil: "networkidle0" });
+  // A first-ever service-worker claim can trigger one intentional soft reload.
+  // Retry the read across that navigation instead of making fresh CI profiles flaky.
+  const authBrand = await waitFor(() => page.evaluate(() => ({
+      heading: document.querySelector("h2")?.textContent || "",
+      src: document.querySelector(".logo-asset")?.getAttribute("src") || "",
+      loaded: document.querySelector(".logo-asset") instanceof HTMLImageElement
+        && document.querySelector(".logo-asset").complete
+        && document.querySelector(".logo-asset").naturalWidth > 0,
+    })).catch(() => null), "stable bridge login after service-worker claim", 5_000);
+  ok(authBrand.heading === "Enter the bridge" && authBrand.src === "/brand/1helm-sailboat.png" && authBrand.loaded,
+    "the bridge login displays the current sailboat artwork");
   await page.evaluate((value) => localStorage.setItem("ctrl.token", value), token);
   await page.goto(`${base}/c/${channel.slug}/thread/${rootMessage.id}`, { waitUntil: "networkidle0" });
   await page.waitForSelector("#thread:not(.hidden)");
@@ -72,7 +86,7 @@ try {
     workspaceLogo: document.querySelector(".logo-asset")?.getAttribute("src"),
   }));
   ok(brand.title.includes("1Helm") && brand.appName === "1Helm" && !brand.body.includes("1Herd"), "the browser presents the product as 1Helm throughout");
-  ok(brand.favicon === "/brand/1helm.png" && brand.workspaceLogo === "/brand/1helm.png", "the app logo is the web favicon and default customizable workspace image");
+  ok(brand.favicon === "/brand/1helm-sailboat.png" && brand.workspaceLogo === "/brand/1helm-sailboat.png", "the sailboat is the web favicon and default customizable workspace image");
   const initialWidth = await page.$eval("#thread", (element) => element.getBoundingClientRect().width);
   ok(initialWidth >= 500, "thread panel opens at the wider default size");
   const handle = await page.$(".thread-resizer");
@@ -163,10 +177,28 @@ try {
       viewFits: channelView.scrollWidth <= channelView.clientWidth,
       lanesFit: lanes.getBoundingClientRect().right <= scrollRect.right + 1,
       everyLaneFits: laneRects.every((rect) => rect.left >= scrollRect.left - 1 && rect.right <= scrollRect.right + 1),
+      everyLaneVertical: laneRects.every((rect) => rect.top >= scrollRect.top - 1 && rect.bottom <= scrollRect.bottom + 1),
     };
   });
-  ok(boardGeometry.pageFits && boardGeometry.viewFits && boardGeometry.lanesFit && boardGeometry.everyLaneFits,
-    "Board lanes wrap within the viewport without horizontal spill");
+  ok(boardGeometry.pageFits && boardGeometry.viewFits && boardGeometry.lanesFit && boardGeometry.everyLaneFits && boardGeometry.everyLaneVertical,
+    "Board lanes wrap within the viewport without horizontal or vertical spill");
+  const laneScroll = await page.evaluate(() => {
+    const cards = document.querySelector('[data-board-status="open"] .board-lane-cards');
+    const last = cards?.lastElementChild;
+    if (!(cards instanceof HTMLElement) || !(last instanceof HTMLElement)) return null;
+    const before = cards.scrollTop;
+    cards.scrollTop = cards.scrollHeight;
+    const cardsRect = cards.getBoundingClientRect();
+    const lastRect = last.getBoundingClientRect();
+    return {
+      overflows: cards.scrollHeight > cards.clientHeight,
+      before,
+      after: cards.scrollTop,
+      lastReachable: lastRect.bottom <= cardsRect.bottom + 1 && lastRect.top >= cardsRect.top - 1,
+    };
+  });
+  ok(laneScroll?.overflows && laneScroll.before === 0 && laneScroll.after > 0 && laneScroll.lastReachable,
+    "a crowded Board swim lane scrolls vertically until its final task is reachable");
 
   await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Terminal"))?.click());
   await page.waitForSelector(".xterm");
@@ -180,7 +212,7 @@ try {
 } finally {
   await browser?.close().catch(() => undefined);
   for (const child of [app, mock]) if (child && child.exitCode == null) child.kill("SIGTERM");
-  rmSync(dataDir, { recursive: true, force: true });
+  rmSync(dataDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

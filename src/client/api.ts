@@ -27,7 +27,7 @@ export type ChannelComputer = {
   maintenance_state: string; last_health: number; last_used: number; last_error: string;
   obligations: Array<{ kind: string; ref: string; mode: "resident" | "wakeable"; details: string; due_at?: number | null }>;
 };
-export type Channel = { id: number; name: string; slug: string; kind: string; topic: string; purpose: string; status: "active" | "archived"; unread: number; agent: ResidentAgent | null; computer?: ChannelComputer | null };
+export type Channel = { id: number; name: string; slug: string; kind: string; topic: string; purpose: string; status: "active" | "archived"; unread: number; agent: ResidentAgent | null; computer?: ChannelComputer | null; personal_main?: boolean; can_manage?: boolean };
 export type Bot = { id: number; name: string; model: string; avatar: string; provider_id: number | null; provider_name: string | null; provider_kind: string | null; computers: number[]; prefs: Record<string, string>; agent_id?: number | null; agent_kind?: string | null; agent_status?: string | null; resident_channel_id?: number | null };
 export type ThreadFollowup = {
   id: number;
@@ -111,7 +111,7 @@ export const getToken = (): string => token;
 
 /** Workspace photo is auth-gated; <img> cannot send Bearer — attach session token. */
 export function workspacePhotoSrc(photoUrl: string | null | undefined, cacheBust?: string | number): string {
-  if (!photoUrl) return "/brand/1helm.png";
+  if (!photoUrl) return "/brand/1helm-sailboat.png";
   const t = getToken();
   const params = new URLSearchParams();
   if (t) params.set("token", t);

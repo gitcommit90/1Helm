@@ -6,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { request as httpRequest } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { DATA_DIR, q, q1, run, now } from "./db.ts";
+import { imageBytesFromChatGPTResponse } from "./chatgpt.ts";
 
 const require = createRequire(import.meta.url);
 const { createHeadlessRuntime } = require("@gitcommit90/rerouted/src/lib/headless-runtime.js") as {
@@ -17,6 +18,15 @@ const openaiCompat = require("@gitcommit90/rerouted/src/lib/providers/openai-com
 };
 const { runProviderModelTest } = require("@gitcommit90/rerouted/src/lib/model-test.js") as {
   runProviderModelTest: (options: Record<string, unknown>) => Promise<Record<string, unknown>>;
+};
+const providerFabricChatGPT = require("@gitcommit90/rerouted/src/lib/providers/chatgpt.js") as {
+  chat: (provider: RoutingProvider, options: {
+    model: string;
+    body: Record<string, unknown>;
+    stream: boolean;
+    signal?: AbortSignal;
+    onTokenRefresh?: (tokens: Record<string, unknown>) => Promise<void>;
+  }) => Promise<Response | { response: Response }>;
 };
 const enginePackage = require("@gitcommit90/rerouted/package.json") as { version: string };
 
@@ -43,6 +53,8 @@ type RoutingRuntime = {
   start: (options?: { port?: number; host?: string }) => Promise<Record<string, unknown>>;
   close: (options?: { drainMs?: number }) => Promise<void>;
 };
+
+type RoutingStore = RoutingRuntime["store"];
 
 type RoutingProvider = {
   id: string;
@@ -115,6 +127,78 @@ type OauthCompletion = { connected: boolean; account?: Record<string, unknown>; 
 const oauthWatchers = new Map<string, NodeJS.Timeout>();
 const oauthCompletions = new Map<string, OauthCompletion>();
 const oauthFinalizing = new Map<string, Promise<Record<string, unknown>>>();
+
+const chatGPTFabricProviders = (config: RoutingConfig): RoutingProvider[] => (config.providers || []).filter((provider) => {
+  if (provider.enabled === false || !["chatgpt", "codex"].includes(String(provider.type || ""))) return false;
+  const accessToken = String(provider.accessToken || "").trim();
+  const refreshToken = String(provider.refreshToken || "").trim();
+  const expiresAt = Number(provider.expiresAt || 0);
+  return Boolean(refreshToken || (accessToken && (!expiresAt || expiresAt > Date.now())));
+});
+
+/** Capability health is derived from the same provider fabric the Settings UI
+ * connects. A provider row or stale UI toggle alone can never advertise it. */
+export function routingChatGPTImageAvailable(): boolean {
+  try {
+    const config = runtime?.store.load();
+    if (config) return chatGPTFabricProviders(config).length > 0;
+    const stored = require("node:fs").readFileSync(join(ROUTING_DIR, "config.json"), "utf8");
+    return chatGPTFabricProviders(JSON.parse(stored) as RoutingConfig).length > 0;
+  } catch { return false; }
+}
+
+const enabledModelIds = (provider: RoutingProvider): string[] => (provider.models || [])
+  .filter((model) => typeof model === "string" || model.enabled !== false)
+  .map((model) => typeof model === "string" ? model : String(model.id || ""))
+  .filter(Boolean);
+
+export async function generateRoutingChatGPTImageWith(
+  store: RoutingStore,
+  adapter: typeof providerFabricChatGPT,
+  prompt: string,
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  const providers = chatGPTFabricProviders(store.load());
+  if (!providers.length) throw new Error("Connect a ChatGPT subscription account in Settings → Providers.");
+  let lastError = "Image generation is unavailable for the connected ChatGPT account.";
+  for (const provider of providers) {
+    const models = enabledModelIds(provider);
+    const preferred = ["gpt-5.6", "gpt-5.5", ...models.filter((model) => /^gpt-5/i.test(model)), ...models];
+    for (const model of [...new Set(preferred.filter((candidate) => models.includes(candidate)))]) {
+      try {
+        const result = await adapter.chat(provider, {
+          model,
+          body: {
+            model,
+            messages: [{ role: "user", content: prompt }],
+            tools: [{ type: "image_generation", action: "generate" }],
+          },
+          stream: true,
+          signal,
+          onTokenRefresh: async (tokens) => {
+            store.update((config) => {
+              const current = config.providers.find((candidate) => candidate.id === provider.id);
+              if (current) Object.assign(current, tokens);
+            });
+          },
+        });
+        const response = result instanceof Response ? result : result.response;
+        return await imageBytesFromChatGPTResponse(response);
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        lastError = (error as Error).message || lastError;
+      }
+    }
+  }
+  throw new Error(lastError);
+}
+
+/** Generate through the authoritative multi-account fabric, including token
+ * refresh persistence and account/model fallback. */
+export async function generateRoutingChatGPTImage(prompt: string, signal?: AbortSignal): Promise<Buffer> {
+  const target = await startRoutingEngine(onActivity || undefined);
+  return generateRoutingChatGPTImageWith(target.store, providerFabricChatGPT, prompt, signal);
+}
 
 function oauthType(payload: unknown): string {
   return typeof payload === "string" ? payload : String((payload as { type?: unknown } | null)?.type || "");

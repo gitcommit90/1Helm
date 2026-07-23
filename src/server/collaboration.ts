@@ -164,6 +164,33 @@ export function ensureCollabChannel(userId?: number): number {
   return Number(channel.id);
 }
 
+/** Private Skipper home for one human. It has no resident agent or channel
+ * computer: Skipper is the workspace-wide agent, while channels this person
+ * creates receive their own resident and isolated computer. */
+export function ensurePersonalMainChannel(userId: number): number {
+  const user = q1("SELECT id,username FROM users WHERE id=?", userId);
+  if (!user) throw new Error("Workspace member not found.");
+  const existing = q1("SELECT id FROM channels WHERE personal_main_owner_id=? AND status<>'deleted' LIMIT 1", userId);
+  if (existing) {
+    run("DELETE FROM members WHERE channel_id=? AND user_id<>?", existing.id, userId);
+    run("INSERT OR IGNORE INTO members (channel_id,user_id) VALUES (?,?)", existing.id, userId);
+    const skipper = q1("SELECT bot_id FROM agents WHERE kind='skipper' AND status<>'deleted' LIMIT 1");
+    if (skipper?.bot_id) run("INSERT OR IGNORE INTO bot_channels (bot_id,channel_id) VALUES (?,?)", skipper.bot_id, existing.id);
+    return Number(existing.id);
+  }
+  const stem = String(user.username || `member-${userId}`).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `member-${userId}`;
+  let slug = `main-${stem}`.slice(0, 64);
+  for (let suffix = 2; q1("SELECT 1 FROM channels WHERE slug=? AND status<>'deleted'", slug); suffix++) {
+    slug = `main-${stem}`.slice(0, Math.max(1, 63 - String(suffix).length)) + `-${suffix}`;
+  }
+  const id = run(`INSERT INTO channels (name,slug,kind,topic,purpose,status,created_by,personal_main_owner_id,created)
+    VALUES ('main',?,'channel','Your private home base with @skipper','Private coordination with Skipper','active',?,?,?)`, slug, userId, userId, now()).lastInsertRowid;
+  run("INSERT INTO members (channel_id,user_id) VALUES (?,?)", id, userId);
+  const skipper = q1("SELECT bot_id FROM agents WHERE kind='skipper' AND status<>'deleted' LIMIT 1");
+  if (skipper?.bot_id) run("INSERT OR IGNORE INTO bot_channels (bot_id,channel_id) VALUES (?,?)", skipper.bot_id, id);
+  return id;
+}
+
 export function claimApprovedAccess(token: string, usernameInput: string, password: string, displayInput: string): { token: string; user: Row } {
   const username = usernameInput.trim().toLowerCase();
   if (!/^[a-z0-9_.-]{2,32}$/.test(username) || password.length < 8) throw new Error("Use a valid username and a password of at least 8 characters.");
@@ -174,6 +201,7 @@ export function claimApprovedAccess(token: string, usernameInput: string, passwo
     if (q1("SELECT 1 FROM users WHERE username=? OR lower(email)=lower(?)", username, request.email)) throw new Error("That username or email already has an account.");
     const userId = run("INSERT INTO users (username,email,pass,display,is_admin,created) VALUES (?,?,?,?,0,?)", username, request.email, hashPassword(password), display, now()).lastInsertRowid;
     ensureCollabChannel(userId);
+    ensurePersonalMainChannel(userId);
     run("UPDATE access_requests SET status='claimed',claimed_user_id=? WHERE id=?", userId, request.id);
     const sessionToken = newToken();
     run("INSERT INTO sessions (token,user_id,created) VALUES (?,?,?)", sessionToken, userId, now());
