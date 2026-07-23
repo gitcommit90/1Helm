@@ -907,8 +907,20 @@ const channels = [
   {id:"support",  label:"#support",  sub:"frontline",     route:"frontline",     prefs:["cgptB","nim","gemini","openrtr"]},
   {id:"main",     label:"#main",     sub:"helm-main",     route:"helm-main",     prefs:["claude","xai","cgptA","custom"]},
 ];
-/* stage x-positions: message -> router -> providers -> channels */
-const MX = 42, MW = 196, RX = 372, RY = 320;
+const MESSAGES = [
+  {text:"“Own the launch, ship the fix.”",  chan:"product"},
+  {text:"“Draft the release notes.”",       chan:"product"},
+  {text:"“Summarize this week's papers.”",  chan:"research"},
+  {text:"“Rebuild the data pipeline.”",     chan:"research"},
+  {text:"“Reconcile March invoices.”",      chan:"finance"},
+  {text:"“Compare the vendor quotes.”",     chan:"finance"},
+  {text:"“Triage the overnight tickets.”",  chan:"support"},
+  {text:"“Reply to the refund thread.”",    chan:"support"},
+  {text:"“Inspect the computer fleet.”",    chan:"main"},
+  {text:"“Rotate the staging certs.”",      chan:"main"},
+];
+/* stage x-positions: messages -> router -> providers -> channels */
+const MX = 42, MW = 200, RX = 372, RY = 320;
 const AX = 556, AW = 210, CX = 884, CW = 158;
 const el = (name, attrs, parent) => {
   const n = document.createElementNS(svgNS, name);
@@ -917,10 +929,15 @@ const el = (name, attrs, parent) => {
   return n;
 };
 const acctY = i => 52 + i * 70;
-const chanY = i => 108 + i * 104;
-/* wires (under nodes): message->router, router->provider, provider->channel mesh */
-const msgPath = el("path", {class:"wire", d:`M ${MX+MW} ${RY} H ${RX-56}`});
-const acctPaths = {}, mesh = {};
+const rowY  = i => 108 + i * 104;   /* shared by message slots and channels */
+/* wires (under nodes) */
+const slotPaths = [], acctPaths = {}, mesh = {};
+for (let i = 0; i < 5; i++){
+  const y = rowY(i) + 25;
+  const sp = el("path", {class:"wire", d:`M ${MX+MW} ${y} C ${MX+MW+84} ${y}, ${RX-130} ${RY}, ${RX-56} ${RY}`});
+  sp.style.opacity = "0"; sp.style.transition = "opacity .5s";
+  slotPaths.push(sp);
+}
 accounts.forEach((a, i) => {
   const y = acctY(i) + 25;
   acctPaths[a.id] = el("path", {class:"wire", d:`M ${RX+56} ${RY} C ${RX+128} ${RY}, ${AX-84} ${y}, ${AX} ${y}`});
@@ -929,18 +946,10 @@ accounts.forEach((a, i) => {
   mesh[a.id] = {};
   const ay = acctY(i) + 25;
   channels.forEach((c, j) => {
-    const cy = chanY(j) + 25;
+    const cy = rowY(j) + 25;
     mesh[a.id][c.id] = el("path", {class:"wire faint", d:`M ${AX+AW} ${ay} C ${AX+AW+56} ${ay}, ${CX-56} ${cy}, ${CX} ${cy}`});
   });
 });
-/* message node */
-const mg = el("g", {class:"msgnode"});
-el("text", {x:MX+MW/2, y:RY-64, "text-anchor":"middle", class:"lab"}, mg).textContent = "A MESSAGE ARRIVES";
-el("rect", {x:MX, y:RY-44, width:MW, height:88, rx:14}, mg);
-el("text", {x:MX+16, y:RY-16, class:"m1"}, mg).textContent = "“Own the launch,";
-el("text", {x:MX+16, y:RY+3, class:"m1"}, mg).textContent = "ship the fix.”";
-el("text", {x:MX+16, y:RY+28, class:"sub"}, mg).textContent = "any thread · any channel";
-const msgLamp = el("circle", {cx:MX+MW, cy:RY, r:4, fill:"#9BCBEE"}, mg);
 /* router */
 const rg = el("g", {});
 el("circle", {cx:RX, cy:RY, r:46, class:"router-ring", opacity:.35}, rg);
@@ -954,6 +963,7 @@ const routerPulse = el("circle", {cx:RX, cy:RY, r:46, fill:"none", stroke:"#FF7A
 el("text", {x:RX, y:RY+74, "text-anchor":"middle", fill:"#93A9C7", "font-size":"10.5"}).textContent = "1HELM ROUTER";
 el("text", {x:RX, y:RY+92, "text-anchor":"middle", fill:"#8098B8", "font-size":"9.5"}).textContent = "picks the route · quotas · logs";
 /* column labels */
+el("text", {x:MX+MW/2, y:24, fill:"#93A9C7", "font-size":"10.5", "letter-spacing":"2", "text-anchor":"middle"}).textContent = "MESSAGES";
 el("text", {x:AX+AW/2, y:24, fill:"#93A9C7", "font-size":"10.5", "letter-spacing":"2", "text-anchor":"middle"}).textContent = "PROVIDERS";
 el("text", {x:CX+CW/2, y:24, fill:"#93A9C7", "font-size":"10.5", "letter-spacing":"2", "text-anchor":"middle"}).textContent = "CHANNELS";
 /* provider nodes */
@@ -980,14 +990,15 @@ accounts.forEach((a, i) => {
   g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
 });
 /* channel nodes */
+const chanEls = {};
 channels.forEach((c, i) => {
   const g = el("g", {class:"chan"});
-  const y = chanY(i);
+  const y = rowY(i);
   el("rect", {x:CX, y, width:CW, height:50, rx:12}, g);
   el("text", {x:CX+16, y:y+22, class:"name"}, g).textContent = c.label;
   el("text", {x:CX+16, y:y+38, class:"sub"}, g).textContent = c.sub;
   c.lamp = el("circle", {cx:CX+CW-14, cy:y+25, r:3.5, fill: c.id === "main" ? "#FFB35C" : "#9BCBEE"}, g);
-  c.rr = 0;
+  chanEls[c.id] = c;
 });
 
 /* strategy */
@@ -1018,17 +1029,7 @@ function logLine(html){
   while (logEl.children.length > 5) logEl.lastChild.remove();
 }
 
-/* dots */
-const dots = [];
-function launchDot(path, color, dur, done){
-  const p0 = path.getPointAtLength(0);
-  const c = el("circle", {r:4, fill:color, opacity:.95, cx:p0.x, cy:p0.y});
-  dots.push({c, path, dur, t0:performance.now(), done});
-}
-function pulse(lamp, r){
-  lamp.setAttribute("r", String(r));
-  setTimeout(() => lamp.setAttribute("r", "3.5"), 240);
-}
+/* routing policy */
 function eligibleFor(chan){
   const preferred = chan.prefs.map(id => acctEls[id]).filter(a => a.enabled);
   const rest = accounts.filter(a => a.enabled && !chan.prefs.includes(a.id));
@@ -1038,37 +1039,20 @@ function pickAccount(chan){
   const pool = eligibleFor(chan);
   if (!pool.length) return null;
   if (strategy === "fallback") return pool[0];
-  chan.rr = (chan.rr + 1) % pool.length;
+  chan.rr = ((chan.rr || 0) + 1) % pool.length;
   return pool[chan.rr];
 }
-function spawnRequest(){
-  const chan = channels[Math.floor(Math.random() * channels.length)];
-  const acct = pickAccount(chan);
-  msgLamp.setAttribute("r", "5.5");
-  setTimeout(() => msgLamp.setAttribute("r", "4"), 220);
-  if (!acct){
-    failed++;
-    failedEl.textContent = failed + " failed — no eligible provider";
-    logLine(`<span class="ts">${ts()}</span> ${chan.label} · <span class="fail">no eligible providers · request failed</span>`);
-    routerPulse.setAttribute("opacity", "0.9");
-    setTimeout(() => routerPulse.setAttribute("opacity", "0"), 500);
-    return;
-  }
-  const attempt = strategy === "fallback"
-    ? `fallback[${eligibleFor(chan).indexOf(acct) + 1}]`
-    : "round-robin";
-  /* one-way: message -> router -> provider -> channel */
-  launchDot(msgPath, "#9BCBEE", 420, () => {
-    launchDot(acctPaths[acct.id], "#9BCBEE", 500, () => {
-      pulse(acct.lamp, 5.5);
-      launchDot(mesh[acct.id][chan.id], "#FFB35C", 480, () => {
-        pulse(chan.lamp, 5.5);
-        served++;
-        servedEl.textContent = served;
-        logLine(`<span class="ts">${ts()}</span> <span class="rt">${chan.route}</span> → <span class="ac">${acct.label}</span> → ${chan.label} · ${attempt}`);
-      });
-    });
-  });
+
+/* dots */
+const dots = [];
+function launchDot(path, color, dur, done){
+  const p0 = path.getPointAtLength(0);
+  const c = el("circle", {r:4.5, fill:color, opacity:.95, cx:p0.x, cy:p0.y});
+  dots.push({c, path, dur, t0:performance.now(), done});
+}
+function pulse(lamp, r){
+  lamp.setAttribute("r", String(r));
+  setTimeout(() => lamp.setAttribute("r", "3.5"), 260);
 }
 function dotLoop(now){
   for (let i = dots.length - 1; i >= 0; i--){
@@ -1086,21 +1070,93 @@ function dotLoop(now){
   }
   requestAnimationFrame(dotLoop);
 }
+
+/* message slots — start with one; every delivery grows the queue (to 5)
+   and refills the freed slot with a fresh message */
+let maxSlots = 1;
+const slots = new Array(5).fill(null);
+let msgCursor = Math.floor(Math.random() * MESSAGES.length);
+function nextMessage(){
+  for (let k = 0; k < MESSAGES.length; k++){
+    msgCursor = (msgCursor + 1) % MESSAGES.length;
+    const m = MESSAGES[msgCursor];
+    if (!slots.some(s => s && s.msg === m)) return m;
+  }
+  return MESSAGES[msgCursor];
+}
+function fillSlot(i){
+  if (slots[i]) return;
+  const msg = nextMessage();
+  const y = rowY(i);
+  const g = el("g", {class:"msgnode", opacity:0});
+  const box = el("rect", {x:MX, y, width:MW, height:50, rx:12}, g);
+  el("text", {x:MX+14, y:y+21, class:"m1", "font-size":"11"}, g).textContent = msg.text;
+  el("text", {x:MX+14, y:y+38, class:"sub"}, g).textContent = "→ " + chanEls[msg.chan].label;
+  g.style.transition = "opacity .5s";
+  requestAnimationFrame(() => { g.style.opacity = "1"; slotPaths[i].style.opacity = "1"; });
+  slots[i] = {msg, g, box, state:"waiting"};
+}
+function completeSlot(i){
+  const s = slots[i];
+  if (!s) return;
+  s.g.style.opacity = "0";
+  slotPaths[i].style.opacity = "0";
+  setTimeout(() => s.g.remove(), 520);
+  slots[i] = null;
+  if (maxSlots < 5){ maxSlots++; setTimeout(() => fillSlot(maxSlots - 1), 700); }
+  setTimeout(() => fillSlot(i), 1100);   /* a new message takes its place */
+}
+function launchSlot(i){
+  const s = slots[i];
+  const chan = chanEls[s.msg.chan];
+  const acct = pickAccount(chan);
+  if (!acct){
+    failed++;
+    failedEl.textContent = failed + " failed — no eligible provider";
+    logLine(`<span class="ts">${ts()}</span> ${chan.label} · <span class="fail">no eligible providers · held, will retry</span>`);
+    routerPulse.setAttribute("opacity", "0.9");
+    setTimeout(() => routerPulse.setAttribute("opacity", "0"), 500);
+    setTimeout(() => { if (slots[i] === s) s.state = "waiting"; }, 2600);
+    return;
+  }
+  const attempt = strategy === "fallback"
+    ? `fallback[${eligibleFor(chan).indexOf(acct) + 1}]`
+    : "round-robin";
+  s.box.style.stroke = "#9BCBEE";
+  launchDot(slotPaths[i], "#9BCBEE", 850, () => {
+    launchDot(acctPaths[acct.id], "#9BCBEE", 950, () => {
+      pulse(acct.lamp, 5.5);
+      launchDot(mesh[acct.id][chan.id], "#FFB35C", 900, () => {
+        pulse(chan.lamp, 5.5);
+        served++;
+        servedEl.textContent = served;
+        logLine(`<span class="ts">${ts()}</span> <span class="rt">${chan.route}</span> → <span class="ac">${acct.label}</span> → ${chan.label} · ${attempt}`);
+        completeSlot(i);
+      });
+    });
+  });
+}
+function fabricTick(){
+  const idx = slots.findIndex(s => s && s.state === "waiting");
+  if (idx === -1) return;
+  slots[idx].state = "inflight";
+  launchSlot(idx);
+}
 let fabricVisible = false, spawnTimer = null;
 new IntersectionObserver(es => {
   fabricVisible = es[0].isIntersecting;
   if (fabricVisible && !spawnTimer && !reduced){
-    spawnTimer = setInterval(() => {
-      spawnRequest();
-      if (Math.random() < 0.4) setTimeout(spawnRequest, 160);
-    }, 560);
-    spawnRequest(); setTimeout(spawnRequest, 200);
+    if (!slots[0] && maxSlots === 1) fillSlot(0);
+    spawnTimer = setInterval(fabricTick, 1300);
+    setTimeout(fabricTick, 600);
   } else if (!fabricVisible && spawnTimer){
     clearInterval(spawnTimer); spawnTimer = null;
   }
 }, {threshold:.25}).observe(fabric);
 if (!reduced) requestAnimationFrame(dotLoop);
 if (reduced){
+  fillSlot(0); fillSlot(1); fillSlot(2);
+  slots.forEach(s => { if (s) s.g.style.opacity = "1"; });
   logLine(`<span class="ts">--:--:--</span> simulation paused (reduced motion) — the diagram above is the live topology`);
 }
 })();
