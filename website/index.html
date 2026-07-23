@@ -312,7 +312,7 @@ h2 em{font-style:italic;color:var(--foam)}
 .wire{stroke:rgba(173,203,238,.22);stroke-width:1.2;fill:none}
 .wire.faint{stroke:rgba(173,203,238,.07)}
 .msgnode rect{fill:var(--ink2);stroke:var(--line2)}
-.msgnode .m1{fill:var(--fg);font-size:12.5px;font-weight:500}
+.msgnode .m1{fill:var(--fg);font-size:10.5px;font-weight:500}
 .msgnode .sub{fill:var(--dim);font-size:10px}
 .msgnode .lab{fill:var(--dim);font-size:10px;letter-spacing:.16em}
 .router-ring{fill:none;stroke:var(--cyan);stroke-width:1.6;opacity:.9}
@@ -908,16 +908,16 @@ const channels = [
   {id:"main",     label:"#main",     sub:"helm-main",     route:"helm-main",     prefs:["claude","xai","cgptA","custom"]},
 ];
 const MESSAGES = [
-  {text:"“Own the launch, ship the fix.”",  chan:"product"},
-  {text:"“Draft the release notes.”",       chan:"product"},
-  {text:"“Summarize this week's papers.”",  chan:"research"},
-  {text:"“Rebuild the data pipeline.”",     chan:"research"},
-  {text:"“Reconcile March invoices.”",      chan:"finance"},
-  {text:"“Compare the vendor quotes.”",     chan:"finance"},
-  {text:"“Triage the overnight tickets.”",  chan:"support"},
-  {text:"“Reply to the refund thread.”",    chan:"support"},
-  {text:"“Inspect the computer fleet.”",    chan:"main"},
-  {text:"“Rotate the staging certs.”",      chan:"main"},
+  {text:"“Own the launch.”",        chan:"product"},
+  {text:"“Draft release notes.”",   chan:"product"},
+  {text:"“Summarize the papers.”",  chan:"research"},
+  {text:"“Rebuild the pipeline.”",  chan:"research"},
+  {text:"“Reconcile invoices.”",    chan:"finance"},
+  {text:"“Compare vendor quotes.”", chan:"finance"},
+  {text:"“Triage the tickets.”",    chan:"support"},
+  {text:"“Handle the refund.”",     chan:"support"},
+  {text:"“Inspect the fleet.”",     chan:"main"},
+  {text:"“Rotate staging certs.”",  chan:"main"},
 ];
 /* stage x-positions: messages -> router -> providers -> channels */
 const MX = 42, MW = 200, RX = 372, RY = 320;
