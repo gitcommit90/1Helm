@@ -26,7 +26,7 @@ case "$(uname -m)" in
   *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-need=(curl git tar xz sha256sum)
+need=(curl git tar xz sha256sum make c++ python3)
 missing=()
 for command in "${need[@]}"; do command -v "$command" >/dev/null || missing+=("$command"); done
 if ((${#missing[@]})); then
@@ -74,7 +74,7 @@ RELEASE_SHA="$(git -C "$TEMP_ROOT/source" rev-parse HEAD)"
 [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Could not resolve the checked-out release commit." >&2; exit 1; }
 RELEASE_ROOT="$RELEASES_ROOT/$VERSION-${RELEASE_SHA:0:12}"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$TEMP_ROOT/source"
-runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH="$NODE_LINK/bin:/usr/bin:/bin" PUPPETEER_SKIP_DOWNLOAD=1 "$NODE_LINK/bin/npm" --prefix "$TEMP_ROOT/source" ci --omit=optional
+runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH="$NODE_LINK/bin:/usr/bin:/bin" PUPPETEER_SKIP_DOWNLOAD=1 "$NODE_LINK/bin/npm" --prefix "$TEMP_ROOT/source" ci
 runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH="$NODE_LINK/bin:/usr/bin:/bin" "$NODE_LINK/bin/npm" --prefix "$TEMP_ROOT/source" run build
 if [[ -e "$RELEASE_ROOT" ]]; then
   EXISTING_SHA="$(git -C "$RELEASE_ROOT" rev-parse HEAD 2>/dev/null || true)"

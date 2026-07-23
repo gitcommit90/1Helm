@@ -700,7 +700,7 @@ export function migrate(): void {
     // developer deliberately opts into the native compatibility backend.
     const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || (process.platform === "darwin" ? "apple" : "native"));
     const backend = ["apple", "native", "mock"].includes(configuredBackend) ? configuredBackend : "native";
-    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.16");
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:1.1.18");
     for (const channel of q(`SELECT c.id FROM channels c JOIN agent_channels ac ON ac.channel_id=c.id
       WHERE c.kind='channel' AND c.status<>'deleted'`)) {
       const channelId = Number(channel.id);

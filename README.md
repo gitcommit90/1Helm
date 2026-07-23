@@ -76,7 +76,7 @@ Open `http://localhost:8123`. On a fresh data directory you see the setup wizard
 | `PORT` | `8123` | HTTP/WebSocket port. |
 | `CTRL_DATA_DIR` | `./data` | SQLite control-plane state + narrow host workspace mirrors and uploaded files (internal path name kept for compatibility). |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `native` elsewhere | Explicit backend override for development/testing. The macOS product uses `apple`. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:1.1.16` | Versioned OCI machine image built from `container/Containerfile`. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:1.1.18` | Versioned OCI machine image built from `container/Containerfile`. |
 
 On first boot 1Helm starts a private loopback Open-Terminal agent and registers it as **"This Computer"** for Skipper's native-Mac work. Ordinary residents are never assigned that host computer.
 

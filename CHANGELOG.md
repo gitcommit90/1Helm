@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.18] - 2026-07-23
+
+### Fixed
+
+- Fresh Linux installs retain platform-specific optional packages required by the production CSS build. The installer still suppresses Puppeteer's browser download, but no longer removes Tailwind's native watcher dependency before `npm run build`.
+
+### Tests
+
+- Extended the installer contract and repeated the disposable Ubuntu acceptance from an empty host after reproducing the prior fresh-build failure.
+
+## [1.1.17] - 2026-07-23
+
+### Fixed
+
+- The Linux installer now probes the native addon toolchain (`make`, a C++ compiler, and Python) independently of its download utilities. Minimal systemd hosts no longer skip `build-essential` merely because `curl`, Git, tar, and xz were already present.
+
+### Tests
+
+- Added an installer regression contract and exercised fresh install, repeat install/state preservation, and health-failure rollback on a disposable systemd Ubuntu host.
+
 ## [1.1.16] - 2026-07-23
 
 ### Added
@@ -242,7 +262,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The native channel-agent workspace began as a separately reviewed specification slice before becoming the normal 1Helm product path.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.16...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v1.1.18...HEAD
+[1.1.18]: https://github.com/gitcommit90/1Helm/compare/v1.1.17...v1.1.18
+[1.1.17]: https://github.com/gitcommit90/1Helm/compare/v1.1.16...v1.1.17
 [1.1.16]: https://github.com/gitcommit90/1Helm/compare/v1.1.15...v1.1.16
 [1.1.15]: https://github.com/gitcommit90/1Helm/compare/v1.1.14...v1.1.15
 [1.1.14]: https://github.com/gitcommit90/1Helm/compare/v1.1.13...v1.1.14
