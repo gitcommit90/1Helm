@@ -1,0 +1,21 @@
+node_modules/
+data/
+data-*/
+public/bundle.js
+public/bundle.css
+public/app.css
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+dist/
+
+# local runtime state & session artifacts
+data-refactored/
+.deploy-backups/
+.claude/
+.design/

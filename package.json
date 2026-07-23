@@ -1,0 +1,77 @@
+{
+  "name": "1helm",
+  "productName": "1Helm",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "1Helm is the self-hosted home for durable AI employees: one resident, one private computer, compounding memory and skills, and Skipper for every boundary.",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "assets:brand": "node scripts/generate-brand-assets.cjs",
+    "assets:screenshots": "node scripts/capture-user-guide-screenshots.mjs && node scripts/generate-readme-assets.cjs",
+    "assets:readme": "node scripts/generate-readme-assets.cjs",
+    "postinstall": "node scripts/ensure-node-pty-helper.cjs",
+    "build:js": "esbuild src/client/app.ts --bundle --format=esm --outfile=public/bundle.js --loader:.css=css --minify",
+    "build:css": "tailwindcss -i src/client/styles.css -o public/app.css --minify",
+    "build:stamp": "node src/build/stamp.mjs",
+    "build": "npm run build:js && npm run build:css && npm run build:stamp",
+    "start": "node --disable-warning=ExperimentalWarning src/server/index.ts",
+    "dev": "npm run build && npm start",
+    "watch:js": "esbuild src/client/app.ts --bundle --format=esm --outfile=public/bundle.js --loader:.css=css --watch",
+    "watch:css": "tailwindcss -i src/client/styles.css -o public/app.css --watch",
+    "typecheck": "tsc --noEmit && tsc -p cloudflare/tsconfig.json --noEmit",
+    "test:native": "node test/native-world.mjs",
+    "test:thread-audit": "node test/thread-audit.mjs",
+    "test:routing": "node --test test/routing.mjs",
+    "test:onboarding-browser": "node test/onboarding-browser.mjs",
+    "test:brief-browser": "node test/brief-regressions-browser.mjs",
+    "test:production-browser": "node test/production-browser.mjs",
+    "test:site": "node --test test/site.mjs",
+    "benchmark:autonomy": "node scripts/autonomy-benchmark.mjs",
+    "helm": "node scripts/1helm-cli.mjs",
+    "test:live": "node test/live-smoke.mjs",
+    "test": "node test/native-world.mjs && node --test test/routing.mjs test/routing-disabled-account.mjs test/desktop.mjs test/channel-computers.mjs test/cloudflare-worker.mjs test/connectors.mjs test/chatgpt-image.mjs test/autonomy-platform.mjs test/gmail.mjs test/photon.mjs test/site.mjs test/workflows.mjs",
+    "ci": "npm run typecheck && npm run build && npm test",
+    "test:pipeline": "node test/pipeline.mjs",
+    "desktop": "electron .",
+    "package:mac": "node scripts/package-mac-dmg.cjs",
+    "package:dmg:release": "HELM_REQUIRE_NOTARIZATION=1 node scripts/package-mac-dmg.cjs",
+    "test:desktop": "node --test test/desktop.mjs",
+    "test:channel-computers:mac": "node scripts/mac-channel-computer-acceptance.mjs"
+  },
+  "dependencies": {
+    "@gitcommit90/rerouted": "https://github.com/gitcommit90/rerouted/releases/download/v0.5.7/ReRouted-0.5.7-linux-node.tgz",
+    "@opencoredev/loginwithchatgpt-server": "^0.2.0",
+    "node-pty": "^1.1.0",
+    "spectrum-ts": "8.0.0",
+    "ws": "^8.21.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260722.1",
+    "@electron/osx-sign": "2.6.0",
+    "@electron/packager": "20.0.3",
+    "@tailwindcss/cli": "^4.3.2",
+    "@types/node": "^26.1.1",
+    "@types/ws": "^8.18.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "electron": "43.1.1",
+    "esbuild": "^0.28.1",
+    "puppeteer": "^25.3.0",
+    "sharp": "^0.35.3",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.113.0"
+  },
+  "overrides": {
+    "sharp": "$sharp",
+    "ws": "$ws"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gitcommit90/1Helm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gitcommit90/1Helm/issues"
+  },
+  "homepage": "https://1helm.com"
+}

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#08090c" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#15171c" media="(prefers-color-scheme: light)" />
+  <meta name="color-scheme" content="dark light" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="1Helm" />
+  <meta name="application-name" content="1Helm" />
+  <meta name="description" content="1Helm — native agent workspace on the 1Helm host." />
+  <title>1Helm — Native agent workspace</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" type="image/png" href="/brand/1helm-sailboat.png" />
+  <link rel="apple-touch-icon" href="/icons/icon-sailboat-192.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400..700;1,400..700&family=Instrument+Serif:ital@0;1&family=Fragment+Mono:ital@0;1&display=swap" rel="stylesheet" />
+  <script>
+    (function () {
+      var t = localStorage.getItem("ctrl.theme");
+      if (!t) t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      document.documentElement.classList.add(t);
+      document.documentElement.dataset.workspaceTheme = localStorage.getItem("ctrl.workspaceTheme") || "graphite";
+      var color = t === "light" ? "#15171c" : "#08090c";
+      document.querySelectorAll('meta[name="theme-color"]').forEach(function (m) { m.setAttribute("content", color); });
+    })();
+  </script>
+  <link rel="stylesheet" href="/app.css?v=41b2a41f2fd4" />
+  <link rel="stylesheet" href="/bundle.css" />
+</head>
+<body class="h-screen w-screen overflow-hidden antialiased">
+  <div id="app" class="h-full w-full"></div>
+  <script type="module" src="/bundle.js?v=99698fa9956c"></script>
+</body>
+</html>
