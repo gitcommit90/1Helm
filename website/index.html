@@ -1,0 +1,1345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1Helm — AI that keeps the job</title>
+<meta name="description" content="1Helm gives every job a permanent resident AI with its own private Linux computer, memory that compounds, durable obligations, and a chief of staff at the boundary. Self-hosted, open source, Apple Silicon native.">
+<meta property="og:title" content="1Helm — AI that keeps the job">
+<meta property="og:description" content="One resident per job. One private computer. Memory that compounds. Skipper at the boundary. Let them cook. Keep the helm.">
+<meta property="og:type" content="website">
+<link rel="icon" type="image/png" href="assets/logo-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink0:#0B121F; --ink1:#101828; --ink2:#16233A; --ink3:#1E2D4A;
+  --line:rgba(151,187,231,.20); --line2:rgba(151,187,231,.36);
+  --fg:#F2F6FC; --mut:#AABBD6; --dim:#7B90B0;
+  --cyan:#6FD6FF; --foam:#C4EAFF; --amber:#FFB35C; --amber2:#FF9736;
+  --green:#5CE49B; --red:#FF7A7A;
+  --disp:"Fraunces",Georgia,serif;
+  --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --maxw:1180px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{
+  background:var(--ink0);color:var(--fg);font-family:var(--sans);
+  font-size:17px;line-height:1.65;-webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+::selection{background:rgba(111,214,255,.28);color:#fff}
+a{color:inherit;text-decoration:none}
+img,svg{display:block;max-width:100%}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+
+/* grain */
+body::after{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:60;opacity:.05;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+}
+
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 28px}
+.mono{font-family:var(--mono)}
+
+/* ---------- nav ---------- */
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:50;
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  background:rgba(4,7,12,.55);border-bottom:1px solid transparent;
+  transition:border-color .3s;
+}
+nav.scrolled{border-bottom-color:var(--line)}
+.nav-in{max-width:var(--maxw);margin:0 auto;padding:0 28px;height:64px;display:flex;align-items:center;gap:34px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;letter-spacing:.01em;font-size:17px}
+.brand img{width:26px;height:26px;border-radius:7px}
+.nav-links{display:flex;gap:26px;margin-left:auto;font-size:13.5px;color:var(--mut)}
+.nav-links a{transition:color .2s}
+.nav-links a:hover{color:var(--fg)}
+.nav-cta{margin-left:8px}
+@media(max-width:920px){.nav-links{display:none}.nav-cta{margin-left:auto}}
+
+.btn{
+  display:inline-flex;align-items:center;gap:9px;border-radius:999px;
+  padding:12px 22px;font-size:14.5px;font-weight:600;letter-spacing:.01em;
+  transition:transform .15s, box-shadow .2s, background .2s, border-color .2s;
+}
+.btn:active{transform:translateY(1px)}
+.btn-solid{background:var(--amber);color:#241303}
+.btn-solid:hover{background:var(--amber2);box-shadow:0 6px 32px rgba(255,151,54,.35)}
+.btn-ghost{border:1px solid var(--line2);color:var(--fg)}
+.btn-ghost:hover{border-color:rgba(148,184,226,.55);background:rgba(148,184,226,.06)}
+.btn-sm{padding:9px 16px;font-size:13px}
+
+/* ---------- hero ---------- */
+header.hero{position:relative;min-height:100svh;display:flex;flex-direction:column;justify-content:center;overflow:hidden}
+#sea{position:absolute;inset:0;width:100%;height:100%}
+.hero-fade{position:absolute;inset:0;background:
+  radial-gradient(1100px 560px at 68% 8%, rgba(111,214,255,.09), transparent 60%),
+  linear-gradient(180deg, rgba(11,18,31,.2) 0%, rgba(11,18,31,0) 30%, rgba(11,18,31,.9) 94%);
+  pointer-events:none}
+.hero-art{
+  position:absolute;top:50%;right:6vw;transform:translateY(-56%);
+  width:min(400px,28vw);border-radius:8%;pointer-events:none;z-index:1;
+  box-shadow:0 40px 120px rgba(0,0,0,.55), 0 0 0 1px rgba(191,232,255,.22), 0 0 90px rgba(111,214,255,.18);
+  animation:bob 9s ease-in-out infinite;
+}
+@keyframes bob{0%,100%{transform:translateY(-56%) rotate(.4deg)}50%{transform:translateY(-53%) rotate(-.6deg)}}
+@media (prefers-reduced-motion:reduce){.hero-art{animation:none}}
+@media(max-width:1120px){.hero-art{display:none}}
+.hero-in{position:relative;z-index:2;padding:140px 0 90px}
+.kicker{font-family:var(--mono);font-size:12.5px;letter-spacing:.22em;color:var(--cyan);text-transform:uppercase}
+.kicker .dot{color:var(--dim)}
+h1{
+  font-family:var(--disp);font-weight:420;font-variation-settings:"opsz" 144;
+  font-size:clamp(52px,8.4vw,118px);line-height:1.02;letter-spacing:-.015em;
+  margin:26px 0 30px;
+}
+h1 em{font-style:italic;color:var(--foam)}
+.hero-sub{max-width:540px;font-size:clamp(17px,1.6vw,20px);color:var(--mut);line-height:1.7}
+.hero-sub strong{color:var(--fg);font-weight:600}
+.hero-ctas{display:flex;flex-wrap:wrap;gap:14px;margin-top:40px;align-items:center}
+.hero-tag{font-family:var(--mono);font-size:13px;color:var(--dim);margin-left:6px}
+.hero-stats{position:relative;z-index:2;border-top:1px solid var(--line);margin-top:auto}
+.hero-stats .wrap{display:grid;grid-template-columns:repeat(4,1fr);gap:0}
+.stat{padding:22px 26px 26px 0;border-left:1px solid var(--line);padding-left:26px}
+.stat:first-child{border-left:0;padding-left:0}
+.stat b{display:block;font-family:var(--disp);font-weight:450;font-size:30px;letter-spacing:-.01em}
+.stat span{font-size:12.5px;color:var(--dim);font-family:var(--mono);letter-spacing:.04em}
+@media(max-width:860px){.hero-stats .wrap{grid-template-columns:1fr 1fr}.stat{border-left:0;padding-left:0}}
+
+/* ---------- ticker ---------- */
+.ticker{border-top:1px solid var(--line);border-bottom:1px solid var(--line);overflow:hidden;background:var(--ink1)}
+.ticker-track{display:flex;width:max-content;animation:tick 46s linear infinite;padding:13px 0}
+@media (prefers-reduced-motion:reduce){.ticker-track{animation:none}}
+.ticker-track span{font-family:var(--mono);font-size:12.5px;letter-spacing:.18em;color:var(--dim);white-space:nowrap;padding:0 26px}
+.ticker-track span i{font-style:normal;color:var(--cyan);padding-right:26px}
+@keyframes tick{to{transform:translateX(-50%)}}
+
+/* ---------- sections ---------- */
+section{padding:130px 0;position:relative}
+.sec-kicker{font-family:var(--mono);font-size:12.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan);margin-bottom:20px}
+.sec-kicker b{color:var(--dim);font-weight:400;margin-right:14px}
+h2{
+  font-family:var(--disp);font-weight:430;font-variation-settings:"opsz" 100;
+  font-size:clamp(36px,4.6vw,62px);line-height:1.06;letter-spacing:-.012em;max-width:20ch;
+}
+h2 em{font-style:italic;color:var(--foam)}
+.lede{margin-top:24px;max-width:620px;color:var(--mut);font-size:18px}
+.lede strong{color:var(--fg)}
+
+.reveal{opacity:0;transform:translateY(26px);transition:opacity .7s ease,transform .7s ease}
+.reveal.on{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none;transition:none}}
+
+/* ---------- problem ---------- */
+#problem{background:linear-gradient(180deg,var(--ink0),var(--ink1))}
+.compare{display:grid;grid-template-columns:1fr 1fr;gap:26px;margin-top:64px}
+@media(max-width:900px){.compare{grid-template-columns:1fr}}
+.pane{border:1px solid var(--line);border-radius:18px;background:var(--ink1);overflow:hidden;display:flex;flex-direction:column}
+.pane-head{display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12.5px;letter-spacing:.1em;color:var(--dim)}
+.pane-head .lamp{width:8px;height:8px;border-radius:50%}
+.pane-body{padding:22px 20px 26px;display:flex;flex-direction:column;gap:12px;flex:1}
+.chatline{font-size:14.5px;line-height:1.55;padding:10px 14px;border-radius:12px;max-width:92%}
+.chat-u{background:var(--ink3);align-self:flex-end;border:1px solid var(--line)}
+.chat-a{background:rgba(148,184,226,.05);border:1px solid var(--line)}
+.pane.amnesia .chatline:nth-child(1){opacity:.25}
+.pane.amnesia .chatline:nth-child(2){opacity:.4}
+.pane.amnesia .chatline:nth-child(3){opacity:.6}
+.gone{font-family:var(--mono);font-size:12px;color:var(--red);letter-spacing:.14em;text-align:center;padding:14px;border:1px dashed rgba(255,122,122,.35);border-radius:12px;margin-top:6px}
+.ledger{display:flex;flex-direction:column;gap:0;font-family:var(--mono);font-size:13px}
+.ledger li{list-style:none;display:flex;gap:14px;padding:9px 2px;border-bottom:1px dashed var(--line);color:var(--mut)}
+.ledger li:last-child{border-bottom:0}
+.ledger .d{color:var(--dim);min-width:70px}
+.ledger .t{color:var(--cyan);min-width:88px}
+.pane-foot{padding:14px 20px;border-top:1px solid var(--line);font-family:var(--mono);font-size:12px;letter-spacing:.1em}
+.pane-foot.bad{color:var(--red)} .pane-foot.good{color:var(--green)}
+.problem-pull{margin-top:70px;font-family:var(--disp);font-size:clamp(24px,3vw,36px);font-weight:420;line-height:1.3;max-width:26ch;color:var(--fg)}
+.problem-pull em{color:var(--foam);font-style:italic}
+
+/* ---------- model / org ---------- */
+.org{display:grid;grid-template-columns:1.05fr .95fr;gap:70px;margin-top:70px;align-items:start}
+@media(max-width:980px){.org{grid-template-columns:1fr}}
+.roles{display:flex;flex-direction:column;gap:14px}
+.role{border:1px solid var(--line);border-radius:16px;padding:24px 24px;background:var(--ink1);transition:border-color .25s,background .25s}
+.role:hover{border-color:var(--line2);background:var(--ink2)}
+.role h3{font-family:var(--disp);font-weight:480;font-size:24px;display:flex;align-items:baseline;gap:12px}
+.role h3 .who{font-family:var(--mono);font-size:11.5px;letter-spacing:.16em;color:var(--cyan);text-transform:uppercase}
+.role p{margin-top:9px;color:var(--mut);font-size:15.5px}
+.orgviz{border:1px solid var(--line);border-radius:18px;background:var(--ink1);padding:18px;position:sticky;top:96px}
+.orgviz svg{width:100%;height:auto}
+.orgviz text{font-family:var(--mono);fill:var(--mut);font-size:11.5px;letter-spacing:.08em}
+.orgviz .nodebox{fill:var(--ink2);stroke:var(--line2)}
+.orgviz .cap{stroke:var(--amber)}
+.orgviz .skip{stroke:var(--cyan)}
+.orgviz .flow{stroke:rgba(111,214,255,.5);stroke-width:1.3;fill:none;stroke-dasharray:5 6;animation:dash 2.6s linear infinite}
+.orgviz .flow.slow{animation-duration:4s;stroke:rgba(255,179,92,.45)}
+@keyframes dash{to{stroke-dashoffset:-44}}
+@media (prefers-reduced-motion:reduce){.orgviz .flow{animation:none}}
+
+/* ---------- anatomy ---------- */
+#anatomy{background:var(--ink1)}
+.anat{display:grid;grid-template-columns:.9fr 1.1fr;gap:60px;margin-top:64px;align-items:start}
+@media(max-width:980px){.anat{grid-template-columns:1fr}}
+.anat-list{display:flex;flex-direction:column}
+.anat-item{border-bottom:1px solid var(--line);padding:20px 6px;cursor:default;transition:background .2s;border-radius:8px}
+.anat-item:hover,.anat-item.lit{background:rgba(111,214,255,.05)}
+.anat-item h4{font-size:16.5px;font-weight:600;display:flex;gap:12px;align-items:baseline}
+.anat-item h4 .n{font-family:var(--mono);font-size:11px;color:var(--cyan)}
+.anat-item p{color:var(--mut);font-size:14.5px;margin-top:5px}
+.schematic{border:1px solid var(--line2);border-radius:20px;background:var(--ink1);padding:22px;position:sticky;top:96px}
+.schem-title{font-family:var(--mono);font-size:12px;letter-spacing:.16em;color:var(--dim);display:flex;justify-content:space-between;padding:0 4px 16px}
+.schem-title b{color:var(--cyan);font-weight:500}
+.schem-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.part{border:1px solid var(--line);border-radius:14px;padding:16px;background:var(--ink2);transition:border-color .2s, box-shadow .2s, background .2s;min-height:96px}
+.part.wide{grid-column:1/-1}
+.part h5{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--mut);font-weight:500}
+.part p{font-size:13px;color:var(--dim);margin-top:6px;line-height:1.5}
+.part.lit{border-color:var(--cyan);background:rgba(111,214,255,.06);box-shadow:0 0 0 1px rgba(111,214,255,.4), 0 0 34px rgba(111,214,255,.08)}
+.part .chip{display:inline-block;font-family:var(--mono);font-size:10.5px;color:var(--cyan);border:1px solid rgba(111,214,255,.3);border-radius:6px;padding:2px 7px;margin:8px 6px 0 0}
+
+/* ---------- handoff ---------- */
+.handoff{display:grid;grid-template-columns:.95fr 1.05fr;gap:60px;margin-top:64px;align-items:start}
+@media(max-width:980px){.handoff{grid-template-columns:1fr}}
+.steps{display:flex;flex-direction:column;gap:6px}
+.step{display:flex;gap:18px;padding:18px 16px;border-radius:14px;border:1px solid transparent;cursor:pointer;transition:background .25s,border-color .25s}
+.step .num{font-family:var(--mono);font-size:12px;color:var(--dim);padding-top:3px;min-width:24px;transition:color .25s}
+.step h4{font-size:16.5px;font-weight:600}
+.step p{color:var(--mut);font-size:14.5px;margin-top:4px}
+.step.active{background:var(--ink2);border-color:var(--line2)}
+.step.active .num{color:var(--amber)}
+.step .bar{height:2px;background:var(--line);border-radius:2px;margin-top:12px;overflow:hidden;display:none}
+.step.active .bar{display:block}
+.step .bar i{display:block;height:100%;background:var(--amber);width:0%}
+.scene{border:1px solid var(--line2);border-radius:20px;background:var(--ink1);padding:26px;position:sticky;top:96px}
+.scene svg{width:100%;height:auto}
+.scene text{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;fill:var(--mut)}
+.scene .box{fill:var(--ink2);stroke:var(--line2);rx:14}
+.scene .box.hot{stroke:var(--amber);filter:drop-shadow(0 0 14px rgba(255,179,92,.25))}
+.scene .box.cool{stroke:var(--cyan);filter:drop-shadow(0 0 14px rgba(111,214,255,.22))}
+.scene .edge{stroke:rgba(148,184,226,.22);stroke-width:1.4;fill:none}
+.scene .edge.hot{stroke:var(--amber);stroke-dasharray:6 7;animation:dash 1.4s linear infinite}
+.scene .edge.cool{stroke:var(--cyan);stroke-dasharray:6 7;animation:dash 1.4s linear infinite}
+.scene .badge{opacity:0;transition:opacity .4s}
+.scene .badge.show{opacity:1}
+.handoff-pull{margin-top:56px;border-left:2px solid var(--amber);padding:6px 0 6px 28px;font-family:var(--disp);font-size:clamp(21px,2.4vw,29px);line-height:1.4;font-weight:420;max-width:34ch}
+.handoff-pull em{font-style:italic;color:var(--foam)}
+
+/* ---------- gate ---------- */
+#gate{background:var(--ink1)}
+.gate-grid{display:grid;grid-template-columns:1fr 1fr;gap:70px;margin-top:64px;align-items:start}
+@media(max-width:980px){.gate-grid{grid-template-columns:1fr}}
+.gate-copy p{color:var(--mut);margin-bottom:18px;font-size:16px}
+.gate-copy p strong{color:var(--fg)}
+.gate-list{margin:26px 0;display:flex;flex-direction:column;gap:10px}
+.gate-list li{list-style:none;display:flex;gap:14px;align-items:baseline;font-size:15px;color:var(--mut)}
+.gate-list li b{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--red);border:1px solid rgba(255,122,122,.35);border-radius:6px;padding:2px 8px;white-space:nowrap}
+.chatmock{border:1px solid var(--line2);border-radius:20px;background:var(--ink1);overflow:hidden}
+.chatmock-head{padding:14px 20px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12px;letter-spacing:.12em;color:var(--dim);display:flex;gap:10px;align-items:center}
+.chatmock-head .lamp{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green)}
+.chatmock-body{padding:22px;display:flex;flex-direction:column;gap:14px}
+.msg{border:1px solid var(--line);border-radius:14px;padding:13px 16px;font-size:14px;line-height:1.6;max-width:94%}
+.msg .who{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;color:var(--dim);display:block;margin-bottom:6px;text-transform:uppercase}
+.msg.user{align-self:flex-end;background:var(--ink3)}
+.msg.bot{background:rgba(151,187,231,.08)}
+.msg.bot .strike{text-decoration:line-through;text-decoration-color:rgba(255,122,122,.7);color:var(--dim)}
+.objection{
+  border:1px solid rgba(255,179,92,.5);background:rgba(255,151,54,.07);border-radius:14px;
+  padding:13px 16px;font-family:var(--mono);font-size:12.5px;line-height:1.7;color:var(--amber);
+  box-shadow:0 0 30px rgba(255,151,54,.07)
+}
+.objection b{letter-spacing:.14em;font-weight:500}
+.worklog{font-family:var(--mono);font-size:12.5px;color:var(--mut);border:1px solid var(--line);border-radius:14px;padding:14px 16px;line-height:1.9}
+.worklog .ok{color:var(--green)}
+.worklog .cmd{color:var(--foam)}
+.evidence{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:12px;color:var(--green);letter-spacing:.1em}
+
+/* ---------- time ---------- */
+.time-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin-top:64px}
+@media(max-width:900px){.time-cards{grid-template-columns:1fr}}
+.tcard{border:1px solid var(--line);border-radius:18px;padding:28px;background:var(--ink1)}
+.tcard h3{font-family:var(--disp);font-size:23px;font-weight:480;margin-bottom:10px}
+.tcard p{color:var(--mut);font-size:15px}
+.tcard .mono-tag{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--cyan);border:1px solid rgba(111,214,255,.3);border-radius:999px;padding:4px 12px;margin-bottom:16px;text-transform:uppercase}
+.timeline{margin-top:34px;border:1px solid var(--line);border-radius:18px;background:var(--ink1);padding:30px 26px;overflow-x:auto}
+.tl-track{position:relative;height:110px;min-width:760px}
+.tl-line{position:absolute;left:0;right:0;top:54px;height:1px;background:var(--line2)}
+.tl-ev{position:absolute;top:0;transform:translateX(-50%);text-align:center;width:150px}
+.tl-ev .pin{width:10px;height:10px;border-radius:50%;background:var(--cyan);margin:49px auto 0;box-shadow:0 0 12px rgba(111,214,255,.6)}
+.tl-ev.wake .pin{background:var(--amber);box-shadow:0 0 12px rgba(255,179,92,.6)}
+.tl-ev .lab{font-family:var(--mono);font-size:11px;color:var(--mut);letter-spacing:.06em;margin-top:12px;line-height:1.5}
+.tl-ev .when{font-family:var(--mono);font-size:10.5px;color:var(--dim);position:absolute;top:16px;left:0;right:0}
+
+/* ---------- routing ---------- */
+#routing{background:linear-gradient(180deg,var(--ink1) 0%,#0D1626 30%,#0D1626 70%,var(--ink0) 100%)}
+.fabric-shell{margin-top:64px;border:1px solid var(--line2);border-radius:24px;background:rgba(18,28,47,.8);overflow:hidden;box-shadow:0 30px 120px rgba(0,0,0,.4), inset 0 1px 0 rgba(151,187,231,.12)}
+.fabric-bar{display:flex;flex-wrap:wrap;align-items:center;gap:14px;padding:16px 22px;border-bottom:1px solid var(--line)}
+.fabric-bar .title{font-family:var(--mono);font-size:12px;letter-spacing:.16em;color:var(--dim)}
+.seg{display:flex;border:1px solid var(--line2);border-radius:999px;overflow:hidden;margin-left:auto}
+.seg button{font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;padding:8px 16px;color:var(--dim);transition:background .2s,color .2s}
+.seg button.on{background:rgba(111,214,255,.14);color:var(--cyan)}
+.fabric-hint{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+.fabric-hint b{color:var(--amber);font-weight:500}
+#fabricSvg{width:100%;height:auto;display:block}
+#fabricSvg text{font-family:var(--mono);letter-spacing:.04em}
+.acct{cursor:pointer}
+.acct rect{fill:var(--ink2);stroke:var(--line2);transition:stroke .2s,opacity .2s}
+.acct:hover rect{stroke:var(--cyan)}
+.acct.off rect{stroke:rgba(255,122,122,.45);stroke-dasharray:5 5;opacity:.45}
+.acct.off text{opacity:.45}
+.acct .name{fill:var(--fg);font-size:12.5px;font-weight:500}
+.acct .sub{fill:var(--dim);font-size:10px}
+.acct .offlab{fill:var(--red);font-size:9.5px;letter-spacing:.14em;opacity:0}
+.acct.off .offlab{opacity:1}
+.chan rect{fill:var(--ink2);stroke:var(--line2)}
+.chan .name{fill:var(--fg);font-size:12.5px;font-weight:500}
+.chan .sub{fill:var(--dim);font-size:10px}
+.wire{stroke:rgba(151,187,231,.22);stroke-width:1.2;fill:none}
+.router-ring{fill:none;stroke:var(--cyan);stroke-width:1.6;opacity:.9}
+.router-core{fill:rgba(111,214,255,.14);stroke:var(--cyan)}
+.fabric-log-shell{border-top:1px solid var(--line);padding:16px 22px;display:grid;grid-template-columns:1fr auto;gap:20px;align-items:start}
+#fabricLog{list-style:none;font-family:var(--mono);font-size:11.8px;line-height:2;color:var(--mut);min-height:96px}
+#fabricLog .ts{color:var(--dim)} #fabricLog .rt{color:var(--cyan)} #fabricLog .ac{color:var(--foam)} #fabricLog .fail{color:var(--red)}
+.fabric-count{font-family:var(--mono);font-size:11.5px;color:var(--dim);text-align:right;line-height:2}
+.fabric-count b{color:var(--green);font-weight:500}
+.routing-points{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin-top:44px}
+@media(max-width:900px){.routing-points{grid-template-columns:1fr}}
+.rpoint{border-top:1px solid var(--line2);padding-top:18px}
+.rpoint h4{font-size:16px;font-weight:600;margin-bottom:8px}
+.rpoint p{color:var(--mut);font-size:14.5px}
+.rpoint code{font-family:var(--mono);font-size:12.5px;color:var(--cyan);background:rgba(111,214,255,.08);border-radius:6px;padding:2px 7px}
+
+/* ---------- skills ---------- */
+#skills{background:var(--ink0)}
+.pipeline{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:56px}
+.pipe{border:1px solid var(--line2);background:var(--ink1);border-radius:12px;padding:12px 18px;font-family:var(--mono);font-size:12px;letter-spacing:.08em;color:var(--foam)}
+.pipe small{display:block;color:var(--dim);font-size:10.5px;letter-spacing:.04em;margin-top:3px}
+.pipe-arrow{color:var(--dim);font-family:var(--mono)}
+.skillgrid{display:flex;flex-wrap:wrap;gap:10px;margin-top:44px}
+.skillgrid span{font-family:var(--mono);font-size:12px;color:var(--mut);border:1px solid var(--line);border-radius:999px;padding:7px 15px;transition:border-color .2s,color .2s}
+.skillgrid span:hover{border-color:var(--cyan);color:var(--foam)}
+.skills-cols{display:grid;grid-template-columns:1fr 1fr;gap:26px;margin-top:56px}
+@media(max-width:900px){.skills-cols{grid-template-columns:1fr}}
+.skillcard{border:1px solid var(--line);border-radius:18px;padding:30px;background:var(--ink1)}
+.skillcard h3{font-family:var(--disp);font-size:24px;font-weight:470;margin-bottom:12px}
+.skillcard p{color:var(--mut);font-size:15px;margin-bottom:10px}
+.skillcard p b{color:var(--fg)}
+.notrust{font-family:var(--mono);font-size:12px;letter-spacing:.1em;color:var(--amber);border:1px dashed rgba(255,179,92,.4);border-radius:10px;padding:10px 16px;display:inline-block;margin-top:8px}
+
+/* ---------- connections ---------- */
+#connections{background:var(--ink1)}
+.conn-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:60px;margin-top:64px;align-items:start}
+@media(max-width:980px){.conn-grid{grid-template-columns:1fr}}
+.conn-cards{display:flex;flex-direction:column;gap:20px}
+.conncard{border:1px solid var(--line);border-radius:18px;padding:28px;background:var(--ink2)}
+.conncard h3{font-size:19px;font-weight:600;display:flex;align-items:center;gap:12px}
+.conncard h3 .ic{width:34px;height:34px;border-radius:10px;border:1px solid var(--line2);display:grid;place-items:center;font-family:var(--mono);font-size:13px;color:var(--cyan)}
+.conncard p{color:var(--mut);font-size:14.5px;margin-top:12px}
+.scope{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.scope span{font-family:var(--mono);font-size:11px;letter-spacing:.06em;border-radius:999px;padding:4px 12px;border:1px solid rgba(92,228,155,.35);color:var(--green)}
+.scope span.no{border-color:rgba(255,122,122,.35);color:var(--red);text-decoration:line-through}
+.vault{border:1px solid var(--line2);border-radius:20px;background:var(--ink1);padding:30px;position:sticky;top:96px}
+.vault svg{width:100%;height:auto}
+.vault text{font-family:var(--mono);font-size:11px;fill:var(--mut);letter-spacing:.06em}
+
+/* ---------- truth ---------- */
+.truth-table{margin-top:64px;border:1px solid var(--line2);border-radius:18px;overflow:hidden}
+.trow{display:grid;grid-template-columns:270px 1fr;border-top:1px solid var(--line)}
+.trow:first-child{border-top:0}
+.trow>div{padding:22px 26px}
+.trow .plat{font-family:var(--mono);font-size:13px;color:var(--foam);letter-spacing:.04em;background:var(--ink1)}
+.trow .what{color:var(--mut);font-size:15px}
+.trow .what b{color:var(--fg)}
+@media(max-width:760px){.trow{grid-template-columns:1fr}.trow .plat{padding-bottom:4px}}
+.notyet{margin-top:34px;border:1px dashed rgba(255,179,92,.35);border-radius:14px;padding:20px 24px;font-size:14.5px;color:var(--mut)}
+.notyet b{font-family:var(--mono);font-size:11.5px;letter-spacing:.16em;color:var(--amber);display:block;margin-bottom:8px}
+.sec-strip{margin-top:64px;display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:18px;overflow:hidden}
+@media(max-width:900px){.sec-strip{grid-template-columns:1fr}}
+.sec-cell{background:var(--ink1);padding:26px}
+.sec-cell h4{font-size:15px;font-weight:600;margin-bottom:7px;display:flex;gap:10px;align-items:center}
+.sec-cell h4 svg{width:15px;height:15px;stroke:var(--green)}
+.sec-cell p{font-size:13.5px;color:var(--mut)}
+
+/* ---------- cta ---------- */
+#cta{padding:170px 0 150px;text-align:center;background:
+  radial-gradient(800px 420px at 50% 118%, rgba(111,214,255,.14), transparent 70%),var(--ink0)}
+#cta .kicker{justify-content:center}
+.cta-logo{width:86px;height:86px;border-radius:20px;margin:0 auto 34px;box-shadow:0 18px 60px rgba(0,0,0,.5), 0 0 0 1px rgba(191,232,255,.25), 0 0 60px rgba(111,214,255,.2)}
+#cta h2{margin:26px auto 0;max-width:14ch;font-size:clamp(46px,6.6vw,92px)}
+#cta .lede{margin:26px auto 0;text-align:center}
+.cta-btns{display:flex;justify-content:center;gap:16px;margin-top:46px;flex-wrap:wrap}
+.install{margin:56px auto 0;max-width:560px;text-align:left;border:1px solid var(--line);border-radius:16px;background:var(--ink1)}
+.install-head{font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;color:var(--dim);padding:12px 20px;border-bottom:1px solid var(--line)}
+.install ol{padding:18px 20px 20px 40px;color:var(--mut);font-size:14.5px;display:flex;flex-direction:column;gap:8px}
+.install li::marker{font-family:var(--mono);color:var(--cyan)}
+
+footer{border-top:1px solid var(--line);padding:44px 0 60px;background:var(--ink0)}
+.foot{display:flex;flex-wrap:wrap;gap:26px;align-items:center;justify-content:space-between}
+.foot .brand{opacity:.9}
+.foot-links{display:flex;flex-wrap:wrap;gap:24px;font-size:13.5px;color:var(--mut)}
+.foot-links a:hover{color:var(--fg)}
+.foot-tag{width:100%;margin-top:26px;font-family:var(--mono);font-size:12px;color:var(--dim);letter-spacing:.08em}
+</style>
+</head>
+<body>
+
+<nav id="nav">
+  <div class="nav-in">
+    <a class="brand" href="#top">
+      <img src="assets/logo-64.png" alt="1Helm logo — a lone sailor at the helm">
+      1Helm
+    </a>
+    <div class="nav-links">
+      <a href="#problem">Why</a>
+      <a href="#model">The crew</a>
+      <a href="#handoff">The handoff</a>
+      <a href="#routing">Routing</a>
+      <a href="#skills">Skills</a>
+      <a href="#truth">Truth</a>
+    </div>
+    <a class="btn btn-solid btn-sm nav-cta" href="https://1helm.com/download/macos">Download</a>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <canvas id="sea" aria-hidden="true"></canvas>
+  <div class="hero-fade" aria-hidden="true"></div>
+
+  <img class="hero-art" src="assets/logo-hero.png" alt="" aria-hidden="true">
+
+  <div class="wrap hero-in">
+    <div class="kicker">Open source <span class="dot">·</span> Self-hosted <span class="dot">·</span> Apple Silicon native</div>
+    <h1>AI that <em>keeps</em><br>the job.</h1>
+    <p class="hero-sub">
+      1Helm gives every job a <strong>permanent resident AI</strong> with its own
+      <strong>private Linux computer</strong>, memory that compounds, and a chief of staff
+      at every boundary. You set the outcome. The crew finishes the work — and gets
+      better every time.
+    </p>
+    <div class="hero-ctas">
+      <a class="btn btn-solid" href="https://1helm.com/download/macos">Download for Apple Silicon</a>
+      <a class="btn btn-ghost" href="https://github.com/gitcommit90/1Helm">Read the source</a>
+      <span class="hero-tag">Let them cook. Keep the helm.</span>
+    </div>
+  </div>
+
+  <div class="hero-stats">
+    <div class="wrap">
+      <div class="stat"><b>1</b><span>resident per channel — permanent</span></div>
+      <div class="stat"><b>1</b><span>private Linux computer each</span></div>
+      <div class="stat"><b>34</b><span>complete built-in playbooks</span></div>
+      <div class="stat"><b>SHA-256</b><span>tamper-evident audit chain</span></div>
+    </div>
+  </div>
+</header>
+
+<div class="ticker" aria-hidden="true">
+  <div class="ticker-track" id="tickTrack">
+    <span><i>✦</i>ONE RESIDENT PER CHANNEL</span>
+    <span><i>✦</i>THREADS ARE SESSIONS, NOT IDENTITIES</span>
+    <span><i>✦</i>MEMORY WITH PROVENANCE</span>
+    <span><i>✦</i>OBLIGATIONS WAKE SLEEPING COMPUTERS</span>
+    <span><i>✦</i>SKIPPER AT THE BOUNDARY</span>
+    <span><i>✦</i>FALLBACK &amp; ROUND-ROBIN ROUTES</span>
+    <span><i>✦</i>OPENAI + ANTHROPIC COMPATIBLE /v1</span>
+    <span><i>✦</i>SIGNED · NOTARIZED · STAPLED</span>
+  </div>
+</div>
+
+<!-- ============ PROBLEM ============ -->
+<section id="problem">
+  <div class="wrap">
+    <div class="sec-kicker reveal"><b>01</b>The problem</div>
+    <h2 class="reveal">Chat sessions are brilliant <em>temps</em>. Jobs need employees.</h2>
+    <p class="lede reveal">Every new chat is a new hire on day one: no memory of last week's decisions,
+    no files, no tools installed, nothing owed to anyone. Close the tab and the employee evaporates.
+    <strong>1Helm inverts this.</strong> The job is the durable unit — threads are just sessions inside
+    a permanent identity.</p>
+
+    <div class="compare">
+      <div class="pane amnesia reveal">
+        <div class="pane-head"><span class="lamp" style="background:var(--red)"></span>A CHAT SESSION · DAY 1, FOREVER</div>
+        <div class="pane-body">
+          <div class="chatline chat-u">Here's our launch plan, our naming rules, and the staging server again…</div>
+          <div class="chatline chat-a">Got it! Could you re-share the API schema from last time?</div>
+          <div class="chatline chat-u">…I pasted that yesterday. And Monday.</div>
+          <div class="gone">SESSION ENDED — CONTEXT DESTROYED</div>
+        </div>
+        <div class="pane-foot bad">memory: 0 · computer: none · owes you: nothing</div>
+      </div>
+
+      <div class="pane reveal">
+        <div class="pane-head"><span class="lamp" style="background:var(--green)"></span>A 1HELM RESIDENT · #product-launch</div>
+        <div class="pane-body">
+          <ul class="ledger">
+            <li><span class="d">day 3</span><span class="t">decision</span>ship behind the beta flag; GA on the 14th</li>
+            <li><span class="d">day 9</span><span class="t">correction</span>never auto-publish the changelog — Captain reviews first</li>
+            <li><span class="d">day 17</span><span class="t">skill</span>crystallized: release-notes procedure, with verification</li>
+            <li><span class="d">day 24</span><span class="t">obligation</span>weekly launch audit — wakes the computer itself</li>
+            <li><span class="d">day 61</span><span class="t">artifact</span>/workspace/launch — every script and draft, still there</li>
+          </ul>
+        </div>
+        <div class="pane-foot good">memory: compounding · computer: persistent · owes you: outcomes</div>
+      </div>
+    </div>
+
+    <p class="problem-pull reveal">Switch the model, restart the app, open a new thread —
+    <em>the resident, its computer, its memory, and its obligations all survive.</em></p>
+  </div>
+</section>
+
+<!-- ============ MODEL / CREW ============ -->
+<section id="model">
+  <div class="wrap">
+    <div class="sec-kicker reveal"><b>02</b>The operating model</div>
+    <h2 class="reveal">A company, not a pile of chat tabs.</h2>
+    <p class="lede reveal">Three roles, sharply drawn. The whole product falls out of keeping them honest.</p>
+
+    <div class="org">
+      <div class="roles">
+        <div class="role reveal">
+          <h3>The Captain <span class="who">that's you</span></h3>
+          <p>Workspace owner and final human authority. Sets outcomes; brings judgment, taste,
+          credentials, and real-world authority. <b style="color:var(--fg)">Not</b> the package manager,
+          retry loop, permission dialog, or message bus between agents.</p>
+        </div>
+        <div class="role reveal">
+          <h3>Skipper <span class="who">chief of staff</span></h3>
+          <p>One workspace-wide operator living in your private <span class="mono" style="color:var(--cyan)">#main</span>.
+          Handles the host, credentials, connections, the computer fleet, lifecycle, audits, and
+          anything that crosses a channel boundary. Residents call Skipper directly — you don't relay.</p>
+        </div>
+        <div class="role reveal">
+          <h3>Residents <span class="who">permanent specialists</span></h3>
+          <p>Exactly one per ordinary channel. Each owns its outcome and works autonomously inside
+          its own computer: inspects, installs, edits, runs, retries, waits, verifies. Threads come
+          and go; the employee stays.</p>
+        </div>
+      </div>
+
+      <div class="orgviz reveal" aria-label="Diagram: Captain sets outcomes, residents execute in private computers, Skipper crosses boundaries">
+        <svg viewBox="0 0 520 460">
+          <!-- captain -->
+          <rect class="nodebox cap" x="155" y="18" width="210" height="52" rx="12"/>
+          <text x="260" y="41" text-anchor="middle" fill="#FFB35C">CAPTAIN</text>
+          <text x="260" y="58" text-anchor="middle">sets the outcome</text>
+          <!-- skipper -->
+          <rect class="nodebox skip" x="155" y="130" width="210" height="52" rx="12"/>
+          <text x="260" y="153" text-anchor="middle" fill="#6FD6FF">SKIPPER · #main</text>
+          <text x="260" y="170" text-anchor="middle">host · fleet · boundaries</text>
+          <!-- residents -->
+          <g>
+            <rect class="nodebox" x="24" y="268" width="140" height="52" rx="12"/>
+            <text x="94" y="291" text-anchor="middle" fill="#F2F6FC">#product</text>
+            <text x="94" y="308" text-anchor="middle">resident</text>
+            <rect class="nodebox" x="190" y="268" width="140" height="52" rx="12"/>
+            <text x="260" y="291" text-anchor="middle" fill="#F2F6FC">#finance</text>
+            <text x="260" y="308" text-anchor="middle">resident</text>
+            <rect class="nodebox" x="356" y="268" width="140" height="52" rx="12"/>
+            <text x="426" y="291" text-anchor="middle" fill="#F2F6FC">#research</text>
+            <text x="426" y="308" text-anchor="middle">resident</text>
+          </g>
+          <!-- computers -->
+          <g>
+            <rect class="nodebox" x="24" y="376" width="140" height="46" rx="10" stroke-dasharray="4 4"/>
+            <text x="94" y="396" text-anchor="middle">private linux vm</text>
+            <text x="94" y="412" text-anchor="middle" fill="#7B90B0">/workspace</text>
+            <rect class="nodebox" x="190" y="376" width="140" height="46" rx="10" stroke-dasharray="4 4"/>
+            <text x="260" y="396" text-anchor="middle">private linux vm</text>
+            <text x="260" y="412" text-anchor="middle" fill="#7B90B0">/workspace</text>
+            <rect class="nodebox" x="356" y="376" width="140" height="46" rx="10" stroke-dasharray="4 4"/>
+            <text x="426" y="396" text-anchor="middle">private linux vm</text>
+            <text x="426" y="412" text-anchor="middle" fill="#7B90B0">/workspace</text>
+          </g>
+          <!-- edges -->
+          <path class="flow slow" d="M260 70 V130"/>
+          <path class="flow" d="M230 182 C170 215 110 235 94 268"/>
+          <path class="flow" d="M260 182 V268"/>
+          <path class="flow" d="M290 182 C350 215 410 235 426 268"/>
+          <path class="edge" stroke="rgba(148,184,226,.25)" fill="none" d="M94 320 V376 M260 320 V376 M426 320 V376" stroke-dasharray="2 4"/>
+        </svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ ANATOMY ============ -->
+<section id="anatomy">
+  <div class="wrap">
+    <div class="sec-kicker reveal"><b>03</b>Anatomy of a channel</div>
+    <h2 class="reveal">One channel. One <em>world.</em></h2>
+    <p class="lede reveal">Create a channel for anything that deserves an owner — a product, an inbox,
+    a client, a household. 1Helm provisions a complete world around it. Hover the parts.</p>
+
+    <div class="anat">
+      <div class="anat-list reveal" id="anatList">
+        <div class="anat-item" data-part="resident">
+          <h4><span class="n">A</span>One permanent resident</h4>
+          <p>The employee identity. It survives threads, restarts, and even model changes.</p>
+        </div>
+        <div class="anat-item" data-part="computer">
+          <h4><span class="n">B</span>One private Linux computer</h4>
+          <p>A real Apple <span class="mono">container machine</span> VM with the Mac home directory unmounted. Agent tools and your Terminal share the same persistent <span class="mono">/workspace</span>.</p>
+        </div>
+        <div class="anat-item" data-part="memory">
+          <h4><span class="n">C</span>Memory with provenance</h4>
+          <p>Curated decisions, corrections, preferences, and outcomes — not a transcript dump — plus an isolated Mnemosyne store for long-term recall.</p>
+        </div>
+        <div class="anat-item" data-part="skills">
+          <h4><span class="n">D</span>A serious skill arsenal</h4>
+          <p>Relevant playbooks activate automatically. Routine tool use is not an approval ritual.</p>
+        </div>
+        <div class="anat-item" data-part="obligations">
+          <h4><span class="n">E</span>Durable obligations</h4>
+          <p>Follow-ups, timers, and recurring workflows with due times and retry state. They can wake the computer back up.</p>
+        </div>
+        <div class="anat-item" data-part="threads">
+          <h4><span class="n">F</span>Threads &amp; files</h4>
+          <p>Durable work sessions with status, evidence, and a Board view. Files live in the same computer the work happens in.</p>
+        </div>
+      </div>
+
+      <div class="schematic reveal" id="schematic">
+        <div class="schem-title"><span>CHANNEL: <b>#product-launch</b></span><span>WORLD VIEW</span></div>
+        <div class="schem-grid">
+          <div class="part wide" data-part="resident">
+            <h5>Resident · “Anchor”</h5>
+            <p>permanent identity · owns the outcome · calls Skipper at boundaries</p>
+          </div>
+          <div class="part" data-part="computer">
+            <h5>Private computer</h5>
+            <p>Apple container machine · home-mount=none</p>
+            <span class="chip">/workspace</span><span class="chip">tools</span><span class="chip">services</span>
+          </div>
+          <div class="part" data-part="memory">
+            <h5>Memory</h5>
+            <p>decisions · corrections · preferences · provenance</p>
+            <span class="chip">mnemosyne</span>
+          </div>
+          <div class="part" data-part="skills">
+            <h5>Skills</h5>
+            <p>34 built-in playbooks + pinned installs + crystallized procedures</p>
+          </div>
+          <div class="part" data-part="obligations">
+            <h5>Obligations</h5>
+            <p>follow-ups · workflows · wake schedule · retry state</p>
+          </div>
+          <div class="part wide" data-part="threads">
+            <h5>Threads · Board · Files</h5>
+            <p>durable sessions with retained evidence — resolving a thread never deletes the world</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ HANDOFF ============ -->
+<section id="handoff">
+  <div class="wrap">
+    <div class="sec-kicker reveal"><b>04</b>The boundary</div>
+    <h2 class="reveal">The handoff you never have to make.</h2>
+    <p class="lede reveal">Most agent products make <strong>you</strong> the router: copy context here, grant
+    permission there, paste the result back. In 1Helm the resident calls Skipper itself — and the
+    thread comes back on its own.</p>
+
+    <div class="handoff">
+      <div class="steps reveal" id="steps">
+        <div class="step" data-step="0">
+          <span class="num">01</span>
+          <div><h4>The resident works</h4><p>Inspects, installs, edits, runs, retries — autonomously, inside its own computer.</p><div class="bar"><i></i></div></div>
+        </div>
+        <div class="step" data-step="1">
+          <span class="num">02</span>
+          <div><h4>It hits the boundary</h4><p>Needs the host, a credential, or another channel's resident. Work it can't — and shouldn't — do alone.</p><div class="bar"><i></i></div></div>
+        </div>
+        <div class="step" data-step="2">
+          <span class="num">03</span>
+          <div><h4>It calls Skipper. Not you.</h4><p>Skipper performs the boundary operation with host-authorized provenance.</p><div class="bar"><i></i></div></div>
+        </div>
+        <div class="step" data-step="3">
+          <span class="num">04</span>
+          <div><h4>The thread returns automatically</h4><p>Skipper hands the exact same thread back to the same resident. No relay, no copy-paste.</p><div class="bar"><i></i></div></div>
+        </div>
+        <div class="step" data-step="4">
+          <span class="num">05</span>
+          <div><h4>The resident verifies end-to-end</h4><p>The original outcome gets checked and evidenced — not assumed.</p><div class="bar"><i></i></div></div>
+        </div>
+      </div>
+
+      <div class="scene reveal">
+        <svg viewBox="0 0 560 430" id="sceneSvg">
+          <!-- resident computer lane -->
+          <rect id="sBoxRes" class="box" x="20" y="26" width="240" height="180" rx="14"/>
+          <text x="40" y="54" fill="#F2F6FC">RESIDENT · #release</text>
+          <text x="40" y="76" fill="#7B90B0">private linux computer</text>
+          <text id="sWork" x="40" y="112" fill="#AABBD6">$ npm run build … ok</text>
+          <text id="sWork2" x="40" y="134" fill="#AABBD6">$ deploy — needs host cred ⚠</text>
+          <!-- skipper lane -->
+          <rect id="sBoxSkip" class="box" x="320" y="26" width="220" height="180" rx="14"/>
+          <text x="340" y="54" fill="#6FD6FF">SKIPPER · #main</text>
+          <text x="340" y="76" fill="#7B90B0">workspace operator</text>
+          <text id="sSkipAct" x="340" y="112" fill="#AABBD6" opacity="0">▸ boundary op · authorized</text>
+          <!-- host lane -->
+          <rect id="sBoxHost" class="box" x="320" y="250" width="220" height="76" rx="14"/>
+          <text x="340" y="280" fill="#F2F6FC">HOST · credentials · fleet</text>
+          <text x="340" y="300" fill="#7B90B0">never inside resident VMs</text>
+          <!-- captain note -->
+          <rect x="20" y="250" width="240" height="76" rx="14" class="box" stroke-dasharray="4 5"/>
+          <text x="40" y="280" fill="#FFB35C">CAPTAIN</text>
+          <text x="40" y="300" fill="#7B90B0">not needed for any of this</text>
+          <!-- edges -->
+          <path id="eCall" class="edge" d="M260 96 H320"/>
+          <path id="eHost" class="edge" d="M430 206 V250"/>
+          <path id="eBack" class="edge" d="M320 150 H260"/>
+          <!-- verify badge -->
+          <g id="sVerify" class="badge">
+            <rect x="20" y="360" width="520" height="46" rx="12" fill="rgba(92,228,155,.07)" stroke="rgba(92,228,155,.45)"/>
+            <text x="280" y="388" text-anchor="middle" fill="#5CE49B">✓ OUTCOME VERIFIED END-TO-END — EVIDENCE RETAINED IN ACTIVITY</text>
+          </g>
+        </svg>
+      </div>
+    </div>
+
+    <p class="handoff-pull reveal">“The Captain is the leader — <em>not the package manager, retry loop,
+    permission dialogue, or message bus between agents.”</em></p>
+  </div>
+</section>
+
+<!-- ============ OUTCOME GATE ============ -->
+<section id="gate">
+  <div class="wrap">
+    <div class="sec-kicker reveal"><b>05</b>The outcome gate</div>
+    <h2 class="reveal">Ending the turn is not <em>finishing the job.</em></h2>
+
+    <div class="gate-grid">
+      <div class="gate-copy reveal">
+        <p>Every model has the same bad habit: when work gets long, it writes you a tutorial and calls
+        it done. Prompting alone doesn't fix that — so 1Helm doesn't rely on prompting alone.</p>
+        <p>For operational requests, a <strong>bounded, deterministic outcome gate</strong> inspects how a
+        turn tries to end. It objects when a model stops at:</p>
+        <ul class="gate-list">
+          <li><b>TUTORIAL</b> “Here are the steps you could follow…” — it has a computer; it should run them.</li>
+          <li><b>UNEVIDENCED BLOCKER</b> “This probably won't work because…” — with nothing tried and nothing shown.</li>
+          <li><b>UNRESOLVED FAILURE</b> A tool call failed and the turn just… ends there.</li>
+          <li><b>DEFLECTION</b> “You could ask Skipper to…” — the resident can call Skipper itself.</li>
+        </ul>
+        <p>The gate keeps the turn open <strong>at most three times</strong>, leaves every objection in the
+        work log, and yields normally for explanatory questions or a genuine structured human boundary.
+        It's a guardrail with a receipt — not an invisible hand.</p>
+      </div>
+
+      <div class="chatmock reveal">
+        <div class="chatmock-head"><span class="lamp"></span>#infra · thread: “rotate the TLS certs”</div>
+        <div class="chatmock-body">
+          <div class="msg user"><span class="who">Captain</span>Rotate the staging TLS certs and prove they're valid.</div>
+          <div class="msg bot"><span class="who">Resident</span><span class="strike">Here's a step-by-step guide you can follow: 1) SSH into the box, 2) run certbot renew…</span></div>
+          <div class="objection"><b>OUTCOME GATE · OBJECTION 1/3</b><br>Executable work must be executed. You own a computer — run it, retry it, or show the evidenced blocker.</div>
+          <div class="worklog">
+            <span class="cmd">$ certbot renew --cert-name staging.example.com</span><br>
+            <span class="cmd">$ systemctl reload nginx</span> <span class="ok">· ok</span><br>
+            <span class="cmd">$ echo | openssl s_client -connect staging:443 | openssl x509 -noout -dates</span><br>
+            notAfter = Oct 21 2026 <span class="ok">· verified</span>
+          </div>
+          <div class="evidence">✓ OUTCOME COMPLETE — EVIDENCE RETAINED · SHA-256 CHAINED</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TIME ============ -->
+<section id="time">
+  <div class="wrap">
+    <div class="sec-kicker reveal"><b>06</b>Obligations</div>
+    <h2 class="reveal">Time is a real dependency. So it's a real <em>object.</em></h2>
+    <p class="lede reveal">1Helm never equates “the model stopped talking” with “work is happening in the
+    background.” If work depends on time passing, it becomes a persisted obligation with a due time,
+    retry state, and observable completion or failure.</p>
+
+    <div class="time-cards">
+      <div class="tcard reveal">
+        <span class="mono-tag">one-shot</span>
+        <h3>Follow-ups</h3>
+        <p>A durable wake on an existing thread. “Check the deploy in two hours” survives restarts,
+        sleep, and your attention span.</p>
+      </div>
+      <div class="tcard reveal">
+        <span class="mono-tag">recurring</span>
+        <h3>Workflows</h3>
+        <p>Interval, next run, run count, pause/resume, and failure history. Weekly audits that actually
+        happen weekly.</p>
+      </div>
+      <div class="tcard reveal">
+        <span class="mono-tag">fleet care</span>
+        <h3>Wake reconciliation</h3>
+        <p>A sleeping computer is not an excuse. Due obligations wake the resident's machine; Skipper
+        reconciles CPU, memory, disk, repair, and update pressure.</p>
+      </div>
+    </div>
+
+    <div class="timeline reveal" aria-label="Timeline of durable obligations">
+      <div class="tl-track">
+        <div class="tl-line"></div>
+        <div class="tl-ev" style="left:8%"><span class="when">now</span><div class="pin"></div><div class="lab">thread: “migrate the DB”<br>resident working</div></div>
+        <div class="tl-ev" style="left:30%"><span class="when">+2 h</span><div class="pin"></div><div class="lab">follow-up fires<br>verify migration</div></div>
+        <div class="tl-ev wake" style="left:52%"><span class="when">+3 d</span><div class="pin"></div><div class="lab">computer asleep →<br>obligation wakes it</div></div>
+        <div class="tl-ev" style="left:74%"><span class="when">weekly</span><div class="pin"></div><div class="lab">workflow: audit &amp;<br>publish verified status</div></div>
+        <div class="tl-ev" style="left:93%"><span class="when">always</span><div class="pin"></div><div class="lab">completion or failure —<br>observable, never implied</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ ROUTING ============ -->
+<section id="routing">
+  <div class="wrap">
+    <div class="sec-kicker reveal"><b>07</b>The model fabric</div>
+    <h2 class="reveal">Every account you have. One fabric. <em>Zero ceremony.</em></h2>
+    <p class="lede reveal">Connect multiple ChatGPT, Claude, Gemini and xAI accounts by OAuth; add
+    OpenRouter, NVIDIA NIM, Cloudflare, GLM, or any custom endpoint by key. Enable exact models, compose
+    named routes, and every resident rides the fabric through a private local gateway.
+    <strong>This is a live simulation — click an account to knock it offline.</strong></p>
+
+    <div class="fabric-shell reveal">
+      <div class="fabric-bar">
+        <span class="title">1HELM ROUTER · <span style="color:var(--cyan)">per-channel routes</span> · live</span>
+        <span class="fabric-hint">click an account to take it <b>offline</b></span>
+        <div class="seg" role="group" aria-label="Routing strategy">
+          <button id="segFb" class="on">FALLBACK</button>
+          <button id="segRr">ROUND-ROBIN</button>
+        </div>
+      </div>
+      <svg id="fabricSvg" viewBox="0 0 1080 640" aria-label="Live routing simulation: requests from channels flow through the 1Helm router to the first healthy account"></svg>
+      <div class="fabric-log-shell">
+        <ul id="fabricLog"></ul>
+        <div class="fabric-count">requests served<br><b id="fabricServed">0</b><br><span id="fabricFailed" style="color:var(--red)"></span></div>
+      </div>
+    </div>
+
+    <div class="routing-points">
+      <div class="rpoint reveal">
+        <h4>Routes, not roulette</h4>
+        <p>A route is a named, ordered policy — <code>fallback</code> tries the next healthy account;
+        <code>round-robin</code> spreads load. Disabled or exhausted accounts are excluded from attempts
+        and from logs. One dead account never blocks a healthy one serving the same model.</p>
+      </div>
+      <div class="rpoint reveal">
+        <h4>Identity outlives the route</h4>
+        <p>Changing a model or route <strong style="color:var(--fg)">never</strong> replaces a resident or
+        discards its computer, memory, skills, files, obligations, or thread history. Agents authenticate
+        with a private internal credential — revoke every external key and the crew stays online.</p>
+      </div>
+      <div class="rpoint reveal">
+        <h4>Your gateway, for everything</h4>
+        <p>The same fabric exposes an authenticated OpenAI- and Anthropic-compatible <code>/v1</code>
+        endpoint. Point external tools at your own router: your accounts, your quotas, your logs, your
+        machine.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SKILLS ============ -->
+<section id="skills">
+  <div class="wrap">
+    <div class="sec-kicker reveal"><b>08</b>Skills</div>
+    <h2 class="reveal">Ready on day one. <em>Specialized</em> by day one hundred.</h2>
+    <p class="lede reveal">Every resident permanently owns a library of 34 complete playbooks — activation
+    cues, execution, authority boundaries, recovery, and verification, not prompt snippets. 1Helm activates
+    only what the task needs.</p>
+
+    <div class="skillgrid reveal" aria-label="Playbook domains">
+      <span>outcome ownership</span><span>skipper handoff</span><span>obligations</span><span>memory</span>
+      <span>research</span><span>email</span><span>calendar</span><span>contacts</span><span>messaging</span>
+      <span>documents</span><span>spreadsheets</span><span>PDFs</span><span>meetings</span><span>projects</span>
+      <span>personal ops</span><span>travel</span><span>finance</span><span>support</span>
+      <span>software delivery</span><span>data</span><span>media</span><span>infrastructure</span>
+      <span>security</span><span>skill discovery</span><span>+ 10 more</span>
+    </div>
+
+    <div class="pipeline reveal" aria-label="External skill install pipeline">
+      <div class="pipe">RESOLVE<small>immutable revision pin</small></div><span class="pipe-arrow">→</span>
+      <div class="pipe">BOUND<small>selected docs only</small></div><span class="pipe-arrow">→</span>
+      <div class="pipe">SCAN<small>unsafe content blocked</small></div><span class="pipe-arrow">→</span>
+      <div class="pipe">HASH<small>SHA-256 + provenance</small></div><span class="pipe-arrow">→</span>
+      <div class="pipe">WRAP<small>under runtime authority</small></div>
+    </div>
+
+    <div class="skills-cols">
+      <div class="skillcard reveal">
+        <h3>The catalog, without the leap of faith</h3>
+        <p>Residents can search the focused SkillsMD catalog of ready, GitHub-backed procedures and
+        install them automatically — but only through the pipeline above. Nothing executes blind.</p>
+        <span class="notrust">COMMUNITY POPULARITY ≠ TRUST</span>
+      </div>
+      <div class="skillcard reveal">
+        <h3>Crystallize what actually worked</h3>
+        <p>When a resident completes a repeatable workflow the arsenal doesn't cover, it can
+        <b>crystallize</b> the proven procedure — activation cues, boundaries, recovery, retained state,
+        and concrete completion evidence.</p>
+        <p>Generic advice, unverified guesses, secrets, and runtime-weakening instructions are rejected.
+        Skills compound; slop doesn't.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CONNECTIONS ============ -->
+<section id="connections">
+  <div class="wrap">
+    <div class="sec-kicker reveal"><b>09</b>Connections</div>
+    <h2 class="reveal">Brokers, not copied secrets.</h2>
+    <p class="lede reveal">Connections are host-owned. Residents receive narrow, scoped operations — never
+    raw OAuth tokens, project secrets, or the host database. A prompt saying “use this service” is not
+    a connector here; connectors earn their place with scoping, recovery, dedup, tests, and an audit trail.</p>
+
+    <div class="conn-grid">
+      <div class="conn-cards">
+        <div class="conncard reveal">
+          <h3><span class="ic">@</span>Gmail</h3>
+          <p>State-protected PKCE OAuth on the host's loopback. Skipper can use connected accounts in your
+          authorized thread and grant only <i>named</i> accounts to a resident.</p>
+          <div class="scope">
+            <span>list accounts</span><span>search</span><span>read</span><span>create drafts</span><span class="no">send</span>
+          </div>
+        </div>
+        <div class="conncard reveal">
+          <h3><span class="ic">✉</span>Photon · iMessage</h3>
+          <p>Allowlisted inbound texts become real 1Helm threads for the mapped resident; the reply returns
+          to that exact conversation, once. New outbound destinations stay blocked unless explicitly granted.</p>
+          <div class="scope">
+            <span>allowlisted inbound</span><span>mapped threads</span><span>narrow replies</span><span class="no">cold outbound</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="vault reveal" aria-label="Diagram: credentials stay on the host; residents get narrow operations only">
+        <svg viewBox="0 0 480 360">
+          <rect x="20" y="20" width="440" height="130" rx="14" fill="rgba(111,214,255,.05)" stroke="rgba(111,214,255,.4)"/>
+          <text x="40" y="50" fill="#6FD6FF">HOST · YOUR MAC</text>
+          <rect x="40" y="66" width="190" height="62" rx="10" fill="#1A2740" stroke="rgba(148,184,226,.3)"/>
+          <text x="56" y="92" fill="#F2F6FC">OAuth tokens · secrets</text>
+          <text x="56" y="112" fill="#7B90B0">host-owned storage</text>
+          <rect x="250" y="66" width="190" height="62" rx="10" fill="#1A2740" stroke="rgba(148,184,226,.3)"/>
+          <text x="266" y="92" fill="#F2F6FC">Broker · audit trail</text>
+          <text x="266" y="112" fill="#7B90B0">scoped operations only</text>
+          <rect x="20" y="230" width="440" height="110" rx="14" fill="#1A2740" stroke="rgba(148,184,226,.3)"/>
+          <text x="40" y="260" fill="#F2F6FC">RESIDENT COMPUTER</text>
+          <text x="40" y="282" fill="#7B90B0">receives: “search inbox X”, “draft reply Y”</text>
+          <text x="40" y="304" fill="#7B90B0">never receives: tokens, secrets, host DB</text>
+          <path d="M345 150 V230" stroke="#5CE49B" stroke-width="1.6" stroke-dasharray="6 6" fill="none"/>
+          <text x="358" y="196" fill="#5CE49B">narrow ops ↓</text>
+          <path d="M135 150 V230" stroke="rgba(255,122,122,.8)" stroke-width="1.4" fill="none"/>
+          <line x1="120" y1="180" x2="150" y2="200" stroke="#FF7A7A" stroke-width="2"/>
+          <line x1="150" y1="180" x2="120" y2="200" stroke="#FF7A7A" stroke-width="2"/>
+          <text x="52" y="196" fill="#FF7A7A">tokens ✕</text>
+        </svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TRUTH ============ -->
+<section id="truth">
+  <div class="wrap">
+    <div class="sec-kicker reveal"><b>10</b>Platform truth</div>
+    <h2 class="reveal">We'd rather be believed than sound impressive.</h2>
+    <p class="lede reveal">Honest capability beats vague promise. Here is exactly what runs where — and
+    what doesn't exist yet.</p>
+
+    <div class="truth-table reveal">
+      <div class="trow">
+        <div class="plat">Apple Silicon · macOS 26</div>
+        <div class="what"><b>The native product.</b> Signed, notarized, stapled DMG. One real isolated
+        Linux VM per resident with no Mac home mount.</div>
+      </div>
+      <div class="trow">
+        <div class="plat">Linux / CI</div>
+        <div class="what"><b>Durable headless compatibility backend.</b> Same control plane and tests —
+        not per-resident VM isolation.</div>
+      </div>
+      <div class="trow">
+        <div class="plat">Windows + WSL</div>
+        <div class="what"><b>Headless compatibility path.</b> Not a native Windows app.</div>
+      </div>
+    </div>
+
+    <div class="notyet reveal">
+      <b>NOT YET SHIPPED — ON PURPOSE, SAID OUT LOUD</b>
+      Native Windows/Linux desktop packages · mobile clients · a hosted control plane ·
+      Linux per-resident VM isolation · rich Photon attachment fidelity · blind execution of community skills.
+    </div>
+
+    <div class="sec-strip reveal">
+      <div class="sec-cell"><h4><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg>Isolation that's real</h4><p>Per-resident Apple VMs, home-mount=none. Workspace mirrors are channel-scoped, size-bounded, symlink-contained.</p></div>
+      <div class="sec-cell"><h4><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>Credentials stay home</h4><p>Provider, Gmail, and Photon secrets live in host-owned storage. They never enter chat, evidence, or a resident computer.</p></div>
+      <div class="sec-cell"><h4><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M4 12h4l2-6 4 12 2-6h4"/></svg>History you can check</h4><p>New operational events enter an append-only SHA-256 chain. Local tamper evidence — honestly labeled, not oversold as a transparency log.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CTA ============ -->
+<section id="cta">
+  <div class="wrap">
+    <img class="cta-logo reveal" src="assets/logo-192.png" alt="1Helm logo">
+    <div class="kicker reveal">MIT licensed · your machine · your accounts</div>
+    <h2 class="reveal">Let them cook. <em>Keep the helm.</em></h2>
+    <p class="lede reveal">Five minutes from download to a crew that remembers, owes, and delivers.</p>
+    <div class="cta-btns reveal">
+      <a class="btn btn-solid" href="https://1helm.com/download/macos">Download for Apple Silicon</a>
+      <a class="btn btn-ghost" href="https://github.com/gitcommit90/1Helm">Star on GitHub</a>
+    </div>
+    <div class="install reveal">
+      <div class="install-head">INSTALL · SIGNED &amp; NOTARIZED</div>
+      <ol>
+        <li>Download the DMG and drag <b>1Helm</b> to Applications.</li>
+        <li>Launch — Gatekeeper verifies the Developer ID signature and notarization ticket.</li>
+        <li>Complete Captain → Providers → Workspace. That's the whole ceremony.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <a class="brand" href="#top">
+      <img src="assets/logo-64.png" alt="1Helm logo" width="22" height="22" style="border-radius:6px">
+      1Helm
+    </a>
+    <div class="foot-links">
+      <a href="https://github.com/gitcommit90/1Helm">GitHub</a>
+      <a href="https://github.com/gitcommit90/1Helm/blob/main/docs/USER_GUIDE.md">User guide</a>
+      <a href="https://github.com/gitcommit90/1Helm/blob/main/docs/VISION.md">Vision</a>
+      <a href="https://github.com/gitcommit90/1Helm/blob/main/SECURITY.md">Security</a>
+      <a href="https://github.com/gitcommit90/1Helm/blob/main/SPEC.md">Spec</a>
+      <a href="https://1helm.com/docs">Docs</a>
+    </div>
+    <div class="foot-tag">1HELM · MIT LICENSE · SELF-HOSTED · THE JOB IS THE DURABLE UNIT</div>
+  </div>
+</footer>
+
+<script>
+(() => {
+"use strict";
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* ---------- nav ---------- */
+const nav = document.getElementById("nav");
+addEventListener("scroll", () => nav.classList.toggle("scrolled", scrollY > 8), {passive:true});
+
+/* ---------- ticker: duplicate content for seamless loop ---------- */
+const tick = document.getElementById("tickTrack");
+tick.innerHTML += tick.innerHTML;
+
+/* ---------- reveal ---------- */
+const ro = new IntersectionObserver(es => es.forEach(e => {
+  if (e.isIntersecting) { e.target.classList.add("on"); ro.unobserve(e.target); }
+}), {threshold:.12});
+document.querySelectorAll(".reveal").forEach(el => ro.observe(el));
+
+/* ---------- hero sea: drifting chart contours ---------- */
+const sea = document.getElementById("sea");
+const ctx = sea.getContext("2d");
+let seaW = 0, seaH = 0, seaOn = true, t0 = performance.now();
+const dpr = Math.min(devicePixelRatio || 1, 2);
+function sizeSea(){
+  seaW = sea.clientWidth; seaH = sea.clientHeight;
+  sea.width = seaW * dpr; sea.height = seaH * dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+function drawSea(now){
+  const t = reduced ? 0 : (now - t0) / 1000;
+  ctx.clearRect(0,0,seaW,seaH);
+  const gap = 26;
+  for (let row = 0; row * gap < seaH + gap; row++){
+    const y = row * gap;
+    const major = row % 5 === 0;
+    ctx.beginPath();
+    for (let x = -10; x <= seaW + 10; x += 7){
+      const yy = y
+        + 14 * Math.sin(x * 0.006 + t * 0.5 + y * 0.012)
+        + 9  * Math.sin(x * 0.0021 - t * 0.27 + y * 0.005)
+        + 4  * Math.sin(x * 0.013 + t * 0.9 + row);
+      x === -10 ? ctx.moveTo(x, yy) : ctx.lineTo(x, yy);
+    }
+    ctx.strokeStyle = major ? "rgba(111,214,255,0.17)" : "rgba(111,214,255,0.085)";
+    ctx.lineWidth = major ? 1.2 : 0.8;
+    ctx.stroke();
+  }
+  if (!reduced && seaOn) requestAnimationFrame(drawSea);
+}
+sizeSea();
+addEventListener("resize", () => { sizeSea(); if (reduced) drawSea(0); });
+new IntersectionObserver(es => {
+  const vis = es[0].isIntersecting;
+  if (vis && !seaOn) { seaOn = true; if (!reduced) requestAnimationFrame(drawSea); }
+  else if (!vis) seaOn = false;
+}).observe(sea);
+reduced ? drawSea(0) : requestAnimationFrame(drawSea);
+
+/* ---------- anatomy hover sync ---------- */
+const litSync = part => {
+  document.querySelectorAll("[data-part]").forEach(el =>
+    el.classList.toggle("lit", !!part && el.dataset.part === part));
+};
+["anatList","schematic"].forEach(id => {
+  const root = document.getElementById(id);
+  root.addEventListener("mouseover", e => {
+    const hit = e.target.closest("[data-part]");
+    if (hit) litSync(hit.dataset.part);
+  });
+  root.addEventListener("mouseleave", () => litSync(null));
+});
+
+/* ---------- handoff stepper ---------- */
+const steps = [...document.querySelectorAll(".step")];
+const S = id => document.getElementById(id);
+const sceneStates = [
+  {hot:["sBoxRes"], cool:[], edges:[], skipAct:0, verify:0},
+  {hot:["sBoxRes"], cool:[], edges:[], skipAct:0, verify:0, warn:1},
+  {hot:[], cool:["sBoxSkip","sBoxHost"], edges:["eCall","eHost"], skipAct:1, verify:0},
+  {hot:["sBoxRes"], cool:["sBoxSkip"], edges:["eBack"], skipAct:1, verify:0},
+  {hot:["sBoxRes"], cool:[], edges:[], skipAct:0, verify:1},
+];
+const STEP_MS = 3400;
+let stepIdx = 0, stepTimer = null, stepStart = 0, pinned = false;
+function applyStep(i){
+  stepIdx = i;
+  steps.forEach((s,k) => s.classList.toggle("active", k === i));
+  const st = sceneStates[i];
+  ["sBoxRes","sBoxSkip","sBoxHost"].forEach(id => {
+    const el = S(id);
+    el.classList.toggle("hot", st.hot.includes(id));
+    el.classList.toggle("cool", st.cool.includes(id));
+  });
+  ["eCall","eHost","eBack"].forEach(id => {
+    const el = S(id), on = st.edges.includes(id);
+    el.classList.toggle(id === "eBack" ? "cool" : "hot", on);
+    if (!on) el.classList.remove("hot","cool");
+  });
+  S("sSkipAct").setAttribute("opacity", st.skipAct ? "1" : "0");
+  S("sVerify").classList.toggle("show", !!st.verify);
+  S("sWork2").setAttribute("fill", i >= 1 && i < 4 ? "#FFB35C" : "#AABBD6");
+  stepStart = performance.now();
+}
+function stepLoop(now){
+  if (!pinned){
+    const p = Math.min(1, (now - stepStart) / STEP_MS);
+    const bar = steps[stepIdx].querySelector(".bar i");
+    if (bar) bar.style.width = (p * 100) + "%";
+    if (p >= 1) applyStep((stepIdx + 1) % steps.length);
+  }
+  requestAnimationFrame(stepLoop);
+}
+steps.forEach(s => s.addEventListener("click", () => {
+  pinned = false; applyStep(Number(s.dataset.step));
+}));
+applyStep(0);
+if (!reduced) requestAnimationFrame(stepLoop);
+
+/* ---------- routing fabric simulation ---------- */
+const svgNS = "http://www.w3.org/2000/svg";
+const fabric = document.getElementById("fabricSvg");
+const accounts = [
+  {id:"claude",  label:"Claude · alex@",   sub:"oauth · subscription"},
+  {id:"cgptA",   label:"ChatGPT · alex@",  sub:"oauth · subscription"},
+  {id:"cgptB",   label:"ChatGPT · ops@",   sub:"oauth · subscription"},
+  {id:"gemini",  label:"Gemini · alex@",   sub:"oauth · antigravity"},
+  {id:"xai",     label:"xAI · alex@",      sub:"oauth"},
+  {id:"openrtr", label:"OpenRouter",       sub:"api key"},
+  {id:"nim",     label:"NVIDIA NIM",       sub:"api key"},
+  {id:"custom",  label:"Custom /v1",       sub:"self-hosted · no auth"},
+];
+const channels = [
+  {id:"product",  label:"#product",  sub:"resident", route:"helm-main",     prefs:["claude","cgptA","openrtr","custom"]},
+  {id:"research", label:"#research", sub:"resident", route:"deep-research", prefs:["gemini","claude","cgptB","nim"]},
+  {id:"finance",  label:"#finance",  sub:"resident", route:"ledger",        prefs:["cgptA","xai","openrtr","custom"]},
+  {id:"support",  label:"#support",  sub:"resident", route:"frontline",     prefs:["cgptB","nim","gemini","openrtr"]},
+  {id:"main",     label:"#main",     sub:"skipper",  route:"helm-main",     prefs:["claude","xai","cgptA","custom"]},
+];
+const RX = 540, RY = 320;
+const el = (name, attrs, parent) => {
+  const n = document.createElementNS(svgNS, name);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  (parent || fabric).appendChild(n);
+  return n;
+};
+const acctY = i => 52 + i * 70;
+const chanY = i => 108 + i * 104;
+const acctPaths = {}, chanPaths = {};
+/* wires first (under nodes) */
+accounts.forEach((a, i) => {
+  const y = acctY(i) + 25;
+  acctPaths[a.id] = el("path", {class:"wire", d:`M262 ${y} C 380 ${y}, ${RX-140} ${RY}, ${RX-58} ${RY}`});
+});
+channels.forEach((c, i) => {
+  const y = chanY(i) + 25;
+  chanPaths[c.id] = el("path", {class:"wire", d:`M ${RX+58} ${RY} C ${RX+140} ${RY}, 700 ${y}, 828 ${y}`});
+});
+/* router */
+const rg = el("g", {});
+el("circle", {cx:RX, cy:RY, r:46, class:"router-ring", opacity:.35}, rg);
+el("circle", {cx:RX, cy:RY, r:34, class:"router-core"}, rg);
+for (let k = 0; k < 8; k++){
+  const a = k * Math.PI / 4;
+  el("line", {x1:RX + Math.cos(a)*12, y1:RY + Math.sin(a)*12, x2:RX + Math.cos(a)*30, y2:RY + Math.sin(a)*30, stroke:"#6FD6FF", "stroke-width":1.6}, rg);
+}
+el("circle", {cx:RX, cy:RY, r:9, fill:"#6FD6FF"}, rg);
+const routerPulse = el("circle", {cx:RX, cy:RY, r:46, fill:"none", stroke:"#FF7A7A", "stroke-width":1.5, opacity:0});
+el("text", {x:RX, y:RY+74, "text-anchor":"middle", fill:"#7B90B0", "font-size":"10.5"}).textContent = "1HELM ROUTER · private gateway";
+el("text", {x:RX, y:RY+92, "text-anchor":"middle", fill:"#63799A", "font-size":"9.5"}).textContent = "internal credential · quotas · logs";
+/* labels */
+el("text", {x:150, y:24, fill:"#7B90B0", "font-size":"10.5", "letter-spacing":"2"}).textContent = "ACCOUNTS & KEYS";
+el("text", {x:900, y:24, fill:"#7B90B0", "font-size":"10.5", "letter-spacing":"2", "text-anchor":"middle"}).textContent = "CHANNELS";
+/* account nodes */
+const acctEls = {};
+accounts.forEach((a, i) => {
+  const g = el("g", {class:"acct", tabindex:0, role:"button", "aria-label":`Toggle ${a.label} offline`});
+  const y = acctY(i);
+  el("rect", {x:38, y, width:224, height:50, rx:12}, g);
+  const nm = el("text", {x:56, y:y+22, class:"name"}, g); nm.textContent = a.label;
+  const sb = el("text", {x:56, y:y+38, class:"sub"}, g); sb.textContent = a.sub;
+  const off = el("text", {x:244, y:y+22, class:"offlab", "text-anchor":"end"}, g); off.textContent = "OFFLINE";
+  const lamp = el("circle", {cx:47, cy:y+25, r:3.5, fill:"#5CE49B"}, g);
+  a.el = g; a.lamp = lamp; a.enabled = true;
+  acctEls[a.id] = a;
+  const toggle = () => {
+    a.enabled = !a.enabled;
+    g.classList.toggle("off", !a.enabled);
+    lamp.setAttribute("fill", a.enabled ? "#5CE49B" : "#FF7A7A");
+    logLine(a.enabled
+      ? `<span class="ts">${ts()}</span> account <span class="ac">${a.label}</span> back online`
+      : `<span class="ts">${ts()}</span> account <span class="fail">${a.label}</span> knocked offline`);
+  };
+  g.addEventListener("click", toggle);
+  g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+});
+/* channel nodes */
+channels.forEach((c, i) => {
+  const g = el("g", {class:"chan"});
+  const y = chanY(i);
+  el("rect", {x:828, y, width:214, height:50, rx:12}, g);
+  const nm = el("text", {x:846, y:y+22, class:"name"}, g); nm.textContent = c.label;
+  const sb = el("text", {x:846, y:y+38, class:"sub"}, g); sb.textContent = c.sub + " · " + c.route;
+  c.lamp = el("circle", {cx:1032, cy:y+25, r:3.5, fill: c.id === "main" ? "#FFB35C" : "#6FD6FF"}, g);
+  c.rr = 0;
+});
+
+/* strategy */
+let strategy = "fallback";
+const segFb = document.getElementById("segFb"), segRr = document.getElementById("segRr");
+const setStrat = s => {
+  strategy = s;
+  segFb.classList.toggle("on", s === "fallback");
+  segRr.classList.toggle("on", s === "rr");
+  logLine(`<span class="ts">${ts()}</span> all routes → strategy <span class="rt">${s === "rr" ? "round-robin" : "fallback"}</span>`);
+};
+segFb.addEventListener("click", () => setStrat("fallback"));
+segRr.addEventListener("click", () => setStrat("rr"));
+
+/* log */
+const logEl = document.getElementById("fabricLog");
+const servedEl = document.getElementById("fabricServed");
+const failedEl = document.getElementById("fabricFailed");
+let served = 0, failed = 0;
+const ts = () => {
+  const d = new Date();
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map(v => String(v).padStart(2,"0")).join(":");
+};
+function logLine(html){
+  const li = document.createElement("li");
+  li.innerHTML = html;
+  logEl.prepend(li);
+  while (logEl.children.length > 5) logEl.lastChild.remove();
+}
+
+/* dots */
+const dots = [];
+function launchDot(path, reverse, color, dur, done){
+  const c = el("circle", {r:4, fill:color, opacity:.95});
+  dots.push({c, path, reverse, dur, start:performance.now(), done});
+}
+/* Each channel has its own named route with an ordered member list, so
+   traffic is naturally spread across the fabric — and knocking an account
+   offline visibly reroutes every route that preferred it. */
+function eligibleFor(chan){
+  const preferred = chan.prefs.map(id => acctEls[id]).filter(a => a.enabled);
+  const rest = accounts.filter(a => a.enabled && !chan.prefs.includes(a.id));
+  return preferred.concat(rest);
+}
+function pickAccount(chan){
+  const pool = eligibleFor(chan);
+  if (!pool.length) return null;
+  if (strategy === "fallback") return pool[0];
+  chan.rr = (chan.rr + 1) % pool.length;
+  return pool[chan.rr];
+}
+function spawnRequest(){
+  const chan = channels[Math.floor(Math.random() * channels.length)];
+  const acct = pickAccount(chan);
+  if (!acct){
+    failed++;
+    failedEl.textContent = failed + " failed — no eligible account";
+    logLine(`<span class="ts">${ts()}</span> ${chan.label} · <span class="fail">no eligible accounts · request failed</span>`);
+    routerPulse.setAttribute("opacity", "0.9");
+    setTimeout(() => routerPulse.setAttribute("opacity", "0"), 500);
+    return;
+  }
+  const attempt = strategy === "fallback"
+    ? `fallback[${eligibleFor(chan).indexOf(acct) + 1}]`
+    : "round-robin";
+  /* one-way flow: account → router → channel */
+  acct.lamp.setAttribute("r", "5.5");
+  setTimeout(() => acct.lamp.setAttribute("r", "3.5"), 240);
+  launchDot(acctPaths[acct.id], false, "#6FD6FF", 640, () => {
+    launchDot(chanPaths[chan.id], false, "#6FD6FF", 640, () => {
+      chan.lamp.setAttribute("r", "5.5");
+      setTimeout(() => chan.lamp.setAttribute("r", "3.5"), 240);
+      served++;
+      servedEl.textContent = served;
+      logLine(`<span class="ts">${ts()}</span> <span class="rt">${chan.route}</span> → <span class="ac">${acct.label}</span> → ${chan.label} · ${attempt}`);
+    });
+  });
+}
+function dotLoop(now){
+  for (let i = dots.length - 1; i >= 0; i--){
+    const d = dots[i];
+    let p = (now - d.start) / d.dur;
+    if (p >= 1){
+      d.c.remove(); dots.splice(i,1);
+      d.done && d.done();
+      continue;
+    }
+    p = p < .5 ? 2*p*p : 1 - Math.pow(-2*p + 2, 2)/2; /* easeInOutQuad */
+    const L = d.path.getTotalLength();
+    const pt = d.path.getPointAtLength((d.reverse ? 1 - p : p) * L);
+    d.c.setAttribute("cx", pt.x); d.c.setAttribute("cy", pt.y);
+  }
+  requestAnimationFrame(dotLoop);
+}
+let fabricVisible = false, spawnTimer = null;
+new IntersectionObserver(es => {
+  fabricVisible = es[0].isIntersecting;
+  if (fabricVisible && !spawnTimer && !reduced){
+    spawnTimer = setInterval(() => {
+      spawnRequest();
+      if (Math.random() < 0.45) setTimeout(spawnRequest, 140);
+    }, 520);
+    spawnRequest(); setTimeout(spawnRequest, 180); setTimeout(spawnRequest, 360);
+  } else if (!fabricVisible && spawnTimer){
+    clearInterval(spawnTimer); spawnTimer = null;
+  }
+}, {threshold:.25}).observe(fabric);
+if (!reduced) requestAnimationFrame(dotLoop);
+if (reduced){
+  logLine(`<span class="ts">--:--:--</span> simulation paused (reduced motion) — the diagram above is the live topology`);
+}
+})();
+</script>
+</body>
+</html>
