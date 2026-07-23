@@ -5,19 +5,27 @@ Wants=network-online.target 1helm-site.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/cloudflared --no-autoupdate --config /etc/cloudflared/config-1helm-site.yml tunnel run
+DynamicUser=yes
+LoadCredential=1helm-site-tunnel.json:/etc/cloudflared/1helm-site-tunnel.json
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config /etc/cloudflared/config-1helm-site.yml tunnel run --credentials-file ${CREDENTIALS_DIRECTORY}/1helm-site-tunnel.json
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
-ProtectHome=read-only
+ProtectHome=yes
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
+RestrictNamespaces=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
 StandardOutput=journal
 StandardError=journal
 

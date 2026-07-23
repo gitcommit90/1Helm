@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+DynamicUser=yes
 WorkingDirectory=/opt/1helm-site/current
 Environment=NODE_ENV=production
 Environment=SITE_HOST=127.0.0.1
@@ -16,13 +17,20 @@ KillMode=control-group
 TimeoutStopSec=15
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectHome=yes
 ProtectSystem=strict
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
+RestrictNamespaces=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
 StandardOutput=journal
 StandardError=journal
 
