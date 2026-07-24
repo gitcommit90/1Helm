@@ -72,6 +72,7 @@ const CONTAINER_CANDIDATES = [process.env.HELM_CONTAINER_CLI, "/usr/local/bin/co
 const COMMAND_TIMEOUT_MS = Math.max(5_000, Number(process.env.HELM_MACHINE_COMMAND_TIMEOUT_MS || 120_000));
 const IDLE_AFTER_MS = Math.max(60_000, Number(process.env.HELM_MACHINE_IDLE_MS || 15 * 60_000));
 const RECONCILE_EVERY_MS = Math.max(15_000, Number(process.env.HELM_FLEET_INTERVAL_MS || 60_000));
+const INITIAL_RECONCILE_MS = Math.max(25, Number(process.env.HELM_FLEET_INITIAL_MS || 2_000));
 const UPDATE_EVERY_MS = Math.max(24 * 60 * 60_000, Number(process.env.HELM_MACHINE_UPDATE_MS || 7 * 24 * 60 * 60_000));
 const UPDATE_RETRY_MS = Math.max(60 * 60_000, Number(process.env.HELM_MACHINE_UPDATE_RETRY_MS || 6 * 60 * 60_000));
 const MAX_WORKSPACE_SYNC_BYTES = Math.max(64 * 1024 ** 2, Number(process.env.HELM_WORKSPACE_SYNC_MAX_BYTES || 2 * 1024 ** 3));
@@ -85,7 +86,10 @@ const terminalSessions = new Map<string, MachineTerminal>();
 const channelLocks = new Map<number, Promise<unknown>>();
 const syncTimers = new Map<number, NodeJS.Timeout>();
 let reconcileTimer: NodeJS.Timeout | null = null;
+let reconcileStartupTimer: NodeJS.Timeout | null = null;
 let reconcileRunning = false;
+let reconcileEnabled = false;
+let reconcilePass: Promise<void> | null = null;
 
 const installationId = (): string => {
   let id = String(q1("SELECT installation_id FROM workspace WHERE id=1")?.installation_id || "");
@@ -757,6 +761,10 @@ export async function appRemovalStatus(): Promise<{ backend: ChannelComputerBack
 export async function prepareAppRemoval(): Promise<{ backend: ChannelComputerBackend; deleted: number; remaining: number }> {
   const backend = configuredChannelBackend();
   if (backend !== "apple") return { backend, deleted: 0, remaining: 0 };
+  // Uninstall is a fleet-wide terminal state. Quiesce and fence the reconciler
+  // before enumerating machines so an already-running pass cannot recreate a
+  // machine from its stale pre-removal snapshot after deletion completes.
+  await shutdownChannelComputers();
   const install = installationId();
   const prefix = `1helm-${install}-channel-`;
   const machineIds = await ownedInstallationMachineIds();
@@ -1028,19 +1036,32 @@ export async function reconcileChannelComputers(channelIds?: Iterable<number>): 
 }
 
 export function startChannelComputerReconciler(): void {
-  if (reconcileTimer) return;
+  if (reconcileEnabled) return;
+  reconcileEnabled = true;
   const tick = (): void => {
-    if (reconcileRunning) return;
+    if (!reconcileEnabled || reconcileRunning) return;
     reconcileRunning = true;
-    void reconcileChannelComputers().catch((error) => console.error("channel computer reconcile failed:", (error as Error).message)).finally(() => { reconcileRunning = false; });
+    const pass: Promise<void> = reconcileChannelComputers()
+      .then(() => undefined)
+      .catch((error) => console.error("channel computer reconcile failed:", (error as Error).message))
+      .finally(() => {
+        reconcileRunning = false;
+        if (reconcilePass === pass) reconcilePass = null;
+      });
+    reconcilePass = pass;
+    void pass;
   };
-  setTimeout(tick, 2_000).unref();
+  reconcileStartupTimer = setTimeout(() => { reconcileStartupTimer = null; tick(); }, INITIAL_RECONCILE_MS);
+  reconcileStartupTimer.unref();
   reconcileTimer = setInterval(tick, RECONCILE_EVERY_MS);
   reconcileTimer.unref();
 }
 
 export async function shutdownChannelComputers(): Promise<void> {
+  reconcileEnabled = false;
+  if (reconcileStartupTimer) { clearTimeout(reconcileStartupTimer); reconcileStartupTimer = null; }
   if (reconcileTimer) { clearInterval(reconcileTimer); reconcileTimer = null; }
+  await reconcilePass?.catch(() => undefined);
   for (const session of [...terminalSessions.values()]) closeChannelTerminal(session.id);
   for (const timer of syncTimers.values()) clearTimeout(timer);
   syncTimers.clear();

@@ -39,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backgrounding or transport loss while retaining the same server session,
   shell state, working directory, and scrollback. Disconnect text is no longer
   written into the terminal.
+- App-removal preparation now quiesces and fences automatic fleet care before
+  deleting owned Apple channel machines, so an in-flight reconciliation pass
+  cannot recreate a machine from stale pre-removal state.
 
 ## [0.0.3] - 2026-07-24
 

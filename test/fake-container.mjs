@@ -63,6 +63,8 @@ if (action === "create") {
 const config = readConfig(name);
 if (!config) fail(`machine ${name} not found`);
 if (action === "inspect") {
+  const delay = Math.max(0, Number(process.env.FAKE_CONTAINER_INSPECT_DELAY_MS || 0));
+  if (delay) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
   process.stdout.write(JSON.stringify(config));
   process.exit(0);
 }

@@ -19,6 +19,7 @@ process.env.HELM_CHANNEL_COMPUTER_BACKEND = "apple";
 process.env.HELM_CONTAINER_CLI = fakeCli;
 process.env.FAKE_CONTAINER_STATE = fakeState;
 process.env.HELM_FLEET_INTERVAL_MS = "600000";
+process.env.HELM_FLEET_INITIAL_MS = "25";
 process.env.HELM_MACHINE_IDLE_MS = "60000";
 
 const db = await import("../src/server/db.ts");
@@ -143,9 +144,16 @@ test("Apple channel-computer contract preserves isolation, files, wakes, archive
   const backend = await readFile(join(root, "src", "server", "channel-computers.ts"), "utf8");
   assert.match(backend, /machine", "run", "-it"[\s\S]*guestWords\("\/bin\/bash", "-l"\)/, "interactive Apple terminals request an explicit guest login shell");
 
+  // Reproduce the real Apple race: uninstall begins while an automatic fleet
+  // pass is already inspecting a machine. Removal must wait for that pass,
+  // fence future ticks, and leave nothing for a stale snapshot to recreate.
+  process.env.FAKE_CONTAINER_INSPECT_DELAY_MS = "200";
+  computers.startChannelComputerReconciler();
+  await new Promise((resolveWait) => setTimeout(resolveWait, 50));
   const removal = await computers.prepareAppRemoval();
   assert.equal(removal.deleted, 1, "uninstall preparation deletes every remaining VM owned by this exact 1Helm installation");
   assert.equal(removal.remaining, 0);
+  await new Promise((resolveWait) => setTimeout(resolveWait, 100));
   assert.equal(existsSync(join(fakeState, "machines", betaComputer.machine_id)), false, "no owned channel VM survives uninstall preparation");
   computers.reactivateComputersAfterPreparedRemoval();
   assert.equal(db.q1("SELECT desired_state FROM channel_computers WHERE channel_id=?", beta.channelId).desired_state, "auto", "a later reinstall can rebuild the removed VM from its preserved host mirror");
