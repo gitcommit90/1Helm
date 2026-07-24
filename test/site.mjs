@@ -47,7 +47,7 @@ test("standalone 1helm.com website serves independent product and documentation 
     assert.match(sitemap, /https:\/\/1helm\.com\/docs\/connections/);
     const download = await fetch(`${base}/download/macos`, { redirect: "manual" });
     assert.equal(download.status, 302);
-    assert.match(download.headers.get("location") || "", /1Helm-[\d.]+-arm64\.dmg$/);
+    assert.match(download.headers.get("location") || "", /1Helm-[\d.]+-arm64\.dmg$|\/releases\/latest$/);
     const windowsDownload = await fetch(`${base}/download/windows`, { redirect: "manual" });
     assert.equal(windowsDownload.status, 404, "the website never advertises a Windows artifact before a signed build exists");
   } finally { child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve)); }

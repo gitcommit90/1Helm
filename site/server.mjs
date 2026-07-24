@@ -22,6 +22,24 @@ const VERSION = String(pkg.version || "");
 const HOST = process.env.SITE_HOST || "127.0.0.1";
 const PORT = Number(process.env.SITE_PORT || process.env.PORT || 8130);
 const ORIGIN = "https://1helm.com";
+const REPO = "gitcommit90/1Helm";
+const RELEASE_PAGE = `https://github.com/${REPO}/releases/latest`;
+const RELEASE_CACHE_MS = 10 * 60_000;
+
+let releaseCache = { at: 0, url: "" };
+async function latestDmgUrl() {
+  if (Date.now() - releaseCache.at < RELEASE_CACHE_MS && releaseCache.url) return releaseCache.url;
+  const response = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+    headers: { "user-agent": "1helm-site", accept: "application/vnd.github+json" },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!response.ok) throw new Error(`GitHub API ${response.status}`);
+  const release = await response.json();
+  const asset = (release.assets || []).find((entry) => /-arm64\.dmg$/i.test(String(entry.name || "")));
+  if (!asset?.browser_download_url) throw new Error("no arm64 DMG asset on latest release");
+  releaseCache = { at: Date.now(), url: asset.browser_download_url };
+  return releaseCache.url;
+}
 
 const mime = {
   ".css": "text/css; charset=utf-8",
@@ -107,7 +125,9 @@ const server = createServer((req, res) => {
     return;
   }
   if (path === "/download/macos") {
-    redirect(res, `https://github.com/gitcommit90/1Helm/releases/download/v${VERSION}/1Helm-${VERSION}-arm64.dmg`);
+    latestDmgUrl()
+      .then((url) => redirect(res, url))
+      .catch(() => redirect(res, RELEASE_PAGE));
     return;
   }
   if (path === "/github") {
