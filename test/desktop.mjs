@@ -141,6 +141,10 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(memoryRuntime, /--ignore-requires-python/);
   assert.match(memoryRuntime, /rmSync\(venv, \{ recursive: true, force: true \}\)/, "an invalid partial app-managed memory venv is repaired without touching agent databases");
   assert.match(memoryRuntime, /process\.platform === "darwin" \? \["\/usr\/bin\/python3"\]/, "macOS retries its bundled Python when a preferred interpreter cannot create the app-managed memory runtime");
+  assert.match(memoryRuntime, /export function prepareMnemosyneRuntime\(\): Promise<boolean>/, "fresh-host memory installation is asynchronous instead of blocking application startup");
+  assert.match(memoryRuntime, /export function cancelMnemosyneRuntimePreparation\(\)/, "host shutdown cancels an in-flight app-managed memory installation");
+  const serverRuntime = await readFile(join(root, "src", "server", "index.ts"), "utf8");
+  assert.match(serverRuntime, /const memoryRuntime = prepareMnemosyneRuntime\(\);[\s\S]*server\.listen\([\s\S]*memoryRuntime\.then/, "the HTTP server becomes ready before optional memory installation and initializes agent databases afterward");
   const memoryBridge = await readFile(join(root, "scripts", "mnemosyne-bridge.py"), "utf8");
   assert.match(memoryBridge, /sys\.version_info < \(3, 10\)/);
   assert.match(memoryBridge, /zip_longest/);

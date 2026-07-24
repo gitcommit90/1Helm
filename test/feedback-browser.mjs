@@ -49,6 +49,7 @@ test("Feedback button saves a real report and the admin inbox shows it", async (
       ...process.env,
       CTRL_DATA_DIR: dataDir,
       PORT: String(appPort),
+      NODE_ENV: "test",
       HELM_CHANNEL_COMPUTER_BACKEND: "native",
       HELM_FEEDBACK_URL: `http://127.0.0.1:${collectorPort}/v1/feedback`,
       IMPROVEMENT_INTERVAL_MS: "600000",
@@ -60,6 +61,10 @@ test("Feedback button saves a real report and the admin inbox shows it", async (
     await browser.close().catch(() => undefined);
     app.kill("SIGTERM");
     provider.kill("SIGTERM");
+    await Promise.race([
+      new Promise((resolve) => app.once("exit", resolve)),
+      new Promise((resolve) => setTimeout(resolve, 3_000)),
+    ]);
     await new Promise((resolve) => collector.close(resolve));
     rmSync(dataDir, { recursive: true, force: true });
   });

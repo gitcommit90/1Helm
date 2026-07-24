@@ -45,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fresh hosts now open the 1Helm server while the optional Mnemosyne Python
+  and embedding runtime is prepared in the background, instead of making
+  first launch and health checks wait on virtual-environment package installs.
 - Newly created and newly assigned skills now appear immediately in already
   open Arsenal and Channel Settings views without a page refresh.
 - Linux upgrades migrate existing compatibility computer records to LXC while

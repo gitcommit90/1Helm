@@ -1,4 +1,5 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { promisify } from "node:util";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR, q1, type Row } from "./db.ts";
@@ -9,6 +10,11 @@ const CONFIG_DIR = join(DATA_DIR, "mnemosyne-runtime", "config");
 const MNEMOSYNE_VERSION = "3.14.0";
 let validatedPython: string | null | undefined;
 let validatedSemanticPython: string | undefined;
+let preparation: Promise<boolean> | null = null;
+let preparationAbort = new AbortController();
+const execFileAsync = promisify(execFile);
+
+const asyncExecOptions = (timeout: number) => ({ timeout, windowsHide: true, signal: preparationAbort.signal });
 
 function hasPinnedRuntime(candidate: string): boolean {
   if (!candidate || !existsSync(candidate)) return false;
@@ -147,7 +153,7 @@ export function recallTranscriptForAgent(agent: Row, query: string, topK = 24): 
 export function mnemosyneAvailable(): boolean { return Boolean(pythonRuntime()); }
 
 /** Install the pinned local-first memory runtime into the data root on a fresh 1Helm host. */
-export function prepareMnemosyneRuntime(): boolean {
+async function prepareMnemosyneRuntimeUnlocked(): Promise<boolean> {
   const managedPython = join(DATA_DIR, "mnemosyne-runtime", "venv", "bin", "python");
   const current = pythonRuntime();
   if (current && hasPinnedSemanticRuntime(current)) return true;
@@ -161,9 +167,10 @@ export function prepareMnemosyneRuntime(): boolean {
   // memory instead of destroying a working durable-memory runtime.
   if (current === managedPython) {
     try {
-      execFileSync(current, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--ignore-requires-python", `mnemosyne-memory[embeddings]==${MNEMOSYNE_VERSION}`], { timeout: 600_000, stdio: "ignore" });
+      await execFileAsync(current, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--ignore-requires-python", `mnemosyne-memory[embeddings]==${MNEMOSYNE_VERSION}`], asyncExecOptions(600_000));
       if (hasPinnedSemanticRuntime(current)) return true;
     } catch (error) {
+      if (preparationAbort.signal.aborted) return false;
       console.warn(`Could not add local semantic retrieval to the existing Mnemosyne runtime:`, (error as Error).message);
     }
     return true;
@@ -181,21 +188,27 @@ export function prepareMnemosyneRuntime(): boolean {
     ...(process.platform === "darwin" ? ["/usr/bin/python3"] : []),
   ].filter(Boolean))];
   for (const python of installers) {
+    if (preparationAbort.signal.aborted) break;
     // A failed venv or pip run may still leave an executable Python behind.
     // Replace only this app-managed runtime after proving it cannot import the
     // pinned package; agent databases and all other Application Support remain.
     if (existsSync(venv)) rmSync(venv, { recursive: true, force: true });
     validatedSemanticPython = undefined;
     try {
-      execFileSync(python, ["-m", "venv", venv], { timeout: 60_000, stdio: "ignore" });
+      await execFileAsync(python, ["-m", "venv", venv], asyncExecOptions(60_000));
       try {
-        execFileSync(join(venv, "bin", "python"), ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--ignore-requires-python", `mnemosyne-memory[embeddings]==${MNEMOSYNE_VERSION}`], { timeout: 600_000, stdio: "ignore" });
+        const requirement = process.env.NODE_ENV === "test"
+          ? `mnemosyne-memory==${MNEMOSYNE_VERSION}`
+          : `mnemosyne-memory[embeddings]==${MNEMOSYNE_VERSION}`;
+        await execFileAsync(join(venv, "bin", "python"), ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--ignore-requires-python", requirement], asyncExecOptions(600_000));
       } catch {
-        execFileSync(join(venv, "bin", "python"), ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--ignore-requires-python", `mnemosyne-memory==${MNEMOSYNE_VERSION}`], { timeout: 180_000, stdio: "ignore" });
+        if (preparationAbort.signal.aborted) break;
+        await execFileAsync(join(venv, "bin", "python"), ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--ignore-requires-python", `mnemosyne-memory==${MNEMOSYNE_VERSION}`], asyncExecOptions(180_000));
       }
       validatedPython = undefined;
       if (pythonRuntime()) return true;
     } catch (error) {
+      if (preparationAbort.signal.aborted) break;
       console.warn(`Could not prepare Mnemosyne runtime with ${python}:`, (error as Error).message);
     }
   }
@@ -205,4 +218,17 @@ export function prepareMnemosyneRuntime(): boolean {
   validatedPython = undefined;
   validatedSemanticPython = undefined;
   return false;
+}
+
+/** Prepare the optional Python runtime without blocking the HTTP server's
+ * event loop on venv creation or package downloads. Concurrent callers share
+ * one installation attempt. */
+export function prepareMnemosyneRuntime(): Promise<boolean> {
+  if (!preparation) preparation = prepareMnemosyneRuntimeUnlocked();
+  return preparation;
+}
+
+/** Stop only the in-flight app-managed runtime installer during host shutdown. */
+export function cancelMnemosyneRuntimePreparation(): void {
+  preparationAbort.abort();
 }

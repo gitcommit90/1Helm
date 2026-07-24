@@ -59,7 +59,7 @@ import { auditEvents, verifyAuditChain } from "./audit.ts";
 import { configurePhoton, mapPhotonChannel, photonStatus, registerPhotonDispatcher, startPhotonConnector, stopPhotonConnector } from "./photon.ts";
 import { photonSetupStatus, startPhotonSetup } from "./photon-auth.ts";
 import { gmailConnectionStatus, saveGmailOAuthClient, startGmailConnection } from "./gmail.ts";
-import { ensureAgentMemory, mnemosyneAvailable, prepareMnemosyneRuntime } from "./memory.ts";
+import { cancelMnemosyneRuntimePreparation, ensureAgentMemory, mnemosyneAvailable, prepareMnemosyneRuntime } from "./memory.ts";
 import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
 import { startFollowupLoop, threadFollowupView, bumpThreadFollowup } from "./followups.ts";
@@ -1872,7 +1872,7 @@ async function bootstrap(): Promise<void> {
   registerPhotonDispatcher((bot, channelId, triggerId, threadRootId) => runBot(bot, channelId, triggerId, threadRootId, true));
   registerWorkflowDispatcher((bot, channelId, triggerId, threadRootId) => runBot(bot, channelId, triggerId, threadRootId, true));
   reactivateComputersAfterPreparedRemoval();
-  prepareMnemosyneRuntime();
+  const memoryRuntime = prepareMnemosyneRuntime();
   await startRoutingEngine((activity, ownerUserId) => {
     if (ownerUserId) sendToUsers([ownerUserId], { type: "routing_activity", activity });
     else broadcastAdmins({ type: "routing_activity", activity });
@@ -1908,6 +1908,13 @@ async function bootstrap(): Promise<void> {
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : PORT;
     console.log(`1Helm on 1Helm → http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${port}  (local agent on ${agentPort})  data: ${DATA_DIR}`);
+    void memoryRuntime.then((ready) => {
+      if (!ready) return;
+      for (const channel of q("SELECT id FROM channels WHERE kind='channel' AND status<>'deleted'")) {
+        const agent = agentForChannel(Number(channel.id));
+        if (agent) ensureAgentMemory(agent);
+      }
+    }).catch((error) => console.warn(`1Helm could not prepare durable memory: ${(error as Error).message}`));
     void queueLinuxHostContractMigration(DATA_DIR).catch((error) => console.warn(`1Helm could not queue its Linux host-contract migration: ${(error as Error).message}`));
   });
 }
@@ -1917,6 +1924,7 @@ let shuttingDown = false;
 const shutdown = async (forNativeUpdate = false): Promise<void> => {
   if (shuttingDown) return;
   shuttingDown = true;
+  cancelMnemosyneRuntimePreparation();
   await stopRoutingEngine().catch(() => undefined);
   stopAllConnectors();
   await stopPhotonConnector().catch(() => undefined);
