@@ -78,14 +78,8 @@ function availableAgentName(channelName: string): string {
 
 const agentInstructions = (name: string, purpose: string, templateInstructions = ""): string => [
   `You are @${name}, the resident specialist for this channel.`,
-  `The channel exists for: ${purpose}`,
+  `Channel purpose: ${purpose}`,
   templateInstructions,
-  "This channel's isolated Linux computer is your own machine. You have full ownership and autonomy inside it; it is not the Captain's computer and not a hypothetical workspace.",
-  "Treat this channel, its threads, files, memory, tools, and /workspace as your normal world. For ordinary installs, downloads, setup, commands, configuration, and file operations inside your machine, act immediately without asking the user for permission.",
-  "Infer the concrete task from the full thread and inspect your machine when useful. Do not ask the user to repeat context or choose between harmless implementation details you can resolve yourself.",
-  "Work directly in /workspace when creating or changing files. Record durable decisions and useful facts with the remember tool. Verify the requested result before reporting completion.",
-  "You know the workspace-wide skill catalog. Request a useful skill from Skipper when needed; grants are permanent. Propose a new skill after solving a reusable problem the catalog does not cover.",
-  "When work needs host-level authority, another channel, a missing capability, another resident expert, or credentials, use call_skipper. Do not silently act outside this channel world.",
 ].join("\n");
 
 export function updateChannelPurpose(channelId: number, purpose: string): void {

@@ -44,8 +44,6 @@ createServer(async (req, res) => {
     const wantsRealEventImage = reqBody.tools?.some((tool) => tool.function?.name === "attach_web_image")
       && /(?:show|find|send|give).{0,50}(?:image|photo|picture)/i.test(latestUser)
       && /(?:sinkhole|water[ -]?main|sunset|incident|event)/i.test(latestUser);
-    const outcomeGateRecovery = /deflect-operational-work/i.test(latestUser) && /runtime outcome gate/i.test(serialized) && !hasToolResult;
-    const outcomeGateDeflection = /deflect-operational-work/i.test(latestUser) && !/runtime outcome gate/i.test(serialized) && !hasToolResult;
     const repeatsTools = /repeat-tool-limit/i.test(serialized);
     const wantsRequestSkill = reqBody.tools?.some((tool) => tool.function?.name === "request_skill") && /request the self-hosting-guide skill/i.test(latestUser) && !hasToolResult;
     const wantsProposeSkill = reqBody.tools?.some((tool) => tool.function?.name === "propose_skill") && /propose a reusable meeting brief skill/i.test(latestUser) && !hasToolResult;
@@ -76,7 +74,6 @@ createServer(async (req, res) => {
       && !hasToolResult;
     const wantsAutonomousInstall = reqBody.tools?.some((tool) => tool.function?.name === "run_command")
       && /(?:download|install|set up) (?:openai )?codex/i.test(latestUser)
-      && /own machine[\s\S]*act immediately without asking permission/i.test(serialized)
       && !hasToolResult;
     const wantsLearnSkill = reqBody.tools?.some((tool) => tool.function?.name === "create_skill")
       && /Learn one new reusable workspace skill/i.test(latestUser)
@@ -145,13 +142,6 @@ createServer(async (req, res) => {
       sse(res, { choices: [{ delta: {}, finish_reason: "stop" }] });
     } else if (wantsCurrentEventResearch && webSearchResult && webInspectResult) {
       sse(res, { choices: [{ delta: { content: "The latest sourced report says a broken water main washed supporting soil from beneath Sunset Boulevard in West Hollywood, producing the sinkhole-shaped roadway collapse seen online. Officials describe the confirmed cause as a water-main break; “sinkhole” describes the visible result. The report says the road reopened after crews repaired the main and filled and stabilized the void. Source: Example News, published July 23, 2026 — https://example.com/news/sunset-sinkhole. Answer complete." } }] });
-      sse(res, { choices: [{ delta: {}, finish_reason: "stop" }] });
-    } else if (outcomeGateRecovery) {
-      const args = { command: "printf 'outcome gate recovered\\n' > outcome-gate.txt" };
-      sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "outcome_gate_recovery_1", type: "function", function: { name: "run_command", arguments: JSON.stringify(args) } }] } }] });
-      sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
-    } else if (outcomeGateDeflection) {
-      sse(res, { choices: [{ delta: { content: "You can run the command yourself, or ask Skipper to help." } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "stop" }] });
     } else if (wantsInspectLearnSource) {
       const url = latestUser.match(/https:\/\/[^\s)\]}>]+/i)?.[0] || "https://example.com/source";

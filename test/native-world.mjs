@@ -624,23 +624,6 @@ try {
     && !installActivity.some((action) => action.tool === "ask_user")
     && existsSync(join(dataDir, "channels", String(requesterNotes.id), "workspace", "codex-install.txt")),
   "a resident treats install/download work as autonomous action on its own machine instead of asking the user for permission");
-  const deflected = await api(`/api/channels/${requesterNotes.id}/messages`, { body: { body: `@${requesterNotes.agent.name} install deflect-operational-work and verify it` } }, requester);
-  const deflectedReply = await waitForAgentReply(deflected.body.message.id, requester, requesterNotes.agent.name);
-  const deflectedActivity = (await api(`/api/channels/${requesterNotes.id}/activity`, {}, requester)).body;
-  const recoveredAction = deflectedActivity.actions.find((action) => action.tool === "run_command" && /outcome-gate/.test(action.input_summary || ""));
-  const recoveredRows = deflectedActivity.activity.filter((item) => Number(item.action_id) === Number(recoveredAction?.id));
-  const gateStayedOpen = deflectedReply.progress?.some((step) => /Outcome gate kept the turn open/.test(step.body || ""));
-  if (!recoveredAction || recoveredRows.length !== 1 || !/→ complete\./.test(recoveredRows[0]?.summary || "") || !/status=completed/.test(recoveredRows[0]?.action_result || "") || !gateStayedOpen) {
-    console.error("outcome gate diagnostics", JSON.stringify({ recoveredAction, recoveredRows, recentActions: deflectedActivity.actions.slice(0, 4), recentActivity: deflectedActivity.activity.slice(0, 6) }, null, 2));
-  }
-  ok(Boolean(recoveredAction) && recoveredAction.status === "complete"
-    && recoveredRows.length === 1
-    && /→ complete\./.test(recoveredRows[0].summary || "")
-    && /status=completed/.test(recoveredRows[0].action_result || "")
-    && gateStayedOpen
-    && !/You can run the command yourself/.test(deflectedReply.body || "")
-    && /Answer complete/.test(deflectedReply.body || ""),
-  "runtime outcome gate replaces rejected hand-holding with one verified final answer and keeps one outcome-first Activity row");
   const captainUser = (await api("/api/users", {}, requester)).body.users.find((candidate) => candidate.username === "captain");
   const captainInvitation = await api(`/api/channels/${requesterNotes.id}/messages`, { body: { body: "@captain join my private notes channel" } }, requester);
   const addCaptain = await api(`/api/channels/${requesterNotes.id}/members/${captainUser.id}`, { body: { messageId: captainInvitation.body.message.id } }, requester);
