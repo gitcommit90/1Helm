@@ -136,6 +136,7 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(helperInstall, /process\.platform === "darwin"/);
   assert.match(helperInstall, /chmodSync\(helper, 0o755\)/, "Mac installs restore node-pty's executable spawn helper before terminals open");
   const memoryRuntime = await readFile(join(root, "src", "server", "memory.ts"), "utf8");
+  const testRunner = await readFile(join(root, "scripts", "run-test-suite.mjs"), "utf8");
   assert.match(memoryRuntime, /assert mnemosyne\.__version__/);
   assert.match(memoryRuntime, /\["recall", "recall_transcript"\][\s\S]*MNEMOSYNE_POLYPHONIC_RECALL: "1"/, "semantic recall enables Mnemosyne's supported vector-capable retrieval mode");
   assert.match(memoryRuntime, /--ignore-requires-python/);
@@ -143,6 +144,7 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(memoryRuntime, /process\.platform === "darwin" \? \["\/usr\/bin\/python3"\]/, "macOS retries its bundled Python when a preferred interpreter cannot create the app-managed memory runtime");
   assert.match(memoryRuntime, /export function prepareMnemosyneRuntime\(\): Promise<boolean>/, "fresh-host memory installation is asynchronous instead of blocking application startup");
   assert.match(memoryRuntime, /export function cancelMnemosyneRuntimePreparation\(\)/, "host shutdown cancels an in-flight app-managed memory installation");
+  assert.match(testRunner, /MNEMOSYNE_PYTHON: runtime/, "the full test suite shares one explicit pinned memory runtime instead of racing app-start installers");
   const serverRuntime = await readFile(join(root, "src", "server", "index.ts"), "utf8");
   assert.match(serverRuntime, /const memoryRuntime = prepareMnemosyneRuntime\(\);[\s\S]*server\.listen\([\s\S]*memoryRuntime\.then/, "the HTTP server becomes ready before optional memory installation and initializes agent databases afterward");
   const memoryBridge = await readFile(join(root, "scripts", "mnemosyne-bridge.py"), "utf8");

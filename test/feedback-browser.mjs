@@ -65,6 +65,7 @@ test("Feedback button saves a real report and the admin inbox shows it", async (
       new Promise((resolve) => app.once("exit", resolve)),
       new Promise((resolve) => setTimeout(resolve, 3_000)),
     ]);
+    collector.closeAllConnections?.();
     await new Promise((resolve) => collector.close(resolve));
     rmSync(dataDir, { recursive: true, force: true });
   });
