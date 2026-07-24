@@ -9,7 +9,8 @@ process.env.CTRL_DATA_DIR = dataDir;
 const dbModule = await import("../src/server/db.ts");
 const { db, q1, run, now, seed } = dbModule;
 const { verifyAuditChain } = await import("../src/server/audit.ts");
-const { classifyToolResult, outcomeGateObjection, runtimePromptTiersForChannel, validateAskUserInput } = await import("../src/server/bots.ts");
+const { classifyToolResult, evidenceGateObjection, outcomeGateObjection, runtimePromptTiersForChannel, runtimeToolNamesForChannel, validateAskUserInput } = await import("../src/server/bots.ts");
+const { inspectWebSource, isPublicWebAddress, validateWebSourceUrl } = await import("../src/server/web-source.ts");
 const { terminalPromptEnvironment } = await import("../src/server/agent.ts");
 const turns = await import("../src/server/turns.ts");
 const catalog = await import("../src/server/skill-catalog.ts");
@@ -30,6 +31,49 @@ test("outcome gate objects to operational hand-holding without rewriting evidenc
   assert.equal(outcomeGateObjection({ request: "Install the CLI", response: "Installed and verified it.", successfulTools: ["run_command"] }), "");
   assert.equal(outcomeGateObjection({ request: "Deploy the site", response: "I need the account owner to authorize production.", successfulTools: ["ask_user"] }), "");
   assert.match(outcomeGateObjection({ request: "Install the CLI", response: "You can install it yourself.", successfulTools: ["gmail_search"] }), /operational reply/i);
+  assert.match(outcomeGateObjection({ request: "Learn the skill from this site", response: "I inspected the source and it is safe." }), /source-inspection claim/i);
+  assert.equal(outcomeGateObjection({ request: "Learn the skill from this site", response: "I inspected the source and found its setup guide.", successfulTools: ["inspect_web_source"] }), "");
+  assert.match(outcomeGateObjection({ request: "Create the research machine", response: "I'm provisioning a purpose-specific research world." }), /provisioning claim/i);
+  assert.match(evidenceGateObjection({ request: "Research this", response: "#main has no computer, so I am blocked.", mainChannel: true, assignedComputerCount: 2 }), /false claim/i);
+});
+
+test("#main is a database- and tool-level resident-free authority channel", () => {
+  seed();
+  const ownerId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('authority-owner','x','Owner',1,?)", now()).lastInsertRowid;
+  const main = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created_by,personal_main_owner_id,created) VALUES ('main','authority-main','channel','','','active',?,?,?)", ownerId, ownerId, now()).lastInsertRowid;
+  const mainRoot = run("INSERT INTO messages (channel_id,body,created) VALUES (?,'authority thread',?)", main, now()).lastInsertRowid;
+  const mainThread = run("INSERT INTO threads (root_message_id,channel_id,status,title,summary,opened_at,updated_at) VALUES (?,?,'open','','',?,?)", mainRoot, main, now(), now()).lastInsertRowid;
+  const ordinary = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created) VALUES ('ordinary','ordinary','channel','','','active',?)", now()).lastInsertRowid;
+  const skipperBot = run("INSERT INTO bots (name,model,created) VALUES ('authority-skipper','mock',?)", now()).lastInsertRowid;
+  run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'skipper','authority-skipper','ready',?)", skipperBot, now());
+  const residentBot = run("INSERT INTO bots (name,model,created) VALUES ('authority-resident','mock',?)", now()).lastInsertRowid;
+  const resident = run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'channel','authority-resident','ready',?)", residentBot, now()).lastInsertRowid;
+  run("INSERT INTO agent_channels (agent_id,channel_id,bound_at) VALUES (?,?,?)", resident, ordinary, now());
+  const mainTools = runtimeToolNamesForChannel(skipperBot, main, true);
+  assert(!mainTools.includes("call_agent"));
+  assert(!mainTools.includes("invite_agent"));
+  assert(mainTools.includes("inspect_web_source"));
+  assert.throws(() => run("INSERT INTO thread_agent_guests (thread_id,agent_id,status,created) VALUES (?,?,'active',?)", mainThread, resident, now()), /cannot enter #main/i);
+  db.exec("DROP TRIGGER trg_thread_guest_no_personal_main_insert; DROP TRIGGER trg_thread_guest_no_personal_main_update;");
+  run("INSERT INTO thread_agent_guests (thread_id,agent_id,status,created) VALUES (?,?,'active',?)", mainThread, resident, now());
+  dbModule.migrate();
+  assert.equal(q1("SELECT status FROM thread_agent_guests WHERE thread_id=? AND agent_id=?", mainThread, resident).status, "removed");
+  assert.throws(() => run("UPDATE thread_agent_guests SET status='active' WHERE thread_id=? AND agent_id=?", mainThread, resident), /cannot enter #main/i);
+});
+
+test("web-source inspection is HTTPS-only, bounded, and rejects private addressing", async () => {
+  assert.throws(() => validateWebSourceUrl("http://example.com"), /HTTPS URLs only/i);
+  assert.throws(() => validateWebSourceUrl("https://127.0.0.1/private"), /private network/i);
+  assert.equal(isPublicWebAddress("10.0.0.1"), false);
+  assert.equal(isPublicWebAddress("169.254.169.254"), false);
+  assert.equal(isPublicWebAddress("93.184.216.34"), true);
+  process.env.NODE_ENV = "test";
+  process.env.HELM_TEST_WEB_SOURCE_FIXTURES = JSON.stringify({ "https://example.com/source": "# Safe source\n\nGrounded text." });
+  const inspected = await inspectWebSource("https://example.com/source");
+  assert.equal(inspected.status, 200);
+  assert.match(inspected.content, /Grounded text/);
+  assert.match(inspected.sha256, /^[a-f0-9]{64}$/);
+  delete process.env.HELM_TEST_WEB_SOURCE_FIXTURES;
 });
 
 test("tool result classification separates human blockers, transient retries, and permanent failures", () => {

@@ -42,11 +42,18 @@ createServer(async (req, res) => {
     const wantsRequestSkill = reqBody.tools?.some((tool) => tool.function?.name === "request_skill") && /request the self-hosting-guide skill/i.test(latestUser) && !hasToolResult;
     const wantsProposeSkill = reqBody.tools?.some((tool) => tool.function?.name === "propose_skill") && /propose a reusable meeting brief skill/i.test(latestUser) && !hasToolResult;
     const wantsInviteAgent = reqBody.tools?.some((tool) => tool.function?.name === "invite_agent") && /invite @?finance-agent/i.test(latestUser) && !hasToolResult;
+    const inviteResults = reqBody.messages.filter((message) => message.role === "tool" && message.name === "invite_agent");
+    const wantsDuplicateInvite = reqBody.tools?.some((tool) => tool.function?.name === "invite_agent")
+      && /invite @?finance-agent twice/i.test(latestUser)
+      && inviteResults.length === 1
+      && !String(inviteResults[0].content || "").startsWith("Error:");
     // Match the Captain/user turn only — system prompts now mention call_agent/hand-back and must not steal other tool paths.
     const wantsCallAgent = reqBody.tools?.some((tool) => tool.function?.name === "call_agent")
       && /hand (?:the )?work back|call_agent|re-invoke|handoff to resident/i.test(latestUser)
       && !hasToolResult
       && /You are @skipper/i.test(serialized);
+    const forcesForbiddenMainCall = /attempt forbidden direct call_agent in #main/i.test(latestUser)
+      && !reqBody.messages.some((message) => message.role === "tool" && message.name === "call_agent");
     // Durable follow-up: resident must schedule when async work continues after the turn.
     const wantsScheduleFollowup = reqBody.tools?.some((tool) => tool.function?.name === "schedule_followup")
       && /schedule[_ ]followup|check later|still downloading|async download|wake me/i.test(latestUser)
@@ -66,6 +73,11 @@ createServer(async (req, res) => {
     const wantsLearnSkill = reqBody.tools?.some((tool) => tool.function?.name === "create_skill")
       && /Learn one new reusable workspace skill/i.test(latestUser)
       && !hasToolResult;
+    const inspectedLearnSource = reqBody.messages.find((message) => message.role === "tool" && message.name === "inspect_web_source");
+    const wantsInspectLearnSource = reqBody.tools?.some((tool) => tool.function?.name === "inspect_web_source")
+      && /Learn one new reusable workspace skill/i.test(latestUser)
+      && /https:\/\//i.test(latestUser)
+      && !inspectedLearnSource;
     const wantsCallSkipper = reqBody.tools && /call skipper to run whoami/i.test(latestUser) && !hasToolResult && /You are @\S+-agent/.test(serialized);
     const wantsCreateChannel = reqBody.tools?.some((tool) => tool.function?.name === "create_channel") && /create (?:a )?(?:new )?channel/i.test(serialized) && !hasToolResult;
     const wantsListChannels = reqBody.tools?.some((tool) => tool.function?.name === "list_channels") && /what channels exist|list (?:the )?channels/i.test(latestUser) && !hasToolResult;
@@ -115,8 +127,15 @@ createServer(async (req, res) => {
     } else if (outcomeGateDeflection) {
       sse(res, { choices: [{ delta: { content: "You can run the command yourself, or ask Skipper to help." } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "stop" }] });
-    } else if (wantsLearnSkill) {
-      const args = { name: "Incident postmortem", description: "Turn incident evidence into reusable postmortems.", instructions: "Gather the timeline, contributing factors, corrective actions, owners, and follow-up dates." };
+    } else if (wantsInspectLearnSource) {
+      const url = latestUser.match(/https:\/\/[^\s)\]}>]+/i)?.[0] || "https://example.com/source";
+      sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "inspect_web_source_1", type: "function", function: { name: "inspect_web_source", arguments: JSON.stringify({ url }) } }] } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+    } else if (wantsLearnSkill || inspectedLearnSource) {
+      const openTerminal = /open terminal|open-terminal|openterminal/i.test(`${latestUser}\n${inspectedLearnSource?.content || ""}`);
+      const args = openTerminal
+        ? { name: "Open Terminal safe deployment", description: "Deploy and verify Open Terminal without unintended host or network exposure.", instructions: "Use when deploying Open Terminal for an agent or automation workflow. Prefer a dedicated Docker container and persistent volume over bare metal because bare-metal commands inherit the service user's host permissions. Require a strong API key, bind or publish only to the network scope the client actually needs, and never mount the Docker socket unless the user explicitly accepts effective host-root control. Treat file_browser_root as a client UI hint, not a security boundary. Verify the exact image or package provenance, start the service, check its health and API docs, execute only a harmless command, verify authentication rejects an invalid key, inspect the listener and logs, and document the pinned update, rollback, and removal procedure. Do not treat single-container multi-user mode as hard production isolation; use one container per trust boundary when users are not mutually trusted." }
+        : { name: "Incident postmortem", description: "Turn incident evidence into reusable postmortems.", instructions: "Gather the timeline, contributing factors, corrective actions, owners, and follow-up dates." };
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "create_skill_1", type: "function", function: { name: "create_skill", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else if (wantsGmailConnect) {
@@ -137,11 +156,11 @@ createServer(async (req, res) => {
       const args = { name: "Meeting brief", description: "Turn meeting context into a concise pre-read, decisions, and follow-ups.", instructions: "Activate before a meeting when agenda, participants, source notes, or prior decisions are available. Gather the authoritative context and distinguish sourced facts from open questions. Produce a compact brief with objective, participants, relevant history, decision points, risks, and required preparation. After the meeting, capture decisions with owners and dates, link the source artifacts, schedule durable follow-ups for unfinished actions, and verify that every stated commitment is represented in the final record.", evidence: "The completed launch meeting brief was attached in the thread and every decision, owner, and due date matched the source notes.", rationale: "This verified workflow is reusable across future meetings." };
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "propose_skill_1", type: "function", function: { name: "propose_skill", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
-    } else if (wantsInviteAgent) {
+    } else if (wantsInviteAgent || wantsDuplicateInvite) {
       const args = { agent: "finance-agent", reason: "Review the financial implications in this one thread." };
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "invite_agent_1", type: "function", function: { name: "invite_agent", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
-    } else if (wantsCallAgent) {
+    } else if (wantsCallAgent || forcesForbiddenMainCall) {
       const args = { reason: "Credentials are ready in /workspace/.secrets/media-stack.env. Continue the original request and finish it." };
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_agent_1", type: "function", function: { name: "call_agent", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
