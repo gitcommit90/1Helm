@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-07-24
+
+### Fixed
+
+- Linux fleet reconciliation no longer mistakes the intentional marker-less
+  interval during a fresh LXC bootstrap for an ownership violation. The
+  provisioning transaction retains strict post-bootstrap verification, while
+  ordinary and post-crash ownership checks remain fail-closed.
+- macOS and Windows desktop packages now retain their required Mnemosyne and
+  Windows WSL/removal runtime scripts. Electron Packager may inspect the
+  parent `scripts` directory before its allowlisted children; the release
+  filters now preserve that traversal without admitting unrelated build
+  helpers or tests.
+
 ## [0.0.6] - 2026-07-24
 
 ### Added
@@ -187,7 +201,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.6...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.7...HEAD
+[0.0.7]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.7
 [0.0.6]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.6
 [0.0.5]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.5
 [0.0.4]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.4

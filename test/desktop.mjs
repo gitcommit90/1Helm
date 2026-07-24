@@ -108,6 +108,7 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(channelComputers, /! findmnt -rn \/mnt\/c[\s\S]*rmdir \/mnt\/c \/mnt\/d[\s\S]*test ! -e \/mnt\/c/, "WSL removes only inert drive mountpoint directories after proving they are not mounted");
   assert.match(channelComputers, /test ! -e \/mnt\/c/, "WSL provisioning verifies the host C drive is not visible");
   const windowsPackager = await readFile(join(root, "scripts", "package-windows.cjs"), "utf8");
+  const macPackager = await readFile(join(root, "scripts", "package-mac-dmg.cjs"), "utf8");
   const windowsRemoval = await readFile(join(root, "scripts", "windows-removal.cjs"), "utf8");
   const windowsRuntime = await readFile(join(root, "scripts", "install-wsl-runtime.ps1"), "utf8");
   assert.match(windowsPackager, /HELM_REQUIRE_WINDOWS_SIGNATURE/);
@@ -117,6 +118,17 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(windowsPackager, /path\.join\(DIST, "RELEASES"\)/, "the GitHub asset keeps Squirrel's required literal RELEASES name");
   assert.match(windowsPackager, /path\.join\(DIST, path\.basename\(nupkg\)\)/, "the uploaded package keeps the exact basename referenced by RELEASES");
   assert.match(windowsPackager, /signPackagedExecutables\(appDir\)/, "release signing covers nested Windows executables before packaging");
+  for (const [source, requiredPaths] of [
+    [windowsPackager, ["/scripts", "/scripts/mnemosyne-bridge.py", "/scripts/install-wsl-runtime.ps1", "/scripts/windows-removal.cjs"]],
+    [macPackager, ["/scripts", "/scripts/mnemosyne-bridge.py"]],
+  ]) {
+    const literal = source.match(/const IGNORE_NON_RUNTIME_ROOTS\s*=\s*(\/\^[^;]+\/);/)?.[1];
+    assert.ok(literal, "desktop packager exposes a testable runtime-root filter");
+    const filter = Function(`"use strict"; return (${literal})`)();
+    for (const requiredPath of requiredPaths) assert.equal(filter.test(requiredPath), false, `${requiredPath} survives desktop packaging`);
+    assert.equal(filter.test("/scripts/release-only-helper.cjs"), true, "non-runtime release helpers stay outside the desktop app");
+    assert.equal(filter.test("/test"), true, "tests stay outside the desktop app");
+  }
   assert.match(windowsRemoval, /installation_id/);
   assert.match(windowsRemoval, /ctrl-pane\.db/, "Windows removal reads the real durable 1Helm database");
   assert.doesNotMatch(windowsRemoval, /helm\.sqlite/);

@@ -23,8 +23,11 @@ const REQUIRE_NOTARIZATION = process.env.HELM_REQUIRE_NOTARIZATION === "1";
 const TEAM_ID = String(process.env.APPLE_TEAM_ID || "").trim().toUpperCase();
 const NOTARY_PROFILE = String(process.env.APPLE_NOTARY_PROFILE || "").trim();
 const CONFIGURED_IDENTITY = String(process.env.APPLE_SIGN_IDENTITY || "").trim();
+// Electron Packager evaluates directories before their children. Keep the
+// scripts directory itself traversable so the required Mnemosyne bridge can
+// survive the otherwise root-level release filter.
 const IGNORE_NON_RUNTIME_ROOTS =
-  /^\/(?!package\.json$|LICENSE$|desktop(?:$|\/)|container(?:$|\/)|src(?:$|\/)|public(?:$|\/)|scripts\/mnemosyne-bridge\.py$|node_modules(?:$|\/))/;
+  /^\/(?!package\.json$|LICENSE$|desktop(?:$|\/)|container(?:$|\/)|src(?:$|\/)|public(?:$|\/)|scripts(?:$|\/mnemosyne-bridge\.py$)|node_modules(?:$|\/))/;
 
 if (!VERSION) throw new Error("package.json must define a version");
 
