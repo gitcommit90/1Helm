@@ -47,7 +47,25 @@ const api = async (path, opts = {}, token = "") => {
 const launchApp = async () => {
   app = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/server/index.ts"], {
     cwd: root,
-    env: { ...process.env, CTRL_DATA_DIR: dataDir, PORT: String(appPort), CLOUDFLARE_MOCK: "1", IMPROVEMENT_INTERVAL_MS: "600000", CTRL_MAX_TOOL_ROUNDS: "6" },
+    env: {
+      ...process.env,
+      CTRL_DATA_DIR: dataDir,
+      PORT: String(appPort),
+      CLOUDFLARE_MOCK: "1",
+      IMPROVEMENT_INTERVAL_MS: "600000",
+      CTRL_MAX_TOOL_ROUNDS: "6",
+      NODE_ENV: "test",
+      HELM_TEST_WEB_SOURCE_FIXTURES: JSON.stringify({
+        "https://example.com/openterminal/": [
+          "# Open Terminal",
+          "A lightweight self-hosted REST API for agent shell commands and files.",
+          "Install with `pip install open-terminal`; Docker is recommended for isolation.",
+          "Require an API key. Bare-metal commands run with the service user's real host permissions.",
+          "Mounting the Docker socket is effective host-root access. File-browser root is only a UI hint.",
+          "Single-container multi-user mode is not hard production isolation.",
+        ].join("\n\n"),
+      }),
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let diagnostics = "";
@@ -135,6 +153,19 @@ try {
   ok(learned.status === 202 && learned.body.channelId === main.id && /@skipper[\s\S]*create_skill/i.test(learned.body.message.body), "Learn a new skill opens a visible Skipper thread that gathers sources and authors through create_skill");
   await waitFor(async () => (await api("/api/skills", {}, captain)).body.skills?.some((skill) => skill.slug === "incident-postmortem"), "learned skill creation");
   ok(true, "Skipper completes the learning thread by adding the reusable skill to the shared arsenal");
+  const learnedFromWeb = await api("/api/skills/learn", { body: { url: "https://example.com/openterminal/" } }, captain);
+  await waitFor(async () => (await api("/api/skills", {}, captain)).body.skills?.some((skill) => skill.slug === "open-terminal-safe-deployment"), "web-source skill creation");
+  const learnedFromWebDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const learnedThread = learnedFromWebDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(learnedFromWeb.body.rootMessageId);
+  const learnedActions = learnedFromWebDb.prepare("SELECT tool,status,input_summary,result_summary FROM tool_actions WHERE thread_id=? ORDER BY id").all(learnedThread.id);
+  const learnedSkill = learnedFromWebDb.prepare("SELECT instructions FROM skills WHERE slug='open-terminal-safe-deployment'").get();
+  learnedFromWebDb.close();
+  ok(learnedFromWeb.status === 202
+    && learnedActions.some((action) => action.tool === "inspect_web_source" && action.status === "complete" && /example\.com\/openterminal/.test(action.input_summary))
+    && learnedActions.some((action) => action.tool === "create_skill" && action.status === "complete")
+    && learnedActions.findIndex((action) => action.tool === "inspect_web_source") < learnedActions.findIndex((action) => action.tool === "create_skill")
+    && /Docker socket[\s\S]*host-root|host-root[\s\S]*Docker socket/i.test(learnedSkill.instructions),
+  "Learn a new skill inspects a supplied HTTPS source before creating a source-grounded shared skill");
   ok(channels.every((channel) => channel.kind !== "channel" || channel.slug), "every channel has a stable URL slug");
 
   const workspaceUpdate = await api("/api/workspace", { method: "PATCH", body: { name: "Native Test Renamed", theme: "ocean" } }, captain);
@@ -321,6 +352,25 @@ try {
   const finance = (await api("/api/channels", { body: { name: "Finance", purpose: "Own finance planning and records." } }, captain)).body.channel;
   ok(finance.agent.id !== launch.agent.id && finance.agent.bot_id !== launch.agent.bot_id, "each channel receives a distinct resident agent");
   ok(finance.agent.runtime.avatar !== launch.agent.runtime.avatar, "new resident agents start with distinct random avatar colors while unused palette colors remain");
+  const rejectedMainGuestRoot = (await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper invite @finance-agent into #main for unrelated research" } }, captain)).body.message.id;
+  await waitForAgentReply(rejectedMainGuestRoot, captain, "skipper");
+  await sleep(300);
+  const rejectedMainGuestDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const rejectedMainThread = rejectedMainGuestDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(rejectedMainGuestRoot);
+  const rejectedMainBinding = rejectedMainGuestDb.prepare("SELECT 1 FROM thread_agent_guests WHERE thread_id=? AND status='active'").get(rejectedMainThread.id);
+  const rejectedMainResidentTurns = rejectedMainGuestDb.prepare("SELECT COUNT(*) n FROM agent_turns WHERE thread_root_id=? AND bot_id=?").get(rejectedMainGuestRoot, finance.agent.bot_id).n;
+  const rejectedMainDispatchActions = rejectedMainGuestDb.prepare("SELECT COUNT(*) n FROM tool_actions WHERE thread_id=? AND tool IN ('invite_agent','call_agent')").get(rejectedMainThread.id).n;
+  rejectedMainGuestDb.close();
+  ok(!rejectedMainBinding && rejectedMainResidentTurns === 0 && rejectedMainDispatchActions === 0, "#main cannot expose or dispatch resident invitations even when the Captain explicitly asks Skipper to invite one");
+  const rejectedMainCallRoot = (await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper attempt forbidden direct call_agent in #main" } }, captain)).body.message.id;
+  await waitForAgentReply(rejectedMainCallRoot, captain, "skipper");
+  await sleep(200);
+  const rejectedMainCallDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const rejectedMainCallAction = rejectedMainCallDb.prepare("SELECT status,result_summary FROM tool_actions WHERE thread_id=(SELECT id FROM threads WHERE root_message_id=?) AND tool='call_agent'").get(rejectedMainCallRoot);
+  const rejectedMainCallBinding = rejectedMainCallDb.prepare("SELECT 1 FROM thread_agent_guests WHERE thread_id=(SELECT id FROM threads WHERE root_message_id=?) AND status='active'").get(rejectedMainCallRoot);
+  const rejectedMainCallTurn = rejectedMainCallDb.prepare("SELECT COUNT(*) n FROM agent_turns WHERE thread_root_id=? AND bot_id=?").get(rejectedMainCallRoot, finance.agent.bot_id).n;
+  rejectedMainCallDb.close();
+  ok(rejectedMainCallAction?.status === "failed" && /cannot be called|cannot.*#main/i.test(rejectedMainCallAction.result_summary) && !rejectedMainCallBinding && rejectedMainCallTurn === 0, "a provider-forced cross-channel call_agent invocation is rejected at the #main execution boundary");
   const legacyBot = (await api("/api/bots", { body: { name: "ambient-third-agent", provider_id: providerId, model: "mock-large" } }, captain)).body.bot;
   const rejectedJoin = await api(`/api/bots/${legacyBot.id}/join`, { body: { channelId: launch.id } }, captain);
   const membershipDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
@@ -353,6 +403,15 @@ try {
   const stillUnpoisoned = resolvedGuestDb.prepare("SELECT 1 FROM bot_channels WHERE bot_id=? AND channel_id=?").get(finance.agent.bot_id, launch.id);
   resolvedGuestDb.close();
   ok(removedGuest?.status === "removed" && !stillUnpoisoned, "resolving the thread revokes its guest expert without changing channel membership");
+
+  const duplicateGuestRoot = (await api(`/api/channels/${launch.id}/messages`, { body: { body: "@skipper invite @finance-agent twice into this thread for one review" } }, captain)).body.message.id;
+  await waitForAgentReply(duplicateGuestRoot, captain, "finance-agent");
+  await waitForAgentReply(duplicateGuestRoot, captain, "skipper");
+  const duplicateGuestDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const financeGuestTurns = duplicateGuestDb.prepare("SELECT COUNT(*) n FROM agent_turns WHERE bot_id=? AND thread_root_id=?").get(finance.agent.bot_id, duplicateGuestRoot).n;
+  const duplicateInviteActions = duplicateGuestDb.prepare("SELECT status FROM tool_actions WHERE thread_id=(SELECT id FROM threads WHERE root_message_id=?) AND tool='invite_agent'").all(duplicateGuestRoot);
+  duplicateGuestDb.close();
+  ok(financeGuestTurns === 1 && duplicateInviteActions.length === 2 && duplicateInviteActions.some((action) => action.status === "failed"), "re-inviting an already active thread guest is rejected without dispatching another resident turn");
 
   const database = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
   const duplicateBindings = database.prepare("SELECT channel_id, COUNT(*) n FROM agent_channels GROUP BY channel_id HAVING n<>1").all();

@@ -62,6 +62,13 @@ export function run(sql: string, ...params: unknown[]): { lastInsertRowid: numbe
   return { lastInsertRowid: Number(r.lastInsertRowid), changes: Number(r.changes) };
 }
 
+/** Personal #main is Skipper's protected authority channel. It deliberately
+ * has no resident agent and can never host a resident as a thread guest. */
+export function isMainChannel(channelId: number): boolean {
+  return Boolean(q1(`SELECT 1 FROM channels WHERE id=? AND kind='channel' AND name='main'
+    AND personal_main_owner_id IS NOT NULL AND status<>'deleted'`, channelId));
+}
+
 /** Synchronous transaction helper. Never await inside fn. */
 export function tx<T>(fn: () => T): T {
   db.exec("BEGIN IMMEDIATE");
@@ -779,7 +786,7 @@ export function migrate(): void {
     // developer deliberately opts into the native compatibility backend.
     const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || (process.platform === "darwin" ? "apple" : "native"));
     const backend = ["apple", "native", "mock"].includes(configuredBackend) ? configuredBackend : "native";
-    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.2");
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.3");
     for (const channel of q(`SELECT c.id FROM channels c JOIN agent_channels ac ON ac.channel_id=c.id
       WHERE c.kind='channel' AND c.status<>'deleted'`)) {
       const channelId = Number(channel.id);
@@ -875,6 +882,28 @@ export function migrate(): void {
   });
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_slug ON channels(slug) WHERE status<>'deleted';");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_personal_main_owner ON channels(personal_main_owner_id) WHERE personal_main_owner_id IS NOT NULL AND status<>'deleted';");
+  // Defense in depth for the authority channel: clean any historical bad
+  // bindings, then reject both new active rows and reactivation through UPDATE.
+  run(`UPDATE thread_agent_guests SET status='removed' WHERE status='active' AND EXISTS (
+    SELECT 1 FROM threads t JOIN channels c ON c.id=t.channel_id
+    WHERE t.id=thread_agent_guests.thread_id AND c.kind='channel' AND c.name='main'
+      AND c.personal_main_owner_id IS NOT NULL AND c.status<>'deleted')`);
+  db.exec(`
+  CREATE TRIGGER IF NOT EXISTS trg_thread_guest_no_personal_main_insert
+  BEFORE INSERT ON thread_agent_guests
+  WHEN NEW.status='active' AND EXISTS (
+    SELECT 1 FROM threads t JOIN channels c ON c.id=t.channel_id
+    WHERE t.id=NEW.thread_id AND c.kind='channel' AND c.name='main'
+      AND c.personal_main_owner_id IS NOT NULL AND c.status<>'deleted')
+  BEGIN SELECT RAISE(ABORT, 'resident agents cannot enter #main'); END;
+  CREATE TRIGGER IF NOT EXISTS trg_thread_guest_no_personal_main_update
+  BEFORE UPDATE OF status,thread_id ON thread_agent_guests
+  WHEN NEW.status='active' AND EXISTS (
+    SELECT 1 FROM threads t JOIN channels c ON c.id=t.channel_id
+    WHERE t.id=NEW.thread_id AND c.kind='channel' AND c.name='main'
+      AND c.personal_main_owner_id IS NOT NULL AND c.status<>'deleted')
+  BEGIN SELECT RAISE(ABORT, 'resident agents cannot enter #main'); END;
+  `);
 }
 migrate();
 

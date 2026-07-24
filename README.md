@@ -208,7 +208,7 @@ A fresh data directory opens first-run setup. The source runtime defaults to
 | `PORT` | `8123` | HTTP/WebSocket control-plane port. |
 | `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and narrow workspace mirrors. |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `native` elsewhere | Explicit development/test backend override. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.2` | Versioned Apple channel-machine image. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.3` | Versioned Apple channel-machine image. |
 
 ### Agent-first JSON CLI
 

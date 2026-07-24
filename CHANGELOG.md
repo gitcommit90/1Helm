@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-07-24
+
+### Fixed
+
+- `#main` is now a hard resident-free authority boundary. Skipper no longer
+  exposes resident dispatch there, direct calls are rejected, historical guest
+  bindings are removed during migration, and database triggers prevent them
+  from returning. Relevant one-thread expert invitations continue to work in
+  ordinary channels, while duplicate active invitations no longer dispatch a
+  second turn.
+- Skipper's command tool now names its authoritative assigned-computer
+  inventory and defaults to `This Computer`, so the intentional absence of a
+  per-channel resident VM in `#main` cannot be presented as absence of Skipper
+  computer access.
+- Learn a New Skill can inspect public HTTPS text sources directly through a
+  bounded, audited reader with redirect revalidation, DNS pinning, private and
+  reserved address rejection, response limits, and source digests. A
+  source-derived skill cannot be created until every supplied URL has been
+  successfully inspected.
+- Runtime evidence checks reject unsupported claims of source inspection,
+  computer provisioning, skill creation, or missing Skipper computers.
+
 ## [0.0.2] - 2026-07-23
 
 ### Fixed
@@ -49,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.3...HEAD
+[0.0.3]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.3
 [0.0.2]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.2
 [0.0.1]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.1

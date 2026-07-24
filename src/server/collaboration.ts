@@ -164,9 +164,9 @@ export function ensureCollabChannel(userId?: number): number {
   return Number(channel.id);
 }
 
-/** Private Skipper home for one human. It has no resident agent or channel
- * computer: Skipper is the workspace-wide agent, while channels this person
- * creates receive their own resident and isolated computer. */
+/** Private Skipper home for one human. It has no resident agent or per-channel
+ * computer: Skipper remains workspace-wide and keeps its separately assigned
+ * computers here, while ordinary channels receive a resident and isolated VM. */
 export function ensurePersonalMainChannel(userId: number): number {
   const user = q1("SELECT id,username FROM users WHERE id=?", userId);
   if (!user) throw new Error("Workspace member not found.");
