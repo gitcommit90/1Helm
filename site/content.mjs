@@ -60,4 +60,4 @@ export const pages = {
   "/docs/install/windows-wsl": installWsl, "/docs/self-hosting": selfHosting,
 };
 export const redirects = { "/download": "/download/macos", "/install": "/docs/getting-started", "/why": "/manifesto", "/architecture": "/docs/architecture" };
-export const sitemapPaths = ["/", "/manual", ...Object.keys(pages)];
+export const sitemapPaths = ["/", "/manual", "/terms", "/privacy", ...Object.keys(pages)];

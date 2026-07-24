@@ -533,3 +533,11 @@
   .channel-shot { height: clamp(180px, 40vh, 360px); }
   .stack { display: flex; flex-direction: column; align-items: center; gap: 0.35rem; }
   .frame-inner.wide { max-width: 1200px; }
+
+  /* half-opacity legal line (final frame) */
+  .legal {
+    opacity: 0.5;
+    font-size: clamp(0.8rem, 1.5vw, 0.95rem);
+    color: var(--ink);
+  }
+  .legal a { color: inherit; }

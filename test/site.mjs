@@ -24,7 +24,10 @@ test("standalone 1helm.com website serves independent product and documentation 
     const manual = await (await fetch(`${base}/manual`)).text();
     assert.match(manual, /The Ship's/);
     assert.match(manual, /Do I really need a dedicated computer/);
-    for (const path of ["/manual", "/product", "/manifesto", "/security", "/faq", "/docs", "/docs/install/macos", "/docs/install/linux", "/docs/install/windows-wsl", "/docs/skills", "/docs/verification", "/docs/connections"]) {
+    const privacy = await (await fetch(`${base}/privacy`)).text();
+    assert.match(privacy, /build@1helm\.com/);
+    assert.match(home, /build@1helm\.com/);
+    for (const path of ["/manual", "/terms", "/privacy", "/product", "/manifesto", "/security", "/faq", "/docs", "/docs/install/macos", "/docs/install/linux", "/docs/install/windows-wsl", "/docs/skills", "/docs/verification", "/docs/connections"]) {
       const response = await fetch(base + path); assert.equal(response.status, 200, path);
       assert.match(response.headers.get("content-security-policy") || "", /default-src 'self'/);
     }

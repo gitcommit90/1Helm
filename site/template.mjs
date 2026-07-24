@@ -31,7 +31,7 @@ function footer(version) {
       <div><h2>Install</h2><a href="/docs/install/macos">Apple Silicon Mac</a><a href="/docs/install/linux">Linux & VPS</a><a href="/docs/install/windows-wsl">Windows + WSL</a><a href="/download/macos">Download v${esc(version)}</a></div>
       <div><h2>Project</h2><a href="/github">GitHub</a><a href="https://github.com/gitcommit90/1Helm/releases">Releases</a><a href="https://github.com/gitcommit90/1Helm/issues">Issues</a><a href="/docs/architecture">Architecture</a></div>
     </div>
-    <div class="footer-floor"><span>Open source · self-hosted · your machines, your memory, your model fabric.</span><span>1Helm v${esc(version)}</span></div>
+    <div class="footer-floor"><span>Open source · self-hosted · your machines, your memory, your model fabric.</span><span><a href="mailto:build@1helm.com">build@1helm.com</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · 1Helm v${esc(version)}</span></div>
   </footer>`;
 }
 
