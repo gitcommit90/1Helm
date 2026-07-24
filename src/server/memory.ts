@@ -1,4 +1,5 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { promisify } from "node:util";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR, q1, type Row } from "./db.ts";
@@ -8,6 +9,12 @@ const BRIDGE = join(APP_ROOT, "scripts", "mnemosyne-bridge.py");
 const CONFIG_DIR = join(DATA_DIR, "mnemosyne-runtime", "config");
 const MNEMOSYNE_VERSION = "3.14.0";
 let validatedPython: string | null | undefined;
+let validatedSemanticPython: string | undefined;
+let preparation: Promise<boolean> | null = null;
+let preparationAbort = new AbortController();
+const execFileAsync = promisify(execFile);
+
+const asyncExecOptions = (timeout: number) => ({ timeout, windowsHide: true, signal: preparationAbort.signal });
 
 function hasPinnedRuntime(candidate: string): boolean {
   if (!candidate || !existsSync(candidate)) return false;
@@ -15,6 +22,17 @@ function hasPinnedRuntime(candidate: string): boolean {
     timeout: 10_000,
     stdio: "ignore",
   });
+  return result.status === 0;
+}
+
+function hasPinnedSemanticRuntime(candidate: string): boolean {
+  if (validatedSemanticPython === candidate) return true;
+  if (!hasPinnedRuntime(candidate)) return false;
+  const result = spawnSync(candidate, ["-c", "import fastembed, sqlite_vec"], {
+    timeout: 10_000,
+    stdio: "ignore",
+  });
+  if (result.status === 0) validatedSemanticPython = candidate;
   return result.status === 0;
 }
 
@@ -53,9 +71,16 @@ function invoke(agent: Row, request: Record<string, unknown>): Record<string, un
         channel_id: request.channel_id || (String(agent.kind) === "skipper" ? "workspace" : String(agent.channel_id || "")),
       }),
       encoding: "utf8",
-      timeout: 20_000,
+      timeout: request.operation === "sync_transcript" ? 120_000 : 20_000,
       maxBuffer: 2 * 1024 * 1024,
-      env: { ...process.env, MNEMOSYNE_DATA_DIR: CONFIG_DIR },
+      env: {
+        ...process.env,
+        MNEMOSYNE_DATA_DIR: CONFIG_DIR,
+        MNEMOSYNE_FASTEMBED_CACHE_DIR: join(DATA_DIR, "mnemosyne-runtime", "cache", "fastembed"),
+        ...(["recall", "recall_transcript"].includes(String(request.operation)) && hasPinnedSemanticRuntime(python)
+          ? { MNEMOSYNE_POLYPHONIC_RECALL: "1" }
+          : {}),
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
     return JSON.parse(output) as Record<string, unknown>;
@@ -95,11 +120,61 @@ export function recallForAgent(agent: Row, query: string, topK = 8): RecalledMem
   return Array.isArray(result?.memories) ? (result!.memories as RecalledMemory[]).filter((memory) => memory?.content) : [];
 }
 
+export type TranscriptMemoryInput = {
+  message_id: number;
+  content: string;
+  previous_memory_id?: string;
+  metadata: Record<string, unknown>;
+};
+
+export type TranscriptMemoryHit = RecalledMemory & {
+  metadata?: Record<string, unknown>;
+};
+
+/** Mirror raw transcript rows into the owning resident's semantic index. The
+ * control-plane messages table remains authoritative; Mnemosyne stores only a
+ * scoped retrieval index with stable source provenance. */
+export function syncTranscriptForAgent(agent: Row, entries: TranscriptMemoryInput[]): { message_id: number; memory_id: string }[] {
+  if (!entries.length) return [];
+  const result = invoke(agent, { operation: "sync_transcript", entries });
+  return Array.isArray(result?.indexed)
+    ? (result!.indexed as { message_id: number; memory_id: string }[]).filter((entry) => Number(entry.message_id) && entry.memory_id)
+    : [];
+}
+
+export function recallTranscriptForAgent(agent: Row, query: string, topK = 24): TranscriptMemoryHit[] {
+  if (!query.trim()) return [];
+  const result = invoke(agent, { operation: "recall_transcript", query: query.slice(0, 4000), top_k: topK });
+  return Array.isArray(result?.memories)
+    ? (result!.memories as TranscriptMemoryHit[]).filter((memory) => memory?.content && memory.metadata?.message_id)
+    : [];
+}
+
 export function mnemosyneAvailable(): boolean { return Boolean(pythonRuntime()); }
 
 /** Install the pinned local-first memory runtime into the data root on a fresh 1Helm host. */
-export function prepareMnemosyneRuntime(): boolean {
-  if (pythonRuntime()) return true;
+async function prepareMnemosyneRuntimeUnlocked(): Promise<boolean> {
+  const managedPython = join(DATA_DIR, "mnemosyne-runtime", "venv", "bin", "python");
+  const current = pythonRuntime();
+  if (current && hasPinnedSemanticRuntime(current)) return true;
+  // Ephemeral test workspaces reuse the repository's already validated base
+  // runtime. Installing the optional embedding stack into every throwaway
+  // data directory would make application startup depend on package downloads
+  // and can leave pip racing test cleanup after a deliberately killed child.
+  if (process.env.NODE_ENV === "test" && current) return true;
+  // Upgrade an existing app-managed base runtime in place. If optional local
+  // embedding wheels are unavailable on this platform, retain keyword/FTS
+  // memory instead of destroying a working durable-memory runtime.
+  if (current === managedPython) {
+    try {
+      await execFileAsync(current, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--ignore-requires-python", `mnemosyne-memory[embeddings]==${MNEMOSYNE_VERSION}`], asyncExecOptions(600_000));
+      if (hasPinnedSemanticRuntime(current)) return true;
+    } catch (error) {
+      if (preparationAbort.signal.aborted) return false;
+      console.warn(`Could not add local semantic retrieval to the existing Mnemosyne runtime:`, (error as Error).message);
+    }
+    return true;
+  }
   const venv = join(DATA_DIR, "mnemosyne-runtime", "venv");
   mkdirSync(join(DATA_DIR, "mnemosyne-runtime"), { recursive: true });
   // Homebrew Python can be preferred in a user's PATH but occasionally lacks
@@ -113,16 +188,27 @@ export function prepareMnemosyneRuntime(): boolean {
     ...(process.platform === "darwin" ? ["/usr/bin/python3"] : []),
   ].filter(Boolean))];
   for (const python of installers) {
+    if (preparationAbort.signal.aborted) break;
     // A failed venv or pip run may still leave an executable Python behind.
     // Replace only this app-managed runtime after proving it cannot import the
     // pinned package; agent databases and all other Application Support remain.
     if (existsSync(venv)) rmSync(venv, { recursive: true, force: true });
+    validatedSemanticPython = undefined;
     try {
-      execFileSync(python, ["-m", "venv", venv], { timeout: 60_000, stdio: "ignore" });
-      execFileSync(join(venv, "bin", "python"), ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--ignore-requires-python", `mnemosyne-memory==${MNEMOSYNE_VERSION}`], { timeout: 180_000, stdio: "ignore" });
+      await execFileAsync(python, ["-m", "venv", venv], asyncExecOptions(60_000));
+      try {
+        const requirement = process.env.NODE_ENV === "test"
+          ? `mnemosyne-memory==${MNEMOSYNE_VERSION}`
+          : `mnemosyne-memory[embeddings]==${MNEMOSYNE_VERSION}`;
+        await execFileAsync(join(venv, "bin", "python"), ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--ignore-requires-python", requirement], asyncExecOptions(600_000));
+      } catch {
+        if (preparationAbort.signal.aborted) break;
+        await execFileAsync(join(venv, "bin", "python"), ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--ignore-requires-python", `mnemosyne-memory==${MNEMOSYNE_VERSION}`], asyncExecOptions(180_000));
+      }
       validatedPython = undefined;
       if (pythonRuntime()) return true;
     } catch (error) {
+      if (preparationAbort.signal.aborted) break;
       console.warn(`Could not prepare Mnemosyne runtime with ${python}:`, (error as Error).message);
     }
   }
@@ -130,5 +216,19 @@ export function prepareMnemosyneRuntime(): boolean {
   // runtime. Agent-owned Mnemosyne databases remain untouched.
   if (existsSync(venv)) rmSync(venv, { recursive: true, force: true });
   validatedPython = undefined;
+  validatedSemanticPython = undefined;
   return false;
+}
+
+/** Prepare the optional Python runtime without blocking the HTTP server's
+ * event loop on venv creation or package downloads. Concurrent callers share
+ * one installation attempt. */
+export function prepareMnemosyneRuntime(): Promise<boolean> {
+  if (!preparation) preparation = prepareMnemosyneRuntimeUnlocked();
+  return preparation;
+}
+
+/** Stop only the in-flight app-managed runtime installer during host shutdown. */
+export function cancelMnemosyneRuntimePreparation(): void {
+  preparationAbort.abort();
 }

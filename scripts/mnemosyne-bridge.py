@@ -63,8 +63,46 @@ def main() -> None:
                 temporal_weight=float(request.get("temporal_weight") or 0.15),
             ),
         }
+    elif operation == "sync_transcript":
+        indexed = []
+        for entry in request.get("entries") or []:
+            previous_id = str(entry.get("previous_memory_id") or "")
+            if previous_id:
+                memory.forget(previous_id)
+            metadata = entry.get("metadata") or {}
+            memory_id = memory.remember(
+                str(entry.get("content") or ""),
+                source="1helm:raw-channel-transcript",
+                importance=0.45,
+                metadata=metadata,
+                scope="global",
+                trust_tier="OBSERVED",
+            )
+            indexed.append({
+                "message_id": metadata.get("message_id"),
+                "memory_id": memory_id,
+            })
+        result = {"ok": True, "indexed": indexed}
+    elif operation == "recall_transcript":
+        recalled = memory.recall(
+            str(request.get("query") or ""),
+            top_k=max(1, min(100, int(request.get("top_k") or 24))),
+            source="1helm:raw-channel-transcript",
+            temporal_weight=float(request.get("temporal_weight") or 0.15),
+        )
+        hydrated = []
+        for item in recalled:
+            detail = memory.get(str(item.get("id") or "")) or {}
+            metadata = detail.get("metadata") or {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+            hydrated.append({**item, "metadata": metadata})
+        result = {"ok": True, "memories": hydrated}
     elif operation == "stats":
-        result = {"ok": True, "stats": memory.stats()}
+        result = {"ok": True, "stats": memory.get_stats()}
     else:
         raise ValueError(f"Unknown operation: {operation}")
     json.dump(result, sys.stdout, default=str)

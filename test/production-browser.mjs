@@ -70,7 +70,11 @@ const waitForReply = async (rootId, author) => waitFor(async () => {
 try {
   app = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/server/index.ts"], {
     cwd: root,
-    env: { ...process.env, CTRL_DATA_DIR: dataDir, PORT: String(port) },
+    // This test uses a disposable copy of production data but runs on the
+    // development host, not an installed Linux service with the root-owned LXC
+    // helper. Keep the production browser contract on the explicit native seam;
+    // real LXC acceptance is exercised independently on the retained host.
+    env: { ...process.env, CTRL_DATA_DIR: dataDir, PORT: String(port), HELM_CHANNEL_COMPUTER_BACKEND: "native" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let diagnostics = "";
@@ -132,7 +136,7 @@ try {
   await page.evaluate(() => [...document.querySelectorAll(".modal-overlay button")].find((button) => button.textContent.trim() === "Skills")?.click());
   await page.waitForFunction(() => document.querySelector(".modal-overlay")?.textContent.includes("Installed arsenal"));
   const skillSurface = await page.$eval(".modal-overlay", (dialog) => dialog.textContent || "");
-  ok(/complete playbooks/.test(skillSurface) && /SkillsMD library/.test(skillSurface), "Skills UI exposes the complete shipped arsenal and focused SkillsMD catalog");
+  ok(/complete procedures/.test(skillSurface) && /SkillsMD library/.test(skillSurface), "Skills UI exposes the complete shipped arsenal and focused SkillsMD catalog");
   await page.evaluate(() => [...document.querySelectorAll(".modal-overlay button")].find((button) => button.textContent.trim() === "Domains")?.click());
   await page.waitForSelector('.modal-overlay input[placeholder="agents.example.com"]');
   ok(Boolean(await page.$('.modal-overlay input[placeholder="Cloudflare API token"]')), "Domains UI provides the Cloudflare hostname and one-time token connection flow");

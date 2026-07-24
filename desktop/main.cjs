@@ -17,6 +17,26 @@ let quitting = false;
 let hostUpdateService = null;
 const remoteWorkspacePath = () => path.join(app.getPath("userData"), "remote-workspace");
 
+function handleSquirrelEvent() {
+  if (process.platform !== "win32") return false;
+  const event = process.argv[1];
+  if (!["--squirrel-install", "--squirrel-updated", "--squirrel-uninstall", "--squirrel-obsolete"].includes(event)) return false;
+  const appFolder = path.resolve(process.execPath, "..");
+  const updateExe = path.resolve(appFolder, "..", "Update.exe");
+  const exe = path.basename(process.execPath);
+  if (event === "--squirrel-install" || event === "--squirrel-updated") {
+    spawnSync(updateExe, ["--createShortcut", exe], { stdio: "ignore", windowsHide: true });
+  } else if (event === "--squirrel-uninstall") {
+    const dataRoot = path.join(String(process.env.APPDATA || ""), "1Helm");
+    const wslRoot = path.join(path.dirname(dataRoot), "1Helm-WSL");
+    const cleanup = path.resolve(__dirname, "..", "scripts", "windows-removal.cjs");
+    spawnSync(process.execPath, [cleanup, dataRoot, wslRoot], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, stdio: "ignore", windowsHide: true, timeout: 10 * 60_000 });
+    spawnSync(updateExe, ["--removeShortcut", exe], { stdio: "ignore", windowsHide: true });
+  }
+  setTimeout(() => app.quit(), 1000);
+  return true;
+}
+
 function preferredWorkspaceOrigin() {
   try {
     const value = fs.readFileSync(remoteWorkspacePath(), "utf8").trim();
@@ -74,7 +94,7 @@ async function startLocalRuntime() {
   process.env.HELM_HOST = LOOPBACK;
   process.env.PORT = String(port);
   process.env.CTRL_DATA_DIR = app.getPath("userData");
-  process.env.SHELL ||= "/bin/zsh";
+  if (process.platform !== "win32") process.env.SHELL ||= "/bin/zsh";
   process.env.HELM_INTERNAL_WAKE_TOKEN ||= crypto.randomBytes(32).toString("hex");
   process.chdir(appRoot);
   localOrigin = `http://${LOOPBACK}:${port}`;
@@ -95,6 +115,13 @@ function keepSkipperAvailable() {
   // Items. The separately registered legacy LaunchAgent was the component
   // macOS exposed as software from the certificate publisher.
   app.setLoginItemSettings({ openAtLogin: true, type: "mainAppService" });
+}
+
+function prepareWindowsWslDataRoot() {
+  if (process.platform !== "win32") return;
+  // Per-channel virtual disks stay outside the replaceable application
+  // directory and beside the durable Electron userData directory.
+  fs.mkdirSync(path.join(path.dirname(app.getPath("userData")), "1Helm-WSL"), { recursive: true });
 }
 
 function allowedLocalUrl(raw) {
@@ -181,7 +208,10 @@ function createWindow(showWhenReady = true) {
   mainWindow = window;
 }
 
-if (!app.requestSingleInstanceLock()) {
+if (handleSquirrelEvent()) {
+  // Squirrel install/update/uninstall work must exit before the application
+  // acquires its normal single-instance lock or starts the local server.
+} else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", (_event, argv) => {
@@ -193,6 +223,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    if (process.platform === "win32") app.setAppUserModelId("com.squirrel.1Helm.1Helm");
     session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
       if (!allowedLocalUrl(details.url)) {
@@ -211,6 +242,7 @@ if (!app.requestSingleInstanceLock()) {
     try {
       removeLegacyWakeLaunchAgent();
       keepSkipperAvailable();
+      prepareWindowsWslDataRoot();
       hostUpdateService = createNativeUpdateService({ app, autoUpdater });
       hostUpdateService.initialize();
       globalThis[Symbol.for("1helm.nativeUpdater")] = {
@@ -227,7 +259,7 @@ if (!app.requestSingleInstanceLock()) {
       await dialog.showMessageBox({
         type: "error",
         title: "1Helm could not start",
-        message: "The local 1Helm runtime could not start on this Mac.",
+        message: `The local 1Helm runtime could not start on this ${process.platform === "win32" ? "Windows PC" : "Mac"}.`,
         detail: error instanceof Error ? error.stack || error.message : String(error),
       });
       app.quit();

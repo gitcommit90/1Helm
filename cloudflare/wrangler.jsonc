@@ -11,6 +11,11 @@
       "name": "PROVISION_LIMIT",
       "namespace_id": "1001",
       "simple": { "limit": 20, "period": 60 }
+    },
+    {
+      "name": "FEEDBACK_LIMIT",
+      "namespace_id": "1002",
+      "simple": { "limit": 30, "period": 60 }
     }
   ],
   "d1_databases": [

@@ -48,6 +48,7 @@ import {
 import { inspectWebSource } from "./web-source.ts";
 import { fetchPublicWebImage } from "./web-source.ts";
 import { searchWeb } from "./web-search.ts";
+import { readChannelThread, searchChannelHistory } from "./history.ts";
 
 type ChatMsg = { role: string; content: string; tool_calls?: ToolCall[]; tool_call_id?: string; name?: string };
 type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
@@ -103,7 +104,7 @@ function completedToolAnswer(tool: string, result: string): string {
       return parsed.setup?.error || "Gmail has no connected accounts yet. Open Settings → Connections to add the one-time Google OAuth client and authorize an account.";
     } catch { return result; }
   }
-  if (["grant_gmail_access", "connect_gmail", "grant_photon_access", "photon_search", "photon_send", "create_channel", "list_channels", "inspect_channel", "archive_channel", "restore_channel", "delete_channel", "inspect_fleet", "care_for_channel_computer", "list_obligations", "run_thread_audit", "run_agent_review", "remember", "call_skipper", "call_agent", "request_skill", "propose_skill", "create_skill", "search_skill_catalog", "inspect_skill", "install_skill", "invite_agent", "search_web", "inspect_web_source", "attach_web_image", "attach_file", "generate_image", "schedule_followup", "schedule_workflow", "list_workflows", "set_workflow_status"].includes(tool)) return result;
+  if (["grant_gmail_access", "connect_gmail", "grant_photon_access", "photon_search", "photon_send", "create_channel", "list_channels", "inspect_channel", "archive_channel", "restore_channel", "delete_channel", "inspect_fleet", "care_for_channel_computer", "list_obligations", "run_thread_audit", "run_agent_review", "remember", "search_channel_history", "read_channel_session", "call_skipper", "call_agent", "request_skill", "propose_skill", "create_skill", "search_skill_catalog", "inspect_skill", "install_skill", "invite_agent", "search_web", "inspect_web_source", "attach_web_image", "attach_file", "generate_image", "schedule_followup", "schedule_workflow", "list_workflows", "set_workflow_status"].includes(tool)) return result;
   if (tool === "gmail_list_accounts") {
     try {
       const parsed = JSON.parse(result) as { accounts?: string[] };
@@ -267,7 +268,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       type: "function",
       function: {
         name: "search_skill_catalog",
-        description: "Search the SkillsMD-backed external catalog for installable skill metadata.",
+        description: "Search the open SkillsMD registry directly. Results are discovery metadata; inspect a result before installing it.",
         parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 20 } }, required: ["query"] },
       },
     });
@@ -414,6 +415,22 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
     });
   }
   if (!visiting) {
+    tools.push({ type: "function", function: {
+      name: "search_channel_history",
+      description: "Search this channel's raw prior-session transcripts semantically, by exact text/date, or list recent messages. Returns scoped message and session references.",
+      parameters: { type: "object", properties: {
+        query: { type: "string", description: "Concept or text to find. Omit to list recent messages." },
+        mode: { type: "string", enum: ["semantic", "exact"], default: "semantic" },
+        from: { type: "string", description: "Optional ISO date/time lower bound." },
+        to: { type: "string", description: "Optional ISO date/time upper bound." },
+        limit: { type: "integer", minimum: 1, maximum: 30, default: 10 },
+      } },
+    } });
+    tools.push({ type: "function", function: {
+      name: "read_channel_session",
+      description: "Read the complete raw transcript for one session returned by search_channel_history.",
+      parameters: { type: "object", properties: { thread_root_id: { type: "integer" } }, required: ["thread_root_id"] },
+    } });
     tools.push({ type: "function", function: {
       name: "list_skills",
       description: "List the skills currently available in your arsenal with names and short descriptions.",
@@ -849,7 +866,7 @@ function actionObject(tool: string, input: string, actor: string): string {
   if (tool === "run_command") return actor === "skipper" ? "the host workspace" : "the resident workspace";
   if (tool === "schedule_followup") return "a durable wake";
   if (tool === "schedule_workflow") return "a recurring workflow";
-  if (tool === "install_skill") return clean || "a trusted skill";
+  if (tool === "install_skill") return clean || "a catalog skill";
   if (tool === "search_web") return clean || "the public web";
   if (tool === "inspect_web_source") return clean || "a public HTTPS source";
   if (tool === "attach_web_image") return clean || "a sourced web image";
@@ -871,6 +888,8 @@ function actionVerb(tool: string): string {
     search_skill_catalog: "Searched",
     inspect_skill: "Inspected",
     search_web: "Searched",
+    search_channel_history: "Searched",
+    read_channel_session: "Read",
     inspect_web_source: "Inspected",
     attach_web_image: "Attached",
     install_skill: "Installed",
@@ -1535,6 +1554,8 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                           ? "List channel-scoped Gmail accounts"
                   : name === "inspect_web_source" ? String(args.url || "")
                   : name === "search_web" ? `${String(args.category || "web")}: ${String(args.query || "")}`
+                  : name === "search_channel_history" ? `${String(args.mode || "semantic")}: ${String(args.query || "recent messages")}`
+                  : name === "read_channel_session" ? `session ${String(args.thread_root_id || "")}`
                   : name === "read_skill" ? String(args.slug || "")
                   : name === "list_skills" ? "Available skill metadata"
                   : name === "attach_web_image" ? `${String(args.caption || "image")} — ${String(args.source_url || "")}`
@@ -1611,6 +1632,10 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               result = JSON.stringify({ skills: skillsForAgent(Number(agent.id)).filter((skill) => !skill.arsenal_locked).map((skill) => ({ slug: skill.slug, name: skill.name, description: skill.description, category: skill.category, source: skill.source })) });
             } else if (name === "read_skill" && agent?.id && !visiting) {
               result = JSON.stringify(readAgentSkill(Number(agent.id), String(args.slug || "")));
+            } else if (name === "search_channel_history" && agent?.id && !visiting) {
+              result = JSON.stringify(searchChannelHistory(agent, channelId, args));
+            } else if (name === "read_channel_session" && agent?.id && !visiting) {
+              result = JSON.stringify(readChannelThread(agent, channelId, args.thread_root_id));
             } else if (name === "remember") {
               const memoryId = recordMemory({ channelId, threadId, kind: String(args.kind || "fact"), content: input, sourceMessageId: msgId, authorType: actor });
               result = `Recorded channel memory ${memoryId}.`;
@@ -1726,7 +1751,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               const currentResident = agentForChannel(channelId);
               const target = targetName ? q1("SELECT id,name FROM agents WHERE lower(name)=lower(?) AND kind='channel' AND status<>'deleted'", targetName) : currentResident;
               const skill = await installCatalogSkill(String(args.identifier || ""), target?.id ? Number(target.id) : null);
-              result = `Installed trusted catalog skill ${skill.name} with immutable provenance and a clean security scan${target?.name ? `; permanently assigned it to @${target.name}` : ""}.`;
+              result = `Installed catalog skill ${skill.name} at an immutable revision after a clean security scan${target?.name ? `; permanently assigned it to @${target.name}` : ""}.`;
               run("INSERT INTO channel_activity (channel_id,thread_id,kind,summary,actor_type,created) VALUES (?,?,'skill',?,'skipper',?)", channelId, threadId, result, now());
             } else if (name === "request_skill" && agent?.kind === "channel") {
               const skill = requestSkill(Number(agent.id), channelId, threadId, String(args.skill || ""), String(args.reason || ""));

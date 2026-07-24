@@ -105,18 +105,23 @@ backgrounding the app or changing networks does not print disconnect noise or
 discard the shell's working directory, exported variables, running process, or
 scrollback. If the host confirms that the underlying terminal session itself no
 longer exists, 1Helm opens a fresh one.
-Ordinary residents cannot select or enter the Captain's native Mac. On supported
-Apple Silicon Macs, each resident runs inside its own Apple `container machine`
-with `home-mount=none`; source/CI compatibility backends do not claim equivalent
-VM isolation.
+Ordinary residents cannot select or enter the Captain's native host. On
+supported Apple Silicon Macs, each resident runs inside its own Apple
+`container machine` with `home-mount=none`; Linux systemd hosts use one
+unprivileged LXC per resident; the accepted Windows implementation uses one
+private WSL 2 distribution per resident with Windows-drive mounts and interop
+disabled. `native` and `mock` remain explicit source/CI test seams.
 
 ![The full-height channel Terminal in its persistent workspace](assets/guide/terminal.png)
 
 ## Memory, Activity, and audit
 
 **Memory** contains curated facts, decisions, corrections, preferences, and
-procedures with provenance—not a transcript dump. Each resident and Skipper also
-has an isolated Mnemosyne store for longer-term recall.
+procedures with provenance—not a transcript dump. Raw messages remain the
+authoritative session archive. Each resident can search its own channel's prior
+sessions semantically, by exact text/date, or by recency and then read one
+returned session in full. Each resident and Skipper has an isolated Mnemosyne
+store; guests and other channel residents cannot use that index.
 
 **Activity** presents outcome-first operational rows that mutate from working to
 complete or failed. Expand a row for the retained input and outcome evidence.
@@ -136,7 +141,7 @@ sidebar; smaller layouts use a compact non-scrolling grid.
 - **Admin** — workspace name, theme, image, and release/update information.
 - **Agents** — Skipper and resident identities, status, models, capabilities,
   and channel ownership.
-- **Skills** — built-in arsenal, focused SkillsMD catalog, installed skills,
+- **Skills** — built-in arsenal, direct SkillsMD search, installed skills,
   and Learn a new skill.
 - **Workflows** — recurring resident work, next run, pause/resume, run counts,
   and failures.
@@ -198,10 +203,10 @@ sees a compact inventory, can list the available skills, and loads the full
 procedure for one skill only when it chooses to use it. The procedures are not
 injected wholesale into every turn.
 
-![Built-in skills and the focused SkillsMD catalog](assets/guide/skills.png)
+![Built-in skills and direct SkillsMD search](assets/guide/skills.png)
 
-Settings searches the focused SkillsMD catalog of ready GitHub-backed
-repositories. A catalog install resolves an immutable revision, selects bounded
+Settings searches the open SkillsMD registry directly and shows every result it
+returns. A catalog install resolves an immutable revision, selects bounded
 skill documentation, scans it, stores a SHA-256 digest and provenance, and wraps
 it beneath 1Helm runtime authority. Unsafe content is blocked. When a ready
 repository-specific procedure is unavailable, choose **Learn a new skill** so
@@ -280,7 +285,7 @@ messages, and WebSocket fan-out.
 
 ## Updates, removal, and recovery
 
-Signed desktop releases are unique patch versions. Profile → Check for updates
+Signed Mac releases are unique patch versions. Profile → Check for updates
 always operates on the machine hosting the active 1Helm instance. In the native
 Mac app, Electron downloads and verifies a notarized update ZIP on that Mac and
 offers **Restart & install** only when it is ready. It does not navigate the
@@ -350,7 +355,8 @@ fallback.
 
 ## Security summary
 
-- Per-resident Apple Linux VMs have no Mac home mount.
+- Per-resident Apple Linux VMs have no Mac home mount; Linux LXC uses
+  subordinate IDs; private WSL worlds disable Windows-drive mounts and interop.
 - Credentials and connectors remain host-owned and minimally brokered.
 - Membership scopes data and live events; private coworker channels are not
   Captain-readable without invitation.

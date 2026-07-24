@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +10,7 @@ import { join } from "node:path";
 const require = createRequire(import.meta.url);
 const { createNativeUpdateService, publicError, releaseVersion } = require("../desktop/updater.cjs");
 
-function harness({ packaged = true, inApplications = true } = {}) {
+function harness({ packaged = true, inApplications = true, platform = "darwin", arch = "arm64" } = {}) {
   const calls = [];
   const autoUpdater = new EventEmitter();
   autoUpdater.setFeedURL = (value) => calls.push(["feed", value]);
@@ -21,7 +21,7 @@ function harness({ packaged = true, inApplications = true } = {}) {
     getVersion: () => "1.2.3",
     isInApplicationsFolder: () => inApplications,
   };
-  const updater = createNativeUpdateService({ app, autoUpdater, platform: "darwin", arch: "arm64" });
+  const updater = createNativeUpdateService({ app, autoUpdater, platform, arch });
   return { app, autoUpdater, calls, updater };
 }
 
@@ -40,6 +40,13 @@ test("native Mac updater owns check, download state, and restart installation", 
   assert.equal(calls.some(([name]) => name === "install"), false, "the host runtime must quiesce before replacement");
   assert.equal(updater.commitInstall(), true);
   assert.deepEqual(calls.at(-1), ["install", [false, true]]);
+});
+
+test("native Windows updater uses the host-owned win32-x64 feed", () => {
+  const { updater } = harness({ platform: "win32", arch: "x64" });
+  assert.equal(updater.initialize(), true);
+  assert.equal(updater.state().mode, "native-windows");
+  assert.match(updater.feedUrl, /gitcommit90\/1Helm\/win32-x64\/1\.2\.3$/);
 });
 
 test("native updater refuses unsupported placement and sanitizes errors", () => {
@@ -79,6 +86,17 @@ test("Linux web action creates only a fixed host request and returns no installe
   assert.equal(typeof request.requested_at, "number");
   assert.deepEqual(Object.keys(request), ["requested_at"]);
   await assert.rejects(() => service.runHostUpdateAction(appRoot, dataDir, "install"), /install automatically/i);
+  await rm(join(dataDir, "host-update.request"));
+  process.env.HELM_CHANNEL_COMPUTER_BACKEND = "native";
+  assert.equal(await service.queueLinuxHostContractMigration(dataDir), true, "a newly installed server queues the root-owned runtime migration old updater code could not perform");
+  assert.equal(await service.queueLinuxHostContractMigration(dataDir), false, "the migration request is idempotent while queued");
+  await rm(join(dataDir, "host-update.request"));
+  await writeFile(join(dataDir, "host-update-status.json"), JSON.stringify({ status: "error" }));
+  assert.equal(await service.queueLinuxHostContractMigration(dataDir), false, "a failed host migration waits for a visible Captain retry instead of looping");
+  process.env.HELM_CHANNEL_COMPUTER_BACKEND = "lxc";
+  await rm(join(dataDir, "host-update-status.json"));
+  assert.equal(await service.queueLinuxHostContractMigration(dataDir), false, "an already migrated LXC service does not queue work");
+  delete process.env.HELM_CHANNEL_COMPUTER_BACKEND;
   delete process.env.HELM_INSTALL_KIND;
   const managed = await service.hostUpdateState(appRoot, dataDir);
   assert.equal(managed.status, "managed");

@@ -55,6 +55,7 @@ const launchApp = async () => {
       IMPROVEMENT_INTERVAL_MS: "600000",
       CTRL_MAX_TOOL_ROUNDS: "6",
       NODE_ENV: "test",
+      HELM_CHANNEL_COMPUTER_BACKEND: "native",
       HELM_TEST_WEB_SEARCH_FIXTURE: JSON.stringify([{
         title: "West Hollywood sinkhole filled after water main repairs",
         url: "https://example.com/news/sunset-sinkhole",
@@ -118,14 +119,14 @@ try {
   const hostDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
   const hostComputer = hostDb.prepare("SELECT base_url,api_key FROM computers WHERE name='This Computer' LIMIT 1").get();
   hostDb.close();
-  const hostPathResponse = await fetch(`${hostComputer.base_url}/execute?wait=5`, {
+  const hostPathResponse = await fetch(`${hostComputer.base_url}/execute?wait=15`, {
     method: "POST",
     headers: { authorization: `Bearer ${hostComputer.api_key}`, "content-type": "application/json" },
     body: JSON.stringify({ command: `printf '%s' "$PATH"` }),
   });
   const hostPathResult = await hostPathResponse.json();
   const hostPath = (hostPathResult.output || []).map((entry) => entry.data).join("");
-  ok(hostPath.startsWith("/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:"), "Skipper host commands restore Homebrew paths after login-shell startup");
+  ok(hostPathResponse.ok && hostPath.startsWith("/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:"), "Skipper host commands restore Homebrew paths after login-shell startup");
 
   let channels = (await api("/api/channels", {}, captain)).body.channels;
   const main = channels.find((channel) => channel.name === "main");

@@ -68,21 +68,23 @@ export async function startChatGPTOAuth(): Promise<void> {
 }
 
 // ============================================================ settings application page
-type Tab = "admin" | "agents" | "skills" | "workflows" | "connections" | "audit" | "domains" | "providers" | "computers" | "members";
+type Tab = "admin" | "agents" | "skills" | "workflows" | "connections" | "feedback" | "audit" | "domains" | "providers" | "computers" | "members";
 export function openSettings(tab: Tab = "agents"): void {
-  const overlay = h("div", { class: "modal-overlay fixed inset-0 z-40 bg-surface" });
+  document.querySelector<HTMLElement>("[data-settings-overlay]")?.remove();
+  const overlay = h("div", { class: "modal-overlay fixed inset-0 z-40 bg-surface", dataset: { settingsOverlay: "", settingsTab: tab } });
   const bodyEl = h("main", { class: "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 sm:p-6 lg:p-8" });
   const page = h("div", { class: "flex h-full w-full flex-col overflow-hidden bg-surface" });
   const tabs: [Tab, string][] = S.me.is_admin
-    ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["workflows", "Workflows"], ["connections", "Connections"], ["audit", "Audit"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]]
+    ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["workflows", "Workflows"], ["connections", "Connections"], ["feedback", "Feedback"], ["audit", "Audit"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]]
     : [["providers", "Providers"]];
   if (!tabs.length) return;
   const tabBar = h("nav", { class: "grid w-full shrink-0 grid-cols-2 gap-1 border-b border-line bg-raised/30 p-3 sm:grid-cols-3 lg:w-64 lg:grid-cols-1 lg:border-b-0 lg:border-r lg:p-4", "aria-label": "Settings sections" });
   const draw = (t: Tab): void => {
+    overlay.dataset.settingsTab = t;
     clear(tabBar);
     tabs.forEach(([id, label]) => tabBar.append(h("button", { class: `rounded-lg px-3 py-2.5 text-left text-sm font-semibold transition ${t === id ? "bg-accent text-white shadow-sm" : "text-muted hover:bg-hover hover:text-fg"}`, type: "button", "aria-current": t === id ? "page" : undefined, onclick: () => draw(id) }, label)));
     clear(bodyEl);
-    const content = t === "admin" ? adminPanel() : t === "agents" ? agentsPanel() : t === "skills" ? skillsPanel() : t === "workflows" ? workflowsPanel() : t === "connections" ? connectionsPanel() : t === "audit" ? auditPanel() : t === "domains" ? domainsPanel() : t === "providers" ? providersPanel() : t === "computers" ? computersPanel() : membersPanel();
+    const content = t === "admin" ? adminPanel() : t === "agents" ? agentsPanel() : t === "skills" ? skillsPanel() : t === "workflows" ? workflowsPanel() : t === "connections" ? connectionsPanel() : t === "feedback" ? feedbackPanel() : t === "audit" ? auditPanel() : t === "domains" ? domainsPanel() : t === "providers" ? providersPanel() : t === "computers" ? computersPanel() : membersPanel();
     bodyEl.append(h("div", { class: `mx-auto w-full ${t === "providers" ? "max-w-7xl" : "max-w-5xl"}` }, h("div", { class: "mb-5" }, h("div", { class: "eyebrow text-accent" }, "Settings"), h("h1", { class: "font-display mt-1 text-3xl text-fg" }, tabs.find(([id]) => id === t)?.[1] || "Settings")), content));
   };
   page.append(
@@ -93,6 +95,14 @@ export function openSettings(tab: Tab = "agents"): void {
   overlay.append(page);
   document.body.append(overlay);
   draw(tab);
+}
+
+/** Repaint only the open Skills control-plane view after a live arsenal change. */
+export function refreshOpenSkillsSettings(): void {
+  const overlay = document.querySelector<HTMLElement>("[data-settings-overlay]");
+  if (overlay?.dataset.settingsTab !== "skills") return;
+  overlay.remove();
+  openSettings("skills");
 }
 
 const adminNote = (): HTMLElement => h("p", { class: "rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-300" }, "Only admins can add or edit these.");
@@ -133,8 +143,10 @@ function adminPanel(): HTMLElement {
     catch (error) { status.textContent = (error as Error).message; }
   };
   const removalStatus = h("p", { class: "min-h-5 text-sm text-muted" }, "Checking for 1Helm channel computers…");
+  let removalBackend = "";
   const prepareRemoval = async (): Promise<void> => {
-    const confirmation = await appPrompt("This deletes every verified 1Helm-owned channel computer from Apple's VM runtime. Your 1Helm Application Support data remains intact.\n\nType **REMOVE 1HELM** to continue:");
+    const platformLabel = removalBackend === "apple" ? "Apple's VM runtime" : removalBackend === "wsl" ? "WSL 2" : removalBackend === "lxc" ? "the Linux LXC runtime" : "the active runtime";
+    const confirmation = await appPrompt(`This deletes every verified 1Helm-owned channel computer from ${platformLabel}. Your durable 1Helm data remains intact.\n\nType **REMOVE 1HELM** to continue:`);
     if (confirmation !== "REMOVE 1HELM") { if (confirmation != null) removalStatus.textContent = "Removal preparation cancelled; confirmation did not match."; return; }
     removalStatus.textContent = "Preserving the latest channel files and deleting owned virtual machines…";
     try {
@@ -143,9 +155,10 @@ function adminPanel(): HTMLElement {
     } catch (error) { removalStatus.textContent = (error as Error).message; }
   };
   void api<{ backend: string; machines: number }>("/api/app/removal").then((result) => {
-    removalStatus.textContent = result.backend === "apple"
+    removalBackend = result.backend;
+    removalStatus.textContent = ["apple", "lxc", "wsl"].includes(result.backend)
       ? `${result.machines} 1Helm-owned channel computer${result.machines === 1 ? "" : "s"} will be removed before uninstall.`
-      : "No Apple channel computers are managed by this installation.";
+      : "No isolated channel computers are managed by this development installation.";
   }).catch((error) => { removalStatus.textContent = (error as Error).message; });
   return h("div", { class: "space-y-4" },
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Workspace identity"), h("p", { class: "mt-1 text-sm text-muted" }, "Simple shared identity for everyone and every agent in this workspace."),
@@ -155,7 +168,7 @@ function adminPanel(): HTMLElement {
       h("div", { class: "mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save workspace"))),
     h("div", { class: "card border-danger/30 p-4" },
       h("h3", { class: "font-semibold text-fg" }, "Remove 1Helm"),
-      h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Before moving 1Helm to Trash, remove its isolated Linux channel computers so Apple’s container runtime does not leave virtual machines running. This keeps your Application Support data in case you reinstall."),
+      h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Before uninstalling 1Helm, remove its isolated Linux channel computers from the host runtime. Durable workspace data stays in place in case you reinstall."),
       h("div", { class: "mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, removalStatus, h("button", { class: "btn-danger shrink-0 text-sm", onclick: () => { void prepareRemoval(); } }, "Prepare to remove 1Helm"))));
 }
 
@@ -174,7 +187,7 @@ function skillsPanel(): HTMLElement {
     wrap.append(skillCatalogBrowser(catalog));
     const shipped = h("section", { class: "space-y-3" },
       h("div", { class: "flex flex-wrap items-end justify-between gap-2" }, h("div", {}, h("h3", { class: "font-display text-lg text-fg" }, "Installed arsenal"), h("p", { class: "text-sm text-muted" }, `${skills.length} complete procedures · permanently available · loaded on demand`))));
-    for (const skill of skills) shipped.append(h("article", { class: `card p-4 ${skill.arsenal_locked ? "opacity-80" : ""}` },
+    for (const skill of skills) shipped.append(h("article", { class: `card p-4 ${skill.arsenal_locked ? "opacity-80" : ""}`, dataset: { skillSlug: skill.slug } },
       h("div", { class: "flex flex-wrap items-center gap-2" },
         h("h3", { class: "font-semibold text-fg" }, skill.name),
         h("span", { class: "chip" }, skill.category),
@@ -196,8 +209,8 @@ function skillCatalogBrowser(initial: SkillCatalogStatus): HTMLElement {
   const status = h("p", { class: "text-xs leading-5 text-muted" });
   const renderStatus = (state: SkillCatalogStatus): void => {
     status.textContent = state.available
-      ? `${state.skill_count.toLocaleString()} ready-to-install repositories from SkillsMD${state.generated_at ? ` · updated ${state.generated_at.slice(0, 10)}` : ""}`
-      : `SkillsMD is not cached yet${state.error ? ` · ${state.error}` : " — the first search will fetch its focused index"}`;
+      ? `${state.skill_count.toLocaleString()} repository records currently listed in SkillsMD's browse index${state.generated_at ? ` · updated ${state.generated_at.slice(0, 10)}` : ""} · searches query the live registry beyond that list`
+      : `SkillsMD is not cached yet${state.error ? ` · ${state.error}` : " — the first search will fetch its index"}`;
   };
   renderStatus(initial);
   const install = async (entry: SkillCatalogResult, button: HTMLButtonElement): Promise<void> => {
@@ -212,16 +225,17 @@ function skillCatalogBrowser(initial: SkillCatalogStatus): HTMLElement {
     if (!text) return;
     clear(results); results.append(h("p", { class: "py-4 text-sm text-muted" }, "Searching catalog metadata…"));
     try {
-      const found = await api<{ status: SkillCatalogStatus; results: SkillCatalogResult[] }>(`/api/skills/catalog?q=${encodeURIComponent(text)}&limit=20`);
+      const found = await api<{ status: SkillCatalogStatus; results: SkillCatalogResult[] }>(`/api/skills/catalog?q=${encodeURIComponent(text)}`);
       renderStatus(found.status); clear(results);
-      if (!found.results.length) results.append(h("div", { class: "rounded-lg border border-line bg-raised/40 p-4 text-sm text-muted" }, h("p", {}, "No ready-to-install skills found."), h("button", { class: "btn-subtle mt-3 text-xs", type: "button", onclick: learnSkillDialog }, "Use Learn a new skill")));
-      for (const entry of found.results.filter((candidate) => candidate.trust_level === "trusted")) {
-        const button = h("button", { class: "btn-primary shrink-0 text-xs" }, "Install") as HTMLButtonElement;
+      if (found.results.length) results.append(h("p", { class: "text-xs text-muted", dataset: { skillSearchCount: "" } }, `${found.results.length.toLocaleString()} result${found.results.length === 1 ? "" : "s"} returned by SkillsMD`));
+      if (!found.results.length) results.append(h("div", { class: "rounded-lg border border-line bg-raised/40 p-4 text-sm text-muted" }, h("p", {}, "SkillsMD returned no matches."), h("button", { class: "btn-subtle mt-3 text-xs", type: "button", onclick: learnSkillDialog }, "Use Learn a new skill")));
+      for (const entry of found.results) {
+        const button = h("button", { class: "btn-primary shrink-0 text-xs" }, "Inspect & install") as HTMLButtonElement;
         button.onclick = () => { void install(entry, button); };
         results.append(h("article", { class: "rounded-lg border border-border bg-panel p-3" },
           h("div", { class: "flex items-start gap-3" },
             h("div", { class: "min-w-0 flex-1" },
-              h("div", { class: "flex flex-wrap items-center gap-2" }, h("h4", { class: "font-semibold text-fg" }, entry.name), h("span", { class: "chip border-emerald-500/30 text-emerald-700 dark:text-emerald-300" }, "ready"), h("span", { class: "chip" }, entry.source)),
+              h("div", { class: "flex flex-wrap items-center gap-2" }, h("h4", { class: "font-semibold text-fg" }, entry.name), h("span", { class: "chip" }, entry.source)),
               h("p", { class: "mt-1 text-sm leading-5 text-muted" }, entry.description || "No description supplied by the index."),
               h("p", { class: "mt-1 break-all text-xs text-muted" }, `${entry.identifier}${entry.repo ? ` · ${entry.repo}/${entry.path || ""}` : ""}`)),
             button)));
@@ -230,7 +244,7 @@ function skillCatalogBrowser(initial: SkillCatalogStatus): HTMLElement {
   };
   query.addEventListener("keydown", (event) => { if (event.key === "Enter") void search(); });
   return h("section", { class: "card space-y-3 p-4" },
-    h("div", {}, h("h3", { class: "font-display text-lg text-fg" }, "SkillsMD library"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Search the curated SkillsMD API on demand. Results are GitHub-backed; 1Helm still revision-pins, size-bounds, scans, hashes, and wraps each installation beneath its security boundary.")),
+    h("div", {}, h("h3", { class: "font-display text-lg text-fg" }, "SkillsMD library"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Search SkillsMD directly. 1Helm shows every result the open registry returns instead of deciding what you may browse. Installation then revision-pins, size-bounds, scans, hashes, and wraps the selected skill beneath its security boundary.")),
     h("div", { class: "flex gap-2" }, query, h("button", { class: "btn-primary", onclick: () => { void search(); } }, "Search")),
     status,
     results);
@@ -364,6 +378,57 @@ function connectionsPanel(): HTMLElement {
     h("div", { class: "rounded-lg border border-accent/25 bg-accent-soft px-4 py-3 text-sm leading-6 text-fg" }, "Connections are host-brokered capabilities. Residents receive the minimum task-scoped interface—not account secrets or your personal computer."),
     gmailConnectionPanel(), box,
     h("section", { class: "card p-4 opacity-80" }, h("h3", { class: "font-display text-lg text-fg" }, "More connections"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Calendar, contacts, Slack, and other messaging brokers are added only when 1Helm can enforce task scope, recovery, and auditability.")));
+}
+
+type FeedbackReport = {
+  id?: number;
+  public_id: string;
+  comment: string;
+  state: string;
+  last_error?: string;
+  created: number;
+  user_display?: string;
+  username?: string;
+  diagnostics: Record<string, unknown>;
+  attachments?: Array<{ id: number; name: string; mime: string; size: number }>;
+};
+function feedbackPanel(): HTMLElement {
+  const wrap = h("div", { class: "space-y-3", dataset: { feedbackInbox: "" } }, h("p", { class: "text-sm text-muted" }, "Loading feedback…"));
+  void api<{ reports: FeedbackReport[]; central: FeedbackReport[] }>("/api/feedback").then(({ reports, central }) => {
+    clear(wrap);
+    const combined = [...reports, ...(central || []).filter((remote) => !reports.some((local) => local.public_id === remote.public_id))];
+    wrap.append(h("div", { class: "rounded-lg border border-accent/25 bg-accent-soft px-4 py-3 text-sm leading-6 text-fg" }, "Feedback is saved on this host first and relayed to the 1Helm team with automatic retries. Diagnostics are opt-in and exclude conversations, prompts, account content, terminal output, credentials, and OAuth material."));
+    if (!combined.length) {
+      wrap.append(h("div", { class: "card p-6 text-center text-sm text-muted" }, "No feedback reports yet."));
+      return;
+    }
+    for (const report of combined) {
+      const diagnostics = JSON.stringify(report.diagnostics || {}, null, 2);
+      wrap.append(h("article", { class: "card space-y-3 p-4", dataset: { feedbackReport: report.public_id } },
+        h("div", { class: "flex flex-wrap items-start justify-between gap-3" },
+          h("div", {},
+            h("div", { class: "font-semibold text-fg" }, report.user_display || report.username || "Workspace member"),
+            h("div", { class: "mt-0.5 font-mono text-[11px] text-muted" }, report.public_id)),
+          h("div", { class: "text-right" },
+            h("span", { class: "chip" }, report.state),
+            h("div", { class: "mt-1 text-xs text-muted" }, new Date(report.created).toLocaleString()))),
+        h("p", { class: "whitespace-pre-wrap text-sm leading-6 text-fg" }, report.comment || "(attachment-only report)"),
+        report.id && report.attachments?.length ? h("div", { class: "flex flex-wrap gap-2" }, ...report.attachments.map((attachment) => h("a", {
+          class: "btn-subtle text-xs",
+          href: `/api/feedback/${report.id}/attachments/${attachment.id}`,
+          target: "_blank",
+          rel: "noopener",
+        }, `${attachment.name} · ${Math.ceil(attachment.size / 1024)} KB`))) : null,
+        diagnostics !== "{}" ? h("details", { class: "rounded-lg border border-line bg-panel p-3" },
+          h("summary", { class: "cursor-pointer text-xs font-semibold text-fg" }, "Privacy-bounded diagnostics"),
+          h("pre", { class: "mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-muted" }, diagnostics)) : null,
+        report.last_error ? h("p", { class: "text-xs text-danger" }, `Delivery: ${report.last_error}`) : null));
+    }
+  }).catch((error) => {
+    clear(wrap);
+    wrap.append(h("p", { class: "text-sm text-danger" }, (error as Error).message));
+  });
+  return wrap;
 }
 
 type AgentWorkflow = { id: number; channel_id: number; agent_id: number; name: string; prompt: string; interval_seconds: number; next_run: number; last_run: number | null; run_count: number; max_runs: number; status: "active" | "paused" | "complete" | "failed"; last_error: string };
@@ -503,8 +568,30 @@ function computersPanel(): HTMLElement {
   draw();
   const paintRuntime = (runtime: ChannelRuntime): void => {
     clear(runtimeBox);
-    if (runtime.backend !== "apple") {
-      runtimeBox.append(h("h3", { class: "font-semibold text-fg" }, "Channel computers · development compatibility"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "This non-macOS source runtime uses an explicit compatibility backend. It does not claim Apple VM isolation."));
+    if (runtime.backend === "native" || runtime.backend === "mock") {
+      runtimeBox.append(h("h3", { class: "font-semibold text-fg" }, "Channel computers · development backend"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "This explicit development seam runs without production VM isolation."));
+      return;
+    }
+    if (runtime.backend === "lxc" || runtime.backend === "wsl") {
+      const label = runtime.backend === "lxc" ? "Unprivileged LXC" : "Private WSL 2";
+      const readyCopy = runtime.backend === "lxc"
+        ? "The root-owned LXC boundary is healthy. Skipper manages one persistent unprivileged Linux container per ordinary channel."
+        : "WSL 2 is healthy. Skipper manages one persistent private Linux distribution per ordinary channel.";
+      const setupCopy = runtime.backend === "lxc"
+        ? "Rerun the verified 1Helm Linux host installer to repair the LXC helper, bridge, cgroups, or pinned image assets."
+        : "Complete 1Helm's one-time Windows administrator setup to enable WSL 2.";
+      const actionStatus = h("p", { class: "mt-2 text-sm text-muted" });
+      const windowsSetup = runtime.backend === "wsl" && !runtime.ready ? h("button", { class: "btn-primary mt-3 text-sm", onclick: async () => {
+        actionStatus.textContent = "Opening Windows' WSL 2 administrator setup…";
+        try { await api("/api/channel-computers/runtime/install", { body: {} }); actionStatus.textContent = "Finish the Windows prompt. Restart once if Windows requests it, then reopen 1Helm."; }
+        catch (error) { actionStatus.textContent = (error as Error).message; }
+      } }, "Set up WSL 2") : null;
+      runtimeBox.append(
+        h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-semibold text-fg" }, "Channel computers"), h("span", { class: "chip border-accent/25" }, runtime.ready ? `${label} ready` : "Setup required")),
+        h("p", { class: "mt-1 text-sm leading-6 text-muted" }, runtime.ready ? readyCopy : setupCopy),
+        ...(runtime.error ? [h("p", { class: "mt-2 text-sm text-danger" }, runtime.error)] : []),
+        ...(windowsSetup ? [windowsSetup] : []), actionStatus,
+      );
       return;
     }
     const actionStatus = h("p", { class: "mt-2 text-sm text-muted" });

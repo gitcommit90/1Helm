@@ -1,0 +1,128 @@
+#!/usr/bin/env node
+"use strict";
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+
+const ROOT = path.resolve(__dirname, "..");
+const DIST = path.join(ROOT, "dist");
+const PRODUCT = "1Helm";
+const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+const VERSION = String(pkg.version || "").trim();
+const REQUIRE_SIGNATURE = process.env.HELM_REQUIRE_WINDOWS_SIGNATURE === "1";
+const CERT_SHA1 = String(process.env.WINDOWS_SIGN_CERT_SHA1 || "").replace(/\s+/g, "").toUpperCase();
+const IGNORE_NON_RUNTIME_ROOTS = /^\/(?!package\.json$|LICENSE$|desktop(?:$|\/)|container(?:$|\/)|deploy(?:$|\/)|src(?:$|\/)|public(?:$|\/)|scripts\/(?:mnemosyne-bridge\.py|install-wsl-runtime\.ps1|windows-removal\.cjs)$|node_modules(?:$|\/))/;
+
+if (process.platform !== "win32" || process.arch !== "x64") throw new Error("Windows packaging must run on Windows x64.");
+if (!/^\d+\.\d+\.\d+$/.test(VERSION)) throw new Error("package.json must contain a release version.");
+if (REQUIRE_SIGNATURE && !CERT_SHA1) throw new Error("Release packaging requires WINDOWS_SIGN_CERT_SHA1 from the Windows certificate store.");
+
+function run(command, args, options = {}) {
+  const safe = args.map((arg, index) => index && args[index - 1] === "/sha1" ? "<certificate-thumbprint>" : arg);
+  process.stdout.write(`$ ${command} ${safe.join(" ")}\n`);
+  const result = spawnSync(command, args, { stdio: "inherit", encoding: "utf8", ...options });
+  if (result.status !== 0) throw new Error(`Command failed (${result.status}): ${command}`);
+}
+
+function capture(command, args) {
+  const result = spawnSync(command, args, { encoding: "utf8" });
+  if (result.status !== 0) return "";
+  return String(result.stdout || "").trim();
+}
+
+function sign(target) {
+  if (!CERT_SHA1) return;
+  run("signtool.exe", ["sign", "/sha1", CERT_SHA1, "/fd", "SHA256", "/tr", "http://timestamp.digicert.com", "/td", "SHA256", target]);
+  run("signtool.exe", ["verify", "/pa", "/v", target]);
+}
+
+function signPackagedExecutables(appDir) {
+  if (!CERT_SHA1) return;
+  const executable = /\.(?:exe|dll|node)$/i;
+  const pending = [appDir];
+  const targets = [];
+  while (pending.length) {
+    const current = pending.pop();
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const target = path.join(current, entry.name);
+      if (entry.isDirectory()) pending.push(target);
+      else if (entry.isFile() && executable.test(entry.name)) targets.push(target);
+    }
+  }
+  for (const target of targets.sort()) sign(target);
+}
+
+async function main() {
+  fs.mkdirSync(DIST, { recursive: true });
+  const iconRoot = fs.mkdtempSync(path.join(os.tmpdir(), "1helm-win-icon-"));
+  const ico = path.join(iconRoot, "1Helm.ico");
+  try {
+    const pngToIco = require("png-to-ico").default;
+    const iconBuffer = await pngToIco([
+      path.join(ROOT, "public", "icons", "icon-sailboat-192.png"),
+      path.join(ROOT, "public", "icons", "icon-sailboat-512.png"),
+    ]);
+    fs.writeFileSync(ico, iconBuffer);
+    const { packager } = require("@electron/packager");
+    const [appDir] = await packager({
+      dir: ROOT, name: PRODUCT, executableName: PRODUCT, appCopyright: "Copyright (c) 2026 Joseph Yaksich",
+      win32metadata: { CompanyName: "Joseph Yaksich", FileDescription: PRODUCT, OriginalFilename: "1Helm.exe", ProductName: PRODUCT, InternalName: PRODUCT },
+      platform: "win32", arch: "x64", out: DIST, overwrite: true, prune: true, asar: false, icon: ico,
+      ignore: [IGNORE_NON_RUNTIME_ROOTS, /\.DS_Store$/, /\.log$/],
+    });
+    const appExe = path.join(appDir, "1Helm.exe");
+    if (!fs.existsSync(appExe)) throw new Error("Packaged Windows application is missing 1Helm.exe.");
+    signPackagedExecutables(appDir);
+    const pty = path.join(appDir, "resources", "app", "node_modules", "node-pty", "prebuilds", "win32-x64", "pty.node");
+    if (!fs.existsSync(pty)) throw new Error("Packaged Windows app is missing the x64 terminal module.");
+    if (capture("where.exe", ["dumpbin.exe"])) {
+      const headers = capture("dumpbin.exe", ["/headers", appExe]);
+      if (!/machine \(x64\)/i.test(headers)) throw new Error("Packaged Windows application is not x64.");
+    }
+    if (capture("where.exe", ["powershell.exe"])) {
+      const script = path.join(appDir, "resources", "app", "scripts", "install-wsl-runtime.ps1");
+      if (!fs.existsSync(script)) throw new Error("Packaged Windows app is missing its WSL setup script.");
+    }
+
+    const installerDir = path.join(DIST, `windows-installer-${VERSION}`);
+    fs.rmSync(installerDir, { recursive: true, force: true });
+    const { createWindowsInstaller } = require("electron-winstaller");
+    await createWindowsInstaller({
+      appDirectory: appDir,
+      outputDirectory: installerDir,
+      authors: "Joseph Yaksich",
+      exe: "1Helm.exe",
+      name: "1Helm",
+      title: "1Helm",
+      description: pkg.description,
+      setupExe: `1Helm-${VERSION}-windows-x64-setup.exe`,
+      setupIcon: ico,
+      iconUrl: "https://1helm.com/icons/icon-sailboat.ico",
+      noMsi: true,
+      loadingGif: undefined,
+      signWithParams: CERT_SHA1 ? `/sha1 ${CERT_SHA1} /fd SHA256 /tr http://timestamp.digicert.com /td SHA256` : undefined,
+    });
+    const setup = path.join(installerDir, `1Helm-${VERSION}-windows-x64-setup.exe`);
+    const nupkg = fs.readdirSync(installerDir).map((name) => path.join(installerDir, name)).find((name) => name.endsWith("-full.nupkg"));
+    const releases = path.join(installerDir, "RELEASES");
+    if (!fs.existsSync(setup) || !nupkg || !fs.existsSync(releases)) throw new Error("Windows installer/update artifacts are incomplete.");
+    sign(setup);
+    const finalSetup = path.join(DIST, path.basename(setup));
+    // update.electronjs.org fetches an asset literally named RELEASES, then
+    // rewrites the unchanged .nupkg basename embedded inside it to the GitHub
+    // release download URL. Renaming either artifact breaks Squirrel updates.
+    const finalNupkg = path.join(DIST, path.basename(nupkg));
+    const finalReleases = path.join(DIST, "RELEASES");
+    for (const target of [finalSetup, finalNupkg, finalReleases]) fs.rmSync(target, { force: true });
+    fs.copyFileSync(setup, finalSetup);
+    fs.copyFileSync(nupkg, finalNupkg);
+    fs.copyFileSync(releases, finalReleases);
+    for (const target of [finalSetup, finalNupkg, finalReleases]) {
+      process.stdout.write(`${target}\nSHA-256 ${capture("certutil.exe", ["-hashfile", target, "SHA256"]).split(/\r?\n/).find((line) => /^[a-f0-9 ]{64,}$/i.test(line.trim()))?.replaceAll(" ", "") || "unavailable"}\n`);
+    }
+  } finally { fs.rmSync(iconRoot, { recursive: true, force: true }); }
+}
+
+main().catch((error) => { console.error(error instanceof Error ? error.stack || error.message : error); process.exit(1); });

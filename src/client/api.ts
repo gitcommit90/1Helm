@@ -22,7 +22,7 @@ export type ResidentAgent = {
   capabilities: string[]; skills: Skill[]; runtime?: Bot;
 };
 export type ChannelComputer = {
-  backend: "apple" | "native" | "mock"; machine_id: string; desired_state: string; observed_state: string;
+  backend: "apple" | "lxc" | "wsl" | "native" | "mock"; machine_id: string; desired_state: string; observed_state: string;
   cpus: number; memory_bytes: number; disk_bytes: number; home_mount: "none"; provision_status: string;
   maintenance_state: string; last_health: number; last_used: number; last_error: string;
   obligations: Array<{ kind: string; ref: string; mode: "resident" | "wakeable"; details: string; due_at?: number | null }>;
@@ -61,8 +61,11 @@ export type ActivityItem = {
 };
 export type Computer = { id: number; name: string; base_url: string; has_key: boolean };
 export type ChannelRuntime = {
-  backend: "apple" | "native" | "mock"; supported: boolean; darwin: boolean; arm64: boolean; macos_version?: string | null;
-  cli: string | null; version?: unknown; system: unknown; runtime_version: string; installer_url: string; installer_sha256: string; ready: boolean;
+  backend: "apple" | "lxc" | "wsl" | "native" | "mock"; supported: boolean; ready: boolean;
+  platform?: string; architecture?: string; darwin?: boolean; arm64?: boolean; macos_version?: string | null;
+  cli?: string | null; version?: unknown; system?: unknown; runtime_version?: string | null;
+  installer_url?: string; installer_sha256?: string; rootfs_release?: string; rootfs_name?: string | null; rootfs_sha256?: string | null;
+  status?: string; error?: string | null; development_only?: boolean;
 };
 export type Provider = { id: number; name: string; base_url: string; kind: string; has_key: boolean; bots: number };
 export type RoutingProviderModel = { id: string; gatewayId: string; name: string; enabled: boolean };

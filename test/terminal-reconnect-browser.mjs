@@ -74,7 +74,13 @@ test("browser silently reconnects a dropped terminal socket to the same live she
   try {
     start(["test/mock-openai.mjs", String(mockPort)]);
     await waitFor(async () => (await fetch(`http://127.0.0.1:${mockPort}/v1/models`).catch(() => null))?.ok, "mock provider");
-    start(["--disable-warning=ExperimentalWarning", "src/server/index.ts"], { CTRL_DATA_DIR: dataDir, PORT: String(appPort), IMPROVEMENT_INTERVAL_MS: "600000" });
+    start(["--disable-warning=ExperimentalWarning", "src/server/index.ts"], {
+      CTRL_DATA_DIR: dataDir,
+      PORT: String(appPort),
+      IMPROVEMENT_INTERVAL_MS: "600000",
+      NODE_ENV: "test",
+      HELM_CHANNEL_COMPUTER_BACKEND: "native",
+    });
     await waitFor(async () => (await fetch(`${base}/api/setup/status`).catch(() => null))?.ok, "1Helm server");
 
     const registration = await api("/api/auth/register", "", { username: "captain", password: "secret-pass", display: "Captain" });

@@ -23,6 +23,9 @@ ownership, recovery, and tests rather than depend on a prompt alone.
 - The prompt names the size and categories of the skill arsenal. Skill metadata
   is available through `list_skills`; a complete procedure enters context only
   when the model calls `read_skill` for that skill.
+- A resident can search its own raw prior-session transcripts and hydrate a
+  returned session in full. These are factual tools, not an injected rule about
+  when the model must recall history; cross-channel access is server-rejected.
 - Channel memory and agent recall are provenance-bearing reference data, never
   higher-priority instructions.
 - `ask_user` is a validated tool for evidenced human judgment, credentials,

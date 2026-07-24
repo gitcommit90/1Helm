@@ -37,7 +37,7 @@ try {
   mock = spawn(process.execPath, ["test/mock-openai.mjs", String(mockPort)], { cwd: root, stdio: "ignore" });
   await waitFor(async () => (await fetch(`http://127.0.0.1:${mockPort}/v1/models`).catch(() => null))?.ok, "mock provider");
   app = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/server/index.ts"], {
-    cwd: root, env: { ...process.env, CTRL_DATA_DIR: dataDir, PORT: String(appPort), IMPROVEMENT_INTERVAL_MS: "600000" }, stdio: "ignore",
+    cwd: root, env: { ...process.env, CTRL_DATA_DIR: dataDir, PORT: String(appPort), IMPROVEMENT_INTERVAL_MS: "600000", HELM_CHANNEL_COMPUTER_BACKEND: "native" }, stdio: "ignore",
   });
   await waitFor(async () => (await fetch(`${base}/api/setup/status`).catch(() => null))?.ok, "app");
   const registration = await api("/api/auth/register", { body: { username: "captain", password: "secret-pass", display: "Captain" } });

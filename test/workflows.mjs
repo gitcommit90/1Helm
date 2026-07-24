@@ -6,6 +6,7 @@ import test from "node:test";
 
 const dataDir = mkdtempSync(join(tmpdir(), "1helm-workflow-"));
 process.env.CTRL_DATA_DIR = dataDir;
+process.env.HELM_CHANNEL_COMPUTER_BACKEND = "native";
 const { db, now, q, q1, run, seed } = await import("../src/server/db.ts");
 const workflows = await import("../src/server/workflows.ts");
 const agents = await import("../src/server/agents.ts");

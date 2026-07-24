@@ -1,6 +1,7 @@
 import { DATA_DIR, now, q, q1, run, tx, type Row } from "./db.ts";
 import { routingChatGPTImageAvailable } from "./routing.ts";
 import { BUILTIN_SKILL_SLUGS } from "./builtin-skills.ts";
+import { broadcastAdmins, sendToUsers } from "./events.ts";
 
 export const skillSlug = (value: string): string => value.trim().toLowerCase()
   .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
@@ -82,6 +83,10 @@ export function provisionSkill(agentId: number, slugInput: string, provisionedBy
   run(`INSERT INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) VALUES (?,?,?,?,1,?)
     ON CONFLICT(agent_id,skill_id) DO UPDATE SET reason=CASE WHEN agent_skills.reason='' THEN excluded.reason ELSE agent_skills.reason END,permanent=1`,
   agentId, skill.id, provisionedBy, reason.slice(0, 1000), now());
+  broadcastAdmins({ type: "skills_changed", action: "assigned", skill_slug: skill.slug, agent_id: agentId });
+  const members = q(`SELECT DISTINCT m.user_id FROM agent_channels ac
+    JOIN members m ON m.channel_id=ac.channel_id WHERE ac.agent_id=?`, agentId).map((row) => Number(row.user_id));
+  if (members.length) sendToUsers(members, { type: "skills_changed", action: "assigned", skill_slug: skill.slug, agent_id: agentId });
   return q1("SELECT * FROM skills WHERE id=?", skill.id)!;
 }
 
@@ -102,7 +107,9 @@ export function createSkill(opts: { name: string; slug?: string; description: st
   if (existing) return existing;
   const id = run(`INSERT INTO skills (slug,name,description,category,instructions,source,status,created,updated)
     VALUES (?,?,?,?,?,?,'active',?,?)`, slug, name, description, skillSlug(opts.category || "general") || "general", instructions, opts.source || "skipper", now(), now()).lastInsertRowid;
-  return q1("SELECT * FROM skills WHERE id=?", id)!;
+  const skill = q1("SELECT * FROM skills WHERE id=?", id)!;
+  broadcastAdmins({ type: "skills_changed", action: "created", skill_slug: skill.slug });
+  return skill;
 }
 
 export function proposeSkill(opts: { agentId: number; channelId: number; threadId: number; name: string; description: string; instructions: string; evidence: string; rationale: string }): Row {

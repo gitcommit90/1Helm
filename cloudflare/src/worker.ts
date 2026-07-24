@@ -4,6 +4,8 @@ interface Env {
   CLOUDFLARE_ZONE_ID: string;
   CLOUDFLARE_RUNTIME_TOKEN: string;
   PROVISION_LIMIT?: RateLimit;
+  FEEDBACK_LIMIT?: RateLimit;
+  FEEDBACK_ADMIN_TOKEN?: string;
 }
 
 type WorkspaceRow = {
@@ -151,11 +153,76 @@ async function workspaceAction(request: Request, env: Env, slug: string): Promis
   return json({ workspace: { slug, hostname: workspace.hostname, status: workspace.status, enabled } });
 }
 
+async function feedbackIntake(request: Request, env: Env): Promise<Response> {
+  const address = request.headers.get("cf-connecting-ip") || "unknown";
+  if (env.FEEDBACK_LIMIT && !(await env.FEEDBACK_LIMIT.limit({ key: address })).success) {
+    return json({ error: "Too many feedback reports. Try again shortly." }, 429);
+  }
+  const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+  const publicId = String(body.public_id || "");
+  const installationId = String(body.installation_id || "");
+  const workspaceName = String(body.workspace_name || "").trim().slice(0, 100);
+  const comment = String(body.comment || "").trim().slice(0, 10_000);
+  const diagnostics = body.diagnostics && typeof body.diagnostics === "object" && !Array.isArray(body.diagnostics) ? body.diagnostics : {};
+  const attachments = Array.isArray(body.attachments) ? body.attachments.slice(0, 3) as Array<Record<string, unknown>> : [];
+  if (!/^fb_[a-f0-9]{24}$/.test(publicId) || !/^[a-f0-9]{16}$/.test(installationId)) {
+    return json({ error: "Feedback source could not be verified." }, 400);
+  }
+  if (!comment && !attachments.length) return json({ error: "Feedback is empty." }, 400);
+  if (JSON.stringify(diagnostics).length > 64 * 1024) return json({ error: "Diagnostics are too large." }, 413);
+  let total = 0;
+  for (const attachment of attachments) {
+    const size = Number(attachment.size || 0);
+    const data = String(attachment.data || "");
+    const validBase64 = data.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(data);
+    const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+    const decodedSize = data.length ? (data.length / 4) * 3 - padding : 0;
+    if (!Number.isSafeInteger(size) || !validBase64 || decodedSize !== size
+      || size < 0 || size > 5 * 1024 * 1024 || data.length > 7 * 1024 * 1024) {
+      return json({ error: "A feedback attachment is too large." }, 413);
+    }
+    total += size;
+  }
+  if (total > 10 * 1024 * 1024) return json({ error: "Feedback attachments are too large." }, 413);
+  const timestamp = Date.now();
+  await env.REGISTRY.prepare(`INSERT OR IGNORE INTO feedback_reports
+    (public_id,installation_id,workspace_name,comment,diagnostics,attachment_count,created_at,received_at)
+    VALUES (?,?,?,?,?,?,?,?)`).bind(publicId, installationId, workspaceName, comment, JSON.stringify(diagnostics), attachments.length, timestamp, timestamp).run();
+  const exists = await env.REGISTRY.prepare("SELECT 1 FROM feedback_attachments WHERE report_id=? LIMIT 1").bind(publicId).first();
+  if (!exists) {
+    for (const attachment of attachments) await env.REGISTRY.prepare(`INSERT INTO feedback_attachments
+      (report_id,name,mime,size,data,created_at) VALUES (?,?,?,?,?,?)`).bind(
+      publicId,
+      String(attachment.name || "attachment").slice(0, 255),
+      String(attachment.mime || "application/octet-stream").slice(0, 120),
+      Number(attachment.size || 0),
+      String(attachment.data || ""),
+      timestamp,
+    ).run();
+  }
+  return json({ id: publicId }, 202);
+}
+
+async function feedbackInbox(request: Request, env: Env): Promise<Response> {
+  const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || "";
+  if (!env.FEEDBACK_ADMIN_TOKEN || token !== env.FEEDBACK_ADMIN_TOKEN) return json({ error: "Not found" }, 404);
+  const results = await env.REGISTRY.prepare(`SELECT public_id,installation_id,workspace_name,comment,diagnostics,
+    attachment_count,created_at created,received_at FROM feedback_reports ORDER BY received_at DESC LIMIT 500`).all<Record<string, unknown>>();
+  return json({ reports: (results.results || []).map((report) => ({
+    ...report,
+    diagnostics: JSON.parse(String(report.diagnostics || "{}")),
+    state: "delivered",
+    attachments: [],
+  })) });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method === "OPTIONS") return json({ ok: true });
     const url = new URL(request.url);
     if (url.pathname === "/health") return json({ ok: true });
+    if (url.pathname === "/v1/feedback" && request.method === "POST") return feedbackIntake(request, env);
+    if (url.pathname === "/v1/feedback" && request.method === "GET") return feedbackInbox(request, env);
     const availability = url.pathname.match(/^\/v1\/slugs\/([a-z0-9-]+)$/);
     if (availability && request.method === "GET") {
       const slug = availability[1].toLowerCase();

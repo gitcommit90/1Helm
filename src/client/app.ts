@@ -1,6 +1,6 @@
 import { api, downloadAuthenticatedFile, openAuthenticatedFile, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type AgentQuestions, type ThreadUsage, type RoutingModel } from "./api.ts";
 import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, beep, icon, helmMark, type ChannelLink } from "./dom.ts";
-import { openSettings, finishOpenRouterOAuth } from "./settings.ts";
+import { openSettings, finishOpenRouterOAuth, refreshOpenSkillsSettings } from "./settings.ts";
 import { pushRoutingActivity } from "./routing.ts";
 import { openOnboarding } from "./onboarding.ts";
 import { defaultTerminalComputer, openTerminals, refitChannelTerminals, getTerminalChrome } from "./term.ts";
@@ -488,6 +488,13 @@ function onEvent(e: any): void {
     if (S.view === "settings") renderChannelView();
   } else if (e.type === "providers_changed") {
     void reloadProviders().then(() => { if (S.view === "settings") renderChannelView(); });
+  } else if (e.type === "skills_changed") {
+    void loadWorkspace().then(() => {
+      renderSidebar();
+      renderHeader();
+      if (S.view === "settings") renderChannelView();
+      refreshOpenSkillsSettings();
+    });
   } else if (e.type === "bot_update" && e.bot) {
     const i = S.bots.findIndex((b) => b.id === e.bot.id);
     if (i >= 0) S.bots[i] = e.bot; else S.bots = [...S.bots, e.bot];
@@ -777,11 +784,109 @@ function sidebar(drawer = false): HTMLElement {
       archived.length ? h("div", {}, h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Archived"), h("div", { class: "space-y-px opacity-65" }, ...archived.map(chan))) : null,
       collab.length ? h("div", {}, h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Human space"), h("div", { class: "space-y-px" }, ...collab.map(chan))) : null,
       h("div", {}, sbSection("Direct messages", () => newDM()), h("div", { class: "space-y-px" }, ...dms.map(chan), dms.length === 0 && h("p", { class: "px-2 py-1 text-[13px] text-sidebar-muted" }, "No conversations yet")))),
+    h("button", {
+      class: "mx-2 mb-1 flex min-h-10 items-center gap-2 rounded-md px-2 py-1.5 text-xs text-sidebar-muted hover:bg-sidebar-hover hover:text-white",
+      type: "button",
+      dataset: { feedbackAction: "" },
+      onclick: () => { closeMobileMenu(); openFeedback(); },
+    }, icon("chat", 14), "Feedback"),
     h("div", { class: "flex items-center gap-1 border-t border-white/10 p-1.5" },
       h("button", { class: "flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-sidebar-hover", title: "Open profile", onclick: (event: MouseEvent) => { closeMobileMenu(); openProfile(event.currentTarget as HTMLElement); } },
         avatar(S.me.display, "user", 8, S.me.avatar),
         h("div", { class: "min-w-0 flex-1" }, h("div", { class: "truncate text-sm font-semibold text-white" }, S.me.display), h("div", { class: "flex items-center gap-1.5 truncate font-mono text-[10.5px] text-sidebar-muted" }, h("span", { class: "h-1.5 w-1.5 rounded-full bg-ok" }), "@" + S.me.username + (S.me.is_admin ? " · admin" : "")))),
       h("button", { class: "grid h-10 w-10 shrink-0 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: S.me.is_admin ? "Settings" : "Provider settings", "aria-label": "Open settings", onclick: () => { closeMobileMenu(); openSettings(S.me.is_admin ? "agents" : "providers"); } }, icon("gear"))));
+}
+
+function openFeedback(): void {
+  document.getElementById("feedback-modal")?.remove();
+  const overlay = h("div", {
+    id: "feedback-modal",
+    class: "modal-overlay fixed inset-0 z-[90] grid place-items-center bg-black/70 p-3",
+    role: "dialog",
+    "aria-modal": "true",
+    "aria-label": "Send feedback",
+  });
+  const comment = h("textarea", {
+    class: "field min-h-36 resize-y",
+    maxlength: 10000,
+    placeholder: "What happened? What did you expect?",
+    dataset: { feedbackComment: "" },
+  }) as HTMLTextAreaElement;
+  const picker = h("input", {
+    type: "file",
+    multiple: true,
+    class: "hidden",
+    accept: "image/*,application/pdf,text/plain,application/json",
+    dataset: { feedbackFiles: "" },
+  }) as HTMLInputElement;
+  const fileList = h("div", { class: "space-y-1 text-xs text-muted" });
+  const diagnostics = h("input", {
+    type: "checkbox",
+    checked: false,
+    class: "accent-accent",
+    dataset: { feedbackDiagnostics: "" },
+  }) as HTMLInputElement;
+  const status = h("p", { class: "min-h-5 text-sm text-muted", dataset: { feedbackStatus: "" } });
+  let files: File[] = [];
+  const showFiles = (): void => {
+    clear(fileList);
+    fileList.append(...files.map((file) => h("div", { class: "truncate" }, `${file.name} · ${Math.ceil(file.size / 1024)} KB`)));
+  };
+  picker.onchange = () => {
+    const selected = [...(picker.files || [])].slice(0, 3);
+    if (selected.some((file) => file.size > 5 * 1024 * 1024) || selected.reduce((sum, file) => sum + file.size, 0) > 10 * 1024 * 1024) {
+      status.textContent = "Attachments are limited to 5 MB each and 10 MB total.";
+      return;
+    }
+    files = selected;
+    status.textContent = "";
+    showFiles();
+  };
+  const close = (): void => overlay.remove();
+  const submit = h("button", {
+    class: "btn-primary text-sm",
+    type: "button",
+    dataset: { feedbackSubmit: "" },
+    onclick: async () => {
+      submit.disabled = true;
+      status.textContent = "Saving feedback…";
+      try {
+        const uploads = [];
+        for (const file of files) uploads.push(await uploadFile(file));
+        const result = await api<{ feedback: { id: string; state: string } }>("/api/feedback", {
+          body: { comment: comment.value, send_diagnostics: diagnostics.checked, uploads },
+        });
+        status.textContent = `Saved as ${result.feedback.id}. Delivery will retry automatically if this host is offline.`;
+        setTimeout(close, 1400);
+      } catch (error) {
+        status.textContent = (error as Error).message;
+        submit.disabled = false;
+      }
+    },
+  }, "Send feedback") as HTMLButtonElement;
+  const card = h("section", { class: "card w-full max-w-xl space-y-4 p-5 shadow-2xl" },
+    h("div", { class: "flex items-start justify-between gap-3" },
+      h("div", {},
+        h("h2", { class: "font-display text-xl text-fg" }, "Send feedback"),
+        h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Tell us what feels broken or what would make 1Helm better.")),
+      h("button", { class: "grid h-8 w-8 place-items-center rounded text-muted hover:bg-hover", "aria-label": "Close feedback", onclick: close }, icon("x"))),
+    comment,
+    h("div", {},
+      h("button", { class: "btn-subtle text-sm", type: "button", onclick: () => picker.click() }, "Add attachments"),
+      picker,
+      fileList),
+    h("label", { class: "flex items-start gap-2 rounded-lg border border-line bg-panel p-3 text-sm text-fg" },
+      diagnostics,
+      h("span", {}, "Include privacy-bounded diagnostics",
+        h("span", { class: "mt-1 block text-xs leading-5 text-muted" }, "Optional. Includes app version, platform, runtime health, failed capability names/statuses, and connector health. Never includes chats, prompts, account content, terminal output, tokens, keys, or OAuth data."))),
+    status,
+    h("div", { class: "flex justify-end gap-2" },
+      h("button", { class: "btn-subtle text-sm", onclick: close }, "Cancel"),
+      submit));
+  overlay.onclick = (event) => { if (event.target === overlay) close(); };
+  overlay.append(card);
+  document.body.append(overlay);
+  comment.focus();
 }
 
 function openProfile(anchor: HTMLElement): void {
@@ -799,7 +904,7 @@ function openProfile(anchor: HTMLElement): void {
     class: "btn-subtle min-h-9 shrink-0 px-3 text-xs",
     dataset: { profileUpdateAction: "" },
   }, "Check for updates") as HTMLButtonElement;
-  type HostUpdate = { mode: "native-macos" | "linux-systemd" | "source"; status: string; current_version: string; version: string | null; message: string; error: string | null };
+  type HostUpdate = { mode: "native-macos" | "native-windows" | "linux-systemd" | "source"; status: string; current_version: string; version: string | null; message: string; error: string | null };
   let updatePoll = 0;
   const applyUpdate = (update: HostUpdate): void => {
     const version = update.version ? ` · v${update.version}` : "";

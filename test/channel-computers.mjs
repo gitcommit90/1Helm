@@ -142,7 +142,13 @@ test("Apple channel-computer contract preserves isolation, files, wakes, archive
   assert.ok(calls.some((call) => call.includes("-w") && call.includes("/workspace") && call.some((word) => word.includes("/bin/bash")) && call.some((word) => word.includes("-lc"))), "resident commands execute in the correct VM workspace");
   assert.equal(db.q1("SELECT disk_bytes FROM channel_computers WHERE channel_id=?", beta.channelId).disk_bytes, computers.MANAGED_CHANNEL_DISK_BYTES, "reported storage is the managed writable allocation, not Apple's host-backed virtual capacity");
   const backend = await readFile(join(root, "src", "server", "channel-computers.ts"), "utf8");
-  assert.match(backend, /machine", "run", "-it"[\s\S]*guestWords\("\/bin\/bash", "-l"\)/, "interactive Apple terminals request an explicit guest login shell");
+  assert.match(backend, /terminal \? \["-it"\] : pipeInput \? \["-i"\]/, "Apple terminal and streamed-stdin invocations request the exact interactive mode they need");
+  assert.match(backend, /isolatedInvocation\(\["\/bin\/bash", "-l"\][\s\S]*true\)/, "interactive isolated terminals request an explicit guest login shell");
+  assert.match(backend, /args: \[\.\.\.words, \.\.\.guestWords\(\.\.\.args\)\]/, "Apple guest argv remains quoted for the runtime's documented second shell parse");
+  assert.match(backend, /WSL_ROOTFS_RELEASE = "20240423"/);
+  assert.match(backend, /ubuntu-noble-wsl-amd64-wsl\.rootfs\.tar\.gz/);
+  assert.match(backend, /ubuntu-noble-wsl-arm64-wsl\.rootfs\.tar\.gz/);
+  assert.doesNotMatch(backend, /cloud-images\.ubuntu\.com\/wsl\/releases\/24\.04\/current/, "WSL provisioning never trusts Canonical's mutable current alias");
 
   // Reproduce the real Apple race: uninstall begins while an automatic fleet
   // pass is already inspecting a machine. Removal must wait for that pass,
@@ -162,7 +168,7 @@ test("Apple channel-computer contract preserves isolation, files, wakes, archive
 test("runtime digest and packaged image recipe stay pinned", async () => {
   assert.equal(computers.APPLE_RUNTIME_SHA256, "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714");
   assert.match(computers.APPLE_RUNTIME_URL, /\/1\.1\.0\/container-1\.1\.0-installer-signed\.pkg$/);
-  assert.equal(computers.DEFAULT_CHANNEL_IMAGE, "local/1helm-channel-machine:0.0.5");
+  assert.equal(computers.DEFAULT_CHANNEL_IMAGE, "local/1helm-channel-machine:0.0.6");
   const packaging = await readFile(join(root, "scripts", "package-mac-dmg.cjs"), "utf8");
   assert.match(packaging, /container\(\?:\$\|\\\/\)/, "release packaging includes container/ image assets");
   const image = await readFile(join(root, "container", "Containerfile"), "utf8");

@@ -165,6 +165,7 @@ if (script.includes("apt-get update") && script.includes("DEBIAN_FRONTEND")) {
   process.stdout.write("fake unattended update complete\n");
   process.exit(0);
 }
+if (script.includes("test ! -e /mnt/c") && script.includes("id -u agent")) process.exit(0);
 if (command[0] === "/bin/bash" && command[1] === "-lc") {
   const cwd = valueAfter("-w") === "/workspace" ? join(root, "workspace") : root;
   const result = spawnSync("/bin/bash", ["-lc", command[2]], { cwd, encoding: null, maxBuffer: 16 * 1024 ** 2 });
