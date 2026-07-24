@@ -2,11 +2,16 @@ import { createServer } from "node:http";
 
 // Minimal OpenAI-compatible mock: /models + streaming /chat/completions with tool calling.
 const PORT = Number(process.argv[2] || 9099);
+let scheduleFollowupContinuationRequests = 0;
 
 const sse = (res, obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
 createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
+  if (url.pathname === "/request-stats") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ schedule_followup_continuations: scheduleFollowupContinuationRequests }));
+  }
   if (url.pathname === "/update-manifest") {
     res.writeHead(200, { "content-type": "application/json" });
     return res.end(JSON.stringify({ version: process.env.MOCK_UPDATE_VERSION || "9.9.9" }));
@@ -26,6 +31,9 @@ createServer(async (req, res) => {
   if (url.pathname.endsWith("/chat/completions")) {
     let raw = ""; for await (const c of req) raw += c;
     const reqBody = JSON.parse(raw || "{}");
+    if (reqBody.messages?.some((message) => message.role === "tool" && message.name === "schedule_followup")) {
+      scheduleFollowupContinuationRequests++;
+    }
     if (url.pathname.includes("/always-fail/")) {
       res.writeHead(503, { "content-type": "application/json" });
       return res.end(JSON.stringify({ error: { message: "Mock upstream unavailable", type: "api_error" } }));

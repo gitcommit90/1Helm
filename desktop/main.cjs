@@ -164,7 +164,7 @@ function openAuthWindow(url) {
   window.webContents.on("will-navigate", returnToApp);
   window.webContents.on("will-redirect", returnToApp);
   window.webContents.setWindowOpenHandler(({ url: nextUrl }) => {
-    if (/^https?:/i.test(nextUrl)) void shell.openExternal(nextUrl);
+    if (/^https?:/i.test(nextUrl) || /^mailto:build@1helm\.com$/i.test(nextUrl)) void shell.openExternal(nextUrl);
     return { action: "deny" };
   });
   window.on("closed", () => { if (authWindow === window) authWindow = null; });
@@ -191,7 +191,7 @@ function createWindow(showWhenReady = true) {
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (allowedAppUrl(url)) return { action: "allow" };
-    if (/^https?:/i.test(url)) void shell.openExternal(url);
+    if (/^https?:/i.test(url) || /^mailto:build@1helm\.com$/i.test(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
   window.webContents.on("will-navigate", (event, url) => {

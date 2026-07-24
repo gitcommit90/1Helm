@@ -46,7 +46,7 @@ const suites = [
     "test/channel-computers.mjs", "test/channel-computers-isolated-backends.mjs", "test/channel-computers-backend-migration.mjs",
     "test/cloudflare-worker.mjs", "test/connectors.mjs", "test/chatgpt-image.mjs", "test/autonomy-platform.mjs",
     "test/feedback.mjs", "test/feedback-browser.mjs", "test/gmail.mjs", "test/photon.mjs", "test/site.mjs",
-    "test/terminal-reconnect-contract.mjs", "test/terminal-reconnect-browser.mjs", "test/web-research.mjs", "test/workflows.mjs"],
+    "test/notifications.mjs", "test/terminal-reconnect-contract.mjs", "test/terminal-reconnect-browser.mjs", "test/web-research.mjs", "test/workflows.mjs"],
 ];
 
 let status = 0;

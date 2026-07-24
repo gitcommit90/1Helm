@@ -35,6 +35,7 @@ async function waitFor(url, timeoutMs = 20_000) {
 
 test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", async () => {
   const source = await readFile(join(root, "desktop", "main.cjs"), "utf8");
+  const appClient = await readFile(join(root, "src", "client", "app.ts"), "utf8");
   assert.match(source, /CTRL_DATA_DIR = app\.getPath\("userData"\)/);
   assert.match(source, /HELM_HOST = LOOPBACK/);
   assert.match(source, /contextIsolation: true/);
@@ -45,6 +46,7 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(source, /HELM_RESOURCES_PATH = process\.resourcesPath/, "the local runtime resolves the connector bundled in the signed app");
   assert.match(source, /allowedTeamUrl/);
   assert.match(source, /url\.protocol === "https:"/);
+  assert.match(source, /\^mailto:build@1helm\\\.com\$/i, "the company email opens only through the exact external mail link allowlist");
   assert.match(source, /\.1helm\\\.com/);
   assert.match(source, /!\["demo\.1helm\.com", "provision\.1helm\.com"\]\.includes/, "only exact customer workspace subdomains may load inside the sandboxed renderer");
   assert.match(source, /remoteWorkspacePath/);
@@ -69,7 +71,6 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   const server = await readFile(join(root, "src", "server", "index.ts"), "utf8");
   assert.match(server, /hostUpdateState\(APP_ROOT, DATA_DIR\)/, "the local control plane owns host update state");
   assert.match(server, /runHostUpdateAction\(APP_ROOT, DATA_DIR, action\)/, "the local control plane invokes a constrained host action");
-  const appClient = await readFile(join(root, "src", "client", "app.ts"), "utf8");
   assert.match(appClient, /Check for updates/);
   assert.match(appClient, /1Helm v\$\{update\.current_version\}/, "Profile displays the installed version beside the update control");
   assert.match(appClient, /Download on host/, "Profile makes native download ownership explicit");
@@ -161,6 +162,7 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(testRunner, /MNEMOSYNE_PYTHON: runtime/, "the full test suite shares one explicit pinned memory runtime instead of racing app-start installers");
   assert.match(testRunner, /if \(existsSync\(venv\)\) rmSync\(venv, \{ recursive: true, force: true \}\);[\s\S]*spawnSync\(installer/, "each test-runtime fallback starts clean after a preferred Python leaves a partial venv");
   assert.match(feedbackBrowser, /skip: executablePath \? false :/, "the Feedback browser contract does not hang a Chrome-free release runner");
+  assert.match(await readFile(join(root, "src", "client", "app.ts"), "utf8"), /mailto:build@1helm\.com/, "the in-app Feedback surface exposes the company contact address");
   assert.match(terminalBrowser, /HELM_CHANNEL_COMPUTER_BACKEND: "native"/, "the terminal browser contract uses the explicit development backend on CI hosts without an installed LXC runtime");
   const serverRuntime = await readFile(join(root, "src", "server", "index.ts"), "utf8");
   assert.match(serverRuntime, /const memoryRuntime = prepareMnemosyneRuntime\(\);[\s\S]*server\.listen\([\s\S]*memoryRuntime\.then/, "the HTTP server becomes ready before optional memory installation and initializes agent databases afterward");

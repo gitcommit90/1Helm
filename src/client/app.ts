@@ -1,6 +1,7 @@
 import { api, downloadAuthenticatedFile, openAuthenticatedFile, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type AgentQuestions, type ThreadUsage, type RoutingModel } from "./api.ts";
-import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, beep, icon, helmMark, type ChannelLink } from "./dom.ts";
+import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, icon, helmMark, type ChannelLink } from "./dom.ts";
 import { openSettings, finishOpenRouterOAuth, refreshOpenSkillsSettings } from "./settings.ts";
+import { hydrateNotificationPreferences, playNotification } from "./notifications.ts";
 import { pushRoutingActivity } from "./routing.ts";
 import { openOnboarding } from "./onboarding.ts";
 import { defaultTerminalComputer, openTerminals, refitChannelTerminals, getTerminalChrome } from "./term.ts";
@@ -103,6 +104,7 @@ function persistCurrentChannelView(): void {
 async function loadUiState(): Promise<void> {
   try {
     const result = await api<{ state: Record<string, unknown> }>("/api/me/ui-state");
+    hydrateNotificationPreferences(result.state.notification_preferences);
     const next: Record<number, ChannelUiView> = {};
     for (const [key, value] of Object.entries(result.state || {})) {
       const match = /^channel_view:(\d+)$/.exec(key);
@@ -385,7 +387,7 @@ function onEvent(e: any): void {
         markChannelRead(msg.channel_id);
         unreadBadgeCounted.add(msg.id);
       }
-      if (e.type === "message" && !mine) beep(mentionsMe ? "mention" : "msg");
+      if (e.type === "message" && !mine) playNotification(msg.channel_id, mentionsMe ? "mention" : "msg");
       // Stream ticks mutate one or two message rows. Rebuilding the whole thread
       // panel here used to destroy the focused composer every 75 ms while an
       // agent was working, which also reset selection and made scrolling jump.
@@ -396,11 +398,11 @@ function onEvent(e: any): void {
       if (!unreadBadgeCounted.has(msg.id)) {
         unreadBadgeCounted.add(msg.id);
         bumpChannelUnread(msg.channel_id);
-        beep(mentionsMe ? "mention" : "msg");
+        playNotification(msg.channel_id, mentionsMe ? "mention" : "msg");
       }
     } else if (e.type === "message" && !mine && !messageIsSettled(msg)) {
       // Working… started in another channel — amber dots come from agent_status; no badge yet.
-      beep(mentionsMe ? "mention" : "msg");
+      playNotification(msg.channel_id, mentionsMe ? "mention" : "msg");
     }
   } else if (e.type === "message_deleted") {
     applyMessageDeleted(e);
@@ -868,7 +870,13 @@ function openFeedback(): void {
     h("div", { class: "flex items-start justify-between gap-3" },
       h("div", {},
         h("h2", { class: "font-display text-xl text-fg" }, "Send feedback"),
-        h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Tell us what feels broken or what would make 1Helm better.")),
+        h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Tell us what feels broken or what would make 1Helm better."),
+        h("p", { class: "mt-1 text-xs leading-5 text-muted" }, "You can also email ", h("a", {
+          class: "text-accent hover:underline",
+          href: "mailto:build@1helm.com",
+          target: "_blank",
+          rel: "noopener",
+        }, "build@1helm.com"), ".")),
       h("button", { class: "grid h-8 w-8 place-items-center rounded text-muted hover:bg-hover", "aria-label": "Close feedback", onclick: close }, icon("x"))),
     comment,
     h("div", {},
