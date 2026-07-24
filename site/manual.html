@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="The 1Helm ship's manual — quick start, the crew, channels, memory, skills, models and providers, connections, workflows, security, and FAQ.">
+<title>1Helm — The Ship's Manual</title>
+<link rel="icon" type="image/png" href="/assets/story/app-icon.png">
+<link rel="stylesheet" href="/assets/manual.css">
+</head>
+<body>
+
+<header>
+  <a class="brand" href="/"><img src="/assets/story/app-icon.png" alt="1Helm">1Helm</a>
+  <nav>
+    <a href="/">the story</a>
+    <a href="#faq">FAQ</a>
+    <a class="hide-sm" href="/github">GitHub ↗</a>
+    <a href="/download/macos">Download</a>
+  </nav>
+</header>
+
+<div class="wrap">
+
+<aside>
+  <div class="toc-title">the ship's manual</div>
+  <a href="#quick-start">Quick start</a>
+  <a href="#the-crew">The crew</a>
+  <a href="#channels">Channels</a>
+  <a href="#talking">Talking to your crew</a>
+  <a href="#computers">Files &amp; Terminal</a>
+  <a href="#memory">Memory</a>
+  <a href="#skills">Skills</a>
+  <a href="#models">Models &amp; providers</a>
+  <a href="#connections">Connections</a>
+  <a href="#workflows">Workflows &amp; follow-ups</a>
+  <a href="#updates">Updates &amp; your data</a>
+  <a href="#security">Security</a>
+  <a href="#troubleshooting">Troubleshooting</a>
+  <a class="faq-link" href="#faq">FAQ</a>
+</aside>
+
+<main>
+  <h1 class="page-title">The Ship's <span class="mark">Manual</span></h1>
+  <p class="page-sub">Everything you need to run your helm. For the story of why 1Helm exists, <a class="b plainlink" href="/">start here</a>.</p>
+
+  <section id="quick-start">
+    <h2><span class="mark">Quick start</span></h2>
+    <p>1Helm turns one computer into your own always-on workspace — a crew of resident agents, each with a private computer, durable memory, and real skills, reachable from any device.</p>
+    <ul>
+      <li><span class="b">Dedicate a machine.</span> A Mac mini, mini PC, or desktop tower — 8&nbsp;GB of RAM and 200&nbsp;GB of storage is plenty. It runs on macOS, Windows, and Linux, and works best when the machine is dedicated, because your crew works around the clock.</li>
+      <li><span class="b">Install 1Helm</span> and sign in with the AI providers you already pay for. Onboarding walks you through it.</li>
+      <li><span class="b">Pick a workspace name</span> — that becomes your address, like <code>yourworkspace.1helm.com</code>.</li>
+      <li><span class="b">Tuck the machine somewhere quiet</span> with power and internet. A closet with an ethernet cable is perfect.</li>
+      <li><span class="b">Open your workspace URL</span> from any device. Skipper is waiting in <code>#main</code>.</li>
+    </ul>
+    <div class="notebox"><span class="notetag">note</span>As long as the helm computer has power and internet, your crew is never out of reach. Sleeping or shutting it down makes the workspace unavailable — it's your server.</div>
+  </section>
+
+  <section id="the-crew">
+    <h2><span class="mark">The crew</span></h2>
+    <div class="crew-row">
+      <div class="crew-card">
+        <img src="/assets/story/captain.png" alt="The Captain">
+        <span class="crew-name">The Captain</span>
+        <span class="crew-desc">You. The workspace owner and final human authority. You set outcomes, supply judgment and credentials when genuinely required, and manage the whole workspace.</span>
+      </div>
+      <div class="crew-card">
+        <img src="/assets/story/skipper.png" alt="Skipper">
+        <span class="crew-name">Skipper</span>
+        <span class="crew-desc">Your chief of staff. Lives in your private <code>#main</code>, manages channels, residents, computers, and schedules — and can jump into any channel to unblock an agent.</span>
+      </div>
+      <div class="crew-card">
+        <img src="/assets/story/agent-8.png" alt="A resident agent">
+        <span class="crew-name">Residents</span>
+        <span class="crew-desc">Permanent specialists. Every channel gets exactly one resident and one isolated, persistent Linux computer. New threads and model swaps never replace the identity.</span>
+      </div>
+      <div class="crew-card">
+        <img src="/assets/story/agent-4.png" alt="A coworker">
+        <span class="crew-name">Coworkers</span>
+        <span class="crew-desc">Human teammates. Each gets their own private <code>#main</code> with Skipper, plus a human-only Collab space. Their channels stay private until they invite you.</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="channels">
+    <h2><span class="mark">Channels</span></h2>
+    <p>Create a channel for any durable area of responsibility — a product, a launch, an inbox, a household, a client, a research stream. The channel owns its resident, its computer, its <code>/workspace</code>, files, threads, memory, skills, and scheduled obligations.</p>
+    <p>Ask Skipper in plain language:</p>
+    <pre><code>@skipper what channels exist
+@skipper inspect #product-launch
+@skipper sunset #ideas
+@skipper inspect the computer fleet and due obligations</code></pre>
+    <p><span class="b">Archive</span> is the safe sunset: it preserves the resident's whole world and disk while pausing workflows. <span class="b">Restore</span> brings back that exact world. Permanent deletion requires the channel to be archived first, and <code>#main</code> can never be archived or deleted.</p>
+  </section>
+
+  <section id="talking">
+    <h2><span class="mark">Talking to your crew</span></h2>
+    <p>Mention the resident to start a job — <code>@email-tracker can you…</code> — then keep talking naturally; you don't need to repeat the mention in a one-on-one thread. Each thread is a durable work session inside the resident's larger identity, with its own status, summary, and usage. <span class="b">Threads</span> lists them; <span class="b">Board</span> organizes the same sessions into status lanes.</p>
+    <p>Replies stream into one stable message, and your draft text and scroll position stay put while updates arrive. If the agent hits something only you can decide — a real judgment call, a missing credential, an irreversible step — it stops and asks with structured options. Routine setup, installs, and retries are its job, not interview material.</p>
+    <div class="notebox"><span class="notetag">the whole point</span>Ask a chatbot to "clean up these files and email the summary" and you get a to-do list. Ask a resident and it just does it — inspects, installs what it needs, retries, checks its own work, and reports back.</div>
+  </section>
+
+  <section id="computers">
+    <h2><span class="mark">Files &amp; Terminal</span></h2>
+    <p>Files and Terminal are two views of the same channel computer. Agent commands and your terminal both start in the channel's persistent <code>/workspace</code>. The terminal survives network changes and app backgrounding — same shell, same variables, same scrollback.</p>
+    <p>Every resident's computer is fully isolated from your real machine:</p>
+    <table>
+      <tr><th>Host</th><th>Isolation</th></tr>
+      <tr><td>macOS (Apple Silicon)</td><td>One Apple <code>container machine</code> per resident, no home-folder mount</td></tr>
+      <tr><td>Linux</td><td>One unprivileged LXC per resident</td></tr>
+      <tr><td>Windows</td><td>One private WSL&nbsp;2 distribution per resident, drive mounts and interop disabled</td></tr>
+    </table>
+    <p>Different plumbing, same architecture: as far as the resident knows, one computer exists — its own. It can't see into yours.</p>
+  </section>
+
+  <section id="memory">
+    <h2><span class="mark">Memory</span></h2>
+    <p>Memory holds curated facts, decisions, corrections, preferences, and procedures — with provenance. It is not a transcript dump; your raw messages remain the authoritative archive, and each resident can search its own channel's past sessions semantically, by exact text or date, and then read one in full.</p>
+    <p>Each resident and Skipper has an isolated memory store. Guests and other channels' residents can't touch it.</p>
+    <div class="notebox"><span class="notetag">facts vs. skills</span>A chatbot remembers <em>that</em> you like bullet points. A resident remembers <em>how</em> to do your job — work through your invoices together once and it writes itself the procedure. Train it once. It's trained.</div>
+  </section>
+
+  <section id="skills">
+    <h2><span class="mark">Skills</span></h2>
+    <p>Every resident starts with a built-in operational arsenal. It sees a compact inventory and loads a skill's full procedure only when it chooses to use it — procedures aren't stuffed into every turn.</p>
+    <p>Beyond the built-ins, Settings&nbsp;→&nbsp;Skills searches the open SkillsMD registry. Installed skills are pinned to an immutable revision, scanned, hashed, and wrapped under 1Helm's runtime authority. And when no ready-made procedure exists, choose <span class="b">Learn a new skill</span>: Skipper studies your local sources, links, and notes in a visible thread and authors a procedure specific to your workspace.</p>
+  </section>
+
+  <section id="models">
+    <h2><span class="mark">Models &amp; providers</span></h2>
+    <p>1Helm is model-agnostic. Connect multiple ChatGPT, Claude, Gemini, and xAI accounts, plus keyed OpenRouter, NVIDIA NIM, Cloudflare, GLM, or any OpenAI-compatible endpoint. Use a direct model, or a named fallback / round-robin route — when a model runs out of quota or errors, requests flow to the next one.</p>
+    <p>Model choice cascades like a waterfall — each level inherits from the one above unless you override it:</p>
+    <div class="waterfall">
+      <span class="lvl">Global</span><span class="warr">→</span>
+      <span class="lvl">Channel</span><span class="warr">→</span>
+      <span class="lvl">Session</span><span class="warr">→</span>
+      <span class="lvl">Message</span>
+    </div>
+    <p>Five messages deep with one model, you can send the sixth with another. The session just continues. Swapping the model changes nothing else — the agent keeps its name, computer, files, memory, and everything it's learned. <span class="b">You're changing the engine, not replacing the employee.</span></p>
+    <p>Providers are member-owned: teammates connect their own accounts, which start private, and can explicitly share them with the workspace without giving anyone else control of the credential.</p>
+  </section>
+
+  <section id="connections">
+    <h2><span class="mark">Connections</span></h2>
+    <h3>Gmail</h3>
+    <p>Settings&nbsp;→&nbsp;Connections&nbsp;→&nbsp;Gmail owns the connection on the helm computer — or just ask <code>@skipper can we set up Gmail</code>. Gmail supports account inventory, search, read, and draft creation. <span class="b">Sending remains disabled.</span> OAuth tokens live in host-owned storage and never enter chat or a resident's computer.</p>
+    <h3>Photon / iMessage</h3>
+    <p>Connections walks you through Photon device authorization and conversation mapping. An allowlisted inbound text creates a real thread, invokes the mapped agent, and sends the reply back to that exact conversation. New outbound destinations stay blocked unless you explicitly grant them.</p>
+  </section>
+
+  <section id="workflows">
+    <h2><span class="mark">Workflows &amp; follow-ups</span></h2>
+    <p>A <span class="b">follow-up</span> is a one-shot durable wake on an existing thread — "follow up on that order in three days." A <span class="b">workflow</span> is a recurring obligation with an interval, next run, and run history — "check inventory every Monday morning."</p>
+    <p>Both survive restarts, and both can wake a sleeping resident computer. Close the laptop and walk away: when Monday comes, the ship wakes itself, does the job, and reports back. Skipper handles the fleet's care — CPU, RAM, and disk pressure, sleep and wake, repair, resize — so you never manually size a machine.</p>
+  </section>
+
+  <section id="updates">
+    <h2><span class="mark">Updates &amp; your data</span></h2>
+    <p>Mac releases are signed, notarized, and verified before install — Profile&nbsp;→&nbsp;Check for updates downloads on the helm machine and offers <span class="b">Restart &amp; install</span> only when ready. Linux installs use a root-owned updater that verifies a release digest, installs into a versioned directory, switches atomically, health-checks, and rolls back if needed.</p>
+    <p>Every update preserves your data root:</p>
+    <pre><code>macOS:  ~/Library/Application Support/1Helm
+Linux:  /var/lib/1helm</code></pre>
+    <div class="warnbox"><span class="notetag">careful</span>That directory holds databases, credentials, workspaces, and resident state. Never delete it during a reinstall or migration — and before removing 1Helm entirely, use the built-in removal flow and export irreplaceable channel files first.</div>
+  </section>
+
+  <section id="security">
+    <h2><span class="mark">Security</span></h2>
+    <ul>
+      <li>Resident computers have no access to your real machine — no home mount on macOS, unprivileged LXC on Linux, no drive mounts or interop on Windows.</li>
+      <li>Credentials and connectors are host-owned and minimally brokered; tokens never enter chat or resident computers.</li>
+      <li>Channel membership gates files, terminals, messages, and live events. Private coworker channels aren't Captain-readable without invitation.</li>
+      <li>External skills are revision-pinned, bounded, scanned, hashed, and wrapped.</li>
+      <li>Operational history enters a SHA-256 hash chain — Settings&nbsp;→&nbsp;Audit verifies it and pinpoints tampering.</li>
+      <li>Releases are Developer ID signed, notarized, stapled, and Gatekeeper-verified before publication.</li>
+    </ul>
+  </section>
+
+  <section id="troubleshooting">
+    <h2><span class="mark">Troubleshooting</span></h2>
+    <h3>Skipper reports only #main</h3>
+    <p>Ask <code>@skipper what channels exist</code> — inventory comes from the native control plane and includes every channel in your scope, archived ones on request.</p>
+    <h3>Terminal and Files disagree</h3>
+    <p>Refresh Files after the command completes and confirm the prompt is inside <code>/workspace</code>. Both views share the channel computer; host paths are not a resident workspace.</p>
+    <h3>A scheduled job didn't run</h3>
+    <p>Check Workflows and Board, then ask Skipper to list obligations and reconcile the fleet. An archived channel intentionally pauses its workflows.</p>
+    <h3>A model keeps using a disabled account</h3>
+    <p>Confirm it's disabled under Providers, reproduce one request, and inspect Logs — disabled accounts should be absent from attempts entirely, not merely fail first.</p>
+    <h3>Gmail asks repeated questions</h3>
+    <p>Start from <code>@skipper can we set up Gmail</code> or Connections&nbsp;→&nbsp;Gmail. The native connector runs directly and must not open consecutive interviews.</p>
+  </section>
+
+  <section id="faq">
+    <h2><span class="mark">FAQ</span></h2>
+
+    <details>
+      <summary>Do I really need a dedicated computer?</summary>
+      <p>It'll run on a computer you already use — but your crew works around the clock, and your everyday machine sleeps, restarts, and leaves the house. A dedicated machine means the workspace is always reachable. Anything with 8&nbsp;GB of RAM and 200&nbsp;GB of storage is plenty to get started.</p>
+    </details>
+
+    <details>
+      <summary>What operating systems does it run on?</summary>
+      <p>macOS (signed Apple Silicon app), Linux (systemd install with a verified updater), and Windows via WSL&nbsp;2. Resident computers work the same way on all three — one isolated machine per agent.</p>
+    </details>
+
+    <details>
+      <summary>Which AI models can I use?</summary>
+      <p>The ones you already pay for. Connect ChatGPT, Claude, Gemini, and xAI accounts, plus OpenRouter, NVIDIA NIM, Cloudflare, GLM, or any OpenAI-compatible endpoint. Swap models mid-conversation — the agent keeps its identity, memory, and skills.</p>
+    </details>
+
+    <details>
+      <summary>Can agents see my files?</summary>
+      <p>No. Each resident lives on its own virtual machine with no view into your real computer. It makes folders, saves files, and runs commands entirely inside its own world. Anything it needs beyond that is brokered explicitly, by you or by Skipper, with the narrowest possible grant.</p>
+    </details>
+
+    <details>
+      <summary>What happens when I close the tab?</summary>
+      <p>Nothing bad — that's the point. The workspace lives on your helm computer, not in the tab. Threads, memory, files, and scheduled work all persist. Open your workspace URL from any device and pick up exactly where you left off.</p>
+    </details>
+
+    <details>
+      <summary>How is this different from my AI provider's "memory"?</summary>
+      <p>Provider memory stores facts — "prefers bullet points" — shared across every conversation. A resident's memory is per-channel and includes procedures: how you like your invoices formatted, where the files live, what it learned last month. Facts versus skills.</p>
+    </details>
+
+    <details>
+      <summary>Can my agent send emails on my behalf?</summary>
+      <p>Not yet, by design. The Gmail connection supports inventory, search, read, and draft creation — a human presses send. iMessage replies via Photon go only to the exact conversation that texted in, and new destinations stay blocked until you grant them.</p>
+    </details>
+
+    <details>
+      <summary>Is it open source? What does it cost?</summary>
+      <p>Fully open source and free. You bring the models you already pay for and the computer it runs on. Your installation and all of its data run on your machine.</p>
+    </details>
+
+    <details>
+      <summary>What if my helm computer dies?</summary>
+      <p>Your data root (<code>~/Library/Application Support/1Helm</code> on macOS, <code>/var/lib/1helm</code> on Linux) holds the workspaces, resident state, and credentials. Back it up, move it to a new machine, reinstall 1Helm, and your crew comes back. Never delete that directory during a move.</p>
+    </details>
+
+    <details>
+      <summary>Where do I start?</summary>
+      <p>Download 1Helm, name your workspace, and say hello to Skipper in <code>#main</code>. Then ask for your first crew member — a task, a goal, anything you want a dedicated agent for. <a class="b plainlink" href="/">The story shows you how it goes.</a></p>
+    </details>
+  </section>
+
+</main>
+</div>
+
+<footer>
+  <a href="/">← back to the story</a>
+  <span>·</span>
+  <a href="/download/macos">Download 1Helm</a>
+  <span>·</span>
+  <a href="/github">GitHub ↗</a>
+  <span>·</span>
+  <span>Free · open source · model-agnostic</span>
+</footer>
+
+</body>
+</html>

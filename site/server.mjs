@@ -9,6 +9,8 @@ const ROOT = resolve(import.meta.dirname, "..");
 const SITE_PUBLIC = join(import.meta.dirname, "public");
 const PRODUCT_PUBLIC = join(ROOT, "public");
 const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+const STORY_HTML = readFileSync(join(import.meta.dirname, "story.html"), "utf8");
+const MANUAL_HTML = readFileSync(join(import.meta.dirname, "manual.html"), "utf8");
 const VERSION = String(pkg.version || "");
 const HOST = process.env.SITE_HOST || "127.0.0.1";
 const PORT = Number(process.env.SITE_PORT || process.env.PORT || 8130);
@@ -87,6 +89,13 @@ const server = createServer((req, res) => {
     answer(res, 200, JSON.stringify({ ok: true, product: "1Helm", surface: "website", version: VERSION }), {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
+    });
+    return;
+  }
+  if (path === "/" || path === "/manual") {
+    answer(res, 200, path === "/" ? STORY_HTML : MANUAL_HTML, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "public, max-age=300, stale-while-revalidate=3600",
     });
     return;
   }

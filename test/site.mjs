@@ -16,10 +16,15 @@ test("standalone 1helm.com website serves independent product and documentation 
     const health = await (await waitFor(`${base}/health`)).json();
     assert.equal(health.surface, "website");
     const home = await (await fetch(base)).text();
-    assert.match(home, /Your AI should finish the work/);
-    assert.match(home, /demo\.1helm\.com.*separate public sandbox/is);
+    assert.match(home, /Welcome to/);
+    assert.match(home, /Intelligence should not be/);
+    assert.match(home, /skip to the end/);
     assert.doesNotMatch(home, /signed-source metadata/);
-    for (const path of ["/product", "/manifesto", "/security", "/faq", "/docs", "/docs/install/macos", "/docs/install/linux", "/docs/install/windows-wsl", "/docs/skills", "/docs/verification", "/docs/connections"]) {
+    assert.doesNotMatch(home, /style="/);
+    const manual = await (await fetch(`${base}/manual`)).text();
+    assert.match(manual, /The Ship's/);
+    assert.match(manual, /Do I really need a dedicated computer/);
+    for (const path of ["/manual", "/product", "/manifesto", "/security", "/faq", "/docs", "/docs/install/macos", "/docs/install/linux", "/docs/install/windows-wsl", "/docs/skills", "/docs/verification", "/docs/connections"]) {
       const response = await fetch(base + path); assert.equal(response.status, 200, path);
       assert.match(response.headers.get("content-security-policy") || "", /default-src 'self'/);
     }
