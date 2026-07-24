@@ -11,7 +11,13 @@ const PRODUCT_PUBLIC = join(ROOT, "public");
 const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 const STORY_HTML = readFileSync(join(import.meta.dirname, "story.html"), "utf8");
 const MANUAL_HTML = readFileSync(join(import.meta.dirname, "manual.html"), "utf8");
-const STATIC_PAGES = { "/": STORY_HTML, "/manual": MANUAL_HTML, "/terms": readFileSync(join(import.meta.dirname, "terms.html"), "utf8"), "/privacy": readFileSync(join(import.meta.dirname, "privacy.html"), "utf8") };
+const ASSET_VERSION = createHash("sha256")
+  .update(readFileSync(join(import.meta.dirname, "public/assets/story.css")))
+  .update(readFileSync(join(import.meta.dirname, "public/assets/story.js")))
+  .update(readFileSync(join(import.meta.dirname, "public/assets/manual.css")))
+  .digest("hex").slice(0, 10);
+const versionAssets = (html) => html.replace(/\/assets\/(story|manual)\.(css|js)/g, (m) => `${m}?v=${ASSET_VERSION}`);
+const STATIC_PAGES = { "/": versionAssets(STORY_HTML), "/manual": versionAssets(MANUAL_HTML), "/terms": versionAssets(readFileSync(join(import.meta.dirname, "terms.html"), "utf8")), "/privacy": versionAssets(readFileSync(join(import.meta.dirname, "privacy.html"), "utf8")) };
 const VERSION = String(pkg.version || "");
 const HOST = process.env.SITE_HOST || "127.0.0.1";
 const PORT = Number(process.env.SITE_PORT || process.env.PORT || 8130);
