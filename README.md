@@ -3,37 +3,46 @@
 </p>
 
 <p align="center">
-  <strong>Give every job a resident AI, a private computer, durable memory, and a chief of staff.</strong><br>
-  1Helm turns capable models into a team that finishes the work—and gets better every time.
+  <strong>Intelligence should not be temporary.</strong><br>
+  1Helm gives every job a permanent AI resident with its own private computer, durable memory,
+  and real skills — so the agent you train today is better at the job tomorrow.
 </p>
 
 <p align="center">
   <a href="https://1helm.com/download/macos"><strong>Download for Apple Silicon</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://1helm.com/product">Product</a>
+  <a href="https://1helm.com">The story</a>
+  &nbsp;·&nbsp;
+  <a href="https://1helm.com/manual">Ship's manual</a>
   &nbsp;·&nbsp;
   <a href="https://1helm.com/docs">Documentation</a>
-  &nbsp;·&nbsp;
-  <a href="docs/USER_GUIDE.md">User guide</a>
   &nbsp;·&nbsp;
   <a href="docs/VISION.md">Vision</a>
   &nbsp;·&nbsp;
   <a href="SECURITY.md">Security</a>
 </p>
 
-Agent turns follow a documented [durability and reliability contract](docs/RELIABILITY.md):
-per-thread concurrency, generation-fenced single-writer responses, restart-safe
-queues, durable connector delivery, narrow human blockers, and adversarial
-release acceptance tests.
-
 <p align="center">
-  <code>Apple Silicon native</code>&nbsp;&nbsp;
-  <code>34 complete playbooks</code>&nbsp;&nbsp;
-  <code>Open SkillsMD search</code>&nbsp;&nbsp;
-  <code>Signed + notarized</code>
+  <code>MIT licensed</code>&nbsp;&nbsp;
+  <code>Self-hosted</code>&nbsp;&nbsp;
+  <code>Model-agnostic</code>&nbsp;&nbsp;
+  <code>Signed + notarized</code>&nbsp;&nbsp;
+  <code>macOS · Linux · Windows soon</code>
 </p>
 
 ---
+
+## The problem
+
+Every AI chat you've ever had ends the same way: the context window fills, the
+session dies, and everything the model learned fits on a sticky note addressed
+to its replacement. One tab, one session, one race against the token timer.
+
+That isn't a law of nature. It's a product decision — and 1Helm makes the
+opposite one. Instead of renting intelligence by the session, you give each
+ongoing job a **resident**: an agent with a stable identity, a persistent
+private Linux computer, curated memory, and scheduled obligations that survive
+restarts, model swaps, and closed laptops.
 
 <p align="center">
   <img src="docs/assets/readme-workspace.png" alt="The real 1Helm workspace with a permanent product-launch resident and direct Skipper handoff" width="100%">
@@ -86,32 +95,73 @@ Skipper ─── crosses the boundary ─────────┘
 - **The computer, memory, skills, and obligations** belong to the channel and
   survive model changes and application restarts.
 
+## Install on Apple Silicon
+
+1. [Download the current signed DMG](https://1helm.com/download/macos).
+2. Open it and drag **1Helm** to Applications.
+3. Launch 1Helm. Gatekeeper verifies its Developer ID signature and Apple
+   notarization ticket.
+4. Complete Captain → Providers → Workspace. If required, approve Apple's
+   signed container runtime once during workspace creation.
+
+Application state lives under `~/Library/Application Support/1Helm` and every
+update preserves it — credentials, databases, resident state, files, and
+workspaces. Profile → Check for updates asks the Mac running 1Helm—not the
+device displaying the web UI—to download and verify the signed update.
+
+Linux hosts use a verified installer that provisions a durable systemd service
+with an atomic, digest-verified, health-checked updater — see the
+[Linux install guide](https://1helm.com/docs/install/linux). Either way, it
+works best on a dedicated machine: your crew works around the clock, and your
+everyday computer takes naps.
+
 ## Ready on day one. Specialized by day one hundred.
 
 <p align="center">
   <img src="docs/assets/readme-skills.png" alt="1Helm Skills showing automatic built-in playbooks, skill learning, and a searchable external library" width="100%">
 </p>
 
-Every resident permanently owns the safe shipped library. The 34 complete
-playbooks cover outcome ownership, Skipper handoff, obligations, skill
+Every resident permanently owns the safe shipped library: 34 complete
+playbooks covering outcome ownership, Skipper handoff, obligations, skill
 discovery, memory, research, email, calendar, contacts, messaging, documents,
 spreadsheets, PDFs, meetings, projects, personal operations, travel, finance,
 support, software delivery, data, media, infrastructure, security, and more.
 
 The model receives a compact inventory of the arsenal—not all 34 procedures in
-every prompt. It can inspect metadata and load one complete skill when useful.
-It can also:
+every prompt. It inspects metadata and loads one complete skill when useful.
+Beyond the built-ins, a resident can:
 
-- search SkillsMD directly without a 1Helm-curated subset, then inspect and install a selected GitHub-backed skill;
-- install ready skills only after immutable revision pinning, bounds,
-  scanning, hashing, provenance storage, and runtime-authority wrapping;
-- route sources without a ready repository-specific procedure through the
-  visible Learn a new skill workflow;
-- crystallize a successful real workflow into a complete reusable procedure,
-  including activation cues, authority boundaries, recovery, retained state,
+- search the open SkillsMD registry directly, then inspect and install a
+  selected GitHub-backed skill — only after immutable revision pinning,
+  bounds, scanning, hashing, provenance storage, and runtime-authority
+  wrapping;
+- learn a workspace-specific procedure from your local sources, URLs, and
+  notes through the visible **Learn a new skill** workflow;
+- crystallize a successful real workflow into a complete reusable procedure —
+  activation cues, authority boundaries, recovery, retained state,
   verification, and concrete completion evidence.
 
-No user has to approve the existence or routine use of every safe skill.
+That last one is the point: work through your invoices together once, and the
+resident doesn't just remember the fact — it writes itself the procedure.
+**Train it once. It's trained.**
+
+## One model fabric
+
+Connect multiple ChatGPT, Claude, Gemini/Antigravity, and xAI OAuth accounts;
+OpenRouter, NVIDIA NIM, Cloudflare, GLM, and custom API keys; then enable exact
+models and assemble fallback or round-robin routes. Model choice cascades —
+Global → Channel → Session → Message — so you can swap engines mid-thread.
+
+Changing a route never replaces the resident or discards its computer, memory,
+skills, files, obligations, or thread history. **You're changing the engine,
+not replacing the employee.**
+
+Each signed-in workspace member connects their own OAuth accounts and API keys.
+New accounts and routes are private to that member unless their owner explicitly
+shares them with the workspace; shared accounts are usable but remain editable
+only by their owner. The same fabric also exposes an authenticated OpenAI- and
+Anthropic-compatible `/v1` endpoint for external tools, with separate revocable
+keys per member.
 
 ## Connections without credential sprawl
 
@@ -129,91 +179,36 @@ New connection types have to earn their place with least-privilege scoping,
 secret isolation, reconnect and recovery, deduplication, deterministic tests,
 and an audit trail. A prompt saying “use this service” is not a connector.
 
-## One model fabric
-
-Connect multiple ChatGPT, Claude, Gemini/Antigravity, and xAI OAuth accounts;
-OpenRouter, NVIDIA NIM, Cloudflare, GLM, and custom API keys; then enable exact
-models and assemble fallback or round-robin routes.
-
-Each signed-in workspace member connects their own OAuth accounts and API keys.
-New accounts and routes are private to that member unless their owner explicitly
-shares them with the workspace; shared accounts are usable but remain editable
-only by their owner. Each member may inherit the workspace model or choose a
-personal model from their own-plus-shared pool.
-
-Changing a route never replaces the resident or discards its computer, memory,
-skills, files, obligations, or thread history. The same fabric also exposes an
-authenticated OpenAI- and Anthropic-compatible `/v1` endpoint for external
-tools. Every member receives separate revocable keys whose identity selects that
-same personal pool, plus a dedicated loopback port on the 1Helm host. The port
-does not run on the laptop or phone viewing the web UI.
-
 ## What ships now
 
 - Captain → Providers → Workspace onboarding in the signed Mac app.
 - Exactly one resident for every ordinary channel and one Skipper in `#main`.
-- A persistent Apple `container machine` Linux VM per ordinary channel, with
-  `home-mount=none`, on supported Apple Silicon Macs.
-- A persistent unprivileged LXC per ordinary channel on supported Linux
-  systemd hosts, with subordinate UID/GID mapping and exact ownership checks.
-- A private WSL 2 Ubuntu distribution per ordinary channel in the accepted
-  Windows implementation, with Windows-drive mounts and interop disabled. Its
-  public installer remains withheld until Authenticode signing is available.
-- Shared channel `/workspace` for the agent command surface and human Terminal.
+- A persistent, fully isolated Linux computer per ordinary channel on every
+  supported platform (exact contracts in the table below).
+- Shared channel `/workspace` for the agent command surface and human Terminal,
+  with automatic terminal heartbeat and silent same-session reconnection.
 - Durable files, threads, curated memory, Mnemosyne long-term recall,
   corrections, follow-ups, and recurring workflows.
 - Direct resident → Skipper escalation and automatic Skipper → resident return.
-- Compact, factual model context: identity, channel, Linux computer and
-  `/workspace`, callable tools, memory, and the skill arsenal. Security and
-  ownership boundaries are enforced by the tools and server rather than a
-  prose grader rewriting model answers.
 - Outcome-first Activity with expandable work evidence and a tamper-evident
   SHA-256 chain for new operational events.
 - Local-first collaboration through an optional workspace domain routed to the
   Captain's Mac; workspace state and provider credentials remain on that Mac.
-- Host-owned updates: a signed native Mac updater plus an atomic, digest-verified Linux system service with health-check rollback.
-- Automatic terminal heartbeat and silent same-session reconnection after
-  backgrounding, focus changes, or brief network interruptions.
+- Host-owned updates: a signed native Mac updater plus an atomic,
+  digest-verified Linux system service with health-check rollback.
 - Signed, Apple-notarized, stapled Apple Silicon DMG releases.
 
 ### Platform truth
 
 | Platform | Current contract |
 |---|---|
-| **Apple Silicon macOS 26** | Native desktop product and real isolated Linux computer per resident. |
-| **Linux / CI** | Supported headless systemd host with one unprivileged LXC per resident; CI may select an explicit test backend. |
-| **Windows + WSL** | Native x64 Electron and private WSL 2 worlds have passed real-host acceptance; the public installer awaits Authenticode signing. |
+| **Apple Silicon macOS 26** | Native desktop product and real isolated Linux computer per resident (Apple `container machine`, `home-mount=none`). |
+| **Linux / CI** | Supported headless systemd host with one unprivileged LXC per resident (subordinate UID/GID mapping, exact ownership checks); CI may select an explicit test backend. |
+| **Windows + WSL** | Native x64 Electron and private WSL 2 worlds (Windows-drive mounts and interop disabled) have passed real-host acceptance; the public installer awaits Authenticode signing. |
 
 Not yet shipped: a signed public Windows installer, a native Linux desktop
 shell, mobile clients, a hosted control plane, rich Photon attachment fidelity,
 or blind execution of community skills.
-
-## Install on Apple Silicon
-
-1. [Download the current signed DMG](https://1helm.com/download/macos).
-2. Open it and drag **1Helm** to Applications.
-3. Launch 1Helm. Gatekeeper verifies its Developer ID signature and Apple
-   notarization ticket.
-4. Complete Captain → Providers → Workspace. If required, approve Apple's
-   signed container runtime once during workspace creation.
-
-Application state lives under:
-
-```text
-~/Library/Application Support/1Helm
-```
-
-After the first install, Profile → Check for updates asks the Mac running
-1Helm—not the device displaying the web UI—to download and verify the signed
-update. **Restart & install** replaces the app while preserving that directory,
-including credentials, databases, resident state, files, and workspaces.
-
-The standard Linux installer similarly provisions a root-owned systemd updater.
-The unprivileged web service may write only a fixed request file; systemd then
-downloads the exact release artifact on the Linux host, verifies GitHub's
-SHA-256 asset digest, stages a versioned release, switches atomically, restarts,
-health-checks, and restores the previous release on failure. Arbitrary source
-checkouts remain operator-managed and never send a Mac installer to the browser.
 
 ## Run the source workspace
 
@@ -236,7 +231,7 @@ A fresh data directory opens first-run setup. The source runtime defaults to
 | `PORT` | `8123` | HTTP/WebSocket control-plane port. |
 | `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and narrow workspace mirrors. |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `lxc` on Linux, `wsl` on Windows | Host isolation backend; `native` and `mock` are explicit development/test overrides. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.7` | Versioned channel-machine image contract. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.8` | Versioned channel-machine image contract. |
 
 ### Agent-first JSON CLI
 
@@ -276,6 +271,12 @@ system tour. [`SPEC.md`](SPEC.md) is the detailed behavioral contract.
 
 ## Verification
 
+Agent turns follow a documented
+[durability and reliability contract](docs/RELIABILITY.md): per-thread
+concurrency, generation-fenced single-writer responses, restart-safe queues,
+durable connector delivery, narrow human blockers, and adversarial release
+acceptance tests.
+
 ```bash
 npm run typecheck
 npm run build
@@ -289,6 +290,9 @@ shipped skill arsenal, compact capability map, narrow human-blocker boundary,
 resident autonomy tools, wakeable recurring work, and audit-chain invariants
 for its fixture. It is deliberately not presented as a live-model success rate
 or a complete security score.
+
+Every pull request and push to `main` runs typecheck, a production build, and
+the complete `npm test` contract.
 
 ## Security boundary
 
@@ -310,14 +314,13 @@ dependency debt.
 ## Project record
 
 - Product direction: [`docs/VISION.md`](docs/VISION.md)
+- Complete user guide: [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)
 - Changelog: [`CHANGELOG.md`](CHANGELOG.md)
 - Release lifecycle: [`docs/release-lifecycle.md`](docs/release-lifecycle.md)
 - Release checklist: [`docs/release-checklist.md`](docs/release-checklist.md)
 - Governance: [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md)
-- Complete user guide: [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)
-
-Every pull request and push to `main` runs typecheck, a production build, and
-the complete `npm test` contract.
+- Terms & privacy: [1helm.com/terms](https://1helm.com/terms) · [1helm.com/privacy](https://1helm.com/privacy)
+- Company contact: [`build@1helm.com`](mailto:build@1helm.com)
 
 ---
 
