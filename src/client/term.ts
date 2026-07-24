@@ -15,6 +15,10 @@ type Pane = {
   el: HTMLElement;
   ro: ResizeObserver;
   disposed: boolean;
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+  heartbeatTimer: ReturnType<typeof setInterval> | null;
+  reconnectAttempt: number;
+  connectionGeneration: number;
   state: TerminalState;
 };
 type TerminalState = {
@@ -38,6 +42,7 @@ type ListedSession = { id: string; computerId: number; channelId: number; client
 const states = new Map<number, TerminalState>();
 let seq = 0;
 let themeHooked = false;
+let reconnectHooksInstalled = false;
 
 /* Night-watch terminal: warm ink field, paper text, vermillion cursor. */
 const themes = {
@@ -91,6 +96,18 @@ export function openTerminals(container: HTMLElement, channelId: number, preferr
   if (!themeHooked) {
     themeHooked = true;
     window.addEventListener("themechange", () => states.forEach((item) => item.columns.flat().forEach((pane) => { pane.term.options.theme = activeTheme(); })));
+  }
+  if (!reconnectHooksInstalled) {
+    reconnectHooksInstalled = true;
+    const reconnectVisiblePanes = (): void => {
+      if (document.visibilityState === "hidden") return;
+      for (const item of states.values()) for (const pane of item.columns.flat()) {
+        if (!pane.disposed && pane.ws?.readyState !== WebSocket.OPEN && pane.ws?.readyState !== WebSocket.CONNECTING) scheduleReconnect(pane, true);
+      }
+    };
+    document.addEventListener("visibilitychange", reconnectVisiblePanes);
+    window.addEventListener("online", reconnectVisiblePanes);
+    window.addEventListener("focus", reconnectVisiblePanes);
   }
   if (state.workspace.parentElement !== container) {
     clear(container);
@@ -289,6 +306,9 @@ function closePane(pane: Pane): void {
   for (const col of state.columns) { const index = col.indexOf(pane); if (index >= 0) col.splice(index, 1); }
   state.columns = state.columns.filter((column) => column.length);
   pane.disposed = true;
+  pane.connectionGeneration++;
+  if (pane.reconnectTimer) clearTimeout(pane.reconnectTimer);
+  if (pane.heartbeatTimer) clearInterval(pane.heartbeatTimer);
   try { pane.ro.disconnect(); pane.ws?.close(); pane.term.dispose(); } catch { /* gone */ }
   if (pane.sessionId) void api(`/api/term/${pane.sessionId}`, { method: "DELETE" }).catch(() => undefined);
   if (!state.columns.length) addColumn(state); else paintBody(state);
@@ -325,7 +345,7 @@ function makePane(state: TerminalState, sessionId: string | null = null, compute
   const term = new Terminal({ fontFamily: '"Fragment Mono", ui-monospace, Menlo, monospace', fontSize: 13, theme: activeTheme(), cursorBlink: true, scrollback: 5000 });
   const fit = new FitAddon(); term.loadAddon(fit);
   const el = h("div", { class: "min-h-0 flex-1 bg-[#070b10]" });
-  const pane: Pane = { id, sessionId, computerId, term, fit, ws: null, el, ro: null as unknown as ResizeObserver, disposed: false, state };
+  const pane: Pane = { id, sessionId, computerId, term, fit, ws: null, el, ro: null as unknown as ResizeObserver, disposed: false, reconnectTimer: null, heartbeatTimer: null, reconnectAttempt: 0, connectionGeneration: 0, state };
   requestAnimationFrame(() => { term.open(el); void connect(pane); });
   pane.ro = new ResizeObserver(() => { try { fit.fit(); sendResize(pane); } catch { /* detached */ } });
   pane.ro.observe(el);
@@ -334,6 +354,9 @@ function makePane(state: TerminalState, sessionId: string | null = null, compute
 }
 
 async function connect(pane: Pane): Promise<void> {
+  if (pane.disposed || pane.ws?.readyState === WebSocket.OPEN || pane.ws?.readyState === WebSocket.CONNECTING) return;
+  if (pane.reconnectTimer) { clearTimeout(pane.reconnectTimer); pane.reconnectTimer = null; }
+  const generation = ++pane.connectionGeneration;
   try {
     if (!pane.sessionId) {
       const opened = await api<{ sessionId: string; computerId?: number }>("/api/term/open", {
@@ -349,12 +372,46 @@ async function connect(pane: Pane): Promise<void> {
     pane.el.dataset.sessionId = pane.sessionId;
     ws.binaryType = "arraybuffer";
     pane.ws = ws;
-    ws.onmessage = (event) => pane.term.write(typeof event.data === "string" ? event.data : new Uint8Array(event.data));
-    ws.onopen = () => sendResize(pane);
-    ws.onclose = (event) => { if (!pane.disposed) pane.term.writeln(`\r\n\x1b[90m[terminal disconnected${event.reason ? `: ${event.reason}` : ""}]\x1b[0m`); };
+    ws.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        try { if (JSON.parse(event.data)?.type === "pong") return; } catch { /* terminal output */ }
+        pane.term.write(event.data);
+      } else pane.term.write(new Uint8Array(event.data));
+    };
+    ws.onopen = () => {
+      if (generation !== pane.connectionGeneration || pane.disposed) { ws.close(); return; }
+      pane.reconnectAttempt = 0;
+      pane.el.dataset.connection = "connected";
+      if (pane.heartbeatTimer) clearInterval(pane.heartbeatTimer);
+      pane.heartbeatTimer = setInterval(() => {
+        if (pane.ws === ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping", at: Date.now() }));
+      }, 20_000);
+      sendResize(pane);
+    };
+    ws.onclose = (event) => {
+      if (generation !== pane.connectionGeneration || pane.disposed) return;
+      if (pane.heartbeatTimer) { clearInterval(pane.heartbeatTimer); pane.heartbeatTimer = null; }
+      pane.ws = null;
+      pane.el.dataset.connection = "reconnecting";
+      if (event.code === 4004) pane.sessionId = null;
+      scheduleReconnect(pane);
+    };
+    ws.onerror = () => { /* close drives the bounded reconnect loop */ };
   } catch (error) {
-    pane.term.writeln(`\r\n\x1b[31m${(error as Error).message}\x1b[0m`);
+    if (generation !== pane.connectionGeneration || pane.disposed) return;
+    pane.ws = null;
+    pane.el.dataset.connection = "reconnecting";
+    scheduleReconnect(pane);
   }
+}
+
+function scheduleReconnect(pane: Pane, immediate = false): void {
+  if (pane.disposed || pane.reconnectTimer || pane.ws?.readyState === WebSocket.OPEN || pane.ws?.readyState === WebSocket.CONNECTING) return;
+  const delay = immediate ? 0 : Math.min(10_000, 350 * (2 ** Math.min(pane.reconnectAttempt++, 5)));
+  pane.reconnectTimer = setTimeout(() => {
+    pane.reconnectTimer = null;
+    void connect(pane);
+  }, delay);
 }
 
 function sendResize(pane: Pane): void {

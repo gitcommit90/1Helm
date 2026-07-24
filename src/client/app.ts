@@ -781,7 +781,7 @@ function sidebar(drawer = false): HTMLElement {
       h("button", { class: "flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-sidebar-hover", title: "Open profile", onclick: (event: MouseEvent) => { closeMobileMenu(); openProfile(event.currentTarget as HTMLElement); } },
         avatar(S.me.display, "user", 8, S.me.avatar),
         h("div", { class: "min-w-0 flex-1" }, h("div", { class: "truncate text-sm font-semibold text-white" }, S.me.display), h("div", { class: "flex items-center gap-1.5 truncate font-mono text-[10.5px] text-sidebar-muted" }, h("span", { class: "h-1.5 w-1.5 rounded-full bg-ok" }), "@" + S.me.username + (S.me.is_admin ? " · admin" : "")))),
-      S.me.is_admin ? h("button", { class: "grid h-10 w-10 shrink-0 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: "Settings", "aria-label": "Open settings", onclick: () => { closeMobileMenu(); openSettings(); } }, icon("gear")) : null));
+      h("button", { class: "grid h-10 w-10 shrink-0 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: S.me.is_admin ? "Settings" : "Provider settings", "aria-label": "Open settings", onclick: () => { closeMobileMenu(); openSettings(S.me.is_admin ? "agents" : "providers"); } }, icon("gear"))));
 }
 
 function openProfile(anchor: HTMLElement): void {
@@ -799,38 +799,62 @@ function openProfile(anchor: HTMLElement): void {
     class: "btn-subtle min-h-9 shrink-0 px-3 text-xs",
     dataset: { profileUpdateAction: "" },
   }, "Check for updates") as HTMLButtonElement;
-  const checkForUpdates = async (openAvailableRelease = false): Promise<void> => {
-    updateButton.disabled = true;
-    updateButton.textContent = "Checking…";
-    try {
-      const update = await api<{ current_version: string; latest_version: string; status: "latest" | "available"; release_url: string; download_url: string }>("/api/app/update");
-      if (update.status === "latest") {
-        updateLabel.textContent = `1Helm v${update.current_version} · latest`;
-        updateStatus.textContent = "You're up to date.";
-        updateButton.className = "btn-subtle min-h-9 shrink-0 px-3 text-xs";
-        updateButton.textContent = "Check again";
-        updateButton.onclick = () => { void checkForUpdates(); };
-      } else {
-        const target = update.download_url || update.release_url;
-        updateLabel.textContent = `1Helm v${update.current_version} · v${update.latest_version} available`;
-        updateStatus.textContent = `1Helm v${update.latest_version} is ready to download.`;
-        updateButton.className = "btn-primary min-h-9 shrink-0 px-3 text-xs";
-        updateButton.textContent = `Download v${update.latest_version}`;
-        updateButton.dataset.updateUrl = target;
-        updateButton.onclick = () => { window.open(target, "_blank", "noopener,noreferrer"); };
-        if (openAvailableRelease) window.open(target, "_blank", "noopener,noreferrer");
-      }
-    } catch (error) {
-      updateStatus.textContent = (error as Error).message;
-      updateLabel.textContent = "1Helm · update check unavailable";
-    } finally {
-      updateButton.disabled = false;
-      if (updateButton.textContent === "Checking…") updateButton.textContent = "Check for updates";
+  type HostUpdate = { mode: "native-macos" | "linux-systemd" | "source"; status: string; current_version: string; version: string | null; message: string; error: string | null };
+  let updatePoll = 0;
+  const applyUpdate = (update: HostUpdate): void => {
+    const version = update.version ? ` · v${update.version}` : "";
+    updateLabel.textContent = `1Helm v${update.current_version}${version}`;
+    updateStatus.textContent = update.error || update.message;
+    updateButton.className = "btn-subtle min-h-9 shrink-0 px-3 text-xs";
+    updateButton.disabled = false;
+    delete updateButton.dataset.updateUrl;
+    if (update.status === "available") {
+      updateButton.className = "btn-primary min-h-9 shrink-0 px-3 text-xs";
+      updateButton.textContent = update.mode === "linux-systemd" ? `Update host to v${update.version}` : `Download on host`;
+      updateButton.onclick = () => { void runUpdateAction("download"); };
+    } else if (update.status === "ready") {
+      updateButton.className = "btn-primary min-h-9 shrink-0 px-3 text-xs";
+      updateButton.textContent = "Restart & install";
+      updateButton.onclick = () => { void runUpdateAction("install"); };
+    } else if (["queued", "checking", "downloading", "installing", "restarting"].includes(update.status)) {
+      updateButton.disabled = true;
+      updateButton.textContent = update.status === "queued" ? "Queued on host…" : update.status === "downloading" ? "Downloading on host…" : update.status === "installing" || update.status === "restarting" ? "Restarting host…" : "Checking host…";
+      window.clearTimeout(updatePoll);
+      updatePoll = window.setTimeout(() => { void checkForUpdates(); }, 1_000);
+    } else if (update.status === "managed" || update.status === "unsupported") {
+      updateButton.disabled = true;
+      updateButton.textContent = "Host-managed";
+    } else {
+      updateButton.textContent = update.status === "current" ? "Check again" : "Check host";
+      updateButton.onclick = () => { void runUpdateAction("download"); };
     }
   };
-  updateButton.onclick = () => { void checkForUpdates(true); };
+  const checkForUpdates = async (): Promise<void> => {
+    updateButton.disabled = true;
+    updateButton.textContent = "Checking host…";
+    try {
+      applyUpdate(await api<HostUpdate>("/api/app/update"));
+    } catch (error) {
+      updateStatus.textContent = (error as Error).message;
+      updateButton.disabled = false;
+      updateButton.textContent = "Retry host check";
+      updateButton.onclick = () => { void checkForUpdates(); };
+    }
+  };
+  const runUpdateAction = async (action: "download" | "install"): Promise<void> => {
+    updateButton.disabled = true;
+    try {
+      applyUpdate(await api<HostUpdate>("/api/app/update", { method: "POST", body: { action } }));
+    } catch (error) {
+      updateStatus.textContent = (error as Error).message;
+      updateButton.disabled = false;
+      updateButton.textContent = "Retry host check";
+      updateButton.onclick = () => { void checkForUpdates(); };
+    }
+  };
+  updateButton.onclick = () => { void runUpdateAction("download"); };
   const pop = h("div", { id: "profile-popover", class: "card fixed bottom-3 left-3 z-50 w-[min(420px,calc(100vw-1.5rem))] space-y-4 p-4 shadow-2xl" });
-  const close = (): void => { pop.remove(); document.removeEventListener("mousedown", outside); document.removeEventListener("keydown", keydown); };
+  const close = (): void => { window.clearTimeout(updatePoll); pop.remove(); document.removeEventListener("mousedown", outside); document.removeEventListener("keydown", keydown); };
   const outside = (event: MouseEvent): void => { if (!pop.contains(event.target as Node) && !anchor.contains(event.target as Node)) close(); };
   const keydown = (event: KeyboardEvent): void => { if (event.key === "Escape") close(); };
   const acceptUser = (user: User): void => { S.me = user; const index = S.users.findIndex((item) => item.id === user.id); if (index >= 0) S.users[index] = user; };
@@ -857,12 +881,12 @@ function openProfile(anchor: HTMLElement): void {
     h("label", { class: "block space-y-1 text-xs font-semibold text-fg" }, "Description", description),
     h("div", { class: "flex items-center justify-between gap-3" },
       status,
-      h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save profile")),
-    h("section", { class: "flex items-center justify-between gap-3 border-t border-line pt-3", dataset: { profileUpdate: "" } },
-      h("div", { class: "min-w-0" }, updateLabel, updateStatus),
-      updateButton));
+      h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save profile")));
+  if (S.me.is_admin) pop.append(h("section", { class: "flex items-center justify-between gap-3 border-t border-line pt-3", dataset: { profileUpdate: "" } },
+    h("div", { class: "min-w-0" }, updateLabel, updateStatus),
+    updateButton));
   document.body.append(pop);
-  void checkForUpdates();
+  if (S.me.is_admin) void checkForUpdates();
   setTimeout(() => { document.addEventListener("mousedown", outside); document.addEventListener("keydown", keydown); }, 0);
 }
 
@@ -2118,7 +2142,7 @@ function composer(parentId: number | null): HTMLElement {
     const policy = selectedPolicy;
     modelButton.replaceChildren(icon("sliders", 13), h("span", { class: "truncate font-mono text-[11px] font-normal" }, policy?.model || agent?.model || "Choose model"));
     modelButton.title = policy ? `${policy.provider_name || "Provider"} · ${policy.model}` : `Inherited model · ${agent?.model || "not configured"}`;
-    modelButton.disabled = !agent || agent.kind === "skipper";
+    modelButton.disabled = !agent;
   };
   drawModelButton();
   if (parentId) void api<{ policy: ModelPolicy }>(`/api/messages/${parentId}/model-policy`).then((result) => { selectedPolicy = result.policy; drawModelButton(); }).catch(() => undefined);
@@ -2152,7 +2176,7 @@ function composer(parentId: number | null): HTMLElement {
     h("div", { class: "flex items-center justify-between gap-1 px-1.5 pb-1.5" },
       h("label", { class: "grid h-11 w-11 cursor-pointer place-items-center rounded-md text-muted hover:bg-hover hover:text-fg sm:h-8 sm:w-8", title: "Attach files" }, icon("paperclip"),
         h("input", { type: "file", multiple: true, class: "hidden", onchange: async (ev: Event) => { for (const f of Array.from((ev.target as HTMLInputElement).files || [])) pending.push(await uploadFile(f)); drawAttach(); } })),
-      h("div", { class: "flex min-w-0 flex-1 justify-end gap-1.5" }, humanOnly || !S.me.is_admin ? null : modelButton,
+      h("div", { class: "flex min-w-0 flex-1 justify-end gap-1.5" }, humanOnly ? null : modelButton,
         h("button", { class: "btn-primary min-h-11 shrink-0 px-3 text-sm sm:min-h-8", onclick: send }, icon("send"), "Send"))));
   const wrap = h("div", { class: "composer-wrap shrink-0 bg-bg px-3 pb-3 pt-1 sm:px-4 sm:pb-4" }, box);
 
@@ -2166,7 +2190,8 @@ function composer(parentId: number | null): HTMLElement {
 async function composerModelPopover(event: MouseEvent, threadRootId: number | null, current: ModelPolicy | null, onChange: (policy: ModelPolicy | null) => void): Promise<void> {
   const channel = S.channels.find((item) => item.id === S.channelId);
   const agent = channel?.agent;
-  if (!agent || agent.kind === "skipper") return;
+  if (!agent) return;
+  const personalMode = !S.me.is_admin || agent.kind === "skipper";
   const pop = h("div", { class: "card fixed z-50 w-[min(400px,calc(100vw-1.5rem))] space-y-3 p-4 shadow-2xl" });
   const width = Math.min(400, window.innerWidth - 24);
   pop.style.width = `${width}px`;
@@ -2177,7 +2202,7 @@ async function composerModelPopover(event: MouseEvent, threadRootId: number | nu
   const keydown = (next: KeyboardEvent): void => { if (next.key === "Escape") close(); };
   const provider = h("select", { class: "field text-xs" }, h("option", { value: "" }, "Inherit channel provider")) as HTMLSelectElement;
   const model = h("select", { class: "field text-xs" }, h("option", { value: "" }, "Inherit channel model")) as HTMLSelectElement;
-  const status = h("p", { class: "min-h-5 text-xs text-muted" }, threadRootId ? "Changes persist for this thread." : "Your choice will be saved when this new thread is sent.");
+  const status = h("p", { class: "min-h-5 text-xs text-muted" }, personalMode ? "This choice follows your 1Helm account." : threadRootId ? "Changes persist for this thread." : "Your choice will be saved when this new thread is sent.");
   let sequence = 0;
   let routedModels: RoutingModel[] = [];
   const providerKey = (item: RoutingModel): string => item.kind === "route" ? "routes" : String(item.providerType || item.providerName || "models");
@@ -2201,13 +2226,17 @@ async function composerModelPopover(event: MouseEvent, threadRootId: number | nu
     if (!provider.value || !model.value) { status.textContent = "Choose both a provider and a model, or use Inherit."; return; }
     let policy: ModelPolicy = { provider_id: agent.provider_id, provider_name: provider.selectedOptions[0]?.textContent || null, provider_kind: "routing", model: model.value, overridden: true, editable: true };
     try {
-      if (threadRootId) policy = (await api<{ policy: ModelPolicy }>(`/api/messages/${threadRootId}/model-policy`, { body: { provider_id: policy.provider_id, model: policy.model } })).policy;
+      if (personalMode) await api("/api/workspace/model-policy", { method: "PATCH", body: { model: policy.model, personal: true } });
+      else if (threadRootId) policy = (await api<{ policy: ModelPolicy }>(`/api/messages/${threadRootId}/model-policy`, { body: { provider_id: policy.provider_id, model: policy.model } })).policy;
       onChange(policy); close();
     } catch (error) { status.textContent = (error as Error).message; }
   };
   const inherit = async (): Promise<void> => {
     try {
-      if (threadRootId) {
+      if (personalMode) {
+        const result = await api<{ model: string }>("/api/workspace/model-policy", { method: "PATCH", body: { model: "", personal: true } });
+        onChange({ provider_id: agent.provider_id, provider_name: agent.provider_name, provider_kind: "routing", model: result.model, overridden: false, editable: true });
+      } else if (threadRootId) {
         const result = await api<{ policy: ModelPolicy }>(`/api/messages/${threadRootId}/model-policy`, { body: { provider_id: null, model: null } });
         onChange(result.policy);
       } else onChange(null);
@@ -2215,11 +2244,11 @@ async function composerModelPopover(event: MouseEvent, threadRootId: number | nu
     } catch (error) { status.textContent = (error as Error).message; }
   };
   pop.append(
-    h("div", { class: "flex items-start justify-between gap-3" }, h("div", {}, h("div", { class: "font-semibold text-fg" }, "Thread model"), h("div", { class: "mt-0.5 text-xs text-muted" }, `Future replies from @${agent.name} use this choice. Skipper keeps the global model.`)), h("button", { class: "grid h-8 w-8 place-items-center rounded text-muted hover:bg-hover", "aria-label": "Close", onclick: close }, icon("x", 16))),
+    h("div", { class: "flex items-start justify-between gap-3" }, h("div", {}, h("div", { class: "font-semibold text-fg" }, personalMode ? "My model" : "Thread model"), h("div", { class: "mt-0.5 text-xs text-muted" }, personalMode ? "Uses your personal providers plus accounts explicitly shared with the workspace." : `Future replies from @${agent.name} use this choice.`)), h("button", { class: "grid h-8 w-8 place-items-center rounded text-muted hover:bg-hover", "aria-label": "Close", onclick: close }, icon("x", 16))),
     h("label", { class: "block space-y-1 text-xs font-semibold text-fg" }, "Provider", provider),
     h("label", { class: "block space-y-1 text-xs font-semibold text-fg" }, "Model", model),
     status,
-    h("div", { class: "flex justify-end gap-2" }, h("button", { class: "btn-subtle min-h-9 px-3 text-xs", onclick: () => { void inherit(); } }, "Inherit"), h("button", { class: "btn-primary min-h-9 px-3 text-xs", onclick: () => { void save(); } }, "Use for thread")));
+    h("div", { class: "flex justify-end gap-2" }, h("button", { class: "btn-subtle min-h-9 px-3 text-xs", onclick: () => { void inherit(); } }, "Use workspace default"), h("button", { class: "btn-primary min-h-9 px-3 text-xs", onclick: () => { void save(); } }, personalMode ? "Use for me" : "Use for thread")));
   document.body.append(pop);
   setTimeout(() => { document.addEventListener("mousedown", outside); document.addEventListener("keydown", keydown); }, 0);
   void api<{ models: RoutingModel[] }>("/api/workspace/model-policy").then(({ models }) => {

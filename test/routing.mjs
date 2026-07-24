@@ -124,8 +124,58 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
       method: "POST", body: JSON.stringify({ username: "crew", password: "crew-password" }),
     })).token;
     assert.equal((await fetch(`http://127.0.0.1:${appPort}/api/routing/models`, { headers: { authorization: `Bearer ${guestToken}` } })).status, 200, "a coworker's private Skipper #main can read the safe model catalog used by agents");
-    assert.equal((await fetch(`http://127.0.0.1:${appPort}/api/routing/state`, { headers: { authorization: `Bearer ${guestToken}` } })).status, 403, "non-admin members cannot read provider credentials or control state");
+    const guestState = await json(`http://127.0.0.1:${appPort}/api/routing/state`, guestToken);
+    assert.equal(guestState.scope, "member", "every member can manage a provider view scoped to personal plus workspace-shared accounts");
+    assert.equal(JSON.stringify(guestState).includes("legacy-key"), false, "member provider state never exposes credential values");
     assert.equal((await fetch(`http://127.0.0.1:${appPort}/api/routing/action`, { method: "POST", headers: { authorization: `Bearer ${guestToken}`, "content-type": "application/json" }, body: JSON.stringify({ action: "app:logs-clear" }) })).status, 403, "non-admin members cannot mutate the provider fabric");
+
+    const guestKeyed = await json(`http://127.0.0.1:${appPort}/api/routing/action`, guestToken, {
+      method: "POST", body: JSON.stringify({ action: "app:add-keyed-provider", payload: { name: "Crew private", baseUrl: `http://127.0.0.1:${mockPort}`, apiKey: "crew-private-key", models: [{ id: "mock-large", name: "mock-large", enabled: true }] } }),
+    });
+    const guestPrivate = (await json(`http://127.0.0.1:${appPort}/api/routing/state`, guestToken)).providers.find((provider) => provider.id === guestKeyed.id);
+    assert.equal(guestPrivate?.mine, true);
+    assert.equal(guestPrivate?.visibility, "personal", "new member credentials are personal by default");
+    assert.equal((await json(`http://127.0.0.1:${appPort}/api/routing/state`, token)).providers.some((provider) => provider.id === guestKeyed.id), false, "Captain cannot see a coworker's private provider");
+    await json(`http://127.0.0.1:${appPort}/api/routing/action`, guestToken, { method: "POST", body: JSON.stringify({ action: "app:set-provider-visibility", payload: { id: guestKeyed.id, visibility: "workspace" } }) });
+    assert.equal((await json(`http://127.0.0.1:${appPort}/api/routing/state`, token)).providers.some((provider) => provider.id === guestKeyed.id), true, "a member can explicitly share their provider with the workspace");
+    assert.equal((await fetch(`http://127.0.0.1:${appPort}/api/routing/action`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ action: "app:set-provider-enabled", payload: { id: guestKeyed.id, enabled: false } }) })).status, 400, "even the Captain cannot mutate a teammate-owned shared provider");
+    const guestSharedRoute = await json(`http://127.0.0.1:${appPort}/api/routing/action`, guestToken, {
+      method: "POST", body: JSON.stringify({ action: "app:save-combo", payload: { name: "crew-shared-route", strategy: "fallback", visibility: "workspace", members: [{ providerId: guestKeyed.id, model: "mock-large" }] } }),
+    });
+    assert.equal(guestSharedRoute.ok, true, "members can explicitly share routes backed by workspace-shared providers");
+    const captainSharedRoute = (await json(`http://127.0.0.1:${appPort}/api/routing/state`, token)).combos.find((entry) => entry.name === "crew-shared-route");
+    assert.equal(captainSharedRoute?.mine, false, "shared routes remain owned by their creator");
+    assert.equal((await fetch(`http://127.0.0.1:${appPort}/api/routing/action`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ action: "app:delete-combo", payload: "crew-shared-route" }) })).status, 400, "another member cannot delete a shared route they do not own");
+    const guestFamilyPrivate = await json(`http://127.0.0.1:${appPort}/api/routing/action`, guestToken, {
+      method: "POST", body: JSON.stringify({ action: "app:add-keyed-provider", payload: { name: "Crew family-private", baseUrl: `http://127.0.0.1:${mockPort}`, apiKey: "crew-family-private-key", models: [{ id: "crew-family-private-model", name: "crew-family-private-model", enabled: true }] } }),
+    });
+    const guestFamilyPrivateState = (await json(`http://127.0.0.1:${appPort}/api/routing/state`, guestToken)).providers.find((provider) => provider.id === guestFamilyPrivate.id);
+    const privateFamilyRoute = await fetch(`http://127.0.0.1:${appPort}/api/routing/action`, {
+      method: "POST", headers: { authorization: `Bearer ${guestToken}`, "content-type": "application/json" }, body: JSON.stringify({ action: "app:save-combo", payload: { name: "private-family-route", strategy: "fallback", visibility: "workspace", members: [{ providerType: guestFamilyPrivateState.type, model: "crew-family-private-model" }] } }),
+    });
+    assert.equal(privateFamilyRoute.status, 400, "a shared family route cannot rely only on the owner's private provider accounts");
+    const guestExternal = await json(`http://127.0.0.1:${appPort}/api/routing/action`, guestToken, { method: "POST", body: JSON.stringify({ action: "app:create-api-key", payload: "Crew client" }) });
+    const guestCredentials = await json(`http://127.0.0.1:${appPort}/api/routing/credentials`, guestToken);
+    const captainCredentialsBefore = await json(`http://127.0.0.1:${appPort}/api/routing/credentials`, token);
+    assert.equal(guestCredentials.apiKeys.some((key) => key.id === guestExternal.key.id), true, "member receives their own revocable external key");
+    assert.equal(captainCredentialsBefore.apiKeys.some((key) => key.id === guestExternal.key.id), false, "endpoint keys are isolated by member");
+    assert.notEqual(guestCredentials.personalPort, captainCredentialsBefore.personalPort, "each signed-in member receives a dedicated host-side endpoint port");
+    assert.equal((await json(`http://127.0.0.1:${appPort}/v1/models`, guestExternal.key.key)).data.some((model) => model.id.includes("mock-large")), true, "member key routes through personal plus shared providers");
+    await json(`http://127.0.0.1:${appPort}/api/routing/action`, guestToken, { method: "POST", body: JSON.stringify({ action: "app:set-provider-visibility", payload: { id: guestKeyed.id, visibility: "personal" } }) });
+    const guestPrivateModel = (await json(`http://127.0.0.1:${appPort}/api/routing/models`, guestToken)).models.find((model) => model.providerName === "Crew private").id;
+    await json(`http://127.0.0.1:${appPort}/v1/chat/completions`, guestExternal.key.key, {
+      method: "POST", body: JSON.stringify({ model: guestPrivateModel, stream: false, messages: [{ role: "user", content: "Private member activity" }] }),
+    });
+    const guestActivity = (await json(`http://127.0.0.1:${appPort}/api/routing/state`, guestToken)).recentActivity;
+    const captainActivity = (await json(`http://127.0.0.1:${appPort}/api/routing/state`, token)).recentActivity;
+    assert.equal(guestActivity.some((event) => event.request?.providerName === "Crew private"), true, "personal endpoint activity is visible to its owner");
+    assert.equal(captainActivity.some((event) => event.request?.providerName === "Crew private"), false, "personal endpoint activity is not disclosed to the Captain or another member");
+    assert.equal((await json(`http://127.0.0.1:${appPort}/api/routing/state`, token)).combos.some((entry) => entry.name === "crew-shared-route"), false, "a shared route stops resolving for teammates when its provider becomes private");
+    const guestOwnedSharedRoute = (await json(`http://127.0.0.1:${appPort}/api/routing/state`, guestToken)).combos.find((entry) => entry.name === "crew-shared-route");
+    await json(`http://127.0.0.1:${appPort}/api/workspace/model-policy`, guestToken, { method: "PATCH", body: JSON.stringify({ model: "crew-shared-route", personal: true }) });
+    await json(`http://127.0.0.1:${appPort}/api/routing/action`, guestToken, { method: "POST", body: JSON.stringify({ action: "app:delete-combo", payload: guestOwnedSharedRoute.id }) });
+    const guestPolicyAfterDelete = await json(`http://127.0.0.1:${appPort}/api/workspace/model-policy`, guestToken);
+    assert.equal(guestPolicyAfterDelete.inherited, true, "deleting a personal model route returns that member to the workspace default");
 
     const oauthOrigins = {
       chatgpt: "https://auth.openai.com",
@@ -151,11 +201,16 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
       });
       assert.equal(cancelled.active, false, `${type} OAuth cancellation clears pending state`);
     }
-    const objectOauth = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
-      method: "POST", body: JSON.stringify({ action: "app:oauth-start", payload: { type: "chatgpt", providerId: "existing-account" } }),
+    assert.equal((await fetch(`http://127.0.0.1:${appPort}/api/routing/action`, {
+      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ action: "app:oauth-start", payload: { type: "chatgpt", providerId: "existing-account" } }),
+    })).status, 400, "reconnecting an account requires ownership of that exact provider");
+    const captainOauth = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
+      method: "POST", body: JSON.stringify({ action: "app:oauth-start", payload: "chatgpt" }),
     });
-    assert.equal(objectOauth.ok, true, "1Helm accepts native OAuth metadata while passing only the provider type to the embedded engine");
-    assert.equal(new URL(objectOauth.authUrl).origin, oauthOrigins.chatgpt);
+    assert.equal(captainOauth.ok, true, "1Helm accepts a signed-in user's OAuth connection");
+    assert.equal((await fetch(`http://127.0.0.1:${appPort}/api/routing/action`, { method: "POST", headers: { authorization: `Bearer ${guestToken}`, "content-type": "application/json" }, body: JSON.stringify({ action: "app:oauth-start", payload: "chatgpt" }) })).status, 400, "a second member cannot collide with an active same-provider OAuth session");
+    assert.equal((await json(`http://127.0.0.1:${appPort}/api/routing/action`, guestToken, { method: "POST", body: JSON.stringify({ action: "app:oauth-status", payload: "chatgpt" }) })).active, false, "OAuth status is isolated to the initiating user");
+    assert.equal(new URL(captainOauth.authUrl).origin, oauthOrigins.chatgpt);
     const objectOauthStatus = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
       method: "POST", body: JSON.stringify({ action: "app:oauth-status", payload: "chatgpt" }),
     });
@@ -163,6 +218,9 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
       method: "POST", body: JSON.stringify({ action: "app:oauth-cancel", payload: "chatgpt" }),
     });
+    const guestOauthAfterCancel = await json(`http://127.0.0.1:${appPort}/api/routing/action`, guestToken, { method: "POST", body: JSON.stringify({ action: "app:oauth-start", payload: "chatgpt" }) });
+    assert.equal(guestOauthAfterCancel.ok, true, "the provider OAuth slot is released after cancellation");
+    await json(`http://127.0.0.1:${appPort}/api/routing/action`, guestToken, { method: "POST", body: JSON.stringify({ action: "app:oauth-cancel", payload: "chatgpt" }) });
     const oauthLogs = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
       method: "POST", body: JSON.stringify({ action: "app:logs-get", payload: 200 }),
     });
@@ -260,6 +318,12 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     await page.waitForSelector('button[title="Settings"]');
     await page.click('button[title="Settings"]');
     await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Providers")?.click());
+    await page.waitForSelector('[data-provider-group-body="custom"]');
+    await page.evaluate(() => [...document.querySelectorAll(".routing-nav button")].find((button) => button.textContent?.trim() === "Endpoint")?.click());
+    await page.waitForSelector(".routing-endpoint-hero");
+    await page.waitForFunction(() => /127\.0\.0\.1:\d+\/v1/.test(document.querySelector(".routing-content")?.textContent || ""));
+    assert.match(await page.$eval(".routing-content", (element) => element.textContent || ""), /Your dedicated host port[\s\S]*127\.0\.0\.1:\d+\/v1/, "the personal host port renders as soon as Endpoint opens");
+    await page.evaluate(() => [...document.querySelectorAll(".routing-nav button")].find((button) => /Sources$/.test(button.textContent?.trim() || ""))?.click());
     await page.waitForSelector('[data-provider-group-body="custom"]');
     await page.evaluate(() => document.querySelector('[data-provider-group-body="custom"]')?.parentElement?.querySelector(".routing-provider-head")?.click());
     const accountSelector = `[data-provider-account="${providerId}"]`;

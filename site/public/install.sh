@@ -10,6 +10,8 @@ NODE_LINK="$INSTALL_ROOT/node-current"
 STATE_ROOT="/var/lib/1helm"
 SERVICE_USER="1helm"
 SERVICE_FILE="/etc/systemd/system/1helm.service"
+UPDATE_SERVICE_FILE="/etc/systemd/system/1helm-update.service"
+UPDATE_PATH_FILE="/etc/systemd/system/1helm-update.path"
 NODE_VERSION="22.23.1"
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -26,15 +28,15 @@ case "$(uname -m)" in
   *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-need=(curl git tar xz sha256sum make c++ python3)
+need=(curl git tar xz sha256sum flock make c++ python3)
 missing=()
 for command in "${need[@]}"; do command -v "$command" >/dev/null || missing+=("$command"); done
 if ((${#missing[@]})); then
   if command -v apt-get >/dev/null; then
     apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y curl git xz-utils ca-certificates build-essential python3
+    DEBIAN_FRONTEND=noninteractive apt-get install -y curl git xz-utils ca-certificates util-linux build-essential python3
   elif command -v dnf >/dev/null; then
-    dnf install -y curl git xz ca-certificates gcc-c++ make python3
+    dnf install -y curl git xz ca-certificates util-linux gcc-c++ make python3
   else
     echo "Install these prerequisites first: ${missing[*]} plus a C/C++ toolchain and Python 3." >&2
     exit 1
@@ -83,6 +85,7 @@ else
   mv "$TEMP_ROOT/source" "$RELEASE_ROOT"
 fi
 chown -R "$SERVICE_USER:$SERVICE_USER" "$RELEASE_ROOT" "$STATE_ROOT"
+install -o root -g root -m 0755 "$RELEASE_ROOT/site/public/update-host.sh" "$INSTALL_ROOT/update-host.sh"
 
 PREVIOUS_RELEASE="$(readlink -f "$APP_ROOT" 2>/dev/null || true)"
 ln -s "$RELEASE_ROOT" "$TEMP_ROOT/current"
@@ -104,6 +107,7 @@ Environment=PORT=8123
 Environment=HELM_HOST=0.0.0.0
 Environment=CTRL_DATA_DIR=$STATE_ROOT
 Environment=HELM_CHANNEL_COMPUTER_BACKEND=native
+Environment=HELM_INSTALL_KIND=linux-systemd
 ExecStart=$NODE_LINK/bin/node --disable-warning=ExperimentalWarning src/server/index.ts
 Restart=on-failure
 RestartSec=3
@@ -116,8 +120,37 @@ ReadWritePaths=$STATE_ROOT
 [Install]
 WantedBy=multi-user.target
 EOF
+
+install -m 0644 /dev/stdin "$UPDATE_SERVICE_FILE" <<EOF
+[Unit]
+Description=Install a verified 1Helm host update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$INSTALL_ROOT/update-host.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=$INSTALL_ROOT $STATE_ROOT
+EOF
+
+install -m 0644 /dev/stdin "$UPDATE_PATH_FILE" <<EOF
+[Unit]
+Description=Watch for Captain-authorized 1Helm host updates
+
+[Path]
+PathChanged=$STATE_ROOT/host-update.request
+Unit=1helm-update.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
 systemctl daemon-reload
 systemctl enable 1helm.service
+systemctl enable --now 1helm-update.path
 systemctl restart 1helm.service
 healthy=0
 for _ in {1..100}; do

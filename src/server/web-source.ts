@@ -5,12 +5,22 @@ import { BlockList, isIP } from "node:net";
 
 const MAX_REDIRECTS = 5;
 const MAX_RESPONSE_BYTES = 512 * 1024;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_CHARS = 120_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 
 type SourceResponse = {
   status: number;
   headers: Record<string, string>;
+  body: Buffer;
+};
+
+export type WebImageFetch = {
+  requested_url: string;
+  final_url: string;
+  content_type: string;
+  bytes: number;
+  sha256: string;
   body: Buffer;
 };
 
@@ -72,13 +82,16 @@ export function validateWebSourceUrl(input: string): URL {
 function fixtureResponse(url: URL): SourceResponse | null {
   if (process.env.NODE_ENV !== "test" || !process.env.HELM_TEST_WEB_SOURCE_FIXTURES) return null;
   try {
-    const fixtures = JSON.parse(process.env.HELM_TEST_WEB_SOURCE_FIXTURES) as Record<string, string>;
-    if (url.hostname !== "example.com" || typeof fixtures[url.href] !== "string") return null;
-    return { status: 200, headers: { "content-type": "text/markdown; charset=utf-8" }, body: Buffer.from(fixtures[url.href]) };
+    const fixtures = JSON.parse(process.env.HELM_TEST_WEB_SOURCE_FIXTURES) as Record<string, string | { content_type?: string; body?: string; base64?: string }>;
+    const fixture = fixtures[url.href];
+    if (url.hostname !== "example.com" || fixture == null) return null;
+    if (typeof fixture === "string") return { status: 200, headers: { "content-type": "text/markdown; charset=utf-8" }, body: Buffer.from(fixture) };
+    const body = fixture.base64 ? Buffer.from(fixture.base64, "base64") : Buffer.from(String(fixture.body || ""));
+    return { status: 200, headers: { "content-type": String(fixture.content_type || "application/octet-stream") }, body };
   } catch { return null; }
 }
 
-async function requestSource(url: URL, signal?: AbortSignal): Promise<SourceResponse> {
+async function requestSource(url: URL, signal?: AbortSignal, maxBytes = MAX_RESPONSE_BYTES, accept = "text/html, text/markdown, text/plain, application/json, application/xml;q=0.8, text/xml;q=0.8"): Promise<SourceResponse> {
   const fixture = fixtureResponse(url);
   if (fixture) return fixture;
   const addresses = await lookup(url.hostname, { all: true, verbatim: true });
@@ -96,7 +109,7 @@ async function requestSource(url: URL, signal?: AbortSignal): Promise<SourceResp
     const req = request(url, {
       method: "GET",
       headers: {
-        accept: "text/html, text/markdown, text/plain, application/json, application/xml;q=0.8, text/xml;q=0.8",
+        accept,
         "accept-encoding": "identity",
         "user-agent": "1Helm-Web-Source/1.0",
       },
@@ -111,17 +124,17 @@ async function requestSource(url: URL, signal?: AbortSignal): Promise<SourceResp
         .filter((entry): entry is [string, string | string[]] => entry[1] != null)
         .map(([key, value]) => [key.toLowerCase(), Array.isArray(value) ? value.join(", ") : String(value)]));
       const declared = Number(headers["content-length"] || 0);
-      if (declared > MAX_RESPONSE_BYTES) {
+      if (declared > maxBytes) {
         res.resume();
-        finish(new Error(`Web source exceeds the ${MAX_RESPONSE_BYTES} byte inspection limit.`));
+        finish(new Error(`Web source exceeds the ${maxBytes} byte inspection limit.`));
         return;
       }
       const chunks: Buffer[] = [];
       let received = 0;
       res.on("data", (chunk: Buffer) => {
         received += chunk.length;
-        if (received > MAX_RESPONSE_BYTES) {
-          res.destroy(new Error(`Web source exceeds the ${MAX_RESPONSE_BYTES} byte inspection limit.`));
+        if (received > maxBytes) {
+          res.destroy(new Error(`Web source exceeds the ${maxBytes} byte inspection limit.`));
           return;
         }
         chunks.push(chunk);
@@ -196,5 +209,33 @@ export async function inspectWebSource(input: string, signal?: AbortSignal): Pro
     fetched_at: new Date().toISOString(),
     content: readableContent(raw, contentType),
     links: /html/i.test(contentType) ? htmlLinks(raw, current) : [],
+  };
+}
+
+export async function fetchPublicWebImage(input: string, signal?: AbortSignal): Promise<WebImageFetch> {
+  const requested = validateWebSourceUrl(input);
+  let current = requested;
+  let response: SourceResponse | undefined;
+  for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
+    response = await requestSource(current, signal, MAX_IMAGE_BYTES, "image/avif,image/webp,image/png,image/jpeg,image/gif;q=0.9");
+    if (![301, 302, 303, 307, 308].includes(response.status)) break;
+    const location = response.headers.location;
+    if (!location) throw new Error(`Web image returned redirect status ${response.status} without a Location header.`);
+    if (redirects === MAX_REDIRECTS) throw new Error("Web image exceeded the redirect limit.");
+    current = validateWebSourceUrl(new URL(location, current).href);
+  }
+  if (!response || response.status < 200 || response.status >= 300) throw new Error(`Web image returned HTTP ${response?.status || 0}.`);
+  const contentType = String(response.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+  if (!new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]).has(contentType)) {
+    throw new Error(`Web image content type ${contentType || "unknown"} is not a supported raster image.`);
+  }
+  if (!response.body.length) throw new Error("Web image was empty.");
+  return {
+    requested_url: requested.href,
+    final_url: current.href,
+    content_type: contentType,
+    bytes: response.body.length,
+    sha256: createHash("sha256").update(response.body).digest("hex"),
+    body: response.body,
   };
 }

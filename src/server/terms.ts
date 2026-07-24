@@ -71,7 +71,8 @@ export async function attachClient(sessionId: string, client: WebSocket, userId:
     if (isBinary) { s.upstream.send(raw); return; }
     try {
       const msg = JSON.parse(raw.toString());
-      if (msg.type === "resize") { s.cols = msg.cols; s.rows = msg.rows; s.upstream.send(JSON.stringify(msg)); }
+      if (msg.type === "ping") { if (client.readyState === client.OPEN) client.send(JSON.stringify({ type: "pong", at: Date.now() })); }
+      else if (msg.type === "resize") { s.cols = msg.cols; s.rows = msg.rows; s.upstream.send(JSON.stringify(msg)); }
       else if (msg.type === "input") s.upstream.send(Buffer.from(String(msg.data), "utf8"));
     } catch { s.upstream.send(raw); }
   };

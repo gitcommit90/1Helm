@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-07-24
+
+### Added
+
+- Every workspace member can connect private OAuth or API-key providers,
+  explicitly share owned providers and routes with the workspace, select a
+  personal model, create isolated revocable endpoint keys, and use a dedicated
+  loopback endpoint port on the 1Helm host. Personal keys also scope the shared
+  `/v1` URL to that member's own-plus-shared provider pool and usage history.
+- Residents and Skipper can search current web/news sources, inspect selected
+  pages, and attach real sourced images with captions and article links.
+- Native Mac releases now include a post-notarization updater ZIP, and the
+  standard Linux installer provisions a root-owned atomic systemd updater with
+  digest verification, health checks, and rollback.
+
+### Fixed
+
+- Update controls now operate on the machine hosting the 1Helm instance. The
+  browser never receives a DMG or Linux artifact as the update action; native
+  macOS downloads and verifies in place, while Linux accepts only a fixed
+  host-side update request.
+- Recent-event questions must research first and answer once with dated source
+  links. Ordinary uncertainty no longer opens an immediate interview, and a
+  real-photo request cannot be satisfied with generated artwork.
+- Provider, route, OAuth, key, model, usage, and endpoint operations enforce
+  signed-in member ownership server-side. Teammates—including the Captain—cannot
+  mutate another member's shared credential, forge a private provider into a
+  route, or observe another member's OAuth session.
+- Terminal panes send heartbeats and silently reconnect after brief
+  backgrounding or transport loss while retaining the same server session,
+  shell state, working directory, and scrollback. Disconnect text is no longer
+  written into the terminal.
+
 ## [0.0.3] - 2026-07-24
 
 ### Fixed
@@ -71,7 +104,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.3...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.4...HEAD
+[0.0.4]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.4
 [0.0.3]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.3
 [0.0.2]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.2
 [0.0.1]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.1

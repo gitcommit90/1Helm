@@ -172,7 +172,9 @@ async function main() {
   fs.mkdirSync(DIST, { recursive: true });
   const dmg = path.join(DIST, `${PRODUCT}-${VERSION}-${ARCH}.dmg`);
   const candidate = path.join(DIST, `${PRODUCT}-${VERSION}-${ARCH}.candidate.dmg`);
-  for (const target of [dmg, candidate]) if (fs.existsSync(target)) fs.unlinkSync(target);
+  const updaterZip = path.join(DIST, `${PRODUCT}-${VERSION}-mac-${ARCH}.zip`);
+  const updaterCandidate = path.join(DIST, `${PRODUCT}-${VERSION}-mac-${ARCH}.candidate.zip`);
+  for (const target of [dmg, candidate, updaterZip, updaterCandidate]) if (fs.existsSync(target)) fs.unlinkSync(target);
 
   const { icon, iconRoot } = createIcon();
   const cloudflared = prepareCloudflared();
@@ -230,6 +232,21 @@ async function main() {
       }
     }
 
+    if (REQUIRE_NOTARIZATION) {
+      console.log("Creating the native updater ZIP from the notarized and stapled app…");
+      run("ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", appPath, updaterCandidate]);
+      const verifyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "1helm-update-verify-"));
+      try {
+        run("ditto", ["-x", "-k", updaterCandidate, verifyRoot]);
+        const extractedApp = path.join(verifyRoot, `${PRODUCT}.app`);
+        if (!fs.existsSync(extractedApp)) throw new Error("Updater ZIP does not contain 1Helm.app");
+        verifyApp(extractedApp, true);
+      } finally {
+        fs.rmSync(verifyRoot, { recursive: true, force: true });
+      }
+      fs.renameSync(updaterCandidate, updaterZip);
+    }
+
     const stage = fs.mkdtempSync(path.join(os.tmpdir(), "1helm-dmg-"));
     try {
       run("ditto", [appPath, path.join(stage, `${PRODUCT}.app`)]);
@@ -276,9 +293,14 @@ async function main() {
     const digest = capture("shasum", ["-a", "256", dmg]).split(/\s+/)[0];
     console.log(`DMG ready: ${dmg}`);
     console.log(`SHA-256: ${digest}`);
+    if (fs.existsSync(updaterZip)) {
+      console.log(`Updater ZIP ready: ${updaterZip}`);
+      console.log(`Updater ZIP SHA-256: ${capture("shasum", ["-a", "256", updaterZip]).split(/\s+/)[0]}`);
+    }
   } finally {
     fs.rmSync(iconRoot, { recursive: true, force: true });
     fs.rmSync(cloudflared.root, { recursive: true, force: true });
+    if (fs.existsSync(updaterCandidate)) fs.unlinkSync(updaterCandidate);
   }
 }
 

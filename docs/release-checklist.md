@@ -33,6 +33,7 @@ PUPPETEER_SKIP_DOWNLOAD=1 npm ci
 npm run typecheck
 npm run build
 npm test
+npm run test:onboarding-browser
 git diff --check
 git status --short
 ```
@@ -62,7 +63,10 @@ VERSION="$(node -p "require('./package.json').version")"
 ```bash
 git tag -a "v${VERSION}" "$MERGED_COMMIT" -m "1Helm ${VERSION}"
 git push origin "refs/tags/v${VERSION}"
-gh release create "v${VERSION}" --title "1Helm ${VERSION}" --generate-notes --draft
+HEADLESS="dist/1Helm-${VERSION}-linux-node.tgz"
+DMG="dist/1Helm-${VERSION}-arm64.dmg"
+UPDATE_ZIP="dist/1Helm-${VERSION}-mac-arm64.zip"
+gh release create "v${VERSION}" "$DMG" "$UPDATE_ZIP" "$HEADLESS" --title "1Helm ${VERSION}" --generate-notes --draft
 # review notes, then:
 gh release edit "v${VERSION}" --draft=false
 ```
@@ -80,7 +84,15 @@ curl -fsS "http://127.0.0.1:18123/api/setup/status"
 
 Expect first-run / needs_setup on empty data dir.
 
-## 7. Clean deployment verify (when shipping install path)
+## 7. Host updater acceptance
+
+- Verify the native ZIP was created only after the app was notarized and stapled; extract it and repeat strict signature, ticket, and Gatekeeper checks.
+- Confirm the public Electron feed selects that ZIP for the prior Mac version and returns no update for the new version.
+- On an independent Mac with preserved Application Support, use Profile to make the host download the update, wait for **Restart & install**, install it, and verify the new version, loopback health, resident state, and data-directory identity.
+- Upload the exact `npm run package:linux` artifact and require GitHub's recorded `sha256:` digest before publication.
+- In a disposable systemd host running the prior release, invoke the same Captain host-update action, observe checking/downloading/installing/restarting, verify the new version and `/var/lib/1helm` identity, and exercise rollback with an intentionally unhealthy disposable fixture.
+
+## 8. Clean deployment verify (when shipping install path)
 
 ```bash
 # use the maintainer's host-local deployment procedure
@@ -88,7 +100,7 @@ Expect first-run / needs_setup on empty data dir.
 # walk the wizard once if this cut changes onboarding
 ```
 
-## 8. Evidence block
+## 9. Evidence block
 
 ```text
 Version:        <package version>
@@ -96,5 +108,7 @@ Merged commit:  <origin/main SHA>
 Tag/Release:    <if any>
 Local setup:    needs_setup verified on clean CTRL_DATA_DIR
 Clean deploy:   <pass / skipped + reason>
+Mac host update:<old → new, updater feed + state preserved>
+Linux update:  <old → new, digest + health + state preserved>
 CI:             Actions green on main
 ```

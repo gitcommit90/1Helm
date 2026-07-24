@@ -36,6 +36,14 @@ createServer(async (req, res) => {
     if (/slow-turn/i.test(latestUser)) await new Promise((resolve) => setTimeout(resolve, 1200));
     if (/live-ui-stream/i.test(latestUser)) await new Promise((resolve) => setTimeout(resolve, 250));
     const hasToolResult = reqBody.messages.some((m) => m.role === "tool");
+    const webSearchResult = [...reqBody.messages].reverse().find((message) => message.role === "tool" && message.name === "search_web");
+    const webInspectResult = [...reqBody.messages].reverse().find((message) => message.role === "tool" && message.name === "inspect_web_source");
+    const webImageResult = [...reqBody.messages].reverse().find((message) => message.role === "tool" && message.name === "attach_web_image");
+    const wantsCurrentEventResearch = reqBody.tools?.some((tool) => tool.function?.name === "search_web")
+      && /(?:sinkhole|water[ -]?main|sunset (?:boulevard|blvd)|recent event|two days ago|2 days ago)/i.test(latestUser);
+    const wantsRealEventImage = reqBody.tools?.some((tool) => tool.function?.name === "attach_web_image")
+      && /(?:show|find|send|give).{0,50}(?:image|photo|picture)/i.test(latestUser)
+      && /(?:sinkhole|water[ -]?main|sunset|incident|event)/i.test(latestUser);
     const outcomeGateRecovery = /deflect-operational-work/i.test(latestUser) && /runtime outcome gate/i.test(serialized) && !hasToolResult;
     const outcomeGateDeflection = /deflect-operational-work/i.test(latestUser) && !/runtime outcome gate/i.test(serialized) && !hasToolResult;
     const repeatsTools = /repeat-tool-limit/i.test(serialized);
@@ -120,7 +128,25 @@ createServer(async (req, res) => {
     }
 
     res.writeHead(200, { "content-type": "text/event-stream" });
-    if (outcomeGateRecovery) {
+    if ((wantsCurrentEventResearch || wantsRealEventImage) && !webSearchResult) {
+      const args = { query: "Sunset Boulevard sinkhole water main West Hollywood", category: "news", limit: 5 };
+      sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "search_web_event_1", type: "function", function: { name: "search_web", arguments: JSON.stringify(args) } }] } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+    } else if (wantsRealEventImage && webSearchResult && !webImageResult) {
+      const args = { image_url: "https://example.com/images/sunset-sinkhole.jpg", source_url: "https://example.com/news/sunset-sinkhole", caption: "Roadway collapse on Sunset Boulevard after a water-main rupture", name: "sunset-boulevard-road-collapse" };
+      sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "attach_web_image_event_1", type: "function", function: { name: "attach_web_image", arguments: JSON.stringify(args) } }] } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+    } else if (wantsCurrentEventResearch && webSearchResult && !webInspectResult) {
+      const args = { url: "https://example.com/news/sunset-sinkhole" };
+      sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "inspect_web_event_1", type: "function", function: { name: "inspect_web_source", arguments: JSON.stringify(args) } }] } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+    } else if (wantsRealEventImage && webImageResult) {
+      sse(res, { choices: [{ delta: { content: "I attached a real news image of the Sunset Boulevard roadway collapse, not an AI-generated reconstruction. Source: Example News — https://example.com/news/sunset-sinkhole. Answer complete." } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "stop" }] });
+    } else if (wantsCurrentEventResearch && webSearchResult && webInspectResult) {
+      sse(res, { choices: [{ delta: { content: "The latest sourced report says a broken water main washed supporting soil from beneath Sunset Boulevard in West Hollywood, producing the sinkhole-shaped roadway collapse seen online. Officials describe the confirmed cause as a water-main break; “sinkhole” describes the visible result. The report says the road reopened after crews repaired the main and filled and stabilized the void. Source: Example News, published July 23, 2026 — https://example.com/news/sunset-sinkhole. Answer complete." } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "stop" }] });
+    } else if (outcomeGateRecovery) {
       const args = { command: "printf 'outcome gate recovered\\n' > outcome-gate.txt" };
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "outcome_gate_recovery_1", type: "function", function: { name: "run_command", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });

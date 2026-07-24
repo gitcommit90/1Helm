@@ -71,9 +71,10 @@ export type RoutingProvider = {
   id: string; type: string; name: string; accountAlias?: string | null; email?: string | null;
   profileName?: string | null; enabled: boolean; hasToken: boolean; baseUrl?: string;
   models: RoutingProviderModel[];
+  visibility?: "personal" | "workspace"; mine?: boolean;
  imageGenerationEnabled?: boolean; };
 export type RoutingComboMember = { providerType?: string; providerId?: string; model: string };
-export type RoutingCombo = { id: string; storageId?: string | null; name: string; strategy: "fallback" | "round-robin"; members: RoutingComboMember[] };
+export type RoutingCombo = { id: string; storageId?: string | null; name: string; strategy: "fallback" | "round-robin"; members: RoutingComboMember[]; visibility?: "personal" | "workspace"; mine?: boolean };
 export type RoutingUsageEntry = {
   at?: number; model?: string; provider?: string; providerName?: string; providerType?: string;
   accountAlias?: string | null; status?: number; requests?: number; prompt_tokens?: number;
@@ -91,6 +92,7 @@ export type RoutingQuotaAccount = {
 };
 export type RoutingState = {
   appVersion: string; endpoint: string; bindHost: string; port: number; serverListening: boolean;
+  directEndpoint?: string; personalPort?: number | null; scope?: "captain" | "member";
   apiKey: string; apiKeys: Array<{ id: string; name: string; key: string; enabled: boolean; createdAt: number }>;
   providers: RoutingProvider[]; combos: RoutingCombo[]; usage: RoutingUsage;
   activeRequests: unknown[]; recentActivity?: unknown[]; imageGenerationEnabled?: boolean; oauthProviders: Array<{ id: string; name: string }>;

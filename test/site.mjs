@@ -42,12 +42,21 @@ test("installer assets are explicit and syntax-valid", () => {
   const installer = readFileSync(`${root}/site/public/install.sh`, "utf8");
   assert.match(installer, /HELM_CHANNEL_COMPUTER_BACKEND=native/);
   assert.match(installer, /NODE_VERSION="22\.23\.1"/);
-  assert.match(installer, /need=\([^\n]*make[^\n]*c\+\+[^\n]*python3[^\n]*\)/, "native dependency toolchain is probed even when download prerequisites already exist");
+  assert.match(installer, /need=\([^\n]*flock[^\n]*make[^\n]*c\+\+[^\n]*python3[^\n]*\)/, "the host updater and native dependency toolchain are probed even when download prerequisites already exist");
   assert.doesNotMatch(installer, /npm[^\n]*ci[^\n]*--omit=optional/, "platform-specific optional build packages are retained");
   assert.match(installer, /EXISTING_SHA="\$\(runuser -u "\$SERVICE_USER" -- git -C "\$RELEASE_ROOT" rev-parse HEAD/, "repeat installs inspect the service-owned release as the service user");
   assert.match(installer, /RELEASES_ROOT=.*releases/);
   assert.match(installer, /mv -Tf .*current/);
   assert.match(installer, /previous release was restored/i);
+  assert.match(installer, /HELM_INSTALL_KIND=linux-systemd/, "standard Linux installs identify their host-owned update mechanism");
+  assert.match(installer, /1helm-update\.path/, "standard Linux installs watch the private host update request file");
+  const updater = readFileSync(`${root}/site/public/update-host.sh`, "utf8");
+  assert.match(updater, /browser_download_url/);
+  assert.match(updater, /\^sha256:\[a-f0-9\]\{64\}\$/, "the Linux updater requires GitHub's exact SHA-256 asset digest");
+  assert.match(updater, /sha256sum -c -/);
+  assert.match(updater, /mv -Tf .*current/);
+  assert.match(updater, /previous release was restored/i);
+  assert.doesNotMatch(updater, /eval|curl[^\n]*\|[^\n]*(?:sh|bash)/, "the root updater never evaluates remote shell content");
   assert.match(readFileSync(`${root}/site/public/install-wsl.ps1`, "utf8"), /systemd=true/);
 });
 
