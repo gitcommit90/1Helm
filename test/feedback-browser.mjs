@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
-import { rmSync } from "node:fs";
+import { accessSync, constants as fsConstants, rmSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -9,6 +9,22 @@ import puppeteer from "puppeteer";
 
 const root = process.cwd();
 const dataDir = join(root, ".native-test-data", `feedback-browser-${process.pid}`);
+const browserExecutable = () => {
+  const configured = process.env.PUPPETEER_EXECUTABLE_PATH;
+  if (configured) {
+    try { accessSync(configured, fsConstants.X_OK); return configured; } catch { /* use discovery */ }
+  }
+  try {
+    const bundled = puppeteer.executablePath();
+    accessSync(bundled, fsConstants.X_OK);
+    return bundled;
+  } catch { /* no bundled browser */ }
+  for (const candidate of ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser"]) {
+    try { accessSync(candidate, fsConstants.X_OK); return candidate; } catch { /* try next */ }
+  }
+  return null;
+};
+const executablePath = browserExecutable();
 const freePort = () => new Promise((resolve, reject) => {
   const server = createServer();
   server.once("error", reject);
@@ -26,7 +42,10 @@ const waitFor = async (fn, label, timeout = 15_000) => {
   throw new Error(`Timed out waiting for ${label}`);
 };
 
-test("Feedback button saves a real report and the admin inbox shows it", async (t) => {
+test("Feedback button saves a real report and the admin inbox shows it", {
+  timeout: 45_000,
+  skip: executablePath ? false : "No local Chrome executable; feedback persistence and WebSocket invalidation contracts still run independently.",
+}, async (t) => {
   rmSync(dataDir, { recursive: true, force: true });
   const appPort = await freePort();
   const providerPort = await freePort();
@@ -56,7 +75,7 @@ test("Feedback button saves a real report and the admin inbox shows it", async (
     },
     stdio: "ignore",
   });
-  const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+  const browser = await puppeteer.launch({ executablePath, headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
   t.after(async () => {
     await browser.close().catch(() => undefined);
     app.kill("SIGTERM");
