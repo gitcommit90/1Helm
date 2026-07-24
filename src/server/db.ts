@@ -430,6 +430,30 @@ export function migrate(): void {
     updated INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_connector_deliveries_state ON connector_deliveries(connector,state,created,id);
+  CREATE TABLE IF NOT EXISTS feedback_reports (
+    id INTEGER PRIMARY KEY,
+    public_id TEXT NOT NULL UNIQUE,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    comment TEXT NOT NULL,
+    diagnostics TEXT NOT NULL DEFAULT '{}',
+    send_diagnostics INTEGER NOT NULL DEFAULT 1 CHECK (send_diagnostics IN (0,1)),
+    state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','sending','delivered','failed')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    remote_id TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_feedback_reports_state ON feedback_reports(state,created,id);
+  CREATE TABLE IF NOT EXISTS feedback_attachments (
+    id INTEGER PRIMARY KEY,
+    report_id INTEGER NOT NULL REFERENCES feedback_reports(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    created INTEGER NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS agent_templates (
     id INTEGER PRIMARY KEY,
     slug TEXT NOT NULL UNIQUE,

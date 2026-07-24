@@ -65,6 +65,7 @@ import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
 import { startFollowupLoop, threadFollowupView, bumpThreadFollowup } from "./followups.ts";
 import { createWorkflow, listWorkflows, registerWorkflowDispatcher, setWorkflowStatus, startWorkflowLoop, stopWorkflowLoop } from "./workflows.ts";
 import { hostUpdateState, installedAppVersion, runHostUpdateAction } from "./updates.ts";
+import { centralFeedbackReports, createFeedback, drainFeedback, feedbackAttachment, localFeedbackReports, startFeedbackLoop } from "./feedback.ts";
 import {
   internalRoutingProviderId,
   isInternalRoutingProvider,
@@ -647,6 +648,43 @@ const server = createServer(async (req, res) => {
     }
 
     if (p === "/api/me") return json(res, 200, { user: publicUser(user), workspace: workspaceView() });
+    if (p === "/api/feedback" && m === "POST") {
+      const b = await jbody(req);
+      const recent = Number(q1("SELECT COUNT(*) n FROM feedback_reports WHERE user_id=? AND created>?", user.id, now() - 60 * 60_000)?.n || 0);
+      if (recent >= 10) return json(res, 429, { error: "You’ve sent several reports recently. Please try again in a little while." });
+      try {
+        const report = createFeedback({
+          userId: Number(user.id),
+          comment: b.comment,
+          sendDiagnostics: b.send_diagnostics === true,
+          uploads: (b.uploads as never[]) || [],
+          appRoot: APP_ROOT,
+        });
+        void drainFeedback();
+        return json(res, 202, { feedback: { id: report.public_id, state: report.state } });
+      } catch (error) {
+        return json(res, 400, { error: (error as Error).message });
+      }
+    }
+    if (p === "/api/feedback" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      let central: unknown[] = [];
+      try { central = await centralFeedbackReports(); } catch { /* Local reports remain available if the collector is offline. */ }
+      return json(res, 200, { reports: localFeedbackReports(), central });
+    }
+    const feedbackFileMatch = p.match(/^\/api\/feedback\/(\d+)\/attachments\/(\d+)$/);
+    if (feedbackFileMatch && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const attachment = feedbackAttachment(Number(feedbackFileMatch[1]), Number(feedbackFileMatch[2]));
+      if (!attachment) return json(res, 404, { error: "Attachment not found" });
+      const mime = /^(image\/|application\/(pdf|json)|text\/)/i.test(String(attachment.mime)) ? String(attachment.mime) : "application/octet-stream";
+      res.writeHead(200, {
+        "content-type": mime,
+        "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(String(attachment.name))}`,
+        ...SECURITY_HEADERS,
+      });
+      return res.end(await readFile(join(UPLOAD_DIR, String(attachment.path))));
+    }
     if (p === "/api/app/update" && m === "GET") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       try { return json(res, 200, await hostUpdateState(APP_ROOT, DATA_DIR)); }
@@ -1842,6 +1880,7 @@ async function bootstrap(): Promise<void> {
   startThreadAuditLoop();
   startFollowupLoop();
   startWorkflowLoop();
+  startFeedbackLoop();
   startChannelComputerReconciler();
   startCollaborationConnector(PORT);
   startCustomDomainConnectors(PORT);

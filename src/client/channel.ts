@@ -716,7 +716,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
         await api(`/api/channels/${channel.id}`, { method: "DELETE", body: { confirm: confirmation } }); onChanged(true);
       } }, icon("trash", 14), "Delete permanently") : null));
 
-  const assignedSkills = h("div", { class: "mt-3 flex flex-wrap gap-2" }, ...((channel.agent?.skills || []).map((skill) => h("span", { class: "chip border-accent/25" }, skill.name))));
+  const assignedSkills = h("div", { class: "mt-3 flex flex-wrap gap-2", dataset: { assignedSkills: "" } }, ...((channel.agent?.skills || []).map((skill) => h("span", { class: "chip border-accent/25", dataset: { assignedSkill: skill.slug } }, skill.name))));
   const computer = channel.computer;
   const computerCard = computer ? h("div", { class: "card p-4" },
     h("div", { class: "flex flex-wrap items-center gap-2" },

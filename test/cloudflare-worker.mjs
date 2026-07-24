@@ -52,6 +52,8 @@ const env = (registry) => ({
   CLOUDFLARE_ZONE_ID: "zone-test",
   CLOUDFLARE_RUNTIME_TOKEN: "runtime-test",
   PROVISION_LIMIT: { limit: async () => ({ success: true }) },
+  FEEDBACK_LIMIT: { limit: async () => ({ success: true }) },
+  FEEDBACK_ADMIN_TOKEN: "feedback-admin-test",
 });
 const request = (path, init) => new Request(`https://provision.1helm.com${path}`, init);
 const body = async (response) => ({ status: response.status, json: await response.json() });
@@ -181,4 +183,83 @@ test("workspace provisioner rejects the atomic reservation when the beta is full
   assert.equal(registry.rows.size, 1000, "the rejected claim creates no row");
   assert.equal(registry.rows.has("overflow"), false);
   assert.equal(cloudflareCalls, 0, "the rejected claim creates no tunnel or DNS record");
+});
+
+test("feedback collector validates, deduplicates, bounds attachments, and keeps its inbox admin-only", async () => {
+  class FeedbackRegistry extends Registry {
+    feedback = new Map();
+    attachments = [];
+    prepare(sql) {
+      if (/feedback_reports/i.test(sql) || /feedback_attachments/i.test(sql)) {
+        const registry = this;
+        return {
+          values: [],
+          bind(...values) { this.values = values; return this; },
+          async first() {
+            if (/SELECT 1 FROM feedback_attachments/i.test(sql)) {
+              return registry.attachments.some((item) => item.report_id === this.values[0]) ? { 1: 1 } : null;
+            }
+            return null;
+          },
+          async run() {
+            if (/INSERT OR IGNORE INTO feedback_reports/i.test(sql)) {
+              const [publicId, installationId, workspaceName, comment, diagnostics, attachmentCount, createdAt, receivedAt] = this.values;
+              if (!registry.feedback.has(publicId)) registry.feedback.set(publicId, {
+                public_id: publicId,
+                installation_id: installationId,
+                workspace_name: workspaceName,
+                comment,
+                diagnostics,
+                attachment_count: attachmentCount,
+                created_at: createdAt,
+                received_at: receivedAt,
+              });
+            } else if (/INSERT INTO feedback_attachments/i.test(sql)) {
+              const [reportId, name, mime, size, data, createdAt] = this.values;
+              registry.attachments.push({ report_id: reportId, name, mime, size, data, created_at: createdAt });
+            }
+            return { success: true, meta: { changes: 1 } };
+          },
+          async all() { return { results: [...registry.feedback.values()] }; },
+        };
+      }
+      return super.prepare(sql);
+    }
+  }
+  const registry = new FeedbackRegistry();
+  const payload = {
+    public_id: `fb_${"a".repeat(24)}`,
+    installation_id: "0123456789abcdef",
+    workspace_name: "Test",
+    comment: "A broken thing",
+    diagnostics: { version: "0.0.5", failed_capabilities: [{ capability: "connect_google_workspace", status: "failed" }] },
+    attachments: [{ name: "shot.png", mime: "image/png", size: 3, data: "YWJj" }],
+  };
+  const intake = await body(await worker.fetch(request("/v1/feedback", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  }), env(registry)));
+  assert.equal(intake.status, 202);
+  assert.equal(registry.feedback.size, 1);
+  assert.equal(registry.attachments.length, 1);
+  await worker.fetch(request("/v1/feedback", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  }), env(registry));
+  assert.equal(registry.feedback.size, 1);
+  assert.equal(registry.attachments.length, 1, "idempotent retry stores no duplicate attachment");
+  assert.equal((await worker.fetch(request("/v1/feedback"), env(registry))).status, 404);
+  const inbox = await body(await worker.fetch(request("/v1/feedback", {
+    headers: { authorization: "Bearer feedback-admin-test" },
+  }), env(registry)));
+  assert.equal(inbox.status, 200);
+  assert.equal(inbox.json.reports.length, 1);
+  const oversized = await worker.fetch(request("/v1/feedback", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...payload, public_id: `fb_${"b".repeat(24)}`, attachments: [{ name: "huge", size: 6 * 1024 * 1024, data: "x" }] }),
+  }), env(registry));
+  assert.equal(oversized.status, 413);
 });

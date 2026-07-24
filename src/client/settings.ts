@@ -68,21 +68,23 @@ export async function startChatGPTOAuth(): Promise<void> {
 }
 
 // ============================================================ settings application page
-type Tab = "admin" | "agents" | "skills" | "workflows" | "connections" | "audit" | "domains" | "providers" | "computers" | "members";
+type Tab = "admin" | "agents" | "skills" | "workflows" | "connections" | "feedback" | "audit" | "domains" | "providers" | "computers" | "members";
 export function openSettings(tab: Tab = "agents"): void {
-  const overlay = h("div", { class: "modal-overlay fixed inset-0 z-40 bg-surface" });
+  document.querySelector<HTMLElement>("[data-settings-overlay]")?.remove();
+  const overlay = h("div", { class: "modal-overlay fixed inset-0 z-40 bg-surface", dataset: { settingsOverlay: "", settingsTab: tab } });
   const bodyEl = h("main", { class: "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 sm:p-6 lg:p-8" });
   const page = h("div", { class: "flex h-full w-full flex-col overflow-hidden bg-surface" });
   const tabs: [Tab, string][] = S.me.is_admin
-    ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["workflows", "Workflows"], ["connections", "Connections"], ["audit", "Audit"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]]
+    ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["workflows", "Workflows"], ["connections", "Connections"], ["feedback", "Feedback"], ["audit", "Audit"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]]
     : [["providers", "Providers"]];
   if (!tabs.length) return;
   const tabBar = h("nav", { class: "grid w-full shrink-0 grid-cols-2 gap-1 border-b border-line bg-raised/30 p-3 sm:grid-cols-3 lg:w-64 lg:grid-cols-1 lg:border-b-0 lg:border-r lg:p-4", "aria-label": "Settings sections" });
   const draw = (t: Tab): void => {
+    overlay.dataset.settingsTab = t;
     clear(tabBar);
     tabs.forEach(([id, label]) => tabBar.append(h("button", { class: `rounded-lg px-3 py-2.5 text-left text-sm font-semibold transition ${t === id ? "bg-accent text-white shadow-sm" : "text-muted hover:bg-hover hover:text-fg"}`, type: "button", "aria-current": t === id ? "page" : undefined, onclick: () => draw(id) }, label)));
     clear(bodyEl);
-    const content = t === "admin" ? adminPanel() : t === "agents" ? agentsPanel() : t === "skills" ? skillsPanel() : t === "workflows" ? workflowsPanel() : t === "connections" ? connectionsPanel() : t === "audit" ? auditPanel() : t === "domains" ? domainsPanel() : t === "providers" ? providersPanel() : t === "computers" ? computersPanel() : membersPanel();
+    const content = t === "admin" ? adminPanel() : t === "agents" ? agentsPanel() : t === "skills" ? skillsPanel() : t === "workflows" ? workflowsPanel() : t === "connections" ? connectionsPanel() : t === "feedback" ? feedbackPanel() : t === "audit" ? auditPanel() : t === "domains" ? domainsPanel() : t === "providers" ? providersPanel() : t === "computers" ? computersPanel() : membersPanel();
     bodyEl.append(h("div", { class: `mx-auto w-full ${t === "providers" ? "max-w-7xl" : "max-w-5xl"}` }, h("div", { class: "mb-5" }, h("div", { class: "eyebrow text-accent" }, "Settings"), h("h1", { class: "font-display mt-1 text-3xl text-fg" }, tabs.find(([id]) => id === t)?.[1] || "Settings")), content));
   };
   page.append(
@@ -93,6 +95,14 @@ export function openSettings(tab: Tab = "agents"): void {
   overlay.append(page);
   document.body.append(overlay);
   draw(tab);
+}
+
+/** Repaint only the open Skills control-plane view after a live arsenal change. */
+export function refreshOpenSkillsSettings(): void {
+  const overlay = document.querySelector<HTMLElement>("[data-settings-overlay]");
+  if (overlay?.dataset.settingsTab !== "skills") return;
+  overlay.remove();
+  openSettings("skills");
 }
 
 const adminNote = (): HTMLElement => h("p", { class: "rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-300" }, "Only admins can add or edit these.");
@@ -174,7 +184,7 @@ function skillsPanel(): HTMLElement {
     wrap.append(skillCatalogBrowser(catalog));
     const shipped = h("section", { class: "space-y-3" },
       h("div", { class: "flex flex-wrap items-end justify-between gap-2" }, h("div", {}, h("h3", { class: "font-display text-lg text-fg" }, "Installed arsenal"), h("p", { class: "text-sm text-muted" }, `${skills.length} complete procedures · permanently available · loaded on demand`))));
-    for (const skill of skills) shipped.append(h("article", { class: `card p-4 ${skill.arsenal_locked ? "opacity-80" : ""}` },
+    for (const skill of skills) shipped.append(h("article", { class: `card p-4 ${skill.arsenal_locked ? "opacity-80" : ""}`, dataset: { skillSlug: skill.slug } },
       h("div", { class: "flex flex-wrap items-center gap-2" },
         h("h3", { class: "font-semibold text-fg" }, skill.name),
         h("span", { class: "chip" }, skill.category),
@@ -364,6 +374,57 @@ function connectionsPanel(): HTMLElement {
     h("div", { class: "rounded-lg border border-accent/25 bg-accent-soft px-4 py-3 text-sm leading-6 text-fg" }, "Connections are host-brokered capabilities. Residents receive the minimum task-scoped interface—not account secrets or your personal computer."),
     gmailConnectionPanel(), box,
     h("section", { class: "card p-4 opacity-80" }, h("h3", { class: "font-display text-lg text-fg" }, "More connections"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Calendar, contacts, Slack, and other messaging brokers are added only when 1Helm can enforce task scope, recovery, and auditability.")));
+}
+
+type FeedbackReport = {
+  id?: number;
+  public_id: string;
+  comment: string;
+  state: string;
+  last_error?: string;
+  created: number;
+  user_display?: string;
+  username?: string;
+  diagnostics: Record<string, unknown>;
+  attachments?: Array<{ id: number; name: string; mime: string; size: number }>;
+};
+function feedbackPanel(): HTMLElement {
+  const wrap = h("div", { class: "space-y-3", dataset: { feedbackInbox: "" } }, h("p", { class: "text-sm text-muted" }, "Loading feedback…"));
+  void api<{ reports: FeedbackReport[]; central: FeedbackReport[] }>("/api/feedback").then(({ reports, central }) => {
+    clear(wrap);
+    const combined = [...reports, ...(central || []).filter((remote) => !reports.some((local) => local.public_id === remote.public_id))];
+    wrap.append(h("div", { class: "rounded-lg border border-accent/25 bg-accent-soft px-4 py-3 text-sm leading-6 text-fg" }, "Feedback is saved on this host first and relayed to the 1Helm team with automatic retries. Diagnostics are opt-in and exclude conversations, prompts, account content, terminal output, credentials, and OAuth material."));
+    if (!combined.length) {
+      wrap.append(h("div", { class: "card p-6 text-center text-sm text-muted" }, "No feedback reports yet."));
+      return;
+    }
+    for (const report of combined) {
+      const diagnostics = JSON.stringify(report.diagnostics || {}, null, 2);
+      wrap.append(h("article", { class: "card space-y-3 p-4", dataset: { feedbackReport: report.public_id } },
+        h("div", { class: "flex flex-wrap items-start justify-between gap-3" },
+          h("div", {},
+            h("div", { class: "font-semibold text-fg" }, report.user_display || report.username || "Workspace member"),
+            h("div", { class: "mt-0.5 font-mono text-[11px] text-muted" }, report.public_id)),
+          h("div", { class: "text-right" },
+            h("span", { class: "chip" }, report.state),
+            h("div", { class: "mt-1 text-xs text-muted" }, new Date(report.created).toLocaleString()))),
+        h("p", { class: "whitespace-pre-wrap text-sm leading-6 text-fg" }, report.comment || "(attachment-only report)"),
+        report.id && report.attachments?.length ? h("div", { class: "flex flex-wrap gap-2" }, ...report.attachments.map((attachment) => h("a", {
+          class: "btn-subtle text-xs",
+          href: `/api/feedback/${report.id}/attachments/${attachment.id}`,
+          target: "_blank",
+          rel: "noopener",
+        }, `${attachment.name} · ${Math.ceil(attachment.size / 1024)} KB`))) : null,
+        diagnostics !== "{}" ? h("details", { class: "rounded-lg border border-line bg-panel p-3" },
+          h("summary", { class: "cursor-pointer text-xs font-semibold text-fg" }, "Privacy-bounded diagnostics"),
+          h("pre", { class: "mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-muted" }, diagnostics)) : null,
+        report.last_error ? h("p", { class: "text-xs text-danger" }, `Delivery: ${report.last_error}`) : null));
+    }
+  }).catch((error) => {
+    clear(wrap);
+    wrap.append(h("p", { class: "text-sm text-danger" }, (error as Error).message));
+  });
+  return wrap;
 }
 
 type AgentWorkflow = { id: number; channel_id: number; agent_id: number; name: string; prompt: string; interval_seconds: number; next_run: number; last_run: number | null; run_count: number; max_runs: number; status: "active" | "paused" | "complete" | "failed"; last_error: string };
