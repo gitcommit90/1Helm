@@ -162,6 +162,14 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     assert.notEqual(guestCredentials.personalPort, captainCredentialsBefore.personalPort, "each signed-in member receives a dedicated host-side endpoint port");
     assert.equal((await json(`http://127.0.0.1:${appPort}/v1/models`, guestExternal.key.key)).data.some((model) => model.id.includes("mock-large")), true, "member key routes through personal plus shared providers");
     await json(`http://127.0.0.1:${appPort}/api/routing/action`, guestToken, { method: "POST", body: JSON.stringify({ action: "app:set-provider-visibility", payload: { id: guestKeyed.id, visibility: "personal" } }) });
+    const guestPrivateModel = (await json(`http://127.0.0.1:${appPort}/api/routing/models`, guestToken)).models.find((model) => model.providerName === "Crew private").id;
+    await json(`http://127.0.0.1:${appPort}/v1/chat/completions`, guestExternal.key.key, {
+      method: "POST", body: JSON.stringify({ model: guestPrivateModel, stream: false, messages: [{ role: "user", content: "Private member activity" }] }),
+    });
+    const guestActivity = (await json(`http://127.0.0.1:${appPort}/api/routing/state`, guestToken)).recentActivity;
+    const captainActivity = (await json(`http://127.0.0.1:${appPort}/api/routing/state`, token)).recentActivity;
+    assert.equal(guestActivity.some((event) => event.request?.providerName === "Crew private"), true, "personal endpoint activity is visible to its owner");
+    assert.equal(captainActivity.some((event) => event.request?.providerName === "Crew private"), false, "personal endpoint activity is not disclosed to the Captain or another member");
     assert.equal((await json(`http://127.0.0.1:${appPort}/api/routing/state`, token)).combos.some((entry) => entry.name === "crew-shared-route"), false, "a shared route stops resolving for teammates when its provider becomes private");
     const guestOwnedSharedRoute = (await json(`http://127.0.0.1:${appPort}/api/routing/state`, guestToken)).combos.find((entry) => entry.name === "crew-shared-route");
     await json(`http://127.0.0.1:${appPort}/api/workspace/model-policy`, guestToken, { method: "PATCH", body: JSON.stringify({ model: "crew-shared-route", personal: true }) });

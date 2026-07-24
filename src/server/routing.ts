@@ -118,6 +118,8 @@ type UserGatewayRuntime = {
   port: number;
   gateway: UserGateway;
   router: RoutingRuntime["router"];
+  requestActivity: RoutingRuntime["requestActivity"];
+  activityUnsubscribe: () => void;
 };
 
 // ReRouted's generic OpenAI-compatible adapter historically assumed every
@@ -151,8 +153,9 @@ const INTERNAL_GATEWAY_KEY_SCOPE = "1helm-internal";
 let runtime: RoutingRuntime | null = null;
 let starting: Promise<RoutingRuntime> | null = null;
 let activityUnsubscribe: (() => void) | null = null;
-let onActivity: ((activity?: unknown) => void) | null = null;
+let onActivity: ((activity?: unknown, userId?: number) => void) | null = null;
 const recentActivity: unknown[] = [];
+const recentUserActivity = new Map<number, unknown[]>();
 type OauthCompletion = { connected: boolean; account?: Record<string, unknown>; error?: string };
 const oauthWatchers = new Map<string, NodeJS.Timeout>();
 const oauthCompletions = new Map<string, OauthCompletion>();
@@ -160,6 +163,15 @@ const oauthFinalizing = new Map<string, Promise<Record<string, unknown>>>();
 const oauthOwners = new Map<string, { userId: number; type: string; providerIds: Set<string> }>();
 const activeOauthByFamily = new Map<string, string>();
 const userGateways = new Map<number, UserGatewayRuntime>();
+
+function publishRoutingActivity(activity: unknown, userId = 0): void {
+  const history = userId > 0
+    ? (recentUserActivity.get(userId) || (recentUserActivity.set(userId, []), recentUserActivity.get(userId)!))
+    : recentActivity;
+  history.unshift(activity);
+  if (history.length > 30) history.length = 30;
+  onActivity?.(activity, userId);
+}
 
 const oauthKey = (userId: number, type: string): string => `${userId}:${type}`;
 const oauthFamily = (type: string): string => ["chatgpt", "codex"].includes(type) ? "chatgpt" : type;
@@ -276,10 +288,17 @@ async function ensureUserGateway(userId: number): Promise<UserGatewayRuntime> {
     },
   } as RoutingRuntime["router"];
   const gateway = createGateway({ store, router, requestActivity });
+  const activityUnsubscribe = requestActivity.subscribe((activity) => publishRoutingActivity(activity, userId));
   const desiredPort = await choosePort(endpoint.port, "127.0.0.1", false);
-  const address = await gateway.start(desiredPort, "127.0.0.1");
+  let address: { port: number; host: string };
+  try {
+    address = await gateway.start(desiredPort, "127.0.0.1");
+  } catch (error) {
+    activityUnsubscribe();
+    throw error;
+  }
   if (address.port !== endpoint.port) run("UPDATE user_routing_endpoints SET port=?,updated=? WHERE user_id=?", address.port, now(), userId);
-  const created = { userId, port: address.port, gateway, router };
+  const created = { userId, port: address.port, gateway, router, requestActivity, activityUnsubscribe };
   userGateways.set(userId, created);
   return created;
 }
@@ -701,7 +720,7 @@ async function choosePort(preferred: number, host: string, honorConfiguredPort =
   });
 }
 
-export async function startRoutingEngine(activityCallback?: (activity?: unknown) => void): Promise<RoutingRuntime> {
+export async function startRoutingEngine(activityCallback?: (activity?: unknown, userId?: number) => void): Promise<RoutingRuntime> {
   if (runtime) return runtime;
   if (starting) return starting;
   onActivity = activityCallback || null;
@@ -723,11 +742,7 @@ export async function startRoutingEngine(activityCallback?: (activity?: unknown)
     if (port !== Number(config.port || 4949)) target.store.update((current) => { current.port = port; });
     await target.start({ port, host });
     ensureInternalProvider(target);
-    activityUnsubscribe = target.requestActivity.subscribe((activity) => {
-      recentActivity.unshift(activity);
-      if (recentActivity.length > 30) recentActivity.length = 30;
-      onActivity?.(activity);
-    });
+    activityUnsubscribe = target.requestActivity.subscribe((activity) => publishRoutingActivity(activity));
     runtime = target;
     return target;
   })().finally(() => { starting = null; });
@@ -746,7 +761,10 @@ export async function stopRoutingEngine(): Promise<void> {
   activeOauthByFamily.clear();
   const gateways = [...userGateways.values()];
   userGateways.clear();
+  for (const entry of gateways) entry.activityUnsubscribe();
   await Promise.all(gateways.map((entry) => entry.gateway.stop().catch(() => undefined)));
+  recentActivity.length = 0;
+  recentUserActivity.clear();
   if (target) await target.close({ drainMs: 10_000 });
 }
 
@@ -955,7 +973,9 @@ export async function routingState(userId = 0, isAdmin = true): Promise<Record<s
     visibility: visibilityOf(combo),
     mine: Number(combo.ownerUserId || 0) === userId,
   }));
-  return { ...state, providers, combos, activeRequests: runtime?.requestActivity.snapshot() || [], recentActivity, imageGenerationEnabled: enabled, apiKey: state.apiKey ? "" : state.apiKey, apiKeys: undefined, scope: isAdmin ? "captain" : "member" };
+  const personalActivity = userId ? recentUserActivity.get(userId) || [] : recentActivity;
+  const activeRequests = userId ? userGateways.get(userId)?.requestActivity.snapshot() || [] : runtime?.requestActivity.snapshot() || [];
+  return { ...state, providers, combos, activeRequests, recentActivity: personalActivity, imageGenerationEnabled: enabled, apiKey: state.apiKey ? "" : state.apiKey, apiKeys: undefined, scope: isAdmin ? "captain" : "member" };
 }
 
 export async function routingCredentials(userId = 0, isAdmin = true): Promise<Record<string, unknown>> {

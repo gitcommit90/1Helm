@@ -1816,7 +1816,10 @@ async function bootstrap(): Promise<void> {
   registerWorkflowDispatcher((bot, channelId, triggerId, threadRootId) => runBot(bot, channelId, triggerId, threadRootId, true));
   reactivateComputersAfterPreparedRemoval();
   prepareMnemosyneRuntime();
-  await startRoutingEngine((activity) => broadcastAdmins({ type: "routing_activity", activity }));
+  await startRoutingEngine((activity, ownerUserId) => {
+    if (ownerUserId) sendToUsers([ownerUserId], { type: "routing_activity", activity });
+    else broadcastAdmins({ type: "routing_activity", activity });
+  });
   ensureImageGenerationSkill();
   await internalRoutingProviderId();
   resumeQueuedAgentTurns();

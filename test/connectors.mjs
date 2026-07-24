@@ -35,9 +35,15 @@ test("stopping a connector cancels automatic relaunch while preserving its crede
   const beforeStop = (await readFile(log, "utf8")).trim().split("\n").length;
   assert.ok(beforeStop >= 2, "a failed desired connector relaunches");
   connectors.stopTunnelConnector("workspace");
+  // A process already returned by spawn() can reach its first instruction
+  // while stop is delivering SIGTERM. Establish the stopped boundary after
+  // that in-flight child settles, then prove no timer can launch another one.
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  const stoppedBoundary = (await readFile(log, "utf8")).trim().split("\n").length;
   await new Promise((resolve) => setTimeout(resolve, 140));
   const afterStop = (await readFile(log, "utf8")).trim().split("\n").length;
-  assert.equal(afterStop, beforeStop, "disabled connector does not relaunch");
+  assert.ok(stoppedBoundary >= beforeStop, "stop accounts for any child that was already spawned");
+  assert.equal(afterStop, stoppedBoundary, "disabled connector does not relaunch after the stopped boundary");
   assert.ok(connectors.connectorCredential("workspace"), "disabling leaves the reserved connector credential available for re-enable");
 
   process.env.HELM_CONNECTOR_TEST_HOLD = "1";
