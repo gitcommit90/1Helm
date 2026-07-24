@@ -81,6 +81,23 @@ test("Gmail loopback OAuth rejects state mismatch and uses PKCE for a valid call
   assert.equal(exchanges[0].redirect_uri, authorization.searchParams.get("redirect_uri"));
 });
 
+test("Gmail accepts a pasted remote-browser localhost callback without fetching it", async () => {
+  const before = exchanges.length;
+  const status = await gmail.startGmailConnection();
+  const authorization = new URL(status.setup.authorization_url);
+  assert.equal(status.setup.manual_completion, true);
+  const callback = new URL(authorization.searchParams.get("redirect_uri"));
+  callback.searchParams.set("code", "pasted-valid-code");
+  callback.searchParams.set("state", authorization.searchParams.get("state"));
+  const completed = await gmail.completeGmailConnection(callback.toString());
+  assert.equal(completed.setup.status, "connected");
+  assert.deepEqual(completed.accounts, ["captain@example.com"]);
+  assert.equal(exchanges.length, before + 1, "only Google's token endpoint is called; the pasted localhost URL is never fetched");
+  assert.equal(exchanges.at(-1).code, "pasted-valid-code");
+  assert.equal(exchanges.at(-1).redirect_uri, authorization.searchParams.get("redirect_uri"));
+  await assert.rejects(() => gmail.completeGmailConnection(callback.toString()), /No Gmail authorization is waiting/i);
+});
+
 test("connected Gmail inventory and brokered reads never expose tokens", async () => {
   const status = gmail.gmailConnectionStatus();
   assert.deepEqual(status.accounts, ["captain@example.com"]);

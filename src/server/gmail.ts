@@ -19,7 +19,8 @@ type TokenPayload = {
 type MailConfig = { accounts: string[]; can_read: boolean; can_draft: boolean; can_send: boolean };
 
 type OAuthClient = { client_id: string; client_secret: string; auth_uri?: string; token_uri?: string; redirect_uris?: string[] };
-type GmailSetup = { active: boolean; status: "idle" | "needs_client" | "waiting" | "connected" | "failed"; authorization_url?: string; error?: string; started_at?: number; expires_at?: number };
+type GmailSetup = { active: boolean; status: "idle" | "needs_client" | "waiting" | "connected" | "failed"; authorization_url?: string; manual_completion?: boolean; error?: string; started_at?: number; expires_at?: number };
+type PendingOAuth = { client: OAuthClient; state: string; verifier: string; redirectUri: string; completing: boolean };
 
 const CONNECTION_DIR = process.env.ONEHELM_GOOGLE_CONNECTION_DIR || join(DATA_DIR, "connections", "gmail");
 const TOKENS_DIR = process.env.ONEHELM_GOOGLE_TOKENS_DIR || join(CONNECTION_DIR, "tokens");
@@ -31,6 +32,7 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const GMAIL_SCOPES = ["openid", "email", "https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"];
 let setup: GmailSetup = { active: false, status: "idle" };
 let callbackServer: Server | null = null;
+let pendingOAuth: PendingOAuth | null = null;
 let gmailFetch: typeof fetch = fetch;
 
 export function setGmailFetchForTests(implementation: typeof fetch | null): void {
@@ -40,6 +42,7 @@ export function setGmailFetchForTests(implementation: typeof fetch | null): void
 export function stopGmailConnection(): void {
   callbackServer?.close();
   callbackServer = null;
+  pendingOAuth = null;
   setup = { active: false, status: "idle" };
 }
 
@@ -107,6 +110,53 @@ export function saveGmailOAuthClient(input: unknown): Record<string, unknown> {
 
 const setupPage = (message: string, ok: boolean): string => `<!doctype html><html><head><meta charset="utf-8"><title>1Helm Gmail</title><style>body{font:16px system-ui;background:#111827;color:#f9fafb;display:grid;place-items:center;min-height:100vh;margin:0}.card{max-width:34rem;padding:2rem;border:1px solid #374151;border-radius:16px;background:#1f2937}h1{margin-top:0;color:${ok ? "#34d399" : "#f87171"}}</style></head><body><main class="card"><h1>${ok ? "Gmail connected" : "Gmail connection failed"}</h1><p>${message.replace(/[<>&]/g, (char) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[char]!)}</p><p>You can close this tab and return to 1Helm.</p></main></body></html>`;
 
+function parsedCallback(value: unknown, pending: PendingOAuth): URL {
+  const raw = String(value || "").trim();
+  if (!raw || raw.length > 8192) throw new Error("Paste the complete Google callback URL from the browser address bar.");
+  let callback: URL;
+  try { callback = new URL(raw); }
+  catch { throw new Error("Paste a valid complete Google callback URL."); }
+  const expected = new URL(pending.redirectUri);
+  if (callback.protocol !== expected.protocol || callback.hostname !== expected.hostname || callback.port !== expected.port || callback.pathname !== expected.pathname) {
+    throw new Error("That is not the localhost callback URL created by this Gmail connection attempt.");
+  }
+  if (callback.searchParams.get("state") !== pending.state) throw new Error("OAuth state did not match. Start the connection again.");
+  const code = callback.searchParams.get("code");
+  if (!code) throw new Error(callback.searchParams.get("error_description") || callback.searchParams.get("error") || "Google returned no authorization code.");
+  return callback;
+}
+
+/** Complete the same PKCE exchange from either the local listener or a pasted
+ * localhost callback URL. The pasted URL is parsed, never fetched. */
+export async function completeGmailConnection(callbackUrl: unknown): Promise<Record<string, unknown>> {
+  const pending = pendingOAuth;
+  if (!pending || !setup.active || setup.status !== "waiting") throw new Error("No Gmail authorization is waiting. Start the connection again.");
+  if (pending.completing) throw new Error("This Gmail authorization is already being completed.");
+  const callback = parsedCallback(callbackUrl, pending);
+  pending.completing = true;
+  try {
+    const code = callback.searchParams.get("code")!;
+    const tokenResponse = await gmailFetch(pending.client.token_uri || "https://oauth2.googleapis.com/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ code, client_id: pending.client.client_id, client_secret: pending.client.client_secret, redirect_uri: pending.redirectUri, grant_type: "authorization_code", code_verifier: pending.verifier }), signal: AbortSignal.timeout(30_000) });
+    const token = await tokenResponse.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; expires_in?: number; scope?: string; error_description?: string };
+    if (!tokenResponse.ok || !token.access_token || !token.refresh_token) throw new Error(token.error_description || "Google did not return a durable refresh token. Reconnect and approve access.");
+    const profileResponse = await gmailFetch(`${GMAIL_API}/profile`, { headers: { authorization: `Bearer ${token.access_token}` }, signal: AbortSignal.timeout(30_000) });
+    const profile = await profileResponse.json().catch(() => ({})) as { emailAddress?: string; error?: { message?: string } };
+    const email = normalizeEmail(profile.emailAddress);
+    if (!profileResponse.ok || !EMAIL.test(email)) throw new Error(profile.error?.message || "Google did not identify the Gmail account.");
+    writePrivate(tokenPath(email), { token: token.access_token, refresh_token: token.refresh_token, token_uri: pending.client.token_uri || "https://oauth2.googleapis.com/token", client_id: pending.client.client_id, client_secret: pending.client.client_secret, account_email: email, scope: token.scope || GMAIL_SCOPES.join(" ") });
+    setup = { active: false, status: "connected", started_at: setup.started_at, expires_at: setup.expires_at };
+    return gmailConnectionStatus();
+  } catch (error) {
+    setup = { active: false, status: "failed", error: (error as Error).message, started_at: setup.started_at };
+    throw error;
+  } finally {
+    if (pendingOAuth === pending) pendingOAuth = null;
+    const server = callbackServer;
+    callbackServer = null;
+    server?.close();
+  }
+}
+
 export async function startGmailConnection(clientInput?: unknown): Promise<Record<string, unknown>> {
   importLegacyConnections();
   if (clientInput) saveGmailOAuthClient(clientInput);
@@ -122,6 +172,7 @@ export async function startGmailConnection(clientInput?: unknown): Promise<Recor
     return gmailConnectionStatus();
   }
   if (callbackServer) { callbackServer.close(); callbackServer = null; }
+  pendingOAuth = null;
   const client = parseOAuthClient(JSON.parse(readFileSync(CLIENT_FILE, "utf8")));
   const state = randomBytes(24).toString("base64url");
   const verifier = randomBytes(48).toString("base64url");
@@ -130,31 +181,27 @@ export async function startGmailConnection(clientInput?: unknown): Promise<Recor
     const url = new URL(req.url || "/", "http://127.0.0.1");
     if (url.pathname !== "/gmail/callback") { res.writeHead(404); res.end(); return; }
     try {
-      if (url.searchParams.get("state") !== state) throw new Error("OAuth state did not match. Start the connection again.");
-      const code = url.searchParams.get("code");
-      if (!code) throw new Error(url.searchParams.get("error_description") || url.searchParams.get("error") || "Google returned no authorization code.");
-      const tokenResponse = await gmailFetch(client.token_uri || "https://oauth2.googleapis.com/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ code, client_id: client.client_id, client_secret: client.client_secret, redirect_uri: redirectUri, grant_type: "authorization_code", code_verifier: verifier }), signal: AbortSignal.timeout(30_000) });
-      const token = await tokenResponse.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; expires_in?: number; scope?: string; error_description?: string };
-      if (!tokenResponse.ok || !token.access_token || !token.refresh_token) throw new Error(token.error_description || "Google did not return a durable refresh token. Reconnect and approve access.");
-      const profileResponse = await gmailFetch(`${GMAIL_API}/profile`, { headers: { authorization: `Bearer ${token.access_token}` }, signal: AbortSignal.timeout(30_000) });
-      const profile = await profileResponse.json().catch(() => ({})) as { emailAddress?: string; error?: { message?: string } };
-      const email = normalizeEmail(profile.emailAddress);
-      if (!profileResponse.ok || !EMAIL.test(email)) throw new Error(profile.error?.message || "Google did not identify the Gmail account.");
-      writePrivate(tokenPath(email), { token: token.access_token, refresh_token: token.refresh_token, token_uri: client.token_uri || "https://oauth2.googleapis.com/token", client_id: client.client_id, client_secret: client.client_secret, account_email: email, scope: token.scope || GMAIL_SCOPES.join(" ") });
-      setup = { active: false, status: "connected", started_at: setup.started_at, expires_at: setup.expires_at };
+      const completed = await completeGmailConnection(new URL(req.url || "/", redirectUri).toString());
+      const email = String((completed.accounts as string[])?.at(-1) || "This Gmail account");
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); res.end(setupPage(`${email} is connected with read and draft access. 1Helm will never expose its OAuth token to a resident computer.`, true));
     } catch (error) {
-      setup = { active: false, status: "failed", error: (error as Error).message, started_at: setup.started_at };
       res.writeHead(400, { "content-type": "text/html; charset=utf-8" }); res.end(setupPage((error as Error).message, false));
-    } finally { setTimeout(() => { server.close(); if (callbackServer === server) callbackServer = null; }, 250).unref(); }
+    }
   });
   callbackServer = server;
   const port = await new Promise<number>((resolve, reject) => { callbackServer!.once("error", reject); callbackServer!.listen(0, "127.0.0.1", () => resolve((callbackServer!.address() as { port: number }).port)); });
   const redirectUri = `http://127.0.0.1:${port}/gmail/callback`;
+  const pending: PendingOAuth = { client, state, verifier, redirectUri, completing: false };
+  pendingOAuth = pending;
   const authorization = new URL(client.auth_uri || "https://accounts.google.com/o/oauth2/v2/auth");
   authorization.search = new URLSearchParams({ client_id: client.client_id, redirect_uri: redirectUri, response_type: "code", scope: GMAIL_SCOPES.join(" "), access_type: "offline", prompt: "consent select_account", state, code_challenge: challenge, code_challenge_method: "S256" }).toString();
-  setup = { active: true, status: "waiting", authorization_url: authorization.toString(), started_at: now(), expires_at: now() + 10 * 60_000 };
-  const timer = setTimeout(() => { if (setup.active && setup.status === "waiting") setup = { active: false, status: "failed", error: "Gmail authorization expired. Start it again." }; callbackServer?.close(); callbackServer = null; }, 10 * 60_000); timer.unref();
+  setup = { active: true, status: "waiting", authorization_url: authorization.toString(), manual_completion: true, started_at: now(), expires_at: now() + 10 * 60_000 };
+  const timer = setTimeout(() => {
+    if (pendingOAuth !== pending) return;
+    setup = { active: false, status: "failed", error: "Gmail authorization expired. Start it again." };
+    pendingOAuth = null;
+    callbackServer?.close(); callbackServer = null;
+  }, 10 * 60_000); timer.unref();
   return gmailConnectionStatus();
 }
 

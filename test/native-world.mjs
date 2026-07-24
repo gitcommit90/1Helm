@@ -671,6 +671,12 @@ try {
   const collaboratorLogin = await api("/api/auth/login", { body: { username: "collaborator", password: "secret-pass" } });
   const collaborator = collaboratorLogin.body.token;
   ok(collaboratorCreate.status === 201 && collaborator, "Captain can add a workspace member who can sign in");
+  const captainNotifications = await api("/api/me/ui-state", { method: "PATCH", body: { key: "notification_preferences", value: { globalMuted: true, channels: { [launch.id]: { muted: true, sound: "chime" } } } } }, captain);
+  const collaboratorUiState = await api("/api/me/ui-state", {}, collaborator);
+  ok(captainNotifications.body.state.notification_preferences.globalMuted === true
+    && captainNotifications.body.state.notification_preferences.channels[launch.id].sound === "chime"
+    && collaboratorUiState.body.state.notification_preferences === undefined,
+  "global mute, channel mute, and channel sound choices persist per user without muting another account");
   const collaboratorInvite = await api(`/api/channels/${launch.id}/messages`, { body: { body: "@collaborator join this agent channel" } }, captain);
   await api(`/api/channels/${launch.id}/members/${collaboratorCreate.body.user.id}`, { body: { messageId: collaboratorInvite.body.message.id } }, captain);
   const removalStatus = await api("/api/app/removal", {}, captain);
@@ -809,7 +815,11 @@ try {
   }, "schedule_followup persists pending row", 15_000);
   const followThread = await api(`/api/messages/${followRoot.body.message.id}/thread`, {}, captain);
   const visibleFollowupReply = followThread.body.replies?.some((message) => message.author?.name === afterRestart.agent.name && message.body && message.body !== "_Working…_");
-  ok(Boolean(followEvidence) && !visibleFollowupReply, "resident schedule_followup creates a durable pending re-entry without a fake user-facing completion");
+  const followupRequestStats = await fetch(`http://127.0.0.1:${mockPort}/request-stats`).then((response) => response.json());
+  ok(
+    Boolean(followEvidence) && !visibleFollowupReply && followupRequestStats.schedule_followup_continuations === 0,
+    "resident schedule_followup creates a durable pending re-entry without another model request or a fake user-facing completion",
+  );
 
   await api(`/api/threads/${taskThread.id}`, { method: "PATCH", body: { status: "waiting" } }, captain);
   const archive = await api(`/api/channels/${launch.id}/archive`, { body: {} }, captain);

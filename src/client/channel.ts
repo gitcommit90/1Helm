@@ -1,6 +1,7 @@
 import { api, downloadAuthenticatedFile, openAuthenticatedFile, uploadFile, type ActivityItem, type AgentTemplate, type Channel, type ChannelFile, type GlobalThread, type MemoryItem, type Message, type ThreadState, type RoutingModel } from "./api.ts";
 import { h, clear, icon, md, timeLabel } from "./dom.ts";
 import { S, avatar, appAlert, appConfirm, appPrompt } from "./app.ts";
+import { NOTIFICATION_SOUNDS, channelNotificationPreference, previewNotification, setChannelNotificationPreference } from "./notifications.ts";
 
 export type ChannelView = "chat" | "board" | "threads" | "files" | "terminal" | "memory" | "activity" | "settings";
 
@@ -614,6 +615,21 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
   const provider = h("select", { class: "field" }, h("option", { value: "" }, "Loading providers…")) as HTMLSelectElement;
   const model = h("select", { class: "field" }, h("option", { value: channel.agent?.model || "" }, channel.agent?.model || "Choose a model")) as HTMLSelectElement;
   const status = h("p", { class: "min-h-5 text-sm text-muted" });
+  const notificationPreference = channelNotificationPreference(channel.id);
+  const channelMuted = h("input", { type: "checkbox", checked: notificationPreference.muted, class: "accent-accent" }) as HTMLInputElement;
+  const channelSound = h("select", { class: "field" }, ...NOTIFICATION_SOUNDS.map((item) => h("option", { value: item.value, selected: item.value === notificationPreference.sound }, item.label))) as HTMLSelectElement;
+  const notificationStatus = h("p", { class: "min-h-5 text-sm text-muted" });
+  const saveChannelNotifications = async (): Promise<void> => {
+    channelMuted.disabled = true; channelSound.disabled = true; notificationStatus.textContent = "Saving…";
+    try {
+      await setChannelNotificationPreference(channel.id, { muted: channelMuted.checked, sound: channelSound.value as typeof notificationPreference.sound });
+      notificationStatus.textContent = channelMuted.checked ? `#${channel.name} is muted for your account.` : `#${channel.name} will use ${channelSound.selectedOptions[0]?.textContent || "this sound"}.`;
+    } catch (error) { notificationStatus.textContent = (error as Error).message; }
+    finally { channelMuted.disabled = false; channelSound.disabled = channelMuted.checked; }
+  };
+  channelMuted.onchange = () => { channelSound.disabled = channelMuted.checked; void saveChannelNotifications(); };
+  channelSound.onchange = () => { previewNotification(channelSound.value as typeof notificationPreference.sound); void saveChannelNotifications(); };
+  channelSound.disabled = channelMuted.checked;
   let loadSequence = 0;
   let modelLoading = false;
   let changeModelButton: HTMLButtonElement | null = null;
@@ -744,6 +760,11 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
           ? null
           : h("button", { class: "btn-primary text-sm", onclick: () => { void saveName(); } }, "Rename"))),
     h("div", { class: "card space-y-3 p-4" }, h("h3", { class: "font-semibold text-fg" }, "Purpose"), purpose, h("div", { class: "flex justify-end" }, h("button", { class: "btn-primary text-sm", onclick: () => { void savePurpose(); } }, "Save purpose"))),
+    h("div", { class: "card space-y-3 p-4", dataset: { channelNotifications: "" } },
+      h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Notification sound"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Private to your account. Global mute in Settings → Notifications always takes priority.")),
+      h("label", { class: "flex items-center gap-3 rounded-lg border border-line bg-panel p-3 text-sm font-semibold text-fg" }, channelMuted, `Mute #${channel.name}`),
+      h("label", { class: "block space-y-1 text-xs font-semibold text-fg" }, "Ping sound", channelSound),
+      notificationStatus),
     h("div", { class: "card space-y-3 p-4" },
       h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Agent avatar"), h("p", { class: "mt-1 text-sm text-muted" }, "Pick a flat color or upload a custom image for this resident agent.")),
       agentAvatar, h("div", { class: "mt-2" }, h("span", { class: "mb-1 block text-xs font-semibold text-muted" }, "Default colors"), avatarColorRow)),

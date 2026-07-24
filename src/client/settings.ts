@@ -2,6 +2,7 @@ import { api, getToken, workspacePhotoSrc, type AccessRequest, type ChannelRunti
 import { h, clear, add, icon } from "./dom.ts";
 import { S, avatar, reloadProviders, renderApp, appAlert, appConfirm, appPrompt } from "./app.ts";
 import { connectRoutingOauth, routingPanel } from "./routing.ts";
+import { globalNotificationsMuted, setGlobalNotificationsMuted } from "./notifications.ts";
 
 // ============================================================ OpenRouter OAuth (PKCE)
 const b64url = (buf: ArrayBuffer): string => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -68,15 +69,15 @@ export async function startChatGPTOAuth(): Promise<void> {
 }
 
 // ============================================================ settings application page
-type Tab = "admin" | "agents" | "skills" | "workflows" | "connections" | "feedback" | "audit" | "domains" | "providers" | "computers" | "members";
+type Tab = "admin" | "agents" | "skills" | "workflows" | "connections" | "notifications" | "feedback" | "audit" | "domains" | "providers" | "computers" | "members";
 export function openSettings(tab: Tab = "agents"): void {
   document.querySelector<HTMLElement>("[data-settings-overlay]")?.remove();
   const overlay = h("div", { class: "modal-overlay fixed inset-0 z-40 bg-surface", dataset: { settingsOverlay: "", settingsTab: tab } });
   const bodyEl = h("main", { class: "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 sm:p-6 lg:p-8" });
   const page = h("div", { class: "flex h-full w-full flex-col overflow-hidden bg-surface" });
   const tabs: [Tab, string][] = S.me.is_admin
-    ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["workflows", "Workflows"], ["connections", "Connections"], ["feedback", "Feedback"], ["audit", "Audit"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]]
-    : [["providers", "Providers"]];
+    ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["workflows", "Workflows"], ["connections", "Connections"], ["notifications", "Notifications"], ["feedback", "Feedback"], ["audit", "Audit"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]]
+    : [["providers", "Providers"], ["notifications", "Notifications"]];
   if (!tabs.length) return;
   const tabBar = h("nav", { class: "grid w-full shrink-0 grid-cols-2 gap-1 border-b border-line bg-raised/30 p-3 sm:grid-cols-3 lg:w-64 lg:grid-cols-1 lg:border-b-0 lg:border-r lg:p-4", "aria-label": "Settings sections" });
   const draw = (t: Tab): void => {
@@ -84,7 +85,7 @@ export function openSettings(tab: Tab = "agents"): void {
     clear(tabBar);
     tabs.forEach(([id, label]) => tabBar.append(h("button", { class: `rounded-lg px-3 py-2.5 text-left text-sm font-semibold transition ${t === id ? "bg-accent text-white shadow-sm" : "text-muted hover:bg-hover hover:text-fg"}`, type: "button", "aria-current": t === id ? "page" : undefined, onclick: () => draw(id) }, label)));
     clear(bodyEl);
-    const content = t === "admin" ? adminPanel() : t === "agents" ? agentsPanel() : t === "skills" ? skillsPanel() : t === "workflows" ? workflowsPanel() : t === "connections" ? connectionsPanel() : t === "feedback" ? feedbackPanel() : t === "audit" ? auditPanel() : t === "domains" ? domainsPanel() : t === "providers" ? providersPanel() : t === "computers" ? computersPanel() : membersPanel();
+    const content = t === "admin" ? adminPanel() : t === "agents" ? agentsPanel() : t === "skills" ? skillsPanel() : t === "workflows" ? workflowsPanel() : t === "connections" ? connectionsPanel() : t === "notifications" ? notificationsPanel() : t === "feedback" ? feedbackPanel() : t === "audit" ? auditPanel() : t === "domains" ? domainsPanel() : t === "providers" ? providersPanel() : t === "computers" ? computersPanel() : membersPanel();
     bodyEl.append(h("div", { class: `mx-auto w-full ${t === "providers" ? "max-w-7xl" : "max-w-5xl"}` }, h("div", { class: "mb-5" }, h("div", { class: "eyebrow text-accent" }, "Settings"), h("h1", { class: "font-display mt-1 text-3xl text-fg" }, tabs.find(([id]) => id === t)?.[1] || "Settings")), content));
   };
   page.append(
@@ -106,6 +107,28 @@ export function refreshOpenSkillsSettings(): void {
 }
 
 const adminNote = (): HTMLElement => h("p", { class: "rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-300" }, "Only admins can add or edit these.");
+
+function notificationsPanel(): HTMLElement {
+  const muted = h("input", { type: "checkbox", checked: globalNotificationsMuted(), class: "accent-accent" }) as HTMLInputElement;
+  const status = h("p", { class: "min-h-5 text-sm text-muted" });
+  muted.onchange = async () => {
+    muted.disabled = true;
+    status.textContent = "Saving…";
+    try {
+      await setGlobalNotificationsMuted(muted.checked);
+      status.textContent = muted.checked ? "All notification sounds are muted for your account." : "Notification sounds are on for your account.";
+    } catch (error) {
+      muted.checked = !muted.checked;
+      status.textContent = (error as Error).message;
+    } finally { muted.disabled = false; }
+  };
+  return h("div", { class: "space-y-4" },
+    h("section", { class: "card space-y-3 p-4" },
+      h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Global sound"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "This preference belongs only to your 1Helm account and follows you across signed-in devices.")),
+      h("label", { class: "flex items-start gap-3 rounded-lg border border-line bg-panel p-3" }, muted, h("span", {}, h("span", { class: "block text-sm font-semibold text-fg" }, "Mute all notification sounds"), h("span", { class: "mt-1 block text-xs leading-5 text-muted" }, "Visual unread badges and agent activity remain available."))),
+      status),
+    h("section", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Channel sounds"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Open any channel → Settings to mute that channel or choose its ping sound. Those choices are also private to your account.")));
+}
 
 function adminPanel(): HTMLElement {
   const name = h("input", { class: "field", value: S.workspace.name, autocomplete: "organization" }) as HTMLInputElement;
@@ -278,11 +301,12 @@ function learnSkillDialog(): void {
 type PhotonMapping = { channel_id: number; channel_name: string; agent_name: string; allowed_users: string; updated: number };
 type PhotonStatus = { configured: boolean; connected: boolean; project_id: string; operator_phone: string; assigned_phone: string; secret: "stored" | "missing"; mappings: PhotonMapping[] };
 type PhotonSetup = { active: boolean; status?: string | PhotonStatus; operator_phone?: string; user_code?: string; verification_uri?: string; verification_uri_complete?: string; expires_at?: number; error?: string; connector?: PhotonStatus };
-type GmailStatus = { accounts: string[]; has_oauth_client: boolean; setup: { active: boolean; status: string; authorization_url?: string; error?: string } };
+type GmailStatus = { accounts: string[]; has_oauth_client: boolean; setup: { active: boolean; status: string; authorization_url?: string; manual_completion?: boolean; error?: string } };
 
 function gmailConnectionPanel(): HTMLElement {
   const card = h("section", { class: "card space-y-4 p-4" }, h("p", { class: "text-sm text-muted" }, "Checking Gmail…"));
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let callbackDraft = "";
   const draw = async (): Promise<void> => {
     try {
       const { gmail } = await api<{ gmail: GmailStatus }>("/api/connectors/gmail");
@@ -303,6 +327,23 @@ function gmailConnectionPanel(): HTMLElement {
         h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "1Helm owns the OAuth tokens on this host. Skipper can search, read, and draft; resident computers never receive credentials and sending stays disabled."));
       card.append(h("div", { class: "flex flex-wrap items-start justify-between gap-3" }, copy, connect));
       if (gmail.setup.authorization_url) card.append(h("a", { class: "btn-primary inline-flex w-fit text-sm", href: gmail.setup.authorization_url, target: "_blank", rel: "noopener noreferrer" }, "Authorize with Google"));
+      if (gmail.setup.active && gmail.setup.manual_completion) {
+        const callback = h("input", { class: "field font-mono text-xs", value: callbackDraft, placeholder: "http://127.0.0.1:.../gmail/callback?state=...&code=...", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+        callback.onfocus = () => { if (timer) { clearTimeout(timer); timer = null; } };
+        callback.oninput = () => { callbackDraft = callback.value; };
+        const callbackStatus = h("p", { class: "min-h-5 text-xs text-muted" });
+        const complete = h("button", { class: "btn-primary shrink-0 text-sm", type: "button", onclick: async () => {
+          complete.disabled = true; callbackStatus.textContent = "Completing securely on the 1Helm host…";
+          try {
+            await api("/api/connectors/gmail/callback", { body: { callback_url: callback.value } });
+            callbackDraft = ""; await draw();
+          } catch (error) { callbackStatus.textContent = (error as Error).message; complete.disabled = false; }
+        } }, "Complete connection") as HTMLButtonElement;
+        card.append(h("div", { class: "rounded-lg border border-line bg-panel p-4", dataset: { gmailManualCallback: "" } },
+          h("h4", { class: "font-semibold text-fg" }, "If the localhost page cannot load"),
+          h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "That is expected when Google opened on a different device. Copy the complete 127.0.0.1 URL from that browser's address bar and paste it here. 1Helm validates its one-time state and PKCE verifier, then exchanges the code on the host; it never fetches the pasted URL."),
+          h("div", { class: "mt-3 flex flex-col gap-2 sm:flex-row" }, callback, complete), callbackStatus));
+      }
       if (gmail.accounts.length) card.append(h("div", { class: "grid gap-2 sm:grid-cols-2" }, ...gmail.accounts.map((account) => h("div", { class: "rounded-lg border border-line bg-panel px-3 py-2" }, h("div", { class: "font-semibold text-fg" }, account), h("div", { class: "mt-0.5 text-xs text-muted" }, "Read · search · draft · host-owned")))));
       if (!gmail.has_oauth_client) {
         const picker = h("input", { type: "file", accept: "application/json,.json", class: "hidden" }) as HTMLInputElement;
@@ -316,7 +357,7 @@ function gmailConnectionPanel(): HTMLElement {
       }
       if (gmail.setup.error) card.append(h("p", { class: "text-sm text-danger" }, gmail.setup.error));
       if (timer) clearTimeout(timer);
-      if (gmail.setup.active) timer = setTimeout(() => { void draw(); }, 1500);
+      if (gmail.setup.active && !callbackDraft) timer = setTimeout(() => { void draw(); }, 1500);
     } catch (error) { clear(card); card.append(h("p", { class: "text-sm text-danger" }, (error as Error).message)); }
   };
   void draw();
@@ -397,7 +438,10 @@ function feedbackPanel(): HTMLElement {
   void api<{ reports: FeedbackReport[]; central: FeedbackReport[] }>("/api/feedback").then(({ reports, central }) => {
     clear(wrap);
     const combined = [...reports, ...(central || []).filter((remote) => !reports.some((local) => local.public_id === remote.public_id))];
-    wrap.append(h("div", { class: "rounded-lg border border-accent/25 bg-accent-soft px-4 py-3 text-sm leading-6 text-fg" }, "Feedback is saved on this host first and relayed to the 1Helm team with automatic retries. Diagnostics are opt-in and exclude conversations, prompts, account content, terminal output, credentials, and OAuth material."));
+    wrap.append(h("div", { class: "rounded-lg border border-accent/25 bg-accent-soft px-4 py-3 text-sm leading-6 text-fg" },
+      "Feedback is saved on this host first and relayed to the 1Helm team with automatic retries. Diagnostics are opt-in and exclude conversations, prompts, account content, terminal output, credentials, and OAuth material. Company contact: ",
+      h("a", { class: "text-accent hover:underline", href: "mailto:build@1helm.com", target: "_blank", rel: "noopener" }, "build@1helm.com"),
+      "."));
     if (!combined.length) {
       wrap.append(h("div", { class: "card p-6 text-center text-sm text-muted" }, "No feedback reports yet."));
       return;

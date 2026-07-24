@@ -224,7 +224,9 @@ Settings → Connections → Gmail owns the connection on the 1Helm host.
 1. Once per Google Cloud project, create a Desktop app OAuth client, enable the
    Gmail API, and choose the downloaded JSON in 1Helm.
 2. Choose **Connect Gmail**. 1Helm opens a state-protected PKCE authorization and
-   receives the callback on loopback.
+   receives the callback on loopback. If the browser is on another device and
+   its `127.0.0.1` page cannot load, copy the complete callback URL from that
+   address bar and paste it into the Gmail connection card.
 3. Return to 1Helm after Google confirms the account.
 
 ![Gmail and Photon are native host-brokered connections](assets/guide/connections.png)
@@ -237,8 +239,10 @@ accounts to that resident. Gmail supports account inventory, search, read, and
 draft creation. Sending remains disabled. OAuth tokens live under 1Helm's
 host-owned data and never enter chat, Activity evidence, or a resident computer.
 
-The loopback callback belongs to the installed/local 1Helm host. A remotely
-viewed demo cannot authorize Gmail on a different machine.
+The pasted callback is never fetched. 1Helm validates its one-time state and
+PKCE verifier, then exchanges the authorization code from the host where the
+tokens belong. Automatic loopback completion still works when the browser is
+running on that host.
 
 ## Photon / iMessage
 
@@ -282,6 +286,15 @@ Settings → Members and create an LLM-independent notice in the Captain's
 `#main`. Collab is human-only and has no resident, bot, terminal, computer,
 model policy, or Files world. Channel membership gates HTTP, files, terminals,
 messages, and WebSocket fan-out.
+
+For privacy, support, or company questions, contact
+[`build@1helm.com`](mailto:build@1helm.com). Sensitive vulnerability reports
+belong in the repository's private GitHub security-advisory flow rather than
+ordinary email.
+
+Notification sounds are personal. Settings → Notifications provides a global
+mute for the signed-in account. Each channel's Settings view can mute only that
+channel or select its ping sound; these choices do not affect other members.
 
 ## Updates, removal, and recovery
 

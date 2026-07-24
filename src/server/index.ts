@@ -58,7 +58,7 @@ import { inspectCatalogSkill, installCatalogSkill, refreshSkillCatalog, searchSk
 import { auditEvents, verifyAuditChain } from "./audit.ts";
 import { configurePhoton, mapPhotonChannel, photonStatus, registerPhotonDispatcher, startPhotonConnector, stopPhotonConnector } from "./photon.ts";
 import { photonSetupStatus, startPhotonSetup } from "./photon-auth.ts";
-import { gmailConnectionStatus, saveGmailOAuthClient, startGmailConnection } from "./gmail.ts";
+import { completeGmailConnection, gmailConnectionStatus, saveGmailOAuthClient, startGmailConnection } from "./gmail.ts";
 import { cancelMnemosyneRuntimePreparation, ensureAgentMemory, mnemosyneAvailable, prepareMnemosyneRuntime } from "./memory.ts";
 import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
@@ -965,6 +965,12 @@ const server = createServer(async (req, res) => {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const b = await jbody(req);
       try { return json(res, 202, { gmail: await startGmailConnection(b.client) }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
+    if (p === "/api/connectors/gmail/callback" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      try { return json(res, 200, { gmail: await completeGmailConnection(b.callback_url) }); }
       catch (error) { return json(res, 400, { error: (error as Error).message }); }
     }
     if (p === "/api/connectors/photon" && m === "GET") {

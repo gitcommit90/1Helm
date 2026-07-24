@@ -200,21 +200,28 @@ export function icon(name: keyof typeof ICONS | string, size = 16): SVGElement {
 }
 
 let audioCtx: AudioContext | null = null;
+export type NotificationSound = "helm" | "bell" | "chime" | "pulse";
 /** Synthesized notification chirp — no asset files needed. */
-export function beep(kind: "msg" | "mention" = "msg"): void {
+export function beep(kind: "msg" | "mention" = "msg", sound: NotificationSound = "helm"): void {
   try {
     audioCtx = audioCtx || new (window.AudioContext || (window as any).webkitAudioContext)();
     const ctx = audioCtx;
-    const notes = kind === "mention" ? [880, 1320] : [660, 990];
-    notes.forEach((freq, i) => {
+    const voices: Record<NotificationSound, { notes: number[]; wave: OscillatorType; gap: number; duration: number; gain: number }> = {
+      helm: { notes: kind === "mention" ? [880, 1320] : [660, 990], wave: "sine", gap: 0.09, duration: 0.16, gain: 0.12 },
+      bell: { notes: kind === "mention" ? [1046.5, 1568] : [1046.5], wave: "triangle", gap: 0.13, duration: 0.32, gain: 0.1 },
+      chime: { notes: kind === "mention" ? [659.25, 783.99, 1046.5] : [523.25, 659.25, 783.99], wave: "sine", gap: 0.075, duration: 0.22, gain: 0.09 },
+      pulse: { notes: kind === "mention" ? [587.33, 783.99] : [440, 587.33], wave: "square", gap: 0.065, duration: 0.1, gain: 0.045 },
+    };
+    const voice = voices[sound] || voices.helm;
+    voice.notes.forEach((freq, i) => {
       const osc = ctx.createOscillator(); const gain = ctx.createGain();
-      osc.type = "sine"; osc.frequency.value = freq;
-      const t0 = ctx.currentTime + i * 0.09;
+      osc.type = voice.wave; osc.frequency.value = freq;
+      const t0 = ctx.currentTime + i * voice.gap;
       gain.gain.setValueAtTime(0, t0);
-      gain.gain.linearRampToValueAtTime(0.12, t0 + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.16);
+      gain.gain.linearRampToValueAtTime(voice.gain, t0 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + voice.duration);
       osc.connect(gain); gain.connect(ctx.destination);
-      osc.start(t0); osc.stop(t0 + 0.18);
+      osc.start(t0); osc.stop(t0 + voice.duration + 0.02);
     });
   } catch { /* audio not available */ }
 }

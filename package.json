@@ -1,10 +1,14 @@
 {
   "name": "1helm",
   "productName": "1Helm",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "private": true,
   "type": "module",
   "description": "1Helm is the self-hosted home for durable AI employees: one resident, one private computer, compounding memory and skills, and Skipper for every boundary.",
+  "author": {
+    "name": "Joseph Yaksich",
+    "email": "build@1helm.com"
+  },
   "main": "desktop/main.cjs",
   "scripts": {
     "assets:brand": "node scripts/generate-brand-assets.cjs",

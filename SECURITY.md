@@ -12,6 +12,10 @@ Use GitHub's **Report a vulnerability** flow for
 Include the affected version, platform, impact, minimum reproduction, and any
 relevant logs after removing credentials and personal data.
 
+For non-sensitive security questions or company contact, email
+[`build@1helm.com`](mailto:build@1helm.com). Do not send unpatched vulnerability
+details or secrets by ordinary email; use the private advisory flow above.
+
 Do not open a public issue for an unpatched vulnerability. Do not include API
 keys, OAuth tokens, Photon project secrets, private messages, workspace data,
 Apple signing material, or other people's personal information in a report.

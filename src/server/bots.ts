@@ -1442,6 +1442,32 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
     responseBody = text;
     paintBody(responseBody);
   };
+  const discardSilentTurnMessage = (): void => {
+    run("DELETE FROM agent_progress WHERE message_id=?", msgId);
+    run("DELETE FROM messages WHERE id=?", msgId);
+    if (threadRootId) {
+      const remaining = q(
+        `SELECT created FROM messages WHERE parent_id=?
+         AND body NOT LIKE '[scheduled-followup%'
+         AND body NOT LIKE '⟦followup⟧%'
+         AND body <> '_Working…_'
+         ORDER BY id`,
+        threadRootId,
+      );
+      const last = remaining.length ? Number(remaining[remaining.length - 1].created) : null;
+      run("UPDATE messages SET reply_count=?, last_reply=? WHERE id=?", remaining.length, last, threadRootId);
+      broadcastToChannel(channelId, {
+        type: "message_deleted",
+        channelId,
+        id: msgId,
+        deleted_ids: [msgId],
+        parent_id: threadRootId,
+        parent: { id: threadRootId, reply_count: remaining.length, last_reply: last },
+      });
+    }
+    refreshThreadSummary(threadRootId);
+    setStatus(agent, channelId, "ready");
+  };
   /** Body while tools/thinking are mid-flight: keep last real thought, never flash back to Working… */
   const paintStickyWorkingBody = (): void => {
     if (responseBody.trim()) {
@@ -1529,6 +1555,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
         if (streamedBody.trim()) liveThought = streamedBody;
         paintStickyWorkingBody();
         messages.push({ role: "assistant", content: content || "", tool_calls: toolCalls });
+        let scheduledSilentFollowup = false;
         for (const toolCall of toolCalls) {
           requireActiveTurn(channelId, controller.signal);
           const args = safeParse(toolCall.function.arguments);
@@ -1792,6 +1819,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
           }
           if (actionStatus === "complete") {
             lastCompletedTool = { name, result };
+            if (name === "schedule_followup") scheduledSilentFollowup = true;
             if (name === "inspect_web_source") {
               try {
                 const inspected = JSON.parse(result) as { requested_url?: string; final_url?: string };
@@ -1801,6 +1829,13 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
             }
           }
           messages.push({ role: "tool", tool_call_id: toolCall.id, name, content: result });
+        }
+        // A successful durable wake is the continuation. End this turn at the
+        // tool boundary so there is no second model request and no transient
+        // fake completion for clients to observe before cleanup.
+        if (scheduledSilentFollowup) {
+          discardSilentTurnMessage();
+          return;
         }
         if (awaitingQuestions) {
           if (!meaningfulAnswer(responseBody)) setBody("I need a few details before I continue.");
@@ -1838,32 +1873,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
       );
       // Wake turns that only re-schedule (or that echo the internal scaffold) must not pollute chat.
       if (silentReschedule || echoedScaffold) {
-        run("DELETE FROM agent_progress WHERE message_id=?", msgId);
-        run("DELETE FROM messages WHERE id=?", msgId);
-        if (threadRootId) {
-          const remaining = q(
-            `SELECT created FROM messages WHERE parent_id=?
-             AND body NOT LIKE '[scheduled-followup%'
-             AND body NOT LIKE '⟦followup⟧%'
-             AND body <> '_Working…_'
-             ORDER BY id`,
-            threadRootId,
-          );
-          const last = remaining.length ? Number(remaining[remaining.length - 1].created) : null;
-          run("UPDATE messages SET reply_count=?, last_reply=? WHERE id=?", remaining.length, last, threadRootId);
-          broadcastToChannel(channelId, {
-            type: "message_deleted",
-            channelId,
-            id: msgId,
-            deleted_ids: [msgId],
-            parent_id: threadRootId,
-            parent: { id: threadRootId, reply_count: remaining.length, last_reply: last },
-          });
-        }
-        refreshThreadSummary(threadRootId);
-        setStatus(agent, channelId, "ready");
-        turns.delete(activeTurn);
-        if (!turns.size) activeTurns.delete(channelId);
+        discardSilentTurnMessage();
         return;
       }
       if (!meaningfulAnswer(responseBody) && lastCompletedTool) setBody(completedToolAnswer(lastCompletedTool.name, lastCompletedTool.result));
@@ -1873,32 +1883,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
     requireActiveTurn(channelId, controller.signal);
     if (!meaningfulAnswer(responseBody) && lastCompletedTool) {
       if (lastCompletedTool.name === "schedule_followup" && !lastCompletedTool.result.startsWith("Error:")) {
-        run("DELETE FROM agent_progress WHERE message_id=?", msgId);
-        run("DELETE FROM messages WHERE id=?", msgId);
-        if (threadRootId) {
-          const remaining = q(
-            `SELECT created FROM messages WHERE parent_id=?
-             AND body NOT LIKE '[scheduled-followup%'
-             AND body NOT LIKE '⟦followup⟧%'
-             AND body <> '_Working…_'
-             ORDER BY id`,
-            threadRootId,
-          );
-          const last = remaining.length ? Number(remaining[remaining.length - 1].created) : null;
-          run("UPDATE messages SET reply_count=?, last_reply=? WHERE id=?", remaining.length, last, threadRootId);
-          broadcastToChannel(channelId, {
-            type: "message_deleted",
-            channelId,
-            id: msgId,
-            deleted_ids: [msgId],
-            parent_id: threadRootId,
-            parent: { id: threadRootId, reply_count: remaining.length, last_reply: last },
-          });
-        }
-        refreshThreadSummary(threadRootId);
-        setStatus(agent, channelId, "ready");
-        turns.delete(activeTurn);
-        if (!turns.size) activeTurns.delete(channelId);
+        discardSilentTurnMessage();
         return;
       }
       setBody(completedToolAnswer(lastCompletedTool.name, lastCompletedTool.result));

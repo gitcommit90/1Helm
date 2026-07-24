@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-07-24
+
+### Fixed
+
+- Successfully scheduling a durable agent follow-up now ends the active turn
+  at the tool boundary. The runtime no longer makes a second model request or
+  briefly exposes a fabricated completion before removing it, eliminating a
+  timing race observed during the clean macOS release test.
+- Gmail OAuth can now be completed from a remote browser by pasting its final
+  localhost callback URL into 1Helm. Automatic host-local callbacks still
+  work; the fallback validates the same one-time state and PKCE exchange.
+
+### Changed
+
+- The app's feedback surface and project privacy, support, and security
+  guidance now identify `build@1helm.com` as the company contact address.
+- Notification audio is now a per-user preference: every member can mute all
+  pings globally, mute an individual channel, and choose that channel's sound
+  without changing anyone else's experience.
+
 ## [0.0.7] - 2026-07-24
 
 ### Fixed
@@ -201,7 +221,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.7...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.8...HEAD
+[0.0.8]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.8
 [0.0.7]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.7
 [0.0.6]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.6
 [0.0.5]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.5
