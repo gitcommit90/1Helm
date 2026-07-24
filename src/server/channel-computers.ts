@@ -67,7 +67,7 @@ const APPLE_RUNTIME_VERSION = "1.1.0";
 export const APPLE_RUNTIME_PACKAGE = `container-${APPLE_RUNTIME_VERSION}-installer-signed.pkg`;
 export const APPLE_RUNTIME_URL = `https://github.com/apple/container/releases/download/${APPLE_RUNTIME_VERSION}/${APPLE_RUNTIME_PACKAGE}`;
 export const APPLE_RUNTIME_SHA256 = "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714";
-export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.6";
+export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.7";
 const CONTAINER_CANDIDATES = [process.env.HELM_CONTAINER_CLI, "/usr/local/bin/container", "/opt/homebrew/bin/container", "container"].filter(Boolean) as string[];
 const LXC_RUNTIME_VERSION = "1helm-lxc-runtime-v1";
 const LXC_HELPER_CANDIDATES = [
@@ -106,6 +106,12 @@ const MAX_WORKSPACE_SYNC_ENTRIES = Math.max(10_000, Number(process.env.HELM_WORK
 const SCROLLBACK_CAP = 256 * 1024;
 const terminalSessions = new Map<string, MachineTerminal>();
 const channelLocks = new Map<number, Promise<unknown>>();
+// Provisioning is a long host operation (the first LXC boot installs its
+// guest toolchain). The reconciler must not interpret the intentionally
+// marker-less machine that exists during that transaction as an ownership
+// violation. This is process-local on purpose: after a crash/restart there is
+// no active transaction, so the normal inspection path can recover or retry.
+const activeProvisioning = new Set<number>();
 const syncTimers = new Map<number, NodeJS.Timeout>();
 let reconcileTimer: NodeJS.Timeout | null = null;
 let reconcileStartupTimer: NodeJS.Timeout | null = null;
@@ -534,14 +540,19 @@ async function ensureWslRootfs(): Promise<string> {
 async function ensureLxcProvisioned(computer: ChannelComputer): Promise<void> {
   let inspection = await inspectLxc(computer);
   if (!inspection) {
-    run("UPDATE channel_computers SET provision_status='provisioning',last_error='',updated=? WHERE channel_id=?", now(), computer.channel_id);
-    markWorkspaceDirty(computer.channel_id, "*", "full");
-    const architecture = process.arch === "arm64" ? "arm64" : "amd64";
-    const created = await lxc(["create", computer.machine_id, ownerMarker(computer), String(computer.cpus), String(Math.round(computer.memory_bytes / 1024 ** 2)), architecture], { timeoutMs: 30 * 60_000 });
-    if (created.code !== 0) throw new Error(created.stderr.toString("utf8").trim() || created.stdout.toString("utf8").trim() || "LXC channel computer creation failed");
-    inspection = await inspectLxc(computer);
-    if (!inspection || inspection.homeMount !== "none") throw new Error("Provisioned LXC computer failed its ownership/isolation verification.");
-    recordComputerActivity(computer.channel_id, "Provisioned a persistent unprivileged LXC computer for this resident.", "complete");
+    activeProvisioning.add(computer.channel_id);
+    try {
+      run("UPDATE channel_computers SET provision_status='provisioning',last_error='',updated=? WHERE channel_id=?", now(), computer.channel_id);
+      markWorkspaceDirty(computer.channel_id, "*", "full");
+      const architecture = process.arch === "arm64" ? "arm64" : "amd64";
+      const created = await lxc(["create", computer.machine_id, ownerMarker(computer), String(computer.cpus), String(Math.round(computer.memory_bytes / 1024 ** 2)), architecture], { timeoutMs: 30 * 60_000 });
+      if (created.code !== 0) throw new Error(created.stderr.toString("utf8").trim() || created.stdout.toString("utf8").trim() || "LXC channel computer creation failed");
+      inspection = await inspectLxc(computer);
+      if (!inspection || inspection.homeMount !== "none") throw new Error("Provisioned LXC computer failed its ownership/isolation verification.");
+      recordComputerActivity(computer.channel_id, "Provisioned a persistent unprivileged LXC computer for this resident.", "complete");
+    } finally {
+      activeProvisioning.delete(computer.channel_id);
+    }
   }
   recordObserved(computer, inspection);
   run("UPDATE channel_computers SET provision_status='ready',desired_state='auto',last_update=?,last_update_attempt=?,last_error='',updated=? WHERE channel_id=?", now(), now(), now(), computer.channel_id);
@@ -1316,6 +1327,10 @@ export async function resizeChannelComputer(channelId: number, targetCpus: numbe
 
 async function reconcileOne(computer: ChannelComputer): Promise<void> {
   if (computer.desired_state === "deleted") return;
+  // A newly created isolated world does not receive its owner marker until
+  // guest bootstrap completes. The provisioning transaction performs the
+  // authoritative post-bootstrap inspection itself.
+  if (activeProvisioning.has(computer.channel_id)) return;
   const channel = q1("SELECT status FROM channels WHERE id=?", computer.channel_id);
   if (!channel) return;
   if (!isolatedBackend(computer)) { await ensureNativeProvisioned(computer); return; }

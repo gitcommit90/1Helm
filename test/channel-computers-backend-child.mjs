@@ -50,7 +50,22 @@ if (backend === "wsl") {
 }
 
 try {
-  const provisioned = await computers.provisionChannelComputer(channelId);
+  let provisioning;
+  if (backend === "lxc") {
+    process.env.FAKE_LXC_CREATE_DELAY_MS = "500";
+    const pending = computers.provisionChannelComputer(channelId);
+    const machineConfig = join(fakeState, "machines", record.machine_id, "config.json");
+    for (let attempt = 0; !existsSync(machineConfig) && attempt < 100; attempt++) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    }
+    assert(existsSync(machineConfig), "the fake LXC entered its marker-less provisioning window");
+    const concurrent = await computers.reconcileChannelComputers([channelId]);
+    assert.deepEqual(concurrent, { checked: 1, errors: 0 }, "fleet reconciliation leaves an active provisioning transaction alone");
+    assert.equal(db.q1("SELECT last_error FROM channel_computers WHERE channel_id=?", channelId).last_error, "");
+    provisioning = await pending;
+    delete process.env.FAKE_LXC_CREATE_DELAY_MS;
+  } else provisioning = await computers.provisionChannelComputer(channelId);
+  const provisioned = provisioning;
   assert.equal(provisioned.backend, backend);
   assert.equal(provisioned.home_mount, "none");
   assert.equal(provisioned.observed_state, "running");

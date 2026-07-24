@@ -34,6 +34,8 @@ if (operation === "create") {
   const [, name, owner, cpus, memoryMb] = args;
   const result = spawnSync(process.execPath, [fakeContainer, "machine", "create", "--name", name, "--cpus", cpus, "--memory", `${memoryMb}M`, "--home-mount", "none", "fake"], { env: process.env, encoding: null });
   if (result.status !== 0) fail(String(result.stderr || "create failed"));
+  const createDelay = Math.max(0, Math.min(5_000, Number(process.env.FAKE_LXC_CREATE_DELAY_MS || 0)));
+  if (createDelay) await new Promise((resolveDelay) => setTimeout(resolveDelay, createDelay));
   mkdirSync(join(machineDir(name), "var", "lib", "1helm"), { recursive: true });
   writeFileSync(ownerPath(name), `${owner}\n`);
   const config = JSON.parse(readFileSync(configPath(name), "utf8"));
