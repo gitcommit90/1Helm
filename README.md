@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="docs/assets/readme-hero.png" alt="1Helm — AI that keeps the job. One resident, one private computer, and a memory that compounds." width="100%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-hero-dark.png">
+    <img src="docs/assets/readme-hero-light.png" alt="1Helm — Intelligence should not be temporary. A permanent AI crew on your computer, with real memory." width="100%">
+  </picture>
 </p>
 
 <p align="center">
@@ -45,7 +48,11 @@ private Linux computer, curated memory, and scheduled obligations that survive
 restarts, model swaps, and closed laptops.
 
 <p align="center">
-  <img src="docs/assets/readme-workspace.png" alt="The real 1Helm workspace with a permanent product-launch resident and direct Skipper handoff" width="100%">
+  <a href="https://1helm.com">
+    <img src="docs/assets/readme-story.gif" alt="The 1Helm story — a hand-drawn scrollytelling tour of the captain, Skipper, and a crew of resident agents" width="720">
+  </a>
+  <br>
+  <sub>The whole story, as told at <a href="https://1helm.com">1helm.com</a> — click to scroll it yourself.</sub>
 </p>
 
 ## The job is the durable unit
@@ -70,6 +77,10 @@ resident automatically.
 
 **The Captain is the leader—not the package manager, retry loop, permission
 dialogue, or message bus between agents.**
+
+<p align="center">
+  <img src="docs/assets/readme-workspace.png" alt="The real 1Helm workspace with a permanent product-launch resident and direct Skipper handoff" width="100%">
+</p>
 
 ## A company, not a collection of chat sessions
 
