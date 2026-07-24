@@ -21,7 +21,7 @@ Process contract from intent to verified deploy. Commands: [release-checklist.md
   version bump on the release branch
        │
        v
-  tag · signed artifact · release notes · deploy target(s)
+  tag · signed DMG + updater ZIP + Linux host artifact · deploy target(s)
        │
        v
   verify (local health + clean install + public artifact)
@@ -77,7 +77,7 @@ Draft PRs are allowed for long slices; mark ready only when the quality bar is m
 2. `npm version patch|minor|major --no-git-tag-version` (or edit `package.json`).
 3. Commit the versioned source on the release branch before merge.
 4. After merge, tag the exact verified `main` commit and push the tag.
-5. Publish the verified artifact and release notes through a GitHub Release.
+5. Publish the verified DMG, native updater ZIP, Linux host artifact, and release notes through one GitHub Release.
 
 ## 7. Deploy
 
@@ -104,5 +104,7 @@ workspace state.
 | Behavior fixed | Tests + manual/API check |
 | Install path still works | Clean `CTRL_DATA_DIR` boot through the wizard plus platform acceptance |
 | Named release | Version, changelog, exact tag, verified public artifact, and clean installation |
+| Native host update | Published updater ZIP feed, installed-old-to-new Mac acceptance, and preserved Application Support |
+| Linux host update | Digest-qualified artifact, real systemd old-to-new update, health check, and preserved `/var/lib/1helm` |
 
 If deploy verification was skipped, say so. Do not call a ship “done.”

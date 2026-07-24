@@ -55,6 +55,14 @@ const launchApp = async () => {
       IMPROVEMENT_INTERVAL_MS: "600000",
       CTRL_MAX_TOOL_ROUNDS: "6",
       NODE_ENV: "test",
+      HELM_TEST_WEB_SEARCH_FIXTURE: JSON.stringify([{
+        title: "West Hollywood sinkhole filled after water main repairs",
+        url: "https://example.com/news/sunset-sinkhole",
+        snippet: "A water-main rupture created a roadway sinkhole on Sunset Boulevard.",
+        source: "Example News",
+        published_at: "2026-07-23T18:00:00.000Z",
+        image_url: "https://example.com/images/sunset-sinkhole.jpg",
+      }]),
       HELM_TEST_WEB_SOURCE_FIXTURES: JSON.stringify({
         "https://example.com/openterminal/": [
           "# Open Terminal",
@@ -64,6 +72,8 @@ const launchApp = async () => {
           "Mounting the Docker socket is effective host-root access. File-browser root is only a UI hint.",
           "Single-container multi-user mode is not hard production isolation.",
         ].join("\n\n"),
+        "https://example.com/news/sunset-sinkhole": "Sunset Boulevard reopened after crews repaired a broken water main and filled and stabilized the resulting roadway collapse.",
+        "https://example.com/images/sunset-sinkhole.jpg": { content_type: "image/jpeg", base64: "/9j/2Q==" },
       }),
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -213,6 +223,33 @@ try {
   const gmailQuestionCount = gmailDb.prepare("SELECT COUNT(*) n FROM agent_questions aq JOIN messages m ON m.id=aq.message_id WHERE m.parent_id=?").get(gmailRequest.body.message.id).n;
   gmailDb.close();
   ok(gmailActions.some((action) => action.tool === "connect_gmail") && !gmailActions.some((action) => action.tool === "ask_user") && gmailQuestionCount === 0 && !JSON.stringify(gmailActions).match(/(?:refresh_token|access_token|client_secret)/i), "plain-language Gmail setup invokes the native host-owned connector once without duplicate interviews or token exposure");
+
+  const eventRequest = await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper give me an update and explanation of the Sunset Boulevard sinkhole in West Hollywood from two days ago" } }, captain);
+  const eventReply = await waitForAgentReply(eventRequest.body.message.id, captain, "skipper");
+  const eventDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const eventThread = eventDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(eventRequest.body.message.id);
+  const eventActions = eventDb.prepare("SELECT tool,status FROM tool_actions WHERE thread_id=? ORDER BY id").all(eventThread.id);
+  const eventAgentReplies = eventDb.prepare("SELECT body FROM messages WHERE parent_id=? AND bot_id IS NOT NULL").all(eventRequest.body.message.id);
+  eventDb.close();
+  ok(eventActions.some((action) => action.tool === "search_web" && action.status === "complete")
+    && eventActions.some((action) => action.tool === "inspect_web_source" && action.status === "complete")
+    && !eventActions.some((action) => action.tool === "ask_user")
+    && eventAgentReplies.length === 1
+    && /July 23, 2026[\s\S]*https:\/\/example\.com\/news\/sunset-sinkhole/i.test(eventReply.body),
+  "a recent-event question immediately researches dated sources and produces one coherent answer without interviewing the user");
+
+  const imageRequest = await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper show me an actual image of that Sunset Boulevard sinkhole incident", parentId: eventRequest.body.message.id } }, captain);
+  await waitFor(async () => {
+    const thread = await api(`/api/messages/${eventRequest.body.message.id}/thread`, {}, captain);
+    return thread.body.replies?.find((message) => message.id !== eventReply.id && message.author?.name === "skipper" && /Answer complete/.test(message.body || "") && message.attachments?.length);
+  }, "sourced event image attachment", 15_000);
+  const imageDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const allImageActions = imageDb.prepare("SELECT tool,status FROM tool_actions WHERE thread_id=? ORDER BY id").all(eventThread.id);
+  imageDb.close();
+  ok(imageRequest.status === 200
+    && allImageActions.some((action) => action.tool === "attach_web_image" && action.status === "complete")
+    && !allImageActions.some((action) => action.tool === "generate_image"),
+  "a real-event image request attaches a sourced web image and never substitutes generated art");
 
   const rapidRoots = await Promise.all([1, 2, 3].map((index) => api(`/api/channels/${main.id}/messages`, { body: { body: `@skipper slow-turn run whoami for independent thread ${index}` } }, captain)));
   const rapidIds = rapidRoots.map((result) => result.body.message.id);
@@ -561,8 +598,9 @@ try {
   ok(accessClaim.status === 200 && requesterChannelsBefore.length === 2 && collab && requesterMain?.agent?.kind === "skipper" && requesterMain.computer === null
     && collabRuntime.agents === 0 && collabRuntime.computers === 0 && collabRuntime.bots === 0
     && hiddenBots.body.bots.some((bot) => bot.name === "skipper") && hiddenProviders.status === 403 && hiddenComputers.body.computers.length === 0
-    && hiddenRouting.status === 403 && hiddenSkills.status === 403 && hiddenCollaboration.status === 403,
-  "an approved coworker lands in human-only Collab plus a private Skipper #main without provider, computer, or Captain control-plane access");
+    && hiddenRouting.status === 200 && hiddenRouting.body.scope === "member" && !JSON.stringify(hiddenRouting.body).includes("api_key")
+    && hiddenSkills.status === 403 && hiddenCollaboration.status === 403,
+  "an approved coworker lands in human-only Collab plus a private Skipper #main and a credential-safe personal provider surface without Captain control-plane access");
   ok(captainDeniedRequesterMain.status === 403, "the Captain cannot read a coworker's private personal #main");
   const requesterChannelRequest = await api(`/api/channels/${requesterMain.id}/messages`, { body: { body: '@skipper create a new channel called "requester-notes"' } }, requester);
   await waitForAgentReply(requesterChannelRequest.body.message.id, requester, "skipper");
@@ -600,9 +638,9 @@ try {
     && /→ complete\./.test(recoveredRows[0].summary || "")
     && /status=completed/.test(recoveredRows[0].action_result || "")
     && gateStayedOpen
-    && /You can run the command yourself/.test(deflectedReply.body || "")
+    && !/You can run the command yourself/.test(deflectedReply.body || "")
     && /Answer complete/.test(deflectedReply.body || ""),
-  "runtime outcome gate continues hand-holding toward a verified result without erasing the already-rendered answer and keeps one outcome-first Activity row");
+  "runtime outcome gate replaces rejected hand-holding with one verified final answer and keeps one outcome-first Activity row");
   const captainUser = (await api("/api/users", {}, requester)).body.users.find((candidate) => candidate.username === "captain");
   const captainInvitation = await api(`/api/channels/${requesterNotes.id}/messages`, { body: { body: "@captain join my private notes channel" } }, requester);
   const addCaptain = await api(`/api/channels/${requesterNotes.id}/members/${captainUser.id}`, { body: { messageId: captainInvitation.body.message.id } }, requester);

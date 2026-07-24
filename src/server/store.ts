@@ -133,6 +133,11 @@ export function resolveModel(botId: number, channelId: number | null, threadRoot
   return (q1("SELECT model FROM bots WHERE id=?", botId)?.model as string) || "";
 }
 
+export function resolveModelForUser(botId: number, channelId: number | null, threadRootId: number | null, userId: number): string {
+  const personal = userId ? String(q1("SELECT model FROM user_model_prefs WHERE user_id=?", userId)?.model || "") : "";
+  return personal || resolveModel(botId, channelId, threadRootId);
+}
+
 export function setModelPref(botId: number, scope: string, scopeId: string, model: string | null): void {
   if (model) run("INSERT INTO model_prefs (bot_id, scope, scope_id, model) VALUES (?,?,?,?) ON CONFLICT(bot_id,scope,scope_id) DO UPDATE SET model=excluded.model", botId, scope, scopeId, model);
   else run("DELETE FROM model_prefs WHERE bot_id=? AND scope=? AND scope_id=?", botId, scope, scopeId);

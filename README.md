@@ -133,10 +133,18 @@ Connect multiple ChatGPT, Claude, Gemini/Antigravity, and xAI OAuth accounts;
 OpenRouter, NVIDIA NIM, Cloudflare, GLM, and custom API keys; then enable exact
 models and assemble fallback or round-robin routes.
 
+Each signed-in workspace member connects their own OAuth accounts and API keys.
+New accounts and routes are private to that member unless their owner explicitly
+shares them with the workspace; shared accounts are usable but remain editable
+only by their owner. Each member may inherit the workspace model or choose a
+personal model from their own-plus-shared pool.
+
 Changing a route never replaces the resident or discards its computer, memory,
 skills, files, obligations, or thread history. The same fabric also exposes an
 authenticated OpenAI- and Anthropic-compatible `/v1` endpoint for external
-tools.
+tools. Every member receives separate revocable keys whose identity selects that
+same personal pool, plus a dedicated loopback port on the 1Helm host. The port
+does not run on the laptop or phone viewing the web UI.
 
 ## What ships now
 
@@ -155,6 +163,9 @@ tools.
   SHA-256 chain for new operational events.
 - Local-first collaboration through an optional workspace domain routed to the
   Captain's Mac; workspace state and provider credentials remain on that Mac.
+- Host-owned updates: a signed native Mac updater plus an atomic, digest-verified Linux system service with health-check rollback.
+- Automatic terminal heartbeat and silent same-session reconnection after
+  backgrounding, focus changes, or brief network interruptions.
 - Signed, Apple-notarized, stapled Apple Silicon DMG releases.
 
 ### Platform truth
@@ -184,8 +195,17 @@ Application state lives under:
 ~/Library/Application Support/1Helm
 ```
 
-Replacing the app with a newer signed DMG preserves that directory, including
-credentials, databases, resident state, files, and workspaces.
+After the first install, Profile → Check for updates asks the Mac running
+1Helm—not the device displaying the web UI—to download and verify the signed
+update. **Restart & install** replaces the app while preserving that directory,
+including credentials, databases, resident state, files, and workspaces.
+
+The standard Linux installer similarly provisions a root-owned systemd updater.
+The unprivileged web service may write only a fixed request file; systemd then
+downloads the exact release artifact on the Linux host, verifies GitHub's
+SHA-256 asset digest, stages a versioned release, switches atomically, restarts,
+health-checks, and restores the previous release on failure. Arbitrary source
+checkouts remain operator-managed and never send a Mac installer to the browser.
 
 ## Run the source workspace
 
@@ -208,7 +228,7 @@ A fresh data directory opens first-run setup. The source runtime defaults to
 | `PORT` | `8123` | HTTP/WebSocket control-plane port. |
 | `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and narrow workspace mirrors. |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `native` elsewhere | Explicit development/test backend override. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.3` | Versioned Apple channel-machine image. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.4` | Versioned Apple channel-machine image. |
 
 ### Agent-first JSON CLI
 

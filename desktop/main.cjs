@@ -1,18 +1,20 @@
 "use strict";
 
-const { app, BrowserWindow, dialog, shell, session } = require("electron");
+const { app, autoUpdater, BrowserWindow, dialog, shell, session } = require("electron");
 const { createServer } = require("node:net");
 const { pathToFileURL } = require("node:url");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const { spawnSync } = require("node:child_process");
+const { createNativeUpdateService } = require("./updater.cjs");
 
 const LOOPBACK = "127.0.0.1";
 let mainWindow = null;
 let authWindow = null;
 let localOrigin = "";
 let quitting = false;
+let hostUpdateService = null;
 const remoteWorkspacePath = () => path.join(app.getPath("userData"), "remote-workspace");
 
 function preferredWorkspaceOrigin() {
@@ -209,7 +211,16 @@ if (!app.requestSingleInstanceLock()) {
     try {
       removeLegacyWakeLaunchAgent();
       keepSkipperAvailable();
+      hostUpdateService = createNativeUpdateService({ app, autoUpdater });
+      hostUpdateService.initialize();
+      globalThis[Symbol.for("1helm.nativeUpdater")] = {
+        state: hostUpdateService.state,
+        check: hostUpdateService.check,
+        install: hostUpdateService.install,
+      };
+      process.on("1helm-native-update-ready", () => { hostUpdateService?.commitInstall(); });
       await startLocalRuntime();
+      hostUpdateService.schedule();
       const login = app.getLoginItemSettings({ type: "mainAppService" });
       createWindow(!login.wasOpenedAtLogin && !process.argv.includes("--1helm-background"));
     } catch (error) {
@@ -229,6 +240,7 @@ if (!app.requestSingleInstanceLock()) {
     if (process.platform !== "darwin") app.quit();
   });
   app.on("before-quit", () => {
+    hostUpdateService?.stop();
     if (quitting) return;
     quitting = true;
     // Explicit Quit is respected; the signed main-app login service starts the

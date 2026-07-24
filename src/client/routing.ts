@@ -78,6 +78,7 @@ function accountCard(account: RoutingProvider, refresh: () => Promise<void>, con
     if (accountMeta) accountMeta.textContent = `${account.name}${account.accountAlias ? ` · ${account.accountAlias}` : ""} · ${enabled}/${models.length} models`;
   };
   const toggle = h("input", { type: "checkbox", checked: account.enabled !== false, class: "accent-accent" }) as HTMLInputElement;
+  toggle.disabled = account.mine === false;
   toggle.onchange = async () => {
     const result = await routingAction<{ ok: boolean }>("app:set-provider-enabled", { id: account.id, enabled: toggle.checked }).catch(() => ({ ok: false }));
     if (!result.ok) toggle.checked = !toggle.checked;
@@ -87,6 +88,7 @@ function accountCard(account: RoutingProvider, refresh: () => Promise<void>, con
   const modelToggles: Array<{ model: RoutingProvider["models"][number]; input: HTMLInputElement }> = [];
   for (const model of models) {
     const modelToggle = h("input", { type: "checkbox", checked: model.enabled !== false, class: "accent-accent", dataset: { modelToggle: model.id } }) as HTMLInputElement;
+    modelToggle.disabled = account.mine === false;
     modelToggles.push({ model, input: modelToggle });
     modelToggle.onchange = async () => {
       const requested = modelToggle.checked;
@@ -112,6 +114,8 @@ function accountCard(account: RoutingProvider, refresh: () => Promise<void>, con
   };
   const allOn = h("button", { class: "btn-ghost text-xs", dataset: { modelsAll: "on" } }, "All on") as HTMLButtonElement;
   const allOff = h("button", { class: "btn-ghost text-xs", dataset: { modelsAll: "off" } }, "All off") as HTMLButtonElement;
+  allOn.disabled = account.mine === false;
+  allOff.disabled = account.mine === false;
   allOn.onclick = () => { void setAllModels(true, [allOn, allOff]); };
   allOff.onclick = () => { void setAllModels(false, [allOn, allOff]); };
   const exact = h("input", { class: "field", placeholder: "Exact provider model ID" }) as HTMLInputElement;
@@ -128,11 +132,18 @@ function accountCard(account: RoutingProvider, refresh: () => Promise<void>, con
       count,
       h("div", { class: "flex gap-2" }, allOn, allOff)),
     models.length ? modelList : h("p", { class: "py-4 text-sm text-muted" }, "No models are configured for this account yet."),
-    h("div", { class: "mt-3 grid gap-2 sm:grid-cols-[1fr_auto]" }, exact, addModel), addStatus,
+    account.mine === false ? null : h("div", { class: "mt-3 grid gap-2 sm:grid-cols-[1fr_auto]" }, exact, addModel), account.mine === false ? null : addStatus,
     h("div", { class: "mt-3 flex flex-wrap justify-end gap-2" },
-      ["chatgpt", "claude", "antigravity", "xai", "codex"].includes(account.type)
+      account.mine
+        ? h("label", { class: "mr-auto flex min-h-10 items-center gap-2 text-xs text-muted" }, (() => {
+          const sharing = h("input", { type: "checkbox", checked: account.visibility === "workspace", class: "accent-accent" }) as HTMLInputElement;
+          sharing.onchange = async () => { await routingAction("app:set-provider-visibility", { id: account.id, visibility: sharing.checked ? "workspace" : "personal" }); await refresh(); };
+          return sharing;
+        })(), "Share with workspace")
+        : h("span", { class: "mr-auto chip text-[10px]" }, "Shared by a teammate"),
+      account.mine !== false && ["chatgpt", "claude", "antigravity", "xai", "codex"].includes(account.type)
         ? h("button", { class: "btn-subtle text-xs", onclick: () => { void openOauth(account.type === "codex" ? "chatgpt" : account.type, refresh, account.id); } }, "Reconnect") : null,
-      h("button", { class: "btn-danger text-xs", onclick: async () => {
+      account.mine === false ? null : h("button", { class: "btn-danger text-xs", onclick: async () => {
         if (!(await confirm(`Disconnect ${accountName(account)}? Existing routes will keep working if another account for this provider remains.`))) return;
         await routingAction("app:remove-provider", account.id); await refresh();
       } }, "Disconnect")));
@@ -457,6 +468,7 @@ function routeEditor(state: RoutingState, refresh: () => Promise<void>, existing
   const wrap = h("section", { class: "routing-route-editor" });
   const name = h("input", { class: "field font-mono", value: existing?.name || "", placeholder: "coding" }) as HTMLInputElement;
   const strategy = h("select", { class: "field" }, h("option", { value: "fallback", selected: existing?.strategy !== "round-robin" }, "Fallback — use preferred order"), h("option", { value: "round-robin", selected: existing?.strategy === "round-robin" }, "Round robin — rotate starting source")) as HTMLSelectElement;
+  const sharing = h("input", { type: "checkbox", checked: existing?.visibility === "workspace", class: "accent-accent" }) as HTMLInputElement;
   const families = providerFamilies(state);
   const provider = h("select", { class: "field" }, h("option", { value: "" }, "Choose provider"), ...families.map((item) => h("option", { value: item.id }, item.name))) as HTMLSelectElement;
   const model = h("select", { class: "field", disabled: true }, h("option", { value: "" }, "Choose model")) as HTMLSelectElement;
@@ -496,9 +508,10 @@ function routeEditor(state: RoutingState, refresh: () => Promise<void>, existing
       if (!members.some((item) => `${item.providerId || item.providerType}::${item.model}` === key)) members.push(candidate);
       redraw();
     } }, "Add destination")),
+    h("label", { class: "mt-3 flex min-h-10 items-center gap-2 text-xs text-muted" }, sharing, "Share this route with the workspace"),
     h("div", { class: "mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, h("div", { class: "flex gap-2" }, h("button", { class: "btn-ghost text-xs", onclick: () => wrap.remove() }, "Cancel"), h("button", { class: "btn-primary text-xs", onclick: async () => {
       if (!name.value.trim() || !members.length) { status.textContent = "Give the route a name and at least one destination."; return; }
-      const result = await routingAction<{ ok: boolean; error?: string }>("app:save-combo", { id: existing?.id, name: name.value.trim(), strategy: strategy.value, members }).catch((error: Error) => ({ ok: false, error: error.message }));
+      const result = await routingAction<{ ok: boolean; error?: string }>("app:save-combo", { id: existing?.id, name: name.value.trim(), strategy: strategy.value, members, visibility: sharing.checked ? "workspace" : "personal" }).catch((error: Error) => ({ ok: false, error: error.message }));
       if (!result.ok) { status.textContent = result.error || "Could not save route."; return; }
       wrap.remove(); await refresh();
     } }, existing ? "Save route" : "Create route"))));
@@ -513,7 +526,7 @@ function routesView(state: RoutingState, refresh: () => Promise<void>, confirm: 
     list.append(h("article", { class: "routing-route-card" },
       h("div", { class: "flex min-w-0 items-start justify-between gap-3" }, h("div", { class: "min-w-0" }, h("div", { class: "eyebrow text-faint" }, route.strategy === "round-robin" ? "Round robin" : "Fallback"), h("h3", { class: "mt-1 break-all font-mono text-lg font-semibold text-fg" }, route.name)), h("span", { class: "chip shrink-0" }, `${route.members.length} stop${route.members.length === 1 ? "" : "s"}`)),
       h("div", { class: "mt-4 space-y-2" }, ...route.members.map((member, index) => h("div", { class: "flex items-center gap-2 text-sm" }, h("span", { class: "routing-route-index" }, String(index + 1)), h("span", { class: "truncate text-muted" }, `${member.providerType || state.providers.find((item) => item.id === member.providerId)?.name || "Provider"} · ${member.model}`)))),
-      h("div", { class: "mt-4 flex justify-end gap-2 border-t border-line pt-3" }, h("button", { class: "btn-ghost text-xs", onclick: () => { clear(editorMount); editorMount.append(routeEditor(state, refresh, route)); } }, "Edit"), h("button", { class: "btn-ghost text-xs text-danger", onclick: async () => { if (await confirm(`Delete the ${route.name} route?`)) { await routingAction("app:delete-combo", route.id); await refresh(); } } }, "Delete"))));
+      h("div", { class: "mt-4 flex justify-end gap-2 border-t border-line pt-3" }, route.mine === false ? h("span", { class: "mr-auto chip text-[10px]" }, "Shared by a teammate") : null, route.mine === false ? null : h("button", { class: "btn-ghost text-xs", onclick: () => { clear(editorMount); editorMount.append(routeEditor(state, refresh, route)); } }, "Edit"), route.mine === false ? null : h("button", { class: "btn-ghost text-xs text-danger", onclick: async () => { if (await confirm(`Delete the ${route.name} route?`)) { await routingAction("app:delete-combo", route.id); await refresh(); } } }, "Delete"))));
   }
   return h("div", {}, heading("Model policy", "Named routes", "Give agents and external tools one stable model name while 1Helm handles account pools, retries, provider fallback, and round-robin selection.", create), editorMount, state.combos.length ? list : empty("No named routes yet", "Create a route such as coding, fast, or review. Direct connected models remain usable without a route."));
 }
@@ -581,7 +594,15 @@ async function logsView(): Promise<HTMLElement> {
   await load(); return wrap;
 }
 
-function endpointView(state: RoutingState, refresh: () => Promise<void>, confirm: Dialog): HTMLElement {
+async function endpointView(state: RoutingState, refresh: () => Promise<void>, confirm: Dialog): Promise<HTMLElement> {
+  const credentials = await api<Pick<RoutingState, "apiKey" | "apiKeys" | "bindHost" | "port" | "serverListening" | "directEndpoint" | "personalPort">>("/api/routing/credentials");
+  state.apiKey = credentials.apiKey;
+  state.apiKeys = credentials.apiKeys;
+  state.bindHost = credentials.bindHost;
+  state.port = credentials.port;
+  state.serverListening = credentials.serverListening;
+  state.directEndpoint = credentials.directEndpoint;
+  state.personalPort = credentials.personalPort;
   const keys = h("div", { class: "space-y-2" });
   const drawKeys = (): void => {
     clear(keys);
@@ -592,19 +613,16 @@ function endpointView(state: RoutingState, refresh: () => Promise<void>, confirm
       keys.append(h("div", { class: "routing-key-row" }, h("div", { class: "min-w-0 flex-1" }, h("div", { class: "font-semibold text-fg" }, key.name), h("code", { class: "block truncate text-[10px] text-faint" }, masked)), h("button", { class: "btn-ghost text-xs", onclick: async () => { await copyText(key.key); } }, "Copy"), toggle, h("button", { class: "btn-ghost p-2 text-danger", onclick: async () => { if (await confirm(`Revoke ${key.name}? Clients using it will stop immediately.`)) { await routingAction("app:revoke-api-key", key.id); await refresh(); } } }, icon("trash", 14))));
     }
   };
-  const loadKeys = async (): Promise<void> => {
-    const credentials = await api<Pick<RoutingState, "apiKey" | "apiKeys" | "bindHost" | "port" | "serverListening">>("/api/routing/credentials");
-    state.apiKey = credentials.apiKey; state.apiKeys = credentials.apiKeys; state.bindHost = credentials.bindHost; state.port = credentials.port; state.serverListening = credentials.serverListening;
-    drawKeys();
-  };
-  void loadKeys();
+  drawKeys();
   const name = h("input", { class: "field", placeholder: "Key name, e.g. MacBook Claude Code" }) as HTMLInputElement;
   const endpoint = publicEndpoint();
-  return h("div", {}, heading("One address", "Endpoint & keys", "Use the same routed models outside 1Helm. Gateway keys are separate from workspace login sessions and can be revoked individually."),
+  return h("div", {}, heading("Your routed identity", "Endpoint & keys", "These keys resolve only your personal accounts plus providers teammates explicitly shared with the workspace. They are separate from your 1Helm login and can be revoked individually."),
     h("section", { class: "routing-endpoint-hero" }, h("div", {}, h("div", { class: "eyebrow text-faint" }, "OpenAI / Anthropic base URL"), h("code", { class: "mt-2 block break-all text-lg text-fg" }, endpoint)), h("button", { class: "btn-primary min-h-10 shrink-0 text-xs", onclick: async () => { await copyText(endpoint); } }, "Copy endpoint")),
     h("div", { class: "routing-section-title" }, "Gateway keys"), keys,
     h("div", { class: "mt-3 grid gap-2 sm:grid-cols-[1fr_auto]" }, name, h("button", { class: "btn-primary min-h-10 text-xs", onclick: async () => { await routingAction("app:create-api-key", name.value.trim() || "1Helm client"); await refresh(); } }, icon("plus", 14), "Create key")),
-    h("div", { class: "routing-section-title" }, "Network"),
+    state.personalPort ? h("section", { class: "mt-4 rounded-lg border border-line bg-surface p-4" }, h("div", { class: "eyebrow text-faint" }, "Your dedicated host port"), h("code", { class: "mt-2 block break-all text-sm text-fg" }, state.directEndpoint || `http://127.0.0.1:${state.personalPort}/v1`), h("p", { class: "mt-2 text-xs leading-5 text-muted" }, "The port runs on the 1Helm host—not on this browser device—and enforces the same personal key identity.")) : null,
+    state.scope === "captain" ? h("div", { class: "routing-section-title" }, "Network") : null,
+    state.scope !== "captain" ? null :
     h("div", { class: "routing-network-row" }, h("div", { class: "min-w-0 flex-1" }, h("div", { class: "font-semibold text-fg" }, "Direct router port"), h("p", { class: "mt-1 text-xs leading-5 text-muted" }, "The 1Helm URL above works wherever your workspace is reachable. Optionally expose the engine's direct port to LAN or Tailscale clients.")), (() => {
       const select = h("select", { class: "field max-w-[190px]" }, h("option", { value: "127.0.0.1", selected: state.bindHost !== "0.0.0.0" }, "Localhost only"), h("option", { value: "0.0.0.0", selected: state.bindHost === "0.0.0.0" }, "LAN / Tailscale")) as HTMLSelectElement;
       select.onchange = async () => {
@@ -621,7 +639,6 @@ function endpointView(state: RoutingState, refresh: () => Promise<void>, confirm
 }
 
 export function routingPanel(isAdmin: boolean, confirm: Dialog): HTMLElement {
-  if (!isAdmin) return h("div", { class: "routing-empty" }, h("div", { class: "font-display text-xl text-fg" }, "Captain-managed model fabric"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Connected models and named routes are available to your resident agents. A workspace Captain manages accounts, keys, quota, and diagnostics."));
   const shell = h("div", { class: "routing-shell" });
   const nav = h("nav", { class: "routing-nav", "aria-label": "Provider controls" });
   const content = h("div", { class: "routing-content" });
@@ -630,7 +647,9 @@ export function routingPanel(isAdmin: boolean, confirm: Dialog): HTMLElement {
   let shellActivityListener: ((activity: unknown) => void) | null = null;
   const expandedAccounts = new Set<string>();
   const expandedGroups = new Set<string>();
-  const views: Array<[RoutingView, string]> = [["sources", "Sources"], ["routes", "Routes"], ["activity", "Activity"], ["quota", "Quota"], ["logs", "Logs"], ["endpoint", "Endpoint"]];
+  const views: Array<[RoutingView, string]> = isAdmin
+    ? [["sources", "Sources"], ["routes", "Routes"], ["activity", "Activity"], ["quota", "Quota"], ["logs", "Logs"], ["endpoint", "Endpoint"]]
+    : [["sources", "My sources"], ["routes", "My routes"], ["activity", "Activity"], ["endpoint", "My endpoint"]];
   const loadState = async (): Promise<RoutingState> => api<RoutingState>("/api/routing/state");
   const draw = async (): Promise<void> => {
     clear(content); content.append(h("div", { class: "routing-loading" }, "Reading the model fabric…"));
@@ -643,7 +662,7 @@ export function routingPanel(isAdmin: boolean, confirm: Dialog): HTMLElement {
       else if (current === "activity") content.append(await activityView(state));
       else if (current === "quota") content.append(await quotaView());
       else if (current === "logs") content.append(await logsView());
-      else content.append(endpointView(state, refresh, confirm));
+      else content.append(await endpointView(state, refresh, confirm));
       if (shellActivityListener) routingActivityListeners.delete(shellActivityListener);
       shellActivityListener = (activity) => {
         if (!shell.isConnected) { routingActivityListeners.delete(shellActivityListener!); return; }

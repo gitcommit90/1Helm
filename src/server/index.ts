@@ -64,7 +64,7 @@ import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from ".
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
 import { startFollowupLoop, threadFollowupView, bumpThreadFollowup } from "./followups.ts";
 import { createWorkflow, listWorkflows, registerWorkflowDispatcher, setWorkflowStatus, startWorkflowLoop, stopWorkflowLoop } from "./workflows.ts";
-import { appUpdateStatus, installedAppVersion } from "./updates.ts";
+import { hostUpdateState, installedAppVersion, runHostUpdateAction } from "./updates.ts";
 import {
   internalRoutingProviderId,
   isInternalRoutingProvider,
@@ -581,19 +581,19 @@ const server = createServer(async (req, res) => {
     // 1Helm-native control-plane facade over the embedded routing engine.
     // Account credentials and gateway keys are workspace-admin material.
     if (p === "/api/routing/state" && m === "GET") {
-      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
-      return json(res, 200, await routingState());
+      if (!canUseAgentSurfaces(user)) return json(res, 403, { error: "Join an agent channel to use provider controls." });
+      return json(res, 200, await routingState(Number(user.id), Boolean(user.is_admin)));
     }
     if (p === "/api/routing/credentials" && m === "GET") {
-      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
-      return json(res, 200, await routingCredentials());
+      if (!canUseAgentSurfaces(user)) return json(res, 403, { error: "Join an agent channel to use provider controls." });
+      return json(res, 200, await routingCredentials(Number(user.id), Boolean(user.is_admin)));
     }
     if (p === "/api/routing/models" && m === "GET") {
       if (!canUseAgentSurfaces(user)) return json(res, 403, { error: "Join an agent channel to use model controls." });
-      return json(res, 200, { models: await routingModels() });
+      return json(res, 200, { models: await routingModels(Number(user.id)) });
     }
     if (p === "/api/routing/action" && m === "POST") {
-      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      if (!canUseAgentSurfaces(user)) return json(res, 403, { error: "Join an agent channel to use provider controls." });
       const b = await jbody(req);
       const action = String(b.action || "");
       const allowed = new Set([
@@ -603,9 +603,12 @@ const server = createServer(async (req, res) => {
         "app:save-combo", "app:delete-combo", "app:create-api-key", "app:revoke-api-key",
         "app:set-api-key-enabled", "app:set-model-enabled", "app:set-all-models-enabled",
         "app:add-model", "app:remove-model", "app:logs-get", "app:logs-clear", "app:set-bind-host",
+        "app:set-provider-visibility",
       ]);
       if (!allowed.has(action)) return json(res, 400, { error: "Unsupported routing action." });
-      const result = await routingInvoke(action, b.payload);
+      const adminOnly = new Set(["app:logs-get", "app:logs-clear", "app:set-bind-host", "app:quota-get", "app:quota-refresh"]);
+      if (!user.is_admin && adminOnly.has(action)) return json(res, 403, { error: "Captain/admin only" });
+      const result = await routingInvoke(action, b.payload, Number(user.id), Boolean(user.is_admin));
       if (result.ok !== false) broadcastAdmins({ type: "routing_changed", action });
       return json(res, result.ok === false ? 400 : 200, result);
     }
@@ -645,8 +648,24 @@ const server = createServer(async (req, res) => {
 
     if (p === "/api/me") return json(res, 200, { user: publicUser(user), workspace: workspaceView() });
     if (p === "/api/app/update" && m === "GET") {
-      try { return json(res, 200, await appUpdateStatus(APP_ROOT)); }
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      try { return json(res, 200, await hostUpdateState(APP_ROOT, DATA_DIR)); }
       catch (error) { return json(res, 502, { error: (error as Error).message }); }
+    }
+    if (p === "/api/app/update" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const b = await jbody(req);
+      const action = String(b.action || "");
+      if (action !== "download" && action !== "install") return json(res, 400, { error: "Choose a supported host update action." });
+      try {
+        const update = await runHostUpdateAction(APP_ROOT, DATA_DIR, action);
+        json(res, 202, update);
+        if (update.mode === "native-macos" && update.status === "installing") {
+          setTimeout(() => { void shutdown(true).then(() => process.emit("1helm-native-update-ready")); }, 100).unref();
+        }
+        return;
+      }
+      catch (error) { return json(res, 409, { error: (error as Error).message }); }
     }
     if (p === "/api/app/removal" && m === "GET") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
@@ -736,15 +755,22 @@ const server = createServer(async (req, res) => {
     if (p === "/api/workspace" && m === "GET") return json(res, 200, { workspace: workspaceView() });
     if (p === "/api/workspace/model-policy" && m === "GET") {
       if (!canUseAgentSurfaces(user)) return json(res, 403, { error: "Join an agent channel to use model controls." });
-      const current = String(q1("SELECT default_model FROM workspace WHERE id=1")?.default_model || "");
-      return json(res, 200, { model: current, models: await routingModels() });
+      const workspaceModel = String(q1("SELECT default_model FROM workspace WHERE id=1")?.default_model || "");
+      const personalModel = String(q1("SELECT model FROM user_model_prefs WHERE user_id=?", user.id)?.model || "");
+      return json(res, 200, { model: personalModel || workspaceModel, inherited: !personalModel, workspace_model: workspaceModel, models: await routingModels(Number(user.id)) });
     }
     if (p === "/api/workspace/model-policy" && m === "PATCH") {
-      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const b = await jbody(req);
       const model = String(b.model || "").trim();
-      const available = await routingModels();
-      if (!model || !available.some((candidate) => candidate.id === model)) return json(res, 400, { error: "Choose an enabled model or named route." });
+      const available = await routingModels(Number(user.id));
+      if (model && !available.some((candidate) => candidate.id === model)) return json(res, 400, { error: "Choose a model available through your accounts or the shared workspace pool." });
+      if (!user.is_admin || b.personal === true) {
+        if (model) run(`INSERT INTO user_model_prefs (user_id,model,updated) VALUES (?,?,?)
+          ON CONFLICT(user_id) DO UPDATE SET model=excluded.model,updated=excluded.updated`, user.id, model, now());
+        else run("DELETE FROM user_model_prefs WHERE user_id=?", user.id);
+        return json(res, 200, { ok: true, model: model || String(q1("SELECT default_model FROM workspace WHERE id=1")?.default_model || ""), inherited: !model, models: available });
+      }
+      if (!model) return json(res, 400, { error: "Choose an enabled model or named route." });
       const internalId = await internalRoutingProviderId();
       run("UPDATE workspace SET default_model=?,default_provider_id=? WHERE id=1", model, internalId);
       run("UPDATE bots SET provider_id=? WHERE id IN (SELECT bot_id FROM agents WHERE status<>'deleted')", internalId);
@@ -1475,15 +1501,16 @@ const server = createServer(async (req, res) => {
       const b = await jbody(req);
       const baseUrl = String(b.base_url || "").trim();
       const apiKey = String(b.api_key || "");
-      const tested = await routingInvoke("app:test-keyed-provider", { baseUrl, apiKey, providerType: "openai-compat" });
+      const tested = await routingInvoke("app:test-keyed-provider", { baseUrl, apiKey, providerType: "openai-compat" }, Number(user.id), true);
       if (tested.ok === false) return json(res, 502, { error: String(tested.error || "Provider test failed") });
       const added = await routingInvoke("app:add-keyed-provider", {
         name: String(b.name || "Provider").trim(), baseUrl, apiKey, models: tested.models || [],
-      });
+        visibility: "workspace",
+      }, Number(user.id), true);
       if (added.ok === false) return json(res, 400, { error: String(added.error || "Could not add provider") });
       const id = await internalRoutingProviderId();
       const provider = providerView(q1("SELECT * FROM providers WHERE id=?", id)!);
-      const routing = await routingState() as {
+      const routing = await routingState(Number(user.id), true) as {
         providers?: Array<{ id?: string; models?: Array<{ gatewayId?: string; id?: string; name?: string; enabled?: boolean }> }>;
       };
       const source = (routing.providers || []).find((item) => item.id === added.id);
@@ -1520,9 +1547,9 @@ const server = createServer(async (req, res) => {
         if (!r.ok) return json(res, 502, { error: `OpenRouter exchange failed (${r.status}): ${(await r.text()).slice(0, 200)}` });
         const key = (await r.json() as { key?: string }).key;
         if (!key) return json(res, 502, { error: "No key returned by OpenRouter" });
-        const tested = await routingInvoke("app:test-keyed-provider", { baseUrl: "https://openrouter.ai/api/v1", apiKey: key, providerType: "openrouter" });
+        const tested = await routingInvoke("app:test-keyed-provider", { baseUrl: "https://openrouter.ai/api/v1", apiKey: key, providerType: "openrouter" }, Number(user.id), true);
         if (tested.ok === false) return json(res, 502, { error: String(tested.error || "OpenRouter model discovery failed") });
-        const added = await routingInvoke("app:add-keyed-provider", { preset: "openrouter", name: String(b.name || "OpenRouter").trim(), apiKey: key, models: tested.models || [] });
+        const added = await routingInvoke("app:add-keyed-provider", { preset: "openrouter", name: String(b.name || "OpenRouter").trim(), apiKey: key, models: tested.models || [], visibility: "workspace" }, Number(user.id), true);
         if (added.ok === false) return json(res, 400, { error: String(added.error || "Could not save OpenRouter") });
         const id = await internalRoutingProviderId();
         const provider = providerView(q1("SELECT * FROM providers WHERE id=?", id)!);
@@ -1825,7 +1852,7 @@ async function bootstrap(): Promise<void> {
 void bootstrap();
 
 let shuttingDown = false;
-const shutdown = async (): Promise<void> => {
+const shutdown = async (forNativeUpdate = false): Promise<void> => {
   if (shuttingDown) return;
   shuttingDown = true;
   await stopRoutingEngine().catch(() => undefined);
@@ -1833,8 +1860,12 @@ const shutdown = async (): Promise<void> => {
   await stopPhotonConnector().catch(() => undefined);
   stopWorkflowLoop();
   await shutdownChannelComputers().catch(() => undefined);
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 12_000).unref();
+  for (const client of wss.clients) client.close(1012, "1Helm host restarting");
+  await Promise.race([
+    new Promise<void>((resolve) => server.close(() => resolve())),
+    new Promise<void>((resolve) => { const timer = setTimeout(resolve, 12_000); timer.unref(); }),
+  ]);
+  if (!forNativeUpdate) process.exit(0);
 };
 process.once("SIGTERM", () => { void shutdown(); });
 process.once("SIGINT", () => { void shutdown(); });

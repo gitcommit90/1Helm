@@ -99,6 +99,12 @@ Files created through either path appear in Files after reconciliation.
 ![The channel Files surface with explicit Open and Download](assets/guide/files.png)
 
 The terminal prompt displays the live current path and changes after `cd`.
+1Helm sends a terminal heartbeat while the pane is open and automatically
+reconnects a dropped browser transport to the same live shell. Briefly
+backgrounding the app or changing networks does not print disconnect noise or
+discard the shell's working directory, exported variables, running process, or
+scrollback. If the host confirms that the underlying terminal session itself no
+longer exists, 1Helm opens a fresh one.
 Ordinary residents cannot select or enter the Captain's native Mac. On supported
 Apple Silicon Macs, each resident runs inside its own Apple `container machine`
 with `home-mount=none`; source/CI compatibility backends do not claim equivalent
@@ -150,6 +156,14 @@ Cloudflare, GLM, or custom OpenAI-compatible endpoints. Enable accounts and
 models independently, then use a direct model or named fallback/round-robin
 route.
 
+Providers are member-owned. Any signed-in member may connect their own OAuth
+accounts or API keys. A new provider or route starts private: only its owner can
+see and use it. The owner may explicitly choose **Share with workspace**, which
+makes it available to teammates without letting them reconnect, disable,
+reconfigure, or delete the owner's credential. A shared route can reference
+only providers that are also shared. Each member can choose **My model** from
+their own-plus-shared pool or return to the Captain's workspace default.
+
 ![The live Requests in flight → 1Helm → Providers visualization](assets/guide/providers.png)
 
 The visualization reflects live requests and their selected destination.
@@ -158,9 +172,24 @@ account does not prevent a healthy account in the same family from serving its
 shared model. Quotas and Logs provide account-aware evidence, and disabled
 accounts must not appear in a request's attempts or log record.
 
-The Endpoint section manages separate external gateway keys. 1Helm agents use a
-private internal credential that is not exposed, disabled, or revoked with
-external keys.
+The Endpoint section manages separate external gateway keys for the signed-in
+member. A personal key sent to the workspace `/v1` URL is also the routing
+identity: requests see only that member's providers plus accounts explicitly
+shared with the workspace. Each member additionally receives a distinct
+loopback port on the 1Helm host for host-local tools. That port is a convenience,
+not an unauthenticated trust boundary; clients still use a personal revocable
+key. 1Helm agents use a separate private internal credential that is not
+exposed, disabled, or revoked with external keys.
+
+## Current events and real images
+
+Recent-event questions trigger public web or news research immediately. The
+agent should search before asking for ordinary identifying details, inspect the
+useful source, and answer once with publication dates and clickable source
+links. When the user asks to see a real event, the agent attaches an image
+returned by that research with its article source and caption. Generated art is
+reserved for requests to create or illustrate something and cannot silently
+stand in for a news photograph.
 
 ## Skills and Learn a new skill
 
@@ -248,15 +277,28 @@ messages, and WebSocket fan-out.
 
 ## Updates, removal, and recovery
 
-Signed desktop releases are unique patch versions. Installing a newer 1Helm app
-preserves:
+Signed desktop releases are unique patch versions. Profile → Check for updates
+always operates on the machine hosting the active 1Helm instance. In the native
+Mac app, Electron downloads and verifies a notarized update ZIP on that Mac and
+offers **Restart & install** only when it is ready. It does not navigate the
+browsing device to a DMG.
+
+The standard Linux systemd install uses a root-owned updater. 1Helm can request
+that one fixed operation, but cannot choose an arbitrary URL, command, or target
+path. The host updater requires a stable GitHub release and its SHA-256 asset
+digest, installs into a versioned directory, switches the current symlink
+atomically, restarts, health-checks, and restores the prior release if needed.
+Source/developer deployments report that their host operator owns updates.
+
+Every host update preserves:
 
 ```text
 ~/Library/Application Support/1Helm
 ```
 
-That directory contains databases, credentials, workspaces, resident state,
-and narrow mirrors. Do not delete it during an app replacement.
+On macOS that directory contains databases, credentials, workspaces, resident
+state, and narrow mirrors. Linux preserves the equivalent host state under
+`/var/lib/1helm`. Do not delete either data root during replacement.
 
 Before removing 1Helm, use its removal preparation flow. It is Captain-only,
 requires typed confirmation, reports backend-owned resident machines, and

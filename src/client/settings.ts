@@ -73,7 +73,9 @@ export function openSettings(tab: Tab = "agents"): void {
   const overlay = h("div", { class: "modal-overlay fixed inset-0 z-40 bg-surface" });
   const bodyEl = h("main", { class: "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 sm:p-6 lg:p-8" });
   const page = h("div", { class: "flex h-full w-full flex-col overflow-hidden bg-surface" });
-  const tabs: [Tab, string][] = S.me.is_admin ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["workflows", "Workflows"], ["connections", "Connections"], ["audit", "Audit"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]] : [];
+  const tabs: [Tab, string][] = S.me.is_admin
+    ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["workflows", "Workflows"], ["connections", "Connections"], ["audit", "Audit"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]]
+    : [["providers", "Providers"]];
   if (!tabs.length) return;
   const tabBar = h("nav", { class: "grid w-full shrink-0 grid-cols-2 gap-1 border-b border-line bg-raised/30 p-3 sm:grid-cols-3 lg:w-64 lg:grid-cols-1 lg:border-b-0 lg:border-r lg:p-4", "aria-label": "Settings sections" });
   const draw = (t: Tab): void => {

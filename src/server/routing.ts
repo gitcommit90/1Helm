@@ -19,6 +19,15 @@ const openaiCompat = require("@gitcommit90/rerouted/src/lib/providers/openai-com
 const { runProviderModelTest } = require("@gitcommit90/rerouted/src/lib/model-test.js") as {
   runProviderModelTest: (options: Record<string, unknown>) => Promise<Record<string, unknown>>;
 };
+const { createRouter } = require("@gitcommit90/rerouted/src/lib/router.js") as {
+  createRouter: (options: Record<string, unknown>) => RoutingRuntime["router"];
+};
+const { createGateway } = require("@gitcommit90/rerouted/src/lib/gateway.js") as {
+  createGateway: (options: Record<string, unknown>) => UserGateway;
+};
+const { createRequestActivity } = require("@gitcommit90/rerouted/src/lib/request-activity.js") as {
+  createRequestActivity: () => RoutingRuntime["requestActivity"];
+};
 const providerFabricChatGPT = require("@gitcommit90/rerouted/src/lib/providers/chatgpt.js") as {
   chat: (provider: RoutingProvider, options: {
     model: string;
@@ -65,6 +74,8 @@ type RoutingProvider = {
   accessToken?: string;
   enabled?: boolean;
   models?: Array<string | { id: string; name?: string; enabled?: boolean }>;
+  ownerUserId?: number;
+  visibility?: "personal" | "workspace";
   [key: string]: unknown;
 };
 
@@ -74,7 +85,13 @@ type RoutingCombo = {
   strategy: "fallback" | "round-robin";
   members: Array<Record<string, unknown>>;
   createdAt?: number;
+  ownerUserId?: number;
+  visibility?: "personal" | "workspace";
 };
+
+function comboMatches(entry: RoutingCombo, id: string): boolean {
+  return entry.id === id || String(entry.name || "").trim() === id;
+}
 
 type RoutingConfig = {
   onboardingComplete: boolean;
@@ -84,10 +101,23 @@ type RoutingConfig = {
   bindHost: string;
   serverEnabled: boolean;
   apiKey: string;
-  apiKeys: Array<{ id: string; key: string; name: string; enabled: boolean; createdAt: number; internal?: boolean; scope?: string }>;
+  apiKeys: Array<{ id: string; key: string; name: string; enabled: boolean; createdAt: number; internal?: boolean; scope?: string; ownerUserId?: number }>;
   providers: RoutingProvider[];
   combos: RoutingCombo[];
   [key: string]: unknown;
+};
+
+type UserGateway = {
+  start: (port?: number, host?: string) => Promise<{ port: number; host: string }>;
+  stop: () => Promise<void>;
+  getListeningAddress: () => { port: number; host: string } | null;
+};
+
+type UserGatewayRuntime = {
+  userId: number;
+  port: number;
+  gateway: UserGateway;
+  router: RoutingRuntime["router"];
 };
 
 // ReRouted's generic OpenAI-compatible adapter historically assumed every
@@ -127,6 +157,132 @@ type OauthCompletion = { connected: boolean; account?: Record<string, unknown>; 
 const oauthWatchers = new Map<string, NodeJS.Timeout>();
 const oauthCompletions = new Map<string, OauthCompletion>();
 const oauthFinalizing = new Map<string, Promise<Record<string, unknown>>>();
+const oauthOwners = new Map<string, { userId: number; type: string; providerIds: Set<string> }>();
+const activeOauthByFamily = new Map<string, string>();
+const userGateways = new Map<number, UserGatewayRuntime>();
+
+const oauthKey = (userId: number, type: string): string => `${userId}:${type}`;
+const oauthFamily = (type: string): string => ["chatgpt", "codex"].includes(type) ? "chatgpt" : type;
+
+const visibilityOf = (entry: { ownerUserId?: unknown; visibility?: unknown }): "personal" | "workspace" =>
+  entry.visibility === "personal" && Number(entry.ownerUserId || 0) > 0 ? "personal" : "workspace";
+const visibleToUser = (entry: { ownerUserId?: unknown; visibility?: unknown }, userId: number): boolean =>
+  visibilityOf(entry) === "workspace" || Number(entry.ownerUserId || 0) === userId;
+const ownedByUser = (entry: { ownerUserId?: unknown }, userId: number): boolean => Number(entry.ownerUserId || 0) === userId;
+
+function stampNewProviders(target: RoutingRuntime, before: Set<string>, userId: number, visibility: "personal" | "workspace" = "personal"): string[] {
+  const ids: string[] = [];
+  target.store.update((config) => {
+    for (const provider of config.providers || []) {
+      if (before.has(provider.id)) continue;
+      provider.ownerUserId = userId;
+      provider.visibility = visibility;
+      ids.push(provider.id);
+    }
+  });
+  return ids;
+}
+
+function scopedConfig(config: RoutingConfig, userId: number, gatewayKey?: string): RoutingConfig {
+  const providers = (config.providers || []).filter((provider) => visibleToUser(provider, userId)).map((provider) => ({ ...provider }));
+  const providerIds = new Set(providers.map((provider) => provider.id));
+  const combos = (config.combos || []).filter((combo) => visibleToUser(combo, userId)).map((combo) => ({
+    ...combo,
+    members: (combo.members || []).filter((member) => {
+      const providerId = String(member.providerId || "");
+      return !providerId || providerIds.has(providerId);
+    }),
+  })).filter((combo) => combo.members.length > 0);
+  const apiKeys: RoutingConfig["apiKeys"] = q("SELECT id,key,name,enabled,created FROM user_routing_keys WHERE user_id=?", userId).map((entry) => ({ id: String(entry.id), key: String(entry.key), name: String(entry.name), enabled: Boolean(entry.enabled), createdAt: Number(entry.created), ownerUserId: userId }));
+  if (gatewayKey) apiKeys.push({ id: `key_user_${userId}`, key: gatewayKey, name: "1Helm user endpoint", enabled: true, createdAt: now(), ownerUserId: userId, internal: true, scope: `1helm-user:${userId}` });
+  return { ...config, providers, combos, apiKeys, apiKey: gatewayKey || "" };
+}
+
+function migrateRoutingOwnership(target: RoutingRuntime): void {
+  const captainId = Number(q1("SELECT id FROM users WHERE is_admin=1 ORDER BY id LIMIT 1")?.id || 0);
+  if (!captainId) return;
+  target.store.update((config) => {
+    for (const provider of config.providers || []) {
+      if (!Number(provider.ownerUserId || 0)) provider.ownerUserId = captainId;
+      if (!provider.visibility) provider.visibility = "workspace";
+    }
+    for (const combo of config.combos || []) {
+      if (!Number(combo.ownerUserId || 0)) combo.ownerUserId = captainId;
+      if (!combo.visibility) combo.visibility = "workspace";
+    }
+    const legacyKeys = (config.apiKeys || []).filter((entry) => !isInternalGatewayKey(entry));
+    for (const entry of legacyKeys) run(`INSERT OR IGNORE INTO user_routing_keys (id,user_id,key,name,enabled,created) VALUES (?,?,?,?,?,?)`,
+      String(entry.id), Number(entry.ownerUserId || captainId), String(entry.key), String(entry.name || "Migrated client"), entry.enabled === false ? 0 : 1, Number(entry.createdAt || now()));
+    config.apiKeys = (config.apiKeys || []).filter(isInternalGatewayKey);
+  });
+}
+
+function userEndpointRow(userId: number): { port: number; internal_key: string } {
+  const existing = q1("SELECT port,internal_key FROM user_routing_endpoints WHERE user_id=?", userId);
+  if (existing) return { port: Number(existing.port), internal_key: String(existing.internal_key) };
+  const used = new Set(q("SELECT port FROM user_routing_endpoints").map((row) => Number(row.port)));
+  let port = Math.max(4950, Number(process.env.HELM_USER_ROUTER_PORT_BASE || 4950));
+  while (used.has(port)) port++;
+  const key = `rru-${randomBytes(24).toString("hex")}`;
+  run("INSERT INTO user_routing_endpoints (user_id,port,internal_key,created,updated) VALUES (?,?,?,?,?)", userId, port, key, now(), now());
+  return { port, internal_key: key };
+}
+
+async function ensureUserGateway(userId: number): Promise<UserGatewayRuntime> {
+  const existing = userGateways.get(userId);
+  if (existing) return existing;
+  const target = await startRoutingEngine(onActivity || undefined);
+  const endpoint = userEndpointRow(userId);
+  const store = {
+    load: () => scopedConfig(target.store.load(), userId, endpoint.internal_key),
+    save: () => undefined,
+    update: (fn: (config: RoutingConfig) => void) => target.store.update((config) => fn(config)),
+  };
+  const requestActivity = createRequestActivity();
+  const baseRouter = createRouter({ store });
+  const recordUserUsage = (result: Record<string, unknown>, body: Record<string, unknown>, status: number, usage?: Record<string, unknown> | null): void => {
+    const prompt = Number(usage?.prompt_tokens ?? usage?.input_tokens ?? 0) || 0;
+    const completion = Number(usage?.completion_tokens ?? usage?.output_tokens ?? 0) || 0;
+    const cached = Number(usage?.cached_tokens ?? (usage?.prompt_tokens_details as Record<string, unknown> | undefined)?.cached_tokens ?? 0) || 0;
+    run(`INSERT INTO routing_usage_events
+      (user_id,provider_id,model,status,prompt_tokens,completion_tokens,cached_tokens,detail,created)
+      VALUES (?,?,?,?,?,?,?,?,?)`,
+    userId, String(result.providerId || ""), String(body.model || ""), status, prompt, completion, cached,
+    JSON.stringify({ providerType: result.providerType || "", providerName: result.providerName || "", accountAlias: result.accountAlias || null }).slice(0, 4000), now());
+  };
+  const router = {
+    ...baseRouter,
+    chatCompletions: async (options: Record<string, unknown>) => {
+      const result = await (baseRouter as unknown as { chatCompletions: (input: Record<string, unknown>) => Promise<Record<string, unknown>> }).chatCompletions(options);
+      const body = options.body && typeof options.body === "object" ? options.body as Record<string, unknown> : {};
+      const streamPipe = result.streamPipe;
+      if (result.ok !== false && typeof streamPipe === "function") {
+        result.streamPipe = async (clientResponse: unknown) => {
+          try {
+            const usage = await (streamPipe as (response: unknown) => Promise<Record<string, unknown> | null>)(clientResponse);
+            recordUserUsage(result, body, 200, usage);
+            return usage;
+          } catch (error) {
+            recordUserUsage(result, body, Number((error as { status?: unknown }).status || 502), null);
+            throw error;
+          }
+        };
+      } else {
+        const openAiJson = result.openAiJson && typeof result.openAiJson === "object" ? result.openAiJson as Record<string, unknown> : {};
+        const usage = openAiJson.usage && typeof openAiJson.usage === "object" ? openAiJson.usage as Record<string, unknown> : null;
+        recordUserUsage(result, body, result.ok === false ? Number(result.status || 502) : 200, usage);
+      }
+      return result;
+    },
+  } as RoutingRuntime["router"];
+  const gateway = createGateway({ store, router, requestActivity });
+  const desiredPort = await choosePort(endpoint.port, "127.0.0.1", false);
+  const address = await gateway.start(desiredPort, "127.0.0.1");
+  if (address.port !== endpoint.port) run("UPDATE user_routing_endpoints SET port=?,updated=? WHERE user_id=?", address.port, now(), userId);
+  const created = { userId, port: address.port, gateway, router };
+  userGateways.set(userId, created);
+  return created;
+}
 
 const chatGPTFabricProviders = (config: RoutingConfig): RoutingProvider[] => (config.providers || []).filter((provider) => {
   if (provider.enabled === false || !["chatgpt", "codex"].includes(String(provider.type || ""))) return false;
@@ -195,56 +351,76 @@ export async function generateRoutingChatGPTImageWith(
 
 /** Generate through the authoritative multi-account fabric, including token
  * refresh persistence and account/model fallback. */
-export async function generateRoutingChatGPTImage(prompt: string, signal?: AbortSignal): Promise<Buffer> {
+export async function generateRoutingChatGPTImage(prompt: string, signal?: AbortSignal, userId = 0): Promise<Buffer> {
   const target = await startRoutingEngine(onActivity || undefined);
-  return generateRoutingChatGPTImageWith(target.store, providerFabricChatGPT, prompt, signal);
+  if (!userId) return generateRoutingChatGPTImageWith(target.store, providerFabricChatGPT, prompt, signal);
+  const store = {
+    load: () => scopedConfig(target.store.load(), userId),
+    save: target.store.save,
+    update: target.store.update,
+  };
+  return generateRoutingChatGPTImageWith(store, providerFabricChatGPT, prompt, signal);
 }
 
 function oauthType(payload: unknown): string {
   return typeof payload === "string" ? payload : String((payload as { type?: unknown } | null)?.type || "");
 }
 
-function stopOauthWatcher(type: string): void {
-  const timer = oauthWatchers.get(type);
+function stopOauthWatcher(key: string): void {
+  const timer = oauthWatchers.get(key);
   if (timer) clearInterval(timer);
-  oauthWatchers.delete(type);
+  oauthWatchers.delete(key);
 }
 
-async function finishOauth(target: RoutingRuntime, payload: Record<string, unknown>, automatic = false): Promise<Record<string, unknown>> {
+function releaseOauthSession(key: string): void {
+  stopOauthWatcher(key);
+  const owner = oauthOwners.get(key);
+  if (owner && activeOauthByFamily.get(oauthFamily(owner.type)) === key) activeOauthByFamily.delete(oauthFamily(owner.type));
+  oauthOwners.delete(key);
+}
+
+async function finishOauth(target: RoutingRuntime, payload: Record<string, unknown>, userId: number, automatic = false): Promise<Record<string, unknown>> {
   const type = oauthType(payload);
-  const completed = oauthCompletions.get(type);
+  const key = oauthKey(userId, type);
+  const completed = oauthCompletions.get(key);
   if (completed?.connected) return { ok: true, account: completed.account, connected: true };
-  const existing = oauthFinalizing.get(type);
+  const owner = oauthOwners.get(key);
+  if (!owner || owner.userId !== userId) return { ok: false, error: "This OAuth connection is not active for your account." };
+  const existing = oauthFinalizing.get(key);
   if (existing) return existing;
   const pending = (async () => {
     const result = publicControlPlaneResult(await target.controlPlane.invoke("app:oauth-complete", [payload], { harness: true }));
     if (result.ok !== false) {
-      stopOauthWatcher(type);
-      oauthCompletions.set(type, { connected: true, account: result.account as Record<string, unknown> | undefined });
+      if (owner?.userId) stampNewProviders(target, owner.providerIds, owner.userId, "personal");
+      releaseOauthSession(key);
+      oauthCompletions.set(key, { connected: true, account: result.account as Record<string, unknown> | undefined });
       ensureInternalProvider(target);
       onActivity?.();
     } else if (automatic) {
-      stopOauthWatcher(type);
-      oauthCompletions.set(type, { connected: false, error: String(result.error || "Connection failed.") });
+      releaseOauthSession(key);
+      oauthCompletions.set(key, { connected: false, error: String(result.error || "Connection failed.") });
     }
     return result;
-  })().finally(() => { oauthFinalizing.delete(type); });
-  oauthFinalizing.set(type, pending);
+  })().finally(() => { oauthFinalizing.delete(key); });
+  oauthFinalizing.set(key, pending);
   return pending;
 }
 
-function watchOauth(target: RoutingRuntime, type: string, providerId?: string): void {
-  stopOauthWatcher(type);
+function watchOauth(target: RoutingRuntime, userId: number, type: string, providerId?: string): void {
+  const key = oauthKey(userId, type);
+  stopOauthWatcher(key);
   const startedAt = Date.now();
   const timer = setInterval(() => {
-    if (oauthFinalizing.has(type)) return;
+    if (oauthFinalizing.has(key)) return;
     void target.controlPlane.invoke("app:oauth-status", [type], { harness: true }).then((status) => {
-      if (status.hasCode) return finishOauth(target, { type, providerId, pasteCode: "" }, true);
-      if (!status.active || Date.now() - startedAt > 20 * 60_000) stopOauthWatcher(type);
+      if (status.hasCode) return finishOauth(target, { type, providerId, pasteCode: "" }, userId, true);
+      if (!status.active || Date.now() - startedAt > 20 * 60_000) {
+        releaseOauthSession(key);
+      }
     }).catch(() => undefined);
   }, 750);
   timer.unref();
-  oauthWatchers.set(type, timer);
+  oauthWatchers.set(key, timer);
 }
 
 function legacyRows(): Array<Record<string, unknown>> {
@@ -484,6 +660,13 @@ function reconcileModelPolicies(target: RoutingRuntime): void {
   for (const pref of q("SELECT bot_id,scope,scope_id,model FROM model_prefs")) {
     if (!available.has(String(pref.model || ""))) run("DELETE FROM model_prefs WHERE bot_id=? AND scope=? AND scope_id=?", pref.bot_id, pref.scope, pref.scope_id);
   }
+  for (const pref of q("SELECT user_id,model FROM user_model_prefs")) {
+    const userId = Number(pref.user_id || 0);
+    const scoped = userId ? scopedConfig(target.store.load(), userId) : target.store.load();
+    const scopedStore = { load: () => scoped, save: () => undefined, update: () => undefined };
+    const scopedModels = new Set((createRouter({ store: scopedStore }).listModels().data || []).map((model) => String(model.id || "").trim()).filter(Boolean));
+    if (!scopedModels.has(String(pref.model || ""))) run("DELETE FROM user_model_prefs WHERE user_id=?", userId);
+  }
   for (const bot of q("SELECT id,model FROM bots")) {
     if (String(bot.model || "") && !available.has(String(bot.model))) run("UPDATE bots SET model=? WHERE id=?", fallback, bot.id);
   }
@@ -501,16 +684,17 @@ async function initializeEngineConfig(target: RoutingRuntime): Promise<void> {
   }
 }
 
-async function choosePort(preferred: number, host: string): Promise<number> {
-  const requested = Number(process.env.HELM_ROUTER_PORT || preferred || 4949);
-  const candidates = process.env.HELM_ROUTER_PORT ? [requested] : [...Array(20)].map((_, index) => requested + index);
+async function choosePort(preferred: number, host: string, honorConfiguredPort = true): Promise<number> {
+  const configured = honorConfiguredPort ? process.env.HELM_ROUTER_PORT : "";
+  const requested = Number(configured || preferred || 4949);
+  const candidates = configured ? [requested] : [...Array(20)].map((_, index) => requested + index);
   const available = (port: number): Promise<boolean> => new Promise((resolve, reject) => {
     const probe = createNetServer();
     probe.once("error", (error: NodeJS.ErrnoException) => error.code === "EADDRINUSE" ? resolve(false) : reject(error));
     probe.listen(port, host, () => probe.close(() => resolve(true)));
   });
   for (const candidate of candidates) if (await available(candidate)) return candidate;
-  if (process.env.HELM_ROUTER_PORT) throw new Error(`Router port ${requested} is unavailable.`);
+  if (configured) throw new Error(`Router port ${requested} is unavailable.`);
   return new Promise((resolve, reject) => {
     const fallback = createNetServer(); fallback.once("error", reject);
     fallback.listen(0, host, () => { const address = fallback.address(); const port = typeof address === "object" && address ? address.port : 0; fallback.close(() => resolve(port)); });
@@ -531,6 +715,7 @@ export async function startRoutingEngine(activityCallback?: (activity?: unknown)
     });
     await initializeEngineConfig(target);
     migrateLegacyProviders(target);
+    migrateRoutingOwnership(target);
     ensureInternalGatewayKey(target);
     const config = target.store.load();
     const host = String(config.bindHost || "127.0.0.1");
@@ -557,6 +742,11 @@ export async function stopRoutingEngine(): Promise<void> {
   for (const type of oauthWatchers.keys()) stopOauthWatcher(type);
   oauthCompletions.clear();
   oauthFinalizing.clear();
+  oauthOwners.clear();
+  activeOauthByFamily.clear();
+  const gateways = [...userGateways.values()];
+  userGateways.clear();
+  await Promise.all(gateways.map((entry) => entry.gateway.stop().catch(() => undefined)));
   if (target) await target.close({ drainMs: 10_000 });
 }
 
@@ -564,35 +754,140 @@ export function routingReady(): boolean {
   return !!runtime;
 }
 
-export async function routingInvoke(action: string, payload?: unknown): Promise<Record<string, unknown>> {
+export async function routingInvoke(action: string, payload?: unknown, userId = 0, isAdmin = true): Promise<Record<string, unknown>> {
   const target = await startRoutingEngine(onActivity || undefined);
+  const actorId = Math.max(0, Number(userId || 0));
+  const value = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+  const configBefore = target.store.load();
+  const providerIdsBefore = new Set(configBefore.providers.map((entry) => entry.id));
+  const comboIdsBefore = new Set(configBefore.combos.map((entry) => entry.id));
+  const providerId = String(value.providerId || value.id || (typeof payload === "string" ? payload : ""));
+  const keyId = String(value.id || (typeof payload === "string" ? payload : ""));
+  const provider = providerId ? configBefore.providers.find((entry) => entry.id === providerId) : undefined;
+  const comboId = String(value.id || (typeof payload === "string" ? payload : ""));
+  const combo = comboId ? configBefore.combos.find((entry) => comboMatches(entry, comboId)) : undefined;
+  const gatewayKey = keyId ? q1("SELECT id,user_id FROM user_routing_keys WHERE id=?", keyId) : undefined;
+  const providerMutation = ["app:remove-provider", "app:set-provider-enabled", "app:set-provider-visibility", "app:set-model-enabled", "app:set-all-models-enabled", "app:add-model", "app:remove-model"].includes(action);
+  if (providerMutation && (!provider || !actorId || !ownedByUser(provider, actorId))) return { ok: false, error: "You can change only your own provider accounts." };
+  if (gatewayKey && Number(gatewayKey.user_id || 0) !== actorId) return { ok: false, error: "You can change only your own endpoint keys." };
+  if (["app:delete-combo"].includes(action) && (!combo || !actorId || !ownedByUser(combo, actorId))) return { ok: false, error: "You can change only your own routes." };
+  if (action === "app:save-combo") {
+    if (!actorId) return { ok: false, error: "A signed-in user is required." };
+    if (comboId && (!combo || !ownedByUser(combo, actorId))) return { ok: false, error: "You can change only your own routes." };
+    const requestedVisibility = value.visibility === "workspace" ? "workspace" : "personal";
+    const members = Array.isArray(value.members) ? value.members as Array<Record<string, unknown>> : [];
+    for (const member of members) {
+      const referencedId = String(member.providerId || "");
+      if (!referencedId) {
+        if (requestedVisibility !== "workspace") continue;
+        const requestedFamily = String(member.providerType || "").replace(/^codex$/, "chatgpt");
+        const requestedModel = String(member.model || "");
+        const hasSharedDestination = configBefore.providers.some((candidate) => {
+          const family = String(candidate.type || "").replace(/^codex$/, "chatgpt");
+          return candidate.enabled !== false
+            && visibilityOf(candidate) === "workspace"
+            && family === requestedFamily
+            && enabledModelIds(candidate).includes(requestedModel);
+        });
+        if (!hasSharedDestination) return { ok: false, error: "Share at least one matching provider account before sharing this route." };
+        continue;
+      }
+      const referenced = configBefore.providers.find((entry) => entry.id === referencedId);
+      if (!referenced || !visibleToUser(referenced, actorId)) return { ok: false, error: "A route can use only providers available to your account." };
+      if (requestedVisibility === "workspace" && visibilityOf(referenced) !== "workspace") return { ok: false, error: "Share each provider in a workspace route before sharing the route." };
+    }
+  }
   if (
     ["app:revoke-api-key", "app:set-api-key-enabled"].includes(action)
     && (typeof payload === "string" ? payload : String((payload as { id?: unknown } | null)?.id || "")) === INTERNAL_GATEWAY_KEY_ID
   ) {
     return { ok: false, error: "The private workspace credential cannot be changed." };
   }
+  if (action === "app:set-provider-visibility") {
+    if (!provider || !ownedByUser(provider, actorId)) return { ok: false, error: "Provider not found." };
+    const visibility = value.visibility === "workspace" ? "workspace" : "personal";
+    target.store.update((config) => {
+      const current = config.providers.find((entry) => entry.id === provider.id);
+      if (current) { current.ownerUserId = actorId || Number(current.ownerUserId || 0); current.visibility = visibility; }
+    });
+    return { ok: true, id: provider.id, visibility };
+  }
+  if (action === "app:create-api-key") {
+    if (!actorId) return { ok: false, error: "A signed-in user is required." };
+    const name = String(typeof payload === "string" ? payload : value.name || "1Helm client").trim().slice(0, 120) || "1Helm client";
+    const id = `key_user_${randomBytes(8).toString("hex")}`;
+    const key = `rr-${randomBytes(24).toString("hex")}`;
+    run("INSERT INTO user_routing_keys (id,user_id,key,name,enabled,created) VALUES (?,?,?,?,1,?)", id, actorId, key, name, now());
+    return { ok: true, key: { id, key, name, enabled: true, createdAt: now() } };
+  }
+  if (action === "app:usage" && actorId) {
+    const rows = q("SELECT provider_id,model,status,prompt_tokens,completion_tokens,cached_tokens,detail,created FROM routing_usage_events WHERE user_id=? ORDER BY id DESC LIMIT 500", actorId);
+    const recent = rows.map((entry) => {
+      let detail: Record<string, unknown> = {};
+      try { detail = JSON.parse(String(entry.detail || "{}")); } catch { detail = {}; }
+      return { ...detail, providerId: String(entry.provider_id), model: String(entry.model), status: Number(entry.status), prompt_tokens: Number(entry.prompt_tokens), completion_tokens: Number(entry.completion_tokens), cached_tokens: Number(entry.cached_tokens), at: Number(entry.created) };
+    });
+    const prompt = rows.reduce((sum, entry) => sum + Number(entry.prompt_tokens || 0), 0);
+    const completion = rows.reduce((sum, entry) => sum + Number(entry.completion_tokens || 0), 0);
+    const cached = rows.reduce((sum, entry) => sum + Number(entry.cached_tokens || 0), 0);
+    const aggregate = (key: "model" | "provider_id") => {
+      const grouped = new Map<string, { requests: number; prompt_tokens: number; completion_tokens: number; cached_tokens: number; total_tokens: number }>();
+      for (const row of rows) {
+        const id = String(row[key] || "unknown");
+        const current = grouped.get(id) || { requests: 0, prompt_tokens: 0, completion_tokens: 0, cached_tokens: 0, total_tokens: 0 };
+        current.requests += 1;
+        current.prompt_tokens += Number(row.prompt_tokens || 0);
+        current.completion_tokens += Number(row.completion_tokens || 0);
+        current.cached_tokens += Number(row.cached_tokens || 0);
+        current.total_tokens = current.prompt_tokens + current.completion_tokens;
+        grouped.set(id, current);
+      }
+      return [...grouped].map(([id, totals]) => ({ ...(key === "model" ? { model: id } : { providerId: id }), ...totals }));
+    };
+    return { ok: true, usage: { period: "all", requests: rows.length, ok: rows.filter((entry) => Number(entry.status) >= 200 && Number(entry.status) < 400).length, errors: rows.filter((entry) => Number(entry.status) >= 400).length, prompt_tokens: prompt, completion_tokens: completion, cached_tokens: cached, total_tokens: prompt + completion, byModel: aggregate("model"), byProvider: aggregate("provider_id"), recent } };
+  }
+  if (action === "app:revoke-api-key" || action === "app:set-api-key-enabled") {
+    if (!gatewayKey) return { ok: false, error: "Endpoint key not found." };
+    if (Number(gatewayKey.user_id) !== actorId) return { ok: false, error: "You can change only your own endpoint keys." };
+    if (action === "app:revoke-api-key") run("DELETE FROM user_routing_keys WHERE id=?", keyId);
+    else run("UPDATE user_routing_keys SET enabled=? WHERE id=?", value.enabled === false ? 0 : 1, keyId);
+    return { ok: true };
+  }
   let result: Record<string, unknown>;
   if (action === "app:oauth-start") {
     const type = oauthType(payload);
     const providerId = typeof payload === "object" && payload ? String((payload as { providerId?: unknown }).providerId || "") : "";
-    stopOauthWatcher(type);
-    oauthCompletions.delete(type);
+    if (!actorId) return { ok: false, error: "A signed-in user is required." };
+    if (providerId && (!provider || !ownedByUser(provider, actorId))) return { ok: false, error: "You can reconnect only your own provider accounts." };
+    const key = oauthKey(actorId, type);
+    const family = oauthFamily(type);
+    const active = activeOauthByFamily.get(family);
+    if (active && active !== key) return { ok: false, error: "Another workspace member is already connecting this provider. Try again when that sign-in finishes." };
+    releaseOauthSession(key);
+    oauthCompletions.delete(key);
+    activeOauthByFamily.set(family, key);
+    oauthOwners.set(key, { userId: actorId, type, providerIds: providerIdsBefore });
     result = await target.controlPlane.invoke(action, [type], { harness: true });
-    if (result.ok !== false) watchOauth(target, type, providerId || undefined);
+    if (result.ok !== false) {
+      watchOauth(target, actorId, type, providerId || undefined);
+    } else releaseOauthSession(key);
   } else if (action === "app:oauth-status") {
     const type = oauthType(payload);
-    const completion = oauthCompletions.get(type);
+    const key = oauthKey(actorId, type);
+    const completion = oauthCompletions.get(key);
     if (completion) return completion;
+    if (activeOauthByFamily.get(oauthFamily(type)) !== key || !oauthOwners.has(key)) return { active: false };
     result = await target.controlPlane.invoke(action, [type], { harness: true });
-    if (oauthFinalizing.has(type)) result = { ...result, completing: true };
+    if (oauthFinalizing.has(key)) result = { ...result, completing: true };
   } else if (action === "app:oauth-cancel") {
     const type = oauthType(payload);
-    stopOauthWatcher(type);
-    oauthCompletions.delete(type);
+    const key = oauthKey(actorId, type);
+    if (activeOauthByFamily.get(oauthFamily(type)) !== key || !oauthOwners.has(key)) return { ok: true };
+    releaseOauthSession(key);
+    oauthCompletions.delete(key);
     result = await target.controlPlane.invoke(action, [type], { harness: true });
   } else if (action === "app:oauth-complete") {
-    result = await finishOauth(target, (payload || {}) as Record<string, unknown>);
+    result = await finishOauth(target, (payload || {}) as Record<string, unknown>, actorId);
   } else if (action === "app:test-keyed-provider" && unauthenticatedCustomPayload(payload)) {
     result = await testUnauthenticatedCustom(unauthenticatedCustomPayload(payload)!);
   } else if (action === "app:add-keyed-provider" && unauthenticatedCustomPayload(payload)) {
@@ -612,14 +907,31 @@ export async function routingInvoke(action: string, payload?: unknown): Promise<
     const args = payload === undefined ? [] : [payload];
     result = await target.controlPlane.invoke(action, args, { harness: true });
   }
+  if (result.ok !== false) {
+    if (["app:add-keyed-provider", "app:oauth-complete"].includes(action) && actorId) {
+      const before = action === "app:oauth-complete" ? oauthOwners.get(oauthKey(actorId, oauthType(payload)))?.providerIds || providerIdsBefore : providerIdsBefore;
+      stampNewProviders(target, before, actorId, value.visibility === "workspace" ? "workspace" : "personal");
+      if (action === "app:oauth-complete") releaseOauthSession(oauthKey(actorId, oauthType(payload)));
+    }
+    if (action === "app:save-combo" && actorId) {
+      target.store.update((config) => {
+        for (const entry of config.combos || []) if (!comboIdsBefore.has(entry.id) || entry.id === String(value.id || "")) {
+          entry.ownerUserId = actorId;
+          entry.visibility = value.visibility === "workspace" ? "workspace" : "personal";
+        }
+      });
+    }
+  }
   // Key and bind changes can alter the endpoint used by 1Helm agents.
   ensureInternalProvider(target);
   if (/provider|model|combo|oauth/i.test(action)) reconcileModelPolicies(target);
   return publicControlPlaneResult(result);
 }
 
-export async function routingState(): Promise<Record<string, unknown>> {
-  const state = await routingInvoke("app:get-state");
+export async function routingState(userId = 0, isAdmin = true): Promise<Record<string, unknown>> {
+  const state = await routingInvoke("app:get-state", undefined, userId, isAdmin);
+  const target = await startRoutingEngine(onActivity || undefined);
+  const scoped = userId ? scopedConfig(target.store.load(), userId) : target.store.load();
   // Credential values are needed only on the dedicated Endpoint screen. Keep
   // routine polling and the rest of the provider UI free of copyable secrets.
   let imageIds: string[] = [];
@@ -628,21 +940,33 @@ export async function routingState(): Promise<Record<string, unknown>> {
     imageIds = imageGenerationEnabledIds();
   } catch { imageIds = []; }
   const enabled = imageIds.length > 0;
+  const visibleProviderIds = new Set(scoped.providers.map((provider) => provider.id));
+  const providerMeta = new Map(scoped.providers.map((provider) => [provider.id, provider]));
   const providers = Array.isArray((state as { providers?: unknown[] }).providers)
-    ? ((state as { providers: Array<Record<string, unknown>> }).providers).map((provider) => ({
+    ? ((state as { providers: Array<Record<string, unknown>> }).providers).filter((provider) => visibleProviderIds.has(String(provider.id))).map((provider) => ({
       ...provider,
+      visibility: visibilityOf(providerMeta.get(String(provider.id)) || provider as RoutingProvider),
+      mine: Number(providerMeta.get(String(provider.id))?.ownerUserId || 0) === userId,
       imageGenerationEnabled: enabled && ["chatgpt", "codex"].includes(String(provider.type || "")),
     }))
     : (state as { providers?: unknown }).providers;
-  return { ...state, providers, activeRequests: runtime?.requestActivity.snapshot() || [], recentActivity, imageGenerationEnabled: enabled, apiKey: state.apiKey ? "" : state.apiKey, apiKeys: undefined };
+  const combos = scoped.combos.map((combo) => ({
+    ...combo,
+    visibility: visibilityOf(combo),
+    mine: Number(combo.ownerUserId || 0) === userId,
+  }));
+  return { ...state, providers, combos, activeRequests: runtime?.requestActivity.snapshot() || [], recentActivity, imageGenerationEnabled: enabled, apiKey: state.apiKey ? "" : state.apiKey, apiKeys: undefined, scope: isAdmin ? "captain" : "member" };
 }
 
-export async function routingCredentials(): Promise<Record<string, unknown>> {
-  const state = await routingInvoke("app:get-state");
+export async function routingCredentials(userId = 0, isAdmin = true): Promise<Record<string, unknown>> {
+  const state = await routingInvoke("app:get-state", undefined, userId, isAdmin);
   const target = await startRoutingEngine(onActivity || undefined);
-  const apiKeys = externalGatewayKeys(target.store.load()).map(({ id, key, name, enabled, createdAt }) => ({ id, key, name, enabled, createdAt }));
+  const apiKeys = q("SELECT id,key,name,enabled,created FROM user_routing_keys WHERE user_id=? ORDER BY created", userId).map((entry) => ({ id: String(entry.id), key: String(entry.key), name: String(entry.name), enabled: Boolean(entry.enabled), createdAt: Number(entry.created) }));
+  const personal = userId ? await ensureUserGateway(userId) : null;
   return {
-    endpoint: state.endpoint,
+    endpoint: "/v1",
+    directEndpoint: personal ? `http://127.0.0.1:${personal.port}/v1` : state.endpoint,
+    personalPort: personal?.port || null,
     bindHost: state.bindHost,
     port: state.port,
     serverListening: state.serverListening,
@@ -651,11 +975,14 @@ export async function routingCredentials(): Promise<Record<string, unknown>> {
   };
 }
 
-export async function routingModels(): Promise<RoutingModel[]> {
+export async function routingModels(userId = 0): Promise<RoutingModel[]> {
   const target = await startRoutingEngine(onActivity || undefined);
   const config = target.store.load();
-  const providers = new Map(config.providers.map((provider) => [provider.id, provider]));
-  const models = (target.router.listModels().data || []).map((model): RoutingModel => {
+  const scoped = userId ? scopedConfig(config, userId) : config;
+  const scopedStore = { load: () => scoped, save: () => undefined, update: () => undefined };
+  const scopedRouter = userId ? createRouter({ store: scopedStore }) : target.router;
+  const providers = new Map(scoped.providers.map((provider) => [provider.id, provider]));
+  const models = (scopedRouter.listModels().data || []).map((model): RoutingModel => {
     const id = String(model.id || "").trim();
     const provider = model.providerId ? providers.get(model.providerId) : null;
     const family = String(model.owned_by || provider?.type || "");
@@ -666,7 +993,7 @@ export async function routingModels(): Promise<RoutingModel[]> {
       providerType: model.combo ? undefined : family,
       providerName: model.combo ? undefined : String(provider?.name || family || "Provider"),
       accountCount: model.combo
-        ? config.combos.find((combo) => combo.name === id || combo.id === id)?.members.length || 0
+        ? scoped.combos.find((combo) => combo.name === id || combo.id === id)?.members.length || 0
         : Array.isArray(model.accountAliases) ? model.accountAliases.length : undefined,
     };
   }).filter((model) => model.id);
@@ -687,6 +1014,15 @@ export function routingEndpoint(): { base_url: string; api_key: string } | null 
   return key ? { base_url: `http://127.0.0.1:${port}/v1`, api_key: key } : null;
 }
 
+/** Internal agent calls inherit the initiating human's provider visibility.
+ * The per-user loopback listener is an identity boundary, not a browser
+ * download or a publicly exposed unauthenticated port. */
+export async function routingEndpointForUser(userId: number): Promise<{ base_url: string; api_key: string }> {
+  const endpoint = userEndpointRow(userId);
+  const gateway = await ensureUserGateway(userId);
+  return { base_url: `http://127.0.0.1:${gateway.port}/v1`, api_key: endpoint.internal_key };
+}
+
 export function isInternalRoutingProvider(providerId: number | null): boolean {
   if (!providerId) return false;
   return String(q1("SELECT kind FROM providers WHERE id=?", providerId)?.kind || "") === INTERNAL_PROVIDER_KIND;
@@ -696,7 +1032,12 @@ export function isInternalRoutingProvider(providerId: number | null): boolean {
 export async function proxyRoutingRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const target = await startRoutingEngine(onActivity || undefined);
   const config = target.store.load();
-  const listening = target.gateway.getListeningAddress?.();
+  const authorization = String(req.headers.authorization || "");
+  const suppliedKey = authorization.match(/^Bearer\s+(.+)$/i)?.[1] || String(req.headers["x-api-key"] || "");
+  const matchedKey = q1("SELECT user_id FROM user_routing_keys WHERE enabled=1 AND key=?", suppliedKey);
+  const ownerUserId = Number(matchedKey?.user_id || 0);
+  const personal = ownerUserId ? await ensureUserGateway(ownerUserId) : null;
+  const listening = personal?.gateway.getListeningAddress() || target.gateway.getListeningAddress?.();
   const port = listening?.port || Number(config.port || 4949);
   await new Promise<void>((resolve, reject) => {
     const upstream = httpRequest({

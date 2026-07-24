@@ -138,6 +138,40 @@ export function migrate(): void {
   );
   CREATE INDEX IF NOT EXISTS idx_agent_turns_lane ON agent_turns(bot_id,channel_id,thread_root_id,state,queued_at,id);
   CREATE INDEX IF NOT EXISTS idx_agent_turns_agent_state ON agent_turns(agent_id,state);
+  CREATE TABLE IF NOT EXISTS user_routing_endpoints (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    port INTEGER NOT NULL UNIQUE,
+    internal_key TEXT NOT NULL UNIQUE,
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS user_model_prefs (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    updated INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS user_routing_keys (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    key TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+    created INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_routing_keys_owner ON user_routing_keys(user_id,created DESC);
+  CREATE TABLE IF NOT EXISTS routing_usage_events (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider_id TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    status INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_tokens INTEGER NOT NULL DEFAULT 0,
+    detail TEXT NOT NULL DEFAULT '{}',
+    created INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_routing_usage_user_created ON routing_usage_events(user_id,created DESC);
   `);
   addColumn("agent_turns", "final_body_hash", "final_body_hash TEXT NOT NULL DEFAULT ''");
   addColumn("workspace", "installation_id", "installation_id TEXT NOT NULL DEFAULT ''");
@@ -786,7 +820,7 @@ export function migrate(): void {
     // developer deliberately opts into the native compatibility backend.
     const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || (process.platform === "darwin" ? "apple" : "native"));
     const backend = ["apple", "native", "mock"].includes(configuredBackend) ? configuredBackend : "native";
-    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.3");
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.4");
     for (const channel of q(`SELECT c.id FROM channels c JOIN agent_channels ac ON ac.channel_id=c.id
       WHERE c.kind='channel' AND c.status<>'deleted'`)) {
       const channelId = Number(channel.id);
