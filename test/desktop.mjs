@@ -147,6 +147,7 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(memoryRuntime, /export function prepareMnemosyneRuntime\(\): Promise<boolean>/, "fresh-host memory installation is asynchronous instead of blocking application startup");
   assert.match(memoryRuntime, /export function cancelMnemosyneRuntimePreparation\(\)/, "host shutdown cancels an in-flight app-managed memory installation");
   assert.match(testRunner, /MNEMOSYNE_PYTHON: runtime/, "the full test suite shares one explicit pinned memory runtime instead of racing app-start installers");
+  assert.match(testRunner, /if \(existsSync\(venv\)\) rmSync\(venv, \{ recursive: true, force: true \}\);[\s\S]*spawnSync\(installer/, "each test-runtime fallback starts clean after a preferred Python leaves a partial venv");
   assert.match(feedbackBrowser, /skip: executablePath \? false :/, "the Feedback browser contract does not hang a Chrome-free release runner");
   assert.match(terminalBrowser, /HELM_CHANNEL_COMPUTER_BACKEND: "native"/, "the terminal browser contract uses the explicit development backend on CI hosts without an installed LXC runtime");
   const serverRuntime = await readFile(join(root, "src", "server", "index.ts"), "utf8");
