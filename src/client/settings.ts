@@ -169,11 +169,11 @@ function skillsPanel(): HTMLElement {
     h("div", { class: "flex flex-col gap-3 rounded-lg border border-accent/30 bg-accent-soft p-4 sm:flex-row sm:items-center sm:justify-between" },
       h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Teach 1Helm from your own material"), h("p", { class: "mt-1 text-sm leading-5 text-muted" }, "Give Skipper a folder or file, a web page, pasted notes, or any combination. It will inspect the sources and author one reusable workspace skill in a visible #main thread.")),
       h("button", { class: "btn-primary shrink-0 text-sm", onclick: learnSkillDialog }, icon("sparkles", 15), "Learn a new skill")),
-    h("p", { class: "text-sm leading-6 text-muted" }, "Every resident permanently owns the safe built-in operational library. 1Helm activates only the playbooks relevant to the current task and can search the focused SkillsMD catalog for ready-to-install GitHub-backed skills."));
+    h("p", { class: "text-sm leading-6 text-muted" }, "Every resident permanently owns the built-in operational library. Agents see a compact inventory and load a full procedure only when they choose that skill. You can also search SkillsMD for GitHub-backed skills."));
   void api<{ skills: Array<Skill & { arsenal_locked?: number; arsenal_reason?: string; assigned_agents?: number }>; catalog: SkillCatalogStatus }>("/api/skills").then(({ skills, catalog }) => {
     wrap.append(skillCatalogBrowser(catalog));
     const shipped = h("section", { class: "space-y-3" },
-      h("div", { class: "flex flex-wrap items-end justify-between gap-2" }, h("div", {}, h("h3", { class: "font-display text-lg text-fg" }, "Installed arsenal"), h("p", { class: "text-sm text-muted" }, `${skills.length} complete playbooks · permanently available · selected automatically per task`))));
+      h("div", { class: "flex flex-wrap items-end justify-between gap-2" }, h("div", {}, h("h3", { class: "font-display text-lg text-fg" }, "Installed arsenal"), h("p", { class: "text-sm text-muted" }, `${skills.length} complete procedures · permanently available · loaded on demand`))));
     for (const skill of skills) shipped.append(h("article", { class: `card p-4 ${skill.arsenal_locked ? "opacity-80" : ""}` },
       h("div", { class: "flex flex-wrap items-center gap-2" },
         h("h3", { class: "font-semibold text-fg" }, skill.name),

@@ -9,7 +9,7 @@ process.env.CTRL_DATA_DIR = dataDir;
 const dbModule = await import("../src/server/db.ts");
 const { db, q1, run, now, seed } = dbModule;
 const { verifyAuditChain } = await import("../src/server/audit.ts");
-const { classifyToolResult, evidenceGateObjection, outcomeGateObjection, runtimePromptTiersForChannel, runtimeToolNamesForChannel, validateAskUserInput } = await import("../src/server/bots.ts");
+const { buildContext, runtimePromptTiersForChannel, runtimeToolNamesForChannel, validateAskUserInput } = await import("../src/server/bots.ts");
 const { inspectWebSource, isPublicWebAddress, validateWebSourceUrl } = await import("../src/server/web-source.ts");
 const { terminalPromptEnvironment } = await import("../src/server/agent.ts");
 const turns = await import("../src/server/turns.ts");
@@ -19,22 +19,6 @@ test("ask_user rejects routine ambiguity and accepts only evidenced human blocke
   assert.equal(validateAskUserInput({ questions: [{ question: "Which?", options: [{ label: "A" }, { label: "B" }] }] }).valid, false);
   assert.equal(validateAskUserInput({ blocker_kind: "human_judgment", evidence: "I am not sure", questions: [{ question: "Which?", options: [{ label: "A" }, { label: "B" }] }] }).valid, false);
   assert.equal(validateAskUserInput({ blocker_kind: "external_authority", evidence: "The vendor requires the account owner to accept its binding contract.", questions: [{ question: "Authorize it?", options: [{ label: "Authorize" }, { label: "Stop" }] }] }).valid, true);
-});
-
-test("outcome gate objects to operational hand-holding without rewriting evidenced tool blockers", () => {
-  assert.match(outcomeGateObjection({ request: "Install the CLI", response: "You can run npm install yourself." }), /operational reply/i);
-  assert.match(outcomeGateObjection({ request: "Fix the server", response: "Skipper could help with that." }), /Skipper suggestion/i);
-  assert.equal(outcomeGateObjection({ request: "Deploy the site", response: "Deployment failed because the provider requires account-owner authorization.", failedTools: ["run_command"] }), "");
-  assert.equal(outcomeGateObjection({ request: "Connect Gmail", response: "Attach the required Google OAuth Desktop app JSON once, then I can launch sign-in.", failedTools: ["connect_gmail"] }), "");
-  assert.equal(outcomeGateObjection({ request: "Explain how routing works", response: "Routing pools the connected providers." }), "");
-  assert.equal(outcomeGateObjection({ request: "How do I install the CLI?", response: "You can install it with npm." }), "");
-  assert.equal(outcomeGateObjection({ request: "Install the CLI", response: "Installed and verified it.", successfulTools: ["run_command"] }), "");
-  assert.equal(outcomeGateObjection({ request: "Deploy the site", response: "I need the account owner to authorize production.", successfulTools: ["ask_user"] }), "");
-  assert.match(outcomeGateObjection({ request: "Install the CLI", response: "You can install it yourself.", successfulTools: ["gmail_search"] }), /operational reply/i);
-  assert.match(outcomeGateObjection({ request: "Learn the skill from this site", response: "I inspected the source and it is safe." }), /source-inspection claim/i);
-  assert.equal(outcomeGateObjection({ request: "Learn the skill from this site", response: "I inspected the source and found its setup guide.", successfulTools: ["inspect_web_source"] }), "");
-  assert.match(outcomeGateObjection({ request: "Create the research machine", response: "I'm provisioning a purpose-specific research world." }), /provisioning claim/i);
-  assert.match(evidenceGateObjection({ request: "Research this", response: "#main has no computer, so I am blocked.", mainChannel: true, assignedComputerCount: 2 }), /false claim/i);
 });
 
 test("#main is a database- and tool-level resident-free authority channel", () => {
@@ -76,13 +60,6 @@ test("web-source inspection is HTTPS-only, bounded, and rejects private addressi
   delete process.env.HELM_TEST_WEB_SOURCE_FIXTURES;
 });
 
-test("tool result classification separates human blockers, transient retries, and permanent failures", () => {
-  assert.equal(classifyToolResult("Connected and verified."), "success");
-  assert.equal(classifyToolResult("Error: attach the Google OAuth Desktop app JSON file to continue."), "human_blocker");
-  assert.equal(classifyToolResult("Error: provider returned 429 temporarily overloaded; try again."), "transient_failure");
-  assert.equal(classifyToolResult("Error: this channel does not exist."), "permanent_failure");
-});
-
 test("native terminal prompts use the selected shell's cwd syntax", () => {
   const zsh = terminalPromptEnvironment("/bin/zsh");
   const bash = terminalPromptEnvironment("/bin/bash");
@@ -116,7 +93,7 @@ test("a finalized turn is immutable to stale stream writers", () => {
   assert.equal(q1("SELECT status FROM agent_progress WHERE id=?", progressId).status, "complete");
 });
 
-test("runtime prompts separate durable partner identity, action policy, and volatile channel context", () => {
+test("runtime exposes compact factual capabilities instead of injected playbooks", () => {
   seed();
   const channelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created) VALUES ('prompt-tiers','prompt-tiers','channel','','First purpose','active',?)", now()).lastInsertRowid;
   const botId = run("INSERT INTO bots (name,model,prompt,created) VALUES ('prompt-agent','mock','Patient domain partner.',?)", now()).lastInsertRowid;
@@ -129,11 +106,29 @@ test("runtime prompts separate durable partner identity, action policy, and vola
   assert.equal(first.identity, second.identity);
   assert.equal(first.operating, second.operating);
   assert.notEqual(first.context, second.context);
-  assert.match(first.identity, /durable operating partner/i);
-  assert.match(first.operating, /Bias|Own the requested outcome|verify/i);
-  assert.match(first.operating, /bounded changed strategy|unchanged failure/i);
+  assert.match(first.operating, /isolated persistent Linux computer/i);
+  assert.match(first.operating, /\/workspace/);
+  assert.match(first.context, /skill-arsenal count=/i);
+  assert.doesNotMatch(first.context, /active-skill-playbooks|workspace-skill-catalog|### /i);
+  assert(first.identity.length + first.operating.length + first.context.length < 2_000, "capability map stays compact");
   assert.match(first.context, /Own prompt testing/);
   assert.match(second.context, /Changed volatile purpose/);
+  const tools = runtimeToolNamesForChannel(botId, channelId, false);
+  assert(tools.includes("list_skills") && tools.includes("read_skill"));
+});
+
+test("model transcript keeps human display names out of user content", () => {
+  const userId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('query-owner','x','Joseph Yaksich',1,?)", now()).lastInsertRowid;
+  const channelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created_by,created) VALUES ('clean-query','clean-query','channel','','Research','active',?,?)", userId, now()).lastInsertRowid;
+  const botId = run("INSERT INTO bots (name,model,prompt,created) VALUES ('clean-agent','mock','Resident.',?)", now()).lastInsertRowid;
+  const agentId = run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'channel','clean-agent','ready',?)", botId, now()).lastInsertRowid;
+  run("INSERT INTO agent_channels (agent_id,channel_id,bound_at) VALUES (?,?,?)", agentId, channelId, now());
+  run("INSERT INTO agent_profiles (agent_id,purpose,instructions,updated) VALUES (?,'Research','Resident.',?)", agentId, now());
+  const rootId = run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", channelId, userId, "@clean-agent whats the latest news on that sinkhole situation in weho", now()).lastInsertRowid;
+  const messages = buildContext(q1("SELECT * FROM bots WHERE id=?", botId), q1("SELECT a.*,ac.channel_id,p.purpose,p.instructions FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id LEFT JOIN agent_profiles p ON p.agent_id=a.id WHERE a.id=?", agentId), channelId, rootId, rootId, false, false);
+  const user = messages.findLast((message) => message.role === "user");
+  assert.equal(user.content, "whats the latest news on that sinkhole situation in weho");
+  assert.doesNotMatch(user.content, /Joseph Yaksich/);
 });
 
 test("procedure crystallization rejects generic snippets and retains complete verified procedures", async () => {

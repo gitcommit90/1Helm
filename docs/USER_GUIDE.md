@@ -193,8 +193,10 @@ stand in for a news photograph.
 
 ## Skills and Learn a new skill
 
-Every resident permanently owns the safe built-in operational arsenal. The
-runtime activates only relevant playbooks for the current task.
+Every resident permanently owns the built-in operational arsenal. The model
+sees a compact inventory, can list the available skills, and loads the full
+procedure for one skill only when it chooses to use it. The procedures are not
+injected wholesale into every turn.
 
 ![Built-in skills and the focused SkillsMD catalog](assets/guide/skills.png)
 
@@ -206,8 +208,9 @@ repository-specific procedure is unavailable, choose **Learn a new skill** so
 Skipper can inspect supplied local sources, web URLs, and notes in a visible
 thread and author a workspace-specific procedure.
 
-A question such as “do we have a calendar skill?” is read-only: it must not
-install a package, install a skill, or open an interview.
+A question such as “do we have a calendar skill?” can be answered directly
+from the agent's actual arsenal inventory without installing anything or
+opening an interview.
 
 ## Gmail
 

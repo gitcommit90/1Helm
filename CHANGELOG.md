@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-07-24
+
+### Changed
+
+- Agent turns now receive a compact factual capability map—identity, channel,
+  Linux computer and `/workspace`, callable tools, memory, skill inventory, and
+  authority scope—instead of large behavioral manifestos.
+- The skill arsenal is lazy-loaded. Models can list available skill metadata
+  and explicitly read one full procedure when useful; 1Helm no longer injects
+  the entire playbook library into every turn.
+- Removed runtime prose classifiers that rejected, rewrote, or forcibly
+  re-entered otherwise valid model answers. Security, ownership, and human-only
+  boundaries remain enforced in tool and server code.
+
+### Fixed
+
+- Human display names are no longer prefixed to user messages sent to models,
+  preventing names such as the Captain's from contaminating generated search
+  queries.
+- A public web/news search with no parsed results now retries once with a
+  concise query, so ordinary conversational wording does not consume the turn
+  or force an immediate refusal.
+- Real-model acceptance covers the exact West Hollywood sinkhole prompt,
+  Skipper's computer awareness in `#main`, lazy skill discovery, and autonomous
+  resident work on its Linux machine.
+
 ## [0.0.4] - 2026-07-24
 
 ### Added
@@ -107,7 +133,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.4...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.5...HEAD
+[0.0.5]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.5
 [0.0.4]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.4
 [0.0.3]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.3
 [0.0.2]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.2

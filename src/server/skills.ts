@@ -89,7 +89,7 @@ export function provisionInitialSkills(agentId: number, templateSlug = "general"
   const template = q1("SELECT * FROM agent_templates WHERE slug=? AND status='active'", skillSlug(templateSlug))
     || q1("SELECT * FROM agent_templates WHERE slug='general'");
   const wanted = new Set([...BUILTIN_SKILL_SLUGS, ...parseList(template?.skill_slugs)]);
-  return [...wanted].map((slug) => provisionSkill(agentId, slug, provisionedBy, `Safe built-in arsenal for the ${template?.name || "agent"}; relevant playbooks activate automatically by task.`));
+  return [...wanted].map((slug) => provisionSkill(agentId, slug, provisionedBy, `Built-in arsenal for the ${template?.name || "agent"}; full procedures are available on demand.`));
 }
 
 export function createSkill(opts: { name: string; slug?: string; description: string; instructions: string; category?: string; source?: string }): Row {
@@ -143,57 +143,26 @@ export function requestSkill(agentId: number, channelId: number, threadId: numbe
   return skill;
 }
 
-const ALWAYS_ACTIVE = new Set([
-  "outcome-ownership", "blocker-resolution", "skipper-escalation", "durable-obligations",
-  "capability-discovery", "procedure-crystallization", "quality-verification",
-]);
+export function readAgentSkill(agentId: number, slugInput: string): Row {
+  const slug = skillSlug(slugInput);
+  const skill = skillsForAgent(agentId).find((entry) => String(entry.slug) === slug);
+  if (!skill || skill.arsenal_locked) throw new Error(`Skill ${slug || slugInput} is not available in this agent's arsenal.`);
+  return {
+    slug: skill.slug,
+    name: skill.name,
+    description: skill.description,
+    category: skill.category,
+    instructions: skill.instructions,
+    source: skill.source,
+  };
+}
 
-const skillMatchesTask = (skill: Row, task: string): boolean => {
-  if (ALWAYS_ACTIVE.has(String(skill.slug))) return true;
-  const haystack = `${skill.slug} ${skill.name} ${skill.description} ${skill.category}`.toLowerCase();
-  const words = task.toLowerCase().match(/[a-z0-9][a-z0-9+._-]{2,}/g) || [];
-  if (words.some((word) => haystack.includes(word))) return true;
-  const rules: Array<[RegExp, string[]]> = [
-    [/mail|gmail|inbox|newsletter|correspond/i, ["email-operations"]],
-    [/calendar|meeting|schedule|appointment|availability/i, ["calendar-operations", "meeting-operations"]],
-    [/contact|customer|lead|vendor|recruit|crm/i, ["contacts-and-crm", "customer-operations"]],
-    [/message|imessage|sms|photon|slack|discord|chat/i, ["message-operations"]],
-    [/document|word|docx|brief|proposal|report/i, ["document-production"]],
-    [/spreadsheet|excel|sheet|csv|workbook|formula/i, ["spreadsheet-operations", "data-analysis"]],
-    [/pdf|scan|ocr|redact/i, ["pdf-operations", "document-production"]],
-    [/research|investigat|compare|look up|source/i, ["research", "browser-operations"]],
-    [/code|software|repo|bug|test|build|github|pull request|release/i, ["software-delivery", "git-and-github"]],
-    [/server|deploy|service|systemd|docker|domain|dns|backup|monitor/i, ["infrastructure-operations", "self-hosting-guide"]],
-    [/security|threat|audit|vulnerab|secret|permission|untrusted/i, ["security-review"]],
-    [/image|photo|audio|video|media|illustrat/i, ["media-production"]],
-    [/finance|invoice|expense|budget|bookkeep|transaction/i, ["finance-operations", "spreadsheet-operations"]],
-    [/travel|flight|hotel|trip|itinerary/i, ["travel-operations"]],
-    [/home|family|personal|renewal|household/i, ["personal-operations"]],
-    [/project|launch|campaign|milestone|plan/i, ["project-planning"]],
-    [/file|artifact|export|workspace/i, ["workspace-artifacts"]],
-    [/remember|preference|decision|history/i, ["durable-memory"]],
-  ];
-  return rules.some(([pattern, slugs]) => pattern.test(task) && slugs.includes(String(skill.slug)));
-};
-
-export function agentSkillContext(agentId: number, task = ""): string {
-  const assigned = skillsForAgent(agentId);
-  const catalog = listSkills(); // image-generation only when arsenal gate is open
-  const assignedSlugs = new Set(assigned.map((skill) => String(skill.slug)));
-  const improvements = q("SELECT summary,instruction,created FROM agent_improvements WHERE agent_id=? AND status='active' ORDER BY created DESC LIMIT 8", agentId);
-  const active = assigned.filter((skill) => skillMatchesTask(skill, task)).slice(0, 14);
-  return [
-    "<active-skill-playbooks>",
-    "These task-relevant playbooks were selected automatically from the resident's permanent arsenal. Apply them without asking the user to approve skill use.",
-    active.map((skill) => `### ${skill.name} (${skill.slug})\n${skill.instructions}`).join("\n\n") || "Use the core outcome-ownership policy.",
-    "</active-skill-playbooks>",
-    "<workspace-skill-catalog>",
-    "The full permanent arsenal is searchable here by metadata. Do not ask the user to choose or approve a skill. If an external catalog skill would materially help, call Skipper to search and install it safely.",
-    catalog.map((skill) => `- ${skill.slug}${assignedSlugs.has(String(skill.slug)) ? " [assigned]" : ""}: ${skill.description}`).join("\n"),
-    "If a solved workflow would be reusable and no catalog skill covers it, silently call propose_skill with the complete tested procedure and concrete completion evidence. Never create a generic one-paragraph skill.",
-    "</workspace-skill-catalog>",
-    improvements.length ? `<skipper-improvements>\n${improvements.map((item) => `- ${item.instruction || item.summary}`).join("\n")}\n</skipper-improvements>` : "",
-  ].filter(Boolean).join("\n\n");
+/** The model gets a compact factual inventory, not every skill's procedure.
+ * It can choose a skill and load its full instructions through read_skill. */
+export function agentSkillContext(agentId: number, _task = ""): string {
+  const available = skillsForAgent(agentId).filter((skill) => !skill.arsenal_locked);
+  const categories = [...new Set(available.map((skill) => String(skill.category || "general")))].sort();
+  return `<skill-arsenal count="${available.length}" categories="${categories.join(", ")}" />`;
 }
 
 export function templateForSlug(slug: string): Row | undefined {

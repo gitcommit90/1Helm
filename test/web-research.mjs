@@ -17,9 +17,8 @@ process.env.HELM_TEST_WEB_SOURCE_FIXTURES = JSON.stringify({
   "https://example.com/images/sunset-sinkhole.jpg": { content_type: "image/jpeg", base64: "/9j/2Q==" },
 });
 
-const { searchWeb } = await import("../src/server/web-search.ts");
+const { conciseSearchQuery, searchWeb } = await import("../src/server/web-search.ts");
 const { fetchPublicWebImage } = await import("../src/server/web-source.ts");
-const { evidenceGateObjection } = await import("../src/server/bots.ts");
 
 test("current-event research returns dated source and a real attachable image", async () => {
   const searched = await searchWeb("Sunset Boulevard sinkhole West Hollywood", "news", 5);
@@ -30,12 +29,13 @@ test("current-event research returns dated source and a real attachable image", 
   assert.equal(image.bytes, 4);
 });
 
-test("runtime requires research and sourced images but accepts completed evidence", () => {
-  const current = "give me an update on the sinkhole I heard about two days ago";
-  assert.match(evidenceGateObjection({ request: current, response: "Here is an answer" }), /live research/i);
-  assert.match(evidenceGateObjection({ request: current, response: "Here is a search-only answer", successfulTools: ["search_web"] }), /live research/i);
-  assert.equal(evidenceGateObjection({ request: current, response: "Here is a sourced answer", successfulTools: ["search_web", "inspect_web_source"] }), "");
-  const images = "show me some images of that sinkhole";
-  assert.match(evidenceGateObjection({ request: images, response: "I made a diagram", successfulTools: ["generate_image"] }), /sourced web image/i);
-  assert.equal(evidenceGateObjection({ request: images, response: "Attached is a news photo", successfulTools: ["search_web", "attach_web_image"] }), "");
+test("empty natural-language searches retry once with a concise query", async () => {
+  const request = "whats the latest news on that sinkhole situation in weho";
+  const concise = conciseSearchQuery(request);
+  assert.equal(concise, "sinkhole weho");
+  process.env.HELM_TEST_WEB_SEARCH_FIXTURE = JSON.stringify({ [request]: [], [concise]: fixtures });
+  const searched = await searchWeb(request, "news", 5);
+  assert.equal(searched.requested_query, request);
+  assert.equal(searched.query, concise);
+  assert.equal(searched.results[0].url, fixtures[0].url);
 });

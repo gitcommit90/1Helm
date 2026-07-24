@@ -49,7 +49,7 @@ else that deserves an owner. 1Helm provisions a complete world around it:
 | **One permanent resident** | Threads are sessions; the employee identity survives them. |
 | **One private Linux computer** | Chat tools and Terminal use the same persistent `/workspace`. |
 | **Memory with provenance** | Decisions, corrections, preferences, files, and outcomes become continuity. |
-| **A serious skill arsenal** | Relevant playbooks activate automatically; routine tool use is not an approval ritual. |
+| **A serious skill arsenal** | The agent sees what exists and loads a full procedure only when it chooses one. |
 | **Durable obligations** | Follow-ups, timers, workflows, and services can wake the computer back up. |
 | **Skipper at the boundary** | Host work, credentials, fleet operations, and cross-channel work route themselves. |
 
@@ -98,7 +98,9 @@ discovery, memory, research, email, calendar, contacts, messaging, documents,
 spreadsheets, PDFs, meetings, projects, personal operations, travel, finance,
 support, software delivery, data, media, infrastructure, security, and more.
 
-1Helm selects only what the task needs. It can also:
+The model receives a compact inventory of the arsenal—not all 34 procedures in
+every prompt. It can inspect metadata and load one complete skill when useful.
+It can also:
 
 - search the focused SkillsMD catalog of ready GitHub-backed repositories;
 - install ready skills only after immutable revision pinning, bounds,
@@ -156,9 +158,10 @@ does not run on the laptop or phone viewing the web UI.
 - Durable files, threads, curated memory, Mnemosyne long-term recall,
   corrections, follow-ups, and recurring workflows.
 - Direct resident → Skipper escalation and automatic Skipper → resident return.
-- A bounded outcome gate that keeps operational work moving when a model tries
-  to stop at a tutorial, unevidenced blocker, unresolved tool failure, or
-  “Skipper could help.”
+- Compact, factual model context: identity, channel, Linux computer and
+  `/workspace`, callable tools, memory, and the skill arsenal. Security and
+  ownership boundaries are enforced by the tools and server rather than a
+  prose grader rewriting model answers.
 - Outcome-first Activity with expandable work evidence and a tamper-evident
   SHA-256 chain for new operational events.
 - Local-first collaboration through an optional workspace domain routed to the
@@ -228,7 +231,7 @@ A fresh data directory opens first-run setup. The source runtime defaults to
 | `PORT` | `8123` | HTTP/WebSocket control-plane port. |
 | `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and narrow workspace mirrors. |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `native` elsewhere | Explicit development/test backend override. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.4` | Versioned Apple channel-machine image. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.5` | Versioned Apple channel-machine image. |
 
 ### Agent-first JSON CLI
 
@@ -276,7 +279,7 @@ npm run benchmark:autonomy
 ```
 
 The autonomy benchmark emits deterministic machine-readable JSON covering the
-shipped playbook arsenal, narrow human-blocker gate, bounded outcome gate,
+shipped skill arsenal, compact capability map, narrow human-blocker boundary,
 resident autonomy tools, wakeable recurring work, and audit-chain invariants
 for its fixture. It is deliberately not presented as a live-model success rate
 or a complete security score.
