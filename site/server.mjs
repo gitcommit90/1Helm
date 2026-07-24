@@ -120,10 +120,10 @@ const server = createServer((req, res) => {
   }
 
   if (path === "/install.sh" && serveFile(req, res, join(SITE_PUBLIC, "install.sh"), "no-cache")) return;
-  if (path === "/install-wsl.ps1" && serveFile(req, res, join(SITE_PUBLIC, "install-wsl.ps1"), "no-cache")) return;
   if (path.startsWith("/schemas/") && serveFile(req, res, safeFile(SITE_PUBLIC, path.slice(1)), "public, max-age=3600")) return;
   if (path.startsWith("/assets/") && serveFile(req, res, safeFile(SITE_PUBLIC, path.slice(1)), "public, max-age=604800")) return;
   if (path.startsWith("/media/") && serveFile(req, res, safeFile(SITE_PUBLIC, path.slice(1)), "public, max-age=604800")) return;
+  if (path.startsWith("/icons/") && serveFile(req, res, safeFile(SITE_PUBLIC, path.slice(1)), "public, max-age=604800")) return;
   if (path.startsWith("/brand/") && serveFile(req, res, safeFile(PRODUCT_PUBLIC, path.slice(1)), "public, max-age=604800")) return;
 
   const page = pages[path];

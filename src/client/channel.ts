@@ -718,17 +718,21 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
 
   const assignedSkills = h("div", { class: "mt-3 flex flex-wrap gap-2", dataset: { assignedSkills: "" } }, ...((channel.agent?.skills || []).map((skill) => h("span", { class: "chip border-accent/25", dataset: { assignedSkill: skill.slug } }, skill.name))));
   const computer = channel.computer;
+  const computerKind = computer?.backend === "apple" ? "Isolated Linux VM"
+    : computer?.backend === "lxc" ? "Unprivileged LXC"
+      : computer?.backend === "wsl" ? "Private WSL 2"
+        : "Development backend";
   const computerCard = computer ? h("div", { class: "card p-4" },
     h("div", { class: "flex flex-wrap items-center gap-2" },
       h("h3", { class: "font-semibold text-fg" }, "This channel's computer"),
-      h("span", { class: "chip border-accent/25" }, computer.backend === "apple" ? "Isolated Linux VM" : "Development compatibility"),
+      h("span", { class: "chip border-accent/25" }, computerKind),
       h("span", { class: "chip" }, computer.observed_state)),
-    h("p", { class: "mt-2 text-sm leading-6 text-muted" }, "Skipper provisions, wakes, monitors, updates, repairs, and sizes this computer automatically. The storage figure is 1Helm's managed writable allocation; Apple's guest filesystem may show the Mac-backed virtual ceiling instead."),
+    h("p", { class: "mt-2 text-sm leading-6 text-muted" }, "Skipper provisions, wakes, monitors, updates, repairs, and sizes this computer automatically. The storage figure is 1Helm's managed writable allocation."),
     h("div", { class: "mt-3 grid gap-2 text-xs text-muted sm:grid-cols-4" },
       h("div", {}, h("span", { class: "block font-semibold text-fg" }, `${computer.cpus} CPU${computer.cpus === 1 ? "" : "s"}`), "Automatically managed"),
       h("div", {}, h("span", { class: "block font-semibold text-fg" }, `${Math.max(1, Math.round(computer.memory_bytes / 1073741824))} GiB RAM`), "Automatically managed"),
       h("div", {}, h("span", { class: "block font-semibold text-fg" }, `${Math.max(1, Math.round(computer.disk_bytes / 1073741824))} GiB storage`), "Managed writable allocation"),
-      h("div", {}, h("span", { class: "block font-semibold text-fg" }, computer.home_mount === "none" ? "Mac home private" : "Needs attention"), "No whole-home mount")),
+      h("div", {}, h("span", { class: "block font-semibold text-fg" }, computer.home_mount === "none" ? "Host home private" : "Needs attention"), "No whole-home mount")),
     computer.obligations?.length ? h("p", { class: "mt-3 text-xs text-muted" }, `${computer.obligations.length} active obligation${computer.obligations.length === 1 ? "" : "s"}; Skipper will keep or wake the computer as needed.`) : null,
     computer.last_error ? h("p", { class: "mt-3 text-sm text-danger" }, computer.last_error) : null) : null;
   panelContent(container, "Channel settings", "Name, purpose, replaceable model policy, permanent skills, scoped capabilities, and lifecycle.", h("div", { class: "space-y-4" },

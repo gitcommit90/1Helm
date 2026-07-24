@@ -174,7 +174,11 @@ async function feedbackIntake(request: Request, env: Env): Promise<Response> {
   for (const attachment of attachments) {
     const size = Number(attachment.size || 0);
     const data = String(attachment.data || "");
-    if (size < 0 || size > 5 * 1024 * 1024 || data.length > 7 * 1024 * 1024) {
+    const validBase64 = data.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(data);
+    const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+    const decodedSize = data.length ? (data.length / 4) * 3 - padding : 0;
+    if (!Number.isSafeInteger(size) || !validBase64 || decodedSize !== size
+      || size < 0 || size > 5 * 1024 * 1024 || data.length > 7 * 1024 * 1024) {
       return json({ error: "A feedback attachment is too large." }, 413);
     }
     total += size;

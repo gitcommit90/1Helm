@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-07-24
+
+### Added
+
+- Linux systemd hosts now give every ordinary channel a persistent
+  unprivileged LXC computer with private networking, subordinate UID/GID maps,
+  exact owner markers, managed CPU/RAM, host-mirrored files, and no host-home
+  mount. The installer pins and verifies the Ubuntu Noble image payloads and
+  installs a narrow root-owned lifecycle boundary.
+- The accepted Windows 11 implementation now has a native x64 desktop and one
+  private WSL 2 Ubuntu distribution per ordinary channel. Windows-drive
+  automount and process interop are disabled, Ubuntu root filesystems are
+  immutable-version and SHA-256 pinned for x64 and arm64, and setup/removal
+  verify exact ownership. Its public installer is withheld until Authenticode
+  signing is available.
+- Durable feedback is always visible, accepts optional attachments and
+  diagnostics, retries central delivery, and provides a Captain feedback inbox.
+- Residents can search their own authoritative raw channel transcripts by
+  meaning, exact text/date, or recency and hydrate a complete prior session on
+  demand. Each channel keeps a separate Mnemosyne index; guests and other
+  channel residents cannot access it.
+- SkillsMD discovery now queries the open registry directly and displays every
+  returned result. Revision pinning, bounds, scanning, hashing, and runtime
+  wrapping remain enforced when the user chooses to install.
+
+### Changed
+
+- Linux and Windows are production isolation backends; the in-process native
+  computer remains an explicit development/test seam rather than the default.
+- Linux update requests are executed entirely by the host. The verified root
+  updater migrates runtime files and systemd units transactionally, refuses
+  downgrades, health-checks for up to one minute, and reports rollback complete
+  only after the restored host answers its health endpoint.
+- The website and documentation describe the macOS, Linux/LXC, and Windows/WSL
+  product contracts without claiming an unsigned Windows artifact is public.
+
+### Fixed
+
+- Newly created and newly assigned skills now appear immediately in already
+  open Arsenal and Channel Settings views without a page refresh.
+- Linux upgrades migrate existing compatibility computer records to LXC while
+  retaining channels, workspaces, obligations, and durable application state.
+- Fresh/repeat Linux installs reject unsafe rollback symlinks and install
+  Python venv support required by long-term Mnemosyne memory.
+- App removal, fleet inspection, lifecycle commands, terminal execution,
+  workspace synchronization, and ownership refusal now cover Apple, LXC, and
+  WSL backends consistently.
+
 ## [0.0.5] - 2026-07-24
 
 ### Changed
@@ -133,7 +181,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.5...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.6...HEAD
+[0.0.6]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.6
 [0.0.5]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.5
 [0.0.4]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.4
 [0.0.3]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.3

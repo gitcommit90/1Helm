@@ -9,10 +9,26 @@ NODE_ROOT="$INSTALL_ROOT/node"
 NODE_LINK="$INSTALL_ROOT/node-current"
 STATE_ROOT="/var/lib/1helm"
 SERVICE_USER="1helm"
-SERVICE_FILE="/etc/systemd/system/1helm.service"
-UPDATE_SERVICE_FILE="/etc/systemd/system/1helm-update.service"
-UPDATE_PATH_FILE="/etc/systemd/system/1helm-update.path"
 NODE_VERSION="22.23.1"
+HOST_CONTRACT_PATHS=(
+  /usr/libexec/1helm-lxc-runtime
+  /usr/libexec/1helm-lxc-net
+  /etc/1helm/lxc-unprivileged.conf
+  /etc/1helm/lxc-idmap
+  /etc/sudoers.d/1helm-lxc-runtime
+  /etc/default/lxc-net
+  /etc/subuid
+  /etc/subgid
+  /etc/systemd/system/1helm-lxc-net.service
+  /etc/systemd/system/1helm.service
+  /etc/systemd/system/1helm-update.service
+  /etc/systemd/system/1helm-update.path
+  /opt/1helm/update-host.sh
+  /opt/1helm/uninstall-host.sh
+)
+HOST_UNITS=(1helm-lxc-net.service 1helm.service 1helm-update.path)
+TRANSACTION_ACTIVE=0
+ROLLING_BACK=0
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run this installer with sudo." >&2
@@ -22,31 +38,93 @@ if ! command -v systemctl >/dev/null || [[ ! -d /run/systemd/system ]]; then
   echo "1Helm's Linux installer requires a running systemd host." >&2
   exit 1
 fi
+if ! command -v apt-get >/dev/null; then
+  echo "1Helm's isolated Linux host currently requires Ubuntu or Debian with apt and systemd." >&2
+  exit 1
+fi
 case "$(uname -m)" in
   x86_64|amd64) NODE_ARCH="x64" ;;
   aarch64|arm64) NODE_ARCH="arm64" ;;
   *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-need=(curl git tar xz sha256sum flock make c++ python3)
+need=(curl git tar xz sha256sum flock make c++ python3 lxc-create lxc-attach newuidmap sudo visudo)
 missing=()
 for command in "${need[@]}"; do command -v "$command" >/dev/null || missing+=("$command"); done
-if ((${#missing[@]})); then
-  if command -v apt-get >/dev/null; then
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y curl git xz-utils ca-certificates util-linux build-essential python3
-  elif command -v dnf >/dev/null; then
-    dnf install -y curl git xz ca-certificates util-linux gcc-c++ make python3
-  else
-    echo "Install these prerequisites first: ${missing[*]} plus a C/C++ toolchain and Python 3." >&2
-    exit 1
-  fi
+if ((${#missing[@]})) || ! python3 -c 'import ensurepip' >/dev/null 2>&1; then
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y curl git xz-utils ca-certificates util-linux build-essential python3 \
+    python3-venv lxc lxc-templates lxcfs uidmap sudo rsync dnsmasq-base iproute2 iptables nftables
 fi
 
 NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
 TEMP_ROOT="$(mktemp -d)"
-trap 'rm -rf -- "$TEMP_ROOT"' EXIT
 chmod 0755 "$TEMP_ROOT"
+
+snapshot_host_contract() {
+  RUNTIME_BACKUP="$TEMP_ROOT/runtime-backup"
+  install -d -m 0700 "$RUNTIME_BACKUP/files" "$RUNTIME_BACKUP/units"
+  for path in "${HOST_CONTRACT_PATHS[@]}"; do
+    if [[ -e "$path" || -L "$path" ]]; then
+      encoded="${path#/}"
+      install -d -m 0700 "$RUNTIME_BACKUP/files/$(dirname "$encoded")"
+      cp -a -- "$path" "$RUNTIME_BACKUP/files/$encoded"
+    fi
+  done
+  for unit in "${HOST_UNITS[@]}"; do
+    systemctl is-enabled "$unit" >"$RUNTIME_BACKUP/units/$unit.enabled" 2>/dev/null || true
+    systemctl is-active "$unit" >"$RUNTIME_BACKUP/units/$unit.active" 2>/dev/null || true
+  done
+}
+
+rollback_host_contract() {
+  local path encoded unit enabled active restored_healthy=1
+  ROLLING_BACK=1
+  systemctl disable --now 1helm-update.path 1helm-lxc-net.service >/dev/null 2>&1 || true
+  systemctl stop 1helm.service >/dev/null 2>&1 || true
+  for path in "${HOST_CONTRACT_PATHS[@]}"; do
+    encoded="${path#/}"
+    rm -f -- "$path"
+    if [[ -e "$RUNTIME_BACKUP/files/$encoded" || -L "$RUNTIME_BACKUP/files/$encoded" ]]; then
+      install -d -m 0755 "$(dirname "$path")"
+      cp -a -- "$RUNTIME_BACKUP/files/$encoded" "$path"
+    fi
+  done
+  if [[ -n "$PREVIOUS_RELEASE" && -d "$PREVIOUS_RELEASE" ]]; then
+    ln -s "$PREVIOUS_RELEASE" "$TEMP_ROOT/rollback-current"
+    mv -Tf "$TEMP_ROOT/rollback-current" "$APP_ROOT"
+  else
+    rm -f -- "$APP_ROOT"
+  fi
+  systemctl daemon-reload
+  for unit in "${HOST_UNITS[@]}"; do
+    enabled="$(cat "$RUNTIME_BACKUP/units/$unit.enabled" 2>/dev/null || true)"
+    active="$(cat "$RUNTIME_BACKUP/units/$unit.active" 2>/dev/null || true)"
+    [[ "$enabled" == "enabled" ]] && systemctl enable "$unit" >/dev/null 2>&1 || true
+    [[ "$active" == "active" ]] && systemctl start "$unit" >/dev/null 2>&1 || true
+  done
+  if [[ "$(cat "$RUNTIME_BACKUP/units/1helm.service.active" 2>/dev/null || true)" == "active" ]]; then
+    restored_healthy=0
+    for _ in {1..300}; do
+      if curl -fsS http://127.0.0.1:8123/api/setup/status >/dev/null; then restored_healthy=1; break; fi
+      sleep 0.2
+    done
+  fi
+  TRANSACTION_ACTIVE=0
+  ROLLING_BACK=0
+  [[ "$restored_healthy" -eq 1 ]]
+}
+
+cleanup_transaction() {
+  local status=$?
+  trap - EXIT
+  if [[ "$TRANSACTION_ACTIVE" -eq 1 && "$ROLLING_BACK" -eq 0 ]]; then
+    rollback_host_contract || true
+  fi
+  rm -rf -- "$TEMP_ROOT"
+  exit "$status"
+}
+trap cleanup_transaction EXIT
 curl -fsSLo "$TEMP_ROOT/$NODE_TARBALL" "https://nodejs.org/dist/v${NODE_VERSION}/$NODE_TARBALL"
 curl -fsSLo "$TEMP_ROOT/SHASUMS256.txt" "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt"
 NODE_SUM="$(awk -v file="$NODE_TARBALL" '$2 == file { print $1 }' "$TEMP_ROOT/SHASUMS256.txt")"
@@ -85,86 +163,26 @@ else
   mv "$TEMP_ROOT/source" "$RELEASE_ROOT"
 fi
 chown -R "$SERVICE_USER:$SERVICE_USER" "$RELEASE_ROOT" "$STATE_ROOT"
-install -o root -g root -m 0755 "$RELEASE_ROOT/site/public/update-host.sh" "$INSTALL_ROOT/update-host.sh"
-
 PREVIOUS_RELEASE="$(readlink -f "$APP_ROOT" 2>/dev/null || true)"
+[[ "$PREVIOUS_RELEASE" == "$RELEASES_ROOT/"* && -d "$PREVIOUS_RELEASE" ]] || PREVIOUS_RELEASE=""
+snapshot_host_contract
+TRANSACTION_ACTIVE=1
+"$RELEASE_ROOT/site/public/install-lxc-runtime.sh" "$RELEASE_ROOT"
+
 ln -s "$RELEASE_ROOT" "$TEMP_ROOT/current"
 mv -Tf "$TEMP_ROOT/current" "$APP_ROOT"
-
-install -m 0644 /dev/stdin "$SERVICE_FILE" <<EOF
-[Unit]
-Description=1Helm durable agent workspace
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=$SERVICE_USER
-Group=$SERVICE_USER
-WorkingDirectory=$APP_ROOT
-Environment=NODE_ENV=production
-Environment=PORT=8123
-Environment=HELM_HOST=0.0.0.0
-Environment=CTRL_DATA_DIR=$STATE_ROOT
-Environment=HELM_CHANNEL_COMPUTER_BACKEND=native
-Environment=HELM_INSTALL_KIND=linux-systemd
-ExecStart=$NODE_LINK/bin/node --disable-warning=ExperimentalWarning src/server/index.ts
-Restart=on-failure
-RestartSec=3
-UMask=0077
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ReadWritePaths=$STATE_ROOT
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-install -m 0644 /dev/stdin "$UPDATE_SERVICE_FILE" <<EOF
-[Unit]
-Description=Install a verified 1Helm host update
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=$INSTALL_ROOT/update-host.sh
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectHome=true
-ProtectSystem=strict
-ReadWritePaths=$INSTALL_ROOT $STATE_ROOT
-EOF
-
-install -m 0644 /dev/stdin "$UPDATE_PATH_FILE" <<EOF
-[Unit]
-Description=Watch for Captain-authorized 1Helm host updates
-
-[Path]
-PathChanged=$STATE_ROOT/host-update.request
-Unit=1helm-update.service
-
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl daemon-reload
-systemctl enable 1helm.service
+"$RELEASE_ROOT/site/public/install-linux-units.sh" "$RELEASE_ROOT"
 systemctl enable --now 1helm-update.path
 systemctl restart 1helm.service
 healthy=0
-for _ in {1..100}; do
+for _ in {1..300}; do
   if curl -fsS http://127.0.0.1:8123/api/setup/status >/dev/null; then healthy=1; break; fi
   sleep 0.2
 done
 if [[ "$healthy" -ne 1 ]]; then
-  if [[ -n "$PREVIOUS_RELEASE" && -d "$PREVIOUS_RELEASE" ]]; then
-    ln -s "$PREVIOUS_RELEASE" "$TEMP_ROOT/rollback"
-    mv -Tf "$TEMP_ROOT/rollback" "$APP_ROOT"
-    systemctl restart 1helm.service
-  fi
   echo "1Helm v$VERSION did not become healthy; the previous release was restored when available." >&2
   exit 1
 fi
+TRANSACTION_ACTIVE=0
 echo "1Helm v$VERSION is running at http://localhost:8123"
-echo "Linux currently uses the durable compatibility computer backend; it does not claim one isolated VM per resident."
+echo "Every ordinary channel now receives its own persistent unprivileged LXC computer."

@@ -29,7 +29,7 @@ release acceptance tests.
 <p align="center">
   <code>Apple Silicon native</code>&nbsp;&nbsp;
   <code>34 complete playbooks</code>&nbsp;&nbsp;
-  <code>Focused SkillsMD catalog</code>&nbsp;&nbsp;
+  <code>Open SkillsMD search</code>&nbsp;&nbsp;
   <code>Signed + notarized</code>
 </p>
 
@@ -102,7 +102,7 @@ The model receives a compact inventory of the arsenal—not all 34 procedures in
 every prompt. It can inspect metadata and load one complete skill when useful.
 It can also:
 
-- search the focused SkillsMD catalog of ready GitHub-backed repositories;
+- search SkillsMD directly without a 1Helm-curated subset, then inspect and install a selected GitHub-backed skill;
 - install ready skills only after immutable revision pinning, bounds,
   scanning, hashing, provenance storage, and runtime-authority wrapping;
 - route sources without a ready repository-specific procedure through the
@@ -154,6 +154,11 @@ does not run on the laptop or phone viewing the web UI.
 - Exactly one resident for every ordinary channel and one Skipper in `#main`.
 - A persistent Apple `container machine` Linux VM per ordinary channel, with
   `home-mount=none`, on supported Apple Silicon Macs.
+- A persistent unprivileged LXC per ordinary channel on supported Linux
+  systemd hosts, with subordinate UID/GID mapping and exact ownership checks.
+- A private WSL 2 Ubuntu distribution per ordinary channel in the accepted
+  Windows implementation, with Windows-drive mounts and interop disabled. Its
+  public installer remains withheld until Authenticode signing is available.
 - Shared channel `/workspace` for the agent command surface and human Terminal.
 - Durable files, threads, curated memory, Mnemosyne long-term recall,
   corrections, follow-ups, and recurring workflows.
@@ -176,12 +181,12 @@ does not run on the laptop or phone viewing the web UI.
 | Platform | Current contract |
 |---|---|
 | **Apple Silicon macOS 26** | Native desktop product and real isolated Linux computer per resident. |
-| **Linux / CI** | Durable headless compatibility backend; not per-resident VM isolation. |
-| **Windows + WSL** | Headless compatibility path; not a native Windows app. |
+| **Linux / CI** | Supported headless systemd host with one unprivileged LXC per resident; CI may select an explicit test backend. |
+| **Windows + WSL** | Native x64 Electron and private WSL 2 worlds have passed real-host acceptance; the public installer awaits Authenticode signing. |
 
-Not yet shipped: native Windows and Linux desktop packages, mobile clients,
-Linux resident VM isolation, a hosted control plane, rich Photon attachment
-fidelity, or blind execution of community skills.
+Not yet shipped: a signed public Windows installer, a native Linux desktop
+shell, mobile clients, a hosted control plane, rich Photon attachment fidelity,
+or blind execution of community skills.
 
 ## Install on Apple Silicon
 
@@ -212,8 +217,8 @@ checkouts remain operator-managed and never send a Mac installer to the browser.
 
 ## Run the source workspace
 
-The native Mac app is the complete consumer product. For development and
-headless compatibility deployments, use Node 22:
+For development or a source deployment outside the verified platform
+installers, use Node 22:
 
 ```bash
 PUPPETEER_SKIP_DOWNLOAD=1 npm install
@@ -230,8 +235,8 @@ A fresh data directory opens first-run setup. The source runtime defaults to
 |---|---|---|
 | `PORT` | `8123` | HTTP/WebSocket control-plane port. |
 | `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and narrow workspace mirrors. |
-| `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `native` elsewhere | Explicit development/test backend override. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.5` | Versioned Apple channel-machine image. |
+| `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `lxc` on Linux, `wsl` on Windows | Host isolation backend; `native` and `mock` are explicit development/test overrides. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.6` | Versioned channel-machine image contract. |
 
 ### Agent-first JSON CLI
 
@@ -249,8 +254,9 @@ npm run helm -- audit-verify
 
 ## Architecture
 
-1Helm is a compact Node/TypeScript control plane hosted by Electron on macOS.
-It does not need an external database or a server transpilation step.
+1Helm is a compact Node/TypeScript control plane hosted by Electron on macOS
+and in the accepted Windows implementation, or by systemd on Linux. It does not
+need an external database or a server transpilation step.
 
 | Layer | Implementation |
 |---|---|
@@ -258,11 +264,11 @@ It does not need an external database or a server transpilation step.
 | Control plane | `node:http`, WebSocket, additive SQLite migrations. |
 | Client | Vanilla TypeScript bundled with esbuild and Tailwind CSS. |
 | Model routing | Embedded ReRouted headless engine, private internal gateway, account pools, retries, routes, quotas, and logs. |
-| Computers | Defensive argv-only Apple `container machine` backend; explicit compatibility backend elsewhere. |
+| Computers | Defensive argv-only Apple `container machine`, narrow root-owned unprivileged LXC, and private WSL 2 backends; explicit `native`/`mock` test seams. |
 | Terminal | `node-pty`; ordinary terminals enter their channel VM while Skipper remains native. |
 | Memory | Curated records with provenance plus an isolated Mnemosyne SQLite store per identity. |
 | Scheduling | Durable obligations, wake reconciliation, lifecycle safety, repair, update, and pressure-aware sizing. |
-| Desktop | Sandboxed Electron renderer, ephemeral loopback server, persistent Application Support, native wake agent. |
+| Desktop | Sandboxed Electron renderer, ephemeral loopback server, persistent host data, and native wake/update integration on supported desktop hosts. |
 
 Start with [`docs/VISION.md`](docs/VISION.md) for the product record and
 [`docs/architecture`](https://1helm.com/docs/architecture) for the readable
@@ -286,7 +292,9 @@ or a complete security score.
 
 ## Security boundary
 
-- Resident Macs use separate Linux VMs with no native Mac home mount.
+- Residents use separate Linux worlds: Apple machines with no Mac home mount,
+  unprivileged LXC with subordinate host IDs, or private WSL 2 distributions
+  with Windows-drive mounts and interop disabled.
 - Skipper's host tools require Captain-authorized provenance.
 - Workspace file mirrors are channel-scoped, size-bounded, and symlink-contained.
 - Provider and connection credentials stay in host-owned storage.

@@ -128,7 +128,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
       setBusy(button, true, "Starting private computers…");
       try {
         const result = await api<{ runtime: ChannelRuntime }>("/api/channel-computers/runtime/start", { body: {} });
-        if (!result.runtime.ready) throw new Error("Apple's runtime started but did not pass its health check.");
+        if (!result.runtime.ready) throw new Error("The private channel-computer runtime did not pass its health check.");
         clear(runtimeMount);
         await completeWorkspace(panel.querySelector("button.btn-primary") as HTMLButtonElement);
       } catch (error) {
@@ -172,10 +172,30 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
       status.textContent = "";
       try {
         const { runtime } = await api<{ runtime: ChannelRuntime }>("/api/channel-computers/runtime");
-        if (runtime.backend === "apple" && !runtime.ready) {
+        if (!runtime.ready) {
           setBusy(button, false);
-          showRuntimeApproval(runtime);
-          runtimeMount.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          if (runtime.backend === "apple") {
+            showRuntimeApproval(runtime);
+            runtimeMount.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          } else {
+            const instruction = runtime.backend === "lxc"
+              ? "The unprivileged LXC runtime is not ready. Rerun the verified 1Helm Linux host installer, then retry."
+              : runtime.backend === "wsl"
+                ? "WSL 2 is not ready. Complete 1Helm's one-time Windows administrator setup, then retry."
+                : "The development channel-computer backend is not ready.";
+            const message = h("div", { class: "wizard-status-err" }, runtime.error ? `${instruction} ${runtime.error}` : instruction);
+            if (runtime.backend === "wsl") {
+              const setupWsl = h("button", { class: "btn-primary mt-3 w-full py-2 sm:w-auto", onclick: async () => {
+                setBusy(setupWsl as HTMLButtonElement, true, "Opening Windows setup…");
+                try {
+                  await api("/api/channel-computers/runtime/install", { body: {} });
+                  status.replaceChildren(h("div", { class: "wizard-status-warn" }, "Finish the Windows prompt. Restart once if requested, then reopen 1Helm."));
+                } catch (error) { status.replaceChildren(h("div", { class: "wizard-status-err" }, (error as Error).message)); }
+                finally { setBusy(setupWsl as HTMLButtonElement, false); }
+              } }, "Set up WSL 2");
+              status.replaceChildren(message, setupWsl);
+            } else status.replaceChildren(message);
+          }
           return;
         }
         await completeWorkspace(button);
@@ -190,7 +210,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
     return layout("Name this workspace", "Skipper will prepare the workspace and automatically manage a private Linux computer for every ordinary channel.",
       h("div", { class: "grid items-start gap-3 sm:grid-cols-[minmax(240px,.7fr)_1.3fr]" },
         h("div", { class: "space-y-3" }, field("Workspace name", name, "This appears in the sidebar. You can rename it later."),
-          h("label", { class: "flex items-start gap-2 rounded-lg border border-line p-3" }, collaborate, h("span", {}, h("span", { class: "block text-sm font-semibold text-fg" }, "Collaborate"), h("span", { class: "mt-1 block text-xs leading-5 text-muted" }, "Give this Mac a private 1helm.com address so teammates can reach its headless web app from anywhere."))),
+        h("label", { class: "flex items-start gap-2 rounded-lg border border-line p-3" }, collaborate, h("span", {}, h("span", { class: "block text-sm font-semibold text-fg" }, "Collaborate"), h("span", { class: "mt-1 block text-xs leading-5 text-muted" }, "Give this 1Helm host a private 1helm.com address so teammates can reach its headless web app from anywhere."))),
           field("Team address", slug, "Your permanent reserved address, even when Collaborate is switched off."), slugStatus),
         h("div", {}, runtimeMount, status)),
       footer(() => { step = 1; void render(); }, () => { void prepare(); }, "Create workspace"));

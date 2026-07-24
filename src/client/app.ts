@@ -904,7 +904,7 @@ function openProfile(anchor: HTMLElement): void {
     class: "btn-subtle min-h-9 shrink-0 px-3 text-xs",
     dataset: { profileUpdateAction: "" },
   }, "Check for updates") as HTMLButtonElement;
-  type HostUpdate = { mode: "native-macos" | "linux-systemd" | "source"; status: string; current_version: string; version: string | null; message: string; error: string | null };
+  type HostUpdate = { mode: "native-macos" | "native-windows" | "linux-systemd" | "source"; status: string; current_version: string; version: string | null; message: string; error: string | null };
   let updatePoll = 0;
   const applyUpdate = (update: HostUpdate): void => {
     const version = update.version ? ` · v${update.version}` : "";

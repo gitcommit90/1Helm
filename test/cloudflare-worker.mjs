@@ -262,4 +262,10 @@ test("feedback collector validates, deduplicates, bounds attachments, and keeps 
     body: JSON.stringify({ ...payload, public_id: `fb_${"b".repeat(24)}`, attachments: [{ name: "huge", size: 6 * 1024 * 1024, data: "x" }] }),
   }), env(registry));
   assert.equal(oversized.status, 413);
+  const dishonestSize = await worker.fetch(request("/v1/feedback", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...payload, public_id: `fb_${"c".repeat(24)}`, attachments: [{ name: "mismatch", size: 0, data: "YWJj" }] }),
+  }), env(registry));
+  assert.equal(dishonestSize.status, 413, "the collector bounds decoded bytes rather than trusting caller-supplied sizes");
 });

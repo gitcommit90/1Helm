@@ -9,7 +9,7 @@ import { spawn as spawnPty, type IPty } from "node-pty";
 import { WebSocket } from "ws";
 import { DATA_DIR, now, q, q1, run, type Row } from "./db.ts";
 
-export type ChannelComputerBackend = "apple" | "native" | "mock";
+export type ChannelComputerBackend = "apple" | "lxc" | "wsl" | "native" | "mock";
 export type ChannelComputer = {
   channel_id: number;
   backend: ChannelComputerBackend;
@@ -53,7 +53,7 @@ export type MachineTerminal = {
   closed: boolean;
 };
 
-type AppleInspection = {
+type MachineInspection = {
   id?: string;
   status?: string;
   cpus?: number;
@@ -67,8 +67,30 @@ const APPLE_RUNTIME_VERSION = "1.1.0";
 export const APPLE_RUNTIME_PACKAGE = `container-${APPLE_RUNTIME_VERSION}-installer-signed.pkg`;
 export const APPLE_RUNTIME_URL = `https://github.com/apple/container/releases/download/${APPLE_RUNTIME_VERSION}/${APPLE_RUNTIME_PACKAGE}`;
 export const APPLE_RUNTIME_SHA256 = "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714";
-export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.5";
+export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.6";
 const CONTAINER_CANDIDATES = [process.env.HELM_CONTAINER_CLI, "/usr/local/bin/container", "/opt/homebrew/bin/container", "container"].filter(Boolean) as string[];
+const LXC_RUNTIME_VERSION = "1helm-lxc-runtime-v1";
+const LXC_HELPER_CANDIDATES = [
+  process.env.HELM_LXC_HELPER,
+  "/usr/libexec/1helm-lxc-runtime",
+  "/usr/local/libexec/1helm-lxc-runtime",
+  join(process.env.HELM_APP_ROOT || process.cwd(), "scripts", "1helm-lxc-runtime"),
+].filter(Boolean) as string[];
+const WSL_RUNTIME_VERSION = "2";
+// Canonical publishes a mutable `current` alias. Pin the immutable dated
+// directory and the digests from its GPG-signed SHA256SUMS instead, with a
+// native rootfs for both Windows architectures 1Helm supports.
+const WSL_ROOTFS_RELEASE = "20240423";
+const WSL_ROOTFS_ARTIFACTS = {
+  amd64: {
+    name: "ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz",
+    sha256: "8251e27ffff381a4af5f41dcb94d867de3e0d9774a9241908ab34555d99315ea",
+  },
+  arm64: {
+    name: "ubuntu-noble-wsl-arm64-wsl.rootfs.tar.gz",
+    sha256: "fecec1d9b7b750c12c109edb49c13c1006f4a2efabb9b8bf341f11c4c9f2ef11",
+  },
+} as const;
 const COMMAND_TIMEOUT_MS = Math.max(5_000, Number(process.env.HELM_MACHINE_COMMAND_TIMEOUT_MS || 120_000));
 const IDLE_AFTER_MS = Math.max(60_000, Number(process.env.HELM_MACHINE_IDLE_MS || 15 * 60_000));
 const RECONCILE_EVERY_MS = Math.max(15_000, Number(process.env.HELM_FLEET_INTERVAL_MS || 60_000));
@@ -101,8 +123,9 @@ const installationId = (): string => {
 };
 
 export const configuredChannelBackend = (): ChannelComputerBackend => {
-  const configured = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || (platform() === "darwin" ? "apple" : "native"));
-  return configured === "apple" || configured === "mock" ? configured : "native";
+  const hostDefault: ChannelComputerBackend = platform() === "darwin" ? "apple" : platform() === "win32" ? "wsl" : "lxc";
+  const configured = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || hostDefault);
+  return ["apple", "lxc", "wsl", "native", "mock"].includes(configured) ? configured as ChannelComputerBackend : hostDefault;
 };
 
 const explicitComputerId = (channelId: number): string => `1helm-${installationId()}-channel-${channelId}`;
@@ -206,6 +229,43 @@ function resolveContainerCli(): string {
   throw new Error("Apple container runtime is not installed. 1Helm can guide the one-time installation from Computer setup.");
 }
 
+function resolveLxcHelper(): string {
+  for (const candidate of LXC_HELPER_CANDIDATES) if (existsSync(candidate)) return candidate;
+  throw new Error("1Helm's root-owned LXC runtime helper is not installed.");
+}
+
+function resolveWslCli(): string {
+  const candidates = [process.env.HELM_WSL_CLI, process.env.SystemRoot ? join(process.env.SystemRoot, "System32", "wsl.exe") : "", "wsl.exe"].filter(Boolean) as string[];
+  for (const candidate of candidates) {
+    if (candidate.includes("/") || candidate.includes("\\")) { if (existsSync(candidate)) return candidate; }
+    else if (spawnSync(candidate, ["--status"], { stdio: "ignore", timeout: 10_000 }).status === 0) return candidate;
+  }
+  throw new Error("WSL 2 is not installed. Run Windows' verified 1Helm setup as Administrator once.");
+}
+
+function privateWslInstallRoot(): string {
+  if (platform() === "win32") return join(dirname(DATA_DIR), "1Helm-WSL");
+  return join(DATA_DIR, "wsl");
+}
+
+const wslInstallDir = (computer: Pick<ChannelComputer, "machine_id">): string => join(privateWslInstallRoot(), computer.machine_id);
+
+async function removeWslInstallDir(computer: Pick<ChannelComputer, "machine_id">): Promise<void> {
+  const root = resolve(privateWslInstallRoot());
+  const target = resolve(wslInstallDir(computer));
+  if (dirname(target) !== root || !/^1helm-[a-f0-9]{16}-channel-\d+$/.test(computer.machine_id)) {
+    throw new Error("Refusing an unsafe WSL install-directory cleanup target.");
+  }
+  for (let attempt = 0; existsSync(target) && attempt < 120; attempt++) {
+    try { rmSync(target, { recursive: true, force: true }); }
+    catch (error) {
+      if (!["EBUSY", "EPERM", "ENOTEMPTY"].includes(String((error as NodeJS.ErrnoException).code || ""))) throw error;
+    }
+    if (existsSync(target)) await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  if (existsSync(target)) throw new Error(`WSL released ${computer.machine_id}, but its private virtual-disk directory remained locked.`);
+}
+
 function appendLimited(chunks: Buffer[], chunk: Buffer, byteState: { value: number }, limit = 8 * 1024 * 1024): void {
   if (byteState.value >= limit) return;
   const accepted = chunk.subarray(0, Math.max(0, limit - byteState.value));
@@ -245,6 +305,44 @@ async function apple(args: string[], opts: Parameters<typeof spawnCollected>[2] 
   return spawnCollected(resolveContainerCli(), args, opts);
 }
 
+async function lxc(args: string[], opts: Parameters<typeof spawnCollected>[2] = {}): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
+  const helper = resolveLxcHelper();
+  if (process.env.HELM_LXC_HELPER_USE_SUDO === "0" || process.getuid?.() === 0) return spawnCollected(helper, args, opts);
+  return spawnCollected("sudo", ["-n", helper, ...args], opts);
+}
+
+async function wsl(args: string[], opts: Parameters<typeof spawnCollected>[2] = {}): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
+  return spawnCollected(resolveWslCli(), args, opts);
+}
+
+const ownerMarker = (computer: ChannelComputer): string => `${installationId()}:${computer.channel_id}`;
+
+function isolatedInvocation(args: string[], computer: ChannelComputer, user: "agent" | "root" = "agent", workdir = "/workspace", terminal = false, pipeInput = false): { command: string; args: string[] } {
+  if (computer.backend === "apple") {
+    const words = ["machine", "run", ...(terminal ? ["-it"] : pipeInput ? ["-i"] : []), ...(user === "root" ? ["--root"] : []), "-n", computer.machine_id, "-w", workdir, "--"];
+    return { command: resolveContainerCli(), args: [...words, ...guestWords(...args)] };
+  }
+  if (computer.backend === "lxc") {
+    const helper = resolveLxcHelper();
+    const helperArgs = terminal ? ["terminal", computer.machine_id, ownerMarker(computer)] : ["exec", computer.machine_id, ownerMarker(computer), user, workdir, "--", ...args];
+    return process.env.HELM_LXC_HELPER_USE_SUDO === "0" || process.getuid?.() === 0
+      ? { command: helper, args: helperArgs }
+      : { command: "sudo", args: ["-n", helper, ...helperArgs] };
+  }
+  if (computer.backend === "wsl") return { command: resolveWslCli(), args: ["--distribution", computer.machine_id, "--user", user, "--cd", workdir, "--exec", ...args] };
+  throw new Error(`Backend ${computer.backend} is not an isolated channel computer.`);
+}
+
+async function isolated(args: string[], computer: ChannelComputer, user: "agent" | "root" = "agent", workdir = "/workspace", opts: Parameters<typeof spawnCollected>[2] = {}): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
+  const invocation = isolatedInvocation(args, computer, user, workdir, false, Boolean(opts.input));
+  return spawnCollected(invocation.command, invocation.args, opts);
+}
+
+const isolatedBackend = (computer: ChannelComputer): boolean => ["apple", "lxc", "wsl"].includes(computer.backend);
+const guestAgentIds = (computer: ChannelComputer): { uid: string; gid: string } => computer.backend === "apple"
+  ? { uid: String(process.getuid?.() ?? 501), gid: String(process.getgid?.() ?? 20) }
+  : { uid: "1000", gid: "1000" };
+
 const transientGuestTransport = (result: { code: number; stdout: Buffer; stderr: Buffer }): boolean => result.code !== 0
   && /operation not supported on socket|inappropriate ioctl for device/i.test(Buffer.concat([result.stderr, result.stdout]).toString("utf8"));
 
@@ -272,14 +370,14 @@ function guestWords(...words: string[]): string[] {
   return words.map((word) => `'${String(word).replaceAll("'", `'"'"'`)}'`);
 }
 
-function parsedInspection(output: Buffer): AppleInspection | null {
+function parsedInspection(output: Buffer): MachineInspection | null {
   try {
     const parsed = JSON.parse(output.toString("utf8"));
-    return (Array.isArray(parsed) ? parsed[0] : parsed) as AppleInspection;
+    return (Array.isArray(parsed) ? parsed[0] : parsed) as MachineInspection;
   } catch { return null; }
 }
 
-async function inspectApple(machineId: string): Promise<AppleInspection | null> {
+async function inspectApple(machineId: string): Promise<MachineInspection | null> {
   const result = await apple(["machine", "inspect", machineId], { timeoutMs: 30_000 });
   if (result.code !== 0) {
     const detail = Buffer.concat([result.stderr, result.stdout]).toString("utf8").trim();
@@ -305,7 +403,7 @@ async function ensureAppleImage(image: string): Promise<void> {
   if (verified.code !== 0) throw new Error("The channel machine image did not exist after its build completed.");
 }
 
-function recordObserved(computer: ChannelComputer, inspection: AppleInspection | null, error = ""): void {
+function recordObserved(computer: ChannelComputer, inspection: MachineInspection | null, error = ""): void {
   if (!inspection) {
     run("UPDATE channel_computers SET observed_state='missing',last_error=?,updated=? WHERE channel_id=?", error.slice(0, 1000), now(), computer.channel_id);
     return;
@@ -316,7 +414,7 @@ function recordObserved(computer: ChannelComputer, inspection: AppleInspection |
 }
 
 async function ensureAppleProvisioned(computer: ChannelComputer): Promise<void> {
-  let inspection: AppleInspection | null = null;
+  let inspection: MachineInspection | null = null;
   try { inspection = await inspectApple(computer.machine_id); } catch (error) {
     run("UPDATE channel_computers SET provision_status='error',last_error=?,updated=? WHERE channel_id=?", (error as Error).message.slice(0, 1000), now(), computer.channel_id);
     throw error;
@@ -360,6 +458,173 @@ async function ensureAppleProvisioned(computer: ChannelComputer): Promise<void> 
   recordComputerActivity(computer.channel_id, "Provisioned a persistent isolated Linux computer with no Mac home mount.", "complete");
 }
 
+async function inspectLxc(computer: ChannelComputer): Promise<MachineInspection | null> {
+  const result = await lxc(["inspect", computer.machine_id, ownerMarker(computer)], { timeoutMs: 30_000 });
+  if (result.code !== 0) {
+    const detail = Buffer.concat([result.stderr, result.stdout]).toString("utf8").trim();
+    if (/does not exist/i.test(detail)) return null;
+    throw new Error(detail || `could not inspect LXC channel computer ${computer.machine_id}`);
+  }
+  if (result.stdout.toString("utf8").trim() === "null") return null;
+  const parsed = parsedInspection(result.stdout);
+  if (!parsed) throw new Error(`LXC runtime returned an unreadable inspection for ${computer.machine_id}`);
+  return parsed;
+}
+
+function windowsLines(buffer: Buffer): string[] {
+  const raw = buffer.toString("utf8");
+  const decoded = raw.includes("\0") ? buffer.toString("utf16le") : raw;
+  return decoded.replaceAll("\0", "").split(/\r?\n/).map((line) => line.trim().replace(/^\*\s*/, "")).filter(Boolean);
+}
+
+async function wslNames(runningOnly = false): Promise<string[]> {
+  const result = await wsl(["--list", ...(runningOnly ? ["--running"] : []), "--quiet"], { timeoutMs: 30_000 });
+  if (result.code !== 0) throw new Error(Buffer.concat([result.stderr, result.stdout]).toString("utf8").replaceAll("\0", "").trim() || "Could not list WSL distributions.");
+  return windowsLines(result.stdout);
+}
+
+async function inspectWsl(computer: ChannelComputer): Promise<MachineInspection | null> {
+  if (!(await wslNames()).includes(computer.machine_id)) return null;
+  const running = (await wslNames(true)).includes(computer.machine_id);
+  if (running) {
+    const ownership = await isolated(["/bin/cat", "/var/lib/1helm/owner"], computer, "root", "/", { timeoutMs: 30_000 });
+    if (ownership.code !== 0 || ownership.stdout.toString("utf8").trim() !== ownerMarker(computer)) {
+      throw new Error(`Refusing to adopt ${computer.machine_id}: its 1Helm ownership marker does not match this installation and channel.`);
+    }
+  } else {
+    // `wsl --export` would be an expensive ownership check, and any guest
+    // command starts the distro. Adoption remains safe because 1Helm-created
+    // distros live only in the exact private install directory and every
+    // destructive path starts then rechecks the marker before acting.
+    const installDir = wslInstallDir(computer);
+    if (!existsSync(installDir)) throw new Error(`Refusing to adopt ${computer.machine_id}: its private 1Helm install directory is missing.`);
+  }
+  return { id: computer.machine_id, status: running ? "running" : "stopped", cpus: computer.cpus, memory: computer.memory_bytes, homeMount: "none" };
+}
+
+async function inspectIsolated(computer: ChannelComputer): Promise<MachineInspection | null> {
+  if (computer.backend === "apple") return inspectApple(computer.machine_id);
+  if (computer.backend === "lxc") return inspectLxc(computer);
+  if (computer.backend === "wsl") return inspectWsl(computer);
+  return null;
+}
+
+async function ensureWslRootfs(): Promise<string> {
+  const architecture = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "amd64" : null;
+  if (!architecture) throw new Error(`Windows ${process.arch} is not supported by 1Helm's pinned WSL rootfs.`);
+  const artifact = WSL_ROOTFS_ARTIFACTS[architecture];
+  const url = `https://cloud-images.ubuntu.com/wsl/releases/24.04/${WSL_ROOTFS_RELEASE}/${artifact.name}`;
+  const runtimeDir = join(DATA_DIR, "runtime");
+  mkdirSync(runtimeDir, { recursive: true });
+  const destination = join(runtimeDir, artifact.name);
+  if (!existsSync(destination) || await sha256File(destination) !== artifact.sha256) {
+    const candidate = `${destination}.candidate-${randomBytes(6).toString("hex")}`;
+    try {
+      const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(10 * 60_000) });
+      if (!response.ok || !response.body) throw new Error(`Ubuntu WSL rootfs download failed (${response.status}).`);
+      await pipeline(Readable.fromWeb(response.body as never), createWriteStream(candidate, { mode: 0o600 }));
+      if (await sha256File(candidate) !== artifact.sha256) throw new Error("Ubuntu WSL rootfs did not match 1Helm's pinned SHA-256.");
+      renameSync(candidate, destination);
+    } finally { if (existsSync(candidate)) rmSync(candidate, { force: true }); }
+  }
+  if (await sha256File(destination) !== artifact.sha256) throw new Error("Ubuntu WSL rootfs digest verification failed.");
+  return destination;
+}
+
+async function ensureLxcProvisioned(computer: ChannelComputer): Promise<void> {
+  let inspection = await inspectLxc(computer);
+  if (!inspection) {
+    run("UPDATE channel_computers SET provision_status='provisioning',last_error='',updated=? WHERE channel_id=?", now(), computer.channel_id);
+    markWorkspaceDirty(computer.channel_id, "*", "full");
+    const architecture = process.arch === "arm64" ? "arm64" : "amd64";
+    const created = await lxc(["create", computer.machine_id, ownerMarker(computer), String(computer.cpus), String(Math.round(computer.memory_bytes / 1024 ** 2)), architecture], { timeoutMs: 30 * 60_000 });
+    if (created.code !== 0) throw new Error(created.stderr.toString("utf8").trim() || created.stdout.toString("utf8").trim() || "LXC channel computer creation failed");
+    inspection = await inspectLxc(computer);
+    if (!inspection || inspection.homeMount !== "none") throw new Error("Provisioned LXC computer failed its ownership/isolation verification.");
+    recordComputerActivity(computer.channel_id, "Provisioned a persistent unprivileged LXC computer for this resident.", "complete");
+  }
+  recordObserved(computer, inspection);
+  run("UPDATE channel_computers SET provision_status='ready',desired_state='auto',last_update=?,last_update_attempt=?,last_error='',updated=? WHERE channel_id=?", now(), now(), now(), computer.channel_id);
+}
+
+async function ensureWslProvisioned(computer: ChannelComputer): Promise<void> {
+  let inspection = await inspectWsl(computer);
+  if (!inspection) {
+    run("UPDATE channel_computers SET provision_status='provisioning',last_error='',updated=? WHERE channel_id=?", now(), computer.channel_id);
+    markWorkspaceDirty(computer.channel_id, "*", "full");
+    const rootfs = await ensureWslRootfs();
+    const installDir = wslInstallDir(computer);
+    if (existsSync(installDir)) throw new Error(`Refusing to import ${computer.machine_id} over an existing private install directory.`);
+    mkdirSync(installDir, { recursive: true });
+    let importedByThisAttempt = false;
+    try {
+      const imported = await wsl(["--import", computer.machine_id, installDir, rootfs, "--version", "2"], { timeoutMs: 20 * 60_000 });
+      if (imported.code !== 0) throw new Error(imported.stderr.toString("utf8").replaceAll("\0", "").trim() || "WSL channel computer import failed");
+      importedByThisAttempt = true;
+      const setup = [
+        "set -eu", "export DEBIAN_FRONTEND=noninteractive", "apt-get update",
+        "apt-get install -y --no-install-recommends bash build-essential ca-certificates coreutils cron curl dbus file findutils git gzip iproute2 iputils-ping jq less locales man-db nano openssh-client procps python3 python3-pip rsync sudo systemd systemd-sysv tar tzdata unzip vim-tiny wget xz-utils zip",
+        "apt-get clean", "rm -rf /var/lib/apt/lists/*",
+        "existing_group=$(getent group 1000 | cut -d: -f1 || true); existing_user=$(getent passwd 1000 | cut -d: -f1 || true)",
+        "named_agent_uid=$(getent passwd agent | cut -d: -f3 || true); named_agent_gid=$(getent group agent | cut -d: -f3 || true)",
+        "{ test -z \"$named_agent_uid\" || test \"$named_agent_uid\" = 1000; } || { echo 'agent user has an unexpected UID' >&2; exit 1; }",
+        "{ test -z \"$named_agent_gid\" || test \"$named_agent_gid\" = 1000; } || { echo 'agent group has an unexpected GID' >&2; exit 1; }",
+        "if test -z \"$existing_group\"; then groupadd --gid 1000 agent; elif test \"$existing_group\" != agent; then groupmod --new-name agent \"$existing_group\"; fi",
+        "if test -z \"$existing_user\"; then useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash agent; elif test \"$existing_user\" != agent; then usermod --login agent --home /home/agent --move-home --gid 1000 --shell /bin/bash \"$existing_user\"; else usermod --home /home/agent --move-home --gid 1000 --shell /bin/bash agent; fi",
+        "mkdir -p /workspace/files /var/lib/1helm /etc/sudoers.d", "chown -R 1000:1000 /workspace /home/agent",
+        "printf 'agent ALL=(ALL) NOPASSWD:ALL\\n' >/etc/sudoers.d/agent", "chmod 0440 /etc/sudoers.d/agent",
+        "printf '[automount]\\nenabled=false\\nmountFsTab=false\\n\\n[interop]\\nenabled=false\\nappendWindowsPath=false\\n\\n[user]\\ndefault=agent\\n\\n[boot]\\nsystemd=true\\n' >/etc/wsl.conf",
+        "rmdir /mnt/c /mnt/d 2>/dev/null || true",
+        `printf '%s\\n' '${ownerMarker(computer)}' >/var/lib/1helm/owner`, "printf '1helm-channel-machine-v1\\n' >/var/lib/1helm/image-contract",
+      ].join("; ");
+      const configured = await isolated(["/bin/bash", "-lc", setup], computer, "root", "/", { timeoutMs: 30 * 60_000 });
+      if (configured.code !== 0) throw new Error(configured.stderr.toString("utf8").trim() || "WSL guest setup failed");
+      const stoppedAfterSetup = await wsl(["--terminate", computer.machine_id], { timeoutMs: 90_000 });
+      if (stoppedAfterSetup.code !== 0) throw new Error(stoppedAfterSetup.stderr.toString("utf8").replaceAll("\0", "").trim() || "WSL could not apply its private mount policy.");
+      const isolationCheck = [
+        "set -eu",
+        "! findmnt -rn /mnt/c >/dev/null 2>&1",
+        "! findmnt -rn /mnt/d >/dev/null 2>&1",
+        "rmdir /mnt/c /mnt/d 2>/dev/null || true",
+        "test ! -e /mnt/c",
+        "test ! -e /mnt/d",
+        "test \"$(id -u agent)\" = 1000",
+        "test \"$(cat /var/lib/1helm/owner)\" = \"$1\"",
+        "! command -v cmd.exe >/dev/null 2>&1",
+      ].join("; ");
+      const isolation = await isolated(["/bin/sh", "-lc", isolationCheck, "1helm-isolation", ownerMarker(computer)], computer, "root", "/", { timeoutMs: 90_000 });
+      if (isolation.code !== 0) throw new Error("WSL isolation failed: Windows drives or the expected private agent identity were not contained.");
+      inspection = await inspectWsl(computer);
+      if (!inspection || inspection.homeMount !== "none") throw new Error("Provisioned WSL computer failed its ownership verification.");
+      recordComputerActivity(computer.channel_id, "Provisioned a persistent private WSL 2 distribution for this resident.", "complete");
+    } catch (error) {
+      const cleanupFailures: string[] = [];
+      if (importedByThisAttempt) {
+        try {
+          const terminated = await wsl(["--terminate", computer.machine_id], { timeoutMs: 90_000 });
+          if (terminated.code !== 0) cleanupFailures.push(terminated.stderr.toString("utf8").replaceAll("\0", "").trim() || "WSL rollback could not terminate the distribution");
+        } catch (cleanupError) { cleanupFailures.push((cleanupError as Error).message); }
+        try {
+          const unregistered = await wsl(["--unregister", computer.machine_id], { timeoutMs: 90_000 });
+          if (unregistered.code !== 0) cleanupFailures.push(unregistered.stderr.toString("utf8").replaceAll("\0", "").trim() || "WSL rollback could not unregister the distribution");
+        } catch (cleanupError) { cleanupFailures.push((cleanupError as Error).message); }
+      }
+      try { await removeWslInstallDir(computer); }
+      catch (cleanupError) { cleanupFailures.push((cleanupError as Error).message); }
+      const detail = `${(error as Error).message}${cleanupFailures.length ? ` Rollback cleanup also failed: ${cleanupFailures.join("; ")}` : ""}`;
+      run("UPDATE channel_computers SET provision_status='error',observed_state='missing',last_error=?,updated=? WHERE channel_id=?", detail.slice(0, 1000), now(), computer.channel_id);
+      throw cleanupFailures.length ? new Error(detail, { cause: error }) : error;
+    }
+  }
+  if (inspection.status !== "running") {
+    const started = await isolated(["/bin/sh", "-lc", "test -d /workspace && test \"$(cat /var/lib/1helm/owner)\" = \"$1\"", "1helm-start", ownerMarker(computer)], computer, "root", "/", { timeoutMs: 90_000 });
+    if (started.code !== 0) throw new Error(started.stderr.toString("utf8").trim() || "WSL channel computer did not start");
+    inspection = await inspectWsl(computer);
+  }
+  recordObserved(computer, inspection);
+  run("UPDATE channel_computers SET provision_status='ready',desired_state='auto',last_update=?,last_update_attempt=?,last_error='',updated=? WHERE channel_id=?", now(), now(), now(), computer.channel_id);
+}
+
 async function ensureNativeProvisioned(computer: ChannelComputer): Promise<void> {
   mkdirSync(hostWorkspace(computer.channel_id), { recursive: true });
   mkdirSync(hostFiles(computer.channel_id), { recursive: true });
@@ -370,9 +635,11 @@ export async function provisionChannelComputer(channelId: number): Promise<Chann
   return withChannelLock(channelId, async () => {
     let computer = ensureChannelComputerRecord(channelId);
     if (computer.backend === "apple") await ensureAppleProvisioned(computer);
+    else if (computer.backend === "lxc") await ensureLxcProvisioned(computer);
+    else if (computer.backend === "wsl") await ensureWslProvisioned(computer);
     else await ensureNativeProvisioned(computer);
     computer = channelComputer(channelId)!;
-    if (computer.backend === "apple") await syncHostChangesToGuest(computer);
+    if (["apple", "lxc", "wsl"].includes(computer.backend)) await syncHostChangesToGuest(computer);
     return channelComputer(channelId)!;
   });
 }
@@ -392,6 +659,18 @@ export async function ensureChannelComputerRunning(channelId: number, reason = "
       await syncHostChangesToGuest(computer);
       const inspection = await inspectApple(computer.machine_id);
       recordObserved(computer, inspection);
+    } else if (computer.backend === "lxc") {
+      await ensureLxcProvisioned(computer);
+      computer = channelComputer(channelId)!;
+      const boot = await isolated(["/bin/sh", "-lc", "test -d /workspace && test \"$(cat /var/lib/1helm/owner)\" = \"$1\"", "1helm-start", ownerMarker(computer)], computer, "root", "/", { timeoutMs: 90_000 });
+      if (boot.code !== 0) throw new Error(boot.stderr.toString("utf8").trim() || "LXC channel computer did not start");
+      await syncHostChangesToGuest(computer);
+      recordObserved(computer, await inspectLxc(computer));
+    } else if (computer.backend === "wsl") {
+      await ensureWslProvisioned(computer);
+      computer = channelComputer(channelId)!;
+      await syncHostChangesToGuest(computer);
+      recordObserved(computer, await inspectWsl(computer));
     } else await ensureNativeProvisioned(computer);
     run("UPDATE channel_computers SET last_used=?,last_error='',updated=? WHERE channel_id=?", now(), now(), channelId);
     recordComputerActivity(channelId, `Computer ready for ${reason}.`, "complete", true);
@@ -400,7 +679,7 @@ export async function ensureChannelComputerRunning(channelId: number, reason = "
 }
 
 async function syncHostChangesToGuest(computer: ChannelComputer, attempt = 0): Promise<void> {
-  if (computer.backend !== "apple") return;
+  if (!isolatedBackend(computer)) return;
   const targetRevision = Number(channelComputer(computer.channel_id)?.host_revision || computer.host_revision);
   const changes = q("SELECT relative_path,operation FROM channel_workspace_changes WHERE channel_id=? ORDER BY created", computer.channel_id);
   if (!changes.length) return;
@@ -412,7 +691,8 @@ async function syncHostChangesToGuest(computer: ChannelComputer, attempt = 0): P
     validateMirrorTree(hostFiles(computer.channel_id));
     const tar = spawn("tar", ["-C", hostWorldRoot(computer.channel_id), "-cf", "-", "workspace", "files"], { stdio: ["ignore", "pipe", "ignore"] });
     const tarClosed = new Promise<number>((resolvePromise) => tar.once("close", (code) => resolvePromise(code ?? 1)));
-    const applied = await apple(["machine", "run", "-i", "--root", "-n", computer.machine_id, "--", ...guestWords("/bin/sh", "-lc", "set -eu; mkdir -p /workspace; find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; rm -rf /files; tar -xf - -C / --no-same-owner; mkdir -p /workspace/files; if test -d /files; then cp -a /files/. /workspace/files/; rm -rf /files; fi; chown -R \"$1:$2\" /workspace", "1helm-sync", String(process.getuid?.() ?? 501), String(process.getgid?.() ?? 20))], { input: tar.stdout!, timeoutMs: 5 * 60_000 });
+    const ids = guestAgentIds(computer);
+    const applied = await isolated(["/bin/sh", "-lc", "set -eu; mkdir -p /workspace; find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; rm -rf /files; tar -xf - -C / --no-same-owner; mkdir -p /workspace/files; if test -d /files; then cp -a /files/. /workspace/files/; rm -rf /files; fi; chown -R \"$1:$2\" /workspace", "1helm-sync", ids.uid, ids.gid], computer, "root", "/", { input: tar.stdout!, timeoutMs: 5 * 60_000 });
     const tarCode = await tarClosed;
     if (tarCode !== 0 || applied.code !== 0) throw new Error(applied.stderr.toString("utf8").trim() || "workspace import failed");
   } else {
@@ -421,7 +701,7 @@ async function syncHostChangesToGuest(computer: ChannelComputer, attempt = 0): P
       const guest = rel.startsWith("files/") ? `/workspace/${rel}` : `/${rel}`;
       const host = resolveHostWorldPath(computer.channel_id, rel);
       if (String(change.operation) === "delete" || !existsSync(host)) {
-        const removed = await apple(["machine", "run", "--root", "-n", computer.machine_id, "--", ...guestWords("/bin/rm", "-rf", "--", guest)]);
+        const removed = await isolated(["/bin/rm", "-rf", "--", guest], computer, "root", "/");
         if (removed.code !== 0) throw new Error(removed.stderr.toString("utf8").trim() || `failed to remove ${rel}`);
         continue;
       }
@@ -430,7 +710,8 @@ async function syncHostChangesToGuest(computer: ChannelComputer, attempt = 0): P
       const parent = dirname(guest);
       const tar = spawn("tar", ["-C", dirname(host), "-cf", "-", basename(host)], { stdio: ["ignore", "pipe", "ignore"] });
       const tarClosed = new Promise<number>((resolvePromise) => tar.once("close", (code) => resolvePromise(code ?? 1)));
-      const applied = await apple(["machine", "run", "-i", "--root", "-n", computer.machine_id, "--", ...guestWords("/bin/sh", "-lc", "set -eu; mkdir -p \"$1\"; rm -rf -- \"$1/$2\"; tar -xf - -C \"$1\" --no-same-owner; chown -R \"$3:$4\" \"$1/$2\"", "1helm-sync", parent, basename(guest), String(process.getuid?.() ?? 501), String(process.getgid?.() ?? 20))], { input: tar.stdout!, timeoutMs: 5 * 60_000 });
+      const ids = guestAgentIds(computer);
+      const applied = await isolated(["/bin/sh", "-lc", "set -eu; mkdir -p \"$1\"; rm -rf -- \"$1/$2\"; tar -xf - -C \"$1\" --no-same-owner; chown -R \"$3:$4\" \"$1/$2\"", "1helm-sync", parent, basename(guest), ids.uid, ids.gid], computer, "root", "/", { input: tar.stdout!, timeoutMs: 5 * 60_000 });
       const tarCode = await tarClosed;
       if (tarCode !== 0 || applied.code !== 0) throw new Error(applied.stderr.toString("utf8").trim() || `failed to import ${rel}`);
     }
@@ -459,7 +740,7 @@ export async function syncGuestToHost(channelId: number): Promise<void> {
 /** Freshen the host mirror for Files/open/attach without booting a stopped VM. */
 export async function refreshChannelWorkspaceMirror(channelId: number): Promise<void> {
   const computer = channelComputer(channelId);
-  if (!computer || computer.backend !== "apple" || computer.observed_state !== "running") return;
+  if (!computer || !isolatedBackend(computer) || computer.observed_state !== "running") return;
   await syncGuestToHost(channelId);
 }
 
@@ -474,13 +755,13 @@ export async function runChannelCommand(channelId: number, command: string, sign
   upsertObligation(channelId, "command", obligationRef, "resident", command.slice(0, 500));
   try {
     const computer = await ensureChannelComputerRunning(channelId, "an agent command");
-    if (computer.backend !== "apple") {
+    if (!isolatedBackend(computer)) {
       const shell = process.env.SHELL || "/bin/bash";
       const result = await spawnCollected(shell, ["-lc", command], { cwd: hostWorkspace(channelId), signal, timeoutMs: 5 * 60_000 });
       run("UPDATE channel_computers SET last_used=?,updated=? WHERE channel_id=?", now(), now(), channelId);
       return { status: "completed", exit_code: result.code, output: Buffer.concat([result.stdout, result.stderr]).toString("utf8").trim() };
     }
-    const result = await apple(["machine", "run", "-n", computer.machine_id, "-w", "/workspace", "--", ...guestWords("/bin/bash", "-lc", command)], { signal, timeoutMs: 5 * 60_000 });
+    const result = await isolated(["/bin/bash", "-lc", command], computer, "agent", "/workspace", { signal, timeoutMs: 5 * 60_000 });
     await syncGuestToHost(channelId);
     run("UPDATE channel_computers SET last_used=?,updated=? WHERE channel_id=?", now(), now(), channelId);
     return { status: "completed", exit_code: result.code, output: Buffer.concat([result.stdout, result.stderr]).toString("utf8").trim() };
@@ -496,16 +777,15 @@ export async function openChannelTerminal(channelId: number, ownerId: number, co
   let computer: ChannelComputer;
   try { computer = await ensureChannelComputerRunning(channelId, "an interactive terminal"); }
   catch (error) { satisfyObligation(channelId, "terminal", id); throw error; }
-  const args = computer.backend === "apple"
-    ? ["machine", "run", "-it", "-n", computer.machine_id, "-w", "/workspace", "--", ...guestWords("/bin/bash", "-l")]
-    : [];
+  const invocation = isolatedBackend(computer) ? isolatedInvocation(["/bin/bash", "-l"], computer, "agent", "/workspace", true) : null;
+  const args = invocation?.args || [];
   const requestedShell = process.env.SHELL || "/bin/bash";
-  const executable = computer.backend === "apple" ? resolveContainerCli() : (requestedShell.startsWith("/") && existsSync(requestedShell) ? requestedShell : "/bin/bash");
+  const executable = invocation?.command || (requestedShell.startsWith("/") && existsSync(requestedShell) ? requestedShell : "/bin/bash");
   let pty: IPty;
   try {
     pty = spawnPty(executable, args, {
       name: "xterm-256color", cols: Math.max(20, cols || 80), rows: Math.max(5, rows || 24),
-      cwd: computer.backend === "apple" ? undefined : hostWorkspace(channelId), env: { ...process.env, TERM: "xterm-256color" },
+      cwd: invocation ? undefined : hostWorkspace(channelId), env: { ...process.env, TERM: "xterm-256color" },
     });
   } catch (error) { satisfyObligation(channelId, "terminal", id); throw error; }
   const session: MachineTerminal = {
@@ -523,7 +803,7 @@ export async function openChannelTerminal(channelId: number, ownerId: number, co
     if (pending) clearTimeout(pending);
     const timer = setTimeout(() => {
       syncTimers.delete(channelId);
-      if (terminalSessions.has(id) && session.backend === "apple") void syncGuestToHost(channelId).catch((error) => recordComputerError(channelId, error));
+      if (terminalSessions.has(id) && ["apple", "lxc", "wsl"].includes(session.backend)) void syncGuestToHost(channelId).catch((error) => recordComputerError(channelId, error));
     }, 3_000);
     timer.unref();
     syncTimers.set(channelId, timer);
@@ -540,7 +820,7 @@ async function finishTerminal(session: MachineTerminal): Promise<void> {
   satisfyObligation(session.channelId, "terminal", session.id);
   const timer = syncTimers.get(session.channelId);
   if (timer) { clearTimeout(timer); syncTimers.delete(session.channelId); }
-  if (session.backend === "apple") await syncGuestToHost(session.channelId).catch((error) => recordComputerError(session.channelId, error));
+  if (["apple", "lxc", "wsl"].includes(session.backend)) await syncGuestToHost(session.channelId).catch((error) => recordComputerError(session.channelId, error));
 }
 
 export async function attachChannelTerminal(sessionId: string, client: WebSocket, ownerId: number): Promise<void> {
@@ -592,6 +872,14 @@ export async function stopChannelComputer(channelId: number, reason: "archive" |
     if (computer.backend === "apple") {
       const stopped = await apple(["machine", "stop", computer.machine_id], { timeoutMs: 90_000 });
       if (stopped.code !== 0 && !/not running|stopped/i.test(stopped.stderr.toString("utf8"))) throw new Error(stopped.stderr.toString("utf8").trim() || "machine stop failed");
+    } else if (computer.backend === "lxc") {
+      const stopped = await lxc(["stop", computer.machine_id, ownerMarker(computer)], { timeoutMs: 90_000 });
+      if (stopped.code !== 0) throw new Error(stopped.stderr.toString("utf8").trim() || "LXC channel computer stop failed");
+    } else if (computer.backend === "wsl") {
+      const ownership = await isolated(["/bin/cat", "/var/lib/1helm/owner"], computer, "root", "/", { timeoutMs: 30_000 });
+      if (ownership.code !== 0 || ownership.stdout.toString("utf8").trim() !== ownerMarker(computer)) throw new Error("Refusing to stop a WSL distribution whose ownership marker does not match exactly.");
+      const stopped = await wsl(["--terminate", computer.machine_id], { timeoutMs: 90_000 });
+      if (stopped.code !== 0) throw new Error(stopped.stderr.toString("utf8").replaceAll("\0", "").trim() || "WSL channel computer stop failed");
     }
     run("UPDATE channel_computers SET desired_state=?,observed_state='stopped',maintenance_state='idle',last_error='',updated=? WHERE channel_id=?", reason === "archive" ? "stopped" : "auto", now(), channelId);
     recordComputerActivity(channelId, reason === "archive" ? "Stopped the archived channel computer; its Linux disk is preserved." : "Stopped an idle, obligation-free channel computer.", "complete");
@@ -599,7 +887,7 @@ export async function stopChannelComputer(channelId: number, reason: "archive" |
 }
 
 async function syncGuestToHostUnlocked(computer: ChannelComputer): Promise<void> {
-  if (computer.backend !== "apple" || !["running", "unknown"].includes(computer.observed_state)) return;
+  if (!isolatedBackend(computer) || !["running", "unknown"].includes(computer.observed_state)) return;
   // Avoid recursive lock: stop/maintenance and the public wrapper already own
   // this channel's lock. Host changes are authoritative when they race guest
   // work, so push the journal before taking the guest snapshot.
@@ -610,7 +898,8 @@ async function syncGuestToHostUnlocked(computer: ChannelComputer): Promise<void>
     const staging = `${hostWorldRoot(computer.channel_id)}.guest-sync-${randomBytes(6).toString("hex")}`;
     mkdirSync(staging, { recursive: true });
     try {
-      const child = spawn(resolveContainerCli(), ["machine", "run", "-n", computer.machine_id, "--", ...guestWords("/bin/tar", "-C", "/", "-cf", "-", "workspace")], { stdio: ["ignore", "pipe", "pipe"] });
+      const invocation = isolatedInvocation(["/bin/tar", "-C", "/", "-cf", "-", "workspace"], computer, "agent", "/workspace");
+      const child = spawn(invocation.command, invocation.args, { stdio: ["ignore", "pipe", "pipe"] });
       const extract = spawn("tar", ["-C", staging, "-xf", "-", "--no-same-owner", "--no-same-permissions"], { stdio: ["pipe", "ignore", "pipe"] });
       let archiveBytes = 0, oversized = false;
       child.stdout!.on("data", (chunk: Buffer) => {
@@ -726,6 +1015,23 @@ export async function deleteChannelComputer(channelId: number): Promise<void> {
         const deleted = await apple(["machine", "delete", computer.machine_id], { timeoutMs: 90_000 });
         if (deleted.code !== 0) throw new Error(deleted.stderr.toString("utf8").trim() || "machine deletion failed");
       }
+    } else if (computer.backend === "lxc") {
+      const inspection = await inspectLxc(computer);
+      if (inspection) {
+        const deleted = await lxc(["delete", computer.machine_id, ownerMarker(computer)], { timeoutMs: 90_000 });
+        if (deleted.code !== 0) throw new Error(deleted.stderr.toString("utf8").trim() || "LXC channel computer deletion failed");
+      }
+    } else if (computer.backend === "wsl") {
+      const inspection = await inspectWsl(computer);
+      if (inspection) {
+        const ownership = await isolated(["/bin/cat", "/var/lib/1helm/owner"], computer, "root", "/", { timeoutMs: 30_000 });
+        if (ownership.code !== 0 || ownership.stdout.toString("utf8").trim() !== ownerMarker(computer)) throw new Error("Refusing to delete a WSL distribution whose ownership marker does not match exactly.");
+        const terminated = await wsl(["--terminate", computer.machine_id], { timeoutMs: 90_000 });
+        if (terminated.code !== 0) throw new Error(terminated.stderr.toString("utf8").replaceAll("\0", "").trim() || "WSL distribution could not stop before deletion");
+        const deleted = await wsl(["--unregister", computer.machine_id], { timeoutMs: 90_000 });
+        if (deleted.code !== 0) throw new Error(deleted.stderr.toString("utf8").replaceAll("\0", "").trim() || "WSL distribution deletion failed");
+        await removeWslInstallDir(computer);
+      }
     }
     run("UPDATE channel_computers SET desired_state='deleted',observed_state='deleted',provision_status='deleted',updated=? WHERE channel_id=?", now(), channelId);
   });
@@ -740,17 +1046,25 @@ function listedAppleMachineIds(output: Buffer): string[] {
 }
 
 async function ownedInstallationMachineIds(): Promise<string[]> {
-  if (configuredChannelBackend() !== "apple") return [];
-  const listed = await apple(["machine", "list", "--format", "json"], { timeoutMs: 30_000 });
-  if (listed.code !== 0) throw new Error(listed.stderr.toString("utf8").trim() || "Could not list Apple channel machines.");
   const prefix = `1helm-${installationId()}-channel-`;
-  return listedAppleMachineIds(listed.stdout).filter((id) => id.startsWith(prefix) && /^\d+$/.test(id.slice(prefix.length)));
+  const backend = configuredChannelBackend();
+  let names: string[] = [];
+  if (backend === "apple") {
+    const listed = await apple(["machine", "list", "--format", "json"], { timeoutMs: 30_000 });
+    if (listed.code !== 0) throw new Error(listed.stderr.toString("utf8").trim() || "Could not list Apple channel machines.");
+    names = listedAppleMachineIds(listed.stdout);
+  } else if (backend === "lxc") {
+    const listed = await lxc(["list", prefix], { timeoutMs: 30_000 });
+    if (listed.code !== 0) throw new Error(listed.stderr.toString("utf8").trim() || "Could not list LXC channel computers.");
+    try { names = JSON.parse(listed.stdout.toString("utf8")); } catch { throw new Error("LXC runtime returned an unreadable machine list."); }
+  } else if (backend === "wsl") names = await wslNames();
+  return names.filter((id) => id.startsWith(prefix) && /^\d+$/.test(id.slice(prefix.length)));
 }
 
 /** Count exact installation-owned VMs that would survive moving the app to Trash. */
 export async function appRemovalStatus(): Promise<{ backend: ChannelComputerBackend; machines: number }> {
   const backend = configuredChannelBackend();
-  return { backend, machines: backend === "apple" ? (await ownedInstallationMachineIds()).length : 0 };
+  return { backend, machines: isolatedBackend({ backend } as ChannelComputer) ? (await ownedInstallationMachineIds()).length : 0 };
 }
 
 /**
@@ -760,7 +1074,7 @@ export async function appRemovalStatus(): Promise<{ backend: ChannelComputerBack
  */
 export async function prepareAppRemoval(): Promise<{ backend: ChannelComputerBackend; deleted: number; remaining: number }> {
   const backend = configuredChannelBackend();
-  if (backend !== "apple") return { backend, deleted: 0, remaining: 0 };
+  if (!["apple", "lxc", "wsl"].includes(backend)) return { backend, deleted: 0, remaining: 0 };
   // Uninstall is a fleet-wide terminal state. Quiesce and fence the reconciler
   // before enumerating machines so an already-running pass cannot recreate a
   // machine from its stale pre-removal snapshot after deletion completes.
@@ -771,24 +1085,35 @@ export async function prepareAppRemoval(): Promise<{ backend: ChannelComputerBac
   let deleted = 0;
   for (const machineId of machineIds) {
     const channelId = Number(machineId.slice(prefix.length));
-    const inspection = await inspectApple(machineId);
+    const synthetic = channelComputer(channelId) || {
+      channel_id: channelId, backend, machine_id: machineId, image: DEFAULT_CHANNEL_IMAGE, cpus: 2, memory_bytes: 2 * 1024 ** 3,
+      disk_bytes: MANAGED_CHANNEL_DISK_BYTES, home_mount: "none", desired_state: "auto", observed_state: "unknown", provision_status: "ready",
+      maintenance_state: "idle", low_pressure_streak: 0, host_revision: 0, synced_host_revision: 0, guest_revision: 0,
+      last_health: 0, last_used: 0, last_update: 0, last_update_attempt: 0, last_error: "", created: now(), updated: now(),
+    } as ChannelComputer;
+    const inspection = await inspectIsolated(synthetic);
     if (!inspection) continue;
-    if (inspection.homeMount !== "none") throw new Error(`Refusing to remove ${machineId}: its Mac home isolation invariant no longer holds.`);
-    const ownership = await apple(["machine", "run", "-n", machineId, "--", ...guestWords("/bin/cat", "/var/lib/1helm/owner")], { timeoutMs: 30_000 });
-    if (ownership.code !== 0 || ownership.stdout.toString("utf8").trim() !== `${install}:${channelId}`) {
-      throw new Error(`Refusing to remove ${machineId}: its 1Helm ownership marker does not match exactly.`);
-    }
+    if (inspection.homeMount !== "none") throw new Error(`Refusing to remove ${machineId}: its host-home isolation invariant no longer holds.`);
+    const ownership = await isolated(["/bin/cat", "/var/lib/1helm/owner"], synthetic, "root", "/", { timeoutMs: 30_000 });
+    if (ownership.code !== 0 || ownership.stdout.toString("utf8").trim() !== `${install}:${channelId}`) throw new Error(`Refusing to remove ${machineId}: its 1Helm ownership marker does not match exactly.`);
     const tracked = q1("SELECT channel_id FROM channel_computers WHERE machine_id=?", machineId);
     if (tracked) {
       await deleteChannelComputer(Number(tracked.channel_id));
       deleted++;
       continue;
     }
-    const stopped = await apple(["machine", "stop", machineId], { timeoutMs: 90_000 });
-    if (stopped.code !== 0 && !/not running|stopped/i.test(Buffer.concat([stopped.stderr, stopped.stdout]).toString("utf8"))) {
-      throw new Error(stopped.stderr.toString("utf8").trim() || `Could not stop ${machineId}.`);
+    let removed: { code: number; stdout: Buffer; stderr: Buffer };
+    if (backend === "apple") {
+      const stopped = await apple(["machine", "stop", machineId], { timeoutMs: 90_000 });
+      if (stopped.code !== 0 && !/not running|stopped/i.test(Buffer.concat([stopped.stderr, stopped.stdout]).toString("utf8"))) throw new Error(stopped.stderr.toString("utf8").trim() || `Could not stop ${machineId}.`);
+      removed = await apple(["machine", "delete", machineId], { timeoutMs: 90_000 });
+    } else if (backend === "lxc") removed = await lxc(["delete", machineId, `${install}:${channelId}`], { timeoutMs: 90_000 });
+    else {
+      const stopped = await wsl(["--terminate", machineId], { timeoutMs: 90_000 });
+      if (stopped.code !== 0) throw new Error(stopped.stderr.toString("utf8").replaceAll("\0", "").trim() || `Could not stop ${machineId}.`);
+      removed = await wsl(["--unregister", machineId], { timeoutMs: 90_000 });
+      await removeWslInstallDir(synthetic);
     }
-    const removed = await apple(["machine", "delete", machineId], { timeoutMs: 90_000 });
     if (removed.code !== 0) throw new Error(removed.stderr.toString("utf8").trim() || `Could not delete ${machineId}.`);
     run("UPDATE channel_computers SET desired_state='deleted',observed_state='deleted',provision_status='deleted',updated=? WHERE machine_id=?", now(), machineId);
     deleted++;
@@ -837,7 +1162,7 @@ function detectGuestObligationsOutput(output: string): { resident: boolean; deta
 }
 
 async function inspectGuestObligations(computer: ChannelComputer): Promise<{ resident: boolean; details: string[]; pressure: Record<string, number> }> {
-  if (computer.backend !== "apple" || computer.observed_state !== "running") return { resident: false, details: [], pressure: {} };
+  if (!isolatedBackend(computer) || computer.observed_state !== "running") return { resident: false, details: [], pressure: {} };
   const script = [
     "set -eu",
     "processes=$(ps -eo uid=,pid=,ppid=,comm=)",
@@ -856,7 +1181,7 @@ async function inspectGuestObligations(computer: ChannelComputer): Promise<{ res
     "test -n \"$load\" && test -n \"$mem\" && test -n \"$disk\"",
     "printf 'SERVICES=%s\\nTIMERS=%s\\nCRON=%s\\nJOBS=%s\\nSOCKETS=%s\\nPATHS=%s\\nLOAD1=%s\\nMEM_AVAILABLE_KB=%s\\nDISK_USED_PERCENT=%s\\n' \"$services\" \"$timers\" \"$cron\" \"$jobs\" \"$sockets\" \"$paths\" \"$load\" \"$mem\" \"$disk\"",
   ].join("; ");
-  const result = await apple(["machine", "run", "-n", computer.machine_id, "--", ...guestWords("/bin/sh", "-lc", script)], { timeoutMs: 30_000 });
+  const result = await isolated(["/bin/sh", "-lc", script], computer, "agent", "/workspace", { timeoutMs: 30_000 });
   if (result.code !== 0) return { resident: true, details: ["guest quiescence could not be proved"], pressure: {} };
   return detectGuestObligationsOutput(result.stdout.toString("utf8"));
 }
@@ -876,7 +1201,7 @@ async function maybeUpdate(computer: ChannelComputer): Promise<void> {
   return withChannelLock(computer.channel_id, async () => {
     computer = channelComputer(computer.channel_id) || computer;
     const stamp = now();
-    if (computer.backend !== "apple" || computer.observed_state !== "running" || !canStopChannelComputer(computer.channel_id)) return;
+    if (!isolatedBackend(computer) || computer.observed_state !== "running" || !canStopChannelComputer(computer.channel_id)) return;
     if (stamp - Number(computer.last_update || computer.created) < UPDATE_EVERY_MS) return;
     if (stamp - Number(computer.last_update_attempt || 0) < UPDATE_RETRY_MS) return;
     const ref = `os-update:${stamp}`;
@@ -892,16 +1217,23 @@ async function maybeUpdate(computer: ChannelComputer): Promise<void> {
         "systemctl mask apt-daily.service apt-daily.timer apt-daily-upgrade.service apt-daily-upgrade.timer dpkg-db-backup.timer e2scrub_all.timer e2scrub_reap.service fstrim.timer man-db.timer motd-news.timer systemd-ask-password-console.path systemd-ask-password-wall.path systemd-pstore.service systemd-sysext.service systemd-sysext.socket systemd-tmpfiles-clean.service systemd-tmpfiles-clean.timer >/dev/null 2>&1 || true",
         "if test -e /var/run/reboot-required; then printf 'REBOOT_REQUIRED\\n'; fi",
       ].join("; ");
-      const updated = await apple(["machine", "run", "--root", "-n", computer.machine_id, "--", ...guestWords("/bin/sh", "-lc", script)], { timeoutMs: 30 * 60_000 });
+      const updated = await isolated(["/bin/sh", "-lc", script], computer, "root", "/", { timeoutMs: 30 * 60_000 });
       if (updated.code !== 0) throw new Error(updated.stderr.toString("utf8").trim() || "Linux package update failed");
       if (updated.stdout.toString("utf8").includes("REBOOT_REQUIRED")) {
         await syncGuestToHostUnlocked(channelComputer(computer.channel_id) || computer);
-        const stopped = await apple(["machine", "stop", computer.machine_id], { timeoutMs: 90_000 });
-        if (stopped.code !== 0) throw new Error(stopped.stderr.toString("utf8").trim() || "updated channel computer could not restart");
-        const restarted = await apple(["machine", "run", "-n", computer.machine_id, "--", ...guestWords("/bin/sh", "-lc", "test -d /workspace")], { timeoutMs: 90_000 });
+        let stopped: { code: number; stdout: Buffer; stderr: Buffer };
+        if (computer.backend === "apple") stopped = await apple(["machine", "stop", computer.machine_id], { timeoutMs: 90_000 });
+        else if (computer.backend === "lxc") stopped = await lxc(["stop", computer.machine_id, ownerMarker(computer)], { timeoutMs: 90_000 });
+        else {
+          const ownership = await isolated(["/bin/cat", "/var/lib/1helm/owner"], computer, "root", "/", { timeoutMs: 30_000 });
+          if (ownership.code !== 0 || ownership.stdout.toString("utf8").trim() !== ownerMarker(computer)) throw new Error("updated WSL computer failed its ownership check");
+          stopped = await wsl(["--terminate", computer.machine_id], { timeoutMs: 90_000 });
+        }
+        if (stopped.code !== 0) throw new Error(stopped.stderr.toString("utf8").replaceAll("\0", "").trim() || "updated channel computer could not restart");
+        const restarted = await isolated(["/bin/sh", "-lc", "test -d /workspace"], computer, "root", "/", { timeoutMs: 90_000 });
         if (restarted.code !== 0) throw new Error(restarted.stderr.toString("utf8").trim() || "updated channel computer failed its restart check");
       }
-      const inspection = await inspectApple(computer.machine_id);
+      const inspection = await inspectIsolated(computer);
       if (!inspection || inspection.homeMount !== "none") throw new Error("updated channel computer failed its security health check");
       recordObserved(computer, inspection);
       run("UPDATE channel_computers SET maintenance_state='idle',last_update=?,last_error='',updated=? WHERE channel_id=?", now(), now(), computer.channel_id);
@@ -917,7 +1249,7 @@ async function maybeUpdate(computer: ChannelComputer): Promise<void> {
 }
 
 async function maybeResizeUnlocked(computer: ChannelComputer, pressure: Record<string, number>): Promise<void> {
-  if (computer.backend !== "apple" || computer.observed_state !== "running" || !canStopChannelComputer(computer.channel_id)) return;
+  if (!["apple", "lxc"].includes(computer.backend) || computer.observed_state !== "running" || !canStopChannelComputer(computer.channel_id)) return;
   const available = Number(pressure.memoryAvailableKb || 0) * 1024;
   const load = Number(pressure.load1 || 0);
   let targetMemory = computer.memory_bytes, targetCpus = computer.cpus;
@@ -935,7 +1267,7 @@ async function maybeResizeUnlocked(computer: ChannelComputer, pressure: Record<s
 }
 
 async function resizeChannelComputerUnlocked(computer: ChannelComputer, targetCpus: number, targetMemory: number): Promise<void> {
-  if (computer.backend !== "apple" || computer.observed_state !== "running") throw new Error("Only a running Apple channel computer can be resized.");
+  if (!["apple", "lxc"].includes(computer.backend) || computer.observed_state !== "running") throw new Error("Only a running Apple or LXC channel computer can be resized independently.");
   if (!canStopChannelComputer(computer.channel_id)) throw new Error("Channel computer is busy; resize will retry when it is quiescent.");
   targetCpus = Math.max(1, Math.min(8, Math.round(targetCpus)));
   targetMemory = Math.max(1024 ** 3, Math.min(16 * 1024 ** 3, Math.round(targetMemory / 1024 ** 2) * 1024 ** 2));
@@ -945,14 +1277,21 @@ async function resizeChannelComputerUnlocked(computer: ChannelComputer, targetCp
   run("UPDATE channel_computers SET maintenance_state='draining',updated=? WHERE channel_id=?", now(), computer.channel_id);
   try {
     await syncGuestToHostUnlocked(computer);
-    const stopped = await apple(["machine", "stop", computer.machine_id], { timeoutMs: 90_000 });
+    const stopped = computer.backend === "apple"
+      ? await apple(["machine", "stop", computer.machine_id], { timeoutMs: 90_000 })
+      : await lxc(["stop", computer.machine_id, ownerMarker(computer)], { timeoutMs: 90_000 });
     if (stopped.code !== 0) throw new Error(stopped.stderr.toString("utf8").trim() || "safe resize drain could not stop the machine");
     run("UPDATE channel_computers SET desired_state='running',observed_state='stopped',maintenance_state='resizing',updated=? WHERE channel_id=?", now(), computer.channel_id);
-    const configured = await apple(["machine", "set", "-n", computer.machine_id, `cpus=${targetCpus}`, `memory=${Math.round(targetMemory / 1024 ** 2)}M`, "home-mount=none"], { timeoutMs: 30_000 });
+    const configured = computer.backend === "apple"
+      ? await apple(["machine", "set", "-n", computer.machine_id, `cpus=${targetCpus}`, `memory=${Math.round(targetMemory / 1024 ** 2)}M`, "home-mount=none"], { timeoutMs: 30_000 })
+      : await lxc(["set", computer.machine_id, ownerMarker(computer), String(targetCpus), String(Math.round(targetMemory / 1024 ** 2))], { timeoutMs: 30_000 });
     if (configured.code !== 0) throw new Error(configured.stderr.toString("utf8").trim() || "resize configuration failed");
-    const restarted = await apple(["machine", "run", "-n", computer.machine_id, "--", ...guestWords("/bin/sh", "-lc", "test -d /workspace")], { timeoutMs: 90_000 });
+    const refreshedBeforeStart = { ...computer, cpus: targetCpus, memory_bytes: targetMemory };
+    const restarted = computer.backend === "apple"
+      ? await apple(["machine", "run", "-n", computer.machine_id, "--", ...guestWords("/bin/sh", "-lc", "test -d /workspace")], { timeoutMs: 90_000 })
+      : await isolated(["/bin/sh", "-lc", "test -d /workspace"], refreshedBeforeStart, "root", "/", { timeoutMs: 90_000 });
     if (restarted.code !== 0) throw new Error(restarted.stderr.toString("utf8").trim() || "resized machine failed verification");
-    const inspection = await inspectApple(computer.machine_id);
+    const inspection = await inspectIsolated(refreshedBeforeStart);
     if (!inspection || Number(inspection.cpus) !== targetCpus || Number(inspection.memory) !== targetMemory || inspection.homeMount !== "none") throw new Error("resized machine did not match its verified target");
     recordObserved(computer, inspection);
     run("UPDATE channel_computers SET desired_state=?,maintenance_state='idle',low_pressure_streak=0,last_error='',updated=? WHERE channel_id=?", previousDesired, now(), computer.channel_id);
@@ -979,9 +1318,9 @@ async function reconcileOne(computer: ChannelComputer): Promise<void> {
   if (computer.desired_state === "deleted") return;
   const channel = q1("SELECT status FROM channels WHERE id=?", computer.channel_id);
   if (!channel) return;
-  if (computer.backend !== "apple") { await ensureNativeProvisioned(computer); return; }
-  let inspection: AppleInspection | null;
-  try { inspection = await inspectApple(computer.machine_id); } catch (error) { recordComputerError(computer.channel_id, error); return; }
+  if (!isolatedBackend(computer)) { await ensureNativeProvisioned(computer); return; }
+  let inspection: MachineInspection | null;
+  try { inspection = await inspectIsolated(computer); } catch (error) { recordComputerError(computer.channel_id, error); return; }
   if (!inspection) {
     recordObserved(computer, null, "machine missing");
     if (channel.status === "active") await provisionChannelComputer(computer.channel_id);
@@ -1071,7 +1410,56 @@ export async function shutdownChannelComputers(): Promise<void> {
 export function runtimeReadiness(): Record<string, unknown> {
   const backend = configuredChannelBackend();
   const darwin = platform() === "darwin";
+  const linux = platform() === "linux";
+  const windows = platform() === "win32";
   const arm64 = process.arch === "arm64";
+  const supportedArchitecture = arm64 || process.arch === "x64";
+  if (backend === "native" || backend === "mock") {
+    return {
+      backend, supported: true, ready: true, platform: platform(), architecture: process.arch,
+      development_only: true, runtime_version: null, status: "development",
+    };
+  }
+  if (backend === "lxc") {
+    let helper = "", version = "", system: unknown = null, error = "";
+    try {
+      helper = resolveLxcHelper();
+      const prefix = process.env.HELM_LXC_HELPER_USE_SUDO === "0" || process.getuid?.() === 0 ? [] : ["-n", helper];
+      const executable = prefix.length ? "sudo" : helper;
+      const versionResult = spawnSync(executable, [...prefix, "version"], { encoding: "utf8", timeout: 10_000 });
+      version = versionResult.status === 0 ? String(versionResult.stdout || "").trim() : "";
+      const readyResult = spawnSync(executable, [...prefix, "ready"], { encoding: "utf8", timeout: 15_000 });
+      if (readyResult.status === 0) {
+        try { system = JSON.parse(String(readyResult.stdout || "")); } catch { system = String(readyResult.stdout || "").trim(); }
+      } else error = String(readyResult.stderr || readyResult.stdout || "LXC runtime readiness check failed.").trim();
+    } catch (failure) { error = (failure as Error).message; }
+    const supported = linux && supportedArchitecture;
+    return {
+      backend, supported, ready: Boolean(supported && helper && version === LXC_RUNTIME_VERSION && system && !error),
+      platform: platform(), architecture: process.arch, cli: helper || null, version: version || null, system,
+      runtime_version: LXC_RUNTIME_VERSION, status: error ? "error" : system ? "running" : "missing", error: error || null,
+    };
+  }
+  if (backend === "wsl") {
+    let cli = "", version: unknown = null, system: unknown = null, error = "";
+    try {
+      cli = resolveWslCli();
+      const versionResult = spawnSync(cli, ["--version"], { encoding: "buffer", timeout: 10_000 });
+      if (versionResult.status === 0) version = windowsLines(versionResult.stdout as Buffer);
+      const statusResult = spawnSync(cli, ["--status"], { encoding: "buffer", timeout: 15_000 });
+      if (statusResult.status === 0) system = windowsLines(statusResult.stdout as Buffer);
+      else error = windowsLines(Buffer.concat([statusResult.stderr as Buffer || Buffer.alloc(0), statusResult.stdout as Buffer || Buffer.alloc(0)])).join(" ") || "WSL 2 readiness check failed.";
+    } catch (failure) { error = (failure as Error).message; }
+    const supported = windows && supportedArchitecture;
+    const artifact = supportedArchitecture ? WSL_ROOTFS_ARTIFACTS[arm64 ? "arm64" : "amd64"] : null;
+    return {
+      backend, supported, ready: Boolean(supported && cli && system && !error),
+      platform: platform(), architecture: process.arch, cli: cli || null, version, system,
+      runtime_version: WSL_RUNTIME_VERSION, rootfs_release: WSL_ROOTFS_RELEASE,
+      rootfs_name: artifact?.name || null, rootfs_sha256: artifact?.sha256 || null,
+      status: error ? "error" : system ? "running" : "missing", error: error || null,
+    };
+  }
   let cli = "";
   try { cli = resolveContainerCli(); } catch { /* missing */ }
   let system: unknown = null;
@@ -1098,9 +1486,10 @@ export function runtimeReadiness(): Record<string, unknown> {
   const macosVersion = darwin ? spawnSync("/usr/bin/sw_vers", ["-productVersion"], { encoding: "utf8" }).stdout?.trim() || "" : "";
   const supportedMac = darwin && arm64 && Number(macosVersion.split(".")[0] || 0) >= 26;
   return {
-    backend, supported: backend !== "apple" || supportedMac, darwin, arm64, macos_version: macosVersion || null, cli: cli || null, version, system,
+    backend, supported: supportedMac, darwin, arm64, platform: platform(), architecture: process.arch, macos_version: macosVersion || null, cli: cli || null, version, system,
     runtime_version: APPLE_RUNTIME_VERSION, installer_url: APPLE_RUNTIME_URL, installer_sha256: APPLE_RUNTIME_SHA256,
-    ready: backend !== "apple" || Boolean(supportedMac && cli && exactRuntime),
+    status: exactRuntime ? "running" : cli ? "stopped" : "missing", error: null,
+    ready: Boolean(supportedMac && cli && exactRuntime),
   };
 }
 
@@ -1140,6 +1529,20 @@ export async function prepareAppleRuntimeInstaller(): Promise<{ path: string; sh
   const opened = spawnSync("/usr/bin/open", [destination], { stdio: "ignore" }).status === 0;
   if (!opened) throw new Error("macOS could not open the verified Apple runtime installer.");
   return { path: destination, sha256: digest, opened };
+}
+
+/** Open Microsoft's one-time elevated WSL 2 feature setup on Windows. */
+export async function prepareWindowsWslRuntime(): Promise<{ opened: boolean }> {
+  if (platform() !== "win32") throw new Error("WSL 2 setup is available only on Windows.");
+  const script = join(process.env.HELM_APP_ROOT || process.cwd(), "scripts", "install-wsl-runtime.ps1");
+  if (!existsSync(script)) throw new Error("1Helm's signed WSL 2 setup script is missing.");
+  const escaped = script.replaceAll("'", "''");
+  const launched = spawnSync("powershell.exe", [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+    `Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','${escaped}') -Verb RunAs`,
+  ], { encoding: "utf8", timeout: 30_000, windowsHide: true });
+  if (launched.status !== 0) throw new Error(String(launched.stderr || launched.stdout || "Windows did not open WSL 2 administrator setup.").trim());
+  return { opened: true };
 }
 
 /** Complete runtime activation after the signed package receives approval. */

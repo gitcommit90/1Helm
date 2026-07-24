@@ -65,8 +65,10 @@ try {
       CTRL_DATA_DIR: dataDir,
       PORT: String(appPort),
       IMPROVEMENT_INTERVAL_MS: "600000",
+      NODE_ENV: "test",
       HELM_UPDATE_MANIFEST_URL: `http://127.0.0.1:${mockPort}/update-manifest`,
       HELM_INSTALL_KIND: "linux-systemd",
+      HELM_CHANNEL_COMPUTER_BACKEND: "native",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -138,6 +140,11 @@ try {
   await page.evaluate(() => [...document.querySelectorAll("#welcome-tour button")].find((button) => button.textContent?.trim() === "Keep current")?.click());
   await page.waitForFunction(() => !document.querySelector("#welcome-tour"));
 
+  // This browser test combines the legacy Linux service contract with the
+  // native fake-computer backend so it can exercise the host update UI. The
+  // real 0.0.5 migration watcher is intentionally absent; clear its synthetic
+  // bootstrap request before asserting the independent release check.
+  rmSync(join(dataDir, "host-update.request"), { force: true });
   await page.click('button[title="Open profile"]');
   await page.waitForSelector("#profile-popover");
   await page.waitForFunction(() => document.querySelector("[data-profile-update-status]")?.textContent?.includes("available for this Linux host"));

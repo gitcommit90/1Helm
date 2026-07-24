@@ -143,8 +143,10 @@ function adminPanel(): HTMLElement {
     catch (error) { status.textContent = (error as Error).message; }
   };
   const removalStatus = h("p", { class: "min-h-5 text-sm text-muted" }, "Checking for 1Helm channel computers…");
+  let removalBackend = "";
   const prepareRemoval = async (): Promise<void> => {
-    const confirmation = await appPrompt("This deletes every verified 1Helm-owned channel computer from Apple's VM runtime. Your 1Helm Application Support data remains intact.\n\nType **REMOVE 1HELM** to continue:");
+    const platformLabel = removalBackend === "apple" ? "Apple's VM runtime" : removalBackend === "wsl" ? "WSL 2" : removalBackend === "lxc" ? "the Linux LXC runtime" : "the active runtime";
+    const confirmation = await appPrompt(`This deletes every verified 1Helm-owned channel computer from ${platformLabel}. Your durable 1Helm data remains intact.\n\nType **REMOVE 1HELM** to continue:`);
     if (confirmation !== "REMOVE 1HELM") { if (confirmation != null) removalStatus.textContent = "Removal preparation cancelled; confirmation did not match."; return; }
     removalStatus.textContent = "Preserving the latest channel files and deleting owned virtual machines…";
     try {
@@ -153,9 +155,10 @@ function adminPanel(): HTMLElement {
     } catch (error) { removalStatus.textContent = (error as Error).message; }
   };
   void api<{ backend: string; machines: number }>("/api/app/removal").then((result) => {
-    removalStatus.textContent = result.backend === "apple"
+    removalBackend = result.backend;
+    removalStatus.textContent = ["apple", "lxc", "wsl"].includes(result.backend)
       ? `${result.machines} 1Helm-owned channel computer${result.machines === 1 ? "" : "s"} will be removed before uninstall.`
-      : "No Apple channel computers are managed by this installation.";
+      : "No isolated channel computers are managed by this development installation.";
   }).catch((error) => { removalStatus.textContent = (error as Error).message; });
   return h("div", { class: "space-y-4" },
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Workspace identity"), h("p", { class: "mt-1 text-sm text-muted" }, "Simple shared identity for everyone and every agent in this workspace."),
@@ -165,7 +168,7 @@ function adminPanel(): HTMLElement {
       h("div", { class: "mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save workspace"))),
     h("div", { class: "card border-danger/30 p-4" },
       h("h3", { class: "font-semibold text-fg" }, "Remove 1Helm"),
-      h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Before moving 1Helm to Trash, remove its isolated Linux channel computers so Apple’s container runtime does not leave virtual machines running. This keeps your Application Support data in case you reinstall."),
+      h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Before uninstalling 1Helm, remove its isolated Linux channel computers from the host runtime. Durable workspace data stays in place in case you reinstall."),
       h("div", { class: "mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, removalStatus, h("button", { class: "btn-danger shrink-0 text-sm", onclick: () => { void prepareRemoval(); } }, "Prepare to remove 1Helm"))));
 }
 
@@ -206,8 +209,8 @@ function skillCatalogBrowser(initial: SkillCatalogStatus): HTMLElement {
   const status = h("p", { class: "text-xs leading-5 text-muted" });
   const renderStatus = (state: SkillCatalogStatus): void => {
     status.textContent = state.available
-      ? `${state.skill_count.toLocaleString()} ready-to-install repositories from SkillsMD${state.generated_at ? ` · updated ${state.generated_at.slice(0, 10)}` : ""}`
-      : `SkillsMD is not cached yet${state.error ? ` · ${state.error}` : " — the first search will fetch its focused index"}`;
+      ? `${state.skill_count.toLocaleString()} repository records currently listed in SkillsMD's browse index${state.generated_at ? ` · updated ${state.generated_at.slice(0, 10)}` : ""} · searches query the live registry beyond that list`
+      : `SkillsMD is not cached yet${state.error ? ` · ${state.error}` : " — the first search will fetch its index"}`;
   };
   renderStatus(initial);
   const install = async (entry: SkillCatalogResult, button: HTMLButtonElement): Promise<void> => {
@@ -222,16 +225,17 @@ function skillCatalogBrowser(initial: SkillCatalogStatus): HTMLElement {
     if (!text) return;
     clear(results); results.append(h("p", { class: "py-4 text-sm text-muted" }, "Searching catalog metadata…"));
     try {
-      const found = await api<{ status: SkillCatalogStatus; results: SkillCatalogResult[] }>(`/api/skills/catalog?q=${encodeURIComponent(text)}&limit=20`);
+      const found = await api<{ status: SkillCatalogStatus; results: SkillCatalogResult[] }>(`/api/skills/catalog?q=${encodeURIComponent(text)}`);
       renderStatus(found.status); clear(results);
-      if (!found.results.length) results.append(h("div", { class: "rounded-lg border border-line bg-raised/40 p-4 text-sm text-muted" }, h("p", {}, "No ready-to-install skills found."), h("button", { class: "btn-subtle mt-3 text-xs", type: "button", onclick: learnSkillDialog }, "Use Learn a new skill")));
-      for (const entry of found.results.filter((candidate) => candidate.trust_level === "trusted")) {
-        const button = h("button", { class: "btn-primary shrink-0 text-xs" }, "Install") as HTMLButtonElement;
+      if (found.results.length) results.append(h("p", { class: "text-xs text-muted", dataset: { skillSearchCount: "" } }, `${found.results.length.toLocaleString()} result${found.results.length === 1 ? "" : "s"} returned by SkillsMD`));
+      if (!found.results.length) results.append(h("div", { class: "rounded-lg border border-line bg-raised/40 p-4 text-sm text-muted" }, h("p", {}, "SkillsMD returned no matches."), h("button", { class: "btn-subtle mt-3 text-xs", type: "button", onclick: learnSkillDialog }, "Use Learn a new skill")));
+      for (const entry of found.results) {
+        const button = h("button", { class: "btn-primary shrink-0 text-xs" }, "Inspect & install") as HTMLButtonElement;
         button.onclick = () => { void install(entry, button); };
         results.append(h("article", { class: "rounded-lg border border-border bg-panel p-3" },
           h("div", { class: "flex items-start gap-3" },
             h("div", { class: "min-w-0 flex-1" },
-              h("div", { class: "flex flex-wrap items-center gap-2" }, h("h4", { class: "font-semibold text-fg" }, entry.name), h("span", { class: "chip border-emerald-500/30 text-emerald-700 dark:text-emerald-300" }, "ready"), h("span", { class: "chip" }, entry.source)),
+              h("div", { class: "flex flex-wrap items-center gap-2" }, h("h4", { class: "font-semibold text-fg" }, entry.name), h("span", { class: "chip" }, entry.source)),
               h("p", { class: "mt-1 text-sm leading-5 text-muted" }, entry.description || "No description supplied by the index."),
               h("p", { class: "mt-1 break-all text-xs text-muted" }, `${entry.identifier}${entry.repo ? ` · ${entry.repo}/${entry.path || ""}` : ""}`)),
             button)));
@@ -240,7 +244,7 @@ function skillCatalogBrowser(initial: SkillCatalogStatus): HTMLElement {
   };
   query.addEventListener("keydown", (event) => { if (event.key === "Enter") void search(); });
   return h("section", { class: "card space-y-3 p-4" },
-    h("div", {}, h("h3", { class: "font-display text-lg text-fg" }, "SkillsMD library"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Search the curated SkillsMD API on demand. Results are GitHub-backed; 1Helm still revision-pins, size-bounds, scans, hashes, and wraps each installation beneath its security boundary.")),
+    h("div", {}, h("h3", { class: "font-display text-lg text-fg" }, "SkillsMD library"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Search SkillsMD directly. 1Helm shows every result the open registry returns instead of deciding what you may browse. Installation then revision-pins, size-bounds, scans, hashes, and wraps the selected skill beneath its security boundary.")),
     h("div", { class: "flex gap-2" }, query, h("button", { class: "btn-primary", onclick: () => { void search(); } }, "Search")),
     status,
     results);
@@ -564,8 +568,30 @@ function computersPanel(): HTMLElement {
   draw();
   const paintRuntime = (runtime: ChannelRuntime): void => {
     clear(runtimeBox);
-    if (runtime.backend !== "apple") {
-      runtimeBox.append(h("h3", { class: "font-semibold text-fg" }, "Channel computers · development compatibility"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "This non-macOS source runtime uses an explicit compatibility backend. It does not claim Apple VM isolation."));
+    if (runtime.backend === "native" || runtime.backend === "mock") {
+      runtimeBox.append(h("h3", { class: "font-semibold text-fg" }, "Channel computers · development backend"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "This explicit development seam runs without production VM isolation."));
+      return;
+    }
+    if (runtime.backend === "lxc" || runtime.backend === "wsl") {
+      const label = runtime.backend === "lxc" ? "Unprivileged LXC" : "Private WSL 2";
+      const readyCopy = runtime.backend === "lxc"
+        ? "The root-owned LXC boundary is healthy. Skipper manages one persistent unprivileged Linux container per ordinary channel."
+        : "WSL 2 is healthy. Skipper manages one persistent private Linux distribution per ordinary channel.";
+      const setupCopy = runtime.backend === "lxc"
+        ? "Rerun the verified 1Helm Linux host installer to repair the LXC helper, bridge, cgroups, or pinned image assets."
+        : "Complete 1Helm's one-time Windows administrator setup to enable WSL 2.";
+      const actionStatus = h("p", { class: "mt-2 text-sm text-muted" });
+      const windowsSetup = runtime.backend === "wsl" && !runtime.ready ? h("button", { class: "btn-primary mt-3 text-sm", onclick: async () => {
+        actionStatus.textContent = "Opening Windows' WSL 2 administrator setup…";
+        try { await api("/api/channel-computers/runtime/install", { body: {} }); actionStatus.textContent = "Finish the Windows prompt. Restart once if Windows requests it, then reopen 1Helm."; }
+        catch (error) { actionStatus.textContent = (error as Error).message; }
+      } }, "Set up WSL 2") : null;
+      runtimeBox.append(
+        h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-semibold text-fg" }, "Channel computers"), h("span", { class: "chip border-accent/25" }, runtime.ready ? `${label} ready` : "Setup required")),
+        h("p", { class: "mt-1 text-sm leading-6 text-muted" }, runtime.ready ? readyCopy : setupCopy),
+        ...(runtime.error ? [h("p", { class: "mt-2 text-sm text-danger" }, runtime.error)] : []),
+        ...(windowsSetup ? [windowsSetup] : []), actionStatus,
+      );
       return;
     }
     const actionStatus = h("p", { class: "mt-2 text-sm text-muted" });

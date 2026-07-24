@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Idempotent bridge wrapper. If a host already owns lxcbr0, 1Helm adopts that
+# healthy private bridge without later stopping it. Otherwise the marker records
+# that this wrapper started lxc-net and may safely stop it during shutdown.
+
+MARKER="/run/1helm-lxc-net-owned"
+RULE_MARKER="/run/1helm-lxc-net-rules-owned"
+LXC_NET=""
+for candidate in /usr/libexec/lxc/lxc-net /usr/lib/lxc/lxc-net; do [[ -x "$candidate" ]] && LXC_NET="$candidate" && break; done
+[[ -n "$LXC_NET" ]] || { echo "lxc-net is unavailable" >&2; exit 1; }
+
+install_rules() {
+  sysctl -q -w net.ipv4.ip_forward=1 >/dev/null
+  if [[ -e "$RULE_MARKER" ]]; then
+    nft delete table inet onehelm_lxc 2>/dev/null || true
+    nft delete table ip onehelm_lxc 2>/dev/null || true
+  elif nft list table inet onehelm_lxc >/dev/null 2>&1 || nft list table ip onehelm_lxc >/dev/null 2>&1; then
+    echo "A non-1Helm nftables ruleset already uses the onehelm_lxc name." >&2
+    exit 1
+  fi
+  nft -f - <<'EOF'
+add table inet onehelm_lxc
+add chain inet onehelm_lxc input { type filter hook input priority -10; policy accept; }
+add rule inet onehelm_lxc input iifname "lxcbr0" udp dport { 53, 67 } accept
+add rule inet onehelm_lxc input iifname "lxcbr0" tcp dport { 53, 67 } accept
+add chain inet onehelm_lxc forward { type filter hook forward priority -10; policy accept; }
+add rule inet onehelm_lxc forward iifname "lxcbr0" accept
+add rule inet onehelm_lxc forward oifname "lxcbr0" ct state established,related accept
+add table ip onehelm_lxc
+add chain ip onehelm_lxc postrouting { type nat hook postrouting priority srcnat; policy accept; }
+add rule ip onehelm_lxc postrouting ip saddr 10.0.3.0/24 ip daddr != 10.0.3.0/24 masquerade
+EOF
+  install -m 0600 /dev/null "$RULE_MARKER"
+}
+
+remove_rules() {
+  if [[ -e "$RULE_MARKER" ]]; then
+    nft delete table inet onehelm_lxc 2>/dev/null || true
+    nft delete table ip onehelm_lxc 2>/dev/null || true
+    rm -f -- "$RULE_MARKER"
+  fi
+}
+
+case "${1:-}" in
+  start)
+    if [[ -d /sys/class/net/lxcbr0 ]]; then
+      ip link show dev lxcbr0 >/dev/null
+      install_rules
+      exit 0
+    fi
+    "$LXC_NET" start
+    [[ -d /sys/class/net/lxcbr0 ]] || { echo "lxcbr0 was not created" >&2; exit 1; }
+    install -m 0600 /dev/null "$MARKER"
+    install_rules
+    ;;
+  stop)
+    remove_rules
+    if [[ -e "$MARKER" ]]; then
+      "$LXC_NET" stop || true
+      rm -f -- "$MARKER"
+    fi
+    ;;
+  *) echo "Usage: $0 {start|stop}" >&2; exit 2 ;;
+esac

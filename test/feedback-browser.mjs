@@ -49,6 +49,7 @@ test("Feedback button saves a real report and the admin inbox shows it", async (
       ...process.env,
       CTRL_DATA_DIR: dataDir,
       PORT: String(appPort),
+      HELM_CHANNEL_COMPUTER_BACKEND: "native",
       HELM_FEEDBACK_URL: `http://127.0.0.1:${collectorPort}/v1/feedback`,
       IMPROVEMENT_INTERVAL_MS: "600000",
     },

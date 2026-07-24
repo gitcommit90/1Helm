@@ -55,6 +55,7 @@ const launchApp = async () => {
       IMPROVEMENT_INTERVAL_MS: "600000",
       CTRL_MAX_TOOL_ROUNDS: "6",
       NODE_ENV: "test",
+      HELM_CHANNEL_COMPUTER_BACKEND: "native",
       HELM_TEST_WEB_SEARCH_FIXTURE: JSON.stringify([{
         title: "West Hollywood sinkhole filled after water main repairs",
         url: "https://example.com/news/sunset-sinkhole",

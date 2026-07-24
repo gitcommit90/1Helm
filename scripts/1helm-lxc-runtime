@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Root-owned lifecycle boundary for 1Helm's Linux channel computers. The web
+# service may invoke only this fixed helper through sudo. Every target name and
+# owner marker is validated, and existing containers are adopted or destroyed
+# only after the in-guest marker matches the exact installation and channel.
+
+RUNTIME_VERSION="1helm-lxc-runtime-v1"
+LXC_ROOT="/var/lib/1helm-lxc"
+LXC_PATH="$LXC_ROOT/machines"
+CACHE_BASE="/var/cache/1helm-lxc"
+ASSET_ROOT="/opt/1helm/runtime/lxc"
+CONFIG_TEMPLATE="/etc/1helm/lxc-unprivileged.conf"
+NAME_PATTERN='^1helm-[a-f0-9]{16}-channel-[0-9]+$'
+OWNER_PATTERN='^[a-f0-9]{16}:[0-9]+$'
+
+IMAGE_BUILD="20260723_07:42"
+AMD64_ROOTFS_SHA256="cbc98489455ce54b5fa8c9abf276f1cb39130376ef70b3b7151d18362cd6354f"
+AMD64_META_SHA256="630feddfe5982719a8409cee6356b9abc6297c5bc05c2f6043bc80dee04637cf"
+ARM64_ROOTFS_SHA256="f4752ea7e776f329f9f50aca59c1919f3dc841dc3ddf22beef2b1696c4b4e29e"
+ARM64_META_SHA256="9ef7cfca774a667f8eb187b1a0a7f47f0fd912b6a7da8dfa1c4d24213631f747"
+
+die() { printf '1Helm LXC runtime: %s\n' "$*" >&2; exit 1; }
+need_root() { [[ "${EUID}" -eq 0 ]] || die "must run as root"; }
+valid_identity() {
+  [[ "${1:-}" =~ $NAME_PATTERN ]] || die "unsafe machine name"
+  [[ "${2:-}" =~ $OWNER_PATTERN ]] || die "unsafe owner marker"
+  [[ "${1##*-}" == "${2##*:}" ]] || die "machine/channel mismatch"
+}
+config_path() { printf '%s/%s/config' "$LXC_PATH" "$1"; }
+rootfs_path() {
+  local value
+  value="$(sed -n 's/^lxc\.rootfs\.path[[:space:]]*=[[:space:]]*//p' "$(config_path "$1")" | tail -n1)"
+  value="${value#dir:}"
+  [[ "$value" == "$LXC_PATH/"*"/rootfs" ]] || die "unsafe LXC rootfs path"
+  printf '%s' "$value"
+}
+state() { lxc-info -P "$LXC_PATH" -n "$1" -sH 2>/dev/null || true; }
+available_cpus() {
+  local cpus
+  cpus="$(cat /sys/fs/cgroup/cpuset.cpus.effective 2>/dev/null || true)"
+  [[ "$cpus" =~ ^[0-9,-]+$ ]] || die "could not resolve delegated host CPUs"
+  printf '%s' "$cpus"
+}
+select_cpus() {
+  local requested="$1" token start end cpu selected="" count=0
+  IFS=',' read -ra tokens <<<"$(available_cpus)"
+  for token in "${tokens[@]}"; do
+    if [[ "$token" == *-* ]]; then start="${token%-*}"; end="${token#*-}"; else start="$token"; end="$token"; fi
+    for ((cpu=start; cpu<=end && count<requested; cpu++)); do
+      selected+="${selected:+,}$cpu"; ((count += 1))
+    done
+    ((count >= requested)) && break
+  done
+  ((count == requested)) || die "requested CPUs exceed this service's delegated CPU set"
+  printf '%s' "$selected"
+}
+cpu_count() {
+  local list="$1" token start end total=0
+  [[ "$list" =~ ^[0-9,-]+$ ]] || { printf '1'; return; }
+  IFS=',' read -ra tokens <<<"$list"
+  for token in "${tokens[@]}"; do
+    if [[ "$token" == *-* ]]; then start="${token%-*}"; end="${token#*-}"; else start="$token"; end="$token"; fi
+    ((total += end - start + 1))
+  done
+  printf '%s' "$total"
+}
+start() {
+  [[ "$(state "$1")" == "RUNNING" ]] || lxc-start -P "$LXC_PATH" -n "$1" -d
+  local attempt
+  for attempt in {1..200}; do
+    [[ "$(state "$1")" == "RUNNING" ]] && return
+    sleep 0.1
+  done
+  die "container did not start"
+}
+marker() {
+  local name="$1" current
+  if [[ "$(state "$name")" == "RUNNING" ]]; then
+    current="$(lxc-attach -P "$LXC_PATH" -n "$name" --clear-env -- /bin/cat /var/lib/1helm/owner 2>/dev/null || true)"
+  else
+    current="$(cat "$(rootfs_path "$name")/var/lib/1helm/owner" 2>/dev/null || true)"
+  fi
+  printf '%s' "$current"
+}
+owned() {
+  [[ -f "$(config_path "$1")" ]] || die "container does not exist"
+  [[ "$(marker "$1")" == "$2" ]] || die "ownership marker does not match"
+}
+image_values() {
+  case "$1" in
+    amd64) printf '%s\n%s\n' "$AMD64_ROOTFS_SHA256" "$AMD64_META_SHA256" ;;
+    arm64) printf '%s\n%s\n' "$ARM64_ROOTFS_SHA256" "$ARM64_META_SHA256" ;;
+    *) die "unsupported architecture" ;;
+  esac
+}
+prepare_cache() {
+  local arch="$1" rootfs_sha meta_sha asset_dir cache_dir candidate
+  mapfile -t values < <(image_values "$arch")
+  rootfs_sha="${values[0]}"; meta_sha="${values[1]}"
+  asset_dir="$ASSET_ROOT/$arch"
+  cache_dir="$CACHE_BASE/download/ubuntu/noble/$arch/default"
+  [[ -f "$asset_dir/rootfs.tar.xz" && -f "$asset_dir/meta.tar.xz" ]] || die "pinned LXC image assets are missing"
+  printf '%s  %s\n' "$rootfs_sha" "$asset_dir/rootfs.tar.xz" | sha256sum -c - >/dev/null || die "pinned LXC rootfs digest mismatch"
+  printf '%s  %s\n' "$meta_sha" "$asset_dir/meta.tar.xz" | sha256sum -c - >/dev/null || die "pinned LXC metadata digest mismatch"
+  if [[ ! -f "$cache_dir/build_id" || "$(cat "$cache_dir/build_id")" != "$IMAGE_BUILD" ]]; then
+    candidate="$(mktemp -d "$CACHE_BASE/.candidate.XXXXXX")"
+    install -d -m 0700 "$candidate/download/ubuntu/noble/$arch/default"
+    cp -- "$asset_dir/rootfs.tar.xz" "$candidate/download/ubuntu/noble/$arch/default/rootfs.tar.xz"
+    tar -xJf "$asset_dir/meta.tar.xz" -C "$candidate/download/ubuntu/noble/$arch/default"
+    printf '%s\n' "$IMAGE_BUILD" >"$candidate/download/ubuntu/noble/$arch/default/build_id"
+    install -d -m 0700 "$(dirname "$cache_dir")"
+    if [[ -e "$cache_dir" ]]; then
+      old_cache="${cache_dir}.old.$$"
+      mv -- "$cache_dir" "$old_cache"
+      mv -- "$candidate/download/ubuntu/noble/$arch/default" "$cache_dir"
+      rm -rf -- "$old_cache"
+    else
+      mv -- "$candidate/download/ubuntu/noble/$arch/default" "$cache_dir"
+    fi
+    rm -rf -- "$candidate"
+  fi
+  printf '%s  %s\n' "$rootfs_sha" "$cache_dir/rootfs.tar.xz" | sha256sum -c - >/dev/null || die "cached LXC rootfs digest mismatch"
+}
+attach() {
+  local name="$1" owner="$2" user="$3" workdir="$4"; shift 4
+  owned "$name" "$owner"
+  start "$name"
+  if [[ "$user" == root ]]; then
+    exec lxc-attach -P "$LXC_PATH" -n "$name" --clear-env -- /usr/bin/env -C "$workdir" \
+      HOME=/root USER=root LOGNAME=root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "$@"
+  fi
+  [[ "$user" == agent ]] || die "unsupported guest user"
+  exec lxc-attach -P "$LXC_PATH" -n "$name" --clear-env --uid 1000 --gid 1000 -- /usr/bin/env -C "$workdir" \
+    HOME=/home/agent USER=agent LOGNAME=agent PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "$@"
+}
+
+need_root
+operation="${1:-}"; shift || true
+case "$operation" in
+  version)
+    printf '%s\n' "$RUNTIME_VERSION"
+    ;;
+  ready)
+    for command in lxc-create lxc-attach lxc-destroy lxc-info lxc-start lxc-stop sha256sum tar; do command -v "$command" >/dev/null || die "missing $command"; done
+    [[ -r "$CONFIG_TEMPLATE" ]] || die "unprivileged LXC configuration is missing"
+    [[ -d /sys/fs/cgroup && -d /sys/class/net/lxcbr0 ]] || die "LXC cgroups or the private bridge are not ready"
+    printf '{"ready":true,"version":"%s"}\n' "$RUNTIME_VERSION"
+    ;;
+  inspect)
+    name="${1:-}"; owner="${2:-}"; valid_identity "$name" "$owner"
+    if [[ ! -f "$(config_path "$name")" ]]; then printf 'null\n'; exit 0; fi
+    owned "$name" "$owner"
+    status="$(state "$name")"
+    cpu_set="$(sed -n 's/^lxc\.cgroup2\.cpuset\.cpus[[:space:]]*=[[:space:]]*//p' "$(config_path "$name")" | tail -n1)"
+    memory="$(sed -n 's/^lxc\.cgroup2\.memory\.max[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$(config_path "$name")" | tail -n1)"
+    cpus="$(cpu_count "$cpu_set")"
+    [[ "$memory" =~ ^[0-9]+$ ]] || memory=1073741824
+    printf '{"id":"%s","status":"%s","cpus":%s,"memory":%s,"homeMount":"none"}\n' \
+      "$name" "$(tr '[:upper:]' '[:lower:]' <<<"$status")" "$cpus" "$memory"
+    ;;
+  create)
+    name="${1:-}"; owner="${2:-}"; cpus="${3:-}"; memory_mb="${4:-}"; arch="${5:-amd64}"
+    valid_identity "$name" "$owner"
+    [[ "$cpus" =~ ^[1-8]$ ]] || die "invalid CPU count"
+    [[ "$memory_mb" =~ ^[0-9]+$ ]] && ((memory_mb >= 1024 && memory_mb <= 16384)) || die "invalid memory"
+    [[ "$arch" == amd64 || "$arch" == arm64 ]] || die "unsupported architecture"
+    [[ ! -e "$(config_path "$name")" ]] || die "container name already exists"
+    [[ -r "$CONFIG_TEMPLATE" ]] || die "unprivileged configuration is missing"
+    created=0
+    cleanup_incomplete_create() {
+      if ((created)); then
+        [[ "$(state "$name")" != RUNNING ]] || lxc-stop -P "$LXC_PATH" -n "$name" -t 10 >/dev/null 2>&1 || true
+        lxc-destroy -P "$LXC_PATH" -n "$name" >/dev/null 2>&1 || true
+        # lxc-create can fail after making its exact target directory but
+        # before writing a destroyable config. The validated name and fixed
+        # parent make this bounded cleanup safe for an interrupted attempt.
+        [[ ! -e "$LXC_PATH/$name" ]] || rm -rf -- "$LXC_PATH/$name"
+      fi
+    }
+    trap cleanup_incomplete_create EXIT
+    # A user-namespaced payload must traverse the LXC state parents to mount
+    # its rootfs. Keep these list-protected (0711), in a tree separate from
+    # 1Helm's private database and credentials; caches remain root-only.
+    install -d -m 0711 "$LXC_ROOT" "$LXC_PATH"
+    install -d -m 0700 "$CACHE_BASE"
+    prepare_cache "$arch"
+    created=1
+    LXC_CACHE_PATH="$CACHE_BASE" lxc-create -P "$LXC_PATH" -n "$name" -f "$CONFIG_TEMPLATE" -t download -- \
+      --dist ubuntu --release noble --arch "$arch" --variant default --force-cache
+    config="$(config_path "$name")"
+    cpu_set="$(select_cpus "$cpus")"
+    printf '\nlxc.cgroup2.cpuset.cpus = %s\nlxc.cgroup2.memory.max = %s\n' "$cpu_set" "$((memory_mb * 1024 * 1024))" >>"$config"
+    start "$name"
+    lxc-attach -P "$LXC_PATH" -n "$name" --clear-env -- /bin/sh -eu -c '
+      export DEBIAN_FRONTEND=noninteractive
+      if [ ! -s /etc/resolv.conf ]; then
+        rm -f /etc/resolv.conf
+        printf "nameserver 10.0.3.1\n" >/etc/resolv.conf
+      fi
+      apt-get update
+      apt-get install -y --no-install-recommends bash build-essential ca-certificates coreutils cron curl dbus file findutils git gzip iproute2 iputils-ping jq less locales man-db nano openssh-client procps python3 python3-pip rsync sudo systemd systemd-sysv tar tzdata unzip vim-tiny wget xz-utils zip
+      apt-get clean
+      rm -rf /var/lib/apt/lists/*
+      existing_group="$(getent group 1000 | cut -d: -f1 || true)"
+      existing_user="$(getent passwd 1000 | cut -d: -f1 || true)"
+      named_agent_uid="$(getent passwd agent | cut -d: -f3 || true)"
+      named_agent_gid="$(getent group agent | cut -d: -f3 || true)"
+      { [ -z "$named_agent_uid" ] || [ "$named_agent_uid" = 1000 ]; } || { echo "agent user has an unexpected UID" >&2; exit 1; }
+      { [ -z "$named_agent_gid" ] || [ "$named_agent_gid" = 1000 ]; } || { echo "agent group has an unexpected GID" >&2; exit 1; }
+      if [ -z "$existing_group" ]; then
+        groupadd --gid 1000 agent
+      elif [ "$existing_group" != agent ]; then
+        groupmod --new-name agent "$existing_group"
+      fi
+      if [ -z "$existing_user" ]; then
+        useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash agent
+      elif [ "$existing_user" != agent ]; then
+        usermod --login agent --home /home/agent --move-home --gid 1000 --shell /bin/bash "$existing_user"
+      else
+        usermod --home /home/agent --move-home --gid 1000 --shell /bin/bash agent
+      fi
+      mkdir -p /workspace/files /var/lib/1helm /etc/sudoers.d
+      chown -R 1000:1000 /workspace /home/agent
+      printf "agent ALL=(ALL) NOPASSWD:ALL\n" >/etc/sudoers.d/agent
+      chmod 0440 /etc/sudoers.d/agent
+      printf "%s\n" "$1" >/var/lib/1helm/owner
+      printf "1helm-channel-machine-v1\n" >/var/lib/1helm/image-contract
+    ' 1helm-setup "$owner"
+    created=0
+    trap - EXIT
+    ;;
+  exec)
+    name="${1:-}"; owner="${2:-}"; user="${3:-}"; workdir="${4:-}"; shift 4 || true
+    valid_identity "$name" "$owner"
+    [[ "$workdir" == /workspace || "$workdir" == / ]] || die "unsafe working directory"
+    [[ "${1:-}" == -- ]] || die "missing argv separator"; shift
+    (($#)) || die "missing guest command"
+    attach "$name" "$owner" "$user" "$workdir" "$@"
+    ;;
+  terminal)
+    name="${1:-}"; owner="${2:-}"; valid_identity "$name" "$owner"
+    attach "$name" "$owner" agent /workspace /bin/bash -l
+    ;;
+  stop)
+    name="${1:-}"; owner="${2:-}"; valid_identity "$name" "$owner"; owned "$name" "$owner"
+    [[ "$(state "$name")" != RUNNING ]] || lxc-stop -P "$LXC_PATH" -n "$name" -t 60
+    ;;
+  set)
+    name="${1:-}"; owner="${2:-}"; cpus="${3:-}"; memory_mb="${4:-}"; valid_identity "$name" "$owner"; owned "$name" "$owner"
+    [[ "$cpus" =~ ^[1-8]$ ]] || die "invalid CPU count"
+    [[ "$memory_mb" =~ ^[0-9]+$ ]] && ((memory_mb >= 1024 && memory_mb <= 16384)) || die "invalid memory"
+    [[ "$(state "$name")" != RUNNING ]] || die "container must be stopped before resize"
+    config="$(config_path "$name")"
+    sed -i -E "/^lxc\.cgroup2\.(cpuset\.cpus|memory\.max)[[:space:]]*=/d" "$config"
+    cpu_set="$(select_cpus "$cpus")"
+    printf 'lxc.cgroup2.cpuset.cpus = %s\nlxc.cgroup2.memory.max = %s\n' "$cpu_set" "$((memory_mb * 1024 * 1024))" >>"$config"
+    ;;
+  delete)
+    name="${1:-}"; owner="${2:-}"; valid_identity "$name" "$owner"; owned "$name" "$owner"
+    [[ "$(state "$name")" != RUNNING ]] || lxc-stop -P "$LXC_PATH" -n "$name" -t 60
+    lxc-destroy -P "$LXC_PATH" -n "$name"
+    ;;
+  list)
+    prefix="${1:-}"
+    [[ "$prefix" =~ ^1helm-[a-f0-9]{16}-channel-$ ]] || die "unsafe installation prefix"
+    first=1; printf '['
+    shopt -s nullglob
+    for config in "$LXC_PATH"/"$prefix"*/config; do
+      name="$(basename "$(dirname "$config")")"
+      [[ "$name" =~ $NAME_PATTERN ]] || continue
+      ((first)) || printf ','; first=0; printf '"%s"' "$name"
+    done
+    printf ']\n'
+    ;;
+  *) die "unsupported operation" ;;
+esac

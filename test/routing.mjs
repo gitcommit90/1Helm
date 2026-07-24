@@ -108,6 +108,7 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
       CTRL_DATA_DIR: dataDir,
       PORT: String(appPort),
       HELM_ROUTER_PORT: String(routerPort),
+      HELM_CHANNEL_COMPUTER_BACKEND: "native",
     });
     await waitFor(`http://127.0.0.1:${appPort}/api/setup/status`);
 
@@ -241,6 +242,7 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
       CTRL_DATA_DIR: dataDir,
       PORT: String(appPort),
       HELM_ROUTER_PORT: String(routerPort),
+      HELM_CHANNEL_COMPUTER_BACKEND: "native",
     });
     await waitFor(`http://127.0.0.1:${appPort}/api/setup/status`);
     let seededState = await json(`http://127.0.0.1:${appPort}/api/routing/state`, token);
@@ -574,6 +576,7 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
       CTRL_DATA_DIR: dataDir,
       PORT: String(appPort),
       HELM_ROUTER_PORT: String(routerPort),
+      HELM_CHANNEL_COMPUTER_BACKEND: "native",
     });
     await waitFor(`http://127.0.0.1:${appPort}/api/setup/status`);
     credentials = await json(`http://127.0.0.1:${appPort}/api/routing/credentials`, token);

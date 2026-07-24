@@ -2,8 +2,9 @@
 
 1Helm gives an AI employee a place to work, not merely a chat box in which to
 describe work. Every ordinary channel owns exactly one resident identity, one
-durable workspace, one memory namespace, and—on supported Apple Silicon
-Macs—one persistent private Linux computer. The human is the Captain. Skipper
+durable workspace, one memory namespace, and one persistent private Linux
+computer: an Apple container machine, unprivileged LXC, or private WSL 2
+distribution according to the host platform. The human is the Captain. Skipper
 is the workspace-wide operator for host, fleet, credentials, connections, and
 cross-channel boundaries.
 
@@ -49,12 +50,22 @@ instructions that weaken the runtime are rejected. Corrections, curated memory,
 skills, artifacts, and obligations compound without binding the identity to one
 model provider.
 
+Raw prior-session transcripts remain an on-demand resident capability rather
+than prompt baggage. Each resident can search its own channel archive by
+meaning, exact text/date, or recency and hydrate a selected session in full.
+The message database remains authoritative; the resident's separate Mnemosyne
+database is a scoped semantic index. Models receive the tools and choose when
+they are relevant without a behavioral decision tree.
+
 ## Computer and connection boundaries
 
 On supported Macs, each resident computer is a real Apple container machine
-with the Mac home directory unmounted. The resident's command tools and the
-channel Terminal share the same `/workspace`. Skipper manages CPU, memory,
-disk, wake/sleep, repair, update, archive, restore, and deletion safety.
+with the Mac home directory unmounted. Linux systemd hosts use an unprivileged
+LXC with subordinate host IDs and private networking. The accepted Windows
+implementation uses one private WSL 2 distribution with Windows-drive mounts
+and interop disabled. The resident's command tools and the channel Terminal
+share the same `/workspace`. Skipper manages CPU, memory, disk, wake/sleep,
+repair, update, archive, restore, and deletion safety.
 
 Provider accounts and native connections remain host-owned brokers. Residents
 receive narrow operations, never raw OAuth tokens, Photon project secrets, or a
@@ -68,13 +79,14 @@ verification.
 - `https://1helm.com` is the standalone product and documentation site.
 - `https://demo.1helm.com` is a separate public sandbox, not the product site
   and not a dependency of an installed workspace.
-- The native consumer product targets Apple Silicon macOS and provides one
+- Apple Silicon macOS and Linux systemd are public host products with one
   isolated Linux computer per ordinary resident.
-- Linux and Windows + WSL run a durable systemd compatibility deployment today.
-  They do not yet claim per-resident VM isolation or native desktop packaging.
+- The native Windows x64 + WSL implementation and real-host lifecycle are
+  accepted, but its public installer is withheld until an Authenticode signing
+  identity is available.
 - 1Helm is self-hosted and open source. A hosted control plane, mobile clients,
-  blind community-skill execution, and native Windows/Linux desktop apps are
-  not shipped.
+  blind community-skill execution, a signed public Windows installer, and a
+  native Linux desktop shell are not shipped.
 
 ## What 1Helm borrows—and what it does not
 

@@ -64,7 +64,7 @@ import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from ".
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
 import { startFollowupLoop, threadFollowupView, bumpThreadFollowup } from "./followups.ts";
 import { createWorkflow, listWorkflows, registerWorkflowDispatcher, setWorkflowStatus, startWorkflowLoop, stopWorkflowLoop } from "./workflows.ts";
-import { hostUpdateState, installedAppVersion, runHostUpdateAction } from "./updates.ts";
+import { hostUpdateState, installedAppVersion, queueLinuxHostContractMigration, runHostUpdateAction } from "./updates.ts";
 import { centralFeedbackReports, createFeedback, drainFeedback, feedbackAttachment, localFeedbackReports, startFeedbackLoop } from "./feedback.ts";
 import {
   internalRoutingProviderId,
@@ -82,6 +82,7 @@ import {
   runtimeReadiness,
   refreshChannelWorkspaceMirror,
   prepareAppleRuntimeInstaller,
+  prepareWindowsWslRuntime,
   startAppleRuntime,
   wakeDueChannelComputers,
   shutdownChannelComputers,
@@ -698,7 +699,7 @@ const server = createServer(async (req, res) => {
       try {
         const update = await runHostUpdateAction(APP_ROOT, DATA_DIR, action);
         json(res, 202, update);
-        if (update.mode === "native-macos" && update.status === "installing") {
+        if (["native-macos", "native-windows"].includes(update.mode) && update.status === "installing") {
           setTimeout(() => { void shutdown(true).then(() => process.emit("1helm-native-update-ready")); }, 100).unref();
         }
         return;
@@ -868,7 +869,8 @@ const server = createServer(async (req, res) => {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const query = String(url.searchParams.get("q") || "").slice(0, 300);
       const trust = String(url.searchParams.get("trust") || "").slice(0, 40);
-      try { return json(res, 200, await searchSkillCatalog(query, { trust, limit: Number(url.searchParams.get("limit") || 20) })); }
+      const requestedLimit = url.searchParams.get("limit");
+      try { return json(res, 200, await searchSkillCatalog(query, { trust, ...(requestedLimit == null ? {} : { limit: Number(requestedLimit) }) })); }
       catch (error) { return json(res, 502, { error: (error as Error).message, status: skillCatalogStatus() }); }
     }
     if (p === "/api/skills/catalog/refresh" && m === "POST") {
@@ -1065,7 +1067,11 @@ const server = createServer(async (req, res) => {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
       if (workspaceView().setup_complete) return json(res, 409, { error: "Setup already completed." });
       const runtime = runtimeReadiness();
-      if (runtime.backend === "apple" && !runtime.ready) return json(res, 409, { error: "Approve and finish the verified Apple channel-computer runtime before creating this workspace." });
+      if (!runtime.ready) return json(res, 409, { error: runtime.backend === "apple"
+        ? "Approve and finish the verified Apple channel-computer runtime before creating this workspace."
+        : runtime.backend === "lxc"
+          ? "Finish the verified unprivileged LXC host setup before creating this workspace."
+          : "Finish WSL 2 setup before creating this workspace." });
       const b = await jbody(req);
       try {
         const result = await completeSetup({
@@ -1690,11 +1696,24 @@ const server = createServer(async (req, res) => {
     }
     if (p === "/api/channel-computers/runtime/install" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const runtime = runtimeReadiness();
+      if (runtime.backend === "wsl") {
+        const installer = await prepareWindowsWslRuntime();
+        return json(res, 200, { ok: true, installer, runtime: runtimeReadiness() });
+      }
+      if (runtime.backend !== "apple") return json(res, 409, { error: "The root-owned LXC runtime is installed and verified by the 1Helm Linux host installer." });
       const installer = await prepareAppleRuntimeInstaller();
       return json(res, 200, { ok: true, installer: { sha256: installer.sha256, opened: installer.opened }, runtime: runtimeReadiness() });
     }
     if (p === "/api/channel-computers/runtime/start" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const runtime = runtimeReadiness();
+      if (runtime.backend !== "apple") {
+        if (!runtime.ready) return json(res, 409, { error: runtime.backend === "lxc"
+          ? "The unprivileged LXC runtime is not ready; rerun the verified Linux host installer."
+          : "WSL 2 is not ready; complete 1Helm's one-time Windows administrator setup." });
+        return json(res, 200, { ok: true, runtime });
+      }
       return json(res, 200, { ok: true, runtime: await startAppleRuntime() });
     }
     if ((mm = p.match(/^\/api\/channels\/(\d+)\/computer$/)) && m === "GET") {
@@ -1889,6 +1908,7 @@ async function bootstrap(): Promise<void> {
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : PORT;
     console.log(`1Helm on 1Helm → http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${port}  (local agent on ${agentPort})  data: ${DATA_DIR}`);
+    void queueLinuxHostContractMigration(DATA_DIR).catch((error) => console.warn(`1Helm could not queue its Linux host-contract migration: ${(error as Error).message}`));
   });
 }
 void bootstrap();
