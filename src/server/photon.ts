@@ -157,10 +157,35 @@ function recoverInterruptedPhotonDeliveries(): void {
   }
 }
 
-function queuePhotonDelivery(channelId: number, destination: string, body: string, sourceMessageId: number, key: string): void {
+function queuePhotonDelivery(channelId: number, destination: string, body: string, sourceMessageId: number | null, key: string): void {
   run(`INSERT OR IGNORE INTO connector_deliveries
     (connector,idempotency_key,channel_id,destination,body,source_message_id,state,created,updated)
     VALUES ('photon',?,?,?,?,?,'pending',?,?)`, key, channelId, destination, body.slice(0, 50_000), sourceMessageId, now(), now());
+}
+
+function activePhotonConversation(channelId: number, sender: string): Row | undefined {
+  return q1(`SELECT pc.* FROM photon_conversations pc
+    JOIN messages root ON root.id=pc.root_message_id AND root.channel_id=pc.channel_id AND root.parent_id IS NULL
+    JOIN threads t ON t.id=pc.thread_id AND t.root_message_id=pc.root_message_id AND t.channel_id=pc.channel_id
+    WHERE pc.channel_id=? AND pc.sender=? AND pc.active=1
+    ORDER BY pc.updated DESC,pc.id DESC LIMIT 1`, channelId, sender);
+}
+
+function closePhotonConversation(channelId: number, sender: string, spaceId: string, event: PhotonEvent): number | null {
+  const conversation = activePhotonConversation(channelId, sender);
+  const timestamp = Date.parse(event.timestamp) || now();
+  run("INSERT INTO photon_messages (channel_id,external_id,space_id,sender,direction,body,received_at,message_id) VALUES (?,?,?,?, 'inbound',?,?,NULL)",
+    channelId, event.id, spaceId, sender, event.text.slice(0, 50_000), timestamp);
+  if (!conversation) return null;
+  run("UPDATE photon_conversations SET active=0,space_id=?,updated=?,closed=? WHERE id=? AND active=1", spaceId, timestamp, timestamp, conversation.id);
+  run("UPDATE threads SET status='resolved',updated_at=? WHERE id=?", timestamp, conversation.thread_id);
+  const noteId = createMessage({ channelId, parentId: Number(conversation.root_message_id), botId: null, body: "Photon conversation closed with /new. The next text starts a new thread." });
+  run("UPDATE messages SET system_message=1 WHERE id=?", noteId);
+  run("INSERT INTO channel_activity (channel_id,thread_id,kind,summary,actor_type,created) VALUES (?,?,'connector',?,'system',?)",
+    channelId, conversation.thread_id, `Photon closed the active conversation for ${sender}; the next text will start a new thread.`, timestamp);
+  broadcastToChannel(channelId, { type: "message", message: serializeMessage(noteId), parent: serializeMessage(Number(conversation.root_message_id)) });
+  refreshThreadSummary(Number(conversation.root_message_id));
+  return noteId;
 }
 
 /** Drain durable reply obligations. The attempt is persisted before crossing
@@ -198,21 +223,44 @@ export async function deliverPhotonEvent(event: PhotonEvent): Promise<boolean> {
   const channelId = Number(mapping.channel_id);
   const resident = agentForChannel(channelId);
   if (!resident?.bot_id) return false;
-  const body = `[Photon iMessage from ${event.sender}; conversation ${event.space_id}]\n${event.text}`;
-  const messageId = createMessage({ channelId, parentId: null, botId: null, body });
+  const timestamp = Date.parse(event.timestamp) || now();
+  if (event.text.trim().toLowerCase() === "/new") {
+    const noteId = closePhotonConversation(channelId, event.sender, event.space_id, event);
+    queuePhotonDelivery(channelId, event.space_id,
+      noteId ? "Started fresh. Your next text will open a new 1Helm thread." : "No conversation was open. Your next text will start a new 1Helm thread.",
+      noteId, `photon:event:${event.id}:new`);
+    await drainPhotonDeliveries();
+    return true;
+  }
+  let conversation = activePhotonConversation(channelId, event.sender);
+  let rootMessageId = Number(conversation?.root_message_id || 0);
+  const body = `[Photon iMessage from ${event.sender}]\n${event.text}`;
+  const messageId = createMessage({ channelId, parentId: rootMessageId || null, botId: null, body });
   run("UPDATE messages SET system_message=1 WHERE id=?", messageId);
-  const threadId = ensureThread(messageId, channelId);
+  if (!rootMessageId) {
+    rootMessageId = messageId;
+    const threadId = ensureThread(rootMessageId, channelId);
+    const conversationId = run(`INSERT INTO photon_conversations
+      (channel_id,sender,space_id,root_message_id,thread_id,active,started,updated)
+      VALUES (?,?,?,?,?,1,?,?)`, channelId, event.sender, event.space_id, rootMessageId, threadId, timestamp, timestamp).lastInsertRowid;
+    conversation = q1("SELECT * FROM photon_conversations WHERE id=?", conversationId);
+  } else {
+    run("UPDATE photon_conversations SET space_id=?,updated=? WHERE id=? AND active=1", event.space_id, timestamp, conversation!.id);
+  }
+  const threadId = Number(conversation!.thread_id);
+  run("UPDATE threads SET status='open',updated_at=? WHERE id=?", timestamp, threadId);
   run("INSERT INTO photon_messages (channel_id,external_id,space_id,sender,direction,body,received_at,message_id) VALUES (?,?,?,?, 'inbound',?,?,?)", channelId, event.id, event.space_id, event.sender, event.text.slice(0, 50_000), Date.parse(event.timestamp) || now(), messageId);
   run("INSERT INTO channel_activity (channel_id,thread_id,kind,summary,actor_type,created) VALUES (?,?,'connector',?,'system',?)", channelId, threadId, `Photon delivered an iMessage from ${event.sender}.`, now());
-  broadcastToChannel(channelId, { type: "message", message: serializeMessage(messageId) });
-  refreshThreadSummary(messageId);
+  broadcastToChannel(channelId, { type: "message", message: serializeMessage(messageId), parent: rootMessageId === messageId ? null : serializeMessage(rootMessageId) });
+  refreshThreadSummary(rootMessageId);
   const bot = q1("SELECT * FROM bots WHERE id=?", resident.bot_id);
   if (bot && dispatchInbound) {
     try {
       const outboundBefore = Number(q1("SELECT COALESCE(MAX(id),0) id FROM photon_messages WHERE channel_id=? AND space_id=? AND direction='outbound'", channelId, event.space_id)?.id || 0);
-      await dispatchInbound(bot, channelId, messageId, messageId);
+      const replyBefore = Number(q1("SELECT COALESCE(MAX(id),0) id FROM messages WHERE channel_id=?", channelId)?.id || 0);
+      await dispatchInbound(bot, channelId, messageId, rootMessageId);
       const reply = q1(`SELECT id,body FROM messages WHERE channel_id=? AND parent_id=? AND bot_id=?
-        AND trim(body)<>'' AND body<>'_Working…_' ORDER BY id DESC LIMIT 1`, channelId, messageId, bot.id);
+        AND id>? AND trim(body)<>'' AND body<>'_Working…_' ORDER BY id DESC LIMIT 1`, channelId, rootMessageId, bot.id, replyBefore);
       const alreadyReturned = q1("SELECT 1 FROM photon_messages WHERE channel_id=? AND space_id=? AND direction='outbound' AND id>? LIMIT 1", channelId, event.space_id, outboundBefore);
       const alreadyQueued = reply?.id ? q1("SELECT 1 FROM connector_deliveries WHERE connector='photon' AND source_message_id=? LIMIT 1", reply.id) : undefined;
       if (reply?.body && !alreadyReturned && !alreadyQueued) queuePhotonDelivery(channelId, event.space_id, String(reply.body), Number(reply.id), `photon:event:${event.id}:final`);
