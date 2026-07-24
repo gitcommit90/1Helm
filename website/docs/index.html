@@ -79,8 +79,8 @@ h1 em{font-style:italic;color:var(--foam)}
 .copybtn:hover{border-color:var(--cyan)}
 
 /* layout */
-.layout{display:grid;grid-template-columns:230px 1fr;gap:56px;padding:34px 0 100px;align-items:start}
-@media(max-width:960px){.layout{grid-template-columns:1fr}aside.toc{display:none}}
+.layout{display:grid;grid-template-columns:230px 1fr;gap:56px;padding:34px 28px 100px;align-items:start}
+@media(max-width:960px){.layout{grid-template-columns:1fr}aside.toc{display:none}table{display:block;overflow-x:auto}}
 aside.toc{position:sticky;top:96px;max-height:calc(100vh - 120px);overflow-y:auto;scrollbar-width:thin;scrollbar-color:rgba(46,70,108,.9) transparent}
 aside.toc::-webkit-scrollbar{width:6px}
 aside.toc::-webkit-scrollbar-track{background:transparent}
