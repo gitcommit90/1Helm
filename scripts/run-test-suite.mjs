@@ -23,6 +23,10 @@ if (!runtime) {
   const venv = join(disposableRoot, "venv");
   const installers = [...new Set([process.env.PYTHON || "", "python3", ...(process.platform === "darwin" ? ["/usr/bin/python3"] : [])].filter(Boolean))];
   for (const installer of installers) {
+    // A failed interpreter can leave a partial venv whose Python symlinks
+    // poison the next fallback attempt. Each interpreter must start from its
+    // own clean disposable runtime, matching the production bootstrap.
+    if (existsSync(venv)) rmSync(venv, { recursive: true, force: true });
     if (spawnSync(installer, ["-m", "venv", venv], { stdio: "ignore" }).status !== 0) continue;
     const candidate = join(venv, pythonName);
     const installed = spawnSync(candidate, ["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--ignore-requires-python", `mnemosyne-memory==${version}`], { stdio: "inherit" });

@@ -45,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Apple Silicon release validation now retries the macOS system Python from a
+  clean virtual environment when a preferred Homebrew Python leaves a partial
+  one behind, so the pinned Mnemosyne test runtime can be prepared reliably.
 - Fresh hosts now open the 1Helm server while the optional Mnemosyne Python
   and embedding runtime is prepared in the background, instead of making
   first launch and health checks wait on virtual-environment package installs.
