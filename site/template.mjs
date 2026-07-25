@@ -57,7 +57,7 @@ export function renderPage(page) {
   <meta name="twitter:card" content="summary_large_image">
   <link rel="canonical" href="${canonical}">
   <link rel="icon" href="/assets/story/app-icon.png" type="image/png">
-  <link rel="stylesheet" href="/assets/site.css?v=${esc(page.version)}">
+  <link rel="stylesheet" href="/assets/site.css?v=${esc(page.assetVersion || page.version)}">
   <title>${esc(title)}</title>
 </head>
 <body class="page-${esc(page.kind || "standard")}">
@@ -67,7 +67,7 @@ export function renderPage(page) {
     <div id="content">${page.body}</div>
     ${footer(page.version)}
   </div>
-  <script src="/assets/site.js?v=${esc(page.version)}" defer></script>
+  <script src="/assets/site.js?v=${esc(page.assetVersion || page.version)}" defer></script>
 </body>
 </html>`;
 }

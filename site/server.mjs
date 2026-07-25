@@ -17,6 +17,10 @@ const ASSET_VERSION = createHash("sha256")
   .update(readFileSync(join(import.meta.dirname, "public/assets/story.js")))
   .update(readFileSync(join(import.meta.dirname, "public/assets/manual.css")))
   .digest("hex").slice(0, 10);
+const SITE_ASSET_VERSION = createHash("sha256")
+  .update(readFileSync(join(import.meta.dirname, "public/assets/site.css")))
+  .update(readFileSync(join(import.meta.dirname, "public/assets/site.js")))
+  .digest("hex").slice(0, 10);
 const versionAssets = (html) => html.replace(/\/assets\/(story|manual)\.(css|js)/g, (m) => `${m}?v=${ASSET_VERSION}`);
 const STATIC_PAGES = { "/": versionAssets(STORY_HTML), "/manual": versionAssets(MANUAL_HTML), "/terms": versionAssets(readFileSync(join(import.meta.dirname, "terms.html"), "utf8")), "/privacy": versionAssets(readFileSync(join(import.meta.dirname, "privacy.html"), "utf8")) };
 const VERSION = String(pkg.version || "");
@@ -360,7 +364,7 @@ const server = createServer(async (req, res) => {
 
   const page = pages[path];
   if (page) {
-    answer(res, 200, renderPage({ ...page, path, version: VERSION }), {
+    answer(res, 200, renderPage({ ...page, path, version: VERSION, assetVersion: SITE_ASSET_VERSION }), {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "public, max-age=300, stale-while-revalidate=3600",
     });
@@ -369,6 +373,7 @@ const server = createServer(async (req, res) => {
   answer(res, 404, renderPage({
     path,
     version: VERSION,
+    assetVersion: SITE_ASSET_VERSION,
     title: "Page not found",
     description: "This 1Helm page does not exist.",
     kind: "error",
