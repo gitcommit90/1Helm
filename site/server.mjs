@@ -314,7 +314,7 @@ const server = createServer(async (req, res) => {
   if (STATIC_PAGES[path]) {
     answer(res, 200, STATIC_PAGES[path], {
       "content-type": "text/html; charset=utf-8",
-      "cache-control": "public, max-age=300, stale-while-revalidate=3600",
+      "cache-control": "no-cache",
     });
     return;
   }
@@ -366,7 +366,7 @@ const server = createServer(async (req, res) => {
   if (page) {
     answer(res, 200, renderPage({ ...page, path, version: VERSION, assetVersion: SITE_ASSET_VERSION }), {
       "content-type": "text/html; charset=utf-8",
-      "cache-control": "public, max-age=300, stale-while-revalidate=3600",
+      "cache-control": "no-cache",
     });
     return;
   }

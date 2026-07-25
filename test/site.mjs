@@ -35,6 +35,7 @@ test("standalone 1helm.com website serves independent product and documentation 
     for (const path of ["/manual", "/terms", "/privacy", "/manual/getting-started", "/manual/architecture", "/manual/outcome-ownership", "/manual/skills", "/manual/verification", "/manual/providers", "/manual/channel-computers", "/manual/connections", "/manual/install-macos", "/manual/install-linux", "/manual/install-windows", "/manual/self-hosting", "/manual/security-model"]) {
       const response = await fetch(base + path); assert.equal(response.status, 200, path);
       assert.match(response.headers.get("content-security-policy") || "", /default-src 'self'/);
+      assert.equal(response.headers.get("cache-control"), "no-cache", `${path} must never be browser-cached`);
     }
     const gettingStarted = await (await fetch(`${base}/manual/getting-started`)).text();
     assert.match(gettingStarted, /On Windows 11 x64, download the signed Setup executable/i);
