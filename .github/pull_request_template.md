@@ -23,6 +23,18 @@ Paste bullets for `CHANGELOG.md` Unreleased (or N/A):
 - [ ] `CHANGELOG.md` updated (or N/A)
 - [ ] `docs/VISION.md` updated if this is a product decision
 
+## Numbered acceptance ledger
+
+<!-- Required for a multi-item request. Preserve the user's numbering and give
+one outcome/evidence line per requested item. Do not merge distinct items into
+generic bullets. Delete this section only for a genuinely single-item change. -->
+
+1. …
+
+- [ ] Every requested item appears once and is implemented or explicitly named
+  as deferred with its reason.
+- [ ] This ledger is ready to be copied into the GitHub Release notes unchanged.
+
 ## Verification
 
 - [ ] `npm run typecheck`

@@ -21,7 +21,7 @@ Process contract from intent to verified deploy. Commands: [release-checklist.md
   version bump on the release branch
        │
        v
-  tag · signed DMG + updater ZIP + Linux host artifact · deploy target(s)
+  full numbered notes · tag · signed DMG + updater ZIP + Linux host artifact
        │
        v
   verify (local health + clean install + public artifact)
@@ -61,7 +61,10 @@ Feature branches that introduce `test/native-world.mjs` (or similar) must run th
 
 ## 4. Pull request
 
-Use the PR template: summary, type, changelog bullets, verification checklist.
+Use the PR template: summary, type, changelog bullets, numbered acceptance
+ledger, and verification checklist. For a multi-item request, preserve its
+numbering and record one concrete outcome per item. The ledger is the source
+for the GitHub Release; a commit title or generated summary is not a substitute.
 
 Draft PRs are allowed for long slices; mark ready only when the quality bar is met.
 
@@ -77,7 +80,14 @@ Draft PRs are allowed for long slices; mark ready only when the quality bar is m
 2. `npm version patch|minor|major --no-git-tag-version` (or edit `package.json`).
 3. Commit the versioned source on the release branch before merge.
 4. After merge, tag the exact verified `main` commit and push the tag.
-5. Publish the verified DMG, native updater ZIP, Linux host artifact, and release notes through one GitHub Release.
+5. Author release notes from the PR acceptance ledger using
+   [release-notes-template.md](./release-notes-template.md). Every accepted
+   user-visible item must appear once, with the same numbering as the request
+   when available. Include additional fixes, artifacts/digests, and verification
+   evidence in their own sections.
+6. Publish the verified DMG, native updater ZIP, Linux host artifact, and those
+   complete release notes through one GitHub Release. Do not use GitHub's
+   generated notes as the sole or primary body.
 
 ## 7. Deploy
 
@@ -103,7 +113,7 @@ workspace state.
 | Code landed | On `origin/main`, CI green |
 | Behavior fixed | Tests + manual/API check |
 | Install path still works | Clean `CTRL_DATA_DIR` boot through the wizard plus platform acceptance |
-| Named release | Version, changelog, exact tag, verified public artifact, and clean installation |
+| Named release | Version, changelog, full numbered notes, exact tag, verified public artifact, and clean installation |
 | Native host update | Published updater ZIP feed, installed-old-to-new Mac acceptance, and preserved Application Support |
 | Linux host update | Digest-qualified artifact, real systemd old-to-new update, health check, and preserved `/var/lib/1helm` |
 
