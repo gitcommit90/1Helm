@@ -158,6 +158,12 @@ resident doesn't just remember the fact — it writes itself the procedure.
 
 ## One model fabric
 
+<p align="center">
+  <img src="docs/assets/readme-terminals.png" alt="Four built-in split-pane 1Helm terminals running Claude Code, OpenAI Codex, opencode, and Grok side by side on one workspace" width="100%">
+  <br>
+  <sub>Built-in split-pane terminals: one workspace, four panes, four different AI CLIs running side by side.</sub>
+</p>
+
 Connect multiple ChatGPT, Claude, Gemini/Antigravity, and xAI OAuth accounts;
 OpenRouter, NVIDIA NIM, Cloudflare, GLM, and custom API keys; then enable exact
 models and assemble fallback or round-robin routes. Model choice cascades —
