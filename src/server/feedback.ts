@@ -5,7 +5,8 @@ import { basename, join } from "node:path";
 import { DATA_DIR, UPLOAD_DIR, now, q, q1, run, type Row } from "./db.ts";
 import { installedAppVersion } from "./updates.ts";
 
-const COLLECTOR = String(process.env.HELM_FEEDBACK_URL || "https://provision.1helm.com/v1/feedback").replace(/\/+$/, "");
+export const DEFAULT_FEEDBACK_COLLECTOR = "https://1helm.com/api/feedback";
+const COLLECTOR = String(process.env.HELM_FEEDBACK_URL || DEFAULT_FEEDBACK_COLLECTOR).replace(/\/+$/, "");
 const ADMIN_TOKEN = String(process.env.HELM_FEEDBACK_ADMIN_TOKEN || "");
 const MAX_FILES = 3;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;

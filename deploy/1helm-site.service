@@ -10,6 +10,9 @@ WorkingDirectory=/opt/1helm-site/current
 Environment=NODE_ENV=production
 Environment=SITE_HOST=127.0.0.1
 Environment=SITE_PORT=8130
+Environment=SITE_DATA_DIR=/var/lib/1helm-site
+StateDirectory=1helm-site
+StateDirectoryMode=0700
 ExecStart=/usr/bin/node site/server.mjs
 Restart=always
 RestartSec=2

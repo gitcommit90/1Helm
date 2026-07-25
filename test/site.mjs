@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { accessSync, constants, readFileSync } from "node:fs";
+import { accessSync, constants, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 const root = new URL("..", import.meta.url).pathname;
@@ -54,6 +57,67 @@ test("standalone 1helm.com website serves independent product and documentation 
     assert.equal(windowsDownload.status, 302);
     assert.match(windowsDownload.headers.get("location") || "", /-windows-x64-setup\.exe$|\/releases\/latest$/);
   } finally { child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve)); }
+});
+
+test("public feedback intake validates, deduplicates, and persists to the website state database", async () => {
+  const state = mkdtempSync(join(tmpdir(), "1helm-site-feedback-"));
+  const token = "feedback-test-admin-token";
+  const publicId = `fb_${"a".repeat(24)}`;
+  let child;
+  const start = async () => {
+    const port = await freePort();
+    child = spawn(process.execPath, ["site/server.mjs"], {
+      cwd: root,
+      env: { ...process.env, SITE_PORT: String(port), SITE_DATA_DIR: state, SITE_FEEDBACK_ADMIN_TOKEN: token },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const base = `http://127.0.0.1:${port}`;
+    await waitFor(`${base}/health`);
+    return base;
+  };
+  const stop = async () => {
+    if (!child || child.exitCode != null) return;
+    child.kill("SIGTERM");
+    await new Promise((resolve) => child.once("exit", resolve));
+  };
+  try {
+    let base = await start();
+    const invalid = await fetch(`${base}/api/feedback`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    assert.equal(invalid.status, 400);
+    assert.match((await invalid.json()).error, /source could not be verified/i);
+    const report = {
+      public_id: publicId,
+      installation_id: "b".repeat(16),
+      workspace_name: "Feedback contract",
+      comment: "first durable report",
+      diagnostics: { version: "test" },
+      attachments: [{ name: "proof.txt", mime: "text/plain", size: 3, data: "YWJj" }],
+    };
+    const saved = await fetch(`${base}/api/feedback`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(report) });
+    assert.equal(saved.status, 202);
+    assert.equal((await saved.json()).id, publicId);
+    const duplicate = await fetch(`${base}/api/feedback`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...report, comment: "must not overwrite" }) });
+    assert.equal(duplicate.status, 202);
+    assert.equal((await fetch(`${base}/api/feedback`)).status, 404, "the central inbox remains hidden without its server-side bearer token");
+    await stop();
+
+    base = await start();
+    const inboxResponse = await fetch(`${base}/api/feedback`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(inboxResponse.status, 200);
+    const inbox = await inboxResponse.json();
+    assert.equal(inbox.reports.length, 1);
+    assert.equal(inbox.reports[0].public_id, publicId);
+    assert.equal(inbox.reports[0].comment, "first durable report");
+    assert.equal(inbox.reports[0].attachment_count, 1);
+    const database = new DatabaseSync(join(state, "feedback.db"));
+    assert.equal(database.prepare("SELECT COUNT(*) count FROM feedback_reports").get().count, 1);
+    assert.equal(database.prepare("SELECT COUNT(*) count FROM feedback_attachments").get().count, 1);
+    assert.equal(Buffer.from(database.prepare("SELECT data FROM feedback_attachments").get().data).toString(), "abc");
+    database.close();
+  } finally {
+    await stop();
+    rmSync(state, { recursive: true, force: true });
+  }
 });
 
 test("installer assets are explicit and syntax-valid", () => {
@@ -127,6 +191,8 @@ test("standalone deployment runs the website and tunnel without root process aut
   const tunnelUnit = readFileSync(`${root}/deploy/1helm-site-cloudflared.service`, "utf8");
   const tunnelConfig = readFileSync(`${root}/deploy/config-1helm-site.yml.example`, "utf8");
   assert.match(siteUnit, /DynamicUser=yes/);
+  assert.match(siteUnit, /StateDirectory=1helm-site/);
+  assert.match(siteUnit, /SITE_DATA_DIR=\/var\/lib\/1helm-site/);
   assert.match(siteUnit, /ProtectHome=yes/);
   assert.match(tunnelUnit, /DynamicUser=yes/);
   assert.match(tunnelUnit, /LoadCredential=1helm-site-tunnel\.json:\/etc\/cloudflared\/1helm-site-tunnel\.json/);
