@@ -14,7 +14,7 @@ test("multi-item releases retain the complete numbered acceptance ledger", () =>
   const notesTemplate = read("docs/release-notes-template.md");
 
   for (const source of [checklist, lifecycle, governance, pullRequest, notesTemplate]) {
-    assert.match(source, /numbered acceptance ledger/i);
+    assert.match(source, /numbered acceptance\s+ledger/i);
   }
   assert.match(checklist, /--notes-file "\$RELEASE_NOTES"/);
   assert.doesNotMatch(checklist, /gh release create[^\n]+--generate-notes/);
