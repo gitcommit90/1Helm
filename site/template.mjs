@@ -1,6 +1,8 @@
 const esc = (value) => String(value).replace(/[&<>\"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '\"': "&quot;" })[character]);
 
 const navItems = [
+  ["/", "The story"],
+  ["/manual", "Manual"],
   ["/product", "Product"],
   ["/manifesto", "Why 1Helm"],
   ["/docs", "Docs"],
@@ -10,21 +12,21 @@ const navItems = [
 function header(path) {
   return `<header class="site-header" data-header>
     <a class="brand" href="/" aria-label="1Helm home">
-      <img src="/brand/1helm-sailboat.png" alt="" width="44" height="44">
+      <img src="/assets/story/app-icon.png" alt="" width="38" height="38">
       <span>1Helm</span>
     </a>
     <button class="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" data-nav-toggle><span></span><span></span></button>
     <nav class="site-nav" aria-label="Main navigation" data-nav>
       ${navItems.map(([href, label]) => `<a href="${href}"${path === href || (href === "/docs" && path.startsWith("/docs/")) ? ' aria-current="page"' : ""}>${label}</a>`).join("")}
       <a class="nav-github" href="/github">GitHub <span aria-hidden="true">↗</span></a>
-      <a class="nav-download" href="/download/macos">Download for Mac</a>
+      <a class="nav-download" href="/download/macos">Download</a>
     </nav>
   </header>`;
 }
 
 function footer(version) {
   return `<footer class="site-footer">
-    <div class="footer-lead"><img src="/brand/1helm-sailboat.png" alt="" width="56" height="56"><div><strong>1Helm</strong><span>Stop renting intelligence by the session.</span></div></div>
+    <div class="footer-lead"><img src="/assets/story/app-icon.png" alt="" width="52" height="52"><div><strong>1Helm</strong><span>Stop renting intelligence by the session.</span></div></div>
     <div class="footer-grid">
       <div><h2>Product</h2><a href="/product">How it works</a><a href="/manifesto">Manifesto</a><a href="/security">Security</a><a href="/faq">FAQ</a></div>
       <div><h2>Documentation</h2><a href="/docs/getting-started">Getting started</a><a href="/docs/providers-and-routing">Provider fabric</a><a href="/docs/channel-computers">Channel computers</a><a href="/docs/self-hosting">Self-hosting</a></div>
@@ -43,7 +45,7 @@ export function renderPage(page) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0b0d12">
+  <meta name="theme-color" content="#fdfaf3">
   <meta name="description" content="${esc(page.description)}">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="1Helm">
@@ -54,7 +56,7 @@ export function renderPage(page) {
   <meta name="twitter:image" content="https://1helm.com/assets/story/og-card.png">
   <meta name="twitter:card" content="summary_large_image">
   <link rel="canonical" href="${canonical}">
-  <link rel="icon" href="/brand/1helm-sailboat.png" type="image/png">
+  <link rel="icon" href="/assets/story/app-icon.png" type="image/png">
   <link rel="stylesheet" href="/assets/site.css?v=${esc(page.version)}">
   <title>${esc(title)}</title>
 </head>
