@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, autoUpdater, BrowserWindow, dialog, shell, session } = require("electron");
+const { app, autoUpdater, BrowserWindow, dialog, shell, session, systemPreferences } = require("electron");
 const { createServer } = require("node:net");
 const { pathToFileURL } = require("node:url");
 const path = require("node:path");
@@ -144,6 +144,13 @@ function allowedTeamUrl(raw) {
 
 const allowedAppUrl = (raw) => allowedLocalUrl(raw) || allowedTeamUrl(raw);
 
+function microphonePermissionAllowed(webContents, permission, details = {}) {
+  const pageUrl = webContents?.getURL?.() || "";
+  if (permission !== "media" || !allowedAppUrl(pageUrl)) return false;
+  const mediaTypes = Array.isArray(details.mediaTypes) ? details.mediaTypes : [];
+  return mediaTypes.length === 0 || (mediaTypes.includes("audio") && !mediaTypes.includes("video"));
+}
+
 function openAuthWindow(url) {
   if (authWindow && !authWindow.isDestroyed()) authWindow.close();
   const window = new BrowserWindow({
@@ -224,7 +231,13 @@ if (handleSquirrelEvent()) {
 
   app.whenReady().then(async () => {
     if (process.platform === "win32") app.setAppUserModelId("com.squirrel.1Helm.1Helm");
-    session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+    session.defaultSession.setPermissionCheckHandler((webContents, permission, _origin, details) => microphonePermissionAllowed(webContents, permission, details));
+    session.defaultSession.setPermissionRequestHandler(async (webContents, permission, callback, details) => {
+      if (!microphonePermissionAllowed(webContents, permission, details)) { callback(false); return; }
+      if (process.platform !== "darwin") { callback(true); return; }
+      try { callback(await systemPreferences.askForMediaAccess("microphone")); }
+      catch { callback(false); }
+    });
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
       if (!allowedLocalUrl(details.url)) {
         callback({ responseHeaders: details.responseHeaders });

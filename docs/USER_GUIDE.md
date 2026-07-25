@@ -198,10 +198,11 @@ stand in for a news photograph.
 
 ## Skills and Learn a new skill
 
-Every resident permanently owns the built-in operational arsenal. The model
-sees a compact inventory, can list the available skills, and loads the full
-procedure for one skill only when it chooses to use it. The procedures are not
-injected wholesale into every turn.
+Every resident starts with a seven-skill operational core plus focused skills
+for its channel template. The model sees a compact inventory of those assigned
+skills and loads the full procedure for one only when it chooses to use it.
+The complete workspace catalog remains searchable, and the resident can ask
+Skipper to assign another procedure when the task needs it.
 
 ![Built-in skills and direct SkillsMD search](assets/guide/skills.png)
 

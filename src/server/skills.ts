@@ -1,6 +1,5 @@
-import { DATA_DIR, now, q, q1, run, tx, type Row } from "./db.ts";
+import { UNIVERSAL_RESIDENT_SKILL_SLUGS, now, q, q1, run, tx, type Row } from "./db.ts";
 import { routingChatGPTImageAvailable } from "./routing.ts";
-import { BUILTIN_SKILL_SLUGS } from "./builtin-skills.ts";
 import { broadcastAdmins, sendToUsers } from "./events.ts";
 
 export const skillSlug = (value: string): string => value.trim().toLowerCase()
@@ -81,7 +80,10 @@ export function provisionSkill(agentId: number, slugInput: string, provisionedBy
   const agent = q1("SELECT id FROM agents WHERE id=? AND status<>'deleted'", agentId);
   if (!agent) throw new Error("Agent not found.");
   run(`INSERT INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) VALUES (?,?,?,?,1,?)
-    ON CONFLICT(agent_id,skill_id) DO UPDATE SET reason=CASE WHEN agent_skills.reason='' THEN excluded.reason ELSE agent_skills.reason END,permanent=1`,
+    ON CONFLICT(agent_id,skill_id) DO UPDATE SET reason=CASE
+      WHEN agent_skills.reason='' OR agent_skills.reason='Part of the safe built-in resident arsenal.'
+        OR agent_skills.reason LIKE 'Built-in arsenal for the %; full procedures are available on demand.'
+      THEN excluded.reason ELSE agent_skills.reason END,permanent=1`,
   agentId, skill.id, provisionedBy, reason.slice(0, 1000), now());
   broadcastAdmins({ type: "skills_changed", action: "assigned", skill_slug: skill.slug, agent_id: agentId });
   const members = q(`SELECT DISTINCT m.user_id FROM agent_channels ac
@@ -93,8 +95,9 @@ export function provisionSkill(agentId: number, slugInput: string, provisionedBy
 export function provisionInitialSkills(agentId: number, templateSlug = "general", purpose = "", provisionedBy: number | null = null): Row[] {
   const template = q1("SELECT * FROM agent_templates WHERE slug=? AND status='active'", skillSlug(templateSlug))
     || q1("SELECT * FROM agent_templates WHERE slug='general'");
-  const wanted = new Set([...BUILTIN_SKILL_SLUGS, ...parseList(template?.skill_slugs)]);
-  return [...wanted].map((slug) => provisionSkill(agentId, slug, provisionedBy, `Built-in arsenal for the ${template?.name || "agent"}; full procedures are available on demand.`));
+  run("UPDATE agents SET template_slug=? WHERE id=?", String(template?.slug || "general"), agentId);
+  const wanted = new Set<string>([...UNIVERSAL_RESIDENT_SKILL_SLUGS, ...parseList(template?.skill_slugs)]);
+  return [...wanted].map((slug) => provisionSkill(agentId, slug, provisionedBy, "Built-in arsenal for the resident template; full procedures are available on demand."));
 }
 
 export function createSkill(opts: { name: string; slug?: string; description: string; instructions: string; category?: string; source?: string }): Row {
@@ -108,6 +111,8 @@ export function createSkill(opts: { name: string; slug?: string; description: st
   const id = run(`INSERT INTO skills (slug,name,description,category,instructions,source,status,created,updated)
     VALUES (?,?,?,?,?,?,'active',?,?)`, slug, name, description, skillSlug(opts.category || "general") || "general", instructions, opts.source || "skipper", now(), now()).lastInsertRowid;
   const skill = q1("SELECT * FROM skills WHERE id=?", id)!;
+  const skipper = skipperId();
+  if (skipper) provisionSkill(skipper, slug, skipper, "Skipper has the full workspace skill arsenal.");
   broadcastAdmins({ type: "skills_changed", action: "created", skill_slug: skill.slug });
   return skill;
 }

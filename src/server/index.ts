@@ -5,7 +5,7 @@ import { existsSync, statSync, unlinkSync } from "node:fs";
 import { join, extname } from "node:path";
 import { randomBytes } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
-import { db, isMainChannel, q, q1, run, now, hashPassword, verifyPassword, newToken, seed, DATA_DIR, UPLOAD_DIR, type Row } from "./db.ts";
+import { db, isMainChannel, normalizeWorkspaceName, q, q1, run, now, hashPassword, verifyPassword, newToken, seed, DATA_DIR, UPLOAD_DIR, type Row } from "./db.ts";
 import { createMessage, deleteMessage, serializeMessage, setModelPref, setModelPolicy, resolvedModelPolicy, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots } from "./store.ts";
 import { computerRowView, fetchModels } from "./computer.ts";
 import { cancelChannelTurns, resumeQueuedAgentTurns, runBot, stopThreadTurn } from "./bots.ts";
@@ -18,17 +18,25 @@ import {
   agentViewForChannel,
   archiveChannel,
   channelWorkspace,
+  createChannelNote,
+  createWorkspaceDirectory,
   deleteChannelWorld,
   ensureChannelWorkspace,
   ensureThread,
   importAttachment,
+  importWorkspaceUpload,
+  listChannelNotes,
+  listWorkspaceDirectory,
   normalizeChannelName,
   provisionChannelWithComputer,
+  readChannelNote,
   recordMemory,
   refreshThreadSummary,
   renameChannel,
+  renameChannelNote,
   resolveWorldFile,
   restoreChannel,
+  saveChannelNote,
   syncWorkspaceArtifacts,
   threadIdForRoot,
   updateChannelPurpose,
@@ -141,7 +149,9 @@ const SECURITY_HEADERS: Record<string, string> = {
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
   "referrer-policy": "same-origin",
-  "permissions-policy": "camera=(), microphone=(), geolocation=()",
+  // Speech-to-text is an explicit, user-triggered first-party composer action.
+  // Keep camera and location denied, but allow this origin to request the mic.
+  "permissions-policy": "camera=(), microphone=(self), geolocation=()",
 };
 const json = (res: ServerResponse, code: number, body: unknown): void => {
   const s = JSON.stringify(body);
@@ -209,11 +219,16 @@ const canSee = (user: Row, channelId: number): boolean => {
 const canUseAgentSurfaces = (user: Row): boolean => Boolean(user.is_admin || q1(`SELECT 1 FROM members m
   JOIN channels c ON c.id=m.channel_id WHERE m.user_id=? AND c.kind='channel' AND c.status<>'deleted' LIMIT 1`, user.id));
 const canManageChannel = (user: Row, channelId: number): boolean => Boolean(q1(
-  `SELECT 1 FROM channels WHERE id=? AND kind='channel' AND status<>'deleted' AND (
-    (name<>'main' AND (created_by=? OR (created_by IS NULL AND ?=1)))
-    OR (name='main' AND personal_main_owner_id=? AND ?=1)
+  `SELECT 1 FROM channels WHERE id=? AND status<>'deleted' AND (
+    (kind='human' AND (created_by=? OR ?=1))
+    OR (kind='channel' AND (
+      (name<>'main' AND (created_by=? OR (created_by IS NULL AND ?=1)))
+      OR (name='main' AND personal_main_owner_id=? AND ?=1)
+    ))
   )`,
   channelId,
+  user.id,
+  user.is_admin ? 1 : 0,
   user.id,
   user.is_admin ? 1 : 0,
   user.id,
@@ -235,6 +250,21 @@ const publicUser = (r: Row): Record<string, unknown> => ({
   tour_complete: Boolean(r.tour_complete),
 });
 
+const channelFavoriteKey = (channelId: number): string => `channel_favorite:${channelId}`;
+const channelIsFavorite = (userId: number, channelId: number): boolean => {
+  const value = q1("SELECT value FROM user_ui_state WHERE user_id=? AND key=?", userId, channelFavoriteKey(channelId))?.value;
+  if (value == null) return false;
+  try { return JSON.parse(String(value)) === true; } catch { return String(value) === "true"; }
+};
+const channelMemberSummaries = (channelId: number): Record<string, unknown>[] => q(`SELECT u.id,u.username,u.display,u.avatar
+  FROM members m JOIN users u ON u.id=m.user_id WHERE m.channel_id=? ORDER BY lower(u.display),lower(u.username),u.id`, channelId)
+  .map((member) => ({
+    id: Number(member.id),
+    username: String(member.username),
+    display: String(member.display),
+    avatar: String(member.avatar || ""),
+  }));
+
 /** Shared channel fields for live fan-out — never includes per-user unread. */
 function channelMetaView(c: Row, viewer?: Row | null): Record<string, unknown> {
   let name = c.name as string;
@@ -253,7 +283,11 @@ function channelMetaView(c: Row, viewer?: Row | null): Record<string, unknown> {
     agent: c.kind === "channel" ? agentViewForChannel(Number(c.id)) : null,
     computer: c.kind === "channel" ? channelComputerView(Number(c.id)) : null,
     personal_main: c.kind === "channel" && c.name === "main" && c.personal_main_owner_id != null,
-    ...(viewer ? { can_manage: canManageChannel(viewer, Number(c.id)) } : {}),
+    ...(viewer ? {
+      can_manage: canManageChannel(viewer, Number(c.id)),
+      favorite: channelIsFavorite(Number(viewer.id), Number(c.id)),
+      members: channelMemberSummaries(Number(c.id)),
+    } : {}),
   };
 }
 
@@ -315,12 +349,12 @@ function broadcastChannelMeta(channelId: number, type: "channel_update" | "chann
 function visibleChannels(user: Row): Row[] {
   return q(`SELECT c.* FROM channels c JOIN members m ON m.channel_id=c.id
     WHERE m.user_id=? AND c.status<>'deleted'
-    ORDER BY CASE WHEN c.status='archived' THEN 1 ELSE 0 END, c.kind, c.name`, user.id);
+    ORDER BY CASE WHEN c.status='archived' THEN 1 ELSE 0 END, c.kind, lower(c.name), c.id`, user.id);
 }
 
 /** Fire the bound resident or workspace-wide Skipper mentioned in a message. */
 function triggerBots(channelId: number, msg: Row, authorId: number): void {
-  if (q1("SELECT kind FROM channels WHERE id=?", channelId)?.kind === "collab") return;
+  if (["collab", "human"].includes(String(q1("SELECT kind FROM channels WHERE id=?", channelId)?.kind || ""))) return;
   const fresh = msg.parent_id == null;
   const threadRootId = Number(msg.parent_id ?? msg.id);
   const mentioned = findMentionedBots(String(msg.body));
@@ -347,8 +381,8 @@ function triggerBots(channelId: number, msg: Row, authorId: number): void {
 
 function offerHumanMemberships(channelId: number, msg: Row, author: Row): void {
   const channel = q1("SELECT kind FROM channels WHERE id=?", channelId);
-  if (!channel || !["channel", "collab"].includes(String(channel.kind))) return;
-  if (channel.kind === "channel" && !canManageChannel(author, channelId)) return;
+  if (!channel || !["channel", "collab", "human"].includes(String(channel.kind))) return;
+  if (["channel", "human"].includes(String(channel.kind)) && !canManageChannel(author, channelId)) return;
   const names = new Set((String(msg.body).match(/@([a-zA-Z0-9_.-]+)/g) || []).map((value) => value.slice(1).toLowerCase()));
   if (!names.size) return;
   for (const candidate of q("SELECT id,username,display FROM users WHERE id<>?", author.id)) {
@@ -464,7 +498,7 @@ function postMessage(channelId: number, user: Row, text: string, parentId: numbe
     if (!/^[a-f0-9]{32,}$/.test(upload.token) || !existsSync(join(UPLOAD_DIR, upload.token))) continue;
     const size = statSync(join(UPLOAD_DIR, upload.token)).size;
     run("INSERT INTO attachments (message_id, name, mime, size, path) VALUES (?,?,?,?,?)", id, upload.name.slice(0, 255), upload.mime.slice(0, 255), size, upload.token);
-    if (channel.kind !== "collab") importAttachment(channelId, threadId, upload.token, upload.name, "human");
+    if (!['collab', 'human'].includes(String(channel.kind))) importAttachment(channelId, threadId, upload.token, upload.name, "human");
   }
   refreshThreadSummary(actualRootId);
   const msg = serializeMessage(id)!;
@@ -604,6 +638,7 @@ const server = createServer(async (req, res) => {
         "app:set-provider-enabled", "app:usage", "app:quota-get", "app:quota-refresh",
         "app:save-combo", "app:delete-combo", "app:create-api-key", "app:revoke-api-key",
         "app:set-api-key-enabled", "app:set-model-enabled", "app:set-all-models-enabled",
+        "app:preview-provider-models", "app:apply-provider-models",
         "app:add-model", "app:remove-model", "app:logs-get", "app:logs-clear", "app:set-bind-host",
         "app:set-provider-visibility",
       ]);
@@ -821,7 +856,7 @@ const server = createServer(async (req, res) => {
     if (p === "/api/workspace" && m === "PATCH") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const b = await jbody(req);
-      const name = String(b.name || "").trim().slice(0, 100);
+      const name = normalizeWorkspaceName(b.name);
       const theme = String(b.theme || "graphite");
       if (!name) return json(res, 400, { error: "Workspace name is required." });
       if (!["graphite", "ocean", "forest", "ember", "plum"].includes(theme)) return json(res, 400, { error: "Unknown workspace theme." });
@@ -1044,7 +1079,8 @@ const server = createServer(async (req, res) => {
     if (p === "/api/collaboration/claim" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const b = await jbody(req);
-      try { return json(res, 201, { collaboration: await claimWorkspace(String(b.slug || ""), String(b.workspace_name || q1("SELECT name FROM workspace WHERE id=1")?.name || "My Workspace"), PORT) }); }
+      const workspaceName = normalizeWorkspaceName(b.workspace_name || q1("SELECT name FROM workspace WHERE id=1")?.name) || "My Workspace";
+      try { return json(res, 201, { collaboration: await claimWorkspace(String(b.slug || ""), workspaceName, PORT) }); }
       catch (error) { return json(res, 400, { error: (error as Error).message }); }
     }
     if (p === "/api/collaboration/enabled" && m === "POST") {
@@ -1080,8 +1116,9 @@ const server = createServer(async (req, res) => {
           : "Finish WSL 2 setup before creating this workspace." });
       const b = await jbody(req);
       try {
+        const name = normalizeWorkspaceName(b.name || "My Workspace") || "My Workspace";
         const result = await completeSetup({
-          name: String(b.name || "My Workspace"),
+          name,
           terminalsEnabled: b.terminals_enabled !== false && b.terminalsEnabled !== false,
           userId: Number(user.id),
           providerId: b.provider_id ? Number(b.provider_id) : undefined,
@@ -1098,6 +1135,41 @@ const server = createServer(async (req, res) => {
 
     // channels
     if (p === "/api/channels" && m === "GET") return json(res, 200, { channels: visibleChannels(user).map((c) => channelView(user, c)) });
+    if (p === "/api/human-channels" && m === "POST") {
+      const b = await jbody(req);
+      const name = Array.from(String(b.name || "").trim()).slice(0, 100).join("").trim();
+      const purpose = Array.from(String(b.purpose || b.topic || "Human-only collaboration").trim()).slice(0, 500).join("").trim() || "Human-only collaboration";
+      const requestedMembers = Array.isArray(b.member_ids) ? b.member_ids : Array.isArray(b.memberIds) ? b.memberIds : [];
+      const memberIds = new Set<number>([Number(user.id), ...requestedMembers.map(Number).filter((id) => Number.isInteger(id) && id > 0)]);
+      if (!name || /[\0-\x1f\x7f]/.test(name)) return json(res, 400, { error: "Human channel name is required." });
+      if (requestedMembers.length && !user.is_admin) return json(res, 403, { error: "Only the Captain can create a channel for other members." });
+      if (memberIds.size > 100) return json(res, 400, { error: "A human channel can start with at most 100 members." });
+      if (Number(q1(`SELECT COUNT(*) n FROM users WHERE id IN (${[...memberIds].map(() => "?").join(",")})`, ...memberIds)?.n || 0) !== memberIds.size) {
+        return json(res, 400, { error: "One or more selected members do not exist." });
+      }
+      if (q1("SELECT 1 FROM channels WHERE kind IN ('human','collab') AND lower(name)=lower(?) AND status<>'deleted'", name)) {
+        return json(res, 409, { error: "A human channel with that name already exists." });
+      }
+      let channelId = 0;
+      try {
+        db.exec("BEGIN IMMEDIATE");
+        let slug = normalizeChannelName(name) || `human-${now()}`;
+        for (let suffix = 2; q1("SELECT 1 FROM channels WHERE slug=? AND status<>'deleted'", slug); suffix++) {
+          const suffixText = `-${suffix}`;
+          slug = `${(normalizeChannelName(name) || "human").slice(0, 64 - suffixText.length)}${suffixText}`;
+        }
+        channelId = run(`INSERT INTO channels (name,slug,kind,topic,purpose,status,created_by,created)
+          VALUES (?,?,'human',?,?,'active',?,?)`, name, slug, purpose, purpose, user.id, now()).lastInsertRowid;
+        for (const memberId of memberIds) run("INSERT INTO members (channel_id,user_id) VALUES (?,?)", channelId, memberId);
+        db.exec("COMMIT");
+      } catch (error) {
+        try { db.exec("ROLLBACK"); } catch { /* transaction did not begin */ }
+        return json(res, 400, { error: (error as Error).message });
+      }
+      const channel = q1("SELECT * FROM channels WHERE id=?", channelId)!;
+      broadcastChannelMeta(channelId, "channel_new");
+      return json(res, 201, { channel: channelView(user, channel) });
+    }
     // Global thread inbox (cross-channel) for the sidebar Threads control.
     if (p === "/api/threads" && m === "GET") {
       const unreadOnly = url.searchParams.get("unread") === "1" || url.searchParams.get("unread") === "true";
@@ -1222,8 +1294,14 @@ const server = createServer(async (req, res) => {
       }
       if (action === "files" && m === "GET") {
         await refreshChannelWorkspaceMirror(channelId);
-        const files = syncWorkspaceArtifacts(channelId, null, "agent");
-        return json(res, 200, { files, artifacts: q("SELECT * FROM artifacts WHERE channel_id=? ORDER BY modified DESC", channelId) });
+        try {
+          if (!url.searchParams.has("path")) {
+            const files = syncWorkspaceArtifacts(channelId, null, "agent");
+            return json(res, 200, { path: "", files, artifacts: q("SELECT * FROM artifacts WHERE channel_id=? ORDER BY modified DESC", channelId) });
+          }
+          const directory = listWorkspaceDirectory(channelId, url.searchParams.get("path") || "");
+          return json(res, 200, { ...directory, artifacts: q("SELECT * FROM artifacts WHERE channel_id=? ORDER BY modified DESC", channelId) });
+        } catch (error) { return json(res, 400, { error: (error as Error).message }); }
       }
       if (action === "memory" && m === "GET") return json(res, 200, { memory: q("SELECT m.*, t.root_message_id FROM memory_items m LEFT JOIN threads t ON t.id=m.thread_id WHERE m.channel_id=? AND m.kind<>'summary' ORDER BY m.status, m.created DESC", channelId) });
       if (action === "memory" && m === "POST") {
@@ -1273,7 +1351,7 @@ const server = createServer(async (req, res) => {
         const agent = agentForChannel(channelId);
         if (!agent?.bot_id) return json(res, 404, { error: "Resident agent not found." });
         const avatar = String(b.avatar || "");
-        if (avatar && !avatar.startsWith("color:") && !avatar.startsWith("data:image/") && !avatar.startsWith("/")) {
+        if (avatar && !avatar.startsWith("color:") && !/^agent:[1-9]:#[0-9a-f]{6}$/i.test(avatar) && !avatar.startsWith("data:image/") && !avatar.startsWith("/")) {
           return json(res, 400, { error: "Invalid avatar value." });
         }
         if (avatar.startsWith("data:image/") && avatar.length > 1_500_000) {
@@ -1284,6 +1362,55 @@ const server = createServer(async (req, res) => {
         broadcastChannelMeta(channelId);
         return json(res, 200, { channel });
       }
+    }
+    const channelFavorite = p.match(/^\/api\/channels\/(\d+)\/favorite$/);
+    if (channelFavorite && (m === "POST" || m === "PUT" || m === "PATCH" || m === "DELETE")) {
+      const channelId = Number(channelFavorite[1]);
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      const b = m === "DELETE" ? {} : await jbody(req);
+      const favorite = m === "DELETE" ? false : "favorite" in b ? b.favorite === true : "value" in b ? b.value === true : true;
+      run(`INSERT INTO user_ui_state (user_id,key,value,updated) VALUES (?,?,?,?)
+        ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value,updated=excluded.updated`, user.id, channelFavoriteKey(channelId), JSON.stringify(favorite), now());
+      const row = q1("SELECT * FROM channels WHERE id=?", channelId)!;
+      const channel = channelView(user, row);
+      sendToUsers([Number(user.id)], { type: "channel_update", channel: channelMetaView(row, user) });
+      return json(res, 200, { ok: true, favorite, channel });
+    }
+    const channelNotes = p.match(/^\/api\/channels\/(\d+)\/notes(?:\/([^/]+))?$/);
+    if (channelNotes) {
+      const channelId = Number(channelNotes[1]);
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      if (!q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", channelId)) return json(res, 404, { error: "Agent-channel notes not found." });
+      try {
+        await refreshChannelWorkspaceMirror(channelId);
+        const encodedName = channelNotes[2];
+        const noteName = encodedName == null ? "" : decodeURIComponent(encodedName);
+        if (!noteName && m === "GET") return json(res, 200, { notes: listChannelNotes(channelId) });
+        if (!noteName && m === "POST") {
+          const b = await jbody(req);
+          return json(res, 201, { note: createChannelNote(channelId, String(b.name || ""), String(b.content || "")) });
+        }
+        if (noteName && m === "GET") return json(res, 200, { note: readChannelNote(channelId, noteName) });
+        if (noteName && m === "PATCH") {
+          const b = await jbody(req);
+          const note = "name" in b
+            ? renameChannelNote(channelId, noteName, String(b.name || ""))
+            : saveChannelNote(channelId, noteName, String(b.content ?? ""));
+          return json(res, 200, { note });
+        }
+      } catch (error) { return json(res, /not found/i.test((error as Error).message) ? 404 : 400, { error: (error as Error).message }); }
+      return json(res, 405, { error: "Method not allowed." });
+    }
+    const channelDirectories = p.match(/^\/api\/channels\/(\d+)\/files\/directories$/);
+    if (channelDirectories && m === "POST") {
+      const channelId = Number(channelDirectories[1]);
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      if (!q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", channelId)) return json(res, 404, { error: "Agent-channel file surface not found." });
+      const b = await jbody(req);
+      try {
+        await refreshChannelWorkspaceMirror(channelId);
+        return json(res, 201, { directory: createWorkspaceDirectory(channelId, String(b.path || ""), String(b.name || "")) });
+      } catch (error) { return json(res, 400, { error: (error as Error).message }); }
     }
     const worldFile = p.match(/^\/api\/channels\/(\d+)\/files\/content$/);
     if (worldFile && m === "GET") {
@@ -1393,6 +1520,7 @@ const server = createServer(async (req, res) => {
         root: serializeMessage(Number(root.id)),
         replies: replies.map((r) => serializeMessage(Number(r.id))).filter(Boolean),
         thread,
+        followup: threadFollowupView(Number(threadId)),
         usage: {
           input_tokens: Math.max(0, Number(thread?.input_tokens || 0)),
           output_tokens: Math.max(0, Number(thread?.output_tokens || 0)),
@@ -1500,9 +1628,15 @@ const server = createServer(async (req, res) => {
       const upload = await jbody(req);
       const token = String(upload.token || "");
       if (!/^[a-f0-9]{32,}$/.test(token) || !existsSync(join(UPLOAD_DIR, token))) return json(res, 400, { error: "Upload not found." });
-      const path = importAttachment(channelId, null, token, String(upload.name || "file"), "human");
+      // An explicit empty path means the /workspace root. Only older clients
+      // that omit `path` retain the historical /workspace/files destination.
+      const destination = Object.prototype.hasOwnProperty.call(upload, "path") ? String(upload.path ?? "") : "files";
+      let path: string | null;
+      try {
+        await refreshChannelWorkspaceMirror(channelId);
+        path = importWorkspaceUpload(channelId, null, token, String(upload.name || "file"), "human", destination);
+      } catch (error) { return json(res, 400, { error: (error as Error).message }); }
       if (!path) return json(res, 400, { error: "The file could not be imported." });
-      await refreshChannelWorkspaceMirror(channelId);
       return json(res, 201, { path });
     }
     if ((mm = p.match(/^\/api\/files\/(\d+)$/)) && m === "GET") {
@@ -1673,7 +1807,7 @@ const server = createServer(async (req, res) => {
       const b = await jbody(req);
       const botId = Number(mm[1]); const cid = Number(b.channelId);
       if (!canSee(user, cid)) return json(res, 403, { error: "No access" });
-      if (q1("SELECT 1 FROM channels WHERE id=? AND kind='collab'", cid)) return json(res, 409, { error: "Collab is human-only." });
+      if (q1("SELECT 1 FROM channels WHERE id=? AND kind IN ('collab','human')", cid)) return json(res, 409, { error: "This channel is human-only." });
       if (q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", cid)) return json(res, 409, { error: "Native channels contain only Skipper and their one resident agent. Invite another resident through Skipper for one thread instead." });
       const targetAgent = agentForBot(botId);
       if (targetAgent?.kind === "channel") return json(res, 409, { error: "Resident agents are created by channel provisioning, not joined manually." });
@@ -1832,13 +1966,14 @@ const server = createServer(async (req, res) => {
     if ((mm = p.match(/^\/api\/channels\/(\d+)\/members\/(\d+)$/)) && m === "POST") {
       const channelId = Number(mm[1]);
       const userId = Number(mm[2]);
-      const channel = q1("SELECT id,name,kind,status FROM channels WHERE id=?", channelId);
+      const channel = q1("SELECT id,name,kind,status,created_by FROM channels WHERE id=?", channelId);
       const addedUser = q1("SELECT id,username,display FROM users WHERE id=?", userId);
       if (!channel || channel.status !== "active" || !addedUser) return json(res, 404, { error: "Channel or member not found." });
       if (channel.kind === "channel" && !canManageChannel(user, channelId)) return json(res, 403, { error: "Only this channel's creator can invite members." });
       if (channel.kind === "collab" && !user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      if (channel.kind === "human" && Number(channel.created_by) !== Number(user.id) && !user.is_admin) return json(res, 403, { error: "Only this channel's creator can invite members." });
       if (channel.kind === "dm") return json(res, 409, { error: "Use direct messages for private conversations." });
-      if (channel.kind === "channel") {
+      if (["channel", "human"].includes(String(channel.kind))) {
         const b = await jbody(req);
         const messageId = Number(b.messageId);
         const invitation = messageId ? q1("SELECT body,user_id FROM messages WHERE id=? AND channel_id=?", messageId, channelId) : undefined;
@@ -1847,8 +1982,9 @@ const server = createServer(async (req, res) => {
         if (!mentioned) return json(res, 409, { error: `Tag @${addedUser.username} in this channel and confirm the invitation.` });
       }
       run("INSERT OR IGNORE INTO members (channel_id,user_id) VALUES (?,?)", channelId, userId);
-      sendToUsers([userId], { type: "channel_new", channel: channelMetaView(channel, addedUser) });
-      return json(res, 200, { channel: channelView(addedUser, channel), user: publicUser(addedUser) });
+      broadcastChannelMeta(channelId);
+      sendToUsers([userId], { type: "channel_new", channel: channelMetaView(q1("SELECT * FROM channels WHERE id=?", channelId)!, addedUser) });
+      return json(res, 200, { channel: channelView(addedUser, q1("SELECT * FROM channels WHERE id=?", channelId)!), user: publicUser(addedUser) });
     }
 
     return json(res, 404, { error: "Not found" });

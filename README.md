@@ -30,7 +30,7 @@
 </p>
 
 <p align="center">
-  <code>MIT licensed</code>&nbsp;&nbsp;
+  <code>AGPL-3.0-only</code>&nbsp;&nbsp;
   <code>Self-hosted</code>&nbsp;&nbsp;
   <code>Model-agnostic</code>&nbsp;&nbsp;
   <code>Signed + notarized</code>&nbsp;&nbsp;
@@ -140,15 +140,17 @@ your everyday computer takes naps.
   <img src="docs/assets/readme-skills.png" alt="1Helm Skills showing automatic built-in playbooks, skill learning, and a searchable external library" width="100%">
 </p>
 
-Every resident permanently owns the safe shipped library: 34 complete
-playbooks covering outcome ownership, Skipper handoff, obligations, skill
-discovery, memory, research, email, calendar, contacts, messaging, documents,
-spreadsheets, PDFs, meetings, projects, personal operations, travel, finance,
-support, software delivery, data, media, infrastructure, security, and more.
+Every resident starts with a seven-skill operational core plus the focused
+playbooks selected by its channel template. The shared workspace catalog still
+contains 34 complete procedures covering outcome ownership, Skipper handoff,
+obligations, skill discovery, memory, research, email, calendar, contacts,
+messaging, documents, spreadsheets, PDFs, meetings, projects, personal
+operations, travel, finance, support, software delivery, data, media,
+infrastructure, security, and more.
 
-The model receives a compact inventory of the arsenal—not all 34 procedures in
-every prompt. It inspects metadata and loads one complete skill when useful.
-Beyond the built-ins, a resident can:
+The model receives a compact inventory of its assigned skills—not all 34
+procedures in every prompt. It loads one complete skill when useful and can ask
+Skipper for another catalog skill when the job expands. A resident can also:
 
 - search the open SkillsMD registry directly, then inspect and install a
   selected GitHub-backed skill — only after immutable revision pinning,
@@ -256,7 +258,7 @@ A fresh data directory opens first-run setup. The source runtime defaults to
 | `PORT` | `8123` | HTTP/WebSocket control-plane port. |
 | `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and narrow workspace mirrors. |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `lxc` on Linux, `wsl` on Windows | Host isolation backend; `native` and `mock` are explicit development/test overrides. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.8` | Versioned channel-machine image contract. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.9` | Versioned channel-machine image contract. |
 
 ### Agent-first JSON CLI
 
@@ -352,5 +354,5 @@ dependency debt.
 <p align="center">
   <img src="public/brand/1helm-sailboat.png" alt="1Helm sailboat" width="72" height="72"><br>
   <strong>Let them cook. Keep the helm.</strong><br>
-  <sub>1Helm · MIT License</sub>
+  <sub>1Helm · AGPL-3.0-only · Copyright © 2026 Joseph Yaksich</sub>
 </p>

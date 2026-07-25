@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-07-25
+
+### Added
+
+- Open chat threads now show the resident's persisted durable follow-up with a
+  live second-by-second “will check back in” countdown. Board and chat use the
+  same follow-up row and WebSocket lifecycle, so the banner clears when the
+  obligation completes or is cancelled.
+- Channel Notes are Markdown files on the channel computer, available as a
+  full tab or a resizable right-hand dock beside chat. Files now have folders,
+  breadcrumbs, folder creation, folder-targeted uploads, and authenticated
+  preview/download; MP3 and M4A attachments play in place.
+- Focused-app speech-to-text can be toggled from the composer microphone or a
+  bare Option/Alt tap, with a macOS microphone-purpose declaration and
+  same-origin audio-only native permission handling.
+- Channels can be favorited, grouped into per-user Favorites and Unreads
+  sections, or created as resident-free human channels. Mentions are scoped to
+  channel membership, and Tab in an empty composer mentions the resident.
+- Provider routing now includes the live Requests → Router → provider flow, a
+  credential-free channel-header activity popover, period-correct account
+  activity, preview-before-apply model discovery, and OpenRouter free-model
+  filtering.
+- Residents receive one of nine illustrated character avatars on their
+  customizable color plate. Profile images now use a crop/move/zoom step and
+  upload a compressed square image.
+
+### Changed
+
+- New residents start with a seven-skill operational core plus focused skills
+  for their channel template instead of every built-in procedure. The complete
+  workspace catalog stays searchable, explicit and learned assignments are
+  preserved, and Skipper retains the full catalog.
+- Skipper fleet views distinguish the Files mirror quota from unknown guest
+  disk capacity and report validated live or last-known load, memory, and disk
+  pressure without asking the Captain to inspect a resident computer.
+- Global Threads is denser, workspace names are Unicode-safe and capped at 100
+  code points, long names wrap, usage is labeled as cumulative provider
+  telemetry, and unclear connection language was removed.
+- Starting with v0.0.9, 1Helm is licensed AGPL-3.0-only under Joseph Yaksich's
+  copyright. Releases through v0.0.8 retain their MIT license; `NOTICE`
+  records the exact boundary, and desktop packages retain both license files.
+- Contributions now require a Developer Certificate of Origin 1.1 sign-off on
+  every commit, with the certification and its non-assignment scope documented
+  in `CONTRIBUTING.md`.
+
+### Fixed
+
+- The channel-header Router button now mounts its live animation, latest-ten
+  request list, and external Base URL instead of opening an empty popover.
+- Web deployments now permit first-party microphone access for explicit
+  speech-to-text while continuing to deny camera and location access.
+- Feedback intake now has a durable central `/v1/feedback` path with bounded
+  attachments, privacy-scoped diagnostics, rate limiting, authentication for
+  the team inbox, and host-side retry behavior.
+- Provider activity periods and human account identities now reflect the
+  selected member's real events instead of an unfiltered all-time view with
+  generic “account” labels.
+
 ## [0.0.8] - 2026-07-24
 
 ### Fixed
@@ -221,7 +279,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.8...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.9...HEAD
+[0.0.9]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.9
 [0.0.8]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.8
 [0.0.7]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.7
 [0.0.6]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.6

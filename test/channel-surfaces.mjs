@@ -1,0 +1,151 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import test, { after } from "node:test";
+
+const root = resolve(import.meta.dirname, "..");
+const dataDir = mkdtempSync(join(tmpdir(), "1helm-channel-surfaces-"));
+process.env.CTRL_DATA_DIR = dataDir;
+process.env.NODE_ENV = "test";
+
+const agents = await import("../src/server/agents.ts");
+const database = await import("../src/server/db.ts");
+const { db, now, q, run, UPLOAD_DIR } = database;
+
+const addChannel = (id, name) => {
+  run("INSERT INTO channels (id,name,slug,kind,topic,purpose,status,created) VALUES (?,?,?,'channel','','','active',?)", id, name, name, now());
+  run(`INSERT INTO channel_computers
+    (channel_id,backend,machine_id,image,desired_state,observed_state,cpus,memory_bytes,disk_bytes,home_mount,provision_status,last_used,created,updated)
+    VALUES (?,'native',?,'','auto','running',1,1073741824,1073741824,'none','ready',?,?,?)`, id, `channel-surfaces-${id}`, now(), now(), now());
+  agents.ensureChannelWorkspace(id);
+};
+
+addChannel(901, "surface-test");
+
+after(() => {
+  db.close();
+  rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("note filenames are plain, bounded Markdown filenames", () => {
+  assert.equal(agents.validateNoteFilename("Launch Plan.md"), "Launch Plan.md");
+  for (const unsafe of ["", ".md", "plan.txt", "../plan.md", "notes/plan.md", " plan.md", "plan.md ", "plan\\one.md", "bad\0.md", `${"a".repeat(158)}.md`]) {
+    assert.throws(() => agents.validateNoteFilename(unsafe), /plain \.md filename/);
+  }
+});
+
+test("notes create, list, open, save, and rename in /workspace/notes with mirror changes", () => {
+  const created = agents.createChannelNote(901, "Launch.md", "# Launch\n");
+  assert.equal(created.name, "Launch.md");
+  assert.equal(created.content, "# Launch\n");
+  assert.equal(readFileSync(join(dataDir, "channels", "901", "workspace", "notes", "Launch.md"), "utf8"), "# Launch\n");
+  assert.deepEqual(agents.listChannelNotes(901).map(({ name }) => name), ["Launch.md"]);
+  assert.equal(agents.readChannelNote(901, "Launch.md").content, "# Launch\n");
+
+  const saved = agents.saveChannelNote(901, "Launch.md", "# Launch\n\nReady.\n");
+  assert.equal(saved.content, "# Launch\n\nReady.\n");
+  const renamed = agents.renameChannelNote(901, "Launch.md", "Release.md");
+  assert.equal(renamed.name, "Release.md");
+  assert.equal(renamed.content, "# Launch\n\nReady.\n");
+  assert.throws(() => agents.readChannelNote(901, "Launch.md"), /not found/);
+
+  const changes = q("SELECT relative_path,operation FROM channel_workspace_changes WHERE channel_id=? ORDER BY relative_path", 901);
+  assert.deepEqual(changes.filter((row) => String(row.relative_path).includes("notes/")).map((row) => ({ ...row })), [
+    { relative_path: "workspace/notes/Launch.md", operation: "delete" },
+    { relative_path: "workspace/notes/Release.md", operation: "upsert" },
+  ]);
+  assert.throws(() => agents.createChannelNote(901, "Release.md", "duplicate"), /already exists/);
+  assert.throws(() => agents.saveChannelNote(901, "Release.md", "x".repeat(1024 * 1024 + 1)), /limited to 1 MB/);
+});
+
+test("notes reject a symlinked notes directory", () => {
+  addChannel(902, "symlink-note-test");
+  const outside = join(dataDir, "outside-notes");
+  mkdirSync(outside);
+  symlinkSync(outside, join(dataDir, "channels", "902", "workspace", "notes"));
+  assert.throws(() => agents.listChannelNotes(902), /not a safe directory/);
+});
+
+test("workspace paths stay contained and entry names cannot become paths", () => {
+  for (const input of ["", ".", "/", "workspace", "/workspace"]) assert.equal(agents.normalizeWorkspaceDirectoryPath(input), "");
+  assert.equal(agents.normalizeWorkspaceDirectoryPath("/workspace/projects/site"), "projects/site");
+  assert.equal(agents.normalizeWorkspaceDirectoryPath("files/audio"), "files/audio");
+  for (const unsafe of ["../outside", "projects/../outside", "/etc", "projects//site", "projects\\site", "./projects", "projects/./site"]) {
+    assert.throws(() => agents.normalizeWorkspaceDirectoryPath(unsafe), /inside \/workspace/);
+  }
+  assert.equal(agents.validateWorkspaceEntryName("Release assets"), "Release assets");
+  for (const unsafe of ["", ".", "..", "../outside", "a/b", "a\\b", " padded", "padded ", "bad\nname"]) {
+    assert.throws(() => agents.validateWorkspaceEntryName(unsafe), /plain name/);
+  }
+});
+
+test("directory listing is navigable, direct-child only, folder-first, and symlink safe", () => {
+  const projects = agents.createWorkspaceDirectory(901, "", "projects");
+  const site = agents.createWorkspaceDirectory(901, "projects", "site");
+  writeFileSync(join(dataDir, "channels", "901", "workspace", "projects", "brief.txt"), "brief");
+  assert.equal(projects.path, "projects");
+  assert.equal(site.path, "projects/site");
+
+  const rootListing = agents.listWorkspaceDirectory(901, "");
+  assert.equal(rootListing.path, "");
+  assert.deepEqual(rootListing.files.map(({ path }) => path), ["files", "notes", "projects"]);
+  const projectListing = agents.listWorkspaceDirectory(901, "/workspace/projects");
+  assert.deepEqual(projectListing.files.map(({ path }) => path), ["projects/site", "projects/brief.txt"]);
+  assert.ok(!projectListing.files.some(({ path }) => path.includes("site/")), "nested descendants are not flattened into the current folder");
+
+  const escaped = join(dataDir, "channels", "901", "workspace", "projects", "outside");
+  symlinkSync("/etc", escaped);
+  assert.ok(!agents.listWorkspaceDirectory(901, "projects").files.some(({ name }) => name === "outside"));
+  assert.throws(() => agents.listWorkspaceDirectory(901, "projects/outside"), /not found/);
+  assert.throws(() => agents.createWorkspaceDirectory(901, "projects", "../outside"), /plain name/);
+  assert.throws(() => agents.createWorkspaceDirectory(901, "", "files"), /reserved/);
+
+  const mirrorChange = q("SELECT operation FROM channel_workspace_changes WHERE channel_id=? AND relative_path=?", 901, "workspace/projects")[0];
+  assert.equal(mirrorChange.operation, "upsert");
+});
+
+test("uploads target the selected folder, retain containment, and keep legacy files/ behavior", () => {
+  writeFileSync(join(UPLOAD_DIR, "a".repeat(40)), "one");
+  writeFileSync(join(UPLOAD_DIR, "b".repeat(40)), "two");
+  writeFileSync(join(UPLOAD_DIR, "c".repeat(40)), "three");
+  const nested = agents.importWorkspaceUpload(901, null, "a".repeat(40), "report.md", "human", "projects/site");
+  const duplicate = agents.importWorkspaceUpload(901, null, "b".repeat(40), "report.md", "human", "/workspace/projects/site");
+  const rootUpload = agents.importWorkspaceUpload(901, null, "c".repeat(40), "root.txt", "human", "");
+  writeFileSync(join(UPLOAD_DIR, "d".repeat(40)), "four");
+  const legacy = agents.importAttachment(901, null, "d".repeat(40), "recording.mp3", "human");
+  assert.equal(nested, "workspace/projects/site/report.md");
+  assert.equal(duplicate, "workspace/projects/site/report-2.md");
+  assert.equal(rootUpload, "workspace/root.txt");
+  assert.equal(legacy, "files/recording.mp3");
+  assert.equal(readFileSync(join(dataDir, "channels", "901", "workspace", "projects", "site", "report.md"), "utf8"), "one");
+  assert.equal(readFileSync(join(dataDir, "channels", "901", "files", "recording.mp3"), "utf8"), "four");
+  assert.equal(agents.importWorkspaceUpload(901, null, "e".repeat(40), "missing.txt", "human", "projects"), null);
+  assert.equal(agents.importWorkspaceUpload(901, null, "../ctrl-pane.db", "escape.txt", "human", "projects"), null);
+  assert.throws(() => agents.importWorkspaceUpload(901, null, "a".repeat(40), "bad.txt", "human", "../outside"), /inside \/workspace/);
+  assert.ok(q("SELECT relative_path FROM channel_workspace_changes WHERE channel_id=?", 901).some((row) => row.relative_path === "workspace/projects/site/report.md"));
+});
+
+test("agent attachment MIME recognizes MP3 and M4A audio", () => {
+  assert.equal(agents.attachmentMimeForName("voice.MP3"), "audio/mpeg");
+  assert.equal(agents.attachmentMimeForName("meeting.m4a"), "audio/mp4");
+  assert.equal(agents.attachmentMimeForName("archive.bin"), "application/octet-stream");
+});
+
+test("channel UI source exposes route-shaped Notes, folder navigation, audio preview, and compact global threads contracts", () => {
+  const channelSource = readFileSync(join(root, "src", "client", "channel.ts"), "utf8");
+  const apiSource = readFileSync(join(root, "src", "client", "api.ts"), "utf8");
+  const appSource = readFileSync(join(root, "src", "client", "app.ts"), "utf8");
+  assert.match(channelSource, /export function renderNotes\(/);
+  assert.match(channelSource, /\/api\/channels\/\$\{channelId\}\/notes/);
+  assert.match(channelSource, /\/files\?path=\$\{encodeURIComponent\(requestedPath\)\}/);
+  assert.match(channelSource, /\/files\/directories/);
+  assert.match(channelSource, /body: \{ \.\.\.upload, path: currentPath \}/);
+  assert.match(channelSource, /data(?:set)?: \{ globalThreadsList: "compact" \}/);
+  assert.match(apiSource, /blob\.type\.startsWith\("audio\/"\)/);
+  assert.match(apiSource, /document\.createElement\("audio"\)/);
+  assert.match(appSource, /\["notes", "Notes"\]/, "Notes is a visible channel surface");
+  assert.match(appSource, /data(?:set)?: \{ notesHeader: "" \}/, "Notes has a channel-header action");
+  assert.match(appSource, /onclick: openNotesFromHeader/, "the header action opens Notes beside chat rather than navigating away");
+  assert.match(appSource, /renderNotes\(notesBox, S\.channelId, closeDockedNotes\)/, "the Notes surface mounts in the shared right-hand dock with a close action");
+});

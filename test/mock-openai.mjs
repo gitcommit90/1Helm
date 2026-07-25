@@ -189,7 +189,7 @@ createServer(async (req, res) => {
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_agent_1", type: "function", function: { name: "call_agent", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else if (wantsScheduleFollowup) {
-      const args = { delay_seconds: 30, reason: "Check whether the async download finished and report Downloaded or Blocked." };
+      const args = { delay_seconds: /browser follow-up countdown/i.test(latestUser) ? 300 : 30, reason: "Check whether the async download finished and report Downloaded or Blocked." };
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "schedule_followup_1", type: "function", function: { name: "schedule_followup", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else if (wantsAutonomousInstall) {

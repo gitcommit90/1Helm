@@ -245,6 +245,7 @@ test("release packaging is fail-closed and records stable product identity", asy
     await rm(iconRoot, { recursive: true, force: true });
   }
   assert.match(source, /CFBundleIconFile", "-string", "1Helm\.icns/);
+  assert.match(source, /NSMicrophoneUsageDescription/, "the signed macOS bundle explains opt-in speech-to-text microphone use");
   assert.match(source, /missing the 1Helm product icon/);
   assert.match(source, /const CLOUDFLARED_VERSION = "2026\.3\.0"/);
   assert.match(source, /2aae4f69b0fc1c671b8353b4f594cbd902cd1e360c8eed2b8cad4602cb1546fb/);

@@ -9,13 +9,13 @@ import puppeteer from "puppeteer";
 
 const root = process.cwd();
 const dataDir = join(root, ".native-test-data", `feedback-browser-${process.pid}`);
-const browserExecutable = () => {
+const browserExecutable = async () => {
   const configured = process.env.PUPPETEER_EXECUTABLE_PATH;
   if (configured) {
     try { accessSync(configured, fsConstants.X_OK); return configured; } catch { /* use discovery */ }
   }
   try {
-    const bundled = puppeteer.executablePath();
+    const bundled = await puppeteer.executablePath();
     accessSync(bundled, fsConstants.X_OK);
     return bundled;
   } catch { /* no bundled browser */ }
@@ -24,7 +24,7 @@ const browserExecutable = () => {
   }
   return null;
 };
-const executablePath = browserExecutable();
+const executablePath = await browserExecutable();
 const freePort = () => new Promise((resolve, reject) => {
   const server = createServer();
   server.once("error", reject);
@@ -144,11 +144,11 @@ test("Feedback button saves a real report and the admin inbox shows it", {
   await page.waitForSelector('article[data-skill-slug="incident-postmortem"]', { timeout: 10_000 });
 
   // Assignment must likewise repaint an already-open channel Settings surface.
-  const main = (await api("/api/channels", {}, token)).channels.find((channel) => channel.name === "main" && channel.kind === "channel");
-  assert.ok(main?.agent?.id);
-  await page.goto(`${base}/c/main/settings`, { waitUntil: "networkidle0" });
+  const liveChannel = (await api("/api/channels", { body: { name: "Live skills", purpose: "Exercise live skill assignment invalidation." } }, token)).channel;
+  assert.ok(liveChannel?.agent?.id);
+  await page.goto(`${base}/c/${liveChannel.slug}/settings`, { waitUntil: "networkidle0" });
   await page.waitForSelector("[data-assigned-skills]");
   assert.equal(await page.$('[data-assigned-skill="incident-postmortem"]'), null);
-  await api(`/api/agents/${main.agent.id}/skills`, { body: { skill: "incident-postmortem", reason: "Live invalidation browser test." } }, token);
+  await api(`/api/agents/${liveChannel.agent.id}/skills`, { body: { skill: "incident-postmortem", reason: "Live invalidation browser test." } }, token);
   await page.waitForSelector('[data-assigned-skill="incident-postmortem"]', { timeout: 10_000 });
 });

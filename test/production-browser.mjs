@@ -134,7 +134,7 @@ try {
   await page.waitForSelector('.modal-overlay input[autocomplete="organization"]');
   ok(await page.$eval('.modal-overlay input[autocomplete="organization"]', (input) => Boolean(input.value)) && Boolean(await page.$('.modal-overlay select option[value="ocean"]')), "Admin UI renders editable workspace name, photo controls, and theme options");
   await page.evaluate(() => [...document.querySelectorAll(".modal-overlay button")].find((button) => button.textContent.trim() === "Skills")?.click());
-  await page.waitForFunction(() => document.querySelector(".modal-overlay")?.textContent.includes("Installed arsenal"));
+  await page.waitForFunction(() => document.querySelector(".modal-overlay")?.textContent.includes("Workspace skill catalog"));
   const skillSurface = await page.$eval(".modal-overlay", (dialog) => dialog.textContent || "");
   ok(/complete procedures/.test(skillSurface) && /SkillsMD library/.test(skillSurface), "Skills UI exposes the complete shipped arsenal and focused SkillsMD catalog");
   await page.evaluate(() => [...document.querySelectorAll(".modal-overlay button")].find((button) => button.textContent.trim() === "Domains")?.click());

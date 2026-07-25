@@ -32,12 +32,35 @@ const isCustom = (provider: RoutingProvider): boolean => ["custom", "openai-comp
 const routeMember = (provider: RoutingProvider, model: string): RoutingComboMember => isCustom(provider)
   ? { providerId: provider.id, model }
   : { providerType: providerFamily(provider), model };
+type DiscoveredModel = { id: string; name?: string; free?: boolean };
+type RoutingActivity = { type?: string; request?: Record<string, unknown>; active?: unknown[] };
 
 let liveRoutingActivity: unknown = null;
 const routingActivityListeners = new Set<(activity: unknown) => void>();
+let closeRoutingPopover: (() => void) | null = null;
 export function pushRoutingActivity(activity: unknown): void {
   liveRoutingActivity = activity;
   for (const listener of routingActivityListeners) listener(activity);
+}
+
+function applyRoutingActivity(state: RoutingState, activity: unknown): void {
+  const event = activity && typeof activity === "object" ? activity as RoutingActivity : {};
+  state.recentActivity = [activity, ...(state.recentActivity || []).filter((item) => item !== activity)].slice(0, 30);
+  if (Array.isArray(event.active)) state.activeRequests = event.active;
+}
+
+function latestRequests(state: RoutingState, limit = 10): Record<string, unknown>[] {
+  const events = Array.isArray(state.recentActivity) ? state.recentActivity as RoutingActivity[] : [];
+  const requests = [
+    ...events.map((event) => event?.request).filter((request): request is Record<string, unknown> => !!request && typeof request === "object"),
+    ...(Array.isArray(state.activeRequests) ? state.activeRequests.filter((request): request is Record<string, unknown> => !!request && typeof request === "object") : []),
+  ];
+  const seen = new Set<string>();
+  return requests.filter((request) => {
+    const key = String(request.id || `${request.startedAt || ""}:${request.model || ""}`);
+    if (!key || seen.has(key)) return false;
+    seen.add(key); return true;
+  }).slice(0, limit);
 }
 
 async function copyText(text: string): Promise<void> {
@@ -64,6 +87,61 @@ function empty(title: string, copy: string): HTMLElement {
 
 function accountName(account: RoutingProvider): string {
   return account.email || account.profileName || account.name || account.accountAlias || account.type;
+}
+
+async function openModelRefresh(account: RoutingProvider, refresh: () => Promise<void>): Promise<void> {
+  const modal = h("div", { class: "modal-overlay fixed inset-0 z-[70] grid place-items-end bg-black/60 sm:place-items-center sm:p-6" });
+  const body = h("div", { class: "space-y-3" }, h("p", { class: "py-6 text-center text-sm text-muted" }, "Asking the provider for its current model catalog…"));
+  const status = statusLine();
+  const close = (): void => modal.remove();
+  modal.onclick = (event: MouseEvent) => { if (event.target === modal) close(); };
+  const panel = h("section", { class: "card mobile-sheet flex max-h-[85vh] w-full max-w-2xl flex-col rounded-b-none p-5 sm:rounded-xl sm:p-6", dataset: { modelRefresh: account.id } },
+    h("div", { class: "mb-4 flex items-start justify-between gap-4" },
+      h("div", {}, h("div", { class: "eyebrow text-accent" }, "Preview only"), h("h2", { class: "font-display mt-1 text-2xl text-fg" }, `Refresh ${accountName(account)} models`), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Choose what this account should offer. Nothing changes until you confirm.")),
+      h("button", { class: "btn-ghost", onclick: close }, icon("x"))),
+    body, status);
+  modal.append(panel); document.body.append(modal);
+  const result: { ok: boolean; previewToken?: string; models?: DiscoveredModel[]; error?: string } = await routingAction<{ ok: boolean; previewToken?: string; models?: DiscoveredModel[]; error?: string }>("app:preview-provider-models", { providerId: account.id }).catch((error: Error) => ({ ok: false, error: error.message }));
+  if (!modal.isConnected) return;
+  clear(body);
+  if (!result.ok || !result.previewToken || !result.models?.length) {
+    body.append(empty("Automatic discovery is unavailable", result.error || "Add an exact model ID manually from this account's expanded controls."));
+    body.append(h("button", { class: "btn-subtle min-h-10 w-full text-xs", onclick: close }, "Back to manual model ID"));
+    return;
+  }
+  const models = result.models;
+  const previouslyEnabled = new Set((account.models || []).filter((model) => model.enabled !== false).map((model) => model.id));
+  const selected = new Set(models.filter((model) => previouslyEnabled.has(model.id)).map((model) => model.id));
+  const list = h("div", { class: "routing-telemetry-list max-h-[42vh] overflow-auto" });
+  let freeOnly = false;
+  const hasFreeMetadata = account.type === "openrouter" && models.some((model) => model.free !== undefined);
+  const redraw = (): void => {
+    clear(list);
+    for (const model of models.filter((item) => !freeOnly || item.free === true)) {
+      const input = h("input", { type: "checkbox", checked: selected.has(model.id), class: "accent-accent", dataset: { discoveredModel: model.id } }) as HTMLInputElement;
+      input.onchange = () => { if (input.checked) selected.add(model.id); else selected.delete(model.id); };
+      list.append(h("label", { class: "routing-model-row px-3" },
+        h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block truncate text-sm font-semibold text-fg" }, model.name || model.id), h("span", { class: "block truncate font-mono text-[10px] text-faint" }, model.id)),
+        model.free === true ? h("span", { class: "chip text-[10px] text-ok" }, "Free") : null, input));
+    }
+    if (!list.childElementCount) list.append(h("p", { class: "p-5 text-center text-sm text-muted" }, "No free models were reported in this catalog."));
+  };
+  const selectVisible = (enabled: boolean): void => {
+    for (const model of models.filter((item) => !freeOnly || item.free === true)) enabled ? selected.add(model.id) : selected.delete(model.id);
+    redraw();
+  };
+  const filters = h("div", { class: "flex flex-wrap items-center gap-2" },
+    h("button", { class: "btn-ghost text-xs", dataset: { discoveredAll: "on" }, onclick: () => selectVisible(true) }, "Select all"),
+    h("button", { class: "btn-ghost text-xs", dataset: { discoveredAll: "off" }, onclick: () => selectVisible(false) }, "Select none"),
+    hasFreeMetadata ? h("button", { class: "btn-subtle ml-auto text-xs", dataset: { freeOnly: "" }, onclick: (event: Event) => { freeOnly = !freeOnly; (event.currentTarget as HTMLElement).classList.toggle("border-accent", freeOnly); (event.currentTarget as HTMLElement).textContent = freeOnly ? "Showing free only" : "Free only"; redraw(); } }, "Free only") : account.type === "openrouter" ? h("span", { class: "ml-auto text-xs text-muted" }, "Free pricing metadata unavailable") : null);
+  const confirm = h("button", { class: "btn-primary min-h-10 text-xs", dataset: { confirmModels: "" }, onclick: async () => {
+    confirm.disabled = true; status.textContent = "Applying the confirmed model selection…";
+    const applied = await routingAction<{ ok: boolean; error?: string }>("app:apply-provider-models", { providerId: account.id, previewToken: result.previewToken, modelIds: [...selected] }).catch((error: Error) => ({ ok: false, error: error.message }));
+    if (!applied.ok) { confirm.disabled = false; status.textContent = applied.error || "The model selection could not be applied."; return; }
+    close(); await refresh();
+  } }, "Confirm model selection") as HTMLButtonElement;
+  redraw();
+  add(body, filters, list, h("p", { class: "text-xs leading-5 text-muted" }, `${models.length} models discovered. Models absent from this provider response, including manually added IDs, are preserved.`), h("div", { class: "flex justify-end gap-2" }, h("button", { class: "btn-ghost text-xs", onclick: close }, "Cancel"), confirm));
 }
 
 function accountCard(account: RoutingProvider, refresh: () => Promise<void>, confirm: Dialog, expandedAccounts: Set<string>): HTMLElement {
@@ -143,6 +221,7 @@ function accountCard(account: RoutingProvider, refresh: () => Promise<void>, con
         : h("span", { class: "mr-auto chip text-[10px]" }, "Shared by a teammate"),
       account.mine !== false && ["chatgpt", "claude", "antigravity", "xai", "codex"].includes(account.type)
         ? h("button", { class: "btn-subtle text-xs", onclick: () => { void openOauth(account.type === "codex" ? "chatgpt" : account.type, refresh, account.id); } }, "Reconnect") : null,
+      account.mine === false ? null : h("button", { class: "btn-subtle text-xs", dataset: { refreshModels: account.id }, onclick: () => { void openModelRefresh(account, refresh); } }, "Refresh models"),
       account.mine === false ? null : h("button", { class: "btn-danger text-xs", onclick: async () => {
         if (!(await confirm(`Disconnect ${accountName(account)}? Existing routes will keep working if another account for this provider remains.`))) return;
         await routingAction("app:remove-provider", account.id); await refresh();
@@ -238,29 +317,98 @@ function familyRouteMember(familyId: string, model: string, state: RoutingState)
 function routingFabric(state: RoutingState): HTMLElement {
   const families = [...new Set((state.providers || []).filter((p) => p.enabled !== false).map((p) => isCustom(p) ? "custom" : providerFamily(p)))].slice(0, 8);
   const nodes = families.length ? families : ["chatgpt", "claude", "openrouter"];
-  if (liveRoutingActivity) state.recentActivity = [liveRoutingActivity, ...(state.recentActivity || []).filter((item) => item !== liveRoutingActivity)].slice(0, 30);
+  if (liveRoutingActivity) applyRoutingActivity(state, liveRoutingActivity);
   const rawEvents = Array.isArray(state.recentActivity) ? state.recentActivity as Array<Record<string, unknown>> : [];
   const latest = rawEvents[0] || ((state.activeRequests || [])[0] ? { type: "routed", request: (state.activeRequests || [])[0] } : null);
   const request = latest?.request && typeof latest.request === "object" ? latest.request as Record<string, unknown> : null;
   const activeFamily = String(request?.providerType || "").replace(/^codex$/, "chatgpt");
   const inFlight = Array.isArray(state.activeRequests) ? state.activeRequests.length : 0;
-  const pyramid = h("div", { class: "routing-pyramid", role: "img", "aria-label": "Live routing flow from requests in flight through 1Helm to enabled providers" },
-    h("div", { class: `routing-pyramid-tier routing-pyramid-requests ${inFlight ? "is-live" : ""}` },
-      h("span", { class: "routing-pyramid-kicker" }, "Requests in flight"),
-      h("strong", {}, String(inFlight)),
-      request ? h("span", { class: "truncate text-xs opacity-80" }, String(request.model || "request")) : h("span", { class: "text-xs opacity-70" }, "waiting")),
-    h("div", { class: `routing-pyramid-arrow ${request ? "is-live" : ""}`, "aria-hidden": "true" }, "↓"),
-    h("div", { class: `routing-pyramid-tier routing-pyramid-helm ${request ? "is-live" : ""}` }, h("span", { class: "routing-pyramid-kicker" }, "1Helm"), h("strong", {}, "Route · pool · fail over")),
-    h("div", { class: `routing-pyramid-arrow ${request ? "is-live" : ""}`, "aria-hidden": "true" }, "↓"),
-    h("div", { class: "routing-pyramid-tier routing-pyramid-providers" },
-      h("span", { class: "routing-pyramid-kicker" }, "Providers"),
-      h("div", { class: "flex flex-wrap justify-center gap-2" }, ...nodes.map((id) => h("span", { class: `routing-fabric-chip ${activeFamily === id ? "border-accent text-accent is-live" : ""}` }, providerMark(id, 14), familyLabel(id, state))))));
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 720 124"); svg.setAttribute("class", "routing-fabric-svg");
+  svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Live dotted flow from requests through the 1Helm Router to the routed provider");
+  const svgEl = <K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string>): SVGElementTagNameMap[K] => {
+    const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [key, value] of Object.entries(attrs)) element.setAttribute(key, value);
+    return element;
+  };
+  const path = (d: string, live: boolean): SVGPathElement => svgEl("path", { d, class: `routing-fabric-path ${live ? "is-live" : "is-idle"}` });
+  svg.append(path("M 112 62 C 205 62, 226 62, 302 62", inFlight > 0));
+  const providerPoints = nodes.map((id, index) => ({ id, y: nodes.length === 1 ? 62 : 14 + index * (96 / (nodes.length - 1)) }));
+  for (const point of providerPoints) svg.append(path(`M 418 62 C 486 62, 500 ${point.y}, 570 ${point.y}`, inFlight > 0 && (!activeFamily || point.id === activeFamily)));
+  svg.append(svgEl("rect", { x: "12", y: "38", width: "100", height: "48", rx: "14", class: "routing-fabric-node" }));
+  const requestTitle = svgEl("text", { x: "62", y: "57", "text-anchor": "middle", class: "routing-fabric-hub-label" }); requestTitle.textContent = "REQUESTS"; svg.append(requestTitle);
+  const requestCount = svgEl("text", { x: "62", y: "73", "text-anchor": "middle", class: "routing-fabric-hub-label" }); requestCount.textContent = inFlight ? `${inFlight} IN FLIGHT` : "READY"; svg.append(requestCount);
+  svg.append(svgEl("rect", { x: "302", y: "33", width: "116", height: "58", rx: "18", class: "routing-fabric-hub" }));
+  const routerTitle = svgEl("text", { x: "360", y: "57", "text-anchor": "middle", class: "routing-fabric-hub-label" }); routerTitle.textContent = "1HELM ROUTER"; svg.append(routerTitle);
+  const routerStatus = svgEl("text", { x: "360", y: "74", "text-anchor": "middle", class: "routing-fabric-hub-label" }); routerStatus.textContent = inFlight ? "ROUTING LIVE" : "POOL · FAIL OVER"; svg.append(routerStatus);
+  for (const point of providerPoints) {
+    svg.append(svgEl("circle", { cx: "586", cy: String(point.y), r: "11", class: "routing-fabric-node" }));
+    const label = svgEl("text", { x: "605", y: String(point.y + 3), class: "routing-fabric-hub-label" }); label.textContent = familyLabel(point.id, state).slice(0, 16).toUpperCase(); svg.append(label);
+  }
+  const flow = h("div", { class: "min-w-0" }, svg,
+    h("div", { class: "routing-fabric-legend" },
+      h("span", { class: `routing-fabric-chip ${inFlight ? "is-live" : ""}` }, `${inFlight || 0} active`),
+      ...nodes.map((id) => h("span", { class: `routing-fabric-chip ${activeFamily === id ? "border-accent text-accent is-live" : ""}` }, providerMark(id, 14), familyLabel(id, state)))));
   const status = !request
     ? h("p", { class: "mt-2 text-center text-xs text-muted" }, "Waiting for the next routed request…")
     : h("div", { class: "mt-2 grid gap-1 rounded-lg border border-line bg-surface px-3 py-2 text-xs sm:grid-cols-[1fr_auto]" },
       h("div", { class: "min-w-0" }, h("span", { class: "font-semibold text-fg" }, String(request.model || "Request")), h("span", { class: "ml-2 text-muted" }, request.providerName ? `→ ${String(request.providerName)}` : latest?.type === "started" ? "choosing a destination…" : "routing…")),
       h("span", { class: `font-mono ${latest?.type === "finished" && Number(request.status || 200) >= 400 ? "text-danger" : "text-accent"}` }, latest?.type === "finished" ? `${String(request.outcome || "finished")} · ${Math.max(0, Number(request.finishedAt || Date.now()) - Number(request.startedAt || Date.now()))}ms` : String(latest?.type || "active")));
-  return h("div", { class: "routing-fabric", title: "Live requests routed by this workspace" }, pyramid, status);
+  return h("div", { class: "routing-fabric", title: "Live requests routed by this workspace" }, flow, status);
+}
+
+/** Compact, credential-free live router surface for the channel header. */
+export async function openRoutingPopover(eventOrAnchor: Event | Element): Promise<void> {
+  const event = eventOrAnchor instanceof Event ? eventOrAnchor : null;
+  event?.preventDefault(); event?.stopPropagation();
+  const anchor: Element | null = event
+    ? (event.currentTarget instanceof Element ? event.currentTarget : event.target instanceof Element ? event.target : null)
+    : eventOrAnchor instanceof Element ? eventOrAnchor : null;
+  closeRoutingPopover?.();
+  const state = await api<RoutingState>("/api/routing/state");
+  const rect = anchor?.getBoundingClientRect();
+  const width = Math.min(420, Math.max(300, window.innerWidth - 24));
+  const left = rect ? Math.min(window.innerWidth - width - 12, Math.max(12, rect.right - width)) : window.innerWidth - width - 12;
+  const top = rect ? Math.min(window.innerHeight - 180, rect.bottom + 8) : 48;
+  const popover = h("aside", { class: "card fixed z-[80] max-h-[min(80vh,44rem)] overflow-auto p-3 shadow-xl", style: `width:${width}px;left:${left}px;top:${Math.max(8, top)}px`, dataset: { routingPopover: "" }, role: "dialog", "aria-label": "Live 1Helm Router activity" });
+  const content = h("div");
+  let listener: ((activity: unknown) => void) | null = null;
+  const close = (): void => {
+    if (listener) routingActivityListeners.delete(listener);
+    document.removeEventListener("pointerdown", outside, true);
+    document.removeEventListener("keydown", keydown, true);
+    popover.remove();
+    if (closeRoutingPopover === close) closeRoutingPopover = null;
+  };
+  const outside = (outsideEvent: Event): void => { if (!popover.contains(outsideEvent.target as Node) && !anchor?.contains(outsideEvent.target as Node)) close(); };
+  const keydown = (keyEvent: KeyboardEvent): void => { if (keyEvent.key === "Escape") close(); };
+  const draw = (): void => {
+    clear(content);
+    const requests = latestRequests(state, 10);
+    const list = h("div", { class: "routing-telemetry-list", dataset: { routingLatest: "10" } });
+    for (const request of requests) {
+      const status = Number(request.status || 0);
+      const finished = Number(request.finishedAt || 0);
+      const at = finished || Number(request.routedAt || request.startedAt || 0);
+      list.append(h("div", { class: "routing-event" },
+        h("span", { class: `routing-event-dot ${status >= 400 ? "is-error" : ""}` }),
+        h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block truncate text-xs font-semibold text-fg" }, String(request.model || "Request")), h("span", { class: "block truncate text-[10px] text-muted" }, String(request.providerName || request.providerType || (finished ? request.outcome || "Completed" : "Choosing provider…")))),
+        h("time", { class: "font-mono text-[10px] text-faint" }, at ? timeLabel(at) : "live")));
+    }
+    const endpoint = publicEndpoint();
+    add(content,
+      h("div", { class: "mb-2 flex items-start justify-between gap-3" }, h("div", {}, h("div", { class: "eyebrow text-accent" }, "Live model fabric"), h("h2", { class: "font-display mt-0.5 text-lg text-fg" }, "1Helm Router")), h("button", { class: "btn-ghost p-2", onclick: close }, icon("x", 14))),
+      routingFabric(state),
+      h("div", { class: "mb-2 flex items-center justify-between gap-2" }, h("strong", { class: "text-xs text-fg" }, "Latest 10 requests"), h("span", { class: "font-mono text-[10px] text-muted" }, `${requests.length} shown`)),
+      requests.length ? list : empty("Waiting for traffic", "Real routed requests will appear here live."),
+      h("div", { class: "mt-3 rounded-lg border border-line bg-raised/40 p-3" }, h("div", { class: "mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted" }, "Base URL"), h("div", { class: "flex items-center gap-2" }, h("code", { class: "min-w-0 flex-1 truncate text-xs text-fg" }, endpoint), h("button", { class: "btn-subtle shrink-0 text-xs", dataset: { copyRoutingBase: "" }, onclick: () => { void copyText(endpoint); } }, "Copy")), h("p", { class: "mt-2 text-xs leading-5 text-muted" }, "API keys for the router are stored in Settings → Providers → Endpoints.")));
+  };
+  popover.append(content);
+  draw(); document.body.append(popover);
+  closeRoutingPopover = close;
+  listener = (activity) => { if (!popover.isConnected) { routingActivityListeners.delete(listener!); return; } applyRoutingActivity(state, activity); draw(); };
+  routingActivityListeners.add(listener);
+  setTimeout(() => { document.addEventListener("pointerdown", outside, true); document.addEventListener("keydown", keydown, true); }, 0);
 }
 
 function sourceCatalog(state: RoutingState, refresh: () => Promise<void>, confirm: Dialog, expandedAccounts: Set<string>, expandedGroups: Set<string>): HTMLElement {
@@ -319,6 +467,16 @@ function keyedForm(id: string, label: string, preset: RoutingState["keyedPresets
   let testedFingerprint: string | null = null;
   let testedSaveFingerprint: string | null = null;
   let testedModels: Array<{ id: string; name?: string }> | null = null;
+  let freeOnly = false;
+  const preview = h("div", { class: "hidden routing-telemetry-list max-h-60 overflow-auto", dataset: { keyedModelPreview: "" } });
+  const freeFilter = h("button", { class: "hidden btn-ghost text-xs", dataset: { keyedFreeOnly: "" } }, "Free only") as HTMLButtonElement;
+  const drawPreview = (): void => {
+    clear(preview);
+    const models = (testedModels || []) as DiscoveredModel[];
+    for (const item of models.filter((candidate) => !freeOnly || candidate.free === true)) preview.append(h("div", { class: "routing-model-row px-3" }, h("span", { class: "min-w-0 flex-1 truncate text-xs text-fg" }, item.name || item.id), item.free === true ? h("span", { class: "chip text-[10px] text-ok" }, "Free") : null));
+    preview.classList.toggle("hidden", !models.length);
+  };
+  freeFilter.onclick = () => { freeOnly = !freeOnly; freeFilter.textContent = freeOnly ? "Showing free only" : "Free only"; freeFilter.classList.toggle("border-accent", freeOnly); drawPreview(); };
   let testGeneration = 0;
   let testing = false;
   let adding = false;
@@ -327,6 +485,11 @@ function keyedForm(id: string, label: string, preset: RoutingState["keyedPresets
     testedFingerprint = null;
     testedSaveFingerprint = null;
     testedModels = null;
+    freeOnly = false;
+    clear(preview);
+    preview.classList.add("hidden");
+    freeFilter.classList.add("hidden");
+    freeFilter.textContent = "Free only";
     save.disabled = true;
     if (status.textContent) status.textContent = message;
   };
@@ -351,6 +514,9 @@ function keyedForm(id: string, label: string, preset: RoutingState["keyedPresets
     testedSaveFingerprint = currentSaveFingerprint;
     testedModels = result.models || [];
     status.textContent = `${testedModels.length} model${testedModels.length === 1 ? "" : "s"} ready.`;
+    const discovered = testedModels as DiscoveredModel[];
+    freeFilter.classList.toggle("hidden", id !== "openrouter" || !discovered.some((item) => item.free !== undefined));
+    drawPreview();
     save.disabled = false;
   } }, "Test connection");
   const save = h("button", { class: "btn-primary text-xs", disabled: true, dataset: { keyedAction: "add" }, onclick: async () => {
@@ -381,6 +547,7 @@ function keyedForm(id: string, label: string, preset: RoutingState["keyedPresets
   add(wrap,
     h("div", { class: "mb-2 flex items-center justify-between" }, h("strong", { class: "text-sm text-fg" }, `New ${label} connection`), h("button", { class: "btn-ghost", onclick: () => wrap.remove() }, icon("x", 14))),
     h("div", { class: "grid gap-2 sm:grid-cols-2" }, name, baseUrl, preset?.needsAccountId ? accountId : null, key, model),
+    h("div", { class: "mt-2 flex justify-end" }, freeFilter), preview,
     h("div", { class: "mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, h("div", { class: "flex gap-2" }, test, save)));
   return wrap;
 }
@@ -667,7 +834,7 @@ export function routingPanel(isAdmin: boolean, confirm: Dialog): HTMLElement {
       shellActivityListener = (activity) => {
         if (!shell.isConnected) { routingActivityListeners.delete(shellActivityListener!); return; }
         if (!state || current !== "sources") return;
-        state.recentActivity = [activity, ...(state.recentActivity || [])].slice(0, 30);
+        applyRoutingActivity(state, activity);
         const old = content.querySelector(".routing-fabric");
         if (old) old.replaceWith(routingFabric(state));
       };

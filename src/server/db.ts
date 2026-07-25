@@ -1,8 +1,13 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BUILTIN_SKILLS } from "./builtin-skills.ts";
+
+export const UNIVERSAL_RESIDENT_SKILL_SLUGS = [
+  "outcome-ownership", "blocker-resolution", "skipper-escalation", "capability-discovery",
+  "durable-memory", "workspace-artifacts", "quality-verification",
+] as const;
 
 export const DATA_DIR = process.env.CTRL_DATA_DIR || join(process.cwd(), "data");
 export const UPLOAD_DIR = join(DATA_DIR, "uploads");
@@ -60,6 +65,11 @@ export function q1(sql: string, ...params: unknown[]): Row | undefined {
 export function run(sql: string, ...params: unknown[]): { lastInsertRowid: number; changes: number } {
   const r = db.prepare(sql).run(...(params as never[]));
   return { lastInsertRowid: Number(r.lastInsertRowid), changes: Number(r.changes) };
+}
+
+/** Workspace names are capped by Unicode code points, never UTF-16 code units. */
+export function normalizeWorkspaceName(value: unknown): string {
+  return Array.from(String(value ?? "").trim()).slice(0, 100).join("").trim();
 }
 
 /** Personal #main is Skipper's protected authority channel. It deliberately
@@ -572,6 +582,7 @@ export function migrate(): void {
   END;
   `);
   addColumn("agents", "provider_inherited", "provider_inherited INTEGER NOT NULL DEFAULT 1");
+  addColumn("agents", "template_slug", "template_slug TEXT NOT NULL DEFAULT 'general'");
   addColumn("model_prefs", "provider_id", "provider_id INTEGER");
   db.exec(`
   CREATE TABLE IF NOT EXISTS agent_progress (
@@ -685,6 +696,10 @@ export function migrate(): void {
     updated INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_channel_computers_state ON channel_computers(desired_state, observed_state, provision_status);
+  CREATE TRIGGER IF NOT EXISTS trg_channel_computer_ordinary
+  BEFORE INSERT ON channel_computers
+  WHEN (SELECT kind FROM channels WHERE id=NEW.channel_id) <> 'channel'
+  BEGIN SELECT RAISE(ABORT, 'computers belong only to agent channels'); END;
   CREATE TABLE IF NOT EXISTS channel_computer_obligations (
     channel_id INTEGER NOT NULL REFERENCES channel_computers(channel_id) ON DELETE CASCADE,
     kind TEXT NOT NULL,
@@ -924,7 +939,7 @@ export function migrate(): void {
     const platformBackend = process.platform === "darwin" ? "apple" : process.platform === "win32" ? "wsl" : "lxc";
     const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || platformBackend);
     const backend = ["apple", "lxc", "wsl", "native", "mock"].includes(configuredBackend) ? configuredBackend : platformBackend;
-    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.8");
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.9");
     // Earlier Linux/Windows releases persisted the compatibility `native`
     // seam into every channel row. A production host update must actually
     // move those rows onto the platform isolation backend; changing the unit's
@@ -1005,10 +1020,39 @@ export function migrate(): void {
       if (String(skill.slug) === "image-generation") continue; // gated: only when ChatGPT OAuth + Providers toggle
       run("INSERT OR IGNORE INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) VALUES (?,?,?,'Skipper has the full workspace skill arsenal.',1,?)", skipper.id, skill.id, skipper.id, now());
     }
-    for (const agent of q("SELECT a.id,p.purpose FROM agents a LEFT JOIN agent_profiles p ON p.agent_id=a.id WHERE a.kind='channel' AND a.status<>'deleted'")) {
-      for (const slug of BUILTIN_SKILLS.map((entry) => entry.slug)) {
+    for (const agent of q(`SELECT a.id,a.template_slug,p.purpose,ac.channel_id FROM agents a
+      LEFT JOIN agent_profiles p ON p.agent_id=a.id LEFT JOIN agent_channels ac ON ac.agent_id=a.id
+      WHERE a.kind='channel' AND a.status<>'deleted'`)) {
+      const profilePath = join(DATA_DIR, "channels", String(agent.channel_id || ""), "profile", "agent.json");
+      if (existsSync(profilePath)) {
+        try {
+          const profile = JSON.parse(readFileSync(profilePath, "utf8")) as { template?: unknown };
+          const templateSlug = String(profile.template || "").trim();
+          if (templateSlug && q1("SELECT 1 FROM agent_templates WHERE slug=? AND status='active'", templateSlug)) {
+            agent.template_slug = templateSlug;
+            run("UPDATE agents SET template_slug=? WHERE id=?", templateSlug, agent.id);
+          }
+        } catch { /* malformed legacy profile falls back to the general template */ }
+      }
+      const template = q1("SELECT skill_slugs FROM agent_templates WHERE slug=? AND status='active'", agent.template_slug || "general")
+        || q1("SELECT skill_slugs FROM agent_templates WHERE slug='general'");
+      let templateSkills: string[] = [];
+      try {
+        const parsed = JSON.parse(String(template?.skill_slugs || "[]"));
+        if (Array.isArray(parsed)) templateSkills = parsed.map(String);
+      } catch { /* invalid legacy template metadata falls back to the universal core */ }
+      const wanted = new Set([...UNIVERSAL_RESIDENT_SKILL_SLUGS, ...templateSkills]);
+      // Remove only historical automatic grants. Explicit Captain/Skipper,
+      // catalog, and resident-created grants remain durable.
+      for (const assignment of q(`SELECT ask.skill_id,s.slug FROM agent_skills ask JOIN skills s ON s.id=ask.skill_id
+        WHERE ask.agent_id=? AND s.source='shipped' AND s.slug<>'image-generation'
+          AND (ask.reason='Part of the safe built-in resident arsenal.'
+            OR ask.reason LIKE 'Built-in arsenal for the %; full procedures are available on demand.')`, agent.id)) {
+        if (!wanted.has(String(assignment.slug))) run("DELETE FROM agent_skills WHERE agent_id=? AND skill_id=?", agent.id, assignment.skill_id);
+      }
+      for (const slug of wanted) {
         const skill = q1("SELECT id FROM skills WHERE slug=?", slug);
-        if (skill) run("INSERT OR IGNORE INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) VALUES (?,?,?,'Part of the safe built-in resident arsenal.',1,?)", agent.id, skill.id, skipper?.id ?? null, now());
+        if (skill) run("INSERT OR IGNORE INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) VALUES (?,?,?,'Built-in arsenal for the resident template; full procedures are available on demand.',1,?)", agent.id, skill.id, skipper?.id ?? null, now());
       }
     }
     if (tableColumns("bot_skills").length && tableColumns("skills_legacy_v1").length) {
@@ -1029,6 +1073,18 @@ export function migrate(): void {
   });
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_slug ON channels(slug) WHERE status<>'deleted';");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_personal_main_owner ON channels(personal_main_owner_id) WHERE personal_main_owner_id IS NOT NULL AND status<>'deleted';");
+  const currentWorkspaceName = normalizeWorkspaceName(q1("SELECT name FROM workspace WHERE id=1")?.name) || "My Workspace";
+  run("UPDATE workspace SET name=? WHERE id=1 AND name<>?", currentWorkspaceName, currentWorkspaceName);
+  db.exec(`
+  CREATE TRIGGER IF NOT EXISTS trg_workspace_name_insert
+  BEFORE INSERT ON workspace
+  WHEN length(NEW.name)<1 OR length(NEW.name)>100 OR NEW.name<>trim(NEW.name)
+  BEGIN SELECT RAISE(ABORT, 'workspace name must contain 1 to 100 Unicode code points'); END;
+  CREATE TRIGGER IF NOT EXISTS trg_workspace_name_update
+  BEFORE UPDATE OF name ON workspace
+  WHEN length(NEW.name)<1 OR length(NEW.name)>100 OR NEW.name<>trim(NEW.name)
+  BEGIN SELECT RAISE(ABORT, 'workspace name must contain 1 to 100 Unicode code points'); END;
+  `);
   // Defense in depth for the authority channel: clean any historical bad
   // bindings, then reject both new active rows and reactivation through UPDATE.
   run(`UPDATE thread_agent_guests SET status='removed' WHERE status='active' AND EXISTS (

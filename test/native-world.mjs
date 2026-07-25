@@ -292,11 +292,11 @@ try {
   const launch = launchCreate.body.channel;
   ok(launchCreate.status === 201 && launch.agent?.kind === "channel", "creating a channel atomically provisions its resident agent");
   ok(launch.agent?.name === "launch-agent" && launch.agent.status === "ready", "resident identity is ready and derived from channel purpose");
-  ok(/^color:#[0-9A-F]{6}$/.test(launch.agent.runtime.avatar), "new resident agents receive a customizable random flat-color avatar");
-  ok(launch.slug === "launch" && launch.agent.skills.length === arsenal.length
+  ok(/^agent:[1-9]:#[0-9A-F]{6}$/.test(launch.agent.runtime.avatar), "new resident agents receive a random character on a customizable flat-color avatar");
+  ok(launch.slug === "launch" && launch.agent.skills.length < arsenal.length
     && launch.agent.skills.some((skill) => skill.slug === "outcome-ownership")
     && launch.agent.skills.some((skill) => skill.slug === "project-planning"),
-  "every resident permanently owns the safe built-in arsenal while preserving a normal channel identity");
+  "each resident receives a focused universal core plus template skills while preserving a normal channel identity");
   const deepRoute = await fetch(`${base}/c/${launch.slug}/memory`);
   ok(deepRoute.status === 200 && /id="app"/.test(await deepRoute.text()), "slug-based channel deep links serve the application shell");
   const deepRouteHead = await fetch(`${base}/c/${launch.slug}/thread/123`, { method: "HEAD" });
@@ -389,7 +389,7 @@ try {
 
   const finance = (await api("/api/channels", { body: { name: "Finance", purpose: "Own finance planning and records." } }, captain)).body.channel;
   ok(finance.agent.id !== launch.agent.id && finance.agent.bot_id !== launch.agent.bot_id, "each channel receives a distinct resident agent");
-  ok(finance.agent.runtime.avatar !== launch.agent.runtime.avatar, "new resident agents start with distinct random avatar colors while unused palette colors remain");
+  ok(finance.agent.runtime.avatar !== launch.agent.runtime.avatar, "new resident agents start with varied character and color combinations");
   const rejectedMainGuestRoot = (await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper invite @finance-agent into #main for unrelated research" } }, captain)).body.message.id;
   await waitForAgentReply(rejectedMainGuestRoot, captain, "skipper");
   await sleep(300);
@@ -814,6 +814,8 @@ try {
     return scheduled && row2?.status === "pending" ? { scheduled, row: row2 } : null;
   }, "schedule_followup persists pending row", 15_000);
   const followThread = await api(`/api/messages/${followRoot.body.message.id}/thread`, {}, captain);
+  ok(followThread.body.followup?.id === followEvidence.row.id && followThread.body.followup?.due_at === followEvidence.row.due_at,
+    "open-thread payload exposes the same persisted next follow-up that drives Board countdowns");
   const visibleFollowupReply = followThread.body.replies?.some((message) => message.author?.name === afterRestart.agent.name && message.body && message.body !== "_Working…_");
   const followupRequestStats = await fetch(`http://127.0.0.1:${mockPort}/request-stats`).then((response) => response.json());
   ok(
