@@ -12,7 +12,11 @@
 </p>
 
 <p align="center">
-  <a href="https://1helm.com/download/macos"><strong>Download for Apple Silicon</strong></a>
+  <a href="https://1helm.com/download/macos"><strong>Download for Mac</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://1helm.com/download/windows"><strong>for Windows</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://1helm.com/docs/install/linux"><strong>for Linux</strong></a>
   &nbsp;·&nbsp;
   <a href="https://1helm.com">The story</a>
   &nbsp;·&nbsp;
@@ -30,7 +34,7 @@
   <code>Self-hosted</code>&nbsp;&nbsp;
   <code>Model-agnostic</code>&nbsp;&nbsp;
   <code>Signed + notarized</code>&nbsp;&nbsp;
-  <code>macOS · Linux · Windows soon</code>
+  <code>macOS · Windows · Linux</code>
 </p>
 
 ---
@@ -106,7 +110,9 @@ Skipper ─── crosses the boundary ─────────┘
 - **The computer, memory, skills, and obligations** belong to the channel and
   survive model changes and application restarts.
 
-## Install on Apple Silicon
+## Install
+
+On Apple Silicon:
 
 1. [Download the current signed DMG](https://1helm.com/download/macos).
 2. Open it and drag **1Helm** to Applications.
@@ -120,11 +126,13 @@ update preserves it — credentials, databases, resident state, files, and
 workspaces. Profile → Check for updates asks the Mac running 1Helm—not the
 device displaying the web UI—to download and verify the signed update.
 
-Linux hosts use a verified installer that provisions a durable systemd service
-with an atomic, digest-verified, health-checked updater — see the
-[Linux install guide](https://1helm.com/docs/install/linux). Either way, it
-works best on a dedicated machine: your crew works around the clock, and your
-everyday computer takes naps.
+Windows 11 x64 gets a [signed Setup executable](https://1helm.com/download/windows)
+that provisions one private WSL 2 world per channel. Linux hosts use a verified
+installer that provisions a durable systemd service with an atomic,
+digest-verified, health-checked updater — see the
+[Linux install guide](https://1helm.com/docs/install/linux). Whichever platform,
+it works best on a dedicated machine: your crew works around the clock, and
+your everyday computer takes naps.
 
 ## Ready on day one. Specialized by day one hundred.
 
@@ -221,11 +229,11 @@ and an audit trail. A prompt saying “use this service” is not a connector.
 |---|---|
 | **Apple Silicon macOS 26** | Native desktop product and real isolated Linux computer per resident (Apple `container machine`, `home-mount=none`). |
 | **Linux / CI** | Supported headless systemd host with one unprivileged LXC per resident (subordinate UID/GID mapping, exact ownership checks); CI may select an explicit test backend. |
-| **Windows + WSL** | Native x64 Electron and private WSL 2 worlds (Windows-drive mounts and interop disabled) have passed real-host acceptance; the public installer awaits Authenticode signing. |
+| **Windows 11 x64** | Native desktop product with one private WSL 2 world per resident (Windows-drive mounts and interop disabled); the signed Setup executable ships with every release. |
 
-Not yet shipped: a signed public Windows installer, a native Linux desktop
-shell, mobile clients, a hosted control plane, rich Photon attachment fidelity,
-or blind execution of community skills.
+Not yet shipped: a native Linux desktop shell, mobile clients, a hosted
+control plane, rich Photon attachment fidelity, or blind execution of
+community skills.
 
 ## Run the source workspace
 

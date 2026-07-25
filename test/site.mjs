@@ -27,13 +27,15 @@ test("standalone 1helm.com website serves independent product and documentation 
     const privacy = await (await fetch(`${base}/privacy`)).text();
     assert.match(privacy, /build@1helm\.com/);
     assert.match(home, /build@1helm\.com/);
+    assert.match(home, /og:image/);
+    assert.match(home, /assets\/story\/og-card\.png/);
     for (const path of ["/manual", "/terms", "/privacy", "/product", "/manifesto", "/security", "/faq", "/docs", "/docs/install/macos", "/docs/install/linux", "/docs/install/windows-wsl", "/docs/skills", "/docs/verification", "/docs/connections"]) {
       const response = await fetch(base + path); assert.equal(response.status, 200, path);
       assert.match(response.headers.get("content-security-policy") || "", /default-src 'self'/);
     }
     const gettingStarted = await (await fetch(`${base}/docs/getting-started`)).text();
-    assert.match(gettingStarted, /Windows 11 x64 implementation is accepted.*public Setup executable is withheld.*Authenticode/is);
-    assert.doesNotMatch(gettingStarted, /On Windows 11 x64, download the signed Setup executable/i);
+    assert.match(gettingStarted, /On Windows 11 x64, download the signed Setup executable/i);
+    assert.doesNotMatch(gettingStarted, /withheld/i);
     assert.equal((await fetch(`${base}/assets/site.css`)).status, 200);
     const windowsIcon = await fetch(`${base}/icons/icon-sailboat.ico`);
     assert.equal(windowsIcon.status, 200);
@@ -49,7 +51,8 @@ test("standalone 1helm.com website serves independent product and documentation 
     assert.equal(download.status, 302);
     assert.match(download.headers.get("location") || "", /1Helm-[\d.]+-arm64\.dmg$|\/releases\/latest$/);
     const windowsDownload = await fetch(`${base}/download/windows`, { redirect: "manual" });
-    assert.equal(windowsDownload.status, 404, "the website never advertises a Windows artifact before a signed build exists");
+    assert.equal(windowsDownload.status, 302);
+    assert.match(windowsDownload.headers.get("location") || "", /-windows-x64-setup\.exe$|\/releases\/latest$/);
   } finally { child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve)); }
 });
 

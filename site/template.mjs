@@ -50,7 +50,8 @@ export function renderPage(page) {
   <meta property="og:title" content="${esc(title)}">
   <meta property="og:description" content="${esc(page.description)}">
   <meta property="og:url" content="${canonical}">
-  <meta property="og:image" content="https://1helm.com/brand/1helm-sailboat.png">
+  <meta property="og:image" content="https://1helm.com/assets/story/og-card.png">
+  <meta name="twitter:image" content="https://1helm.com/assets/story/og-card.png">
   <meta name="twitter:card" content="summary_large_image">
   <link rel="canonical" href="${canonical}">
   <link rel="icon" href="/brand/1helm-sailboat.png" type="image/png">

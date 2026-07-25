@@ -26,19 +26,22 @@ const REPO = "gitcommit90/1Helm";
 const RELEASE_PAGE = `https://github.com/${REPO}/releases/latest`;
 const RELEASE_CACHE_MS = 10 * 60_000;
 
-let releaseCache = { at: 0, url: "" };
-async function latestDmgUrl() {
-  if (Date.now() - releaseCache.at < RELEASE_CACHE_MS && releaseCache.url) return releaseCache.url;
+let releaseCache = { at: 0, assets: null };
+async function latestReleaseAssets() {
+  if (Date.now() - releaseCache.at < RELEASE_CACHE_MS && releaseCache.assets) return releaseCache.assets;
   const response = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
     headers: { "user-agent": "1helm-site", accept: "application/vnd.github+json" },
     signal: AbortSignal.timeout(8000),
   });
   if (!response.ok) throw new Error(`GitHub API ${response.status}`);
   const release = await response.json();
-  const asset = (release.assets || []).find((entry) => /-arm64\.dmg$/i.test(String(entry.name || "")));
-  if (!asset?.browser_download_url) throw new Error("no arm64 DMG asset on latest release");
-  releaseCache = { at: Date.now(), url: asset.browser_download_url };
-  return releaseCache.url;
+  releaseCache = { at: Date.now(), assets: release.assets || [] };
+  return releaseCache.assets;
+}
+async function latestAssetUrl(pattern) {
+  const asset = (await latestReleaseAssets()).find((entry) => pattern.test(String(entry.name || "")));
+  if (!asset?.browser_download_url) throw new Error("no matching asset on latest release");
+  return asset.browser_download_url;
 }
 
 const mime = {
@@ -125,7 +128,13 @@ const server = createServer((req, res) => {
     return;
   }
   if (path === "/download/macos") {
-    latestDmgUrl()
+    latestAssetUrl(/-arm64\.dmg$/i)
+      .then((url) => redirect(res, url))
+      .catch(() => redirect(res, RELEASE_PAGE));
+    return;
+  }
+  if (path === "/download/windows") {
+    latestAssetUrl(/-windows-x64-setup\.exe$/i)
       .then((url) => redirect(res, url))
       .catch(() => redirect(res, RELEASE_PAGE));
     return;
