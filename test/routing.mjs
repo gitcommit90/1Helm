@@ -7,6 +7,7 @@ import { createServer } from "node:net";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import puppeteer from "puppeteer";
+import "./routing-ui-contract.mjs";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
@@ -400,6 +401,20 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     });
     await page.waitForFunction(() => /Test source/.test(document.querySelector(".routing-fabric")?.textContent || "") && /mock-large/.test(document.querySelector(".routing-fabric")?.textContent || ""));
     assert.equal(Boolean(await page.$(".routing-fabric")), true, "Sources renders real request routing activity in place from the workspace WebSocket");
+    assert.equal(Boolean(await page.$(".routing-fabric-svg .routing-fabric-path")), true, "Sources uses the dotted Requests → router → provider live flow");
+    assert.equal(Boolean(await page.$(`${accountSelector} [data-refresh-models]`)), true, "Refresh models is available beside connected-account controls");
+    // The channel-header action lives below the full-screen Settings overlay.
+    // Close Settings before exercising the same real click a user can make.
+    await page.click('button[aria-label="Close settings"]');
+    await page.waitForFunction(() => !document.querySelector('.modal-overlay button[aria-label="Close settings"]'));
+    await page.waitForSelector("[data-routing-header]");
+    await page.click("[data-routing-header]");
+    await page.waitForSelector("[data-routing-popover]");
+    const popoverCopy = await page.$eval("[data-routing-popover]", (element) => element.textContent || "");
+    assert.match(popoverCopy, /Latest 10 requests/);
+    assert.match(popoverCopy, /API keys for the router are stored in Settings → Providers → Endpoints\./);
+    assert.equal(await page.$$eval("[data-routing-popover] [data-routing-latest] .routing-event", (rows) => rows.length <= 10), true, "channel popover renders no more than the latest 10 real requests");
+    assert.equal(popoverCopy.includes("mock-key"), false, "channel popover never exposes provider credentials");
     await browser.close(); browser = undefined;
     }
 
@@ -432,6 +447,20 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     });
     assert(activity.usage.requests >= 3, "direct, unauthenticated, and named-route requests are recorded in usage");
     assert.equal(activity.usage.recent[0].model, "workspace-coding");
+    assert.notEqual(activity.usage.byProvider[0].provider, "account", "traffic aggregates resolve a human account or provider identity");
+
+    const usageDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+    const captainId = Number(usageDb.prepare("SELECT id FROM users WHERE username='captain'").get().id);
+    usageDb.prepare(`INSERT INTO routing_usage_events
+      (user_id,provider_id,model,status,prompt_tokens,completion_tokens,cached_tokens,detail,created)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(captainId, providerId, "old-period-model", 200, 9, 3, 0, JSON.stringify({ providerName: "account" }), Date.now() - 2 * 60 * 60_000);
+    usageDb.close();
+    const usage1h = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, { method: "POST", body: JSON.stringify({ action: "app:usage", payload: "1h" }) });
+    const usage24h = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, { method: "POST", body: JSON.stringify({ action: "app:usage", payload: "24h" }) });
+    assert.equal(usage1h.usage.period, "1h");
+    assert.equal(usage1h.usage.recent.some((entry) => entry.model === "old-period-model"), false, "1h excludes older user-scoped events");
+    assert.equal(usage24h.usage.recent.some((entry) => entry.model === "old-period-model"), true, "24h includes events outside the 1h window");
+    assert.equal(usage24h.usage.byProvider.find((entry) => entry.providerId === providerId)?.provider, "Test source", "generic stored activity names hydrate from the owned provider");
 
     const addSource = async (name, baseUrl, models = [{ id: "mock-large", name: "mock-large", enabled: true }]) => {
       const result = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
@@ -444,6 +473,23 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     const backupProvider = await addSource("Fallback backup", `http://127.0.0.1:${mockPort}/fallback-backup`);
     const roundA = await addSource("Round A", `http://127.0.0.1:${mockPort}/round-a`);
     const roundB = await addSource("Round B", `http://127.0.0.1:${mockPort}/round-b`);
+
+    const preview = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
+      method: "POST", body: JSON.stringify({ action: "app:preview-provider-models", payload: { providerId: backupProvider } }),
+    });
+    assert.deepEqual(preview.models.map((model) => model.id), ["mock-large", "mock-small"], "refresh uses host-owned provider credentials to preview /models");
+    let beforeApply = (await json(`http://127.0.0.1:${appPort}/api/routing/state`, token)).providers.find((entry) => entry.id === backupProvider);
+    assert.equal(beforeApply.models.some((model) => model.id === "mock-small"), false, "preview does not mutate provider models");
+    await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
+      method: "POST", body: JSON.stringify({ action: "app:apply-provider-models", payload: { providerId: backupProvider, previewToken: preview.previewToken, modelIds: ["mock-small"] } }),
+    });
+    beforeApply = (await json(`http://127.0.0.1:${appPort}/api/routing/state`, token)).providers.find((entry) => entry.id === backupProvider);
+    assert.equal(beforeApply.models.find((model) => model.id === "mock-small")?.enabled, true, "confirmation applies the selected discovered models");
+    assert.equal(beforeApply.models.find((model) => model.id === "mock-large")?.enabled, false, "confirmation can disable an unselected discovered model");
+    assert.equal(JSON.stringify(preview).includes("mock-key"), false, "model previews never return provider credentials");
+    const replay = await fetch(`http://127.0.0.1:${appPort}/api/routing/action`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ action: "app:apply-provider-models", payload: { providerId: backupProvider, previewToken: preview.previewToken, modelIds: ["mock-large"] } }) });
+    assert.equal(replay.status, 400, "a model preview token can be applied only once");
+    await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, { method: "POST", body: JSON.stringify({ action: "app:set-all-models-enabled", payload: { providerId: backupProvider, enabled: true } }) });
 
     await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
       method: "POST", body: JSON.stringify({ action: "app:save-combo", payload: { name: "fallback-contract", strategy: "fallback", members: [{ providerId: failingProvider, model: "mock-large" }, { providerId: backupProvider, model: "mock-large" }] } }),

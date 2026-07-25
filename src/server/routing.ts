@@ -156,6 +156,9 @@ let activityUnsubscribe: (() => void) | null = null;
 let onActivity: ((activity?: unknown, userId?: number) => void) | null = null;
 const recentActivity: unknown[] = [];
 const recentUserActivity = new Map<number, unknown[]>();
+type ModelDiscovery = { id: string; name: string; free?: boolean };
+type ModelRefreshPreview = { userId: number; providerId: string; models: ModelDiscovery[]; expiresAt: number };
+const modelRefreshPreviews = new Map<string, ModelRefreshPreview>();
 type OauthCompletion = { connected: boolean; account?: Record<string, unknown>; error?: string };
 const oauthWatchers = new Map<string, NodeJS.Timeout>();
 const oauthCompletions = new Map<string, OauthCompletion>();
@@ -462,6 +465,112 @@ function routableBaseUrl(value: string): boolean {
   catch { return false; }
 }
 
+function openRouterFreeFlag(model: Record<string, unknown>): boolean | undefined {
+  if (String(model.id || model.name || "").toLowerCase().endsWith(":free")) return true;
+  const pricing = model.pricing && typeof model.pricing === "object" ? model.pricing as Record<string, unknown> : null;
+  if (!pricing) return undefined;
+  const values = [pricing.prompt, pricing.completion].map((value) => Number(value));
+  if (values.some((value) => !Number.isFinite(value))) return undefined;
+  return values.every((value) => value === 0);
+}
+
+async function fetchModelCatalog(provider: Pick<RoutingProvider, "type" | "baseUrl" | "apiKey" | "accessToken">): Promise<ModelDiscovery[]> {
+  const baseUrl = normalizeBaseUrl(provider.baseUrl);
+  if (!baseUrl || !routableBaseUrl(baseUrl)) throw new Error("Automatic model discovery is unavailable for this account.");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const headers = new Headers({ Accept: "application/json" });
+    const credential = String(provider.apiKey || provider.accessToken || "").trim();
+    if (credential) headers.set("Authorization", `Bearer ${credential}`);
+    const response = await fetch(`${baseUrl}/models`, { headers, signal: controller.signal, redirect: "error" });
+    if (!response.ok) throw new Error(`The provider's model catalog is unavailable (HTTP ${response.status}).`);
+    const announcedBytes = Number(response.headers.get("content-length") || 0);
+    if (announcedBytes > 8 * 1024 * 1024) throw new Error("The provider's model catalog is too large to preview safely.");
+    const rawPayload = await response.text();
+    if (rawPayload.length > 8 * 1024 * 1024) throw new Error("The provider's model catalog is too large to preview safely.");
+    let payload: unknown;
+    try { payload = JSON.parse(rawPayload); }
+    catch { throw new Error("The provider's model catalog did not return valid JSON."); }
+    const raw = Array.isArray(payload)
+      ? payload
+      : payload && typeof payload === "object" && Array.isArray((payload as { data?: unknown }).data)
+        ? (payload as { data: unknown[] }).data
+        : [];
+    const models = raw.flatMap((entry): ModelDiscovery[] => {
+      if (typeof entry === "string") return entry.trim() ? [{ id: entry.trim(), name: entry.trim() }] : [];
+      if (!entry || typeof entry !== "object") return [];
+      const item = entry as Record<string, unknown>;
+      const id = String(item.id || item.name || "").trim().slice(0, 512);
+      if (!id) return [];
+      const free = String(provider.type || "") === "openrouter" ? openRouterFreeFlag(item) : undefined;
+      return [{ id, name: String(item.name || id).trim().slice(0, 512) || id, ...(free === undefined ? {} : { free }) }];
+    });
+    return [...new Map(models.map((model) => [model.id, model])).values()].slice(0, 5_000);
+  } catch (error) {
+    if ((error as Error).name === "AbortError") throw new Error("The provider's model catalog did not respond in time.");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function previewStoredProviderModels(provider: RoutingProvider, userId: number): Promise<Record<string, unknown>> {
+  try {
+    const models = await fetchModelCatalog(provider);
+    if (!models.length) return { ok: false, error: "The provider returned no models. Add an exact model ID manually instead." };
+    for (const [token, preview] of modelRefreshPreviews) {
+      if (preview.expiresAt < now() || (preview.userId === userId && preview.providerId === provider.id)) modelRefreshPreviews.delete(token);
+    }
+    if (modelRefreshPreviews.size >= 512) modelRefreshPreviews.delete(modelRefreshPreviews.keys().next().value as string);
+    const previewToken = `models_${randomBytes(18).toString("hex")}`;
+    const expiresAt = now() + 10 * 60_000;
+    modelRefreshPreviews.set(previewToken, { userId, providerId: provider.id, models, expiresAt });
+    return { ok: true, previewToken, models, expiresAt };
+  } catch (error) {
+    return { ok: false, error: `${(error as Error).message} Add an exact model ID manually instead.` };
+  }
+}
+
+async function previewOpenRouterConnection(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const modelId = String(payload.modelId || "").trim();
+  if (modelId) return { ok: true, models: [{ id: modelId, name: modelId }], validation: "manual-model" };
+  const baseUrl = normalizeBaseUrl(payload.baseUrl);
+  const apiKey = String(payload.apiKey || "").trim();
+  if (!baseUrl || !apiKey) return { ok: false, error: "Base URL and API key required" };
+  try {
+    const models = await fetchModelCatalog({ type: "openrouter", baseUrl, apiKey });
+    return models.length ? { ok: true, models, validation: "models" } : { ok: false, error: "OpenRouter returned no models." };
+  } catch (error) {
+    return { ok: false, error: (error as Error).message };
+  }
+}
+
+function applyStoredProviderModels(target: RoutingRuntime, provider: RoutingProvider, userId: number, value: Record<string, unknown>): Record<string, unknown> {
+  const previewToken = String(value.previewToken || "");
+  const preview = modelRefreshPreviews.get(previewToken);
+  if (!preview || preview.userId !== userId || preview.providerId !== provider.id || preview.expiresAt < now()) {
+    modelRefreshPreviews.delete(previewToken);
+    return { ok: false, error: "That model preview expired. Refresh the catalog again before confirming." };
+  }
+  const available = new Set(preview.models.map((model) => model.id));
+  const selected = new Set((Array.isArray(value.modelIds) ? value.modelIds : []).map((id) => String(id)).filter((id) => available.has(id)));
+  const requested = Array.isArray(value.modelIds) ? value.modelIds.map((id) => String(id)) : [];
+  if (requested.some((id) => !available.has(id))) return { ok: false, error: "The selection contains a model that was not in this preview." };
+  target.store.update((config) => {
+    const current = config.providers.find((entry) => entry.id === provider.id);
+    if (!current) return;
+    const discovered = new Set(preview.models.map((model) => model.id));
+    const manual = (current.models || []).filter((model) => !discovered.has(typeof model === "string" ? model : model.id));
+    current.models = [
+      ...manual,
+      ...preview.models.map((model) => ({ id: model.id, name: model.name, enabled: selected.has(model.id) })),
+    ];
+  });
+  modelRefreshPreviews.delete(previewToken);
+  return { ok: true, providerId: provider.id, discovered: preview.models.length, enabled: selected.size };
+}
+
 function routeNameAvailable(config: RoutingConfig, name: string): boolean {
   const key = name.trim().toLowerCase();
   return !!key && !config.combos.some((combo) => String(combo.name || "").trim().toLowerCase() === key);
@@ -765,6 +874,7 @@ export async function stopRoutingEngine(): Promise<void> {
   await Promise.all(gateways.map((entry) => entry.gateway.stop().catch(() => undefined)));
   recentActivity.length = 0;
   recentUserActivity.clear();
+  modelRefreshPreviews.clear();
   if (target) await target.close({ drainMs: 10_000 });
 }
 
@@ -785,7 +895,7 @@ export async function routingInvoke(action: string, payload?: unknown, userId = 
   const comboId = String(value.id || (typeof payload === "string" ? payload : ""));
   const combo = comboId ? configBefore.combos.find((entry) => comboMatches(entry, comboId)) : undefined;
   const gatewayKey = keyId ? q1("SELECT id,user_id FROM user_routing_keys WHERE id=?", keyId) : undefined;
-  const providerMutation = ["app:remove-provider", "app:set-provider-enabled", "app:set-provider-visibility", "app:set-model-enabled", "app:set-all-models-enabled", "app:add-model", "app:remove-model"].includes(action);
+  const providerMutation = ["app:remove-provider", "app:set-provider-enabled", "app:set-provider-visibility", "app:set-model-enabled", "app:set-all-models-enabled", "app:add-model", "app:remove-model", "app:preview-provider-models", "app:apply-provider-models"].includes(action);
   if (providerMutation && (!provider || !actorId || !ownedByUser(provider, actorId))) return { ok: false, error: "You can change only your own provider accounts." };
   if (gatewayKey && Number(gatewayKey.user_id || 0) !== actorId) return { ok: false, error: "You can change only your own endpoint keys." };
   if (["app:delete-combo"].includes(action) && (!combo || !actorId || !ownedByUser(combo, actorId))) return { ok: false, error: "You can change only your own routes." };
@@ -838,13 +948,42 @@ export async function routingInvoke(action: string, payload?: unknown, userId = 
     run("INSERT INTO user_routing_keys (id,user_id,key,name,enabled,created) VALUES (?,?,?,?,1,?)", id, actorId, key, name, now());
     return { ok: true, key: { id, key, name, enabled: true, createdAt: now() } };
   }
+  if (action === "app:preview-provider-models") {
+    return previewStoredProviderModels(provider!, actorId);
+  }
+  if (action === "app:apply-provider-models") {
+    const applied = applyStoredProviderModels(target, provider!, actorId, value);
+    if (applied.ok !== false) reconcileModelPolicies(target);
+    return applied;
+  }
   if (action === "app:usage" && actorId) {
-    const rows = q("SELECT provider_id,model,status,prompt_tokens,completion_tokens,cached_tokens,detail,created FROM routing_usage_events WHERE user_id=? ORDER BY id DESC LIMIT 500", actorId);
+    const requestedPeriod = typeof payload === "string" ? payload : String(value.period || "24h");
+    const periods: Record<string, number | null> = { "1h": 60 * 60_000, "24h": 24 * 60 * 60_000, "7d": 7 * 24 * 60 * 60_000, "30d": 30 * 24 * 60 * 60_000, all: null };
+    const period = Object.hasOwn(periods, requestedPeriod) ? requestedPeriod : "24h";
+    const cutoff = periods[period] == null ? null : now() - Number(periods[period]);
+    const rows = cutoff == null
+      ? q("SELECT provider_id,model,status,prompt_tokens,completion_tokens,cached_tokens,detail,created FROM routing_usage_events WHERE user_id=? ORDER BY id DESC", actorId)
+      : q("SELECT provider_id,model,status,prompt_tokens,completion_tokens,cached_tokens,detail,created FROM routing_usage_events WHERE user_id=? AND created>=? ORDER BY id DESC", actorId, cutoff);
+    const providerMeta = new Map(configBefore.providers.filter((entry) => visibleToUser(entry, actorId)).map((entry) => [entry.id, entry]));
+    const rowDetail = (entry: Record<string, unknown>): Record<string, unknown> => {
+      try { return JSON.parse(String(entry.detail || "{}")); } catch { return {}; }
+    };
+    const providerIdentity = (entry: Record<string, unknown>): Record<string, unknown> => {
+      const detail = rowDetail(entry);
+      const current = providerMeta.get(String(entry.provider_id || ""));
+      const providerType = String(detail.providerType || current?.type || "").replace(/^codex$/, "chatgpt");
+      const accountAlias = String(detail.accountAlias || current?.accountAlias || "").trim() || null;
+      const storedName = String(detail.providerName || "").trim();
+      const humanStoredName = !storedName || /^account$/i.test(storedName) || /^prov_/i.test(storedName) ? "" : storedName;
+      const currentName = String(current?.name || "").trim();
+      const humanCurrentName = !currentName || /^account$/i.test(currentName) || /^prov_/i.test(currentName) ? "" : currentName;
+      const providerName = String(current?.email || current?.profileName || accountAlias || humanCurrentName || humanStoredName || providerType || "Disconnected account").trim();
+      return { provider: accountAlias && providerName !== accountAlias ? `${providerName} · ${accountAlias}` : providerName, providerName, providerType, accountAlias };
+    };
     const recent = rows.map((entry) => {
-      let detail: Record<string, unknown> = {};
-      try { detail = JSON.parse(String(entry.detail || "{}")); } catch { detail = {}; }
-      return { ...detail, providerId: String(entry.provider_id), model: String(entry.model), status: Number(entry.status), prompt_tokens: Number(entry.prompt_tokens), completion_tokens: Number(entry.completion_tokens), cached_tokens: Number(entry.cached_tokens), at: Number(entry.created) };
-    });
+      const detail = rowDetail(entry);
+      return { ...detail, ...providerIdentity(entry), providerId: String(entry.provider_id), model: String(entry.model), status: Number(entry.status), prompt_tokens: Number(entry.prompt_tokens), completion_tokens: Number(entry.completion_tokens), cached_tokens: Number(entry.cached_tokens), at: Number(entry.created) };
+    }).slice(0, 30);
     const prompt = rows.reduce((sum, entry) => sum + Number(entry.prompt_tokens || 0), 0);
     const completion = rows.reduce((sum, entry) => sum + Number(entry.completion_tokens || 0), 0);
     const cached = rows.reduce((sum, entry) => sum + Number(entry.cached_tokens || 0), 0);
@@ -860,9 +999,13 @@ export async function routingInvoke(action: string, payload?: unknown, userId = 
         current.total_tokens = current.prompt_tokens + current.completion_tokens;
         grouped.set(id, current);
       }
-      return [...grouped].map(([id, totals]) => ({ ...(key === "model" ? { model: id } : { providerId: id }), ...totals }));
+      return [...grouped].map(([id, totals]) => {
+        if (key === "model") return { model: id, ...totals };
+        const newest = rows.find((row) => String(row.provider_id || "unknown") === id) || {};
+        return { providerId: id, ...providerIdentity(newest), ...totals };
+      });
     };
-    return { ok: true, usage: { period: "all", requests: rows.length, ok: rows.filter((entry) => Number(entry.status) >= 200 && Number(entry.status) < 400).length, errors: rows.filter((entry) => Number(entry.status) >= 400).length, prompt_tokens: prompt, completion_tokens: completion, cached_tokens: cached, total_tokens: prompt + completion, byModel: aggregate("model"), byProvider: aggregate("provider_id"), recent } };
+    return { ok: true, usage: { period, requests: rows.length, ok: rows.filter((entry) => Number(entry.status) >= 200 && Number(entry.status) < 400).length, errors: rows.filter((entry) => Number(entry.status) >= 400).length, prompt_tokens: prompt, completion_tokens: completion, cached_tokens: cached, total_tokens: prompt + completion, byModel: aggregate("model"), byProvider: aggregate("provider_id"), recent } };
   }
   if (action === "app:revoke-api-key" || action === "app:set-api-key-enabled") {
     if (!gatewayKey) return { ok: false, error: "Endpoint key not found." };
@@ -906,6 +1049,8 @@ export async function routingInvoke(action: string, payload?: unknown, userId = 
     result = await target.controlPlane.invoke(action, [type], { harness: true });
   } else if (action === "app:oauth-complete") {
     result = await finishOauth(target, (payload || {}) as Record<string, unknown>, actorId);
+  } else if (action === "app:test-keyed-provider" && String(value.providerType || "") === "openrouter") {
+    result = await previewOpenRouterConnection(value);
   } else if (action === "app:test-keyed-provider" && unauthenticatedCustomPayload(payload)) {
     result = await testUnauthenticatedCustom(unauthenticatedCustomPayload(payload)!);
   } else if (action === "app:add-keyed-provider" && unauthenticatedCustomPayload(payload)) {

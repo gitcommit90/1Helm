@@ -16,7 +16,7 @@ const CERT_SHA1 = String(process.env.WINDOWS_SIGN_CERT_SHA1 || "").replace(/\s+/
 // Electron Packager evaluates directories before their children. Keep the
 // scripts directory itself traversable, then retain only the three runtime
 // files below; otherwise the exact-file exceptions can never be reached.
-const IGNORE_NON_RUNTIME_ROOTS = /^\/(?!package\.json$|LICENSE$|desktop(?:$|\/)|container(?:$|\/)|deploy(?:$|\/)|src(?:$|\/)|public(?:$|\/)|scripts(?:$|\/(?:mnemosyne-bridge\.py|install-wsl-runtime\.ps1|windows-removal\.cjs)$)|node_modules(?:$|\/))/;
+const IGNORE_NON_RUNTIME_ROOTS = /^\/(?!package\.json$|LICENSE$|NOTICE$|desktop(?:$|\/)|container(?:$|\/)|deploy(?:$|\/)|src(?:$|\/)|public(?:$|\/)|scripts(?:$|\/(?:mnemosyne-bridge\.py|install-wsl-runtime\.ps1|windows-removal\.cjs)$)|node_modules(?:$|\/))/;
 
 if (process.platform !== "win32" || process.arch !== "x64") throw new Error("Windows packaging must run on Windows x64.");
 if (!/^\d+\.\d+\.\d+$/.test(VERSION)) throw new Error("package.json must contain a release version.");

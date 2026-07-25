@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { DATA_DIR, UPLOAD_DIR, now, q, q1, run, tx, type Row } from "./db.ts";
 import { botView, resolveModel } from "./store.ts";
 import { ensureAgentMemory, rememberForAgent } from "./memory.ts";
@@ -12,12 +12,10 @@ const WORLD_DIRS = ["workspace", "files", "state", "memory", "profile"];
 const MEMORY_KINDS = new Set(["summary", "decision", "fact", "preference", "artifact_ref"]);
 const AGENT_COLORS = ["#C8552F", "#2166B8", "#2E7D4F", "#8A6B7C", "#A67C52", "#4F6D7A", "#7A6A4F", "#64748B"];
 const randomAgentAvatar = (): string => {
-  const used = new Set(q(`SELECT b.avatar FROM bots b JOIN agents a ON a.bot_id=b.id
-    WHERE a.kind='channel' AND a.status<>'deleted' AND b.avatar LIKE 'color:#%'`)
-    .map((row) => String(row.avatar).slice(6).toUpperCase()));
-  const available = AGENT_COLORS.filter((color) => !used.has(color.toUpperCase()));
-  const palette = available.length ? available : AGENT_COLORS;
-  return `color:${palette[randomBytes(1)[0] % palette.length]}`;
+  const residentCount = Number(q1("SELECT COUNT(*) n FROM agents WHERE kind='channel' AND status<>'deleted'")?.n || 0);
+  const character = (residentCount + Number(randomBytes(1)[0])) % 9 + 1;
+  const color = AGENT_COLORS[Number(randomBytes(1)[0]) % AGENT_COLORS.length];
+  return `agent:${character}:${color}`;
 };
 
 export type ProvisionedChannel = {
@@ -393,6 +391,211 @@ export function relevantMemory(channelId: number, currentThreadId: number | null
 
 export type WorkspaceFile = { path: string; name: string; size: number; modified: number; kind: "file" | "directory" };
 
+export type ChannelNote = { name: string; size: number; modified: number; content?: string };
+
+const MAX_NOTE_BYTES = 1024 * 1024;
+
+/** Notes are deliberately flat: their only path is /workspace/notes/<name>. */
+export function validateNoteFilename(input: string): string {
+  const value = String(input || "");
+  const name = value.trim();
+  if (!name || name !== value || name === "." || name === ".." || name.length > 160
+      || /[\\/\0-\x1f\x7f]/.test(name) || !name.toLowerCase().endsWith(".md") || name.toLowerCase() === ".md") {
+    throw new Error("Note names must be a plain .md filename without folders or control characters.");
+  }
+  return name;
+}
+
+function checkedNoteContent(input: string): string {
+  const content = String(input ?? "");
+  if (Buffer.byteLength(content, "utf8") > MAX_NOTE_BYTES) throw new Error("Notes are limited to 1 MB.");
+  return content;
+}
+
+function channelNotesDirectory(channelId: number): string {
+  const workspace = channelWorkspace(channelId);
+  ensureChannelWorkspace(channelId);
+  const notes = join(workspace, "notes");
+  let created = false;
+  if (existsSync(notes)) {
+    if (lstatSync(notes).isSymbolicLink() || !lstatSync(notes).isDirectory()) throw new Error("The channel notes folder is not a safe directory.");
+    const resolvedWorkspace = realpathSync(workspace);
+    const resolvedNotes = realpathSync(notes);
+    if (resolvedNotes !== resolvedWorkspace && !resolvedNotes.startsWith(resolvedWorkspace + sep)) throw new Error("The channel notes folder leaves the workspace.");
+  } else { mkdirSync(notes); created = true; }
+  if (created) markWorkspaceDirty(channelId, "workspace/notes", "upsert");
+  return notes;
+}
+
+function notePath(channelId: number, input: string, requireExisting = true): { name: string; path: string } {
+  const name = validateNoteFilename(input);
+  const notes = channelNotesDirectory(channelId);
+  const path = join(notes, name);
+  if (requireExisting && (!existsSync(path) || lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile())) throw new Error("Note not found.");
+  if (existsSync(path)) {
+    const resolvedNotes = realpathSync(notes);
+    const resolvedPath = realpathSync(path);
+    if (!resolvedPath.startsWith(resolvedNotes + sep)) throw new Error("Note not found.");
+  }
+  return { name, path };
+}
+
+function noteView(name: string, path: string, content?: string): ChannelNote {
+  const info = statSync(path);
+  return { name, size: info.size, modified: info.mtimeMs, ...(content === undefined ? {} : { content }) };
+}
+
+export function listChannelNotes(channelId: number): ChannelNote[] {
+  const notes = channelNotesDirectory(channelId);
+  return readdirSync(notes, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && !entry.isSymbolicLink() && entry.name.toLowerCase().endsWith(".md"))
+    .map((entry) => noteView(entry.name, join(notes, entry.name)))
+    .sort((a, b) => b.modified - a.modified || a.name.localeCompare(b.name));
+}
+
+export function readChannelNote(channelId: number, input: string): ChannelNote {
+  const note = notePath(channelId, input);
+  return noteView(note.name, note.path, readFileSync(note.path, "utf8"));
+}
+
+export function createChannelNote(channelId: number, input: string, initialContent = ""): ChannelNote {
+  const note = notePath(channelId, input, false);
+  if (existsSync(note.path)) throw new Error("A note with that name already exists.");
+  const content = checkedNoteContent(initialContent);
+  writeFileSync(note.path, content, { encoding: "utf8", flag: "wx" });
+  markWorkspaceDirty(channelId, `workspace/notes/${note.name}`, "upsert");
+  return noteView(note.name, note.path, content);
+}
+
+export function saveChannelNote(channelId: number, input: string, nextContent: string): ChannelNote {
+  const note = notePath(channelId, input);
+  const content = checkedNoteContent(nextContent);
+  writeFileSync(note.path, content, "utf8");
+  markWorkspaceDirty(channelId, `workspace/notes/${note.name}`, "upsert");
+  return noteView(note.name, note.path, content);
+}
+
+export function renameChannelNote(channelId: number, currentInput: string, nextInput: string): ChannelNote {
+  const current = notePath(channelId, currentInput);
+  const next = notePath(channelId, nextInput, false);
+  if (current.name === next.name) return readChannelNote(channelId, current.name);
+  if (existsSync(next.path)) throw new Error("A note with that name already exists.");
+  renameSync(current.path, next.path);
+  markWorkspaceDirty(channelId, `workspace/notes/${current.name}`, "delete");
+  markWorkspaceDirty(channelId, `workspace/notes/${next.name}`, "upsert");
+  return readChannelNote(channelId, next.name);
+}
+
+/** Canonical API paths are relative to /workspace; the empty string is its root. */
+export function normalizeWorkspaceDirectoryPath(input: string): string {
+  let value = String(input || "").trim();
+  if (!value || value === "." || value === "/" || value === "workspace" || value === "/workspace") return "";
+  if (value.startsWith("/workspace/")) value = value.slice("/workspace/".length);
+  else if (value.startsWith("workspace/")) value = value.slice("workspace/".length);
+  else if (value.startsWith("/")) throw new Error("Folder must stay inside /workspace.");
+  if (value.includes("\\")) throw new Error("Folder must stay inside /workspace.");
+  const parts = value.split("/");
+  if (parts.some((part) => !part || part === "." || part === ".." || part !== part.trim() || /[\0-\x1f\x7f]/.test(part))) {
+    throw new Error("Folder must stay inside /workspace.");
+  }
+  return parts.join("/");
+}
+
+export function validateWorkspaceEntryName(input: string): string {
+  const value = String(input || "");
+  const name = value.trim();
+  if (!name || name !== value || name === "." || name === ".." || name.length > 255 || /[\\/\0-\x1f\x7f]/.test(name)) {
+    throw new Error("Folder name must be one plain name without slashes or control characters.");
+  }
+  return name;
+}
+
+function workspaceApiPathToHost(channelId: number, input: string): { path: string; host: string; base: string } {
+  const path = normalizeWorkspaceDirectoryPath(input);
+  const root = ensureChannelWorkspace(channelId);
+  const uploads = path === "files" || path.startsWith("files/");
+  const base = resolve(root, uploads ? "files" : "workspace");
+  const inside = uploads ? path.slice("files".length).replace(/^\/+/, "") : path;
+  const host = resolve(base, inside);
+  if (host !== base && !host.startsWith(base + sep)) throw new Error("Folder must stay inside /workspace.");
+  return { path, host, base };
+}
+
+function existingWorkspaceDirectory(channelId: number, input: string): { path: string; host: string; base: string } {
+  const resolved = workspaceApiPathToHost(channelId, input);
+  if (!existsSync(resolved.host) || lstatSync(resolved.host).isSymbolicLink() || !lstatSync(resolved.host).isDirectory()) throw new Error("Folder not found.");
+  const relativeParts = relative(resolved.base, resolved.host).split(sep).filter(Boolean);
+  let cursor = resolved.base;
+  for (const part of relativeParts) {
+    cursor = join(cursor, part);
+    if (lstatSync(cursor).isSymbolicLink()) throw new Error("Folder not found.");
+  }
+  const realBase = realpathSync(resolved.base);
+  const realHost = realpathSync(resolved.host);
+  if (realHost !== realBase && !realHost.startsWith(realBase + sep)) throw new Error("Folder not found.");
+  return resolved;
+}
+
+function workspaceWorldPath(path: string): string {
+  return path === "files" || path.startsWith("files/") ? path : path ? `workspace/${path}` : "workspace";
+}
+
+/** Direct children for a navigable /workspace file browser. */
+export function listWorkspaceDirectory(channelId: number, input = ""): { path: string; files: WorkspaceFile[] } {
+  const directory = existingWorkspaceDirectory(channelId, input);
+  const files = readdirSync(directory.host, { withFileTypes: true }).flatMap((entry): WorkspaceFile[] => {
+    // /workspace/files is the guest view of the separate host-owned upload mirror.
+    if (!directory.path && entry.name === "files") return [];
+    if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) return [];
+    const full = join(directory.host, entry.name);
+    const info = statSync(full);
+    const path = directory.path ? `${directory.path}/${entry.name}` : entry.name;
+    return [{ path, name: entry.name, size: entry.isFile() ? info.size : 0, modified: info.mtimeMs, kind: entry.isDirectory() ? "directory" : "file" }];
+  });
+  if (!directory.path) {
+    const uploads = join(ensureChannelWorkspace(channelId), "files");
+    const info = statSync(uploads);
+    files.push({ path: "files", name: "files", size: 0, modified: info.mtimeMs, kind: "directory" });
+  }
+  files.sort((a, b) => Number(a.kind !== "directory") - Number(b.kind !== "directory") || a.name.localeCompare(b.name));
+  return { path: directory.path, files };
+}
+
+export function createWorkspaceDirectory(channelId: number, parentInput: string, nameInput: string): WorkspaceFile {
+  const parent = existingWorkspaceDirectory(channelId, parentInput);
+  const name = validateWorkspaceEntryName(nameInput);
+  if (!parent.path && name === "files") throw new Error("The /workspace/files folder is reserved for channel uploads.");
+  const path = parent.path ? `${parent.path}/${name}` : name;
+  const target = resolve(parent.host, name);
+  if (dirname(target) !== parent.host || existsSync(target)) throw new Error("A file or folder with that name already exists.");
+  mkdirSync(target);
+  markWorkspaceDirty(channelId, workspaceWorldPath(path), "upsert");
+  const info = statSync(target);
+  return { path, name, size: 0, modified: info.mtimeMs, kind: "directory" };
+}
+
+export function importWorkspaceUpload(channelId: number, threadId: number | null, token: string, nameInput: string, createdBy: string, directoryInput = "files"): string | null {
+  if (!/^[a-f0-9]{32,}$/.test(String(token || ""))) return null;
+  const source = join(UPLOAD_DIR, token);
+  if (!existsSync(source) || !lstatSync(source).isFile()) return null;
+  const directory = existingWorkspaceDirectory(channelId, directoryInput);
+  const basenameOnly = basename(String(nameInput || "file"));
+  const safe = basenameOnly.replace(/[^a-zA-Z0-9._ -]+/g, "-").replace(/^\.+$/, "") || "file";
+  let target = join(directory.host, safe);
+  for (let suffix = 2; existsSync(target); suffix++) {
+    const dot = safe.lastIndexOf(".");
+    target = join(directory.host, dot > 0 ? `${safe.slice(0, dot)}-${suffix}${safe.slice(dot)}` : `${safe}-${suffix}`);
+  }
+  copyFileSync(source, target);
+  const name = basename(target);
+  const path = directory.path ? `${directory.path}/${name}` : name;
+  const worldPath = workspaceWorldPath(path);
+  const info = statSync(target);
+  run("INSERT INTO artifacts (channel_id, thread_id, path, kind, created_by, size, modified, created) VALUES (?,?,?,'upload',?,?,?,?)", channelId, threadId, worldPath, createdBy, info.size, info.mtimeMs, now());
+  markWorkspaceDirty(channelId, worldPath, "upsert");
+  return worldPath;
+}
+
 export function listWorkspaceFiles(channelId: number): WorkspaceFile[] {
   // Terminal / agent shell CWD is channel workspace/. Present that tree under
   // workspace/... (its absolute path in the agent world, and unambiguous next
@@ -452,21 +655,7 @@ export function syncWorkspaceArtifacts(channelId: number, threadId: number | nul
 }
 
 export function importAttachment(channelId: number, threadId: number | null, token: string, name: string, createdBy: string): string | null {
-  const source = join(UPLOAD_DIR, token);
-  if (!existsSync(source)) return null;
-  const safe = basename(name).replace(/[^a-zA-Z0-9._ -]+/g, "-") || "file";
-  const filesDir = join(ensureChannelWorkspace(channelId), "files");
-  let target = join(filesDir, safe);
-  for (let suffix = 2; existsSync(target); suffix++) {
-    const dot = safe.lastIndexOf(".");
-    target = join(filesDir, dot > 0 ? `${safe.slice(0, dot)}-${suffix}${safe.slice(dot)}` : `${safe}-${suffix}`);
-  }
-  copyFileSync(source, target);
-  const rel = relative(channelRoot(channelId), target).split(sep).join("/");
-  const stat = statSync(target);
-  run("INSERT INTO artifacts (channel_id, thread_id, path, kind, created_by, size, modified, created) VALUES (?,?,?,'upload',?,?,?,?)", channelId, threadId, rel, createdBy, stat.size, stat.mtimeMs, now());
-  markWorkspaceDirty(channelId, rel, "upsert");
-  return rel;
+  return importWorkspaceUpload(channelId, threadId, token, name, createdBy, "files");
 }
 
 const ATTACH_MIME: Record<string, string> = {
@@ -484,9 +673,11 @@ const ATTACH_MIME: Record<string, string> = {
   ".html": "text/html",
   ".htm": "text/html",
   ".zip": "application/zip",
+  ".mp3": "audio/mpeg",
+  ".m4a": "audio/mp4",
 };
 
-function guessMime(name: string): string {
+export function attachmentMimeForName(name: string): string {
   const lower = name.toLowerCase();
   const dot = lower.lastIndexOf(".");
   if (dot < 0) return "application/octet-stream";
@@ -579,7 +770,7 @@ export function attachWorkspaceFileToMessage(
   }
 
   const name = (displayName?.trim() || basename(absolute)).slice(0, 255) || "file";
-  const mime = guessMime(name).slice(0, 255);
+  const mime = attachmentMimeForName(name).slice(0, 255);
   const stat = statSync(absolute);
   if (!stat.isFile()) throw new Error("Not a file.");
   if (stat.size > 25 * 1024 * 1024) throw new Error("Attachments are limited to 25 MB.");

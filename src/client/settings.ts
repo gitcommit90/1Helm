@@ -110,6 +110,7 @@ const adminNote = (): HTMLElement => h("p", { class: "rounded-lg border border-a
 
 function notificationsPanel(): HTMLElement {
   const muted = h("input", { type: "checkbox", checked: globalNotificationsMuted(), class: "accent-accent" }) as HTMLInputElement;
+  const unreadFirst = h("input", { type: "checkbox", checked: S.groupUnreadChannelsFirst, class: "accent-accent", dataset: { groupUnreadFirst: "" } }) as HTMLInputElement;
   const status = h("p", { class: "min-h-5 text-sm text-muted" });
   muted.onchange = async () => {
     muted.disabled = true;
@@ -122,16 +123,31 @@ function notificationsPanel(): HTMLElement {
       status.textContent = (error as Error).message;
     } finally { muted.disabled = false; }
   };
+  unreadFirst.onchange = async () => {
+    unreadFirst.disabled = true;
+    const previous = S.groupUnreadChannelsFirst;
+    S.groupUnreadChannelsFirst = unreadFirst.checked;
+    try {
+      await api("/api/me/ui-state", { method: "PATCH", body: { key: "group_unread_channels_first", value: unreadFirst.checked } });
+      status.textContent = unreadFirst.checked ? "Unread channels are grouped near the top of your sidebar." : "Unread channels stay in their normal sections.";
+      renderApp();
+    } catch (error) {
+      S.groupUnreadChannelsFirst = previous;
+      unreadFirst.checked = previous;
+      status.textContent = (error as Error).message;
+    } finally { unreadFirst.disabled = false; }
+  };
   return h("div", { class: "space-y-4" },
     h("section", { class: "card space-y-3 p-4" },
       h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Global sound"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "This preference belongs only to your 1Helm account and follows you across signed-in devices.")),
       h("label", { class: "flex items-start gap-3 rounded-lg border border-line bg-panel p-3" }, muted, h("span", {}, h("span", { class: "block text-sm font-semibold text-fg" }, "Mute all notification sounds"), h("span", { class: "mt-1 block text-xs leading-5 text-muted" }, "Visual unread badges and agent activity remain available."))),
+      h("label", { class: "flex items-start gap-3 rounded-lg border border-line bg-panel p-3" }, unreadFirst, h("span", {}, h("span", { class: "block text-sm font-semibold text-fg" }, "Group unread channels first"), h("span", { class: "mt-1 block text-xs leading-5 text-muted" }, "Shows a personal Unreads section above the normal channel groups. Your teammates' sidebars are unchanged."))),
       status),
     h("section", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Channel sounds"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Open any channel → Settings to mute that channel or choose its ping sound. Those choices are also private to your account.")));
 }
 
 function adminPanel(): HTMLElement {
-  const name = h("input", { class: "field", value: S.workspace.name, autocomplete: "organization" }) as HTMLInputElement;
+  const name = h("input", { class: "field", value: S.workspace.name, autocomplete: "organization", maxlength: 100 }) as HTMLInputElement;
   const theme = h("select", { class: "field" }, ...[["graphite", "Signal"], ["ocean", "Ocean"], ["forest", "Forest"], ["ember", "Brass"], ["plum", "Plum"]].map(([value, label]) => h("option", { value, selected: S.workspace.theme === value }, label))) as HTMLSelectElement;
   const status = h("p", { class: "min-h-5 text-sm text-muted" });
   const photo = h("img", { class: "h-16 w-16 rounded-xl border border-line bg-raised object-cover", src: workspacePhotoSrc(S.workspace.photo_url, Date.now()), alt: "Workspace" }) as HTMLImageElement;
@@ -162,7 +178,7 @@ function adminPanel(): HTMLElement {
     S.workspace = result.workspace; photo.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); document.querySelectorAll<HTMLImageElement>(".logo-asset").forEach((image) => { image.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); }); status.textContent = "Workspace photo updated.";
   };
   const save = async (): Promise<void> => {
-    try { S.workspace = (await api<{ workspace: typeof S.workspace }>("/api/workspace", { method: "PATCH", body: { name: name.value, theme: theme.value } })).workspace; applyWorkspaceTheme(); document.querySelectorAll<HTMLElement>(".workspace-sidebar .truncate.text-\\[15px\\]").forEach((node) => { node.textContent = S.workspace.name; }); status.textContent = "Workspace settings saved."; }
+    try { S.workspace = (await api<{ workspace: typeof S.workspace }>("/api/workspace", { method: "PATCH", body: { name: name.value.trim().slice(0, 100), theme: theme.value } })).workspace; applyWorkspaceTheme(); document.querySelectorAll<HTMLElement>("[data-workspace-name]").forEach((node) => { node.textContent = S.workspace.name; }); status.textContent = "Workspace settings saved."; }
     catch (error) { status.textContent = (error as Error).message; }
   };
   const removalStatus = h("p", { class: "min-h-5 text-sm text-muted" }, "Checking for 1Helm channel computers…");
@@ -205,11 +221,11 @@ function skillsPanel(): HTMLElement {
     h("div", { class: "flex flex-col gap-3 rounded-lg border border-accent/30 bg-accent-soft p-4 sm:flex-row sm:items-center sm:justify-between" },
       h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Teach 1Helm from your own material"), h("p", { class: "mt-1 text-sm leading-5 text-muted" }, "Give Skipper a folder or file, a web page, pasted notes, or any combination. It will inspect the sources and author one reusable workspace skill in a visible #main thread.")),
       h("button", { class: "btn-primary shrink-0 text-sm", onclick: learnSkillDialog }, icon("sparkles", 15), "Learn a new skill")),
-    h("p", { class: "text-sm leading-6 text-muted" }, "Every resident permanently owns the built-in operational library. Agents see a compact inventory and load a full procedure only when they choose that skill. You can also search SkillsMD for GitHub-backed skills."));
+    h("p", { class: "text-sm leading-6 text-muted" }, "Every resident starts with a focused core plus the skills for its channel template. The complete workspace catalog remains searchable, and residents can ask Skipper for another procedure when needed."));
   void api<{ skills: Array<Skill & { arsenal_locked?: number; arsenal_reason?: string; assigned_agents?: number }>; catalog: SkillCatalogStatus }>("/api/skills").then(({ skills, catalog }) => {
     wrap.append(skillCatalogBrowser(catalog));
     const shipped = h("section", { class: "space-y-3" },
-      h("div", { class: "flex flex-wrap items-end justify-between gap-2" }, h("div", {}, h("h3", { class: "font-display text-lg text-fg" }, "Installed arsenal"), h("p", { class: "text-sm text-muted" }, `${skills.length} complete procedures · permanently available · loaded on demand`))));
+      h("div", { class: "flex flex-wrap items-end justify-between gap-2" }, h("div", {}, h("h3", { class: "font-display text-lg text-fg" }, "Workspace skill catalog"), h("p", { class: "text-sm text-muted" }, `${skills.length} complete procedures · assigned by resident role · loaded on demand`))));
     for (const skill of skills) shipped.append(h("article", { class: `card p-4 ${skill.arsenal_locked ? "opacity-80" : ""}`, dataset: { skillSlug: skill.slug } },
       h("div", { class: "flex flex-wrap items-center gap-2" },
         h("h3", { class: "font-semibold text-fg" }, skill.name),
@@ -418,7 +434,7 @@ function connectionsPanel(): HTMLElement {
   return h("div", { class: "space-y-4" },
     h("div", { class: "rounded-lg border border-accent/25 bg-accent-soft px-4 py-3 text-sm leading-6 text-fg" }, "Connections are host-brokered capabilities. Residents receive the minimum task-scoped interface—not account secrets or your personal computer."),
     gmailConnectionPanel(), box,
-    h("section", { class: "card p-4 opacity-80" }, h("h3", { class: "font-display text-lg text-fg" }, "More connections"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Calendar, contacts, Slack, and other messaging brokers are added only when 1Helm can enforce task scope, recovery, and auditability.")));
+    h("section", { class: "card p-4 opacity-80" }, h("h3", { class: "font-display text-lg text-fg" }, "Connection availability"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Photon for iMessage is available above. Calendar, contacts, Slack, and other services are not available yet; they will appear here when supported.")));
 }
 
 type FeedbackReport = {

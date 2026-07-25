@@ -53,6 +53,12 @@ try {
     const thread = await api(`/api/messages/${rootMessage.id}/thread`, {}, token);
     return thread.replies?.find((reply) => reply.author.name === channel.agent.name && /Answer complete/.test(reply.body || ""));
   }, "agent reply");
+  // Schedule early on an independent lane so later visual fixtures cannot make
+  // countdown acceptance depend on draining unrelated message work.
+  const followupRoot = (await api(`/api/channels/${channel.id}/messages`, {
+    body: { body: `@${channel.agent.name} schedule followup for the browser follow-up countdown because an async download is still running` },
+  }, token)).message;
+  await waitFor(async () => (await api(`/api/messages/${followupRoot.id}/thread`, {}, token)).followup, "persisted browser follow-up", 15_000);
   for (let index = 0; index < 10; index++) {
     await api(`/api/channels/${channel.id}/messages`, { body: { body: `Scroll fixture ${index + 1}: ${"stable viewport words ".repeat(32)}`, parentId: rootMessage.id } }, token);
   }
@@ -191,7 +197,7 @@ try {
   await page.waitForSelector("#channelview");
   const fileInput = await page.waitForSelector('#channelview input[type="file"]');
   await fileInput.uploadFile(join(root, "README.md"));
-  await page.waitForFunction(() => document.getElementById("channelview")?.innerText.includes("/files/README.md"), { timeout: 5000 });
+  await page.waitForSelector('#channelview [data-file-path="README.md"]', { timeout: 5000 });
   ok(true, "Files upload imports a selected file directly into the channel workspace");
   await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Activity"))?.click());
   await page.waitForFunction(() => document.getElementById("channelview")?.innerText.includes("Ran work in the resident workspace → complete."));
@@ -239,12 +245,11 @@ try {
   ok(savedAnswer.length === 1 && savedAnswer[0] === selectedLabel.trim(), "clicking a structured option submits exactly one authoritative single-select value");
 
   await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Files"))?.click());
-  await page.waitForFunction(() => document.getElementById("channelview")?.innerText.includes("/files/README.md"));
+  await page.waitForSelector('#channelview [data-file-path="README.md"]');
   const fileActions = await page.$$eval("#channelview button", (buttons) => buttons.map((button) => button.textContent?.trim()).filter((text) => text === "Open" || text === "Download"));
   ok(fileActions.includes("Open") && fileActions.includes("Download"), "Files exposes explicit authenticated Open and Download actions");
   await page.evaluate(() => {
-    const path = [...document.querySelectorAll("#channelview div")].find((element) => element.textContent?.trim() === "/files/README.md");
-    const readmeRow = path?.parentElement?.parentElement;
+    const readmeRow = document.querySelector('#channelview [data-file-path="README.md"]');
     [...(readmeRow?.querySelectorAll("button") || [])].find((button) => button.textContent?.trim() === "Open")?.click();
   });
   await page.waitForSelector('[role="dialog"][aria-label^="Preview "]');
@@ -272,7 +277,8 @@ try {
   await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Providers")?.click());
   await page.waitForSelector(".routing-fabric");
   const fabricText = await page.$eval(".routing-fabric", (element) => element.textContent || "");
-  ok(/Requests in flight/.test(fabricText) && /1Helm/.test(fabricText) && /Providers/.test(fabricText), "Providers visualizes the live Requests in flight → 1Helm → Providers routing pyramid");
+  const fabricAria = await page.$eval(".routing-fabric-svg", (element) => element.getAttribute("aria-label") || "");
+  ok(/REQUESTS/.test(fabricText) && /1HELM ROUTER/.test(fabricText) && /routed provider/.test(fabricAria), "Providers visualizes the live dotted Requests → 1Helm Router → provider flow");
   await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.getAttribute("aria-label") === "Close settings" || button.textContent?.trim() === "Close")?.click());
   await page.goto(`${base}/c/${channel.slug}`, { waitUntil: "networkidle0" });
 
@@ -322,6 +328,19 @@ try {
   await page.keyboard.type("cd /tmp"); await page.keyboard.press("Enter");
   await page.waitForFunction(() => /:\/tmp[$#]/.test(document.querySelector(".xterm-rows")?.textContent || ""));
   ok(true, "the terminal prompt visibly reports the current path and changes after cd");
+
+  await page.goto(`${base}/c/${channel.slug}/thread/${followupRoot.id}`, { waitUntil: "networkidle0" });
+  // Hydration must work even if the socket event raced with navigation.
+  if (!(await page.$("[data-thread-followup]"))) await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForSelector("[data-thread-followup]", { timeout: 10_000 });
+  const firstCountdown = await page.$eval("[data-thread-followup]", (element) => ({
+    text: element.textContent || "",
+    seconds: Number((element.querySelector("[data-thread-followup-countdown]")?.textContent || "").match(/(\d+)s/)?.[1] || -1),
+  }));
+  await sleep(1_150);
+  const secondCountdown = await page.$eval("[data-thread-followup-countdown]", (element) => Number((element.textContent || "").match(/(\d+)s/)?.[1] || -1));
+  ok(firstCountdown.text.includes(`@${channel.agent.name} will check back in`) && firstCountdown.seconds > secondCountdown,
+    "a persisted resident follow-up appears in the open thread and counts down live");
   ok(browserErrors.length === 0, "the regression browser flow has no console or page errors");
 } catch (error) {
   fail++;

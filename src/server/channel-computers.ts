@@ -67,7 +67,7 @@ const APPLE_RUNTIME_VERSION = "1.1.0";
 export const APPLE_RUNTIME_PACKAGE = `container-${APPLE_RUNTIME_VERSION}-installer-signed.pkg`;
 export const APPLE_RUNTIME_URL = `https://github.com/apple/container/releases/download/${APPLE_RUNTIME_VERSION}/${APPLE_RUNTIME_PACKAGE}`;
 export const APPLE_RUNTIME_SHA256 = "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714";
-export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.8";
+export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.9";
 const CONTAINER_CANDIDATES = [process.env.HELM_CONTAINER_CLI, "/usr/local/bin/container", "/opt/homebrew/bin/container", "container"].filter(Boolean) as string[];
 const LXC_RUNTIME_VERSION = "1helm-lxc-runtime-v1";
 const LXC_HELPER_CANDIDATES = [
@@ -152,10 +152,34 @@ export function channelComputer(channelId: number): ChannelComputer | undefined 
   return q1("SELECT * FROM channel_computers WHERE channel_id=?", channelId) as ChannelComputer | undefined;
 }
 
+function channelComputerPressure(computer: ChannelComputer): Record<string, unknown> | undefined {
+  let value: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(String(computer.pressure_json || "{}"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    value = parsed as Record<string, unknown>;
+  } catch { return undefined; }
+  const load1 = Number(value.load1);
+  const memoryAvailableKb = Number(value.memoryAvailableKb);
+  const diskUsedPercent = Number(value.diskUsedPercent);
+  if (!Number.isFinite(load1) || load1 < 0
+    || !Number.isFinite(memoryAvailableKb) || memoryAvailableKb < 0
+    || !Number.isFinite(diskUsedPercent) || diskUsedPercent < 0 || diskUsedPercent > 100) return undefined;
+  return {
+    load1,
+    memoryAvailableKb,
+    memoryAvailableBytes: memoryAvailableKb * 1024,
+    diskUsedPercent,
+    sampledAt: Number(computer.last_health || 0) || null,
+    status: computer.observed_state === "running" ? "live" : "last_known",
+  };
+}
+
 export function channelComputerView(channelId: number): Record<string, unknown> | null {
   const computer = channelComputer(channelId);
   if (!computer) return null;
   const obligations = computerObligations(channelId);
+  const pressure = channelComputerPressure(computer);
   return {
     backend: computer.backend,
     machine_id: computer.machine_id,
@@ -164,7 +188,16 @@ export function channelComputerView(channelId: number): Record<string, unknown> 
     observed_state: computer.observed_state,
     cpus: computer.cpus,
     memory_bytes: computer.memory_bytes,
-    disk_bytes: computer.disk_bytes,
+    // `disk_bytes` in the persistence model predates the mirror boundary and
+    // is not a VM disk allocation. Never serialize it under a capacity-like
+    // name. Apple's runtime in particular exposes the host filesystem's
+    // ceiling inside the guest, which is not storage reserved for this VM.
+    mirror_quota_bytes: computer.disk_bytes,
+    mirror_quota_purpose: "Maximum channel workspace copied across the guest-to-host mirror safety boundary; not VM storage capacity.",
+    guest_disk_capacity_bytes: null,
+    guest_disk_capacity_status: "unknown",
+    pressure,
+    pressure_status: pressure ? pressure.status : "unknown",
     home_mount: computer.home_mount,
     provision_status: computer.provision_status,
     maintenance_state: computer.maintenance_state,

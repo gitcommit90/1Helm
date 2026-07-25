@@ -1,15 +1,16 @@
-import { api, downloadAuthenticatedFile, openAuthenticatedFile, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type AgentQuestions, type ThreadUsage, type RoutingModel } from "./api.ts";
+import { api, downloadAuthenticatedFile, openAuthenticatedFile, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type AgentQuestions, type ThreadFollowup, type ThreadUsage, type RoutingModel } from "./api.ts";
 import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, icon, helmMark, type ChannelLink } from "./dom.ts";
 import { openSettings, finishOpenRouterOAuth, refreshOpenSkillsSettings } from "./settings.ts";
 import { hydrateNotificationPreferences, playNotification } from "./notifications.ts";
-import { pushRoutingActivity } from "./routing.ts";
+import { openRoutingPopover, pushRoutingActivity } from "./routing.ts";
 import { openOnboarding } from "./onboarding.ts";
 import { defaultTerminalComputer, openTerminals, refitChannelTerminals, getTerminalChrome } from "./term.ts";
-import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderThreads, type ChannelView } from "./channel.ts";
+import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderNotes, renderThreads, type ChannelView } from "./channel.ts";
 
 /** Per-channel layout bound to the user profile (server user_ui_state). */
 type ChannelUiView = {
   terminalOpen: boolean;
+  notesOpen: boolean;
   serversListOpen: boolean;
   preferredComputerId: number | null;
   threadRootId: number | null;
@@ -19,28 +20,37 @@ type State = {
   workspace: Workspace;
   channelId: number; channelBots: Bot[]; messages: Message[];
   threadRoot: Message | null; threadReplies: Message[]; view: ChannelView;
-  /** Live rough model usage for the open thread (provider-reported). */
+  /** Cumulative provider-reported model usage for the open thread. */
   threadUsage: ThreadUsage;
+  /** The same next persisted wake exposed on Board for the open thread. */
+  threadFollowup: ThreadFollowup | null;
   mobileMenuOpen: boolean;
   preferredTerminalComputerId: number | null;
   /** Docked RHS terminal for the current channel (header Terminals button). */
   terminalOpen: boolean;
+  /** Docked RHS Markdown notes for the current channel (header Notes button). */
+  notesOpen: boolean;
   serversListOpen: boolean;
   /** Profile-bound per-channel layout: key = channelId. */
   channelViews: Record<number, ChannelUiView>;
   /** Workspace-wide Threads inbox (sidebar), not the per-channel Threads tab. */
   globalThreadsOpen: boolean;
   globalThreadsUnreadOnly: boolean;
+  /** Profile-bound sidebar preference loaded from /api/me/ui-state. */
+  groupUnreadChannelsFirst: boolean;
 };
 export const S = {
   mobileMenuOpen: false,
   preferredTerminalComputerId: null,
   terminalOpen: false,
+  notesOpen: false,
   serversListOpen: false,
   channelViews: {},
   globalThreadsOpen: false,
   globalThreadsUnreadOnly: false,
+  groupUnreadChannelsFirst: false,
   threadUsage: { input_tokens: 0, output_tokens: 0 },
+  threadFollowup: null,
 } as State;
 
 /** One-shot: next chat/thread paint must land on latest messages (channel open / hop). */
@@ -63,6 +73,7 @@ function pinScrollBottom(id: string, frames = 2): void {
 
 const defaultChannelView = (): ChannelUiView => ({
   terminalOpen: false,
+  notesOpen: false,
   serversListOpen: false,
   preferredComputerId: null,
   threadRootId: null,
@@ -74,6 +85,7 @@ function getChannelView(channelId: number): ChannelUiView {
 function applyChannelViewToState(channelId: number): void {
   const view = getChannelView(channelId);
   S.terminalOpen = !!view.terminalOpen;
+  S.notesOpen = !!view.notesOpen;
   S.serversListOpen = !!view.serversListOpen;
   S.preferredTerminalComputerId = view.preferredComputerId;
 }
@@ -81,8 +93,9 @@ let uiStateSaveTimer: ReturnType<typeof setTimeout> | null = null;
 function schedulePersistChannelView(channelId: number): void {
   if (!channelId || !S.me?.id) return;
   const snapshot: ChannelUiView = channelId === S.channelId
-    ? {
+      ? {
         terminalOpen: !!S.terminalOpen,
+        notesOpen: !!S.notesOpen,
         serversListOpen: !!S.serversListOpen,
         preferredComputerId: S.preferredTerminalComputerId,
         threadRootId: S.threadRoot?.id ?? null,
@@ -105,6 +118,7 @@ async function loadUiState(): Promise<void> {
   try {
     const result = await api<{ state: Record<string, unknown> }>("/api/me/ui-state");
     hydrateNotificationPreferences(result.state.notification_preferences);
+    S.groupUnreadChannelsFirst = result.state.group_unread_channels_first === true;
     const next: Record<number, ChannelUiView> = {};
     for (const [key, value] of Object.entries(result.state || {})) {
       const match = /^channel_view:(\d+)$/.exec(key);
@@ -112,6 +126,7 @@ async function loadUiState(): Promise<void> {
       const raw = value as Partial<ChannelUiView>;
       next[Number(match[1])] = {
         terminalOpen: !!raw.terminalOpen,
+        notesOpen: !!raw.notesOpen,
         serversListOpen: !!raw.serversListOpen,
         preferredComputerId: raw.preferredComputerId == null ? null : Number(raw.preferredComputerId) || null,
         threadRootId: raw.threadRootId == null ? null : Number(raw.threadRootId) || null,
@@ -137,7 +152,7 @@ export function toggleTheme(): void {
 }
 
 type AppRoute = { slug: string | null; view: ChannelView; threadRootId: number | null };
-const VIEWS = new Set<ChannelView>(["chat", "board", "threads", "files", "terminal", "memory", "activity", "settings"]);
+const VIEWS = new Set<ChannelView>(["chat", "board", "threads", "notes", "files", "terminal", "memory", "activity", "settings"]);
 function readRoute(): AppRoute {
   const parts = location.pathname.split("/").filter(Boolean);
   if (parts[0] !== "c" || !parts[1]) return { slug: null, view: "chat", threadRootId: null };
@@ -308,7 +323,7 @@ async function loadWorkspace(): Promise<void> {
 async function openChannel(id: number, view: ChannelView = "chat", threadRootId: number | null = null, replaceRoute = false): Promise<void> {
   // Persist the channel we're leaving so terminal/thread docks survive hops.
   if (S.channelId && S.channelId !== id) persistCurrentChannelView();
-  S.channelId = id; S.threadRoot = null; S.threadUsage = { input_tokens: 0, output_tokens: 0 }; S.view = view; S.globalThreadsOpen = false;
+  S.channelId = id; S.threadRoot = null; S.threadFollowup = null; S.threadUsage = { input_tokens: 0, output_tokens: 0 }; S.view = view; S.globalThreadsOpen = false;
   applyChannelViewToState(id);
   // Full Terminal tab is separate from the docked header terminal.
   if (view === "terminal") S.terminalOpen = false;
@@ -459,9 +474,13 @@ function onEvent(e: any): void {
       renderChannelView();
     }
   } else if (e.type === "followup") {
-    // Durable agent wake scheduled/cleared — Board Scheduled lane + countdown need a refresh.
+    // Durable agent wake scheduled/cleared — Board and the open thread share this source.
     if (Number(e.channelId) === Number(S.channelId) && (S.view === "board" || S.view === "threads")) {
       renderChannelView();
+    }
+    if (Number(e.channelId) === Number(S.channelId) && S.threadRoot && Number(e.rootMessageId) === Number(S.threadRoot.id)) {
+      S.threadFollowup = e.followup || null;
+      paintThreadFollowup();
     }
   } else if (e.type === "channel_bots") { if (S.channelBots) { S.channelBots = e.bots; renderHeader(); } }
   else if (e.type === "thread_usage") {
@@ -753,10 +772,19 @@ function sidebar(drawer = false): HTMLElement {
         "aria-hidden": "true",
       }, h("span"), h("span"), h("span")));
   };
-  const channels = S.channels.filter((c) => c.kind === "channel" && c.status !== "archived");
+  const allChannels = S.channels.filter((c) => c.kind === "channel" && c.status !== "archived");
   const archived = S.channels.filter((c) => c.kind === "channel" && c.status === "archived");
-  const collab = S.channels.filter((c) => c.kind === "collab");
-  const dms = S.channels.filter((c) => c.kind === "dm");
+  const allHuman = S.channels.filter((c) => ["collab", "human"].includes(c.kind) && c.status !== "archived");
+  const allDms = S.channels.filter((c) => c.kind === "dm" && c.status !== "archived");
+  const favorites = S.channels.filter((c) => c.status !== "archived" && c.favorite);
+  const favoriteIds = new Set(favorites.map((c) => c.id));
+  const unreads = S.groupUnreadChannelsFirst
+    ? S.channels.filter((c) => c.status !== "archived" && Number(c.unread) > 0 && !favoriteIds.has(c.id))
+    : [];
+  const groupedUnreadIds = new Set([...favorites, ...unreads].map((c) => c.id));
+  const channels = allChannels.filter((c) => !groupedUnreadIds.has(c.id));
+  const human = allHuman.filter((c) => !groupedUnreadIds.has(c.id));
+  const dms = allDms.filter((c) => !groupedUnreadIds.has(c.id));
   const theme = currentTheme();
 
   return h("aside", {
@@ -767,12 +795,12 @@ function sidebar(drawer = false): HTMLElement {
     "aria-modal": drawer ? "true" : undefined, "aria-label": drawer ? "Workspace navigation" : undefined,
   },
     h("div", { class: "flex items-center justify-between border-b border-white/10 px-4 py-3.5" },
-      h("div", { class: "flex min-w-0 items-center gap-2.5 font-semibold text-white" }, h("span", { class: `logo-plate h-7 w-7 rounded-md${S.workspace?.photo_url ? " logo-plate-photo" : ""}` }, h("img", { class: `logo-asset${S.workspace?.photo_url ? " logo-asset-fill" : ""}`, src: workspacePhotoSrc(S.workspace?.photo_url, "sidebar"), alt: S.workspace?.name || "1Helm" })), h("span", { class: "truncate text-[15px] tracking-[-0.01em]" }, S.workspace?.name || "1Helm")),
+      h("div", { class: "flex min-w-0 flex-1 items-start gap-2.5 pr-1 font-semibold text-white" }, h("span", { class: `logo-plate h-7 w-7 shrink-0 rounded-md${S.workspace?.photo_url ? " logo-plate-photo" : ""}` }, h("img", { class: `logo-asset${S.workspace?.photo_url ? " logo-asset-fill" : ""}`, src: workspacePhotoSrc(S.workspace?.photo_url, "sidebar"), alt: S.workspace?.name || "1Helm" })), h("span", { class: "min-w-0 whitespace-normal break-words text-[15px] leading-5 tracking-[-0.01em]", dataset: { workspaceName: "" } }, S.workspace?.name || "1Helm")),
       h("div", { class: "flex items-center gap-1" },
         h("button", { class: "grid h-9 w-9 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: theme === "light" ? "Switch to dark" : "Switch to light", onclick: toggleTheme }, icon(theme === "light" ? "moon" : "sun")),
         drawer ? h("button", { class: "grid h-11 w-11 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: "Close navigation", "aria-label": "Close navigation", dataset: { drawerClose: "" }, onclick: closeMobileMenu }, icon("x", 20)) : null)),
     h("div", { class: "flex-1 space-y-5 overflow-y-auto px-2 py-3" },
-      channels.length ? h("div", { class: "px-1 pb-1" },
+      allChannels.length ? h("div", { class: "px-1 pb-1" },
         h("button", {
           type: "button",
           class: `nav-item w-full ${S.globalThreadsOpen ? "nav-item-active" : "nav-item-idle"}`,
@@ -782,9 +810,11 @@ function sidebar(drawer = false): HTMLElement {
         },
           h("span", { class: "shrink-0 text-sidebar-muted" }, icon("thread", 14)),
           h("span", { class: "flex-1 truncate text-left" }, "Threads"))) : null,
+      favorites.length ? h("div", { dataset: { sidebarFavorites: "" } }, h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Favorites"), h("div", { class: "space-y-px" }, ...favorites.map(chan))) : null,
+      unreads.length ? h("div", { dataset: { sidebarUnreads: "" } }, h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Unreads"), h("div", { class: "space-y-px" }, ...unreads.map(chan))) : null,
       channels.length || S.me.is_admin ? h("div", {}, sbSection("Agent channels", () => newChannel()), h("div", { class: "space-y-px" }, ...channels.map(chan))) : null,
       archived.length ? h("div", {}, h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Archived"), h("div", { class: "space-y-px opacity-65" }, ...archived.map(chan))) : null,
-      collab.length ? h("div", {}, h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Human space"), h("div", { class: "space-y-px" }, ...collab.map(chan))) : null,
+      h("div", {}, sbSection("Human channels", () => newHumanChannel()), h("div", { class: "space-y-px" }, ...human.map(chan), human.length === 0 && h("p", { class: "px-2 py-1 text-[13px] text-sidebar-muted" }, "No human channels yet"))),
       h("div", {}, sbSection("Direct messages", () => newDM()), h("div", { class: "space-y-px" }, ...dms.map(chan), dms.length === 0 && h("p", { class: "px-2 py-1 text-[13px] text-sidebar-muted" }, "No conversations yet")))),
     h("button", {
       class: "mx-2 mb-1 flex min-h-10 items-center gap-2 rounded-md px-2 py-1.5 text-xs text-sidebar-muted hover:bg-sidebar-hover hover:text-white",
@@ -903,9 +933,72 @@ function openProfile(anchor: HTMLElement): void {
   const jobTitle = h("input", { class: "field", value: S.me.job_title || "", placeholder: "Job title", maxlength: 160 }) as HTMLInputElement;
   const description = h("textarea", { class: "field min-h-24 resize-y", placeholder: "A little about you and how you work", maxlength: 1000 }, S.me.description || "") as HTMLTextAreaElement;
   description.value = S.me.description || "";
-  const photo = avatar(S.me.display, "user", 16, S.me.avatar);
+  const photoSlot = h("div", { class: "shrink-0" }, avatar(S.me.display, "user", 20, S.me.avatar));
   const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", class: "hidden" }) as HTMLInputElement;
   const status = h("p", { class: "min-h-5 text-xs text-muted" });
+  const cropCanvas = h("canvas", { width: 320, height: 320, class: "aspect-square h-auto w-full cursor-move touch-none rounded-xl bg-raised object-cover", "aria-label": "Move photo crop" }) as HTMLCanvasElement;
+  const cropZoom = h("input", { type: "range", min: "1", max: "3", step: "0.01", value: "1", class: "w-full accent-accent", "aria-label": "Photo zoom" }) as HTMLInputElement;
+  const cropPanel = h("div", { class: "hidden space-y-2 rounded-xl border border-line bg-panel p-3", dataset: { profilePhotoCrop: "" } },
+    h("div", { class: "mx-auto w-full max-w-72 overflow-hidden rounded-xl" }, cropCanvas),
+    h("label", { class: "flex items-center gap-3 text-xs font-semibold text-fg" }, "Zoom", cropZoom),
+    h("p", { class: "text-center text-[11px] leading-4 text-muted" }, "Drag to move the photo inside the square. The compressed square preview uploads only when you save."));
+  let crop: { image: HTMLImageElement; url: string; zoom: number; x: number; y: number } | null = null;
+  let drag: { pointerId: number; x: number; y: number; startX: number; startY: number } | null = null;
+  const cropBounds = (): { scale: number; minX: number; minY: number } | null => {
+    if (!crop) return null;
+    const scale = Math.max(cropCanvas.width / crop.image.naturalWidth, cropCanvas.height / crop.image.naturalHeight) * crop.zoom;
+    return { scale, minX: cropCanvas.width - crop.image.naturalWidth * scale, minY: cropCanvas.height - crop.image.naturalHeight * scale };
+  };
+  const clampCrop = (): void => {
+    const bounds = cropBounds(); if (!crop || !bounds) return;
+    crop.x = Math.min(0, Math.max(bounds.minX, crop.x));
+    crop.y = Math.min(0, Math.max(bounds.minY, crop.y));
+  };
+  const paintCrop = (): void => {
+    const ctx = cropCanvas.getContext("2d"); const bounds = cropBounds();
+    if (!ctx || !crop || !bounds) return;
+    clampCrop(); ctx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
+    ctx.drawImage(crop.image, crop.x, crop.y, crop.image.naturalWidth * bounds.scale, crop.image.naturalHeight * bounds.scale);
+  };
+  const centerCrop = (): void => {
+    const bounds = cropBounds(); if (!crop || !bounds) return;
+    crop.x = bounds.minX / 2; crop.y = bounds.minY / 2; paintCrop();
+  };
+  cropZoom.oninput = () => {
+    if (!crop) return;
+    const oldBounds = cropBounds(); if (!oldBounds) return;
+    const centerX = (cropCanvas.width / 2 - crop.x) / oldBounds.scale;
+    const centerY = (cropCanvas.height / 2 - crop.y) / oldBounds.scale;
+    crop.zoom = Number(cropZoom.value);
+    const nextBounds = cropBounds(); if (!nextBounds) return;
+    crop.x = cropCanvas.width / 2 - centerX * nextBounds.scale;
+    crop.y = cropCanvas.height / 2 - centerY * nextBounds.scale;
+    paintCrop();
+  };
+  cropCanvas.onpointerdown = (event) => {
+    if (!crop) return;
+    drag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, startX: crop.x, startY: crop.y };
+    cropCanvas.setPointerCapture(event.pointerId);
+  };
+  cropCanvas.onpointermove = (event) => {
+    if (!crop || !drag || drag.pointerId !== event.pointerId) return;
+    const ratio = cropCanvas.width / cropCanvas.getBoundingClientRect().width;
+    crop.x = drag.startX + (event.clientX - drag.x) * ratio;
+    crop.y = drag.startY + (event.clientY - drag.y) * ratio;
+    paintCrop();
+  };
+  cropCanvas.onpointerup = cropCanvas.onpointercancel = (event) => {
+    if (drag?.pointerId === event.pointerId) drag = null;
+  };
+  const renderedPhoto = async (): Promise<Blob | null> => {
+    if (!crop) return null;
+    const output = document.createElement("canvas"); output.width = 512; output.height = 512;
+    const ctx = output.getContext("2d"); const bounds = cropBounds(); if (!ctx || !bounds) return null;
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, 512, 512);
+    const ratio = output.width / cropCanvas.width;
+    ctx.drawImage(crop.image, crop.x * ratio, crop.y * ratio, crop.image.naturalWidth * bounds.scale * ratio, crop.image.naturalHeight * bounds.scale * ratio);
+    return new Promise((resolve) => output.toBlob(resolve, "image/jpeg", 0.86));
+  };
   const updateStatus = h("p", { class: "mt-1 min-h-4 text-xs leading-5 text-muted", dataset: { profileUpdateStatus: "" } });
   const updateLabel = h("p", { class: "font-mono text-[10px] leading-4 text-faint" }, "1Helm");
   const updateButton = h("button", {
@@ -966,8 +1059,8 @@ function openProfile(anchor: HTMLElement): void {
     }
   };
   updateButton.onclick = () => { void runUpdateAction("download"); };
-  const pop = h("div", { id: "profile-popover", class: "card fixed bottom-3 left-3 z-50 w-[min(420px,calc(100vw-1.5rem))] space-y-4 p-4 shadow-2xl" });
-  const close = (): void => { window.clearTimeout(updatePoll); pop.remove(); document.removeEventListener("mousedown", outside); document.removeEventListener("keydown", keydown); };
+  const pop = h("div", { id: "profile-popover", class: "card fixed bottom-3 left-3 z-50 max-h-[calc(100dvh-1.5rem)] w-[min(520px,calc(100vw-1.5rem))] space-y-4 overflow-y-auto p-4 shadow-2xl" });
+  const close = (): void => { window.clearTimeout(updatePoll); if (crop) URL.revokeObjectURL(crop.url); pop.remove(); document.removeEventListener("mousedown", outside); document.removeEventListener("keydown", keydown); };
   const outside = (event: MouseEvent): void => { if (!pop.contains(event.target as Node) && !anchor.contains(event.target as Node)) close(); };
   const keydown = (event: KeyboardEvent): void => { if (event.key === "Escape") close(); };
   const acceptUser = (user: User): void => { S.me = user; const index = S.users.findIndex((item) => item.id === user.id); if (index >= 0) S.users[index] = user; };
@@ -975,26 +1068,44 @@ function openProfile(anchor: HTMLElement): void {
     status.textContent = "Saving…";
     try {
       acceptUser((await api<{ user: User }>("/api/me/profile", { method: "PATCH", body: { display: display.value, job_title: jobTitle.value, description: description.value } })).user);
+      const image = await renderedPhoto();
+      if (image) {
+        status.textContent = "Compressing and saving photo…";
+        const response = await fetch("/api/me/avatar", { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": image.type }, body: image });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        acceptUser(result.user);
+      }
       status.textContent = "Profile saved.";
       close(); renderSidebar(); renderHeader();
     } catch (error) { status.textContent = (error as Error).message; }
   };
-  file.onchange = async () => {
+  file.onchange = () => {
     const image = file.files?.[0]; if (!image) return;
-    status.textContent = "Uploading photo…";
-    const response = await fetch("/api/me/avatar", { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": image.type }, body: image });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) { status.textContent = result.error || `HTTP ${response.status}`; return; }
-    acceptUser(result.user); photo.replaceWith(avatar(S.me.display, "user", 16, S.me.avatar)); status.textContent = "Photo updated.";
+    if (image.size > 25 * 1024 * 1024) { status.textContent = "Choose an image smaller than 25 MB."; return; }
+    const url = URL.createObjectURL(image);
+    const source = new Image();
+    source.onload = () => {
+      if (crop) URL.revokeObjectURL(crop.url);
+      crop = { image: source, url, zoom: 1, x: 0, y: 0 };
+      cropZoom.value = "1"; cropPanel.classList.remove("hidden"); centerCrop();
+      status.textContent = "Photo ready. Adjust the crop, then choose Save profile.";
+    };
+    source.onerror = () => { URL.revokeObjectURL(url); status.textContent = "This image could not be opened."; };
+    source.src = url;
   };
   pop.append(
     h("div", { class: "flex items-start justify-between gap-3" }, h("div", {}, h("h2", { class: "font-display text-xl text-fg" }, "Profile"), h("p", { class: "mt-1 text-xs text-muted" }, `@${S.me.username}`)), h("button", { class: "grid h-8 w-8 place-items-center rounded text-muted hover:bg-hover", "aria-label": "Close profile", onclick: close }, icon("x"))),
-    h("div", { class: "flex items-center gap-3" }, photo, h("div", { class: "flex flex-wrap gap-2" }, h("label", { class: "btn-subtle cursor-pointer text-xs" }, "Choose photo", file), S.me.avatar ? h("button", { class: "btn-ghost text-xs", onclick: async () => { acceptUser((await api<{ user: User }>("/api/me/avatar", { method: "DELETE" })).user); close(); renderSidebar(); renderHeader(); } }, "Remove") : null)),
+    h("div", { class: "flex items-center gap-3" }, photoSlot, h("div", { class: "flex flex-wrap gap-2" }, h("label", { class: "btn-subtle cursor-pointer text-xs" }, "Choose photo", file), S.me.avatar ? h("button", { class: "btn-ghost text-xs", onclick: async () => { acceptUser((await api<{ user: User }>("/api/me/avatar", { method: "DELETE" })).user); close(); renderSidebar(); renderHeader(); } }, "Remove") : null)),
+    cropPanel,
     h("div", { class: "grid gap-3 sm:grid-cols-2" }, h("label", { class: "space-y-1 text-xs font-semibold text-fg" }, "Display name", display), h("label", { class: "space-y-1 text-xs font-semibold text-fg" }, "Job title", jobTitle)),
     h("label", { class: "block space-y-1 text-xs font-semibold text-fg" }, "Description", description),
     h("div", { class: "flex items-center justify-between gap-3" },
       status,
-      h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save profile")));
+      h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save profile")),
+    h("p", { class: "border-t border-line pt-3 text-xs leading-5 text-muted" },
+      "1Helm is AGPL-3.0-only. ",
+      h("a", { class: "text-accent hover:underline", href: "https://github.com/gitcommit90/1Helm", target: "_blank", rel: "noopener noreferrer" }, "View source code ↗")));
   if (S.me.is_admin) pop.append(h("section", { class: "flex items-center justify-between gap-3 border-t border-line pt-3", dataset: { profileUpdate: "" } },
     h("div", { class: "min-w-0" }, updateLabel, updateStatus),
     updateButton));
@@ -1013,6 +1124,41 @@ function newChannel(): void {
     await loadWorkspace();
     await openChannel(created.id);
   });
+}
+function newHumanChannel(): void {
+  document.getElementById("new-human-channel")?.remove();
+  const overlay = h("div", { id: "new-human-channel", class: "modal-overlay fixed inset-0 z-50 grid place-items-end bg-black/55 p-0 sm:place-items-center sm:p-6", role: "dialog", "aria-modal": "true", "aria-label": "Create human channel" });
+  const name = h("input", { class: "field", maxlength: 100, placeholder: "Channel name", autocomplete: "off", dataset: { humanChannelName: "" } }) as HTMLInputElement;
+  const status = h("p", { class: "min-h-5 text-xs text-muted", dataset: { humanChannelStatus: "" } });
+  const selected = new Set<number>();
+  const people = h("div", { class: "max-h-52 space-y-1 overflow-y-auto rounded-lg border border-line bg-panel p-2" });
+  const others = S.users.filter((user) => user.id !== S.me.id);
+  if (S.me.is_admin && others.length) {
+    for (const user of others) {
+      const checkbox = h("input", { type: "checkbox", class: "accent-accent", value: String(user.id) }) as HTMLInputElement;
+      checkbox.onchange = () => { if (checkbox.checked) selected.add(user.id); else selected.delete(user.id); };
+      people.append(h("label", { class: "flex items-center gap-2 rounded-md px-2 py-2 text-sm text-fg hover:bg-hover" }, checkbox, avatar(user.display, "user", 6, user.avatar), h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block truncate font-semibold" }, user.display), h("span", { class: "block truncate text-[11px] text-muted" }, `@${user.username}`))));
+    }
+  } else {
+    people.append(h("p", { class: "px-2 py-2 text-xs leading-5 text-muted" }, S.me.is_admin ? "No other workspace members are available yet." : "The Captain can add workspace members when creating a shared human channel."));
+  }
+  const close = (): void => overlay.remove();
+  const create = h("button", { class: "btn-primary min-h-11 px-4 text-sm", dataset: { humanChannelCreate: "" } }, "Create channel") as HTMLButtonElement;
+  create.onclick = async () => {
+    const channelName = name.value.trim().slice(0, 100);
+    if (!channelName) { status.textContent = "Enter a channel name."; name.focus(); return; }
+    create.disabled = true; status.textContent = "Creating human-only channel…";
+    try {
+      const result = await api<{ channel: Channel }>("/api/human-channels", { method: "POST", body: { name: channelName, member_ids: [...selected] } });
+      close(); await loadWorkspace(); await openChannel(result.channel.id);
+    } catch (error) { create.disabled = false; status.textContent = (error as Error).message; }
+  };
+  overlay.onclick = (event) => { if (event.target === overlay) close(); };
+  overlay.append(h("section", { class: "card mobile-sheet w-full max-w-md overflow-hidden rounded-b-none shadow-2xl sm:rounded-xl" },
+    h("div", { class: "flex items-start justify-between gap-3 border-b border-line px-4 py-4 sm:px-6" }, h("div", {}, h("h2", { class: "font-display text-[1.4rem] leading-tight text-fg" }, "Create human channel"), h("p", { class: "mt-1 text-xs leading-5 text-muted" }, "A private conversation for people only—no resident agent or channel computer.")), h("button", { class: "grid h-9 w-9 place-items-center rounded text-muted hover:bg-hover", "aria-label": "Close", onclick: close }, icon("x"))),
+    h("div", { class: "space-y-3 p-4 sm:p-6" }, h("label", { class: "block space-y-1 text-xs font-semibold text-fg" }, "Name", name), h("div", {}, h("div", { class: "mb-1 text-xs font-semibold text-fg" }, "People"), people), status),
+    h("div", { class: "flex justify-end gap-2 border-t border-line px-4 py-4 sm:px-6" }, h("button", { class: "btn-subtle min-h-11 px-4 text-sm", onclick: close }, "Cancel"), create)));
+  document.body.append(overlay); name.focus();
 }
 function newDM(): void {
   const others = S.users.filter((u) => u.id !== S.me.id);
@@ -1066,14 +1212,17 @@ function renderMain(): void {
     return;
   }
   const channel = S.channels.find((item) => item.id === S.channelId);
-  if (channel?.kind !== "channel") { S.view = "chat"; S.terminalOpen = false; }
+  if (channel?.kind !== "channel") { S.view = "chat"; S.terminalOpen = false; S.notesOpen = false; }
   if (S.view !== "chat") {
     main.append(h("section", { class: "flex min-w-0 flex-1 flex-col" }, h("div", { id: "hdr" }), channelTabs(), h("div", { id: "channelview", class: "min-h-0 flex-1 overflow-y-auto" })));
     renderHeader(); renderChannelView();
     return;
   }
-  const showRhs = !!(S.threadRoot || (S.terminalOpen && channel?.kind === "channel" && S.workspace?.terminals_enabled !== false));
-  const split = !!(S.threadRoot && S.terminalOpen);
+  const showRhs = !!(S.threadRoot
+    || (S.terminalOpen && channel?.kind === "channel" && S.workspace?.terminals_enabled !== false)
+    || (S.notesOpen && channel?.kind === "channel"));
+  const rhsCount = Number(Boolean(S.threadRoot)) + Number(Boolean(S.terminalOpen)) + Number(Boolean(S.notesOpen));
+  const split = rhsCount > 1;
   const parts: HTMLElement[] = [
     h("section", { class: "flex min-w-0 flex-1 flex-col" }, h("div", { id: "hdr" }), channel?.kind === "channel" ? channelTabs() : null, h("div", { id: "msgs", class: "flex-1 overflow-y-auto py-3" }), composer(null)),
   ];
@@ -1091,7 +1240,8 @@ function renderMain(): void {
 function renderRhs(): void {
   const el = document.getElementById("thread");
   if (!el) return;
-  const split = !!(S.threadRoot && S.terminalOpen);
+  const rhsCount = Number(Boolean(S.threadRoot)) + Number(Boolean(S.terminalOpen)) + Number(Boolean(S.notesOpen));
+  const split = rhsCount > 1;
   const priorThread = document.getElementById("threadmsgs");
   const priorTop = priorThread?.scrollTop ?? 0;
   const forceBottom = forceThreadScrollBottom;
@@ -1124,10 +1274,15 @@ function renderRhs(): void {
   });
   el.append(resizeHandle);
 
+  let mounted = 0;
+  const paneClass = (): string => {
+    mounted += 1;
+    return `flex min-h-0 min-w-0 flex-col ${split ? `flex-1 ${mounted < rhsCount ? "border-b border-line" : ""}` : "min-h-0 flex-1"}`;
+  };
   if (S.threadRoot) {
     const threadBox = h("div", {
       id: "thread-panel",
-      class: `flex min-h-0 min-w-0 flex-col ${split ? "flex-1 border-b border-line" : "min-h-0 flex-1"}`,
+      class: paneClass(),
     });
     el.append(threadBox);
     paintThreadPanel(threadBox, priorTop, stickThread, forceBottom);
@@ -1135,10 +1290,15 @@ function renderRhs(): void {
   if (S.terminalOpen) {
     const termBox = h("div", {
       id: "term-dock",
-      class: `term-dock flex min-h-0 min-w-0 flex-col ${split ? "flex-1" : "min-h-0 flex-1"}`,
+      class: `term-dock ${paneClass()}`,
     });
     el.append(termBox);
     paintDockedTerminal(termBox);
+  }
+  if (S.notesOpen) {
+    const notesBox = h("div", { id: "notes-dock", class: paneClass() });
+    el.append(notesBox);
+    renderNotes(notesBox, S.channelId, closeDockedNotes);
   }
 }
 
@@ -1183,7 +1343,7 @@ function renderGlobalThreadsHeader(): void {
 function channelTabs(): HTMLElement {
   const currentChannel = S.channels.find((channel) => channel.id === S.channelId);
   const tabs: [ChannelView, string][] = [
-    ["chat", "Chat"], ["board", "Board"], ["threads", "Threads"], ["files", "Files"],
+    ["chat", "Chat"], ["board", "Board"], ["threads", "Threads"], ["notes", "Notes"], ["files", "Files"],
     ["terminal", "Terminal"], ["memory", "Memory"], ["activity", "Activity"], ["settings", "Settings"],
   ];
   return h("nav", { class: "flex shrink-0 gap-2 overflow-x-auto border-b border-line bg-surface px-3" }, ...tabs
@@ -1199,6 +1359,7 @@ export function navigateChannelView(view: ChannelView): void {
     S.terminalOpen = false;
     S.preferredTerminalComputerId = S.preferredTerminalComputerId ?? getChannelView(S.channelId).preferredComputerId ?? defaultTerminalComputer(S.channelId);
   }
+  if (view === "notes") S.notesOpen = false;
   persistCurrentChannelView();
   renderApp();
   writeRoute(S.channels.find((channel) => channel.id === S.channelId), view, null);
@@ -1234,6 +1395,24 @@ export function openTerminalsFromHeader(): void {
   writeRoute(channel, "chat", S.threadRoot?.id ?? null);
 }
 
+/** Header Notes — dock RHS like a thread or terminal while keeping chat visible. */
+export function openNotesFromHeader(): void {
+  const channel = S.channels.find((item) => item.id === S.channelId);
+  if (!channel || channel.kind !== "channel") {
+    void appAlert("Open an agent channel to use notes.");
+    return;
+  }
+  if (channel.status === "archived") {
+    void appAlert("Restore the channel before editing its notes.");
+    return;
+  }
+  if (S.view !== "chat") S.view = "chat";
+  S.notesOpen = !S.notesOpen;
+  persistCurrentChannelView();
+  renderApp();
+  writeRoute(channel, "chat", S.threadRoot?.id ?? null);
+}
+
 function openTerminalOnComputer(computerId: number): void {
   // Full-tab path (channel Terminal tab / legacy).
   S.preferredTerminalComputerId = computerId;
@@ -1257,6 +1436,7 @@ export function renderChannelView(): void {
     void openThread(root);
   });
   else if (S.view === "threads") renderThreads(container, channel.id, (thread) => { S.view = "chat"; renderApp(); void openThread(thread.root); });
+  else if (S.view === "notes") renderNotes(container, channel.id);
   else if (S.view === "files") renderFiles(container, channel.id);
   else if (S.view === "memory") renderMemory(container, channel.id);
   else if (S.view === "activity") renderActivity(container, channel.id);
@@ -1296,13 +1476,37 @@ function renderHeader(): void {
     });
   };
   const terminalsEnabled = S.workspace?.terminals_enabled !== false && (agent?.kind === "channel" || S.me.is_admin);
+  const toggleFavorite = async (): Promise<void> => {
+    if (!channel) return;
+    const favorite = !channel.favorite;
+    channel.favorite = favorite;
+    renderHeader(); renderSidebar();
+    try {
+      const result = await api<{ channel?: Channel }>(`/api/channels/${channel.id}/favorite`, { method: "PATCH", body: { favorite } });
+      if (result.channel) mergeChannelMeta(result.channel);
+      renderHeader(); renderSidebar();
+    } catch (error) {
+      channel.favorite = !favorite;
+      renderHeader(); renderSidebar();
+      void appAlert((error as Error).message);
+    }
+  };
   add(el,
     h("div", { class: "flex min-w-0 flex-1 items-start gap-2" },
       mobileMenuButton(),
-      h("div", { class: "flex min-w-0 max-w-[46%] shrink items-center gap-1 text-[15px] font-semibold tracking-[-0.01em] text-fg sm:max-w-none sm:text-[16px]" }, channel?.kind === "dm" ? null : h("span", { class: "shrink-0 font-normal text-faint" }, "#"), h("span", { class: "min-w-0 truncate" }, channel?.name || "")),
+      h("div", { class: "flex min-w-0 max-w-[46%] shrink items-start gap-1 text-[15px] font-semibold leading-5 tracking-[-0.01em] text-fg sm:max-w-none sm:text-[16px]" }, channel?.kind === "dm" ? null : h("span", { class: "shrink-0 font-normal text-faint" }, "#"), h("span", { class: "min-w-0 whitespace-normal break-words", title: channel?.name || "" }, channel?.name || "")),
       channel?.purpose ? h("span", { class: "hidden min-w-0 max-w-[38vw] whitespace-normal break-words border-l border-line pl-2.5 text-[12px] leading-4 text-muted xl:inline", title: channel.purpose }, channel.purpose) : null,
       channel?.status === "archived" ? h("span", { class: "chip shrink-0" }, "Paused") : null),
     h("div", { class: "flex max-w-[52%] shrink-0 items-center justify-end gap-1.5 sm:max-w-none sm:gap-2" },
+      channel ? h("button", {
+        class: `grid h-11 w-11 place-items-center rounded-md border border-transparent transition hover:border-line hover:bg-hover sm:h-9 sm:w-9 ${channel.favorite ? "text-accent" : "text-muted hover:text-fg"}`,
+        title: channel.favorite ? "Remove from Favorites" : "Add to Favorites", "aria-label": channel.favorite ? "Remove current channel from Favorites" : "Favorite current channel",
+        "aria-pressed": String(Boolean(channel.favorite)), dataset: { favoriteChannel: String(channel.id) }, onclick: () => { void toggleFavorite(); },
+      }, starIcon(Boolean(channel.favorite))) : null,
+      h("button", {
+        class: "grid h-11 w-11 place-items-center rounded-md border border-transparent text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:h-9 sm:w-9",
+        title: "Open live 1Helm Router activity", "aria-label": "Open 1Helm Router", dataset: { routingHeader: "" }, onclick: (event: MouseEvent) => { void openRoutingPopover(event).catch((error) => appAlert((error as Error).message)); },
+      }, routerSymbolIcon()),
       agent ? h("button", { class: "flex min-h-11 max-w-full items-center gap-1.5 rounded-md border border-transparent px-1.5 py-1 font-mono text-[10px] text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:min-h-0 sm:max-w-[14rem] sm:gap-2 sm:px-2 sm:text-[11px]", title: `${agent.display_name || agent.name} · ${agent.status} · ${agent.provider_kind === "routing" ? "Model fabric" : agent.provider_name || "no provider"} · ${agent.model || "no model"}`, onclick: channel?.can_manage ? () => navigateChannelView("settings") : undefined },
         h("span", { class: `h-1.5 w-1.5 shrink-0 rounded-full ${statusTone}` }), h("span", { class: "min-w-0 truncate" }, "@" + agent.name),
         h("span", { class: "hidden max-w-28 truncate text-faint 2xl:inline" }, agent.model || "no model")) : null,
@@ -1310,7 +1514,28 @@ function renderHeader(): void {
         class: `grid h-11 w-11 place-items-center rounded-md border border-transparent text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:h-9 sm:w-9 ${S.terminalOpen || S.view === "terminal" ? "border-line bg-hover text-fg" : ""}`,
         title: "Terminals", "aria-label": "Open terminals", onclick: openTerminalsFromHeader,
       }, icon("terminal", 18)) : null,
-      channel?.kind === "channel" ? h("button", { class: "btn-subtle min-h-11 px-2.5 text-xs sm:min-h-0 sm:px-3", onclick: callSkipper }, helmMark(14), h("span", { class: "hidden sm:inline" }, "Call Skipper")) : null));
+      channel?.kind === "channel" ? h("button", {
+        class: `grid h-11 w-11 place-items-center rounded-md border border-transparent text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:h-9 sm:w-9 ${S.notesOpen || S.view === "notes" ? "border-line bg-hover text-fg" : ""}`,
+        title: "Notes", "aria-label": "Open channel notes", dataset: { notesHeader: "" }, onclick: openNotesFromHeader,
+      }, icon("file", 18)) : null,
+      channel?.kind === "channel" ? h("button", { class: "btn-subtle min-h-11 px-2.5 text-xs sm:min-h-0 sm:px-3", title: "Call Skipper", onclick: callSkipper }, helmMark(14), h("span", { class: "hidden xl:inline" }, "Call Skipper")) : null));
+}
+
+function starIcon(filled: boolean): SVGElement {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("width", "18"); svg.setAttribute("height", "18");
+  svg.setAttribute("stroke", "currentColor"); svg.setAttribute("stroke-width", "2"); svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("fill", filled ? "currentColor" : "none");
+  svg.innerHTML = '<path d="m12 2.8 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9L6.4 20l1.1-6.2L3 9.4l6.2-.9L12 2.8z"/>';
+  return svg;
+}
+function routerSymbolIcon(): SVGElement {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("width", "18"); svg.setAttribute("height", "18");
+  svg.setAttribute("fill", "none"); svg.setAttribute("stroke", "currentColor"); svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round"); svg.setAttribute("stroke-linejoin", "round");
+  svg.innerHTML = '<circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12h3c3 0 3-6 7-6M10 12c3 0 3 6 7 6"/>';
+  return svg;
 }
 
 function progressOpenIn(root: ParentNode | null): boolean {
@@ -2116,9 +2341,10 @@ function attachments(m: Message): HTMLElement | null {
 
 // ---------------- thread panel ----------------
 async function openThread(root: Message, replaceRoute = false): Promise<void> {
-  const data = await api<{ root: Message; replies: Message[]; usage?: ThreadUsage }>(`/api/messages/${root.id}/thread`);
+  const data = await api<{ root: Message; replies: Message[]; followup?: ThreadFollowup | null; usage?: ThreadUsage }>(`/api/messages/${root.id}/thread`);
   S.threadRoot = data.root;
   S.threadReplies = data.replies;
+  S.threadFollowup = data.followup || null;
   S.threadUsage = {
     input_tokens: Math.max(0, Number(data.usage?.input_tokens || 0)),
     output_tokens: Math.max(0, Number(data.usage?.output_tokens || 0)),
@@ -2133,6 +2359,7 @@ async function openThread(root: Message, replaceRoute = false): Promise<void> {
 }
 function closeThread(): void {
   S.threadRoot = null;
+  S.threadFollowup = null;
   S.threadUsage = { input_tokens: 0, output_tokens: 0 };
   persistCurrentChannelView();
   renderMain();
@@ -2145,7 +2372,13 @@ function closeDockedTerminal(): void {
   renderMain();
 }
 
-/** Compact rough token count for the thread header (1.2k, 340, …). */
+function closeDockedNotes(): void {
+  S.notesOpen = false;
+  persistCurrentChannelView();
+  renderMain();
+}
+
+/** Compact token count for the thread header (1.2k, 340, …). */
 function formatRoughTokens(n: number): string {
   const v = Math.max(0, Math.round(Number(n) || 0));
   if (v >= 1_000_000) {
@@ -2159,17 +2392,72 @@ function formatRoughTokens(n: number): string {
   return String(v);
 }
 
-function threadCtxLabel(usage: ThreadUsage = S.threadUsage): string {
-  return `Ctx ${formatRoughTokens(usage.input_tokens)}/${formatRoughTokens(usage.output_tokens)}`;
+function threadUsageLabel(usage: ThreadUsage = S.threadUsage): string {
+  return `Used ${formatRoughTokens(usage.input_tokens)} in · ${formatRoughTokens(usage.output_tokens)} out`;
 }
 
 function paintThreadCtx(): void {
   const el = document.getElementById("thread-ctx");
   if (!el) return;
-  const label = threadCtxLabel();
+  const label = threadUsageLabel();
   el.textContent = label;
-  el.setAttribute("title", `Rough model usage for this thread · ${S.threadUsage.input_tokens} in / ${S.threadUsage.output_tokens} out`);
+  el.setAttribute("title", `Cumulative provider-reported usage for this thread · ${S.threadUsage.input_tokens} input tokens · ${S.threadUsage.output_tokens} output tokens. This is usage, not remaining context-window capacity.`);
   el.classList.toggle("hidden", !(S.threadUsage.input_tokens || S.threadUsage.output_tokens));
+}
+
+function formatThreadFollowupCountdown(dueAt: number, nowMs = Date.now()): string {
+  const remaining = Math.max(0, Math.floor((dueAt - nowMs) / 1000));
+  if (remaining <= 0) return "now";
+  const hours = Math.floor(remaining / 3600);
+  const minutes = Math.floor((remaining % 3600) / 60);
+  const seconds = remaining % 60;
+  if (hours) return `${hours}h ${String(minutes).padStart(2, "0")}m ${String(seconds).padStart(2, "0")}s`;
+  if (minutes) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  return `${seconds}s`;
+}
+
+let threadFollowupTimer: number | null = null;
+function stopThreadFollowupTicker(): void {
+  if (threadFollowupTimer != null) window.clearInterval(threadFollowupTimer);
+  threadFollowupTimer = null;
+}
+function tickThreadFollowup(): void {
+  const banner = document.querySelector<HTMLElement>("[data-thread-followup]");
+  const countdown = banner?.querySelector<HTMLElement>("[data-thread-followup-countdown]");
+  if (!banner || !countdown || !S.threadFollowup) { stopThreadFollowupTicker(); return; }
+  const dueAt = Number(S.threadFollowup.due_at || 0);
+  countdown.textContent = formatThreadFollowupCountdown(dueAt);
+  countdown.classList.toggle("text-danger", dueAt <= Date.now());
+  countdown.classList.toggle("text-accent", dueAt > Date.now());
+}
+function residentFollowupName(): string {
+  return S.channels.find((channel) => channel.id === S.channelId)?.agent?.name || "Agent";
+}
+function threadFollowupBanner(): HTMLElement | null {
+  const followup = S.threadFollowup;
+  if (!followup?.due_at || followup.status !== "pending") return null;
+  const intent = String(followup.check_hint || followup.reason || "").trim();
+  return h("div", {
+    class: "mx-3 mb-2 rounded-lg border border-accent/30 bg-accent-soft px-3 py-2 sm:mx-4",
+    dataset: { threadFollowup: String(followup.id) },
+    role: "status",
+    title: `Scheduled wake at ${new Date(Number(followup.due_at)).toLocaleString()}`,
+  },
+    h("div", { class: "flex min-w-0 items-center gap-2 text-xs" },
+      h("span", { class: "shrink-0 text-accent" }, icon("helm", 15)),
+      h("span", { class: "min-w-0 flex-1 text-fg" }, h("strong", {}, `@${residentFollowupName()}`), " will check back in ",
+        h("span", { class: "font-mono tabular-nums text-accent", dataset: { threadFollowupCountdown: "" } }, formatThreadFollowupCountdown(Number(followup.due_at)))),
+      h("span", { class: "hidden shrink-0 font-mono text-[9px] uppercase tracking-[0.12em] text-faint sm:inline" }, "scheduled")),
+    intent ? h("p", { class: "mt-1 line-clamp-2 pl-[23px] text-[11px] leading-4 text-muted" }, intent) : null);
+}
+function paintThreadFollowup(): void {
+  const existing = document.querySelector<HTMLElement>("[data-thread-followup]");
+  const next = threadFollowupBanner();
+  if (existing && next) existing.replaceWith(next);
+  else if (existing) existing.remove();
+  else if (next) document.querySelector<HTMLElement>("#thread-panel .composer-wrap")?.before(next);
+  stopThreadFollowupTicker();
+  if (next) { tickThreadFollowup(); threadFollowupTimer = window.setInterval(tickThreadFollowup, 1000); }
 }
 
 /** Fill the thread half (or full RHS) inside an already-built #thread shell. */
@@ -2181,8 +2469,9 @@ function paintThreadPanel(box: HTMLElement, priorTop = 0, stickThread = true, fo
   const ctxChip = h("span", {
     id: "thread-ctx",
     class: `thread-ctx select-none font-mono text-[10px] font-normal tracking-tight text-faint tabular-nums ${hasUsage ? "" : "hidden"}`,
-    title: `Rough model usage for this thread · ${S.threadUsage.input_tokens} in / ${S.threadUsage.output_tokens} out`,
-  }, threadCtxLabel());
+    title: `Cumulative provider-reported usage for this thread · ${S.threadUsage.input_tokens} input tokens · ${S.threadUsage.output_tokens} output tokens. This is usage, not remaining context-window capacity.`,
+  }, threadUsageLabel());
+  const followupBanner = threadFollowupBanner();
   box.append(
     h("div", { class: "app-topbar thread-topbar flex min-h-12 items-center justify-between gap-2 border-b border-line px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2.5" },
       h("div", { class: "flex min-w-0 items-center gap-1.5 sm:gap-2" },
@@ -2204,9 +2493,12 @@ function paintThreadPanel(box: HTMLElement, priorTop = 0, stickThread = true, fo
           onclick: closeThread,
         }, icon("x", 18)))),
     h("div", { id: "threadmsgs", class: "thread-messages min-w-0 flex-1 overflow-y-auto overflow-x-hidden py-2" }),
+    ...(followupBanner ? [followupBanner] : []),
     composer(S.threadRoot.id));
   const tm = document.getElementById("threadmsgs");
   if (tm) fillThreadMessages(tm);
+  stopThreadFollowupTicker();
+  if (S.threadFollowup) { tickThreadFollowup(); threadFollowupTimer = window.setInterval(tickThreadFollowup, 1000); }
   restoreScroll(tm, priorTop, stickThread);
   if (forceBottom) pinScrollBottom("threadmsgs");
 }
@@ -2235,9 +2527,94 @@ function renderThread(): void {
 }
 
 // ---------------- composer ----------------
+type BrowserSpeechRecognition = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: any) => void) | null;
+  onerror: ((event: any) => void) | null;
+  onend: (() => void) | null;
+  start(): void;
+  stop(): void;
+};
+type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
+let activeSpeech: { recognition: BrowserSpeechRecognition; input: HTMLTextAreaElement; button: HTMLButtonElement } | null = null;
+
+function speechRecognitionConstructor(): BrowserSpeechRecognitionConstructor | null {
+  const browser = window as Window & { SpeechRecognition?: BrowserSpeechRecognitionConstructor; webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor };
+  return browser.SpeechRecognition || browser.webkitSpeechRecognition || null;
+}
+function speechRecognitionAvailable(): boolean { return !!speechRecognitionConstructor(); }
+function microphoneIcon(): SVGElement {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("width", "17"); svg.setAttribute("height", "17");
+  svg.setAttribute("fill", "none"); svg.setAttribute("stroke", "currentColor"); svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round"); svg.setAttribute("stroke-linejoin", "round");
+  svg.innerHTML = '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/>';
+  return svg;
+}
+function activeComposerInput(): HTMLTextAreaElement | null {
+  const parent = S.threadRoot ? String(S.threadRoot.id) : "root";
+  return document.querySelector<HTMLTextAreaElement>(`textarea[data-composer-parent="${parent}"]`);
+}
+async function toggleSpeechToText(input = activeComposerInput()): Promise<void> {
+  if (!input) return;
+  if (activeSpeech) {
+    const wasThisInput = activeSpeech.input === input;
+    activeSpeech.recognition.stop();
+    if (wasThisInput) return;
+  }
+  const Recognition = speechRecognitionConstructor();
+  if (!Recognition) {
+    await appAlert("Speech-to-text is not available in this browser. Try the current 1Helm desktop app or a browser with SpeechRecognition support; typing and attachments still work normally.");
+    return;
+  }
+  const button = input.closest(".composer-wrap")?.querySelector<HTMLButtonElement>("[data-speech-toggle]");
+  if (!button) return;
+  const recognition = new Recognition();
+  const original = input.value;
+  const joiner = original && !/\s$/.test(original) ? " " : "";
+  let finalTranscript = "";
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = document.documentElement.lang || navigator.language || "en-US";
+  recognition.onresult = (event: any) => {
+    let interim = "";
+    for (let index = Number(event.resultIndex || 0); index < Number(event.results?.length || 0); index += 1) {
+      const transcript = String(event.results[index]?.[0]?.transcript || "");
+      if (event.results[index]?.isFinal) finalTranscript += transcript;
+      else interim += transcript;
+    }
+    input.value = original + joiner + finalTranscript + interim;
+    input.selectionStart = input.selectionEnd = input.value.length;
+    input.dispatchEvent(new Event("input"));
+  };
+  recognition.onerror = (event: any) => {
+    const reason = String(event.error || "speech recognition failed");
+    button.title = reason === "not-allowed" ? "Microphone access was not allowed" : `Speech-to-text stopped: ${reason}`;
+  };
+  recognition.onend = () => {
+    button.setAttribute("aria-pressed", "false");
+    button.classList.remove("bg-danger/15", "text-danger");
+    button.title = "Dictate · tap Option/Alt to toggle";
+    if (activeSpeech?.recognition === recognition) activeSpeech = null;
+  };
+  activeSpeech = { recognition, input, button };
+  button.setAttribute("aria-pressed", "true");
+  button.classList.add("bg-danger/15", "text-danger");
+  button.title = "Listening… tap again or tap Option/Alt to stop";
+  input.focus();
+  try { recognition.start(); }
+  catch (error) {
+    activeSpeech = null;
+    recognition.onend?.();
+    await appAlert(`Speech-to-text could not start: ${(error as Error).message}`);
+  }
+}
+
 function composer(parentId: number | null): HTMLElement {
   const channel = S.channels.find((item) => item.id === S.channelId);
-  const humanOnly = channel?.kind === "collab";
+  const humanOnly = ["collab", "human"].includes(channel?.kind || "");
   const attachBar = h("div", { class: "flex flex-wrap gap-2 px-1 pt-1 empty:hidden" });
   const input = h("textarea", { class: "max-h-44 min-h-[24px] w-full resize-none bg-transparent px-1 py-1 text-[15px] text-fg outline-none placeholder:text-faint", rows: 1, dataset: { composerParent: parentId == null ? "root" : String(parentId) }, placeholder: parentId ? "Reply…" : humanOnly ? "Message your coworkers…" : "Start a session — mention the resident agent or @skipper" }) as HTMLTextAreaElement;
   const mentionBox = h("div", { class: "absolute bottom-full left-0 right-0 z-20 mb-2 hidden max-h-[50vh] w-full max-w-sm overflow-y-auto overflow-hidden rounded-lg border border-line bg-surface shadow-xl sm:right-auto sm:w-72" });
@@ -2280,15 +2657,34 @@ function composer(parentId: number | null): HTMLElement {
     const k = ev as KeyboardEvent;
     if (!mentionBox.classList.contains("hidden") && ["Enter", "Tab", "ArrowDown", "ArrowUp"].includes(k.key)) { if (handleComposerSuggestKey(k, mentionBox, input)) { k.preventDefault(); return; } }
     if (k.key === "Escape") mentionBox.classList.add("hidden");
+    if (k.key === "Tab" && !k.shiftKey && !k.altKey && !k.ctrlKey && !k.metaKey && !input.value.trim() && channel?.agent?.name) {
+      k.preventDefault();
+      input.value = `@${channel.agent.name} `;
+      input.selectionStart = input.selectionEnd = input.value.length;
+      input.dispatchEvent(new Event("input"));
+      return;
+    }
     if (k.key === "Enter" && !k.shiftKey) { k.preventDefault(); send(); }
   });
+
+  const micButton = h("button", {
+    class: "grid h-11 w-11 shrink-0 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg sm:h-8 sm:w-8",
+    type: "button",
+    title: speechRecognitionAvailable() ? "Dictate · tap Option/Alt to toggle" : "Speech-to-text is unavailable in this browser",
+    "aria-label": "Toggle speech-to-text",
+    "aria-pressed": "false",
+    dataset: { speechToggle: "" },
+    onclick: () => { void toggleSpeechToText(input); },
+  }, microphoneIcon()) as HTMLButtonElement;
 
   const box = h("div", { class: "relative rounded-lg border border-line bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.06)] transition focus-within:border-accent focus-within:shadow-[0_0_0_3px_var(--c-accent-soft)]" },
     mentionBox, attachBar,
     h("div", { class: "px-2 pt-1.5" }, input),
     h("div", { class: "flex items-center justify-between gap-1 px-1.5 pb-1.5" },
-      h("label", { class: "grid h-11 w-11 cursor-pointer place-items-center rounded-md text-muted hover:bg-hover hover:text-fg sm:h-8 sm:w-8", title: "Attach files" }, icon("paperclip"),
-        h("input", { type: "file", multiple: true, class: "hidden", onchange: async (ev: Event) => { for (const f of Array.from((ev.target as HTMLInputElement).files || [])) pending.push(await uploadFile(f)); drawAttach(); } })),
+      h("div", { class: "flex items-center gap-0.5" },
+        h("label", { class: "grid h-11 w-11 cursor-pointer place-items-center rounded-md text-muted hover:bg-hover hover:text-fg sm:h-8 sm:w-8", title: "Attach files" }, icon("paperclip"),
+          h("input", { type: "file", multiple: true, class: "hidden", onchange: async (ev: Event) => { for (const f of Array.from((ev.target as HTMLInputElement).files || [])) pending.push(await uploadFile(f)); drawAttach(); } })),
+        micButton),
       h("div", { class: "flex min-w-0 flex-1 justify-end gap-1.5" }, humanOnly ? null : modelButton,
         h("button", { class: "btn-primary min-h-11 shrink-0 px-3 text-sm sm:min-h-8", onclick: send }, icon("send"), "Send"))));
   const wrap = h("div", { class: "composer-wrap shrink-0 bg-bg px-3 pb-3 pt-1 sm:px-4 sm:pb-4" }, box);
@@ -2391,18 +2787,18 @@ function composerAutocomplete(input: HTMLTextAreaElement, box: HTMLElement): voi
   const at = currentAtMention(input);
   if (at != null) {
     const channel = S.channels.find((item) => item.id === S.channelId);
-    const allowed = new Set<number>();
-    if (channel?.agent?.bot_id) allowed.add(channel.agent.bot_id);
-    const skipper = S.bots.find((bot) => bot.agent_kind === "skipper"); if (skipper) allowed.add(skipper.id);
-    const agentMatches: ComposerSuggest[] = S.bots
-      .filter((bot) => allowed.has(bot.id) && bot.name.toLowerCase().startsWith(at))
-      .slice(0, 6)
-      .map((bot) => ({ kind: "agent", token: bot.name, label: bot.name, detail: bot.model || "no model" }));
-    const humanMatches: ComposerSuggest[] = S.users
+    const resident = channel?.agent?.bot_id ? S.bots.find((bot) => bot.id === channel.agent!.bot_id) : undefined;
+    const skipper = S.bots.find((bot) => bot.agent_kind === "skipper");
+    const agentCandidates = channel?.kind === "channel" ? [resident, skipper] : [];
+    const agentMatches: ComposerSuggest[] = agentCandidates
+      .filter((bot): bot is Bot => !!bot && bot.name.toLowerCase().startsWith(at))
+      .map((bot) => ({ kind: "agent", token: bot.name, label: bot.name, detail: bot.agent_kind === "skipper" ? "Workspace Skipper" : bot.model || "Resident agent" }));
+    const members = Array.isArray(channel?.members) ? channel.members : [];
+    const humanMatches: ComposerSuggest[] = members
       .filter((user) => user.id !== S.me.id && (user.username.toLowerCase().startsWith(at) || user.display.toLowerCase().startsWith(at)))
       .slice(0, 6)
       .map((user) => ({ kind: "human", token: user.username, label: user.display || user.username, detail: `@${user.username}` }));
-    return drawComposerSuggest(box, input, [...humanMatches, ...agentMatches].slice(0, 8), "People and agents", "agent");
+    return drawComposerSuggest(box, input, [...agentMatches, ...humanMatches].slice(0, 8), "People and agents", "agent");
   }
   const hash = currentHashMention(input);
   if (hash != null) {
@@ -2543,6 +2939,20 @@ export function appPrompt(message: string | Node, defaultValue = ""): Promise<st
 
 export function avatar(name: string, kind: "user" | "bot" | "system", size = 8, avatarValue?: string): HTMLElement {
   const px = size * 4;
+  const residentCharacter = /^agent:([1-9]):(#[0-9a-f]{6})$/i.exec(avatarValue || "");
+  if (kind === "bot" && residentCharacter) {
+    return h("span", {
+      class: "identity-bot identity-solid relative inline-grid shrink-0 place-items-center overflow-hidden rounded-md",
+      style: `width:${px}px;height:${px}px;background:${residentCharacter[2]}`,
+      title: name,
+      "aria-label": name,
+    }, h("img", {
+      class: "h-full w-full object-contain",
+      src: `/agent-avatars/agent-${residentCharacter[1]}.png`,
+      alt: "",
+      draggable: false,
+    }));
+  }
   // Custom or default image fills the whole plate — never layer initials on top of it.
   if (avatarValue?.startsWith("data:image/") || avatarValue?.startsWith("/")) {
     return h("img", {
@@ -2595,14 +3005,32 @@ export const renderSidebar = (): void => {
 };
 const fmtSize = (n: number): string => n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + " KB" : (n / 1048576).toFixed(1) + " MB";
 
+let altTapStarted = 0;
+let altTapOnly = false;
 window.addEventListener("keydown", (event) => {
+  if (event.key === "Alt" && !event.repeat && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+    altTapStarted = performance.now();
+    altTapOnly = true;
+    return;
+  }
+  if (altTapOnly) altTapOnly = false;
   if (event.key !== "Escape") return;
   if (S.mobileMenuOpen) { closeMobileMenu(); return; }
   // Close terminal first when both are open (thread stays).
   if (S.terminalOpen && S.threadRoot) { closeDockedTerminal(); return; }
   if (S.terminalOpen) { closeDockedTerminal(); return; }
+  if (S.notesOpen) { closeDockedNotes(); return; }
   if (S.threadRoot) closeThread();
 });
+window.addEventListener("keyup", (event) => {
+  if (event.key !== "Alt") return;
+  const isSingleTap = altTapOnly && performance.now() - altTapStarted < 800;
+  altTapOnly = false;
+  if (!isSingleTap || !document.hasFocus()) return;
+  const input = activeComposerInput();
+  if (input && !input.disabled && input.offsetParent !== null) void toggleSpeechToText(input);
+});
+window.addEventListener("blur", () => { altTapOnly = false; });
 window.matchMedia("(min-width: 768px)").addEventListener("change", (event) => { if (event.matches && S.mobileMenuOpen) closeMobileMenu(); });
 
 function registerServiceWorker(): void {

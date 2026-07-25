@@ -27,7 +27,7 @@ const CONFIGURED_IDENTITY = String(process.env.APPLE_SIGN_IDENTITY || "").trim()
 // scripts directory itself traversable so the required Mnemosyne bridge can
 // survive the otherwise root-level release filter.
 const IGNORE_NON_RUNTIME_ROOTS =
-  /^\/(?!package\.json$|LICENSE$|desktop(?:$|\/)|container(?:$|\/)|src(?:$|\/)|public(?:$|\/)|scripts(?:$|\/mnemosyne-bridge\.py$)|node_modules(?:$|\/))/;
+  /^\/(?!package\.json$|LICENSE$|NOTICE$|desktop(?:$|\/)|container(?:$|\/)|src(?:$|\/)|public(?:$|\/)|scripts(?:$|\/mnemosyne-bridge\.py$)|node_modules(?:$|\/))/;
 
 if (!VERSION) throw new Error("package.json must define a version");
 
@@ -201,6 +201,7 @@ async function main() {
       extendInfo: {
         CFBundleDisplayName: PRODUCT,
         CFBundleName: PRODUCT,
+        NSMicrophoneUsageDescription: "1Helm uses the microphone only when you start speech-to-text in a message composer.",
         NSHighResolutionCapable: true,
         NSSupportsAutomaticGraphicsSwitching: true,
       },
@@ -255,6 +256,7 @@ async function main() {
       run("ditto", [appPath, path.join(stage, `${PRODUCT}.app`)]);
       run("ln", ["-s", "/Applications", path.join(stage, "Applications")]);
       fs.copyFileSync(path.join(ROOT, "LICENSE"), path.join(stage, "LICENSE.txt"));
+      fs.copyFileSync(path.join(ROOT, "NOTICE"), path.join(stage, "NOTICE.txt"));
       fs.writeFileSync(path.join(stage, "Install.txt"), [
         "1Helm", "", "Drag 1Helm.app to Applications, then open it.", "",
         "1Helm runs its workspace, terminals, agents, and data locally on this Mac.",

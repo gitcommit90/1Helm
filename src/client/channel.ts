@@ -3,7 +3,7 @@ import { h, clear, icon, md, timeLabel } from "./dom.ts";
 import { S, avatar, appAlert, appConfirm, appPrompt } from "./app.ts";
 import { NOTIFICATION_SOUNDS, channelNotificationPreference, previewNotification, setChannelNotificationPreference } from "./notifications.ts";
 
-export type ChannelView = "chat" | "board" | "threads" | "files" | "terminal" | "memory" | "activity" | "settings";
+export type ChannelView = "chat" | "board" | "threads" | "notes" | "files" | "terminal" | "memory" | "activity" | "settings";
 
 export function openCreateChannel(onCreated: (channel: Channel) => void): void {
   const name = h("input", { class: "field", placeholder: "launch", autocomplete: "off" }) as HTMLInputElement;
@@ -334,9 +334,9 @@ export function renderGlobalThreads(
   panelLoading(container, "Threads", "Sessions across every agent channel. Filter to only unread activity.");
   const path = opts.unreadOnly ? "/api/threads?unread=1" : "/api/threads";
   void api<{ threads: GlobalThread[] }>(path).then(({ threads }) => {
-    const toolbar = h("div", { class: "mb-3" },
-      h("p", { class: "text-sm text-muted" }, opts.unreadOnly ? "Showing threads with new activity since you last read the channel. Use the top-bar Unread control to change the filter." : "All focused sessions, newest first."));
-    const list = h("div", { class: "space-y-2" });
+    const toolbar = h("div", { class: "mb-2" },
+      h("p", { class: "text-xs text-muted" }, opts.unreadOnly ? "Unread activity across your channels." : `${threads.length} session${threads.length === 1 ? "" : "s"} · newest first`));
+    const list = h("div", { class: "overflow-hidden rounded-lg border border-line bg-surface", dataset: { globalThreadsList: "compact" } });
     if (!threads.length) {
       list.append(empty(
         opts.unreadOnly ? "No unread threads" : "No sessions yet",
@@ -344,23 +344,21 @@ export function renderGlobalThreads(
       ));
     }
     for (const thread of threads) {
-      list.append(h("article", {
-        class: `card flex w-full min-w-0 items-start gap-2.5 p-3 ${thread.unread ? "border-accent/35 bg-accent-soft/30" : ""}`,
-      },
-        h("span", { class: "mt-0.5 shrink-0 text-accent" }, icon("thread")),
+      list.append(h("article", { class: `border-b border-line last:border-0 ${thread.unread ? "bg-accent-soft/30" : "hover:bg-hover"}` },
         h("button", {
-          class: "min-w-0 flex-1 text-left", type: "button",
+          class: "flex w-full min-w-0 items-start gap-2.5 px-3 py-2 text-left", type: "button",
           dataset: { globalThreadOpen: String(thread.id) },
           onclick: () => opts.onOpen(thread),
         },
-          h("div", { class: "flex min-w-0 items-center gap-2" },
-            h("span", { class: `truncate ${thread.unread ? "font-semibold text-fg" : "font-semibold text-fg hover:text-accent"}` }, thread.title || "Untitled session"),
-            thread.unread ? h("span", { class: "shrink-0 rounded-full bg-danger px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white" }, "Unread") : null),
-          h("div", { class: "mt-1 flex flex-wrap items-center gap-2 text-xs text-muted" },
-            h("span", { class: "font-mono text-accent" }, `#${thread.channel_name}`),
-            h("span", {}, `· Updated ${timeLabel(thread.updated_at)}`)),
-          h("div", { class: "md mt-0.5 line-clamp-2 text-[13px] leading-snug text-muted", html: md(thread.summary || "No summary yet.") }),
-          h("div", { class: "mt-2 flex items-center gap-2 text-xs text-faint" }, statusPath(thread.status, thread.updated_at)))));
+          h("span", { class: `mt-1.5 h-2 w-2 shrink-0 rounded-full ${thread.unread ? "bg-danger" : "bg-line"}`, "aria-label": thread.unread ? "Unread" : undefined }),
+          h("span", { class: "min-w-0 flex-1" },
+            h("span", { class: "flex min-w-0 items-baseline gap-2" },
+              h("span", { class: `truncate text-sm text-fg ${thread.unread ? "font-bold" : "font-semibold"}` }, thread.title || "Untitled session"),
+              h("span", { class: "shrink-0 font-mono text-[11px] text-accent" }, `#${thread.channel_name}`),
+              h("span", { class: "ml-auto shrink-0 text-[11px] text-faint" }, timeLabel(thread.updated_at))),
+            h("span", { class: "mt-0.5 flex min-w-0 items-center gap-2" },
+              h("span", { class: "min-w-0 flex-1 truncate text-xs text-muted" }, thread.summary || "No summary yet."),
+              h("span", { class: "shrink-0 rounded-full border border-line px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-faint" }, thread.status))))));
     }
     clear(container);
     container.append(h("div", { class: "mx-auto w-full max-w-5xl p-6" },
@@ -371,40 +369,151 @@ export function renderGlobalThreads(
   }).catch((error) => panelError(container, error));
 }
 
-export function renderFiles(container: HTMLElement, channelId: number): void {
-  panelLoading(container, "Files", "Same tree the channel terminal sees as /workspace. Uploads also appear under files/.");
-  void api<{ files: ChannelFile[] }>(`/api/channels/${channelId}/files`).then(({ files }) => {
-    const list = h("div", { class: "overflow-hidden rounded-lg border border-line bg-surface" });
-    if (!files.length) list.append(empty("No files yet", "Ask the resident agent to create something in /workspace, or attach a file in Chat."));
-    for (const file of files) {
-      const display = file.path.startsWith("files/") ? file.path : file.path;
-      const row = h("div", { class: "flex items-center gap-3 border-b border-line px-4 py-3 last:border-0" },
-        h("span", { class: file.kind === "directory" ? "text-muted" : "text-accent" }, icon("file")),
-        h("div", { class: "min-w-0 flex-1" },
-          h("div", { class: "truncate font-mono text-sm text-fg" }, "/" + display),
-          h("div", { class: "text-xs text-muted" }, file.kind === "directory" ? "Folder" : `${formatBytes(file.size)} · changed ${timeLabel(file.modified)} · ${file.path.startsWith("files/") ? "uploads/files" : "workspace"}`)),
-        file.kind === "file" ? h("div", { class: "flex shrink-0 items-center gap-2" },
-          h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void openAuthenticatedFile(`/api/channels/${channelId}/files/content?path=${encodeURIComponent(file.path)}`).catch((error) => appAlert((error as Error).message)); } }, "Open"),
-          h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void downloadAuthenticatedFile(`/api/channels/${channelId}/files/content?path=${encodeURIComponent(file.path)}&download=1`, file.name).catch((error) => appAlert((error as Error).message)); } }, "Download")) : null);
-      list.append(row);
-    }
-    const fileInput = h("input", { type: "file", multiple: true, class: "hidden" }) as HTMLInputElement;
-    const uploadStatus = h("span", { class: "text-xs text-muted" });
-    const uploadButton = h("button", { class: "btn-primary text-sm", onclick: () => fileInput.click() }, icon("plus"), "Upload");
-    fileInput.onchange = async () => {
-      const chosen = Array.from(fileInput.files || []);
-      if (!chosen.length) return;
-      uploadButton.setAttribute("disabled", "true"); uploadStatus.textContent = `Uploading ${chosen.length} file${chosen.length === 1 ? "" : "s"}…`;
+export function renderFiles(container: HTMLElement, channelId: number, initialPath = ""): void {
+  let currentPath = initialPath.replace(/^\/?workspace\/?/, "").replace(/^\/+|\/+$/g, "");
+  panelLoading(container, "Files", "Browse the same folders the channel computer sees under /workspace.");
+  const load = (): void => {
+    const requestedPath = currentPath;
+    void api<{ path?: string; files: ChannelFile[] }>(`/api/channels/${channelId}/files?path=${encodeURIComponent(requestedPath)}`).then((result) => {
+      currentPath = result.path ?? requestedPath;
+      const crumbs = h("nav", { class: "flex min-w-0 items-center gap-1 overflow-x-auto font-mono text-xs", "aria-label": "File breadcrumbs", dataset: { fileBreadcrumbs: "" } });
+      const segments = currentPath ? currentPath.split("/") : [];
+      const addCrumb = (label: string, path: string): void => {
+        if (crumbs.childNodes.length) crumbs.append(h("span", { class: "text-faint" }, "/"));
+        crumbs.append(h("button", { class: `shrink-0 rounded px-1.5 py-1 ${path === currentPath ? "text-fg" : "text-accent hover:bg-hover"}`, type: "button", onclick: () => { currentPath = path; load(); } }, label));
+      };
+      addCrumb("workspace", "");
+      segments.forEach((_segment, index) => addCrumb(segments[index], segments.slice(0, index + 1).join("/")));
+
+      const list = h("div", { class: "overflow-hidden rounded-lg border border-line bg-surface", dataset: { fileDirectory: currentPath || "/" } });
+      if (!result.files.length) list.append(empty("This folder is empty", "Upload a file, create a folder, or let the resident agent add something here."));
+      for (const file of result.files) {
+        const isFolder = file.kind === "directory";
+        const openFile = (): void => { void openAuthenticatedFile(`/api/channels/${channelId}/files/content?path=${encodeURIComponent(file.path)}`).catch((error) => appAlert((error as Error).message)); };
+        list.append(h("div", { class: "flex items-center gap-3 border-b border-line px-3 py-2.5 last:border-0", dataset: { filePath: file.path, fileKind: file.kind } },
+          h("button", { class: `flex min-w-0 flex-1 items-center gap-3 text-left ${isFolder ? "hover:text-accent" : ""}`, type: "button", onclick: () => { if (isFolder) { currentPath = file.path; load(); } else openFile(); } },
+            h("span", { class: `grid h-8 w-8 shrink-0 place-items-center rounded ${isFolder ? "bg-hover text-muted" : "bg-accent-soft text-accent"}` }, icon("file", 16)),
+            h("span", { class: "min-w-0 flex-1" },
+              h("span", { class: "block truncate font-mono text-sm text-fg" }, file.name),
+              h("span", { class: "block truncate text-xs text-muted" }, isFolder ? "Folder" : `${formatBytes(file.size)} · changed ${timeLabel(file.modified)}`))),
+          !isFolder ? h("div", { class: "flex shrink-0 items-center gap-1.5" },
+            h("button", { class: "btn-subtle text-xs", type: "button", onclick: openFile }, "Open"),
+            h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void downloadAuthenticatedFile(`/api/channels/${channelId}/files/content?path=${encodeURIComponent(file.path)}&download=1`, file.name).catch((error) => appAlert((error as Error).message)); } }, "Download")) : null));
+      }
+
+      const fileInput = h("input", { type: "file", multiple: true, class: "hidden" }) as HTMLInputElement;
+      const status = h("span", { class: "min-h-5 flex-1 text-xs text-muted", role: "status" });
+      const uploadButton = h("button", { class: "btn-primary text-sm", type: "button", onclick: () => fileInput.click() }, icon("plus"), "Upload here") as HTMLButtonElement;
+      const folderButton = h("button", { class: "btn-subtle text-sm", type: "button", onclick: async () => {
+        const name = await appPrompt("Folder name");
+        if (!name) return;
+        folderButton.setAttribute("disabled", "true");
+        try { await api(`/api/channels/${channelId}/files/directories`, { body: { path: currentPath, name } }); load(); }
+        catch (error) { status.textContent = (error as Error).message; folderButton.removeAttribute("disabled"); }
+      } }, icon("plus"), "New folder") as HTMLButtonElement;
+      fileInput.onchange = async () => {
+        const chosen = Array.from(fileInput.files || []);
+        if (!chosen.length) return;
+        uploadButton.disabled = true; status.textContent = `Uploading ${chosen.length} file${chosen.length === 1 ? "" : "s"} to /workspace${currentPath ? `/${currentPath}` : ""}…`;
+        try {
+          for (const file of chosen) {
+            const upload = await uploadFile(file);
+            await api(`/api/channels/${channelId}/files/upload`, { body: { ...upload, path: currentPath } });
+          }
+          load();
+        } catch (error) { status.textContent = (error as Error).message; uploadButton.disabled = false; }
+      };
+      panelContent(container, "Files", "Browse the same folders the channel computer sees under /workspace.", h("div", {},
+        h("div", { class: "mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-line bg-raised px-3 py-2" }, crumbs, h("div", { class: "flex-1" }), status, folderButton, uploadButton, fileInput),
+        list));
+    }).catch((error) => panelError(container, error));
+  };
+  load();
+}
+
+type ChannelNoteView = { name: string; size: number; modified: number; content?: string };
+
+/** Dock-ready Notes surface; app.ts only needs to mount this function for a tab or side dock. */
+export function renderNotes(container: HTMLElement, channelId: number, onClose?: () => void): void {
+  let notes: ChannelNoteView[] = [];
+  let active: ChannelNoteView | null = null;
+  let savedContent = "";
+  let loadingNote = false;
+  const editor = h("textarea", { class: "field min-h-[24rem] flex-1 resize-none font-mono text-sm leading-6", placeholder: "Choose a note, or create one.", disabled: true, "aria-label": "Note content" }) as HTMLTextAreaElement;
+  const title = h("div", { class: "truncate font-semibold text-fg" }, "No note selected");
+  const saveStatus = h("span", { class: "text-xs text-muted", role: "status" });
+  const saveButton = h("button", { class: "btn-primary text-sm", type: "button", disabled: true }, "Save") as HTMLButtonElement;
+  const renameButton = h("button", { class: "btn-subtle text-sm", type: "button", disabled: true }, "Rename") as HTMLButtonElement;
+  const list = h("div", { class: "min-h-0 overflow-y-auto", dataset: { noteList: "" } });
+  const dirty = (): boolean => Boolean(active) && editor.value !== savedContent;
+  const updateEditorState = (): void => {
+    saveButton.disabled = !active || !dirty();
+    saveStatus.textContent = dirty() ? "Unsaved changes" : active ? `Saved · ${formatBytes(active.size)}` : "";
+  };
+  const confirmDiscard = async (): Promise<boolean> => !dirty() || appConfirm("Discard the unsaved changes to this note?");
+  const drawList = (): void => {
+    clear(list);
+    if (!notes.length) list.append(empty("No notes yet", "Create a Markdown note for plans, meeting notes, or working context."));
+    for (const note of notes) list.append(h("button", { class: `block w-full border-b border-line px-3 py-2.5 text-left last:border-0 ${active?.name === note.name ? "bg-accent-soft" : "hover:bg-hover"}`, type: "button", dataset: { noteName: note.name }, onclick: async () => {
+      if (loadingNote || active?.name === note.name || !(await confirmDiscard())) return;
+      loadingNote = true;
       try {
-        for (const file of chosen) {
-          const upload = await uploadFile(file);
-          await api(`/api/channels/${channelId}/files/upload`, { body: upload });
-        }
-        renderFiles(container, channelId);
-      } catch (error) { uploadStatus.textContent = (error as Error).message; uploadButton.removeAttribute("disabled"); }
-    };
-    panelContent(container, "Files", "Same tree the channel terminal sees as /workspace. Uploads also appear under files/.", h("div", {}, h("div", { class: "mb-4 flex items-center justify-end gap-3" }, uploadStatus, uploadButton, fileInput), list));
-  }).catch((error) => panelError(container, error));
+        const result = await api<{ note: ChannelNoteView }>(`/api/channels/${channelId}/notes/${encodeURIComponent(note.name)}`);
+        active = result.note; savedContent = result.note.content || ""; editor.value = savedContent; editor.disabled = false;
+        title.textContent = result.note.name; renameButton.disabled = false; drawList(); updateEditorState(); editor.focus();
+      } catch (error) { void appAlert((error as Error).message); }
+      finally { loadingNote = false; }
+    } }, h("span", { class: "block truncate font-mono text-sm text-fg" }, note.name), h("span", { class: "mt-0.5 block text-xs text-muted" }, `${formatBytes(note.size)} · ${timeLabel(note.modified)}`)));
+  };
+  const reloadList = async (selectName?: string): Promise<void> => {
+    const result = await api<{ notes: ChannelNoteView[] }>(`/api/channels/${channelId}/notes`);
+    notes = result.notes;
+    if (active) active = notes.find((note) => note.name === (selectName || active?.name)) || active;
+    drawList();
+  };
+  const save = async (): Promise<void> => {
+    if (!active || !dirty()) return;
+    saveButton.disabled = true; saveStatus.textContent = "Saving…";
+    try {
+      const result = await api<{ note: ChannelNoteView }>(`/api/channels/${channelId}/notes/${encodeURIComponent(active.name)}`, { method: "PATCH", body: { content: editor.value } });
+      active = result.note; savedContent = result.note.content ?? editor.value; editor.value = savedContent; await reloadList(active.name); updateEditorState();
+    } catch (error) { saveStatus.textContent = (error as Error).message; updateEditorState(); }
+  };
+  saveButton.onclick = () => { void save(); };
+  renameButton.onclick = async () => {
+    if (!active || !(await confirmDiscard())) return;
+    const name = await appPrompt("Rename note (.md)", active.name);
+    if (!name || name === active.name) return;
+    renameButton.disabled = true;
+    try {
+      const oldName = active.name;
+      const result = await api<{ note: ChannelNoteView }>(`/api/channels/${channelId}/notes/${encodeURIComponent(oldName)}`, { method: "PATCH", body: { name } });
+      active = result.note; savedContent = result.note.content || ""; editor.value = savedContent; title.textContent = result.note.name; await reloadList(result.note.name); updateEditorState();
+    } catch (error) { void appAlert((error as Error).message); }
+    finally { renameButton.disabled = !active; }
+  };
+  editor.oninput = updateEditorState;
+  editor.addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); } });
+  const newButton = h("button", { class: "btn-primary text-sm", type: "button", onclick: async () => {
+    if (!(await confirmDiscard())) return;
+    const name = await appPrompt("New note name (.md)", "untitled.md");
+    if (!name) return;
+    try {
+      const result = await api<{ note: ChannelNoteView }>(`/api/channels/${channelId}/notes`, { body: { name, content: "" } });
+      active = result.note; savedContent = result.note.content || ""; editor.value = savedContent; editor.disabled = false; title.textContent = result.note.name; renameButton.disabled = false; await reloadList(result.note.name); updateEditorState(); editor.focus();
+    } catch (error) { void appAlert((error as Error).message); }
+  } }, icon("plus"), "New note");
+  const closeButton = onClose ? h("button", { class: "btn-subtle text-sm", type: "button", "aria-label": "Close notes", onclick: async () => { if (await confirmDiscard()) onClose(); } }, icon("x"), "Close") : null;
+  clear(container);
+  container.append(h("section", { class: "flex h-full min-h-[32rem] flex-col", dataset: { notesSurface: String(channelId) } },
+    h("div", { class: "flex items-start gap-3 border-b border-line px-4 py-3" },
+      h("div", { class: "min-w-0 flex-1" }, h("h2", { class: "font-display text-xl text-fg" }, "Notes"), h("p", { class: "mt-0.5 text-xs text-muted" }, "Markdown notes shared with this channel computer in /workspace/notes.")),
+      newButton, closeButton),
+    h("div", { class: "grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[15rem_minmax(0,1fr)]" },
+      h("aside", { class: "min-h-0 border-b border-line bg-raised md:border-b-0 md:border-r" }, list),
+      h("div", { class: "flex min-h-0 flex-col gap-3 p-4" },
+        h("div", { class: "flex min-h-9 items-center gap-2" }, title, h("div", { class: "flex-1" }), saveStatus, renameButton, saveButton), editor))));
+  void reloadList().catch((error) => panelError(container, error));
 }
 
 export function renderMemory(container: HTMLElement, channelId: number): void {
@@ -688,10 +797,15 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
   const avatarFile = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", class: "hidden" }) as HTMLInputElement;
   const avatarColors = ["#c8552f", "#4f6d7a", "#8a6b7c", "#a67c52", "#7a6a4f", "#2e7d4f", "#2166b8", "#64748b"];
   const avatarColorRow = h("div", { class: "flex flex-wrap gap-2" });
+  const avatarCharacterRow = h("div", { class: "grid grid-cols-3 gap-2 sm:grid-cols-5" });
   const currentAvatar = channel.agent?.runtime?.avatar || "";
   const drawAvatarPreview = (value: string): void => {
     clear(avatarPreview);
-    if (value.startsWith("color:")) {
+    const character = /^agent:([1-9]):(#[0-9a-f]{6})$/i.exec(value);
+    if (character) {
+      avatarPreview.append(h("div", { class: "h-12 w-12 overflow-hidden rounded-xl identity-solid", style: `background:${character[2]}`, title: channel.agent?.name || "Agent" },
+        h("img", { class: "h-full w-full object-contain", src: `/agent-avatars/agent-${character[1]}.png`, alt: "" })));
+    } else if (value.startsWith("color:")) {
       // Solid color is the entire avatar plate — no initials on top.
       avatarPreview.append(h("div", { class: "h-12 w-12 rounded-xl identity-solid", style: `background:${value.slice(6)}`, title: channel.agent?.name || "Agent" }));
     } else if (value.startsWith("data:image/") || value.startsWith("/")) {
@@ -711,6 +825,15 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
     } catch (error) { status.textContent = (error as Error).message; }
   };
   for (const hex of avatarColors) avatarColorRow.append(h("button", { class: "h-8 w-8 rounded-lg border border-line shadow-sm transition hover:scale-105", style: `background:${hex}`, title: hex, onclick: () => { void saveAvatar(`color:${hex}`); } }));
+  for (let character = 1; character <= 9; character++) {
+    const color = avatarColors[(character - 1) % avatarColors.length];
+    avatarCharacterRow.append(h("button", {
+      class: "h-12 w-12 overflow-hidden rounded-xl border border-line shadow-sm transition hover:scale-105",
+      style: `background:${color}`,
+      title: `Resident character ${character}`,
+      onclick: () => { void saveAvatar(`agent:${character}:${color}`); },
+    }, h("img", { class: "h-full w-full object-contain", src: `/agent-avatars/agent-${character}.png`, alt: `Resident character ${character}` })));
+  }
   avatarFile.onchange = async () => {
     const image = avatarFile.files?.[0]; if (!image) return;
     const reader = new FileReader();
@@ -743,11 +866,12 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
       h("h3", { class: "font-semibold text-fg" }, "This channel's computer"),
       h("span", { class: "chip border-accent/25" }, computerKind),
       h("span", { class: "chip" }, computer.observed_state)),
-    h("p", { class: "mt-2 text-sm leading-6 text-muted" }, "Skipper provisions, wakes, monitors, updates, repairs, and sizes this computer automatically. The storage figure is 1Helm's managed writable allocation."),
-    h("div", { class: "mt-3 grid gap-2 text-xs text-muted sm:grid-cols-4" },
+    h("p", { class: "mt-2 text-sm leading-6 text-muted" }, "Skipper provisions, wakes, monitors, updates, repairs, and sizes this computer automatically. The mirror quota protects host sync; it is not the VM's disk capacity."),
+    h("div", { class: "mt-3 grid gap-2 text-xs text-muted sm:grid-cols-5" },
       h("div", {}, h("span", { class: "block font-semibold text-fg" }, `${computer.cpus} CPU${computer.cpus === 1 ? "" : "s"}`), "Automatically managed"),
       h("div", {}, h("span", { class: "block font-semibold text-fg" }, `${Math.max(1, Math.round(computer.memory_bytes / 1073741824))} GiB RAM`), "Automatically managed"),
-      h("div", {}, h("span", { class: "block font-semibold text-fg" }, `${Math.max(1, Math.round(computer.disk_bytes / 1073741824))} GiB storage`), "Managed writable allocation"),
+      h("div", {}, h("span", { class: "block font-semibold text-fg" }, `${Math.max(1, Math.round(computer.mirror_quota_bytes / 1073741824))} GiB mirror quota`), "Host-sync safety limit"),
+      h("div", {}, h("span", { class: "block font-semibold text-fg" }, computer.pressure?.diskUsedPercent != null ? `${Math.round(computer.pressure.diskUsedPercent)}% disk used` : "Disk use unknown"), computer.guest_disk_capacity_status === "known" ? "Guest capacity known" : "VM capacity not reported"),
       h("div", {}, h("span", { class: "block font-semibold text-fg" }, computer.home_mount === "none" ? "Host home private" : "Needs attention"), "No whole-home mount")),
     computer.obligations?.length ? h("p", { class: "mt-3 text-xs text-muted" }, `${computer.obligations.length} active obligation${computer.obligations.length === 1 ? "" : "s"}; Skipper will keep or wake the computer as needed.`) : null,
     computer.last_error ? h("p", { class: "mt-3 text-sm text-danger" }, computer.last_error) : null) : null;
@@ -766,13 +890,15 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
       h("label", { class: "block space-y-1 text-xs font-semibold text-fg" }, "Ping sound", channelSound),
       notificationStatus),
     h("div", { class: "card space-y-3 p-4" },
-      h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Agent avatar"), h("p", { class: "mt-1 text-sm text-muted" }, "Pick a flat color or upload a custom image for this resident agent.")),
-      agentAvatar, h("div", { class: "mt-2" }, h("span", { class: "mb-1 block text-xs font-semibold text-muted" }, "Default colors"), avatarColorRow)),
+      h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Agent avatar"), h("p", { class: "mt-1 text-sm text-muted" }, "Pick a resident character on a flat color, a plain color, or upload a custom image.")),
+      agentAvatar,
+      h("div", { class: "mt-2" }, h("span", { class: "mb-1 block text-xs font-semibold text-muted" }, "Resident characters"), avatarCharacterRow),
+      h("div", { class: "mt-2" }, h("span", { class: "mb-1 block text-xs font-semibold text-muted" }, "Plain colors"), avatarColorRow)),
     h("div", { class: "card space-y-3 p-4" },
       h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Serving model"), h("p", { class: "mt-1 text-sm text-muted" }, "The model provides replaceable intelligence. Changing it never creates a new agent or discards channel-owned state.")),
       h("div", { class: "grid grid-cols-1 gap-3 sm:grid-cols-2" }, provider, model),
       h("div", { class: "flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, S.me.is_admin ? changeModelButton : null)),
-    h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Permanent skill arsenal"), h("p", { class: "mt-1 text-sm text-muted" }, "Skipper provisioned these skills for this agent. New grants stay permanently, and the agent still knows what else exists in the workspace catalog."), assignedSkills),
+    h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Assigned skills"), h("p", { class: "mt-1 text-sm text-muted" }, "This resident starts with a small shared core plus skills for its channel template. It can search the complete workspace catalog and ask Skipper for another skill when needed."), assignedSkills),
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Capabilities"), h("div", { class: "mt-3 flex flex-wrap gap-2" }, ...(channel.agent?.capabilities || []).map((capability) => h("span", { class: "chip" }, capability))), h("p", { class: "mt-3 text-xs text-muted" }, "The resident agent is channel-scoped. It calls @skipper for host-level, cross-channel, credential, guest-expert, or missing-capability work.")),
     computerCard,
     lifecycle));

@@ -197,6 +197,7 @@ function systemPromptTiers(bot: Row, agent: RuntimeAgent | undefined, channelId:
       isMainChannel(channelId)
         ? "#main is the Captain's private authority channel. It has no resident agent. Your assigned Skipper computers and the tools listed for this turn remain available here."
         : "This ordinary channel has one resident agent. You are present only for the invoking thread; call_agent can return work to that resident.",
+      "You already own automatic pressure-aware channel-computer lifecycle care: periodic fleet reconciliation, safe CPU/RAM resizing, health/update/repair, obligation-aware sleep, and wakeups for due work. Fleet metadata reports live guest load, available memory, and disk-used percentage when known. The mirror quota is only the guest-to-host copy safety limit, never VM storage capacity; actual guest capacity is unknown when 1Helm cannot prove it.",
       "The callable tools below are your current capabilities. Their implementations enforce authority and isolation boundaries.",
     ].join("\n\n");
     const context = [
@@ -294,7 +295,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       type: "function",
       function: {
         name: "list_channels",
-        description: "List the 1Helm channels visible in the current user scope, including lifecycle, resident, computer, and obligation state.",
+        description: "List the 1Helm channels visible in the current user scope, including lifecycle, resident, automatically managed computer, live guest pressure when known, honest mirror quota/unknown guest capacity, and obligation state.",
         parameters: { type: "object", properties: { include_archived: { type: "boolean", description: "Include archived channels (default true)." } } },
       },
     });
@@ -302,7 +303,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       type: "function",
       function: {
         name: "inspect_channel",
-        description: "Inspect one authoritative 1Helm channel by name or id: purpose, lifecycle, resident, computer health, obligations, workflows, and thread counts.",
+        description: "Inspect one authoritative 1Helm channel by name or id: purpose, lifecycle, resident, automatically managed computer health and live guest pressure, mirror quota (not VM capacity), obligations, workflows, and thread counts.",
         parameters: { type: "object", properties: { channel: { type: "string", description: "Channel name such as ideas or #ideas, or numeric id." } }, required: ["channel"] },
       },
     });
@@ -334,7 +335,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       type: "function",
       function: {
         name: "inspect_fleet",
-        description: "Inspect health and lifecycle state for every scoped per-channel computer.",
+        description: "Inspect every scoped per-channel computer, including the live guest load, available memory, and disk-used percentage when known. Skipper already reconciles lifecycle and pressure automatically; mirror_quota_bytes is only the host-mirror safety limit and guest_disk_capacity_bytes remains unknown unless proven.",
         parameters: { type: "object", properties: {} },
       },
     });
@@ -342,7 +343,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       type: "function",
       function: {
         name: "care_for_channel_computer",
-        description: "Perform native 1Helm computer care: wake one channel computer, stop it only when obligation-free, or reconcile the scoped fleet.",
+        description: "Run immediate native care in addition to Skipper's existing automatic pressure-aware reconciliation, resizing, updates/repair, safe sleep, and obligation wakeups: wake one computer, stop it only when obligation-free, or reconcile the scoped fleet now.",
         parameters: { type: "object", properties: { action: { type: "string", enum: ["wake", "stop", "reconcile"] }, channel: { type: "string", description: "Required for wake or stop." } }, required: ["action"] },
       },
     });
@@ -726,11 +727,20 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
 /** Narrow diagnostic surface used by integration coverage to prove the exact
  * production tool set without duplicating its capability rules. */
 export function runtimeToolNamesForChannel(botId: number, channelId: number, hostAuthorized = false): string[] {
+  return runtimeToolDefinitionsForChannel(botId, channelId, hostAuthorized).map((tool) => tool.name);
+}
+
+/** Narrow diagnostic surface for verifying capability descriptions that carry
+ * operationally important safety/automation semantics. */
+export function runtimeToolDefinitionsForChannel(botId: number, channelId: number, hostAuthorized = false): { name: string; description: string }[] {
   const bot = q1("SELECT * FROM bots WHERE id=?", botId);
   if (!bot) return [];
   const agent = agentForBot(botId) as RuntimeAgent | undefined;
   return (toolsFor(bot, agent, hostAuthorized, channelId) || []).map((tool) =>
-    String((tool as { function?: { name?: string } }).function?.name || "")).filter(Boolean);
+    ({
+      name: String((tool as { function?: { name?: string } }).function?.name || ""),
+      description: String((tool as { function?: { description?: string } }).function?.description || ""),
+    })).filter((tool) => Boolean(tool.name));
 }
 
 export function validateAskUserInput(args: Record<string, unknown>): { valid: boolean; error: string } {
@@ -1016,6 +1026,21 @@ function channelControlMeta(channel: Row): Record<string, unknown> {
   };
 }
 
+export function skipperFleetManagementView(): Record<string, unknown> {
+  return {
+    owner: "Skipper",
+    automatic: true,
+    pressure_aware: true,
+    periodic_reconciliation: true,
+    safe_cpu_memory_resizing: true,
+    lifecycle_and_repair: true,
+    obligation_aware_sleep: true,
+    due_obligation_wakeups: true,
+    telemetry: "Live guest load, available memory, and disk-used percentage are reported when known; stopped computers retain only a last-known sample.",
+    storage: "mirror_quota_bytes is the guest-to-host mirror safety limit, not VM storage capacity; guest capacity is unknown unless independently proven.",
+  };
+}
+
 function broadcastSkipperChannelMeta(channelId: number): void {
   const channel = q1("SELECT * FROM channels WHERE id=?", channelId);
   if (!channel) return;
@@ -1027,9 +1052,9 @@ function broadcastSkipperChannelMeta(channelId: number): void {
 async function executeSkipperControlTool(name: string, args: Record<string, unknown>, userId: number, hostAuthorized: boolean): Promise<string | null> {
   if (name === "list_channels") {
     const channels = scopedChannelRows(userId, hostAuthorized, args.include_archived !== false).map(channelControlView);
-    return JSON.stringify({ channels, count: channels.length });
+    return JSON.stringify({ channels, count: channels.length, fleet_management: skipperFleetManagementView() });
   }
-  if (name === "inspect_channel") return JSON.stringify(channelControlView(scopedChannel(args.channel, userId, hostAuthorized)));
+  if (name === "inspect_channel") return JSON.stringify({ ...channelControlView(scopedChannel(args.channel, userId, hostAuthorized)), fleet_management: skipperFleetManagementView() });
   if (name === "archive_channel") {
     const channel = scopedChannel(args.channel, userId, hostAuthorized);
     cancelChannelTurns(Number(channel.id));
@@ -1056,22 +1081,22 @@ async function executeSkipperControlTool(name: string, args: Record<string, unkn
   }
   if (name === "inspect_fleet") {
     const channels = scopedChannelRows(userId, hostAuthorized, true).map((channel) => ({ channel: `#${channel.name}`, status: channel.status, computer: channelComputerView(Number(channel.id)) }));
-    return JSON.stringify({ channels, count: channels.length });
+    return JSON.stringify({ channels, count: channels.length, fleet_management: skipperFleetManagementView() });
   }
   if (name === "care_for_channel_computer") {
     const action = String(args.action || "");
     if (action === "reconcile") {
       const channelIds = scopedChannelRows(userId, hostAuthorized, true).map((channel) => Number(channel.id));
-      return JSON.stringify(await reconcileChannelComputers(channelIds));
+      return JSON.stringify({ ...await reconcileChannelComputers(channelIds), fleet_management: skipperFleetManagementView() });
     }
     const channel = scopedChannel(args.channel, userId, hostAuthorized);
     if (action === "wake") {
       const computer = await ensureChannelComputerRunning(Number(channel.id), "Skipper native care request");
-      return `Woke and verified #${channel.name}'s channel computer (${computer.observed_state}).`;
+      return `Woke and verified #${channel.name}'s channel computer (${computer.observed_state}). Skipper's automatic pressure-aware reconciliation, resizing, repair, safe sleep, and obligation wakeups remain active.`;
     }
     if (action === "stop") {
       await stopChannelComputer(Number(channel.id), "idle");
-      return `Asked 1Helm to stop #${channel.name}'s computer; active obligations and work remain authoritative and prevent an unsafe stop.`;
+      return `Asked 1Helm to stop #${channel.name}'s computer; active obligations and work remain authoritative and prevent an unsafe stop. Skipper's automatic pressure-aware lifecycle care remains active.`;
     }
     throw new Error("Choose wake, stop, or reconcile.");
   }

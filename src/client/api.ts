@@ -23,11 +23,16 @@ export type ResidentAgent = {
 };
 export type ChannelComputer = {
   backend: "apple" | "lxc" | "wsl" | "native" | "mock"; machine_id: string; desired_state: string; observed_state: string;
-  cpus: number; memory_bytes: number; disk_bytes: number; home_mount: "none"; provision_status: string;
+  cpus: number; memory_bytes: number; mirror_quota_bytes: number; mirror_quota_purpose: string;
+  guest_disk_capacity_bytes: number | null; guest_disk_capacity_status: "unknown" | "known";
+  home_mount: "none"; provision_status: string;
   maintenance_state: string; last_health: number; last_used: number; last_error: string;
+  pressure?: { load1: number; memoryAvailableKb: number; memoryAvailableBytes: number; diskUsedPercent: number; sampledAt: number | null; status: "live" | "last_known" };
+  pressure_status: "live" | "last_known" | "unknown";
   obligations: Array<{ kind: string; ref: string; mode: "resident" | "wakeable"; details: string; due_at?: number | null }>;
 };
-export type Channel = { id: number; name: string; slug: string; kind: string; topic: string; purpose: string; status: "active" | "archived"; unread: number; agent: ResidentAgent | null; computer?: ChannelComputer | null; personal_main?: boolean; can_manage?: boolean };
+export type ChannelMember = { id: number; username: string; display: string; avatar: string };
+export type Channel = { id: number; name: string; slug: string; kind: string; topic: string; purpose: string; status: "active" | "archived"; unread: number; favorite?: boolean; members?: ChannelMember[]; agent: ResidentAgent | null; computer?: ChannelComputer | null; personal_main?: boolean; can_manage?: boolean };
 export type Bot = { id: number; name: string; model: string; avatar: string; provider_id: number | null; provider_name: string | null; provider_kind: string | null; computers: number[]; prefs: Record<string, string>; agent_id?: number | null; agent_kind?: string | null; agent_status?: string | null; resident_channel_id?: number | null };
 export type ThreadFollowup = {
   id: number;
@@ -69,6 +74,7 @@ export type ChannelRuntime = {
 };
 export type Provider = { id: number; name: string; base_url: string; kind: string; has_key: boolean; bots: number };
 export type RoutingProviderModel = { id: string; gatewayId: string; name: string; enabled: boolean };
+export type RoutingDiscoveredModel = { id: string; name: string; free?: boolean; pricing?: Record<string, string | number | null> };
 export type RoutingModel = { id: string; name: string; kind: "model" | "route"; providerType?: string; providerName?: string; accountCount?: number };
 export type RoutingProvider = {
   id: string; type: string; name: string; accountAlias?: string | null; email?: string | null;
