@@ -14,6 +14,10 @@ const userId = run("INSERT INTO users (username,pass,display,is_admin,created) V
 const botId = run("INSERT INTO bots (name,model,created) VALUES ('feedback-agent','mock',?)", now()).lastInsertRowid;
 const agentId = run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'skipper','feedback-agent','ready',?)", botId, now()).lastInsertRowid;
 
+test("feedback defaults to the host-controlled central collector", () => {
+  assert.equal(feedback.DEFAULT_FEEDBACK_COLLECTOR, "https://1helm.com/api/feedback");
+});
+
 test("feedback diagnostics are opt-in, privacy-bounded, and attachments are durable", () => {
   const token = "a".repeat(40);
   writeFileSync(join(UPLOAD_DIR, token), "image");

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-07-25
+
+### Fixed
+
+- Feedback delivery now uses a durable central SQLite collector hosted on
+  `1helm.com`, with bounded request bodies and attachments, validation,
+  deduplication, rate limiting, a hidden authenticated inbox, and persistent
+  systemd state outside versioned website snapshots. This removes the
+  undeployed Cloudflare Worker route that returned `Not found` in v0.0.9.
+- The final stress-test integration pass reconfirmed the full 22-item product
+  sweep and the live resident follow-up countdown without weakening channel
+  isolation, provider routing, or the existing app experience.
+
 ## [0.0.9] - 2026-07-25
 
 ### Added
@@ -279,7 +292,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.9...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.10...HEAD
+[0.0.10]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.10
 [0.0.9]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.9
 [0.0.8]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.8
 [0.0.7]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.7
