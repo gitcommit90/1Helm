@@ -403,6 +403,11 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     assert.equal(Boolean(await page.$(".routing-fabric")), true, "Sources renders real request routing activity in place from the workspace WebSocket");
     assert.equal(Boolean(await page.$(".routing-fabric-svg .routing-fabric-path")), true, "Sources uses the dotted Requests → router → provider live flow");
     assert.equal(Boolean(await page.$(`${accountSelector} [data-refresh-models]`)), true, "Refresh models is available beside connected-account controls");
+    // The channel-header action lives below the full-screen Settings overlay.
+    // Close Settings before exercising the same real click a user can make.
+    await page.click('button[aria-label="Close settings"]');
+    await page.waitForFunction(() => !document.querySelector('.modal-overlay button[aria-label="Close settings"]'));
+    await page.waitForSelector("[data-routing-header]");
     await page.click("[data-routing-header]");
     await page.waitForSelector("[data-routing-popover]");
     const popoverCopy = await page.$eval("[data-routing-popover]", (element) => element.textContent || "");
