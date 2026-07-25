@@ -454,7 +454,8 @@ th { background: rgba(246, 201, 69, 0.25); font-weight: normal; }
     gap: 0.3rem;
   }
   .site-nav[data-open] { display: flex; }
-  .docs-layout { grid-template-columns: 1fr; }
+  .docs-layout { grid-template-columns: minmax(0, 1fr); }
+  pre, .code-card { max-width: 100%; }
   .docs-nav {
     position: static;
     max-height: none;
