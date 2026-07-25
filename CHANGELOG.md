@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- GitHub Releases now require the complete numbered acceptance ledger from a
+  multi-item request, plus artifact and verification evidence. Generated
+  commit summaries can no longer replace the user-facing change list.
+- The retained Apple Silicon release host now owns the complete macOS path:
+  clean build, signing, notarization, public-download installation, launch,
+  smoke verification, and Application Support preservation.
+
 ## [0.0.10] - 2026-07-25
 
 ### Fixed

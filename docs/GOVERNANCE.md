@@ -54,6 +54,11 @@ contract as the slice hardens.
 5. No secrets, operator hosts/paths, real provider keys, or `data/` SQLite dumps.
 6. Significant product decisions recorded in `docs/VISION.md`.
 7. User-visible changes noted under `CHANGELOG.md` → `## [Unreleased]`.
+8. A multi-item user request retains a numbered acceptance ledger in the pull
+   request and GitHub Release. Do not collapse completed items into a generic
+   summary or rely on generated commit notes as the user-facing release record.
+9. The retained Apple Silicon release host owns both artifact production and
+   public-download installed-app verification.
 
 ## Versioning
 
@@ -61,6 +66,13 @@ contract as the slice hardens.
 - **Do not** reuse a published version tag for different bits.
 - A release requires a unique version, changelog, exact tag, verified public
   artifact, and platform-appropriate clean installation evidence.
+- GitHub Release notes are a first-class product artifact. They must enumerate
+  every user-visible fix and feature accepted for that release, using the same
+  numbered ledger as the originating request when one exists. A short summary
+  can introduce that ledger but cannot replace it.
+- macOS verification must use the exact publicly downloaded artifact, preserve
+  Application Support, and prove signature/ticket/Gatekeeper, launch, version,
+  loopback behavior, and retained state on the retained release host.
 
 Never hand-edit only a deployment target to fix the product. Fix in git,
 review, merge, and redeploy the exact source commit.

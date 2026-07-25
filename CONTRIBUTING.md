@@ -13,6 +13,7 @@ welcome through GitHub issues and pull requests.
 | [docs/GOVERNANCE.md](./docs/GOVERNANCE.md) | Authority, branches, quality bar |
 | [docs/release-lifecycle.md](./docs/release-lifecycle.md) | Idea → PR → deploy |
 | [docs/release-checklist.md](./docs/release-checklist.md) | Ship verification commands |
+| [docs/release-notes-template.md](./docs/release-notes-template.md) | Complete public release record |
 | [CHANGELOG.md](./CHANGELOG.md) | User/operator-facing history |
 | [docs/VISION.md](./docs/VISION.md) | Product decisions and build record |
 
@@ -49,6 +50,8 @@ assignment; contributors retain copyright in contributions they author.
 5. Record durable decisions in `docs/VISION.md`.
 6. Use the merge method selected by the maintainer; delete the head branch.
 7. For a named ship: version bump + [release-checklist.md](./docs/release-checklist.md).
+8. For a multi-item ship, preserve the numbered acceptance ledger in the PR
+   and GitHub Release; generated notes are not a replacement.
 
 ### Security
 
