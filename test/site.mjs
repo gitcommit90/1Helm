@@ -32,11 +32,11 @@ test("standalone 1helm.com website serves independent product and documentation 
     assert.match(home, /build@1helm\.com/);
     assert.match(home, /og:image/);
     assert.match(home, /assets\/story\/og-card\.png/);
-    for (const path of ["/manual", "/terms", "/privacy", "/product", "/manifesto", "/security", "/faq", "/docs", "/docs/install/macos", "/docs/install/linux", "/docs/install/windows-wsl", "/docs/skills", "/docs/verification", "/docs/connections"]) {
+    for (const path of ["/manual", "/terms", "/privacy", "/manual/getting-started", "/manual/architecture", "/manual/outcome-ownership", "/manual/skills", "/manual/verification", "/manual/providers", "/manual/channel-computers", "/manual/connections", "/manual/install-macos", "/manual/install-linux", "/manual/install-windows", "/manual/self-hosting", "/manual/security-model"]) {
       const response = await fetch(base + path); assert.equal(response.status, 200, path);
       assert.match(response.headers.get("content-security-policy") || "", /default-src 'self'/);
     }
-    const gettingStarted = await (await fetch(`${base}/docs/getting-started`)).text();
+    const gettingStarted = await (await fetch(`${base}/manual/getting-started`)).text();
     assert.match(gettingStarted, /On Windows 11 x64, download the signed Setup executable/i);
     assert.doesNotMatch(gettingStarted, /withheld/i);
     assert.equal((await fetch(`${base}/assets/site.css`)).status, 200);
@@ -49,7 +49,13 @@ test("standalone 1helm.com website serves independent product and documentation 
     assert.equal((await fetch(`${base}/install.sh`)).status, 200);
     assert.equal((await fetch(`${base}/../../package.json`)).status, 404);
     const sitemap = await (await fetch(`${base}/sitemap.xml`)).text();
-    assert.match(sitemap, /https:\/\/1helm\.com\/docs\/connections/);
+    assert.match(sitemap, /https:\/\/1helm\.com\/manual\/connections/);
+    assert.doesNotMatch(sitemap, /1helm\.com\/docs/);
+    for (const [oldPath, newPath] of [["/docs", "/manual"], ["/docs/install/linux", "/manual/install-linux"], ["/faq", "/manual#faq"], ["/security", "/manual/security-model"], ["/product", "/"]]) {
+      const moved = await fetch(`${base}${oldPath}`, { redirect: "manual" });
+      assert.equal(moved.status, 301, oldPath);
+      assert.equal(moved.headers.get("location"), newPath, oldPath);
+    }
     const download = await fetch(`${base}/download/macos`, { redirect: "manual" });
     assert.equal(download.status, 302);
     assert.match(download.headers.get("location") || "", /1Helm-[\d.]+-arm64\.dmg$|\/releases\/latest$/);

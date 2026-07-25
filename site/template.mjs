@@ -1,12 +1,9 @@
 const esc = (value) => String(value).replace(/[&<>\"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '\"': "&quot;" })[character]);
 
 const navItems = [
-  ["/", "The story"],
-  ["/manual", "Manual"],
-  ["/product", "Product"],
-  ["/manifesto", "Why 1Helm"],
-  ["/docs", "Docs"],
-  ["/faq", "FAQ"],
+  ["/", "the story"],
+  ["/manual", "manual"],
+  ["/manual#faq", "FAQ"],
 ];
 
 function header(path) {
@@ -17,7 +14,7 @@ function header(path) {
     </a>
     <button class="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" data-nav-toggle><span></span><span></span></button>
     <nav class="site-nav" aria-label="Main navigation" data-nav>
-      ${navItems.map(([href, label]) => `<a href="${href}"${path === href || (href === "/docs" && path.startsWith("/docs/")) ? ' aria-current="page"' : ""}>${label}</a>`).join("")}
+      ${navItems.map(([href, label]) => `<a href="${href}"${path === href || (href === "/manual" && path.startsWith("/manual/")) ? ' aria-current="page"' : ""}>${label}</a>`).join("")}
       <a class="nav-github" href="/github">GitHub <span aria-hidden="true">↗</span></a>
       <a class="nav-download" href="/download/macos">Download</a>
     </nav>
@@ -25,15 +22,22 @@ function header(path) {
 }
 
 function footer(version) {
-  return `<footer class="site-footer">
-    <div class="footer-lead"><img src="/assets/story/app-icon.png" alt="" width="52" height="52"><div><strong>1Helm</strong><span>Stop renting intelligence by the session.</span></div></div>
-    <div class="footer-grid">
-      <div><h2>Product</h2><a href="/product">How it works</a><a href="/manifesto">Manifesto</a><a href="/security">Security</a><a href="/faq">FAQ</a></div>
-      <div><h2>Documentation</h2><a href="/docs/getting-started">Getting started</a><a href="/docs/providers-and-routing">Provider fabric</a><a href="/docs/channel-computers">Channel computers</a><a href="/docs/self-hosting">Self-hosting</a></div>
-      <div><h2>Install</h2><a href="/docs/install/macos">Apple Silicon Mac</a><a href="/docs/install/linux">Linux & VPS</a><a href="/docs/install/windows-wsl">Windows + WSL</a><a href="/download/macos">Download v${esc(version)}</a></div>
-      <div><h2>Project</h2><a href="/github">GitHub</a><a href="https://github.com/gitcommit90/1Helm/releases">Releases</a><a href="https://github.com/gitcommit90/1Helm/issues">Issues</a><a href="/docs/architecture">Architecture</a></div>
-    </div>
-    <div class="footer-floor"><span>Open source · self-hosted · your machines, your memory, your model fabric.</span><span><a href="mailto:build@1helm.com">build@1helm.com</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · 1Helm v${esc(version)}</span></div>
+  return `<footer class="site-footer simple">
+    <a href="/">&larr; back to the story</a>
+    <span>&middot;</span>
+    <a href="/manual">the ship's manual</a>
+    <span>&middot;</span>
+    <a href="/download/macos">Download 1Helm</a>
+    <span>&middot;</span>
+    <a href="/github">GitHub &#8599;</a>
+    <span>&middot;</span>
+    <a href="mailto:build@1helm.com">build@1helm.com</a>
+    <span>&middot;</span>
+    <a href="/terms">Terms</a>
+    <span>&middot;</span>
+    <a href="/privacy">Privacy</a>
+    <span>&middot;</span>
+    <span>1Helm v${esc(version)}</span>
   </footer>`;
 }
 

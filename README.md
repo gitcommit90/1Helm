@@ -16,13 +16,11 @@
   &nbsp;·&nbsp;
   <a href="https://1helm.com/download/windows"><strong>for Windows</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://1helm.com/docs/install/linux"><strong>for Linux</strong></a>
+  <a href="https://1helm.com/manual/install-linux"><strong>for Linux</strong></a>
   &nbsp;·&nbsp;
   <a href="https://1helm.com">The story</a>
   &nbsp;·&nbsp;
   <a href="https://1helm.com/manual">Ship's manual</a>
-  &nbsp;·&nbsp;
-  <a href="https://1helm.com/docs">Documentation</a>
   &nbsp;·&nbsp;
   <a href="docs/VISION.md">Vision</a>
   &nbsp;·&nbsp;
@@ -130,7 +128,7 @@ Windows 11 x64 gets a [signed Setup executable](https://1helm.com/download/windo
 that provisions one private WSL 2 world per channel. Linux hosts use a verified
 installer that provisions a durable systemd service with an atomic,
 digest-verified, health-checked updater — see the
-[Linux install guide](https://1helm.com/docs/install/linux). Whichever platform,
+[Linux install guide](https://1helm.com/manual/install-linux). Whichever platform,
 it works best on a dedicated machine: your crew works around the clock, and
 your everyday computer takes naps.
 
@@ -293,7 +291,7 @@ need an external database or a server transpilation step.
 | Desktop | Sandboxed Electron renderer, ephemeral loopback server, persistent host data, and native wake/update integration on supported desktop hosts. |
 
 Start with [`docs/VISION.md`](docs/VISION.md) for the product record and
-[`docs/architecture`](https://1helm.com/docs/architecture) for the readable
+[`docs/architecture`](https://1helm.com/manual/architecture) for the readable
 system tour. [`SPEC.md`](SPEC.md) is the detailed behavioral contract.
 
 ## Verification
@@ -335,7 +333,7 @@ the complete `npm test` contract.
   tamper-evident retained history, not a remotely witnessed transparency log.
 
 See [`SECURITY.md`](SECURITY.md) and the
-[security model](https://1helm.com/security) for the full boundary and current
+[security model](https://1helm.com/manual/security-model) for the full boundary and current
 dependency debt.
 
 ## Project record

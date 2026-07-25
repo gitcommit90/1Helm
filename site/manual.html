@@ -51,6 +51,14 @@
   <a href="#security">Security</a>
   <a href="#troubleshooting">Troubleshooting</a>
   <a class="faq-link" href="#faq">FAQ</a>
+  <div class="toc-title" style="margin-top:1rem;">Guides</div>
+  <a href="/manual/getting-started">Getting started</a>
+  <a href="/manual/install-macos">Install on macOS</a>
+  <a href="/manual/install-windows">Install on Windows</a>
+  <a href="/manual/install-linux">Install on Linux</a>
+  <a href="/manual/self-hosting">Self-hosting</a>
+  <a href="/manual/architecture">Architecture</a>
+  <a href="/manual/security-model">Security model</a>
 </aside>
 
 <main>
@@ -67,7 +75,7 @@
       <li><span class="b">Tuck the machine somewhere quiet</span> with power and internet. A closet with an ethernet cable is perfect.</li>
       <li><span class="b">Open your workspace URL</span> from any device. Skipper is waiting in <code>#main</code>.</li>
     </ul>
-    <div class="notebox"><span class="notetag">note</span>As long as the helm computer has power and internet, your crew is never out of reach. Sleeping or shutting it down makes the workspace unavailable — it's your server.</div>
+    <div class="notebox"><span class="notetag">note</span>Platform specifics live in the guides: <a class="b plainlink" href="/manual/install-macos">macOS</a>, <a class="b plainlink" href="/manual/install-windows">Windows</a>, and <a class="b plainlink" href="/manual/install-linux">Linux</a>. As long as the helm computer has power and internet, your crew is never out of reach. Sleeping or shutting it down makes the workspace unavailable — it's your server.</div>
   </section>
 
   <section id="the-crew">
@@ -249,6 +257,16 @@ Linux:  /var/lib/1helm</code></pre>
     <details>
       <summary>What if my helm computer dies?</summary>
       <p>Your data root (<code>~/Library/Application Support/1Helm</code> on macOS, <code>/var/lib/1helm</code> on Linux) holds the workspaces, resident state, and credentials. Back it up, move it to a new machine, reinstall 1Helm, and your crew comes back. Never delete that directory during a move.</p>
+    </details>
+
+    <details>
+      <summary>Is demo.1helm.com the product?</summary>
+      <p>No — it's a public sandbox so you can poke around. The real product is the downloadable, self-hosted 1Helm runtime, and your installation's state stays on your machine.</p>
+    </details>
+
+    <details>
+      <summary>Why a crew instead of one big agent?</summary>
+      <p>Isolation, specialization, and continuity. Your finances shouldn't share a filesystem with your travel plans, and an agent that owns one job gets genuinely good at that job. Each crew member has its own computer, memory, and skills.</p>
     </details>
 
     <details>

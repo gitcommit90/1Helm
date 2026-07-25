@@ -468,3 +468,17 @@ th { background: rgba(246, 201, 69, 0.25); font-weight: normal; }
   .docs-nav a { display: inline-block; border-left: none; padding: 0.15em 0.5em; }
   .footer-floor { flex-direction: column; }
 }
+
+/* simple centered footer shared with the manual */
+.site-footer.simple {
+  display: flex;
+  align-items: center;
+  gap: 1.2rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  color: #85857e;
+  font-size: 1rem;
+  padding: 2rem clamp(1rem, 4vw, 2.5rem);
+}
+.site-footer.simple a { color: var(--blue-deep); text-decoration: none; }
+.site-footer.simple a:hover { text-decoration: underline; }
