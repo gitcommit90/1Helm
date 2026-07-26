@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -10,6 +11,17 @@ import sharp from "sharp";
 
 const root = resolve(import.meta.dirname, "..");
 const read = (path) => readFile(join(root, path), "utf8");
+
+async function browserExecutable() {
+  const candidates = [process.env.PUPPETEER_EXECUTABLE_PATH || ""];
+  try { candidates.push(puppeteer.executablePath()); } catch { /* no bundled browser */ }
+  candidates.push("/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser");
+  for (const candidate of candidates.filter(Boolean)) {
+    try { await access(candidate, fsConstants.X_OK); return candidate; } catch { /* try next */ }
+  }
+  return null;
+}
+const executablePath = await browserExecutable();
 
 async function freePort() {
   return new Promise((resolvePort, reject) => {
@@ -142,7 +154,9 @@ test("mobile server addresses normalize to an HTTPS origin and reject ambiguous 
   }
 });
 
-test("the packaged phone gateway opens a fitting connection screen instead of host setup", async () => {
+test("the packaged phone gateway opens a fitting connection screen instead of host setup", {
+  skip: executablePath ? false : "No local Chrome executable; native-shell and transport contracts still run independently.",
+}, async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "1helm-mobile-ui-test-"));
   const port = await freePort();
   const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/server/index.ts"], {
@@ -154,7 +168,7 @@ test("the packaged phone gateway opens a fitting connection screen instead of ho
   try {
     const base = `http://127.0.0.1:${port}`;
     await waitFor(`${base}/api/setup/status`);
-    browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    browser = await puppeteer.launch({ executablePath, headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
     const page = await browser.newPage();
     await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
     await page.evaluateOnNewDocument(() => {
