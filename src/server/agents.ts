@@ -12,10 +12,15 @@ const WORLD_DIRS = ["workspace", "files", "state", "memory", "profile"];
 const MEMORY_KINDS = new Set(["summary", "decision", "fact", "preference", "artifact_ref"]);
 const AGENT_COLORS = ["#C8552F", "#2166B8", "#2E7D4F", "#8A6B7C", "#A67C52", "#4F6D7A", "#7A6A4F", "#64748B"];
 const randomAgentAvatar = (): string => {
-  const residentCount = Number(q1("SELECT COUNT(*) n FROM agents WHERE kind='channel' AND status<>'deleted'")?.n || 0);
-  const character = (residentCount + Number(randomBytes(1)[0])) % 9 + 1;
-  const color = AGENT_COLORS[Number(randomBytes(1)[0]) % AGENT_COLORS.length];
-  return `agent:${character}:${color}`;
+  const options = Array.from({ length: 9 }, (_, character) => AGENT_COLORS.map((color) => `agent:${character + 1}:${color}`)).flat();
+  const used = new Set(q(`SELECT b.avatar FROM bots b JOIN agents a ON a.bot_id=b.id
+    WHERE a.kind='channel' AND a.status<>'deleted'`).map((row) => String(row.avatar)));
+  const start = Number(randomBytes(1)[0]) % options.length;
+  for (let offset = 0; offset < options.length; offset++) {
+    const candidate = options[(start + offset) % options.length];
+    if (!used.has(candidate)) return candidate;
+  }
+  return options[start];
 };
 
 export type ProvisionedChannel = {
@@ -398,10 +403,19 @@ const MAX_NOTE_BYTES = 1024 * 1024;
 /** Notes are deliberately flat: their only path is /workspace/notes/<name>. */
 export function validateNoteFilename(input: string): string {
   const value = String(input || "");
-  const name = value.trim();
-  if (!name || name !== value || name === "." || name === ".." || name.length > 160
-      || /[\\/\0-\x1f\x7f]/.test(name) || !name.toLowerCase().endsWith(".md") || name.toLowerCase() === ".md") {
-    throw new Error("Note names must be a plain .md filename without folders or control characters.");
+  let name = value.trim();
+  if (!name || name !== value || name === "." || name === ".."
+      || /[\\/\0-\x1f\x7f]/.test(name)) {
+    throw new Error("Note names must be a plain Markdown filename without folders or control characters.");
+  }
+  const finalDot = name.lastIndexOf(".");
+  if (finalDot < 0) name += ".md";
+  else if (!name.toLowerCase().endsWith(".md")) {
+    const corrected = `${name.slice(0, finalDot) || name}.md`;
+    throw new Error(`Notes use .md files. Try “${corrected}”.`);
+  }
+  if (name.toLowerCase() === ".md" || name.length > 160) {
+    throw new Error("Note names must be a plain Markdown filename no longer than 160 characters.");
   }
   return name;
 }

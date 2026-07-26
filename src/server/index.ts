@@ -64,7 +64,7 @@ import { stopAllConnectors } from "./connectors.ts";
 import { ensureImageGenerationSkill, listSkills, listTemplates, provisionSkill, skillsForAgent, setImageGenerationEnabled, imageGenerationAvailable, imageGenerationEnabledIds } from "./skills.ts";
 import { inspectCatalogSkill, installCatalogSkill, refreshSkillCatalog, searchSkillCatalog, skillCatalogStatus } from "./skill-catalog.ts";
 import { auditEvents, verifyAuditChain } from "./audit.ts";
-import { configurePhoton, mapPhotonChannel, photonStatus, registerPhotonDispatcher, startPhotonConnector, stopPhotonConnector } from "./photon.ts";
+import { configurePhoton, continuePhotonConversation, deliverPhotonEvent, photonConversation, photonConversations, photonStatus, registerPhotonDispatcher, startPhotonConnector, stopPhotonConnector } from "./photon.ts";
 import { photonSetupStatus, startPhotonSetup } from "./photon-auth.ts";
 import { completeGmailConnection, gmailConnectionStatus, saveGmailOAuthClient, startGmailConnection } from "./gmail.ts";
 import { cancelMnemosyneRuntimePreparation, ensureAgentMemory, mnemosyneAvailable, prepareMnemosyneRuntime } from "./memory.ts";
@@ -313,7 +313,7 @@ function messageIsSettledSql(alias = "m"): string {
 function maxSettledMessageId(channelId: number): number {
   return Number(q1(
     `SELECT MAX(m.id) x FROM messages m
-     WHERE m.channel_id=? AND ${messageIsSettledSql("m")}`,
+     WHERE m.channel_id=? AND m.photon_conversation_id IS NULL AND ${messageIsSettledSql("m")}`,
     channelId,
   )?.x || 0);
 }
@@ -321,7 +321,7 @@ function maxSettledMessageId(channelId: number): number {
 function channelUnreadCount(userId: number, channelId: number, lastRead: number): number {
   return Number(q1(
     `SELECT COUNT(*) n FROM messages m
-     WHERE m.channel_id=? AND m.id>? AND (m.user_id IS NULL OR m.user_id<>?)
+     WHERE m.channel_id=? AND m.photon_conversation_id IS NULL AND m.id>? AND (m.user_id IS NULL OR m.user_id<>?)
        AND ${messageIsSettledSql("m")}`,
     channelId, lastRead, userId,
   )?.n || 0);
@@ -1028,11 +1028,28 @@ const server = createServer(async (req, res) => {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       return json(res, 200, { photon: photonSetupStatus() });
     }
-    if (p === "/api/connectors/photon/map" && m === "POST") {
+    if (p === "/api/texts" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Texts are private to the Captain." });
+      return json(res, 200, { conversations: photonConversations(Number(user.id)) });
+    }
+    if (p === "/api/testing/photon" && m === "POST" && process.env.NODE_ENV === "test") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const b = await jbody(req);
-      try { return json(res, 200, { photon: mapPhotonChannel(Number(b.channel_id), Array.isArray(b.allowed_users) ? b.allowed_users.map(String) : undefined) }); }
-      catch (error) { return json(res, 400, { error: (error as Error).message }); }
+      if (b.event) return json(res, 200, { accepted: await deliverPhotonEvent(b.event as never) });
+      return json(res, 200, { outbound: Number(q1("SELECT COUNT(*) n FROM photon_messages WHERE direction='outbound'")?.n || 0) });
+    }
+    const textConversation = p.match(/^\/api\/texts\/(\d+)$/);
+    if (textConversation && user.is_admin) {
+      const conversationId = Number(textConversation[1]);
+      if (m === "GET") {
+        const conversation = photonConversation(Number(user.id), conversationId);
+        return conversation ? json(res, 200, { conversation }) : json(res, 404, { error: "Text thread not found." });
+      }
+      if (m === "POST") {
+        const b = await jbody(req);
+        try { return json(res, 200, { conversation: await continuePhotonConversation(Number(user.id), conversationId, String(b.body || "")) }); }
+        catch (error) { return json(res, 409, { error: (error as Error).message }); }
+      }
     }
     if (p === "/api/thread-audit/run" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
@@ -1177,11 +1194,11 @@ const server = createServer(async (req, res) => {
       const threads: Record<string, unknown>[] = [];
       for (const channel of channels) {
         const channelId = Number(channel.id);
-        for (const root of q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL ORDER BY id", channelId)) {
+        for (const root of q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL AND photon_conversation_id IS NULL ORDER BY id", channelId)) {
           ensureThread(Number(root.id), channelId);
         }
         const lastRead = Number(q1("SELECT last_read FROM members WHERE channel_id=? AND user_id=?", channelId, user.id)?.last_read || 0);
-        for (const thread of q("SELECT * FROM threads WHERE channel_id=? ORDER BY updated_at DESC", channelId)) {
+        for (const thread of q("SELECT t.* FROM threads t JOIN messages m ON m.id=t.root_message_id WHERE t.channel_id=? AND m.photon_conversation_id IS NULL ORDER BY t.updated_at DESC", channelId)) {
           const rootId = Number(thread.root_message_id);
           const unread = Number(q1(
             `SELECT COUNT(*) n FROM messages m
@@ -1284,8 +1301,8 @@ const server = createServer(async (req, res) => {
         } catch (error) { return json(res, 400, { error: (error as Error).message }); }
       }
       if (action === "threads" && m === "GET") {
-        for (const root of q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL ORDER BY id", channelId)) ensureThread(Number(root.id), channelId);
-        const threads = q("SELECT * FROM threads WHERE channel_id=? ORDER BY updated_at DESC", channelId).map((thread) => ({
+        for (const root of q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL AND photon_conversation_id IS NULL ORDER BY id", channelId)) ensureThread(Number(root.id), channelId);
+        const threads = q("SELECT t.* FROM threads t JOIN messages m ON m.id=t.root_message_id WHERE t.channel_id=? AND m.photon_conversation_id IS NULL ORDER BY t.updated_at DESC", channelId).map((thread) => ({
           ...thread,
           followup: threadFollowupView(Number(thread.id)),
           root: serializeMessage(Number(thread.root_message_id)),
@@ -1500,7 +1517,7 @@ const server = createServer(async (req, res) => {
       if (m === "GET") {
         run("INSERT INTO members (channel_id, user_id, last_read) VALUES (?,?,?) ON CONFLICT(channel_id,user_id) DO UPDATE SET last_read=excluded.last_read",
           cid, user.id, maxSettledMessageId(cid));
-        const rows = q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL ORDER BY id DESC LIMIT 100", cid).reverse();
+        const rows = q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL AND photon_conversation_id IS NULL ORDER BY id DESC LIMIT 100", cid).reverse();
         return json(res, 200, { messages: rows.map((r) => serializeMessage(Number(r.id))), bots: botsInChannel(cid).map(botView), agent: agentViewForChannel(cid) });
       }
       if (m === "POST") {

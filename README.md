@@ -196,9 +196,10 @@ keys per member.
 
 Connections are host-owned brokers, not secrets copied into every resident's
 shell. Gmail exposes scoped account listing, search, read, and draft creation;
-sending remains disabled by default. Photon maps allowlisted inbound iMessage
-threads to a resident and permits narrow replies in an already-authorized
-conversation. Provider, Gmail, and Photon credentials stay on the host.
+sending remains disabled by default. Photon gives the Captain one direct line
+to Skipper: every text stays in a private Texts thread until `/new`, and that
+same context can continue on desktop without echoing desktop-only turns back to
+iMessage. Provider, Gmail, and Photon credentials stay on the host.
 
 New connection types have to earn their place with least-privilege scoping,
 secret isolation, reconnect and recovery, deduplication, deterministic tests,
@@ -256,7 +257,7 @@ A fresh data directory opens first-run setup. The source runtime defaults to
 | `PORT` | `8123` | HTTP/WebSocket control-plane port. |
 | `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and narrow workspace mirrors. |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `lxc` on Linux, `wsl` on Windows | Host isolation backend; `native` and `mock` are explicit development/test overrides. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.10` | Versioned channel-machine image contract. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.11` | Versioned channel-machine image contract. |
 
 ### Agent-first JSON CLI
 

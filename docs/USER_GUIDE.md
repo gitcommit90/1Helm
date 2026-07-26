@@ -248,15 +248,16 @@ running on that host.
 ## Photon / iMessage
 
 Connections guides Photon device authorization, project setup, secret rotation,
-phone registration, sidecar health, and conversation mapping. The first mapping
-defaults to the Captain's `#main` and Skipper.
+phone registration, and sidecar health. There are no channel mappings: the
+Captain's configured phone always talks directly to Skipper.
 
-An allowlisted inbound text creates a real 1Helm thread, invokes the mapped
-agent, retains its reply in 1Helm, and sends that final reply to the exact inbound
-conversation once. If the agent explicitly uses `photon_send`, the automatic
-return suppresses its duplicate. New unrelated outbound destinations remain
-blocked unless explicitly granted. Rich attachment fidelity is not yet part of
-the verified contract.
+The first inbound text creates a private conversation in `#main`'s **Texts**
+tab. Phone messages and Skipper's iMessage replies are retained there, and the
+conversation keeps one context across connector restarts and Photon space-ID
+changes until the Captain sends `/new`. The Captain can continue the same
+thread inside 1Helm and return to the phone later; desktop-only turns stay in
+1Helm rather than being replayed as iMessages. Rich attachment fidelity is not
+yet part of the verified contract.
 
 ## Workflows, follow-ups, and computer care
 

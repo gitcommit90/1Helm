@@ -314,8 +314,7 @@ function learnSkillDialog(): void {
   overlay.append(modal); document.body.append(overlay); notes.focus();
 }
 
-type PhotonMapping = { channel_id: number; channel_name: string; agent_name: string; allowed_users: string; updated: number };
-type PhotonStatus = { configured: boolean; connected: boolean; project_id: string; operator_phone: string; assigned_phone: string; secret: "stored" | "missing"; mappings: PhotonMapping[] };
+type PhotonStatus = { configured: boolean; connected: boolean; project_id: string; operator_phone: string; assigned_phone: string; secret: "stored" | "missing"; thread_count: number };
 type PhotonSetup = { active: boolean; status?: string | PhotonStatus; operator_phone?: string; user_code?: string; verification_uri?: string; verification_uri_complete?: string; expires_at?: number; error?: string; connector?: PhotonStatus };
 type GmailStatus = { accounts: string[]; has_oauth_client: boolean; setup: { active: boolean; status: string; authorization_url?: string; manual_completion?: boolean; error?: string } };
 
@@ -393,7 +392,7 @@ function connectionsPanel(): HTMLElement {
       clear(box);
       box.append(
         h("div", { class: "flex flex-wrap items-start justify-between gap-3" },
-          h("div", {}, h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-display text-lg text-fg" }, "Photon · iMessage"), h("span", { class: `chip ${photon.connected ? "border-emerald-500/30 text-emerald-700 dark:text-emerald-300" : "border-amber-400/40 text-amber-700 dark:text-amber-300"}` }, photon.connected ? "Connected" : photon.configured ? "Reconnecting" : "Not configured")), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "A supervised loopback connector streams task-scoped messages into the mapped resident. Photon credentials stay on the 1Helm host; residents never receive the Mac Messages database.")),
+          h("div", {}, h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-display text-lg text-fg" }, "Photon · iMessage"), h("span", { class: `chip ${photon.connected ? "border-emerald-500/30 text-emerald-700 dark:text-emerald-300" : "border-amber-400/40 text-amber-700 dark:text-amber-300"}` }, photon.connected ? "Connected" : photon.configured ? "Reconnecting" : "Not configured")), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Text your 1Helm number to talk directly with Skipper. Conversations stay private to your Texts inbox and continue until you send /new. Photon credentials stay on the 1Helm host.")),
           photon.assigned_phone ? h("div", { class: "text-right text-xs text-muted" }, "Text 1Helm at", h("strong", { class: "mt-1 block text-sm text-fg" }, photon.assigned_phone)) : null),
       );
       if (!photon.configured || ["waiting", "provisioning", "failed", "expired"].includes(String(setup.status || ""))) {
@@ -413,18 +412,10 @@ function connectionsPanel(): HTMLElement {
         box.append(h("div", { class: "rounded-lg border border-accent/30 bg-accent-soft p-4" }, h("p", { class: "text-xs font-semibold uppercase tracking-wide text-muted" }, "Approve Photon login"), h("div", { class: "mt-2 flex flex-wrap items-center gap-3" }, h("code", { class: "rounded bg-panel px-3 py-2 text-lg font-bold text-fg" }, setup.user_code), h("a", { class: "btn-primary text-sm", href: destination, target: "_blank", rel: "noopener noreferrer" }, "Open Photon ↗")), h("p", { class: "mt-2 text-xs text-muted" }, "This page updates automatically after approval.")));
       }
       if (photon.configured) {
-        const main = S.channels.find((entry) => entry.kind === "channel" && entry.name === "main" && entry.agent);
-        const channel = h("select", { class: "field" }, ...S.channels.filter((entry) => entry.kind === "channel" && entry.agent).map((entry) => h("option", { value: String(entry.id), selected: entry.id === main?.id || undefined }, `#${entry.name} · @${entry.agent!.name}`))) as HTMLSelectElement;
-        const allowed = h("input", { class: "field", type: "tel", placeholder: photon.operator_phone || "+15551234567", value: photon.operator_phone || "", autocomplete: "tel" }) as HTMLInputElement;
-        const mappingStatus = h("p", { class: "min-h-5 text-sm text-muted" });
-        const map = h("button", { class: "btn-primary text-sm", onclick: async () => {
-          map.disabled = true; mappingStatus.textContent = "Applying least-privilege mapping…";
-          try { await api("/api/connectors/photon/map", { body: { channel_id: Number(channel.value), allowed_users: allowed.value.split(",").map((value) => value.trim()).filter(Boolean) } }); await refresh(); }
-          catch (error) { map.disabled = false; mappingStatus.textContent = (error as Error).message; }
-        } }, "Map conversation") as HTMLButtonElement;
-        box.append(h("div", { class: "space-y-3" }, h("div", {}, h("h4", { class: "font-semibold text-fg" }, "Conversation mappings"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "#main and Skipper are the default. An allowlisted inbound message opens a real thread, invokes the mapped agent, and 1Helm automatically returns that agent's final reply to the same authorized iMessage conversation.")),
-          ...photon.mappings.map((mapping) => h("div", { class: "rounded-lg border border-border bg-panel p-3" }, h("div", { class: "font-semibold text-fg" }, `#${mapping.channel_name} · @${mapping.agent_name}`), h("div", { class: "mt-1 text-xs text-muted" }, `Allowlisted: ${(() => { try { return (JSON.parse(mapping.allowed_users) as string[]).join(", "); } catch { return "invalid mapping"; } })()}`))),
-          h("div", { class: "grid gap-2 sm:grid-cols-[1fr_1fr_auto]" }, channel, allowed, map), mappingStatus));
+        box.append(h("div", { class: "rounded-lg border border-line bg-panel p-4" },
+          h("div", { class: "flex flex-wrap items-center justify-between gap-3" },
+            h("div", {}, h("h4", { class: "font-semibold text-fg" }, "Texts inbox"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, `Messages from ${photon.operator_phone} talk to @skipper without belonging to any channel. Continue on phone or desktop; only phone-originated turns receive iMessage replies.`)),
+            h("span", { class: "chip" }, `${photon.thread_count || 0} thread${photon.thread_count === 1 ? "" : "s"}`))));
       }
       if (setup.active) { stopPolling(); timer = setTimeout(() => { void refresh(); }, 2000); }
       else stopPolling();

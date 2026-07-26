@@ -581,6 +581,46 @@ export function migrate(): void {
     SELECT bot_id, NEW.channel_id FROM agents WHERE id=NEW.agent_id AND bot_id IS NOT NULL;
   END;
   `);
+  // Photon is a private Captain ↔ Skipper inbox. Legacy channel mappings are
+  // retained only long enough to migrate conversation history; they are no
+  // longer a user-facing routing primitive.
+  addColumn("messages", "photon_conversation_id", "photon_conversation_id INTEGER");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_messages_photon_conversation ON messages(photon_conversation_id,id)");
+  const photonMain = q1(`SELECT c.id FROM channels c JOIN users u ON u.id=c.personal_main_owner_id
+    WHERE c.kind='channel' AND c.name='main' AND c.status<>'deleted' AND u.is_admin=1
+    ORDER BY c.id LIMIT 1`);
+  if (photonMain?.id) {
+    for (const sender of q("SELECT sender FROM photon_conversations WHERE active=1 GROUP BY sender HAVING COUNT(*)>1")) {
+      const keep = q1("SELECT id FROM photon_conversations WHERE sender=? AND active=1 ORDER BY updated DESC,id DESC LIMIT 1", sender.sender);
+      run("UPDATE photon_conversations SET active=0,closed=COALESCE(closed,updated) WHERE sender=? AND active=1 AND id<>?", sender.sender, keep?.id || 0);
+    }
+    for (const conversation of q("SELECT id,channel_id,root_message_id,thread_id FROM photon_conversations ORDER BY id")) {
+      try {
+        tx(() => {
+          run("UPDATE messages SET channel_id=?,photon_conversation_id=? WHERE id=? OR parent_id=?", photonMain.id, conversation.id, conversation.root_message_id, conversation.root_message_id);
+          run("UPDATE threads SET channel_id=? WHERE id=?", photonMain.id, conversation.thread_id);
+          run("UPDATE agent_turns SET channel_id=? WHERE thread_root_id=?", photonMain.id, conversation.root_message_id);
+          run("UPDATE memory_items SET channel_id=? WHERE thread_id=?", photonMain.id, conversation.thread_id);
+          run("UPDATE channel_activity SET channel_id=? WHERE thread_id=?", photonMain.id, conversation.thread_id);
+        });
+      } catch {
+        // Historical installations may have an in-flight agent_turn whose
+        // trigger id uniqueness prevents rebinding. Keep the conversation in
+        // its original world until the normal recovery pass settles the turn.
+      }
+    }
+    run(`UPDATE photon_conversations SET channel_id=? WHERE NOT EXISTS (
+      SELECT 1 FROM messages m WHERE m.id=photon_conversations.root_message_id AND m.channel_id<>?)`, photonMain.id, photonMain.id);
+    run(`UPDATE photon_messages SET channel_id=(SELECT channel_id FROM photon_conversations pc
+      WHERE pc.id=(SELECT photon_conversation_id FROM messages m WHERE m.id=photon_messages.message_id))
+      WHERE message_id IS NOT NULL AND EXISTS (SELECT 1 FROM messages m WHERE m.id=photon_messages.message_id AND m.photon_conversation_id IS NOT NULL)`);
+  }
+  // The table survives only as a schema-compatibility tombstone. Photon no
+  // longer has channel mappings: credentials identify one Captain and every
+  // accepted turn goes directly to that Captain's Skipper Texts inbox.
+  run("DELETE FROM photon_channel_mappings");
+  db.exec("DROP INDEX IF EXISTS idx_photon_conversation_active");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_photon_conversation_active ON photon_conversations(sender) WHERE active=1");
   addColumn("agents", "provider_inherited", "provider_inherited INTEGER NOT NULL DEFAULT 1");
   addColumn("agents", "template_slug", "template_slug TEXT NOT NULL DEFAULT 'general'");
   addColumn("model_prefs", "provider_id", "provider_id INTEGER");
@@ -939,7 +979,7 @@ export function migrate(): void {
     const platformBackend = process.platform === "darwin" ? "apple" : process.platform === "win32" ? "wsl" : "lxc";
     const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || platformBackend);
     const backend = ["apple", "lxc", "wsl", "native", "mock"].includes(configuredBackend) ? configuredBackend : platformBackend;
-    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.10");
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.11");
     // Earlier Linux/Windows releases persisted the compatibility `native`
     // seam into every channel row. A production host update must actually
     // move those rows onto the platform isolation backend; changing the unit's

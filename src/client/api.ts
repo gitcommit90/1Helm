@@ -13,7 +13,7 @@ export type AgentQuestions = {
   answers?: Array<{ question_id: string; question: string; values: string[]; custom: string }> | null;
   answered?: number | null;
 };
-export type Message = { id: number; channel_id: number; parent_id: number | null; body: string; created: number; reply_count: number; last_reply: number | null; author: Author; attachments: Attachment[]; progress?: AgentProgress[]; questions?: AgentQuestions | null };
+export type Message = { id: number; channel_id: number; parent_id: number | null; body: string; created: number; reply_count: number; last_reply: number | null; author: Author; attachments: Attachment[]; progress?: AgentProgress[]; questions?: AgentQuestions | null; photon_conversation_id?: number | null; transport?: "inbound" | "outbound" | "app" };
 export type ModelPolicy = { provider_id: number | null; provider_name: string | null; provider_kind: string | null; model: string; overridden: boolean; editable: boolean };
 export type ResidentAgent = {
   id: number; bot_id: number; kind: "channel" | "skipper"; name: string; display_name: string;
@@ -57,6 +57,7 @@ export type ThreadState = {
   followup?: ThreadFollowup | null;
 };
 export type GlobalThread = ThreadState & { channel_name: string; channel_slug: string; unread: boolean };
+export type TextConversation = { id: number; sender: string; root_message_id: number; thread_id: number; active: number; started: number; updated: number; closed?: number | null; title: string; summary: string; status: string; last_body?: string; message_count?: number; messages?: Message[] };
 export type ChannelFile = { path: string; name: string; size: number; modified: number; kind: "file" | "directory" };
 export type MemoryItem = { id: number; channel_id: number; thread_id: number | null; root_message_id?: number | null; kind: "summary" | "decision" | "fact" | "preference" | "artifact_ref"; content: string; author_type: string; scope: string; status: "current" | "superseded"; created: number };
 export type ActivityItem = {
