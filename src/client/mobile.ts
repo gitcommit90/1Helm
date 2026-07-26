@@ -17,6 +17,17 @@ const native = Capacitor.isNativePlatform();
 let serverOrigin = "";
 let launchFinishQueued = false;
 
+/** Keep the reserved native status surface visually joined to the app header. */
+export async function syncNativeStatusSurface(): Promise<void> {
+  if (!native) return;
+  const surface = getComputedStyle(document.documentElement).getPropertyValue("--c-surface").trim() || "#111318";
+  const statusStyle = document.documentElement.classList.contains("light") ? Style.Light : Style.Dark;
+  await Promise.allSettled([
+    StatusBar.setBackgroundColor({ color: surface }),
+    StatusBar.setStyle({ style: statusStyle }),
+  ]);
+}
+
 export const isNativeMobile = (): boolean => native;
 export const mobilePlatform = (): string => native ? Capacitor.getPlatform() : "web";
 export const getServerOrigin = (): string => serverOrigin;
@@ -96,10 +107,11 @@ export async function initializeMobileRuntime(): Promise<string> {
   }
 
   await Promise.allSettled([
-    StatusBar.setStyle({ style: Style.Default }),
     StatusBar.setOverlaysWebView({ overlay: platform !== "ios" }),
     Keyboard.setResizeMode({ mode: KeyboardResize.Native }),
   ]);
+  await syncNativeStatusSurface();
+  window.addEventListener("themechange", () => { void syncNativeStatusSurface(); });
 
   await App.addListener("appUrlOpen", ({ url }) => {
     const code = nativeCallbackCode(url);

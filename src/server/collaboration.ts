@@ -9,7 +9,7 @@ const DIR = join(DATA_DIR, "collaboration");
 const SECRET_PATH = join(DIR, "management-secret");
 const CONNECTOR_ID = "workspace";
 
-function managementSecret(): string {
+export function installationManagementSecret(): string {
   mkdirSync(DIR, { recursive: true });
   if (existsSync(SECRET_PATH)) return readFileSync(SECRET_PATH, "utf8").trim();
   const secret = randomBytes(32).toString("hex");
@@ -61,7 +61,7 @@ export async function claimWorkspace(slug: string, workspaceName: string, port: 
         slug: slug.trim().toLowerCase(),
         installation_id: String(workspace.installation_id),
         workspace_name: workspaceName,
-        management_secret: managementSecret(),
+        management_secret: installationManagementSecret(),
       }),
     });
     if (result.connector) saveTunnelConnector(CONNECTOR_ID, result.connector, [result.workspace.hostname], port);
@@ -83,7 +83,7 @@ export async function setCollaborationEnabled(enabled: boolean): Promise<Record<
   if (!slug) throw new Error("Claim a 1helm.com workspace address first.");
   await provisioner(`/v1/workspaces/${encodeURIComponent(slug)}`, {
     method: "POST",
-    headers: { authorization: `Bearer ${managementSecret()}`, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${installationManagementSecret()}`, "content-type": "application/json" },
     body: JSON.stringify({ enabled }),
   });
   run("UPDATE workspace SET collaboration_enabled=?,collaboration_status=?,collaboration_error='' WHERE id=1", enabled ? 1 : 0, enabled ? "active" : "off");

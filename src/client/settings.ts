@@ -2,7 +2,7 @@ import { api, getToken, openAuthenticatedFile, workspacePhotoSrc, type AccessReq
 import { h, clear, add, icon } from "./dom.ts";
 import { S, avatar, reloadProviders, renderApp, appAlert, appConfirm, appPrompt } from "./app.ts";
 import { connectRoutingOauth, routingPanel } from "./routing.ts";
-import { globalNotificationsMuted, setGlobalNotificationsMuted } from "./notifications.ts";
+import { disableNativeNotifications, enableNativeNotifications, globalNotificationsMuted, nativeNotificationState, setGlobalNotificationsMuted } from "./notifications.ts";
 import { apiUrl, isNativeMobile, openExternalUrl } from "./mobile.ts";
 
 // ============================================================ OpenRouter OAuth (PKCE)
@@ -140,7 +140,28 @@ function notificationsPanel(): HTMLElement {
       status.textContent = (error as Error).message;
     } finally { unreadFirst.disabled = false; }
   };
+  const nativeCard = h("section", { class: "card space-y-3 p-4", dataset: { nativeNotifications: "" } },
+    h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Phone notifications"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Receive channel and resident-agent updates when 1Helm is closed or in the background.")),
+    h("p", { class: "text-sm text-muted" }, "Checking this device…"));
+  const drawNative = async (): Promise<void> => {
+    const state = await nativeNotificationState();
+    if (!state.available) { nativeCard.remove(); return; }
+    const enabled = state.permission === "granted" && state.registered;
+    const action = h("button", { class: enabled ? "btn-subtle text-sm" : "btn-primary text-sm", type: "button" }, enabled ? "Turn off on this phone" : state.permission === "denied" ? "Check again" : "Turn on notifications") as HTMLButtonElement;
+    const detail = h("p", { class: `text-sm ${state.error ? "text-danger" : "text-muted"}` }, state.error || (enabled ? "This phone is registered for 1Helm notifications." : state.permission === "denied" ? "Notifications are blocked in iOS Settings. Open Settings → Notifications → 1Helm to allow them." : "1Helm will ask for permission once, after you choose Turn on."));
+    action.onclick = async () => {
+      action.disabled = true;
+      if (enabled) await disableNativeNotifications();
+      else if (state.permission !== "denied") await enableNativeNotifications();
+      await drawNative();
+    };
+    nativeCard.replaceChildren(
+      h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Phone notifications"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Receive channel and resident-agent updates when 1Helm is closed or in the background.")),
+      h("div", { class: "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between" }, detail, action));
+  };
+  void drawNative();
   return h("div", { class: "space-y-4" },
+    nativeCard,
     h("section", { class: "card space-y-3 p-4" },
       h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Global sound"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "This preference belongs only to your 1Helm account and follows you across signed-in devices.")),
       h("label", { class: "flex items-start gap-3 rounded-lg border border-line bg-panel p-3" }, muted, h("span", {}, h("span", { class: "block text-sm font-semibold text-fg" }, "Mute all notification sounds"), h("span", { class: "mt-1 block text-xs leading-5 text-muted" }, "Visual unread badges and agent activity remain available."))),

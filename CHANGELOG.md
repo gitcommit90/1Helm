@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.16] - 2026-07-26
+
+### Added
+
+- Native iPhone notification registration now belongs to the signed-in 1Helm
+  profile. Background channel and resident-agent updates use a
+  durable, retryable, idempotent delivery queue, honor global sound and
+  per-channel mute choices, skip the author, encrypt device tokens in the push
+  relay, and open the relevant channel or thread when tapped.
+- Settings → Notifications now lets a phone owner explicitly request system
+  notification permission, see whether the current phone is registered, and
+  turn registration off without changing another device.
+
+### Changed
+
+- Phone channel chrome now uses two calm rows: hamburger and channel name on
+  top, then a right-aligned row for Favorite, Router, resident status,
+  Terminal, Notes, and Skipper. Desktop remains one compact row, and every
+  phone action retains a 44-point target without horizontal overflow.
+- The native iOS status surface matches the current light or dark page header
+  behind the Dynamic Island while WebView controls remain physically below the
+  system indicators.
+
+### Fixed
+
+- Choosing **Take Photo or Video** from a message attachment no longer causes
+  iOS to terminate 1Helm. Camera, photo-library, and video-microphone access now
+  have narrow user-facing privacy declarations tied to explicit attachment
+  actions.
+- The Notes top bar shares the mobile surface treatment and keeps **New note**
+  and **Close** visible on a 390-point phone viewport.
+
 ## [0.0.15] - 2026-07-26
 
 ### Fixed
@@ -406,7 +438,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.15...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.16...HEAD
+[0.0.16]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.16
 [0.0.15]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.15
 [0.0.14]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.14
 [0.0.13]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.13

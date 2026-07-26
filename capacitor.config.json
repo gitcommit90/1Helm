@@ -3,7 +3,7 @@
   "appName": "1Helm",
   "webDir": "public",
   "loggingBehavior": "none",
-  "backgroundColor": "#08090c",
+  "backgroundColor": "#111318",
   "zoomEnabled": false,
   "appendUserAgent": " 1HelmMobile",
   "server": {
@@ -48,7 +48,10 @@
     "StatusBar": {
       "overlaysWebView": false,
       "style": "DEFAULT",
-      "backgroundColor": "#08090c"
+      "backgroundColor": "#111318"
+    },
+    "PushNotifications": {
+      "presentationOptions": []
     }
   }
 }

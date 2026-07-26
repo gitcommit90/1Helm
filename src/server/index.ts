@@ -10,6 +10,7 @@ import { createMessage, deleteMessage, serializeMessage, setModelPref, setModelP
 import { computerRowView, fetchModels } from "./computer.ts";
 import { cancelChannelTurns, resumeQueuedAgentTurns, runBot, stopThreadTurn } from "./bots.ts";
 import { register, unregister, broadcastToChannel, broadcastAll, broadcastAdmins, sendToUsers } from "./events.ts";
+import { mobilePushStatus, registerMobilePush, startMobilePushLoop, unregisterMobilePush } from "./mobile-push.ts";
 import { openChannelSession, openSession, attachClient, listSessions, closeChannelSessions, closeSession } from "./terms.ts";
 import { startAgent } from "./agent.ts";
 import {
@@ -820,6 +821,23 @@ const server = createServer(async (req, res) => {
         catch { state[String(row.key)] = String(row.value || ""); }
       }
       return json(res, 200, { state });
+    }
+    if (p === "/api/mobile/push" && m === "GET") return json(res, 200, mobilePushStatus(Number(user.id)));
+    if (p === "/api/mobile/push/status" && m === "POST") {
+      const b = await jbody(req);
+      return json(res, 200, mobilePushStatus(Number(user.id), b.platform, b.token));
+    }
+    if (p === "/api/mobile/push" && m === "POST") {
+      const b = await jbody(req);
+      try { return json(res, 200, { registration: await registerMobilePush(Number(user.id), b.platform, b.token) }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
+    if (p === "/api/mobile/push" && m === "DELETE") {
+      const b = await jbody(req);
+      try {
+        await unregisterMobilePush(Number(user.id), b.platform, b.token);
+        return json(res, 200, { ok: true });
+      } catch (error) { return json(res, 400, { error: (error as Error).message }); }
     }
     if (p === "/api/me/ui-state" && (m === "PUT" || m === "PATCH")) {
       const b = await jbody(req);
@@ -2057,6 +2075,7 @@ server.on("upgrade", (req, socket: Socket, head) => {
 
 // ---- embedded local computer (open-terminal compatible) ----
 async function bootstrap(): Promise<void> {
+  startMobilePushLoop();
   registerPhotonDispatcher((bot, channelId, triggerId, threadRootId) => runBot(bot, channelId, triggerId, threadRootId, true));
   registerWorkflowDispatcher((bot, channelId, triggerId, threadRootId) => runBot(bot, channelId, triggerId, threadRootId, true));
   reactivateComputersAfterPreparedRemoval();

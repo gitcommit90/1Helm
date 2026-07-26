@@ -87,8 +87,9 @@ test("mobile compatibility is explicit and CORS is confined to packaged Capacito
 });
 
 test("Capacitor shells keep sessions native, connections HTTPS-only, and release identities stable", async () => {
-  const [config, mobile, api, app, androidManifest, androidBuild, androidRules, androidPackage, androidStyles, androidLaunch, iosInfo, iosProject, iosLaunch, privacy, packageJson, iosPackage] = await Promise.all([
+  const [config, mobile, api, app, notifications, androidManifest, androidBuild, androidRules, androidPackage, androidStyles, androidLaunch, iosInfo, iosProject, iosLaunch, privacy, packageJson, iosPackage] = await Promise.all([
     read("capacitor.config.json"), read("src/client/mobile.ts"), read("src/client/api.ts"), read("src/client/app.ts"),
+    read("src/client/notifications.ts"),
     read("android/app/src/main/AndroidManifest.xml"), read("android/app/build.gradle"), read("android/app/src/main/res/xml/data_extraction_rules.xml"), read("scripts/package-android-apk.mjs"),
     read("android/app/src/main/res/values/styles.xml"), read("android/app/src/main/res/layout/launch_screen.xml"), read("ios/App/App/Info.plist"), read("ios/App/App.xcodeproj/project.pbxproj"), read("ios/App/App/Base.lproj/LaunchScreen.storyboard"),
     read("ios/App/App/PrivacyInfo.xcprivacy"), read("package.json"), read("scripts/package-ios-ipa.mjs"),
@@ -104,6 +105,8 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.equal(parsed.ios.preferredContentMode, "mobile");
   assert.equal(parsed.ios.webContentsDebuggingEnabled, false);
   assert.equal(parsed.plugins.StatusBar.overlaysWebView, false, "iOS reserves the system status area before the packaged UI paints");
+  assert.equal(parsed.plugins.StatusBar.backgroundColor, "#111318", "the native status area matches the dark header surface before first paint");
+  assert.deepEqual(parsed.plugins.PushNotifications.presentationOptions, [], "foreground live events remain the one notification surface while background pushes use the system UI");
   assert.equal(parsed.plugins.SplashScreen.launchAutoHide, false, "native launch art remains only until the first real screen paints");
   assert.ok(parsed.plugins.SplashScreen.launchShowDuration <= 500, "launch has no artificial logo hold");
   assert.equal(parsed.plugins.SplashScreen.launchFadeOutDuration, 180);
@@ -118,6 +121,8 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.match(mobile, /SplashScreen\.hide\(\{ fadeOutDuration: 180 \}\)/);
   assert.match(mobile, /requestAnimationFrame\(\(\) => requestAnimationFrame/, "launch fades only after the gateway or workspace paints");
   assert.match(mobile, /StatusBar\.setOverlaysWebView\(\{ overlay: platform !== "ios" \}\)/, "iOS keeps every full-screen header below the Dynamic Island while Android retains edge-to-edge rendering");
+  assert.match(mobile, /StatusBar\.setBackgroundColor\(\{ color: surface \}\)/, "native status chrome follows the computed header surface");
+  assert.match(mobile, /contains\("light"\) \? Style\.Light : Style\.Dark/, "status indicators stay legible when the user switches theme");
   assert.match(mobile, /App\.getLaunchUrl/, "a cold-start OAuth callback is retained");
   assert.doesNotMatch(mobile, /destination\.origin === serverOrigin/, "server links cannot replace the audited packaged WebView");
   assert.doesNotMatch(api, /let token = localStorage\.getItem/, "the session is not eagerly copied out of native secure storage");
@@ -146,10 +151,15 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.match(iosInfo, /com\.gitcommit90\.onehelm\.mobile/);
   assert.match(iosInfo, /<string>onehelm<\/string>/);
   assert.match(iosInfo, /NSMicrophoneUsageDescription/);
+  assert.match(iosInfo, /NSCameraUsageDescription/);
+  assert.match(iosInfo, /NSPhotoLibraryUsageDescription/);
+  assert.match(iosInfo, /Take Photo or Video/, "the protected camera path explains the exact user-triggered attachment action");
   assert.match(iosInfo, /NSSpeechRecognitionUsageDescription/);
   assert.match(iosInfo, /ITSAppUsesNonExemptEncryption/);
   assert.match(iosProject, /PRODUCT_BUNDLE_IDENTIFIER = com\.gitcommit90\.onehelm\.mobile/);
   assert.match(iosProject, /PrivacyInfo\.xcprivacy in Resources/);
+  assert.match(iosProject, /CODE_SIGN_ENTITLEMENTS = App\/App\.entitlements/);
+  assert.match(notifications, /mobilePlatform\(\) !== "ios"/, "the current release offers push only on the platform with a complete APNs delivery path");
   assert.match(iosLaunch, /contentMode="scaleAspectFit"/);
   assert.match(iosLaunch, /firstAttribute="width" constant="88"/);
   assert.match(iosLaunch, /firstAttribute="height" constant="88"/);
