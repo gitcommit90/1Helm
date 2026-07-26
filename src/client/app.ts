@@ -1,4 +1,4 @@
-import { api, downloadAuthenticatedFile, openAuthenticatedFile, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type AgentQuestions, type ThreadFollowup, type ThreadUsage, type RoutingModel } from "./api.ts";
+import { api, downloadAuthenticatedFile, initializeApiTransport, openAuthenticatedFile, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type AgentQuestions, type ThreadFollowup, type ThreadUsage, type RoutingModel } from "./api.ts";
 import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, icon, helmMark, type ChannelLink } from "./dom.ts";
 import { openSettings, finishOpenRouterOAuth, refreshOpenSkillsSettings } from "./settings.ts";
 import { hydrateNotificationPreferences, playNotification } from "./notifications.ts";
@@ -6,6 +6,7 @@ import { openRoutingPopover, pushRoutingActivity } from "./routing.ts";
 import { openOnboarding } from "./onboarding.ts";
 import { defaultTerminalComputer, openTerminals, refitChannelTerminals, getTerminalChrome } from "./term.ts";
 import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderNotes, renderTexts, renderThreads, type ChannelView } from "./channel.ts";
+import { apiUrl, forgetMobileServer, getServerOrigin, isNativeMobile, serverAssetUrl, setMobileServer } from "./mobile.ts";
 
 /** Per-channel layout bound to the user profile (server user_ui_state). */
 type ChannelUiView = {
@@ -173,18 +174,21 @@ function writeRoute(channel: Channel | undefined, view: ChannelView, threadRootI
 
 // ---------------- boot ----------------
 export async function boot(): Promise<void> {
+  // The native clients are gateways to an existing 1Helm. They never expose
+  // the host setup wizard, even if a remembered address points at a fresh host.
+  if (isNativeMobile() && !getToken()) return renderAuth();
   const setup = await api<{ needs_setup: boolean; has_users: boolean; setup_complete: boolean; workspace: Workspace }>("/api/setup/status").catch(() => null);
-  if (setup && !setup.has_users) return openOnboarding(root, { resume: false, onDone: () => boot() });
+  if (!isNativeMobile() && setup && !setup.has_users) return openOnboarding(root, { resume: false, onDone: () => boot() });
   if (!getToken()) return renderAuth();
   try {
     const me = await api<{ user: User; workspace: Workspace }>("/api/me");
     S.me = me.user;
     S.workspace = me.workspace;
-  } catch { clearToken(); return renderAuth(); }
+  } catch { await clearToken(); return renderAuth(); }
   // Complete OpenRouter OAuth before loading the workspace so a failed
   // channel/provider fetch cannot swallow the callback.
   const oauth = await finishOpenRouterOAuth();
-  if (!S.workspace.setup_complete && S.me.is_admin) {
+  if (!isNativeMobile() && !S.workspace.setup_complete && S.me.is_admin) {
     return openOnboarding(root, { resume: true, resumeStep: oauth.connected ? 2 : 1, onDone: () => boot() });
   }
   await enterWorkspace();
@@ -644,12 +648,40 @@ function applyMessageDeleted(e: {
 function renderAuth(): void {
   clear(root);
   const err = h("p", { class: "min-h-5 text-sm text-danger" });
+  const server = h("input", {
+    class: "field",
+    type: "url",
+    inputmode: "url",
+    placeholder: "https://your-1helm-server.com",
+    autocomplete: "url",
+    autocapitalize: "none",
+    spellcheck: false,
+    value: getServerOrigin(),
+  }) as HTMLInputElement;
   const u = h("input", { class: "field", placeholder: "username", autocomplete: "username" });
   const pw = h("input", { class: "field", type: "password", placeholder: "password", autocomplete: "current-password" });
+  const submitButton = h("button", { class: "btn-primary w-full py-2.5" }, "Sign in") as HTMLButtonElement;
   const submit = async (): Promise<void> => {
     err.textContent = "";
-    try { const r = await api<{ token: string; user: User }>("/api/auth/login", { body: { username: u.value, password: pw.value } }); setToken(r.token); boot(); }
-    catch (e) { err.textContent = (e as Error).message; }
+    submitButton.disabled = true;
+    submitButton.textContent = isNativeMobile() ? "Connecting…" : "Signing in…";
+    try {
+      const password = pw.value;
+      pw.value = "";
+      if (isNativeMobile()) {
+        setMobileServer(server.value);
+        const compatibility = await api<{ product?: string; mobile_api?: number; has_users?: boolean; setup_complete?: boolean }>("/api/mobile/compatibility");
+        if (compatibility.product !== "1Helm" || compatibility.mobile_api !== 1) throw new Error("That address is not a compatible 1Helm server.");
+        if (!compatibility.has_users || !compatibility.setup_complete) throw new Error("Finish setting up 1Helm on the host before connecting the mobile app.");
+      }
+      const r = await api<{ token: string; user: User }>("/api/auth/login", { body: { username: u.value, password } });
+      await setToken(r.token);
+      await boot();
+    } catch (e) {
+      err.textContent = (e as Error).message;
+      submitButton.disabled = false;
+      submitButton.textContent = "Sign in";
+    }
   };
   const access = h("div", { class: "space-y-3" });
   root.append(h("div", { class: "auth-stage grid h-full place-items-center overflow-y-auto p-6" },
@@ -659,12 +691,13 @@ function renderAuth(): void {
         h("h1", { class: "mt-5 text-[2rem] font-bold leading-none tracking-[-0.03em] text-fg" }, "1Helm"),
         h("p", { class: "eyebrow mt-3 text-muted" }, "Native agent workspace")),
       h("div", { class: "card space-y-3 p-7" },
-        h("div", { class: "mb-3" }, h("h2", { class: "font-display text-[1.55rem] leading-tight text-fg" }, "Enter the bridge"), h("p", { class: "mt-1.5 text-sm text-muted" }, "Sign in to your workspace.")),
-        u, pw, err,
-        h("button", { class: "btn-primary w-full py-2.5", onclick: submit }, "Sign in"), access))));
+        h("div", { class: "mb-3" }, h("h2", { class: "font-display text-[1.55rem] leading-tight text-fg" }, isNativeMobile() ? "Connect to your 1Helm" : "Enter the bridge"), h("p", { class: "mt-1.5 text-sm text-muted" }, isNativeMobile() ? "Your 1Helm host must already be set up and reachable over HTTPS." : "Sign in to your workspace.")),
+        isNativeMobile() ? h("label", { class: "space-y-1 text-xs font-semibold text-fg" }, "Server address", server) : null,
+        u, pw, err, submitButton, isNativeMobile() ? h("p", { class: "text-center text-[11px] leading-5 text-faint" }, "Your password is sent only to this server for sign-in and is never saved. The session is stored in your device’s secure key store.") : access))));
+  submitButton.onclick = () => { void submit(); };
   pw.addEventListener("keydown", (ev) => { if ((ev as KeyboardEvent).key === "Enter") submit(); });
-  u.focus();
-  void renderAccessRequest(access);
+  (isNativeMobile() && !server.value ? server : u).focus();
+  if (!isNativeMobile()) void renderAccessRequest(access);
 }
 
 async function renderAccessRequest(container: HTMLElement): Promise<void> {
@@ -695,7 +728,7 @@ async function renderAccessRequest(container: HTMLElement): Promise<void> {
         const finish = async (): Promise<void> => {
           try {
             const result = await api<{ token: string }>(`/api/access-requests/${claimToken}`, { body: { display: display.value, username: username.value, password: password.value } });
-            localStorage.removeItem(key); setToken(result.token); void boot();
+            localStorage.removeItem(key); await setToken(result.token); void boot();
           } catch (error) { status.textContent = (error as Error).message; }
         };
         container.append(h("div", { class: "space-y-2 border-t border-line pt-3" }, h("p", { class: "text-sm font-semibold text-fg" }, "You’re approved"), h("p", { class: "text-xs text-muted" }, "Create your local account for this workspace."), display, username, password, status, h("button", { class: "btn-primary w-full", onclick: () => { void finish(); } }, "Create account and sign in")));
@@ -1094,7 +1127,7 @@ function openProfile(anchor: HTMLElement): void {
       const image = await renderedPhoto();
       if (image) {
         status.textContent = "Compressing and saving photo…";
-        const response = await fetch("/api/me/avatar", { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": image.type }, body: image });
+        const response = await fetch(apiUrl("/api/me/avatar"), { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": image.type }, body: image });
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
         acceptUser(result.user);
@@ -1129,6 +1162,15 @@ function openProfile(anchor: HTMLElement): void {
     h("p", { class: "border-t border-line pt-3 text-xs leading-5 text-muted" },
       "1Helm is AGPL-3.0-only. ",
       h("a", { class: "text-accent hover:underline", href: "https://github.com/gitcommit90/1Helm", target: "_blank", rel: "noopener noreferrer" }, "View source code ↗")));
+  if (isNativeMobile()) pop.append(h("section", { class: "flex items-center justify-between gap-3 border-t border-line pt-3" },
+    h("div", { class: "min-w-0" }, h("p", { class: "text-xs font-semibold text-fg" }, "Connected server"), h("p", { class: "truncate text-[11px] text-muted" }, getServerOrigin())),
+    h("button", { class: "btn-subtle min-h-9 shrink-0 px-3 text-xs", onclick: async () => {
+      await api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+      await forgetMobileServer();
+      await clearToken();
+      close();
+      await boot();
+    } }, "Disconnect")));
   if (S.me.is_admin) pop.append(h("section", { class: "flex items-center justify-between gap-3 border-t border-line pt-3", dataset: { profileUpdate: "" } },
     h("div", { class: "min-w-0" }, updateLabel, updateStatus),
     updateButton));
@@ -2356,7 +2398,7 @@ function attachments(m: Message): HTMLElement | null {
   if (!m.attachments?.length) return null;
   return h("div", { class: "mt-1.5 flex flex-wrap gap-2" }, ...m.attachments.map((a) => {
     const viewUrl = `/api/files/${a.id}`;
-    const mediaUrl = `${viewUrl}?token=${encodeURIComponent(getToken())}`;
+    const mediaUrl = `${serverAssetUrl(viewUrl)}?token=${encodeURIComponent(getToken())}`;
     const actions = h("div", { class: "flex items-center gap-1 border-t border-line/70 px-2 py-1.5" },
       h("button", { class: "btn-subtle text-xs", type: "button", onclick: (event: MouseEvent) => { event.stopPropagation(); void openAuthenticatedFile(viewUrl).catch((error) => appAlert((error as Error).message)); } }, "Open"),
       h("button", { class: "btn-subtle text-xs", type: "button", onclick: (event: MouseEvent) => { event.stopPropagation(); void downloadAuthenticatedFile(`${viewUrl}?download=1`, a.name).catch((error) => appAlert((error as Error).message)); } }, "Download"));
@@ -2988,7 +3030,7 @@ export function avatar(name: string, kind: "user" | "bot" | "system", size = 8, 
     return h("img", {
       class: `${kind === "bot" ? "identity-bot" : "identity-user"} identity-photo rounded-md object-cover`,
       style: `width:${px}px;height:${px}px`,
-      src: avatarValue,
+      src: serverAssetUrl(avatarValue),
       alt: name,
       title: name,
     });
@@ -3064,6 +3106,7 @@ window.addEventListener("blur", () => { altTapOnly = false; });
 window.matchMedia("(min-width: 768px)").addEventListener("change", (event) => { if (event.matches && S.mobileMenuOpen) closeMobileMenu(); });
 
 function registerServiceWorker(): void {
+  if (isNativeMobile()) return;
   if (!("serviceWorker" in navigator)) return;
   void navigator.serviceWorker.register("/sw.js", { scope: "/", updateViaCache: "none" })
     .then((reg) => {
@@ -3079,4 +3122,10 @@ function registerServiceWorker(): void {
 if (document.readyState === "complete") registerServiceWorker();
 else window.addEventListener("load", registerServiceWorker, { once: true });
 
-boot();
+void initializeApiTransport().then(() => boot()).catch((error) => {
+  clear(root);
+  root.append(h("div", { class: "auth-stage grid h-full place-items-center p-6" }, h("section", { class: "card max-w-md space-y-3 p-6 text-center" },
+    h("h1", { class: "font-display text-2xl text-fg" }, "1Helm could not open"),
+    h("p", { class: "text-sm leading-6 text-muted" }, (error as Error).message || "The device security store is unavailable."),
+    h("button", { class: "btn-primary", onclick: () => location.reload() }, "Try again"))));
+});

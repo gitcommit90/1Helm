@@ -109,6 +109,8 @@ const UPLOAD_BODY_LIMIT = 25 * 1024 * 1024;
 const WORKSPACE_PHOTO = join(DATA_DIR, "workspace-photo");
 const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
 const INTERNAL_WAKE_TOKEN = String(process.env.HELM_INTERNAL_WAKE_TOKEN || "");
+const MOBILE_API_VERSION = 1;
+const MOBILE_APP_ORIGINS = new Set(["capacitor://localhost", "https://localhost"]);
 const MIME: Record<string, string> = {
   ".html": "text/html",
   ".js": "text/javascript",
@@ -157,6 +159,16 @@ const json = (res: ServerResponse, code: number, body: unknown): void => {
   const s = JSON.stringify(body);
   res.writeHead(code, { "content-type": "application/json", ...SECURITY_HEADERS });
   res.end(s);
+};
+const applyMobileCors = (req: IncomingMessage, res: ServerResponse): boolean => {
+  const origin = String(req.headers.origin || "");
+  if (!MOBILE_APP_ORIGINS.has(origin)) return false;
+  res.setHeader("access-control-allow-origin", origin);
+  res.setHeader("access-control-allow-methods", "GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS");
+  res.setHeader("access-control-allow-headers", "Authorization, Content-Type, X-Filename");
+  res.setHeader("access-control-expose-headers", "Content-Disposition, Content-Type");
+  res.setHeader("vary", "Origin");
+  return true;
 };
 const body = (req: IncomingMessage, limit = JSON_BODY_LIMIT): Promise<Buffer> => new Promise((resolve, reject) => {
   const declared = Number(req.headers["content-length"] || 0);
@@ -514,6 +526,12 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://localhost`);
     const p = url.pathname;
     const m = req.method || "GET";
+    const mobileOrigin = applyMobileCors(req, res);
+    if (m === "OPTIONS" && p.startsWith("/api/")) {
+      if (!mobileOrigin) return json(res, 403, { error: "Origin not allowed" });
+      res.writeHead(204, { ...SECURITY_HEADERS, "cache-control": "no-store" });
+      return res.end();
+    }
 
     // The unified provider gateway is public by URL and authenticates with its
     // own generated gateway keys. It intentionally does not use a 1Helm web
@@ -547,6 +565,17 @@ const server = createServer(async (req, res) => {
     }
 
     // ---- setup and auth (no session required) ----
+    if (p === "/api/mobile/compatibility" && m === "GET") {
+      const setup = setupStatus();
+      return json(res, 200, {
+        product: "1Helm",
+        mobile_api: MOBILE_API_VERSION,
+        version: installedAppVersion(APP_ROOT),
+        has_users: setup.has_users,
+        setup_complete: setup.setup_complete,
+        requires_https: true,
+      });
+    }
     if (p === "/api/setup/status" && m === "GET") return json(res, 200, setupStatus());
     if (p === "/api/collaboration/public" && m === "GET") return json(res, 200, { workspace: publicWorkspaceStatus() });
     if (p === "/api/access-requests" && m === "POST") {

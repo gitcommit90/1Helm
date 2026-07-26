@@ -134,8 +134,9 @@ export type Collaboration = {
 export type AccessRequest = { id: number; email: string; display: string; status: "pending" | "approved" | "denied" | "claimed"; requested_at: number; reviewed_at: number | null };
 export type Workspace = { name: string; terminals_enabled: boolean; setup_complete: boolean; photo_url: string | null; theme: "graphite" | "ocean" | "forest" | "ember" | "plum" };
 
-let token = localStorage.getItem("ctrl.token") || "";
+let token = "";
 export const getToken = (): string => token;
+export async function initializeApiTransport(): Promise<void> { token = await initializeMobileRuntime(); }
 
 /** Workspace photo is auth-gated; <img> cannot send Bearer — attach session token. */
 export function workspacePhotoSrc(photoUrl: string | null | undefined, cacheBust?: string | number): string {
@@ -145,13 +146,14 @@ export function workspacePhotoSrc(photoUrl: string | null | undefined, cacheBust
   if (t) params.set("token", t);
   if (cacheBust != null && cacheBust !== "") params.set("v", String(cacheBust));
   const q = params.toString();
-  return q ? `${photoUrl}${photoUrl.includes("?") ? "&" : "?"}${q}` : photoUrl;
+  const source = serverAssetUrl(photoUrl);
+  return q ? `${source}${source.includes("?") ? "&" : "?"}${q}` : source;
 }
-export const setToken = (t: string): void => { token = t; localStorage.setItem("ctrl.token", t); };
-export const clearToken = (): void => { token = ""; localStorage.removeItem("ctrl.token"); };
+export const setToken = async (t: string): Promise<void> => { token = t; await persistSecureSession(t); };
+export const clearToken = async (): Promise<void> => { token = ""; await removeSecureSession(); };
 
 export async function api<T = any>(path: string, opts: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(apiUrl(path), {
     method: opts.method || (opts.body !== undefined ? "POST" : "GET"),
     headers: { ...(opts.body !== undefined ? { "content-type": "application/json" } : {}), ...(token ? { authorization: `Bearer ${token}` } : {}), ...(opts.headers || {}) },
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
@@ -194,7 +196,7 @@ export async function openAuthenticatedFile(path: string): Promise<void> {
 }
 
 async function authenticatedFile(path: string): Promise<{ blob: Blob; name: string }> {
-  const response = await fetch(path, { headers: token ? { authorization: `Bearer ${token}` } : {} });
+  const response = await fetch(apiUrl(path), { headers: token ? { authorization: `Bearer ${token}` } : {} });
   if (!response.ok) throw new Error((await response.json().catch(() => ({})) as { error?: string }).error || `HTTP ${response.status}`);
   const disposition = response.headers.get("content-disposition") || "";
   const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
@@ -215,7 +217,7 @@ export async function downloadAuthenticatedFile(path: string, preferredName?: st
 }
 
 export async function uploadFile(file: File): Promise<{ token: string; name: string; mime: string; size: number }> {
-  const res = await fetch("/api/upload", { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": file.type || "application/octet-stream", "x-filename": encodeURIComponent(file.name) }, body: file });
+  const res = await fetch(apiUrl("/api/upload"), { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": file.type || "application/octet-stream", "x-filename": encodeURIComponent(file.name) }, body: file });
   const data = await res.json();
   return { token: data.token, name: file.name, mime: file.type || "application/octet-stream", size: file.size };
 }
@@ -228,13 +230,16 @@ export type EventSocketHooks = {
 
 /** Single app-event socket with auto-reconnect. onOpen fires on every successful (re)connect so the UI can resync. */
 export function connectEvents(onMessage: Handler, hooks: EventSocketHooks = {}): WebSocket {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws?token=${token}`);
+  const socketToken = token;
+  const ws = new WebSocket(serverWebSocketUrl(`/ws?token=${encodeURIComponent(token)}`));
   ws.onmessage = (e) => { try { onMessage(JSON.parse(e.data)); } catch { /* ignore */ } };
   ws.onopen = () => { hooks.onOpen?.(); };
   ws.onclose = () => {
     hooks.onClose?.();
-    setTimeout(() => connectEvents(onMessage, hooks), 1500);
+    if (socketToken && token === socketToken) setTimeout(() => {
+      if (token === socketToken) connectEvents(onMessage, hooks);
+    }, 1500);
   };
   return ws;
 }
+import { apiUrl, initializeMobileRuntime, persistSecureSession, removeSecureSession, serverAssetUrl, serverWebSocketUrl } from "./mobile.ts";

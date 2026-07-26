@@ -57,7 +57,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
       status.textContent = ""; setBusy(button, true, "Creating Captain…");
       try {
         const result = await api<{ token: string }>("/api/auth/register", { body: { username: username.value, display: display.value, password: password.value } });
-        setToken(result.token); step = 1; await render();
+        await setToken(result.token); step = 1; await render();
       } catch (error) { status.replaceChildren(h("div", { class: "wizard-status-err" }, (error as Error).message)); setBusy(button, false); }
     };
     password.addEventListener("keydown", (event) => { if (event.key === "Enter") void submit(); });
