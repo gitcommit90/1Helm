@@ -8,7 +8,6 @@ import { availableGoogleAccounts, createGmailDraft, getGmailMessage, gmailConnec
 import { recallForAgent, rememberForAgent } from "./memory.ts";
 import { agentSkillContext, createSkill, imageGenerationAvailable, listSkills, proposeSkill, provisionSkill, readAgentSkill, requestSkill, skillsForAgent } from "./skills.ts";
 import { inspectCatalogSkill, installCatalogSkill, searchSkillCatalog } from "./skill-catalog.ts";
-import { grantPhotonToResident, photonMessages, sendPhoton } from "./photon.ts";
 import { createWorkflow, listWorkflows, setWorkflowStatus } from "./workflows.ts";
 import { runThreadAuditPass } from "./thread-audit.ts";
 import { runImprovementPass } from "./improvements.ts";
@@ -104,7 +103,7 @@ function completedToolAnswer(tool: string, result: string): string {
       return parsed.setup?.error || "Gmail has no connected accounts yet. Open Settings → Connections to add the one-time Google OAuth client and authorize an account.";
     } catch { return result; }
   }
-  if (["grant_gmail_access", "connect_gmail", "grant_photon_access", "photon_search", "photon_send", "create_channel", "list_channels", "inspect_channel", "archive_channel", "restore_channel", "delete_channel", "inspect_fleet", "care_for_channel_computer", "list_obligations", "run_thread_audit", "run_agent_review", "remember", "search_channel_history", "read_channel_session", "call_skipper", "call_agent", "request_skill", "propose_skill", "create_skill", "search_skill_catalog", "inspect_skill", "install_skill", "invite_agent", "search_web", "inspect_web_source", "attach_web_image", "attach_file", "generate_image", "schedule_followup", "schedule_workflow", "list_workflows", "set_workflow_status"].includes(tool)) return result;
+  if (["grant_gmail_access", "connect_gmail", "create_channel", "list_channels", "inspect_channel", "archive_channel", "restore_channel", "delete_channel", "inspect_fleet", "care_for_channel_computer", "list_obligations", "run_thread_audit", "run_agent_review", "remember", "search_channel_history", "read_channel_session", "call_skipper", "call_agent", "request_skill", "propose_skill", "create_skill", "search_skill_catalog", "inspect_skill", "install_skill", "invite_agent", "search_web", "inspect_web_source", "attach_web_image", "attach_file", "generate_image", "schedule_followup", "schedule_workflow", "list_workflows", "set_workflow_status"].includes(tool)) return result;
   if (tool === "gmail_list_accounts") {
     try {
       const parsed = JSON.parse(result) as { accounts?: string[] };
@@ -255,14 +254,6 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
           },
           required: ["reason"],
         },
-      },
-    });
-    if (q1("SELECT 1 FROM photon_channel_mappings WHERE channel_id=?", channelId)) tools.push({
-      type: "function",
-      function: {
-        name: "grant_photon_access",
-        description: "Grant this channel resident host-brokered Photon iMessage search/draft access. Optionally allow sending only when the Captain's request clearly authorizes external messaging. Photon credentials never enter the resident computer.",
-        parameters: { type: "object", properties: { can_send: { type: "boolean" } } },
       },
     });
     tools.push({
@@ -697,29 +688,6 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
         },
       });
     }
-    const photon = q1("SELECT config FROM agent_capabilities WHERE agent_id=? AND capability='photon'", agent.id);
-    if (photon) {
-      let config: Record<string, unknown> = {};
-      try { config = JSON.parse(String(photon.config || "{}")); } catch { /* disabled */ }
-      if (config.can_read !== false) tools.push({
-        type: "function",
-        function: {
-          name: "photon_search",
-          description: "Search task-scoped Photon iMessage history already brokered into this channel. No Photon credentials or unrelated conversations are returned.",
-          parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 50 } } },
-        },
-      });
-      if (config.can_send === true || config.can_reply === true) tools.push({
-        type: "function",
-        function: {
-          name: "photon_send",
-          description: config.can_send === true
-            ? "Send an iMessage through the channel's host-scoped Photon connector. Use only when the user's intent authorizes sending; resolve the destination carefully and verify the returned message id."
-            : "Reply through Photon only to a conversation already delivered from an allowlisted sender into this channel. New outbound conversations remain disabled.",
-          parameters: { type: "object", properties: { space_id: { type: "string", description: "Existing Photon conversation id or an E.164 number." }, text: { type: "string" } }, required: ["space_id", "text"] },
-        },
-      });
-    }
   }
   return tools.length ? tools : undefined;
 }
@@ -871,8 +839,6 @@ function actionObject(tool: string, input: string, actor: string): string {
   if (tool === "gmail_search") return "granted Gmail";
   if (tool === "gmail_get") return "a granted Gmail message";
   if (tool === "gmail_create_draft") return "a Gmail draft";
-  if (tool === "photon_search") return "granted iMessage history";
-  if (tool === "photon_send") return "an authorized iMessage conversation";
   if (tool === "run_command") return actor === "skipper" ? "the host workspace" : "the resident workspace";
   if (tool === "schedule_followup") return "a durable wake";
   if (tool === "schedule_workflow") return "a recurring workflow";
@@ -908,9 +874,6 @@ function actionVerb(tool: string): string {
     gmail_search: "Searched",
     gmail_get: "Read",
     gmail_create_draft: "Created",
-    grant_photon_access: "Granted",
-    photon_search: "Searched",
-    photon_send: "Sent to",
     schedule_followup: "Scheduled",
     schedule_workflow: "Scheduled",
     list_workflows: "Listed",
@@ -1593,9 +1556,6 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                 ? `#${normalizeChannelName(String(args.name || ""))}${args.purpose ? ` — ${String(args.purpose)}` : ""}`
                 : name === "grant_gmail_access"
                   ? `Grant Gmail read/search/draft access for ${Array.isArray(args.accounts) && args.accounts.length ? args.accounts.join(", ") : "all connected accounts"}`
-                  : name === "grant_photon_access" ? `Grant Photon access${args.can_send ? " with sending" : " for search/drafts"}`
-                  : name === "photon_search" ? String(args.query || "")
-                  : name === "photon_send" ? `${String(args.space_id || "")}: ${String(args.text || "").slice(0, 200)}`
                   : name === "gmail_search"
                     ? `${String(args.account || "")}: ${String(args.query || "")}`
                     : name === "gmail_get"
@@ -1766,8 +1726,6 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               result = grantGmail(channelId, args.accounts);
             } else if (name === "connect_gmail" && agent?.kind === "skipper" && hostAuthorized) {
               result = JSON.stringify(args.start ? await startGmailConnection() : gmailConnectionStatus());
-            } else if (name === "grant_photon_access" && agent?.kind === "skipper" && hostAuthorized) {
-              result = grantPhotonToResident(channelId, Boolean(args.can_send));
             } else if (name === "invite_agent" && agent?.kind === "skipper" && hostAuthorized) {
               result = isMainChannel(channelId)
                 ? "Error: resident agents cannot enter #main. Use Skipper's own tools directly."
@@ -1826,10 +1784,6 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               const { account, config } = grantedGmail(agent, args.account, hostAuthorized);
               if (!config.can_draft) result = "Error: Gmail draft access is not granted to this channel.";
               else result = JSON.stringify(await createGmailDraft(account, String(args.to || ""), String(args.subject || ""), String(args.body || ""), turnSignal));
-            } else if (name === "photon_search" && agent?.kind === "channel") {
-              result = JSON.stringify(await photonMessages(channelId, String(args.query || ""), Number(args.limit || 20)));
-            } else if (name === "photon_send" && agent?.kind === "channel") {
-              result = JSON.stringify(await sendPhoton(channelId, String(args.space_id || ""), String(args.text || "")));
             } else if (name === "call_skipper" && agent?.kind === "channel") result = callSkipper(agent, channelId, threadRootId, input);
             else result = `Error: tool ${name} is not available.`;
           } catch (error) {

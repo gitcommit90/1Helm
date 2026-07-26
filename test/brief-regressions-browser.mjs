@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { rmSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import puppeteer from "puppeteer";
 
@@ -37,7 +37,7 @@ try {
   mock = spawn(process.execPath, ["test/mock-openai.mjs", String(mockPort)], { cwd: root, stdio: "ignore" });
   await waitFor(async () => (await fetch(`http://127.0.0.1:${mockPort}/v1/models`).catch(() => null))?.ok, "mock provider");
   app = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/server/index.ts"], {
-    cwd: root, env: { ...process.env, CTRL_DATA_DIR: dataDir, PORT: String(appPort), IMPROVEMENT_INTERVAL_MS: "600000", HELM_CHANNEL_COMPUTER_BACKEND: "native" }, stdio: "ignore",
+    cwd: root, env: { ...process.env, NODE_ENV: "test", CTRL_DATA_DIR: dataDir, PORT: String(appPort), IMPROVEMENT_INTERVAL_MS: "600000", HELM_CHANNEL_COMPUTER_BACKEND: "native" }, stdio: "ignore",
   });
   await waitFor(async () => (await fetch(`${base}/api/setup/status`).catch(() => null))?.ok, "app");
   const registration = await api("/api/auth/register", { body: { username: "captain", password: "secret-pass", display: "Captain" } });
@@ -45,6 +45,8 @@ try {
   const provider = await api("/api/providers", { body: { name: "Mock", base_url: `http://127.0.0.1:${mockPort}/v1`, api_key: "test" } }, token);
   await api("/api/setup/complete", { body: { name: "Browser Brief", terminals_enabled: true, provider_id: provider.provider.id, model: "mock-large" } }, token);
   const channel = (await api("/api/channels", { body: { name: "Visual", purpose: "Exercise the brief regressions." } }, token)).channel;
+  const extensionlessNote = await api(`/api/channels/${channel.id}/notes`, { body: { name: "Quiet refresh proof", content: "# Durable note\n\nStart here." } }, token);
+  ok(extensionlessNote.note.name === "Quiet refresh proof.md", "extensionless note titles are normalized to .md by the API");
   const securityResponse = await fetch(base);
   ok(/(?:^|;)\s*frame-src 'self' blob:(?:;|$)/.test(securityResponse.headers.get("content-security-policy") || ""), "the web control plane permits only same-origin and blob frames for safe PDF preview");
   ok(/(?:^|;)\s*media-src 'self' blob:(?:;|$)/.test(securityResponse.headers.get("content-security-policy") || ""), "the web control plane permits only same-origin and blob media for safe audio/video preview");
@@ -80,6 +82,13 @@ try {
   const audioUpload = await audioUploadResponse.json();
   const audioMessage = (await api(`/api/channels/${channel.id}/messages`, { body: { body: "Safe audio preview fixture", uploads: [audioUpload] } }, token)).message;
 
+  // Photon is already configured by this point in a real workspace. Seed only
+  // the host-owned credential marker and one private conversation so browser
+  // acceptance can exercise the Texts UI without an external Photon account.
+  writeFileSync(join(dataDir, "photon-credentials.json"), JSON.stringify({ project_id: "browser-fixture", project_secret: "stored-outside-renderer", operator_phone: "+15551234567", assigned_phone: "+15557654321", configured_at: Date.now() }), { mode: 0o600 });
+  await api("/api/testing/photon", { body: { event: { id: "browser-phone-1", space_id: "browser-space", space_type: "dm", sender: "+15551234567", text: "Phone hello", timestamp: new Date().toISOString() } } }, token);
+  const textConversation = (await api("/api/texts", {}, token)).conversations[0].id;
+
   browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 900 });
@@ -110,6 +119,55 @@ try {
   }));
   ok(brand.title.includes("1Helm") && brand.appName === "1Helm" && !brand.body.includes("1Herd"), "the browser presents the product as 1Helm throughout");
   ok(brand.favicon === "/brand/1helm-sailboat.png" && brand.workspaceLogo === "/brand/1helm-sailboat.png", "the sailboat is the web favicon and default customizable workspace image");
+
+  await page.goto(`${base}/c/${channel.slug}/notes`, { waitUntil: "networkidle0" });
+  await page.click('[data-note-name="Quiet refresh proof.md"]');
+  await page.waitForFunction(() => document.querySelector('[aria-label="Note content"]')?.value.includes("Start here"));
+  await page.evaluate(() => {
+    const editor = document.querySelector('[aria-label="Note content"]');
+    editor.value += "\n\nUnsaved words survive.";
+    editor.focus(); editor.setSelectionRange(4, 11); editor.dispatchEvent(new Event("input"));
+    window.__briefNoteEditor = editor;
+  });
+  const themeBeforeNotesRefresh = await page.evaluate(() => document.documentElement.className);
+  await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => /Switch to/.test(button.title))?.click());
+  await page.waitForFunction((prior) => document.documentElement.className !== prior, {}, themeBeforeNotesRefresh);
+  const durableNote = await page.evaluate(() => {
+    const editor = document.querySelector('[aria-label="Note content"]');
+    return { sameNode: editor === window.__briefNoteEditor, value: editor?.value, focused: document.activeElement === editor, start: editor?.selectionStart, end: editor?.selectionEnd, toolbar: document.querySelector('[aria-label="Note formatting"]')?.textContent };
+  });
+  ok(durableNote.sameNode && durableNote.value.endsWith("Unsaved words survive.") && durableNote.focused && durableNote.start === 4 && durableNote.end === 11,
+    "shell refreshes preserve the exact note editor node, unsaved draft, focus, and selection");
+  ok(/H.*B.*I.*List.*Code.*Link/.test(durableNote.toolbar || ""), "notes expose practical Markdown formatting controls");
+  await page.click('[data-note-preview-toggle]');
+  await page.waitForFunction(() => Boolean(document.querySelector('[data-note-preview]') && !document.querySelector('[data-note-preview]').classList.contains("hidden")));
+  ok(await page.$eval('[data-note-preview]', (element) => /Unsaved words survive/.test(element.textContent)), "note preview renders the current unsaved Markdown draft");
+
+  await api(`/api/channels/${channel.id}`, { method: "PATCH", body: { purpose: "A deliberately long channel description that must remain one calm truncated line even when a large-monitor user narrows the remote application window. ".repeat(5) } }, token);
+  await page.setViewport({ width: 1280, height: 760 });
+  await page.goto(`${base}/c/${channel.slug}/chat`, { waitUntil: "networkidle0" });
+  const compactHeader = await page.$eval("#hdr", (header) => {
+    const purpose = [...header.querySelectorAll('[title]')].find((element) => element.title.startsWith("A deliberately long channel description"));
+    const style = purpose ? getComputedStyle(purpose) : null;
+    return { headerHeight: header.getBoundingClientRect().height, purposeWidth: purpose?.getBoundingClientRect().width || 0, purposeHeight: purpose?.getBoundingClientRect().height || 0, lineHeight: style ? parseFloat(style.lineHeight) : 0, overflow: style?.overflow, whitespace: style?.whiteSpace, textOverflow: style?.textOverflow };
+  });
+  ok(compactHeader.headerHeight < 72 && (compactHeader.purposeWidth === 0 || (compactHeader.purposeHeight <= compactHeader.lineHeight + 1 && compactHeader.overflow === "hidden" && compactHeader.whitespace === "nowrap" && compactHeader.textOverflow === "ellipsis")),
+    `narrow desktop headers keep long channel descriptions to one truncated line instead of one letter per row (${JSON.stringify(compactHeader)})`);
+
+  await page.goto(`${base}/c/main/texts`, { waitUntil: "networkidle0" });
+  await page.waitForSelector(`[data-texts-messages="${textConversation}"]`);
+  ok(await page.$eval("body", (body) => body.innerText.includes("Phone hello") && body.innerText.includes("Phone") && body.innerText.includes("Texts")), "configured Photon exposes a private #main Texts inbox with phone-originated history");
+  const outboundBeforeDesktop = (await api("/api/testing/photon", { body: {} }, token)).outbound;
+  await page.type(`[data-texts-composer="${textConversation}"]`, "Continue from desktop");
+  await page.click(`[data-texts-composer="${textConversation}"] + button`);
+  await page.waitForFunction(() => document.body.innerText.includes("Continue from desktop"));
+  await page.waitForFunction(() => document.querySelector('[data-texts-messages]')?.innerText.includes("Answer complete"), { timeout: 10_000 });
+  const outboundAfterDesktop = (await api("/api/testing/photon", { body: {} }, token)).outbound;
+  ok(outboundAfterDesktop === outboundBeforeDesktop, "desktop Texts continuation shares Skipper context without echoing app messages back to iMessage");
+
+  await page.setViewport({ width: 1440, height: 900 });
+  await page.goto(`${base}/c/${channel.slug}/thread/${rootMessage.id}`, { waitUntil: "networkidle0" });
+  await page.waitForSelector("#thread:not(.hidden)");
   const initialWidth = await page.$eval("#thread", (element) => element.getBoundingClientRect().width);
   ok(initialWidth >= 500, "thread panel opens at the wider default size");
   const handle = await page.$(".thread-resizer");

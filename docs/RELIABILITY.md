@@ -59,9 +59,10 @@ ownership, recovery, and tests rather than depend on a prompt alone.
 - Delivery state records pending, attempting, delivered, failed, or uncertain.
   A restart may resume a never-attempted reply. An interrupted attempt is
   surfaced as uncertain and is not blindly replayed into a duplicate.
-- An external message received through Photon defaults to the Captain's
-  `#main`/Skipper mapping, invokes the mapped partner, and returns the final
-  response to the originating authorized conversation.
+- An external message received through Photon is private Captain ↔ Skipper
+  state. It appears only in `#main` Texts, returns the final response to the
+  originating phone conversation, and continues until the Captain sends
+  `/new`; desktop continuations share context without producing iMessage echo.
 - Timers, recurring workflows, long-running follow-ups, and connector replies
   are durable obligations. Sleep, restart, or a closed renderer must not erase
   them.

@@ -42,8 +42,7 @@ function reportDiagnostics(appRoot: string): Diagnostics {
   const failed = q("SELECT tool capability,status,created FROM tool_actions WHERE status='failed' ORDER BY created DESC LIMIT 20")
     .map((row) => ({ capability: String(row.capability), status: String(row.status), created: Number(row.created) }));
   const connectorStatus: Array<{ connector: string; status: string }> = [];
-  const photon = q1("SELECT COUNT(*) mapped FROM photon_channel_mappings");
-  connectorStatus.push({ connector: "photon", status: Number(photon?.mapped || 0) ? "mapped" : "not_configured" });
+  connectorStatus.push({ connector: "photon", status: existsSync(join(DATA_DIR, "photon-credentials.json")) ? "configured" : "not_configured" });
   const google = existsSync(join(DATA_DIR, "connections", "gmail", "tokens"));
   connectorStatus.push({ connector: "google_workspace", status: google ? "configured" : "not_configured" });
   return {

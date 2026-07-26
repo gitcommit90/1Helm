@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DATA_DIR, now, q, q1, run, type Row } from "./db.ts";
 import { createMessage, serializeMessage } from "./store.ts";
-import { broadcastToChannel } from "./events.ts";
+import { broadcastToChannel, sendToUsers } from "./events.ts";
 import { agentForChannel, ensureThread, refreshThreadSummary } from "./agents.ts";
 
 const CREDENTIAL_FILE = join(DATA_DIR, "photon-credentials.json");
@@ -33,6 +33,7 @@ const credentials = (): PhotonCredential | null => {
 const hidden = (value: string): string => value ? `${value.slice(0, 4)}…${value.slice(-2)}` : "";
 export function photonStatus(): Record<string, unknown> {
   const value = credentials();
+  const main = photonMainChannel();
   return {
     configured: Boolean(value?.project_id && value?.project_secret),
     connected: Boolean(child && child.exitCode == null && base),
@@ -40,8 +41,14 @@ export function photonStatus(): Record<string, unknown> {
     operator_phone: value?.operator_phone || "",
     assigned_phone: value?.assigned_phone || "",
     secret: value?.project_secret ? "stored" : "missing",
-    mappings: q("SELECT pcm.*,c.name channel_name,a.name agent_name FROM photon_channel_mappings pcm JOIN channels c ON c.id=pcm.channel_id LEFT JOIN agent_channels ac ON ac.channel_id=c.id LEFT JOIN agents a ON a.id=ac.agent_id ORDER BY pcm.created"),
+    thread_count: main ? Number(q1("SELECT COUNT(*) n FROM photon_conversations WHERE channel_id=?", main.id)?.n || 0) : 0,
   };
+}
+
+function photonMainChannel(): Row | undefined {
+  return q1(`SELECT c.*,u.id owner_user_id FROM channels c JOIN users u ON u.id=c.personal_main_owner_id
+    WHERE c.kind='channel' AND c.name='main' AND c.status='active' AND u.is_admin=1
+    ORDER BY c.id LIMIT 1`);
 }
 
 export async function configurePhoton(input: { project_id: string; project_secret: string; operator_phone: string; assigned_phone?: string; dashboard_token?: string }): Promise<Record<string, unknown>> {
@@ -65,36 +72,7 @@ export async function configurePhoton(input: { project_id: string; project_secre
     await restartPhotonConnector().catch(() => undefined);
     throw error;
   }
-  if (!q1("SELECT 1 FROM photon_channel_mappings LIMIT 1")) {
-    const main = q1(`SELECT c.id FROM channels c JOIN users u ON u.id=c.personal_main_owner_id
-      WHERE c.kind='channel' AND c.name='main' AND c.status='active' AND u.is_admin=1 ORDER BY c.id LIMIT 1`);
-    if (main?.id) mapPhotonChannel(Number(main.id), [operatorPhone]);
-  }
   return photonStatus();
-}
-
-export function mapPhotonChannel(channelId: number, allowedUsers?: string[]): Record<string, unknown> {
-  const channel = q1("SELECT id,name,status FROM channels WHERE id=? AND kind='channel' AND status='active'", channelId);
-  const resident = agentForChannel(channelId);
-  if (!channel || !resident?.id || !["channel", "skipper"].includes(String(resident.kind))) throw new Error("Choose an active agent channel, including your #main Skipper channel.");
-  const configured = credentials();
-  const users = (allowedUsers?.length ? allowedUsers : configured?.operator_phone ? [configured.operator_phone] : [])
-    .map((value) => String(value).trim()).filter((value) => E164.test(value));
-  if (!users.length) throw new Error("At least one allowed E.164 sender is required.");
-  run(`INSERT INTO photon_channel_mappings (channel_id,allowed_users,created,updated) VALUES (?,?,?,?)
-    ON CONFLICT(channel_id) DO UPDATE SET allowed_users=excluded.allowed_users,updated=excluded.updated`, channelId, JSON.stringify([...new Set(users)]), now(), now());
-  run(`INSERT INTO agent_capabilities (agent_id,capability,config,created) VALUES (?,'photon',?,?)
-    ON CONFLICT(agent_id,capability) DO UPDATE SET config=excluded.config`, resident.id, JSON.stringify({ can_read: true, can_draft: true, can_reply: true, can_send: false, allowed_users: users }), now());
-  return photonStatus();
-}
-
-export function grantPhotonToResident(channelId: number, canSend = false): string {
-  const resident = agentForChannel(channelId);
-  const mapping = q1("SELECT allowed_users FROM photon_channel_mappings WHERE channel_id=?", channelId);
-  if (!resident?.id || !mapping) return "Error: configure and map Photon to this channel in Settings first.";
-  run(`INSERT INTO agent_capabilities (agent_id,capability,config,created) VALUES (?,'photon',?,?)
-    ON CONFLICT(agent_id,capability) DO UPDATE SET config=excluded.config`, resident.id, JSON.stringify({ can_read: true, can_draft: true, can_reply: true, can_send: Boolean(canSend), allowed_users: JSON.parse(String(mapping.allowed_users || "[]")) }), now());
-  return `Granted @${resident.name} Photon iMessage read, draft, and authorized-conversation reply access${canSend ? " plus new outbound sending" : " (new outbound conversations remain disabled)"}. Credentials remain host-scoped.`;
 }
 
 const spectrumHost = (): string => String(process.env.PHOTON_SPECTRUM_HOST || "https://spectrum.photon.codes").replace(/\/+$/, "");
@@ -123,29 +101,62 @@ async function sidecar(path: string, init: RequestInit = {}): Promise<Record<str
   return result;
 }
 
-export async function photonMessages(channelId: number, query = "", limit = 20): Promise<unknown> {
-  const text = String(query || "").toLowerCase();
-  const rows = q(`SELECT id,external_id,space_id,sender,body,received_at FROM photon_messages WHERE channel_id=?
-    AND (?='' OR lower(body) LIKE '%'||?||'%' OR lower(sender) LIKE '%'||?||'%') ORDER BY received_at DESC LIMIT ?`, channelId, text, text, text, Math.max(1, Math.min(50, limit)));
-  return { query, messages: rows };
+export function photonConversations(ownerUserId: number): Record<string, unknown>[] {
+  const main = photonMainChannel();
+  if (!main || Number(main.personal_main_owner_id) !== ownerUserId) return [];
+  return q(`SELECT pc.id,pc.sender,pc.space_id,pc.root_message_id,pc.thread_id,pc.active,pc.started,pc.updated,pc.closed,
+      t.title,t.summary,t.status,
+      (SELECT COALESCE((SELECT pm.body FROM photon_messages pm WHERE pm.message_id=m.id ORDER BY pm.id DESC LIMIT 1),m.body)
+        FROM messages m WHERE m.photon_conversation_id=pc.id AND trim(m.body)<>'' AND m.body<>'_Working…_' ORDER BY m.id DESC LIMIT 1) last_body,
+      (SELECT COUNT(*) FROM messages WHERE photon_conversation_id=pc.id AND trim(body)<>'' AND body<>'_Working…_') message_count
+    FROM photon_conversations pc JOIN threads t ON t.id=pc.thread_id
+    WHERE pc.channel_id=? ORDER BY pc.updated DESC,pc.id DESC`, main.id);
 }
 
-export async function sendPhoton(channelId: number, spaceId: string, text: string): Promise<unknown> {
-  const mapping = q1("SELECT 1 FROM photon_channel_mappings WHERE channel_id=?", channelId);
-  if (!mapping) throw new Error("Photon is not mapped to this channel.");
-  const destination = String(spaceId || "").trim();
-  if (!destination || !String(text || "").trim()) throw new Error("Photon destination and message text are required.");
-  const resident = agentForChannel(channelId);
-  const capability = resident?.id ? q1("SELECT config FROM agent_capabilities WHERE agent_id=? AND capability='photon'", resident.id) : undefined;
-  let permissions: Record<string, unknown> = {};
-  try { permissions = JSON.parse(String(capability?.config || "{}")); } catch { /* fail closed below */ }
-  const replying = Boolean(q1("SELECT 1 FROM photon_messages WHERE channel_id=? AND direction='inbound' AND space_id=?", channelId, destination));
-  if (!permissions.can_send && !(permissions.can_reply && replying)) {
-    throw new Error("Photon can reply only to an authorized conversation already delivered to this channel. Skipper must grant new outbound sending for any other destination.");
+export function photonConversation(ownerUserId: number, conversationId: number): Record<string, unknown> | null {
+  const main = photonMainChannel();
+  if (!main || Number(main.personal_main_owner_id) !== ownerUserId) return null;
+  const conversation = q1(`SELECT pc.*,t.title,t.summary,t.status FROM photon_conversations pc
+    JOIN threads t ON t.id=pc.thread_id WHERE pc.id=? AND pc.channel_id=?`, conversationId, main.id);
+  if (!conversation) return null;
+  const messages = q("SELECT id FROM messages WHERE photon_conversation_id=? ORDER BY id", conversationId).map((row) => {
+    const message = serializeMessage(Number(row.id));
+    if (!message || String(message.body) === "_Working…_") return null;
+    const transport = q1("SELECT direction,body FROM photon_messages WHERE message_id=? ORDER BY id DESC LIMIT 1", row.id);
+    return { ...message, body: transport?.body ? String(transport.body) : message.body, transport: transport?.direction ? String(transport.direction) : "app" };
+  }).filter(Boolean);
+  return { ...conversation, messages };
+}
+
+/** Continue any saved Texts thread from the desktop. It uses the same Skipper
+ * context but deliberately does not mirror the exchange back to the phone. */
+export async function continuePhotonConversation(ownerUserId: number, conversationId: number, text: string): Promise<Record<string, unknown>> {
+  const main = photonMainChannel();
+  if (!main || Number(main.personal_main_owner_id) !== ownerUserId) throw new Error("Texts are available only in your private #main.");
+  const conversation = q1("SELECT * FROM photon_conversations WHERE id=? AND channel_id=?", conversationId, main.id);
+  if (!conversation) throw new Error("Text thread not found.");
+  const body = String(text || "").trim();
+  if (!body) throw new Error("Write a message to Skipper.");
+  if (body.length > 50_000) throw new Error("Messages are limited to 50,000 characters.");
+  const timestamp = now();
+  // Sending from a saved conversation resumes that exact context everywhere.
+  // Any previously current thread is retained in history but stops receiving
+  // phone messages, so the next phone turn continues the desktop selection.
+  run("UPDATE photon_conversations SET active=0,closed=COALESCE(closed,?) WHERE sender=? AND active=1 AND id<>?", timestamp, conversation.sender, conversationId);
+  run("UPDATE photon_conversations SET active=1,closed=NULL,updated=? WHERE id=?", timestamp, conversationId);
+  const messageId = createMessage({ channelId: Number(main.id), parentId: Number(conversation.root_message_id), userId: ownerUserId, body });
+  run("UPDATE messages SET photon_conversation_id=? WHERE id=?", conversationId, messageId);
+  run("UPDATE threads SET status='open',updated_at=? WHERE id=?", timestamp, conversation.thread_id);
+  refreshThreadSummary(Number(conversation.root_message_id));
+  sendToUsers([ownerUserId], { type: "photon_update", conversationId, message: serializeMessage(messageId) });
+  const skipper = agentForChannel(Number(main.id));
+  const bot = skipper?.bot_id ? q1("SELECT * FROM bots WHERE id=?", skipper.bot_id) : undefined;
+  if (bot && dispatchInbound) {
+    void dispatchInbound(bot, Number(main.id), messageId, Number(conversation.root_message_id))
+      .then(() => sendToUsers([ownerUserId], { type: "photon_update", conversationId }))
+      .catch((error) => sendToUsers([ownerUserId], { type: "photon_update", conversationId, error: (error as Error).message }));
   }
-  const result = await sidecar("/send", { method: "POST", body: JSON.stringify({ space_id: destination, text: String(text).slice(0, 50_000) }) });
-  run("INSERT INTO photon_messages (channel_id,external_id,space_id,sender,direction,body,received_at) VALUES (?,?,?,?, 'outbound',?,?)", channelId, String(result.message_id || ""), destination, "1Helm", String(text).slice(0, 50_000), now());
-  return { status: "sent", destination, message_id: result.message_id || "" };
+  return photonConversation(ownerUserId, conversationId)!;
 }
 
 function recoverInterruptedPhotonDeliveries(): void {
@@ -163,16 +174,16 @@ function queuePhotonDelivery(channelId: number, destination: string, body: strin
     VALUES ('photon',?,?,?,?,?,'pending',?,?)`, key, channelId, destination, body.slice(0, 50_000), sourceMessageId, now(), now());
 }
 
-function activePhotonConversation(channelId: number, sender: string): Row | undefined {
+function activePhotonConversation(sender: string): Row | undefined {
   return q1(`SELECT pc.* FROM photon_conversations pc
     JOIN messages root ON root.id=pc.root_message_id AND root.channel_id=pc.channel_id AND root.parent_id IS NULL
     JOIN threads t ON t.id=pc.thread_id AND t.root_message_id=pc.root_message_id AND t.channel_id=pc.channel_id
-    WHERE pc.channel_id=? AND pc.sender=? AND pc.active=1
-    ORDER BY pc.updated DESC,pc.id DESC LIMIT 1`, channelId, sender);
+    WHERE pc.sender=? AND pc.active=1
+    ORDER BY pc.updated DESC,pc.id DESC LIMIT 1`, sender);
 }
 
 function closePhotonConversation(channelId: number, sender: string, spaceId: string, event: PhotonEvent): number | null {
-  const conversation = activePhotonConversation(channelId, sender);
+  const conversation = activePhotonConversation(sender);
   const timestamp = Date.parse(event.timestamp) || now();
   run("INSERT INTO photon_messages (channel_id,external_id,space_id,sender,direction,body,received_at,message_id) VALUES (?,?,?,?, 'inbound',?,?,NULL)",
     channelId, event.id, spaceId, sender, event.text.slice(0, 50_000), timestamp);
@@ -181,9 +192,11 @@ function closePhotonConversation(channelId: number, sender: string, spaceId: str
   run("UPDATE threads SET status='resolved',updated_at=? WHERE id=?", timestamp, conversation.thread_id);
   const noteId = createMessage({ channelId, parentId: Number(conversation.root_message_id), botId: null, body: "Photon conversation closed with /new. The next text starts a new thread." });
   run("UPDATE messages SET system_message=1 WHERE id=?", noteId);
+  run("UPDATE messages SET photon_conversation_id=? WHERE id=?", conversation.id, noteId);
   run("INSERT INTO channel_activity (channel_id,thread_id,kind,summary,actor_type,created) VALUES (?,?,'connector',?,'system',?)",
     channelId, conversation.thread_id, `Photon closed the active conversation for ${sender}; the next text will start a new thread.`, timestamp);
   broadcastToChannel(channelId, { type: "message", message: serializeMessage(noteId), parent: serializeMessage(Number(conversation.root_message_id)) });
+  sendToUsers([Number(q1("SELECT personal_main_owner_id owner FROM channels WHERE id=?", channelId)?.owner || 0)], { type: "photon_update", conversationId: conversation.id });
   refreshThreadSummary(Number(conversation.root_message_id));
   return noteId;
 }
@@ -215,14 +228,13 @@ export async function drainPhotonDeliveries(): Promise<void> {
 export async function deliverPhotonEvent(event: PhotonEvent): Promise<boolean> {
   if (!event.id || !event.space_id || !event.text) return false;
   if (q1("SELECT 1 FROM photon_messages WHERE external_id=?", event.id)) return false;
-  const mappings = q("SELECT * FROM photon_channel_mappings ORDER BY created");
-  const mapping = mappings.find((row) => {
-    try { return (JSON.parse(String(row.allowed_users || "[]")) as string[]).includes(event.sender); } catch { return false; }
-  });
-  if (!mapping) return false;
-  const channelId = Number(mapping.channel_id);
+  const main = photonMainChannel();
+  if (!main) return false;
+  const configured = credentials();
+  if (!configured?.operator_phone || event.sender !== configured.operator_phone) return false;
+  const channelId = Number(main.id);
   const resident = agentForChannel(channelId);
-  if (!resident?.bot_id) return false;
+  if (!resident?.bot_id || resident.kind !== "skipper") return false;
   const timestamp = Date.parse(event.timestamp) || now();
   if (event.text.trim().toLowerCase() === "/new") {
     const noteId = closePhotonConversation(channelId, event.sender, event.space_id, event);
@@ -232,7 +244,7 @@ export async function deliverPhotonEvent(event: PhotonEvent): Promise<boolean> {
     await drainPhotonDeliveries();
     return true;
   }
-  let conversation = activePhotonConversation(channelId, event.sender);
+  let conversation = activePhotonConversation(event.sender);
   let rootMessageId = Number(conversation?.root_message_id || 0);
   const body = `[Photon iMessage from ${event.sender}]\n${event.text}`;
   const messageId = createMessage({ channelId, parentId: rootMessageId || null, botId: null, body });
@@ -244,14 +256,17 @@ export async function deliverPhotonEvent(event: PhotonEvent): Promise<boolean> {
       (channel_id,sender,space_id,root_message_id,thread_id,active,started,updated)
       VALUES (?,?,?,?,?,1,?,?)`, channelId, event.sender, event.space_id, rootMessageId, threadId, timestamp, timestamp).lastInsertRowid;
     conversation = q1("SELECT * FROM photon_conversations WHERE id=?", conversationId);
+    run("UPDATE messages SET photon_conversation_id=? WHERE id=?", conversationId, messageId);
   } else {
     run("UPDATE photon_conversations SET space_id=?,updated=? WHERE id=? AND active=1", event.space_id, timestamp, conversation!.id);
+    run("UPDATE messages SET photon_conversation_id=? WHERE id=?", conversation!.id, messageId);
   }
   const threadId = Number(conversation!.thread_id);
   run("UPDATE threads SET status='open',updated_at=? WHERE id=?", timestamp, threadId);
   run("INSERT INTO photon_messages (channel_id,external_id,space_id,sender,direction,body,received_at,message_id) VALUES (?,?,?,?, 'inbound',?,?,?)", channelId, event.id, event.space_id, event.sender, event.text.slice(0, 50_000), Date.parse(event.timestamp) || now(), messageId);
   run("INSERT INTO channel_activity (channel_id,thread_id,kind,summary,actor_type,created) VALUES (?,?,'connector',?,'system',?)", channelId, threadId, `Photon delivered an iMessage from ${event.sender}.`, now());
   broadcastToChannel(channelId, { type: "message", message: serializeMessage(messageId), parent: rootMessageId === messageId ? null : serializeMessage(rootMessageId) });
+  sendToUsers([Number(main.owner_user_id)], { type: "photon_update", conversationId: conversation!.id });
   refreshThreadSummary(rootMessageId);
   const bot = q1("SELECT * FROM bots WHERE id=?", resident.bot_id);
   if (bot && dispatchInbound) {

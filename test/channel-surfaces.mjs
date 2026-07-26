@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import test, { after } from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
+const agentsSource = readFileSync(join(root, "src", "server", "agents.ts"), "utf8");
 const dataDir = mkdtempSync(join(tmpdir(), "1helm-channel-surfaces-"));
 process.env.CTRL_DATA_DIR = dataDir;
 process.env.NODE_ENV = "test";
@@ -28,10 +29,12 @@ after(() => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
-test("note filenames are plain, bounded Markdown filenames", () => {
+test("note filenames accept titles with or without .md and reject other extensions", () => {
   assert.equal(agents.validateNoteFilename("Launch Plan.md"), "Launch Plan.md");
-  for (const unsafe of ["", ".md", "plan.txt", "../plan.md", "notes/plan.md", " plan.md", "plan.md ", "plan\\one.md", "bad\0.md", `${"a".repeat(158)}.md`]) {
-    assert.throws(() => agents.validateNoteFilename(unsafe), /plain \.md filename/);
+  assert.equal(agents.validateNoteFilename("Launch Plan"), "Launch Plan.md");
+  assert.throws(() => agents.validateNoteFilename("plan.txt"), /Notes use \.md files.*plan\.md/);
+  for (const unsafe of ["", ".md", "../plan.md", "notes/plan.md", " plan.md", "plan.md ", "plan\\one.md", "bad\0.md", `${"a".repeat(158)}.md`]) {
+    assert.throws(() => agents.validateNoteFilename(unsafe), /plain Markdown filename/);
   }
 });
 
@@ -57,6 +60,10 @@ test("notes create, list, open, save, and rename in /workspace/notes with mirror
   ]);
   assert.throws(() => agents.createChannelNote(901, "Release.md", "duplicate"), /already exists/);
   assert.throws(() => agents.saveChannelNote(901, "Release.md", "x".repeat(1024 * 1024 + 1)), /limited to 1 MB/);
+
+  const extensionless = agents.createChannelNote(901, "Meeting notes", "# Meeting\n");
+  assert.equal(extensionless.name, "Meeting notes.md");
+  assert.equal(readFileSync(join(dataDir, "channels", "901", "workspace", "notes", "Meeting notes.md"), "utf8"), "# Meeting\n");
 });
 
 test("notes reject a symlinked notes directory", () => {
@@ -137,6 +144,9 @@ test("channel UI source exposes route-shaped Notes, folder navigation, audio pre
   const apiSource = readFileSync(join(root, "src", "client", "api.ts"), "utf8");
   const appSource = readFileSync(join(root, "src", "client", "app.ts"), "utf8");
   assert.match(channelSource, /export function renderNotes\(/);
+  assert.match(channelSource, /const noteSurfaces = new Map/, "note editor nodes survive shell refreshes");
+  assert.match(channelSource, /data(?:set)?: \{ notePreviewToggle: "" \}/, "Notes includes a Markdown preview mode");
+  assert.match(channelSource, /role: "toolbar", "aria-label": "Note formatting"/, "Notes exposes formatting controls");
   assert.match(channelSource, /\/api\/channels\/\$\{channelId\}\/notes/);
   assert.match(channelSource, /\/files\?path=\$\{encodeURIComponent\(requestedPath\)\}/);
   assert.match(channelSource, /\/files\/directories/);
@@ -148,4 +158,10 @@ test("channel UI source exposes route-shaped Notes, folder navigation, audio pre
   assert.match(appSource, /data(?:set)?: \{ notesHeader: "" \}/, "Notes has a channel-header action");
   assert.match(appSource, /onclick: openNotesFromHeader/, "the header action opens Notes beside chat rather than navigating away");
   assert.match(appSource, /renderNotes\(notesBox, S\.channelId, closeDockedNotes\)/, "the Notes surface mounts in the shared right-hand dock with a close action");
+  assert.doesNotMatch(appSource, /controllerchange[\s\S]{0,300}location\.reload\(/, "service-worker updates never reload an active note draft");
+});
+
+test("new residents choose an unused character and color combination while options remain", () => {
+  assert.match(agentsSource, /const used = new Set\(q\(`[\s\S]*a\.kind='channel'[\s\S]*a\.status<>'deleted'/, "active resident avatars define the used set");
+  assert.match(agentsSource, /if \(!used\.has\(candidate\)\) return candidate;/, "provisioning skips an already-used avatar combination");
 });

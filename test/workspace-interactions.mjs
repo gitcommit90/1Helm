@@ -47,3 +47,14 @@ test("profile, naming, routing, and usage language match the visible product con
   assert.match(app, /Cumulative provider-reported usage for this thread/, "thread token totals are labeled as actual cumulative usage");
   assert.doesNotMatch(app, /`Ctx /, "usage is not presented as context-window capacity");
 });
+
+test("service-worker updates never reload an active editor or conversation", () => {
+  assert.doesNotMatch(app, /controllerchange[\s\S]{0,300}location\.reload\(/, "service-worker takeover must not reload a live draft");
+  assert.match(app, /destroy an editor draft/, "the no-reload update contract is documented at the decision point");
+});
+
+test("Texts routes fail closed outside the Captain's private #main", () => {
+  assert.match(app, /function textsAvailable\(channel\?: Channel\): boolean \{[\s\S]*S\.me\.is_admin[\s\S]*S\.photonConfigured[\s\S]*channel\.name === "main"[\s\S]*channel\.personal_main/, "Texts eligibility is centralized on the Captain's configured private #main");
+  assert.match(app, /if \(view === "texts" && !textsAvailable\(requestedChannel\)\) view = "chat";/, "direct Texts URLs fall back to chat outside private #main");
+  assert.match(app, /if \(view === "texts" && !textsAvailable\(S\.channels\.find/, "programmatic Texts navigation uses the same guard");
+});

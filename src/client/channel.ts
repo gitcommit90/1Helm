@@ -1,9 +1,9 @@
-import { api, downloadAuthenticatedFile, openAuthenticatedFile, uploadFile, type ActivityItem, type AgentTemplate, type Channel, type ChannelFile, type GlobalThread, type MemoryItem, type Message, type ThreadState, type RoutingModel } from "./api.ts";
+import { api, downloadAuthenticatedFile, openAuthenticatedFile, uploadFile, type ActivityItem, type AgentTemplate, type Channel, type ChannelFile, type GlobalThread, type MemoryItem, type Message, type TextConversation, type ThreadState, type RoutingModel } from "./api.ts";
 import { h, clear, icon, md, timeLabel } from "./dom.ts";
 import { S, avatar, appAlert, appConfirm, appPrompt } from "./app.ts";
 import { NOTIFICATION_SOUNDS, channelNotificationPreference, previewNotification, setChannelNotificationPreference } from "./notifications.ts";
 
-export type ChannelView = "chat" | "board" | "threads" | "notes" | "files" | "terminal" | "memory" | "activity" | "settings";
+export type ChannelView = "chat" | "texts" | "board" | "threads" | "notes" | "files" | "terminal" | "memory" | "activity" | "settings";
 
 export function openCreateChannel(onCreated: (channel: Channel) => void): void {
   const name = h("input", { class: "field", placeholder: "launch", autocomplete: "off" }) as HTMLInputElement;
@@ -369,6 +369,56 @@ export function renderGlobalThreads(
   }).catch((error) => panelError(container, error));
 }
 
+/** Private Captain ↔ Skipper conversations originated through Photon. */
+export function renderTexts(container: HTMLElement, selectedId?: number, onSelect?: (id: number) => void): void {
+  panelLoading(container, "Texts", "Your direct, channel-free conversations with Skipper.");
+  void api<{ conversations: TextConversation[] }>("/api/texts").then(async ({ conversations }) => {
+    const selected = conversations.find((conversation) => conversation.id === selectedId) || conversations[0];
+    const sidebar = h("aside", { class: "min-h-0 overflow-y-auto border-b border-line bg-raised/55 md:border-b-0 md:border-r" });
+    sidebar.append(h("div", { class: "border-b border-line px-4 py-3" }, h("div", { class: "eyebrow text-muted" }, "Conversations"), h("p", { class: "mt-1 text-xs leading-5 text-muted" }, "Send /new from your phone to start another.")));
+    const list = h("div", { class: "p-2", dataset: { textsThreadList: "" } });
+    if (!conversations.length) list.append(empty("No text threads yet", "Text your 1Helm number. Your first message starts a private conversation with Skipper."));
+    for (const conversation of conversations) list.append(h("button", {
+      class: `mb-1 block w-full rounded-lg border px-3 py-2.5 text-left ${selected?.id === conversation.id ? "border-accent/30 bg-accent-soft" : "border-transparent hover:border-line hover:bg-hover"}`,
+      type: "button", dataset: { textConversation: String(conversation.id) }, onclick: () => onSelect?.(conversation.id),
+    }, h("span", { class: "flex items-center gap-2" }, h("span", { class: "min-w-0 flex-1 truncate text-sm font-semibold text-fg" }, conversation.title || "Text with Skipper"), conversation.active ? h("span", { class: "h-1.5 w-1.5 rounded-full bg-ok", title: "Current thread" }) : null),
+    h("span", { class: "mt-1 block truncate text-xs text-muted" }, conversation.last_body || conversation.summary || "Conversation"),
+    h("span", { class: "mt-1 block font-mono text-[10px] text-faint" }, `${conversation.message_count || 0} messages · ${timeLabel(conversation.updated)}`)));
+    sidebar.append(list);
+    const conversationPanel = h("section", { class: "flex min-h-0 min-w-0 flex-col bg-surface" });
+    if (!selected) {
+      conversationPanel.append(h("div", { class: "grid min-h-[24rem] flex-1 place-items-center p-8 text-center" }, h("div", {}, h("div", { class: "text-accent" }, icon("chat", 28)), h("h3", { class: "mt-3 font-display text-xl text-fg" }, "Text Skipper to begin"), h("p", { class: "mt-2 max-w-sm text-sm leading-6 text-muted" }, "Once Photon receives your message, this inbox appears automatically and keeps the conversation available on desktop."))));
+    } else {
+      const detail = await api<{ conversation: TextConversation }>(`/api/texts/${selected.id}`);
+      const messages = detail.conversation.messages || [];
+      const stream = h("div", { class: "min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6", dataset: { textsMessages: String(selected.id) } });
+      for (const message of messages) {
+        const captain = message.author.kind === "user" || message.transport === "inbound";
+        stream.append(h("div", { class: `flex ${captain ? "justify-end" : "justify-start"}` },
+          h("article", { class: `max-w-[min(88%,44rem)] rounded-xl border px-3.5 py-2.5 ${captain ? "border-accent/25 bg-accent-soft" : "border-line bg-raised/60"}` },
+            h("div", { class: "mb-1 flex items-center gap-2 font-mono text-[10px] text-faint" }, h("span", { class: "font-semibold text-muted" }, captain ? "You" : "Skipper"), h("span", {}, "·"), h("span", {}, message.transport === "inbound" ? "Phone" : message.transport === "outbound" ? "iMessage reply" : "1Helm"), h("span", {}, "·"), h("span", {}, timeLabel(message.created))),
+            h("div", { class: "md text-sm leading-6 text-fg", html: md(message.body) }))));
+      }
+      const input = h("textarea", { class: "max-h-40 min-h-12 flex-1 resize-none bg-transparent px-1 py-1 text-sm text-fg outline-none placeholder:text-faint", rows: 2, placeholder: "Continue with Skipper in 1Helm…", dataset: { textsComposer: String(selected.id) } }) as HTMLTextAreaElement;
+      const status = h("span", { class: "text-xs text-muted", role: "status" });
+      const send = h("button", { class: "btn-primary shrink-0", type: "button" }, "Send") as HTMLButtonElement;
+      const submit = async (): Promise<void> => {
+        const body = input.value.trim(); if (!body || send.disabled) return;
+        send.disabled = true; input.disabled = true; status.textContent = "Sending to Skipper…";
+        try { await api(`/api/texts/${selected.id}`, { body: { body } }); input.value = ""; onSelect?.(selected.id); }
+        catch (error) { status.textContent = (error as Error).message; send.disabled = false; input.disabled = false; input.focus(); }
+      };
+      send.onclick = () => { void submit(); };
+      input.onkeydown = (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } };
+      conversationPanel.append(h("div", { class: "flex min-h-14 items-center gap-3 border-b border-line px-4 py-3" }, h("span", { class: "text-accent" }, icon("chat", 18)), h("div", { class: "min-w-0" }, h("h3", { class: "truncate font-semibold text-fg" }, selected.title || "Text with Skipper"), h("p", { class: "truncate text-xs text-muted" }, selected.active ? "Current thread · phone and desktop share context" : "Closed with /new · still resumable in 1Helm"))), stream,
+        h("div", { class: "border-t border-line bg-surface p-3 sm:p-4" }, h("div", { class: "mx-auto flex max-w-3xl items-end gap-2 rounded-xl border border-line bg-raised/45 p-2.5 focus-within:border-accent/50" }, input, send), h("div", { class: "mx-auto mt-1.5 flex max-w-3xl justify-between px-1" }, h("span", { class: "text-[11px] text-faint" }, "Desktop messages stay in 1Helm; return to your phone anytime."), status)));
+      requestAnimationFrame(() => { stream.scrollTop = stream.scrollHeight; });
+    }
+    clear(container);
+    container.append(h("div", { class: "flex h-full min-h-0 flex-col" }, h("header", { class: "border-b border-line px-4 py-3" }, h("h2", { class: "font-display text-xl text-fg" }, "Texts"), h("p", { class: "mt-0.5 text-xs text-muted" }, "One continuous thread with Skipper until you send /new.")), h("div", { class: "grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[18rem_minmax(0,1fr)]" }, sidebar, conversationPanel)));
+  }).catch((error) => panelError(container, error));
+}
+
 export function renderFiles(container: HTMLElement, channelId: number, initialPath = ""): void {
   let currentPath = initialPath.replace(/^\/?workspace\/?/, "").replace(/^\/+|\/+$/g, "");
   panelLoading(container, "Files", "Browse the same folders the channel computer sees under /workspace.");
@@ -432,38 +482,63 @@ export function renderFiles(container: HTMLElement, channelId: number, initialPa
 }
 
 type ChannelNoteView = { name: string; size: number; modified: number; content?: string };
+type NoteSurface = { node: HTMLElement; setClose: (onClose?: () => void) => void; reload: () => Promise<void> };
+
+/** Notes are a long-lived editor, not disposable render output. Shell refreshes
+ * (including event-socket reconnects) move this node instead of recreating it,
+ * preserving the active note, draft, focus, selection, and preview mode. */
+const noteSurfaces = new Map<number, NoteSurface>();
 
 /** Dock-ready Notes surface; app.ts only needs to mount this function for a tab or side dock. */
 export function renderNotes(container: HTMLElement, channelId: number, onClose?: () => void): void {
+  const cached = noteSurfaces.get(channelId);
+  if (cached) {
+    cached.setClose(onClose);
+    clear(container);
+    container.append(cached.node);
+    void cached.reload().catch(() => undefined);
+    return;
+  }
   let notes: ChannelNoteView[] = [];
   let active: ChannelNoteView | null = null;
   let savedContent = "";
   let loadingNote = false;
-  const editor = h("textarea", { class: "field min-h-[24rem] flex-1 resize-none font-mono text-sm leading-6", placeholder: "Choose a note, or create one.", disabled: true, "aria-label": "Note content" }) as HTMLTextAreaElement;
+  let closeHandler = onClose;
+  let previewing = false;
+  let filter = "";
+  const editor = h("textarea", { class: "note-editor min-h-[24rem] flex-1 resize-none bg-surface px-5 py-4 font-mono text-sm leading-6 text-fg outline-none placeholder:text-faint", placeholder: "Choose a note, or create one.", disabled: true, "aria-label": "Note content", spellcheck: "true" }) as HTMLTextAreaElement;
+  const preview = h("div", { class: "md note-preview hidden min-h-[24rem] flex-1 overflow-y-auto px-6 py-5 text-sm leading-6 text-fg", dataset: { notePreview: "" } });
   const title = h("div", { class: "truncate font-semibold text-fg" }, "No note selected");
   const saveStatus = h("span", { class: "text-xs text-muted", role: "status" });
   const saveButton = h("button", { class: "btn-primary text-sm", type: "button", disabled: true }, "Save") as HTMLButtonElement;
   const renameButton = h("button", { class: "btn-subtle text-sm", type: "button", disabled: true }, "Rename") as HTMLButtonElement;
-  const list = h("div", { class: "min-h-0 overflow-y-auto", dataset: { noteList: "" } });
+  const editButton = h("button", { class: "note-mode-active rounded px-2.5 py-1 text-xs font-semibold", type: "button", "aria-pressed": "true" }, "Write") as HTMLButtonElement;
+  const previewButton = h("button", { class: "rounded px-2.5 py-1 text-xs font-semibold text-muted hover:text-fg", type: "button", "aria-pressed": "false", dataset: { notePreviewToggle: "" } }, "Preview") as HTMLButtonElement;
+  const list = h("div", { class: "min-h-0 flex-1 overflow-y-auto px-2 pb-3", dataset: { noteList: "" } });
+  const search = h("input", { class: "field h-9 bg-surface text-xs", type: "search", placeholder: "Find a note", "aria-label": "Find a note" }) as HTMLInputElement;
   const dirty = (): boolean => Boolean(active) && editor.value !== savedContent;
   const updateEditorState = (): void => {
     saveButton.disabled = !active || !dirty();
     saveStatus.textContent = dirty() ? "Unsaved changes" : active ? `Saved · ${formatBytes(active.size)}` : "";
+    if (previewing) preview.innerHTML = md(editor.value || "_This note is empty._");
   };
   const confirmDiscard = async (): Promise<boolean> => !dirty() || appConfirm("Discard the unsaved changes to this note?");
   const drawList = (): void => {
     clear(list);
-    if (!notes.length) list.append(empty("No notes yet", "Create a Markdown note for plans, meeting notes, or working context."));
-    for (const note of notes) list.append(h("button", { class: `block w-full border-b border-line px-3 py-2.5 text-left last:border-0 ${active?.name === note.name ? "bg-accent-soft" : "hover:bg-hover"}`, type: "button", dataset: { noteName: note.name }, onclick: async () => {
+    const visible = notes.filter((note) => !filter || note.name.toLowerCase().includes(filter));
+    if (!notes.length) list.append(empty("No notes yet", "Create a note for plans, meetings, or working context."));
+    else if (!visible.length) list.append(h("p", { class: "px-2 py-8 text-center text-xs leading-5 text-faint" }, "No notes match that search."));
+    for (const note of visible) list.append(h("button", { class: `group mb-1 flex w-full items-start gap-2.5 rounded-lg border px-2.5 py-2.5 text-left transition ${active?.name === note.name ? "border-accent/30 bg-accent-soft" : "border-transparent hover:border-line hover:bg-hover"}`, type: "button", dataset: { noteName: note.name }, onclick: async () => {
       if (loadingNote || active?.name === note.name || !(await confirmDiscard())) return;
       loadingNote = true;
       try {
         const result = await api<{ note: ChannelNoteView }>(`/api/channels/${channelId}/notes/${encodeURIComponent(note.name)}`);
         active = result.note; savedContent = result.note.content || ""; editor.value = savedContent; editor.disabled = false;
-        title.textContent = result.note.name; renameButton.disabled = false; drawList(); updateEditorState(); editor.focus();
+        title.textContent = result.note.name; renameButton.disabled = false; previewButton.disabled = false; drawList(); updateEditorState(); editor.focus();
       } catch (error) { void appAlert((error as Error).message); }
       finally { loadingNote = false; }
-    } }, h("span", { class: "block truncate font-mono text-sm text-fg" }, note.name), h("span", { class: "mt-0.5 block text-xs text-muted" }, `${formatBytes(note.size)} · ${timeLabel(note.modified)}`)));
+    } }, h("span", { class: `mt-0.5 shrink-0 ${active?.name === note.name ? "text-accent" : "text-faint group-hover:text-muted"}` }, icon("file", 16)),
+    h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block truncate text-sm font-semibold text-fg" }, note.name.replace(/\.md$/i, "")), h("span", { class: "mt-0.5 block truncate text-[11px] text-muted" }, `${timeLabel(note.modified)} · ${formatBytes(note.size)}`))));
   };
   const reloadList = async (selectName?: string): Promise<void> => {
     const result = await api<{ notes: ChannelNoteView[] }>(`/api/channels/${channelId}/notes`);
@@ -482,7 +557,7 @@ export function renderNotes(container: HTMLElement, channelId: number, onClose?:
   saveButton.onclick = () => { void save(); };
   renameButton.onclick = async () => {
     if (!active || !(await confirmDiscard())) return;
-    const name = await appPrompt("Rename note (.md)", active.name);
+    const name = await appPrompt("Rename note", active.name);
     if (!name || name === active.name) return;
     renameButton.disabled = true;
     try {
@@ -492,27 +567,86 @@ export function renderNotes(container: HTMLElement, channelId: number, onClose?:
     } catch (error) { void appAlert((error as Error).message); }
     finally { renameButton.disabled = !active; }
   };
+  const insertFormatting = (before: string, after = before, placeholder = "text"): void => {
+    if (!active) return;
+    const start = editor.selectionStart;
+    const end = editor.selectionEnd;
+    const selected = editor.value.slice(start, end) || placeholder;
+    editor.setRangeText(`${before}${selected}${after}`, start, end, "end");
+    editor.focus();
+    editor.dispatchEvent(new Event("input"));
+  };
+  const prefixLines = (prefix: string): void => {
+    if (!active) return;
+    const start = editor.value.lastIndexOf("\n", Math.max(0, editor.selectionStart - 1)) + 1;
+    const selectionEnd = editor.selectionEnd;
+    const nextBreak = editor.value.indexOf("\n", selectionEnd);
+    const end = nextBreak < 0 ? editor.value.length : nextBreak;
+    const text = editor.value.slice(start, end) || "Text";
+    editor.setRangeText(text.split("\n").map((line) => `${prefix}${line}`).join("\n"), start, end, "select");
+    editor.focus();
+    editor.dispatchEvent(new Event("input"));
+  };
+  const setPreview = (next: boolean): void => {
+    previewing = next;
+    editor.classList.toggle("hidden", next);
+    preview.classList.toggle("hidden", !next);
+    editButton.className = `${next ? "text-muted hover:text-fg" : "note-mode-active"} rounded px-2.5 py-1 text-xs font-semibold`;
+    previewButton.className = `${next ? "note-mode-active" : "text-muted hover:text-fg"} rounded px-2.5 py-1 text-xs font-semibold`;
+    editButton.setAttribute("aria-pressed", String(!next));
+    previewButton.setAttribute("aria-pressed", String(next));
+    updateEditorState();
+    if (!next) editor.focus();
+  };
+  editButton.onclick = () => setPreview(false);
+  previewButton.onclick = () => setPreview(true);
+  search.oninput = () => { filter = search.value.trim().toLowerCase(); drawList(); };
   editor.oninput = updateEditorState;
-  editor.addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); } });
+  editor.addEventListener("keydown", (event) => {
+    if (!(event.ctrlKey || event.metaKey)) return;
+    const key = event.key.toLowerCase();
+    if (key === "s") { event.preventDefault(); void save(); }
+    else if (key === "b") { event.preventDefault(); insertFormatting("**", "**", "bold text"); }
+    else if (key === "i") { event.preventDefault(); insertFormatting("*", "*", "italic text"); }
+  });
   const newButton = h("button", { class: "btn-primary text-sm", type: "button", onclick: async () => {
     if (!(await confirmDiscard())) return;
-    const name = await appPrompt("New note name (.md)", "untitled.md");
+    const name = await appPrompt("New note name", "Untitled");
     if (!name) return;
     try {
       const result = await api<{ note: ChannelNoteView }>(`/api/channels/${channelId}/notes`, { body: { name, content: "" } });
-      active = result.note; savedContent = result.note.content || ""; editor.value = savedContent; editor.disabled = false; title.textContent = result.note.name; renameButton.disabled = false; await reloadList(result.note.name); updateEditorState(); editor.focus();
+      active = result.note; savedContent = result.note.content || ""; editor.value = savedContent; editor.disabled = false; title.textContent = result.note.name; renameButton.disabled = false; previewButton.disabled = false; setPreview(false); await reloadList(result.note.name); updateEditorState(); editor.focus();
     } catch (error) { void appAlert((error as Error).message); }
   } }, icon("plus"), "New note");
-  const closeButton = onClose ? h("button", { class: "btn-subtle text-sm", type: "button", "aria-label": "Close notes", onclick: async () => { if (await confirmDiscard()) onClose(); } }, icon("x"), "Close") : null;
+  const closeButton = h("button", { class: "btn-subtle text-sm", type: "button", "aria-label": "Close notes", onclick: async () => { if (closeHandler && await confirmDiscard()) closeHandler(); } }, icon("x"), "Close") as HTMLButtonElement;
+  const formatting = h("div", { class: "flex min-w-0 flex-wrap items-center gap-1 border-b border-line bg-raised/40 px-3 py-2", role: "toolbar", "aria-label": "Note formatting" },
+    h("button", { class: "note-format-button", type: "button", title: "Heading", onclick: () => prefixLines("## ") }, "H"),
+    h("button", { class: "note-format-button font-bold", type: "button", title: "Bold", onclick: () => insertFormatting("**", "**", "bold text") }, "B"),
+    h("button", { class: "note-format-button italic", type: "button", title: "Italic", onclick: () => insertFormatting("*", "*", "italic text") }, "I"),
+    h("button", { class: "note-format-button", type: "button", title: "Bulleted list", onclick: () => prefixLines("- ") }, "• List"),
+    h("button", { class: "note-format-button", type: "button", title: "Numbered list", onclick: () => prefixLines("1. ") }, "1. List"),
+    h("button", { class: "note-format-button font-mono", type: "button", title: "Inline code", onclick: () => insertFormatting("`", "`", "code") }, "Code"),
+    h("button", { class: "note-format-button", type: "button", title: "Link", onclick: () => insertFormatting("[", "](https://)", "link text") }, "Link"));
   clear(container);
-  container.append(h("section", { class: "flex h-full min-h-[32rem] flex-col", dataset: { notesSurface: String(channelId) } },
+  const node = h("section", { class: "flex h-full min-h-[32rem] flex-col bg-surface", dataset: { notesSurface: String(channelId) } },
     h("div", { class: "flex items-start gap-3 border-b border-line px-4 py-3" },
-      h("div", { class: "min-w-0 flex-1" }, h("h2", { class: "font-display text-xl text-fg" }, "Notes"), h("p", { class: "mt-0.5 text-xs text-muted" }, "Markdown notes shared with this channel computer in /workspace/notes.")),
+      h("div", { class: "min-w-0 flex-1" }, h("h2", { class: "font-display text-xl text-fg" }, "Notes"), h("p", { class: "mt-0.5 text-xs text-muted" }, "Fast Markdown notes shared with this channel's /workspace/notes.")),
       newButton, closeButton),
-    h("div", { class: "grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[15rem_minmax(0,1fr)]" },
-      h("aside", { class: "min-h-0 border-b border-line bg-raised md:border-b-0 md:border-r" }, list),
-      h("div", { class: "flex min-h-0 flex-col gap-3 p-4" },
-        h("div", { class: "flex min-h-9 items-center gap-2" }, title, h("div", { class: "flex-1" }), saveStatus, renameButton, saveButton), editor))));
+    h("div", { class: "grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[17rem_minmax(0,1fr)]" },
+      h("aside", { class: "flex min-h-0 flex-col border-b border-line bg-raised/55 md:border-b-0 md:border-r" },
+        h("div", { class: "space-y-2 p-3" }, h("div", { class: "flex items-center justify-between gap-2" }, h("span", { class: "eyebrow text-muted" }, "All notes"), h("span", { class: "font-mono text-[10px] text-faint" }, "Markdown")), search), list),
+      h("div", { class: "flex min-h-0 min-w-0 flex-col" },
+        h("div", { class: "flex min-h-12 flex-wrap items-center gap-2 border-b border-line px-4 py-2" }, title, h("div", { class: "flex-1" }), h("div", { class: "flex rounded-md bg-raised p-0.5" }, editButton, previewButton), saveStatus, renameButton, saveButton),
+        formatting,
+        h("div", { class: "flex min-h-0 flex-1 flex-col overflow-hidden" }, editor, preview))));
+  closeButton.classList.toggle("hidden", !closeHandler);
+  const surface: NoteSurface = {
+    node,
+    setClose: (next) => { closeHandler = next; closeButton.classList.toggle("hidden", !next); },
+    reload: reloadList,
+  };
+  noteSurfaces.set(channelId, surface);
+  container.append(node);
   void reloadList().catch((error) => panelError(container, error));
 }
 

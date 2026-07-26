@@ -7,14 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-07-26
+
+### Added
+
+- Notes now include a focused Markdown toolbar for headings, bold, italic,
+  lists, code, and links, plus Write and Preview modes that render the current
+  unsaved draft.
+- Configured Photon workspaces now show a private **Texts** tab only in the
+  Captain's personal `#main`. It lists every Skipper conversation, preserves
+  each thread, and lets the Captain select, resume, and continue it on desktop.
+
 ### Changed
 
+- Notes use a cleaner searchable sidebar, friendly titles without a visible
+  `.md` suffix, and a more spacious editor layout.
+- Photon is now channel-agnostic: the configured Captain phone always texts
+  Skipper, one conversation remains current until `/new`, and legacy mapped
+  conversations move to the Captain's private Texts inbox during migration.
+  Desktop continuations share the same context without echoing to iMessage;
+  returning to the phone continues the conversation selected on desktop.
 - GitHub Releases now require the complete numbered acceptance ledger from a
   multi-item request, plus artifact and verification evidence. Generated
   commit summaries can no longer replace the user-facing change list.
 - The retained Apple Silicon release host now owns the complete macOS path:
   clean build, signing, notarization, public-download installation, launch,
   smoke verification, and Application Support preservation.
+
+### Fixed
+
+- New notes accept titles with or without `.md`, add the suffix when omitted,
+  and reject another extension with a corrected `.md` suggestion.
+- Theme, reconnect, and service-worker update refreshes no longer discard or
+  replace the active Notes editor. The exact editor node, unsaved draft, focus,
+  selection, and preview state survive shell rebuilds.
+- Long channel descriptions remain single-line and truncated at narrower
+  desktop widths instead of expanding the top bar into a one-character column.
+- Newly provisioned residents prefer an unused character/color avatar
+  combination, eliminating stochastic duplicate identities in small fleets.
+- Photon content is excluded from channel Chat, channel/global Threads, Board,
+  and unread counts, and the obsolete resident Photon tools and mapping UI are
+  removed.
 
 ## [0.0.10] - 2026-07-25
 
@@ -301,7 +334,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.10...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.11...HEAD
+[0.0.11]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.11
 [0.0.10]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.10
 [0.0.9]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.9
 [0.0.8]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.8

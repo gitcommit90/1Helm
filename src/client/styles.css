@@ -157,6 +157,18 @@ body {
   border-color: color-mix(in srgb, var(--c-accent) 70%, var(--c-line));
   box-shadow: 0 0 0 3px var(--c-accent-soft);
 }
+
+/* Notes workspace */
+.note-format-button {
+  @apply inline-flex min-h-8 items-center justify-center rounded-md border border-transparent px-2 text-xs text-muted transition hover:border-line hover:bg-surface hover:text-fg;
+}
+.note-mode-active {
+  background: var(--c-surface);
+  color: var(--c-fg);
+  box-shadow: 0 1px 2px rgba(0,0,0,.12), inset 0 0 0 1px var(--c-line);
+}
+.note-editor:focus { box-shadow: inset 3px 0 0 var(--c-accent); }
+.note-preview { background: color-mix(in srgb, var(--c-surface) 94%, var(--c-raised)); }
 select.field {
   @apply cursor-pointer appearance-none bg-[image:var(--chev)] bg-[length:16px] bg-[right_0.6rem_center] bg-no-repeat pr-9;
   min-height: 2.5rem;

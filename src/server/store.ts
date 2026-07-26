@@ -13,6 +13,10 @@ export function createMessage(m: Msg): number {
     "INSERT INTO messages (channel_id, parent_id, user_id, bot_id, body, created) VALUES (?,?,?,?,?,?)",
     m.channelId, m.parentId, m.userId ?? null, m.botId ?? null, m.body, now(),
   ).lastInsertRowid;
+  if (m.parentId) {
+    const conversationId = q1("SELECT photon_conversation_id FROM messages WHERE id=?", m.parentId)?.photon_conversation_id;
+    if (conversationId) run("UPDATE messages SET photon_conversation_id=? WHERE id=?", conversationId, id);
+  }
   // Internal wake triggers still need a parent_id link for ordering, but must not
   // inflate the user-visible reply count.
   if (m.parentId && !isInternalMessageBody(m.body)) {

@@ -5,7 +5,7 @@ import { hydrateNotificationPreferences, playNotification } from "./notification
 import { openRoutingPopover, pushRoutingActivity } from "./routing.ts";
 import { openOnboarding } from "./onboarding.ts";
 import { defaultTerminalComputer, openTerminals, refitChannelTerminals, getTerminalChrome } from "./term.ts";
-import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderNotes, renderThreads, type ChannelView } from "./channel.ts";
+import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderNotes, renderTexts, renderThreads, type ChannelView } from "./channel.ts";
 
 /** Per-channel layout bound to the user profile (server user_ui_state). */
 type ChannelUiView = {
@@ -38,6 +38,8 @@ type State = {
   globalThreadsUnreadOnly: boolean;
   /** Profile-bound sidebar preference loaded from /api/me/ui-state. */
   groupUnreadChannelsFirst: boolean;
+  photonConfigured: boolean;
+  selectedTextConversationId: number | null;
 };
 export const S = {
   mobileMenuOpen: false,
@@ -49,6 +51,8 @@ export const S = {
   globalThreadsOpen: false,
   globalThreadsUnreadOnly: false,
   groupUnreadChannelsFirst: false,
+  photonConfigured: false,
+  selectedTextConversationId: null,
   threadUsage: { input_tokens: 0, output_tokens: 0 },
   threadFollowup: null,
 } as State;
@@ -152,7 +156,7 @@ export function toggleTheme(): void {
 }
 
 type AppRoute = { slug: string | null; view: ChannelView; threadRootId: number | null };
-const VIEWS = new Set<ChannelView>(["chat", "board", "threads", "notes", "files", "terminal", "memory", "activity", "settings"]);
+const VIEWS = new Set<ChannelView>(["chat", "texts", "board", "threads", "notes", "files", "terminal", "memory", "activity", "settings"]);
 function readRoute(): AppRoute {
   const parts = location.pathname.split("/").filter(Boolean);
   if (parts[0] !== "c" || !parts[1]) return { slug: null, view: "chat", threadRootId: null };
@@ -304,16 +308,18 @@ async function resyncAfterReconnect(): Promise<void> {
 }
 
 async function loadWorkspace(): Promise<void> {
-  const [ch, us, bots, comps, provs, ws] = await Promise.all([
+  const [ch, us, bots, comps, provs, ws, photon] = await Promise.all([
     api<{ channels: Channel[] }>("/api/channels"),
     api<{ users: User[] }>("/api/users"),
     api<{ bots: Bot[] }>("/api/bots"),
     S.me.is_admin ? api<{ computers: Computer[] }>("/api/computers") : Promise.resolve({ computers: [] }),
     S.me.is_admin ? api<{ providers: Provider[] }>("/api/providers") : Promise.resolve({ providers: [] }),
     api<{ workspace: Workspace }>("/api/workspace").catch(() => ({ workspace: S.workspace })),
+    S.me.is_admin ? api<{ photon: { configured: boolean } }>("/api/connectors/photon").catch(() => ({ photon: { configured: false } })) : Promise.resolve({ photon: { configured: false } }),
   ]);
   S.channels = ch.channels; S.users = us.users; S.bots = bots.bots; S.computers = comps.computers; S.providers = provs.providers;
   if (ws?.workspace) S.workspace = ws.workspace;
+  S.photonConfigured = Boolean(photon?.photon?.configured);
   if (!S.channelId || !S.channels.find((c) => c.id === S.channelId)) {
     const main = S.channels.find((c) => c.name === "main" && c.kind === "channel");
     S.channelId = main?.id || S.channels[0]?.id || 0;
@@ -323,6 +329,8 @@ async function loadWorkspace(): Promise<void> {
 async function openChannel(id: number, view: ChannelView = "chat", threadRootId: number | null = null, replaceRoute = false): Promise<void> {
   // Persist the channel we're leaving so terminal/thread docks survive hops.
   if (S.channelId && S.channelId !== id) persistCurrentChannelView();
+  const requestedChannel = S.channels.find((channel) => channel.id === id);
+  if (view === "texts" && !textsAvailable(requestedChannel)) view = "chat";
   S.channelId = id; S.threadRoot = null; S.threadFollowup = null; S.threadUsage = { input_tokens: 0, output_tokens: 0 }; S.view = view; S.globalThreadsOpen = false;
   applyChannelViewToState(id);
   // Full Terminal tab is separate from the docked header terminal.
@@ -391,6 +399,10 @@ function onEvent(e: any): void {
   if (e.type === "message" || e.type === "message_update") {
     const msg = e.message as Message;
     if (!msg?.channel_id) return;
+    if (msg.photon_conversation_id) {
+      if (S.view === "texts") renderChannelView();
+      return;
+    }
     const mine = msg.author?.kind === "user" && msg.author.id === S.me.id;
     const mentionsMe = new RegExp(`@${S.me.username}\\b`, "i").test(msg.body || "");
     // Only "viewing" a channel when its chat surface is open — not while sitting in global Threads.
@@ -419,6 +431,10 @@ function onEvent(e: any): void {
       // Working… started in another channel — amber dots come from agent_status; no badge yet.
       playNotification(msg.channel_id, mentionsMe ? "mention" : "msg");
     }
+  } else if (e.type === "photon_update") {
+    S.photonConfigured = true;
+    if (e.conversationId) S.selectedTextConversationId = Number(e.conversationId);
+    if (S.view === "texts") renderChannelView(); else renderHeader();
   } else if (e.type === "message_deleted") {
     applyMessageDeleted(e);
   } else if (e.type === "mention_confirmation") {
@@ -707,6 +723,9 @@ async function renderAccessRequest(container: HTMLElement): Promise<void> {
 
 // ---------------- layout ----------------
 export function renderApp(): void {
+  const focusedNote = document.activeElement instanceof HTMLTextAreaElement && document.activeElement.classList.contains("note-editor")
+    ? { node: document.activeElement, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd }
+    : null;
   document.documentElement.dataset.workspaceTheme = S.workspace?.theme || localStorage.getItem("ctrl.workspaceTheme") || "graphite";
   clear(root);
   const shell = h("div", { id: "app-shell", class: "workspace-shell app-shell relative flex h-full min-h-0 min-w-0 overflow-hidden" },
@@ -715,6 +734,10 @@ export function renderApp(): void {
   root.append(shell);
   if (S.mobileMenuOpen) shell.append(mobileNavigation());
   renderMain();
+  if (focusedNote?.node.isConnected) {
+    focusedNote.node.focus({ preventScroll: true });
+    focusedNote.node.setSelectionRange(focusedNote.start, focusedNote.end);
+  }
 }
 
 function setMobileMenu(open: boolean): void {
@@ -1340,13 +1363,18 @@ function renderGlobalThreadsHeader(): void {
       }, S.globalThreadsUnreadOnly ? "Unread · on" : "Unread · off")));
 }
 
+function textsAvailable(channel?: Channel): boolean {
+  return Boolean(S.me.is_admin && S.photonConfigured && channel?.kind === "channel" && channel.name === "main" && channel.personal_main);
+}
+
 function channelTabs(): HTMLElement {
   const currentChannel = S.channels.find((channel) => channel.id === S.channelId);
   const tabs: [ChannelView, string][] = [
-    ["chat", "Chat"], ["board", "Board"], ["threads", "Threads"], ["notes", "Notes"], ["files", "Files"],
+    ["chat", "Chat"], ["texts", "Texts"], ["board", "Board"], ["threads", "Threads"], ["notes", "Notes"], ["files", "Files"],
     ["terminal", "Terminal"], ["memory", "Memory"], ["activity", "Activity"], ["settings", "Settings"],
   ];
   return h("nav", { class: "flex shrink-0 gap-2 overflow-x-auto border-b border-line bg-surface px-3" }, ...tabs
+    .filter(([id]) => id !== "texts" || textsAvailable(currentChannel))
     .filter(([id]) => id !== "terminal" || S.workspace?.terminals_enabled !== false)
     .filter(([id]) => id !== "terminal" || currentChannel?.agent?.kind === "channel" || S.me.is_admin)
     .filter(([id]) => id !== "settings" || Boolean(currentChannel?.can_manage))
@@ -1354,6 +1382,7 @@ function channelTabs(): HTMLElement {
 }
 
 export function navigateChannelView(view: ChannelView): void {
+  if (view === "texts" && !textsAvailable(S.channels.find((channel) => channel.id === S.channelId))) view = "chat";
   S.view = view; S.threadRoot = null; S.globalThreadsOpen = false;
   if (view === "terminal") {
     S.terminalOpen = false;
@@ -1428,7 +1457,8 @@ export function renderChannelView(): void {
   const container = document.getElementById("channelview");
   const channel = S.channels.find((item) => item.id === S.channelId);
   if (!container || !channel) return;
-  if (S.view === "board") renderBoard(container, channel.id, (root) => {
+  if (S.view === "texts") renderTexts(container, S.selectedTextConversationId || undefined, (id) => { S.selectedTextConversationId = id; renderChannelView(); });
+  else if (S.view === "board") renderBoard(container, channel.id, (root) => {
     if (!S.messages.some((message) => message.id === root.id)) S.messages.push(root);
     S.messages.sort((a, b) => a.id - b.id);
     S.view = "chat";
@@ -1492,10 +1522,10 @@ function renderHeader(): void {
     }
   };
   add(el,
-    h("div", { class: "flex min-w-0 flex-1 items-start gap-2" },
+    h("div", { class: "flex min-w-0 flex-1 items-center gap-2 overflow-hidden" },
       mobileMenuButton(),
-      h("div", { class: "flex min-w-0 max-w-[46%] shrink items-start gap-1 text-[15px] font-semibold leading-5 tracking-[-0.01em] text-fg sm:max-w-none sm:text-[16px]" }, channel?.kind === "dm" ? null : h("span", { class: "shrink-0 font-normal text-faint" }, "#"), h("span", { class: "min-w-0 whitespace-normal break-words", title: channel?.name || "" }, channel?.name || "")),
-      channel?.purpose ? h("span", { class: "hidden min-w-0 max-w-[38vw] whitespace-normal break-words border-l border-line pl-2.5 text-[12px] leading-4 text-muted xl:inline", title: channel.purpose }, channel.purpose) : null,
+      h("div", { class: "flex min-w-0 max-w-[46%] shrink items-center gap-1 text-[15px] font-semibold leading-5 tracking-[-0.01em] text-fg sm:max-w-none sm:text-[16px]" }, channel?.kind === "dm" ? null : h("span", { class: "shrink-0 font-normal text-faint" }, "#"), h("span", { class: "min-w-0 truncate", title: channel?.name || "" }, channel?.name || "")),
+      channel?.purpose ? h("span", { class: "hidden min-w-0 max-w-[min(38vw,32rem)] truncate border-l border-line pl-2.5 text-[12px] leading-4 text-muted 2xl:block", title: channel.purpose }, channel.purpose) : null,
       channel?.status === "archived" ? h("span", { class: "chip shrink-0" }, "Paused") : null),
     h("div", { class: "flex max-w-[52%] shrink-0 items-center justify-end gap-1.5 sm:max-w-none sm:gap-2" },
       channel ? h("button", {
@@ -3040,12 +3070,9 @@ function registerServiceWorker(): void {
       // Pick up a new SW when the host ships a build — no manual hard refresh.
       void reg.update().catch(() => {});
       setInterval(() => { void reg.update().catch(() => {}); }, 60 * 60_000);
-      navigator.serviceWorker.addEventListener("controllerchange", () => {
-        // One soft reload after SW takeover so the stamped index/bundle bind.
-        if ((window as any).__1helmSwReloaded) return;
-        (window as any).__1helmSwReloaded = true;
-        location.reload();
-      });
+      // A newly activated worker controls future navigations. Never force this
+      // live document to reload: that can destroy an editor draft or pull the
+      // Captain out of the note/thread they are using.
     })
     .catch((error) => console.warn("1Helm service worker registration failed", error));
 }
