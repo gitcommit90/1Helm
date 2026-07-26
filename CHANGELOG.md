@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-07-26
+
+### Fixed
+
+- iPhone and iPad now reserve the iOS system status area for the Dynamic
+  Island, battery, and signal indicators instead of drawing the packaged
+  workspace underneath it. Full-screen headers such as Notes keep **New note**
+  and **Close** visible and tappable, while Android retains its existing
+  edge-to-edge behavior.
+
 ## [0.0.14] - 2026-07-26
 
 ### Changed
@@ -396,7 +406,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.14...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.15...HEAD
+[0.0.15]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.15
 [0.0.14]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.14
 [0.0.13]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.13
 [0.0.12]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.12

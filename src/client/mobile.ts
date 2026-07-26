@@ -83,7 +83,8 @@ export function serverWebSocketUrl(path: string): string {
 
 export async function initializeMobileRuntime(): Promise<string> {
   if (!native) return localStorage.getItem("ctrl.token") || "";
-  document.documentElement.dataset.nativeMobile = mobilePlatform();
+  const platform = mobilePlatform();
+  document.documentElement.dataset.nativeMobile = platform;
   serverOrigin = localStorage.getItem(SERVER_KEY) || "";
   try { if (serverOrigin) serverOrigin = normalizeServerOrigin(serverOrigin); }
   catch { serverOrigin = ""; localStorage.removeItem(SERVER_KEY); }
@@ -96,7 +97,7 @@ export async function initializeMobileRuntime(): Promise<string> {
 
   await Promise.allSettled([
     StatusBar.setStyle({ style: Style.Default }),
-    StatusBar.setOverlaysWebView({ overlay: true }),
+    StatusBar.setOverlaysWebView({ overlay: platform !== "ios" }),
     Keyboard.setResizeMode({ mode: KeyboardResize.Native }),
   ]);
 
