@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-07-26
+
+### Fixed
+
+- Linux host updates now apply the verified runtime files, release symlink,
+  systemd units, restart, health check, and rollback inside one bounded
+  transient root transaction. This lets a v0.0.11 host escape its obsolete
+  `ProtectSystem=strict` mount namespace before atomically replacing host
+  files, while future updater units grant write access only to the required
+  parent trees.
+- Fresh Linux installs create every LXC state/cache root named by the service
+  unit before systemd builds its private mount namespace, so the first launch
+  no longer depends on a channel computer having already been provisioned.
+
 ## [0.0.11] - 2026-07-26
 
 ### Added
@@ -334,7 +348,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.11...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.12...HEAD
+[0.0.12]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.12
 [0.0.11]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.11
 [0.0.10]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.10
 [0.0.9]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.9
