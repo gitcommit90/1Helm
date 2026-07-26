@@ -22,6 +22,7 @@ Process contract from intent to verified deploy. Commands: [release-checklist.md
        │
        v
   full numbered notes · tag · signed DMG + updater ZIP + Linux host artifact
+                         + signed universal APK + App Store mobile archive
        │
        v
   verify (local health + clean install + public artifact)
@@ -85,9 +86,11 @@ Draft PRs are allowed for long slices; mark ready only when the quality bar is m
    user-visible item must appear once, with the same numbering as the request
    when available. Include additional fixes, artifacts/digests, and verification
    evidence in their own sections.
-6. Publish the verified DMG, native updater ZIP, Linux host artifact, and those
-   complete release notes through one GitHub Release. Do not use GitHub's
-   generated notes as the sole or primary body.
+6. Publish the verified DMG, native updater ZIP, Linux host artifact, any
+   directly distributed signed Android APK, and those complete release notes
+   through one GitHub Release. Submit an iOS build through App Store Connect
+   rather than publishing an installable IPA as a generic download. Do not use
+   GitHub's generated notes as the sole or primary body.
 
 ## 7. Deploy
 

@@ -38,6 +38,7 @@ npm run typecheck
 npm run build
 npm test
 npm run test:onboarding-browser
+ANDROID_SDK_ROOT=<sdk> npm run mobile:check
 git diff --check
 git status --short
 ```
@@ -70,12 +71,13 @@ git push origin "refs/tags/v${VERSION}"
 HEADLESS="dist/1Helm-${VERSION}-linux-node.tgz"
 DMG="dist/1Helm-${VERSION}-arm64.dmg"
 UPDATE_ZIP="dist/1Helm-${VERSION}-mac-arm64.zip"
+ANDROID_APK="dist/1Helm-${VERSION}-universal.apk"
 RELEASE_NOTES="dist/1Helm-${VERSION}-release-notes.md"
 # Author RELEASE_NOTES from docs/release-notes-template.md. It must contain the
 # complete numbered acceptance ledger, artifact digests, and verification.
 test -s "$RELEASE_NOTES"
 rg -q '^1\. ' "$RELEASE_NOTES" # multi-item ships must retain a numbered ledger
-gh release create "v${VERSION}" "$DMG" "$UPDATE_ZIP" "$HEADLESS" --title "1Helm ${VERSION}" --notes-file "$RELEASE_NOTES" --draft
+gh release create "v${VERSION}" "$DMG" "$UPDATE_ZIP" "$HEADLESS" "$ANDROID_APK" --title "1Helm ${VERSION}" --notes-file "$RELEASE_NOTES" --draft
 # review notes, then:
 gh release edit "v${VERSION}" --draft=false
 ```
@@ -85,6 +87,22 @@ Generated commit/PR lists may be appended as secondary metadata, but the public
 body must lead with the complete user-visible acceptance ledger. Before
 publication, compare the notes item-by-item with the originating request and
 the versioned `CHANGELOG.md` entry.
+
+### Mobile release gates
+
+- Build Android only with the retained external production key and properties
+  file. Back up that key independently, never commit either file or any
+  password, and never replace the key: Android updates require the same
+  certificate forever.
+- Verify the universal APK with `zipalign`, `apksigner`, package/version
+  inspection, release-certificate SHA-256, and an install/update smoke on a
+  device or emulator. Upload the APK SHA-256 and certificate fingerprint in
+  the release evidence.
+- Build iOS with full Xcode from the exact merged source, archive for generic
+  iOS using automatic App Store signing, validate the archive/IPA, then upload
+  it to App Store Connect or TestFlight. A public GitHub IPA is not a substitute
+  for Apple distribution. Record the App Store build number and validation or
+  upload result.
 
 ## 6. Local verify
 
@@ -129,5 +147,7 @@ Local setup:    needs_setup verified on clean CTRL_DATA_DIR
 Clean deploy:   <pass / skipped + reason>
 Mac host update:<public artifact installed on release host + state preserved>
 Linux update:  <old → new, digest + health + state preserved>
+Android:      <public APK digest, certificate fingerprint, install/update smoke>
+iOS:          <App Store build number + validation/upload result>
 CI:             Actions green on main
 ```

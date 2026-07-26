@@ -1,7 +1,7 @@
 {
   "name": "1helm",
   "productName": "1Helm",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-only",
@@ -13,6 +13,7 @@
   "main": "desktop/main.cjs",
   "scripts": {
     "assets:brand": "node scripts/generate-brand-assets.cjs",
+    "assets:mobile": "node scripts/generate-mobile-assets.mjs",
     "assets:screenshots": "node scripts/capture-user-guide-screenshots.mjs && node scripts/generate-readme-assets.cjs",
     "assets:readme": "node scripts/generate-readme-assets.cjs",
     "postinstall": "node scripts/ensure-node-pty-helper.cjs",
@@ -20,6 +21,8 @@
     "build:css": "tailwindcss -i src/client/styles.css -o public/app.css --minify",
     "build:stamp": "node src/build/stamp.mjs",
     "build": "npm run build:js && npm run build:css && npm run build:stamp",
+    "mobile:sync": "node scripts/sync-mobile-version.mjs && npm run assets:mobile && npm run build && cap sync",
+    "mobile:check": "npm run typecheck && node --test test/mobile.mjs && cap doctor android",
     "start": "node --disable-warning=ExperimentalWarning src/server/index.ts",
     "dev": "npm run build && npm start",
     "watch:js": "esbuild src/client/app.ts --bundle --format=esm --outfile=public/bundle.js --loader:.css=css --watch",
@@ -46,10 +49,21 @@
     "package:linux": "node scripts/package-linux-host.mjs",
     "package:windows": "node scripts/package-windows.cjs",
     "package:windows:release": "set HELM_REQUIRE_WINDOWS_SIGNATURE=1&& node scripts/package-windows.cjs",
+    "package:android:release": "node scripts/package-android-apk.mjs",
+    "package:ios:release": "node scripts/package-ios-ipa.mjs",
     "test:desktop": "node --test test/desktop.mjs",
     "test:channel-computers:mac": "node scripts/mac-channel-computer-acceptance.mjs"
   },
   "dependencies": {
+    "@aparajita/capacitor-secure-storage": "^8.0.0",
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/app": "^8.0.1",
+    "@capacitor/browser": "^8.0.1",
+    "@capacitor/core": "^8.4.2",
+    "@capacitor/ios": "^8.4.2",
+    "@capacitor/keyboard": "^8.0.1",
+    "@capacitor/splash-screen": "^8.0.1",
+    "@capacitor/status-bar": "^8.0.1",
     "@gitcommit90/rerouted": "https://github.com/gitcommit90/rerouted/releases/download/v0.5.7/ReRouted-0.5.7-linux-node.tgz",
     "@opencoredev/loginwithchatgpt-server": "^0.2.0",
     "node-pty": "^1.1.0",
@@ -57,6 +71,7 @@
     "ws": "^8.21.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.4.2",
     "@cloudflare/workers-types": "^5.20260722.1",
     "@electron/osx-sign": "2.6.0",
     "@electron/packager": "20.0.3",

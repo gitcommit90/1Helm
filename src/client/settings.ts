@@ -1,8 +1,9 @@
-import { api, getToken, workspacePhotoSrc, type AccessRequest, type ChannelRuntime, type Collaboration, type Computer, type Skill, type SkillCatalogResult, type SkillCatalogStatus, type User, type WorkspaceDomain } from "./api.ts";
+import { api, getToken, openAuthenticatedFile, workspacePhotoSrc, type AccessRequest, type ChannelRuntime, type Collaboration, type Computer, type Skill, type SkillCatalogResult, type SkillCatalogStatus, type User, type WorkspaceDomain } from "./api.ts";
 import { h, clear, add, icon } from "./dom.ts";
 import { S, avatar, reloadProviders, renderApp, appAlert, appConfirm, appPrompt } from "./app.ts";
 import { connectRoutingOauth, routingPanel } from "./routing.ts";
 import { globalNotificationsMuted, setGlobalNotificationsMuted } from "./notifications.ts";
+import { apiUrl, isNativeMobile, openExternalUrl } from "./mobile.ts";
 
 // ============================================================ OpenRouter OAuth (PKCE)
 const b64url = (buf: ArrayBuffer): string => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -19,8 +20,10 @@ export async function startOpenRouterOAuth(): Promise<void> {
   // localStorage (not sessionStorage): the verifier must survive the full-page
   // round trip through openrouter.ai, which can land in a fresh session.
   localStorage.setItem(VERIFIER_KEY, JSON.stringify({ v: verifier, t: Date.now() }));
-  const callback = location.origin + location.pathname;
-  location.assign(`https://openrouter.ai/auth?callback_url=${encodeURIComponent(callback)}&code_challenge=${await pkceChallenge(verifier)}&code_challenge_method=S256`);
+  const callback = isNativeMobile() ? "onehelm://openrouter" : location.origin + location.pathname;
+  const destination = `https://openrouter.ai/auth?callback_url=${encodeURIComponent(callback)}&code_challenge=${await pkceChallenge(verifier)}&code_challenge_method=S256`;
+  if (isNativeMobile()) await openExternalUrl(destination);
+  else location.assign(destination);
 }
 const VERIFIER_KEY = "ctrl.or_verifier";
 const VERIFIER_TTL_MS = 30 * 60 * 1000;
@@ -163,7 +166,7 @@ function adminPanel(): HTMLElement {
     ctx.fillStyle = hex; ctx.fillRect(0, 0, 256, 256);
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
     if (!blob) { status.textContent = "Could not generate image."; return; }
-    const response = await fetch("/api/workspace/photo", { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": "image/png" }, body: blob });
+    const response = await fetch(apiUrl("/api/workspace/photo"), { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": "image/png" }, body: blob });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) { status.textContent = result.error || `HTTP ${response.status}`; return; }
     S.workspace = result.workspace; photo.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); document.querySelectorAll<HTMLImageElement>(".logo-asset").forEach((image) => { image.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); }); status.textContent = "Workspace photo updated.";
@@ -172,7 +175,7 @@ function adminPanel(): HTMLElement {
   file.onchange = async () => {
     const image = file.files?.[0]; if (!image) return;
     status.textContent = "Uploading workspace photo…";
-    const response = await fetch("/api/workspace/photo", { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": image.type }, body: image });
+    const response = await fetch(apiUrl("/api/workspace/photo"), { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": image.type }, body: image });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) { status.textContent = result.error || `HTTP ${response.status}`; return; }
     S.workspace = result.workspace; photo.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); document.querySelectorAll<HTMLImageElement>(".logo-asset").forEach((image) => { image.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); }); status.textContent = "Workspace photo updated.";
@@ -331,7 +334,7 @@ function gmailConnectionPanel(): HTMLElement {
           try {
             const result = await api<{ gmail: GmailStatus }>("/api/connectors/gmail/setup", { body: {} });
             const destination = result.gmail.setup.authorization_url;
-            if (destination) window.open(destination, "_blank", "noopener,noreferrer");
+            if (destination) await openExternalUrl(destination);
             await draw();
           } catch (error) { void appAlert((error as Error).message); }
         } }, connected ? "Connect another" : "Connect Gmail");
@@ -464,11 +467,10 @@ function feedbackPanel(): HTMLElement {
             h("span", { class: "chip" }, report.state),
             h("div", { class: "mt-1 text-xs text-muted" }, new Date(report.created).toLocaleString()))),
         h("p", { class: "whitespace-pre-wrap text-sm leading-6 text-fg" }, report.comment || "(attachment-only report)"),
-        report.id && report.attachments?.length ? h("div", { class: "flex flex-wrap gap-2" }, ...report.attachments.map((attachment) => h("a", {
+        report.id && report.attachments?.length ? h("div", { class: "flex flex-wrap gap-2" }, ...report.attachments.map((attachment) => h("button", {
           class: "btn-subtle text-xs",
-          href: `/api/feedback/${report.id}/attachments/${attachment.id}`,
-          target: "_blank",
-          rel: "noopener",
+          type: "button",
+          onclick: () => { void openAuthenticatedFile(`/api/feedback/${report.id}/attachments/${attachment.id}`).catch((error) => appAlert((error as Error).message)); },
         }, `${attachment.name} · ${Math.ceil(attachment.size / 1024)} KB`))) : null,
         diagnostics !== "{}" ? h("details", { class: "rounded-lg border border-line bg-panel p-3" },
           h("summary", { class: "cursor-pointer text-xs font-semibold text-fg" }, "Privacy-bounded diagnostics"),

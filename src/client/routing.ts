@@ -9,6 +9,7 @@ import {
   type RoutingUsage,
 } from "./api.ts";
 import { add, clear, h, icon, providerMark, timeLabel } from "./dom.ts";
+import { getServerOrigin, openExternalUrl } from "./mobile.ts";
 
 type RoutingView = "sources" | "routes" | "activity" | "quota" | "logs" | "endpoint";
 type Dialog = (message: string) => Promise<boolean>;
@@ -26,7 +27,7 @@ const providerCopy: Record<string, string> = {
 };
 
 const fmt = (value: unknown): string => new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(Number(value || 0));
-const publicEndpoint = (): string => `${location.origin}/v1`;
+const publicEndpoint = (): string => `${getServerOrigin() || location.origin}/v1`;
 const providerFamily = (provider: RoutingProvider): string => provider.type === "codex" ? "chatgpt" : provider.type;
 const isCustom = (provider: RoutingProvider): boolean => ["custom", "openai-compat"].includes(provider.type);
 const routeMember = (provider: RoutingProvider, model: string): RoutingComboMember => isCustom(provider)
@@ -263,7 +264,7 @@ async function openOauth(type: string, refresh: () => Promise<void>, providerId?
       paste,
       h("button", { class: "btn-subtle min-h-11 w-full", onclick: () => { void finish(); } }, "Finish connection"), status));
   document.body.append(modal);
-  window.open(started.authUrl, "_blank", "noopener,noreferrer");
+  void openExternalUrl(started.authUrl);
   for (let attempt = 0; attempt < 240 && !closed; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     if (closed) break;

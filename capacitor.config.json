@@ -1,0 +1,53 @@
+{
+  "appId": "com.gitcommit90.onehelm.mobile",
+  "appName": "1Helm",
+  "webDir": "public",
+  "loggingBehavior": "none",
+  "backgroundColor": "#08090c",
+  "zoomEnabled": false,
+  "appendUserAgent": " 1HelmMobile",
+  "server": {
+    "hostname": "localhost",
+    "iosScheme": "capacitor",
+    "androidScheme": "https",
+    "cleartext": false
+  },
+  "ios": {
+    "contentInset": "never",
+    "preferredContentMode": "mobile",
+    "allowsLinkPreview": false,
+    "webContentsDebuggingEnabled": false,
+    "buildOptions": {
+      "signingStyle": "automatic",
+      "exportMethod": "app-store-connect"
+    }
+  },
+  "android": {
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": false,
+    "minWebViewVersion": 83,
+    "useLegacyBridge": false,
+    "buildOptions": {
+      "releaseType": "APK",
+      "signingType": "apksigner"
+    }
+  },
+  "plugins": {
+    "Keyboard": {
+      "resize": "native",
+      "resizeOnFullScreen": true
+    },
+    "SplashScreen": {
+      "launchShowDuration": 1200,
+      "launchAutoHide": true,
+      "backgroundColor": "#08090c",
+      "showSpinner": false,
+      "androidScaleType": "CENTER_CROP"
+    },
+    "StatusBar": {
+      "overlaysWebView": true,
+      "style": "DEFAULT",
+      "backgroundColor": "#08090c"
+    }
+  }
+}

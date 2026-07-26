@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-07-26
+
+### Added
+
+- iPhone, iPad, and Android now have thin Capacitor gateway clients for an
+  already configured 1Helm host. The connection screen accepts an HTTPS server
+  address, username, and password, confirms the host's explicit mobile
+  compatibility contract, and never exposes first-run host setup.
+- Android ships as a directly distributed, signed universal APK with a stable
+  application ID and permanent release certificate. Release builds fail
+  closed without external signing material and verify alignment, package and
+  version metadata, v2/v3 signatures, and native ABI coverage.
+- iOS has an App Store archive/export path with iPhone and iPad support, stable
+  bundle and callback identifiers, a privacy manifest, and the required
+  microphone, speech, and encryption declarations.
+
+### Security
+
+- Mobile passwords are used only for the sign-in request and are never saved.
+  Sessions are kept in the device-only iOS Keychain or encrypted with an
+  Android Keystore-held key; Disconnect erases the session and server address.
+- The packaged local web client connects only to HTTPS servers, disables
+  native WebView debugging and release logging, rejects cleartext traffic and
+  Android backups, and limits server CORS to the two packaged Capacitor origins.
+
+### Changed
+
+- Authenticated API calls, files, avatars, workspace photos, terminals, app
+  events, external links, and provider OAuth flows now resolve correctly
+  through a selected mobile server while bundled brand and resident character
+  assets remain local.
+
 ## [0.0.12] - 2026-07-26
 
 ### Fixed
@@ -348,7 +380,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.12...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.13...HEAD
+[0.0.13]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.13
 [0.0.12]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.12
 [0.0.11]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.11
 [0.0.10]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.10

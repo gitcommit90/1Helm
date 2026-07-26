@@ -2,6 +2,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { api, getToken } from "./api.ts";
+import { serverWebSocketUrl } from "./mobile.ts";
 import { h, clear, icon } from "./dom.ts";
 import { S } from "./app.ts";
 
@@ -367,8 +368,7 @@ async function connect(pane: Pane): Promise<void> {
       pane.el.dataset.sessionId = pane.sessionId;
     }
     if (pane.disposed) { if (pane.sessionId) await api(`/api/term/${pane.sessionId}`, { method: "DELETE" }).catch(() => undefined); return; }
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/ws/term/${pane.sessionId}?token=${getToken()}`);
+    const ws = new WebSocket(serverWebSocketUrl(`/ws/term/${pane.sessionId}?token=${encodeURIComponent(getToken())}`));
     pane.el.dataset.sessionId = pane.sessionId;
     ws.binaryType = "arraybuffer";
     pane.ws = ws;

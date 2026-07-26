@@ -18,6 +18,8 @@
   &nbsp;·&nbsp;
   <a href="https://1helm.com/manual/install-linux"><strong>for Linux</strong></a>
   &nbsp;·&nbsp;
+  <a href="https://github.com/gitcommit90/1Helm/releases/latest"><strong>for Android</strong></a>
+  &nbsp;·&nbsp;
   <a href="https://1helm.com">The story</a>
   &nbsp;·&nbsp;
   <a href="https://1helm.com/manual">Ship's manual</a>
@@ -32,7 +34,7 @@
   <code>Self-hosted</code>&nbsp;&nbsp;
   <code>Model-agnostic</code>&nbsp;&nbsp;
   <code>Signed + notarized</code>&nbsp;&nbsp;
-  <code>macOS · Windows · Linux</code>
+  <code>macOS · Windows · Linux · iOS · Android</code>
 </p>
 
 ---
@@ -132,6 +134,26 @@ digest-verified, health-checked updater — see the
 it works best on a dedicated machine: your crew works around the clock, and
 your everyday computer takes naps.
 
+### Connect from iPhone, iPad, or Android
+
+The mobile apps are thin, native gateways to a 1Helm you already run. Install
+and finish setup on a supported Mac, Windows, or Linux host first, give that
+host an HTTPS address, then enter the address, username, and password in the
+mobile app. The password is used only for sign-in and is never retained; the
+resulting session is stored in the iOS Keychain or encrypted with a key held by
+Android Keystore.
+
+- iPhone and iPad use the App Store build under the stable bundle identifier
+  `com.gitcommit90.onehelm.mobile`.
+- Android is distributed directly as `1Helm-<version>-universal.apk` on the
+  matching GitHub Release. Android may ask you to allow installs from the app
+  you used to open the file. Verify the release SHA-256 and install it; future
+  releases signed by the same permanent 1Helm certificate install in place.
+- The native clients require HTTPS, do not contain or initialize the 1Helm
+  server, and do not retain host data or provider credentials beyond the
+  selected server address and secure session token. Use **Disconnect** in the
+  profile menu to erase both from the device.
+
 ## Ready on day one. Specialized by day one hundred.
 
 <p align="center">
@@ -223,6 +245,8 @@ and an audit trail. A prompt saying “use this service” is not a connector.
 - Host-owned updates: a signed native Mac updater plus an atomic,
   digest-verified Linux system service with health-check rollback.
 - Signed, Apple-notarized, stapled Apple Silicon DMG releases.
+- Native iPhone/iPad and directly distributed Android gateway clients for an
+  already configured HTTPS 1Helm host.
 
 ### Platform truth
 
@@ -231,10 +255,11 @@ and an audit trail. A prompt saying “use this service” is not a connector.
 | **Apple Silicon macOS 26** | Native desktop product and real isolated Linux computer per resident (Apple `container machine`, `home-mount=none`). |
 | **Linux / CI** | Supported headless systemd host with one unprivileged LXC per resident (subordinate UID/GID mapping, exact ownership checks); CI may select an explicit test backend. |
 | **Windows 11 x64** | Native desktop product with one private WSL 2 world per resident (Windows-drive mounts and interop disabled); the signed Setup executable ships with every release. |
+| **iPhone and iPad** | App Store gateway to an already configured HTTPS 1Helm host; sessions live in the device-only iOS Keychain. |
+| **Android 7+** | Directly distributed signed universal APK gateway; sessions are encrypted by a key held in Android Keystore. |
 
-Not yet shipped: a native Linux desktop shell, mobile clients, a hosted
-control plane, rich Photon attachment fidelity, or blind execution of
-community skills.
+Not yet shipped: a native Linux desktop shell, a hosted control plane, rich
+Photon attachment fidelity, or blind execution of community skills.
 
 ## Run the source workspace
 
@@ -257,7 +282,7 @@ A fresh data directory opens first-run setup. The source runtime defaults to
 | `PORT` | `8123` | HTTP/WebSocket control-plane port. |
 | `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and narrow workspace mirrors. |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `lxc` on Linux, `wsl` on Windows | Host isolation backend; `native` and `mock` are explicit development/test overrides. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.12` | Versioned channel-machine image contract. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.13` | Versioned channel-machine image contract. |
 
 ### Agent-first JSON CLI
 
