@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-07-26
+
+### Changed
+
+- iPhone, iPad, and Android now open through a restrained native launch
+  transition: a compact centered sailboat mark on the platform-appropriate
+  light or dark background, followed by a short fade as soon as the gateway or
+  workspace has painted. The previous oversized full-screen artwork and
+  artificial 1.2-second logo hold are removed.
+
+### Fixed
+
+- App Store packaging now safely copies an exported IPA across filesystem
+  boundaries before its atomic final rename, so clean builds on the retained
+  APFS release volume no longer fail after a successful Xcode export.
+
 ## [0.0.13] - 2026-07-26
 
 ### Added
@@ -380,7 +396,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.13...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.14...HEAD
+[0.0.14]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.14
 [0.0.13]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.13
 [0.0.12]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.12
 [0.0.11]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.11

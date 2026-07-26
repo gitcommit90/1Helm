@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -37,7 +37,9 @@ try {
   run("xcodebuild", ["-exportArchive", "-archivePath", archive, "-exportPath", exported, "-exportOptionsPlist", options, "-allowProvisioningUpdates"]);
   const ipaName = (await readdir(exported)).find((name) => name.endsWith(".ipa"));
   if (!ipaName) throw new Error("Xcode did not produce an IPA.");
-  await rename(join(exported, ipaName), candidate);
+  // Xcode's temp directory and a release volume can be different filesystems.
+  // Copy into the release directory before the same-volume atomic rename.
+  await copyFile(join(exported, ipaName), candidate);
   const entries = spawnSync("unzip", ["-Z1", candidate], { encoding: "utf8" });
   if (entries.status !== 0 || /(^|\n)(?:AGENTS\.md|.*\/AGENTS\.md)(?:\n|$)/.test(entries.stdout || "")) throw new Error("The IPA is invalid or contains host-local instructions.");
   await rm(canonical, { force: true });

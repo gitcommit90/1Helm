@@ -5,21 +5,36 @@ import sharp from "sharp";
 
 const root = resolve(import.meta.dirname, "..");
 const source = join(root, "desktop", "icons", "1helm-macos-app-logo.jpg");
-const dark = { r: 8, g: 9, b: 12, alpha: 1 };
 
 async function icon(target, size) {
   await mkdir(dirname(target), { recursive: true });
   await sharp(source).resize(size, size, { fit: "cover" }).png({ compressionLevel: 9 }).toFile(target);
 }
 
-async function splash(target, width, height) {
-  const markSize = Math.round(Math.min(width, height) * 0.34);
-  const mark = await sharp(source)
-    .resize(markSize, markSize, { fit: "cover" })
+async function markBuffer(size) {
+  const radius = Math.round(size * 0.22);
+  const mask = Buffer.from(`<svg width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg"><rect width="${size}" height="${size}" rx="${radius}" fill="white"/></svg>`);
+  const artwork = await sharp(source).resize(size, size, { fit: "cover" }).png().toBuffer();
+  return sharp({ create: { width: size, height: size, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+    .composite([{ input: artwork }, { input: mask, blend: "dest-in" }])
     .png({ compressionLevel: 9 })
     .toBuffer();
+}
+
+async function launchMark(target, canvasSize, markSize = canvasSize) {
+  const mark = await markBuffer(markSize);
   await mkdir(dirname(target), { recursive: true });
-  await sharp({ create: { width, height, channels: 4, background: dark } })
+  await sharp({ create: { width: canvasSize, height: canvasSize, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+    .composite([{ input: mark, left: Math.round((canvasSize - markSize) / 2), top: Math.round((canvasSize - markSize) / 2) }])
+    .png({ compressionLevel: 9 })
+    .toFile(target);
+}
+
+async function legacySplash(target, width, height) {
+  const markSize = Math.round(Math.min(width, height) * 0.18);
+  const mark = await markBuffer(markSize);
+  await mkdir(dirname(target), { recursive: true });
+  await sharp({ create: { width, height, channels: 4, background: { r: 242, g: 239, b: 231, alpha: 1 } } })
     .composite([{ input: mark, left: Math.round((width - markSize) / 2), top: Math.round((height - markSize) / 2) }])
     .png({ compressionLevel: 9 })
     .toFile(target);
@@ -47,12 +62,14 @@ const androidSplashes = {
   "drawable-port-xxhdpi/splash.png": [960, 1600],
   "drawable-port-xxxhdpi/splash.png": [1280, 1920],
 };
-for (const [relative, [width, height]] of Object.entries(androidSplashes)) await splash(join(androidRes, relative), width, height);
+for (const [relative, [width, height]] of Object.entries(androidSplashes)) await legacySplash(join(androidRes, relative), width, height);
+await launchMark(join(androidRes, "drawable-nodpi", "splash_mark.png"), 256);
+await launchMark(join(androidRes, "drawable-nodpi", "splash_android12.png"), 256, 96);
 
 const iosAssets = join(root, "ios", "App", "App", "Assets.xcassets");
 await icon(join(iosAssets, "AppIcon.appiconset", "AppIcon-512@2x.png"), 1024);
 for (const filename of await readdir(join(iosAssets, "Splash.imageset"))) {
-  if (filename.endsWith(".png")) await splash(join(iosAssets, "Splash.imageset", filename), 2732, 2732);
+  if (filename.endsWith(".png")) await launchMark(join(iosAssets, "Splash.imageset", filename), 512);
 }
 
-console.log("Generated branded iOS and Android icons and launch screens.");
+console.log("Generated branded mobile icons and compact launch marks.");

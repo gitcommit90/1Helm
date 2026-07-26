@@ -6,7 +6,7 @@ import { openRoutingPopover, pushRoutingActivity } from "./routing.ts";
 import { openOnboarding } from "./onboarding.ts";
 import { defaultTerminalComputer, openTerminals, refitChannelTerminals, getTerminalChrome } from "./term.ts";
 import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderNotes, renderTexts, renderThreads, type ChannelView } from "./channel.ts";
-import { apiUrl, forgetMobileServer, getServerOrigin, isNativeMobile, serverAssetUrl, setMobileServer } from "./mobile.ts";
+import { apiUrl, finishNativeLaunch, forgetMobileServer, getServerOrigin, isNativeMobile, serverAssetUrl, setMobileServer } from "./mobile.ts";
 
 /** Per-channel layout bound to the user profile (server user_ui_state). */
 type ChannelUiView = {
@@ -698,6 +698,7 @@ function renderAuth(): void {
   pw.addEventListener("keydown", (ev) => { if ((ev as KeyboardEvent).key === "Enter") submit(); });
   (isNativeMobile() && !server.value ? server : u).focus();
   if (!isNativeMobile()) void renderAccessRequest(access);
+  finishNativeLaunch();
 }
 
 async function renderAccessRequest(container: HTMLElement): Promise<void> {
@@ -771,6 +772,7 @@ export function renderApp(): void {
     focusedNote.node.focus({ preventScroll: true });
     focusedNote.node.setSelectionRange(focusedNote.start, focusedNote.end);
   }
+  finishNativeLaunch();
 }
 
 function setMobileMenu(open: boolean): void {
@@ -3128,4 +3130,5 @@ void initializeApiTransport().then(() => boot()).catch((error) => {
     h("h1", { class: "font-display text-2xl text-fg" }, "1Helm could not open"),
     h("p", { class: "text-sm leading-6 text-muted" }, (error as Error).message || "The device security store is unavailable."),
     h("button", { class: "btn-primary", onclick: () => location.reload() }, "Try again"))));
+  finishNativeLaunch();
 });

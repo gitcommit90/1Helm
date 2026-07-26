@@ -3,6 +3,7 @@ import { Browser } from "@capacitor/browser";
 import { Capacitor } from "@capacitor/core";
 import { Keyboard, KeyboardResize } from "@capacitor/keyboard";
 import { SecureStorage, KeychainAccess } from "@aparajita/capacitor-secure-storage";
+import { SplashScreen } from "@capacitor/splash-screen";
 import { StatusBar, Style } from "@capacitor/status-bar";
 
 const SESSION_KEY = "session";
@@ -14,10 +15,20 @@ type StoredSession = { server: string; token: string };
 
 const native = Capacitor.isNativePlatform();
 let serverOrigin = "";
+let launchFinishQueued = false;
 
 export const isNativeMobile = (): boolean => native;
 export const mobilePlatform = (): string => native ? Capacitor.getPlatform() : "web";
 export const getServerOrigin = (): string => serverOrigin;
+
+/** Reveal the first real native screen only after the WebView has painted it. */
+export function finishNativeLaunch(): void {
+  if (!native || launchFinishQueued) return;
+  launchFinishQueued = true;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    void SplashScreen.hide({ fadeOutDuration: 180 }).catch(() => undefined);
+  }));
+}
 
 export function normalizeServerOrigin(value: string): string {
   const raw = value.trim();
