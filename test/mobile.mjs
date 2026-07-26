@@ -103,6 +103,7 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.equal(parsed.android.webContentsDebuggingEnabled, false);
   assert.equal(parsed.ios.preferredContentMode, "mobile");
   assert.equal(parsed.ios.webContentsDebuggingEnabled, false);
+  assert.equal(parsed.plugins.StatusBar.overlaysWebView, false, "iOS reserves the system status area before the packaged UI paints");
   assert.equal(parsed.plugins.SplashScreen.launchAutoHide, false, "native launch art remains only until the first real screen paints");
   assert.ok(parsed.plugins.SplashScreen.launchShowDuration <= 500, "launch has no artificial logo hold");
   assert.equal(parsed.plugins.SplashScreen.launchFadeOutDuration, 180);
@@ -116,6 +117,7 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.match(mobile, /removeSecureSession/);
   assert.match(mobile, /SplashScreen\.hide\(\{ fadeOutDuration: 180 \}\)/);
   assert.match(mobile, /requestAnimationFrame\(\(\) => requestAnimationFrame/, "launch fades only after the gateway or workspace paints");
+  assert.match(mobile, /StatusBar\.setOverlaysWebView\(\{ overlay: platform !== "ios" \}\)/, "iOS keeps every full-screen header below the Dynamic Island while Android retains edge-to-edge rendering");
   assert.match(mobile, /App\.getLaunchUrl/, "a cold-start OAuth callback is retained");
   assert.doesNotMatch(mobile, /destination\.origin === serverOrigin/, "server links cannot replace the audited packaged WebView");
   assert.doesNotMatch(api, /let token = localStorage\.getItem/, "the session is not eagerly copied out of native secure storage");

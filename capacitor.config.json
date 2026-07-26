@@ -46,7 +46,7 @@
       "layoutName": "launch_screen"
     },
     "StatusBar": {
-      "overlaysWebView": true,
+      "overlaysWebView": false,
       "style": "DEFAULT",
       "backgroundColor": "#08090c"
     }
