@@ -225,7 +225,7 @@ PACKAGE_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "
   || fail "The verified Linux artifact version does not match its release tag."
 [[ -x "$STAGE/site/public/update-host.sh" ]] \
   || fail "The verified Linux artifact is missing its host updater."
-[[ -x "$STAGE/site/public/migrate-linux-host-contract.sh" && -x "$STAGE/site/public/install-lxc-runtime.sh" && -x "$STAGE/site/public/install-linux-units.sh" && -x "$STAGE/site/public/uninstall-host.sh" && -x "$STAGE/scripts/1helm-lxc-runtime" && -x "$STAGE/scripts/1helm-lxc-net" ]] \
+[[ -x "$STAGE/site/public/apply-linux-release.sh" && -x "$STAGE/site/public/migrate-linux-host-contract.sh" && -x "$STAGE/site/public/install-lxc-runtime.sh" && -x "$STAGE/site/public/install-linux-units.sh" && -x "$STAGE/site/public/uninstall-host.sh" && -x "$STAGE/scripts/1helm-lxc-runtime" && -x "$STAGE/scripts/1helm-lxc-net" ]] \
   || fail "The verified Linux artifact is missing its isolated LXC runtime contract."
 chown -R "$SERVICE_USER:$SERVICE_USER" "$STAGE"
 
@@ -247,26 +247,15 @@ else
 fi
 chown -R "$SERVICE_USER:$SERVICE_USER" "$RELEASE_ROOT"
 
-PREVIOUS_RELEASE="$(readlink -f "$APP_ROOT" 2>/dev/null || true)"
-[[ "$PREVIOUS_RELEASE" == "$RELEASES_ROOT/"* && -d "$PREVIOUS_RELEASE" ]] || PREVIOUS_RELEASE=""
-snapshot_host_contract
-TRANSACTION_ACTIVE=1
-"$RELEASE_ROOT/site/public/install-lxc-runtime.sh" "$RELEASE_ROOT" \
-  || fail "The verified 1Helm release could not install its isolated LXC runtime."
-ln -s "$RELEASE_ROOT" "$TEMP_ROOT/current"
-mv -Tf "$TEMP_ROOT/current" "$APP_ROOT"
-"$RELEASE_ROOT/site/public/install-linux-units.sh" "$RELEASE_ROOT" \
-  || fail "The verified 1Helm release could not migrate its Linux service contract."
-
-write_status "restarting" "$TARGET_VERSION" "The host installed v$TARGET_VERSION and is restarting 1Helm."
-systemctl restart "$SERVICE_NAME"
-healthy=0
-for _ in {1..300}; do
-  if curl -fsS "http://127.0.0.1:$PORT/api/setup/status" >/dev/null; then healthy=1; break; fi
-  sleep 0.2
-done
-if [[ "$healthy" -ne 1 ]]; then
-  fail "1Helm v$TARGET_VERSION failed its host health check; the previous release was restored when available."
+# One verified transient root transaction owns the runtime files, current
+# symlink, unit migration, restart, health check, and rollback together. This
+# also escapes v0.0.11's obsolete ProtectSystem=strict mount namespace before
+# the first host file is replaced.
+APPLY_UNIT="1helm-release-apply-${TARGET_VERSION//./-}-$$"
+if ! systemd-run --quiet --collect --wait --pipe --unit="$APPLY_UNIT" \
+    --property=Type=oneshot --property=NoNewPrivileges=false --property=PrivateTmp=true --property=ProtectHome=true \
+    "$RELEASE_ROOT/site/public/apply-linux-release.sh" "$RELEASE_ROOT" "$TARGET_VERSION"; then
+  echo "1Helm v$TARGET_VERSION failed its atomic host transaction; the transaction's visible status records whether rollback was proven healthy." >&2
+  exit 1
 fi
-TRANSACTION_ACTIVE=0
-write_status "current" "$TARGET_VERSION" "This 1Helm host is running v$TARGET_VERSION."
+exit 0

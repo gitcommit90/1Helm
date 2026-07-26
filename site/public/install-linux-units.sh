@@ -12,9 +12,24 @@ NODE_LINK="$INSTALL_ROOT/node-current"
 STATE_ROOT="/var/lib/1helm"
 SERVICE_USER="1helm"
 
+# Bridge upgrades from v0.0.11's too-narrow ProtectSystem=strict namespace.
+# The retained release has already been SHA-verified and built by the root
+# updater; only its fixed unit installer can be delegated.
+if [[ "${HELM_HOST_APPLY_DELEGATED:-}" != "1" ]] \
+    && awk -F: '$1 == "0" && $3 ~ /(^|\/)1helm-update\.service(\/|$)/ { found=1 } END { exit found ? 0 : 1 }' /proc/self/cgroup; then
+  RESOLVED_RELEASE="$(readlink -f "$RELEASE_ROOT" 2>/dev/null || true)"
+  [[ "$RESOLVED_RELEASE" == /opt/1helm/releases/* && -d "$RESOLVED_RELEASE" ]] \
+    || { echo "The updater can delegate only a verified retained 1Helm release." >&2; exit 1; }
+  DELEGATE_UNIT="1helm-linux-units-apply-${RANDOM}-$$"
+  exec systemd-run --quiet --collect --wait --pipe --unit="$DELEGATE_UNIT" \
+    --property=Type=oneshot --property=NoNewPrivileges=false --property=PrivateTmp=true --property=ProtectHome=true \
+    --setenv=HELM_HOST_APPLY_DELEGATED=1 \
+    "$RESOLVED_RELEASE/site/public/install-linux-units.sh" "$RESOLVED_RELEASE"
+fi
+
 [[ "${EUID}" -eq 0 ]] || { echo "The Linux service installer must run as root." >&2; exit 1; }
 [[ -n "$RELEASE_ROOT" && -d "$RELEASE_ROOT" ]] || { echo "A verified 1Helm release directory is required." >&2; exit 1; }
-[[ -x "$RELEASE_ROOT/site/public/update-host.sh" && -x "$RELEASE_ROOT/site/public/migrate-linux-host-contract.sh" && -x "$RELEASE_ROOT/site/public/uninstall-host.sh" ]] \
+[[ -x "$RELEASE_ROOT/site/public/update-host.sh" && -x "$RELEASE_ROOT/site/public/apply-linux-release.sh" && -x "$RELEASE_ROOT/site/public/migrate-linux-host-contract.sh" && -x "$RELEASE_ROOT/site/public/uninstall-host.sh" ]] \
   || { echo "The verified 1Helm release is missing its host lifecycle scripts." >&2; exit 1; }
 id "$SERVICE_USER" >/dev/null 2>&1 || { echo "The 1Helm service account does not exist." >&2; exit 1; }
 
@@ -67,7 +82,10 @@ NoNewPrivileges=false
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=$INSTALL_ROOT $STATE_ROOT /var/lib/1helm-lxc /var/cache/1helm-lxc /run/lxc /usr/libexec/1helm-lxc-runtime /usr/libexec/1helm-lxc-net /etc/1helm /etc/default/lxc-net /etc/systemd/system/1helm-lxc-net.service /etc/systemd/system/1helm.service /etc/systemd/system/1helm-update.service /etc/systemd/system/1helm-update.path /etc/sudoers.d/1helm-lxc-runtime /etc/subuid /etc/subgid
+# Runtime and unit files are installed by atomic rename and removed during a
+# failed-update rollback, so their exact parent directories—not merely the old
+# files—must be writable inside this root-owned transaction.
+ReadWritePaths=$INSTALL_ROOT $STATE_ROOT /var/lib/1helm-lxc /var/cache/1helm-lxc /run/lxc /usr/libexec /etc/1helm /etc/default /etc/systemd/system /etc/sudoers.d /etc/subuid /etc/subgid
 EOF
 
 install -m 0644 /dev/stdin /etc/systemd/system/1helm-update.path <<EOF

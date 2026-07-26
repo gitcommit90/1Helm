@@ -9,6 +9,9 @@ set -euo pipefail
 APP_SOURCE="${1:-}"
 INSTALL_ROOT="/opt/1helm"
 RUNTIME_ROOT="$INSTALL_ROOT/runtime/lxc"
+LXC_ROOT="/var/lib/1helm-lxc"
+LXC_PATH="$LXC_ROOT/containers"
+CACHE_BASE="/var/cache/1helm-lxc"
 HELPER_PATH="/usr/libexec/1helm-lxc-runtime"
 NETWORK_HELPER_PATH="/usr/libexec/1helm-lxc-net"
 CONFIG_PATH="/etc/1helm/lxc-unprivileged.conf"
@@ -16,6 +19,52 @@ IDMAP_PATH="/etc/1helm/lxc-idmap"
 SUDOERS_PATH="/etc/sudoers.d/1helm-lxc-runtime"
 SERVICE_USER="1helm"
 IMAGE_BUILD="20260723_07:42"
+
+# v0.0.11's updater unit made the exact destination files writable under
+# ProtectSystem=strict. Atomic replacement still requires write access to each
+# parent directory, so an upgrade from that unit must hand the complete,
+# digest-qualified release transaction to a short-lived root unit outside the
+# old mount namespace. Fresh installs and newer updater units run directly.
+if [[ "${HELM_HOST_APPLY_DELEGATED:-}" != "1" ]] \
+    && awk -F: '$1 == "0" && $3 ~ /(^|\/)1helm-update\.service(\/|$)/ { found=1 } END { exit found ? 0 : 1 }' /proc/self/cgroup; then
+  RELEASE_ROOT="$(readlink -f "$APP_SOURCE" 2>/dev/null || true)"
+  [[ "$RELEASE_ROOT" == /opt/1helm/releases/* && -d "$RELEASE_ROOT" ]] \
+    || { echo "The updater can delegate only a verified retained 1Helm release." >&2; exit 1; }
+  [[ -x "$RELEASE_ROOT/site/public/apply-linux-release.sh" ]] \
+    || { echo "The retained release is missing its atomic Linux transaction." >&2; exit 1; }
+  TARGET_VERSION="$(/opt/1helm/node-current/bin/node -p 'require(process.argv[1]).version' "$RELEASE_ROOT/package.json" 2>/dev/null || true)"
+  [[ "$TARGET_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || { echo "The retained release has no valid package version." >&2; exit 1; }
+  LEGACY_UPDATER_PID="$(systemctl show --property=MainPID --value 1helm-update.service 2>/dev/null || true)"
+  legacy_updater_pid_is_exact() {
+    local pid="${1:-}" main_pid command_line
+    [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 1)) && [[ -r "/proc/$pid/cgroup" && -r "/proc/$pid/cmdline" ]] || return 1
+    main_pid="$(systemctl show --property=MainPID --value 1helm-update.service 2>/dev/null || true)"
+    [[ "$main_pid" == "$pid" ]] || return 1
+    awk -F: '$1 == "0" && $3 ~ /(^|\/)1helm-update\.service(\/|$)/ { found=1 } END { exit found ? 0 : 1 }' "/proc/$pid/cgroup" || return 1
+    command_line="$(tr '\0' '\n' <"/proc/$pid/cmdline")"
+    grep -Fxq '/opt/1helm/update-host.sh' <<<"$command_line"
+  }
+  legacy_updater_pid_is_exact "$LEGACY_UPDATER_PID" \
+    || { echo "The legacy updater handoff could not validate its exact systemd main process." >&2; exit 1; }
+  DELEGATE_UNIT="1helm-release-apply-${TARGET_VERSION//./-}-${RANDOM}-$$"
+  if systemd-run --quiet --collect --wait --pipe --unit="$DELEGATE_UNIT" \
+    --property=Type=oneshot --property=NoNewPrivileges=false --property=PrivateTmp=true --property=ProtectHome=true \
+    "$RELEASE_ROOT/site/public/apply-linux-release.sh" "$RELEASE_ROOT" "$TARGET_VERSION"; then
+    exit 0
+  fi
+  # The delegated transaction has already restored the exact prior release,
+  # reloaded its units, proved its HTTP health, and written the visible error.
+  # Stop only the still-identical legacy updater main process with SIGKILL so
+  # its EXIT trap cannot attempt a second rollback from the obsolete namespace
+  # or overwrite that stronger evidence.
+  if legacy_updater_pid_is_exact "$LEGACY_UPDATER_PID"; then
+    kill -KILL "$LEGACY_UPDATER_PID"
+  else
+    echo "The failed release was rolled back, but the legacy updater process identity changed before it could be stopped." >&2
+  fi
+  exit 1
+fi
 
 case "$(uname -m)" in
   x86_64|amd64)
@@ -49,6 +98,12 @@ for command in curl sha256sum lxc-create lxc-attach lxc-info lxc-start lxc-stop 
   command -v "$command" >/dev/null || { echo "Missing LXC prerequisite after host setup: $command" >&2; exit 1; }
 done
 python3 -c 'import ensurepip' >/dev/null 2>&1 || { echo "Python venv support is unavailable after host setup." >&2; exit 1; }
+
+# The service unit names these exact writable roots. They must exist before
+# systemd creates the service's mount namespace, even before the first channel
+# computer is provisioned.
+install -d -o root -g root -m 0711 "$LXC_ROOT" "$LXC_PATH"
+install -d -o root -g root -m 0700 "$CACHE_BASE"
 
 TEMP_ROOT="$(mktemp -d)"
 trap 'rm -rf -- "$TEMP_ROOT"' EXIT
