@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- The public privacy policy now covers the iOS gateway, just-in-time media and
+  speech permissions, optional encrypted APNs relay, optional feedback,
+  third-party processors, retention, deletion, and user choices.
+
 ## [0.0.16] - 2026-07-26
 
 ### Added

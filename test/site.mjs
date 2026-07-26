@@ -29,6 +29,11 @@ test("standalone 1helm.com website serves independent product and documentation 
     assert.match(manual, /Do I really need a dedicated computer/);
     const privacy = await (await fetch(`${base}/privacy`)).text();
     assert.match(privacy, /build@1helm\.com/);
+    assert.match(privacy, /device tokens are encrypted at rest/i);
+    assert.match(privacy, /notification title and body[\s\S]*Cloudflare relay and Apple APNs/i);
+    assert.match(privacy, /does not retain the password/i);
+    assert.match(privacy, /privacy-bounded diagnostics[\s\S]*exclude chats, prompts, terminal output/i);
+    assert.match(privacy, /do not sell it[\s\S]*track you across/i);
     assert.match(home, /build@1helm\.com/);
     assert.match(home, /og:image/);
     assert.match(home, /assets\/story\/og-card\.png/);

@@ -3,18 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="description" content="Privacy policy for 1helm.com and the self-hosted 1Helm software: your workspace lives on your machine.">
+<meta name="description" content="Privacy policy for 1helm.com and 1Helm, including the self-hosted workspace, mobile app, notifications, and optional feedback.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="1Helm">
 <meta property="og:title" content="1Helm — Privacy Policy">
-<meta property="og:description" content="1Helm is self-hosted: your workspace lives on your machine. Here's what that means.">
+<meta property="og:description" content="How the self-hosted 1Helm workspace, mobile app, notifications, and optional feedback handle data.">
 <meta property="og:url" content="https://1helm.com/privacy">
 <meta property="og:image" content="https://1helm.com/assets/story/og-card.png">
 <meta property="og:image:width" content="2400">
 <meta property="og:image:height" content="1260">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="1Helm — Privacy Policy">
-<meta name="twitter:description" content="1Helm is self-hosted: your workspace lives on your machine. Here's what that means.">
+<meta name="twitter:description" content="How the self-hosted 1Helm workspace, mobile app, notifications, and optional feedback handle data.">
 <meta name="twitter:image" content="https://1helm.com/assets/story/og-card.png">
 <link rel="canonical" href="https://1helm.com/privacy">
 <title>1Helm — Privacy Policy</title>
@@ -36,11 +36,11 @@
 <div class="wrap single">
 <main>
   <h1 class="page-title">Privacy <span class="mark">Policy</span></h1>
-  <p class="legal-meta">Effective date: July 24, 2026 · Contact: <a class="b plainlink" href="mailto:build@1helm.com">build@1helm.com</a></p>
+  <p class="legal-meta">Effective date: July 26, 2026 · Contact: <a class="b plainlink" href="mailto:build@1helm.com">build@1helm.com</a></p>
 
   <section>
     <h2><span class="mark">The short version</span></h2>
-    <p>1Helm is self-hosted. Your workspace — messages, files, memory, threads, credentials, agents, and everything they produce — lives on <span class="b">your</span> machine. We don't operate your installation, we can't see into it, and we don't receive its contents.</p>
+    <p>1Helm is self-hosted. Your workspace — messages, files, memory, threads, credentials, agents, and everything they produce — lives on <span class="b">your</span> machine, under the control of you or your workspace operator. 1Helm does not centrally host or inspect that workspace. Limited information leaves it only when you use an external service described below, such as an AI provider, optional mobile notifications, or optional feedback.</p>
   </section>
   <section>
     <h2><span class="mark">This website</span></h2>
@@ -56,7 +56,30 @@
   </section>
   <section>
     <h2><span class="mark">Your self-hosted workspace</span></h2>
-    <p>When your installation talks to AI model providers, the content you route to them is sent to those providers using <span class="b">your</span> accounts, under their terms and privacy policies. You choose which providers to connect and what to send. Provider credentials are stored on your machine, in host-owned storage — they never pass through us.</p>
+    <p>Your workspace operator controls its accounts, storage, logs, retention, and network. When your installation talks to AI model providers or other services you connect, the content you route to them is sent using <span class="b">your</span> accounts, under their terms and privacy policies. You choose which providers to connect and what to send. Provider credentials are stored on your workspace host, in host-owned storage — they do not pass through the 1Helm website or notification relay.</p>
+  </section>
+  <section>
+    <h2><span class="mark">The mobile app</span></h2>
+    <p>The mobile app is a client for an existing HTTPS 1Helm installation. The server address is stored on your device. Your username and password are sent directly to the server you choose over HTTPS to sign in; the app does not retain the password after that request. The resulting session is stored in the device-only iOS Keychain. Ordinary workspace content travels directly between the app and that server, subject to the workspace operator's practices.</p>
+    <p>Camera, photo-library, microphone, and speech-recognition access is requested only when you choose a feature that needs it, such as taking or attaching media or dictating a message. Selected media and dictated text may be sent to your chosen workspace. iOS and its speech-recognition services may also process those requests under Apple's privacy terms. 1Helm does not use these permissions for advertising or tracking.</p>
+  </section>
+  <section>
+    <h2><span class="mark">Optional notifications</span></h2>
+    <p>If you turn on mobile notifications, your installation registers an opaque recipient identifier and an Apple Push Notification service (APNs) device token with the 1Helm notification relay hosted on Cloudflare. Device tokens are encrypted at rest. The relay does not receive your username, password, or provider credentials.</p>
+    <p>To deliver an alert, the notification title and body — which can include a channel name, sender name, and message text — pass through the Cloudflare relay and Apple APNs. The relay forwards that content for delivery rather than storing the title or body in its notification database. It retains pseudonymous installation, recipient, token, and delivery-deduplication records needed to operate and secure the service. Turning notifications off inside 1Helm requests deletion of that device token; invalid APNs tokens are also removed. Apple processes notifications under its own privacy policy.</p>
+  </section>
+  <section>
+    <h2><span class="mark">Optional feedback</span></h2>
+    <p>If you deliberately send feedback from 1Helm, we receive the comment and any files you attach, together with a pseudonymous installation identifier and workspace name. Privacy-bounded diagnostics are included only if you check the diagnostics option; they contain app and runtime health information and exclude chats, prompts, terminal output, account content, credentials, keys, tokens, and OAuth data. We retain submitted feedback to respond, diagnose problems, and improve 1Helm. Email <a class="b plainlink" href="mailto:build@1helm.com">build@1helm.com</a> to request deletion.</p>
+  </section>
+  <section>
+    <h2><span class="mark">Use, sharing, and retention</span></h2>
+    <p>We use the limited data described above only to provide, secure, support, and improve 1Helm. We do not sell it, use it for advertising, or track you across other companies' apps or websites. We share it only with service providers needed for the requested function — currently Cloudflare for website and notification-relay infrastructure, Apple for APNs and relevant iOS services, and GitHub for downloads — or when legally required.</p>
+    <p>Notification device records remain only while needed to keep the opt-in service working and are removed when disabled through 1Helm or when APNs reports the token invalid. Pseudonymous delivery records are kept as needed for reliable delivery, deduplication, abuse prevention, and security. Feedback is kept until it is no longer needed for support or product improvement, or until a valid deletion request can be fulfilled.</p>
+  </section>
+  <section>
+    <h2><span class="mark">Your choices</span></h2>
+    <p>You can use the mobile app without notifications, turn notifications off in 1Helm and iOS Settings, deny or revoke camera, photo, microphone, and speech permissions in iOS Settings, and choose not to send feedback or diagnostics. For questions, access, or deletion requests concerning data handled by the 1Helm website, notification relay, or feedback service, email <a class="b plainlink" href="mailto:build@1helm.com">build@1helm.com</a>. For data held by a self-hosted workspace, contact that workspace's operator.</p>
   </section>
   <section>
     <h2><span class="mark">Changes &amp; contact</span></h2>
