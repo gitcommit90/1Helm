@@ -39,8 +39,14 @@
 	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>1Helm uses the camera only when you choose Take Photo or Video for a message attachment.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>1Helm uses the microphone only when you choose dictation in a message composer.</string>
+	<string>1Helm uses the microphone only when you choose dictation or record a video attachment.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>1Helm accesses photos and videos only when you choose them as message attachments.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>1Helm saves media to your photo library only when you explicitly choose to do so.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>1Helm converts speech to text only when you choose dictation in a message composer.</string>
 	<key>UILaunchStoryboardName</key>

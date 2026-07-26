@@ -629,7 +629,7 @@ export function renderNotes(container: HTMLElement, channelId: number, onClose?:
     h("button", { class: "note-format-button", type: "button", title: "Link", onclick: () => insertFormatting("[", "](https://)", "link text") }, "Link"));
   clear(container);
   const node = h("section", { class: "flex h-full min-h-[32rem] flex-col bg-surface", dataset: { notesSurface: String(channelId) } },
-    h("div", { class: "flex items-start gap-3 border-b border-line px-4 py-3" },
+    h("div", { class: "mobile-surface-topbar flex items-start gap-3 border-b border-line bg-surface px-4 py-3" },
       h("div", { class: "min-w-0 flex-1" }, h("h2", { class: "font-display text-xl text-fg" }, "Notes"), h("p", { class: "mt-0.5 text-xs text-muted" }, "Fast Markdown notes shared with this channel's /workspace/notes.")),
       newButton, closeButton),
     h("div", { class: "grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[17rem_minmax(0,1fr)]" },

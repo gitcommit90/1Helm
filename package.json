@@ -1,7 +1,7 @@
 {
   "name": "1helm",
   "productName": "1Helm",
-  "version": "0.0.15",
+  "version": "0.0.16",
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-only",
@@ -62,6 +62,7 @@
     "@capacitor/core": "^8.4.2",
     "@capacitor/ios": "^8.4.2",
     "@capacitor/keyboard": "^8.0.1",
+    "@capacitor/push-notifications": "^8.0.1",
     "@capacitor/splash-screen": "^8.0.1",
     "@capacitor/status-bar": "^8.0.1",
     "@gitcommit90/rerouted": "https://github.com/gitcommit90/rerouted/releases/download/v0.5.7/ReRouted-0.5.7-linux-node.tgz",

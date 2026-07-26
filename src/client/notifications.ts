@@ -1,5 +1,7 @@
 import { api } from "./api.ts";
 import { beep, type NotificationSound } from "./dom.ts";
+import { getServerOrigin, isNativeMobile, mobilePlatform } from "./mobile.ts";
+import { PushNotifications, type PermissionStatus } from "@capacitor/push-notifications";
 
 export const NOTIFICATION_SOUNDS: ReadonlyArray<{ value: NotificationSound; label: string }> = [
   { value: "helm", label: "Helm chirp" },
@@ -16,6 +18,16 @@ type NotificationPreferences = {
 
 const sounds = new Set<NotificationSound>(NOTIFICATION_SOUNDS.map((item) => item.value));
 let preferences: NotificationPreferences = { globalMuted: false, channels: {} };
+let nativePermission: PermissionStatus["receive"] | "unavailable" = isNativeMobile() ? "prompt" : "unavailable";
+let nativeRegistrationError = "";
+let nativeListenersReady = false;
+let nativeNavigationHandler: ((channelId: number, rootMessageId: number | null) => void) | null = null;
+let nativeRegistrationAttempt: { resolve: () => void; reject: (error: Error) => void } | null = null;
+let nativeRegistrationPromise: Promise<void> | null = null;
+let nativeDeviceToken = "";
+
+const nativePreferenceKey = (): string => `1helm.mobile.push.enabled:${getServerOrigin()}`;
+const nativeNotificationsEnabled = (): boolean => localStorage.getItem(nativePreferenceKey()) === "1";
 
 function soundValue(value: unknown): NotificationSound {
   return sounds.has(value as NotificationSound) ? value as NotificationSound : "helm";
@@ -77,4 +89,121 @@ export function playNotification(channelId: number, kind: "msg" | "mention" = "m
 
 export function previewNotification(sound: NotificationSound): void {
   beep("msg", soundValue(sound));
+}
+
+function pushTarget(data: unknown): { channelId: number; rootMessageId: number | null } | null {
+  if (!data || typeof data !== "object") return null;
+  const row = data as Record<string, unknown>;
+  const channelId = Number(row.channelId || row.channel_id || 0);
+  const rootMessageId = Number(row.rootMessageId || row.root_message_id || 0) || null;
+  return Number.isSafeInteger(channelId) && channelId > 0 ? { channelId, rootMessageId } : null;
+}
+
+export function setNativeNotificationNavigation(handler: (channelId: number, rootMessageId: number | null) => void): void {
+  nativeNavigationHandler = handler;
+}
+
+async function installNativeListeners(): Promise<void> {
+  if (!isNativeMobile() || nativeListenersReady) return;
+  nativeListenersReady = true;
+  await PushNotifications.addListener("registration", ({ value }) => {
+    nativeDeviceToken = value;
+    nativeRegistrationError = "";
+    void api("/api/mobile/push", { body: { platform: mobilePlatform(), token: value } }).then(() => {
+      nativeRegistrationAttempt?.resolve();
+    }).catch((error) => {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      nativeRegistrationError = failure.message;
+      nativeRegistrationAttempt?.reject(failure);
+    });
+  });
+  await PushNotifications.addListener("registrationError", ({ error }) => {
+    nativeRegistrationError = String(error || "Registration failed.");
+    nativeRegistrationAttempt?.reject(new Error(nativeRegistrationError));
+  });
+  await PushNotifications.addListener("pushNotificationActionPerformed", ({ notification }) => {
+    const target = pushTarget(notification.data);
+    if (target) nativeNavigationHandler?.(target.channelId, target.rootMessageId);
+  });
+}
+
+async function registerNativeDevice(): Promise<void> {
+  if (nativeRegistrationPromise) return nativeRegistrationPromise;
+  nativeRegistrationPromise = (async () => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const completion = new Promise<void>((resolve, reject) => {
+      nativeRegistrationAttempt = { resolve, reject };
+      timer = setTimeout(() => reject(new Error("Notification registration timed out. Please try again.")), 20_000);
+    });
+    try {
+      await PushNotifications.register();
+      await completion;
+    } finally {
+      if (timer) clearTimeout(timer);
+      nativeRegistrationAttempt = null;
+    }
+  })();
+  try { await nativeRegistrationPromise; }
+  finally { nativeRegistrationPromise = null; }
+}
+
+export type NativeNotificationState = {
+  available: boolean;
+  permission: PermissionStatus["receive"] | "unavailable";
+  registered: boolean;
+  platforms: string[];
+  error: string;
+};
+
+export async function nativeNotificationState(): Promise<NativeNotificationState> {
+  if (!isNativeMobile() || mobilePlatform() !== "ios") return { available: false, permission: "unavailable", registered: false, platforms: [], error: "" };
+  await installNativeListeners();
+  nativePermission = (await PushNotifications.checkPermissions()).receive;
+  if (!nativeNotificationsEnabled() || nativePermission !== "granted") return { available: true, permission: nativePermission, registered: false, platforms: [], error: nativeRegistrationError };
+  if (!nativeDeviceToken) {
+    try { await registerNativeDevice(); }
+    catch (error) { nativeRegistrationError = error instanceof Error ? error.message : String(error); }
+  }
+  if (!nativeDeviceToken) return { available: true, permission: nativePermission, registered: false, platforms: [], error: nativeRegistrationError };
+  const server = await api<{ registered: boolean; platforms: string[] }>("/api/mobile/push/status", {
+    body: { platform: mobilePlatform(), token: nativeDeviceToken },
+  }).catch(() => ({ registered: false, platforms: [] }));
+  return { available: true, permission: nativePermission, registered: server.registered, platforms: server.platforms || [], error: nativeRegistrationError };
+}
+
+/** Request OS permission only from an explicit user action, then bind this device to the signed-in 1Helm profile. */
+export async function enableNativeNotifications(): Promise<NativeNotificationState> {
+  if (!isNativeMobile() || mobilePlatform() !== "ios") return nativeNotificationState();
+  await installNativeListeners();
+  let permission = await PushNotifications.checkPermissions();
+  if (permission.receive === "prompt" || permission.receive === "prompt-with-rationale") permission = await PushNotifications.requestPermissions();
+  nativePermission = permission.receive;
+  if (permission.receive !== "granted") return nativeNotificationState();
+  nativeRegistrationError = "";
+  try { await registerNativeDevice(); }
+  catch (error) { nativeRegistrationError = error instanceof Error ? error.message : String(error); }
+  if (nativeDeviceToken && !nativeRegistrationError) localStorage.setItem(nativePreferenceKey(), "1");
+  return nativeNotificationState();
+}
+
+export async function disableNativeNotifications(): Promise<NativeNotificationState> {
+  if (!isNativeMobile() || mobilePlatform() !== "ios") return nativeNotificationState();
+  if (!nativeDeviceToken && nativeNotificationsEnabled() && nativePermission === "granted") await registerNativeDevice().catch(() => undefined);
+  if (nativeDeviceToken) await api("/api/mobile/push", { method: "DELETE", body: { platform: mobilePlatform(), token: nativeDeviceToken } }).catch(() => undefined);
+  await PushNotifications.unregister().catch(() => undefined);
+  nativeDeviceToken = "";
+  localStorage.removeItem(nativePreferenceKey());
+  return nativeNotificationState();
+}
+
+/** Re-register an already-authorized app after sign-in without prompting. */
+export async function restoreNativeNotifications(): Promise<void> {
+  if (!isNativeMobile() || mobilePlatform() !== "ios" || !nativeNotificationsEnabled()) return;
+  await installNativeListeners();
+  const permission = await PushNotifications.checkPermissions();
+  nativePermission = permission.receive;
+  if (permission.receive === "granted") {
+    try { await registerNativeDevice(); }
+    catch (error) { nativeRegistrationError = error instanceof Error ? error.message : String(error); }
+  }
 }

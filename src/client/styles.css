@@ -892,10 +892,20 @@ html, body { height: 100%; width: 100%; overflow: hidden; overscroll-behavior: n
 }
 
 @media (max-width: 767px) {
-  .app-topbar, .thread-topbar {
+  .app-topbar, .thread-topbar, .mobile-surface-topbar {
     padding-top: max(.375rem, env(safe-area-inset-top));
     padding-left: max(.5rem, env(safe-area-inset-left));
     padding-right: max(.5rem, env(safe-area-inset-right));
+  }
+  [data-mobile-header-actions] {
+    width: 100%;
+    min-height: 44px;
+    overflow: hidden;
+  }
+  [data-mobile-header-actions] > button { flex-shrink: 0; }
+  [data-mobile-header-actions] > button:nth-child(3) {
+    min-width: 0;
+    flex: 0 1 auto;
   }
   .composer-wrap {
     padding-right: max(.75rem, env(safe-area-inset-right));

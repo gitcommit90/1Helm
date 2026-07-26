@@ -53,7 +53,9 @@ const env = (registry) => ({
   CLOUDFLARE_RUNTIME_TOKEN: "runtime-test",
   PROVISION_LIMIT: { limit: async () => ({ success: true }) },
   FEEDBACK_LIMIT: { limit: async () => ({ success: true }) },
+  PUSH_LIMIT: { limit: async () => ({ success: true }) },
   FEEDBACK_ADMIN_TOKEN: "feedback-admin-test",
+  PUSH_DEVICE_ENCRYPTION_KEY: "push-device-encryption-test",
 });
 const request = (path, init) => new Request(`https://provision.1helm.com${path}`, init);
 const body = async (response) => ({ status: response.status, json: await response.json() });
@@ -268,4 +270,101 @@ test("feedback collector validates, deduplicates, bounds attachments, and keeps 
     body: JSON.stringify({ ...payload, public_id: `fb_${"c".repeat(24)}`, attachments: [{ name: "mismatch", size: 0, data: "YWJj" }] }),
   }), env(registry));
   assert.equal(dishonestSize.status, 413, "the collector bounds decoded bytes rather than trusting caller-supplied sizes");
+});
+
+test("push relay authenticates installations, encrypts device tokens, signs APNs JWTs, and makes delivery idempotent", async (t) => {
+  class PushRegistry extends Registry {
+    installations = new Map();
+    devices = [];
+    deliveries = new Map();
+    prepare(sql) {
+      if (/push_(?:installations|devices|deliveries)/i.test(sql)) {
+        const registry = this;
+        return {
+          values: [],
+          bind(...values) { this.values = values; return this; },
+          async first() {
+            if (/FROM push_installations/i.test(sql)) return registry.installations.get(this.values[0]) || null;
+            if (/FROM push_deliveries/i.test(sql)) return registry.deliveries.get(`${this.values[0]}:${this.values[1]}`) || null;
+            return null;
+          },
+          async run() {
+            if (/INSERT INTO push_installations/i.test(sql)) {
+              const [installationId, hash, created, updated] = this.values;
+              registry.installations.set(installationId, { installation_id: installationId, management_secret_hash: hash, created_at: created, updated_at: updated });
+            } else if (/UPDATE push_installations/i.test(sql)) {
+              const [updated, installationId] = this.values;
+              registry.installations.get(installationId).updated_at = updated;
+            } else if (/INSERT INTO push_devices/i.test(sql)) {
+              const [installationId, recipientId, platform, tokenHash, tokenCipher, created, updated] = this.values;
+              const existing = registry.devices.find((item) => item.installation_id === installationId && item.platform === platform && item.token_hash === tokenHash);
+              if (existing) Object.assign(existing, { recipient_id: recipientId, token_cipher: tokenCipher, updated_at: updated });
+              else registry.devices.push({ id: registry.devices.length + 1, installation_id: installationId, recipient_id: recipientId, platform, token_hash: tokenHash, token_cipher: tokenCipher, created_at: created, updated_at: updated });
+            } else if (/INSERT OR IGNORE INTO push_deliveries/i.test(sql)) {
+              const [installationId, idempotencyKey, recipientId, created] = this.values;
+              const key = `${installationId}:${idempotencyKey}`;
+              if (registry.deliveries.has(key)) return { success: true, meta: { changes: 0 } };
+              registry.deliveries.set(key, { recipient_id: recipientId, delivered_count: -1, created_at: created });
+            } else if (/UPDATE push_deliveries SET delivered_count/i.test(sql)) {
+              const [deliveredCount, installationId, idempotencyKey] = this.values;
+              registry.deliveries.get(`${installationId}:${idempotencyKey}`).delivered_count = deliveredCount;
+            } else if (/DELETE FROM push_deliveries/i.test(sql)) {
+              const [installationId, idempotencyKey] = this.values;
+              registry.deliveries.delete(`${installationId}:${idempotencyKey}`);
+            } else if (/DELETE FROM push_devices/i.test(sql) && /token_hash/i.test(sql)) {
+              const [installationId, recipientId, platform, tokenHash] = this.values;
+              registry.devices = registry.devices.filter((item) => !(item.installation_id === installationId && item.recipient_id === recipientId && item.platform === platform && item.token_hash === tokenHash));
+            }
+            return { success: true, meta: { changes: 1 } };
+          },
+          async all() {
+            if (/FROM push_devices/i.test(sql)) return { results: registry.devices.filter((item) => item.installation_id === this.values[0] && item.recipient_id === this.values[1]) };
+            return { results: [] };
+          },
+        };
+      }
+      return super.prepare(sql);
+    }
+  }
+  const registry = new PushRegistry();
+  const secret = "p".repeat(64);
+  const installationId = "0123456789abcdef";
+  const recipientId = "7".repeat(32);
+  const pushEnv = env(registry);
+  const installation = await body(await worker.fetch(request("/v1/push/installations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ installation_id: installationId, management_secret: secret }) }), pushEnv));
+  assert.equal(installation.status, 200);
+  const registration = await body(await worker.fetch(request("/v1/push/devices", { method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" }, body: JSON.stringify({ installation_id: installationId, recipient_id: recipientId, platform: "ios", token: "a".repeat(64) }) }), pushEnv));
+  assert.equal(registration.status, 200);
+  assert.equal(registry.devices.length, 1);
+  assert.notEqual(registry.devices[0].token_cipher, "a".repeat(64), "raw APNs tokens are encrypted at rest");
+  const unauthenticated = await worker.fetch(request("/v1/push/devices", { method: "POST", headers: { authorization: "Bearer wrong", "content-type": "application/json" }, body: JSON.stringify({ installation_id: installationId, recipient_id: recipientId, platform: "ios", token: "b".repeat(64) }) }), pushEnv);
+  assert.equal(unauthenticated.status, 401);
+  const signingPair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const pkcs8 = Buffer.from(await crypto.subtle.exportKey("pkcs8", signingPair.privateKey)).toString("base64").match(/.{1,64}/g).join("\n");
+  Object.assign(pushEnv, { APNS_TEAM_ID: "98V3FJEFGR", APNS_KEY_ID: "TESTKEY001", APNS_PRIVATE_KEY: `-----BEGIN PRIVATE KEY-----\n${pkcs8}\n-----END PRIVATE KEY-----` });
+  const originalFetch = globalThis.fetch;
+  const apnsCalls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    apnsCalls.push({ url: String(url), init });
+    return new Response(null, { status: 200 });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const apnsDelivery = await body(await worker.fetch(request("/v1/push/deliveries", {
+    method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
+    body: JSON.stringify({ installation_id: installationId, recipient_id: recipientId, idempotency_key: "signed-message", title: "Ready", body: "Done", channelId: 2, messageId: 3 }),
+  }), pushEnv));
+  assert.equal(apnsDelivery.status, 200);
+  assert.equal(apnsDelivery.json.delivered, 1);
+  assert.match(apnsCalls[0].url, /^https:\/\/api\.push\.apple\.com\/3\/device\//);
+  const jwt = String(apnsCalls[0].init.headers.authorization || "").replace(/^bearer /, "");
+  assert.equal(jwt.split(".").length, 3);
+  assert.equal(Buffer.from(jwt.split(".")[2].replace(/-/g, "+").replace(/_/g, "/"), "base64url").length, 64, "ES256 uses the raw 64-byte JWT signature APNs requires");
+  assert.equal(apnsCalls[0].init.headers["apns-topic"], "com.gitcommit90.onehelm.mobile");
+  registry.devices = [];
+  const deliveryInit = { method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" }, body: JSON.stringify({ installation_id: installationId, recipient_id: recipientId, idempotency_key: "one-message", title: "Ready", body: "Done", channelId: 2, messageId: 3 }) };
+  const delivered = await body(await worker.fetch(request("/v1/push/deliveries", deliveryInit), pushEnv));
+  assert.equal(delivered.status, 200);
+  assert.equal(delivered.json.delivered, 0);
+  const repeated = await body(await worker.fetch(request("/v1/push/deliveries", deliveryInit), pushEnv));
+  assert.equal(repeated.json.existing, true);
 });

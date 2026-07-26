@@ -650,6 +650,31 @@ export function migrate(): void {
     updated INTEGER NOT NULL,
     PRIMARY KEY (user_id, key)
   );
+  CREATE TABLE IF NOT EXISTS mobile_push_registrations (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL CHECK (platform IN ('ios','android')),
+    token TEXT NOT NULL,
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL,
+    UNIQUE(platform,token)
+  );
+  CREATE INDEX IF NOT EXISTS idx_mobile_push_user ON mobile_push_registrations(user_id,platform);
+  CREATE TABLE IF NOT EXISTS mobile_push_outbox (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    payload TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL,
+    UNIQUE(user_id,message_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_mobile_push_outbox_due ON mobile_push_outbox(state,next_attempt,id);
   `);
   // Per-thread rough model usage (sum of provider-reported prompt/completion tokens).
   addColumn("threads", "input_tokens", "input_tokens INTEGER NOT NULL DEFAULT 0");
@@ -979,7 +1004,7 @@ export function migrate(): void {
     const platformBackend = process.platform === "darwin" ? "apple" : process.platform === "win32" ? "wsl" : "lxc";
     const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || platformBackend);
     const backend = ["apple", "lxc", "wsl", "native", "mock"].includes(configuredBackend) ? configuredBackend : platformBackend;
-    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.15");
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.16");
     // Earlier Linux/Windows releases persisted the compatibility `native`
     // seam into every channel row. A production host update must actually
     // move those rows onto the platform isolation backend; changing the unit's

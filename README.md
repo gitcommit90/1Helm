@@ -153,6 +153,10 @@ Android Keystore.
   server, and do not retain host data or provider credentials beyond the
   selected server address and secure session token. Use **Disconnect** in the
   profile menu to erase both from the device.
+- iPhone notifications are opt-in under **Settings → Notifications**. Device
+  registration belongs to the signed-in account, per-channel mute still wins,
+  and tapping an update opens its channel or thread. iOS camera and photo
+  access is requested only after an explicit attachment action.
 
 ## Ready on day one. Specialized by day one hundred.
 
@@ -282,7 +286,7 @@ A fresh data directory opens first-run setup. The source runtime defaults to
 | `PORT` | `8123` | HTTP/WebSocket control-plane port. |
 | `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and narrow workspace mirrors. |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `lxc` on Linux, `wsl` on Windows | Host isolation backend; `native` and `mock` are explicit development/test overrides. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.15` | Versioned channel-machine image contract. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.16` | Versioned channel-machine image contract. |
 
 ### Agent-first JSON CLI
 

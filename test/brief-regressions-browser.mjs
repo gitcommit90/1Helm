@@ -154,6 +154,41 @@ try {
   ok(compactHeader.headerHeight < 72 && (compactHeader.purposeWidth === 0 || (compactHeader.purposeHeight <= compactHeader.lineHeight + 1 && compactHeader.overflow === "hidden" && compactHeader.whitespace === "nowrap" && compactHeader.textOverflow === "ellipsis")),
     `narrow desktop headers keep long channel descriptions to one truncated line instead of one letter per row (${JSON.stringify(compactHeader)})`);
 
+  await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
+  await page.goto(`${base}/c/${channel.slug}/chat`, { waitUntil: "networkidle0" });
+  const phoneHeader = await page.evaluate(() => {
+    const header = document.getElementById("hdr");
+    const title = document.querySelector("[data-mobile-header-title]");
+    const actions = document.querySelector("[data-mobile-header-actions]");
+    const headerRect = header?.getBoundingClientRect();
+    const titleRect = title?.getBoundingClientRect();
+    const actionRect = actions?.getBoundingClientRect();
+    const controls = [...(actions?.querySelectorAll("button") || [])].map((button) => button.getBoundingClientRect());
+    return {
+      twoRows: Boolean(titleRect && actionRect && titleRect.bottom <= actionRect.top + 1),
+      rightAligned: Boolean(headerRect && actionRect && Math.abs(actionRect.right - headerRect.right) <= 10),
+      controlsFit: Boolean(actionRect && controls.every((rect) => rect.left >= actionRect.left - 1 && rect.right <= actionRect.right + 1 && rect.width >= 43 && rect.height >= 43)),
+      pageFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    };
+  });
+  ok(phoneHeader.twoRows && phoneHeader.rightAligned && phoneHeader.controlsFit && phoneHeader.pageFits,
+    `phone channel chrome uses a safe title row plus right-aligned 44px actions without horizontal overflow (${JSON.stringify(phoneHeader)})`);
+  await page.evaluate(() => document.querySelector('[data-notes-header]')?.click());
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-notes-surface]')].some((element) => element.getBoundingClientRect().width > 0));
+  const phoneNotes = await page.evaluate(() => {
+    const surface = [...document.querySelectorAll("[data-notes-surface]")].find((element) => element.getBoundingClientRect().width > 0);
+    const buttons = [...(surface?.querySelectorAll(":scope > div:first-child button") || [])];
+    return {
+      visible: buttons.length >= 2 && buttons.every((button) => {
+        const rect = button.getBoundingClientRect();
+        return rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
+      }),
+      pageFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    };
+  });
+  ok(phoneNotes.visible && phoneNotes.pageFits, "phone Notes keeps New note and Close visible inside the matching surface top bar");
+  await page.setViewport({ width: 1280, height: 760, deviceScaleFactor: 1, isMobile: false, hasTouch: false });
+
   await page.goto(`${base}/c/main/texts`, { waitUntil: "networkidle0" });
   await page.waitForSelector(`[data-texts-messages="${textConversation}"]`);
   ok(await page.$eval("body", (body) => body.innerText.includes("Phone hello") && body.innerText.includes("Phone") && body.innerText.includes("Texts")), "configured Photon exposes a private #main Texts inbox with phone-originated history");

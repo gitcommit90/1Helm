@@ -1,5 +1,7 @@
 import type { WebSocket } from "ws";
 import { q, q1 } from "./db.ts";
+import { queueMobilePush } from "./mobile-push.ts";
+import { drainMobilePush } from "./mobile-push.ts";
 
 /** Live event fan-out to browser clients, scoped by channel membership. */
 type Client = { ws: WebSocket; userId: number };
@@ -18,6 +20,8 @@ function audience(channelId: number): Set<number> {
 }
 
 export function broadcastToChannel(channelId: number, payload: unknown): void {
+  queueMobilePush(channelId, payload);
+  void drainMobilePush();
   const aud = audience(channelId);
   const data = JSON.stringify(payload);
   for (const c of clients) {

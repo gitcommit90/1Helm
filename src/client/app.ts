@@ -1,7 +1,7 @@
 import { api, downloadAuthenticatedFile, initializeApiTransport, openAuthenticatedFile, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type AgentQuestions, type ThreadFollowup, type ThreadUsage, type RoutingModel } from "./api.ts";
 import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, icon, helmMark, type ChannelLink } from "./dom.ts";
 import { openSettings, finishOpenRouterOAuth, refreshOpenSkillsSettings } from "./settings.ts";
-import { hydrateNotificationPreferences, playNotification } from "./notifications.ts";
+import { disableNativeNotifications, hydrateNotificationPreferences, playNotification, restoreNativeNotifications, setNativeNotificationNavigation } from "./notifications.ts";
 import { openRoutingPopover, pushRoutingActivity } from "./routing.ts";
 import { openOnboarding } from "./onboarding.ts";
 import { defaultTerminalComputer, openTerminals, refitChannelTerminals, getTerminalChrome } from "./term.ts";
@@ -217,6 +217,8 @@ async function enterWorkspace(preferredChannelId?: number): Promise<void> {
   if (!S.channelId && main) S.channelId = main.id;
   if (S.channelId) await openChannel(S.channelId, route.view, route.threadRootId, true);
   else renderApp();
+  setNativeNotificationNavigation((channelId, rootMessageId) => { void openChannel(channelId, "chat", rootMessageId, true); });
+  void restoreNativeNotifications();
   if (!S.me.tour_complete && sessionStorage.getItem("1helm.justOnboarded") === "1") {
     sessionStorage.removeItem("1helm.justOnboarded");
     void openWelcomeTour();
@@ -1167,6 +1169,7 @@ function openProfile(anchor: HTMLElement): void {
   if (isNativeMobile()) pop.append(h("section", { class: "flex items-center justify-between gap-3 border-t border-line pt-3" },
     h("div", { class: "min-w-0" }, h("p", { class: "text-xs font-semibold text-fg" }, "Connected server"), h("p", { class: "truncate text-[11px] text-muted" }, getServerOrigin())),
     h("button", { class: "btn-subtle min-h-9 shrink-0 px-3 text-xs", onclick: async () => {
+      await disableNativeNotifications().catch(() => undefined);
       await api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
       await forgetMobileServer();
       await clearToken();
@@ -1539,7 +1542,7 @@ function renderHeader(): void {
   const channel = S.channels.find((item) => item.id === S.channelId);
   const agent = channel?.agent;
   clear(el);
-  el.className = "app-topbar flex min-h-12 items-center justify-between gap-2 border-b border-line bg-surface px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-2.5";
+  el.className = "app-topbar flex min-h-12 flex-col items-stretch justify-between gap-0 border-b border-line bg-surface px-2 py-1.5 sm:flex-row sm:items-center sm:gap-3 sm:px-4 sm:py-2.5";
   const statusTone = agent?.status === "working" ? "bg-amber-400 animate-pulse" : agent?.status === "waiting" ? "bg-blue-400" : agent?.status === "archived" || agent?.status === "paused" ? "bg-faint" : "bg-ok";
   const callSkipper = (): void => {
     S.view = "chat"; renderApp();
@@ -1566,12 +1569,12 @@ function renderHeader(): void {
     }
   };
   add(el,
-    h("div", { class: "flex min-w-0 flex-1 items-center gap-2 overflow-hidden" },
+    h("div", { class: "flex min-w-0 flex-1 items-center gap-2 overflow-hidden", dataset: { mobileHeaderTitle: "" } },
       mobileMenuButton(),
-      h("div", { class: "flex min-w-0 max-w-[46%] shrink items-center gap-1 text-[15px] font-semibold leading-5 tracking-[-0.01em] text-fg sm:max-w-none sm:text-[16px]" }, channel?.kind === "dm" ? null : h("span", { class: "shrink-0 font-normal text-faint" }, "#"), h("span", { class: "min-w-0 truncate", title: channel?.name || "" }, channel?.name || "")),
+      h("div", { class: "flex min-w-0 flex-1 items-center gap-1 text-[15px] font-semibold leading-5 tracking-[-0.01em] text-fg sm:flex-initial sm:text-[16px]" }, channel?.kind === "dm" ? null : h("span", { class: "shrink-0 font-normal text-faint" }, "#"), h("span", { class: "min-w-0 truncate", title: channel?.name || "" }, channel?.name || "")),
       channel?.purpose ? h("span", { class: "hidden min-w-0 max-w-[min(38vw,32rem)] truncate border-l border-line pl-2.5 text-[12px] leading-4 text-muted 2xl:block", title: channel.purpose }, channel.purpose) : null,
       channel?.status === "archived" ? h("span", { class: "chip shrink-0" }, "Paused") : null),
-    h("div", { class: "flex max-w-[52%] shrink-0 items-center justify-end gap-1.5 sm:max-w-none sm:gap-2" },
+    h("div", { class: "flex min-w-0 shrink-0 items-center justify-end gap-1 sm:max-w-none sm:gap-2", dataset: { mobileHeaderActions: "" } },
       channel ? h("button", {
         class: `grid h-11 w-11 place-items-center rounded-md border border-transparent transition hover:border-line hover:bg-hover sm:h-9 sm:w-9 ${channel.favorite ? "text-accent" : "text-muted hover:text-fg"}`,
         title: channel.favorite ? "Remove from Favorites" : "Add to Favorites", "aria-label": channel.favorite ? "Remove current channel from Favorites" : "Favorite current channel",
@@ -1581,8 +1584,8 @@ function renderHeader(): void {
         class: "grid h-11 w-11 place-items-center rounded-md border border-transparent text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:h-9 sm:w-9",
         title: "Open live 1Helm Router activity", "aria-label": "Open 1Helm Router", dataset: { routingHeader: "" }, onclick: (event: MouseEvent) => { void openRoutingPopover(event).catch((error) => appAlert((error as Error).message)); },
       }, routerSymbolIcon()),
-      agent ? h("button", { class: "flex min-h-11 max-w-full items-center gap-1.5 rounded-md border border-transparent px-1.5 py-1 font-mono text-[10px] text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:min-h-0 sm:max-w-[14rem] sm:gap-2 sm:px-2 sm:text-[11px]", title: `${agent.display_name || agent.name} · ${agent.status} · ${agent.provider_kind === "routing" ? "Model fabric" : agent.provider_name || "no provider"} · ${agent.model || "no model"}`, onclick: channel?.can_manage ? () => navigateChannelView("settings") : undefined },
-        h("span", { class: `h-1.5 w-1.5 shrink-0 rounded-full ${statusTone}` }), h("span", { class: "min-w-0 truncate" }, "@" + agent.name),
+      agent ? h("button", { class: "flex h-11 w-11 shrink-0 items-center justify-center gap-1.5 rounded-md border border-transparent px-1.5 py-1 font-mono text-[10px] text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:h-auto sm:min-h-0 sm:w-auto sm:max-w-[14rem] sm:gap-2 sm:px-2 sm:text-[11px]", title: `${agent.display_name || agent.name} · ${agent.status} · ${agent.provider_kind === "routing" ? "Model fabric" : agent.provider_name || "no provider"} · ${agent.model || "no model"}`, "aria-label": `Open ${agent.display_name || agent.name} settings · ${agent.status}`, onclick: channel?.can_manage ? () => navigateChannelView("settings") : undefined },
+        h("span", { class: `h-1.5 w-1.5 shrink-0 rounded-full ${statusTone}` }), h("span", { class: "hidden min-w-0 truncate sm:inline" }, "@" + agent.name),
         h("span", { class: "hidden max-w-28 truncate text-faint 2xl:inline" }, agent.model || "no model")) : null,
       terminalsEnabled ? h("button", {
         class: `grid h-11 w-11 place-items-center rounded-md border border-transparent text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:h-9 sm:w-9 ${S.terminalOpen || S.view === "terminal" ? "border-line bg-hover text-fg" : ""}`,
@@ -1592,7 +1595,7 @@ function renderHeader(): void {
         class: `grid h-11 w-11 place-items-center rounded-md border border-transparent text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:h-9 sm:w-9 ${S.notesOpen || S.view === "notes" ? "border-line bg-hover text-fg" : ""}`,
         title: "Notes", "aria-label": "Open channel notes", dataset: { notesHeader: "" }, onclick: openNotesFromHeader,
       }, icon("file", 18)) : null,
-      channel?.kind === "channel" ? h("button", { class: "btn-subtle min-h-11 px-2.5 text-xs sm:min-h-0 sm:px-3", title: "Call Skipper", onclick: callSkipper }, helmMark(14), h("span", { class: "hidden xl:inline" }, "Call Skipper")) : null));
+      channel?.kind === "channel" ? h("button", { class: "btn-subtle min-h-11 w-11 px-0 text-xs sm:min-h-0 sm:w-auto sm:px-3", title: "Call Skipper", "aria-label": "Call Skipper", onclick: callSkipper }, helmMark(14), h("span", { class: "hidden xl:inline" }, "Call Skipper")) : null));
 }
 
 function starIcon(filled: boolean): SVGElement {
