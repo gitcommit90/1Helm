@@ -87,10 +87,11 @@ test("mobile compatibility is explicit and CORS is confined to packaged Capacito
 });
 
 test("Capacitor shells keep sessions native, connections HTTPS-only, and release identities stable", async () => {
-  const [config, mobile, api, app, androidManifest, androidBuild, androidRules, androidPackage, iosInfo, iosProject, privacy, packageJson] = await Promise.all([
+  const [config, mobile, api, app, androidManifest, androidBuild, androidRules, androidPackage, androidStyles, androidLaunch, iosInfo, iosProject, iosLaunch, privacy, packageJson, iosPackage] = await Promise.all([
     read("capacitor.config.json"), read("src/client/mobile.ts"), read("src/client/api.ts"), read("src/client/app.ts"),
     read("android/app/src/main/AndroidManifest.xml"), read("android/app/build.gradle"), read("android/app/src/main/res/xml/data_extraction_rules.xml"), read("scripts/package-android-apk.mjs"),
-    read("ios/App/App/Info.plist"), read("ios/App/App.xcodeproj/project.pbxproj"), read("ios/App/App/PrivacyInfo.xcprivacy"), read("package.json"),
+    read("android/app/src/main/res/values/styles.xml"), read("android/app/src/main/res/layout/launch_screen.xml"), read("ios/App/App/Info.plist"), read("ios/App/App.xcodeproj/project.pbxproj"), read("ios/App/App/Base.lproj/LaunchScreen.storyboard"),
+    read("ios/App/App/PrivacyInfo.xcprivacy"), read("package.json"), read("scripts/package-ios-ipa.mjs"),
   ]);
   const parsed = JSON.parse(config);
   assert.equal(parsed.appId, "com.gitcommit90.onehelm.mobile");
@@ -102,12 +103,19 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.equal(parsed.android.webContentsDebuggingEnabled, false);
   assert.equal(parsed.ios.preferredContentMode, "mobile");
   assert.equal(parsed.ios.webContentsDebuggingEnabled, false);
+  assert.equal(parsed.plugins.SplashScreen.launchAutoHide, false, "native launch art remains only until the first real screen paints");
+  assert.ok(parsed.plugins.SplashScreen.launchShowDuration <= 500, "launch has no artificial logo hold");
+  assert.equal(parsed.plugins.SplashScreen.launchFadeOutDuration, 180);
+  assert.equal(parsed.plugins.SplashScreen.androidScaleType, "CENTER_INSIDE");
+  assert.equal(parsed.plugins.SplashScreen.layoutName, "launch_screen");
 
   assert.match(mobile, /SecureStorage/);
   assert.match(mobile, /KeychainAccess\.whenUnlockedThisDeviceOnly/);
   assert.match(mobile, /parsed\.protocol !== "https:"/);
   assert.match(mobile, /persistSecureSession/);
   assert.match(mobile, /removeSecureSession/);
+  assert.match(mobile, /SplashScreen\.hide\(\{ fadeOutDuration: 180 \}\)/);
+  assert.match(mobile, /requestAnimationFrame\(\(\) => requestAnimationFrame/, "launch fades only after the gateway or workspace paints");
   assert.match(mobile, /App\.getLaunchUrl/, "a cold-start OAuth callback is retained");
   assert.doesNotMatch(mobile, /destination\.origin === serverOrigin/, "server links cannot replace the audited packaged WebView");
   assert.doesNotMatch(api, /let token = localStorage\.getItem/, "the session is not eagerly copied out of native secure storage");
@@ -126,6 +134,12 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.match(androidRules, /exclude domain="sharedpref"/);
   assert.match(androidPackage, /7b2d96ab21a242f9b17ddc7c65d133033bb9f0322158b6aab57bf8d46a7d27bf/);
   assert.match(androidPackage, /expected the permanent 1Helm release certificate/);
+  assert.match(androidStyles, /windowSplashScreenBackground">@color\/launch_background/);
+  assert.match(androidStyles, /windowSplashScreenAnimatedIcon">@drawable\/splash_android12/);
+  assert.doesNotMatch(androidStyles, /android:background">@drawable\/splash/);
+  assert.match(androidLaunch, /android:layout_width="96dp"/);
+  assert.match(androidLaunch, /android:layout_height="96dp"/);
+  assert.match(androidLaunch, /android:src="@drawable\/splash_mark"/);
 
   assert.match(iosInfo, /com\.gitcommit90\.onehelm\.mobile/);
   assert.match(iosInfo, /<string>onehelm<\/string>/);
@@ -134,7 +148,12 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.match(iosInfo, /ITSAppUsesNonExemptEncryption/);
   assert.match(iosProject, /PRODUCT_BUNDLE_IDENTIFIER = com\.gitcommit90\.onehelm\.mobile/);
   assert.match(iosProject, /PrivacyInfo\.xcprivacy in Resources/);
+  assert.match(iosLaunch, /contentMode="scaleAspectFit"/);
+  assert.match(iosLaunch, /firstAttribute="width" constant="88"/);
+  assert.match(iosLaunch, /firstAttribute="height" constant="88"/);
+  assert.doesNotMatch(iosLaunch, /contentMode="scaleAspectFill"/, "launch mark never fills or crops to the screen");
   assert.match(privacy, /NSPrivacyTracking[\s\S]*<false\/>/);
+  assert.match(iosPackage, /copyFile\(join\(exported, ipaName\), candidate\)/, "IPA packaging supports a separate APFS release volume");
 
   const pkg = JSON.parse(packageJson);
   for (const dependency of ["@capacitor/core", "@capacitor/android", "@capacitor/ios", "@aparajita/capacitor-secure-storage"]) assert.ok(pkg.dependencies[dependency]);
@@ -142,6 +161,12 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
 
   const iosIcon = await sharp(join(root, "ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png")).metadata();
   assert.equal(iosIcon.width, 1024); assert.equal(iosIcon.height, 1024);
+  const iosLaunchMark = await sharp(join(root, "ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732.png")).metadata();
+  assert.equal(iosLaunchMark.width, 512); assert.equal(iosLaunchMark.height, 512); assert.equal(iosLaunchMark.hasAlpha, true);
+  const androidLaunchMark = await sharp(join(root, "android/app/src/main/res/drawable-nodpi/splash_mark.png")).metadata();
+  assert.equal(androidLaunchMark.width, 256); assert.equal(androidLaunchMark.height, 256); assert.equal(androidLaunchMark.hasAlpha, true);
+  const android12LaunchMark = await sharp(join(root, "android/app/src/main/res/drawable-nodpi/splash_android12.png")).metadata();
+  assert.equal(android12LaunchMark.width, 256); assert.equal(android12LaunchMark.height, 256); assert.equal(android12LaunchMark.hasAlpha, true);
   assert.ok((await stat(join(root, "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png"))).size > 10_000);
 });
 

@@ -38,11 +38,12 @@
       "resizeOnFullScreen": true
     },
     "SplashScreen": {
-      "launchShowDuration": 1200,
-      "launchAutoHide": true,
-      "backgroundColor": "#08090c",
+      "launchShowDuration": 500,
+      "launchAutoHide": false,
+      "launchFadeOutDuration": 180,
       "showSpinner": false,
-      "androidScaleType": "CENTER_CROP"
+      "androidScaleType": "CENTER_INSIDE",
+      "layoutName": "launch_screen"
     },
     "StatusBar": {
       "overlaysWebView": true,

@@ -979,7 +979,7 @@ export function migrate(): void {
     const platformBackend = process.platform === "darwin" ? "apple" : process.platform === "win32" ? "wsl" : "lxc";
     const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || platformBackend);
     const backend = ["apple", "lxc", "wsl", "native", "mock"].includes(configuredBackend) ? configuredBackend : platformBackend;
-    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.13");
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.14");
     // Earlier Linux/Windows releases persisted the compatibility `native`
     // seam into every channel row. A production host update must actually
     // move those rows onto the platform isolation backend; changing the unit's
