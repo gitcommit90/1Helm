@@ -152,12 +152,14 @@ const pending: { token: string; name: string; mime: string; size: number }[] = [
 type UiContinuity = {
   active: { key: string; start: number | null; end: number | null; value: string | null; checked: boolean | null; node: HTMLElement | null } | null;
   scroll: Array<{ key: string; top: number; left: number }>;
-  details: string[];
+  details: Array<{ key: string; open: boolean }>;
 };
 
 function continuityKey(element: Element): string | null {
-  const stable = element.closest<HTMLElement>("[data-continuity-key]")?.dataset.continuityKey;
-  if (stable) return `[data-continuity-key="${CSS.escape(stable)}"]`;
+  const stableElement = element.closest<HTMLElement>("[data-continuity-key]");
+  const stable = stableElement?.dataset.continuityKey;
+  const stableSelector = stable ? `[data-continuity-key="${CSS.escape(stable)}"]` : "";
+  if (stableElement === element) return stableSelector;
   if (element.id) return `#${CSS.escape(element.id)}`;
   const composer = (element as HTMLElement).dataset?.composerParent;
   if (composer != null) return `[data-composer-parent="${CSS.escape(composer)}"]`;
@@ -167,11 +169,12 @@ function continuityKey(element: Element): string | null {
   if (labelled) return `${element.tagName.toLowerCase()}[aria-label="${CSS.escape(labelled)}"]`;
   const placeholder = element.getAttribute("placeholder");
   if (placeholder) return `${element.tagName.toLowerCase()}[placeholder="${CSS.escape(placeholder)}"]`;
+  if (stableSelector && stableElement?.querySelectorAll(element.tagName).length === 1) return `${stableSelector} ${element.tagName.toLowerCase()}`;
   return null;
 }
 
 /** Preserve user-owned focus, selection, scroll, and expansion across unavoidable shell paints. */
-function captureUiContinuity(scope: ParentNode): UiContinuity {
+export function captureUiContinuity(scope: ParentNode): UiContinuity {
   const activeElement = document.activeElement instanceof HTMLElement && scope.contains(document.activeElement) ? document.activeElement : null;
   const activeKey = activeElement ? continuityKey(activeElement) || (activeElement.isContentEditable ? "[contenteditable=true]" : null) : null;
   const selection = activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement
@@ -181,16 +184,16 @@ function captureUiContinuity(scope: ParentNode): UiContinuity {
   const scroll = Array.from(scope.querySelectorAll<HTMLElement>("[data-continuity-key],#msgs,#threadmsgs,#channelview"))
     .filter((element) => element.scrollTop !== 0 || element.scrollLeft !== 0)
     .flatMap((element) => { const key = continuityKey(element); return key ? [{ key, top: element.scrollTop, left: element.scrollLeft }] : []; });
-  const details = Array.from(scope.querySelectorAll<HTMLDetailsElement>("details[open][data-continuity-key]"))
-    .flatMap((element) => { const key = continuityKey(element); return key ? [key] : []; });
+  const details = Array.from(scope.querySelectorAll<HTMLDetailsElement>("details[data-continuity-key]"))
+    .flatMap((element) => { const key = continuityKey(element); return key ? [{ key, open: element.open }] : []; });
   return { active: activeKey ? { key: activeKey, node: activeElement, ...selection } : null, scroll, details };
 }
 
-function restoreUiContinuity(snapshot: UiContinuity): void {
+export function restoreUiContinuity(snapshot: UiContinuity): void {
   // Restore focus synchronously once the retained surface is reattached. A
   // caller may observe the completed paint before the next animation frame;
   // focus and cursor ownership must already be back with the user by then.
-  for (const key of snapshot.details) { const element = document.querySelector<HTMLDetailsElement>(key); if (element) element.open = true; }
+  for (const saved of snapshot.details) { const element = document.querySelector<HTMLDetailsElement>(saved.key); if (element) element.open = saved.open; }
   if (snapshot.active) {
     const element = snapshot.active.node?.isConnected ? snapshot.active.node : document.querySelector<HTMLElement>(snapshot.active.key);
     if (element) {
@@ -199,6 +202,10 @@ function restoreUiContinuity(snapshot: UiContinuity): void {
       element.focus({ preventScroll: true });
       if ((element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) && snapshot.active.start != null && snapshot.active.end != null) element.setSelectionRange(snapshot.active.start, snapshot.active.end);
     }
+  }
+  for (const saved of snapshot.scroll) {
+    const element = document.querySelector<HTMLElement>(saved.key);
+    if (element) { element.scrollTop = saved.top; element.scrollLeft = saved.left; }
   }
   requestAnimationFrame(() => {
     for (const saved of snapshot.scroll) { const element = document.querySelector<HTMLElement>(saved.key); if (element) { element.scrollTop = saved.top; element.scrollLeft = saved.left; } }
@@ -472,7 +479,7 @@ function onEvent(e: any): void {
     const msg = e.message as Message;
     if (!msg?.channel_id) return;
     if (msg.photon_conversation_id) {
-      if (S.view === "texts") renderChannelView();
+      if (S.view === "texts") refreshChannelViewWithContinuity();
       return;
     }
     const mine = msg.author?.kind === "user" && msg.author.id === S.me.id;
@@ -506,7 +513,7 @@ function onEvent(e: any): void {
   } else if (e.type === "photon_update") {
     S.photonConfigured = true;
     if (e.conversationId) S.selectedTextConversationId = Number(e.conversationId);
-    if (S.view === "texts") renderChannelView(); else renderHeader();
+    if (S.view === "texts") refreshChannelViewWithContinuity(); else renderHeader();
   } else if (e.type === "message_deleted") {
     applyMessageDeleted(e);
   } else if (e.type === "mention_confirmation") {
@@ -538,7 +545,7 @@ function onEvent(e: any): void {
       // Keep the URL slug in sync after rename without a hard navigation.
       writeRoute(S.channels.find((c) => c.id === S.channelId), S.view, S.threadRoot?.id ?? null, true);
       renderHeader();
-      if (S.view === "settings") renderChannelView();
+      if (S.view === "settings") refreshChannelViewWithContinuity();
       else if (S.view === "chat") { renderMessages(); if (S.threadRoot) renderThread(); }
     }
   } else if (e.type === "channel_deleted") {
@@ -554,17 +561,17 @@ function onEvent(e: any): void {
     renderSidebar();
     if (e.channelId === S.channelId) renderHeader();
   } else if (e.type === "activity" || e.type === "escalation") {
-    if (e.channelId === S.channelId && (S.view === "activity" || S.view === "memory")) renderChannelView();
+    if (e.channelId === S.channelId && (S.view === "activity" || S.view === "memory")) refreshChannelViewWithContinuity();
   } else if (e.type === "thread_update") {
     // Skipper (or API) changed durable session status — refresh board/threads/activity surfaces.
-    if (S.globalThreadsOpen) renderMain();
+    if (S.globalThreadsOpen) refreshMainWithContinuity();
     else if (Number(e.channelId) === Number(S.channelId) && (S.view === "board" || S.view === "threads" || S.view === "activity")) {
-      renderChannelView();
+      refreshChannelViewWithContinuity();
     }
   } else if (e.type === "followup") {
     // Durable agent wake scheduled/cleared — Board and the open thread share this source.
     if (Number(e.channelId) === Number(S.channelId) && (S.view === "board" || S.view === "threads")) {
-      renderChannelView();
+      refreshChannelViewWithContinuity();
     }
     if (Number(e.channelId) === Number(S.channelId) && S.threadRoot && Number(e.rootMessageId) === Number(S.threadRoot.id)) {
       S.threadFollowup = e.followup || null;
@@ -591,17 +598,17 @@ function onEvent(e: any): void {
   } else if (e.type === "provider_update" && e.provider) {
     const i = S.providers.findIndex((p) => p.id === e.provider.id);
     if (i >= 0) S.providers[i] = e.provider; else S.providers = [...S.providers, e.provider];
-    if (S.view === "settings") renderChannelView();
+    if (S.view === "settings") refreshChannelViewWithContinuity();
   } else if (e.type === "provider_deleted") {
     S.providers = S.providers.filter((p) => p.id !== e.providerId);
-    if (S.view === "settings") renderChannelView();
+    if (S.view === "settings") refreshChannelViewWithContinuity();
   } else if (e.type === "providers_changed") {
-    void reloadProviders().then(() => { if (S.view === "settings") renderChannelView(); });
+    void reloadProviders().then(() => { if (S.view === "settings") refreshChannelViewWithContinuity(); });
   } else if (e.type === "skills_changed") {
     void loadWorkspace().then(() => {
       renderSidebar();
       renderHeader();
-      if (S.view === "settings") renderChannelView();
+      if (S.view === "settings") refreshChannelViewWithContinuity();
       refreshOpenSkillsSettings();
     });
   } else if (e.type === "bot_update" && e.bot) {
@@ -883,6 +890,7 @@ function sidebar(drawer = false): HTMLElement {
       class: `nav-item ${active ? "nav-item-active" : "nav-item-idle"} ${unread || working ? "font-semibold text-white" : ""}`,
       title: labels.join(" · "),
       "aria-label": labels.join(", "),
+      dataset: { continuityKey: `sidebar-${drawer ? "mobile" : "desktop"}-channel-${c.id}` },
       onclick: () => { closeMobileMenu(); void openChannel(c.id); },
     },
       c.kind === "dm"
@@ -923,13 +931,14 @@ function sidebar(drawer = false): HTMLElement {
       h("div", { class: "flex items-center gap-1" },
         h("button", { class: "grid h-9 w-9 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: theme === "light" ? "Switch to dark" : "Switch to light", onclick: toggleTheme }, icon(theme === "light" ? "moon" : "sun")),
         drawer ? h("button", { class: "grid h-11 w-11 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: "Close navigation", "aria-label": "Close navigation", dataset: { drawerClose: "" }, onclick: closeMobileMenu }, icon("x", 20)) : null)),
-    h("div", { class: "flex-1 space-y-5 overflow-y-auto px-2 py-3" },
+    h("div", { class: "flex-1 space-y-5 overflow-y-auto px-2 py-3", dataset: { continuityKey: `sidebar-${drawer ? "mobile" : "desktop"}-scroll` } },
       allChannels.length ? h("div", { class: "px-1 pb-1" },
         h("button", {
           type: "button",
           class: `nav-item w-full ${S.globalThreadsOpen ? "nav-item-active" : "nav-item-idle"}`,
           title: "All threads across agent channels",
           "aria-pressed": String(Boolean(S.globalThreadsOpen)),
+          dataset: { continuityKey: `sidebar-${drawer ? "mobile" : "desktop"}-threads` },
           onclick: () => { closeMobileMenu(); openGlobalThreads(); },
         },
           h("span", { class: "shrink-0 text-sidebar-muted" }, icon("thread", 14)),
@@ -1310,7 +1319,29 @@ function openGlobalThreads(): void {
   void loadWorkspace().then(() => renderApp()).catch(() => renderApp());
 }
 
-function renderMain(preserveChannelSurface = false): void {
+function refreshMainWithContinuity(): void {
+  const main = document.getElementById("main");
+  const continuity = main ? captureUiContinuity(main) : null;
+  if (S.globalThreadsOpen) {
+    const container = document.getElementById("channelview");
+    if (!container) { renderMain(true, continuity || undefined); return; }
+    renderGlobalThreads(container, {
+      unreadOnly: S.globalThreadsUnreadOnly,
+      onToggleUnread: (next) => { S.globalThreadsUnreadOnly = next; refreshMainWithContinuity(); },
+      onOpen: (thread) => {
+        S.globalThreadsOpen = false;
+        void openChannel(thread.channel_id, "chat", thread.root_message_id);
+      },
+    }, {
+      preserveExisting: true,
+      onPaint: continuity ? () => restoreUiContinuity(continuity) : undefined,
+    });
+    return;
+  }
+  renderMain(true, continuity || undefined);
+}
+
+function renderMain(preserveChannelSurface = false, continuity?: UiContinuity): void {
   setActiveCoworkChannel(!S.globalThreadsOpen && (S.view === "cowork" || S.view === "notes") ? S.channelId : null);
   const main = document.getElementById("main")!;
   // #msgs is destroyed on every shell rebuild. Capture scroll *before* clear so
@@ -1338,12 +1369,16 @@ function renderMain(preserveChannelSurface = false): void {
     renderGlobalThreadsHeader();
     renderGlobalThreads(document.getElementById("channelview")!, {
       unreadOnly: S.globalThreadsUnreadOnly,
-      onToggleUnread: (next) => { S.globalThreadsUnreadOnly = next; renderMain(); },
+      onToggleUnread: (next) => { S.globalThreadsUnreadOnly = next; refreshMainWithContinuity(); },
       onOpen: (thread) => {
         S.globalThreadsOpen = false;
         void openChannel(thread.channel_id, "chat", thread.root_message_id);
       },
+    }, {
+      preserveExisting: preserveChannelSurface,
+      onPaint: continuity ? () => restoreUiContinuity(continuity) : undefined,
     });
+    if (continuity) restoreUiContinuity(continuity);
     return;
   }
   const channel = S.channels.find((item) => item.id === S.channelId);
@@ -1471,7 +1506,8 @@ function renderGlobalThreadsHeader(): void {
         type: "button",
         class: `btn-subtle min-h-11 text-xs sm:min-h-0 ${S.globalThreadsUnreadOnly ? "border-accent/40 bg-accent-soft text-accent" : ""}`,
         "aria-pressed": String(S.globalThreadsUnreadOnly),
-        onclick: () => { S.globalThreadsUnreadOnly = !S.globalThreadsUnreadOnly; renderMain(); },
+        dataset: { continuityKey: "global-threads-unread" },
+        onclick: () => { S.globalThreadsUnreadOnly = !S.globalThreadsUnreadOnly; refreshMainWithContinuity(); },
       }, S.globalThreadsUnreadOnly ? "Unread · on" : "Unread · off")));
 }
 
@@ -1590,25 +1626,42 @@ function openTerminalOnComputer(computerId: number): void {
   writeRoute(S.channels.find((channel) => channel.id === S.channelId), "terminal", null);
 }
 
-export function renderChannelView(preserveSurface = false): void {
+let channelViewRenderGeneration = 0;
+
+function refreshChannelViewWithContinuity(): void {
+  const container = document.getElementById("channelview");
+  if (!container) return;
+  const continuity = captureUiContinuity(container);
+  renderChannelView(true, () => restoreUiContinuity(continuity));
+}
+
+export function renderChannelView(preserveSurface = false, onPaint?: () => void): void {
   const container = document.getElementById("channelview");
   const channel = S.channels.find((item) => item.id === S.channelId);
   if (!container || !channel) return;
-  if (S.view === "texts") renderTexts(container, S.selectedTextConversationId || undefined, (id) => { S.selectedTextConversationId = id; renderChannelView(); });
+  const generation = ++channelViewRenderGeneration;
+  const options = {
+    preserveExisting: preserveSurface,
+    isCurrent: () => generation === channelViewRenderGeneration && container.isConnected,
+    onPaint: () => { if (generation === channelViewRenderGeneration && container.isConnected) onPaint?.(); },
+  };
+  let paintsAsynchronously = false;
+  if (S.view === "texts") renderTexts(container, S.selectedTextConversationId || undefined, (id) => { S.selectedTextConversationId = id; renderChannelView(); }, options);
   else if (S.view === "board") renderBoard(container, channel.id, (root) => {
     if (!S.messages.some((message) => message.id === root.id)) S.messages.push(root);
     S.messages.sort((a, b) => a.id - b.id);
     S.view = "chat";
     renderApp();
     void openThread(root);
-  });
-  else if (S.view === "threads") renderThreads(container, channel.id, (thread) => { S.view = "chat"; renderApp(); void openThread(thread.root); });
+  }, options);
+  else if (S.view === "threads") renderThreads(container, channel.id, (thread) => { S.view = "chat"; renderApp(); void openThread(thread.root); }, options);
   else if (S.view === "cowork" || S.view === "notes") renderCowork(container, channel.id, channel, S.me, (root) => { S.view = "chat"; renderApp(); void openThread(root); }, preserveSurface);
   else if (S.view === "files") renderFiles(container, channel.id, "", (path) => { stageCoworkPath(channel.id, path); navigateChannelView("cowork"); }, preserveSurface);
-  else if (S.view === "memory") renderMemory(container, channel.id);
-  else if (S.view === "activity") renderActivity(container, channel.id);
+  else if (S.view === "memory") renderMemory(container, channel.id, options);
+  else if (S.view === "activity") renderActivity(container, channel.id, options);
   else if (S.view === "terminal") openTerminals(container, channel.id, S.preferredTerminalComputerId || undefined);
-  else if (S.view === "settings") renderChannelSettings(container, channel, async (deleted) => {
+  else if (S.view === "settings") {
+    renderChannelSettings(container, channel, async (deleted) => {
     await loadWorkspace();
     if (deleted || !S.channels.some((item) => item.id === S.channelId)) {
       S.channelId = S.channels.find((item) => item.name === "main" && item.kind === "channel")?.id || S.channels[0]?.id || 0;
@@ -1624,11 +1677,16 @@ export function renderChannelView(preserveSurface = false): void {
       }
       renderApp();
     }
-  });
+    }, options.onPaint);
+    options.onPaint();
+    paintsAsynchronously = true;
+  }
+  if (preserveSurface && !paintsAsynchronously) options.onPaint();
 }
 
 function renderHeader(): void {
   const el = document.getElementById("hdr"); if (!el) return;
+  const continuity = captureUiContinuity(el);
   const channel = S.channels.find((item) => item.id === S.channelId);
   const agent = channel?.agent;
   clear(el);
@@ -1676,6 +1734,7 @@ function renderHeader(): void {
         class: `grid h-11 w-11 place-items-center rounded-md border border-transparent text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:h-9 sm:w-9 ${S.notesOpen || S.view === "notes" ? "border-line bg-hover text-fg" : ""}`,
         title: "Quick Note", "aria-label": "Open Quick Note", dataset: { quickNoteHeader: "" }, onclick: (event: MouseEvent) => { event.stopPropagation(); openQuickNoteFromHeader(); },
       }, icon("fileText", 18)) : null));
+  restoreUiContinuity(continuity);
 }
 
 function starIcon(filled: boolean): SVGElement {
@@ -3179,7 +3238,9 @@ export function pickList(title: string, items: { id: number; label: string }[], 
 }
 export const renderSidebar = (): void => {
   if (!S.channels) return;
+  const continuity = captureUiContinuity(document);
   document.querySelectorAll<HTMLElement>("[data-sidebar]").forEach((s) => s.replaceWith(sidebar(s.dataset.sidebar === "mobile")));
+  restoreUiContinuity(continuity);
 };
 const fmtSize = (n: number): string => n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + " KB" : (n / 1048576).toFixed(1) + " MB";
 

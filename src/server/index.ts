@@ -1565,7 +1565,9 @@ const server = createServer(async (req, res) => {
         const resident = agentForChannel(Number(thread.channel_id)); if (resident) scheduleAgentReview(Number(resident.id));
       }
       if (b.summary != null) run("UPDATE threads SET summary=?, updated_at=? WHERE id=?", String(b.summary).slice(0, 10000), now(), thread.id);
-      return json(res, 200, { thread: q1("SELECT * FROM threads WHERE id=?", thread.id) });
+      const updated = q1("SELECT * FROM threads WHERE id=?", thread.id);
+      broadcastToChannel(Number(thread.channel_id), { type: "thread_update", channelId: Number(thread.channel_id), thread: updated });
+      return json(res, 200, { thread: updated });
     }
     if (p === "/api/dm" && m === "POST") {
       const b = await jbody(req);

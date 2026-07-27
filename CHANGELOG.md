@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.19] - 2026-07-27
+
+### Fixed
+
+- Live Activity, Board, channel Threads, global Threads, Texts, Memory, and
+  channel-settings refreshes now keep the current surface visible until fresh
+  data arrives, ignore stale async paints, and restore focused controls,
+  cursor selection, unsaved values, scroll positions, and open or deliberately
+  closed disclosures by stable identity.
+- Activity remembers the selected filter and expanded evidence across live
+  events, Board lane and Texts conversation scrollers retain their reading
+  position, and sidebar/header status updates no longer steal focus or reset
+  navigation state.
+- Background skill-catalog changes no longer close and reopen Settings. The
+  open Skills page stays untouched and offers an explicit **Refresh when
+  ready** action so searches, drafts, focus, and scroll remain user-owned.
+
+### Tests
+
+- Browser regressions now trigger real WebSocket updates while a user owns a
+  Texts draft, Activity evidence, channel-settings cursor selection, Board
+  card, or global Threads position, and prove every state remains stable while
+  the incoming data and Markdown update in place.
+
 ## [0.0.18] - 2026-07-27
 
 ### Added
@@ -532,7 +556,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.18...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.19...HEAD
+[0.0.19]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.19
 [0.0.18]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.18
 [0.0.17]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.17
 [0.0.16]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.16

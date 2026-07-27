@@ -5,6 +5,16 @@ import { NOTIFICATION_SOUNDS, channelNotificationPreference, previewNotification
 
 export type ChannelView = "chat" | "texts" | "board" | "threads" | "cowork" | "notes" | "files" | "terminal" | "memory" | "activity" | "settings";
 
+type RenderRefreshOptions = {
+  preserveExisting?: boolean;
+  isCurrent?: () => boolean;
+  onPaint?: () => void;
+};
+
+function refreshIsCurrent(options: RenderRefreshOptions): boolean {
+  return options.isCurrent?.() !== false;
+}
+
 export function openCreateChannel(onCreated: (channel: Channel) => void): void {
   const name = h("input", { class: "field", placeholder: "launch", autocomplete: "off" }) as HTMLInputElement;
   const purpose = h("textarea", { class: "field min-h-28", placeholder: "This channel owns planning and coordinating the product launch." }) as HTMLTextAreaElement;
@@ -166,15 +176,16 @@ function startBoardCountdownTicker(root: HTMLElement): void {
   boardCountdownTimer = window.setInterval(tick, 1000);
 }
 
-export function renderThreads(container: HTMLElement, channelId: number, onOpen: (thread: ThreadState) => void): void {
-  panelLoading(container, "Threads", "Focused sessions with durable status and rolling summaries.");
+export function renderThreads(container: HTMLElement, channelId: number, onOpen: (thread: ThreadState) => void, refresh: RenderRefreshOptions = {}): void {
+  if (!refresh.preserveExisting) panelLoading(container, "Threads", "Focused sessions with durable status and rolling summaries.");
   void api<{ threads: ThreadState[] }>(`/api/channels/${channelId}/threads`).then(({ threads }) => {
+    if (!refreshIsCurrent(refresh)) return;
     const list = h("div", { class: "space-y-2" });
     if (!threads.length) list.append(empty("No sessions yet", "Start a top-level message in Chat to open a focused session."));
     for (const thread of threads) {
       list.append(h("article", { class: "card flex w-full min-w-0 items-start gap-2.5 p-3" },
         h("span", { class: "mt-0.5 shrink-0 text-accent" }, icon("thread")),
-        h("button", { class: "min-w-0 flex-1 text-left", type: "button", dataset: { threadOpen: String(thread.id) }, onclick: () => onOpen(thread) },
+        h("button", { class: "min-w-0 flex-1 text-left", type: "button", dataset: { threadOpen: String(thread.id), continuityKey: `channel-thread-${thread.id}` }, onclick: () => onOpen(thread) },
           h("div", { class: "truncate font-semibold text-fg hover:text-accent" }, thread.title),
           h("div", { class: "md mt-0.5 line-clamp-2 text-[13px] leading-snug text-muted", html: md(thread.summary || "No summary yet.") }),
           followupMeta(thread),
@@ -182,7 +193,8 @@ export function renderThreads(container: HTMLElement, channelId: number, onOpen:
     }
     panelContent(container, "Threads", "Focused sessions with durable status and rolling summaries.", list);
     startBoardCountdownTicker(list);
-  }).catch((error) => panelError(container, error));
+    refresh.onPaint?.();
+  }).catch((error) => { if (refreshIsCurrent(refresh)) panelError(container, error); });
 }
 
 /**
@@ -197,16 +209,19 @@ export function renderThreads(container: HTMLElement, channelId: number, onOpen:
  * `agent_followups` rows (next pending due_at). Cards with a pending wake sit
  * only in Scheduled so the Captain can see the real countdown.
  */
-export function renderBoard(container: HTMLElement, channelId: number, onOpen: (root: Message) => void): void {
-  clear(container);
-  container.append(h("div", { class: "board-shell" },
-    h("div", { class: "board-header" },
-      h("div", { class: "min-w-0" },
-        h("h2", { class: "font-display text-xl leading-tight text-fg sm:text-[1.45rem]" }, "Board"),
-        h("p", { class: "mt-0.5 text-xs text-muted sm:text-sm" }, "Sessions by status. Scheduled = durable agent wake with live countdown.")),
-      h("span", { class: "board-header-hint" }, "Loading…"))));
+export function renderBoard(container: HTMLElement, channelId: number, onOpen: (root: Message) => void, refresh: RenderRefreshOptions = {}): void {
+  if (!refresh.preserveExisting) {
+    clear(container);
+    container.append(h("div", { class: "board-shell" },
+      h("div", { class: "board-header" },
+        h("div", { class: "min-w-0" },
+          h("h2", { class: "font-display text-xl leading-tight text-fg sm:text-[1.45rem]" }, "Board"),
+          h("p", { class: "mt-0.5 text-xs text-muted sm:text-sm" }, "Sessions by status. Scheduled = durable agent wake with live countdown.")),
+        h("span", { class: "board-header-hint" }, "Loading…"))));
+  }
 
   void api<{ threads: ThreadState[] }>(`/api/channels/${channelId}/threads`).then(({ threads }) => {
+    if (!refreshIsCurrent(refresh)) return;
     const statuses: { status: ThreadState["status"]; label: string }[] = [
       { status: "open", label: "Open" },
       { status: "waiting", label: "Waiting" },
@@ -233,7 +248,7 @@ export function renderBoard(container: HTMLElement, channelId: number, onOpen: (
     const threadCard = (thread: ThreadState): HTMLElement => h("button", {
       class: `board-card${hasPendingFollowup(thread) ? " board-card-scheduled" : ""}`,
       type: "button",
-      dataset: { threadOpen: String(thread.id) },
+      dataset: { threadOpen: String(thread.id), continuityKey: `board-thread-${thread.id}` },
       onclick: () => onOpen(thread.root),
     },
     h("div", { class: "truncate text-[13px] font-semibold leading-snug text-fg" }, thread.title || "Untitled session"),
@@ -257,7 +272,7 @@ export function renderBoard(container: HTMLElement, channelId: number, onOpen: (
           h("h3", { class: "font-semibold text-fg" }, "Scheduled"),
           h("p", { class: "mt-0.5 text-[11px] text-muted" }, "Agent wake · live countdown")),
         h("span", { class: "font-mono text-[10px] text-faint" }, String(scheduled.length))),
-      h("div", { class: "board-lane-cards" }, ...scheduled.map(threadCard),
+      h("div", { class: "board-lane-cards", dataset: { continuityKey: "board-lane-scheduled" } }, ...scheduled.map(threadCard),
         scheduled.length ? null : h("p", { class: "px-1 py-6 text-center text-xs leading-5 text-faint" }, "No scheduled wakes")));
 
     const lanes = statuses.map(({ status, label }) => {
@@ -266,7 +281,7 @@ export function renderBoard(container: HTMLElement, channelId: number, onOpen: (
         h("div", { class: "board-lane-heading" },
           h("h3", { class: "font-semibold text-fg" }, label),
           h("span", { class: "font-mono text-[10px] text-faint" }, String(laneThreads.length))),
-        h("div", { class: "board-lane-cards" }, ...laneThreads.map(threadCard),
+        h("div", { class: "board-lane-cards", dataset: { continuityKey: `board-lane-${status}` } }, ...laneThreads.map(threadCard),
           laneThreads.length ? null : h("p", { class: "px-1 py-6 text-center text-xs leading-5 text-faint" }, "No sessions")));
     });
 
@@ -280,7 +295,8 @@ export function renderBoard(container: HTMLElement, channelId: number, onOpen: (
       h("div", { class: "board-scroll" }, h("div", { class: "board-lanes" }, incoming, scheduledLane, ...lanes)));
     container.append(shell);
     startBoardCountdownTicker(shell);
-  }).catch((error) => panelError(container, error));
+    refresh.onPaint?.();
+  }).catch((error) => { if (refreshIsCurrent(refresh)) panelError(container, error); });
 }
 
 function openBoardComposer(channelId: number, onOpen: (root: Message) => void): void {
@@ -330,10 +346,12 @@ function openBoardComposer(channelId: number, onOpen: (root: Message) => void): 
 export function renderGlobalThreads(
   container: HTMLElement,
   opts: { unreadOnly: boolean; onToggleUnread: (next: boolean) => void; onOpen: (thread: GlobalThread) => void },
+  refresh: RenderRefreshOptions = {},
 ): void {
-  panelLoading(container, "Threads", "Sessions across every agent channel. Filter to only unread activity.");
+  if (!refresh.preserveExisting) panelLoading(container, "Threads", "Sessions across every agent channel. Filter to only unread activity.");
   const path = opts.unreadOnly ? "/api/threads?unread=1" : "/api/threads";
   void api<{ threads: GlobalThread[] }>(path).then(({ threads }) => {
+    if (!refreshIsCurrent(refresh)) return;
     const toolbar = h("div", { class: "mb-2" },
       h("p", { class: "text-xs text-muted" }, opts.unreadOnly ? "Unread activity across your channels." : `${threads.length} session${threads.length === 1 ? "" : "s"} · newest first`));
     const list = h("div", { class: "overflow-hidden rounded-lg border border-line bg-surface", dataset: { globalThreadsList: "compact" } });
@@ -347,7 +365,7 @@ export function renderGlobalThreads(
       list.append(h("article", { class: `border-b border-line last:border-0 ${thread.unread ? "bg-accent-soft/30" : "hover:bg-hover"}` },
         h("button", {
           class: "flex w-full min-w-0 items-start gap-2.5 px-3 py-2 text-left", type: "button",
-          dataset: { globalThreadOpen: String(thread.id) },
+          dataset: { globalThreadOpen: String(thread.id), continuityKey: `global-thread-${thread.id}` },
           onclick: () => opts.onOpen(thread),
         },
           h("span", { class: `mt-1.5 h-2 w-2 shrink-0 rounded-full ${thread.unread ? "bg-danger" : "bg-line"}`, "aria-label": thread.unread ? "Unread" : undefined }),
@@ -366,15 +384,17 @@ export function renderGlobalThreads(
         h("h2", { class: "font-display text-[1.75rem] leading-tight text-fg" }, "Threads"),
         h("p", { class: "mt-1.5 text-sm text-muted" }, "Sessions across every agent channel. Filter to only unread activity.")),
       toolbar, list));
-  }).catch((error) => panelError(container, error));
+    refresh.onPaint?.();
+  }).catch((error) => { if (refreshIsCurrent(refresh)) panelError(container, error); });
 }
 
 /** Private Captain ↔ Skipper conversations originated through Photon. */
-export function renderTexts(container: HTMLElement, selectedId?: number, onSelect?: (id: number) => void): void {
-  panelLoading(container, "Texts", "Your direct, channel-free conversations with Skipper.");
+export function renderTexts(container: HTMLElement, selectedId?: number, onSelect?: (id: number) => void, refresh: RenderRefreshOptions = {}): void {
+  if (!refresh.preserveExisting) panelLoading(container, "Texts", "Your direct, channel-free conversations with Skipper.");
   void api<{ conversations: TextConversation[] }>("/api/texts").then(async ({ conversations }) => {
+    if (!refreshIsCurrent(refresh)) return;
     const selected = conversations.find((conversation) => conversation.id === selectedId) || conversations[0];
-    const sidebar = h("aside", { class: "min-h-0 overflow-y-auto border-b border-line bg-raised/55 md:border-b-0 md:border-r" });
+    const sidebar = h("aside", { class: "min-h-0 overflow-y-auto border-b border-line bg-raised/55 md:border-b-0 md:border-r", dataset: { continuityKey: "texts-conversations" } });
     sidebar.append(h("div", { class: "border-b border-line px-4 py-3" }, h("div", { class: "eyebrow text-muted" }, "Conversations"), h("p", { class: "mt-1 text-xs leading-5 text-muted" }, "Send /new from your phone to start another.")));
     const list = h("div", { class: "p-2", dataset: { textsThreadList: "" } });
     if (!conversations.length) list.append(empty("No text threads yet", "Text your 1Helm number. Your first message starts a private conversation with Skipper."));
@@ -390,8 +410,9 @@ export function renderTexts(container: HTMLElement, selectedId?: number, onSelec
       conversationPanel.append(h("div", { class: "grid min-h-[24rem] flex-1 place-items-center p-8 text-center" }, h("div", {}, h("div", { class: "text-accent" }, icon("chat", 28)), h("h3", { class: "mt-3 font-display text-xl text-fg" }, "Text Skipper to begin"), h("p", { class: "mt-2 max-w-sm text-sm leading-6 text-muted" }, "Once Photon receives your message, this inbox appears automatically and keeps the conversation available on desktop."))));
     } else {
       const detail = await api<{ conversation: TextConversation }>(`/api/texts/${selected.id}`);
+      if (!refreshIsCurrent(refresh)) return;
       const messages = detail.conversation.messages || [];
-      const stream = h("div", { class: "min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6", dataset: { textsMessages: String(selected.id) } });
+      const stream = h("div", { class: "min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6", dataset: { textsMessages: String(selected.id), continuityKey: `texts-messages-${selected.id}` } });
       for (const message of messages) {
         const captain = message.author.kind === "user" || message.transport === "inbound";
         stream.append(h("div", { class: `flex ${captain ? "justify-end" : "justify-start"}` },
@@ -412,11 +433,12 @@ export function renderTexts(container: HTMLElement, selectedId?: number, onSelec
       input.onkeydown = (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } };
       conversationPanel.append(h("div", { class: "flex min-h-14 items-center gap-3 border-b border-line px-4 py-3" }, h("span", { class: "text-accent" }, icon("chat", 18)), h("div", { class: "min-w-0" }, h("h3", { class: "truncate font-semibold text-fg" }, selected.title || "Text with Skipper"), h("p", { class: "truncate text-xs text-muted" }, selected.active ? "Current thread · phone and desktop share context" : "Closed with /new · still resumable in 1Helm"))), stream,
         h("div", { class: "border-t border-line bg-surface p-3 sm:p-4" }, h("div", { class: "mx-auto flex max-w-3xl items-end gap-2 rounded-xl border border-line bg-raised/45 p-2.5 focus-within:border-accent/50" }, input, send), h("div", { class: "mx-auto mt-1.5 flex max-w-3xl justify-between px-1" }, h("span", { class: "text-[11px] text-faint" }, "Desktop messages stay in 1Helm; return to your phone anytime."), status)));
-      requestAnimationFrame(() => { stream.scrollTop = stream.scrollHeight; });
+      if (!refresh.preserveExisting) requestAnimationFrame(() => { stream.scrollTop = stream.scrollHeight; });
     }
     clear(container);
     container.append(h("div", { class: "flex h-full min-h-0 flex-col" }, h("header", { class: "border-b border-line px-4 py-3" }, h("h2", { class: "font-display text-xl text-fg" }, "Texts"), h("p", { class: "mt-0.5 text-xs text-muted" }, "One continuous thread with Skipper until you send /new.")), h("div", { class: "grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[18rem_minmax(0,1fr)]" }, sidebar, conversationPanel)));
-  }).catch((error) => panelError(container, error));
+    refresh.onPaint?.();
+  }).catch((error) => { if (refreshIsCurrent(refresh)) panelError(container, error); });
 }
 
 function workspaceIcon(file: ChannelFile, size = 18): SVGElement {
@@ -724,10 +746,11 @@ export function renderNotes(container: HTMLElement, channelId: number, onClose?:
   void reloadList().catch((error) => panelError(container, error));
 }
 
-export function renderMemory(container: HTMLElement, channelId: number): void {
-  panelLoading(container, "Memory / Knowledge", "Provider-neutral continuity owned by this channel, with provenance.");
+export function renderMemory(container: HTMLElement, channelId: number, refresh: RenderRefreshOptions = {}): void {
+  if (!refresh.preserveExisting) panelLoading(container, "Memory / Knowledge", "Provider-neutral continuity owned by this channel, with provenance.");
   const load = (): void => {
     void api<{ memory: MemoryItem[] }>(`/api/channels/${channelId}/memory`).then(({ memory }) => {
+      if (!refreshIsCurrent(refresh)) return;
       const current = memory.filter((item) => item.status === "current");
       const list = h("div", { class: "space-y-2" });
       if (!current.length) list.append(empty("No durable knowledge yet", "Record decisions, facts, preferences, and artifact references worth carrying into future sessions. Session recaps live in Threads, not here."));
@@ -737,7 +760,8 @@ export function renderMemory(container: HTMLElement, channelId: number): void {
         h("div", { class: "md text-sm text-fg", html: md(item.content) })));
       const add = h("button", { class: "btn-primary text-sm", onclick: () => addMemory(channelId, load) }, icon("plus"), "Record knowledge");
       panelContent(container, "Memory / Knowledge", "Provider-neutral continuity owned by this channel, with provenance.", h("div", {}, h("div", { class: "mb-4 flex justify-end" }, add), list));
-    }).catch((error) => panelError(container, error));
+      refresh.onPaint?.();
+    }).catch((error) => { if (refreshIsCurrent(refresh)) panelError(container, error); });
   };
   load();
 }
@@ -758,6 +782,7 @@ const ACTIVITY_SYSTEM = new Set(["agent_status", "lifecycle", "profile"]);
 ACTIVITY_SKIPPER.add("computer");
 
 type ActivityFilter = "all" | "skipper" | "work" | "system";
+const activityFilters = new Map<number, ActivityFilter>();
 
 function activityBucket(kind: string): ActivityFilter {
   if (ACTIVITY_SKIPPER.has(kind)) return "skipper";
@@ -833,7 +858,7 @@ function activityCard(item: ActivityItem): HTMLElement {
   if (item.action_result) evidence.push(
     h("div", {}, h("div", { class: "mb-1 font-mono text-[9.5px] uppercase tracking-[0.16em] text-faint" }, "Outcome evidence"),
       h("pre", { class: "m-0 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-4 text-muted" }, item.action_result)));
-  return h("details", { class: `overflow-hidden rounded-lg border ${border}`, dataset: { actionId: String(item.action_id) } },
+  return h("details", { class: `overflow-hidden rounded-lg border ${border}`, dataset: { actionId: String(item.action_id), continuityKey: `activity-action-${item.action_id}` } },
     h("summary", { class: "cursor-pointer select-none list-none" }, headline),
     h("div", { class: "space-y-3 border-t border-line/70 bg-raised/30 px-4 py-3" },
       ...(evidence.length ? evidence : [h("p", { class: "text-xs text-muted" }, item.status === "running" ? "The action is still running; evidence will appear here when it settles." : "No additional output was retained for this action.")])));
@@ -853,10 +878,11 @@ function activitySection(title: string, copy: string, items: ActivityItem[]): HT
     body);
 }
 
-export function renderActivity(container: HTMLElement, channelId: number): void {
-  panelLoading(container, "Activity", "Ops log for this channel — tools, escalations, and Skipper's background checks (not the chat stream).");
+export function renderActivity(container: HTMLElement, channelId: number, refresh: RenderRefreshOptions = {}): void {
+  if (!refresh.preserveExisting) panelLoading(container, "Activity", "Ops log for this channel — tools, escalations, and Skipper's background checks (not the chat stream).");
   void api<{ activity: ActivityItem[] }>(`/api/channels/${channelId}/activity`).then(({ activity }) => {
-    let filter: ActivityFilter = "all";
+    if (!refreshIsCurrent(refresh)) return;
+    let filter: ActivityFilter = activityFilters.get(channelId) || "all";
     const root = h("div", { class: "space-y-5" });
 
     const paint = (): void => {
@@ -875,7 +901,8 @@ export function renderActivity(container: HTMLElement, channelId: number): void 
           type: "button",
           class: `btn-subtle min-h-11 shrink-0 text-sm sm:min-h-0 ${filter === item.id ? "border-accent/40 bg-accent-soft text-accent" : ""}`,
           "aria-pressed": String(filter === item.id),
-          onclick: () => { filter = item.id; paint(); },
+          dataset: { continuityKey: `activity-filter-${channelId}-${item.id}` },
+          onclick: () => { filter = item.id; activityFilters.set(channelId, filter); paint(); },
         }, item.label)));
 
       const blurb = h("p", { class: "text-sm leading-6 text-muted" },
@@ -917,20 +944,22 @@ export function renderActivity(container: HTMLElement, channelId: number): void 
 
     paint();
     panelContent(container, "Activity", "Ops log for this channel — tools, escalations, and Skipper's background checks (not the chat stream).", root);
-  }).catch((error) => panelError(container, error));
+    refresh.onPaint?.();
+  }).catch((error) => { if (refreshIsCurrent(refresh)) panelError(container, error); });
 }
 
-export function renderChannelSettings(container: HTMLElement, channel: Channel, onChanged: (deleted?: boolean) => void): void {
+export function renderChannelSettings(container: HTMLElement, channel: Channel, onChanged: (deleted?: boolean) => void, onPaint?: () => void): void {
   const nameField = h("input", {
     class: "field font-mono",
     value: channel.name,
     autocomplete: "off",
     spellcheck: "false",
+    dataset: { continuityKey: `channel-settings-name-${channel.id}` },
     disabled: channel.name === "main" || !channel.can_manage ? true : undefined,
   }) as HTMLInputElement;
-  const purpose = h("textarea", { class: "field min-h-24" }, channel.purpose || "") as HTMLTextAreaElement;
-  const provider = h("select", { class: "field" }, h("option", { value: "" }, "Loading providers…")) as HTMLSelectElement;
-  const model = h("select", { class: "field" }, h("option", { value: channel.agent?.model || "" }, channel.agent?.model || "Choose a model")) as HTMLSelectElement;
+  const purpose = h("textarea", { class: "field min-h-24", "aria-label": "Channel purpose", dataset: { continuityKey: `channel-settings-purpose-${channel.id}` } }, channel.purpose || "") as HTMLTextAreaElement;
+  const provider = h("select", { class: "field", "aria-label": "Serving provider", dataset: { continuityKey: `channel-settings-provider-${channel.id}` } }, h("option", { value: "" }, "Loading providers…")) as HTMLSelectElement;
+  const model = h("select", { class: "field", "aria-label": "Serving model", dataset: { continuityKey: `channel-settings-model-${channel.id}` } }, h("option", { value: channel.agent?.model || "" }, channel.agent?.model || "Choose a model")) as HTMLSelectElement;
   const status = h("p", { class: "min-h-5 text-sm text-muted" });
   const notificationPreference = channelNotificationPreference(channel.id);
   const channelMuted = h("input", { type: "checkbox", checked: notificationPreference.muted, class: "accent-accent" }) as HTMLInputElement;
@@ -971,13 +1000,14 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
     }
   };
   provider.onchange = () => { void loadModels(); };
-  void api<{ models: RoutingModel[] }>("/api/workspace/model-policy").then(({ models }) => {
+  void api<{ models: RoutingModel[] }>("/api/workspace/model-policy").then(async ({ models }) => {
     routedModels = models;
     const groups = new Map<string, string>();
     for (const item of models) groups.set(providerKey(item), item.kind === "route" ? "Named routes" : String(item.providerName || item.providerType || "Provider"));
     const current = models.find((item) => item.id === channel.agent?.model);
     clear(provider); provider.append(h("option", { value: "" }, "Choose a provider"), ...[...groups].map(([value, label]) => h("option", { value, selected: current ? providerKey(current) === value : false }, label)));
-    void loadModels();
+    await loadModels();
+    onPaint?.();
   }).catch((error) => { status.textContent = (error as Error).message; });
   const saveName = async (): Promise<void> => {
     if (channel.name === "main") { status.textContent = "#main cannot be renamed."; return; }
@@ -1110,6 +1140,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Capabilities"), h("div", { class: "mt-3 flex flex-wrap gap-2" }, ...(channel.agent?.capabilities || []).map((capability) => h("span", { class: "chip" }, capability))), h("p", { class: "mt-3 text-xs text-muted" }, "The resident agent is channel-scoped. It calls @skipper for host-level, cross-channel, credential, guest-expert, or missing-capability work.")),
     computerCard,
     lifecycle));
+  onPaint?.();
   if (channel.agent?.provider_id) void loadModels();
 }
 
