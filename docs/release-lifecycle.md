@@ -118,8 +118,9 @@ Draft PRs are allowed for long slices; mark ready only when the quality bar is m
    evidence in their own sections.
 6. Before creating the tag or GitHub Release, finish the complete desktop
    matrix from the exact merged commit: verified macOS DMG + updater ZIP,
-   Linux host archive, and Authenticode-signed Windows Setup + full `.nupkg` +
-   literal `RELEASES` manifest.
+   Linux host archive, and Windows Setup + full `.nupkg` + literal `RELEASES`
+   manifest. Record whether Windows artifacts are trusted-signed or unsigned;
+   unsigned is accepted until 1Helm adopts a trusted Windows signing identity.
 7. Publish those desktop artifacts and complete release notes together through
    one GitHub Release. Never publish a subset or attach a platform later to a
    version already described as complete. Include a directly distributed
@@ -154,7 +155,7 @@ workspace state.
 | Named desktop release | One version/commit, changelog, full numbered notes, exact tag, complete Mac + Linux + Windows asset matrix, and clean installation evidence for all three |
 | Mac host update | Published notarized/stapled updater ZIP feed, installed-old-to-new acceptance, and preserved Application Support |
 | Linux host update | Digest-qualified artifact, real systemd old-to-new update, health check/rollback, and preserved `/var/lib/1helm` |
-| Windows host update | Authenticode-signed Setup + `.nupkg` + `RELEASES`, real Squirrel old-to-new update, WSL lifecycle smoke, and preserved app data |
+| Windows host update | Setup + `.nupkg` + `RELEASES` with disclosed signature status, real Squirrel old-to-new update, WSL lifecycle smoke, and preserved app data |
 
 If any platform artifact or acceptance run is skipped, the release is paused,
 not partially shipped. Say exactly what is missing and do not call it “done.”

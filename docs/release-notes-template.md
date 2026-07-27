@@ -43,7 +43,7 @@ Source commit: `<full merged SHA>`
   launch/smoke behavior, and Application Support preservation.
 - For Linux, state archive/source/digest verification and the real prior-version
   systemd update, health-check rollback, and `/var/lib/1helm` preservation.
-- For Windows, state Authenticode verification, Setup clean install, Squirrel
+- For Windows, state Authenticode status, Setup clean install, Squirrel
   prior-version update, WSL lifecycle smoke, loopback health, and app-data
   preservation.
 - Name anything skipped or incomplete; do not call an incomplete release fully

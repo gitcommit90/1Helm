@@ -60,7 +60,10 @@ contract as the slice hardens.
 9. Each supported desktop platform owns its native artifact and installed-app
    verification lane. The retained Apple Silicon host owns macOS signing and
    notarization; Linux owns the systemd/LXC artifact and updater acceptance;
-   Windows 11 x64 owns Authenticode, Squirrel, and WSL acceptance.
+   Windows 11 x64 owns Squirrel and WSL acceptance. Authenticode is optional
+   until 1Helm adopts a trusted Windows signing identity; unsigned artifacts
+   must be identified honestly, but their signature status is not a release
+   blocker.
 
 ## Versioning
 
@@ -80,9 +83,11 @@ contract as the slice hardens.
   loopback behavior, and retained state on the retained release host.
 - Linux verification must use the digest-qualified release archive and prove a
   real systemd update, health-failure rollback, and retained `/var/lib/1helm`.
-- Windows verification must use Authenticode-signed Setup/Squirrel artifacts
-  and prove clean install, old-to-new update, loopback health, WSL lifecycle,
-  and retained application data on Windows 11 x64.
+- Windows verification must prove the Setup/Squirrel signature status, clean
+  install, old-to-new update, loopback health, WSL lifecycle, and retained
+  application data on Windows 11 x64. Do not substitute a self-signed
+  certificate or block an otherwise accepted release solely because the
+  artifacts are honestly disclosed as unsigned.
 
 Never hand-edit only a deployment target to fix the product. Fix in git,
 review, merge, and redeploy the exact source commit.

@@ -82,7 +82,7 @@ RELEASE_NOTES="dist/1Helm-${VERSION}-release-notes.md"
 # Build from clean snapshots of the same MERGED_COMMIT on the platform owners:
 # macOS arm64: npm ci && npm run typecheck && npm run build && npm test && npm run package:dmg:release
 # Linux:       npm ci && npm run typecheck && npm run build && npm test && npm run package:linux
-# Windows x64: npm ci && npm run typecheck && npm run build && npm test && npm run package:windows:release
+# Windows x64: npm ci && npm run typecheck && npm run build && npm test && npm run package:windows
 
 for artifact in "$DMG" "$UPDATE_ZIP" "$HEADLESS" "$WINDOWS_SETUP" "$WINDOWS_NUPKG" "$WINDOWS_RELEASES"; do
   test -s "$artifact"
@@ -95,9 +95,11 @@ rg -q '^1\. ' "$RELEASE_NOTES" # multi-item ships must retain a numbered ledger
 ```
 
 The Windows `.nupkg` basename must exactly match the entry inside `RELEASES`.
-All Windows executable code and Setup must pass Authenticode verification. Do
-not use unsigned output from `npm run package:windows`; public candidates must
-come from the fail-closed `package:windows:release` command on Windows x64.
+Record Authenticode status for Windows executable code and Setup. Trusted
+signing is optional until 1Helm adopts a Windows signing identity: an honestly
+disclosed `NotSigned` result is accepted and must not block the release. Never
+substitute a self-signed identity. When a trusted identity is configured, use
+the fail-closed `package:windows:release` command.
 
 Only after Sections 6–8 pass for all three desktop platforms:
 
@@ -164,9 +166,10 @@ Expect first-run / needs_setup on empty data dir.
   host running the prior release, invoke the Captain host-update action,
   observe checking/downloading/installing/restarting, verify the new version
   and `/var/lib/1helm` identity, and exercise health-failure rollback.
-- **Windows:** on Windows 11 x64, verify Authenticode on Setup, the packaged app,
-  and its executable code; confirm `.nupkg` and `RELEASES` consistency; clean
-  install Setup; exercise the real WSL 2 channel lifecycle; then expose staged
+- **Windows:** on Windows 11 x64, record Authenticode status for Setup, the
+  packaged app, and its executable code; confirm `.nupkg` and `RELEASES`
+  consistency; clean install Setup; exercise the real WSL 2 channel lifecycle;
+  then expose staged
   Squirrel metadata to the prior public version and prove download,
   verification, restart installation, new version, loopback health, WSL state,
   and app-data preservation.
@@ -193,7 +196,7 @@ Local setup:    needs_setup verified on clean CTRL_DATA_DIR
 Clean deploy:   <pass / skipped + reason>
 Mac host update:<public artifact installed on release host + state preserved>
 Linux update:  <old → new, digest + health + state preserved>
-Windows update:<old → new, Authenticode + Squirrel feed + WSL/app state preserved>
+Windows update:<old → new, disclosed signature status + Squirrel feed + WSL/app state preserved>
 Desktop matrix:<DMG + Mac ZIP + Linux TGZ + Windows Setup + nupkg + RELEASES, all same version/commit>
 Android:      <public APK digest, certificate fingerprint, install/update smoke>
 iOS:          <App Store build number + validation/upload result>

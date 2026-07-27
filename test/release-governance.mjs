@@ -54,6 +54,8 @@ test("desktop releases fail closed unless Mac, Linux, and Windows ship together"
   assert.match(checklist + lifecycle + governance, /pause (?:the )?(?:whole|entire) release/i);
   assert.match(checklist, /package:windows:release/);
   assert.match(checklist, /Authenticode/i);
+  assert.match(checklist + lifecycle + governance, /NotSigned[\s\S]+must not block|unsigned is accepted/i);
+  assert.match(checklist + governance, /Never[\s\S]+self-signed|Never[\s\S]+self-sign/i);
   assert.match(checklist, /Squirrel/i);
   assert.doesNotMatch(notes, /Other published artifact, or `Not applicable`/i);
 });
