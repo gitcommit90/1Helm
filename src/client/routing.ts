@@ -542,7 +542,10 @@ function keyedForm(id: string, label: string, preset: RoutingState["keyedPresets
     testedModels = null;
     testedFingerprint = null;
     testedSaveFingerprint = null;
-    key.value = ""; wrap.remove(); await refresh();
+    // Keep the disabled Connecting state mounted until the authoritative
+    // provider refresh finishes. Removing the form first exposes stale source
+    // controls that a fast second click can target while the view is repainting.
+    key.value = ""; await refresh(); wrap.remove();
   } }, "Connect");
   inputs.forEach((input) => input.addEventListener("input", () => invalidate()));
   add(wrap,

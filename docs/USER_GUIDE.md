@@ -126,18 +126,29 @@ Whiteboard, Code, Docs, and Presentations modes map directly to:
 ```
 
 Each mode keeps the same folder rail and nested-folder navigation while the
-center changes to the appropriate editor. Notes and Docs edit Markdown, Code
-provides a focused text editor and declines unsupported binary types,
-Whiteboard uses one readable `.whiteboard.json` file, and Presentations uses
-one readable `.slides.json` file. Drafts and each mode's last open asset remain
-available while switching modes. Opening one of these assets from Files routes
-to the matching Cowork mode because both surfaces edit the same bytes.
+center changes to the appropriate editor. Notes and Docs use collaborative
+Markdown editors with formatting and preview; Code adds line numbers, search,
+indentation, and language-aware highlighting while declining unsupported
+binary types. Whiteboard embeds a collaborative Excalidraw canvas in one
+readable `.whiteboard.json` file. Presentations use one readable `.slides.json`
+file with an Excalidraw-backed slide canvas, thumbnails, reordering, and
+presentation mode. Drafts and each mode's last open asset remain available
+while switching modes. Opening one of these assets from Files routes to the
+matching Cowork mode because both surfaces edit the same bytes.
+
+People viewing the same text asset can edit simultaneously and see each
+other's cursor and selection. Whiteboard and presentation scene changes also
+appear live for the other viewers. Agent and Terminal changes to an open clean
+file are pulled into Cowork automatically; if a local draft and an external
+change conflict, Cowork asks before replacing either version.
 
 The resident avatar opens Cowork's collapsible agent panel without covering the
 asset on desktop. Its first message starts a normal channel thread and adds the
-current `/workspace/...` path; later messages continue that thread, and **Open
-in Chat** moves the same session to the channel's regular conversation view.
-The agent harness otherwise remains unchanged.
+current `/workspace/...` path. When other people are actively viewing that
+asset, their usernames are included with the first message so the normal
+thread can include the current collaborators. Later messages continue that
+thread, and **Open in Chat** moves the same session to the channel's regular
+conversation view. The agent harness otherwise remains unchanged.
 
 The terminal prompt displays the live current path and changes after `cd`.
 1Helm sends a terminal heartbeat while the pane is open and automatically

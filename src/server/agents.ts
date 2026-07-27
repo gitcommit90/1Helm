@@ -629,6 +629,7 @@ function workspaceFileView(path: string, host: string): WorkspaceFile {
 function checkedWorkspaceText(input: string): string {
   const content = String(input ?? "");
   if (Buffer.byteLength(content, "utf8") > MAX_EDITABLE_FILE_BYTES) throw new Error("Editable files are limited to 5 MB.");
+  if (content.includes("\0")) throw new Error("This file type is not supported to view.");
   return content;
 }
 

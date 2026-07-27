@@ -1,7 +1,7 @@
 {
   "name": "1helm",
   "productName": "1Helm",
-  "version": "0.0.17",
+  "version": "0.0.18",
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-only",
@@ -17,10 +17,11 @@
     "assets:screenshots": "node scripts/capture-user-guide-screenshots.mjs && node scripts/generate-readme-assets.cjs",
     "assets:readme": "node scripts/generate-readme-assets.cjs",
     "postinstall": "node scripts/ensure-node-pty-helper.cjs",
-    "build:js": "esbuild src/client/app.ts --bundle --format=esm --outfile=public/bundle.js --loader:.css=css --minify",
+    "build:js": "esbuild src/client/app.ts --bundle --format=esm --outfile=public/bundle.js --loader:.css=css --minify && node scripts/self-host-excalidraw.mjs",
     "build:css": "tailwindcss -i src/client/styles.css -o public/app.css --minify",
     "build:stamp": "node src/build/stamp.mjs",
-    "build": "npm run build:js && npm run build:css && npm run build:stamp",
+    "build:excalidraw": "node scripts/copy-excalidraw-assets.mjs",
+    "build": "npm run build:excalidraw && npm run build:js && npm run build:css && npm run build:stamp",
     "mobile:sync": "node scripts/sync-mobile-version.mjs && npm run assets:mobile && npm run build && cap sync",
     "mobile:check": "npm run typecheck && node --test test/mobile.mjs && cap doctor android",
     "start": "node --disable-warning=ExperimentalWarning src/server/index.ts",
@@ -65,11 +66,26 @@
     "@capacitor/push-notifications": "^8.0.1",
     "@capacitor/splash-screen": "^8.0.1",
     "@capacitor/status-bar": "^8.0.1",
+    "@codemirror/lang-css": "6.3.1",
+    "@codemirror/lang-html": "6.4.11",
+    "@codemirror/lang-javascript": "6.2.5",
+    "@codemirror/lang-json": "6.0.2",
+    "@codemirror/lang-markdown": "6.5.1",
+    "@codemirror/lang-python": "6.2.1",
+    "@codemirror/lang-sql": "6.10.0",
+    "@codemirror/lang-yaml": "6.1.3",
+    "@excalidraw/excalidraw": "0.18.1",
     "@gitcommit90/rerouted": "https://github.com/gitcommit90/rerouted/releases/download/v0.5.7/ReRouted-0.5.7-linux-node.tgz",
     "@opencoredev/loginwithchatgpt-server": "^0.2.0",
+    "codemirror": "6.0.2",
     "node-pty": "^1.1.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "spectrum-ts": "8.0.0",
-    "ws": "^8.21.1"
+    "ws": "^8.21.1",
+    "y-codemirror.next": "0.3.5",
+    "y-websocket": "1.5.4",
+    "yjs": "13.6.31"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.4.2",
@@ -78,6 +94,8 @@
     "@electron/packager": "20.0.3",
     "@tailwindcss/cli": "^4.3.2",
     "@types/node": "^26.1.1",
+    "@types/react": "18.3.28",
+    "@types/react-dom": "18.3.7",
     "@types/ws": "^8.18.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
@@ -91,6 +109,13 @@
     "wrangler": "^4.113.0"
   },
   "overrides": {
+    "@excalidraw/excalidraw": {
+      "nanoid": "3.3.11"
+    },
+    "@excalidraw/mermaid-to-excalidraw": {
+      "nanoid": "5.0.9"
+    },
+    "lodash-es": "4.18.1",
     "sharp": "$sharp",
     "ws": "$ws"
   },

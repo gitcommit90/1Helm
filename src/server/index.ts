@@ -77,6 +77,7 @@ import { configurePhoton, continuePhotonConversation, deliverPhotonEvent, photon
 import { photonSetupStatus, startPhotonSetup } from "./photon-auth.ts";
 import { completeGmailConnection, gmailConnectionStatus, saveGmailOAuthClient, startGmailConnection } from "./gmail.ts";
 import { cancelMnemosyneRuntimePreparation, ensureAgentMemory, mnemosyneAvailable, prepareMnemosyneRuntime } from "./memory.ts";
+import { attachCoworkClient, coworkPresence, coworkViewerUsernames, flushCoworkDocuments, normalizeCoworkPath } from "./cowork-collaboration.ts";
 import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
 import { startFollowupLoop, threadFollowupView, bumpThreadFollowup } from "./followups.ts";
@@ -162,7 +163,7 @@ const SECURITY_HEADERS: Record<string, string> = {
   "referrer-policy": "same-origin",
   // Speech-to-text is an explicit, user-triggered first-party composer action.
   // Keep camera and location denied, but allow this origin to request the mic.
-  "permissions-policy": "camera=(), microphone=(self), geolocation=()",
+  "permissions-policy": "camera=(), microphone=(self), geolocation=(), unload=(self)",
 };
 const json = (res: ServerResponse, code: number, body: unknown): void => {
   const s = JSON.stringify(body);
@@ -1525,6 +1526,13 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { file: saveWorkspaceTextFile(channelId, path, String(b?.content || "")) });
       } catch (error) { return json(res, /not found/i.test((error as Error).message) ? 404 : 400, { error: (error as Error).message }); }
     }
+    const coworkPresenceRoute = p.match(/^\/api\/channels\/(\d+)\/cowork\/presence$/);
+    if (coworkPresenceRoute && m === "GET") {
+      const channelId = Number(coworkPresenceRoute[1]);
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      try { return json(res, 200, { viewers: coworkPresence(channelId, url.searchParams.get("path") || "") }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
     const worldFile = p.match(/^\/api\/channels\/(\d+)\/files\/content$/);
     if (worldFile && m === "GET") {
       const channelId = Number(worldFile[1]);
@@ -1619,7 +1627,17 @@ const server = createServer(async (req, res) => {
       if (m === "POST") {
         const b = await jbody(req);
         if (b.modelPolicy && !user.is_admin) return json(res, 403, { error: "Only the Captain can choose a thread model." });
-        try { return json(res, 200, { message: postMessage(cid, user, String(b.body || ""), b.parentId ? Number(b.parentId) : null, (b.uploads as never[]) || [], b.modelPolicy as never) }); }
+        try {
+          let body = String(b.body || "");
+          if (b.coworkPath) {
+            const path = normalizeCoworkPath(String(b.coworkPath));
+            const viewers = coworkViewerUsernames(cid, path, Number(user.id));
+            const suffix = b.parentId ? [] : [`Working file: /workspace/${path}`];
+            if (viewers.length) suffix.push(`Working with: ${viewers.map((username) => `@${username}`).join(" ")}`);
+            if (suffix.length) body = `${body.trim()}\n\n${suffix.join("\n")}`;
+          }
+          return json(res, 200, { message: postMessage(cid, user, body, b.parentId ? Number(b.parentId) : null, (b.uploads as never[]) || [], b.modelPolicy as never) });
+        }
         catch (error) { return json(res, 409, { error: (error as Error).message }); }
       }
     }
@@ -2106,15 +2124,33 @@ const server = createServer(async (req, res) => {
   }
 });
 
-// ---- WebSockets: /ws (app events) and /ws/term/:sid (terminal proxy) ----
+// ---- WebSockets: app events, terminals, and membership-gated Cowork files ----
 const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (req, socket: Socket, head) => {
   const url = new URL(req.url || "/", "http://localhost");
   const user = userFromToken(url.searchParams.get("token"));
   if (!user) { socket.destroy(); return; }
   const termMatch = url.pathname.match(/^\/ws\/term\/([^/]+)$/);
+  const coworkMatch = url.pathname.match(/^\/ws\/cowork\/(\d+)\/[^/]+$/);
+  let cowork: { channelId: number; path: string } | null = null;
+  if (coworkMatch) {
+    const channelId = Number(coworkMatch[1]);
+    try {
+      const path = normalizeCoworkPath(url.searchParams.get("path") || "");
+      if (!canSee(user, channelId)) throw new Error("No access");
+      // Validate before upgrading so arbitrary/non-text files never become rooms.
+      readWorkspaceTextFile(channelId, path);
+      cowork = { channelId, path };
+    } catch { socket.destroy(); return; }
+  }
+  if (!termMatch && !cowork && url.pathname !== "/ws") { socket.destroy(); return; }
   wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
     if (termMatch) { void attachClient(termMatch[1], ws, Number(user.id)); return; }
+    if (cowork) {
+      try { attachCoworkClient(cowork.channelId, cowork.path, { id: Number(user.id), username: String(user.username), display: String(user.display), avatar: String(user.avatar || "") }, ws, req); }
+      catch { ws.close(1008, "Cowork file unavailable"); }
+      return;
+    }
     const client = register(ws, Number(user.id));
     ws.on("close", () => unregister(client));
     ws.on("message", () => { /* clients act via REST; WS is push-only */ });
@@ -2186,6 +2222,7 @@ const shutdown = async (forNativeUpdate = false): Promise<void> => {
   await stopPhotonConnector().catch(() => undefined);
   stopWorkflowLoop();
   await shutdownChannelComputers().catch(() => undefined);
+  flushCoworkDocuments();
   for (const client of wss.clients) client.close(1012, "1Helm host restarting");
   await Promise.race([
     new Promise<void>((resolve) => server.close(() => resolve())),

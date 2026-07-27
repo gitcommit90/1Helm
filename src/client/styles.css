@@ -898,21 +898,29 @@ html, body { height: 100%; width: 100%; overflow: hidden; overscroll-behavior: n
 .cowork-section.is-active { border-bottom-color: var(--c-accent); color: var(--c-fg); }
 .cowork-workspace { background-image: linear-gradient(var(--c-grid) 1px, transparent 1px), linear-gradient(90deg, var(--c-grid) 1px, transparent 1px); background-size: 24px 24px; }
 .cowork-editor-toolbar { display: flex; min-height: 3rem; flex-shrink: 0; align-items: center; gap: .5rem; border-bottom: 1px solid var(--c-line); background: color-mix(in srgb, var(--c-surface) 92%, transparent); padding: .45rem .7rem; }
-.cowork-note-editor, .cowork-code-editor { min-height: 0; flex: 1 1 auto; resize: none; border: 0; background: color-mix(in srgb, var(--c-surface) 95%, transparent); padding: 1.25rem 1.5rem; color: var(--c-fg); outline: none; }
-.cowork-note-editor { font-family: var(--font-mono); font-size: 14px; line-height: 1.7; }
-.cowork-code-editor { font-family: var(--font-mono); font-size: 13px; line-height: 1.65; tab-size: 2; background: color-mix(in srgb, #071019 72%, var(--c-surface)); }
+.cowork-codemirror { min-height: 0; flex: 1 1 auto; overflow: hidden; background: color-mix(in srgb, var(--c-surface) 95%, transparent); font-size: 13px; }
+.cowork-codemirror > .cm-editor { height: 100%; }
+.cowork-codemirror-notes { font-size: 14px; }
+.cowork-codemirror-code { background: color-mix(in srgb, #071019 72%, var(--c-surface)); }
 .cowork-markdown-preview { min-height: 100%; overflow-y: auto; background: var(--c-surface); padding: 1.5rem 2rem; }
 .cowork-doc-canvas { background: color-mix(in srgb, var(--c-raised) 75%, var(--c-bg)); }
-.cowork-doc-page { width: min(48rem, calc(100% - 2rem)); min-height: min(62rem, calc(100% - 2rem)); margin: 1rem auto; resize: none; border: 1px solid var(--c-line); border-radius: .2rem; background: var(--c-surface); padding: clamp(1.5rem, 6vw, 4rem); color: var(--c-fg); box-shadow: 0 20px 70px -45px #000; outline: none; font-family: var(--font-sans); font-size: 15px; line-height: 1.75; }
-.cowork-whiteboard-canvas { position: relative; min-width: 45rem; min-height: 32rem; flex: 1 1 auto; overflow: auto; background: radial-gradient(circle, color-mix(in srgb, var(--c-faint) 35%, transparent) 1px, transparent 1px); background-size: 20px 20px; }
-.cowork-whiteboard-card { position: absolute; width: 13rem; height: 8rem; cursor: move; border: 2px solid var(--c-accent); border-radius: .65rem; background: color-mix(in srgb, var(--c-surface) 95%, transparent); padding: .65rem; box-shadow: 0 14px 35px -25px #000; }
+.cowork-doc-page { width: min(48rem, calc(100% - 2rem)); min-height: min(62rem, calc(100% - 2rem)); margin: 1rem auto; border: 1px solid var(--c-line); border-radius: .2rem; background: var(--c-surface); box-shadow: 0 20px 70px -45px #000; overflow: hidden; }
+.cowork-doc-page .cm-content { padding: clamp(1.5rem, 6vw, 4rem) !important; font-family: var(--font-sans); font-size: 15px; line-height: 1.75; }
+.cowork-doc-page .cm-gutters { display: none; }
+.cowork-excalidraw { position: relative; min-width: 0; min-height: 0; flex: 1 1 auto; overflow: hidden; background: var(--c-surface); }
+.cowork-excalidraw > .excalidraw { height: 100%; }
+.cowork-whiteboard-canvas { min-height: 32rem; }
+.cowork-presence [data-cowork-viewer] { box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-line) 80%, transparent); }
+.cowork-file-actions .btn-ghost { flex: 1 1 auto; }
 .cowork-slide-strip { width: 11rem; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--c-line); background: var(--c-raised); padding: .6rem; }
-.cowork-slide-thumb { display: flex; width: 100%; min-height: 4.5rem; align-items: flex-start; gap: .4rem; margin-bottom: .5rem; border: 1px solid var(--c-line); border-radius: .45rem; background: var(--c-surface); padding: .45rem; text-align: left; }
+.cowork-slide-thumb { display: flex; width: 100%; min-height: 5.25rem; flex-direction: column; align-items: stretch; gap: .25rem; margin-bottom: .5rem; border: 1px solid var(--c-line); border-radius: .45rem; background: var(--c-surface); padding: .45rem; text-align: left; }
 .cowork-slide-thumb.is-active { border-color: var(--c-accent); box-shadow: 0 0 0 2px var(--c-accent-soft); }
+.cowork-slide-action { min-width: 1.4rem; border-radius: .25rem; color: var(--c-muted); }
+.cowork-slide-action:hover:not(:disabled) { background: var(--c-hover); color: var(--c-fg); }
+.cowork-slide-action:disabled { opacity: .3; }
 .cowork-slide-stage { display: grid; min-width: 0; flex: 1 1 auto; place-items: center; overflow: auto; padding: 1.5rem; background: color-mix(in srgb, var(--c-raised) 70%, var(--c-bg)); }
-.cowork-slide { display: flex; aspect-ratio: 16 / 9; width: min(55rem, 90%); flex-direction: column; justify-content: center; border: 1px solid var(--c-line); background: var(--c-surface); padding: 8%; box-shadow: 0 22px 70px -40px #000; }
-.cowork-slide-title { width: 100%; border: 0; background: transparent; color: var(--c-fg); outline: none; font-family: var(--font-display); font-size: clamp(1.6rem, 4vw, 3rem); }
-.cowork-slide-body { width: 100%; min-height: 0; flex: 1 1 auto; margin-top: 1rem; resize: none; border: 0; background: transparent; color: var(--c-muted); outline: none; font-size: clamp(.9rem, 1.6vw, 1.25rem); line-height: 1.6; }
+.cowork-slide-canvas { aspect-ratio: 16 / 9; width: min(55rem, 96%); flex: 0 0 auto; border: 1px solid var(--c-line); box-shadow: 0 22px 70px -40px #000; }
+.cowork-presentation-view { width: 100%; height: 100%; }
 .cowork-agent-toggle { position: absolute; right: 1rem; bottom: 1rem; z-index: 5; display: grid; width: 3rem; height: 3rem; place-items: center; border: 3px solid var(--c-surface); border-radius: 999px; background: var(--c-surface); box-shadow: 0 10px 30px -15px #000, 0 0 0 1px var(--c-line); transition: transform .15s ease, box-shadow .15s ease; }
 .cowork-agent-toggle:hover { transform: translateY(-2px); box-shadow: 0 16px 34px -15px #000, 0 0 0 2px var(--c-accent-soft); }
 .cowork-chat-message { margin-right: 1.5rem; border: 1px solid var(--c-line); border-radius: .7rem; background: var(--c-raised); padding: .65rem .75rem; }

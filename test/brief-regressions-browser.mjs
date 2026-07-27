@@ -122,21 +122,31 @@ try {
 
   await page.goto(`${base}/c/${channel.slug}/cowork`, { waitUntil: "networkidle0" });
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent?.includes("Quiet refresh proof.md"))?.click());
-  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"]')?.value.includes("Start here"));
+  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Start here"));
+  await page.click('[aria-label="Notes editor"] .cm-content');
+  await page.keyboard.down("Control"); await page.keyboard.press("End"); await page.keyboard.up("Control");
+  await page.keyboard.type("\n\nUnsaved words survive.");
+  await page.click('[aria-label="Notes editor"] .cm-line');
+  await page.keyboard.press("Home");
+  for (let index = 0; index < 2; index++) await page.keyboard.press("ArrowRight");
+  await page.keyboard.down("Shift"); for (let index = 0; index < 7; index++) await page.keyboard.press("ArrowRight"); await page.keyboard.up("Shift");
   await page.evaluate(() => {
-    const editor = document.querySelector('[aria-label="Notes editor"]');
-    editor.value += "\n\nUnsaved words survive.";
-    editor.focus(); editor.setSelectionRange(4, 11); editor.dispatchEvent(new Event("input"));
+    const editor = document.querySelector('[aria-label="Notes editor"] .cm-content');
     window.__briefNoteEditor = editor;
   });
   const themeBeforeNotesRefresh = await page.evaluate(() => document.documentElement.className);
   await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => /Switch to/.test(button.title))?.click());
   await page.waitForFunction((prior) => document.documentElement.className !== prior, {}, themeBeforeNotesRefresh);
   const durableNote = await page.evaluate(() => {
-    const editor = document.querySelector('[aria-label="Notes editor"]');
-    return { sameNode: editor === window.__briefNoteEditor, value: editor?.value, focused: document.activeElement === editor, start: editor?.selectionStart, end: editor?.selectionEnd };
+    const editor = document.querySelector('[aria-label="Notes editor"] .cm-content');
+    return {
+      sameNode: editor === window.__briefNoteEditor,
+      value: [...document.querySelectorAll('[aria-label="Notes editor"] .cm-line')].map((line) => line.textContent).join("\n"),
+      focused: document.activeElement === editor,
+      selection: window.getSelection()?.toString(),
+    };
   });
-  ok(durableNote.sameNode && durableNote.value.endsWith("Unsaved words survive.") && durableNote.focused && durableNote.start === 4 && durableNote.end === 11,
+  ok(durableNote.sameNode && durableNote.value.endsWith("Unsaved words survive.") && durableNote.focused && durableNote.selection === "Durable",
     "shell refreshes preserve the exact note editor node, unsaved draft, focus, and selection");
   await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent?.trim() === "Preview")?.click());
   await page.waitForSelector('.cowork-markdown-preview:not(.hidden)');
