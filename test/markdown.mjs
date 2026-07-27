@@ -49,6 +49,7 @@ ok(/<h2>Steps<\/h2>/.test(html), "H2 heading rendered");
 ok(/<h3>Notes<\/h3>/.test(html), "H3 heading rendered");
 ok(!/(^|>)#{1,3}\s/.test(html.replace(/<[^>]+>/g, "")), "no raw hashtags leak into text");
 ok(/<strong>plan<\/strong>/.test(html), "bold rendered");
+ok(/<strong> Goal <\/strong>/.test(md("** Goal **")), "spaced bold labels render without literal asterisks");
 ok(/<em>caveats<\/em>/.test(html), "italic rendered");
 ok(/<del>old steps<\/del>/.test(html), "strikethrough rendered");
 ok(/<ol>.*<li>Pull the latest image<\/li>/s.test(html), "ordered list rendered");

@@ -91,10 +91,20 @@ const stopApp = async () => {
   await Promise.race([new Promise((resolve) => app.once("exit", resolve)), sleep(2000)]);
   if (app.exitCode == null) app.kill("SIGKILL");
 };
-const waitForAgentReply = async (rootId, token, authorName) => waitFor(async () => {
-  const response = await api(`/api/messages/${rootId}/thread`, {}, token);
-  return response.body.replies?.find((message) => message.author?.name === authorName && /Answer complete\.|Error contacting model/.test(message.body || ""));
-}, `@${authorName} reply`, 15_000);
+// This file intentionally exercises many concurrent agent lanes. Give a
+// completed mock reply enough wall time on loaded release hosts without
+// weakening the per-step assertions or accepting a placeholder response.
+const waitForAgentReply = async (rootId, token, authorName) => {
+  try {
+    return await waitFor(async () => {
+      const response = await api(`/api/messages/${rootId}/thread`, {}, token);
+      return response.body.replies?.find((message) => message.author?.name === authorName && /Answer complete\.|Error contacting model/.test(message.body || ""));
+    }, `@${authorName} reply`, 60_000);
+  } catch (error) {
+    const response = await api(`/api/messages/${rootId}/thread`, {}, token);
+    throw new Error(`${(error).message}; thread=${JSON.stringify(response.body)}`);
+  }
+};
 
 try {
   rmSync(dataDir, { recursive: true, force: true });

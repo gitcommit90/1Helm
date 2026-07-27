@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17] - 2026-07-27
+
+### Added
+
+- Cowork replaces the former Notes tab with one direct editing plane for the
+  channel's existing `/workspace/notes`, `/whiteboards`, `/code`, `/docs`, and
+  `/presentations` trees. Its five stable work modes share nested-folder
+  navigation and add focused Markdown, document, code, single-file whiteboard,
+  and single-file presentation editors.
+- Cowork's collapsible resident-agent panel keeps the active file visible,
+  starts an ordinary channel thread, adds the open `/workspace/...` path only
+  to the first message, and lets that same session continue in Chat.
+- The top-bar Quick Note captures a titled or collision-safe untitled Markdown
+  note directly into `/workspace/notes` without leaving the active channel,
+  tab, thread, or scroll position. Collapsed drafts persist in the current
+  session; dictation, Escape-to-save, and Control/Command+Enter are supported.
+- Dictation now has a subtle listening waveform and active resident work uses
+  a compact animated orb without obscuring content.
+
+### Changed
+
+- Files is now a familiar two-pane browser with a persistent folder rail,
+  breadcrumbs, bounded content grid, search, sorting, metadata, distinct
+  folder and file-type icons, non-color-only selection, and direct create,
+  upload, open, rename, move, duplicate, delete, and download actions. Cowork
+  assets open in the matching Cowork mode over the same underlying file.
+- Markdown now renders consistently in global and channel Threads, Board,
+  session summaries, agent and status messages, Cowork chat, Memory, Texts,
+  and Activity, including spaced bold labels such as `** Goal **`.
+- Photon conversations no longer repeat robotic phone-number source labels;
+  legacy entries use the concise human-facing title “Text with Skipper.”
+- Mobile Settings uses a compact horizontal section rail, all layouts track
+  the real visual viewport and safe areas, and scrolling away from the message
+  composer releases focus so the on-screen keyboard can dismiss naturally.
+- The redundant **Call Skipper** button is removed; `@Skipper` remains the
+  direct escalation path.
+
+### Fixed
+
+- Background messages, polling, synchronization, route repaints, and shell
+  updates no longer remount live Files or Cowork surfaces or reset the user's
+  focused input, selection/cursor, draft value, scroll position, expanded
+  details, active file, panel, or workspace mode.
+- Folder and file rows no longer share an ambiguous document glyph, and mobile
+  panels and Terminal size against the visible screen instead of extending
+  beneath browser chrome, the keyboard, or operating-system safe areas.
+
 ### Documentation
 
 - The public privacy policy now covers the iOS gateway, just-in-time media and
@@ -444,7 +491,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.16...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.17...HEAD
+[0.0.17]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.17
 [0.0.16]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.16
 [0.0.15]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.15
 [0.0.14]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.14

@@ -25,6 +25,7 @@ test("speech-to-text is explicit, graceful, and combination-safe", () => {
   assert.match(server, /"permissions-policy": "camera=\(\), microphone=\(self\), geolocation=\(\)"/, "the web control plane permits first-party microphone access for explicit dictation");
   assert.match(app, /SpeechRecognition\?[^\n]+webkitSpeechRecognition/, "standard and prefixed browser recognition are supported");
   assert.match(app, /dataset: \{ speechToggle: "" \}/, "the composer exposes an explicit mic control");
+  assert.match(app, /data(?:set)?: \{ listeningIndicator: "" \}/, "dictation exposes a subtle global listening indicator");
   assert.match(app, /Speech-to-text is not available in this browser/, "unsupported browsers get a useful explanation");
   assert.match(app, /event\.key === "Alt" && !event\.repeat && !event\.ctrlKey && !event\.metaKey && !event\.shiftKey/, "only a bare Option\/Alt keydown starts tap detection");
   assert.match(app, /if \(altTapOnly\) altTapOnly = false/, "any combined keystroke cancels the single-tap shortcut");

@@ -16,6 +16,7 @@ type StoredSession = { server: string; token: string };
 const native = Capacitor.isNativePlatform();
 let serverOrigin = "";
 let launchFinishQueued = false;
+let viewportInstalled = false;
 
 /** Keep the reserved native status surface visually joined to the app header. */
 export async function syncNativeStatusSurface(): Promise<void> {
@@ -31,6 +32,39 @@ export async function syncNativeStatusSurface(): Promise<void> {
 export const isNativeMobile = (): boolean => native;
 export const mobilePlatform = (): string => native ? Capacitor.getPlatform() : "web";
 export const getServerOrigin = (): string => serverOrigin;
+
+/** Track the truly visible viewport (browser chrome + keyboard), and let an
+ * upward conversation scroll dismiss composition like a native messenger. */
+export function installMobileViewportBehavior(): void {
+  if (viewportInstalled) return;
+  viewportInstalled = true;
+  const update = (): void => {
+    const viewport = window.visualViewport;
+    const height = Math.max(320, viewport?.height || window.innerHeight);
+    const keyboard = Math.max(0, window.innerHeight - height - (viewport?.offsetTop || 0));
+    document.documentElement.style.setProperty("--app-viewport-height", `${height}px`);
+    document.documentElement.style.setProperty("--app-keyboard-height", `${keyboard}px`);
+    document.documentElement.classList.toggle("keyboard-visible", keyboard > 120);
+    window.dispatchEvent(new CustomEvent("1helm:viewport", { detail: { height, keyboard } }));
+  };
+  window.visualViewport?.addEventListener("resize", update, { passive: true });
+  window.visualViewport?.addEventListener("scroll", update, { passive: true });
+  window.addEventListener("resize", update, { passive: true });
+  update();
+  const lastTop = new WeakMap<HTMLElement, number>();
+  document.addEventListener("scroll", (event) => {
+    if (!matchMedia("(max-width: 767px)").matches) return;
+    const target = event.target as HTMLElement | null;
+    if (!target?.matches?.("#msgs,#threadmsgs,#channelview,[data-cowork-chat-stream]")) return;
+    const previous = lastTop.get(target) ?? target.scrollHeight;
+    const awayFromComposer = target.scrollTop < previous - 2 || target.scrollHeight - target.scrollTop - target.clientHeight > 48;
+    lastTop.set(target, target.scrollTop);
+    const active = document.activeElement as HTMLElement | null;
+    if (!awayFromComposer || !active?.closest?.(".composer-wrap")) return;
+    active.blur();
+    if (native) void Keyboard.hide().catch(() => undefined);
+  }, true);
+}
 
 /** Reveal the first real native screen only after the WebView has painted it. */
 export function finishNativeLaunch(): void {
@@ -93,6 +127,7 @@ export function serverWebSocketUrl(path: string): string {
 }
 
 export async function initializeMobileRuntime(): Promise<string> {
+  installMobileViewportBehavior();
   if (!native) return localStorage.getItem("ctrl.token") || "";
   const platform = mobilePlatform();
   document.documentElement.dataset.nativeMobile = platform;

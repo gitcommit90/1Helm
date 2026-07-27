@@ -3,7 +3,7 @@ export type User = {
   description: string; job_title: string; avatar: string; tour_complete: boolean;
 };
 export type Author = { kind: "user" | "bot" | "system"; id: number; name: string };
-export type Attachment = { id: number; name: string; mime: string; size: number };
+export type Attachment = { id: number; name: string; mime: string; size: number; workspace_path?: string };
 export type AgentProgress = { id: number; kind: "thinking" | "tool" | "status"; body: string; status: "running" | "complete" | "failed"; created: number; updated: number };
 export type ThreadUsage = { input_tokens: number; output_tokens: number };
 export type AgentQuestionOption = { label: string; description?: string };

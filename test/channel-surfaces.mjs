@@ -70,6 +70,7 @@ test("notes reject a symlinked notes directory", () => {
   addChannel(902, "symlink-note-test");
   const outside = join(dataDir, "outside-notes");
   mkdirSync(outside);
+  rmSync(join(dataDir, "channels", "902", "workspace", "notes"), { recursive: true });
   symlinkSync(outside, join(dataDir, "channels", "902", "workspace", "notes"));
   assert.throws(() => agents.listChannelNotes(902), /not a safe directory/);
 });
@@ -96,7 +97,7 @@ test("directory listing is navigable, direct-child only, folder-first, and symli
 
   const rootListing = agents.listWorkspaceDirectory(901, "");
   assert.equal(rootListing.path, "");
-  assert.deepEqual(rootListing.files.map(({ path }) => path), ["files", "notes", "projects"]);
+  assert.deepEqual(rootListing.files.map(({ path }) => path), ["code", "docs", "files", "notes", "presentations", "projects", "whiteboards"]);
   const projectListing = agents.listWorkspaceDirectory(901, "/workspace/projects");
   assert.deepEqual(projectListing.files.map(({ path }) => path), ["projects/site", "projects/brief.txt"]);
   assert.ok(!projectListing.files.some(({ path }) => path.includes("site/")), "nested descendants are not flattened into the current folder");
@@ -133,16 +134,41 @@ test("uploads target the selected folder, retain containment, and keep legacy fi
   assert.ok(q("SELECT relative_path FROM channel_workspace_changes WHERE channel_id=?", 901).some((row) => row.relative_path === "workspace/projects/site/report.md"));
 });
 
+test("workspace files support contained CRUD and protected Cowork roots", () => {
+  const created = agents.createWorkspaceFile(901, "docs", "proposal.md", "# Proposal\n");
+  assert.equal(created.path, "docs/proposal.md");
+  assert.equal(agents.readWorkspaceTextFile(901, created.path).content, "# Proposal\n");
+  assert.equal(agents.saveWorkspaceTextFile(901, created.path, "# Proposal\n\nReady.\n").content, "# Proposal\n\nReady.\n");
+  const renamed = agents.moveWorkspaceEntry(901, created.path, undefined, "launch-proposal.md");
+  assert.equal(renamed.path, "docs/launch-proposal.md");
+  const duplicated = agents.duplicateWorkspaceEntry(901, renamed.path);
+  assert.equal(duplicated.path, "docs/launch-proposal copy.md");
+  agents.deleteWorkspaceEntry(901, duplicated.path);
+  assert.throws(() => agents.readWorkspaceTextFile(901, duplicated.path), /not found/);
+  const nested = agents.createWorkspaceDirectory(901, "docs", "plans");
+  assert.equal(agents.moveWorkspaceEntry(901, renamed.path, nested.path).path, "docs/plans/launch-proposal.md");
+  assert.throws(() => agents.moveWorkspaceEntry(901, "docs", "", "renamed-docs"), /top-level workspace folder/);
+  assert.throws(() => agents.deleteWorkspaceEntry(901, "notes"), /top-level workspace folder/);
+});
+
+test("quick notes choose collision-safe untitled filenames", () => {
+  assert.equal(agents.createQuickNote(901, "", "first").name, "untitled-quick-note-1.md");
+  assert.equal(agents.createQuickNote(901, "", "second").name, "untitled-quick-note-2.md");
+  assert.equal(agents.createQuickNote(901, "Captain thought", "third").name, "Captain thought.md");
+  assert.equal(agents.createQuickNote(901, "release.v2", "fourth").name, "release.v2.md");
+});
+
 test("agent attachment MIME recognizes MP3 and M4A audio", () => {
   assert.equal(agents.attachmentMimeForName("voice.MP3"), "audio/mpeg");
   assert.equal(agents.attachmentMimeForName("meeting.m4a"), "audio/mp4");
   assert.equal(agents.attachmentMimeForName("archive.bin"), "application/octet-stream");
 });
 
-test("channel UI source exposes route-shaped Notes, folder navigation, audio preview, and compact global threads contracts", () => {
+test("channel UI source exposes file-backed Cowork, traditional Files, audio preview, and compact global threads contracts", () => {
   const channelSource = readFileSync(join(root, "src", "client", "channel.ts"), "utf8");
   const apiSource = readFileSync(join(root, "src", "client", "api.ts"), "utf8");
   const appSource = readFileSync(join(root, "src", "client", "app.ts"), "utf8");
+  const coworkSource = readFileSync(join(root, "src", "client", "cowork.ts"), "utf8");
   assert.match(channelSource, /export function renderNotes\(/);
   assert.match(channelSource, /const noteSurfaces = new Map/, "note editor nodes survive shell refreshes");
   assert.match(channelSource, /data(?:set)?: \{ notePreviewToggle: "" \}/, "Notes includes a Markdown preview mode");
@@ -152,12 +178,16 @@ test("channel UI source exposes route-shaped Notes, folder navigation, audio pre
   assert.match(channelSource, /\/files\/directories/);
   assert.match(channelSource, /body: \{ \.\.\.upload, path: currentPath \}/);
   assert.match(channelSource, /data(?:set)?: \{ globalThreadsList: "compact" \}/);
+  assert.match(channelSource, /class: "md text-sm leading-5 text-fg", html: md\(item\.summary\)/, "Markdown is rendered in status and Activity summaries too");
   assert.match(apiSource, /blob\.type\.startsWith\("audio\/"\)/);
   assert.match(apiSource, /document\.createElement\("audio"\)/);
-  assert.match(appSource, /\["notes", "Notes"\]/, "Notes is a visible channel surface");
-  assert.match(appSource, /data(?:set)?: \{ notesHeader: "" \}/, "Notes has a channel-header action");
-  assert.match(appSource, /onclick: openNotesFromHeader/, "the header action opens Notes beside chat rather than navigating away");
-  assert.match(appSource, /renderNotes\(notesBox, S\.channelId, closeDockedNotes\)/, "the Notes surface mounts in the shared right-hand dock with a close action");
+  assert.match(appSource, /\["cowork", "Cowork"\]/, "Cowork replaces the visible Notes tab");
+  assert.match(appSource, /data(?:set)?: \{ quickNoteHeader: "" \}/, "the header exposes Quick Note");
+  assert.doesNotMatch(appSource, /title: "Call Skipper"|aria-label": "Call Skipper"/, "the redundant Call Skipper button is removed");
+  assert.match(channelSource, /data(?:set)?: \{ fileFolderTree: "" \}/, "Files has a folder navigation rail");
+  assert.match(channelSource, /icon\("folder"/, "Files uses a recognizable folder icon");
+  assert.match(coworkSource, /const SECTIONS[\s\S]*"notes"[\s\S]*"whiteboards"[\s\S]*"code"[\s\S]*"docs"[\s\S]*"presentations"/, "Cowork exposes five file-backed work modes");
+  assert.match(coworkSource, /Working file: \/workspace\//, "the first Cowork agent message includes the open file path");
   assert.doesNotMatch(appSource, /controllerchange[\s\S]{0,300}location\.reload\(/, "service-worker updates never reload an active note draft");
 });
 

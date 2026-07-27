@@ -120,11 +120,11 @@ try {
   ok(brand.title.includes("1Helm") && brand.appName === "1Helm" && !brand.body.includes("1Herd"), "the browser presents the product as 1Helm throughout");
   ok(brand.favicon === "/brand/1helm-sailboat.png" && brand.workspaceLogo === "/brand/1helm-sailboat.png", "the sailboat is the web favicon and default customizable workspace image");
 
-  await page.goto(`${base}/c/${channel.slug}/notes`, { waitUntil: "networkidle0" });
-  await page.click('[data-note-name="Quiet refresh proof.md"]');
-  await page.waitForFunction(() => document.querySelector('[aria-label="Note content"]')?.value.includes("Start here"));
+  await page.goto(`${base}/c/${channel.slug}/cowork`, { waitUntil: "networkidle0" });
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent?.includes("Quiet refresh proof.md"))?.click());
+  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"]')?.value.includes("Start here"));
   await page.evaluate(() => {
-    const editor = document.querySelector('[aria-label="Note content"]');
+    const editor = document.querySelector('[aria-label="Notes editor"]');
     editor.value += "\n\nUnsaved words survive.";
     editor.focus(); editor.setSelectionRange(4, 11); editor.dispatchEvent(new Event("input"));
     window.__briefNoteEditor = editor;
@@ -133,15 +133,14 @@ try {
   await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => /Switch to/.test(button.title))?.click());
   await page.waitForFunction((prior) => document.documentElement.className !== prior, {}, themeBeforeNotesRefresh);
   const durableNote = await page.evaluate(() => {
-    const editor = document.querySelector('[aria-label="Note content"]');
-    return { sameNode: editor === window.__briefNoteEditor, value: editor?.value, focused: document.activeElement === editor, start: editor?.selectionStart, end: editor?.selectionEnd, toolbar: document.querySelector('[aria-label="Note formatting"]')?.textContent };
+    const editor = document.querySelector('[aria-label="Notes editor"]');
+    return { sameNode: editor === window.__briefNoteEditor, value: editor?.value, focused: document.activeElement === editor, start: editor?.selectionStart, end: editor?.selectionEnd };
   });
   ok(durableNote.sameNode && durableNote.value.endsWith("Unsaved words survive.") && durableNote.focused && durableNote.start === 4 && durableNote.end === 11,
     "shell refreshes preserve the exact note editor node, unsaved draft, focus, and selection");
-  ok(/H.*B.*I.*List.*Code.*Link/.test(durableNote.toolbar || ""), "notes expose practical Markdown formatting controls");
-  await page.click('[data-note-preview-toggle]');
-  await page.waitForFunction(() => Boolean(document.querySelector('[data-note-preview]') && !document.querySelector('[data-note-preview]').classList.contains("hidden")));
-  ok(await page.$eval('[data-note-preview]', (element) => /Unsaved words survive/.test(element.textContent)), "note preview renders the current unsaved Markdown draft");
+  await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent?.trim() === "Preview")?.click());
+  await page.waitForSelector('.cowork-markdown-preview:not(.hidden)');
+  ok(await page.$eval('.cowork-markdown-preview', (element) => /Unsaved words survive/.test(element.textContent)), "Cowork note preview renders the current unsaved Markdown draft");
 
   await api(`/api/channels/${channel.id}`, { method: "PATCH", body: { purpose: "A deliberately long channel description that must remain one calm truncated line even when a large-monitor user narrows the remote application window. ".repeat(5) } }, token);
   await page.setViewport({ width: 1280, height: 760 });
@@ -173,20 +172,21 @@ try {
   });
   ok(phoneHeader.twoRows && phoneHeader.rightAligned && phoneHeader.controlsFit && phoneHeader.pageFits,
     `phone channel chrome uses a safe title row plus right-aligned 44px actions without horizontal overflow (${JSON.stringify(phoneHeader)})`);
-  await page.evaluate(() => document.querySelector('[data-notes-header]')?.click());
-  await page.waitForFunction(() => [...document.querySelectorAll('[data-notes-surface]')].some((element) => element.getBoundingClientRect().width > 0));
+  await page.evaluate(() => document.querySelector('[data-quick-note-header]')?.click());
+  await page.waitForSelector('[role="dialog"][aria-label="Quick Note"]');
   const phoneNotes = await page.evaluate(() => {
-    const surface = [...document.querySelectorAll("[data-notes-surface]")].find((element) => element.getBoundingClientRect().width > 0);
-    const buttons = [...(surface?.querySelectorAll(":scope > div:first-child button") || [])];
+    const surface = document.querySelector('[role="dialog"][aria-label="Quick Note"]');
+    const buttons = [...(surface?.querySelectorAll("button") || [])];
     return {
-      visible: buttons.length >= 2 && buttons.every((button) => {
+      visible: buttons.length >= 4 && buttons.every((button) => {
         const rect = button.getBoundingClientRect();
         return rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
       }),
       pageFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
     };
   });
-  ok(phoneNotes.visible && phoneNotes.pageFits, "phone Notes keeps New note and Close visible inside the matching surface top bar");
+  ok(phoneNotes.visible && phoneNotes.pageFits, "phone Quick Note keeps dictation, collapse, Discard, and Save visible inside the viewport");
+  await page.evaluate(() => document.querySelector('[aria-label="Collapse Quick Note"]')?.click());
   await page.setViewport({ width: 1280, height: 760, deviceScaleFactor: 1, isMobile: false, hasTouch: false });
 
   await page.goto(`${base}/c/main/texts`, { waitUntil: "networkidle0" });
@@ -339,12 +339,11 @@ try {
 
   await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Files"))?.click());
   await page.waitForSelector('#channelview [data-file-path="README.md"]');
-  const fileActions = await page.$$eval("#channelview button", (buttons) => buttons.map((button) => button.textContent?.trim()).filter((text) => text === "Open" || text === "Download"));
+  await page.click('#channelview [data-file-path="README.md"]');
+  await page.waitForFunction(() => document.querySelector('[data-file-metadata]')?.textContent?.includes("README.md"));
+  const fileActions = await page.$$eval("[data-file-metadata] button", (buttons) => buttons.map((button) => button.textContent?.trim()).filter((text) => text === "Open" || text === "Download"));
   ok(fileActions.includes("Open") && fileActions.includes("Download"), "Files exposes explicit authenticated Open and Download actions");
-  await page.evaluate(() => {
-    const readmeRow = document.querySelector('#channelview [data-file-path="README.md"]');
-    [...(readmeRow?.querySelectorAll("button") || [])].find((button) => button.textContent?.trim() === "Open")?.click();
-  });
+  await page.evaluate(() => [...document.querySelectorAll('[data-file-metadata] button')].find((button) => button.textContent?.trim() === "Open")?.click());
   await page.waitForSelector('[role="dialog"][aria-label^="Preview "]');
   ok(await page.$eval('[role="dialog"]', (dialog) => /README\.md/.test(dialog.textContent || "") && /Download/.test(dialog.textContent || "")), "Files opens an authenticated in-app preview with its own download action");
   await page.evaluate(() => [...document.querySelectorAll('[role="dialog"] button')].find((button) => button.textContent?.trim() === "Close")?.click());

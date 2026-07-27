@@ -216,6 +216,7 @@ function systemPromptTiers(bot: Row, agent: RuntimeAgent | undefined, channelId:
     visiting
       ? "You are a temporary thread guest. No shell, workspace, or durable-memory capability is attached to this invitation."
       : "You own an isolated persistent Linux computer for this channel. Its durable workspace is /workspace. The run_command tool executes there; files, memory, and other listed tools belong to this channel.",
+    visiting ? "" : "Where practical, use Markdown for notes and documents, plain text source files for code, .whiteboard.json for whiteboards, and .slides.json for presentations.",
     "The callable tools below are your current capabilities. Their implementations enforce authority and isolation boundaries.",
   ].filter(Boolean).join("\n\n");
   const context = [
