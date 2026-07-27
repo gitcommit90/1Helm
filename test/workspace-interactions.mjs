@@ -40,7 +40,7 @@ test("profile, naming, routing, and usage language match the visible product con
   assert.match(app, /toBlob\(resolve, "image\/jpeg", 0\.86\)/, "the square avatar is compressed before upload");
   assert.match(app, /Photo ready\. Adjust the crop, then choose Save profile\./, "file choice does not instantly upload the raw photo");
   assert.match(settings, /maxlength: 100/, "workspace naming allows and caps a generous 100 characters");
-  assert.match(settings, /workspacePhotoSrc\("\/api\/workspace\/photo", Date\.now\(\)\)/, "workspace photo updates use the fixed same-origin asset route instead of an API-returned DOM URL");
+  assert.match(settings, /fetch\(apiUrl\("\/api\/workspace\/photo"\)[\s\S]{0,300}URL\.createObjectURL\(await response\.blob\(\)\)/, "workspace photo updates fetch the fixed authenticated asset and expose only a browser-created blob URL to the DOM");
   assert.equal([...settings.matchAll(/workspacePhotoSrc\(S\.workspace\.photo_url, Date\.now\(\)\)/g)].length, 1, "only the already-loaded workspace value may initialize the preview; update responses never become image destinations");
   assert.match(app, /dataset: \{ workspaceName: "" \}/, "the complete workspace name has a stable wrapping hook");
   assert.match(settings, /Connection availability/, "connections use direct availability wording");
