@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.20] - 2026-07-27
+
+### Added
+
+- Cowork's agent request, Notes, and Docs editors now support the same
+  explicit speech-to-text mic control and bare Option/Alt shortcut as Chat
+  and Quick Note.
+
+### Fixed
+
+- Skipper now renders with the product avatar in Cowork rather than a plain
+  `S` initial.
+- Returning to Cowork after navigating away starts a fresh collaboration
+  transport from the authoritative saved file. It cannot merge stale Yjs
+  history into a new room and duplicate an agent's or user's document edits.
+- Long Cowork Notes stay scrollable while in Write mode.
+- Files selection now paints immediately. Recursive folder-tree loading is
+  independent of the current directory request, removing repeated VM mirror
+  work from ordinary file and folder clicks.
+
+### Tests
+
+- Browser coverage proves leaving and reopening a saved Cowork note retains
+  exactly one copy of its content, and focused source/browser contracts cover
+  Cowork dictation, Skipper identity, Notes scrolling, and non-blocking Files
+  selection.
+
 ## [0.0.19] - 2026-07-27
 
 ### Fixed
@@ -556,7 +583,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.19...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.20...HEAD
+[0.0.20]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.20
 [0.0.19]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.19
 [0.0.18]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.18
 [0.0.17]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.17

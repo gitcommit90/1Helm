@@ -901,6 +901,9 @@ html, body { height: 100%; width: 100%; overflow: hidden; overscroll-behavior: n
 .cowork-codemirror { min-height: 0; flex: 1 1 auto; overflow: hidden; background: color-mix(in srgb, var(--c-surface) 95%, transparent); font-size: 13px; }
 .cowork-codemirror > .cm-editor { height: 100%; }
 .cowork-codemirror-notes { font-size: 14px; }
+.cowork-notes-edit-stage { overflow-y: auto; }
+.cowork-notes-edit-stage .cowork-codemirror { min-height: 100%; flex: 0 0 auto; }
+.cowork-notes-edit-stage .cowork-codemirror > .cm-editor { min-height: 100%; height: auto; }
 .cowork-codemirror-code { background: color-mix(in srgb, #071019 72%, var(--c-surface)); }
 .cowork-markdown-preview { min-height: 100%; overflow-y: auto; background: var(--c-surface); padding: 1.5rem 2rem; }
 .cowork-doc-canvas { background: color-mix(in srgb, var(--c-raised) 75%, var(--c-bg)); }
