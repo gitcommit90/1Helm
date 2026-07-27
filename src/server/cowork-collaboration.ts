@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import type { IncomingMessage } from "node:http";
 import type { WebSocket } from "ws";
-import * as Y from "yjs";
+import type * as Y from "yjs";
 import {
   normalizeWorkspaceDirectoryPath,
   readWorkspaceTextFile,
