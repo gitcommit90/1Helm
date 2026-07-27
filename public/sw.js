@@ -1,5 +1,5 @@
 /* 1Helm shell service worker — offline shell only; never pin API/WS or stale JS. */
-const CACHE = "1helm-shell-v3";
+const CACHE = "1helm-shell-v4";
 const PRECACHE = [
   "/",
   "/index.html",
@@ -57,7 +57,7 @@ self.addEventListener("fetch", (event) => {
           caches.open(CACHE).then((c) => c.put("/index.html", copy)).catch(() => {});
           return res;
         })
-        .catch(() => caches.match("/index.html").then((r) => r || caches.match("/"))),
+        .catch(() => caches.match("/index.html").then(async (r) => r || await caches.match("/") || new Response("1Helm is offline.", { status: 503, headers: { "content-type": "text/plain; charset=utf-8" } }))),
     );
     return;
   }
@@ -72,7 +72,7 @@ self.addEventListener("fetch", (event) => {
           }
           return res;
         })
-        .catch(() => cached);
+        .catch(() => cached || Response.error());
       return cached || network;
     }),
   );

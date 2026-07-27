@@ -126,13 +126,18 @@ update preserves it — credentials, databases, resident state, files, and
 workspaces. Profile → Check for updates asks the Mac running 1Helm—not the
 device displaying the web UI—to download and verify the signed update.
 
-Windows 11 x64 gets a [signed Setup executable](https://1helm.com/download/windows)
+Windows 11 x64 gets a [Setup executable](https://1helm.com/download/windows)
 that provisions one private WSL 2 world per channel. Linux hosts use a verified
 installer that provisions a durable systemd service with an atomic,
 digest-verified, health-checked updater — see the
 [Linux install guide](https://1helm.com/manual/install-linux). Whichever platform,
 it works best on a dedicated machine: your crew works around the clock, and
 your everyday computer takes naps.
+
+Mac, Linux, and Windows use one synchronized desktop release version. A release
+is held in full until the DMG/updater ZIP, Linux host archive, and signed
+Windows Setup/Squirrel feed have all passed native install and update
+acceptance from the same source commit.
 
 ### Connect from iPhone, iPad, or Android
 
@@ -268,7 +273,7 @@ and an audit trail. A prompt saying “use this service” is not a connector.
 |---|---|
 | **Apple Silicon macOS 26** | Native desktop product and real isolated Linux computer per resident (Apple `container machine`, `home-mount=none`). |
 | **Linux / CI** | Supported headless systemd host with one unprivileged LXC per resident (subordinate UID/GID mapping, exact ownership checks); CI may select an explicit test backend. |
-| **Windows 11 x64** | Native desktop product with one private WSL 2 world per resident (Windows-drive mounts and interop disabled); the signed Setup executable ships with every release. |
+| **Windows 11 x64** | Native desktop product with one private WSL 2 world per resident (Windows-drive mounts and interop disabled); the Setup executable ships with every release and its signature status is disclosed. |
 | **iPhone and iPad** | App Store gateway to an already configured HTTPS 1Helm host; sessions live in the device-only iOS Keychain. |
 | **Android 7+** | Directly distributed signed universal APK gateway; sessions are encrypted by a key held in Android Keystore. |
 
@@ -296,7 +301,7 @@ A fresh data directory opens first-run setup. The source runtime defaults to
 | `PORT` | `8123` | HTTP/WebSocket control-plane port. |
 | `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and narrow workspace mirrors. |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `lxc` on Linux, `wsl` on Windows | Host isolation backend; `native` and `mock` are explicit development/test overrides. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.20` | Versioned channel-machine image contract. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.21` | Versioned channel-machine image contract. |
 
 ### Agent-first JSON CLI
 

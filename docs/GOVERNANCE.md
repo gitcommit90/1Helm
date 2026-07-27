@@ -57,15 +57,23 @@ contract as the slice hardens.
 8. A multi-item user request retains a numbered acceptance ledger in the pull
    request and GitHub Release. Do not collapse completed items into a generic
    summary or rely on generated commit notes as the user-facing release record.
-9. The retained Apple Silicon release host owns both artifact production and
-   public-download installed-app verification.
+9. Each supported desktop platform owns its native artifact and installed-app
+   verification lane. The retained Apple Silicon host owns macOS signing and
+   notarization; Linux owns the systemd/LXC artifact and updater acceptance;
+   Windows 11 x64 owns Squirrel and WSL acceptance. Authenticode is optional
+   until 1Helm adopts a trusted Windows signing identity; unsigned artifacts
+   must be identified honestly, but their signature status is not a release
+   blocker.
 
 ## Versioning
 
 - Semantic versioning on `package.json`.
 - **Do not** reuse a published version tag for different bits.
-- A release requires a unique version, changelog, exact tag, verified public
-  artifact, and platform-appropriate clean installation evidence.
+- A desktop release requires one unique version and exact commit, changelog,
+  complete Mac + Linux + Windows artifact matrix, and clean-install plus
+  prior-to-new update evidence on every platform. Partial platform releases
+  under the shared product version are prohibited. If one platform is blocked,
+  the entire tag/publication waits.
 - GitHub Release notes are a first-class product artifact. They must enumerate
   every user-visible fix and feature accepted for that release, using the same
   numbered ledger as the originating request when one exists. A short summary
@@ -73,6 +81,13 @@ contract as the slice hardens.
 - macOS verification must use the exact publicly downloaded artifact, preserve
   Application Support, and prove signature/ticket/Gatekeeper, launch, version,
   loopback behavior, and retained state on the retained release host.
+- Linux verification must use the digest-qualified release archive and prove a
+  real systemd update, health-failure rollback, and retained `/var/lib/1helm`.
+- Windows verification must prove the Setup/Squirrel signature status, clean
+  install, old-to-new update, loopback health, WSL lifecycle, and retained
+  application data on Windows 11 x64. Do not substitute a self-signed
+  certificate or block an otherwise accepted release solely because the
+  artifacts are honestly disclosed as unsigned.
 
 Never hand-edit only a deployment target to fix the product. Fix in git,
 review, merge, and redeploy the exact source commit.

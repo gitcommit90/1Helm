@@ -119,6 +119,8 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(windowsPackager, /path\.join\(DIST, "RELEASES"\)/, "the GitHub asset keeps Squirrel's required literal RELEASES name");
   assert.match(windowsPackager, /path\.join\(DIST, path\.basename\(nupkg\)\)/, "the uploaded package keeps the exact basename referenced by RELEASES");
   assert.match(windowsPackager, /signPackagedExecutables\(appDir\)/, "release signing covers nested Windows executables before packaging");
+  assert.match(windowsPackager, /IGNORE_CLIENT_BUILD_MODULES/, "Windows packaging omits client source already compiled into the browser bundle");
+  assert.match(windowsPackager, /path\.join\(DIST, "w"\)/, "Squirrel uses a short private scratch root compatible with legacy Windows path handling");
   for (const [source, requiredPaths] of [
     [windowsPackager, ["/scripts", "/scripts/mnemosyne-bridge.py", "/scripts/install-wsl-runtime.ps1", "/scripts/windows-removal.cjs"]],
     [macPackager, ["/scripts", "/scripts/mnemosyne-bridge.py"]],

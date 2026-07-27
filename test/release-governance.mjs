@@ -36,3 +36,26 @@ test("one retained Mac Studio owns the complete macOS release gate", () => {
   assert.match(tracked, /publicly downloaded/i);
   assert.match(tracked, /Application Support preservation/i);
 });
+
+test("desktop releases fail closed unless Mac, Linux, and Windows ship together", () => {
+  const checklist = read("docs/release-checklist.md");
+  const lifecycle = read("docs/release-lifecycle.md");
+  const governance = read("docs/GOVERNANCE.md");
+  const notes = read("docs/release-notes-template.md");
+  const vision = read("docs/VISION.md");
+
+  for (const source of [checklist, lifecycle, governance, notes, vision]) {
+    assert.match(source, /Mac(?:OS)?[^\n]+Linux[^\n]+Windows|macOS[^\n]+Linux[^\n]+Windows/i);
+  }
+  for (const artifact of [
+    "arm64.dmg", "mac-arm64.zip", "linux-node.tgz",
+    "windows-x64-setup.exe", "full.nupkg", "RELEASES",
+  ]) assert.match(checklist + notes, new RegExp(artifact.replaceAll(".", "\\."), "i"));
+  assert.match(checklist + lifecycle + governance, /pause (?:the )?(?:whole|entire) release/i);
+  assert.match(checklist, /package:windows:release/);
+  assert.match(checklist, /Authenticode/i);
+  assert.match(checklist + lifecycle + governance, /NotSigned[\s\S]+must not block|unsigned is accepted/i);
+  assert.match(checklist + governance, /Never[\s\S]+self-signed|Never[\s\S]+self-sign/i);
+  assert.match(checklist, /Squirrel/i);
+  assert.doesNotMatch(notes, /Other published artifact, or `Not applicable`/i);
+});

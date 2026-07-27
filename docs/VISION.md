@@ -79,14 +79,12 @@ verification.
 - `https://1helm.com` is the standalone product and documentation site.
 - `https://demo.1helm.com` is a separate public sandbox, not the product site
   and not a dependency of an installed workspace.
-- Apple Silicon macOS and Linux systemd are public host products with one
-  isolated Linux computer per ordinary resident.
-- The native Windows x64 + WSL implementation and real-host lifecycle are
-  accepted, but its public installer is withheld until an Authenticode signing
-  identity is available.
+- Apple Silicon macOS, Linux systemd, and native Windows x64 + WSL are the
+  synchronized public desktop-host product. Every named desktop release must
+  publish all three from one version and exact source commit.
 - 1Helm is self-hosted and open source. A hosted control plane, mobile clients,
-  blind community-skill execution, a signed public Windows installer, and a
-  native Linux desktop shell are not shipped.
+  blind community-skill execution, and a native Linux desktop shell are not
+  shipped.
 
 ## What 1Helm borrows—and what it does not
 

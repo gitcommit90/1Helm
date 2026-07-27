@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.21] - 2026-07-27
+
+### Fixed
+
+- Desktop release policy now fail-closes on platform parity: one version and
+  exact source commit must produce verified macOS DMG/updater, Linux host, and
+  Windows Setup/Squirrel artifacts before any tag or GitHub Release can be
+  published. Windows signature status is disclosed and unsigned output remains
+  accepted until a trusted signing identity is adopted. A missing platform
+  pauses the whole release instead of leaving users on a stale update line.
+
+- Cowork new-file prompts now start blank. Names with an explicit extension are
+  preserved, while extensionless names receive the active section's `.md`,
+  `.whiteboard.json`, `.txt`, or `.slides.json` default.
+- Presentation canvases anchor at the top of their scrollable stage, and the
+  Excalidraw hamburger menu escapes the editor's inner clip into a bounded,
+  scrollable overlay so its complete menu remains visible and interactive.
+- Cowork Code uses the normal light surface with readable dark text in light
+  mode while retaining its navy editor treatment in dark mode.
+- Offline shell fallbacks always resolve service-worker requests with a valid
+  response instead of producing a rejected FetchEvent conversion error.
+- Cowork's bare Option/Alt shortcut now carries the mic control belonging to
+  the focused Notes, Docs, or agent input and uses a capture-phase fallback
+  when the macOS desktop shell swallows the corresponding keyup.
+- Long Cowork Notes give CodeMirror a finite editor frame and scroll through
+  its actual viewport in Write mode.
+- Leaving Cowork, changing sections, or opening another file now destroys the
+  outgoing Yjs document and reloads the authoritative workspace file into a
+  fresh document. The stale browser recovery copy that could resurrect or
+  repeatedly duplicate prior text has been removed.
+- Files directory, tree, text, and content reads now paint from the host mirror
+  immediately. One explicit background refresh coalesces the expensive channel
+  computer export and repaints the current listing when it completes.
+
+### Added
+
+- Files now keeps `/workspace` and the five Cowork folders first in its visual
+  navigation rail, with all remaining root files and folders grouped under an
+  expandable **Other** disclosure without changing the underlying filesystem.
+- Selecting a Markdown file in Files exposes **Download - DOCX**, backed by an
+  authenticated, contained Office Open XML export.
+- Desktop workspace navigation can collapse to a compact channel-icon rail and
+  expand again. The profile-bound preference persists, while the existing
+  mobile drawer remains unchanged.
+
+### Tests
+
+- Browser coverage toggles both Cowork editor and agent dictation through bare
+  Option/Alt, scrolls a 120-line Note, and proves section changes, full Cowork
+  navigation, and a five-line external replacement all reopen exactly once
+  without a recovery prompt.
+- A fake Apple channel computer with an intentionally slow export proves cached
+  Files reads stay responsive, simultaneous refreshes coalesce, and guest-only
+  files appear after the background refresh.
+- Browser and server coverage verify blank Cowork naming, default and explicit
+  extensions, presentation-menu stage bounds and pointer hit-testing, light
+  Code contrast, Files grouping, real DOCX ZIP contents, and persistent
+  desktop-only sidebar collapse.
+
 ## [0.0.20] - 2026-07-27
 
 ### Added
@@ -583,7 +642,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.20...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.21...HEAD
+[0.0.21]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.21
 [0.0.20]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.20
 [0.0.19]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.19
 [0.0.18]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.18

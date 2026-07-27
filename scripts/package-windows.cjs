@@ -17,6 +17,10 @@ const CERT_SHA1 = String(process.env.WINDOWS_SIGN_CERT_SHA1 || "").replace(/\s+/
 // scripts directory itself traversable, then retain only the three runtime
 // files below; otherwise the exact-file exceptions can never be reached.
 const IGNORE_NON_RUNTIME_ROOTS = /^\/(?!package\.json$|LICENSE$|NOTICE$|desktop(?:$|\/)|container(?:$|\/)|deploy(?:$|\/)|src(?:$|\/)|public(?:$|\/)|scripts(?:$|\/(?:mnemosyne-bridge\.py|install-wsl-runtime\.ps1|windows-removal\.cjs)$)|node_modules(?:$|\/))/;
+// Excalidraw is compiled into public/bundle.js. Shipping its source package as
+// well adds deeply nested Radix paths that legacy Squirrel/NuGet cannot
+// releasify under Windows' 260-character path limit.
+const IGNORE_CLIENT_BUILD_MODULES = /^\/node_modules\/@excalidraw(?:$|\/)/;
 
 if (process.platform !== "win32" || process.arch !== "x64") throw new Error("Windows packaging must run on Windows x64.");
 if (!/^\d+\.\d+\.\d+$/.test(VERSION)) throw new Error("package.json must contain a release version.");
@@ -73,7 +77,7 @@ async function main() {
       dir: ROOT, name: PRODUCT, executableName: PRODUCT, appCopyright: "Copyright (c) 2026 Joseph Yaksich",
       win32metadata: { CompanyName: "Joseph Yaksich", FileDescription: PRODUCT, OriginalFilename: "1Helm.exe", ProductName: PRODUCT, InternalName: PRODUCT },
       platform: "win32", arch: "x64", out: DIST, overwrite: true, prune: true, asar: false, icon: ico,
-      ignore: [IGNORE_NON_RUNTIME_ROOTS, /\.DS_Store$/, /\.log$/],
+      ignore: [IGNORE_NON_RUNTIME_ROOTS, IGNORE_CLIENT_BUILD_MODULES, /\.DS_Store$/, /\.log$/],
     });
     const appExe = path.join(appDir, "1Helm.exe");
     if (!fs.existsSync(appExe)) throw new Error("Packaged Windows application is missing 1Helm.exe.");
@@ -89,7 +93,10 @@ async function main() {
       if (!fs.existsSync(script)) throw new Error("Packaged Windows app is missing its WSL setup script.");
     }
 
-    const installerDir = path.join(DIST, `windows-installer-${VERSION}`);
+    // Squirrel 1.x uses legacy .NET path handling while it expands the NuGet
+    // package. Keep its private scratch root deliberately short; only the
+    // canonical artifacts copied into DIST below are retained.
+    const installerDir = path.join(DIST, "w");
     fs.rmSync(installerDir, { recursive: true, force: true });
     const { createWindowsInstaller } = require("electron-winstaller");
     await createWindowsInstaller({

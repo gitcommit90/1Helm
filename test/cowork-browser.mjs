@@ -83,10 +83,12 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await createFile("code", "tool.ts", "export const ready = true;\n");
   await createFile("docs", "proposal.md", "# Proposal\n");
   await createFile("presentations", "review.slides.json", JSON.stringify({ version: 1, slides: [{ title: "Review", body: "Ready" }] }, null, 2));
+  await api(`/api/channels/${channel.id}/files/directories`, { body: { path: "", name: "archive" } }, token);
+  await createFile("", "README.md", "# Workspace overview\n");
   const markdownThread = (await api(`/api/channels/${channel.id}/messages`, { body: { body: "** Goal **\n\n** Session Status **" } }, token)).message;
   for (let index = 0; index < 18; index++) await api(`/api/channels/${channel.id}/messages`, { body: { body: `Mobile scroll fixture ${index + 1}: ${"readable history ".repeat(18)}` } }, token);
 
-  browser = await puppeteer.launch({ executablePath, headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+  browser = await puppeteer.launch({ executablePath, headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox", "--use-fake-ui-for-media-stream"] });
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -148,6 +150,78 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.keyboard.down(primaryModifier); await page.keyboard.press("s"); await page.keyboard.up(primaryModifier);
   await waitFor(async () => (await api(`/api/channels/${channel.id}/files/text?path=notes%2Ffield-notes.md`, {}, token)).file.content.includes("Unsaved continuity proof"), "saved Cowork note");
   assert.equal(await page.$$eval('[data-speech-toggle]', (buttons) => buttons.some((button) => button.getAttribute("aria-label") === "Dictate note")), true, "Cowork Notes exposes dictation");
+  // Install a deterministic SpeechRecognition seam in the page and exercise
+  // the real bare Alt event path while CodeMirror owns focus. This previously
+  // failed because the shortcut knew the editor target but not its mic button.
+  await page.evaluate(() => {
+    class FakeRecognition {
+      start() { window.__speechStarts = (window.__speechStarts || 0) + 1; }
+      stop() { this.onend?.(); }
+    }
+    window.SpeechRecognition = FakeRecognition;
+  });
+  await page.click(editorContent);
+  await page.keyboard.down("Alt"); await page.keyboard.up("Alt");
+  await page.waitForFunction(() => window.__speechStarts === 1);
+  assert.equal(await page.$eval('[aria-label="Dictate note"]', (button) => button.getAttribute("aria-pressed")), "true", "bare Alt starts Cowork Notes dictation");
+  await page.keyboard.down("Alt"); await page.keyboard.up("Alt");
+  await page.waitForFunction(() => document.querySelector('[aria-label="Dictate note"]')?.getAttribute("aria-pressed") === "false");
+  await page.keyboard.down("Alt"); await page.keyboard.press("x"); await page.keyboard.up("Alt");
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  assert.equal(await page.evaluate(() => window.__speechStarts), 1, "an Option/Alt character combination does not start dictation");
+
+  // The CodeMirror scroller itself must own a finite viewport and scroll—not
+  // an outer wrapper whose inner editor clips overflowing content.
+  await page.click(editorContent);
+  await page.keyboard.down(primaryModifier); await page.keyboard.press("End"); await page.keyboard.up(primaryModifier);
+  await page.keyboard.type(`\n${Array.from({ length: 120 }, (_, index) => `Scrollable note row ${index + 1}`).join("\n")}`);
+  const noteScroll = await page.$eval('[aria-label="Notes editor"] .cm-scroller', (scroller) => {
+    const before = scroller.scrollTop;
+    scroller.scrollTop = Math.max(1, scroller.scrollHeight - scroller.clientHeight);
+    return { before, after: scroller.scrollTop, clientHeight: scroller.clientHeight, scrollHeight: scroller.scrollHeight };
+  });
+  assert.ok(noteScroll.clientHeight > 0 && noteScroll.scrollHeight > noteScroll.clientHeight && noteScroll.after > 0, JSON.stringify(noteScroll));
+  await page.keyboard.down(primaryModifier); await page.keyboard.press("s"); await page.keyboard.up(primaryModifier);
+  await waitFor(async () => (await api(`/api/channels/${channel.id}/files/text?path=notes%2Ffield-notes.md`, {}, token)).file.content.includes("Scrollable note row 120"), "saved long Cowork note");
+
+  // Switch to another Cowork section while this page is the only client. That
+  // destroys the server room. Returning must create a fresh Y.Doc rather than
+  // reconnecting stale history and duplicating the complete text.
+  await page.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Docs")?.click());
+  await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("proposal.md"));
+  await page.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Notes")?.click());
+  await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("field-notes.md"));
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("field-notes.md"))?.click());
+  await page.waitForSelector('[aria-label="Notes editor"] .cm-content');
+  await page.$eval('[aria-label="Notes editor"] .cm-scroller', (scroller) => { scroller.scrollTop = scroller.scrollHeight; });
+  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Scrollable note row 120"));
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  const sectionReopenedText = (await api(`/api/channels/${channel.id}/files/text?path=notes%2Ffield-notes.md`, {}, token)).file.content;
+  assert.equal((sectionReopenedText.match(/Scrollable note row 120/g) || []).length, 1, "switching Cowork sections never duplicates saved text");
+
+  // Reproduce the reported agent-edit path: an external writer replaces the
+  // open document, the live room adopts it, and every later reopen must retain
+  // exactly the five requested lines without a recovery prompt or replay.
+  await page.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Docs")?.click());
+  await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("proposal.md"));
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("proposal.md"))?.click());
+  await page.waitForSelector('[aria-label="Docs editor"] .cm-content');
+  await api(`/api/channels/${channel.id}/files/text`, { method: "PATCH", body: { path: "docs/proposal.md", content: "Hello World\n".repeat(5) } }, token);
+  await page.waitForFunction(() => (document.querySelector('[aria-label="Docs editor"] .cm-content')?.textContent.match(/Hello World/g) || []).length === 5);
+  await page.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Notes")?.click());
+  await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("field-notes.md"));
+  await page.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Docs")?.click());
+  await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("proposal.md"));
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("proposal.md"))?.click());
+  await page.waitForFunction(() => document.querySelector('[aria-label="Docs editor"] .cm-content')?.textContent.includes("Hello World"));
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  const externallyReopened = (await api(`/api/channels/${channel.id}/files/text?path=docs%2Fproposal.md`, {}, token)).file.content;
+  assert.equal((externallyReopened.match(/Hello World/g) || []).length, 5, "an agent-style replacement remains exactly-once after leaving and reopening a document");
+  assert.equal(await page.$('.modal-overlay'), null, "authoritative agent edits never trigger a stale local recovery prompt");
+  await page.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Notes")?.click());
+  await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("field-notes.md"));
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("field-notes.md"))?.click());
+  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Unsaved continuity proof"));
   // Leave the sole Cowork client and return. The old document transport must
   // never merge its stale Yjs history with a fresh server room and duplicate
   // the complete file.
@@ -159,6 +233,22 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Unsaved continuity proof"));
   const reopenedText = await page.$eval('[aria-label="Notes editor"] .cm-content', (editor) => editor.textContent || "");
   assert.equal((reopenedText.match(/Unsaved continuity proof/g) || []).length, 1, "leaving and reopening Cowork never duplicates saved text");
+
+  // Focus the actual Cowork agent textarea and prove the same bare Alt route
+  // starts its own mic button rather than falling back to Chat.
+  await page.evaluate(() => document.querySelector('.cowork-agent-toggle')?.click());
+  await page.waitForSelector('[data-cowork-agent]:not(.hidden) textarea');
+  await page.focus('[data-cowork-agent] textarea');
+  await page.keyboard.down("Alt"); await page.keyboard.up("Alt");
+  try { await page.waitForFunction(() => window.__speechStarts === 2, { timeout: 5_000 }); }
+  catch (error) {
+    const state = await page.evaluate(() => ({ starts: window.__speechStarts, active: document.activeElement?.outerHTML, pressed: document.querySelector('[aria-label="Dictate Cowork agent request"]')?.getAttribute("aria-pressed") }));
+    throw new Error(`Cowork agent Alt shortcut did not start: ${JSON.stringify(state)}`, { cause: error });
+  }
+  assert.equal(await page.$eval('[aria-label="Dictate Cowork agent request"]', (button) => button.getAttribute("aria-pressed")), "true", "bare Alt starts Cowork agent dictation");
+  await page.keyboard.down("Alt"); await page.keyboard.up("Alt");
+  await page.waitForFunction(() => document.querySelector('[aria-label="Dictate Cowork agent request"]')?.getAttribute("aria-pressed") === "false");
+  await page.evaluate(() => document.querySelector('[aria-label="Close agent panel"]')?.click());
 
   // A second authenticated member joins the same ordinary workspace file.
   // Both clients see presence, remote cursors, and edits without a reload.
@@ -175,6 +265,7 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await collaboratorPage.click('[aria-label="Notes editor"] .cm-content');
   await collaboratorPage.keyboard.down(primaryModifier); await collaboratorPage.keyboard.press("a"); await collaboratorPage.keyboard.up(primaryModifier); await collaboratorPage.keyboard.press("ArrowRight");
   await collaboratorPage.keyboard.type("\nLive words from Crew.");
+  await page.$eval('[aria-label="Notes editor"] .cm-scroller', (scroller) => { scroller.scrollTop = scroller.scrollHeight; });
   await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Live words from Crew"));
   await collaboratorPage.evaluate(() => {
     const editor = document.querySelector('[aria-label="Notes editor"] .cm-content');
@@ -239,6 +330,23 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("tool.ts"));
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("tool.ts"))?.click());
   await page.waitForSelector('[aria-label="Code editor"][data-cowork-language="typescript"] .cm-lineNumbers');
+  if (!(await page.evaluate(() => document.documentElement.classList.contains("light")))) {
+    await page.evaluate(() => [...document.querySelectorAll('button[title="Switch to light"]')][0]?.click());
+    await page.waitForFunction(() => document.documentElement.classList.contains("light"));
+  }
+  const codeContrast = await page.$eval('[aria-label="Code editor"]', (editor) => {
+    const parse = (value) => (value.match(/[\d.]+/g) || []).slice(0, 3).map(Number);
+    const luminance = (rgb) => {
+      const values = rgb.map((value) => { const channel = value / 255; return channel <= .03928 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4; });
+      return .2126 * values[0] + .7152 * values[1] + .0722 * values[2];
+    };
+    const style = getComputedStyle(editor.querySelector('.cm-editor'));
+    const background = getComputedStyle(editor).backgroundColor;
+    const foreground = style.color;
+    const [bright, dark] = [luminance(parse(background)), luminance(parse(foreground))].sort((a, b) => b - a);
+    return { background, foreground, ratio: (bright + .05) / (dark + .05) };
+  });
+  assert.ok(codeContrast.ratio >= 4.5, JSON.stringify(codeContrast));
   await page.click('[aria-label="Code editor"] .cm-content');
   await page.keyboard.down(primaryModifier); await page.keyboard.press("a"); await page.keyboard.up(primaryModifier); await page.keyboard.press("ArrowRight");
   await page.keyboard.press("Enter"); await page.keyboard.press("Tab"); await page.keyboard.type("const searchableValue = 42;");
@@ -289,6 +397,14 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-file-actions] button')].find((button) => button.textContent.trim() === "Delete")?.click());
   await page.waitForSelector('.modal-overlay'); await page.evaluate(() => [...document.querySelectorAll('.modal-overlay button')].find((button) => button.textContent.trim() === "Confirm")?.click());
   await page.waitForFunction(() => !document.querySelector('[data-cowork-path="docs/drafts/renamed copy.md"]'));
+  await page.evaluate(() => document.querySelector('[aria-label="Cowork folder path"] button')?.click());
+  await page.waitForFunction(() => !document.querySelector('[aria-label="Cowork folder path"]')?.textContent.includes("drafts"));
+  await clickCoworkTitle("New file");
+  assert.equal(await page.$eval('.modal-overlay input', (input) => input.value), "", "Cowork new-file prompts start blank");
+  await answerPrompt("default-document");
+  await page.waitForSelector('[data-cowork-path="docs/default-document.md"]');
+  await clickCoworkTitle("New file"); await answerPrompt("explicit.custom");
+  await page.waitForSelector('[data-cowork-path="docs/explicit.custom"]');
 
   // Presentations are one collaborative file with live slide structure,
   // Excalidraw drawing, reordering, deletion, persistence, and presentation mode.
@@ -296,6 +412,29 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("review.slides.json"));
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("review.slides.json"))?.click());
   await page.waitForSelector('[data-cowork-presentation][data-slide-count="1"] .cowork-slide-canvas .excalidraw');
+  await page.click('.cowork-slide-canvas .main-menu-trigger');
+  await page.waitForSelector('.cowork-slide-canvas .dropdown-menu');
+  const menuGeometry = await page.$eval('.cowork-slide-canvas .dropdown-menu', (menu) => {
+    const menuBox = menu.getBoundingClientRect();
+    const canvasBox = menu.closest('.cowork-slide-canvas').getBoundingClientRect();
+    const stageBox = menu.closest('.cowork-slide-stage').getBoundingClientRect();
+    const container = menu.querySelector('.dropdown-menu-container');
+    const firstAction = menu.querySelector('.dropdown-menu-item');
+    const actionBox = firstAction?.getBoundingClientRect();
+    const visibleAtAction = actionBox ? document.elementFromPoint(actionBox.left + Math.min(16, actionBox.width / 2), actionBox.top + actionBox.height / 2) : null;
+    return {
+      menuTop: menuBox.top, menuBottom: menuBox.bottom, menuHeight: menuBox.height,
+      canvasTop: canvasBox.top, canvasBottom: canvasBox.bottom, stageTop: stageBox.top, stageBottom: stageBox.bottom,
+      clientHeight: container?.clientHeight || 0, scrollHeight: container?.scrollHeight || 0,
+      firstActionVisible: Boolean(firstAction && visibleAtAction && (firstAction === visibleAtAction || firstAction.contains(visibleAtAction))),
+      firstAction: actionBox ? { text: firstAction.textContent?.trim(), top: actionBox.top, bottom: actionBox.bottom, left: actionBox.left, right: actionBox.right } : null,
+      hit: visibleAtAction ? { tag: visibleAtAction.tagName, className: String(visibleAtAction.className), text: visibleAtAction.textContent?.trim()?.slice(0, 80) } : null,
+    };
+  });
+  assert.ok(menuGeometry.menuTop >= menuGeometry.stageTop - 1 && menuGeometry.menuBottom <= menuGeometry.stageBottom + 1, JSON.stringify(menuGeometry));
+  assert.ok(menuGeometry.menuHeight > 100 && menuGeometry.clientHeight > 100 && menuGeometry.scrollHeight >= menuGeometry.clientHeight && menuGeometry.firstActionVisible, JSON.stringify(menuGeometry));
+  await page.screenshot({ path: "/tmp/1helm-presentation-menu.png" });
+  await page.click('.cowork-slide-canvas .main-menu-trigger');
   await collaboratorPage.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Presentations")?.click());
   await collaboratorPage.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("review.slides.json"));
   await collaboratorPage.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("review.slides.json"))?.click());
@@ -341,6 +480,12 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.waitForSelector('[data-file-browser]');
   const rootFolders = await page.$$eval('[data-file-directory="/"] [data-file-kind="directory"]', (items) => items.map((item) => ({ name: item.textContent, folderIcon: Boolean(item.querySelector('.file-grid-icon.is-folder')) })));
   assert.ok(["notes", "whiteboards", "code", "docs", "presentations"].every((name) => rootFolders.some((item) => item.name.includes(name) && item.folderIcon)));
+  const treeBeforeOther = await page.$$eval('[data-file-folder-tree] [data-file-tree-path]', (items) => items.map((item) => item.getAttribute("data-file-tree-path")));
+  assert.deepEqual(treeBeforeOther.filter((path) => path === "/" || !path.includes("/")).slice(0, 6), ["/", "notes", "whiteboards", "code", "docs", "presentations"]);
+  assert.equal(treeBeforeOther.includes("archive"), false, "Other starts collapsed");
+  await page.click('[data-file-other-toggle]');
+  await page.waitForSelector('[data-file-tree-path="archive"]');
+  await page.waitForSelector('[data-file-tree-path="README.md"]');
   await page.screenshot({ path: "/tmp/1helm-files-desktop.png" });
   await page.evaluate(() => document.querySelector('[data-file-path="docs"]')?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
   await page.waitForSelector('[data-file-directory="docs"]');
@@ -360,6 +505,7 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.waitForSelector('[data-file-path="docs/browser.md"]');
   await page.click('[data-file-path="docs/browser.md"]');
   await page.waitForFunction(() => document.querySelector('[data-file-metadata]')?.textContent.includes("browser.md"));
+  assert.equal(await page.$eval('[data-file-metadata] [data-download-docx]', (button) => button.textContent.trim()), "Download - DOCX");
   await page.evaluate(() => [...document.querySelectorAll('[data-file-metadata] button')].find((button) => button.textContent.trim() === "Rename")?.click()); await submitPrompt("renamed.md");
   await page.waitForSelector('[data-file-path="docs/renamed.md"]');
   await page.click('[data-file-path="docs/renamed.md"]');
@@ -381,6 +527,23 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   assert.ok(markdown.strong.some((text) => text.trim().toLowerCase().startsWith("goal")) && markdown.strong.some((text) => text.trim().toLowerCase().startsWith("session status")), JSON.stringify(markdown));
   assert.doesNotMatch(markdown.text, /\*\*/);
 
+  // Desktop navigation collapses to a compact rail, gives the main surface
+  // the reclaimed width, persists through a shell reload, and expands again.
+  const expandedWidth = await page.$eval('[data-sidebar="desktop"]', (sidebar) => sidebar.getBoundingClientRect().width);
+  const mainWidthBeforeCollapse = await page.$eval('#main', (main) => main.getBoundingClientRect().width);
+  await page.click('[data-sidebar="desktop"] [data-sidebar-collapse-toggle]');
+  await page.waitForSelector('[data-sidebar="desktop"][data-sidebar-collapsed="true"]');
+  const collapsedLayout = await page.evaluate(() => ({
+    sidebar: document.querySelector('[data-sidebar="desktop"]').getBoundingClientRect().width,
+    main: document.querySelector('#main').getBoundingClientRect().width,
+  }));
+  assert.ok(collapsedLayout.sidebar < expandedWidth && collapsedLayout.main > mainWidthBeforeCollapse, JSON.stringify(collapsedLayout));
+  await waitFor(async () => (await api("/api/me/ui-state", {}, token)).state.desktop_sidebar_collapsed === true, "persisted desktop sidebar collapse");
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForSelector('[data-sidebar="desktop"][data-sidebar-collapsed="true"] [aria-label="Expand navigation"]');
+  await page.click('[data-sidebar="desktop"] [data-sidebar-collapse-toggle]');
+  await page.waitForSelector('[data-sidebar="desktop"][data-sidebar-collapsed="false"]');
+
   // On a phone, scrolling away blurs the composer (allowing the OS keyboard
   // to dismiss), settings navigation stays compact, and the visible viewport
   // owns the application height without clipping below the screen.
@@ -399,6 +562,7 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   assert.ok(Math.abs(mobile.shellBottom - mobile.viewport) <= 1 && mobile.cssHeight.endsWith("px"), JSON.stringify(mobile));
   await page.click('[aria-label="Open navigation"]');
   await page.waitForSelector('[data-sidebar="mobile"] [aria-label="Open settings"]');
+  assert.equal(await page.$('[data-sidebar="mobile"] [data-sidebar-collapse-toggle]'), null, "desktop collapse never changes the mobile drawer");
   await page.evaluate(() => document.querySelector('[data-sidebar="mobile"] [aria-label="Open settings"]')?.click());
   await page.waitForSelector('[aria-label="Settings sections"]');
   const settings = await page.$eval('[aria-label="Settings sections"]', (nav) => ({ height: nav.getBoundingClientRect().height, width: nav.getBoundingClientRect().width, scrolls: nav.scrollWidth > nav.clientWidth }));

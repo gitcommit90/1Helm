@@ -67,7 +67,7 @@ const APPLE_RUNTIME_VERSION = "1.1.0";
 export const APPLE_RUNTIME_PACKAGE = `container-${APPLE_RUNTIME_VERSION}-installer-signed.pkg`;
 export const APPLE_RUNTIME_URL = `https://github.com/apple/container/releases/download/${APPLE_RUNTIME_VERSION}/${APPLE_RUNTIME_PACKAGE}`;
 export const APPLE_RUNTIME_SHA256 = "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714";
-export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.20";
+export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.21";
 const CONTAINER_CANDIDATES = [process.env.HELM_CONTAINER_CLI, "/usr/local/bin/container", "/opt/homebrew/bin/container", "container"].filter(Boolean) as string[];
 const LXC_RUNTIME_VERSION = "1helm-lxc-runtime-v1";
 const LXC_HELPER_CANDIDATES = [
@@ -138,6 +138,7 @@ const explicitComputerId = (channelId: number): string => `1helm-${installationI
 const hostWorldRoot = (channelId: number): string => join(DATA_DIR, "channels", String(channelId));
 const hostWorkspace = (channelId: number): string => join(hostWorldRoot(channelId), "workspace");
 const hostFiles = (channelId: number): string => join(hostWorldRoot(channelId), "files");
+const workspaceMirrorRefreshes = new Map<number, Promise<void>>();
 
 function withChannelLock<T>(channelId: number, fn: () => Promise<T>): Promise<T> {
   const previous = channelLocks.get(channelId) || Promise.resolve();
@@ -785,7 +786,13 @@ export async function syncGuestToHost(channelId: number): Promise<void> {
 export async function refreshChannelWorkspaceMirror(channelId: number): Promise<void> {
   const computer = channelComputer(channelId);
   if (!computer || !isolatedBackend(computer) || computer.observed_state !== "running") return;
-  await syncGuestToHost(channelId);
+  const current = workspaceMirrorRefreshes.get(channelId);
+  if (current) return current;
+  const refresh = syncGuestToHost(channelId).finally(() => {
+    if (workspaceMirrorRefreshes.get(channelId) === refresh) workspaceMirrorRefreshes.delete(channelId);
+  });
+  workspaceMirrorRefreshes.set(channelId, refresh);
+  await refresh;
 }
 
 /** Resolve an agent artifact only after its canonical guest filesystem is mirrored. */

@@ -6,7 +6,11 @@ Process: [release-lifecycle.md](./release-lifecycle.md). Policy: [GOVERNANCE.md]
 
 Docs-only governance can merge without a version bump; still update `CHANGELOG.md` Unreleased when operators should notice.
 
-**Do not say “done” for a ship until applicable checks pass.**
+**Hard gate:** every named desktop release must ship macOS, Linux, and Windows
+from the same version and exact source commit. There is no Mac-only fast path.
+Do not create the tag or GitHub Release, publish any platform, mark anything
+latest, or say “done” until all three lanes pass. If one lane is blocked, pause
+the whole release and report it.
 
 ## 1. Prepare
 
@@ -63,21 +67,51 @@ MERGED_COMMIT="$(git rev-parse origin/main)"
 VERSION="$(node -p "require('./package.json').version")"
 ```
 
-## 5. Tag (optional but preferred for named cuts)
+## 5. Build the complete desktop matrix before tagging
+
+```bash
+HEADLESS="dist/1Helm-${VERSION}-linux-node.tgz"
+DMG="dist/1Helm-${VERSION}-arm64.dmg"
+UPDATE_ZIP="dist/1Helm-${VERSION}-mac-arm64.zip"
+WINDOWS_SETUP="dist/1Helm-${VERSION}-windows-x64-setup.exe"
+WINDOWS_NUPKG="dist/1Helm-${VERSION}-full.nupkg"
+WINDOWS_RELEASES="dist/RELEASES"
+ANDROID_APK="dist/1Helm-${VERSION}-universal.apk"
+RELEASE_NOTES="dist/1Helm-${VERSION}-release-notes.md"
+
+# Build from clean snapshots of the same MERGED_COMMIT on the platform owners:
+# macOS arm64: npm ci && npm run typecheck && npm run build && npm test && npm run package:dmg:release
+# Linux:       npm ci && npm run typecheck && npm run build && npm test && npm run package:linux
+# Windows x64: npm ci && npm run typecheck && npm run build && npm test && npm run package:windows
+
+for artifact in "$DMG" "$UPDATE_ZIP" "$HEADLESS" "$WINDOWS_SETUP" "$WINDOWS_NUPKG" "$WINDOWS_RELEASES"; do
+  test -s "$artifact"
+done
+# Author RELEASE_NOTES from docs/release-notes-template.md. It must contain the
+# complete numbered acceptance ledger, every desktop artifact digest, and all
+# three platform verification records.
+test -s "$RELEASE_NOTES"
+rg -q '^1\. ' "$RELEASE_NOTES" # multi-item ships must retain a numbered ledger
+```
+
+The Windows `.nupkg` basename must exactly match the entry inside `RELEASES`.
+Record Authenticode status for Windows executable code and Setup. Trusted
+signing is optional until 1Helm adopts a Windows signing identity: an honestly
+disclosed `NotSigned` result is accepted and must not block the release. Never
+substitute a self-signed identity. When a trusted identity is configured, use
+the fail-closed `package:windows:release` command.
+
+Only after Sections 6–8 pass for all three desktop platforms:
 
 ```bash
 git tag -a "v${VERSION}" "$MERGED_COMMIT" -m "1Helm ${VERSION}"
 git push origin "refs/tags/v${VERSION}"
-HEADLESS="dist/1Helm-${VERSION}-linux-node.tgz"
-DMG="dist/1Helm-${VERSION}-arm64.dmg"
-UPDATE_ZIP="dist/1Helm-${VERSION}-mac-arm64.zip"
-ANDROID_APK="dist/1Helm-${VERSION}-universal.apk"
-RELEASE_NOTES="dist/1Helm-${VERSION}-release-notes.md"
-# Author RELEASE_NOTES from docs/release-notes-template.md. It must contain the
-# complete numbered acceptance ledger, artifact digests, and verification.
-test -s "$RELEASE_NOTES"
-rg -q '^1\. ' "$RELEASE_NOTES" # multi-item ships must retain a numbered ledger
-gh release create "v${VERSION}" "$DMG" "$UPDATE_ZIP" "$HEADLESS" "$ANDROID_APK" --title "1Helm ${VERSION}" --notes-file "$RELEASE_NOTES" --draft
+gh release create "v${VERSION}" \
+  "$DMG" "$UPDATE_ZIP" "$HEADLESS" \
+  "$WINDOWS_SETUP" "$WINDOWS_NUPKG" "$WINDOWS_RELEASES" \
+  --title "1Helm ${VERSION}" --notes-file "$RELEASE_NOTES" --draft
+# Upload mobile artifacts through their applicable distribution lane; their
+# timing never permits a partial desktop release.
 # review notes, then:
 gh release edit "v${VERSION}" --draft=false
 ```
@@ -117,16 +151,31 @@ curl -fsS "http://127.0.0.1:18123/api/setup/status"
 
 Expect first-run / needs_setup on empty data dir.
 
-## 7. Host updater acceptance
+## 7. Host updater acceptance — all three lanes are required
 
-- Verify the native ZIP was created only after the app was notarized and stapled; extract it and repeat strict signature, ticket, and Gatekeeper checks.
-- Confirm the public Electron feed selects that ZIP for the prior Mac version and returns no update for the new version.
+- **macOS:** verify the native ZIP was created only after the app was notarized
+  and stapled; extract it and repeat strict signature, ticket, and Gatekeeper
+  checks. Confirm the staged/public Electron feed selects that ZIP for the
+  prior Mac version and no update for the new version.
 - On the same retained Apple Silicon release host used for the clean build,
   install the **publicly downloaded** DMG/update with preserved Application
   Support, then verify the new version, loopback health, resident state, and
   data-directory identity.
-- Upload the exact `npm run package:linux` artifact and require GitHub's recorded `sha256:` digest before publication.
-- In a disposable systemd host running the prior release, invoke the same Captain host-update action, observe checking/downloading/installing/restarting, verify the new version and `/var/lib/1helm` identity, and exercise rollback with an intentionally unhealthy disposable fixture.
+- **Linux:** verify the exact `npm run package:linux` archive, its source commit
+  and SHA-256, then stage equivalent release metadata. In a disposable systemd
+  host running the prior release, invoke the Captain host-update action,
+  observe checking/downloading/installing/restarting, verify the new version
+  and `/var/lib/1helm` identity, and exercise health-failure rollback.
+- **Windows:** on Windows 11 x64, record Authenticode status for Setup, the
+  packaged app, and its executable code; confirm `.nupkg` and `RELEASES`
+  consistency; clean install Setup; exercise the real WSL 2 channel lifecycle;
+  then expose staged
+  Squirrel metadata to the prior public version and prove download,
+  verification, restart installation, new version, loopback health, WSL state,
+  and app-data preservation.
+- Before publication, compare each uploaded GitHub asset digest with the local
+  verified digest and assert the release contains the complete six-file
+  desktop matrix. A missing asset is a release blocker, not “not applicable.”
 
 ## 8. Clean deployment verify (when shipping install path)
 
@@ -147,6 +196,8 @@ Local setup:    needs_setup verified on clean CTRL_DATA_DIR
 Clean deploy:   <pass / skipped + reason>
 Mac host update:<public artifact installed on release host + state preserved>
 Linux update:  <old → new, digest + health + state preserved>
+Windows update:<old → new, disclosed signature status + Squirrel feed + WSL/app state preserved>
+Desktop matrix:<DMG + Mac ZIP + Linux TGZ + Windows Setup + nupkg + RELEASES, all same version/commit>
 Android:      <public APK digest, certificate fingerprint, install/update smoke>
 iOS:          <App Store build number + validation/upload result>
 CI:             Actions green on main

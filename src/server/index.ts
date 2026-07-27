@@ -73,6 +73,7 @@ import { stopAllConnectors } from "./connectors.ts";
 import { ensureImageGenerationSkill, listSkills, listTemplates, provisionSkill, skillsForAgent, setImageGenerationEnabled, imageGenerationAvailable, imageGenerationEnabledIds } from "./skills.ts";
 import { inspectCatalogSkill, installCatalogSkill, refreshSkillCatalog, searchSkillCatalog, skillCatalogStatus } from "./skill-catalog.ts";
 import { auditEvents, verifyAuditChain } from "./audit.ts";
+import { markdownToDocx } from "./docx.ts";
 import { configurePhoton, continuePhotonConversation, deliverPhotonEvent, photonConversation, photonConversations, photonStatus, registerPhotonDispatcher, startPhotonConnector, stopPhotonConnector } from "./photon.ts";
 import { photonSetupStatus, startPhotonSetup } from "./photon-auth.ts";
 import { completeGmailConnection, gmailConnectionStatus, saveGmailOAuthClient, startGmailConnection } from "./gmail.ts";
@@ -1366,9 +1367,9 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { threads });
       }
       if (action === "files" && m === "GET") {
-        await refreshChannelWorkspaceMirror(channelId);
         try {
           if (!url.searchParams.has("path")) {
+            await refreshChannelWorkspaceMirror(channelId);
             const files = syncWorkspaceArtifacts(channelId, null, "agent");
             return json(res, 200, { path: "", files, artifacts: q("SELECT * FROM artifacts WHERE channel_id=? ORDER BY modified DESC", channelId) });
           }
@@ -1489,11 +1490,19 @@ const server = createServer(async (req, res) => {
       if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
       if (!q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", channelId)) return json(res, 404, { error: "Agent-channel file surface not found." });
       try {
-        await refreshChannelWorkspaceMirror(channelId);
+        if (m === "POST") await refreshChannelWorkspaceMirror(channelId);
         if (m === "GET") return json(res, 200, { directories: listWorkspaceDirectories(channelId) });
         const b = await jbody(req);
         return json(res, 201, { directory: createWorkspaceDirectory(channelId, String(b.path || ""), String(b.name || "")) });
       } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
+    const channelFilesRefresh = p.match(/^\/api\/channels\/(\d+)\/files\/refresh$/);
+    if (channelFilesRefresh && m === "POST") {
+      const channelId = Number(channelFilesRefresh[1]);
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      if (!q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", channelId)) return json(res, 404, { error: "Agent-channel file surface not found." });
+      try { await refreshChannelWorkspaceMirror(channelId); return json(res, 200, { ok: true }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
     }
     const worldEntry = p.match(/^\/api\/channels\/(\d+)\/files\/entries$/);
     if (worldEntry && ["POST", "PATCH", "DELETE"].includes(m)) {
@@ -1519,11 +1528,30 @@ const server = createServer(async (req, res) => {
       const channelId = Number(worldText[1]);
       if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
       try {
-        await refreshChannelWorkspaceMirror(channelId);
         const b = m === "GET" ? null : await jbody(req);
         const path = m === "GET" ? String(url.searchParams.get("path") || "") : String(b?.path || "");
         if (m === "GET") return json(res, 200, { file: readWorkspaceTextFile(channelId, path) });
         return json(res, 200, { file: saveWorkspaceTextFile(channelId, path, String(b?.content || "")) });
+      } catch (error) { return json(res, /not found/i.test((error as Error).message) ? 404 : 400, { error: (error as Error).message }); }
+    }
+    const worldDocx = p.match(/^\/api\/channels\/(\d+)\/files\/docx$/);
+    if (worldDocx && m === "GET") {
+      const channelId = Number(worldDocx[1]);
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      if (!q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", channelId)) return json(res, 404, { error: "Agent-channel file not found." });
+      try {
+        const path = String(url.searchParams.get("path") || "");
+        if (!/\.md$/i.test(path)) return json(res, 400, { error: "Choose a Markdown (.md) file to download as DOCX." });
+        const file = readWorkspaceTextFile(channelId, path);
+        const name = file.name.replace(/\.md$/i, ".docx");
+        const output = await markdownToDocx(file.content);
+        res.writeHead(200, {
+          "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+          "content-length": output.byteLength,
+          ...SECURITY_HEADERS,
+        });
+        return res.end(output);
       } catch (error) { return json(res, /not found/i.test((error as Error).message) ? 404 : 400, { error: (error as Error).message }); }
     }
     const coworkPresenceRoute = p.match(/^\/api\/channels\/(\d+)\/cowork\/presence$/);
@@ -1539,7 +1567,6 @@ const server = createServer(async (req, res) => {
       if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
       if (!q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", channelId)) return json(res, 404, { error: "Agent-channel file not found." });
       try {
-        await refreshChannelWorkspaceMirror(channelId);
         const file = resolveWorldFile(channelId, url.searchParams.get("path") || "");
         const disposition = url.searchParams.get("download") === "1" ? "attachment" : "inline";
         res.writeHead(200, { "content-type": MIME[extname(file)] || "application/octet-stream", "content-disposition": `${disposition}; filename*=UTF-8''${encodeURIComponent(file.split("/").pop() || "file")}`, ...SECURITY_HEADERS });
