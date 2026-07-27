@@ -197,7 +197,7 @@ async function main() {
       overwrite: true,
       prune: true,
       asar: false,
-      ignore: [IGNORE_NON_RUNTIME_ROOTS, /\.DS_Store$/, /\.log$/],
+      ignore: [IGNORE_NON_RUNTIME_ROOTS, /\/AGENTS\.md$/, /\.DS_Store$/, /\.log$/],
       extendInfo: {
         CFBundleDisplayName: PRODUCT,
         CFBundleName: PRODUCT,
