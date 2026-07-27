@@ -178,6 +178,15 @@ function adminPanel(): HTMLElement {
   const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", class: "hidden" }) as HTMLInputElement;
   const presetColors = ["#c8552f", "#4f6d7a", "#8a6b7c", "#a67c52", "#7a6a4f", "#2e7d4f", "#2166b8", "#64748b"];
   const presetRow = h("div", { class: "mt-2 flex flex-wrap gap-2" });
+  const applyWorkspacePhoto = (workspace: typeof S.workspace): void => {
+    // The endpoint is fixed and same-origin; never turn an API-returned string
+    // into an arbitrary DOM URL. This also keeps session tokens out of any
+    // server-selected destination.
+    S.workspace = workspace;
+    const source = workspacePhotoSrc("/api/workspace/photo", Date.now());
+    photo.src = source;
+    document.querySelectorAll<HTMLImageElement>(".logo-asset").forEach((image) => { image.src = source; });
+  };
   const applyPreset = async (hex: string): Promise<void> => {
     status.textContent = "Applying workspace color…";
     const canvas = document.createElement("canvas");
@@ -190,7 +199,7 @@ function adminPanel(): HTMLElement {
     const response = await fetch(apiUrl("/api/workspace/photo"), { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": "image/png" }, body: blob });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) { status.textContent = result.error || `HTTP ${response.status}`; return; }
-    S.workspace = result.workspace; photo.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); document.querySelectorAll<HTMLImageElement>(".logo-asset").forEach((image) => { image.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); }); status.textContent = "Workspace photo updated.";
+    applyWorkspacePhoto(result.workspace); status.textContent = "Workspace photo updated.";
   };
   for (const hex of presetColors) presetRow.append(h("button", { class: "h-8 w-8 rounded-lg border border-line shadow-sm transition hover:scale-105", style: `background:${hex}`, title: hex, onclick: () => { void applyPreset(hex); } }));
   file.onchange = async () => {
@@ -199,7 +208,7 @@ function adminPanel(): HTMLElement {
     const response = await fetch(apiUrl("/api/workspace/photo"), { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": image.type }, body: image });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) { status.textContent = result.error || `HTTP ${response.status}`; return; }
-    S.workspace = result.workspace; photo.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); document.querySelectorAll<HTMLImageElement>(".logo-asset").forEach((image) => { image.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); }); status.textContent = "Workspace photo updated.";
+    applyWorkspacePhoto(result.workspace); status.textContent = "Workspace photo updated.";
   };
   const save = async (): Promise<void> => {
     try { S.workspace = (await api<{ workspace: typeof S.workspace }>("/api/workspace", { method: "PATCH", body: { name: name.value.trim().slice(0, 100), theme: theme.value } })).workspace; applyWorkspaceTheme(); document.querySelectorAll<HTMLElement>("[data-workspace-name]").forEach((node) => { node.textContent = S.workspace.name; }); status.textContent = "Workspace settings saved."; }
