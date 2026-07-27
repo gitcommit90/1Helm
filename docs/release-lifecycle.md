@@ -2,6 +2,27 @@
 
 Process contract from intent to verified deploy. Commands: [release-checklist.md](./release-checklist.md).
 
+## Immutable desktop release rule
+
+1Helm has one synchronized desktop-host release train. A named desktop release
+is one version, one exact source commit, and one GitHub Release containing all
+of the following:
+
+- Apple Silicon macOS DMG and native updater ZIP;
+- Linux host archive;
+- Windows x64 Setup executable, full Squirrel package, and `RELEASES` manifest.
+
+All three platform lanes are mandatory even when a change appears
+platform-specific, because the application source and updater version advance
+together. Do not tag, create or publish a GitHub Release, mark it latest, or
+update public download/feed metadata until every lane is built, signed where
+required, digest-verified, installed, and update-tested from the previous
+release. If any lane is unavailable or fails, pause the whole release. Never
+publish a Mac-only or otherwise partial set under the product version.
+
+Mobile distribution may have additional store/signing timing, but it never
+weakens the Mac + Linux + Windows desktop invariant.
+
 ```text
   intent / issue
        │
@@ -21,8 +42,17 @@ Process contract from intent to verified deploy. Commands: [release-checklist.md
   version bump on the release branch
        │
        v
-  full numbered notes · tag · signed DMG + updater ZIP + Linux host artifact
-                         + signed universal APK + App Store mobile archive
+  exact-commit candidates on every desktop lane
+       │
+       v
+  Mac DMG + ZIP · Linux host archive · Windows Setup + nupkg + RELEASES
+       │
+       v
+  clean install + prior→new updater acceptance on Mac, Linux, and Windows
+       │
+       v
+  full numbered notes · tag · one complete GitHub Release
+                         + mobile artifacts when applicable
        │
        v
   verify (local health + clean install + public artifact)
@@ -86,9 +116,14 @@ Draft PRs are allowed for long slices; mark ready only when the quality bar is m
    user-visible item must appear once, with the same numbering as the request
    when available. Include additional fixes, artifacts/digests, and verification
    evidence in their own sections.
-6. Publish the verified DMG, native updater ZIP, Linux host artifact, any
-   directly distributed signed Android APK, and those complete release notes
-   through one GitHub Release. Submit an iOS build through App Store Connect
+6. Before creating the tag or GitHub Release, finish the complete desktop
+   matrix from the exact merged commit: verified macOS DMG + updater ZIP,
+   Linux host archive, and Authenticode-signed Windows Setup + full `.nupkg` +
+   literal `RELEASES` manifest.
+7. Publish those desktop artifacts and complete release notes together through
+   one GitHub Release. Never publish a subset or attach a platform later to a
+   version already described as complete. Include a directly distributed
+   signed Android APK when applicable. Submit iOS through App Store Connect
    rather than publishing an installable IPA as a generic download. Do not use
    GitHub's generated notes as the sole or primary body.
 
@@ -116,8 +151,10 @@ workspace state.
 | Code landed | On `origin/main`, CI green |
 | Behavior fixed | Tests + manual/API check |
 | Install path still works | Clean `CTRL_DATA_DIR` boot through the wizard plus platform acceptance |
-| Named release | Version, changelog, full numbered notes, exact tag, verified public artifact, and clean installation |
-| Native host update | Published updater ZIP feed, installed-old-to-new Mac acceptance, and preserved Application Support |
-| Linux host update | Digest-qualified artifact, real systemd old-to-new update, health check, and preserved `/var/lib/1helm` |
+| Named desktop release | One version/commit, changelog, full numbered notes, exact tag, complete Mac + Linux + Windows asset matrix, and clean installation evidence for all three |
+| Mac host update | Published notarized/stapled updater ZIP feed, installed-old-to-new acceptance, and preserved Application Support |
+| Linux host update | Digest-qualified artifact, real systemd old-to-new update, health check/rollback, and preserved `/var/lib/1helm` |
+| Windows host update | Authenticode-signed Setup + `.nupkg` + `RELEASES`, real Squirrel old-to-new update, WSL lifecycle smoke, and preserved app data |
 
-If deploy verification was skipped, say so. Do not call a ship “done.”
+If any platform artifact or acceptance run is skipped, the release is paused,
+not partially shipped. Say exactly what is missing and do not call it “done.”

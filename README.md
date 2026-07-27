@@ -134,6 +134,11 @@ digest-verified, health-checked updater — see the
 it works best on a dedicated machine: your crew works around the clock, and
 your everyday computer takes naps.
 
+Mac, Linux, and Windows use one synchronized desktop release version. A release
+is held in full until the DMG/updater ZIP, Linux host archive, and signed
+Windows Setup/Squirrel feed have all passed native install and update
+acceptance from the same source commit.
+
 ### Connect from iPhone, iPad, or Android
 
 The mobile apps are thin, native gateways to a 1Helm you already run. Install
