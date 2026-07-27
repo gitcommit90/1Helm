@@ -14,9 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cowork new-file prompts now start blank. Names with an explicit extension are
   preserved, while extensionless names receive the active section's `.md`,
   `.whiteboard.json`, `.txt`, or `.slides.json` default.
-- Presentation canvases anchor at the top of their scrollable stage so the
-  Excalidraw hamburger menu remains fully reachable, including when the canvas
-  is taller than the available area.
+- Presentation canvases anchor at the top of their scrollable stage, and the
+  Excalidraw hamburger menu escapes the editor's inner clip into a bounded,
+  scrollable overlay so its complete menu remains visible and interactive.
 - Cowork Code uses the normal light surface with readable dark text in light
   mode while retaining its navy editor treatment in dark mode.
 - Offline shell fallbacks always resolve service-worker requests with a valid
@@ -55,8 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Files reads stay responsive, simultaneous refreshes coalesce, and guest-only
   files appear after the background refresh.
 - Browser and server coverage verify blank Cowork naming, default and explicit
-  extensions, presentation menu reachability, light Code contrast, Files
-  grouping, real DOCX ZIP contents, and persistent desktop-only sidebar collapse.
+  extensions, presentation-menu stage bounds and pointer hit-testing, light
+  Code contrast, Files grouping, real DOCX ZIP contents, and persistent
+  desktop-only sidebar collapse.
 
 ## [0.0.20] - 2026-07-27
 

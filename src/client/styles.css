@@ -927,14 +927,15 @@ html, body { height: 100%; width: 100%; overflow: hidden; overscroll-behavior: n
 .cowork-slide-action { min-width: 1.4rem; border-radius: .25rem; color: var(--c-muted); }
 .cowork-slide-action:hover:not(:disabled) { background: var(--c-hover); color: var(--c-fg); }
 .cowork-slide-action:disabled { opacity: .3; }
-.cowork-slide-stage { display: grid; min-width: 0; flex: 1 1 auto; place-items: start center; overflow: auto; padding: 1.5rem; scroll-padding-top: 1.5rem; background: color-mix(in srgb, var(--c-raised) 70%, var(--c-bg)); }
-.cowork-slide-canvas { aspect-ratio: 16 / 9; width: min(55rem, 96%); flex: 0 0 auto; border: 1px solid var(--c-line); box-shadow: 0 22px 70px -40px #000; }
-/* Excalidraw flips its full-height menu above the trigger when a 16:9 slide
- * cannot fit the whole list below. That puts the first actions outside the
- * clipped canvas. Keep the menu below its trigger and scroll its bounded body. */
-.cowork-slide-canvas .dropdown-menu { top: 100% !important; bottom: auto !important; transform: none !important; }
-.cowork-slide-canvas .dropdown-menu { height: min(15rem, calc(100% - 4.75rem)); overflow: hidden; }
-.cowork-slide-canvas .dropdown-menu .dropdown-menu-container { max-height: 100%; overflow-y: auto; overscroll-behavior: contain; }
+.cowork-slide-stage { container-type: size; position: relative; display: grid; min-width: 0; flex: 1 1 auto; place-items: start center; overflow: auto; padding: 1.5rem; scroll-padding-top: 1.5rem; background: color-mix(in srgb, var(--c-raised) 70%, var(--c-bg)); }
+.cowork-slide-canvas { z-index: 1; aspect-ratio: 16 / 9; width: min(55rem, 96%); flex: 0 0 auto; overflow: visible; border: 1px solid var(--c-line); box-shadow: 0 22px 70px -40px #000; }
+.cowork-slide-canvas > .excalidraw { overflow: visible; }
+/* Excalidraw flips its long main menu above a short 16:9 slide and the shared
+ * canvas clip then hides it. Presentations deliberately let this one overlay
+ * escape the slide, anchor it below the top controls, and bound its own scroll
+ * to the visible presentation stage. */
+.cowork-slide-canvas .dropdown-menu { top: 3.25rem !important; bottom: auto !important; height: auto; overflow: visible; transform: none !important; }
+.cowork-slide-canvas .dropdown-menu .dropdown-menu-container { max-height: min(25rem, max(8rem, calc(100cqh - 11rem))) !important; overflow-y: auto; overscroll-behavior: contain; box-shadow: 0 16px 40px -18px #000; }
 .cowork-presentation-view { width: 100%; height: 100%; }
 .cowork-agent-toggle { position: absolute; right: 1rem; bottom: 1rem; z-index: 5; display: grid; width: 3rem; height: 3rem; place-items: center; border: 3px solid var(--c-surface); border-radius: 999px; background: var(--c-surface); box-shadow: 0 10px 30px -15px #000, 0 0 0 1px var(--c-line); transition: transform .15s ease, box-shadow .15s ease; }
 .cowork-agent-toggle:hover { transform: translateY(-2px); box-shadow: 0 16px 34px -15px #000, 0 0 0 2px var(--c-accent-soft); }

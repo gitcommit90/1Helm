@@ -418,10 +418,22 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
     const menuBox = menu.getBoundingClientRect();
     const canvasBox = menu.closest('.cowork-slide-canvas').getBoundingClientRect();
     const stageBox = menu.closest('.cowork-slide-stage').getBoundingClientRect();
-    return { menuTop: menuBox.top, menuBottom: menuBox.bottom, canvasTop: canvasBox.top, canvasBottom: canvasBox.bottom, stageTop: stageBox.top, viewportTop: 0 };
+    const container = menu.querySelector('.dropdown-menu-container');
+    const firstAction = menu.querySelector('.dropdown-menu-item');
+    const actionBox = firstAction?.getBoundingClientRect();
+    const visibleAtAction = actionBox ? document.elementFromPoint(actionBox.left + Math.min(16, actionBox.width / 2), actionBox.top + actionBox.height / 2) : null;
+    return {
+      menuTop: menuBox.top, menuBottom: menuBox.bottom, menuHeight: menuBox.height,
+      canvasTop: canvasBox.top, canvasBottom: canvasBox.bottom, stageTop: stageBox.top, stageBottom: stageBox.bottom,
+      clientHeight: container?.clientHeight || 0, scrollHeight: container?.scrollHeight || 0,
+      firstActionVisible: Boolean(firstAction && visibleAtAction && (firstAction === visibleAtAction || firstAction.contains(visibleAtAction))),
+      firstAction: actionBox ? { text: firstAction.textContent?.trim(), top: actionBox.top, bottom: actionBox.bottom, left: actionBox.left, right: actionBox.right } : null,
+      hit: visibleAtAction ? { tag: visibleAtAction.tagName, className: String(visibleAtAction.className), text: visibleAtAction.textContent?.trim()?.slice(0, 80) } : null,
+    };
   });
-  assert.ok(menuGeometry.menuTop >= Math.max(menuGeometry.canvasTop, menuGeometry.stageTop, menuGeometry.viewportTop) - 1, JSON.stringify(menuGeometry));
-  assert.ok(menuGeometry.menuBottom <= menuGeometry.canvasBottom + 1, JSON.stringify(menuGeometry));
+  assert.ok(menuGeometry.menuTop >= menuGeometry.stageTop - 1 && menuGeometry.menuBottom <= menuGeometry.stageBottom + 1, JSON.stringify(menuGeometry));
+  assert.ok(menuGeometry.menuHeight > 100 && menuGeometry.clientHeight > 100 && menuGeometry.scrollHeight >= menuGeometry.clientHeight && menuGeometry.firstActionVisible, JSON.stringify(menuGeometry));
+  await page.screenshot({ path: "/tmp/1helm-presentation-menu.png" });
   await page.click('.cowork-slide-canvas .main-menu-trigger');
   await collaboratorPage.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Presentations")?.click());
   await collaboratorPage.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("review.slides.json"));
