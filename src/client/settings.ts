@@ -105,8 +105,18 @@ export function openSettings(tab: Tab = "agents"): void {
 export function refreshOpenSkillsSettings(): void {
   const overlay = document.querySelector<HTMLElement>("[data-settings-overlay]");
   if (overlay?.dataset.settingsTab !== "skills") return;
-  overlay.remove();
-  openSettings("skills");
+  let notice = overlay.querySelector<HTMLElement>("[data-skills-refresh-notice]");
+  if (notice) return;
+  notice = h("div", {
+    class: "mx-auto mb-4 flex w-full max-w-5xl flex-wrap items-center gap-3 rounded-lg border border-accent/30 bg-accent-soft px-4 py-3 text-sm text-fg",
+    dataset: { skillsRefreshNotice: "" },
+    role: "status",
+  }, h("span", { class: "min-w-0 flex-1" }, "The workspace skill catalog changed in the background."), h("button", {
+    class: "btn-subtle shrink-0 text-xs",
+    type: "button",
+    onclick: () => { overlay.remove(); openSettings("skills"); },
+  }, "Refresh when ready"));
+  overlay.querySelector("main > div")?.prepend(notice);
 }
 
 const adminNote = (): HTMLElement => h("p", { class: "rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-300" }, "Only admins can add or edit these.");

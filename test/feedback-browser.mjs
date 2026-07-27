@@ -135,12 +135,15 @@ test("Feedback button saves a real report and the admin inbox shows it", {
   assert.ok(await page.$(`[data-feedback-report="${reports[0].public_id}"]`));
 
   // Keep the Skills control plane open while Skipper creates a new skill. The
-  // WebSocket event must invalidate the view; no page reload or tab hop is used.
+  // WebSocket event must never tear down the user's active settings surface;
+  // it offers an explicit refresh at the user's chosen moment instead.
   await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="Settings sections"] button')]
     .find((button) => button.textContent?.trim() === "Skills")?.click());
   await page.waitForSelector('article[data-skill-slug="outcome-ownership"]');
   await api("/api/skills/learn", { body: { notes: "Turn this UI refresh evidence into a reusable incident postmortem skill." } }, token);
   await waitFor(async () => (await api("/api/skills", {}, token)).skills?.find((skill) => skill.slug === "incident-postmortem"), "new skill in authoritative arsenal");
+  await page.waitForSelector("[data-skills-refresh-notice]");
+  await page.click("[data-skills-refresh-notice] button");
   await page.waitForSelector('article[data-skill-slug="incident-postmortem"]', { timeout: 10_000 });
 
   // Assignment must likewise repaint an already-open channel Settings surface.

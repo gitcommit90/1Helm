@@ -213,6 +213,21 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-texts-messages]')?.innerText.includes("Answer complete"), { timeout: 10_000 });
   const outboundAfterDesktop = (await api("/api/testing/photon", { body: {} }, token)).outbound;
   ok(outboundAfterDesktop === outboundBeforeDesktop, "desktop Texts continuation shares Skipper context without echoing app messages back to iMessage");
+  await page.type(`[data-texts-composer="${textConversation}"]`, "Text draft remains under my cursor");
+  await page.evaluate((conversationId) => {
+    const input = document.querySelector(`[data-texts-composer="${conversationId}"]`);
+    input.focus(); input.setSelectionRange(5, 10);
+  }, textConversation);
+  await api("/api/testing/photon", { body: { event: { id: "browser-phone-live-continuity", space_id: "browser-space", space_type: "dm", sender: "+15551234567", text: "Phone update while drafting", timestamp: new Date().toISOString() } } }, token);
+  await page.waitForFunction((conversationId) => {
+    const input = document.querySelector(`[data-texts-composer="${conversationId}"]`);
+    const stream = document.querySelector(`[data-texts-messages="${conversationId}"]`);
+    return document.activeElement === input
+      && input?.value === "Text draft remains under my cursor"
+      && input?.selectionStart === 5 && input?.selectionEnd === 10
+      && stream?.textContent?.includes("Phone update while drafting");
+  }, {}, textConversation);
+  ok(true, "live phone updates preserve the focused Texts draft and exact cursor selection");
 
   await page.setViewport({ width: 1440, height: 900 });
   await page.goto(`${base}/c/${channel.slug}/thread/${rootMessage.id}`, { waitUntil: "networkidle0" });
@@ -318,6 +333,39 @@ try {
   }, actionId);
   ok(activityEvidence.rows === 1 && activityEvidence.open && /Input/.test(activityEvidence.text) && /Outcome evidence/.test(activityEvidence.text) && /status=completed/.test(activityEvidence.text),
     "Activity mutates one outcome-first row and expands to the retained input and outcome evidence");
+  const liveActivityBefore = await page.evaluate((expectedActionId) => {
+    const view = document.getElementById("channelview");
+    const details = document.querySelector(`#channelview details[data-action-id="${expectedActionId}"]`);
+    view.scrollTop = Math.max(1, Math.min(view.scrollHeight - view.clientHeight, 180));
+    details.open = true;
+    window.__briefActivityView = view;
+    return { top: view.scrollTop, action: details.getAttribute("data-continuity-key") };
+  }, actionId);
+  await api(`/api/channels/${channel.id}/messages`, { body: { body: `@${channel.agent.name} run whoami for live activity continuity` } }, token);
+  await page.waitForFunction((expectedAction) => {
+    const details = document.querySelector(`#channelview details[data-action-id="${expectedAction}"]`);
+    return details?.open && document.getElementById("channelview")?.scrollTop > 0;
+  }, {}, actionId);
+  const liveActivityAfter = await page.evaluate(({ expectedActionId, priorTop }) => {
+    const view = document.getElementById("channelview");
+    const details = document.querySelector(`#channelview details[data-action-id="${expectedActionId}"]`);
+    return { sameView: view === window.__briefActivityView, open: details?.open, top: view?.scrollTop, priorTop };
+  }, { expectedActionId: actionId, priorTop: liveActivityBefore.top });
+  ok(liveActivityAfter.sameView && liveActivityAfter.open && Math.abs(liveActivityAfter.top - liveActivityAfter.priorTop) <= 1,
+    "live Activity refreshes preserve the active panel node, expanded evidence, and reading position");
+
+  await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Settings"))?.click());
+  await page.waitForSelector('textarea[aria-label="Channel purpose"]');
+  await page.evaluate(() => {
+    const input = document.querySelector('textarea[aria-label="Channel purpose"]');
+    input.value = "Unsaved settings draft survives background updates.";
+    input.focus(); input.setSelectionRange(8, 16);
+  });
+  await api(`/api/providers/${provider.provider.id}`, { method: "PATCH", body: { name: "Mock live continuity" } }, token);
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Channel purpose"
+    && document.activeElement?.value === "Unsaved settings draft survives background updates."
+    && document.activeElement?.selectionStart === 8 && document.activeElement?.selectionEnd === 16);
+  ok(true, "live provider updates preserve the focused channel-settings draft and exact cursor selection");
   await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Chat"))?.click());
   await page.waitForSelector('textarea[data-composer-parent="root"]');
   const restoredDraft = await page.$eval('textarea[data-composer-parent="root"]', (element) => element.value);
@@ -424,6 +472,42 @@ try {
   });
   ok(laneScroll?.overflows && laneScroll.before === 0 && laneScroll.after > 0 && laneScroll.lastReachable,
     "a crowded Board swim lane scrolls vertically until its final task is reachable");
+  const boardContinuity = await page.evaluate(() => {
+    const cards = document.querySelector('[data-board-status="open"] .board-lane-cards');
+    const focused = cards?.querySelector('button[data-thread-open]');
+    cards.scrollTop = Math.max(1, Math.floor((cards.scrollHeight - cards.clientHeight) / 2));
+    focused?.focus();
+    return { top: cards?.scrollTop, threadId: focused?.getAttribute("data-thread-open") };
+  });
+  await api(`/api/threads/${Number(boardContinuity.threadId)}`, { method: "PATCH", body: { summary: "**Goal** live Board continuity" } }, token);
+  await page.waitForFunction(({ threadId, priorTop }) => {
+    const focused = document.querySelector(`[data-thread-open="${threadId}"]`);
+    const cards = focused?.closest(".board-lane-cards");
+    return document.activeElement === focused && Math.abs((cards?.scrollTop || 0) - priorTop) <= 1;
+  }, {}, { threadId: boardContinuity.threadId, priorTop: boardContinuity.top });
+  ok(true, "live Board status refreshes preserve the focused session card and lane scroll position");
+
+  await page.evaluate(() => [...document.querySelectorAll('[data-sidebar="desktop"] button')].find((button) => button.textContent?.trim() === "Threads")?.click());
+  await page.waitForSelector('[data-global-threads-list] [data-global-thread-open]');
+  const globalThreadsContinuity = await page.evaluate(() => {
+    const view = document.getElementById("channelview");
+    const focused = document.querySelector('[data-global-thread-open]');
+    view.scrollTop = Math.max(1, Math.floor((view.scrollHeight - view.clientHeight) / 2));
+    focused?.focus();
+    window.__briefGlobalThreadsView = view;
+    return { top: view.scrollTop, threadId: focused?.getAttribute("data-global-thread-open") };
+  });
+  await api(`/api/threads/${Number(globalThreadsContinuity.threadId)}`, { method: "PATCH", body: { summary: "**Session Status** global continuity" } }, token);
+  await page.waitForFunction(({ threadId, priorTop }) => {
+    const view = document.getElementById("channelview");
+    const focused = document.querySelector(`[data-global-thread-open="${threadId}"]`);
+    return view === window.__briefGlobalThreadsView
+      && document.activeElement === focused
+      && Math.abs((view?.scrollTop || 0) - priorTop) <= 1
+      && focused?.querySelector("strong")?.textContent === "Session Status";
+  }, {}, { threadId: globalThreadsContinuity.threadId, priorTop: globalThreadsContinuity.top });
+  ok(true, "live global Threads refreshes preserve the active panel, focused session, scroll position, and rendered Markdown");
+  await page.goto(`${base}/c/${channel.slug}`, { waitUntil: "networkidle0" });
 
   await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Terminal"))?.click());
   await page.waitForSelector(".xterm");
