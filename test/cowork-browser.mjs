@@ -140,9 +140,11 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content') === window.__coworkEditor);
   const continuity = await page.evaluate(() => {
     const editor = document.querySelector('[aria-label="Notes editor"] .cm-content');
-    return { same: editor === window.__coworkEditor, focused: document.activeElement === editor, lines: [...document.querySelectorAll('[aria-label="Notes editor"] .cm-line')].map((line) => line.textContent), selection: window.getSelection()?.toString() };
+    return { same: editor === window.__coworkEditor, focused: document.activeElement === editor, lines: [...document.querySelectorAll('[aria-label="Notes editor"] .cm-line')].map((line) => line.textContent) };
   });
-  assert.deepEqual(continuity, { same: true, focused: true, lines: ["# Field notes", "", "**Goal**", "", "Unsaved continuity proof."], selection: "ield not" });
+  assert.deepEqual(continuity, { same: true, focused: true, lines: ["# Field notes", "", "**Goal**", "", "Unsaved continuity proof."] });
+  await page.keyboard.type("PRESERVED");
+  assert.deepEqual(await page.$$eval('[aria-label="Notes editor"] .cm-line', (lines) => lines.map((line) => line.textContent)), ["# FPRESERVEDes", "", "**Goal**", "", "Unsaved continuity proof."]);
   await page.keyboard.down(primaryModifier); await page.keyboard.press("s"); await page.keyboard.up(primaryModifier);
   await waitFor(async () => (await api(`/api/channels/${channel.id}/files/text?path=notes%2Ffield-notes.md`, {}, token)).file.content.includes("Unsaved continuity proof"), "saved Cowork note");
 
