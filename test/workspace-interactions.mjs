@@ -22,7 +22,7 @@ test("workspace sidebar interactions have durable, member-scoped contracts", () 
 });
 
 test("speech-to-text is explicit, graceful, and combination-safe", () => {
-  assert.match(server, /"permissions-policy": "camera=\(\), microphone=\(self\), geolocation=\(\)(?:, [^"]+)*"/, "the web control plane permits first-party microphone access for explicit dictation");
+  assert.ok(server.includes('"permissions-policy": "camera=(), microphone=(self), geolocation=(), unload=(self)"'), "the web control plane permits first-party microphone access for explicit dictation");
   assert.match(app, /SpeechRecognition\?[^\n]+webkitSpeechRecognition/, "standard and prefixed browser recognition are supported");
   assert.match(app, /dataset: \{ speechToggle: "" \}/, "the composer exposes an explicit mic control");
   assert.match(app, /data(?:set)?: \{ listeningIndicator: "" \}/, "dictation exposes a subtle global listening indicator");
