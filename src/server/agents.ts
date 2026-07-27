@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { DATA_DIR, UPLOAD_DIR, now, q, q1, run, tx, type Row } from "./db.ts";
 import { botView, resolveModel } from "./store.ts";
@@ -9,6 +9,9 @@ import { archiveChannelComputer, deleteChannelComputer, ensureChannelComputerRec
 
 const CHANNELS_DIR = join(DATA_DIR, "channels");
 const WORLD_DIRS = ["workspace", "files", "state", "memory", "profile"];
+const COWORK_DIRS = ["notes", "whiteboards", "code", "docs", "presentations"];
+const PROTECTED_WORKSPACE_ROOTS = new Set([...COWORK_DIRS, "files"]);
+const MAX_EDITABLE_FILE_BYTES = 5 * 1024 * 1024;
 const MEMORY_KINDS = new Set(["summary", "decision", "fact", "preference", "artifact_ref"]);
 const AGENT_COLORS = ["#C8552F", "#2166B8", "#2E7D4F", "#8A6B7C", "#A67C52", "#4F6D7A", "#7A6A4F", "#64748B"];
 const randomAgentAvatar = (): string => {
@@ -46,6 +49,13 @@ export function ensureChannelWorkspace(channelId: number): string {
   if (!channel) throw new Error("Channel workspace not found.");
   const root = channelRoot(channelId);
   for (const dir of WORLD_DIRS) mkdirSync(join(root, dir), { recursive: true });
+  for (const dir of COWORK_DIRS) {
+    const path = join(root, "workspace", dir);
+    if (!existsSync(path)) {
+      mkdirSync(path, { recursive: true });
+      markWorkspaceDirty(channelId, `workspace/${dir}`, "upsert");
+    }
+  }
   run("INSERT OR IGNORE INTO channel_workspaces (channel_id, root_ref, created) VALUES (?,?,?)", channelId, `channels/${channelId}`, now());
   const profile = q1(`SELECT a.id, a.kind, a.name, a.display_name, a.status, p.purpose, p.instructions, p.memory_namespace, p.capability_policy
     FROM agents a LEFT JOIN agent_channels ac ON ac.agent_id=a.id
@@ -588,6 +598,154 @@ export function createWorkspaceDirectory(channelId: number, parentInput: string,
   return { path, name, size: 0, modified: info.mtimeMs, kind: "directory" };
 }
 
+function workspaceEntry(channelId: number, input: string): { path: string; host: string; base: string; info: Stats } {
+  const path = normalizeWorkspaceDirectoryPath(input);
+  if (!path) throw new Error("Choose a file or folder inside /workspace.");
+  const resolved = workspaceApiPathToHost(channelId, path);
+  if (!existsSync(resolved.host) || lstatSync(resolved.host).isSymbolicLink()) throw new Error("File or folder not found.");
+  const relativeParts = relative(resolved.base, resolved.host).split(sep).filter(Boolean);
+  let cursor = resolved.base;
+  for (const part of relativeParts) {
+    cursor = join(cursor, part);
+    if (lstatSync(cursor).isSymbolicLink()) throw new Error("File or folder not found.");
+  }
+  const realBase = realpathSync(resolved.base);
+  const realHost = realpathSync(resolved.host);
+  if (realHost !== realBase && !realHost.startsWith(realBase + sep)) throw new Error("File or folder not found.");
+  return { ...resolved, info: lstatSync(resolved.host) };
+}
+
+function assertMutableWorkspaceEntry(path: string): void {
+  if (!path.includes("/") && PROTECTED_WORKSPACE_ROOTS.has(path)) {
+    throw new Error("This top-level workspace folder is part of 1Helm and cannot be renamed, moved, duplicated, or deleted.");
+  }
+}
+
+function workspaceFileView(path: string, host: string): WorkspaceFile {
+  const info = statSync(host);
+  return { path, name: basename(host), size: info.isFile() ? info.size : 0, modified: info.mtimeMs, kind: info.isDirectory() ? "directory" : "file" };
+}
+
+function checkedWorkspaceText(input: string): string {
+  const content = String(input ?? "");
+  if (Buffer.byteLength(content, "utf8") > MAX_EDITABLE_FILE_BYTES) throw new Error("Editable files are limited to 5 MB.");
+  return content;
+}
+
+/** Create a text asset in the same /workspace tree used by agents and Terminal. */
+export function createWorkspaceFile(channelId: number, parentInput: string, nameInput: string, initialContent = ""): WorkspaceFile {
+  const parent = existingWorkspaceDirectory(channelId, parentInput);
+  const name = validateWorkspaceEntryName(nameInput);
+  const path = parent.path ? `${parent.path}/${name}` : name;
+  const target = resolve(parent.host, name);
+  if (dirname(target) !== parent.host || existsSync(target)) throw new Error("A file or folder with that name already exists.");
+  writeFileSync(target, checkedWorkspaceText(initialContent), { encoding: "utf8", flag: "wx" });
+  markWorkspaceDirty(channelId, workspaceWorldPath(path), "upsert");
+  return workspaceFileView(path, target);
+}
+
+export function readWorkspaceTextFile(channelId: number, input: string): WorkspaceFile & { content: string } {
+  const entry = workspaceEntry(channelId, input);
+  if (!entry.info.isFile()) throw new Error("Choose a file to edit.");
+  if (entry.info.size > MAX_EDITABLE_FILE_BYTES) throw new Error("This file is too large to edit in 1Helm.");
+  const content = readFileSync(entry.host, "utf8");
+  if (content.includes("\0")) throw new Error("This file type is not supported to view.");
+  return { ...workspaceFileView(entry.path, entry.host), content };
+}
+
+export function saveWorkspaceTextFile(channelId: number, input: string, nextContent: string): WorkspaceFile & { content: string } {
+  const entry = workspaceEntry(channelId, input);
+  if (!entry.info.isFile()) throw new Error("Choose a file to edit.");
+  const content = checkedWorkspaceText(nextContent);
+  writeFileSync(entry.host, content, "utf8");
+  markWorkspaceDirty(channelId, workspaceWorldPath(entry.path), "upsert");
+  return { ...workspaceFileView(entry.path, entry.host), content };
+}
+
+/** Rename and/or move one contained entry without ever replacing a destination. */
+export function moveWorkspaceEntry(channelId: number, input: string, parentInput?: string, nameInput?: string): WorkspaceFile {
+  const entry = workspaceEntry(channelId, input);
+  assertMutableWorkspaceEntry(entry.path);
+  const parentPath = parentInput == null ? entry.path.split("/").slice(0, -1).join("/") : normalizeWorkspaceDirectoryPath(parentInput);
+  const parent = existingWorkspaceDirectory(channelId, parentPath);
+  const name = nameInput == null ? basename(entry.path) : validateWorkspaceEntryName(nameInput);
+  const nextPath = parent.path ? `${parent.path}/${name}` : name;
+  if (nextPath === entry.path) return workspaceFileView(entry.path, entry.host);
+  if (entry.info.isDirectory() && (nextPath === entry.path || nextPath.startsWith(entry.path + "/"))) throw new Error("A folder cannot be moved inside itself.");
+  const target = resolve(parent.host, name);
+  if (dirname(target) !== parent.host || existsSync(target)) throw new Error("A file or folder with that name already exists.");
+  renameSync(entry.host, target);
+  markWorkspaceDirty(channelId, workspaceWorldPath(entry.path), "delete");
+  markWorkspaceDirty(channelId, workspaceWorldPath(nextPath), "upsert");
+  return workspaceFileView(nextPath, target);
+}
+
+export function duplicateWorkspaceEntry(channelId: number, input: string): WorkspaceFile {
+  const entry = workspaceEntry(channelId, input);
+  assertMutableWorkspaceEntry(entry.path);
+  const parentPath = entry.path.split("/").slice(0, -1).join("/");
+  const parent = existingWorkspaceDirectory(channelId, parentPath);
+  const original = basename(entry.path);
+  const dot = entry.info.isFile() ? original.lastIndexOf(".") : -1;
+  const stem = dot > 0 ? original.slice(0, dot) : original;
+  const ext = dot > 0 ? original.slice(dot) : "";
+  let name = `${stem} copy${ext}`;
+  for (let suffix = 2; existsSync(resolve(parent.host, name)); suffix += 1) name = `${stem} copy ${suffix}${ext}`;
+  const path = parent.path ? `${parent.path}/${name}` : name;
+  const target = resolve(parent.host, name);
+  cpSync(entry.host, target, { recursive: entry.info.isDirectory(), errorOnExist: true, force: false, verbatimSymlinks: false, filter: (source) => !lstatSync(source).isSymbolicLink() });
+  markWorkspaceDirty(channelId, workspaceWorldPath(path), "upsert");
+  return workspaceFileView(path, target);
+}
+
+export function deleteWorkspaceEntry(channelId: number, input: string): void {
+  const entry = workspaceEntry(channelId, input);
+  assertMutableWorkspaceEntry(entry.path);
+  rmSync(entry.host, { recursive: entry.info.isDirectory(), force: false });
+  markWorkspaceDirty(channelId, workspaceWorldPath(entry.path), "delete");
+}
+
+/** A safe folder tree for the Files and Cowork navigation rails. */
+export function listWorkspaceDirectories(channelId: number): WorkspaceFile[] {
+  const result: WorkspaceFile[] = [];
+  const walk = (path: string): void => {
+    const directory = existingWorkspaceDirectory(channelId, path);
+    for (const entry of readdirSync(directory.host, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const child = directory.path ? `${directory.path}/${entry.name}` : entry.name;
+      const host = join(directory.host, entry.name);
+      result.push(workspaceFileView(child, host));
+      walk(child);
+    }
+  };
+  walk("");
+  const uploads = join(ensureChannelWorkspace(channelId), "files");
+  result.push(workspaceFileView("files", uploads));
+  const walkUploads = (path: string): void => {
+    const directory = existingWorkspaceDirectory(channelId, path);
+    for (const entry of readdirSync(directory.host, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const child = `${directory.path}/${entry.name}`;
+      result.push(workspaceFileView(child, join(directory.host, entry.name)));
+      walkUploads(child);
+    }
+  };
+  walkUploads("files");
+  return result.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+export function createQuickNote(channelId: number, titleInput: string, contentInput: string): ChannelNote {
+  const content = checkedNoteContent(contentInput);
+  const rawTitle = String(titleInput || "").trim();
+  const title = rawTitle && !rawTitle.toLowerCase().endsWith(".md") ? `${rawTitle}.md` : rawTitle;
+  if (title) return createChannelNote(channelId, title, content);
+  for (let index = 1; index < 100_000; index += 1) {
+    try { return createChannelNote(channelId, `untitled-quick-note-${index}.md`, content); }
+    catch (error) { if (!/already exists/i.test((error as Error).message)) throw error; }
+  }
+  throw new Error("Could not allocate a Quick Note filename.");
+}
+
 export function importWorkspaceUpload(channelId: number, threadId: number | null, token: string, nameInput: string, createdBy: string, directoryInput = "files"): string | null {
   if (!/^[a-f0-9]{32,}$/.test(String(token || ""))) return null;
   const source = join(UPLOAD_DIR, token);
@@ -792,8 +950,8 @@ export function attachWorkspaceFileToMessage(
   const token = randomBytes(20).toString("hex");
   copyFileSync(absolute, join(UPLOAD_DIR, token));
   const id = run(
-    "INSERT INTO attachments (message_id, name, mime, size, path) VALUES (?,?,?,?,?)",
-    messageId, name, mime, stat.size, token,
+    "INSERT INTO attachments (message_id, name, mime, size, path, workspace_path) VALUES (?,?,?,?,?,?)",
+    messageId, name, mime, stat.size, token, worldRelSafe(channelId, absolute),
   ).lastInsertRowid;
 
   const worldRel = worldRelSafe(channelId, absolute);

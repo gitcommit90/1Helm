@@ -55,6 +55,13 @@ messages remain conversational without repeated mentions. Mention Skipper for a
 boundary outside the resident computer; the resident can also call Skipper
 itself, and the runtime returns the unblocked thread automatically.
 
+The top-bar **Quick Note** opens a compact editor above the current view. It
+keeps an unsaved draft when collapsed, supports dictation, saves with
+Control/Command+Enter, and writes directly to `/workspace/notes`. Give the note
+an optional title or let 1Helm allocate the next
+`untitled-quick-note-[#].md`; saving never changes the current tab, thread, or
+scroll position.
+
 Agent replies stream into one stable message. Draft text, focus, selection,
 scroll position, and open work logs remain stable while updates arrive. Use the
 Stop control to interrupt only the active turn; the next reply receives hidden
@@ -90,13 +97,47 @@ the workspace-wide Threads entry provides a cross-channel view.
 
 ![Board lanes for real channel sessions](assets/guide/board.png)
 
-## Files and Terminal
+## Files, Cowork, and Terminal
 
-Files and Terminal are two views of the same channel computer. Agent commands
-and the human Terminal both start in the channel's persistent `/workspace`.
-Files created through either path appear in Files after reconciliation.
+Files, Cowork, and Terminal are three views of the same channel computer. Agent
+commands and the human Terminal both start in the channel's persistent
+`/workspace`; there is no separate Cowork document store.
+
+**Files** is a traditional two-pane browser. The left rail navigates the folder
+tree while the main pane shows the selected folder in a bounded grid. Use the
+breadcrumb, search, and sort controls for larger collections; folders and
+file types have distinct icons and selected items have a visible outline as
+well as color. From the details pane you can open, rename, move, duplicate,
+delete, or download an item. The top bar creates files and folders or uploads
+into the current directory. Protected top-level product folders cannot be
+renamed or deleted.
 
 ![The channel Files surface with explicit Open and Download](assets/guide/files.png)
+
+**Cowork** is the visual editor for files already in `/workspace`. Its Notes,
+Whiteboard, Code, Docs, and Presentations modes map directly to:
+
+```text
+/workspace/notes
+/workspace/whiteboards
+/workspace/code
+/workspace/docs
+/workspace/presentations
+```
+
+Each mode keeps the same folder rail and nested-folder navigation while the
+center changes to the appropriate editor. Notes and Docs edit Markdown, Code
+provides a focused text editor and declines unsupported binary types,
+Whiteboard uses one readable `.whiteboard.json` file, and Presentations uses
+one readable `.slides.json` file. Drafts and each mode's last open asset remain
+available while switching modes. Opening one of these assets from Files routes
+to the matching Cowork mode because both surfaces edit the same bytes.
+
+The resident avatar opens Cowork's collapsible agent panel without covering the
+asset on desktop. Its first message starts a normal channel thread and adds the
+current `/workspace/...` path; later messages continue that thread, and **Open
+in Chat** moves the same session to the channel's regular conversation view.
+The agent harness otherwise remains unchanged.
 
 The terminal prompt displays the live current path and changes after `cd`.
 1Helm sends a terminal heartbeat while the pane is open and automatically
@@ -136,7 +177,8 @@ log.
 ## Settings
 
 The gear opens a full-screen settings application. On desktop, use its vertical
-sidebar; smaller layouts use a compact non-scrolling grid.
+sidebar; smaller layouts use a compact horizontal section rail so settings do
+not consume half of the visible screen.
 
 - **Admin** — workspace name, theme, image, and release/update information.
 - **Agents** — Skipper and resident identities, status, models, capabilities,

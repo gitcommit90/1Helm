@@ -6,6 +6,7 @@ import { openRoutingPopover, pushRoutingActivity } from "./routing.ts";
 import { openOnboarding } from "./onboarding.ts";
 import { defaultTerminalComputer, openTerminals, refitChannelTerminals, getTerminalChrome } from "./term.ts";
 import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderNotes, renderTexts, renderThreads, type ChannelView } from "./channel.ts";
+import { renderCowork, stageCoworkPath } from "./cowork.ts";
 import { apiUrl, finishNativeLaunch, forgetMobileServer, getServerOrigin, isNativeMobile, serverAssetUrl, setMobileServer } from "./mobile.ts";
 
 /** Per-channel layout bound to the user profile (server user_ui_state). */
@@ -90,7 +91,9 @@ function getChannelView(channelId: number): ChannelUiView {
 function applyChannelViewToState(channelId: number): void {
   const view = getChannelView(channelId);
   S.terminalOpen = !!view.terminalOpen;
-  S.notesOpen = !!view.notesOpen;
+  // 0.0.17 replaced the full Notes dock with the non-disruptive Quick Note.
+  // Ignore legacy persisted dock-open state so an old preference cannot reopen it.
+  S.notesOpen = false;
   S.serversListOpen = !!view.serversListOpen;
   S.preferredTerminalComputerId = view.preferredComputerId;
 }
@@ -145,6 +148,67 @@ async function loadUiState(): Promise<void> {
 const root = document.getElementById("app")!;
 const pending: { token: string; name: string; mime: string; size: number }[] = [];
 
+type UiContinuity = {
+  active: { key: string; start: number | null; end: number | null; value: string | null; checked: boolean | null } | null;
+  scroll: Array<{ key: string; top: number; left: number }>;
+  details: string[];
+};
+
+function continuityKey(element: Element): string | null {
+  const stable = element.closest<HTMLElement>("[data-continuity-key]")?.dataset.continuityKey;
+  if (stable) return `[data-continuity-key="${CSS.escape(stable)}"]`;
+  if (element.id) return `#${CSS.escape(element.id)}`;
+  const composer = (element as HTMLElement).dataset?.composerParent;
+  if (composer != null) return `[data-composer-parent="${CSS.escape(composer)}"]`;
+  const quick = (element as HTMLElement).dataset?.quickNote;
+  if (quick != null) return `[data-quick-note="${CSS.escape(quick)}"]`;
+  const labelled = element.getAttribute("aria-label");
+  if (labelled) return `${element.tagName.toLowerCase()}[aria-label="${CSS.escape(labelled)}"]`;
+  const placeholder = element.getAttribute("placeholder");
+  if (placeholder) return `${element.tagName.toLowerCase()}[placeholder="${CSS.escape(placeholder)}"]`;
+  return null;
+}
+
+/** Preserve user-owned focus, selection, scroll, and expansion across unavoidable shell paints. */
+function captureUiContinuity(scope: ParentNode): UiContinuity {
+  const activeElement = document.activeElement instanceof HTMLElement && scope.contains(document.activeElement) ? document.activeElement : null;
+  const activeKey = activeElement ? continuityKey(activeElement) : null;
+  const selection = activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement
+    ? { start: activeElement.selectionStart, end: activeElement.selectionEnd, value: activeElement.value, checked: activeElement instanceof HTMLInputElement && ["checkbox", "radio"].includes(activeElement.type) ? activeElement.checked : null }
+    : activeElement instanceof HTMLSelectElement ? { start: null, end: null, value: activeElement.value, checked: null }
+    : { start: null, end: null, value: null, checked: null };
+  const scroll = Array.from(scope.querySelectorAll<HTMLElement>("[data-continuity-key],#msgs,#threadmsgs,#channelview"))
+    .filter((element) => element.scrollTop !== 0 || element.scrollLeft !== 0)
+    .flatMap((element) => { const key = continuityKey(element); return key ? [{ key, top: element.scrollTop, left: element.scrollLeft }] : []; });
+  const details = Array.from(scope.querySelectorAll<HTMLDetailsElement>("details[open][data-continuity-key]"))
+    .flatMap((element) => { const key = continuityKey(element); return key ? [key] : []; });
+  return { active: activeKey ? { key: activeKey, ...selection } : null, scroll, details };
+}
+
+function restoreUiContinuity(snapshot: UiContinuity): void {
+  // Restore focus synchronously once the retained surface is reattached. A
+  // caller may observe the completed paint before the next animation frame;
+  // focus and cursor ownership must already be back with the user by then.
+  for (const key of snapshot.details) { const element = document.querySelector<HTMLDetailsElement>(key); if (element) element.open = true; }
+  if (snapshot.active) {
+    const element = document.querySelector<HTMLElement>(snapshot.active.key);
+    if (element) {
+      if ((element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) && snapshot.active.value != null) element.value = snapshot.active.value;
+      if (element instanceof HTMLInputElement && snapshot.active.checked != null) element.checked = snapshot.active.checked;
+      element.focus({ preventScroll: true });
+      if ((element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) && snapshot.active.start != null && snapshot.active.end != null) element.setSelectionRange(snapshot.active.start, snapshot.active.end);
+    }
+  }
+  requestAnimationFrame(() => {
+    for (const saved of snapshot.scroll) { const element = document.querySelector<HTMLElement>(saved.key); if (element) { element.scrollTop = saved.top; element.scrollLeft = saved.left; } }
+  });
+}
+
+function showToast(message: string): void {
+  const toast = h("div", { class: "app-toast card fixed bottom-6 left-1/2 z-[75] -translate-x-1/2 px-4 py-3 text-sm text-fg shadow-2xl", role: "status" }, message);
+  document.body.append(toast); window.setTimeout(() => toast.remove(), 3200);
+}
+
 // ---------------- theme ----------------
 export function currentTheme(): "light" | "dark" { return document.documentElement.classList.contains("light") ? "light" : "dark"; }
 export function toggleTheme(): void {
@@ -157,12 +221,13 @@ export function toggleTheme(): void {
 }
 
 type AppRoute = { slug: string | null; view: ChannelView; threadRootId: number | null };
-const VIEWS = new Set<ChannelView>(["chat", "texts", "board", "threads", "notes", "files", "terminal", "memory", "activity", "settings"]);
+const VIEWS = new Set<ChannelView>(["chat", "texts", "board", "threads", "cowork", "notes", "files", "terminal", "memory", "activity", "settings"]);
 function readRoute(): AppRoute {
   const parts = location.pathname.split("/").filter(Boolean);
   if (parts[0] !== "c" || !parts[1]) return { slug: null, view: "chat", threadRootId: null };
   if (parts[2] === "thread" && /^\d+$/.test(parts[3] || "")) return { slug: decodeURIComponent(parts[1]), view: "chat", threadRootId: Number(parts[3]) };
-  const view = VIEWS.has(parts[2] as ChannelView) ? parts[2] as ChannelView : "chat";
+  const requested = VIEWS.has(parts[2] as ChannelView) ? parts[2] as ChannelView : "chat";
+  const view = requested === "notes" ? "cowork" : requested;
   return { slug: decodeURIComponent(parts[1]), view, threadRootId: null };
 }
 function writeRoute(channel: Channel | undefined, view: ChannelView, threadRootId: number | null, replace = false): void {
@@ -759,9 +824,10 @@ async function renderAccessRequest(container: HTMLElement): Promise<void> {
 
 // ---------------- layout ----------------
 export function renderApp(): void {
-  const focusedNote = document.activeElement instanceof HTMLTextAreaElement && document.activeElement.classList.contains("note-editor")
-    ? { node: document.activeElement, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd }
-    : null;
+  const continuity = captureUiContinuity(root);
+  const preserveChannelSurface = Boolean(root.querySelector(
+    `[data-file-browser="${S.channelId}"], [data-cowork-surface="${S.channelId}"]`,
+  ));
   document.documentElement.dataset.workspaceTheme = S.workspace?.theme || localStorage.getItem("ctrl.workspaceTheme") || "graphite";
   clear(root);
   const shell = h("div", { id: "app-shell", class: "workspace-shell app-shell relative flex h-full min-h-0 min-w-0 overflow-hidden" },
@@ -769,11 +835,8 @@ export function renderApp(): void {
     h("main", { id: "main", class: "relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-bg" }));
   root.append(shell);
   if (S.mobileMenuOpen) shell.append(mobileNavigation());
-  renderMain();
-  if (focusedNote?.node.isConnected) {
-    focusedNote.node.focus({ preventScroll: true });
-    focusedNote.node.setSelectionRange(focusedNote.start, focusedNote.end);
-  }
+  renderMain(preserveChannelSurface);
+  restoreUiContinuity(continuity);
   finishNativeLaunch();
 }
 
@@ -1246,7 +1309,7 @@ function openGlobalThreads(): void {
   void loadWorkspace().then(() => renderApp()).catch(() => renderApp());
 }
 
-function renderMain(): void {
+function renderMain(preserveChannelSurface = false): void {
   const main = document.getElementById("main")!;
   // #msgs is destroyed on every shell rebuild. Capture scroll *before* clear so
   // open/close thread doesn't dump the user at the oldest message.
@@ -1285,7 +1348,7 @@ function renderMain(): void {
   if (channel?.kind !== "channel") { S.view = "chat"; S.terminalOpen = false; S.notesOpen = false; }
   if (S.view !== "chat") {
     main.append(h("section", { class: "flex min-w-0 flex-1 flex-col" }, h("div", { id: "hdr" }), channelTabs(), h("div", { id: "channelview", class: "min-h-0 flex-1 overflow-y-auto" })));
-    renderHeader(); renderChannelView();
+    renderHeader(); renderChannelView(preserveChannelSurface);
     return;
   }
   const showRhs = !!(S.threadRoot
@@ -1417,7 +1480,7 @@ function textsAvailable(channel?: Channel): boolean {
 function channelTabs(): HTMLElement {
   const currentChannel = S.channels.find((channel) => channel.id === S.channelId);
   const tabs: [ChannelView, string][] = [
-    ["chat", "Chat"], ["texts", "Texts"], ["board", "Board"], ["threads", "Threads"], ["notes", "Notes"], ["files", "Files"],
+    ["chat", "Chat"], ["texts", "Texts"], ["board", "Board"], ["threads", "Threads"], ["cowork", "Cowork"], ["files", "Files"],
     ["terminal", "Terminal"], ["memory", "Memory"], ["activity", "Activity"], ["settings", "Settings"],
   ];
   return h("nav", { class: "flex shrink-0 gap-2 overflow-x-auto border-b border-line bg-surface px-3" }, ...tabs
@@ -1435,7 +1498,7 @@ export function navigateChannelView(view: ChannelView): void {
     S.terminalOpen = false;
     S.preferredTerminalComputerId = S.preferredTerminalComputerId ?? getChannelView(S.channelId).preferredComputerId ?? defaultTerminalComputer(S.channelId);
   }
-  if (view === "notes") S.notesOpen = false;
+  if (view === "cowork" || view === "notes") { view = "cowork"; S.notesOpen = false; }
   persistCurrentChannelView();
   renderApp();
   writeRoute(S.channels.find((channel) => channel.id === S.channelId), view, null);
@@ -1471,22 +1534,47 @@ export function openTerminalsFromHeader(): void {
   writeRoute(channel, "chat", S.threadRoot?.id ?? null);
 }
 
-/** Header Notes — dock RHS like a thread or terminal while keeping chat visible. */
-export function openNotesFromHeader(): void {
+type QuickNoteDraft = { title: string; content: string };
+const quickNoteDrafts = new Map<number, QuickNoteDraft>();
+
+/** Header Quick Note floats above the current view and never rebuilds its DOM. */
+export function openQuickNoteFromHeader(): void {
   const channel = S.channels.find((item) => item.id === S.channelId);
   if (!channel || channel.kind !== "channel") {
-    void appAlert("Open an agent channel to use notes.");
+    void appAlert("Open an agent channel to take a Quick Note.");
     return;
   }
   if (channel.status === "archived") {
-    void appAlert("Restore the channel before editing its notes.");
+    void appAlert("Restore the channel before saving a Quick Note.");
     return;
   }
-  if (S.view !== "chat") S.view = "chat";
-  S.notesOpen = !S.notesOpen;
-  persistCurrentChannelView();
-  renderApp();
-  writeRoute(channel, "chat", S.threadRoot?.id ?? null);
+  const existing = document.querySelector<HTMLElement>(`[data-quick-note="${channel.id}"]`);
+  if (existing) { existing.querySelector<HTMLButtonElement>('[aria-label="Collapse Quick Note"]')?.click(); return; }
+  const draft = quickNoteDrafts.get(channel.id) || { title: "", content: "" };
+  const title = h("input", { class: "field h-9 text-sm", value: draft.title, placeholder: "Optional title", maxlength: 150, "aria-label": "Quick Note title" }) as HTMLInputElement;
+  const content = h("textarea", { class: "quick-note-content field resize-none text-sm leading-6", value: draft.content, rows: 9, placeholder: "Take a quick note and save it to /workspace/notes…", "aria-label": "Quick Note content" }) as HTMLTextAreaElement;
+  const status = h("span", { class: "min-h-5 flex-1 text-xs text-muted", role: "status" });
+  const panel = h("section", { class: "quick-note-panel card fixed right-3 top-[max(4.25rem,env(safe-area-inset-top))] z-[65] flex w-[min(25rem,calc(100vw-1.5rem))] flex-col overflow-hidden shadow-2xl", dataset: { quickNote: String(channel.id) }, role: "dialog", "aria-label": "Quick Note" });
+  const remember = (): void => { quickNoteDrafts.set(channel.id, { title: title.value, content: content.value }); };
+  title.oninput = remember; content.oninput = remember;
+  const collapse = (): void => { remember(); panel.remove(); document.removeEventListener("click", outside); };
+  const discard = async (): Promise<void> => {
+    if ((title.value.trim() || content.value.trim()) && !(await appConfirm("Discard this Quick Note?"))) return;
+    collapse(); quickNoteDrafts.delete(channel.id);
+  };
+  const save = async (): Promise<void> => {
+    if (!content.value.trim()) { status.textContent = "Write a note before saving."; content.focus(); return; }
+    status.textContent = "Saving…";
+    try {
+      const result = await api<{ note: { name: string } }>(`/api/channels/${channel.id}/notes/quick`, { body: { title: title.value, content: content.value } });
+      quickNoteDrafts.delete(channel.id); panel.remove(); document.removeEventListener("click", outside); showToast(`Saved ${result.note.name} in /workspace/notes`);
+    } catch (error) { status.textContent = (error as Error).message; }
+  };
+  const outside = (event: MouseEvent): void => { if (!panel.contains(event.target as Node)) collapse(); };
+  const mic = h("button", { class: "grid h-8 w-8 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg", type: "button", title: "Dictate", "aria-label": "Dictate Quick Note", dataset: { speechToggle: "" }, onclick: () => { void toggleSpeechToText(content); } }, microphoneIcon());
+  panel.append(h("header", { class: "flex items-center gap-2 border-b border-line px-3 py-2.5" }, h("span", { class: "text-accent" }, icon("fileText", 17)), h("h2", { class: "flex-1 font-semibold text-fg" }, "Quick Note"), mic, h("button", { class: "grid h-8 w-8 place-items-center rounded text-muted hover:bg-hover", "aria-label": "Collapse Quick Note", onclick: collapse }, icon("x", 15))), h("div", { class: "space-y-2 p-3" }, title, content), h("footer", { class: "flex items-center gap-2 border-t border-line px-3 py-2.5" }, status, h("button", { class: "btn-ghost text-xs", onclick: () => { void discard(); } }, "Discard"), h("button", { class: "btn-primary text-xs", onclick: () => { void save(); } }, "Save")));
+  panel.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); if (content.value.trim()) void save(); else collapse(); } else if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); void save(); } });
+  document.body.append(panel); setTimeout(() => document.addEventListener("click", outside), 0); requestAnimationFrame(() => content.focus({ preventScroll: true }));
 }
 
 function openTerminalOnComputer(computerId: number): void {
@@ -1500,7 +1588,7 @@ function openTerminalOnComputer(computerId: number): void {
   writeRoute(S.channels.find((channel) => channel.id === S.channelId), "terminal", null);
 }
 
-export function renderChannelView(): void {
+export function renderChannelView(preserveSurface = false): void {
   const container = document.getElementById("channelview");
   const channel = S.channels.find((item) => item.id === S.channelId);
   if (!container || !channel) return;
@@ -1513,8 +1601,8 @@ export function renderChannelView(): void {
     void openThread(root);
   });
   else if (S.view === "threads") renderThreads(container, channel.id, (thread) => { S.view = "chat"; renderApp(); void openThread(thread.root); });
-  else if (S.view === "notes") renderNotes(container, channel.id);
-  else if (S.view === "files") renderFiles(container, channel.id);
+  else if (S.view === "cowork" || S.view === "notes") renderCowork(container, channel.id, channel, (root) => { S.view = "chat"; renderApp(); void openThread(root); }, preserveSurface);
+  else if (S.view === "files") renderFiles(container, channel.id, "", (path) => { stageCoworkPath(channel.id, path); navigateChannelView("cowork"); }, preserveSurface);
   else if (S.view === "memory") renderMemory(container, channel.id);
   else if (S.view === "activity") renderActivity(container, channel.id);
   else if (S.view === "terminal") openTerminals(container, channel.id, S.preferredTerminalComputerId || undefined);
@@ -1543,15 +1631,6 @@ function renderHeader(): void {
   const agent = channel?.agent;
   clear(el);
   el.className = "app-topbar flex min-h-12 flex-col items-stretch justify-between gap-0 border-b border-line bg-surface px-2 py-1.5 sm:flex-row sm:items-center sm:gap-3 sm:px-4 sm:py-2.5";
-  const statusTone = agent?.status === "working" ? "bg-amber-400 animate-pulse" : agent?.status === "waiting" ? "bg-blue-400" : agent?.status === "archived" || agent?.status === "paused" ? "bg-faint" : "bg-ok";
-  const callSkipper = (): void => {
-    S.view = "chat"; renderApp();
-    queueMicrotask(() => {
-      const target = S.threadRoot ? String(S.threadRoot.id) : "root";
-      const input = document.querySelector<HTMLTextAreaElement>(`textarea[data-composer-parent="${target}"]`);
-      if (input) { input.value = "@skipper "; input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
-    });
-  };
   const terminalsEnabled = S.workspace?.terminals_enabled !== false && (agent?.kind === "channel" || S.me.is_admin);
   const toggleFavorite = async (): Promise<void> => {
     if (!channel) return;
@@ -1585,7 +1664,7 @@ function renderHeader(): void {
         title: "Open live 1Helm Router activity", "aria-label": "Open 1Helm Router", dataset: { routingHeader: "" }, onclick: (event: MouseEvent) => { void openRoutingPopover(event).catch((error) => appAlert((error as Error).message)); },
       }, routerSymbolIcon()),
       agent ? h("button", { class: "flex h-11 w-11 shrink-0 items-center justify-center gap-1.5 rounded-md border border-transparent px-1.5 py-1 font-mono text-[10px] text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:h-auto sm:min-h-0 sm:w-auto sm:max-w-[14rem] sm:gap-2 sm:px-2 sm:text-[11px]", title: `${agent.display_name || agent.name} · ${agent.status} · ${agent.provider_kind === "routing" ? "Model fabric" : agent.provider_name || "no provider"} · ${agent.model || "no model"}`, "aria-label": `Open ${agent.display_name || agent.name} settings · ${agent.status}`, onclick: channel?.can_manage ? () => navigateChannelView("settings") : undefined },
-        h("span", { class: `h-1.5 w-1.5 shrink-0 rounded-full ${statusTone}` }), h("span", { class: "hidden min-w-0 truncate sm:inline" }, "@" + agent.name),
+        h("span", { class: `agent-state-orb ${agent.status === "working" ? "is-working" : agent.status === "waiting" ? "is-waiting" : ""}`, "aria-hidden": "true" }, h("span", {}), h("span", {})), h("span", { class: "hidden min-w-0 truncate sm:inline" }, "@" + agent.name),
         h("span", { class: "hidden max-w-28 truncate text-faint 2xl:inline" }, agent.model || "no model")) : null,
       terminalsEnabled ? h("button", {
         class: `grid h-11 w-11 place-items-center rounded-md border border-transparent text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:h-9 sm:w-9 ${S.terminalOpen || S.view === "terminal" ? "border-line bg-hover text-fg" : ""}`,
@@ -1593,9 +1672,8 @@ function renderHeader(): void {
       }, icon("terminal", 18)) : null,
       channel?.kind === "channel" ? h("button", {
         class: `grid h-11 w-11 place-items-center rounded-md border border-transparent text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:h-9 sm:w-9 ${S.notesOpen || S.view === "notes" ? "border-line bg-hover text-fg" : ""}`,
-        title: "Notes", "aria-label": "Open channel notes", dataset: { notesHeader: "" }, onclick: openNotesFromHeader,
-      }, icon("file", 18)) : null,
-      channel?.kind === "channel" ? h("button", { class: "btn-subtle min-h-11 w-11 px-0 text-xs sm:min-h-0 sm:w-auto sm:px-3", title: "Call Skipper", "aria-label": "Call Skipper", onclick: callSkipper }, helmMark(14), h("span", { class: "hidden xl:inline" }, "Call Skipper")) : null));
+        title: "Quick Note", "aria-label": "Open Quick Note", dataset: { quickNoteHeader: "" }, onclick: (event: MouseEvent) => { event.stopPropagation(); openQuickNoteFromHeader(); },
+      }, icon("fileText", 18)) : null));
 }
 
 function starIcon(filled: boolean): SVGElement {
@@ -2404,16 +2482,23 @@ function attachments(m: Message): HTMLElement | null {
   return h("div", { class: "mt-1.5 flex flex-wrap gap-2" }, ...m.attachments.map((a) => {
     const viewUrl = `/api/files/${a.id}`;
     const mediaUrl = `${serverAssetUrl(viewUrl)}?token=${encodeURIComponent(getToken())}`;
+    const cowork = a.workspace_path ? coworkAttachmentPath(a.workspace_path) : null;
+    const open = (event: MouseEvent): void => { event.stopPropagation(); if (cowork) { stageCoworkPath(m.channel_id, cowork); navigateChannelView("cowork"); } else void openAuthenticatedFile(viewUrl).catch((error) => appAlert((error as Error).message)); };
     const actions = h("div", { class: "flex items-center gap-1 border-t border-line/70 px-2 py-1.5" },
-      h("button", { class: "btn-subtle text-xs", type: "button", onclick: (event: MouseEvent) => { event.stopPropagation(); void openAuthenticatedFile(viewUrl).catch((error) => appAlert((error as Error).message)); } }, "Open"),
+      h("button", { class: "btn-subtle text-xs", type: "button", onclick: open }, cowork ? "Open in Cowork" : "Open"),
       h("button", { class: "btn-subtle text-xs", type: "button", onclick: (event: MouseEvent) => { event.stopPropagation(); void downloadAuthenticatedFile(`${viewUrl}?download=1`, a.name).catch((error) => appAlert((error as Error).message)); } }, "Download"));
     if (a.mime.startsWith("image/")) return h("article", { class: "overflow-hidden rounded-lg border border-line bg-raised" },
-      h("button", { type: "button", class: "block", onclick: (event: MouseEvent) => { event.stopPropagation(); void openAuthenticatedFile(viewUrl).catch((error) => appAlert((error as Error).message)); } }, h("img", { src: mediaUrl, class: "max-h-64 object-contain", alt: a.name })), actions);
+      h("button", { type: "button", class: "block", onclick: open }, h("img", { src: mediaUrl, class: "max-h-64 object-contain", alt: a.name })), actions);
     return h("article", { class: "overflow-hidden rounded-lg border border-line bg-raised text-sm" },
-      h("button", { type: "button", class: "flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-hover", onclick: (event: MouseEvent) => { event.stopPropagation(); void openAuthenticatedFile(viewUrl).catch((error) => appAlert((error as Error).message)); } },
+      h("button", { type: "button", class: "flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-hover", onclick: open },
         h("span", { class: "grid h-9 w-9 place-items-center rounded-lg bg-accent-soft text-accent" }, icon("file")),
         h("div", { class: "min-w-0" }, h("div", { class: "truncate font-medium text-fg" }, a.name), h("div", { class: "text-xs text-muted" }, fmtSize(a.size)))), actions);
   }));
+}
+
+function coworkAttachmentPath(path: string): string | null {
+  const normalized = String(path || "").replace(/^\/?workspace\/?/, "").replace(/^\/+/, "");
+  return /^(notes|whiteboards|code|docs|presentations)\//.test(normalized) ? normalized : null;
 }
 
 // ---------------- thread panel ----------------
@@ -2617,6 +2702,15 @@ type BrowserSpeechRecognition = {
 type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
 let activeSpeech: { recognition: BrowserSpeechRecognition; input: HTMLTextAreaElement; button: HTMLButtonElement } | null = null;
 
+function setListeningIndicator(listening: boolean): void {
+  let indicator = document.querySelector<HTMLElement>("[data-listening-indicator]");
+  if (listening && !indicator) {
+    indicator = h("div", { class: "listening-indicator", dataset: { listeningIndicator: "" }, role: "status", "aria-label": "Listening" }, h("span", { class: "listening-orb" }, h("i", {}), h("i", {}), h("i", {})), h("span", { class: "hidden text-[11px] font-semibold text-fg sm:inline" }, "Listening"));
+    document.body.append(indicator);
+  }
+  if (!listening) indicator?.remove();
+}
+
 function speechRecognitionConstructor(): BrowserSpeechRecognitionConstructor | null {
   const browser = window as Window & { SpeechRecognition?: BrowserSpeechRecognitionConstructor; webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor };
   return browser.SpeechRecognition || browser.webkitSpeechRecognition || null;
@@ -2631,6 +2725,8 @@ function microphoneIcon(): SVGElement {
   return svg;
 }
 function activeComposerInput(): HTMLTextAreaElement | null {
+  const quickNote = document.querySelector<HTMLTextAreaElement>("[data-quick-note] .quick-note-content");
+  if (quickNote && quickNote.offsetParent !== null) return quickNote;
   const parent = S.threadRoot ? String(S.threadRoot.id) : "root";
   return document.querySelector<HTMLTextAreaElement>(`textarea[data-composer-parent="${parent}"]`);
 }
@@ -2646,7 +2742,7 @@ async function toggleSpeechToText(input = activeComposerInput()): Promise<void> 
     await appAlert("Speech-to-text is not available in this browser. Try the current 1Helm desktop app or a browser with SpeechRecognition support; typing and attachments still work normally.");
     return;
   }
-  const button = input.closest(".composer-wrap")?.querySelector<HTMLButtonElement>("[data-speech-toggle]");
+  const button = input.closest(".composer-wrap, [data-quick-note]")?.querySelector<HTMLButtonElement>("[data-speech-toggle]");
   if (!button) return;
   const recognition = new Recognition();
   const original = input.value;
@@ -2675,15 +2771,18 @@ async function toggleSpeechToText(input = activeComposerInput()): Promise<void> 
     button.classList.remove("bg-danger/15", "text-danger");
     button.title = "Dictate · tap Option/Alt to toggle";
     if (activeSpeech?.recognition === recognition) activeSpeech = null;
+    setListeningIndicator(false);
   };
   activeSpeech = { recognition, input, button };
   button.setAttribute("aria-pressed", "true");
   button.classList.add("bg-danger/15", "text-danger");
   button.title = "Listening… tap again or tap Option/Alt to stop";
+  setListeningIndicator(true);
   input.focus();
   try { recognition.start(); }
   catch (error) {
     activeSpeech = null;
+    setListeningIndicator(false);
     recognition.onend?.();
     await appAlert(`Speech-to-text could not start: ${(error as Error).message}`);
   }

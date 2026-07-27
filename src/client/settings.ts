@@ -82,11 +82,11 @@ export function openSettings(tab: Tab = "agents"): void {
     ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["workflows", "Workflows"], ["connections", "Connections"], ["notifications", "Notifications"], ["feedback", "Feedback"], ["audit", "Audit"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]]
     : [["providers", "Providers"], ["notifications", "Notifications"]];
   if (!tabs.length) return;
-  const tabBar = h("nav", { class: "grid w-full shrink-0 grid-cols-2 gap-1 border-b border-line bg-raised/30 p-3 sm:grid-cols-3 lg:w-64 lg:grid-cols-1 lg:border-b-0 lg:border-r lg:p-4", "aria-label": "Settings sections" });
+  const tabBar = h("nav", { class: "settings-nav flex w-full shrink-0 gap-1 overflow-x-auto border-b border-line bg-raised/30 p-2 lg:w-64 lg:flex-col lg:overflow-y-auto lg:border-b-0 lg:border-r lg:p-4", "aria-label": "Settings sections" });
   const draw = (t: Tab): void => {
     overlay.dataset.settingsTab = t;
     clear(tabBar);
-    tabs.forEach(([id, label]) => tabBar.append(h("button", { class: `rounded-lg px-3 py-2.5 text-left text-sm font-semibold transition ${t === id ? "bg-accent text-white shadow-sm" : "text-muted hover:bg-hover hover:text-fg"}`, type: "button", "aria-current": t === id ? "page" : undefined, onclick: () => draw(id) }, label)));
+    tabs.forEach(([id, label]) => tabBar.append(h("button", { class: `shrink-0 rounded-lg px-3 py-2 text-left text-xs font-semibold transition lg:w-full lg:py-2.5 lg:text-sm ${t === id ? "bg-accent text-white shadow-sm" : "text-muted hover:bg-hover hover:text-fg"}`, type: "button", "aria-current": t === id ? "page" : undefined, onclick: () => draw(id) }, label)));
     clear(bodyEl);
     const content = t === "admin" ? adminPanel() : t === "agents" ? agentsPanel() : t === "skills" ? skillsPanel() : t === "workflows" ? workflowsPanel() : t === "connections" ? connectionsPanel() : t === "notifications" ? notificationsPanel() : t === "feedback" ? feedbackPanel() : t === "audit" ? auditPanel() : t === "domains" ? domainsPanel() : t === "providers" ? providersPanel() : t === "computers" ? computersPanel() : membersPanel();
     bodyEl.append(h("div", { class: `mx-auto w-full ${t === "providers" ? "max-w-7xl" : "max-w-5xl"}` }, h("div", { class: "mb-5" }, h("div", { class: "eyebrow text-accent" }, "Settings"), h("h1", { class: "font-display mt-1 text-3xl text-fg" }, tabs.find(([id]) => id === t)?.[1] || "Settings")), content));
@@ -178,6 +178,17 @@ function adminPanel(): HTMLElement {
   const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", class: "hidden" }) as HTMLInputElement;
   const presetColors = ["#c8552f", "#4f6d7a", "#8a6b7c", "#a67c52", "#7a6a4f", "#2e7d4f", "#2166b8", "#64748b"];
   const presetRow = h("div", { class: "mt-2 flex flex-wrap gap-2" });
+  const applyWorkspacePhoto = async (workspace: typeof S.workspace): Promise<void> => {
+    // Fetch the fixed same-origin asset as authenticated bytes and give the DOM
+    // a browser-created blob URL. Neither an API-returned string nor session
+    // text is ever reinterpreted as a DOM destination.
+    S.workspace = workspace;
+    const response = await fetch(apiUrl("/api/workspace/photo"), { headers: { authorization: `Bearer ${getToken()}` }, cache: "no-store" });
+    if (!response.ok) throw new Error("The updated workspace photo could not be loaded.");
+    const source = URL.createObjectURL(await response.blob());
+    photo.src = source;
+    document.querySelectorAll<HTMLImageElement>(".logo-asset").forEach((image) => { image.src = source; });
+  };
   const applyPreset = async (hex: string): Promise<void> => {
     status.textContent = "Applying workspace color…";
     const canvas = document.createElement("canvas");
@@ -190,7 +201,7 @@ function adminPanel(): HTMLElement {
     const response = await fetch(apiUrl("/api/workspace/photo"), { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": "image/png" }, body: blob });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) { status.textContent = result.error || `HTTP ${response.status}`; return; }
-    S.workspace = result.workspace; photo.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); document.querySelectorAll<HTMLImageElement>(".logo-asset").forEach((image) => { image.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); }); status.textContent = "Workspace photo updated.";
+    await applyWorkspacePhoto(result.workspace); status.textContent = "Workspace photo updated.";
   };
   for (const hex of presetColors) presetRow.append(h("button", { class: "h-8 w-8 rounded-lg border border-line shadow-sm transition hover:scale-105", style: `background:${hex}`, title: hex, onclick: () => { void applyPreset(hex); } }));
   file.onchange = async () => {
@@ -199,7 +210,7 @@ function adminPanel(): HTMLElement {
     const response = await fetch(apiUrl("/api/workspace/photo"), { method: "POST", headers: { authorization: `Bearer ${getToken()}`, "content-type": image.type }, body: image });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) { status.textContent = result.error || `HTTP ${response.status}`; return; }
-    S.workspace = result.workspace; photo.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); document.querySelectorAll<HTMLImageElement>(".logo-asset").forEach((image) => { image.src = workspacePhotoSrc(S.workspace.photo_url, Date.now()); }); status.textContent = "Workspace photo updated.";
+    await applyWorkspacePhoto(result.workspace); status.textContent = "Workspace photo updated.";
   };
   const save = async (): Promise<void> => {
     try { S.workspace = (await api<{ workspace: typeof S.workspace }>("/api/workspace", { method: "PATCH", body: { name: name.value.trim().slice(0, 100), theme: theme.value } })).workspace; applyWorkspaceTheme(); document.querySelectorAll<HTMLElement>("[data-workspace-name]").forEach((node) => { node.textContent = S.workspace.name; }); status.textContent = "Workspace settings saved."; }

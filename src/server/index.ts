@@ -20,17 +20,24 @@ import {
   archiveChannel,
   channelWorkspace,
   createChannelNote,
+  createQuickNote,
+  createWorkspaceFile,
   createWorkspaceDirectory,
   deleteChannelWorld,
   ensureChannelWorkspace,
   ensureThread,
   importAttachment,
   importWorkspaceUpload,
+  deleteWorkspaceEntry,
+  duplicateWorkspaceEntry,
   listChannelNotes,
   listWorkspaceDirectory,
+  listWorkspaceDirectories,
+  moveWorkspaceEntry,
   normalizeChannelName,
   provisionChannelWithComputer,
   readChannelNote,
+  readWorkspaceTextFile,
   recordMemory,
   refreshThreadSummary,
   renameChannel,
@@ -38,6 +45,7 @@ import {
   resolveWorldFile,
   restoreChannel,
   saveChannelNote,
+  saveWorkspaceTextFile,
   syncWorkspaceArtifacts,
   threadIdForRoot,
   updateChannelPurpose,
@@ -510,8 +518,8 @@ function postMessage(channelId: number, user: Row, text: string, parentId: numbe
   for (const upload of uniqueUploads) {
     if (!/^[a-f0-9]{32,}$/.test(upload.token) || !existsSync(join(UPLOAD_DIR, upload.token))) continue;
     const size = statSync(join(UPLOAD_DIR, upload.token)).size;
-    run("INSERT INTO attachments (message_id, name, mime, size, path) VALUES (?,?,?,?,?)", id, upload.name.slice(0, 255), upload.mime.slice(0, 255), size, upload.token);
-    if (!['collab', 'human'].includes(String(channel.kind))) importAttachment(channelId, threadId, upload.token, upload.name, "human");
+    const workspacePath = !['collab', 'human'].includes(String(channel.kind)) ? importAttachment(channelId, threadId, upload.token, upload.name, "human") : null;
+    run("INSERT INTO attachments (message_id, name, mime, size, path, workspace_path) VALUES (?,?,?,?,?,?)", id, upload.name.slice(0, 255), upload.mime.slice(0, 255), size, upload.token, workspacePath || "");
   }
   refreshThreadSummary(actualRootId);
   const msg = serializeMessage(id)!;
@@ -1440,6 +1448,15 @@ const server = createServer(async (req, res) => {
       sendToUsers([Number(user.id)], { type: "channel_update", channel: channelMetaView(row, user) });
       return json(res, 200, { ok: true, favorite, channel });
     }
+    const quickNote = p.match(/^\/api\/channels\/(\d+)\/notes\/quick$/);
+    if (quickNote && m === "POST") {
+      const channelId = Number(quickNote[1]);
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      try {
+        const b = await jbody(req);
+        return json(res, 201, { note: createQuickNote(channelId, String(b.title || ""), String(b.content || "")) });
+      } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
     const channelNotes = p.match(/^\/api\/channels\/(\d+)\/notes(?:\/([^/]+))?$/);
     if (channelNotes) {
       const channelId = Number(channelNotes[1]);
@@ -1466,15 +1483,47 @@ const server = createServer(async (req, res) => {
       return json(res, 405, { error: "Method not allowed." });
     }
     const channelDirectories = p.match(/^\/api\/channels\/(\d+)\/files\/directories$/);
-    if (channelDirectories && m === "POST") {
+    if (channelDirectories && (m === "GET" || m === "POST")) {
       const channelId = Number(channelDirectories[1]);
       if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
       if (!q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", channelId)) return json(res, 404, { error: "Agent-channel file surface not found." });
-      const b = await jbody(req);
       try {
         await refreshChannelWorkspaceMirror(channelId);
+        if (m === "GET") return json(res, 200, { directories: listWorkspaceDirectories(channelId) });
+        const b = await jbody(req);
         return json(res, 201, { directory: createWorkspaceDirectory(channelId, String(b.path || ""), String(b.name || "")) });
       } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
+    const worldEntry = p.match(/^\/api\/channels\/(\d+)\/files\/entries$/);
+    if (worldEntry && ["POST", "PATCH", "DELETE"].includes(m)) {
+      const channelId = Number(worldEntry[1]);
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      try {
+        const b = await jbody(req);
+        if (m === "POST") return json(res, 201, { file: createWorkspaceFile(channelId, String(b.parent || ""), String(b.name || ""), String(b.content || "")) });
+        if (m === "PATCH") return json(res, 200, { entry: moveWorkspaceEntry(channelId, String(b.path || ""), "parent" in b ? String(b.parent || "") : undefined, "name" in b ? String(b.name || "") : undefined) });
+        deleteWorkspaceEntry(channelId, String(b.path || ""));
+        return json(res, 200, { ok: true });
+      } catch (error) { return json(res, /not found/i.test((error as Error).message) ? 404 : 400, { error: (error as Error).message }); }
+    }
+    const duplicateEntry = p.match(/^\/api\/channels\/(\d+)\/files\/duplicate$/);
+    if (duplicateEntry && m === "POST") {
+      const channelId = Number(duplicateEntry[1]);
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      try { const b = await jbody(req); return json(res, 201, { entry: duplicateWorkspaceEntry(channelId, String(b.path || "")) }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
+    const worldText = p.match(/^\/api\/channels\/(\d+)\/files\/text$/);
+    if (worldText && (m === "GET" || m === "PATCH" || m === "PUT")) {
+      const channelId = Number(worldText[1]);
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      try {
+        await refreshChannelWorkspaceMirror(channelId);
+        const b = m === "GET" ? null : await jbody(req);
+        const path = m === "GET" ? String(url.searchParams.get("path") || "") : String(b?.path || "");
+        if (m === "GET") return json(res, 200, { file: readWorkspaceTextFile(channelId, path) });
+        return json(res, 200, { file: saveWorkspaceTextFile(channelId, path, String(b?.content || "")) });
+      } catch (error) { return json(res, /not found/i.test((error as Error).message) ? 404 : 400, { error: (error as Error).message }); }
     }
     const worldFile = p.match(/^\/api\/channels\/(\d+)\/files\/content$/);
     if (worldFile && m === "GET") {

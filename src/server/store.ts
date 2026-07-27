@@ -87,7 +87,7 @@ export function serializeMessage(id: number): Row | undefined {
       name: (q1("SELECT name FROM bots WHERE id=?", m.bot_id)?.name as string) || "agent",
     }
     : { kind: "user", id: m.user_id, name: (q1("SELECT display FROM users WHERE id=?", m.user_id)?.display as string) || "user" };
-  const attachments = q("SELECT id, name, mime, size FROM attachments WHERE message_id=?", id);
+  const attachments = q("SELECT id, name, mime, size, workspace_path FROM attachments WHERE message_id=?", id);
   // A transient Working placeholder is visible activity, not a completed
   // reply. Compute the user-facing total from durable reply bodies so it can
   // never be inflated by reconnects or placeholder creation.

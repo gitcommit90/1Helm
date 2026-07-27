@@ -3,7 +3,7 @@ import { h, clear, icon, md, timeLabel } from "./dom.ts";
 import { S, avatar, appAlert, appConfirm, appPrompt } from "./app.ts";
 import { NOTIFICATION_SOUNDS, channelNotificationPreference, previewNotification, setChannelNotificationPreference } from "./notifications.ts";
 
-export type ChannelView = "chat" | "texts" | "board" | "threads" | "notes" | "files" | "terminal" | "memory" | "activity" | "settings";
+export type ChannelView = "chat" | "texts" | "board" | "threads" | "cowork" | "notes" | "files" | "terminal" | "memory" | "activity" | "settings";
 
 export function openCreateChannel(onCreated: (channel: Channel) => void): void {
   const name = h("input", { class: "field", placeholder: "launch", autocomplete: "off" }) as HTMLInputElement;
@@ -357,7 +357,7 @@ export function renderGlobalThreads(
               h("span", { class: "shrink-0 font-mono text-[11px] text-accent" }, `#${thread.channel_name}`),
               h("span", { class: "ml-auto shrink-0 text-[11px] text-faint" }, timeLabel(thread.updated_at))),
             h("span", { class: "mt-0.5 flex min-w-0 items-center gap-2" },
-              h("span", { class: "min-w-0 flex-1 truncate text-xs text-muted" }, thread.summary || "No summary yet."),
+              h("div", { class: "md min-w-0 flex-1 truncate text-xs text-muted", html: md(thread.summary || "No summary yet.") }),
               h("span", { class: "shrink-0 rounded-full border border-line px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-faint" }, thread.status))))));
     }
     clear(container);
@@ -419,66 +419,140 @@ export function renderTexts(container: HTMLElement, selectedId?: number, onSelec
   }).catch((error) => panelError(container, error));
 }
 
-export function renderFiles(container: HTMLElement, channelId: number, initialPath = ""): void {
+function workspaceIcon(file: ChannelFile, size = 18): SVGElement {
+  if (file.kind === "directory") return icon("folder", size);
+  const ext = file.name.split(".").pop()?.toLowerCase() || "";
+  if (["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)) return icon("image", size);
+  if (["js", "jsx", "ts", "tsx", "html", "css", "json", "yaml", "yml", "py", "rb", "go", "rs", "sh", "sql"].includes(ext)) return icon("code", size);
+  if (["excalidraw", "whiteboard"].includes(ext)) return icon("board", size);
+  if (["deck", "slides", "ppt", "pptx"].includes(ext)) return icon("presentation", size);
+  return icon("fileText", size);
+}
+
+function coworkPath(path: string): { section: "notes" | "whiteboards" | "code" | "docs" | "presentations"; path: string } | null {
+  const section = path.split("/")[0] as "notes" | "whiteboards" | "code" | "docs" | "presentations";
+  return ["notes", "whiteboards", "code", "docs", "presentations"].includes(section) ? { section, path } : null;
+}
+
+type FileBrowserSurface = { node: HTMLElement; reload: () => Promise<void> };
+const fileBrowserSurfaces = new Map<number, FileBrowserSurface>();
+
+/** Traditional two-pane browser over the channel's one authoritative /workspace. */
+export function renderFiles(container: HTMLElement, channelId: number, initialPath = "", onOpenCowork?: (path: string) => void, preserveExisting = false): void {
+  const cached = fileBrowserSurfaces.get(channelId);
+  if (cached) {
+    clear(container); container.append(cached.node);
+    if (!preserveExisting) void cached.reload();
+    return;
+  }
   let currentPath = initialPath.replace(/^\/?workspace\/?/, "").replace(/^\/+|\/+$/g, "");
-  panelLoading(container, "Files", "Browse the same folders the channel computer sees under /workspace.");
-  const load = (): void => {
+  let selected: ChannelFile | null = null;
+  let filter = "";
+  let sort: "name" | "modified" | "size" = "name";
+  const root = h("section", { class: "file-browser flex h-full min-h-[32rem] flex-col bg-surface", dataset: { fileBrowser: String(channelId) } });
+  const heading = h("span", { class: "truncate font-semibold text-fg" }, "/workspace");
+  const status = h("span", { class: "min-h-5 min-w-0 flex-1 truncate text-xs text-muted", role: "status" });
+  const search = h("input", { class: "field h-9 min-w-0 text-xs", type: "search", placeholder: "Search this folder", "aria-label": "Search current folder" }) as HTMLInputElement;
+  const tree = h("div", { class: "min-h-0 flex-1 overflow-y-auto p-2", dataset: { fileFolderTree: "" } });
+  const main = h("div", { class: "min-h-0 flex-1 overflow-y-auto", dataset: { fileDirectory: "" } });
+  const info = h("aside", { class: "hidden min-h-0 w-60 shrink-0 overflow-y-auto border-l border-line bg-raised/35 p-4 xl:block", dataset: { fileMetadata: "" } });
+  const crumbs = h("nav", { class: "flex min-w-0 flex-1 items-center gap-1 overflow-x-auto font-mono text-xs", "aria-label": "File breadcrumbs", dataset: { fileBreadcrumbs: "" } });
+  const fileInput = h("input", { type: "file", multiple: true, class: "hidden" }) as HTMLInputElement;
+  const open = (entry: ChannelFile): void => {
+    if (entry.kind === "directory") { currentPath = entry.path; selected = null; void load(); return; }
+    const target = coworkPath(entry.path);
+    if (target && onOpenCowork) { onOpenCowork(entry.path); return; }
+    void openAuthenticatedFile(`/api/channels/${channelId}/files/content?path=${encodeURIComponent(entry.path)}`).catch((error) => appAlert((error as Error).message));
+  };
+  const mutate = async (action: "rename" | "move" | "duplicate" | "delete"): Promise<void> => {
+    if (!selected) return;
+    try {
+      if (action === "rename") {
+        const name = await appPrompt(`Rename ${selected.kind === "directory" ? "folder" : "file"}`, selected.name);
+        if (!name || name === selected.name) return;
+        await api(`/api/channels/${channelId}/files/entries`, { method: "PATCH", body: { path: selected.path, name } });
+      } else if (action === "move") {
+        const parent = await appPrompt("Move to folder inside /workspace (leave empty for the top level)", selected.path.split("/").slice(0, -1).join("/"));
+        if (parent == null) return;
+        await api(`/api/channels/${channelId}/files/entries`, { method: "PATCH", body: { path: selected.path, parent } });
+      } else if (action === "duplicate") {
+        await api(`/api/channels/${channelId}/files/duplicate`, { body: { path: selected.path } });
+      } else {
+        if (!(await appConfirm(`Delete “${selected.name}”${selected.kind === "directory" ? " and everything inside it" : ""}? This cannot be undone.`))) return;
+        await api(`/api/channels/${channelId}/files/entries`, { method: "DELETE", body: { path: selected.path } });
+      }
+      selected = null; status.textContent = ""; await load();
+    } catch (error) { status.textContent = (error as Error).message; }
+  };
+  const drawTree = (directories: ChannelFile[]): void => {
+    clear(tree);
+    const all = [{ path: "", name: "workspace", size: 0, modified: 0, kind: "directory" as const }, ...directories];
+    for (const directory of all) {
+      const depth = directory.path ? directory.path.split("/").length : 0;
+      tree.append(h("button", {
+        class: `mb-0.5 flex min-h-9 w-full items-center gap-2 rounded-md pr-2 text-left text-xs ${currentPath === directory.path ? "bg-accent-soft text-fg" : "text-muted hover:bg-hover hover:text-fg"}`,
+        style: `padding-left:${8 + depth * 14}px`, type: "button", onclick: () => { currentPath = directory.path; selected = null; void load(); },
+      }, h("span", { class: currentPath === directory.path ? "text-accent" : "text-faint" }, icon(currentPath === directory.path ? "folderOpen" : "folder", 15)), h("span", { class: "truncate" }, directory.name)));
+    }
+  };
+  const drawInfo = (): void => {
+    clear(info);
+    if (!selected) { info.append(h("div", { class: "grid h-full place-items-center text-center text-xs leading-5 text-faint" }, "Select an item to see details and actions.")); return; }
+    info.append(h("div", { class: "mx-auto grid h-14 w-14 place-items-center rounded-xl bg-accent-soft text-accent" }, workspaceIcon(selected, 28)),
+      h("h3", { class: "mt-3 break-words text-sm font-semibold text-fg" }, selected.name),
+      h("dl", { class: "mt-4 space-y-3 text-xs" },
+        h("div", {}, h("dt", { class: "text-faint" }, "Kind"), h("dd", { class: "mt-0.5 text-muted" }, selected.kind === "directory" ? "Folder" : "File")),
+        h("div", {}, h("dt", { class: "text-faint" }, "Location"), h("dd", { class: "mt-0.5 break-all font-mono text-muted" }, `/workspace/${selected.path}`)),
+        h("div", {}, h("dt", { class: "text-faint" }, "Size"), h("dd", { class: "mt-0.5 text-muted" }, selected.kind === "directory" ? "—" : formatBytes(selected.size))),
+        h("div", {}, h("dt", { class: "text-faint" }, "Modified"), h("dd", { class: "mt-0.5 text-muted" }, timeLabel(selected.modified)))),
+      h("div", { class: "mt-5 grid gap-2" },
+        h("button", { class: "btn-primary text-xs", type: "button", onclick: () => open(selected!) }, selected.kind === "directory" ? "Open folder" : coworkPath(selected.path) && onOpenCowork ? "Open in Cowork" : "Open"),
+        h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void mutate("rename"); } }, "Rename"),
+        h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void mutate("move"); } }, "Move"),
+        h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void mutate("duplicate"); } }, "Duplicate"),
+        selected.kind === "file" ? h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void downloadAuthenticatedFile(`/api/channels/${channelId}/files/content?path=${encodeURIComponent(selected!.path)}&download=1`, selected!.name); } }, "Download") : null,
+        h("button", { class: "btn-ghost text-xs text-danger", type: "button", onclick: () => { void mutate("delete"); } }, "Delete")));
+  };
+  const load = async (): Promise<void> => {
     const requestedPath = currentPath;
-    void api<{ path?: string; files: ChannelFile[] }>(`/api/channels/${channelId}/files?path=${encodeURIComponent(requestedPath)}`).then((result) => {
-      currentPath = result.path ?? requestedPath;
-      const crumbs = h("nav", { class: "flex min-w-0 items-center gap-1 overflow-x-auto font-mono text-xs", "aria-label": "File breadcrumbs", dataset: { fileBreadcrumbs: "" } });
+    try {
+      const [result, folders] = await Promise.all([
+        api<{ path?: string; files: ChannelFile[] }>(`/api/channels/${channelId}/files?path=${encodeURIComponent(requestedPath)}`),
+        api<{ directories: ChannelFile[] }>(`/api/channels/${channelId}/files/directories`),
+      ]);
+      if (requestedPath !== currentPath) return;
+      currentPath = result.path ?? requestedPath; heading.textContent = `/workspace${currentPath ? `/${currentPath}` : ""}`; main.dataset.fileDirectory = currentPath || "/";
+      drawTree(folders.directories);
+      clear(crumbs);
       const segments = currentPath ? currentPath.split("/") : [];
       const addCrumb = (label: string, path: string): void => {
         if (crumbs.childNodes.length) crumbs.append(h("span", { class: "text-faint" }, "/"));
-        crumbs.append(h("button", { class: `shrink-0 rounded px-1.5 py-1 ${path === currentPath ? "text-fg" : "text-accent hover:bg-hover"}`, type: "button", onclick: () => { currentPath = path; load(); } }, label));
+        crumbs.append(h("button", { class: `shrink-0 rounded px-1.5 py-1 ${path === currentPath ? "text-fg" : "text-accent hover:bg-hover"}`, type: "button", onclick: () => { currentPath = path; selected = null; void load(); } }, label));
       };
-      addCrumb("workspace", "");
-      segments.forEach((_segment, index) => addCrumb(segments[index], segments.slice(0, index + 1).join("/")));
-
-      const list = h("div", { class: "overflow-hidden rounded-lg border border-line bg-surface", dataset: { fileDirectory: currentPath || "/" } });
-      if (!result.files.length) list.append(empty("This folder is empty", "Upload a file, create a folder, or let the resident agent add something here."));
-      for (const file of result.files) {
-        const isFolder = file.kind === "directory";
-        const openFile = (): void => { void openAuthenticatedFile(`/api/channels/${channelId}/files/content?path=${encodeURIComponent(file.path)}`).catch((error) => appAlert((error as Error).message)); };
-        list.append(h("div", { class: "flex items-center gap-3 border-b border-line px-3 py-2.5 last:border-0", dataset: { filePath: file.path, fileKind: file.kind } },
-          h("button", { class: `flex min-w-0 flex-1 items-center gap-3 text-left ${isFolder ? "hover:text-accent" : ""}`, type: "button", onclick: () => { if (isFolder) { currentPath = file.path; load(); } else openFile(); } },
-            h("span", { class: `grid h-8 w-8 shrink-0 place-items-center rounded ${isFolder ? "bg-hover text-muted" : "bg-accent-soft text-accent"}` }, icon("file", 16)),
-            h("span", { class: "min-w-0 flex-1" },
-              h("span", { class: "block truncate font-mono text-sm text-fg" }, file.name),
-              h("span", { class: "block truncate text-xs text-muted" }, isFolder ? "Folder" : `${formatBytes(file.size)} · changed ${timeLabel(file.modified)}`))),
-          !isFolder ? h("div", { class: "flex shrink-0 items-center gap-1.5" },
-            h("button", { class: "btn-subtle text-xs", type: "button", onclick: openFile }, "Open"),
-            h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void downloadAuthenticatedFile(`/api/channels/${channelId}/files/content?path=${encodeURIComponent(file.path)}&download=1`, file.name).catch((error) => appAlert((error as Error).message)); } }, "Download")) : null));
-      }
-
-      const fileInput = h("input", { type: "file", multiple: true, class: "hidden" }) as HTMLInputElement;
-      const status = h("span", { class: "min-h-5 flex-1 text-xs text-muted", role: "status" });
-      const uploadButton = h("button", { class: "btn-primary text-sm", type: "button", onclick: () => fileInput.click() }, icon("plus"), "Upload here") as HTMLButtonElement;
-      const folderButton = h("button", { class: "btn-subtle text-sm", type: "button", onclick: async () => {
-        const name = await appPrompt("Folder name");
-        if (!name) return;
-        folderButton.setAttribute("disabled", "true");
-        try { await api(`/api/channels/${channelId}/files/directories`, { body: { path: currentPath, name } }); load(); }
-        catch (error) { status.textContent = (error as Error).message; folderButton.removeAttribute("disabled"); }
-      } }, icon("plus"), "New folder") as HTMLButtonElement;
-      fileInput.onchange = async () => {
-        const chosen = Array.from(fileInput.files || []);
-        if (!chosen.length) return;
-        uploadButton.disabled = true; status.textContent = `Uploading ${chosen.length} file${chosen.length === 1 ? "" : "s"} to /workspace${currentPath ? `/${currentPath}` : ""}…`;
-        try {
-          for (const file of chosen) {
-            const upload = await uploadFile(file);
-            await api(`/api/channels/${channelId}/files/upload`, { body: { ...upload, path: currentPath } });
-          }
-          load();
-        } catch (error) { status.textContent = (error as Error).message; uploadButton.disabled = false; }
-      };
-      panelContent(container, "Files", "Browse the same folders the channel computer sees under /workspace.", h("div", {},
-        h("div", { class: "mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-line bg-raised px-3 py-2" }, crumbs, h("div", { class: "flex-1" }), status, folderButton, uploadButton, fileInput),
-        list));
-    }).catch((error) => panelError(container, error));
+      addCrumb("workspace", ""); segments.forEach((segment, index) => addCrumb(segment, segments.slice(0, index + 1).join("/")));
+      let files = result.files.filter((entry) => !filter || entry.name.toLowerCase().includes(filter));
+      files = files.slice().sort((a, b) => Number(a.kind !== "directory") - Number(b.kind !== "directory") || (sort === "modified" ? b.modified - a.modified : sort === "size" ? b.size - a.size : a.name.localeCompare(b.name)));
+      clear(main);
+      if (!files.length) main.append(empty(result.files.length ? "No matches" : "This folder is empty", result.files.length ? "Try a different search." : "Create a folder or file, upload something, or let the resident agent add it."));
+      else main.append(h("div", { class: "file-grid", role: "list" }, ...files.map((entry) => h("button", {
+        class: `file-grid-item ${selected?.path === entry.path ? "is-selected" : ""}`, type: "button", role: "listitem", dataset: { filePath: entry.path, fileKind: entry.kind },
+        onclick: () => { selected = entry; void load(); }, ondblclick: () => open(entry),
+      }, h("span", { class: `file-grid-icon ${entry.kind === "directory" ? "is-folder" : "is-file"}` }, workspaceIcon(entry, 27)), h("span", { class: "min-w-0 flex-1 text-left" }, h("span", { class: "block truncate text-sm font-semibold text-fg" }, entry.name), h("span", { class: "mt-0.5 block truncate text-[11px] text-muted" }, entry.kind === "directory" ? "Folder" : `${formatBytes(entry.size)} · ${timeLabel(entry.modified)}`)), h("span", { class: "file-grid-kind" }, entry.kind === "directory" ? "Folder" : (entry.name.split(".").pop()?.toUpperCase() || "File"))))));
+      drawInfo(); status.textContent = `${result.files.length} item${result.files.length === 1 ? "" : "s"}`;
+    } catch (error) { panelError(main, error); }
   };
-  load();
+  search.oninput = () => { filter = search.value.trim().toLowerCase(); void load(); };
+  const sortSelect = h("select", { class: "field h-9 w-auto min-w-28 text-xs", "aria-label": "Sort files", onchange: (event: Event) => { sort = (event.target as HTMLSelectElement).value as typeof sort; void load(); } }, h("option", { value: "name" }, "Name"), h("option", { value: "modified" }, "Modified"), h("option", { value: "size" }, "Size"));
+  const newFolder = async (): Promise<void> => { const name = await appPrompt("Folder name"); if (!name) return; try { await api(`/api/channels/${channelId}/files/directories`, { body: { path: currentPath, name } }); await load(); } catch (error) { status.textContent = (error as Error).message; } };
+  const newFile = async (): Promise<void> => { const name = await appPrompt("File name", "untitled.md"); if (!name) return; try { await api(`/api/channels/${channelId}/files/entries`, { body: { parent: currentPath, name, content: "" } }); await load(); } catch (error) { status.textContent = (error as Error).message; } };
+  fileInput.onchange = async () => { const chosen = Array.from(fileInput.files || []); if (!chosen.length) return; status.textContent = `Uploading ${chosen.length} item${chosen.length === 1 ? "" : "s"}…`; try { for (const file of chosen) { const upload = await uploadFile(file); await api(`/api/channels/${channelId}/files/upload`, { body: { ...upload, path: currentPath } }); } fileInput.value = ""; await load(); } catch (error) { status.textContent = (error as Error).message; } };
+  root.append(
+    h("header", { class: "flex min-h-14 flex-wrap items-center gap-2 border-b border-line px-3 py-2 sm:px-4" }, h("span", { class: "text-accent" }, icon("folderOpen", 20)), heading, h("div", { class: "flex-1" }), status, h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void newFile(); } }, icon("plus", 14), "New file"), h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void newFolder(); } }, icon("folder", 14), "New folder"), h("button", { class: "btn-primary text-xs", type: "button", onclick: () => fileInput.click() }, "Upload"), fileInput),
+    h("div", { class: "flex min-h-0 flex-1" },
+      h("aside", { class: "hidden min-h-0 w-60 shrink-0 flex-col border-r border-line bg-raised/35 md:flex" }, h("div", { class: "border-b border-line p-3" }, h("div", { class: "eyebrow text-muted" }, "Folders")), tree),
+      h("section", { class: "flex min-h-0 min-w-0 flex-1 flex-col" }, h("div", { class: "flex flex-wrap items-center gap-2 border-b border-line bg-raised/25 px-3 py-2" }, crumbs, h("div", { class: "w-full sm:w-48" }, search), sortSelect), main), info));
+  fileBrowserSurfaces.set(channelId, { node: root, reload: load });
+  clear(container); container.append(root); void load();
 }
 
 type ChannelNoteView = { name: string; size: number; modified: number; content?: string };
@@ -748,7 +822,7 @@ function activityCard(item: ActivityItem): HTMLElement {
   const headline = h("div", { class: `flex gap-3 ${item.action_id ? "px-4 py-3" : "rounded-lg px-4 py-3"}` },
     h("span", { class: `mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${activityStatusTone(item.status)}`, title: item.status || "complete" }),
     h("div", { class: "min-w-0 flex-1" },
-      h("div", { class: "text-sm leading-5 text-fg" }, item.summary),
+      h("div", { class: "md text-sm leading-5 text-fg", html: md(item.summary) }),
       h("div", { class: "mt-1 text-xs text-muted" }, meta)));
   if (!item.action_id) return h("div", { class: `rounded-lg border ${border}` }, headline);
 

@@ -345,20 +345,31 @@ Once ready, the channel visibly presents:
 - its current model/provider, as a replaceable implementation detail;
 - its files/artifacts;
 - its active/recent threads; and
-- an obvious `@skipper` escalation path.
+- an obvious `@skipper` mention path.
 
 ### 8.3 Channel layout
 
 Chat remains the shared work surface, but the channel is not reduced to a message feed. It provides views or panels for:
 
 - **Threads** — active and completed sessions;
-- **Files** — the channel workspace and shared artifacts;
+- **Files** — a familiar two-pane browser for the channel workspace and shared artifacts;
+- **Cowork** — the direct visual editing plane for the same files under
+  `/workspace/notes`, `/workspace/whiteboards`, `/workspace/code`,
+  `/workspace/docs`, and `/workspace/presentations`;
 - **Terminal** — interactive shell sessions inside the channel environment;
 - **Memory/Knowledge** — channel-owned decisions, facts, summaries, and references;
 - **Activity** — tool actions, long-running work, Skipper interventions, and system lifecycle; and
 - **Settings** — purpose, model policy, scoped capabilities, and lifecycle controls.
 
 These views are representations of the same channel world, not separate apps that force users to copy context between them.
+
+The top-bar note action is a compact Quick Note overlay, not a separate Notes
+dock. Saving writes a collision-safe Markdown file under `/workspace/notes`
+without changing the active channel, view, thread, focus, or scroll position.
+Cowork provides Notes, Whiteboard, Code, Docs, and Presentations work modes with
+one shared folder rail and an optional channel-agent panel. The panel starts an
+ordinary channel thread, appending only the currently open `/workspace/...`
+path to its first human message; the same thread remains available in Chat.
 
 ### 8.4 Agent interactions
 
@@ -565,7 +576,7 @@ Use language that reinforces the native model:
 - **Workspace** — the agent's durable environment.
 - **Thread** or **session** — focused unit of work.
 - **Memory/Knowledge** — channel-owned continuity.
-- **Call Skipper** — escalation to the workspace-level operator.
+- **Mention Skipper** — direct escalation to the workspace-level operator.
 - **Captain** — final human owner.
 
 Suggested concise positioning:

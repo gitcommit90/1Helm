@@ -110,7 +110,10 @@ export function photonConversations(ownerUserId: number): Record<string, unknown
         FROM messages m WHERE m.photon_conversation_id=pc.id AND trim(m.body)<>'' AND m.body<>'_Working…_' ORDER BY m.id DESC LIMIT 1) last_body,
       (SELECT COUNT(*) FROM messages WHERE photon_conversation_id=pc.id AND trim(body)<>'' AND body<>'_Working…_') message_count
     FROM photon_conversations pc JOIN threads t ON t.id=pc.thread_id
-    WHERE pc.channel_id=? ORDER BY pc.updated DESC,pc.id DESC`, main.id);
+    WHERE pc.channel_id=? ORDER BY pc.updated DESC,pc.id DESC`, main.id).map((conversation) => ({
+      ...conversation,
+      title: /^\[?Photon\b|^Photon message from\b/i.test(String(conversation.title || "")) ? "Text with Skipper" : conversation.title,
+    }));
 }
 
 export function photonConversation(ownerUserId: number, conversationId: number): Record<string, unknown> | null {
@@ -246,7 +249,9 @@ export async function deliverPhotonEvent(event: PhotonEvent): Promise<boolean> {
   }
   let conversation = activePhotonConversation(event.sender);
   let rootMessageId = Number(conversation?.root_message_id || 0);
-  const body = `[Photon iMessage from ${event.sender}]\n${event.text}`;
+  // Source/direction/sender already live in photon_messages. Keep the visible
+  // transcript human and avoid repeating a robotic transport label + phone number.
+  const body = event.text;
   const messageId = createMessage({ channelId, parentId: rootMessageId || null, botId: null, body });
   run("UPDATE messages SET system_message=1 WHERE id=?", messageId);
   if (!rootMessageId) {
