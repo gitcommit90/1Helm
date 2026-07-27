@@ -13,9 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Desktop release policy now fail-closes on platform parity: one version and
   exact source commit must produce verified macOS DMG/updater, Linux host, and
-  signed Windows Setup/Squirrel artifacts before any tag or GitHub Release can
-  be published. A missing platform pauses the whole release instead of leaving
-  users on a stale update line.
+  Windows Setup/Squirrel artifacts before any tag or GitHub Release can be
+  published. Windows signature status is disclosed and unsigned output remains
+  accepted until a trusted signing identity is adopted. A missing platform
+  pauses the whole release instead of leaving users on a stale update line.
 
 - Cowork new-file prompts now start blank. Names with an explicit extension are
   preserved, while extensionless names receive the active section's `.md`,
