@@ -34,6 +34,7 @@ export type MountedEditor = {
   focus: () => void;
   destroy: () => void;
   getContent?: () => string;
+  replaceContent?: (content: string) => void;
   format?: (prefix: string, suffix?: string, placeholder?: string) => void;
   selection?: () => { from: number; to: number };
 };
@@ -87,6 +88,10 @@ export function mountCodeMirror(
     focus: () => view.focus(),
     destroy: () => view.destroy(),
     getContent: () => view.state.doc.toString(),
+    replaceContent: (content) => {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: content }, selection: { anchor: content.length } });
+      view.focus();
+    },
     format: (prefix, suffix = prefix, placeholder = "text") => {
       const range = view.state.selection.main;
       const selected = view.state.sliceDoc(range.from, range.to) || placeholder;

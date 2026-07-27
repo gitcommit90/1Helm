@@ -480,6 +480,7 @@ export function renderFiles(container: HTMLElement, channelId: number, initialPa
   const info = h("aside", { class: "hidden min-h-0 w-60 shrink-0 overflow-y-auto border-l border-line bg-raised/35 p-4 xl:block", dataset: { fileMetadata: "" } });
   const crumbs = h("nav", { class: "flex min-w-0 flex-1 items-center gap-1 overflow-x-auto font-mono text-xs", "aria-label": "File breadcrumbs", dataset: { fileBreadcrumbs: "" } });
   const fileInput = h("input", { type: "file", multiple: true, class: "hidden" }) as HTMLInputElement;
+  let directoryCache: ChannelFile[] | null = null;
   const open = (entry: ChannelFile): void => {
     if (entry.kind === "directory") { currentPath = entry.path; selected = null; void load(); return; }
     const target = coworkPath(entry.path);
@@ -535,16 +536,24 @@ export function renderFiles(container: HTMLElement, channelId: number, initialPa
         selected.kind === "file" ? h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void downloadAuthenticatedFile(`/api/channels/${channelId}/files/content?path=${encodeURIComponent(selected!.path)}&download=1`, selected!.name); } }, "Download") : null,
         h("button", { class: "btn-ghost text-xs text-danger", type: "button", onclick: () => { void mutate("delete"); } }, "Delete")));
   };
-  const load = async (): Promise<void> => {
+  const refreshDirectories = async (): Promise<void> => {
+    try {
+      directoryCache = (await api<{ directories: ChannelFile[] }>(`/api/channels/${channelId}/files/directories`)).directories;
+      drawTree(directoryCache);
+    } catch { /* the current directory remains usable while the tree retries */ }
+  };
+  const redrawSelection = (): void => {
+    main.querySelectorAll<HTMLElement>("[data-file-path]").forEach((node) => node.classList.toggle("is-selected", node.dataset.filePath === selected?.path));
+    drawInfo();
+  };
+  const load = async (options: { refreshTree?: boolean } = {}): Promise<void> => {
     const requestedPath = currentPath;
     try {
-      const [result, folders] = await Promise.all([
-        api<{ path?: string; files: ChannelFile[] }>(`/api/channels/${channelId}/files?path=${encodeURIComponent(requestedPath)}`),
-        api<{ directories: ChannelFile[] }>(`/api/channels/${channelId}/files/directories`),
-      ]);
+      const result = await api<{ path?: string; files: ChannelFile[] }>(`/api/channels/${channelId}/files?path=${encodeURIComponent(requestedPath)}`);
       if (requestedPath !== currentPath) return;
       currentPath = result.path ?? requestedPath; heading.textContent = `/workspace${currentPath ? `/${currentPath}` : ""}`; main.dataset.fileDirectory = currentPath || "/";
-      drawTree(folders.directories);
+      if (directoryCache) drawTree(directoryCache);
+      else void refreshDirectories();
       clear(crumbs);
       const segments = currentPath ? currentPath.split("/") : [];
       const addCrumb = (label: string, path: string): void => {
@@ -558,14 +567,14 @@ export function renderFiles(container: HTMLElement, channelId: number, initialPa
       if (!files.length) main.append(empty(result.files.length ? "No matches" : "This folder is empty", result.files.length ? "Try a different search." : "Create a folder or file, upload something, or let the resident agent add it."));
       else main.append(h("div", { class: "file-grid", role: "list" }, ...files.map((entry) => h("button", {
         class: `file-grid-item ${selected?.path === entry.path ? "is-selected" : ""}`, type: "button", role: "listitem", dataset: { filePath: entry.path, fileKind: entry.kind },
-        onclick: () => { selected = entry; void load(); }, ondblclick: () => open(entry),
+        onclick: () => { selected = entry; redrawSelection(); }, ondblclick: () => open(entry),
       }, h("span", { class: `file-grid-icon ${entry.kind === "directory" ? "is-folder" : "is-file"}` }, workspaceIcon(entry, 27)), h("span", { class: "min-w-0 flex-1 text-left" }, h("span", { class: "block truncate text-sm font-semibold text-fg" }, entry.name), h("span", { class: "mt-0.5 block truncate text-[11px] text-muted" }, entry.kind === "directory" ? "Folder" : `${formatBytes(entry.size)} · ${timeLabel(entry.modified)}`)), h("span", { class: "file-grid-kind" }, entry.kind === "directory" ? "Folder" : (entry.name.split(".").pop()?.toUpperCase() || "File"))))));
       drawInfo(); status.textContent = `${result.files.length} item${result.files.length === 1 ? "" : "s"}`;
     } catch (error) { panelError(main, error); }
   };
   search.oninput = () => { filter = search.value.trim().toLowerCase(); void load(); };
   const sortSelect = h("select", { class: "field h-9 w-auto min-w-28 text-xs", "aria-label": "Sort files", onchange: (event: Event) => { sort = (event.target as HTMLSelectElement).value as typeof sort; void load(); } }, h("option", { value: "name" }, "Name"), h("option", { value: "modified" }, "Modified"), h("option", { value: "size" }, "Size"));
-  const newFolder = async (): Promise<void> => { const name = await appPrompt("Folder name"); if (!name) return; try { await api(`/api/channels/${channelId}/files/directories`, { body: { path: currentPath, name } }); await load(); } catch (error) { status.textContent = (error as Error).message; } };
+  const newFolder = async (): Promise<void> => { const name = await appPrompt("Folder name"); if (!name) return; try { await api(`/api/channels/${channelId}/files/directories`, { body: { path: currentPath, name } }); directoryCache = null; await load(); } catch (error) { status.textContent = (error as Error).message; } };
   const newFile = async (): Promise<void> => { const name = await appPrompt("File name", "untitled.md"); if (!name) return; try { await api(`/api/channels/${channelId}/files/entries`, { body: { parent: currentPath, name, content: "" } }); await load(); } catch (error) { status.textContent = (error as Error).message; } };
   fileInput.onchange = async () => { const chosen = Array.from(fileInput.files || []); if (!chosen.length) return; status.textContent = `Uploading ${chosen.length} item${chosen.length === 1 ? "" : "s"}…`; try { for (const file of chosen) { const upload = await uploadFile(file); await api(`/api/channels/${channelId}/files/upload`, { body: { ...upload, path: currentPath } }); } fileInput.value = ""; await load(); } catch (error) { status.textContent = (error as Error).message; } };
   root.append(
@@ -573,7 +582,7 @@ export function renderFiles(container: HTMLElement, channelId: number, initialPa
     h("div", { class: "flex min-h-0 flex-1" },
       h("aside", { class: "hidden min-h-0 w-60 shrink-0 flex-col border-r border-line bg-raised/35 md:flex" }, h("div", { class: "border-b border-line p-3" }, h("div", { class: "eyebrow text-muted" }, "Folders")), tree),
       h("section", { class: "flex min-h-0 min-w-0 flex-1 flex-col" }, h("div", { class: "flex flex-wrap items-center gap-2 border-b border-line bg-raised/25 px-3 py-2" }, crumbs, h("div", { class: "w-full sm:w-48" }, search), sortSelect), main), info));
-  fileBrowserSurfaces.set(channelId, { node: root, reload: load });
+  fileBrowserSurfaces.set(channelId, { node: root, reload: async () => { directoryCache = null; await load(); } });
   clear(container); container.append(root); void load();
 }
 

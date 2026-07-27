@@ -147,6 +147,18 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   assert.deepEqual(await page.$$eval('[aria-label="Notes editor"] .cm-line', (lines) => lines.map((line) => line.textContent)), ["# FPRESERVEDes", "", "**Goal**", "", "Unsaved continuity proof."]);
   await page.keyboard.down(primaryModifier); await page.keyboard.press("s"); await page.keyboard.up(primaryModifier);
   await waitFor(async () => (await api(`/api/channels/${channel.id}/files/text?path=notes%2Ffield-notes.md`, {}, token)).file.content.includes("Unsaved continuity proof"), "saved Cowork note");
+  assert.equal(await page.$$eval('[data-speech-toggle]', (buttons) => buttons.some((button) => button.getAttribute("aria-label") === "Dictate note")), true, "Cowork Notes exposes dictation");
+  // Leave the sole Cowork client and return. The old document transport must
+  // never merge its stale Yjs history with a fresh server room and duplicate
+  // the complete file.
+  await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Files"))?.click());
+  await page.waitForSelector('[data-file-browser]');
+  await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Cowork"))?.click());
+  await page.waitForSelector('[data-cowork-surface]');
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("field-notes.md"))?.click());
+  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Unsaved continuity proof"));
+  const reopenedText = await page.$eval('[aria-label="Notes editor"] .cm-content', (editor) => editor.textContent || "");
+  assert.equal((reopenedText.match(/Unsaved continuity proof/g) || []).length, 1, "leaving and reopening Cowork never duplicates saved text");
 
   // A second authenticated member joins the same ordinary workspace file.
   // Both clients see presence, remote cursors, and edits without a reload.

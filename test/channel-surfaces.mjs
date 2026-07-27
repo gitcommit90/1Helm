@@ -6,6 +6,7 @@ import test, { after } from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
 const agentsSource = readFileSync(join(root, "src", "server", "agents.ts"), "utf8");
+const stylesSource = readFileSync(join(root, "src", "client", "styles.css"), "utf8");
 const dataDir = mkdtempSync(join(tmpdir(), "1helm-channel-surfaces-"));
 process.env.CTRL_DATA_DIR = dataDir;
 process.env.NODE_ENV = "test";
@@ -188,6 +189,13 @@ test("channel UI source exposes file-backed Cowork, traditional Files, audio pre
   assert.match(channelSource, /data(?:set)?: \{ fileFolderTree: "" \}/, "Files has a folder navigation rail");
   assert.match(channelSource, /icon\("folder"/, "Files uses a recognizable folder icon");
   assert.match(coworkSource, /const SECTIONS[\s\S]*"notes"[\s\S]*"whiteboards"[\s\S]*"code"[\s\S]*"docs"[\s\S]*"presentations"/, "Cowork exposes five file-backed work modes");
+  assert.match(coworkSource, /mountSpeechToTextControl\(input, "Dictate Cowork agent request"\)/, "Cowork agent requests expose the shared explicit dictation control");
+  assert.match(coworkSource, /mountSpeechToTextControl\(\{[\s\S]*Dictate \$\{mode === "docs" \? "document" : "note"\}/, "Cowork Notes and Docs expose the shared explicit dictation control");
+  assert.match(coworkSource, /if \(!value && channel\.agent\?\.kind === "skipper"\) return h\("img"/, "Cowork renders Skipper with a real product avatar instead of an initial");
+  assert.match(coworkSource, /disconnectEditors[\s\S]*closeEditorForHiddenCowork[\s\S]*candidate\.loaded = false/, "Cowork discards disconnected Yjs histories before a hidden surface is reopened");
+  assert.match(channelSource, /onclick: \(\) => \{ selected = entry; redrawSelection\(\); \}/, "Files paints selection immediately without re-fetching the guest mirror");
+  assert.match(channelSource, /const refreshDirectories = async/, "Files loads its recursive folder tree independently of the current directory listing");
+  assert.match(stylesSource, /\.cowork-notes-edit-stage \{ overflow-y: auto; \}/, "long Cowork Notes edit sessions have their own vertical scroll container");
   assert.match(coworkSource, /\.\.\.\(coworkContextPending \? \{ coworkPath: session\.path \} : \{\}\)/, "a Cowork panel's first message submits its open path for authenticated enrichment");
   assert.match(serverSource, /if \(b\.coworkPath\)[\s\S]*b\.parentId \? \[\] : \[`Working file: \/workspace\/\$\{path\}`\]/, "the server adds the validated open file path only to a new Cowork thread");
   assert.match(serverSource, /coworkViewerUsernames\(cid, path, Number\(user\.id\)\)[\s\S]*Working with:/, "the server adds active co-viewers to the first Cowork agent message");

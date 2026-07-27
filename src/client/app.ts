@@ -2761,7 +2761,9 @@ type BrowserSpeechRecognition = {
   stop(): void;
 };
 type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
-let activeSpeech: { recognition: BrowserSpeechRecognition; input: HTMLTextAreaElement; button: HTMLButtonElement } | null = null;
+type SpeechTextTarget = HTMLTextAreaElement | { value: () => string; replace: (value: string) => void; focus: () => void };
+let activeSpeech: { recognition: BrowserSpeechRecognition; input: SpeechTextTarget; button: HTMLButtonElement } | null = null;
+let focusedSpeechTarget: SpeechTextTarget | null = null;
 
 function setListeningIndicator(listening: boolean): void {
   let indicator = document.querySelector<HTMLElement>("[data-listening-indicator]");
@@ -2791,7 +2793,7 @@ function activeComposerInput(): HTMLTextAreaElement | null {
   const parent = S.threadRoot ? String(S.threadRoot.id) : "root";
   return document.querySelector<HTMLTextAreaElement>(`textarea[data-composer-parent="${parent}"]`);
 }
-async function toggleSpeechToText(input = activeComposerInput()): Promise<void> {
+async function toggleSpeechToText(input: SpeechTextTarget | null = activeComposerInput(), explicitButton?: HTMLButtonElement): Promise<void> {
   if (!input) return;
   if (activeSpeech) {
     const wasThisInput = activeSpeech.input === input;
@@ -2803,10 +2805,10 @@ async function toggleSpeechToText(input = activeComposerInput()): Promise<void> 
     await appAlert("Speech-to-text is not available in this browser. Try the current 1Helm desktop app or a browser with SpeechRecognition support; typing and attachments still work normally.");
     return;
   }
-  const button = input.closest(".composer-wrap, [data-quick-note]")?.querySelector<HTMLButtonElement>("[data-speech-toggle]");
+  const button = explicitButton || (input instanceof HTMLTextAreaElement ? input.closest(".composer-wrap, [data-quick-note]")?.querySelector<HTMLButtonElement>("[data-speech-toggle]") : null);
   if (!button) return;
   const recognition = new Recognition();
-  const original = input.value;
+  const original = input instanceof HTMLTextAreaElement ? input.value : input.value();
   const joiner = original && !/\s$/.test(original) ? " " : "";
   let finalTranscript = "";
   recognition.continuous = true;
@@ -2819,9 +2821,12 @@ async function toggleSpeechToText(input = activeComposerInput()): Promise<void> 
       if (event.results[index]?.isFinal) finalTranscript += transcript;
       else interim += transcript;
     }
-    input.value = original + joiner + finalTranscript + interim;
-    input.selectionStart = input.selectionEnd = input.value.length;
-    input.dispatchEvent(new Event("input"));
+    const next = original + joiner + finalTranscript + interim;
+    if (input instanceof HTMLTextAreaElement) {
+      input.value = next;
+      input.selectionStart = input.selectionEnd = input.value.length;
+      input.dispatchEvent(new Event("input"));
+    } else input.replace(next);
   };
   recognition.onerror = (event: any) => {
     const reason = String(event.error || "speech recognition failed");
@@ -2849,11 +2854,29 @@ async function toggleSpeechToText(input = activeComposerInput()): Promise<void> 
   }
 }
 
+/** Shared explicit mic control for textareas and Cowork's CodeMirror inputs.
+ * The bare Option/Alt shortcut targets the currently focused control too. */
+export function mountSpeechToTextControl(input: SpeechTextTarget, label = "Toggle speech-to-text"): HTMLButtonElement {
+  const button = h("button", {
+    class: "grid h-8 w-8 shrink-0 place-items-center rounded text-muted hover:bg-hover hover:text-fg",
+    type: "button",
+    title: speechRecognitionAvailable() ? `${label} · tap Option/Alt to toggle` : "Speech-to-text is unavailable in this browser",
+    "aria-label": label,
+    "aria-pressed": "false",
+    dataset: { speechToggle: "" },
+  }, microphoneIcon()) as HTMLButtonElement;
+  button.onclick = () => { void toggleSpeechToText(input, button); };
+  return button;
+}
+
+export function setFocusedSpeechTarget(input: SpeechTextTarget | null): void { focusedSpeechTarget = input; }
+
 function composer(parentId: number | null): HTMLElement {
   const channel = S.channels.find((item) => item.id === S.channelId);
   const humanOnly = ["collab", "human"].includes(channel?.kind || "");
   const attachBar = h("div", { class: "flex flex-wrap gap-2 px-1 pt-1 empty:hidden" });
   const input = h("textarea", { class: "max-h-44 min-h-[24px] w-full resize-none bg-transparent px-1 py-1 text-[15px] text-fg outline-none placeholder:text-faint", rows: 1, dataset: { composerParent: parentId == null ? "root" : String(parentId) }, placeholder: parentId ? "Reply…" : humanOnly ? "Message your coworkers…" : "Start a session — mention the resident agent or @skipper" }) as HTMLTextAreaElement;
+  input.addEventListener("focus", () => setFocusedSpeechTarget(input));
   const mentionBox = h("div", { class: "absolute bottom-full left-0 right-0 z-20 mb-2 hidden max-h-[50vh] w-full max-w-sm overflow-y-auto overflow-hidden rounded-lg border border-line bg-surface shadow-xl sm:right-auto sm:w-72" });
   const draftKey = `1helm.draft.${S.me.id}.${S.channelId}.${parentId == null ? "root" : parentId}`;
   const savedDraft = localStorage.getItem(draftKey);
@@ -3266,8 +3289,10 @@ window.addEventListener("keyup", (event) => {
   const isSingleTap = altTapOnly && performance.now() - altTapStarted < 800;
   altTapOnly = false;
   if (!isSingleTap || !document.hasFocus()) return;
-  const input = activeComposerInput();
-  if (input && !input.disabled && input.offsetParent !== null) void toggleSpeechToText(input);
+  const input = focusedSpeechTarget || activeComposerInput();
+  if (!input) return;
+  if (input instanceof HTMLTextAreaElement && (input.disabled || input.offsetParent === null)) return;
+  void toggleSpeechToText(input);
 });
 window.addEventListener("blur", () => { altTapOnly = false; });
 window.matchMedia("(min-width: 768px)").addEventListener("change", (event) => { if (event.matches && S.mobileMenuOpen) closeMobileMenu(); });
