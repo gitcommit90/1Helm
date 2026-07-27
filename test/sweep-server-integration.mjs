@@ -156,6 +156,8 @@ test("server sweep seams stay scoped, human-only, Unicode-safe, and least-arsena
     assert.equal(imported.body.path, "workspace/briefs/brief.txt");
     const listing = await api(base, `/api/channels/${channelId}/files?path=briefs`, token);
     assert.deepEqual(listing.body.files.map((file) => file.name), ["brief.txt"]);
+    assert.equal((await api(base, `/api/channels/${channelId}/files/refresh`, token, { method: "POST" })).status, 200);
+    assert.equal((await api(base, `/api/channels/${channelId}/files/refresh`, crewToken, { method: "POST" })).status, 403);
     const opened = await fetch(`${base}/api/channels/${channelId}/files/content?path=briefs%2Fbrief.txt`, { headers: { authorization: `Bearer ${token}` } });
     assert.equal(await opened.text(), "bounded file");
     assert.equal((await api(base, `/api/channels/${channelId}/files/directories`, token, { method: "POST", body: { path: "../", name: "escape" } })).status, 400);

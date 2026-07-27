@@ -1366,9 +1366,9 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { threads });
       }
       if (action === "files" && m === "GET") {
-        await refreshChannelWorkspaceMirror(channelId);
         try {
           if (!url.searchParams.has("path")) {
+            await refreshChannelWorkspaceMirror(channelId);
             const files = syncWorkspaceArtifacts(channelId, null, "agent");
             return json(res, 200, { path: "", files, artifacts: q("SELECT * FROM artifacts WHERE channel_id=? ORDER BY modified DESC", channelId) });
           }
@@ -1489,11 +1489,19 @@ const server = createServer(async (req, res) => {
       if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
       if (!q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", channelId)) return json(res, 404, { error: "Agent-channel file surface not found." });
       try {
-        await refreshChannelWorkspaceMirror(channelId);
+        if (m === "POST") await refreshChannelWorkspaceMirror(channelId);
         if (m === "GET") return json(res, 200, { directories: listWorkspaceDirectories(channelId) });
         const b = await jbody(req);
         return json(res, 201, { directory: createWorkspaceDirectory(channelId, String(b.path || ""), String(b.name || "")) });
       } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
+    const channelFilesRefresh = p.match(/^\/api\/channels\/(\d+)\/files\/refresh$/);
+    if (channelFilesRefresh && m === "POST") {
+      const channelId = Number(channelFilesRefresh[1]);
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      if (!q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", channelId)) return json(res, 404, { error: "Agent-channel file surface not found." });
+      try { await refreshChannelWorkspaceMirror(channelId); return json(res, 200, { ok: true }); }
+      catch (error) { return json(res, 400, { error: (error as Error).message }); }
     }
     const worldEntry = p.match(/^\/api\/channels\/(\d+)\/files\/entries$/);
     if (worldEntry && ["POST", "PATCH", "DELETE"].includes(m)) {
@@ -1519,7 +1527,6 @@ const server = createServer(async (req, res) => {
       const channelId = Number(worldText[1]);
       if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
       try {
-        await refreshChannelWorkspaceMirror(channelId);
         const b = m === "GET" ? null : await jbody(req);
         const path = m === "GET" ? String(url.searchParams.get("path") || "") : String(b?.path || "");
         if (m === "GET") return json(res, 200, { file: readWorkspaceTextFile(channelId, path) });
@@ -1539,7 +1546,6 @@ const server = createServer(async (req, res) => {
       if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
       if (!q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", channelId)) return json(res, 404, { error: "Agent-channel file not found." });
       try {
-        await refreshChannelWorkspaceMirror(channelId);
         const file = resolveWorldFile(channelId, url.searchParams.get("path") || "");
         const disposition = url.searchParams.get("download") === "1" ? "attachment" : "inline";
         res.writeHead(200, { "content-type": MIME[extname(file)] || "application/octet-stream", "content-disposition": `${disposition}; filename*=UTF-8''${encodeURIComponent(file.split("/").pop() || "file")}`, ...SECURITY_HEADERS });

@@ -2762,8 +2762,9 @@ type BrowserSpeechRecognition = {
 };
 type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
 type SpeechTextTarget = HTMLTextAreaElement | { value: () => string; replace: (value: string) => void; focus: () => void };
+type FocusedSpeechTarget = { input: SpeechTextTarget; button: HTMLButtonElement | null };
 let activeSpeech: { recognition: BrowserSpeechRecognition; input: SpeechTextTarget; button: HTMLButtonElement } | null = null;
-let focusedSpeechTarget: SpeechTextTarget | null = null;
+let focusedSpeechTarget: FocusedSpeechTarget | null = null;
 
 function setListeningIndicator(listening: boolean): void {
   let indicator = document.querySelector<HTMLElement>("[data-listening-indicator]");
@@ -2866,17 +2867,19 @@ export function mountSpeechToTextControl(input: SpeechTextTarget, label = "Toggl
     dataset: { speechToggle: "" },
   }, microphoneIcon()) as HTMLButtonElement;
   button.onclick = () => { void toggleSpeechToText(input, button); };
+  if (input instanceof HTMLTextAreaElement) input.addEventListener("focus", () => setFocusedSpeechTarget(input, button));
   return button;
 }
 
-export function setFocusedSpeechTarget(input: SpeechTextTarget | null): void { focusedSpeechTarget = input; }
+export function setFocusedSpeechTarget(input: SpeechTextTarget | null, button: HTMLButtonElement | null = null): void {
+  focusedSpeechTarget = input ? { input, button } : null;
+}
 
 function composer(parentId: number | null): HTMLElement {
   const channel = S.channels.find((item) => item.id === S.channelId);
   const humanOnly = ["collab", "human"].includes(channel?.kind || "");
   const attachBar = h("div", { class: "flex flex-wrap gap-2 px-1 pt-1 empty:hidden" });
   const input = h("textarea", { class: "max-h-44 min-h-[24px] w-full resize-none bg-transparent px-1 py-1 text-[15px] text-fg outline-none placeholder:text-faint", rows: 1, dataset: { composerParent: parentId == null ? "root" : String(parentId) }, placeholder: parentId ? "Reply…" : humanOnly ? "Message your coworkers…" : "Start a session — mention the resident agent or @skipper" }) as HTMLTextAreaElement;
-  input.addEventListener("focus", () => setFocusedSpeechTarget(input));
   const mentionBox = h("div", { class: "absolute bottom-full left-0 right-0 z-20 mb-2 hidden max-h-[50vh] w-full max-w-sm overflow-y-auto overflow-hidden rounded-lg border border-line bg-surface shadow-xl sm:right-auto sm:w-72" });
   const draftKey = `1helm.draft.${S.me.id}.${S.channelId}.${parentId == null ? "root" : parentId}`;
   const savedDraft = localStorage.getItem(draftKey);
@@ -2936,6 +2939,7 @@ function composer(parentId: number | null): HTMLElement {
     dataset: { speechToggle: "" },
     onclick: () => { void toggleSpeechToText(input); },
   }, microphoneIcon()) as HTMLButtonElement;
+  input.addEventListener("focus", () => setFocusedSpeechTarget(input, micButton));
 
   const box = h("div", { class: "relative rounded-lg border border-line bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.06)] transition focus-within:border-accent focus-within:shadow-[0_0_0_3px_var(--c-accent-soft)]" },
     mentionBox, attachBar,
@@ -3269,13 +3273,33 @@ const fmtSize = (n: number): string => n < 1024 ? n + " B" : n < 1048576 ? (n / 
 
 let altTapStarted = 0;
 let altTapOnly = false;
+let altTapFallback: number | null = null;
+const clearAltTapFallback = (): void => {
+  if (altTapFallback != null) window.clearTimeout(altTapFallback);
+  altTapFallback = null;
+};
 window.addEventListener("keydown", (event) => {
   if (event.key === "Alt" && !event.repeat && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+    clearAltTapFallback();
     altTapStarted = performance.now();
     altTapOnly = true;
+    if (focusedSpeechTarget?.button?.isConnected || activeComposerInput()) {
+      // CodeMirror/Electron can swallow the corresponding bare Option keyup.
+      // A short fallback handles that case, while any following keydown still
+      // cancels Option-character combinations before dictation can start.
+      altTapFallback = window.setTimeout(() => {
+        altTapFallback = null;
+        if (!altTapOnly || !document.hasFocus()) return;
+        const focused = focusedSpeechTarget?.button?.isConnected ? focusedSpeechTarget : null;
+        const input = focused?.input || activeComposerInput();
+        if (!input || (input instanceof HTMLTextAreaElement && (input.disabled || input.offsetParent === null))) return;
+        altTapOnly = false;
+        void toggleSpeechToText(input, focused?.button || undefined);
+      }, 250);
+    }
     return;
   }
-  if (altTapOnly) altTapOnly = false;
+  if (altTapOnly) { altTapOnly = false; clearAltTapFallback(); }
   if (event.key !== "Escape") return;
   if (S.mobileMenuOpen) { closeMobileMenu(); return; }
   // Close terminal first when both are open (thread stays).
@@ -3283,18 +3307,21 @@ window.addEventListener("keydown", (event) => {
   if (S.terminalOpen) { closeDockedTerminal(); return; }
   if (S.notesOpen) { closeDockedNotes(); return; }
   if (S.threadRoot) closeThread();
-});
+}, true);
 window.addEventListener("keyup", (event) => {
   if (event.key !== "Alt") return;
   const isSingleTap = altTapOnly && performance.now() - altTapStarted < 800;
   altTapOnly = false;
+  clearAltTapFallback();
   if (!isSingleTap || !document.hasFocus()) return;
-  const input = focusedSpeechTarget || activeComposerInput();
+  const focused = focusedSpeechTarget?.button?.isConnected ? focusedSpeechTarget : null;
+  const input = focused?.input || activeComposerInput();
   if (!input) return;
   if (input instanceof HTMLTextAreaElement && (input.disabled || input.offsetParent === null)) return;
-  void toggleSpeechToText(input);
-});
-window.addEventListener("blur", () => { altTapOnly = false; });
+  event.preventDefault();
+  void toggleSpeechToText(input, focused?.button || undefined);
+}, true);
+window.addEventListener("blur", () => { altTapOnly = false; clearAltTapFallback(); });
 window.matchMedia("(min-width: 768px)").addEventListener("change", (event) => { if (event.matches && S.mobileMenuOpen) closeMobileMenu(); });
 
 function registerServiceWorker(): void {

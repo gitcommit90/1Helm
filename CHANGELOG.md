@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.21] - 2026-07-27
+
+### Fixed
+
+- Cowork's bare Option/Alt shortcut now carries the mic control belonging to
+  the focused Notes, Docs, or agent input and uses a capture-phase fallback
+  when the macOS desktop shell swallows the corresponding keyup.
+- Long Cowork Notes give CodeMirror a finite editor frame and scroll through
+  its actual viewport in Write mode.
+- Leaving Cowork, changing sections, or opening another file now destroys the
+  outgoing Yjs document and reloads the authoritative workspace file into a
+  fresh document. The stale browser recovery copy that could resurrect or
+  repeatedly duplicate prior text has been removed.
+- Files directory, tree, text, and content reads now paint from the host mirror
+  immediately. One explicit background refresh coalesces the expensive channel
+  computer export and repaints the current listing when it completes.
+
+### Tests
+
+- Browser coverage toggles both Cowork editor and agent dictation through bare
+  Option/Alt, scrolls a 120-line Note, and proves section changes, full Cowork
+  navigation, and a five-line external replacement all reopen exactly once
+  without a recovery prompt.
+- A fake Apple channel computer with an intentionally slow export proves cached
+  Files reads stay responsive, simultaneous refreshes coalesce, and guest-only
+  files appear after the background refresh.
+
 ## [0.0.20] - 2026-07-27
 
 ### Added
@@ -583,7 +610,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.20...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.21...HEAD
+[0.0.21]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.21
 [0.0.20]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.20
 [0.0.19]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.19
 [0.0.18]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.18

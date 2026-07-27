@@ -481,6 +481,7 @@ export function renderFiles(container: HTMLElement, channelId: number, initialPa
   const crumbs = h("nav", { class: "flex min-w-0 flex-1 items-center gap-1 overflow-x-auto font-mono text-xs", "aria-label": "File breadcrumbs", dataset: { fileBreadcrumbs: "" } });
   const fileInput = h("input", { type: "file", multiple: true, class: "hidden" }) as HTMLInputElement;
   let directoryCache: ChannelFile[] | null = null;
+  let mirrorRefresh: Promise<void> | null = null;
   const open = (entry: ChannelFile): void => {
     if (entry.kind === "directory") { currentPath = entry.path; selected = null; void load(); return; }
     const target = coworkPath(entry.path);
@@ -572,6 +573,15 @@ export function renderFiles(container: HTMLElement, channelId: number, initialPa
       drawInfo(); status.textContent = `${result.files.length} item${result.files.length === 1 ? "" : "s"}`;
     } catch (error) { panelError(main, error); }
   };
+  const refreshMirror = (): Promise<void> => {
+    if (mirrorRefresh) return mirrorRefresh;
+    status.textContent = "Refreshing from the channel computer…";
+    mirrorRefresh = api(`/api/channels/${channelId}/files/refresh`, { method: "POST" })
+      .then(async () => { directoryCache = null; await Promise.all([load(), refreshDirectories()]); })
+      .catch((error) => { status.textContent = `Showing cached files · ${(error as Error).message}`; })
+      .finally(() => { mirrorRefresh = null; });
+    return mirrorRefresh;
+  };
   search.oninput = () => { filter = search.value.trim().toLowerCase(); void load(); };
   const sortSelect = h("select", { class: "field h-9 w-auto min-w-28 text-xs", "aria-label": "Sort files", onchange: (event: Event) => { sort = (event.target as HTMLSelectElement).value as typeof sort; void load(); } }, h("option", { value: "name" }, "Name"), h("option", { value: "modified" }, "Modified"), h("option", { value: "size" }, "Size"));
   const newFolder = async (): Promise<void> => { const name = await appPrompt("Folder name"); if (!name) return; try { await api(`/api/channels/${channelId}/files/directories`, { body: { path: currentPath, name } }); directoryCache = null; await load(); } catch (error) { status.textContent = (error as Error).message; } };
@@ -582,8 +592,8 @@ export function renderFiles(container: HTMLElement, channelId: number, initialPa
     h("div", { class: "flex min-h-0 flex-1" },
       h("aside", { class: "hidden min-h-0 w-60 shrink-0 flex-col border-r border-line bg-raised/35 md:flex" }, h("div", { class: "border-b border-line p-3" }, h("div", { class: "eyebrow text-muted" }, "Folders")), tree),
       h("section", { class: "flex min-h-0 min-w-0 flex-1 flex-col" }, h("div", { class: "flex flex-wrap items-center gap-2 border-b border-line bg-raised/25 px-3 py-2" }, crumbs, h("div", { class: "w-full sm:w-48" }, search), sortSelect), main), info));
-  fileBrowserSurfaces.set(channelId, { node: root, reload: async () => { directoryCache = null; await load(); } });
-  clear(container); container.append(root); void load();
+  fileBrowserSurfaces.set(channelId, { node: root, reload: async () => { await load(); void refreshMirror(); } });
+  clear(container); container.append(root); void load(); void refreshMirror();
 }
 
 type ChannelNoteView = { name: string; size: number; modified: number; content?: string };

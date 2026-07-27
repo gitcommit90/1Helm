@@ -140,7 +140,6 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
   const activeSession = (): SectionSession => sessions.get(section)!;
   const activeSection = () => SECTIONS.find((candidate) => candidate.id === section)!;
   const threadKey = (path: string): string => `1helm.cowork.thread.${channelId}.${path || section}`;
-  const draftKey = (path: string): string => `1helm.cowork.draft.${channelId}.${path}`;
 
   const syncCollaborationActivity = (): void => {
     const current = activeSession();
@@ -149,38 +148,37 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
 
   const disposeEditor = (session: SectionSession): void => {
     session.loadVersion += 1;
+    setFocusedSpeechTarget(null);
     session.presenceCleanup?.(); session.presenceCleanup = null;
     session.mounted?.destroy(); session.mounted = null;
     session.collaboration?.destroy(); session.collaboration = null;
     session.view = null;
   };
 
-  const closeEditorForHiddenCowork = (session: SectionSession): void => {
-    session.presenceCleanup?.(); session.presenceCleanup = null;
-    session.mounted?.destroy(); session.mounted = null;
-    session.collaboration?.destroy(); session.collaboration = null;
-    session.view = null;
+  /** y-websocket rooms are ephemeral. A disconnected Y.Doc must never be
+   * reconnected after its server room has been reseeded from the file: Yjs
+   * would merge both histories and duplicate the whole document. Every hidden
+   * editor is destroyed and must reload the authoritative file into a new doc. */
+  const resetEditor = (session: SectionSession): void => {
+    disposeEditor(session);
+    session.loaded = false;
+    session.content = "";
+    session.saved = "";
   };
 
-  /** A Yjs room is intentionally ephemeral server-side. Once its last socket
-   * closes, reopening the old client document would merge two unrelated Yjs
-   * histories and replay a complete file as duplicate text. Destroy the
-   * transport while Cowork is hidden, then reopen from the saved file. */
   const disconnectEditors = (): void => {
-    for (const candidate of sessions.values()) {
-      if (!candidate.collaboration) continue;
-      closeEditorForHiddenCowork(candidate);
-      candidate.loaded = false;
-      candidate.content = "";
-      candidate.saved = "";
-    }
+    for (const candidate of sessions.values()) if (candidate.path) resetEditor(candidate);
   };
 
   const updateSectionNav = (): void => {
     clear(sectionNav);
     for (const item of SECTIONS) sectionNav.append(h("button", {
       class: `cowork-section ${section === item.id ? "is-active" : ""}`, type: "button", "aria-current": section === item.id ? "page" : undefined,
-      onclick: () => { if (section === item.id) return; section = item.id; filter = ""; selectedEntry = null; search.value = ""; coworkContextPending = true; syncCollaborationActivity(); void draw(); },
+      onclick: () => {
+        if (section === item.id) return;
+        resetEditor(activeSession());
+        section = item.id; filter = ""; selectedEntry = null; search.value = ""; coworkContextPending = true; syncCollaborationActivity(); void draw();
+      },
     }, icon(item.icon, 15), item.label));
   };
 
@@ -203,13 +201,12 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
     status.textContent = "Saving…";
     try {
       const result = await api<{ file: EditableFile }>(`/api/channels/${channelId}/files/text`, { method: "PATCH", body: { path: session.path, content: session.content } });
-      session.saved = result.file.content; localStorage.removeItem(draftKey(session.path)); status.textContent = "Saved";
+      session.saved = result.file.content; status.textContent = "Saved";
     } catch (error) { status.textContent = (error as Error).message; }
   };
 
   const markChanged = (session: SectionSession, content: string): void => {
     session.content = content;
-    localStorage.setItem(draftKey(session.path), JSON.stringify({ content, base: session.saved, updated: Date.now() }));
     status.textContent = "Saving…";
     window.setTimeout(() => { if (activeSession() === session && status.textContent === "Saving…") status.textContent = "Saved live"; }, 700);
   };
@@ -237,30 +234,30 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
     const mounted = mountCodeMirror(session.collaboration!, session.path, mode, (content) => markChanged(session, content), () => { void saveFile(); });
     session.mounted = mounted;
     const preview = h("div", { class: "md cowork-markdown-preview hidden" });
-    const editStage = h("div", { class: mode === "docs" ? "cowork-doc-page" : "min-h-0 flex-1 overflow-hidden" }, mounted.node);
+    const editStage = h("div", { class: mode === "docs" ? "cowork-doc-page" : "cowork-notes-editor-frame min-h-0 flex-1 overflow-hidden" }, mounted.node);
     const format = (label: string, prefix: string, suffix = prefix, placeholder = "text") => h("button", { class: "btn-ghost text-xs", type: "button", title: label, onclick: () => mounted.format?.(prefix, suffix, placeholder) }, label);
     const previewButton = mode !== "code" ? h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => {
       session.preview = !session.preview; preview.classList.toggle("hidden", !session.preview); editStage.classList.toggle("hidden", session.preview);
       preview.innerHTML = md(session.mounted?.getContent?.() || session.content || "_This file is empty._");
       (previewButton as HTMLButtonElement).textContent = session.preview ? "Write" : "Preview";
     } }, "Preview") : null;
-    const dictation = mode === "notes" || mode === "docs" ? mountSpeechToTextControl({
+    const speechTarget = {
       value: () => mounted.getContent?.() || "",
-      replace: (content) => mounted.replaceContent?.(content),
+      replace: (content: string) => mounted.replaceContent?.(content),
       focus: () => mounted.focus(),
-    }, `Dictate ${mode === "docs" ? "document" : "note"}`) : null;
-    if (mode === "notes" || mode === "docs") mounted.node.addEventListener("focusin", () => setFocusedSpeechTarget({
-      value: () => mounted.getContent?.() || "",
-      replace: (content) => mounted.replaceContent?.(content),
-      focus: () => mounted.focus(),
-    }));
+    };
+    const dictation = mode === "notes" || mode === "docs" ? mountSpeechToTextControl(speechTarget, `Dictate ${mode === "docs" ? "document" : "note"}`) : null;
+    if (dictation) mounted.node.addEventListener("focusin", () => setFocusedSpeechTarget(speechTarget, dictation));
     const toolbar = commonToolbar(session, `/workspace/${session.path}`,
       mode !== "code" ? format("Heading", "## ", "", "Heading") : null,
       mode !== "code" ? format("Bold", "**", "**") : null,
       mode !== "code" ? format("Italic", "_", "_") : null,
       mode === "docs" ? format("List", "- ", "", "List item") : null,
       dictation, previewButton);
-    return h("div", { class: `flex min-h-0 flex-1 flex-col ${mode === "docs" ? "cowork-doc-canvas" : ""}` }, toolbar, h("div", { class: `cowork-text-stage flex min-h-0 flex-1 flex-col overflow-auto ${mode === "notes" ? "cowork-notes-edit-stage" : ""}` }, editStage, preview));
+    const stage = mode === "notes"
+      ? h("div", { class: "cowork-notes-edit-stage flex min-h-0 flex-1 flex-col overflow-hidden" }, editStage, preview)
+      : h("div", { class: "cowork-text-stage flex min-h-0 flex-1 flex-col overflow-auto" }, editStage, preview);
+    return h("div", { class: `flex min-h-0 flex-1 flex-col ${mode === "docs" ? "cowork-doc-canvas" : ""}` }, toolbar, stage);
   };
 
   const whiteboardEditor = (session: SectionSession): HTMLElement => {
@@ -356,39 +353,30 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
     if (!session.loaded) {
       const openingPath = session.path;
       const loadVersion = ++session.loadVersion;
+      let openingCollaboration: CoworkDocument | null = null;
       workspace.append(h("div", { class: "grid h-full place-items-center text-sm text-muted" }, "Opening file…"));
       try {
         const result = await api<{ file: EditableFile }>(`/api/channels/${channelId}/files/text?path=${encodeURIComponent(openingPath)}`);
         if (session.loadVersion !== loadVersion || session.path !== openingPath) return;
         session.content = result.file.content; session.saved = result.file.content; session.loaded = true;
-        session.collaboration = connectCoworkDocument(channelId, openingPath, me);
+        openingCollaboration = connectCoworkDocument(channelId, openingPath, me);
+        session.collaboration = openingCollaboration;
         syncCollaborationActivity();
         await new Promise<void>((resolve, reject) => {
           const timeout = window.setTimeout(() => reject(new Error("The collaborative editor could not connect.")), 12_000);
-          const synced = (ready: boolean) => { if (!ready) return; window.clearTimeout(timeout); session.collaboration?.provider.off("sync", synced); resolve(); };
-          session.collaboration!.provider.on("sync", synced);
+          const synced = (ready: boolean) => { if (!ready) return; window.clearTimeout(timeout); openingCollaboration?.provider.off("sync", synced); resolve(); };
+          openingCollaboration!.provider.on("sync", synced);
         });
-        if (session.loadVersion !== loadVersion || session.path !== openingPath) { disposeEditor(session); return; }
-        const shared = session.path.endsWith(".whiteboard.json") || session.path.endsWith(".slides.json") ? session.collaboration.scene.get("json") || "" : session.collaboration.text.toString();
-        const storedDraft = localStorage.getItem(draftKey(session.path));
-        let draft: { content: string; base: string | null } | null = null;
-        if (storedDraft) {
-          try {
-            const parsed = JSON.parse(storedDraft) as { content?: unknown; base?: unknown };
-            if (typeof parsed.content === "string") draft = { content: parsed.content, base: typeof parsed.base === "string" ? parsed.base : null };
-          } catch { draft = { content: storedDraft, base: null }; }
-        }
-        if (draft?.content === shared) localStorage.removeItem(draftKey(session.path));
-        else if (draft && draft.content !== shared) {
-          const safeRestore = draft.base !== null && draft.base === shared;
-          const restore = safeRestore || await appConfirm(`Restore unsaved changes to ${visibleName(session.path)}? The file has changed since that draft was captured.`);
-          if (restore) {
-            if (session.path.endsWith(".whiteboard.json") || session.path.endsWith(".slides.json")) session.collaboration.scene.set("json", draft.content);
-            else session.collaboration.doc.transact(() => { session.collaboration!.text.delete(0, session.collaboration!.text.length); session.collaboration!.text.insert(0, draft!.content); });
-            session.content = draft.content;
-          } else localStorage.removeItem(draftKey(session.path));
-        } else session.content = shared || session.content;
+        if (session.loadVersion !== loadVersion || session.path !== openingPath || session.collaboration !== openingCollaboration) return;
+        const shared = openingPath.endsWith(".whiteboard.json") || openingPath.endsWith(".slides.json") ? openingCollaboration.scene.get("json") || "" : openingCollaboration.text.toString();
+        // The synchronized file is authoritative. Keeping a second recovery
+        // copy in localStorage previously resurrected stale text after agents or
+        // collaborators changed the file and was the source of the misleading
+        // “Restore unsaved changes?” loop. The server flushes live Yjs changes
+        // on its debounce and again when the last editor disconnects.
+        session.content = shared || session.content;
       } catch (error) {
+        if (session.loadVersion !== loadVersion || session.path !== openingPath) return;
         disposeEditor(session); clear(workspace); workspace.append(h("div", { class: "grid h-full place-items-center p-8 text-center" }, h("div", {}, h("span", { class: "text-accent" }, fileIcon({ path: session.path, name: visibleName(session.path), size: 0, modified: 0, kind: "file" }, 32)), h("h3", { class: "mt-3 font-semibold text-fg" }, visibleName(session.path)), h("p", { class: "mt-2 text-sm text-muted" }, (error as Error).message || "File type not supported to view.")))); return;
       }
       clear(workspace);
@@ -400,8 +388,10 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
 
   const openPath = async (path: string): Promise<void> => {
     const normalized = path.replace(/^\/?workspace\/?/, "").replace(/^\/+/, "");
-    const nextSection = sectionForPath(normalized); section = nextSection; const session = activeSession();
-    if (session.path !== normalized) { disposeEditor(session); session.path = normalized; session.loaded = false; session.content = ""; session.saved = ""; session.preview = false; session.activeSlide = 0; }
+    const nextSection = sectionForPath(normalized);
+    if (section !== nextSection) resetEditor(activeSession());
+    section = nextSection; const session = activeSession();
+    if (session.path !== normalized) { resetEditor(session); session.path = normalized; session.preview = false; session.activeSlide = 0; }
     session.folder = normalized.split("/").slice(0, -1).join("/") || activeSection().folder; selectedEntry = { path: normalized, name: visibleName(normalized), kind: "file", size: 0, modified: 0 };
     chatRootId = Number(localStorage.getItem(threadKey(normalized)) || 0); coworkContextPending = true; syncCollaborationActivity(); await draw();
   };
@@ -460,7 +450,7 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
     const input = h("textarea", { class: "min-h-20 w-full resize-none bg-transparent p-2 text-sm text-fg outline-none placeholder:text-faint", rows: 3, placeholder: session.path ? `Ask @${channel.agent?.name || "agent"} about this file…` : "Open a file to give the agent its path…", disabled: !session.path, value: agentDrafts.get(session.path) || "" }) as HTMLTextAreaElement;
     const dictate = mountSpeechToTextControl(input, "Dictate Cowork agent request");
     input.oninput = () => agentDrafts.set(session.path, input.value);
-    input.onfocus = () => setFocusedSpeechTarget(input);
+    input.onfocus = () => setFocusedSpeechTarget(input, dictate);
     const send = async (): Promise<void> => {
       const message = input.value.trim(); if (!message || !session.path) return;
       input.disabled = true;

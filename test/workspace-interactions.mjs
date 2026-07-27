@@ -29,7 +29,8 @@ test("speech-to-text is explicit, graceful, and combination-safe", () => {
   assert.match(app, /data(?:set)?: \{ listeningIndicator: "" \}/, "dictation exposes a subtle global listening indicator");
   assert.match(app, /Speech-to-text is not available in this browser/, "unsupported browsers get a useful explanation");
   assert.match(app, /event\.key === "Alt" && !event\.repeat && !event\.ctrlKey && !event\.metaKey && !event\.shiftKey/, "only a bare Option\/Alt keydown starts tap detection");
-  assert.match(app, /if \(altTapOnly\) altTapOnly = false/, "any combined keystroke cancels the single-tap shortcut");
+  assert.match(app, /if \(altTapOnly\) \{ altTapOnly = false; clearAltTapFallback\(\); \}/, "any combined keystroke cancels the single-tap shortcut and its swallowed-keyup fallback");
+  assert.match(app, /toggleSpeechToText\(input, focused\?\.button \|\| undefined\)/, "the bare Option\/Alt shortcut carries Cowork's explicit mic button into speech recognition");
   assert.match(desktop, /permission !== "media"/, "the native shell keeps non-media permission requests denied");
   assert.match(desktop, /mediaTypes\.includes\("audio"\) && !mediaTypes\.includes\("video"\)/, "the native permission exception is microphone-only");
   assert.match(desktop, /askForMediaAccess\("microphone"\)/, "macOS uses its native microphone approval flow");
