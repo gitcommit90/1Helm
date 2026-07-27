@@ -225,7 +225,7 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   assert.ok(Math.abs(mobile.shellBottom - mobile.viewport) <= 1 && mobile.cssHeight.endsWith("px"), JSON.stringify(mobile));
   await page.click('[aria-label="Open navigation"]');
   await page.waitForSelector('[data-sidebar="mobile"] [aria-label="Open settings"]');
-  await page.click('[data-sidebar="mobile"] [aria-label="Open settings"]');
+  await page.evaluate(() => document.querySelector('[data-sidebar="mobile"] [aria-label="Open settings"]')?.click());
   await page.waitForSelector('[aria-label="Settings sections"]');
   const settings = await page.$eval('[aria-label="Settings sections"]', (nav) => ({ height: nav.getBoundingClientRect().height, width: nav.getBoundingClientRect().width, scrolls: nav.scrollWidth > nav.clientWidth }));
   assert.ok(settings.height < 90 && settings.width >= 380 && settings.scrolls, JSON.stringify(settings));
