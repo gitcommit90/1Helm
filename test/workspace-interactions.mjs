@@ -9,12 +9,16 @@ const settings = await readFile(resolve(root, "src/client/settings.ts"), "utf8")
 const routing = await readFile(resolve(root, "src/client/routing.ts"), "utf8");
 const desktop = await readFile(resolve(root, "desktop/main.cjs"), "utf8");
 const server = await readFile(resolve(root, "src/server/index.ts"), "utf8");
+const serviceWorker = await readFile(resolve(root, "public/sw.js"), "utf8");
 
 test("workspace sidebar interactions have durable, member-scoped contracts", () => {
   assert.match(app, /data(?:set)?:? \{ sidebarFavorites: "" \}/, "favorites have their own sidebar section");
   assert.match(app, /\/api\/channels\/\$\{channel\.id\}\/favorite/, "the current channel favorite action calls its typed integration endpoint");
   assert.match(app, /"\/api\/human-channels"/, "human-only channel creation uses its dedicated endpoint");
   assert.match(app, /group_unread_channels_first/, "the sidebar loads the per-user unread grouping preference");
+  assert.match(app, /desktop_sidebar_collapsed/, "desktop sidebar collapse is a profile-bound UI preference");
+  assert.match(app, /dataset: \{ sidebar: drawer \? "mobile" : "desktop", sidebarCollapsed: collapsed \? "true" : "false" \}/, "desktop collapse state is visible for behavioral and accessibility checks");
+  assert.match(app, /title: "Expand navigation"[\s\S]*title: "Collapse navigation"/, "the compact desktop rail always retains an explicit expand control");
   assert.match(settings, /key: "group_unread_channels_first"/, "the setting persists through user UI state");
   assert.match(app, /const members = Array\.isArray\(channel\?\.members\) \? channel\.members : \[\]/, "human suggestions come only from current-channel members");
   assert.match(app, /channel\?\.kind === "channel" \? \[resident, skipper\] : \[\]/, "agent channels suggest their resident before Skipper");
@@ -56,6 +60,8 @@ test("profile, naming, routing, and usage language match the visible product con
 test("service-worker updates never reload an active editor or conversation", () => {
   assert.doesNotMatch(app, /controllerchange[\s\S]{0,300}location\.reload\(/, "service-worker takeover must not reload a live draft");
   assert.match(app, /destroy an editor draft/, "the no-reload update contract is documented at the decision point");
+  assert.match(serviceWorker, /new Response\("1Helm is offline\.", \{ status: 503/, "offline navigation always resolves to a valid Response");
+  assert.match(serviceWorker, /catch\(\(\) => cached \|\| Response\.error\(\)\)/, "an uncached failed asset request never resolves FetchEvent with undefined");
 });
 
 test("Texts routes fail closed outside the Captain's private #main", () => {

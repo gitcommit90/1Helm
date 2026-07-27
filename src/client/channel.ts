@@ -458,6 +458,7 @@ function coworkPath(path: string): { section: "notes" | "whiteboards" | "code" |
 
 type FileBrowserSurface = { node: HTMLElement; reload: () => Promise<void> };
 const fileBrowserSurfaces = new Map<number, FileBrowserSurface>();
+const CORE_WORKSPACE_FOLDERS = ["notes", "whiteboards", "code", "docs", "presentations"] as const;
 
 /** Traditional two-pane browser over the channel's one authoritative /workspace. */
 export function renderFiles(container: HTMLElement, channelId: number, initialPath = "", onOpenCowork?: (path: string) => void, preserveExisting = false): void {
@@ -481,6 +482,8 @@ export function renderFiles(container: HTMLElement, channelId: number, initialPa
   const crumbs = h("nav", { class: "flex min-w-0 flex-1 items-center gap-1 overflow-x-auto font-mono text-xs", "aria-label": "File breadcrumbs", dataset: { fileBreadcrumbs: "" } });
   const fileInput = h("input", { type: "file", multiple: true, class: "hidden" }) as HTMLInputElement;
   let directoryCache: ChannelFile[] | null = null;
+  let rootEntries: ChannelFile[] = [];
+  let otherExpanded = false;
   let mirrorRefresh: Promise<void> | null = null;
   const open = (entry: ChannelFile): void => {
     if (entry.kind === "directory") { currentPath = entry.path; selected = null; void load(); return; }
@@ -510,14 +513,45 @@ export function renderFiles(container: HTMLElement, channelId: number, initialPa
   };
   const drawTree = (directories: ChannelFile[]): void => {
     clear(tree);
-    const all = [{ path: "", name: "workspace", size: 0, modified: 0, kind: "directory" as const }, ...directories];
-    for (const directory of all) {
-      const depth = directory.path ? directory.path.split("/").length : 0;
+    const core = new Set<string>(CORE_WORKSPACE_FOLDERS);
+    const rootName = (path: string): string => path.split("/")[0] || "";
+    const appendDirectory = (directory: ChannelFile, depth: number, group: "workspace" | "core" | "other"): void => {
       tree.append(h("button", {
         class: `mb-0.5 flex min-h-9 w-full items-center gap-2 rounded-md pr-2 text-left text-xs ${currentPath === directory.path ? "bg-accent-soft text-fg" : "text-muted hover:bg-hover hover:text-fg"}`,
-        style: `padding-left:${8 + depth * 14}px`, type: "button", onclick: () => { currentPath = directory.path; selected = null; void load(); },
+        style: `padding-left:${8 + depth * 14}px`, type: "button", dataset: { fileTreePath: directory.path || "/", fileTreeGroup: group },
+        onclick: () => { currentPath = directory.path; selected = null; void load(); },
       }, h("span", { class: currentPath === directory.path ? "text-accent" : "text-faint" }, icon(currentPath === directory.path ? "folderOpen" : "folder", 15)), h("span", { class: "truncate" }, directory.name)));
+    };
+    appendDirectory({ path: "", name: "workspace", size: 0, modified: 0, kind: "directory" }, 0, "workspace");
+    for (const folder of CORE_WORKSPACE_FOLDERS) {
+      const entry = directories.find((directory) => directory.path === folder)
+        || { path: folder, name: folder, size: 0, modified: 0, kind: "directory" as const };
+      appendDirectory(entry, 1, "core");
     }
+    for (const folder of CORE_WORKSPACE_FOLDERS) {
+      for (const child of directories.filter((directory) => directory.path.startsWith(`${folder}/`))) {
+        appendDirectory(child, child.path.split("/").length, "core");
+      }
+    }
+    const otherDirectories = directories.filter((directory) => !core.has(rootName(directory.path)));
+    const otherRootFiles = rootEntries.filter((entry) => entry.kind === "file" && !core.has(rootName(entry.path)));
+    const otherActive = Boolean(currentPath && !core.has(rootName(currentPath)));
+    if (otherActive) otherExpanded = true;
+    tree.append(h("button", {
+      class: `mb-0.5 mt-2 flex min-h-9 w-full items-center gap-2 rounded-md px-2 text-left text-xs ${otherActive ? "bg-accent-soft text-fg" : "text-muted hover:bg-hover hover:text-fg"}`,
+      type: "button", dataset: { fileOtherToggle: "" }, "aria-expanded": String(otherExpanded),
+      onclick: () => { otherExpanded = !otherExpanded; drawTree(directories); },
+    }, h("span", { class: `text-[10px] transition-transform ${otherExpanded ? "rotate-90" : ""}` }, "›"), h("span", { class: "text-faint" }, icon(otherExpanded ? "folderOpen" : "folder", 15)), h("span", { class: "truncate font-medium" }, "Other")));
+    if (!otherExpanded) return;
+    for (const directory of otherDirectories) appendDirectory(directory, directory.path.split("/").length, "other");
+    for (const file of otherRootFiles) {
+      tree.append(h("button", {
+        class: `mb-0.5 flex min-h-9 w-full items-center gap-2 rounded-md pr-2 text-left text-xs ${selected?.path === file.path ? "bg-accent-soft text-fg" : "text-muted hover:bg-hover hover:text-fg"}`,
+        style: "padding-left:22px", type: "button", dataset: { fileTreePath: file.path, fileTreeGroup: "other" },
+        onclick: () => { selected = file; redrawSelection(); }, ondblclick: () => open(file),
+      }, h("span", { class: "text-faint" }, workspaceIcon(file, 15)), h("span", { class: "truncate" }, file.name)));
+    }
+    if (!otherDirectories.length && !otherRootFiles.length) tree.append(h("p", { class: "px-6 py-2 text-[11px] text-faint", dataset: { fileOtherEmpty: "" } }, "No other files"));
   };
   const drawInfo = (): void => {
     clear(info);
@@ -534,7 +568,8 @@ export function renderFiles(container: HTMLElement, channelId: number, initialPa
         h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void mutate("rename"); } }, "Rename"),
         h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void mutate("move"); } }, "Move"),
         h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void mutate("duplicate"); } }, "Duplicate"),
-        selected.kind === "file" ? h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void downloadAuthenticatedFile(`/api/channels/${channelId}/files/content?path=${encodeURIComponent(selected!.path)}&download=1`, selected!.name); } }, "Download") : null,
+        selected.kind === "file" ? h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void downloadAuthenticatedFile(`/api/channels/${channelId}/files/content?path=${encodeURIComponent(selected!.path)}&download=1`, selected!.name).catch((error) => appAlert((error as Error).message)); } }, "Download") : null,
+        selected.kind === "file" && /\.md$/i.test(selected.name) ? h("button", { class: "btn-subtle text-xs", type: "button", dataset: { downloadDocx: "" }, onclick: () => { void downloadAuthenticatedFile(`/api/channels/${channelId}/files/docx?path=${encodeURIComponent(selected!.path)}`, selected!.name.replace(/\.md$/i, ".docx")).catch((error) => appAlert(`DOCX download failed: ${(error as Error).message}`)); } }, "Download - DOCX") : null,
         h("button", { class: "btn-ghost text-xs text-danger", type: "button", onclick: () => { void mutate("delete"); } }, "Delete")));
   };
   const refreshDirectories = async (): Promise<void> => {
@@ -552,6 +587,7 @@ export function renderFiles(container: HTMLElement, channelId: number, initialPa
     try {
       const result = await api<{ path?: string; files: ChannelFile[] }>(`/api/channels/${channelId}/files?path=${encodeURIComponent(requestedPath)}`);
       if (requestedPath !== currentPath) return;
+      if (!requestedPath) rootEntries = result.files;
       currentPath = result.path ?? requestedPath; heading.textContent = `/workspace${currentPath ? `/${currentPath}` : ""}`; main.dataset.fileDirectory = currentPath || "/";
       if (directoryCache) drawTree(directoryCache);
       else void refreshDirectories();

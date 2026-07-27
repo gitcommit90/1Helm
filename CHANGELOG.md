@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Cowork new-file prompts now start blank. Names with an explicit extension are
+  preserved, while extensionless names receive the active section's `.md`,
+  `.whiteboard.json`, `.txt`, or `.slides.json` default.
+- Presentation canvases anchor at the top of their scrollable stage so the
+  Excalidraw hamburger menu remains fully reachable, including when the canvas
+  is taller than the available area.
+- Cowork Code uses the normal light surface with readable dark text in light
+  mode while retaining its navy editor treatment in dark mode.
+- Offline shell fallbacks always resolve service-worker requests with a valid
+  response instead of producing a rejected FetchEvent conversion error.
 - Cowork's bare Option/Alt shortcut now carries the mic control belonging to
   the focused Notes, Docs, or agent input and uses a capture-phase fallback
   when the macOS desktop shell swallows the corresponding keyup.
@@ -24,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   immediately. One explicit background refresh coalesces the expensive channel
   computer export and repaints the current listing when it completes.
 
+### Added
+
+- Files now keeps `/workspace` and the five Cowork folders first in its visual
+  navigation rail, with all remaining root files and folders grouped under an
+  expandable **Other** disclosure without changing the underlying filesystem.
+- Selecting a Markdown file in Files exposes **Download - DOCX**, backed by an
+  authenticated, contained Office Open XML export.
+- Desktop workspace navigation can collapse to a compact channel-icon rail and
+  expand again. The profile-bound preference persists, while the existing
+  mobile drawer remains unchanged.
+
 ### Tests
 
 - Browser coverage toggles both Cowork editor and agent dictation through bare
@@ -33,6 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A fake Apple channel computer with an intentionally slow export proves cached
   Files reads stay responsive, simultaneous refreshes coalesce, and guest-only
   files appear after the background refresh.
+- Browser and server coverage verify blank Cowork naming, default and explicit
+  extensions, presentation menu reachability, light Code contrast, Files
+  grouping, real DOCX ZIP contents, and persistent desktop-only sidebar collapse.
 
 ## [0.0.20] - 2026-07-27
 

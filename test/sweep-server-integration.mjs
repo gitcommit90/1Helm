@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -160,6 +160,19 @@ test("server sweep seams stay scoped, human-only, Unicode-safe, and least-arsena
     assert.equal((await api(base, `/api/channels/${channelId}/files/refresh`, crewToken, { method: "POST" })).status, 403);
     const opened = await fetch(`${base}/api/channels/${channelId}/files/content?path=briefs%2Fbrief.txt`, { headers: { authorization: `Bearer ${token}` } });
     assert.equal(await opened.text(), "bounded file");
+    assert.equal((await api(base, `/api/channels/${channelId}/files/entries`, token, { method: "POST", body: { parent: "briefs", name: "launch.md", content: "# Launch\n\n**Ready** for review.\n\n- First step" } })).status, 201);
+    const docx = await fetch(`${base}/api/channels/${channelId}/files/docx?path=briefs%2Flaunch.md`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(docx.status, 200);
+    assert.equal(docx.headers.get("content-type"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    assert.match(docx.headers.get("content-disposition") || "", /attachment; filename\*=UTF-8''launch\.docx/);
+    const docxBytes = Buffer.from(await docx.arrayBuffer());
+    assert.equal(docxBytes.subarray(0, 2).toString(), "PK", "DOCX is an Office Open XML ZIP, not renamed Markdown");
+    const docxPath = join(dataDir, "launch.docx"); writeFileSync(docxPath, docxBytes);
+    const documentXml = spawnSync("unzip", ["-p", docxPath, "word/document.xml"], { encoding: "utf8" });
+    assert.equal(documentXml.status, 0, documentXml.stderr);
+    assert.match(documentXml.stdout, /Launch/); assert.match(documentXml.stdout, /Ready/); assert.match(documentXml.stdout, /First step/);
+    assert.equal((await api(base, `/api/channels/${channelId}/files/docx?path=briefs%2Fbrief.txt`, token)).status, 400);
+    assert.equal((await api(base, `/api/channels/${channelId}/files/docx?path=briefs%2Flaunch.md`, crewToken)).status, 403);
     assert.equal((await api(base, `/api/channels/${channelId}/files/directories`, token, { method: "POST", body: { path: "../", name: "escape" } })).status, 400);
 
     const catalog = await api(base, "/api/skills", token);

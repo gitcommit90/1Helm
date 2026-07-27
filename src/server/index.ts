@@ -73,6 +73,7 @@ import { stopAllConnectors } from "./connectors.ts";
 import { ensureImageGenerationSkill, listSkills, listTemplates, provisionSkill, skillsForAgent, setImageGenerationEnabled, imageGenerationAvailable, imageGenerationEnabledIds } from "./skills.ts";
 import { inspectCatalogSkill, installCatalogSkill, refreshSkillCatalog, searchSkillCatalog, skillCatalogStatus } from "./skill-catalog.ts";
 import { auditEvents, verifyAuditChain } from "./audit.ts";
+import { markdownToDocx } from "./docx.ts";
 import { configurePhoton, continuePhotonConversation, deliverPhotonEvent, photonConversation, photonConversations, photonStatus, registerPhotonDispatcher, startPhotonConnector, stopPhotonConnector } from "./photon.ts";
 import { photonSetupStatus, startPhotonSetup } from "./photon-auth.ts";
 import { completeGmailConnection, gmailConnectionStatus, saveGmailOAuthClient, startGmailConnection } from "./gmail.ts";
@@ -1531,6 +1532,26 @@ const server = createServer(async (req, res) => {
         const path = m === "GET" ? String(url.searchParams.get("path") || "") : String(b?.path || "");
         if (m === "GET") return json(res, 200, { file: readWorkspaceTextFile(channelId, path) });
         return json(res, 200, { file: saveWorkspaceTextFile(channelId, path, String(b?.content || "")) });
+      } catch (error) { return json(res, /not found/i.test((error as Error).message) ? 404 : 400, { error: (error as Error).message }); }
+    }
+    const worldDocx = p.match(/^\/api\/channels\/(\d+)\/files\/docx$/);
+    if (worldDocx && m === "GET") {
+      const channelId = Number(worldDocx[1]);
+      if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
+      if (!q1("SELECT 1 FROM channels WHERE id=? AND kind='channel'", channelId)) return json(res, 404, { error: "Agent-channel file not found." });
+      try {
+        const path = String(url.searchParams.get("path") || "");
+        if (!/\.md$/i.test(path)) return json(res, 400, { error: "Choose a Markdown (.md) file to download as DOCX." });
+        const file = readWorkspaceTextFile(channelId, path);
+        const name = file.name.replace(/\.md$/i, ".docx");
+        const output = await markdownToDocx(file.content);
+        res.writeHead(200, {
+          "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+          "content-length": output.byteLength,
+          ...SECURITY_HEADERS,
+        });
+        return res.end(output);
       } catch (error) { return json(res, /not found/i.test((error as Error).message) ? 404 : 400, { error: (error as Error).message }); }
     }
     const coworkPresenceRoute = p.match(/^\/api\/channels\/(\d+)\/cowork\/presence$/);

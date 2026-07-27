@@ -26,12 +26,12 @@ type SectionSession = {
 };
 type CoworkSurface = { node: HTMLElement; openPath: (path: string) => Promise<void>; reload: () => Promise<void>; setOpenThread: (callback: (root: Message) => void) => void; setActive: (active: boolean) => void };
 
-const SECTIONS: Array<{ id: CoworkSection; label: string; folder: string; icon: string; defaultName: string }> = [
-  { id: "notes", label: "Notes", folder: "notes", icon: "fileText", defaultName: "untitled.md" },
-  { id: "whiteboards", label: "Whiteboard", folder: "whiteboards", icon: "board", defaultName: "untitled.whiteboard.json" },
-  { id: "code", label: "Code", folder: "code", icon: "code", defaultName: "untitled.txt" },
-  { id: "docs", label: "Docs", folder: "docs", icon: "fileText", defaultName: "untitled-document.md" },
-  { id: "presentations", label: "Presentations", folder: "presentations", icon: "presentation", defaultName: "untitled.slides.json" },
+const SECTIONS: Array<{ id: CoworkSection; label: string; folder: string; icon: string; defaultExtension: string }> = [
+  { id: "notes", label: "Notes", folder: "notes", icon: "fileText", defaultExtension: ".md" },
+  { id: "whiteboards", label: "Whiteboard", folder: "whiteboards", icon: "board", defaultExtension: ".whiteboard.json" },
+  { id: "code", label: "Code", folder: "code", icon: "code", defaultExtension: ".txt" },
+  { id: "docs", label: "Docs", folder: "docs", icon: "fileText", defaultExtension: ".md" },
+  { id: "presentations", label: "Presentations", folder: "presentations", icon: "presentation", defaultExtension: ".slides.json" },
 ];
 
 const surfaces = new Map<number, CoworkSurface>();
@@ -474,7 +474,19 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
   agentToggle.onclick = () => { agentOpen = !agentOpen; if (agentOpen) { focusAgentOnDraw = true; coworkContextPending = true; } drawAgent(); };
   search.oninput = () => { filter = search.value.trim().toLowerCase(); void loadFiles(); };
   const createFolder = async (): Promise<void> => { const name = await appPrompt("Folder name"); if (!name) return; try { await api(`/api/channels/${channelId}/files/directories`, { body: { path: activeSession().folder, name } }); await loadFiles(); } catch (error) { status.textContent = (error as Error).message; } };
-  const createFile = async (): Promise<void> => { const item = activeSection(); const name = await appPrompt(`New ${item.label.toLowerCase()} file`, item.defaultName); if (!name) return; try { const result = await api<{ file: ChannelFile }>(`/api/channels/${channelId}/files/entries`, { body: { parent: activeSession().folder, name, content: starterContent(section) } }); await openPath(result.file.path); } catch (error) { status.textContent = (error as Error).message; } };
+  const createFile = async (): Promise<void> => {
+    const item = activeSection();
+    const input = await appPrompt(`New ${item.label.toLowerCase()} file`);
+    const requested = input?.trim() || "";
+    if (!requested) return;
+    // A supplied suffix is deliberate, including compound formats such as
+    // .slides.json. Only truly extensionless names receive the section default.
+    const name = /\.[^./]+(?:\.[^./]+)*$/.test(requested) ? requested : `${requested}${item.defaultExtension}`;
+    try {
+      const result = await api<{ file: ChannelFile }>(`/api/channels/${channelId}/files/entries`, { body: { parent: activeSession().folder, name, content: starterContent(section) } });
+      await openPath(result.file.path);
+    } catch (error) { status.textContent = (error as Error).message; }
+  };
 
   const draw = async (): Promise<void> => { updateSectionNav(); drawBreadcrumb(); await Promise.all([loadFiles(), drawWorkspace()]); drawAgent(); };
   const rail = h("aside", { class: "cowork-files flex min-h-0 w-[min(18rem,28vw)] shrink-0 flex-col border-r border-line bg-surface" }, h("div", { class: "space-y-2 border-b border-line p-3" }, h("div", { class: "flex items-center gap-2" }, breadcrumb, h("button", { class: "grid h-8 w-8 shrink-0 place-items-center rounded text-muted hover:bg-hover", title: "New folder", onclick: () => { void createFolder(); } }, icon("folder", 14)), h("button", { class: "grid h-8 w-8 shrink-0 place-items-center rounded bg-accent text-white", title: "New file", onclick: () => { void createFile(); } }, icon("plus", 14))), search), fileList, fileActions, h("div", { class: "min-h-9 border-t border-line px-3 py-2" }, status));

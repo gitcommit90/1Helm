@@ -40,6 +40,7 @@ type State = {
   globalThreadsUnreadOnly: boolean;
   /** Profile-bound sidebar preference loaded from /api/me/ui-state. */
   groupUnreadChannelsFirst: boolean;
+  desktopSidebarCollapsed: boolean;
   photonConfigured: boolean;
   selectedTextConversationId: number | null;
 };
@@ -53,6 +54,7 @@ export const S = {
   globalThreadsOpen: false,
   globalThreadsUnreadOnly: false,
   groupUnreadChannelsFirst: false,
+  desktopSidebarCollapsed: false,
   photonConfigured: false,
   selectedTextConversationId: null,
   threadUsage: { input_tokens: 0, output_tokens: 0 },
@@ -128,6 +130,7 @@ async function loadUiState(): Promise<void> {
     const result = await api<{ state: Record<string, unknown> }>("/api/me/ui-state");
     hydrateNotificationPreferences(result.state.notification_preferences);
     S.groupUnreadChannelsFirst = result.state.group_unread_channels_first === true;
+    S.desktopSidebarCollapsed = result.state.desktop_sidebar_collapsed === true;
     const next: Record<number, ChannelUiView> = {};
     for (const [key, value] of Object.entries(result.state || {})) {
       const match = /^channel_view:(\d+)$/.exec(key);
@@ -876,13 +879,14 @@ function mobileNavigation(): HTMLElement {
 }
 
 function sidebar(drawer = false): HTMLElement {
+  const collapsed = !drawer && S.desktopSidebarCollapsed;
   const chan = (c: Channel): HTMLElement => {
     const active = c.id === S.channelId && !S.globalThreadsOpen;
     const unread = Number(c.unread) > 0;
     const working = c.agent?.status === "working";
     const labels = [c.name, working ? "working" : "", unread ? "unread" : ""].filter(Boolean);
     // Name carries the iOS-style unread badge on its upper-right corner (on the text, not the row end).
-    const name = h("span", { class: "channel-nav-label min-w-0 flex-1" },
+    const name = collapsed ? null : h("span", { class: "channel-nav-label min-w-0 flex-1" },
       h("span", { class: "channel-nav-name truncate" }, c.name),
       unread && h("span", { class: "channel-unread-badge", "aria-hidden": "true" }),
     );
@@ -894,11 +898,11 @@ function sidebar(drawer = false): HTMLElement {
       onclick: () => { closeMobileMenu(); void openChannel(c.id); },
     },
       c.kind === "dm"
-        ? h("span", { class: "relative grid h-4 w-4 shrink-0 place-items-center rounded-sm border border-white/10 text-[9px] font-semibold", style: `background:${color(c.name)};color:#f4f7fb` }, initials(c.name))
-        : h("span", { class: "shrink-0 text-sidebar-muted" }, icon("hash", 14)),
+        ? h("span", { class: "relative grid h-4 w-4 shrink-0 place-items-center rounded-sm border border-white/10 text-[9px] font-semibold", style: `background:${color(c.name)};color:#f4f7fb` }, initials(c.name), collapsed && (unread || working) ? h("span", { class: `sidebar-compact-status ${working ? "is-working" : ""}`, "aria-hidden": "true" }) : null)
+        : h("span", { class: "relative shrink-0 text-sidebar-muted" }, icon("hash", 14), collapsed && (unread || working) ? h("span", { class: `sidebar-compact-status ${working ? "is-working" : ""}`, "aria-hidden": "true" }) : null),
       name,
       // Live agent turn — three bouncing dots after the name.
-      working && h("span", {
+      working && !collapsed && h("span", {
         class: "channel-working-dots shrink-0",
         title: "Agent working",
         "aria-hidden": "true",
@@ -922,16 +926,22 @@ function sidebar(drawer = false): HTMLElement {
   return h("aside", {
     class: drawer
       ? "mobile-drawer fixed inset-y-0 left-0 z-10 flex w-[min(86vw,320px)] flex-col border-r border-white/5 bg-sidebar text-sidebar-fg shadow-2xl"
-      : "workspace-sidebar hidden w-64 shrink-0 flex-col border-r border-white/5 bg-sidebar text-sidebar-fg md:flex",
-    dataset: { sidebar: drawer ? "mobile" : "desktop" }, role: drawer ? "dialog" : undefined,
+      : `workspace-sidebar hidden ${collapsed ? "workspace-sidebar-collapsed w-16" : "w-64"} shrink-0 flex-col border-r border-white/5 bg-sidebar text-sidebar-fg md:flex`,
+    dataset: { sidebar: drawer ? "mobile" : "desktop", sidebarCollapsed: collapsed ? "true" : "false" }, role: drawer ? "dialog" : undefined,
     "aria-modal": drawer ? "true" : undefined, "aria-label": drawer ? "Workspace navigation" : undefined,
   },
-    h("div", { class: "flex items-center justify-between border-b border-white/10 px-4 py-3.5" },
-      h("div", { class: "flex min-w-0 flex-1 items-start gap-2.5 pr-1 font-semibold text-white" }, h("span", { class: `logo-plate h-7 w-7 shrink-0 rounded-md${S.workspace?.photo_url ? " logo-plate-photo" : ""}` }, h("img", { class: `logo-asset${S.workspace?.photo_url ? " logo-asset-fill" : ""}`, src: workspacePhotoSrc(S.workspace?.photo_url, "sidebar"), alt: S.workspace?.name || "1Helm" })), h("span", { class: "min-w-0 whitespace-normal break-words text-[15px] leading-5 tracking-[-0.01em]", dataset: { workspaceName: "" } }, S.workspace?.name || "1Helm")),
-      h("div", { class: "flex items-center gap-1" },
-        h("button", { class: "grid h-9 w-9 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: theme === "light" ? "Switch to dark" : "Switch to light", onclick: toggleTheme }, icon(theme === "light" ? "moon" : "sun")),
-        drawer ? h("button", { class: "grid h-11 w-11 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: "Close navigation", "aria-label": "Close navigation", dataset: { drawerClose: "" }, onclick: closeMobileMenu }, icon("x", 20)) : null)),
-    h("div", { class: "flex-1 space-y-5 overflow-y-auto px-2 py-3", dataset: { continuityKey: `sidebar-${drawer ? "mobile" : "desktop"}-scroll` } },
+    collapsed
+      ? h("div", { class: "flex flex-col items-center gap-1 border-b border-white/10 px-2 py-2" },
+          h("span", { class: `logo-plate h-7 w-7 shrink-0 rounded-md${S.workspace?.photo_url ? " logo-plate-photo" : ""}`, title: S.workspace?.name || "1Helm" }, h("img", { class: `logo-asset${S.workspace?.photo_url ? " logo-asset-fill" : ""}`, src: workspacePhotoSrc(S.workspace?.photo_url, "sidebar"), alt: S.workspace?.name || "1Helm" })),
+          h("button", { class: "grid h-8 w-8 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: "Expand navigation", "aria-label": "Expand navigation", dataset: { sidebarCollapseToggle: "" }, onclick: toggleDesktopSidebar }, h("span", { class: "text-lg leading-none" }, "›")))
+      : h("div", { class: "flex items-center justify-between border-b border-white/10 px-4 py-3.5" },
+          h("div", { class: "flex min-w-0 flex-1 items-start gap-2.5 pr-1 font-semibold text-white" }, h("span", { class: `logo-plate h-7 w-7 shrink-0 rounded-md${S.workspace?.photo_url ? " logo-plate-photo" : ""}` }, h("img", { class: `logo-asset${S.workspace?.photo_url ? " logo-asset-fill" : ""}`, src: workspacePhotoSrc(S.workspace?.photo_url, "sidebar"), alt: S.workspace?.name || "1Helm" })), h("span", { class: "min-w-0 whitespace-normal break-words text-[15px] leading-5 tracking-[-0.01em]", dataset: { workspaceName: "" } }, S.workspace?.name || "1Helm")),
+          h("div", { class: "flex items-center gap-1" },
+            h("button", { class: "grid h-9 w-9 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: theme === "light" ? "Switch to dark" : "Switch to light", onclick: toggleTheme }, icon(theme === "light" ? "moon" : "sun")),
+            drawer
+              ? h("button", { class: "grid h-11 w-11 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: "Close navigation", "aria-label": "Close navigation", dataset: { drawerClose: "" }, onclick: closeMobileMenu }, icon("x", 20))
+              : h("button", { class: "grid h-9 w-9 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: "Collapse navigation", "aria-label": "Collapse navigation", dataset: { sidebarCollapseToggle: "" }, onclick: toggleDesktopSidebar }, icon("chevronLeft", 18)))),
+    h("div", { class: `flex-1 ${collapsed ? "space-y-2" : "space-y-5"} overflow-y-auto px-2 py-3`, dataset: { continuityKey: `sidebar-${drawer ? "mobile" : "desktop"}-scroll` } },
       allChannels.length ? h("div", { class: "px-1 pb-1" },
         h("button", {
           type: "button",
@@ -942,24 +952,30 @@ function sidebar(drawer = false): HTMLElement {
           onclick: () => { closeMobileMenu(); openGlobalThreads(); },
         },
           h("span", { class: "shrink-0 text-sidebar-muted" }, icon("thread", 14)),
-          h("span", { class: "flex-1 truncate text-left" }, "Threads"))) : null,
-      favorites.length ? h("div", { dataset: { sidebarFavorites: "" } }, h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Favorites"), h("div", { class: "space-y-px" }, ...favorites.map(chan))) : null,
-      unreads.length ? h("div", { dataset: { sidebarUnreads: "" } }, h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Unreads"), h("div", { class: "space-y-px" }, ...unreads.map(chan))) : null,
-      channels.length || S.me.is_admin ? h("div", {}, sbSection("Agent channels", () => newChannel()), h("div", { class: "space-y-px" }, ...channels.map(chan))) : null,
-      archived.length ? h("div", {}, h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Archived"), h("div", { class: "space-y-px opacity-65" }, ...archived.map(chan))) : null,
-      h("div", {}, sbSection("Human channels", () => newHumanChannel()), h("div", { class: "space-y-px" }, ...human.map(chan), human.length === 0 && h("p", { class: "px-2 py-1 text-[13px] text-sidebar-muted" }, "No human channels yet"))),
-      h("div", {}, sbSection("Direct messages", () => newDM()), h("div", { class: "space-y-px" }, ...dms.map(chan), dms.length === 0 && h("p", { class: "px-2 py-1 text-[13px] text-sidebar-muted" }, "No conversations yet")))),
+          collapsed ? null : h("span", { class: "flex-1 truncate text-left" }, "Threads"))) : null,
+      favorites.length ? h("div", { dataset: { sidebarFavorites: "" } }, collapsed ? null : h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Favorites"), h("div", { class: "space-y-px" }, ...favorites.map(chan))) : null,
+      unreads.length ? h("div", { dataset: { sidebarUnreads: "" } }, collapsed ? null : h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Unreads"), h("div", { class: "space-y-px" }, ...unreads.map(chan))) : null,
+      channels.length || S.me.is_admin ? h("div", {}, collapsed ? null : sbSection("Agent channels", () => newChannel()), h("div", { class: "space-y-px" }, ...channels.map(chan))) : null,
+      archived.length ? h("div", {}, collapsed ? null : h("div", { class: "eyebrow px-2 pb-1 text-sidebar-muted" }, "Archived"), h("div", { class: "space-y-px opacity-65" }, ...archived.map(chan))) : null,
+      h("div", {}, collapsed ? null : sbSection("Human channels", () => newHumanChannel()), h("div", { class: "space-y-px" }, ...human.map(chan), !collapsed && human.length === 0 && h("p", { class: "px-2 py-1 text-[13px] text-sidebar-muted" }, "No human channels yet"))),
+      h("div", {}, collapsed ? null : sbSection("Direct messages", () => newDM()), h("div", { class: "space-y-px" }, ...dms.map(chan), !collapsed && dms.length === 0 && h("p", { class: "px-2 py-1 text-[13px] text-sidebar-muted" }, "No conversations yet")))),
     h("button", {
-      class: "mx-2 mb-1 flex min-h-10 items-center gap-2 rounded-md px-2 py-1.5 text-xs text-sidebar-muted hover:bg-sidebar-hover hover:text-white",
+      class: `${collapsed ? "mx-auto w-10 justify-center" : "mx-2"} mb-1 flex min-h-10 items-center gap-2 rounded-md px-2 py-1.5 text-xs text-sidebar-muted hover:bg-sidebar-hover hover:text-white`,
       type: "button",
       dataset: { feedbackAction: "" },
       onclick: () => { closeMobileMenu(); openFeedback(); },
-    }, icon("chat", 14), "Feedback"),
-    h("div", { class: "flex items-center gap-1 border-t border-white/10 p-1.5" },
-      h("button", { class: "flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-sidebar-hover", title: "Open profile", onclick: (event: MouseEvent) => { closeMobileMenu(); openProfile(event.currentTarget as HTMLElement); } },
+    }, icon("chat", 14), collapsed ? null : "Feedback"),
+    h("div", { class: `${collapsed ? "flex-col" : ""} flex items-center gap-1 border-t border-white/10 p-1.5` },
+      h("button", { class: `${collapsed ? "justify-center" : "min-w-0 flex-1"} flex items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-sidebar-hover`, title: "Open profile", onclick: (event: MouseEvent) => { closeMobileMenu(); openProfile(event.currentTarget as HTMLElement); } },
         avatar(S.me.display, "user", 8, S.me.avatar),
-        h("div", { class: "min-w-0 flex-1" }, h("div", { class: "truncate text-sm font-semibold text-white" }, S.me.display), h("div", { class: "flex items-center gap-1.5 truncate font-mono text-[10.5px] text-sidebar-muted" }, h("span", { class: "h-1.5 w-1.5 rounded-full bg-ok" }), "@" + S.me.username + (S.me.is_admin ? " · admin" : "")))),
+        collapsed ? null : h("div", { class: "min-w-0 flex-1" }, h("div", { class: "truncate text-sm font-semibold text-white" }, S.me.display), h("div", { class: "flex items-center gap-1.5 truncate font-mono text-[10.5px] text-sidebar-muted" }, h("span", { class: "h-1.5 w-1.5 rounded-full bg-ok" }), "@" + S.me.username + (S.me.is_admin ? " · admin" : "")))),
       h("button", { class: "grid h-10 w-10 shrink-0 place-items-center rounded-md text-sidebar-muted hover:bg-sidebar-hover hover:text-white", title: S.me.is_admin ? "Settings" : "Provider settings", "aria-label": "Open settings", onclick: () => { closeMobileMenu(); openSettings(S.me.is_admin ? "agents" : "providers"); } }, icon("gear"))));
+}
+
+function toggleDesktopSidebar(): void {
+  S.desktopSidebarCollapsed = !S.desktopSidebarCollapsed;
+  renderSidebar();
+  void api("/api/me/ui-state", { method: "PATCH", body: { key: "desktop_sidebar_collapsed", value: S.desktopSidebarCollapsed } }).catch(() => undefined);
 }
 
 function openFeedback(): void {

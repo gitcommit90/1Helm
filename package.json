@@ -78,6 +78,7 @@
     "@gitcommit90/rerouted": "https://github.com/gitcommit90/rerouted/releases/download/v0.5.7/ReRouted-0.5.7-linux-node.tgz",
     "@opencoredev/loginwithchatgpt-server": "^0.2.0",
     "codemirror": "6.0.2",
+    "docx": "9.7.1",
     "node-pty": "^1.1.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",

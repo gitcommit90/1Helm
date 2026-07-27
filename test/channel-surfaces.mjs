@@ -195,7 +195,13 @@ test("channel UI source exposes file-backed Cowork, traditional Files, audio pre
   assert.match(coworkSource, /const resetEditor[\s\S]*session\.loaded = false[\s\S]*disconnectEditors[\s\S]*resetEditor\(candidate\)/, "Cowork discards disconnected Yjs histories before a hidden surface is reopened");
   assert.match(channelSource, /onclick: \(\) => \{ selected = entry; redrawSelection\(\); \}/, "Files paints selection immediately without re-fetching the guest mirror");
   assert.match(channelSource, /const refreshDirectories = async/, "Files loads its recursive folder tree independently of the current directory listing");
+  assert.match(channelSource, /CORE_WORKSPACE_FOLDERS = \["notes", "whiteboards", "code", "docs", "presentations"\]/, "Files visually prioritizes the five Cowork roots");
+  assert.match(channelSource, /fileOtherToggle/, "Files groups non-core root entries behind a visual Other disclosure");
+  assert.match(channelSource, /files\/docx[\s\S]*catch\(\(error\) => appAlert\(`DOCX download failed:[\s\S]*Download - DOCX/, "Markdown files expose a real DOCX export action with visible failure handling");
   assert.match(stylesSource, /\.cowork-notes-edit-stage \.cm-scroller \{ overflow-y: auto; \}/, "long Cowork Notes edit sessions scroll in CodeMirror's real viewport");
+  assert.match(stylesSource, /\.cowork-codemirror-code \{ background: var\(--c-surface\); \}[\s\S]*\.dark \.cowork-codemirror-code/, "Code uses a legible light surface without changing its dark treatment");
+  assert.match(stylesSource, /\.cowork-slide-stage[^}]*place-items: start center/, "oversized presentation canvases remain reachable from their top edge");
+  assert.match(stylesSource, /\.cowork-slide-canvas \.dropdown-menu[^}]*top: 100% !important[\s\S]*height: min\(15rem[\s\S]*max-height: 100%/, "presentation menus stay below their trigger with a bounded scrollable body");
   assert.match(channelSource, /files\/refresh[\s\S]*void refreshMirror\(\)/, "Files paints the host cache first and refreshes the VM mirror independently");
   assert.match(serverSource, /channelFilesRefresh[\s\S]*refreshChannelWorkspaceMirror\(channelId\)/, "Files has one explicit coalesced VM refresh route instead of syncing every click");
   assert.match(coworkSource, /\.\.\.\(coworkContextPending \? \{ coworkPath: session\.path \} : \{\}\)/, "a Cowork panel's first message submits its open path for authenticated enrichment");
