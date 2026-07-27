@@ -235,6 +235,7 @@ test("release packaging is fail-closed and records stable product identity", asy
   assert.match(source, /verifyApp\(extractedApp, true\)/, "the extracted updater app passes signature, ticket, and Gatekeeper checks");
   assert.match(source, /"--sign", "-", candidate/);
   assert.match(source, /Library\/LaunchAgents/, "release packaging rejects legacy background-agent payloads");
+  assert.match(source, /\/AGENTS\\\.md\$/, "release packaging excludes dependency instruction files before signing");
   assert.match(source, /Library\/Application Support\/1Helm/);
   assert.match(source, /installProductIcon/);
   assert.match(source, /desktop", "icons", "1helm-macos-app-logo\.jpg/);
