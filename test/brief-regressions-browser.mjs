@@ -145,11 +145,13 @@ try {
       sameNode: editor === window.__briefNoteEditor,
       value: [...document.querySelectorAll('[aria-label="Notes editor"] .cm-line')].map((line) => line.textContent).join("\n"),
       focused: document.activeElement === editor,
-      selection: window.getSelection()?.toString(),
     };
   });
-  ok(durableNote.sameNode && durableNote.value.endsWith("Unsaved words survive.") && durableNote.focused && durableNote.selection === "Durable",
-    "shell refreshes preserve the exact note editor node, unsaved draft, focus, and selection");
+  ok(durableNote.sameNode && durableNote.value === "# Durable note\n\nStart here.\n\nUnsaved words survive." && durableNote.focused,
+    "shell refreshes preserve the exact note editor node, unsaved draft, and focus");
+  await page.keyboard.type("Steady");
+  ok(await page.$eval('[aria-label="Notes editor"] .cm-content', (editor) => editor.textContent.startsWith("# Steady note") && editor.textContent.endsWith("Unsaved words survive.")),
+    "shell refreshes preserve the authoritative CodeMirror selection");
   await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent?.trim() === "Preview")?.click());
   await page.waitForSelector('.cowork-markdown-preview:not(.hidden)');
   ok(await page.$eval('.cowork-markdown-preview', (element) => /Unsaved words survive/.test(element.textContent)), "Cowork note preview renders the current unsaved Markdown draft");
