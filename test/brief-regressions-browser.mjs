@@ -4,6 +4,8 @@ import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import puppeteer from "puppeteer";
 
+const primaryModifier = process.platform === "darwin" ? "Meta" : "Control";
+
 const root = process.cwd();
 const dataDir = join(root, ".native-test-data", `brief-browser-${process.pid}`);
 const freePort = () => new Promise((resolve, reject) => {
@@ -124,10 +126,10 @@ try {
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent?.includes("Quiet refresh proof.md"))?.click());
   await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Start here"));
   await page.click('[aria-label="Notes editor"] .cm-content');
-  await page.keyboard.down("Control"); await page.keyboard.press("End"); await page.keyboard.up("Control");
+  await page.keyboard.down(primaryModifier); await page.keyboard.press("a"); await page.keyboard.up(primaryModifier); await page.keyboard.press("ArrowRight");
   await page.keyboard.type("\n\nUnsaved words survive.");
   await page.click('[aria-label="Notes editor"] .cm-line');
-  await page.keyboard.press("Home");
+  await page.keyboard.down(primaryModifier); await page.keyboard.press("a"); await page.keyboard.up(primaryModifier); await page.keyboard.press("ArrowLeft");
   for (let index = 0; index < 2; index++) await page.keyboard.press("ArrowRight");
   await page.keyboard.down("Shift"); for (let index = 0; index < 7; index++) await page.keyboard.press("ArrowRight"); await page.keyboard.up("Shift");
   await page.evaluate(() => {
