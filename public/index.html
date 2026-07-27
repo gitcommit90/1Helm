@@ -21,6 +21,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400..700;1,400..700&family=Instrument+Serif:ital@0;1&family=Fragment+Mono:ital@0;1&display=swap" rel="stylesheet" />
   <script>
     (function () {
+      window.EXCALIDRAW_ASSET_PATH = "/excalidraw/";
       var t = localStorage.getItem("ctrl.theme");
       if (!t) t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
       document.documentElement.classList.add(t);
@@ -29,11 +30,12 @@
       document.querySelectorAll('meta[name="theme-color"]').forEach(function (m) { m.setAttribute("content", color); });
     })();
   </script>
-  <link rel="stylesheet" href="/app.css?v=b2edc255e5b5" />
+  <link rel="stylesheet" href="/app.css?v=85051ba52505" />
   <link rel="stylesheet" href="/bundle.css" />
+  <link rel="stylesheet" href="/excalidraw/index.css" />
 </head>
 <body class="h-screen w-screen overflow-hidden antialiased">
   <div id="app" class="h-full w-full"></div>
-  <script type="module" src="/bundle.js?v=548edeb10d3e"></script>
+  <script type="module" src="/bundle.js?v=b081a4d28129"></script>
 </body>
 </html>

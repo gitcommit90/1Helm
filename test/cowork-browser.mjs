@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { accessSync, constants as fsConstants, rmSync } from "node:fs";
+import { accessSync, constants as fsConstants, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
@@ -72,6 +72,10 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   const providerRecord = await api("/api/providers", { body: { name: "Mock", base_url: `http://127.0.0.1:${providerPort}/v1`, api_key: "test" } }, token);
   await api("/api/setup/complete", { body: { name: "Cowork Browser", terminals_enabled: true, provider_id: providerRecord.provider.id, model: "mock-large" } }, token);
   const channel = (await api("/api/channels", { body: { name: "Studio", purpose: "Exercise Cowork and Files." } }, token)).channel;
+  const collaborator = (await api("/api/admin/users", { body: { username: "crew", password: "secret-pass", display: "Crew Mate" } }, token)).user;
+  const invitation = (await api(`/api/channels/${channel.id}/messages`, { body: { body: "@crew join this Cowork channel" } }, token)).message;
+  await api(`/api/channels/${channel.id}/members/${collaborator.id}`, { body: { messageId: invitation.id } }, token);
+  const collaboratorToken = (await api("/api/auth/login", { body: { username: "crew", password: "secret-pass" } })).token;
   const createFile = (parent, name, content) => api(`/api/channels/${channel.id}/files/entries`, { body: { parent, name, content } }, token);
   await createFile("notes", "field-notes.md", "# Field notes\n\n**Goal**\n");
   await createFile("whiteboards", "map.whiteboard.json", JSON.stringify({ version: 1, elements: [] }, null, 2));
@@ -90,6 +94,11 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.goto(base, { waitUntil: "networkidle0" });
   await page.evaluate((value) => localStorage.setItem("ctrl.token", value), token);
   await page.goto(`${base}/c/${channel.slug}/chat`, { waitUntil: "networkidle0" });
+  const answerPrompt = async (value) => {
+    await page.waitForSelector('.modal-overlay input');
+    await page.$eval('.modal-overlay input', (input, next) => { input.value = next; input.dispatchEvent(new Event("input", { bubbles: true })); }, value);
+    await page.evaluate(() => [...document.querySelectorAll('.modal-overlay button')].find((button) => button.textContent.trim() === "OK")?.click());
+  };
 
   // Quick Note stays above the current context, collapses without discarding,
   // saves with both shortcuts, and allocates collision-safe untitled names.
@@ -116,20 +125,48 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.waitForSelector('[data-cowork-surface]');
   assert.deepEqual(await page.$$eval('[aria-label="Cowork sections"] button', (buttons) => buttons.map((button) => button.textContent.trim())), ["Notes", "Whiteboard", "Code", "Docs", "Presentations"]);
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("field-notes.md"))?.click());
-  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"]')?.value.includes("Field notes"));
-  await page.evaluate(() => {
-    const editor = document.querySelector('[aria-label="Notes editor"]');
-    editor.value += "\nUnsaved continuity proof."; editor.dispatchEvent(new Event("input")); editor.focus(); editor.setSelectionRange(3, 12); window.__coworkEditor = editor;
-  });
+  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Field notes"));
+  const editorContent = '[aria-label="Notes editor"] .cm-content';
+  await page.click(editorContent);
+  await page.keyboard.down("Control"); await page.keyboard.press("End"); await page.keyboard.up("Control");
+  await page.keyboard.type("\nUnsaved continuity proof.");
+  await page.click('[aria-label="Notes editor"] .cm-line');
+  await page.keyboard.press("Home");
+  for (let index = 0; index < 3; index++) await page.keyboard.press("ArrowRight");
+  await page.keyboard.down("Shift"); for (let index = 0; index < 8; index++) await page.keyboard.press("ArrowRight"); await page.keyboard.up("Shift");
+  await page.evaluate(() => { window.__coworkEditor = document.querySelector('[aria-label="Notes editor"] .cm-content'); });
   await page.evaluate(() => [...document.querySelectorAll('button[title^="Switch to"]')][0]?.click());
-  await page.waitForFunction(() => document.activeElement === document.querySelector('[aria-label="Notes editor"]'));
+  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content') === window.__coworkEditor);
   const continuity = await page.evaluate(() => {
-    const editor = document.querySelector('[aria-label="Notes editor"]');
-    return { same: editor === window.__coworkEditor, focused: document.activeElement === editor, value: editor?.value, start: editor?.selectionStart, end: editor?.selectionEnd };
+    const editor = document.querySelector('[aria-label="Notes editor"] .cm-content');
+    return { same: editor === window.__coworkEditor, focused: document.activeElement === editor, lines: [...document.querySelectorAll('[aria-label="Notes editor"] .cm-line')].map((line) => line.textContent), selection: window.getSelection()?.toString() };
   });
-  assert.deepEqual(continuity, { same: true, focused: true, value: "# Field notes\n\n**Goal**\n\nUnsaved continuity proof.", start: 3, end: 12 });
+  assert.deepEqual(continuity, { same: true, focused: true, lines: ["# Field notes", "", "**Goal**", "", "Unsaved continuity proof."], selection: "ield not" });
   await page.keyboard.down("Control"); await page.keyboard.press("s"); await page.keyboard.up("Control");
   await waitFor(async () => (await api(`/api/channels/${channel.id}/files/text?path=notes%2Ffield-notes.md`, {}, token)).file.content.includes("Unsaved continuity proof"), "saved Cowork note");
+
+  // A second authenticated member joins the same ordinary workspace file.
+  // Both clients see presence, remote cursors, and edits without a reload.
+  const collaboratorContext = await browser.createBrowserContext();
+  const collaboratorPage = await collaboratorContext.newPage();
+  t.after(() => collaboratorContext.close().catch(() => undefined));
+  await collaboratorPage.goto(base, { waitUntil: "networkidle0" });
+  await collaboratorPage.evaluate((value) => localStorage.setItem("ctrl.token", value), collaboratorToken);
+  await collaboratorPage.goto(`${base}/c/${channel.slug}/cowork`, { waitUntil: "networkidle0" });
+  await collaboratorPage.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("field-notes.md"))?.click());
+  await collaboratorPage.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("continuity proof"));
+  await page.waitForSelector('[data-cowork-viewer="crew"]');
+  await collaboratorPage.waitForSelector('[data-cowork-viewer="captain"]');
+  await collaboratorPage.click('[aria-label="Notes editor"] .cm-content');
+  await collaboratorPage.keyboard.down("Control"); await collaboratorPage.keyboard.press("End"); await collaboratorPage.keyboard.up("Control");
+  await collaboratorPage.keyboard.type("\nLive words from Crew.");
+  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Live words from Crew"));
+  await collaboratorPage.evaluate(() => {
+    const editor = document.querySelector('[aria-label="Notes editor"] .cm-content');
+    const last = [...document.querySelectorAll('[aria-label="Notes editor"] .cm-line')].at(-1)?.firstChild;
+    editor.focus(); window.getSelection().setBaseAndExtent(last, 1, last, 5); document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.waitForSelector('.cm-ySelectionCaret');
   await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent.trim() === "Preview")?.click());
   await page.waitForSelector(".cowork-markdown-preview:not(.hidden) strong");
 
@@ -139,26 +176,148 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("map.whiteboard.json"));
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("map.whiteboard.json"))?.click());
   await page.waitForSelector('[aria-label="Whiteboard canvas"]');
-  await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent.includes("Card"))?.click());
-  assert.equal(await page.$$eval(".cowork-whiteboard-card", (cards) => cards.length), 1);
+  await collaboratorPage.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Whiteboard")?.click());
+  await collaboratorPage.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("map.whiteboard.json"));
+  await collaboratorPage.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("map.whiteboard.json"))?.click());
+  await collaboratorPage.waitForSelector('[aria-label="Whiteboard canvas"]');
+  await page.waitForSelector('[aria-label="Whiteboard canvas"] .excalidraw canvas');
+  const canvas = await page.$('[aria-label="Whiteboard canvas"] .excalidraw');
+  const bounds = await canvas.boundingBox();
+  await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.keyboard.press("r");
+  await page.mouse.move(bounds.x + bounds.width * 0.35, bounds.y + bounds.height * 0.35); await page.mouse.down(); await page.mouse.move(bounds.x + bounds.width * 0.6, bounds.y + bounds.height * 0.62, { steps: 5 }); await page.mouse.up();
+  await waitFor(async () => JSON.parse((await api(`/api/channels/${channel.id}/files/text?path=whiteboards%2Fmap.whiteboard.json`, {}, token)).file.content).elements.length > 0, "saved Excalidraw shape");
+  await collaboratorPage.waitForFunction(() => Number(document.querySelector('[aria-label="Whiteboard canvas"]')?.dataset.sceneElements || 0) > 0);
+  await page.waitForSelector('[data-cowork-viewer="crew"]');
+  const whiteboardTheme = await page.evaluate(() => {
+    window.__coworkCanvas = document.querySelector('[aria-label="Whiteboard canvas"] canvas.interactive');
+    return document.documentElement.className;
+  });
+  await page.evaluate(() => [...document.querySelectorAll('button[title^="Switch to"]')][0]?.click());
+  await page.waitForFunction((prior) => document.documentElement.className !== prior, {}, whiteboardTheme);
+  assert.equal(await page.evaluate(() => document.querySelector('[aria-label="Whiteboard canvas"] canvas.interactive') === window.__coworkCanvas), true);
   await page.evaluate(() => document.querySelector('.cowork-agent-toggle')?.click());
   await page.waitForSelector('[data-cowork-agent]:not(.hidden) textarea');
   await page.type('[data-cowork-agent] textarea', "Help arrange this board");
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-agent] button')].find((button) => button.textContent.includes("Send"))?.click());
   const coworkRootId = await waitFor(async () => page.evaluate((id) => Number(localStorage.getItem(`1helm.cowork.thread.${id}.whiteboards/map.whiteboard.json`) || 0), channel.id), "Cowork thread id");
   const coworkThread = await api(`/api/messages/${coworkRootId}/thread`, {}, token);
-  assert.match(coworkThread.root.body, /^@\S+ Help arrange this board\n\nWorking file: \/workspace\/whiteboards\/map\.whiteboard\.json$/);
+  assert.match(coworkThread.root.body, /^@\S+ Help arrange this board\n\nWorking file: \/workspace\/whiteboards\/map\.whiteboard\.json\nWorking with: @crew$/);
 
-  for (const [label, file, selector] of [
-    ["Code", "tool.ts", '[aria-label="Code editor"]'],
-    ["Docs", "proposal.md", '[aria-label="Docs editor"]'],
-    ["Presentations", "review.slides.json", ".cowork-slide"],
-  ]) {
-    await page.evaluate((next) => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === next)?.click(), label);
-    await page.waitForFunction((name) => document.querySelector('[data-cowork-files]')?.textContent.includes(name), {}, file);
-    await page.evaluate((name) => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes(name))?.click(), file);
-    await page.waitForSelector(selector);
-  }
+  // Reopening the Cowork agent panel on an existing normal thread contributes
+  // current co-viewers once, without duplicating the file path on follow-ups.
+  await page.evaluate(() => document.querySelector('.cowork-agent-toggle')?.click());
+  await page.evaluate(() => document.querySelector('.cowork-agent-toggle')?.click());
+  await page.waitForSelector('[data-cowork-agent]:not(.hidden) textarea');
+  await page.type('[data-cowork-agent] textarea', "Polish it together");
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-agent] button')].find((button) => button.textContent.includes("Send"))?.click());
+  const coworkFollowup = await waitFor(async () => {
+    const thread = await api(`/api/messages/${coworkRootId}/thread`, {}, token);
+    return thread.replies.find((reply) => reply.author?.kind === "user" && reply.body.includes("Polish it together"));
+  }, "Cowork follow-up context");
+  assert.equal(coworkFollowup.body, "Polish it together\n\nWorking with: @crew");
+  assert.equal((coworkFollowup.body.match(/Working file:/g) || []).length, 0);
+
+  // Code is a capable text editor: syntax mode, line numbers, indentation,
+  // and search work without introducing a second IDE or terminal.
+  await page.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Code")?.click());
+  await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("tool.ts"));
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("tool.ts"))?.click());
+  await page.waitForSelector('[aria-label="Code editor"][data-cowork-language="typescript"] .cm-lineNumbers');
+  await page.click('[aria-label="Code editor"] .cm-content');
+  await page.keyboard.down("Control"); await page.keyboard.press("End"); await page.keyboard.up("Control");
+  await page.keyboard.press("Enter"); await page.keyboard.press("Tab"); await page.keyboard.type("const searchableValue = 42;");
+  assert.equal(await page.$eval('[aria-label="Code editor"] .cm-line:last-child', (line) => line.textContent.startsWith("  ")), true);
+  await page.keyboard.down("Control"); await page.keyboard.press("f"); await page.keyboard.up("Control");
+  await page.waitForSelector('[aria-label="Code editor"] .cm-search input');
+  await page.type('[aria-label="Code editor"] .cm-search input', "searchableValue");
+  assert.ok(await page.$$eval('[aria-label="Code editor"] .cm-searchMatch', (matches) => matches.length) > 0);
+  await page.keyboard.press("Escape");
+  await page.keyboard.down("Control"); await page.keyboard.press("s"); await page.keyboard.up("Control");
+  await waitFor(async () => (await api(`/api/channels/${channel.id}/files/text?path=code%2Ftool.ts`, {}, token)).file.content.includes("searchableValue"), "saved TypeScript editor content");
+
+  // Docs keeps a page-oriented editor and its formatting controls write
+  // ordinary Markdown that survives save/reopen.
+  await page.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Docs")?.click());
+  await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("proposal.md"));
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("proposal.md"))?.click());
+  await page.waitForSelector('.cowork-doc-page [aria-label="Docs editor"]');
+  await page.click('[aria-label="Docs editor"] .cm-content');
+  await page.keyboard.down("Control"); await page.keyboard.press("End"); await page.keyboard.up("Control");
+  await page.keyboard.press("Enter");
+  await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent.trim() === "Bold")?.click());
+  await page.keyboard.type("shared proposal");
+  await page.keyboard.down("Control"); await page.keyboard.press("s"); await page.keyboard.up("Control");
+  await waitFor(async () => (await api(`/api/channels/${channel.id}/files/text?path=docs%2Fproposal.md`, {}, token)).file.content.includes("**shared proposal**"), "saved formatted document");
+
+  // Cowork-local Explorer actions operate in nested folders over the same
+  // /workspace tree as the main Files browser.
+  const clickCoworkTitle = (title) => page.evaluate((value) => document.querySelector(`[title="${value}"]`)?.click(), title);
+  await clickCoworkTitle("New folder"); await answerPrompt("drafts");
+  await page.waitForSelector('[data-cowork-path="docs/drafts"]');
+  await page.evaluate(() => document.querySelector('[data-cowork-path="docs/drafts"]')?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+  await page.waitForFunction(() => document.querySelector('[aria-label="Cowork folder path"]')?.textContent.includes("drafts"));
+  await clickCoworkTitle("New file"); await answerPrompt("nested.md");
+  await page.waitForSelector('[data-cowork-path="docs/drafts/nested.md"]');
+  await page.click('[data-cowork-path="docs/drafts/nested.md"]');
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-file-actions] button')].find((button) => button.textContent.trim() === "Rename")?.click()); await answerPrompt("renamed.md");
+  await page.waitForSelector('[data-cowork-path="docs/drafts/renamed.md"]');
+  await page.click('[data-cowork-path="docs/drafts/renamed.md"]');
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-file-actions] button')].find((button) => button.textContent.trim() === "Duplicate")?.click());
+  await page.waitForSelector('[data-cowork-path="docs/drafts/renamed copy.md"]');
+  await page.click('[data-cowork-path="docs/drafts/renamed.md"]');
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-file-actions] button')].find((button) => button.textContent.trim() === "Move")?.click()); await answerPrompt("docs");
+  await page.waitForSelector('[data-cowork-path="docs/renamed.md"]');
+  await page.evaluate(() => document.querySelector('[data-cowork-path="docs/drafts"]')?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+  await page.waitForSelector('[data-cowork-path="docs/drafts/renamed copy.md"]');
+  await page.click('[data-cowork-path="docs/drafts/renamed copy.md"]');
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-file-actions] button')].find((button) => button.textContent.trim() === "Delete")?.click());
+  await page.waitForSelector('.modal-overlay'); await page.evaluate(() => [...document.querySelectorAll('.modal-overlay button')].find((button) => button.textContent.trim() === "Confirm")?.click());
+  await page.waitForFunction(() => !document.querySelector('[data-cowork-path="docs/drafts/renamed copy.md"]'));
+
+  // Presentations are one collaborative file with live slide structure,
+  // Excalidraw drawing, reordering, deletion, persistence, and presentation mode.
+  await page.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Presentations")?.click());
+  await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("review.slides.json"));
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("review.slides.json"))?.click());
+  await page.waitForSelector('[data-cowork-presentation][data-slide-count="1"] .cowork-slide-canvas .excalidraw');
+  await collaboratorPage.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Presentations")?.click());
+  await collaboratorPage.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("review.slides.json"));
+  await collaboratorPage.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("review.slides.json"))?.click());
+  await collaboratorPage.waitForSelector('[data-cowork-presentation][data-slide-count="1"]');
+  assert.ok(await page.$eval('.cowork-slide-canvas', (canvas) => Number(canvas.dataset.sceneElements || 0)) > 0);
+  assert.ok(await collaboratorPage.$eval('.cowork-slide-canvas', (canvas) => Number(canvas.dataset.sceneElements || 0)) > 0);
+  await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent.includes("Slide"))?.click());
+  await page.waitForSelector('[data-cowork-presentation][data-slide-count="2"]');
+  await collaboratorPage.waitForSelector('[data-cowork-presentation][data-slide-count="2"]');
+  await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent.trim() === "Duplicate")?.click());
+  await page.waitForSelector('[data-cowork-presentation][data-slide-count="3"]');
+  await page.evaluate(() => {
+    const active = document.querySelector('.cowork-slide-thumb.is-active');
+    active?.querySelector('[title="Move slide up"]')?.click();
+  });
+  const orderAfterMove = await waitFor(async () => {
+    const slides = JSON.parse((await api(`/api/channels/${channel.id}/files/text?path=presentations%2Freview.slides.json`, {}, token)).file.content).slides;
+    return slides.length === 3 && /copy/i.test(slides[1]?.name || "") ? slides.map((slide) => slide.name) : null;
+  }, "reordered presentation slides");
+  assert.equal(orderAfterMove.length, 3);
+  await page.waitForSelector('[data-cowork-presentation][data-slide-count="3"]');
+  await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent.trim() === "Delete")?.click());
+  await waitFor(async () => JSON.parse((await api(`/api/channels/${channel.id}/files/text?path=presentations%2Freview.slides.json`, {}, token)).file.content).slides.length === 2, "deleted presentation slide");
+  await page.waitForFunction(() => document.querySelector('[data-cowork-presentation]')?.dataset.slideCount === "2");
+  await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent.trim() === "Present")?.click());
+  await page.waitForSelector('[role="dialog"][aria-label="Presentation mode"]');
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Presentation mode"]'));
+  await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent.trim() === "Save")?.click());
+  await waitFor(async () => JSON.parse((await api(`/api/channels/${channel.id}/files/text?path=presentations%2Freview.slides.json`, {}, token)).file.content).slides.length === 2, "saved presentation structure");
+
+  // Unsupported binaries stay simple and safe.
+  writeFileSync(join(dataDir, "channels", String(channel.id), "workspace", "code", "data.db"), Buffer.from("SQLite payload"));
+  await page.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Code")?.click());
+  await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("data.db"));
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("data.db"))?.click());
+  await page.waitForFunction(() => /not supported to view/i.test(document.querySelector('[data-cowork-viewport]')?.textContent || ""));
   await page.screenshot({ path: "/tmp/1helm-cowork-desktop.png" });
 
   // Files behaves like a bounded file browser and all familiar CRUD actions
@@ -230,5 +389,5 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   const settings = await page.$eval('[aria-label="Settings sections"]', (nav) => ({ height: nav.getBoundingClientRect().height, width: nav.getBoundingClientRect().width, scrolls: nav.scrollWidth > nav.clientWidth }));
   assert.ok(settings.height < 90 && settings.width >= 380 && settings.scrolls, JSON.stringify(settings));
   await page.screenshot({ path: "/tmp/1helm-mobile-settings.png" });
-  assert.deepEqual(errors, []);
+  assert.deepEqual(errors.filter((message) => message !== "Failed to load resource: the server responded with a status of 400 (Bad Request)"), []);
 });

@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.18] - 2026-07-27
+
+### Added
+
+- Cowork Notes, Docs, and Code now use CodeMirror 6 with shared live text,
+  collaborator cursors and selections, line numbers, search, indentation,
+  bracket support, language-aware highlighting, and Command/Control+S.
+- Whiteboards now use a native embedded Excalidraw canvas, while Presentations
+  use Excalidraw-backed slides with add, duplicate, delete, reorder, and
+  distraction-free presentation mode. Both remain ordinary readable files in
+  the channel's `/workspace`.
+- Authenticated Yjs collaboration lets channel members edit the same Cowork
+  asset together. Presence is membership-gated and scoped to the currently
+  visible file; agent or Terminal changes flow into an open clean document.
+
+### Changed
+
+- The Cowork agent panel still creates an ordinary channel session, but its
+  first message now includes the authenticated current co-viewers as well as
+  the open file path. Reopening an existing session can include newly present
+  collaborators without repeating the path.
+- Notes and Docs add focused Markdown formatting and preview, Docs uses a
+  page-oriented surface, Code rejects unsupported binary database files with a
+  concise message, and the shared Cowork rail now exposes the complete nested
+  create, rename, move, duplicate, delete, search, and breadcrumb flow.
+- Excalidraw fonts and assets are generated into the app and loaded only from
+  the same origin. Patched transitive `lodash-es` and `nanoid` versions remove
+  the Cowork dependency advisories without downgrading Excalidraw.
+
+### Fixed
+
+- Hidden Cowork channels and sections no longer retain live presence, while
+  switching themes or repainting the application shell preserves the exact
+  editor or canvas node, focus, selection, open asset, and unsaved work.
+- In-flight file opens can no longer reconnect to a renamed, moved, or deleted
+  path, stale local drafts cannot silently overwrite newer agent or
+  collaborator changes, and shutdown synchronously flushes dirty Cowork files.
+- Text creation and save reject embedded NUL data, collaborative rooms reject
+  unsupported roots, directories, unsafe/binary or oversized files, and every
+  Cowork WebSocket requires both authentication and channel membership.
+
 ## [0.0.17] - 2026-07-27
 
 ### Added
@@ -491,7 +532,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.17...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.18...HEAD
+[0.0.18]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.18
 [0.0.17]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.17
 [0.0.16]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.16
 [0.0.15]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.15

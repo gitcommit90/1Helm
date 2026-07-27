@@ -169,6 +169,7 @@ test("channel UI source exposes file-backed Cowork, traditional Files, audio pre
   const apiSource = readFileSync(join(root, "src", "client", "api.ts"), "utf8");
   const appSource = readFileSync(join(root, "src", "client", "app.ts"), "utf8");
   const coworkSource = readFileSync(join(root, "src", "client", "cowork.ts"), "utf8");
+  const serverSource = readFileSync(join(root, "src", "server", "index.ts"), "utf8");
   assert.match(channelSource, /export function renderNotes\(/);
   assert.match(channelSource, /const noteSurfaces = new Map/, "note editor nodes survive shell refreshes");
   assert.match(channelSource, /data(?:set)?: \{ notePreviewToggle: "" \}/, "Notes includes a Markdown preview mode");
@@ -187,7 +188,9 @@ test("channel UI source exposes file-backed Cowork, traditional Files, audio pre
   assert.match(channelSource, /data(?:set)?: \{ fileFolderTree: "" \}/, "Files has a folder navigation rail");
   assert.match(channelSource, /icon\("folder"/, "Files uses a recognizable folder icon");
   assert.match(coworkSource, /const SECTIONS[\s\S]*"notes"[\s\S]*"whiteboards"[\s\S]*"code"[\s\S]*"docs"[\s\S]*"presentations"/, "Cowork exposes five file-backed work modes");
-  assert.match(coworkSource, /Working file: \/workspace\//, "the first Cowork agent message includes the open file path");
+  assert.match(coworkSource, /\.\.\.\(coworkContextPending \? \{ coworkPath: session\.path \} : \{\}\)/, "a Cowork panel's first message submits its open path for authenticated enrichment");
+  assert.match(serverSource, /if \(b\.coworkPath\)[\s\S]*b\.parentId \? \[\] : \[`Working file: \/workspace\/\$\{path\}`\]/, "the server adds the validated open file path only to a new Cowork thread");
+  assert.match(serverSource, /coworkViewerUsernames\(cid, path, Number\(user\.id\)\)[\s\S]*Working with:/, "the server adds active co-viewers to the first Cowork agent message");
   assert.doesNotMatch(appSource, /controllerchange[\s\S]{0,300}location\.reload\(/, "service-worker updates never reload an active note draft");
 });
 

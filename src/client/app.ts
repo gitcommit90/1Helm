@@ -6,7 +6,7 @@ import { openRoutingPopover, pushRoutingActivity } from "./routing.ts";
 import { openOnboarding } from "./onboarding.ts";
 import { defaultTerminalComputer, openTerminals, refitChannelTerminals, getTerminalChrome } from "./term.ts";
 import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderNotes, renderTexts, renderThreads, type ChannelView } from "./channel.ts";
-import { renderCowork, stageCoworkPath } from "./cowork.ts";
+import { renderCowork, setActiveCoworkChannel, stageCoworkPath } from "./cowork.ts";
 import { apiUrl, finishNativeLaunch, forgetMobileServer, getServerOrigin, isNativeMobile, serverAssetUrl, setMobileServer } from "./mobile.ts";
 
 /** Per-channel layout bound to the user profile (server user_ui_state). */
@@ -91,7 +91,8 @@ function getChannelView(channelId: number): ChannelUiView {
 function applyChannelViewToState(channelId: number): void {
   const view = getChannelView(channelId);
   S.terminalOpen = !!view.terminalOpen;
-  // 0.0.17 replaced the full Notes dock with the non-disruptive Quick Note.
+  // Quick Note replaced the former full Notes dock without changing this
+  // compatibility field's persisted shape.
   // Ignore legacy persisted dock-open state so an old preference cannot reopen it.
   S.notesOpen = false;
   S.serversListOpen = !!view.serversListOpen;
@@ -149,7 +150,7 @@ const root = document.getElementById("app")!;
 const pending: { token: string; name: string; mime: string; size: number }[] = [];
 
 type UiContinuity = {
-  active: { key: string; start: number | null; end: number | null; value: string | null; checked: boolean | null } | null;
+  active: { key: string; start: number | null; end: number | null; value: string | null; checked: boolean | null; node: HTMLElement | null } | null;
   scroll: Array<{ key: string; top: number; left: number }>;
   details: string[];
 };
@@ -172,7 +173,7 @@ function continuityKey(element: Element): string | null {
 /** Preserve user-owned focus, selection, scroll, and expansion across unavoidable shell paints. */
 function captureUiContinuity(scope: ParentNode): UiContinuity {
   const activeElement = document.activeElement instanceof HTMLElement && scope.contains(document.activeElement) ? document.activeElement : null;
-  const activeKey = activeElement ? continuityKey(activeElement) : null;
+  const activeKey = activeElement ? continuityKey(activeElement) || (activeElement.isContentEditable ? "[contenteditable=true]" : null) : null;
   const selection = activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement
     ? { start: activeElement.selectionStart, end: activeElement.selectionEnd, value: activeElement.value, checked: activeElement instanceof HTMLInputElement && ["checkbox", "radio"].includes(activeElement.type) ? activeElement.checked : null }
     : activeElement instanceof HTMLSelectElement ? { start: null, end: null, value: activeElement.value, checked: null }
@@ -182,7 +183,7 @@ function captureUiContinuity(scope: ParentNode): UiContinuity {
     .flatMap((element) => { const key = continuityKey(element); return key ? [{ key, top: element.scrollTop, left: element.scrollLeft }] : []; });
   const details = Array.from(scope.querySelectorAll<HTMLDetailsElement>("details[open][data-continuity-key]"))
     .flatMap((element) => { const key = continuityKey(element); return key ? [key] : []; });
-  return { active: activeKey ? { key: activeKey, ...selection } : null, scroll, details };
+  return { active: activeKey ? { key: activeKey, node: activeElement, ...selection } : null, scroll, details };
 }
 
 function restoreUiContinuity(snapshot: UiContinuity): void {
@@ -191,7 +192,7 @@ function restoreUiContinuity(snapshot: UiContinuity): void {
   // focus and cursor ownership must already be back with the user by then.
   for (const key of snapshot.details) { const element = document.querySelector<HTMLDetailsElement>(key); if (element) element.open = true; }
   if (snapshot.active) {
-    const element = document.querySelector<HTMLElement>(snapshot.active.key);
+    const element = snapshot.active.node?.isConnected ? snapshot.active.node : document.querySelector<HTMLElement>(snapshot.active.key);
     if (element) {
       if ((element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) && snapshot.active.value != null) element.value = snapshot.active.value;
       if (element instanceof HTMLInputElement && snapshot.active.checked != null) element.checked = snapshot.active.checked;
@@ -1310,6 +1311,7 @@ function openGlobalThreads(): void {
 }
 
 function renderMain(preserveChannelSurface = false): void {
+  setActiveCoworkChannel(!S.globalThreadsOpen && (S.view === "cowork" || S.view === "notes") ? S.channelId : null);
   const main = document.getElementById("main")!;
   // #msgs is destroyed on every shell rebuild. Capture scroll *before* clear so
   // open/close thread doesn't dump the user at the oldest message.
@@ -1601,7 +1603,7 @@ export function renderChannelView(preserveSurface = false): void {
     void openThread(root);
   });
   else if (S.view === "threads") renderThreads(container, channel.id, (thread) => { S.view = "chat"; renderApp(); void openThread(thread.root); });
-  else if (S.view === "cowork" || S.view === "notes") renderCowork(container, channel.id, channel, (root) => { S.view = "chat"; renderApp(); void openThread(root); }, preserveSurface);
+  else if (S.view === "cowork" || S.view === "notes") renderCowork(container, channel.id, channel, S.me, (root) => { S.view = "chat"; renderApp(); void openThread(root); }, preserveSurface);
   else if (S.view === "files") renderFiles(container, channel.id, "", (path) => { stageCoworkPath(channel.id, path); navigateChannelView("cowork"); }, preserveSurface);
   else if (S.view === "memory") renderMemory(container, channel.id);
   else if (S.view === "activity") renderActivity(container, channel.id);

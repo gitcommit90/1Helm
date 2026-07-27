@@ -244,9 +244,9 @@ and an audit trail. A prompt saying “use this service” is not a connector.
   familiar create, rename, move, duplicate, delete, upload, and download actions.
 - Cowork as the direct visual editing plane for `/workspace/notes`,
   `/workspace/whiteboards`, `/workspace/code`, `/workspace/docs`, and
-  `/workspace/presentations`, with one consistent file rail, purpose-built
-  editors, and an optional channel-agent panel that starts an ordinary thread
-  with the open file path.
+  `/workspace/presentations`, with one consistent file rail, live collaborative
+  text editors, embedded whiteboard and slide canvases, and an optional
+  channel-agent panel that starts an ordinary thread with the open file path.
 - Quick Note in the top bar for capturing a Markdown note into
   `/workspace/notes` without leaving or repositioning the current channel view.
 - Durable files, threads, curated memory, Mnemosyne long-term recall,
@@ -296,7 +296,7 @@ A fresh data directory opens first-run setup. The source runtime defaults to
 | `PORT` | `8123` | HTTP/WebSocket control-plane port. |
 | `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and narrow workspace mirrors. |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `lxc` on Linux, `wsl` on Windows | Host isolation backend; `native` and `mock` are explicit development/test overrides. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.17` | Versioned channel-machine image contract. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.18` | Versioned channel-machine image contract. |
 
 ### Agent-first JSON CLI
 
