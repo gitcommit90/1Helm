@@ -100,6 +100,10 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(appClient, /1Helm v\$\{update\.current_version\}/, "Profile displays the installed version beside the update control");
   assert.match(appClient, /Download on host/, "Profile makes native download ownership explicit");
   assert.match(appClient, /Restart & install/, "Profile installs only after the host reports a verified update ready");
+  assert.match(appClient, /scheduleHostUpdatePromptChecks\(\)/, "admins learn about a downloaded update without opening Profile");
+  assert.match(appClient, /1helm\.updateReadyPrompt/, "the automatic update prompt is shown only once per downloaded version");
+  assert.match(appClient, /A new version has been downloaded and verified\.[\s\S]*Later[\s\S]*Restart Now/, "the verified update prompt offers an explicit defer-or-restart choice");
+  assert.match(appClient, /Restart Now[\s\S]*action: "install"/, "Restart Now uses the existing host-owned safe install action");
   assert.doesNotMatch(appClient, /window\.open\(target/, "updating never navigates the browsing device to a host installer");
   const nativeUpdater = await readFile(join(root, "desktop", "updater.cjs"), "utf8");
   assert.match(nativeUpdater, /autoUpdater\.checkForUpdates\(\)/);

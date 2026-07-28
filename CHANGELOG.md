@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Admins now receive a one-time **Later** / **Restart Now** prompt when a
+  desktop update has finished downloading and verification, without
+  needing to open Profile or manually check first.
 - Fresh macOS and Windows installations can connect to an existing 1Helm
   workspace with the clean `[workspace].1helm.com` gateway or its alternate
   HTTPS URL flow. **New User?** reveals the explicit option to set the current

@@ -206,7 +206,7 @@ test("channel UI source exposes file-backed Cowork, traditional Files, audio pre
   assert.match(stylesSource, /\.cowork-notes-edit-stage \.cm-scroller \{ overflow-y: auto; \}/, "long Cowork Notes edit sessions scroll in CodeMirror's real viewport");
   assert.match(coworkSource, /mode === "code" \? "overflow-hidden" : "overflow-auto"/, "Cowork Code gives its finite editor viewport control of scrolling");
   assert.match(stylesSource, /\.cowork-codemirror-code \.cm-scroller \{ overflow-y: auto; \}/, "long Cowork Code files scroll inside CodeMirror");
-  assert.match(stylesSource, /\.cowork-codemirror-code \{ background: var\(--c-surface\); \}[\s\S]*\.dark \.cowork-codemirror-code/, "Code uses a legible light surface without changing its dark treatment");
+  assert.match(stylesSource, /\.cowork-codemirror-code \{[^}]*background: var\(--c-surface\);[^}]*\}[\s\S]*\.dark \.cowork-codemirror-code/, "Code uses a bounded, legible light surface without changing its dark treatment");
   assert.match(stylesSource, /\.cowork-slide-stage[^}]*place-items: start center/, "oversized presentation canvases remain reachable from their top edge");
   assert.match(coworkSource, /fitToContentElementId: PRINTABLE_BOUNDARY_ID/, "every opened, selected, or newly created presentation slide fits exactly its printable boundary");
   assert.match(coworkEditorsSource, /scrollToContent\(target\.length \? target : scene\.elements, \{ fitToContent: true, animate: false, viewportZoomFactor: 0\.88 \}\)/, "presentation fitting leaves a clean margin around the complete dotted boundary");

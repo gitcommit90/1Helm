@@ -357,7 +357,9 @@ Signed Mac releases are unique patch versions. Profile → Check for updates
 always operates on the machine hosting the active 1Helm instance. In the native
 Mac app, Electron downloads and verifies a notarized update ZIP on that Mac and
 offers **Restart & install** only when it is ready. It does not navigate the
-browsing device to a DMG.
+browsing device to a DMG. An admin who is signed in when that verified download
+finishes receives a one-time **Later** / **Restart Now** prompt; choosing
+**Later** leaves the same update ready in Profile.
 
 The standard Linux systemd install uses a root-owned updater. 1Helm can request
 that one fixed operation, but cannot choose an arbitrary URL, command, or target

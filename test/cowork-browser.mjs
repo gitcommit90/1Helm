@@ -47,8 +47,11 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   const app = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/server/index.ts"], {
     cwd: root,
     env: { ...process.env, CTRL_DATA_DIR: dataDir, PORT: String(appPort), NODE_ENV: "test", HELM_CHANNEL_COMPUTER_BACKEND: "native", IMPROVEMENT_INTERVAL_MS: "600000" },
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  let appLogs = "";
+  app.stdout.on("data", (chunk) => { appLogs = `${appLogs}${chunk}`.slice(-12_000); });
+  app.stderr.on("data", (chunk) => { appLogs = `${appLogs}${chunk}`.slice(-12_000); });
   let browser;
   t.after(async () => {
     await browser?.close().catch(() => undefined);
@@ -60,11 +63,16 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await waitFor(async () => (await fetch(`http://127.0.0.1:${providerPort}/v1/models`).catch(() => null))?.ok, "mock provider");
   await waitFor(async () => (await fetch(`${base}/api/setup/status`).catch(() => null))?.ok, "1Helm server");
   const api = async (path, options = {}, token = "") => {
-    const response = await fetch(base + path, {
-      method: options.method || (options.body !== undefined ? "POST" : "GET"),
-      headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(options.body !== undefined ? { "content-type": "application/json" } : {}) },
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    });
+    let response;
+    try {
+      response = await fetch(base + path, {
+        method: options.method || (options.body !== undefined ? "POST" : "GET"),
+        headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(options.body !== undefined ? { "content-type": "application/json" } : {}) },
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      });
+    } catch (error) {
+      throw new Error(`${path}: ${error.message}; server exit=${app.exitCode ?? "running"}\n${appLogs}`);
+    }
     const payload = await response.json().catch(() => ({}));
     assert.equal(response.ok, true, `${path}: ${payload.error || response.status}`);
     return payload;

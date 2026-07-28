@@ -151,6 +151,36 @@ async function loadUiState(): Promise<void> {
 }
 const root = document.getElementById("app")!;
 const pending: { token: string; name: string; mime: string; size: number }[] = [];
+type HostUpdate = { mode: "native-macos" | "native-windows" | "linux-systemd" | "source"; status: string; current_version: string; version: string | null; message: string; error: string | null };
+const UPDATE_READY_PROMPT_KEY = "1helm.updateReadyPrompt";
+let updateReadyPoll = 0;
+
+function maybeShowUpdateReadyPrompt(update: HostUpdate): void {
+  if (!S.me?.is_admin || update.status !== "ready") return;
+  const identity = `${update.mode}:${update.current_version}->${update.version || "downloaded"}`;
+  if (localStorage.getItem(UPDATE_READY_PROMPT_KEY) === identity || document.querySelector("[data-update-ready-prompt]")) return;
+  localStorage.setItem(UPDATE_READY_PROMPT_KEY, identity);
+  const version = update.version ? ` v${update.version}` : "";
+  const prompt = appModal(`1Helm${version} is ready`, "A new version has been downloaded and verified. Restart 1Helm now to apply the update?", [
+    { label: "Later", onClick: () => undefined },
+    { label: "Restart Now", primary: true, onClick: () => {
+      void api("/api/app/update", { method: "POST", body: { action: "install" } })
+        .catch((error) => appAlert((error as Error).message || "The update could not be installed."));
+    } },
+  ]);
+  prompt.dataset.updateReadyPrompt = identity;
+}
+
+function scheduleHostUpdatePromptChecks(): void {
+  window.clearTimeout(updateReadyPoll);
+  if (!S.me?.is_admin) return;
+  const poll = async (): Promise<void> => {
+    try { maybeShowUpdateReadyPrompt(await api<HostUpdate>("/api/app/update")); }
+    catch { /* Profile retains the visible manual retry path. */ }
+    updateReadyPoll = window.setTimeout(() => { void poll(); }, 30_000);
+  };
+  updateReadyPoll = window.setTimeout(() => { void poll(); }, 25_000);
+}
 
 type UiContinuity = {
   active: { key: string; start: number | null; end: number | null; value: string | null; checked: boolean | null; node: HTMLElement | null } | null;
@@ -250,6 +280,7 @@ function writeRoute(channel: Channel | undefined, view: ChannelView, threadRootI
 
 // ---------------- boot ----------------
 export async function boot(): Promise<void> {
+  window.clearTimeout(updateReadyPoll);
   // The native clients are gateways to an existing 1Helm. They never expose
   // the host setup wizard, even if a remembered address points at a fresh host.
   if (isNativeMobile() && !getToken()) return renderAuth();
@@ -295,6 +326,7 @@ async function enterWorkspace(preferredChannelId?: number): Promise<void> {
   else renderApp();
   setNativeNotificationNavigation((channelId, rootMessageId) => { void openChannel(channelId, "chat", rootMessageId, true); });
   void restoreNativeNotifications();
+  scheduleHostUpdatePromptChecks();
   if (!S.me.tour_complete && sessionStorage.getItem("1helm.justOnboarded") === "1") {
     sessionStorage.removeItem("1helm.justOnboarded");
     void openWelcomeTour();
@@ -1137,7 +1169,6 @@ function openProfile(anchor: HTMLElement): void {
     class: "btn-subtle min-h-9 shrink-0 px-3 text-xs",
     dataset: { profileUpdateAction: "" },
   }, "Check for updates") as HTMLButtonElement;
-  type HostUpdate = { mode: "native-macos" | "native-windows" | "linux-systemd" | "source"; status: string; current_version: string; version: string | null; message: string; error: string | null };
   let updatePoll = 0;
   const applyUpdate = (update: HostUpdate): void => {
     const version = update.version ? ` · v${update.version}` : "";
@@ -1166,6 +1197,7 @@ function openProfile(anchor: HTMLElement): void {
       updateButton.textContent = update.status === "current" ? "Check again" : "Check host";
       updateButton.onclick = () => { void runUpdateAction("download"); };
     }
+    maybeShowUpdateReadyPrompt(update);
   };
   const checkForUpdates = async (): Promise<void> => {
     updateButton.disabled = true;
@@ -3181,8 +3213,8 @@ function memberAddConfirmation(event: { channelId: number; messageId: number; us
 }
 
 // ---------------- shared atoms ----------------
-function appModal(title: string, body: string | HTMLElement, buttons: { label: string; primary?: boolean; danger?: boolean; onClick: () => void }[]): void {
-  const overlay = h("div", { class: "modal-overlay fixed inset-0 z-50 grid place-items-end bg-black/55 p-0 sm:place-items-center sm:p-6", onclick: (e: MouseEvent) => { if (e.target === overlay) overlay.remove(); } },
+function appModal(title: string, body: string | HTMLElement, buttons: { label: string; primary?: boolean; danger?: boolean; onClick: () => void }[]): HTMLElement {
+  const overlay = h("div", { class: "modal-overlay fixed inset-0 z-50 grid place-items-end bg-black/55 p-0 sm:place-items-center sm:p-6", role: "dialog", "aria-modal": "true", "aria-label": title, onclick: (e: MouseEvent) => { if (e.target === overlay) overlay.remove(); } },
     h("section", { class: "card mobile-sheet w-full max-w-md overflow-hidden rounded-b-none shadow-2xl sm:rounded-xl" },
       h("div", { class: "flex items-start justify-between gap-3 border-b border-line px-4 py-4 sm:px-6" },
         h("h2", { class: "font-display text-[1.4rem] leading-tight text-fg" }, title),
@@ -3194,6 +3226,7 @@ function appModal(title: string, body: string | HTMLElement, buttons: { label: s
           onclick: () => { btn.onClick(); overlay.remove(); },
         }, btn.label)))));
   document.body.append(overlay);
+  return overlay;
 }
 
 export function appAlert(message: string): Promise<void> {
