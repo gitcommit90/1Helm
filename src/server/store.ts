@@ -138,8 +138,7 @@ export function resolveModel(botId: number, channelId: number | null, threadRoot
 }
 
 export function resolveModelForUser(botId: number, channelId: number | null, threadRootId: number | null, userId: number): string {
-  const personal = userId ? String(q1("SELECT model FROM user_model_prefs WHERE user_id=?", userId)?.model || "") : "";
-  return personal || resolveModel(botId, channelId, threadRootId);
+  return String(resolvedModelPolicy(botId, channelId, threadRootId, userId).model || "");
 }
 
 export function setModelPref(botId: number, scope: string, scopeId: string, model: string | null): void {
@@ -162,18 +161,36 @@ export function resolveProviderId(botId: number, channelId: number | null, threa
   return bot?.provider_id ? Number(bot.provider_id) : null;
 }
 
-export function resolvedModelPolicy(botId: number, channelId: number, threadRootId: number | null): Record<string, unknown> {
+export function resolvedModelPolicy(botId: number, channelId: number | null, threadRootId: number | null, userId = 0): Record<string, unknown> {
+  const scoped = (scope: string, scopeId: string): Row | undefined =>
+    q1("SELECT model,provider_id FROM model_prefs WHERE bot_id=? AND scope=? AND scope_id=?", botId, scope, scopeId);
+  const thread = threadRootId != null ? scoped("thread", String(threadRootId)) : undefined;
+  const channel = channelId != null ? scoped("channel", String(channelId)) : undefined;
+  const personalModel = userId ? String(q1("SELECT model FROM user_model_prefs WHERE user_id=?", userId)?.model || "") : "";
+  const workspaceModel = String(q1("SELECT default_model FROM workspace WHERE id=1")?.default_model || "");
+  const global = scoped("global", "");
+  const agentModel = String(q1("SELECT model FROM bots WHERE id=?", botId)?.model || "");
+  let source: "thread" | "channel" | "personal" | "workspace" | "agent" = "agent";
+  let model = agentModel;
+  if (thread?.model) { source = "thread"; model = String(thread.model); }
+  else if (channel?.model) { source = "channel"; model = String(channel.model); }
+  else if (personalModel) { source = "personal"; model = personalModel; }
+  else if (workspaceModel) { source = "workspace"; model = workspaceModel; }
+  else if (global?.model) { source = "agent"; model = String(global.model); }
   const providerId = resolveProviderId(botId, channelId, threadRootId);
   const provider = providerId ? q1("SELECT id,name,kind FROM providers WHERE id=?", providerId) : undefined;
-  const overridden = threadRootId != null && !!q1("SELECT 1 FROM model_prefs WHERE bot_id=? AND scope='thread' AND scope_id=?", botId, String(threadRootId));
-  const skipper = q1("SELECT kind FROM agents WHERE bot_id=? AND status<>'deleted'", botId)?.kind === "skipper";
   return {
     provider_id: provider?.id ? Number(provider.id) : null,
     provider_name: provider?.name ? String(provider.name) : null,
     provider_kind: provider?.kind ? String(provider.kind) : null,
-    model: resolveModel(botId, channelId, threadRootId),
-    overridden,
-    editable: !skipper,
+    model,
+    requested_model: model,
+    source,
+    source_label: source === "personal" ? "Personal override" : source === "workspace" ? "Workspace default" : source === "thread" ? "Thread policy" : source === "channel" ? "Channel policy" : "Agent default",
+    personal_model: personalModel || null,
+    workspace_model: workspaceModel,
+    overridden: source === "thread" || source === "channel" || source === "personal",
+    editable: true,
   };
 }
 

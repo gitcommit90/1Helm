@@ -7,7 +7,7 @@ import { openOnboarding } from "./onboarding.ts";
 import { defaultTerminalComputer, openTerminals, refitChannelTerminals, getTerminalChrome } from "./term.ts";
 import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderNotes, renderTexts, renderThreads, type ChannelView } from "./channel.ts";
 import { renderCowork, setActiveCoworkChannel, stageCoworkPath } from "./cowork.ts";
-import { apiUrl, finishNativeLaunch, forgetMobileServer, getServerOrigin, isNativeMobile, serverAssetUrl, setMobileServer } from "./mobile.ts";
+import { apiUrl, finishNativeLaunch, forgetMobileServer, getServerOrigin, isNativeMobile, serverAssetUrl } from "./mobile.ts";
 
 /** Per-channel layout bound to the user profile (server user_ui_state). */
 type ChannelUiView = {
@@ -726,16 +726,6 @@ function applyMessageDeleted(e: {
 function renderAuth(): void {
   clear(root);
   const err = h("p", { class: "min-h-5 text-sm text-danger" });
-  const server = h("input", {
-    class: "field",
-    type: "url",
-    inputmode: "url",
-    placeholder: "https://your-1helm-server.com",
-    autocomplete: "url",
-    autocapitalize: "none",
-    spellcheck: false,
-    value: getServerOrigin(),
-  }) as HTMLInputElement;
   const u = h("input", { class: "field", placeholder: "username", autocomplete: "username" });
   const pw = h("input", { class: "field", type: "password", placeholder: "password", autocomplete: "current-password" });
   const submitButton = h("button", { class: "btn-primary w-full py-2.5" }, "Sign in") as HTMLButtonElement;
@@ -746,12 +736,6 @@ function renderAuth(): void {
     try {
       const password = pw.value;
       pw.value = "";
-      if (isNativeMobile()) {
-        setMobileServer(server.value);
-        const compatibility = await api<{ product?: string; mobile_api?: number; has_users?: boolean; setup_complete?: boolean }>("/api/mobile/compatibility");
-        if (compatibility.product !== "1Helm" || compatibility.mobile_api !== 1) throw new Error("That address is not a compatible 1Helm server.");
-        if (!compatibility.has_users || !compatibility.setup_complete) throw new Error("Finish setting up 1Helm on the host before connecting the mobile app.");
-      }
       const r = await api<{ token: string; user: User }>("/api/auth/login", { body: { username: u.value, password } });
       await setToken(r.token);
       await boot();
@@ -769,12 +753,11 @@ function renderAuth(): void {
         h("h1", { class: "mt-5 text-[2rem] font-bold leading-none tracking-[-0.03em] text-fg" }, "1Helm"),
         h("p", { class: "eyebrow mt-3 text-muted" }, "Native agent workspace")),
       h("div", { class: "card space-y-3 p-7" },
-        h("div", { class: "mb-3" }, h("h2", { class: "font-display text-[1.55rem] leading-tight text-fg" }, isNativeMobile() ? "Connect to your 1Helm" : "Enter the bridge"), h("p", { class: "mt-1.5 text-sm text-muted" }, isNativeMobile() ? "Your 1Helm host must already be set up and reachable over HTTPS." : "Sign in to your workspace.")),
-        isNativeMobile() ? h("label", { class: "space-y-1 text-xs font-semibold text-fg" }, "Server address", server) : null,
+        h("div", { class: "mb-3" }, h("h2", { class: "font-display text-[1.55rem] leading-tight text-fg" }, "Enter the bridge"), h("p", { class: "mt-1.5 text-sm text-muted" }, isNativeMobile() ? `Sign in to ${getServerOrigin()}.` : "Sign in to your workspace.")),
         u, pw, err, submitButton, isNativeMobile() ? h("p", { class: "text-center text-[11px] leading-5 text-faint" }, "Your password is sent only to this server for sign-in and is never saved. The session is stored in your device’s secure key store.") : access))));
   submitButton.onclick = () => { void submit(); };
   pw.addEventListener("keydown", (ev) => { if ((ev as KeyboardEvent).key === "Enter") submit(); });
-  (isNativeMobile() && !server.value ? server : u).focus();
+  u.focus();
   if (!isNativeMobile()) void renderAccessRequest(access);
   finishNativeLaunch();
 }
@@ -1255,6 +1238,15 @@ function openProfile(anchor: HTMLElement): void {
     h("p", { class: "border-t border-line pt-3 text-xs leading-5 text-muted" },
       "1Helm is AGPL-3.0-only. ",
       h("a", { class: "text-accent hover:underline", href: "https://github.com/gitcommit90/1Helm", target: "_blank", rel: "noopener noreferrer" }, "View source code ↗")));
+  pop.append(h("section", { class: "flex items-center justify-between gap-3 border-t border-line pt-3" },
+    h("div", {}, h("p", { class: "text-xs font-semibold text-fg" }, "Session"), h("p", { class: "text-[11px] text-muted" }, "Sign out of this 1Helm account.")),
+    h("button", { class: "btn-subtle min-h-9 shrink-0 px-3 text-xs", dataset: { profileLogout: "" }, onclick: async () => {
+      await disableNativeNotifications().catch(() => undefined);
+      await api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+      await clearToken();
+      close();
+      await boot();
+    } }, "Log Out")));
   if (isNativeMobile()) pop.append(h("section", { class: "flex items-center justify-between gap-3 border-t border-line pt-3" },
     h("div", { class: "min-w-0" }, h("p", { class: "text-xs font-semibold text-fg" }, "Connected server"), h("p", { class: "truncate text-[11px] text-muted" }, getServerOrigin())),
     h("button", { class: "btn-subtle min-h-9 shrink-0 px-3 text-xs", onclick: async () => {
@@ -2194,15 +2186,11 @@ function structuredQuestions(message: Message): HTMLElement | null {
     const buttons: HTMLButtonElement[] = [];
     const repaint = (): void => buttons.forEach((button) => {
       const selected = current.values.has(button.dataset.value || "");
-      button.classList.toggle("border-accent", selected);
-      button.classList.toggle("bg-accent", selected);
-      button.classList.toggle("text-white", selected);
-      button.classList.toggle("shadow-sm", selected);
       button.setAttribute("aria-pressed", String(selected));
     });
     for (const option of question.options) {
       const button = h("button", {
-        class: "rounded-lg border border-line bg-surface px-3 py-2 text-left text-sm text-fg transition hover:border-accent/60 hover:bg-hover",
+        class: "structured-answer-option relative rounded-lg border border-line bg-surface px-3 py-2 pl-10 text-left text-sm text-fg transition hover:border-accent/60 hover:bg-hover",
         type: "button", "aria-pressed": "false",
         dataset: { value: option.label }, title: option.description || option.label,
         onclick: (event: MouseEvent) => {
@@ -2211,7 +2199,7 @@ function structuredQuestions(message: Message): HTMLElement | null {
           else { current.values.clear(); current.values.add(option.label); }
           repaint();
         },
-      }, h("span", { class: "font-semibold" }, option.label), option.description ? h("span", { class: "mt-0.5 block text-xs text-muted" }, option.description) : null) as HTMLButtonElement;
+      }, h("span", { class: "structured-answer-check absolute left-3 top-2.5 grid h-5 w-5 place-items-center rounded-full border border-line text-transparent", "aria-hidden": "true" }, icon("check", 12)), h("span", { class: "font-semibold" }, option.label), option.description ? h("span", { class: "mt-0.5 block text-xs text-muted" }, option.description) : null) as HTMLButtonElement;
       buttons.push(button); options.append(button);
     }
     repaint();
@@ -2909,25 +2897,36 @@ function composer(parentId: number | null): HTMLElement {
   }) as HTMLButtonElement;
   const drawModelButton = (): void => {
     const policy = selectedPolicy;
-    modelButton.replaceChildren(icon("sliders", 13), h("span", { class: "truncate font-mono text-[11px] font-normal" }, policy?.model || agent?.model || "Choose model"));
-    modelButton.title = policy ? `${policy.provider_name || "Provider"} · ${policy.model}` : `Inherited model · ${agent?.model || "not configured"}`;
+    const source = policy?.source_label || (policy ? "Effective policy" : "Loading policy");
+    modelButton.replaceChildren(icon("sliders", 13), h("span", { class: "truncate font-mono text-[11px] font-normal" }, policy ? `${source}: ${policy.model}` : agent?.model || "Loading model…"));
+    modelButton.title = policy ? `${source} · Requested model ${policy.requested_model || policy.model}. Router provider selection and fallback are shown separately in Routes.` : "Loading the effective model policy";
     modelButton.disabled = !agent;
   };
   drawModelButton();
-  if (parentId) void api<{ policy: ModelPolicy }>(`/api/messages/${parentId}/model-policy`).then((result) => { selectedPolicy = result.policy; drawModelButton(); }).catch(() => undefined);
+  const refreshPolicy = async (): Promise<void> => {
+    if (!agent) return;
+    const result = await api<{ policy: ModelPolicy }>(parentId ? `/api/messages/${parentId}/model-policy` : `/api/channels/${S.channelId}/model-policy`);
+    selectedPolicy = result.policy; drawModelButton();
+  };
+  void refreshPolicy().catch(() => undefined);
 
   const drawAttach = (): void => { clear(attachBar); pending.forEach((p, i) => attachBar.append(h("span", { class: "file-pill" }, icon("file", 13), p.name, h("button", { class: "text-faint hover:text-danger", onclick: () => { pending.splice(i, 1); drawAttach(); } }, "✕")))); };
   const send = async (): Promise<void> => {
     const body = input.value.trim(); if (!body && !pending.length) return;
+    if (agent && !selectedPolicy) {
+      try { await refreshPolicy(); }
+      catch (error) { void appAlert((error as Error).message || "Could not load the effective model policy."); return; }
+    }
     const uploads = pending.slice();
     const originalValue = input.value;
     input.value = ""; input.style.height = "auto"; localStorage.removeItem(draftKey);
     pending.splice(0, uploads.length); drawAttach();
     try {
-      await api(`/api/channels/${S.channelId}/messages`, { body: { body, parentId, uploads, modelPolicy: selectedPolicy && !parentId ? { provider_id: selectedPolicy.provider_id, model: selectedPolicy.model } : undefined } });
+      await api(`/api/channels/${S.channelId}/messages`, { body: { body, parentId, uploads, modelPolicy: selectedPolicy && !parentId && selectedPolicy.source === "thread" ? { provider_id: selectedPolicy.provider_id, model: selectedPolicy.model } : undefined, effectiveModelPolicy: selectedPolicy ? { provider_id: selectedPolicy.provider_id, model: selectedPolicy.model, source: selectedPolicy.source } : undefined } });
     } catch (error) {
       if (!input.value) { input.value = originalValue; input.dispatchEvent(new Event("input")); }
       pending.unshift(...uploads); drawAttach();
+      if (/effective model policy changed/i.test((error as Error).message)) await refreshPolicy().catch(() => undefined);
       void appAlert((error as Error).message || "Could not send message");
     }
   };
@@ -3013,7 +3012,7 @@ async function composerModelPopover(event: MouseEvent, threadRootId: number | nu
   provider.addEventListener("change", () => { void load(); });
   const save = async (): Promise<void> => {
     if (!provider.value || !model.value) { status.textContent = "Choose both a provider and a model, or use Inherit."; return; }
-    let policy: ModelPolicy = { provider_id: agent.provider_id, provider_name: provider.selectedOptions[0]?.textContent || null, provider_kind: "routing", model: model.value, overridden: true, editable: true };
+    let policy: ModelPolicy = { provider_id: agent.provider_id, provider_name: provider.selectedOptions[0]?.textContent || null, provider_kind: "routing", model: model.value, requested_model: model.value, source: personalMode ? "personal" : "thread", source_label: personalMode ? "Personal override" : "Thread policy", personal_model: personalMode ? model.value : current?.personal_model, workspace_model: current?.workspace_model, overridden: true, editable: true };
     try {
       if (personalMode) await api("/api/workspace/model-policy", { method: "PATCH", body: { model: policy.model, personal: true } });
       else if (threadRootId) policy = (await api<{ policy: ModelPolicy }>(`/api/messages/${threadRootId}/model-policy`, { body: { provider_id: policy.provider_id, model: policy.model } })).policy;
@@ -3023,8 +3022,8 @@ async function composerModelPopover(event: MouseEvent, threadRootId: number | nu
   const inherit = async (): Promise<void> => {
     try {
       if (personalMode) {
-        const result = await api<{ model: string }>("/api/workspace/model-policy", { method: "PATCH", body: { model: "", personal: true } });
-        onChange({ provider_id: agent.provider_id, provider_name: agent.provider_name, provider_kind: "routing", model: result.model, overridden: false, editable: true });
+        const result = await api<{ model: string; source?: ModelPolicy["source"]; source_label?: string; workspace_model?: string }>("/api/workspace/model-policy", { method: "PATCH", body: { model: "", personal: true } });
+        onChange({ provider_id: agent.provider_id, provider_name: agent.provider_name, provider_kind: "routing", model: result.model, requested_model: result.model, source: result.source || "workspace", source_label: result.source_label || "Workspace default", personal_model: null, workspace_model: result.workspace_model || result.model, overridden: false, editable: true });
       } else if (threadRootId) {
         const result = await api<{ policy: ModelPolicy }>(`/api/messages/${threadRootId}/model-policy`, { body: { provider_id: null, model: null } });
         onChange(result.policy);
@@ -3032,12 +3031,22 @@ async function composerModelPopover(event: MouseEvent, threadRootId: number | nu
       close();
     } catch (error) { status.textContent = (error as Error).message; }
   };
+  const clearPersonal = async (): Promise<void> => {
+    try {
+      await api("/api/workspace/model-policy", { method: "PATCH", body: { model: "", personal: true } });
+      const result = await api<{ policy: ModelPolicy }>(threadRootId ? `/api/messages/${threadRootId}/model-policy` : `/api/channels/${S.channelId}/model-policy`);
+      onChange(result.policy); close();
+    } catch (error) { status.textContent = (error as Error).message; }
+  };
   pop.append(
     h("div", { class: "flex items-start justify-between gap-3" }, h("div", {}, h("div", { class: "font-semibold text-fg" }, personalMode ? "My model" : "Thread model"), h("div", { class: "mt-0.5 text-xs text-muted" }, personalMode ? "Uses your personal providers plus accounts explicitly shared with the workspace." : `Future replies from @${agent.name} use this choice.`)), h("button", { class: "grid h-8 w-8 place-items-center rounded text-muted hover:bg-hover", "aria-label": "Close", onclick: close }, icon("x", 16))),
     h("label", { class: "block space-y-1 text-xs font-semibold text-fg" }, "Provider", provider),
     h("label", { class: "block space-y-1 text-xs font-semibold text-fg" }, "Model", model),
     status,
-    h("div", { class: "flex justify-end gap-2" }, h("button", { class: "btn-subtle min-h-9 px-3 text-xs", onclick: () => { void inherit(); } }, "Use workspace default"), h("button", { class: "btn-primary min-h-9 px-3 text-xs", onclick: () => { void save(); } }, personalMode ? "Use for me" : "Use for thread")));
+    h("div", { class: "flex flex-wrap justify-end gap-2" },
+      current?.personal_model || personalMode ? h("button", { class: "btn-subtle min-h-9 px-3 text-xs", dataset: { clearPersonalModel: "" }, onclick: () => { void clearPersonal(); } }, "Use workspace default") : null,
+      !personalMode ? h("button", { class: "btn-subtle min-h-9 px-3 text-xs", onclick: () => { void inherit(); } }, threadRootId ? "Use inherited policy" : "Cancel thread choice") : null,
+      h("button", { class: "btn-primary min-h-9 px-3 text-xs", onclick: () => { void save(); } }, personalMode ? "Use for me" : "Use for thread")));
   document.body.append(pop);
   setTimeout(() => { document.addEventListener("mousedown", outside); document.addEventListener("keydown", keydown); }, 0);
   void api<{ models: RoutingModel[] }>("/api/workspace/model-policy").then(({ models }) => {

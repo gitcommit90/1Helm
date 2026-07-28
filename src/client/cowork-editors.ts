@@ -12,7 +12,7 @@ import { yaml } from "@codemirror/lang-yaml";
 import { yCollab } from "y-codemirror.next";
 import React from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Excalidraw } from "@excalidraw/excalidraw";
+import { Excalidraw, MainMenu } from "@excalidraw/excalidraw";
 import type { User } from "./api.ts";
 import { h } from "./dom.ts";
 import type { CoworkDocument } from "./cowork-collaboration.ts";
@@ -139,6 +139,7 @@ export function mountExcalidraw(
       read: (content: string) => Scene;
       write: (scene: Scene, content: string) => string;
     };
+    exportPdf?: () => void | Promise<void>;
   } = {},
 ): MountedEditor {
   const node = h("div", { class: `cowork-excalidraw ${className}`, "aria-label": label, dataset: { excalidrawCanvas: "" } });
@@ -185,7 +186,7 @@ export function mountExcalidraw(
     isCollaborating: true,
     zenModeEnabled: Boolean(options.presentation),
     viewModeEnabled: Boolean(options.viewMode),
-    UIOptions: { canvasActions: { loadScene: false, saveToActiveFile: false } },
+    UIOptions: { canvasActions: { loadScene: false, saveToActiveFile: false, export: false, saveAsImage: false } },
     onPointerUpdate: (payload: { pointer: { x: number; y: number; tool: "pointer" | "laser" }; button: "up" | "down" }) => {
       collaboration.provider.awareness.setLocalStateField("canvasPointer", { ...payload.pointer, button: payload.button });
     },
@@ -203,7 +204,12 @@ export function mountExcalidraw(
       last = content; collaboration.scene.set("json", content); onChange(content);
     },
   };
-  root.render(React.createElement(Excalidraw, props));
+  const menu = options.exportPdf ? React.createElement(MainMenu, null,
+    React.createElement(MainMenu.Item, { onSelect: () => { void options.exportPdf?.(); }, value: "export-pdf", children: "Export PDF" }),
+    React.createElement(MainMenu.Separator),
+    React.createElement(MainMenu.DefaultItems.ToggleTheme),
+    React.createElement(MainMenu.DefaultItems.ChangeCanvasBackground)) : null;
+  root.render(React.createElement(Excalidraw, props, menu));
   return {
     node,
     focus: () => node.querySelector<HTMLElement>("canvas")?.focus({ preventScroll: true }),

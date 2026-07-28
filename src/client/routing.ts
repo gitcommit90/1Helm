@@ -26,6 +26,17 @@ const providerCopy: Record<string, string> = {
   custom: "Any compatible OpenAI-style endpoint",
 };
 
+const routeProviderFamilies = [
+  { id: "chatgpt", name: "ChatGPT" },
+  { id: "claude", name: "Claude" },
+  { id: "antigravity", name: "Antigravity" },
+  { id: "xai", name: "xAI" },
+  { id: "openrouter", name: "OpenRouter" },
+  { id: "nvidia", name: "NVIDIA" },
+  { id: "cloudflare", name: "Cloudflare" },
+  { id: "glm", name: "GLM" },
+] as const;
+
 const fmt = (value: unknown): string => new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(Number(value || 0));
 const publicEndpoint = (): string => `${getServerOrigin() || location.origin}/v1`;
 const providerFamily = (provider: RoutingProvider): string => provider.type === "codex" ? "chatgpt" : provider.type;
@@ -316,8 +327,8 @@ function familyRouteMember(familyId: string, model: string, state: RoutingState)
 }
 
 function routingFabric(state: RoutingState): HTMLElement {
-  const families = [...new Set((state.providers || []).filter((p) => p.enabled !== false).map((p) => isCustom(p) ? "custom" : providerFamily(p)))].slice(0, 8);
-  const nodes = families.length ? families : ["chatgpt", "claude", "openrouter"];
+  const connectedFamilies = new Set((state.providers || []).filter((provider) => provider.enabled !== false && !isCustom(provider)).map(providerFamily));
+  const nodes = routeProviderFamilies;
   if (liveRoutingActivity) applyRoutingActivity(state, liveRoutingActivity);
   const rawEvents = Array.isArray(state.recentActivity) ? state.recentActivity as Array<Record<string, unknown>> : [];
   const latest = rawEvents[0] || ((state.activeRequests || [])[0] ? { type: "routed", request: (state.activeRequests || [])[0] } : null);
@@ -325,35 +336,35 @@ function routingFabric(state: RoutingState): HTMLElement {
   const activeFamily = String(request?.providerType || "").replace(/^codex$/, "chatgpt");
   const inFlight = Array.isArray(state.activeRequests) ? state.activeRequests.length : 0;
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", "0 0 720 124"); svg.setAttribute("class", "routing-fabric-svg");
-  svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Live dotted flow from requests through the 1Helm Router to the routed provider");
+  svg.setAttribute("viewBox", "0 0 720 280"); svg.setAttribute("class", "routing-fabric-svg");
+  svg.setAttribute("aria-hidden", "true");
   const svgEl = <K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string>): SVGElementTagNameMap[K] => {
     const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
     for (const [key, value] of Object.entries(attrs)) element.setAttribute(key, value);
     return element;
   };
   const path = (d: string, live: boolean): SVGPathElement => svgEl("path", { d, class: `routing-fabric-path ${live ? "is-live" : "is-idle"}` });
-  svg.append(path("M 112 62 C 205 62, 226 62, 302 62", inFlight > 0));
-  const providerPoints = nodes.map((id, index) => ({ id, y: nodes.length === 1 ? 62 : 14 + index * (96 / (nodes.length - 1)) }));
-  for (const point of providerPoints) svg.append(path(`M 418 62 C 486 62, 500 ${point.y}, 570 ${point.y}`, inFlight > 0 && (!activeFamily || point.id === activeFamily)));
-  svg.append(svgEl("rect", { x: "12", y: "38", width: "100", height: "48", rx: "14", class: "routing-fabric-node" }));
-  const requestTitle = svgEl("text", { x: "62", y: "57", "text-anchor": "middle", class: "routing-fabric-hub-label" }); requestTitle.textContent = "REQUESTS"; svg.append(requestTitle);
-  const requestCount = svgEl("text", { x: "62", y: "73", "text-anchor": "middle", class: "routing-fabric-hub-label" }); requestCount.textContent = inFlight ? `${inFlight} IN FLIGHT` : "READY"; svg.append(requestCount);
-  svg.append(svgEl("rect", { x: "302", y: "33", width: "116", height: "58", rx: "18", class: "routing-fabric-hub" }));
-  const routerTitle = svgEl("text", { x: "360", y: "57", "text-anchor": "middle", class: "routing-fabric-hub-label" }); routerTitle.textContent = "1HELM ROUTER"; svg.append(routerTitle);
-  const routerStatus = svgEl("text", { x: "360", y: "74", "text-anchor": "middle", class: "routing-fabric-hub-label" }); routerStatus.textContent = inFlight ? "ROUTING LIVE" : "POOL · FAIL OVER"; svg.append(routerStatus);
-  for (const point of providerPoints) {
-    svg.append(svgEl("circle", { cx: "586", cy: String(point.y), r: "11", class: "routing-fabric-node" }));
-    const label = svgEl("text", { x: "605", y: String(point.y + 3), class: "routing-fabric-hub-label" }); label.textContent = familyLabel(point.id, state).slice(0, 16).toUpperCase(); svg.append(label);
-  }
-  const flow = h("div", { class: "min-w-0" }, svg,
-    h("div", { class: "routing-fabric-legend" },
-      h("span", { class: `routing-fabric-chip ${inFlight ? "is-live" : ""}` }, `${inFlight || 0} active`),
-      ...nodes.map((id) => h("span", { class: `routing-fabric-chip ${activeFamily === id ? "border-accent text-accent is-live" : ""}` }, providerMark(id, 14), familyLabel(id, state)))));
+  const providerPoints = nodes.map((provider, index) => {
+    const x = 65 + index * (590 / (nodes.length - 1));
+    const center = (nodes.length - 1) / 2;
+    const y = 46 + Math.abs(index - center) * 5;
+    return { ...provider, x, y };
+  });
+  svg.append(path("M 360 248 C 360 225, 360 205, 360 185", inFlight > 0));
+  for (const point of providerPoints) svg.append(path(`M 360 135 C 360 96, ${point.x} 108, ${point.x} ${point.y + 25}`, inFlight > 0 && (!activeFamily || point.id === activeFamily)));
+  const providers = h("div", { class: "routing-live-providers", "aria-label": "Provider network" }, ...providerPoints.map((point) => h("div", {
+    class: `routing-live-provider ${connectedFamilies.has(point.id) ? "is-connected" : ""} ${activeFamily === point.id ? "is-active" : ""}`,
+    title: `${point.name} · ${connectedFamilies.has(point.id) ? "Connected" : "Not connected"}`,
+    style: `left:${(point.x / 720) * 100}%;top:${point.y - 22}px`,
+  }, providerMark(point.id, 24), h("span", {}, point.name))));
+  const router = h("div", { class: `routing-live-router ${inFlight ? "is-active" : ""}` }, icon("shuffle", 21), h("span", {}, "1Helm Router"), h("small", {}, inFlight ? "Routing live" : "Pool · fail over"));
+  const source = h("div", { class: `routing-live-source ${inFlight ? "is-active" : ""}` }, h("span", { class: "routing-live-pulse", "aria-hidden": "true" }), h("strong", {}, "Requests"), h("small", {}, `${inFlight} in flight`));
+  const flow = h("div", { class: "routing-live-stage", role: "img", "aria-label": `Bottom-to-top live route map: ${inFlight} requests through 1Helm Router to ${nodes.length} providers` },
+    h("div", { class: "routing-live-label" }, "Provider network"), svg, providers, router, source);
   const status = !request
     ? h("p", { class: "mt-2 text-center text-xs text-muted" }, "Waiting for the next routed request…")
     : h("div", { class: "mt-2 grid gap-1 rounded-lg border border-line bg-surface px-3 py-2 text-xs sm:grid-cols-[1fr_auto]" },
-      h("div", { class: "min-w-0" }, h("span", { class: "font-semibold text-fg" }, String(request.model || "Request")), h("span", { class: "ml-2 text-muted" }, request.providerName ? `→ ${String(request.providerName)}` : latest?.type === "started" ? "choosing a destination…" : "routing…")),
+      h("div", { class: "min-w-0" }, h("span", { class: "font-semibold text-fg" }, request.initiator === "system" ? `System work · ${String(request.work_kind || "maintenance").replace(/-/g, " ")}` : `Requested · ${String(request.model || "model")}`), h("span", { class: "ml-2 text-muted" }, request.providerName ? `Routed via ${String(request.providerName)}` : latest?.type === "started" ? "choosing a provider…" : "routing…")),
       h("span", { class: `font-mono ${latest?.type === "finished" && Number(request.status || 200) >= 400 ? "text-danger" : "text-accent"}` }, latest?.type === "finished" ? `${String(request.outcome || "finished")} · ${Math.max(0, Number(request.finishedAt || Date.now()) - Number(request.startedAt || Date.now()))}ms` : String(latest?.type || "active")));
   return h("div", { class: "routing-fabric", title: "Live requests routed by this workspace" }, flow, status);
 }
@@ -368,7 +379,7 @@ export async function openRoutingPopover(eventOrAnchor: Event | Element): Promis
   closeRoutingPopover?.();
   const state = await api<RoutingState>("/api/routing/state");
   const rect = anchor?.getBoundingClientRect();
-  const width = Math.min(420, Math.max(300, window.innerWidth - 24));
+  const width = Math.min(760, Math.max(300, window.innerWidth - 24));
   const left = rect ? Math.min(window.innerWidth - width - 12, Math.max(12, rect.right - width)) : window.innerWidth - width - 12;
   const top = rect ? Math.min(window.innerHeight - 180, rect.bottom + 8) : 48;
   const popover = h("aside", { class: "card fixed z-[80] max-h-[min(80vh,44rem)] overflow-auto p-3 shadow-xl", style: `width:${width}px;left:${left}px;top:${Math.max(8, top)}px`, dataset: { routingPopover: "" }, role: "dialog", "aria-label": "Live 1Helm Router activity" });
@@ -393,7 +404,7 @@ export async function openRoutingPopover(eventOrAnchor: Event | Element): Promis
       const at = finished || Number(request.routedAt || request.startedAt || 0);
       list.append(h("div", { class: "routing-event" },
         h("span", { class: `routing-event-dot ${status >= 400 ? "is-error" : ""}` }),
-        h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block truncate text-xs font-semibold text-fg" }, String(request.model || "Request")), h("span", { class: "block truncate text-[10px] text-muted" }, String(request.providerName || request.providerType || (finished ? request.outcome || "Completed" : "Choosing provider…")))),
+        h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block truncate text-xs font-semibold text-fg" }, request.initiator === "system" ? `System · ${String(request.work_kind || "maintenance").replace(/-/g, " ")}` : `Requested · ${String(request.model || "model")}`), h("span", { class: "block truncate text-[10px] text-muted" }, request.providerName || request.providerType ? `Routed via ${String(request.providerName || request.providerType)}` : String(finished ? request.outcome || "Completed" : "Choosing provider…"))),
         h("time", { class: "font-mono text-[10px] text-faint" }, at ? timeLabel(at) : "live")));
     }
     const endpoint = publicEndpoint();
@@ -449,7 +460,7 @@ function sourceCatalog(state: RoutingState, refresh: () => Promise<void>, confir
   const imageRow = h("div", { class: "mb-4 flex items-start gap-3 rounded-lg border border-line bg-raised/40 px-4 py-3" },
     h("span", { class: `mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${chatgptConnected ? "bg-ok" : "bg-faint"}` }),
     h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block text-sm font-semibold text-fg" }, "Image Generation · ChatGPT family"), h("span", { class: "mt-0.5 block text-xs leading-5 text-muted" }, chatgptConnected ? "Available automatically through the connected ChatGPT account." : "Connect a ChatGPT subscription account to make this workspace capability available.")));
-  return h("div", {}, heading("Provider fabric", "Requests → 1Helm → Providers", "Connect subscriptions and API keys once. Watch active work flow through 1Helm's account pool and into enabled providers."), routingFabric(state), imageRow, list);
+  return h("div", {}, heading("Provider fabric", "Requests rise through 1Helm Router", "Connect subscriptions and API keys once. Watch work flow bottom-to-top from each request, through the router, into an enabled provider."), routingFabric(state), imageRow, list);
 }
 
 function keyedForm(id: string, label: string, preset: RoutingState["keyedPresets"][number] | undefined, refresh: () => Promise<void>): HTMLElement {

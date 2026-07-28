@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { accessSync, constants as fsConstants, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 import puppeteer from "puppeteer";
+import { PDFDocument } from "pdf-lib";
 
 const root = process.cwd();
 const dataDir = join(root, ".native-test-data", `cowork-browser-${process.pid}`);
@@ -90,6 +91,9 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
 
   browser = await puppeteer.launch({ executablePath, headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox", "--use-fake-ui-for-media-stream"] });
   const page = await browser.newPage();
+  const downloadDir = join(dataDir, "downloads");
+  mkdirSync(downloadDir, { recursive: true });
+  await page.createCDPSession().then((session) => session.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloadDir }));
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
@@ -127,6 +131,7 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.goto(`${base}/c/${channel.slug}/cowork`, { waitUntil: "networkidle0" });
   await page.waitForSelector('[data-cowork-surface]');
   assert.deepEqual(await page.$$eval('[aria-label="Cowork sections"] button', (buttons) => buttons.map((button) => button.textContent.trim())), ["Notes", "Whiteboard", "Code", "Docs", "Presentations"]);
+  await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent?.includes("field-notes.md"));
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("field-notes.md"))?.click());
   await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Field notes"));
   const editorContent = '[aria-label="Notes editor"] .cm-content';
@@ -412,6 +417,11 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("review.slides.json"));
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("review.slides.json"))?.click());
   await page.waitForSelector('[data-cowork-presentation][data-slide-count="1"] .cowork-slide-canvas .excalidraw');
+  assert.deepEqual(await page.$eval('.cowork-slide-canvas', (canvas) => ({
+    width: Number(canvas.dataset.printableWidth),
+    height: Number(canvas.dataset.printableHeight),
+    ratio: getComputedStyle(canvas).aspectRatio,
+  })), { width: 1500, height: 1000, ratio: "1500 / 1000" }, "legacy decks open inside the default 1500 × 1000 printable area");
   await page.click('.cowork-slide-canvas .main-menu-trigger');
   await page.waitForSelector('.cowork-slide-canvas .dropdown-menu');
   const menuGeometry = await page.$eval('.cowork-slide-canvas .dropdown-menu', (menu) => {
@@ -433,6 +443,9 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   });
   assert.ok(menuGeometry.menuTop >= menuGeometry.stageTop - 1 && menuGeometry.menuBottom <= menuGeometry.stageBottom + 1, JSON.stringify(menuGeometry));
   assert.ok(menuGeometry.menuHeight > 100 && menuGeometry.clientHeight > 100 && menuGeometry.scrollHeight >= menuGeometry.clientHeight && menuGeometry.firstActionVisible, JSON.stringify(menuGeometry));
+  const presentationMenuText = await page.$eval('.cowork-slide-canvas .dropdown-menu', (menu) => menu.textContent || "");
+  assert.match(presentationMenuText, /Export PDF/);
+  assert.doesNotMatch(presentationMenuText, /Export Image/);
   await page.screenshot({ path: "/tmp/1helm-presentation-menu.png" });
   await page.click('.cowork-slide-canvas .main-menu-trigger');
   await collaboratorPage.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Presentations")?.click());
@@ -459,6 +472,28 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent.trim() === "Delete")?.click());
   await waitFor(async () => JSON.parse((await api(`/api/channels/${channel.id}/files/text?path=presentations%2Freview.slides.json`, {}, token)).file.content).slides.length === 2, "deleted presentation slide");
   await page.waitForFunction(() => document.querySelector('[data-cowork-presentation]')?.dataset.slideCount === "2");
+  await page.$eval('[aria-label="Printable width"]', (input) => { input.value = "1600"; input.dispatchEvent(new Event("change", { bubbles: true })); });
+  await page.waitForSelector('.cowork-slide-canvas[data-printable-width="1600"]');
+  await page.$eval('[aria-label="Printable height"]', (input) => { input.value = "900"; input.dispatchEvent(new Event("change", { bubbles: true })); });
+  await page.waitForSelector('.cowork-slide-canvas[data-printable-width="1600"][data-printable-height="900"]');
+  const persistedDeck = await waitFor(async () => {
+    const parsed = JSON.parse((await api(`/api/channels/${channel.id}/files/text?path=presentations%2Freview.slides.json`, {}, token)).file.content);
+    return parsed.version === 3 && parsed.printableArea?.width === 1600 && parsed.printableArea?.height === 900 ? parsed : null;
+  }, "custom printable area persistence");
+  assert.equal(persistedDeck.slides.flatMap((slide) => slide.scene?.elements || []).some((element) => element.id === "1helm-printable-area-boundary"), false,
+    "the locked editing boundary never becomes persisted slide content");
+
+  await page.click('.cowork-slide-canvas .main-menu-trigger');
+  await page.waitForSelector('.cowork-slide-canvas .dropdown-menu');
+  await page.evaluate(() => [...document.querySelectorAll('.cowork-slide-canvas .dropdown-menu-item')].find((item) => item.textContent?.trim() === "Export PDF")?.click());
+  const pdfPath = await waitFor(() => {
+    const file = readdirSync(downloadDir).find((name) => name.endsWith(".pdf") && !name.endsWith(".crdownload"));
+    return file ? join(downloadDir, file) : null;
+  }, "complete presentation PDF download", 30_000);
+  const exportedPdf = await PDFDocument.load(readFileSync(pdfPath));
+  assert.equal(exportedPdf.getPageCount(), 2, "Export PDF emits the entire deck as one two-page document");
+  assert.deepEqual(exportedPdf.getPages().map((pdfPage) => ({ width: pdfPage.getWidth(), height: pdfPage.getHeight() })),
+    [{ width: 1600, height: 900 }, { width: 1600, height: 900 }], "every PDF page uses the exact custom printable dimensions");
   await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent.trim() === "Present")?.click());
   await page.waitForSelector('[role="dialog"][aria-label="Presentation mode"]');
   await page.keyboard.press("Escape");

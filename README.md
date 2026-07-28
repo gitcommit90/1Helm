@@ -143,10 +143,11 @@ acceptance from the same source commit.
 
 The mobile apps are thin, native gateways to a 1Helm you already run. Install
 and finish setup on a supported Mac, Windows, or Linux host first, give that
-host an HTTPS address, then enter the address, username, and password in the
-mobile app. The password is used only for sign-in and is never retained; the
-resulting session is stored in the iOS Keychain or encrypted with a key held by
-Android Keystore.
+host an HTTPS address, then select that address in the app. The app loads the
+selected instance's live frontend directly, so browsers, iPhone, iPad, and
+Android always use the same current interface. Sign-in happens on that live
+frontend; the password is never retained and the resulting session is stored
+in the iOS Keychain or encrypted with a key held by Android Keystore.
 
 - iPhone and iPad use the App Store build under the stable bundle identifier
   `com.gitcommit90.onehelm.mobile`.
@@ -155,9 +156,11 @@ Android Keystore.
   you used to open the file. Verify the release SHA-256 and install it; future
   releases signed by the same permanent 1Helm certificate install in place.
 - The native clients require HTTPS, do not contain or initialize the 1Helm
-  server, and do not retain host data or provider credentials beyond the
-  selected server address and secure session token. Use **Disconnect** in the
-  profile menu to erase both from the device.
+  server or a frozen copy of its product frontend, and do not retain host data
+  or provider credentials beyond the selected server address and secure
+  session token. Native bridge access is restricted to that exact scheme,
+  host, and port. Use **Disconnect** in the profile menu to erase both from the
+  device.
 - iPhone notifications are opt-in under **Settings → Notifications**. Device
   registration belongs to the signed-in account, per-channel mute still wins,
   and tapping an update opens its channel or thread. iOS camera and photo
@@ -252,6 +255,9 @@ and an audit trail. A prompt saying “use this service” is not a connector.
   `/workspace/presentations`, with one consistent file rail, live collaborative
   text editors, embedded whiteboard and slide canvases, and an optional
   channel-agent panel that starts an ordinary thread with the open file path.
+- Presentations define a visible, locked printable area (1500 × 1000 by
+  default), allow custom page dimensions, and export the complete bounded slide
+  deck as one multi-page PDF while excluding work outside each page.
 - Quick Note in the top bar for capturing a Markdown note into
   `/workspace/notes` without leaving or repositioning the current channel view.
 - Durable files, threads, curated memory, Mnemosyne long-term recall,
@@ -301,7 +307,7 @@ A fresh data directory opens first-run setup. The source runtime defaults to
 | `PORT` | `8123` | HTTP/WebSocket control-plane port. |
 | `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and narrow workspace mirrors. |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `lxc` on Linux, `wsl` on Windows | Host isolation backend; `native` and `mock` are explicit development/test overrides. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.21` | Versioned channel-machine image contract. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.22` | Versioned channel-machine image contract. |
 
 ### Agent-first JSON CLI
 

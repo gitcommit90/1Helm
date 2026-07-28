@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="color-scheme" content="light dark"><title>1Helm unavailable</title>
+  <style>:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17191d;background:#f5f3ec}*{box-sizing:border-box}body{min-height:100dvh;margin:0;padding:2rem;display:grid;place-items:center;text-align:center}main{width:min(100%,24rem);padding:1.5rem;border:1px solid #d9d5ca;border-radius:1rem;background:#fff}h1{margin:.2rem 0;font-size:1.55rem}p{color:#68655e;line-height:1.55}button{width:100%;min-height:3rem;margin-top:.6rem;border:0;border-radius:.65rem;background:#ef5b2a;color:#fff;font:inherit;font-weight:750}.secondary{border:1px solid #c9c5ba;background:transparent;color:inherit}@media(prefers-color-scheme:dark){:root{color:#f4f2eb;background:#111318}main{border-color:#34373e;background:#191c22}p{color:#a8a59d}.secondary{border-color:#3d4149}}</style>
+</head>
+<body><main><h1>Instance unavailable</h1><p>1Helm could not reach the selected instance. Check its connection, retry, or choose a different instance.</p><button onclick="location.reload()">Retry</button><button class="secondary" id="change">Change instance</button><div id="status" role="alert"></div></main><script src="capacitor.js"></script><script>document.getElementById("change").onclick=async()=>{try{await window.Capacitor.Plugins.InstanceGateway.clearServer()}catch(error){document.getElementById("status").textContent=error.message||"Could not reset the instance."}}</script></body>
+</html>

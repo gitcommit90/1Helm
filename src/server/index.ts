@@ -485,7 +485,15 @@ function setBotComputers(botId: number, computerIds: unknown[]): void {
   }
 }
 
-function postMessage(channelId: number, user: Row, text: string, parentId: number | null, uploads: { token: string; name: string; mime: string; size: number }[], modelPolicy?: { provider_id?: number | null; model?: string | null }): Row {
+function postMessage(
+  channelId: number,
+  user: Row,
+  text: string,
+  parentId: number | null,
+  uploads: { token: string; name: string; mime: string; size: number }[],
+  modelPolicy?: { provider_id?: number | null; model?: string | null },
+  submittedPolicy?: { provider_id?: number | null; model?: string; source?: string },
+): Row {
   const channel = q1("SELECT status,kind FROM channels WHERE id=?", channelId);
   if (!channel) throw new Error("Channel not found.");
   if (channel.status !== "active") throw new Error("Restore this channel before starting new work.");
@@ -497,6 +505,17 @@ function postMessage(channelId: number, user: Row, text: string, parentId: numbe
   if (!message && !(uploads || []).length) throw new Error("Write a message or attach a file.");
   if (message.length > 50_000) throw new Error("Messages are limited to 50,000 characters.");
   if (modelPolicy?.provider_id && !q1("SELECT 1 FROM providers WHERE id=?", Number(modelPolicy.provider_id))) throw new Error("Provider not found.");
+  const resident = agentForChannel(channelId);
+  if (submittedPolicy?.model && resident?.bot_id) {
+    const effective = modelPolicy?.model && !parentId && resident.kind !== "skipper"
+      ? { provider_id: modelPolicy.provider_id ? Number(modelPolicy.provider_id) : null, model: String(modelPolicy.model), source: "thread" }
+      : resolvedModelPolicy(Number(resident.bot_id), channelId, parentId, Number(user.id));
+    const submittedProviderId = submittedPolicy.provider_id ? Number(submittedPolicy.provider_id) : null;
+    const effectiveProviderId = effective.provider_id ? Number(effective.provider_id) : null;
+    if (submittedProviderId !== effectiveProviderId || String(submittedPolicy.model) !== String(effective.model || "") || String(submittedPolicy.source || "") !== String(effective.source || "")) {
+      throw new Error("The effective model policy changed before this message was submitted. Review the refreshed model label and send again.");
+    }
+  }
   const rootId = parentId || 0;
   const existingThread = rootId ? q1("SELECT id,stopped_followup_pending FROM threads WHERE root_message_id=? AND channel_id=?", rootId, channelId) : undefined;
   const stoppedFollowup = Boolean(existingThread?.stopped_followup_pending);
@@ -508,11 +527,10 @@ function postMessage(channelId: number, user: Row, text: string, parentId: numbe
   const actualRootId = parentId || id;
   const threadId = ensureThread(actualRootId, channelId);
   if (modelPolicy?.model) {
-    const agent = agentForChannel(channelId);
     // Skipper always keeps its workspace-wide policy, including in #main.
-    if (agent?.bot_id && agent.kind !== "skipper") {
+    if (resident?.bot_id && resident.kind !== "skipper") {
       const providerId = modelPolicy.provider_id ? Number(modelPolicy.provider_id) : null;
-      setModelPolicy(Number(agent.bot_id), "thread", String(actualRootId), providerId, String(modelPolicy.model));
+      setModelPolicy(Number(resident.bot_id), "thread", String(actualRootId), providerId, String(modelPolicy.model));
     }
   }
   run("UPDATE threads SET status='open', updated_at=? WHERE id=? AND status IN ('waiting','resolved','failed')", now(), threadId);
@@ -888,7 +906,7 @@ const server = createServer(async (req, res) => {
       if (!canUseAgentSurfaces(user)) return json(res, 403, { error: "Join an agent channel to use model controls." });
       const workspaceModel = String(q1("SELECT default_model FROM workspace WHERE id=1")?.default_model || "");
       const personalModel = String(q1("SELECT model FROM user_model_prefs WHERE user_id=?", user.id)?.model || "");
-      return json(res, 200, { model: personalModel || workspaceModel, inherited: !personalModel, workspace_model: workspaceModel, models: await routingModels(Number(user.id)) });
+      return json(res, 200, { model: personalModel || workspaceModel, requested_model: personalModel || workspaceModel, source: personalModel ? "personal" : "workspace", source_label: personalModel ? "Personal override" : "Workspace default", personal_model: personalModel || null, inherited: !personalModel, workspace_model: workspaceModel, models: await routingModels(Number(user.id)) });
     }
     if (p === "/api/workspace/model-policy" && m === "PATCH") {
       const b = await jbody(req);
@@ -899,7 +917,8 @@ const server = createServer(async (req, res) => {
         if (model) run(`INSERT INTO user_model_prefs (user_id,model,updated) VALUES (?,?,?)
           ON CONFLICT(user_id) DO UPDATE SET model=excluded.model,updated=excluded.updated`, user.id, model, now());
         else run("DELETE FROM user_model_prefs WHERE user_id=?", user.id);
-        return json(res, 200, { ok: true, model: model || String(q1("SELECT default_model FROM workspace WHERE id=1")?.default_model || ""), inherited: !model, models: available });
+        const workspaceModel = String(q1("SELECT default_model FROM workspace WHERE id=1")?.default_model || "");
+        return json(res, 200, { ok: true, model: model || workspaceModel, requested_model: model || workspaceModel, source: model ? "personal" : "workspace", source_label: model ? "Personal override" : "Workspace default", personal_model: model || null, workspace_model: workspaceModel, inherited: !model, models: available });
       }
       if (!model) return json(res, 400, { error: "Choose an enabled model or named route." });
       const internalId = await internalRoutingProviderId();
@@ -1665,10 +1684,17 @@ const server = createServer(async (req, res) => {
             if (viewers.length) suffix.push(`Working with: ${viewers.map((username) => `@${username}`).join(" ")}`);
             if (suffix.length) body = `${body.trim()}\n\n${suffix.join("\n")}`;
           }
-          return json(res, 200, { message: postMessage(cid, user, body, b.parentId ? Number(b.parentId) : null, (b.uploads as never[]) || [], b.modelPolicy as never) });
+          return json(res, 200, { message: postMessage(cid, user, body, b.parentId ? Number(b.parentId) : null, (b.uploads as never[]) || [], b.modelPolicy as never, b.effectiveModelPolicy as never) });
         }
         catch (error) { return json(res, 409, { error: (error as Error).message }); }
       }
+    }
+    if ((mm = p.match(/^\/api\/channels\/(\d+)\/model-policy$/)) && m === "GET") {
+      const cid = Number(mm[1]);
+      if (!canSee(user, cid)) return json(res, 403, { error: "No access" });
+      const agent = agentForChannel(cid);
+      if (!agent?.bot_id) return json(res, 404, { error: "Resident agent not found" });
+      return json(res, 200, { policy: resolvedModelPolicy(Number(agent.bot_id), cid, null, Number(user.id)), models: await routingModels(Number(user.id)) });
     }
     if ((mm = p.match(/^\/api\/messages\/(\d+)\/thread$/)) && m === "GET") {
       const root = q1("SELECT * FROM messages WHERE id=?", Number(mm[1]));
@@ -1692,7 +1718,7 @@ const server = createServer(async (req, res) => {
       if (!root || !canSee(user, Number(root.channel_id))) return json(res, 404, { error: "Not found" });
       const agent = agentForChannel(Number(root.channel_id));
       if (!agent?.bot_id) return json(res, 404, { error: "Resident agent not found" });
-      if (m === "GET") return json(res, 200, { policy: resolvedModelPolicy(Number(agent.bot_id), Number(root.channel_id), Number(root.id)) });
+      if (m === "GET") return json(res, 200, { policy: resolvedModelPolicy(Number(agent.bot_id), Number(root.channel_id), Number(root.id), Number(user.id)) });
       if (m === "POST") {
         if (!user.is_admin) return json(res, 403, { error: "Only the Captain can change a thread model." });
         if (agent.kind === "skipper") return json(res, 409, { error: "Skipper always uses the workspace-wide model policy." });
@@ -1701,7 +1727,7 @@ const server = createServer(async (req, res) => {
         if (providerId && !q1("SELECT 1 FROM providers WHERE id=?", providerId)) return json(res, 400, { error: "Provider not found" });
         if (b.model && !(await routingModels()).some((candidate) => candidate.id === String(b.model))) return json(res, 400, { error: "That model is disabled or no longer exists." });
         setModelPolicy(Number(agent.bot_id), "thread", String(root.id), providerId, b.model ? String(b.model) : null);
-        return json(res, 200, { policy: resolvedModelPolicy(Number(agent.bot_id), Number(root.channel_id), Number(root.id)) });
+        return json(res, 200, { policy: resolvedModelPolicy(Number(agent.bot_id), Number(root.channel_id), Number(root.id), Number(user.id)) });
       }
     }
     if ((mm = p.match(/^\/api\/messages\/(\d+)\/stop$/)) && m === "POST") {

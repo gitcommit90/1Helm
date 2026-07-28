@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { access, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -87,18 +88,22 @@ test("mobile compatibility is explicit and CORS is confined to packaged Capacito
 });
 
 test("Capacitor shells keep sessions native, connections HTTPS-only, and release identities stable", async () => {
-  const [config, mobile, api, app, notifications, androidManifest, androidBuild, androidRules, androidPackage, androidStyles, androidLaunch, iosInfo, iosProject, iosLaunch, privacy, packageJson, iosPackage] = await Promise.all([
+  const [config, mobile, api, app, notifications, androidManifest, androidBuild, androidRules, androidPackage, androidStyles, androidLaunch, iosInfo, iosProject, iosLaunch, privacy, packageJson, iosPackage, gatewayHtml, gatewayError, androidGateway, androidActivity, iosGateway] = await Promise.all([
     read("capacitor.config.json"), read("src/client/mobile.ts"), read("src/client/api.ts"), read("src/client/app.ts"),
     read("src/client/notifications.ts"),
     read("android/app/src/main/AndroidManifest.xml"), read("android/app/build.gradle"), read("android/app/src/main/res/xml/data_extraction_rules.xml"), read("scripts/package-android-apk.mjs"),
     read("android/app/src/main/res/values/styles.xml"), read("android/app/src/main/res/layout/launch_screen.xml"), read("ios/App/App/Info.plist"), read("ios/App/App.xcodeproj/project.pbxproj"), read("ios/App/App/Base.lproj/LaunchScreen.storyboard"),
     read("ios/App/App/PrivacyInfo.xcprivacy"), read("package.json"), read("scripts/package-ios-ipa.mjs"),
+    read("mobile-gateway/index.html"), read("mobile-gateway/error.html"), read("android/app/src/main/java/com/gitcommit90/onehelm/mobile/InstanceGatewayPlugin.java"), read("android/app/src/main/java/com/gitcommit90/onehelm/mobile/MainActivity.java"), read("ios/App/App/GatewayViewController.swift"),
   ]);
   const parsed = JSON.parse(config);
   assert.equal(parsed.appId, "com.gitcommit90.onehelm.mobile");
   assert.equal(parsed.server.androidScheme, "https");
   assert.equal(parsed.server.cleartext, false);
-  assert.equal(parsed.server.url, undefined, "release app packages the audited local UI instead of navigating a wildcard remote WebView");
+  assert.equal(parsed.webDir, "mobile-gateway", "the app packages only the connection and recovery shell");
+  assert.equal(parsed.server.url, undefined, "the exact selected server is injected natively at launch, never as a wildcard build-time origin");
+  assert.equal(parsed.server.allowNavigation, undefined, "no wildcard navigation grant can broaden native bridge access");
+  assert.equal(parsed.server.errorPath, "error.html");
   assert.equal(parsed.loggingBehavior, "none");
   assert.equal(parsed.android.buildOptions.releaseType, "APK");
   assert.equal(parsed.android.webContentsDebuggingEnabled, false);
@@ -124,7 +129,10 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.match(mobile, /StatusBar\.setBackgroundColor\(\{ color: surface \}\)/, "native status chrome follows the computed header surface");
   assert.match(mobile, /contains\("light"\) \? Style\.Light : Style\.Dark/, "status indicators stay legible when the user switches theme");
   assert.match(mobile, /App\.getLaunchUrl/, "a cold-start OAuth callback is retained");
-  assert.doesNotMatch(mobile, /destination\.origin === serverOrigin/, "server links cannot replace the audited packaged WebView");
+  assert.match(mobile, /registerPlugin<InstanceGateway>\("InstanceGateway"\)/);
+  assert.match(mobile, /location\.origin !== serverOrigin/, "the live frontend rejects a bridge injected onto any origin other than the selected instance");
+  assert.match(mobile, /target\.protocol = target\.protocol === "https:" \? "wss:" : "ws:"/,
+    "same-origin WebSockets preserve ws:// for HTTP browser instances and use wss:// for HTTPS/native gateways");
   assert.doesNotMatch(api, /let token = localStorage\.getItem/, "the session is not eagerly copied out of native secure storage");
   assert.match(app, /if \(isNativeMobile\(\) && !getToken\(\)\) return renderAuth\(\)/, "the gateway never opens host onboarding");
   assert.match(app, /src: serverAssetUrl\(avatarValue\)/, "server-hosted custom avatars resolve against the selected host");
@@ -134,6 +142,9 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.match(androidManifest, /android\.permission\.INTERNET/);
   assert.match(androidManifest, /android\.permission\.RECORD_AUDIO/);
   assert.match(androidManifest, /android:scheme="onehelm" android:host="openrouter"/);
+  assert.match(androidGateway, /parsed\.protocol|"https"\.equalsIgnoreCase|validOrigin/);
+  assert.match(androidGateway, /shouldOverrideLoad[\s\S]*sameOrigin[\s\S]*https:\/\/localhost/, "Android rejects in-WebView HTTP(S) navigation outside the exact local or selected origin");
+  assert.match(androidActivity, /registerPlugin\(InstanceGatewayPlugin\.class\)[\s\S]*setServerUrl\(selected\)[\s\S]*setErrorPath\("error\.html"\)/, "Android builds a bridge for exactly the selected HTTPS origin");
   assert.match(androidBuild, /versionName oneHelmVersion/);
   assert.match(androidBuild, /HELM_ANDROID_SIGNING_PROPERTIES/);
   assert.match(androidBuild, /signingConfig signingConfigs\.release/);
@@ -157,6 +168,9 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.match(iosInfo, /NSSpeechRecognitionUsageDescription/);
   assert.match(iosInfo, /ITSAppUsesNonExemptEncryption/);
   assert.match(iosProject, /PRODUCT_BUNDLE_IDENTIFIER = com\.gitcommit90\.onehelm\.mobile/);
+  assert.match(iosProject, /GatewayViewController\.swift in Sources/);
+  assert.match(iosGateway, /descriptor\.errorPath = "error\.html"[\s\S]*descriptor\.serverURL = origin[\s\S]*registerPluginInstance\(InstanceGatewayPlugin\(\)\)/, "iOS builds a bridge for exactly the selected HTTPS origin");
+  assert.match(iosGateway, /shouldOverrideLoad[\s\S]*sameOrigin[\s\S]*scheme\?\.lowercased\(\)[\s\S]*host\?\.lowercased\(\)/, "iOS rejects in-WebView HTTP(S) navigation outside an exact scheme, host, and port match");
   assert.match(iosProject, /PrivacyInfo\.xcprivacy in Resources/);
   assert.match(iosProject, /CODE_SIGN_ENTITLEMENTS = App\/App\.entitlements/);
   assert.match(notifications, /mobilePlatform\(\) !== "ios"/, "the current release offers push only on the platform with a complete APNs delivery path");
@@ -170,6 +184,12 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   const pkg = JSON.parse(packageJson);
   for (const dependency of ["@capacitor/core", "@capacitor/android", "@capacitor/ios", "@aparajita/capacitor-secure-storage"]) assert.ok(pkg.dependencies[dependency]);
   assert.ok(pkg.scripts["mobile:sync"] && pkg.scripts["package:android:release"] && pkg.scripts["package:ios:release"]);
+
+  assert.match(gatewayHtml, /Connect to 1Helm[\s\S]*api\/mobile\/compatibility[\s\S]*selectServer/);
+  assert.match(gatewayError, /Instance unavailable[\s\S]*Retry[\s\S]*Change instance/);
+  for (const frozenAsset of ["bundle.js", "app.css", "excalidraw"]) {
+    assert.doesNotMatch(gatewayHtml + gatewayError, new RegExp(frozenAsset.replace(".", "\\."), "i"), `gateway contains no frozen ${frozenAsset}`);
+  }
 
   const iosIcon = await sharp(join(root, "ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png")).metadata();
   assert.equal(iosIcon.width, 1024); assert.equal(iosIcon.height, 1024);
@@ -194,71 +214,54 @@ test("mobile server addresses normalize to an HTTPS origin and reject ambiguous 
 test("the packaged phone gateway opens a fitting connection screen instead of host setup", {
   skip: executablePath ? false : "No local Chrome executable; native-shell and transport contracts still run independently.",
 }, async () => {
-  const dataDir = await mkdtemp(join(tmpdir(), "1helm-mobile-ui-test-"));
+  const gatewayHtml = await read("mobile-gateway/index.html");
   const port = await freePort();
-  const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/server/index.ts"], {
-    cwd: root,
-    env: { ...process.env, CTRL_DATA_DIR: dataDir, PORT: String(port), HELM_CHANNEL_COMPUTER_BACKEND: "native" },
-    stdio: ["ignore", "pipe", "pipe"],
+  const gatewayServer = createHttpServer((request, response) => {
+    if (request.url === "/" || request.url === "/index.html") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" }); response.end(gatewayHtml); return;
+    }
+    if (request.url === "/capacitor.js") {
+      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
+      response.end(`window.Capacitor={Plugins:{InstanceGateway:{getServer:async()=>({origin:""}),selectServer:async({origin})=>({origin})}}};`); return;
+    }
+    response.writeHead(404); response.end("not found");
+  });
+  await new Promise((resolveListen, reject) => {
+    gatewayServer.once("error", reject);
+    gatewayServer.listen(port, "127.0.0.1", resolveListen);
   });
   let browser;
   try {
     const base = `http://127.0.0.1:${port}`;
-    await waitFor(`${base}/api/setup/status`);
     browser = await puppeteer.launch({ executablePath, headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
     const page = await browser.newPage();
     await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
-    await page.evaluateOnNewDocument(() => {
-      // Minimal Capacitor Android bridge contract. Native methods resolve as
-      // they do on-device, while secure storage begins empty for this test.
-      Object.defineProperty(window, "androidBridge", { value: {}, configurable: true });
-      const promiseMethods = (names) => names.map((name) => ({ name, rtype: "promise" }));
-      window.Capacitor = {
-        PluginHeaders: [
-          { name: "SecureStorage", methods: promiseMethods(["setSynchronizeKeychain", "internalGetItem", "internalSetItem", "internalRemoveItem", "clearItemsWithPrefix", "getPrefixedKeys"]) },
-          { name: "StatusBar", methods: promiseMethods(["setStyle", "setOverlaysWebView"]) },
-          { name: "Keyboard", methods: promiseMethods(["setResizeMode"]) },
-          { name: "App", methods: [{ name: "addListener", rtype: "callback" }, ...promiseMethods(["removeListener", "getLaunchUrl"]) ] },
-          { name: "Browser", methods: promiseMethods(["open", "close"]) },
-        ],
-        nativePromise(plugin, method) {
-          if (plugin === "SecureStorage" && method === "internalGetItem") return Promise.resolve({ data: null });
-          if (plugin === "SecureStorage" && method === "internalRemoveItem") return Promise.resolve({ success: false });
-          if (plugin === "SecureStorage" && method === "getPrefixedKeys") return Promise.resolve({ keys: [] });
-          return Promise.resolve({});
-        },
-        nativeCallback() { return Promise.resolve("mobile-test-listener"); },
-      };
-    });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(base, { waitUntil: "networkidle0" });
     await page.waitForSelector('input[placeholder="https://your-1helm-server.com"]');
     const screen = await page.evaluate(() => {
-      const stage = document.querySelector(".auth-stage");
+      const card = document.querySelector("main");
       const inputs = [...document.querySelectorAll("input")];
       return {
-        body: document.body.textContent || "",
+        body: card?.textContent || "",
         serverType: inputs[0]?.getAttribute("type"),
-        passwordType: inputs.at(-1)?.getAttribute("type"),
+        inputCount: inputs.length,
         overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-        stageOverflowY: stage ? stage.scrollHeight - stage.clientHeight : -1,
-        nativePlatform: document.documentElement.dataset.nativeMobile,
+        cardFits: card ? card.getBoundingClientRect().top >= 0 && card.getBoundingClientRect().bottom <= innerHeight : false,
       };
     });
-    assert.match(screen.body, /Connect to your 1Helm/);
-    assert.match(screen.body, /must already be set up and reachable over HTTPS/);
+    assert.match(screen.body, /Connect to 1Helm/);
+    assert.match(screen.body, /live interface/);
     assert.doesNotMatch(screen.body, /Create the Captain account/);
+    assert.doesNotMatch(screen.body, /password|Sign in/i);
     assert.equal(screen.serverType, "url");
-    assert.equal(screen.passwordType, "password");
-    assert.equal(screen.nativePlatform, "android");
+    assert.equal(screen.inputCount, 1, "the packaged gateway asks only for the selected instance");
     assert.ok(screen.overflowX <= 0, `phone gateway has ${screen.overflowX}px horizontal overflow`);
-    assert.ok(screen.stageOverflowY <= 0, `phone connection card has ${screen.stageOverflowY}px vertical overflow`);
+    assert.equal(screen.cardFits, true, "the connection card fits the phone viewport");
     assert.deepEqual(errors, []);
   } finally {
     if (browser) await browser.close().catch(() => undefined);
-    child.kill("SIGTERM");
-    await new Promise((resolveWait) => child.once("exit", resolveWait));
-    await rm(dataDir, { recursive: true, force: true });
+    await new Promise((resolveClose) => gatewayServer.close(resolveClose));
   }
 });

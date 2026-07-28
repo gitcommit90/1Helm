@@ -3,13 +3,16 @@ import { clear, color, h, icon, initials, md } from "./dom.ts";
 import { appAlert, appConfirm, appPrompt, mountSpeechToTextControl, setFocusedSpeechTarget } from "./app.ts";
 import { connectCoworkDocument, type CoworkDocument } from "./cowork-collaboration.ts";
 import { mountCodeMirror, mountExcalidraw, type MountedEditor } from "./cowork-editors.ts";
+import { exportToCanvas, getCommonBounds } from "@excalidraw/excalidraw";
+import { PDFDocument } from "pdf-lib";
 
 export type CoworkSection = "notes" | "whiteboards" | "code" | "docs" | "presentations";
 
 type EditableFile = ChannelFile & { content: string };
 type SlideScene = { elements: readonly unknown[]; appState?: Record<string, unknown>; files?: Record<string, unknown> };
 type DeckSlide = { id: string; name: string; scene: SlideScene };
-type Deck = { type: "1helm-slides"; version: 2; slides: DeckSlide[] };
+type PrintableArea = { width: number; height: number };
+type Deck = { type: "1helm-slides"; version: 3; printableArea: PrintableArea; slides: DeckSlide[] };
 type SectionSession = {
   folder: string;
   path: string;
@@ -62,7 +65,36 @@ function fileIcon(file: ChannelFile, size = 17): SVGElement {
 }
 
 function blankScene(): SlideScene { return { elements: [], appState: { viewBackgroundColor: "#ffffff" }, files: {} }; }
-function blankDeck(): Deck { return { type: "1helm-slides", version: 2, slides: [{ id: crypto.randomUUID(), name: "Slide 1", scene: blankScene() }] }; }
+const DEFAULT_PRINTABLE_AREA: PrintableArea = { width: 1500, height: 1000 };
+const PRINTABLE_BOUNDARY_ID = "1helm-printable-area-boundary";
+function blankDeck(): Deck { return { type: "1helm-slides", version: 3, printableArea: { ...DEFAULT_PRINTABLE_AREA }, slides: [{ id: crypto.randomUUID(), name: "Slide 1", scene: blankScene() }] }; }
+
+function printableArea(value: unknown): PrintableArea {
+  const candidate = value && typeof value === "object" ? value as Partial<PrintableArea> : {};
+  const width = Math.round(Number(candidate.width));
+  const height = Math.round(Number(candidate.height));
+  return {
+    width: Number.isFinite(width) ? Math.max(320, Math.min(5000, width)) : DEFAULT_PRINTABLE_AREA.width,
+    height: Number.isFinite(height) ? Math.max(240, Math.min(5000, height)) : DEFAULT_PRINTABLE_AREA.height,
+  };
+}
+
+function printableBoundary(area: PrintableArea): Record<string, unknown> {
+  return {
+    id: PRINTABLE_BOUNDARY_ID, type: "rectangle", x: 0, y: 0, width: area.width, height: area.height, angle: 0,
+    strokeColor: "#4c6ef5", backgroundColor: "transparent", fillStyle: "solid", strokeWidth: 2, strokeStyle: "dashed",
+    roughness: 0, opacity: 100, groupIds: [], frameId: null, roundness: null, seed: 15001000, version: 1,
+    versionNonce: 15001000, index: "Zz", isDeleted: false, boundElements: null, updated: 1, link: null, locked: true,
+  };
+}
+
+function sceneWithPrintableBoundary(scene: SlideScene, area: PrintableArea): SlideScene {
+  return { ...scene, elements: [printableBoundary(area), ...scene.elements.filter((element: any) => element?.id !== PRINTABLE_BOUNDARY_ID)] };
+}
+
+function sceneWithoutPrintableBoundary(scene: SlideScene): SlideScene {
+  return { ...scene, elements: scene.elements.filter((element: any) => element?.id !== PRINTABLE_BOUNDARY_ID) };
+}
 
 function starterContent(section: CoworkSection): string {
   if (section === "whiteboards") return JSON.stringify({ type: "excalidraw", version: 2, elements: [], appState: {}, files: {} }, null, 2);
@@ -73,21 +105,55 @@ function starterContent(section: CoworkSection): string {
 function normalizeDeck(content: string): Deck {
   const parsed = JSON.parse(content || "{}");
   if (parsed?.type === "1helm-slides" && Array.isArray(parsed.slides)) {
-    return { type: "1helm-slides", version: 2, slides: parsed.slides.length ? parsed.slides.map((slide: Partial<DeckSlide>, index: number) => ({ id: slide.id || crypto.randomUUID(), name: slide.name || `Slide ${index + 1}`, scene: slide.scene?.elements ? slide.scene : blankScene() })) : blankDeck().slides };
+    return { type: "1helm-slides", version: 3, printableArea: printableArea(parsed.printableArea), slides: parsed.slides.length ? parsed.slides.map((slide: Partial<DeckSlide>, index: number) => ({ id: slide.id || crypto.randomUUID(), name: slide.name || `Slide ${index + 1}`, scene: slide.scene?.elements ? sceneWithoutPrintableBoundary(slide.scene) : blankScene() })) : blankDeck().slides };
   }
   if (Array.isArray(parsed?.slides)) {
     return {
-      type: "1helm-slides", version: 2,
+      type: "1helm-slides", version: 3, printableArea: { ...DEFAULT_PRINTABLE_AREA },
       slides: parsed.slides.length ? parsed.slides.map((slide: { title?: string; body?: string }, index: number) => ({
         id: crypto.randomUUID(), name: slide.title || `Slide ${index + 1}`,
         scene: { ...blankScene(), elements: [
-          ...(slide.title ? [{ type: "text", id: crypto.randomUUID(), x: 120, y: 120, width: 720, height: 70, text: slide.title, originalText: slide.title, fontSize: 42, fontFamily: 1, textAlign: "center", verticalAlign: "top", strokeColor: "#1b1b1f", backgroundColor: "transparent", fillStyle: "solid", strokeWidth: 1, roughness: 1, opacity: 100, angle: 0, seed: 1, version: 1, versionNonce: 1, index: `a${index}`, isDeleted: false, groupIds: [], frameId: null, roundness: null, boundElements: null, link: null, locked: false, containerId: null, autoResize: true, lineHeight: 1.25 }] : []),
-          ...(slide.body ? [{ type: "text", id: crypto.randomUUID(), x: 160, y: 240, width: 640, height: 160, text: slide.body, originalText: slide.body, fontSize: 24, fontFamily: 1, textAlign: "left", verticalAlign: "top", strokeColor: "#495057", backgroundColor: "transparent", fillStyle: "solid", strokeWidth: 1, roughness: 1, opacity: 100, angle: 0, seed: 2, version: 1, versionNonce: 2, index: `b${index}`, isDeleted: false, groupIds: [], frameId: null, roundness: null, boundElements: null, link: null, locked: false, containerId: null, autoResize: true, lineHeight: 1.25 }] : []),
+          ...(slide.title ? [{ type: "text", id: crypto.randomUUID(), x: 120, y: 120, width: 720, height: 70, text: slide.title, originalText: slide.title, fontSize: 42, fontFamily: 1, textAlign: "center", verticalAlign: "top", strokeColor: "#1b1b1f", backgroundColor: "transparent", fillStyle: "solid", strokeWidth: 1, roughness: 1, opacity: 100, angle: 0, seed: 1, version: 1, versionNonce: 1, index: "a0", isDeleted: false, groupIds: [], frameId: null, roundness: null, boundElements: null, link: null, locked: false, containerId: null, autoResize: true, lineHeight: 1.25 }] : []),
+          ...(slide.body ? [{ type: "text", id: crypto.randomUUID(), x: 160, y: 240, width: 640, height: 160, text: slide.body, originalText: slide.body, fontSize: 24, fontFamily: 1, textAlign: "left", verticalAlign: "top", strokeColor: "#495057", backgroundColor: "transparent", fillStyle: "solid", strokeWidth: 1, roughness: 1, opacity: 100, angle: 0, seed: 2, version: 1, versionNonce: 2, index: "a1", isDeleted: false, groupIds: [], frameId: null, roundness: null, boundElements: null, link: null, locked: false, containerId: null, autoResize: true, lineHeight: 1.25 }] : []),
         ] },
       })) : blankDeck().slides,
     };
   }
   throw new Error("Unsupported presentation file");
+}
+
+async function presentationPdf(deck: Deck, filename: string): Promise<void> {
+  const pdf = await PDFDocument.create();
+  const { width, height } = deck.printableArea;
+  for (const slide of deck.slides) {
+    const elements = slide.scene.elements.filter((element: any) => {
+      if (!element || element.id === PRINTABLE_BOUNDARY_ID || element.isDeleted) return false;
+      const [minX, minY, maxX, maxY] = getCommonBounds([element] as never);
+      return maxX > 0 && maxY > 0 && minX < width && minY < height;
+    });
+    const output = document.createElement("canvas"); output.width = width; output.height = height;
+    const context = output.getContext("2d");
+    if (!context) throw new Error("This browser could not prepare the PDF canvas.");
+    context.fillStyle = String(slide.scene.appState?.viewBackgroundColor || "#ffffff");
+    context.fillRect(0, 0, width, height);
+    if (elements.length) {
+      const [minX, minY] = getCommonBounds(elements as never);
+      const rendered = await exportToCanvas({ elements: elements as never, appState: { ...slide.scene.appState, exportBackground: false, exportScale: 1 } as never, files: (slide.scene.files || {}) as never, exportPadding: 0 });
+      // The printable canvas is the clipping mask. Partially overlapping
+      // elements retain their in-bounds pixels while content wholly outside
+      // 0,0 → width,height never reaches the exported page.
+      context.save(); context.beginPath(); context.rect(0, 0, width, height); context.clip();
+      context.drawImage(rendered, minX, minY); context.restore();
+    }
+    const image = await pdf.embedPng(output.toDataURL("image/png"));
+    const page = pdf.addPage([width, height]);
+    page.drawImage(image, { x: 0, y: 0, width, height });
+  }
+  const bytes = await pdf.save();
+  const blob = new Blob([bytes as BlobPart], { type: "application/pdf" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob); link.download = `${filename.replace(/\.slides\.json$/i, "") || "presentation"}.pdf`; link.click();
+  window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 
 function visibleName(path: string): string { return path.split("/").pop() || path; }
@@ -117,7 +183,7 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
   let openThreadCallback = onOpenThread;
   const agentDrafts = new Map<string, string>();
   const shell = h("section", { class: "cowork-shell flex h-full min-h-[34rem] flex-col bg-surface", dataset: { coworkSurface: String(channelId) } });
-  const sectionNav = h("nav", { class: "cowork-sections flex shrink-0 gap-1 overflow-x-auto border-b border-line bg-raised/25 px-3", "aria-label": "Cowork sections" });
+  const sectionNav = h("nav", { class: "cowork-sections flex w-full shrink-0 justify-start gap-1 overflow-x-auto border-b border-line bg-raised/25 px-3 sm:justify-center", "aria-label": "Cowork sections" });
   const breadcrumb = h("nav", { class: "flex min-w-0 flex-1 items-center gap-1 overflow-x-auto font-mono text-[11px]", "aria-label": "Cowork folder path" });
   const fileList = h("div", { class: "min-h-0 flex-1 overflow-y-auto p-2", dataset: { coworkFiles: "" } });
   const fileActions = h("div", { class: "cowork-file-actions hidden flex-wrap gap-1 border-t border-line p-2", dataset: { coworkFileActions: "" } });
@@ -274,15 +340,26 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
     catch { return h("div", { class: "grid flex-1 place-items-center p-8 text-center text-sm text-muted" }, "This file is not a supported 1Helm presentation."); }
     session.activeSlide = Math.min(session.activeSlide, Math.max(0, deck.slides.length - 1));
     const root = h("div", { class: "flex min-h-0 flex-1 flex-col", dataset: { coworkPresentation: "", slideCount: String(deck.slides.length), activeSlide: String(session.activeSlide) } });
-    const structureSignature = (next: Deck): string => next.slides.map((slide) => `${slide.id}:${slide.name}`).join("|");
+    const structureSignature = (next: Deck): string => `${next.printableArea.width}x${next.printableArea.height}|${next.slides.map((slide) => `${slide.id}:${slide.name}`).join("|")}`;
     let structure = structureSignature(deck);
     const writeDeck = (next: Deck): void => { structure = structureSignature(next); const content = JSON.stringify(next, null, 2); session.collaboration!.scene.set("json", content); markChanged(session, content); };
     const adapter = {
-      read: (content: string): SlideScene => normalizeDeck(content).slides[session.activeSlide]?.scene || blankScene(),
-      write: (scene: SlideScene, content: string): string => { const next = normalizeDeck(content); if (next.slides[session.activeSlide]) next.slides[session.activeSlide].scene = scene; return JSON.stringify(next, null, 2); },
+      read: (content: string): SlideScene => { const next = normalizeDeck(content); return sceneWithPrintableBoundary(next.slides[session.activeSlide]?.scene || blankScene(), next.printableArea); },
+      write: (scene: SlideScene, content: string): string => { const next = normalizeDeck(content); if (next.slides[session.activeSlide]) next.slides[session.activeSlide].scene = sceneWithoutPrintableBoundary(scene); return JSON.stringify(next, null, 2); },
     };
     const reopen = (): void => { session.mounted?.destroy(); session.mounted = null; session.view = null; void drawWorkspace(true); };
-    const mounted = mountExcalidraw(session.collaboration!, me, "cowork-slide-canvas", `Slide ${session.activeSlide + 1} canvas`, (content) => markChanged(session, content), { adapter });
+    let exportPending = false;
+    const exportPdf = async (): Promise<void> => {
+      if (exportPending) return;
+      exportPending = true; status.textContent = `Exporting ${deck.slides.length} PDF page${deck.slides.length === 1 ? "" : "s"}…`;
+      try { await presentationPdf(normalizeDeck(session.collaboration!.scene.get("json") || session.content), visibleName(session.path)); status.textContent = "PDF exported"; }
+      catch (error) { status.textContent = (error as Error).message; }
+      finally { exportPending = false; }
+    };
+    const mounted = mountExcalidraw(session.collaboration!, me, "cowork-slide-canvas", `Slide ${session.activeSlide + 1} canvas`, (content) => markChanged(session, content), { adapter, exportPdf });
+    mounted.node.style.aspectRatio = `${deck.printableArea.width} / ${deck.printableArea.height}`;
+    mounted.node.dataset.printableWidth = String(deck.printableArea.width);
+    mounted.node.dataset.printableHeight = String(deck.printableArea.height);
     const remoteStructure = (): void => {
       try {
         const next = normalizeDeck(session.collaboration!.scene.get("json") || "");
@@ -328,7 +405,11 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
       overlay.append(h("header", { class: "flex h-12 items-center gap-2 bg-black/80 px-3" }, h("span", { class: "flex-1 truncate text-sm text-white" }, visibleName(session.path)), h("button", { class: "btn-ghost text-white", disabled: at === 0, onclick: () => { at -= 1; paint(); } }, "Previous"), counter, h("button", { class: "btn-ghost text-white", disabled: at === deck.slides.length - 1, onclick: () => { at += 1; paint(); } }, "Next"), h("button", { class: "btn-subtle", onclick: close }, "Close")), stage); document.body.append(overlay); paint();
       overlay.onkeydown = (event) => { if (event.key === "Escape") close(); else if (event.key === "ArrowRight" && at < deck.slides.length - 1) { at += 1; paint(); } else if (event.key === "ArrowLeft" && at > 0) { at -= 1; paint(); } }; overlay.tabIndex = -1; overlay.focus();
     };
-    const toolbar = commonToolbar(session, h("span", { class: "flex-1 text-xs text-muted" }, `${deck.slides.length} slide${deck.slides.length === 1 ? "" : "s"}`),
+    const width = h("input", { class: "field h-8 w-20 px-2 text-xs", type: "number", min: "320", max: "5000", step: "10", value: String(deck.printableArea.width), "aria-label": "Printable width" }) as HTMLInputElement;
+    const height = h("input", { class: "field h-8 w-20 px-2 text-xs", type: "number", min: "240", max: "5000", step: "10", value: String(deck.printableArea.height), "aria-label": "Printable height" }) as HTMLInputElement;
+    const resize = (): void => { const area = printableArea({ width: width.value, height: height.value }); if (area.width === deck.printableArea.width && area.height === deck.printableArea.height) return; deck.printableArea = area; writeDeck(deck); reopen(); };
+    width.onchange = resize; height.onchange = resize;
+    const toolbar = commonToolbar(session, h("div", { class: "flex min-w-0 flex-1 items-center gap-2" }, h("span", { class: "truncate text-xs text-muted" }, `${deck.slides.length} slide${deck.slides.length === 1 ? "" : "s"}`), h("span", { class: "hidden text-[10px] font-semibold uppercase tracking-wide text-faint lg:inline" }, "Printable area"), width, h("span", { class: "text-xs text-muted" }, "×"), height),
       h("button", { class: "btn-subtle text-xs", onclick: () => { deck.slides.push({ id: crypto.randomUUID(), name: `Slide ${deck.slides.length + 1}`, scene: blankScene() }); session.activeSlide = deck.slides.length - 1; writeDeck(deck); reopen(); } }, icon("plus", 13), "Slide"),
       h("button", { class: "btn-ghost text-xs", onclick: () => { const copy = structuredClone(deck.slides[session.activeSlide]); copy.id = crypto.randomUUID(); copy.name = `${copy.name} copy`; deck.slides.splice(session.activeSlide + 1, 0, copy); session.activeSlide += 1; writeDeck(deck); reopen(); } }, "Duplicate"),
       h("button", { class: "btn-ghost text-xs text-danger", disabled: deck.slides.length <= 1, onclick: () => { deck.slides.splice(session.activeSlide, 1); session.activeSlide = Math.min(session.activeSlide, deck.slides.length - 1); writeDeck(deck); reopen(); } }, "Delete"),
@@ -366,6 +447,11 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
           const timeout = window.setTimeout(() => reject(new Error("The collaborative editor could not connect.")), 12_000);
           const synced = (ready: boolean) => { if (!ready) return; window.clearTimeout(timeout); openingCollaboration?.provider.off("sync", synced); resolve(); };
           openingCollaboration!.provider.on("sync", synced);
+          // A fast local socket can finish its first sync between provider
+          // construction and listener registration. Treat that durable state
+          // as completion instead of leaving Cowork on “Opening file…” until
+          // the timeout despite a healthy connected document.
+          if (openingCollaboration!.provider.synced) synced(true);
         });
         if (session.loadVersion !== loadVersion || session.path !== openingPath || session.collaboration !== openingCollaboration) return;
         const shared = openingPath.endsWith(".whiteboard.json") || openingPath.endsWith(".slides.json") ? openingCollaboration.scene.get("json") || "" : openingCollaboration.text.toString();
@@ -418,7 +504,13 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
           type: "button",
           dataset: { coworkPath: file.path, coworkKind: file.kind },
           ondblclick: () => { if (file.kind === "directory") { session.folder = file.path; selectedEntry = null; void draw(); } else void openPath(file.path); },
-          onclick: () => { selectedEntry = file; drawFileActions(); void loadFiles(); if (file.kind === "file") void openPath(file.path); },
+          onclick: () => {
+            selectedEntry = file; drawFileActions();
+            // Opening a file already redraws the rail and workspace together.
+            // A second concurrent loadFiles() raced that draw, repeatedly
+            // replacing the clicked node and sometimes leaving the editor unopened.
+            if (file.kind === "file") void openPath(file.path); else void loadFiles();
+          },
         },
         h("span", { class: file.kind === "directory" ? "text-muted" : "text-accent" }, fileIcon(file)),
         h("span", { class: "min-w-0 flex-1 truncate text-xs text-fg" }, file.name),

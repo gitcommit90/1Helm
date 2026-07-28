@@ -194,6 +194,10 @@ export function migrate(): void {
   CREATE INDEX IF NOT EXISTS idx_routing_usage_user_created ON routing_usage_events(user_id,created DESC);
   `);
   addColumn("agent_turns", "final_body_hash", "final_body_hash TEXT NOT NULL DEFAULT ''");
+  addColumn("agent_turns", "requested_model", "requested_model TEXT NOT NULL DEFAULT ''");
+  addColumn("agent_turns", "requested_provider_id", "requested_provider_id INTEGER");
+  addColumn("agent_turns", "model_source", "model_source TEXT NOT NULL DEFAULT ''");
+  addColumn("agent_turns", "request_user_id", "request_user_id INTEGER");
   addColumn("workspace", "installation_id", "installation_id TEXT NOT NULL DEFAULT ''");
   addColumn("workspace", "collaboration_enabled", "collaboration_enabled INTEGER NOT NULL DEFAULT 0");
   addColumn("workspace", "collaboration_slug", "collaboration_slug TEXT NOT NULL DEFAULT ''");
@@ -1005,7 +1009,7 @@ export function migrate(): void {
     const platformBackend = process.platform === "darwin" ? "apple" : process.platform === "win32" ? "wsl" : "lxc";
     const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || platformBackend);
     const backend = ["apple", "lxc", "wsl", "native", "mock"].includes(configuredBackend) ? configuredBackend : platformBackend;
-    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.21");
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.22");
     // Earlier Linux/Windows releases persisted the compatibility `native`
     // seam into every channel row. A production host update must actually
     // move those rows onto the platform isolation backend; changing the unit's

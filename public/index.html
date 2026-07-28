@@ -23,19 +23,19 @@
     (function () {
       window.EXCALIDRAW_ASSET_PATH = "/excalidraw/";
       var t = localStorage.getItem("ctrl.theme");
-      if (!t) t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      if (!t) t = "light";
       document.documentElement.classList.add(t);
       document.documentElement.dataset.workspaceTheme = localStorage.getItem("ctrl.workspaceTheme") || "graphite";
       var color = t === "light" ? "#15171c" : "#08090c";
       document.querySelectorAll('meta[name="theme-color"]').forEach(function (m) { m.setAttribute("content", color); });
     })();
   </script>
-  <link rel="stylesheet" href="/app.css?v=529f020be33d" />
+  <link rel="stylesheet" href="/app.css?v=49c236a0a037" />
   <link rel="stylesheet" href="/bundle.css" />
   <link rel="stylesheet" href="/excalidraw/index.css" />
 </head>
 <body class="h-screen w-screen overflow-hidden antialiased">
   <div id="app" class="h-full w-full"></div>
-  <script type="module" src="/bundle.js?v=e91a5ced9deb"></script>
+  <script type="module" src="/bundle.js?v=1eeb27b8fc0c"></script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 {
   "appId": "com.gitcommit90.onehelm.mobile",
   "appName": "1Helm",
-  "webDir": "public",
+  "webDir": "mobile-gateway",
   "loggingBehavior": "none",
   "backgroundColor": "#111318",
   "zoomEnabled": false,
@@ -10,7 +10,8 @@
     "hostname": "localhost",
     "iosScheme": "capacitor",
     "androidScheme": "https",
-    "cleartext": false
+    "cleartext": false,
+    "errorPath": "error.html"
   },
   "ios": {
     "contentInset": "never",

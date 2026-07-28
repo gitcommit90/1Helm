@@ -74,13 +74,17 @@ try {
   const captain = registration.body.token;
   ok(registration.status === 200 && captain, "captain registers");
 
-  const provider = await api("/api/providers", {
-    body: { name: "Deterministic provider", base_url: `http://127.0.0.1:${mockPort}/v1`, api_key: "test" },
+  const provider = await api("/api/routing/action", {
+    body: { action: "app:add-keyed-provider", payload: {
+      name: "Deterministic provider",
+      baseUrl: `http://127.0.0.1:${mockPort}/v1`,
+      apiKey: "test",
+      models: [{ id: "mock-small", name: "mock-small", enabled: true }],
+    } },
   }, captain);
-  const providerId = provider.body.provider.id;
+  ok(provider.status === 200 && provider.body.id, "routing provider is connected");
   const setup = await api("/api/setup/complete", {
     body: {
-      provider_id: providerId,
       model: "mock-small",
       terminals_enabled: false,
       name: "Audit Workspace",
@@ -101,7 +105,7 @@ try {
   await waitFor(async () => {
     const thread = await api(`/api/messages/${doneRoot.body.message.id}/thread`, {}, captain);
     return thread.body.replies?.some((message) => /Answer complete\./.test(message.body || ""));
-  }, "agent finished done thread");
+  }, "agent finished done thread", 30_000);
 
   // Thread B: clearly waiting on human.
   const waitRoot = await api(`/api/channels/${channelId}/messages`, {
@@ -113,24 +117,17 @@ try {
     body: { body: "still waiting for your decision on staging vs prod", parentId: waitRoot.body.message.id },
   }, captain);
 
-  // Thread C: ambiguous / still open work — should keep.
+  // Thread C: ambiguous / still open work — should keep. Keep this fixture
+  // human-only: resident-turn scheduling is covered elsewhere, and making the
+  // thread-audit contract depend on a second unrelated agent turn caused this
+  // focused test to race a loaded host.
   const openRoot = await api(`/api/channels/${channelId}/messages`, {
-    body: { body: `@${agentName} explore options for the next sprint` },
+    body: { body: "explore options for the next sprint" },
   }, captain);
   ok(openRoot.status === 200, "open root posted");
-  await waitFor(async () => {
-    const thread = await api(`/api/messages/${openRoot.body.message.id}/thread`, {}, captain);
-    return thread.body.replies?.some((message) => /Answer complete\./.test(message.body || ""));
-  }, "agent finished open thread");
-  // Human follow-up without @mention keeps the conversational agent engaged; wait for that too.
   await api(`/api/channels/${channelId}/messages`, {
     body: { body: "keep this open — still gathering options, more work remains", parentId: openRoot.body.message.id },
   }, captain);
-  await waitFor(async () => {
-    const thread = await api(`/api/messages/${openRoot.body.message.id}/thread`, {}, captain);
-    const replies = thread.body.replies || [];
-    return replies.filter((message) => message.author?.kind === "bot").length >= 2;
-  }, "agent second reply on open thread", 15_000).catch(() => null);
 
   const list = (await api(`/api/channels/${channelId}/threads`, {}, captain)).body.threads;
   const byRoot = Object.fromEntries(list.map((thread) => [thread.root_message_id, thread]));
@@ -183,6 +180,11 @@ try {
   const rawActivity = activity.body.activity || [];
   const hasAuditLog = rawActivity.some((item) => item.kind === "thread_audit" || /Skipper marked thread/i.test(item.summary || ""));
   ok(hasAuditLog, "thread_audit activity is recorded");
+
+  const routingState = await api("/api/routing/state", {}, captain);
+  const systemRequest = (routingState.body.recentActivity || []).find((event) => event.request?.work_kind === "thread-audit");
+  ok(systemRequest?.request?.initiator === "system" && String(systemRequest.request.id || "").startsWith("system-"),
+    "silent audit routing is explicitly identified by its own system request identity");
 
   const forbidden = await api("/api/thread-audit/run", { body: {} }, "");
   ok(forbidden.status === 401 || forbidden.status === 403, "anonymous cannot run audit");

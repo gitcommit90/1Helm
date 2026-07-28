@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Connect 1Helm</title>
+  <style>
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #17191d; background: #f5f3ec; }
+    * { box-sizing: border-box; } body { min-height: 100dvh; margin: 0; padding: max(1.5rem, env(safe-area-inset-top)) 1.25rem max(1.5rem, env(safe-area-inset-bottom)); display: grid; place-items: center; }
+    main { width: min(100%, 25rem); padding: 1.5rem; border: 1px solid #d9d5ca; border-radius: 1rem; background: #fff; box-shadow: 0 24px 60px -42px #000; }
+    .mark { display: grid; width: 3.5rem; height: 3.5rem; place-items: center; margin: 0 auto 1rem; border-radius: .9rem; background: #17191d; color: #fff; font-size: 1.55rem; }
+    h1 { margin: 0; font-size: 1.6rem; text-align: center; } p { margin: .6rem 0 1.25rem; color: #68655e; font-size: .9rem; line-height: 1.55; text-align: center; }
+    label { display: block; margin-bottom: .4rem; font-size: .75rem; font-weight: 700; } input, button { width: 100%; min-height: 3rem; border-radius: .65rem; font: inherit; }
+    input { border: 1px solid #c9c5ba; padding: .75rem; background: #fff; color: #17191d; } button { margin-top: .75rem; border: 0; padding: .7rem 1rem; background: #ef5b2a; color: #fff; font-weight: 750; }
+    button:disabled { opacity: .6; } #status { min-height: 1.25rem; margin: .65rem 0 0; color: #a23024; font-size: .78rem; text-align: left; }
+    small { display: block; margin-top: .85rem; color: #77736b; font-size: .7rem; line-height: 1.5; text-align: center; }
+    @media (prefers-color-scheme: dark) { :root { color: #f4f2eb; background: #111318; } main { border-color: #34373e; background: #191c22; } .mark { background: #f4f2eb; color: #17191d; } p, small { color: #a8a59d; } input { border-color: #3d4149; background: #121419; color: #f4f2eb; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark" aria-hidden="true">⛵</div>
+    <h1>Connect to 1Helm</h1>
+    <p>Choose the HTTPS address of an existing 1Helm instance. The app will load that instance’s live interface.</p>
+    <form id="connect">
+      <label for="server">Instance address</label>
+      <input id="server" type="url" inputmode="url" autocomplete="url" autocapitalize="none" spellcheck="false" placeholder="https://your-1helm-server.com" required>
+      <button id="submit" type="submit">Connect</button>
+      <div id="status" role="alert"></div>
+    </form>
+    <small>Only the selected HTTPS origin receives native bridge access. Other links open outside the app.</small>
+  </main>
+  <script src="capacitor.js"></script>
+  <script>
+    const form = document.getElementById("connect");
+    const input = document.getElementById("server");
+    const submit = document.getElementById("submit");
+    const status = document.getElementById("status");
+    const gateway = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.InstanceGateway;
+    const normalize = (value) => {
+      const raw = value.trim();
+      const parsed = new URL(raw.includes("://") ? raw : `https://${raw}`);
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash || (parsed.pathname !== "/" && parsed.pathname !== "")) throw new Error("Enter an HTTPS root address without a path, credentials, query, or fragment.");
+      return parsed.origin;
+    };
+    gateway && gateway.getServer().then(({ origin }) => { if (origin) input.value = origin; }).catch(() => {});
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault(); status.textContent = ""; submit.disabled = true; submit.textContent = "Checking…";
+      try {
+        if (!gateway) throw new Error("The native connection service is unavailable. Reinstall this 1Helm app.");
+        const origin = normalize(input.value);
+        const response = await fetch(`${origin}/api/mobile/compatibility`, { cache: "no-store" });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || result.product !== "1Helm" || result.mobile_api !== 1) throw new Error("That address is not a compatible 1Helm instance.");
+        if (!result.has_users || !result.setup_complete) throw new Error("Finish setting up this 1Helm instance before connecting the app.");
+        submit.textContent = "Opening…";
+        await gateway.selectServer({ origin });
+      } catch (error) { status.textContent = error && error.message ? error.message : "Could not connect to this instance."; submit.disabled = false; submit.textContent = "Connect"; }
+    });
+  </script>
+</body>
+</html>
