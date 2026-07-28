@@ -1,17 +1,22 @@
 import { App } from "@capacitor/app";
 import { Browser } from "@capacitor/browser";
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Keyboard, KeyboardResize } from "@capacitor/keyboard";
 import { SecureStorage, KeychainAccess } from "@aparajita/capacitor-secure-storage";
 import { SplashScreen } from "@capacitor/splash-screen";
 import { StatusBar, Style } from "@capacitor/status-bar";
 
 const SESSION_KEY = "session";
-const SERVER_KEY = "1helm.mobile.server";
 const SERVER_PREFIX = "1helm_mobile_";
 const OPENROUTER_CALLBACK_PREFIX = "onehelm://openrouter";
 
 type StoredSession = { server: string; token: string };
+type InstanceGateway = {
+  getServer: () => Promise<{ origin: string }>;
+  selectServer: (options: { origin: string }) => Promise<{ origin: string }>;
+  clearServer: () => Promise<void>;
+};
+const instanceGateway = registerPlugin<InstanceGateway>("InstanceGateway");
 
 const native = Capacitor.isNativePlatform();
 let serverOrigin = "";
@@ -91,36 +96,30 @@ export function normalizeServerOrigin(value: string): string {
 export function setMobileServer(value: string): string {
   if (!native) return location.origin;
   serverOrigin = normalizeServerOrigin(value);
-  localStorage.setItem(SERVER_KEY, serverOrigin);
   return serverOrigin;
 }
 
 export async function forgetMobileServer(): Promise<void> {
   if (!native) return;
   await removeSecureSession();
+  await instanceGateway.clearServer();
   serverOrigin = "";
-  localStorage.removeItem(SERVER_KEY);
 }
 
 export function apiUrl(path: string): string {
   if (!native || !path.startsWith("/")) return path;
-  if (!serverOrigin) throw new Error("Choose a 1Helm server before connecting.");
-  return `${serverOrigin}${path}`;
+  if (!serverOrigin || location.origin !== serverOrigin) throw new Error("The selected 1Helm instance is unavailable.");
+  return path;
 }
 
 export function serverAssetUrl(path: string): string {
-  if (!native || !path.startsWith("/")) return path;
-  return serverOrigin ? `${serverOrigin}${path}` : path;
+  return path;
 }
 
 export function serverWebSocketUrl(path: string): string {
-  if (!native) {
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    return `${protocol}//${location.host}${path}`;
-  }
-  if (!serverOrigin) throw new Error("Choose a 1Helm server before connecting.");
-  const target = new URL(serverOrigin);
-  target.protocol = "wss:";
+  const target = new URL(location.origin);
+  if (native && (!serverOrigin || location.origin !== serverOrigin)) throw new Error("The selected 1Helm instance is unavailable.");
+  target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
   target.pathname = path.split("?")[0] || "/";
   target.search = path.includes("?") ? path.slice(path.indexOf("?")) : "";
   return target.toString();
@@ -131,9 +130,9 @@ export async function initializeMobileRuntime(): Promise<string> {
   if (!native) return localStorage.getItem("ctrl.token") || "";
   const platform = mobilePlatform();
   document.documentElement.dataset.nativeMobile = platform;
-  serverOrigin = localStorage.getItem(SERVER_KEY) || "";
-  try { if (serverOrigin) serverOrigin = normalizeServerOrigin(serverOrigin); }
-  catch { serverOrigin = ""; localStorage.removeItem(SERVER_KEY); }
+  const selected = await instanceGateway.getServer().catch(() => ({ origin: "" }));
+  serverOrigin = normalizeServerOrigin(selected.origin || location.origin);
+  if (serverOrigin !== location.origin) throw new Error("The native bridge is restricted to the selected 1Helm origin.");
 
   await SecureStorage.setKeyPrefix(SERVER_PREFIX);
   if (mobilePlatform() === "ios") {

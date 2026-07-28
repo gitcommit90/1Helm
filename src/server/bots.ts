@@ -1,5 +1,5 @@
 import { isMainChannel, q, q1, run, now, tx, type Row } from "./db.ts";
-import { createMessage, serializeMessage, resolveModelForUser, resolveProviderId, botEndpoint, isInternalMessageBody } from "./store.ts";
+import { createMessage, serializeMessage, resolvedModelPolicy, resolveModelForUser, resolveProviderId, botEndpoint, isInternalMessageBody } from "./store.ts";
 import { getComputer, execOnComputer } from "./computer.ts";
 import { broadcastToChannel, sendToUsers } from "./events.ts";
 import { isChatGPTProvider, streamChatGPTCompletion } from "./chatgpt.ts";
@@ -1245,6 +1245,13 @@ function repaintAgentQueue(botId: number, channelId: number, threadRootId: numbe
   });
 }
 
+function requestUserForTurn(triggerId: number, threadRootId: number): number {
+  return Number(q1(
+    "SELECT user_id FROM messages WHERE id IN (?,?) AND user_id IS NOT NULL ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END LIMIT 1",
+    triggerId, threadRootId, triggerId,
+  )?.user_id || 0);
+}
+
 export function runBot(bot: Row, channelId: number, triggerId: number, threadRootId: number, fresh: boolean, escalationId?: number, hostAuthorized = false): Promise<void> {
   const botId = Number(bot.id);
   const key = turnLane(botId, channelId, threadRootId);
@@ -1255,6 +1262,8 @@ export function runBot(bot: Row, channelId: number, triggerId: number, threadRoo
   const ahead = Number(q1("SELECT COUNT(*) n FROM agent_turns WHERE bot_id=? AND channel_id=? AND thread_root_id=? AND state IN ('queued','running')", botId, channelId, threadRootId)?.n || 0);
   const queuedTurn: QueuedTurn = { channelId, threadRootId, messageId: 0, progressId: 0 };
   const runtimeAgent = agentForBot(botId);
+  const requestUserId = requestUserForTurn(triggerId, threadRootId);
+  const admittedPolicy = resolvedModelPolicy(botId, channelId, threadRootId, requestUserId);
   const admittedAt = now();
   const turnId = tx(() => {
     queuedTurn.messageId = createMessage({ channelId, parentId: threadRootId, botId: Number(bot.id), body: "_Working…_" });
@@ -1266,9 +1275,10 @@ export function runBot(bot: Row, channelId: number, triggerId: number, threadRoo
       admittedAt,
     ).lastInsertRowid;
     return run(`INSERT INTO agent_turns
-      (bot_id,agent_id,channel_id,trigger_id,thread_root_id,message_id,state,fresh,escalation_id,host_authorized,queued_at)
-      VALUES (?,?,?,?,?,?,'queued',?,?,?,?)`,
-    botId, runtimeAgent?.id ?? null, channelId, triggerId, threadRootId, queuedTurn.messageId, fresh ? 1 : 0, escalationId ?? null, hostAuthorized ? 1 : 0, admittedAt).lastInsertRowid;
+      (bot_id,agent_id,channel_id,trigger_id,thread_root_id,message_id,state,fresh,escalation_id,host_authorized,queued_at,requested_model,requested_provider_id,model_source,request_user_id)
+      VALUES (?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?)`,
+    botId, runtimeAgent?.id ?? null, channelId, triggerId, threadRootId, queuedTurn.messageId, fresh ? 1 : 0, escalationId ?? null, hostAuthorized ? 1 : 0, admittedAt,
+    String(admittedPolicy.model || ""), admittedPolicy.provider_id ? Number(admittedPolicy.provider_id) : null, String(admittedPolicy.source || ""), requestUserId || null).lastInsertRowid;
   });
   broadcastToChannel(channelId, { type: "message", message: serializeMessage(queuedTurn.messageId), parent: serializeMessage(threadRootId) });
   queue.push(queuedTurn);
@@ -1367,14 +1377,14 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
   // or process shutdown — never an arbitrary wall-clock deadline.
   const turnSignal = controller.signal;
   const threadId = threadIdForRoot(threadRootId, channelId) ?? ensureThread(threadRootId, channelId);
-  const requestUserId = Number(q1(
-    "SELECT user_id FROM messages WHERE id IN (?,?) AND user_id IS NOT NULL ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END LIMIT 1",
-    triggerId, threadRootId, triggerId,
-  )?.user_id || 0);
-  const model = resolveModelForUser(Number(bot.id), channelId, threadRootId, requestUserId);
-  let endpoint = botEndpoint(Number(bot.id), channelId, threadRootId);
-  const providerId = resolveProviderId(Number(bot.id), channelId, threadRootId);
-  const provider = providerId ? q1("SELECT kind, base_url FROM providers WHERE id=?", providerId) : undefined;
+  const admittedTurn = turnId ? q1("SELECT requested_model,requested_provider_id,request_user_id FROM agent_turns WHERE id=?", turnId) : undefined;
+  const requestUserId = Number(admittedTurn?.request_user_id || requestUserForTurn(triggerId, threadRootId));
+  const model = String(admittedTurn?.requested_model || "") || resolveModelForUser(Number(bot.id), channelId, threadRootId, requestUserId);
+  const providerId = admittedTurn?.requested_provider_id != null ? Number(admittedTurn.requested_provider_id) : resolveProviderId(Number(bot.id), channelId, threadRootId);
+  const provider = providerId ? q1("SELECT kind,base_url,api_key FROM providers WHERE id=?", providerId) : undefined;
+  let endpoint = admittedTurn?.requested_provider_id != null
+    ? (provider ? { base_url: String(provider.base_url), api_key: String(provider.api_key) } : null)
+    : botEndpoint(Number(bot.id), channelId, threadRootId);
   const isChatGPT = isChatGPTProvider(provider);
   if (providerId && isInternalRoutingProvider(providerId) && requestUserId) endpoint = await routingEndpointForUser(requestUserId);
   const msgId = preparedMessageId || createMessage({ channelId, parentId: threadRootId, botId: Number(bot.id), body: "_Working…_" });

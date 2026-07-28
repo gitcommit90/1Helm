@@ -3,6 +3,7 @@ import { botEndpoint, resolveModel } from "./store.ts";
 import { broadcastToChannel } from "./events.ts";
 import { refreshThreadSummary, agentForChannel } from "./agents.ts";
 import { scheduleAgentReview } from "./improvements.ts";
+import { isInternalRoutingProvider, routeSystemRequestForUser } from "./routing.ts";
 
 /** Default: every ~10 minutes Skipper audits thread statuses workspace-wide. */
 const CHECK_EVERY_MS = Number(process.env.THREAD_AUDIT_INTERVAL_MS || 10 * 60_000);
@@ -229,6 +230,9 @@ async function skipperModelDecisions(dossiers: ThreadDossier[]): Promise<AuditDe
   const botId = Number(skipper.bot_id);
   const endpoint = botEndpoint(botId);
   if (!endpoint?.base_url) return null;
+  const providerId = Number(q1("SELECT provider_id FROM bots WHERE id=?", botId)?.provider_id || 0);
+  const captainId = Number(q1("SELECT personal_main_owner_id FROM channels WHERE name='main' AND kind='channel' AND status='active' AND personal_main_owner_id IS NOT NULL ORDER BY id LIMIT 1")?.personal_main_owner_id || 0);
+  const routedSystemWork = Boolean(captainId && isInternalRoutingProvider(providerId));
   const model = resolveModel(botId, null, null) || String(skipper.model || "");
   if (!model) return null;
 
@@ -244,25 +248,27 @@ async function skipperModelDecisions(dossiers: ThreadDossier[]): Promise<AuditDe
   ].join(" ");
 
   const user = `Audit these threads and return one decision object per thread_id:\n${JSON.stringify(dossiers, null, 2)}`;
-  const base = endpoint.base_url.replace(/\/$/, "");
+  const requestBody = {
+    model,
+    temperature: 0,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    stream: false,
+  };
   try {
-    const response = await fetch(`${base}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(endpoint.api_key ? { authorization: `Bearer ${endpoint.api_key}` } : {}),
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        stream: false,
-      }),
-      signal: AbortSignal.timeout(45_000),
-    });
+    const response = routedSystemWork
+      ? await routeSystemRequestForUser(captainId, "thread-audit", requestBody)
+      : await fetch(`${endpoint.base_url.replace(/\/$/, "")}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(endpoint.api_key ? { authorization: `Bearer ${endpoint.api_key}` } : {}),
+          },
+          body: JSON.stringify(requestBody),
+          signal: AbortSignal.timeout(45_000),
+        });
     if (!response.ok) return null;
     const payload = await response.json() as {
       choices?: { message?: { content?: string } }[];

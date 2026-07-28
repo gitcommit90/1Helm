@@ -141,6 +141,31 @@ try {
   let channels = (await api("/api/channels", {}, captain)).body.channels;
   const main = channels.find((channel) => channel.name === "main");
   ok(main?.agent?.kind === "skipper" && main.agent.name === "skipper", "#main exposes the one workspace-wide Skipper");
+  const initialMainPolicy = await api(`/api/channels/${main.id}/model-policy`, {}, captain);
+  ok(initialMainPolicy.body.policy.model === primaryLargeModel && initialMainPolicy.body.policy.source === "workspace" && initialMainPolicy.body.policy.requested_model === primaryLargeModel,
+    "#main composer receives the same authoritative workspace model policy Skipper will execute");
+  const stalePolicyTurn = await api(`/api/channels/${main.id}/messages`, { body: {
+    body: "@skipper this stale model label must not start a turn",
+    effectiveModelPolicy: { model: primarySmallModel, source: "personal" },
+  } }, captain);
+  ok(stalePolicyTurn.status === 409 && /effective model policy changed/i.test(stalePolicyTurn.body.error || ""),
+    "a stale composer policy is rejected before its message or agent turn is admitted");
+  await api("/api/workspace/model-policy", { method: "PATCH", body: { model: primarySmallModel, personal: true } }, captain);
+  const personalMainPolicy = await api(`/api/channels/${main.id}/model-policy`, {}, captain);
+  ok(personalMainPolicy.body.policy.model === primarySmallModel && personalMainPolicy.body.policy.source === "personal" && personalMainPolicy.body.policy.source_label === "Personal override" && personalMainPolicy.body.policy.personal_model === primarySmallModel,
+    "a Captain personal override is explicitly disclosed by every effective-policy response");
+  const personalTurn = await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper prove the effective personal model" } }, captain);
+  const personalTurnReply = await waitForAgentReply(personalTurn.body.message.id, captain, "skipper");
+  ok(/mock-small/.test(personalTurnReply.body), "the visibly disclosed personal override is the model actually used by Skipper");
+  const personalTurnDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const admittedPersonalTurn = personalTurnDb.prepare("SELECT requested_model,requested_provider_id,model_source,request_user_id FROM agent_turns WHERE trigger_id=?").get(personalTurn.body.message.id);
+  personalTurnDb.close();
+  ok(admittedPersonalTurn?.requested_model === primarySmallModel && admittedPersonalTurn?.requested_provider_id === main.agent.provider_id && admittedPersonalTurn?.model_source === "personal" && admittedPersonalTurn?.request_user_id === registration.body.user.id,
+    "an admitted personal-policy turn durably records its requested model, provider, source, and requesting user");
+  await api("/api/workspace/model-policy", { method: "PATCH", body: { model: "", personal: true } }, captain);
+  const restoredMainPolicy = await api(`/api/channels/${main.id}/model-policy`, {}, captain);
+  ok(restoredMainPolicy.body.policy.model === primaryLargeModel && restoredMainPolicy.body.policy.source === "workspace" && restoredMainPolicy.body.policy.personal_model === null,
+    "clearing a personal override immediately restores the visible workspace model");
   ok(main.agent.runtime.avatar === "color:#4F6D7A", "Skipper starts with the customizable flat-color avatar");
   const skipperTerm = await api("/api/term/open", { body: { channelId: main.id, cols: 240, rows: 28 } }, captain);
   const skipperTermState = await new Promise((resolve, reject) => {
@@ -275,16 +300,31 @@ try {
 
   const queueRoot = (await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper slow-turn run whoami for ordered session one" } }, captain)).body.message.id;
   await waitFor(async () => (await api(`/api/messages/${queueRoot}/thread`, {}, captain)).body.replies?.some((reply) => reply.progress?.some((item) => item.status === "running")), "ordered Skipper turn start");
-  await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper run whoami for ordered session two", parentId: queueRoot } }, captain);
+  const queuedPolicy = await api(`/api/messages/${queueRoot}/model-policy`, {}, captain);
+  const queuedMessage = await api(`/api/channels/${main.id}/messages`, { body: {
+    body: "@skipper report the admitted model for ordered session two",
+    parentId: queueRoot,
+    effectiveModelPolicy: { provider_id: queuedPolicy.body.policy.provider_id, model: queuedPolicy.body.policy.model, source: queuedPolicy.body.policy.source },
+  } }, captain);
   await waitFor(async () => {
     const replies = (await api(`/api/messages/${queueRoot}/thread`, {}, captain)).body.replies || [];
     return replies.find((reply) => reply.progress?.some((item) => /Queued · 1 ahead/.test(item.body || "")));
   }, "visible same-thread queue");
   ok(true, "a same-thread follow-up is durably admitted and immediately shows Queued · 1 ahead");
+  await api("/api/workspace/model-policy", { method: "PATCH", body: { model: primarySmallModel, personal: true } }, captain);
+  const admittedQueueDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const admittedQueue = admittedQueueDb.prepare("SELECT requested_model,requested_provider_id,model_source,state FROM agent_turns WHERE trigger_id=?").get(queuedMessage.body.message.id);
+  admittedQueueDb.close();
+  ok(admittedQueue?.requested_model === primaryLargeModel && admittedQueue?.requested_provider_id === main.agent.provider_id && admittedQueue?.model_source === "workspace" && ["queued", "running", "completed"].includes(admittedQueue?.state),
+    "a queued turn snapshots the effective workspace model and provider at admission");
   await waitFor(async () => {
-    const replies = (await api(`/api/messages/${queueRoot}/thread`, {}, captain)).body.replies || [];
-    return replies.filter((reply) => reply.author?.name === "skipper" && /Answer complete/.test(reply.body || "")).length >= 2;
+    const queuedDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+    const completed = queuedDb.prepare("SELECT t.state,m.body FROM agent_turns t JOIN messages m ON m.id=t.message_id WHERE t.trigger_id=?").get(queuedMessage.body.message.id);
+    queuedDb.close();
+    return completed?.state === "completed" && /mock-large/.test(completed.body || "") && completed;
   }, "same-thread queue drain", 15_000);
+  ok(true, "a queued turn executes its admitted model even when the personal policy changes before execution");
+  await api("/api/workspace/model-policy", { method: "PATCH", body: { model: "", personal: true } }, captain);
 
   const deleteRequest = await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper sunset and delete #ideas" } }, captain);
   await waitForAgentReply(deleteRequest.body.message.id, captain, "skipper");

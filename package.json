@@ -1,7 +1,7 @@
 {
   "name": "1helm",
   "productName": "1Helm",
-  "version": "0.0.21",
+  "version": "0.0.22",
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-only",
@@ -80,6 +80,7 @@
     "codemirror": "6.0.2",
     "docx": "9.7.1",
     "node-pty": "^1.1.0",
+    "pdf-lib": "^1.17.1",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "spectrum-ts": "8.0.0",

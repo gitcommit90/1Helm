@@ -189,6 +189,10 @@ test("channel UI source exposes file-backed Cowork, traditional Files, audio pre
   assert.match(channelSource, /data(?:set)?: \{ fileFolderTree: "" \}/, "Files has a folder navigation rail");
   assert.match(channelSource, /icon\("folder"/, "Files uses a recognizable folder icon");
   assert.match(coworkSource, /const SECTIONS[\s\S]*"notes"[\s\S]*"whiteboards"[\s\S]*"code"[\s\S]*"docs"[\s\S]*"presentations"/, "Cowork exposes five file-backed work modes");
+  assert.match(coworkSource, /version: 3[\s\S]*DEFAULT_PRINTABLE_AREA[\s\S]*width: 1500, height: 1000[\s\S]*PRINTABLE_BOUNDARY_ID/, "Presentations migrate to a visible 1500×1000 printable-area contract");
+  assert.match(coworkSource, /presentationPdf[\s\S]*PDFDocument\.create\(\)[\s\S]*for \(const slide of deck\.slides\)[\s\S]*pdf\.addPage/, "Presentations export every slide into one multipage PDF");
+  assert.match(coworkSource, /sceneWithoutPrintableBoundary[\s\S]*element\?\.id !== PRINTABLE_BOUNDARY_ID/, "the visible printable boundary is not persisted as user content");
+  assert.match(coworkSource, /aria-label": "Printable width"[\s\S]*aria-label": "Printable height"/, "printable dimensions are user configurable");
   assert.match(coworkSource, /mountSpeechToTextControl\(input, "Dictate Cowork agent request"\)/, "Cowork agent requests expose the shared explicit dictation control");
   assert.match(coworkSource, /mountSpeechToTextControl\(speechTarget, `Dictate \$\{mode === "docs" \? "document" : "note"\}`\)/, "Cowork Notes and Docs expose the shared explicit dictation control");
   assert.match(coworkSource, /if \(!value && channel\.agent\?\.kind === "skipper"\) return h\("img"/, "Cowork renders Skipper with a real product avatar instead of an initial");

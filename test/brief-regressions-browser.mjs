@@ -45,7 +45,10 @@ try {
   const registration = await api("/api/auth/register", { body: { username: "captain", password: "secret-pass", display: "Captain" } });
   const token = registration.token;
   const provider = await api("/api/providers", { body: { name: "Mock", base_url: `http://127.0.0.1:${mockPort}/v1`, api_key: "test" } }, token);
-  await api("/api/setup/complete", { body: { name: "Browser Brief", terminals_enabled: true, provider_id: provider.provider.id, model: "mock-large" } }, token);
+  const largeModel = provider.models.find((model) => model.name === "mock-large").id;
+  const smallModel = provider.models.find((model) => model.name === "mock-small").id;
+  await api("/api/setup/complete", { body: { name: "Browser Brief", terminals_enabled: true, provider_id: provider.provider.id, model: largeModel } }, token);
+  const mainChannel = (await api("/api/channels", {}, token)).channels.find((candidate) => candidate.name === "main");
   const channel = (await api("/api/channels", { body: { name: "Visual", purpose: "Exercise the brief regressions." } }, token)).channel;
   const extensionlessNote = await api(`/api/channels/${channel.id}/notes`, { body: { name: "Quiet refresh proof", content: "# Durable note\n\nStart here." } }, token);
   ok(extensionlessNote.note.name === "Quiet refresh proof.md", "extensionless note titles are normalized to .md by the API");
@@ -102,6 +105,7 @@ try {
   // Retry the read across that navigation instead of making fresh CI profiles flaky.
   const authBrand = await waitFor(() => page.evaluate(() => ({
       heading: document.querySelector("h2")?.textContent || "",
+      light: document.documentElement.classList.contains("light"),
       src: document.querySelector(".logo-asset")?.getAttribute("src") || "",
       loaded: document.querySelector(".logo-asset") instanceof HTMLImageElement
         && document.querySelector(".logo-asset").complete
@@ -109,6 +113,7 @@ try {
     })).catch(() => null), "stable bridge login after service-worker claim", 5_000);
   ok(authBrand.heading === "Enter the bridge" && authBrand.src === "/brand/1helm-sailboat.png" && authBrand.loaded,
     "the bridge login displays the current sailboat artwork");
+  ok(authBrand.light, "a first-ever browser profile starts in light mode");
   await page.evaluate((value) => localStorage.setItem("ctrl.token", value), token);
   await page.goto(`${base}/c/${channel.slug}/thread/${rootMessage.id}`, { waitUntil: "networkidle0" });
   await page.waitForSelector("#thread:not(.hidden)");
@@ -122,8 +127,32 @@ try {
   ok(brand.title.includes("1Helm") && brand.appName === "1Helm" && !brand.body.includes("1Herd"), "the browser presents the product as 1Helm throughout");
   ok(brand.favicon === "/brand/1helm-sailboat.png" && brand.workspaceLogo === "/brand/1helm-sailboat.png", "the sailboat is the web favicon and default customizable workspace image");
 
+  await page.click('[title="Open profile"]');
+  await page.waitForSelector('[data-profile-logout]');
+  ok(await page.$eval('[data-profile-logout]', (button) => button.textContent?.trim() === "Log Out"), "the profile menu exposes the account Log Out action");
+  await page.click('[aria-label="Close profile"]');
+
+  await api("/api/workspace/model-policy", { method: "PATCH", body: { model: smallModel, personal: true } }, token);
+  await page.goto(`${base}/c/${mainChannel.slug}/chat`, { waitUntil: "networkidle0" });
+  await page.waitForFunction((expected) => document.querySelector('textarea[data-composer-parent="root"]')?.closest('.composer-wrap')?.querySelector('.model-picker-button')?.textContent?.includes(`Personal override: ${expected}`), {}, smallModel);
+  await page.click('textarea[data-composer-parent="root"] + *').catch(() => undefined);
+  await page.click('.composer-wrap .model-picker-button');
+  await page.waitForSelector('[data-clear-personal-model]');
+  await page.click('[data-clear-personal-model]');
+  await page.waitForFunction((expected) => document.querySelector('.composer-wrap .model-picker-button')?.textContent?.includes(`Workspace default: ${expected}`), {}, largeModel);
+  ok(true, "#main visibly discloses a personal override and immediately repaints the workspace model when it is cleared");
+
   await page.goto(`${base}/c/${channel.slug}/cowork`, { waitUntil: "networkidle0" });
-  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent?.includes("Quiet refresh proof.md"))?.click());
+  const coworkTabs = await page.$eval('[aria-label="Cowork sections"]', (nav) => {
+    const buttons = [...nav.querySelectorAll("button")];
+    const navBox = nav.getBoundingClientRect();
+    const first = buttons[0].getBoundingClientRect();
+    const last = buttons.at(-1).getBoundingClientRect();
+    return { navCenter: navBox.left + navBox.width / 2, tabsCenter: (first.left + last.right) / 2, scrollable: nav.scrollWidth >= nav.clientWidth };
+  });
+  ok(Math.abs(coworkTabs.navCenter - coworkTabs.tabsCenter) <= 2 && coworkTabs.scrollable, "Cowork section tabs are centered in their normal-width container");
+  await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent?.includes("Quiet refresh proof.md"));
+  await page.click('[data-cowork-path="notes/Quiet refresh proof.md"]');
   await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Start here"));
   await page.click('[aria-label="Notes editor"] .cm-content');
   await page.keyboard.down(primaryModifier); await page.keyboard.press("a"); await page.keyboard.up(primaryModifier); await page.keyboard.press("ArrowRight");
@@ -378,8 +407,23 @@ try {
   }, "structured interview");
   await page.goto(`${base}/c/${channel.slug}/thread/${questionRequest.message.id}`, { waitUntil: "networkidle0" });
   await page.waitForSelector('#thread [aria-pressed="false"]');
-  const selectedLabel = await page.$eval('#thread [aria-pressed="false"]', (button) => { button.click(); return button.querySelector("span")?.textContent || button.textContent || ""; });
+  const selectedLabel = await page.$eval('#thread [aria-pressed="false"]', (button) => { button.click(); return button.querySelector(".font-semibold")?.textContent || button.textContent || ""; });
   await page.waitForFunction(() => Boolean(document.querySelector('#thread [aria-pressed="true"]')));
+  const selectedVisual = async () => page.$eval('#thread [aria-pressed="true"]', (button) => {
+    const style = getComputedStyle(button); const check = getComputedStyle(button.querySelector('.structured-answer-check'));
+    return { aria: button.getAttribute("aria-pressed"), shadow: style.boxShadow, border: style.borderColor, background: style.backgroundColor, checkBackground: check.backgroundColor, checkColor: check.color };
+  });
+  const firstSelectedVisual = await selectedVisual();
+  await page.screenshot({ path: "/tmp/1helm-selected-answer-light.png" });
+  ok(firstSelectedVisual.aria === "true" && firstSelectedVisual.shadow !== "none" && firstSelectedVisual.background !== "rgba(0, 0, 0, 0)" && firstSelectedVisual.checkBackground !== "rgba(0, 0, 0, 0)",
+    "a selected structured answer has an unmistakable ring, fill, checked circle, and pressed accessibility state");
+  const themeBeforeAnswer = await page.evaluate(() => document.documentElement.className);
+  await page.evaluate(() => [...document.querySelectorAll('button[title^="Switch to"]')][0]?.click());
+  await page.waitForFunction((prior) => document.documentElement.className !== prior, {}, themeBeforeAnswer);
+  const oppositeThemeVisual = await selectedVisual();
+  await page.screenshot({ path: "/tmp/1helm-selected-answer-dark.png" });
+  ok(oppositeThemeVisual.aria === "true" && oppositeThemeVisual.shadow !== "none" && oppositeThemeVisual.background !== "rgba(0, 0, 0, 0)" && oppositeThemeVisual.checkBackground !== "rgba(0, 0, 0, 0)",
+    "the unmistakable selected-answer state remains intact in the opposite theme");
   await page.evaluate((messageId) => {
     const row = document.querySelector(`[data-message-surface="thread"][data-message-id="${messageId}"]`);
     window.__briefQuestionRow = row;
@@ -401,7 +445,7 @@ try {
 
   await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Files"))?.click());
   await page.waitForSelector('#channelview [data-file-path="README.md"]');
-  await page.click('#channelview [data-file-path="README.md"]');
+  await page.evaluate(() => document.querySelector('#channelview [data-file-path="README.md"]')?.click());
   await page.waitForFunction(() => document.querySelector('[data-file-metadata]')?.textContent?.includes("README.md"));
   const fileActions = await page.$$eval("[data-file-metadata] button", (buttons) => buttons.map((button) => button.textContent?.trim()).filter((text) => text === "Open" || text === "Download"));
   ok(fileActions.includes("Open") && fileActions.includes("Download"), "Files exposes explicit authenticated Open and Download actions");
@@ -431,8 +475,19 @@ try {
   await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Providers")?.click());
   await page.waitForSelector(".routing-fabric");
   const fabricText = await page.$eval(".routing-fabric", (element) => element.textContent || "");
-  const fabricAria = await page.$eval(".routing-fabric-svg", (element) => element.getAttribute("aria-label") || "");
-  ok(/REQUESTS/.test(fabricText) && /1HELM ROUTER/.test(fabricText) && /routed provider/.test(fabricAria), "Providers visualizes the live dotted Requests → 1Helm Router → provider flow");
+  const fabricAria = await page.$eval(".routing-live-stage", (element) => element.getAttribute("aria-label") || "");
+  const fabricGeometry = await page.$eval(".routing-live-stage", (stage) => {
+    const providers = [...stage.querySelectorAll('.routing-live-provider')].map((node) => node.getBoundingClientRect());
+    const providerNames = [...stage.querySelectorAll('.routing-live-provider span')].map((node) => node.textContent?.trim());
+    const router = stage.querySelector('.routing-live-router').getBoundingClientRect();
+    const requests = stage.querySelector('.routing-live-source').getBoundingClientRect();
+    return { width: stage.getBoundingClientRect().width, providerNames, providersAboveRouter: providers.length === 8 && providers.every((box) => box.bottom < router.top), routerAboveRequests: router.bottom < requests.top };
+  });
+  await page.screenshot({ path: "/tmp/1helm-routes-bottom-to-top.png" });
+  ok(/Requests/.test(fabricText) && /1Helm Router/.test(fabricText) && /Bottom-to-top live route map/.test(fabricAria)
+    && fabricGeometry.width >= 500 && fabricGeometry.providersAboveRouter && fabricGeometry.routerAboveRequests
+    && ["ChatGPT", "Claude", "Antigravity", "xAI", "OpenRouter", "NVIDIA", "Cloudflare", "GLM"].every((name) => fabricGeometry.providerNames.includes(name)),
+  "Providers visualizes a spacious, literal bottom-to-top Requests → 1Helm Router → provider arc");
   await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.getAttribute("aria-label") === "Close settings" || button.textContent?.trim() === "Close")?.click());
   await page.goto(`${base}/c/${channel.slug}`, { waitUntil: "networkidle0" });
 

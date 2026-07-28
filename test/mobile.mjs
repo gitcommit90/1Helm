@@ -87,18 +87,22 @@ test("mobile compatibility is explicit and CORS is confined to packaged Capacito
 });
 
 test("Capacitor shells keep sessions native, connections HTTPS-only, and release identities stable", async () => {
-  const [config, mobile, api, app, notifications, androidManifest, androidBuild, androidRules, androidPackage, androidStyles, androidLaunch, iosInfo, iosProject, iosLaunch, privacy, packageJson, iosPackage] = await Promise.all([
+  const [config, mobile, api, app, notifications, androidManifest, androidBuild, androidRules, androidPackage, androidStyles, androidLaunch, iosInfo, iosProject, iosLaunch, privacy, packageJson, iosPackage, gatewayHtml, gatewayError, androidGateway, androidActivity, iosGateway] = await Promise.all([
     read("capacitor.config.json"), read("src/client/mobile.ts"), read("src/client/api.ts"), read("src/client/app.ts"),
     read("src/client/notifications.ts"),
     read("android/app/src/main/AndroidManifest.xml"), read("android/app/build.gradle"), read("android/app/src/main/res/xml/data_extraction_rules.xml"), read("scripts/package-android-apk.mjs"),
     read("android/app/src/main/res/values/styles.xml"), read("android/app/src/main/res/layout/launch_screen.xml"), read("ios/App/App/Info.plist"), read("ios/App/App.xcodeproj/project.pbxproj"), read("ios/App/App/Base.lproj/LaunchScreen.storyboard"),
     read("ios/App/App/PrivacyInfo.xcprivacy"), read("package.json"), read("scripts/package-ios-ipa.mjs"),
+    read("mobile-gateway/index.html"), read("mobile-gateway/error.html"), read("android/app/src/main/java/com/gitcommit90/onehelm/mobile/InstanceGatewayPlugin.java"), read("android/app/src/main/java/com/gitcommit90/onehelm/mobile/MainActivity.java"), read("ios/App/App/GatewayViewController.swift"),
   ]);
   const parsed = JSON.parse(config);
   assert.equal(parsed.appId, "com.gitcommit90.onehelm.mobile");
   assert.equal(parsed.server.androidScheme, "https");
   assert.equal(parsed.server.cleartext, false);
-  assert.equal(parsed.server.url, undefined, "release app packages the audited local UI instead of navigating a wildcard remote WebView");
+  assert.equal(parsed.webDir, "mobile-gateway", "the app packages only the connection and recovery shell");
+  assert.equal(parsed.server.url, undefined, "the exact selected server is injected natively at launch, never as a wildcard build-time origin");
+  assert.equal(parsed.server.allowNavigation, undefined, "no wildcard navigation grant can broaden native bridge access");
+  assert.equal(parsed.server.errorPath, "error.html");
   assert.equal(parsed.loggingBehavior, "none");
   assert.equal(parsed.android.buildOptions.releaseType, "APK");
   assert.equal(parsed.android.webContentsDebuggingEnabled, false);
@@ -124,7 +128,10 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.match(mobile, /StatusBar\.setBackgroundColor\(\{ color: surface \}\)/, "native status chrome follows the computed header surface");
   assert.match(mobile, /contains\("light"\) \? Style\.Light : Style\.Dark/, "status indicators stay legible when the user switches theme");
   assert.match(mobile, /App\.getLaunchUrl/, "a cold-start OAuth callback is retained");
-  assert.doesNotMatch(mobile, /destination\.origin === serverOrigin/, "server links cannot replace the audited packaged WebView");
+  assert.match(mobile, /registerPlugin<InstanceGateway>\("InstanceGateway"\)/);
+  assert.match(mobile, /location\.origin !== serverOrigin/, "the live frontend rejects a bridge injected onto any origin other than the selected instance");
+  assert.match(mobile, /target\.protocol = target\.protocol === "https:" \? "wss:" : "ws:"/,
+    "same-origin WebSockets preserve ws:// for HTTP browser instances and use wss:// for HTTPS/native gateways");
   assert.doesNotMatch(api, /let token = localStorage\.getItem/, "the session is not eagerly copied out of native secure storage");
   assert.match(app, /if \(isNativeMobile\(\) && !getToken\(\)\) return renderAuth\(\)/, "the gateway never opens host onboarding");
   assert.match(app, /src: serverAssetUrl\(avatarValue\)/, "server-hosted custom avatars resolve against the selected host");
@@ -134,6 +141,9 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.match(androidManifest, /android\.permission\.INTERNET/);
   assert.match(androidManifest, /android\.permission\.RECORD_AUDIO/);
   assert.match(androidManifest, /android:scheme="onehelm" android:host="openrouter"/);
+  assert.match(androidGateway, /parsed\.protocol|"https"\.equalsIgnoreCase|validOrigin/);
+  assert.match(androidGateway, /shouldOverrideLoad[\s\S]*sameOrigin[\s\S]*https:\/\/localhost/, "Android rejects in-WebView HTTP(S) navigation outside the exact local or selected origin");
+  assert.match(androidActivity, /registerPlugin\(InstanceGatewayPlugin\.class\)[\s\S]*setServerUrl\(selected\)[\s\S]*setErrorPath\("error\.html"\)/, "Android builds a bridge for exactly the selected HTTPS origin");
   assert.match(androidBuild, /versionName oneHelmVersion/);
   assert.match(androidBuild, /HELM_ANDROID_SIGNING_PROPERTIES/);
   assert.match(androidBuild, /signingConfig signingConfigs\.release/);
@@ -157,6 +167,9 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.match(iosInfo, /NSSpeechRecognitionUsageDescription/);
   assert.match(iosInfo, /ITSAppUsesNonExemptEncryption/);
   assert.match(iosProject, /PRODUCT_BUNDLE_IDENTIFIER = com\.gitcommit90\.onehelm\.mobile/);
+  assert.match(iosProject, /GatewayViewController\.swift in Sources/);
+  assert.match(iosGateway, /descriptor\.errorPath = "error\.html"[\s\S]*descriptor\.serverURL = origin[\s\S]*registerPluginInstance\(InstanceGatewayPlugin\(\)\)/, "iOS builds a bridge for exactly the selected HTTPS origin");
+  assert.match(iosGateway, /shouldOverrideLoad[\s\S]*sameOrigin[\s\S]*scheme\?\.lowercased\(\)[\s\S]*host\?\.lowercased\(\)/, "iOS rejects in-WebView HTTP(S) navigation outside an exact scheme, host, and port match");
   assert.match(iosProject, /PrivacyInfo\.xcprivacy in Resources/);
   assert.match(iosProject, /CODE_SIGN_ENTITLEMENTS = App\/App\.entitlements/);
   assert.match(notifications, /mobilePlatform\(\) !== "ios"/, "the current release offers push only on the platform with a complete APNs delivery path");
@@ -170,6 +183,12 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   const pkg = JSON.parse(packageJson);
   for (const dependency of ["@capacitor/core", "@capacitor/android", "@capacitor/ios", "@aparajita/capacitor-secure-storage"]) assert.ok(pkg.dependencies[dependency]);
   assert.ok(pkg.scripts["mobile:sync"] && pkg.scripts["package:android:release"] && pkg.scripts["package:ios:release"]);
+
+  assert.match(gatewayHtml, /Connect to 1Helm[\s\S]*api\/mobile\/compatibility[\s\S]*selectServer/);
+  assert.match(gatewayError, /Instance unavailable[\s\S]*Retry[\s\S]*Change instance/);
+  for (const frozenAsset of ["bundle.js", "app.css", "excalidraw"]) {
+    assert.doesNotMatch(gatewayHtml + gatewayError, new RegExp(frozenAsset.replace(".", "\\."), "i"), `gateway contains no frozen ${frozenAsset}`);
+  }
 
   const iosIcon = await sharp(join(root, "ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png")).metadata();
   assert.equal(iosIcon.width, 1024); assert.equal(iosIcon.height, 1024);

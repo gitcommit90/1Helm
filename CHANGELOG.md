@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.22] - 2026-07-28
+
+### Added
+
+- Presentations now define a visible, locked printable boundary on every
+  slide, defaulting to 1500 × 1000 with configurable dimensions. The
+  Excalidraw menu exports the whole bounded deck as one real multi-page PDF and
+  excludes material outside each printable page.
+- Android and iOS now package only a minimal HTTPS instance connection and
+  recovery shell. After selection they load the chosen instance's live
+  frontend directly, preserve native secure sessions, notifications, links,
+  attachments, microphone, keyboard, and safe-area behavior, and confine the
+  native bridge to an exact scheme/host/effective-port match.
+
+### Changed
+
+- Fresh browser profiles start in light mode, while retaining the existing
+  user-controlled dark-mode switch.
+- The Cowork section tabs are centered at normal widths.
+- Routes now presents a spacious bottom-to-top request flow through **1Helm
+  Router** into a stable arc of ChatGPT, Claude, Antigravity, xAI, OpenRouter,
+  NVIDIA, Cloudflare, and GLM. Dotted live paths and the request ledger keep
+  requested model policy separate from the routed provider or fallback.
+- Structured question choices now show an accessible pressed state with a
+  strong ring, fill, inset accent, and checked indicator in both themes.
+
+### Fixed
+
+- **Log Out** is now available in the profile menu. Native profiles also retain
+  their separate **Disconnect** action for erasing the selected instance and
+  secure session.
+- Every composer now displays and submits the authoritative effective model
+  policy using thread → channel → personal → workspace → agent precedence.
+  Personal overrides are labeled and can be cleared with **Use workspace
+  default**; stale submissions are rejected before admission, and queued turns
+  retain the model and provider snapshot they were admitted with.
+- Silent thread audits use their own `system-*` routing identity and the
+  Captain-scoped provider fabric, so concurrent user requests cannot be
+  mislabeled as maintenance. Router fallback remains a provider outcome rather
+  than appearing to change the requested model mid-turn.
+- HTTP browser instances now use `ws:` while HTTPS and native instances use
+  `wss:`. Fast Cowork collaboration sync, detached Files test rows, and legacy
+  presentation element ordering are also handled deterministically.
+
+### Tests
+
+- Native integration coverage proves visible personal-policy execution,
+  immediate restoration of the workspace default, stale-policy rejection,
+  durable admission metadata, and queued-model immutability across a later
+  preference change.
+- Browser coverage verifies profile Log Out, first-profile light mode, centered
+  Cowork tabs, selected answers in both themes, the literal eight-provider
+  Routes geometry, the locked presentation boundary, configurable page size,
+  and a parsed two-page 1600 × 900 PDF export.
+- Mobile contracts prove only gateway assets are packaged, HTTPS origins are
+  normalized, native sessions stay secure, and Android/iOS navigation cannot
+  broaden bridge access through an origin-prefix attack.
+
 ## [0.0.21] - 2026-07-27
 
 ### Fixed
@@ -642,7 +700,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.21...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.22...HEAD
+[0.0.22]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.22
 [0.0.21]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.21
 [0.0.20]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.20
 [0.0.19]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.19

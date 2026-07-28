@@ -49,6 +49,7 @@ type RoutingRuntime = {
     usageAggregate: (period: string) => unknown;
     stats: () => unknown;
     listModels: () => { data?: Array<{ id?: string; name?: string; combo?: boolean; providerId?: string | null; owned_by?: string; accountAliases?: string[] }> };
+    chatCompletions: (options: Record<string, unknown>) => Promise<Record<string, unknown>>;
   };
   gateway: {
     getAddress: () => string | null;
@@ -156,6 +157,7 @@ let activityUnsubscribe: (() => void) | null = null;
 let onActivity: ((activity?: unknown, userId?: number) => void) | null = null;
 const recentActivity: unknown[] = [];
 const recentUserActivity = new Map<number, unknown[]>();
+const activeSystemRequests = new Map<number, Map<string, Record<string, unknown>>>();
 type ModelDiscovery = { id: string; name: string; free?: boolean };
 type ModelRefreshPreview = { userId: number; providerId: string; models: ModelDiscovery[]; expiresAt: number };
 const modelRefreshPreviews = new Map<string, ModelRefreshPreview>();
@@ -168,12 +170,21 @@ const activeOauthByFamily = new Map<string, string>();
 const userGateways = new Map<number, UserGatewayRuntime>();
 
 function publishRoutingActivity(activity: unknown, userId = 0): void {
+  let published = activity;
+  if (activity && typeof activity === "object") {
+    const event = activity as { type?: unknown; request?: Record<string, unknown>; active?: Array<Record<string, unknown>> };
+    const systemActive = [...(activeSystemRequests.get(userId)?.values() || [])];
+    published = {
+      ...event,
+      active: Array.isArray(event.active) ? [...event.active, ...systemActive] : systemActive,
+    };
+  }
   const history = userId > 0
     ? (recentUserActivity.get(userId) || (recentUserActivity.set(userId, []), recentUserActivity.get(userId)!))
     : recentActivity;
-  history.unshift(activity);
+  history.unshift(published);
   if (history.length > 30) history.length = 30;
-  onActivity?.(activity, userId);
+  onActivity?.(published, userId);
 }
 
 const oauthKey = (userId: number, type: string): string => `${userId}:${type}`;
@@ -874,6 +885,7 @@ export async function stopRoutingEngine(): Promise<void> {
   await Promise.all(gateways.map((entry) => entry.gateway.stop().catch(() => undefined)));
   recentActivity.length = 0;
   recentUserActivity.clear();
+  activeSystemRequests.clear();
   modelRefreshPreviews.clear();
   if (target) await target.close({ drainMs: 10_000 });
 }
@@ -1119,7 +1131,8 @@ export async function routingState(userId = 0, isAdmin = true): Promise<Record<s
     mine: Number(combo.ownerUserId || 0) === userId,
   }));
   const personalActivity = userId ? recentUserActivity.get(userId) || [] : recentActivity;
-  const activeRequests = userId ? userGateways.get(userId)?.requestActivity.snapshot() || [] : runtime?.requestActivity.snapshot() || [];
+  const routedActive = userId ? userGateways.get(userId)?.requestActivity.snapshot() || [] : runtime?.requestActivity.snapshot() || [];
+  const activeRequests = [...routedActive, ...(activeSystemRequests.get(userId)?.values() || [])];
   return { ...state, providers, combos, activeRequests, recentActivity: personalActivity, imageGenerationEnabled: enabled, apiKey: state.apiKey ? "" : state.apiKey, apiKeys: undefined, scope: isAdmin ? "captain" : "member" };
 }
 
@@ -1186,6 +1199,62 @@ export async function routingEndpointForUser(userId: number): Promise<{ base_url
   const endpoint = userEndpointRow(userId);
   const gateway = await ensureUserGateway(userId);
   return { base_url: `http://127.0.0.1:${gateway.port}/v1`, api_key: endpoint.internal_key };
+}
+
+/** Route one exact silent maintenance request through a user's visible provider
+ * fabric. This emits its own request identity instead of guessing which
+ * same-model gateway request is system work, so concurrent human traffic can
+ * never inherit the system label. */
+export async function routeSystemRequestForUser(
+  userId: number,
+  workKind: string,
+  body: Record<string, unknown>,
+): Promise<Response> {
+  const gateway = await ensureUserGateway(userId);
+  const id = `system-${randomBytes(16).toString("hex")}`;
+  const requests = activeSystemRequests.get(userId) || new Map<string, Record<string, unknown>>();
+  activeSystemRequests.set(userId, requests);
+  let request: Record<string, unknown> = {
+    id,
+    model: String(body.model || ""),
+    stream: Boolean(body.stream),
+    startedAt: Date.now(),
+    providerId: null,
+    providerType: null,
+    providerName: null,
+    initiator: "system",
+    work_kind: String(workKind || "maintenance"),
+  };
+  requests.set(id, request);
+  publishRoutingActivity({ type: "started", request, active: [] }, userId);
+  let status = 500;
+  let outcome = "error";
+  try {
+    const result = await gateway.router.chatCompletions({
+      body,
+      onProviderSelected: (provider: Record<string, unknown>) => {
+        request = { ...request, ...provider, routedAt: Date.now() };
+        requests.set(id, request);
+        publishRoutingActivity({ type: "routed", request, active: [] }, userId);
+      },
+    } as never) as unknown as Record<string, unknown>;
+    status = result.ok === false ? Number(result.status || 502) : 200;
+    outcome = result.ok === false ? "error" : "success";
+    const payload = result.ok === false ? result.error : result.openAiJson;
+    return new Response(JSON.stringify(payload || {}), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ error: { message: (error as Error).message || "Routing failed" } }), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  } finally {
+    requests.delete(id);
+    if (!requests.size) activeSystemRequests.delete(userId);
+    publishRoutingActivity({ type: "finished", request: { ...request, status, outcome, finishedAt: Date.now() }, active: [] }, userId);
+  }
 }
 
 export function isInternalRoutingProvider(providerId: number | null): boolean {
