@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { access, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -213,71 +214,54 @@ test("mobile server addresses normalize to an HTTPS origin and reject ambiguous 
 test("the packaged phone gateway opens a fitting connection screen instead of host setup", {
   skip: executablePath ? false : "No local Chrome executable; native-shell and transport contracts still run independently.",
 }, async () => {
-  const dataDir = await mkdtemp(join(tmpdir(), "1helm-mobile-ui-test-"));
+  const gatewayHtml = await read("mobile-gateway/index.html");
   const port = await freePort();
-  const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/server/index.ts"], {
-    cwd: root,
-    env: { ...process.env, CTRL_DATA_DIR: dataDir, PORT: String(port), HELM_CHANNEL_COMPUTER_BACKEND: "native" },
-    stdio: ["ignore", "pipe", "pipe"],
+  const gatewayServer = createHttpServer((request, response) => {
+    if (request.url === "/" || request.url === "/index.html") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" }); response.end(gatewayHtml); return;
+    }
+    if (request.url === "/capacitor.js") {
+      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
+      response.end(`window.Capacitor={Plugins:{InstanceGateway:{getServer:async()=>({origin:""}),selectServer:async({origin})=>({origin})}}};`); return;
+    }
+    response.writeHead(404); response.end("not found");
+  });
+  await new Promise((resolveListen, reject) => {
+    gatewayServer.once("error", reject);
+    gatewayServer.listen(port, "127.0.0.1", resolveListen);
   });
   let browser;
   try {
     const base = `http://127.0.0.1:${port}`;
-    await waitFor(`${base}/api/setup/status`);
     browser = await puppeteer.launch({ executablePath, headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
     const page = await browser.newPage();
     await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
-    await page.evaluateOnNewDocument(() => {
-      // Minimal Capacitor Android bridge contract. Native methods resolve as
-      // they do on-device, while secure storage begins empty for this test.
-      Object.defineProperty(window, "androidBridge", { value: {}, configurable: true });
-      const promiseMethods = (names) => names.map((name) => ({ name, rtype: "promise" }));
-      window.Capacitor = {
-        PluginHeaders: [
-          { name: "SecureStorage", methods: promiseMethods(["setSynchronizeKeychain", "internalGetItem", "internalSetItem", "internalRemoveItem", "clearItemsWithPrefix", "getPrefixedKeys"]) },
-          { name: "StatusBar", methods: promiseMethods(["setStyle", "setOverlaysWebView"]) },
-          { name: "Keyboard", methods: promiseMethods(["setResizeMode"]) },
-          { name: "App", methods: [{ name: "addListener", rtype: "callback" }, ...promiseMethods(["removeListener", "getLaunchUrl"]) ] },
-          { name: "Browser", methods: promiseMethods(["open", "close"]) },
-        ],
-        nativePromise(plugin, method) {
-          if (plugin === "SecureStorage" && method === "internalGetItem") return Promise.resolve({ data: null });
-          if (plugin === "SecureStorage" && method === "internalRemoveItem") return Promise.resolve({ success: false });
-          if (plugin === "SecureStorage" && method === "getPrefixedKeys") return Promise.resolve({ keys: [] });
-          return Promise.resolve({});
-        },
-        nativeCallback() { return Promise.resolve("mobile-test-listener"); },
-      };
-    });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(base, { waitUntil: "networkidle0" });
     await page.waitForSelector('input[placeholder="https://your-1helm-server.com"]');
     const screen = await page.evaluate(() => {
-      const stage = document.querySelector(".auth-stage");
+      const card = document.querySelector("main");
       const inputs = [...document.querySelectorAll("input")];
       return {
-        body: document.body.textContent || "",
+        body: card?.textContent || "",
         serverType: inputs[0]?.getAttribute("type"),
-        passwordType: inputs.at(-1)?.getAttribute("type"),
+        inputCount: inputs.length,
         overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-        stageOverflowY: stage ? stage.scrollHeight - stage.clientHeight : -1,
-        nativePlatform: document.documentElement.dataset.nativeMobile,
+        cardFits: card ? card.getBoundingClientRect().top >= 0 && card.getBoundingClientRect().bottom <= innerHeight : false,
       };
     });
-    assert.match(screen.body, /Connect to your 1Helm/);
-    assert.match(screen.body, /must already be set up and reachable over HTTPS/);
+    assert.match(screen.body, /Connect to 1Helm/);
+    assert.match(screen.body, /live interface/);
     assert.doesNotMatch(screen.body, /Create the Captain account/);
+    assert.doesNotMatch(screen.body, /password|Sign in/i);
     assert.equal(screen.serverType, "url");
-    assert.equal(screen.passwordType, "password");
-    assert.equal(screen.nativePlatform, "android");
+    assert.equal(screen.inputCount, 1, "the packaged gateway asks only for the selected instance");
     assert.ok(screen.overflowX <= 0, `phone gateway has ${screen.overflowX}px horizontal overflow`);
-    assert.ok(screen.stageOverflowY <= 0, `phone connection card has ${screen.stageOverflowY}px vertical overflow`);
+    assert.equal(screen.cardFits, true, "the connection card fits the phone viewport");
     assert.deepEqual(errors, []);
   } finally {
     if (browser) await browser.close().catch(() => undefined);
-    child.kill("SIGTERM");
-    await new Promise((resolveWait) => child.once("exit", resolveWait));
-    await rm(dataDir, { recursive: true, force: true });
+    await new Promise((resolveClose) => gatewayServer.close(resolveClose));
   }
 });
