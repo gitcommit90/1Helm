@@ -247,26 +247,31 @@ test("the packaged phone gateway opens a fitting connection screen instead of ho
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(base, { waitUntil: "networkidle0" });
-    await page.waitForSelector('input[placeholder="https://your-1helm-server.com"]');
+    await page.waitForSelector('input[placeholder="your-workspace"]');
     const screen = await page.evaluate(() => {
       const card = document.querySelector("main");
       const inputs = [...document.querySelectorAll("input")];
       return {
         body: card?.textContent || "",
         serverType: inputs[0]?.getAttribute("type"),
+        suffix: document.querySelector(".suffix")?.textContent || "",
         inputCount: inputs.length,
         overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         cardFits: card ? card.getBoundingClientRect().top >= 0 && card.getBoundingClientRect().bottom <= innerHeight : false,
       };
     });
     assert.match(screen.body, /Connect to 1Helm/);
-    assert.match(screen.body, /live interface/);
+    assert.match(screen.body, /Enter your workspace name/);
     assert.doesNotMatch(screen.body, /Create the Captain account/);
     assert.doesNotMatch(screen.body, /password|Sign in/i);
-    assert.equal(screen.serverType, "url");
+    assert.equal(screen.serverType, "text");
+    assert.equal(screen.suffix, ".1helm.com");
     assert.equal(screen.inputCount, 1, "the packaged gateway asks only for the selected instance");
     assert.ok(screen.overflowX <= 0, `phone gateway has ${screen.overflowX}px horizontal overflow`);
     assert.equal(screen.cardFits, true, "the connection card fits the phone viewport");
+    await page.click("#alternate");
+    await page.waitForSelector('input[placeholder="https://your-1helm-server.com"]');
+    assert.equal(await page.$eval("#alternate", (button) => button.textContent?.trim()), "Connect to 1Helm URL?");
     assert.deepEqual(errors, []);
   } finally {
     if (browser) await browser.close().catch(() => undefined);
