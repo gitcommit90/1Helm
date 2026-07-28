@@ -5,9 +5,35 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import workspaceTarget from "../desktop/workspace-target.cjs";
 
 const root = resolve(import.meta.dirname, "..");
 const packageVersion = JSON.parse(await readFile(join(root, "package.json"), "utf8")).version;
+const { allowedRemoteUrl, desktopGatewayAction, isHostedWorkspaceOrigin, normalizeRemoteOrigin } = workspaceTarget;
+
+test("desktop first launch can connect to an existing workspace or start this PC as the server", async () => {
+  const source = await readFile(join(root, "desktop", "main.cjs"), "utf8");
+  const gateway = await readFile(join(root, "desktop", "gateway.html"), "utf8");
+  assert.equal(normalizeRemoteOrigin("https://acme.1helm.com/path"), "https://acme.1helm.com");
+  assert.equal(normalizeRemoteOrigin("http://acme.1helm.com"), "");
+  assert.equal(isHostedWorkspaceOrigin("https://acme.1helm.com"), true);
+  assert.equal(isHostedWorkspaceOrigin("https://demo.1helm.com"), false);
+  assert.equal(allowedRemoteUrl("https://private.example/app", "https://private.example"), true);
+  assert.equal(allowedRemoteUrl("https://other.example/app", "https://private.example"), false);
+  assert.deepEqual(desktopGatewayAction("https://desktop-action.1helm.invalid/setup"), { type: "setup" });
+  assert.deepEqual(desktopGatewayAction("https://desktop-action.1helm.invalid/connect?origin=https%3A%2F%2Facme.1helm.com"), { type: "connect", origin: "https://acme.1helm.com" });
+  assert.equal(desktopGatewayAction("https://other.invalid/setup"), null);
+  assert.match(source, /if \(fs\.existsSync\(localDatabasePath\(\)\)\) return "server"/, "configured desktop installations continue opening their local server");
+  assert.match(source, /if \(fs\.existsSync\(remoteWorkspacePath\(\)\)\) return "client"/, "older remote desktop installations remain clients");
+  assert.match(source, /if \(mode === "server" \|\| process\.platform === "linux"\)[\s\S]*await startLocalRuntime\(\)/, "only server-mode desktops and headless Linux start the local runtime at launch");
+  assert.match(source, /gatewayAction\.type === "setup"\) void startServerMode/, "the explicit new-user server action creates the local runtime");
+  assert.match(source, /mode === "server" \|\| process\.platform === "linux"/, "the visual gateway is scoped to Mac and Windows, leaving Linux server-oriented");
+  assert.match(source, /api\/mobile\/compatibility/, "the desktop validates the selected server before remembering it");
+  assert.match(gateway, /\.1helm\.com[\s\S]*Connect to a Different URL\?[\s\S]*Connect to 1Helm URL\?/, "desktop reuses the clean workspace-name and custom-URL flow");
+  assert.match(gateway, />New User\?</);
+  assert.match(gateway, />Set this PC up as a 1Helm Server to Get Started</);
+  assert.match(gateway, /1helm-macos-app-logo\.jpg/, "the desktop gateway uses the real product artwork");
+});
 
 async function freePort() {
   return new Promise((resolvePort, reject) => {
@@ -45,10 +71,9 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(source, /media-src 'self' blob:/, "the Electron renderer permits only same-origin and blob media for safe audio/video preview");
   assert.match(source, /HELM_RESOURCES_PATH = process\.resourcesPath/, "the local runtime resolves the connector bundled in the signed app");
   assert.match(source, /allowedTeamUrl/);
-  assert.match(source, /url\.protocol === "https:"/);
+  assert.match(await readFile(join(root, "desktop", "workspace-target.cjs"), "utf8"), /url\.protocol !== "https:"/);
   assert.match(source, /\^mailto:build@1helm\\\.com\$/i, "the company email opens only through the exact external mail link allowlist");
-  assert.match(source, /\.1helm\\\.com/);
-  assert.match(source, /!\["demo\.1helm\.com", "provision\.1helm\.com"\]\.includes/, "only exact customer workspace subdomains may load inside the sandboxed renderer");
+  assert.match(await readFile(join(root, "desktop", "workspace-target.cjs"), "utf8"), /\.1helm\\\.com/);
   assert.match(source, /remoteWorkspacePath/);
   assert.match(source, /preferredWorkspaceOrigin\(\)/, "the app remembers a selected team workspace while its own local headless runtime keeps running");
   assert.match(source, /requestSingleInstanceLock/);
@@ -75,6 +100,10 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(appClient, /1Helm v\$\{update\.current_version\}/, "Profile displays the installed version beside the update control");
   assert.match(appClient, /Download on host/, "Profile makes native download ownership explicit");
   assert.match(appClient, /Restart & install/, "Profile installs only after the host reports a verified update ready");
+  assert.match(appClient, /scheduleHostUpdatePromptChecks\(\)/, "admins learn about a downloaded update without opening Profile");
+  assert.match(appClient, /1helm\.updateReadyPrompt/, "the automatic update prompt is shown only once per downloaded version");
+  assert.match(appClient, /A new version has been downloaded and verified\.[\s\S]*Later[\s\S]*Restart Now/, "the verified update prompt offers an explicit defer-or-restart choice");
+  assert.match(appClient, /Restart Now[\s\S]*action: "install"/, "Restart Now uses the existing host-owned safe install action");
   assert.doesNotMatch(appClient, /window\.open\(target/, "updating never navigates the browsing device to a host installer");
   const nativeUpdater = await readFile(join(root, "desktop", "updater.cjs"), "utf8");
   assert.match(nativeUpdater, /autoUpdater\.checkForUpdates\(\)/);

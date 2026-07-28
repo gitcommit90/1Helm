@@ -117,6 +117,10 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.equal(parsed.plugins.SplashScreen.launchFadeOutDuration, 180);
   assert.equal(parsed.plugins.SplashScreen.androidScaleType, "CENTER_INSIDE");
   assert.equal(parsed.plugins.SplashScreen.layoutName, "launch_screen");
+  for (const gatewayPage of [gatewayHtml, gatewayError]) {
+    assert.match(gatewayPage, /requestAnimationFrame\(\(\)\s*=>\s*requestAnimationFrame/, "standalone gateway screens wait for their first paint before releasing the native splash");
+    assert.match(gatewayPage, /SplashScreen[\s\S]*hide\(\{\s*fadeOutDuration:\s*180\s*\}\)/, "standalone gateway screens release the native splash");
+  }
 
   assert.match(mobile, /SecureStorage/);
   assert.match(mobile, /KeychainAccess\.whenUnlockedThisDeviceOnly/);
@@ -186,6 +190,10 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.ok(pkg.scripts["mobile:sync"] && pkg.scripts["package:android:release"] && pkg.scripts["package:ios:release"]);
 
   assert.match(gatewayHtml, /Connect to 1Helm[\s\S]*api\/mobile\/compatibility[\s\S]*selectServer/);
+  assert.match(gatewayHtml, /<img[^>]+src="1helm-logo\.png"[^>]+alt="1Helm">/, "the native connection screen uses the real product logo");
+  assert.doesNotMatch(gatewayHtml, /⛵/, "the native connection screen has no emoji placeholder logo");
+  assert.match(gatewayHtml, /\.1helm\.com[\s\S]*Connect to a different url\?[\s\S]*Connect to 1Helm URL\?/, "the primary workspace-name field can switch to the existing custom-URL flow and back");
+  assert.match(gatewayHtml, /customUrl \? normalize\(input\.value\) : workspaceOrigin\(input\.value\)/, "workspace names resolve only beneath 1helm.com while custom URLs retain strict validation");
   assert.match(gatewayError, /Instance unavailable[\s\S]*Retry[\s\S]*Change instance/);
   for (const frozenAsset of ["bundle.js", "app.css", "excalidraw"]) {
     assert.doesNotMatch(gatewayHtml + gatewayError, new RegExp(frozenAsset.replace(".", "\\."), "i"), `gateway contains no frozen ${frozenAsset}`);
@@ -239,26 +247,31 @@ test("the packaged phone gateway opens a fitting connection screen instead of ho
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(base, { waitUntil: "networkidle0" });
-    await page.waitForSelector('input[placeholder="https://your-1helm-server.com"]');
+    await page.waitForSelector('input[placeholder="your-workspace"]');
     const screen = await page.evaluate(() => {
       const card = document.querySelector("main");
       const inputs = [...document.querySelectorAll("input")];
       return {
         body: card?.textContent || "",
         serverType: inputs[0]?.getAttribute("type"),
+        suffix: document.querySelector(".suffix")?.textContent || "",
         inputCount: inputs.length,
         overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         cardFits: card ? card.getBoundingClientRect().top >= 0 && card.getBoundingClientRect().bottom <= innerHeight : false,
       };
     });
     assert.match(screen.body, /Connect to 1Helm/);
-    assert.match(screen.body, /live interface/);
+    assert.match(screen.body, /Enter your workspace name/);
     assert.doesNotMatch(screen.body, /Create the Captain account/);
     assert.doesNotMatch(screen.body, /password|Sign in/i);
-    assert.equal(screen.serverType, "url");
+    assert.equal(screen.serverType, "text");
+    assert.equal(screen.suffix, ".1helm.com");
     assert.equal(screen.inputCount, 1, "the packaged gateway asks only for the selected instance");
     assert.ok(screen.overflowX <= 0, `phone gateway has ${screen.overflowX}px horizontal overflow`);
     assert.equal(screen.cardFits, true, "the connection card fits the phone viewport");
+    await page.click("#alternate");
+    await page.waitForSelector('input[placeholder="https://your-1helm-server.com"]');
+    assert.equal(await page.$eval("#alternate", (button) => button.textContent?.trim()), "Connect to 1Helm URL?");
     assert.deepEqual(errors, []);
   } finally {
     if (browser) await browser.close().catch(() => undefined);

@@ -127,10 +127,36 @@ try {
   ok(brand.title.includes("1Helm") && brand.appName === "1Helm" && !brand.body.includes("1Herd"), "the browser presents the product as 1Helm throughout");
   ok(brand.favicon === "/brand/1helm-sailboat.png" && brand.workspaceLogo === "/brand/1helm-sailboat.png", "the sailboat is the web favicon and default customizable workspace image");
 
+  await page.setRequestInterception(true);
+  const interceptReadyUpdate = (request) => {
+    if (request.url() === `${base}/api/app/update` && request.method() === "GET") {
+      void request.respond({ status: 200, contentType: "application/json", body: JSON.stringify({ mode: "native-macos", status: "ready", current_version: "0.0.22", version: "0.0.23", message: "Verified update ready.", error: null }) });
+      return;
+    }
+    void request.continue();
+  };
+  page.on("request", interceptReadyUpdate);
   await page.click('[title="Open profile"]');
   await page.waitForSelector('[data-profile-logout]');
   ok(await page.$eval('[data-profile-logout]', (button) => button.textContent?.trim() === "Log Out"), "the profile menu exposes the account Log Out action");
+  await page.waitForSelector('[data-update-ready-prompt]');
+  const updatePrompt = await page.$eval('[data-update-ready-prompt]', (dialog) => ({
+    label: dialog.getAttribute("aria-label"),
+    text: dialog.textContent || "",
+    remembered: localStorage.getItem("1helm.updateReadyPrompt"),
+  }));
+  ok(updatePrompt.label === "1Helm v0.0.23 is ready" && /downloaded and verified/.test(updatePrompt.text) && /Later/.test(updatePrompt.text) && /Restart Now/.test(updatePrompt.text) && updatePrompt.remembered === "native-macos:0.0.22->0.0.23",
+    "admins receive one clear Later / Restart Now prompt for a verified downloaded update");
+  await page.evaluate(() => [...document.querySelectorAll('[data-update-ready-prompt] button')].find((button) => button.textContent?.trim() === "Later")?.click());
+  await page.waitForFunction(() => !document.querySelector('[data-update-ready-prompt]'));
   await page.click('[aria-label="Close profile"]');
+  await page.click('[title="Open profile"]');
+  await page.waitForSelector('[data-profile-logout]');
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  ok(await page.$('[data-update-ready-prompt]') === null, "deferring a downloaded version does not nag the same admin again");
+  await page.click('[aria-label="Close profile"]');
+  page.off("request", interceptReadyUpdate);
+  await page.setRequestInterception(false);
 
   await api("/api/workspace/model-policy", { method: "PATCH", body: { model: smallModel, personal: true } }, token);
   await page.goto(`${base}/c/${mainChannel.slug}/chat`, { waitUntil: "networkidle0" });
@@ -481,12 +507,12 @@ try {
     const providerNames = [...stage.querySelectorAll('.routing-live-provider span')].map((node) => node.textContent?.trim());
     const router = stage.querySelector('.routing-live-router').getBoundingClientRect();
     const requests = stage.querySelector('.routing-live-source').getBoundingClientRect();
-    return { width: stage.getBoundingClientRect().width, providerNames, providersAboveRouter: providers.length === 8 && providers.every((box) => box.bottom < router.top), routerAboveRequests: router.bottom < requests.top };
+    return { width: stage.getBoundingClientRect().width, providerNames, providersAboveRouter: providers.length === 9 && providers.every((box) => box.bottom < router.top), routerAboveRequests: router.bottom < requests.top };
   });
   await page.screenshot({ path: "/tmp/1helm-routes-bottom-to-top.png" });
   ok(/Requests/.test(fabricText) && /1Helm Router/.test(fabricText) && /Bottom-to-top live route map/.test(fabricAria)
     && fabricGeometry.width >= 500 && fabricGeometry.providersAboveRouter && fabricGeometry.routerAboveRequests
-    && ["ChatGPT", "Claude", "Antigravity", "xAI", "OpenRouter", "NVIDIA", "Cloudflare", "GLM"].every((name) => fabricGeometry.providerNames.includes(name)),
+    && ["ChatGPT", "Claude", "Antigravity", "xAI", "OpenRouter", "NVIDIA", "Cloudflare", "GLM", "Custom"].every((name) => fabricGeometry.providerNames.includes(name)),
   "Providers visualizes a spacious, literal bottom-to-top Requests → 1Helm Router → provider arc");
   await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.getAttribute("aria-label") === "Close settings" || button.textContent?.trim() === "Close")?.click());
   await page.goto(`${base}/c/${channel.slug}`, { waitUntil: "networkidle0" });

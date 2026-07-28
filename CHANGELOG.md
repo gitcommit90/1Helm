@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.23] - 2026-07-28
+
+### Added
+
+- Admins now receive a one-time **Later** / **Restart Now** prompt when a
+  desktop update has finished downloading and verification, without
+  needing to open Profile or manually check first.
+- Fresh macOS and Windows installations can connect to an existing 1Helm
+  workspace with the clean `[workspace].1helm.com` gateway or its alternate
+  HTTPS URL flow. **New User?** reveals the explicit option to set the current
+  PC up as a new 1Helm server, while configured desktop servers continue to
+  open their existing local workspace normally and Linux stays headless. A
+  client-only desktop does not create a second local server or server login
+  item behind the connection screen.
+- The live Routes graphic includes one collapsed **Custom** provider node and
+  illuminates its line when any custom OpenAI-compatible endpoint handles a
+  request, while the request details retain the actual endpoint name.
+
+### Fixed
+
+- Presentations fit the entire dotted printable boundary into view whenever a
+  deck opens or a slide is selected, created, or duplicated, without changing
+  the slide's printable dimensions, content, persistence, or PDF export.
+- The Cowork agent is available from a section or nested folder before a file
+  is opened, and a new chat receives that exact `/workspace` folder path just
+  as file-scoped chats receive their exact file path.
+- Long Cowork Code files scroll inside their finite editor viewport instead of
+  extending below the visible canvas.
+- The Android and iOS connection shell releases its native splash after its
+  first paint, uses the real 1Helm artwork, and defaults to the same clean
+  workspace-name connection flow.
+
 ## [0.0.22] - 2026-07-28
 
 ### Added
@@ -700,7 +732,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.22...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...HEAD
+[0.0.23]: https://github.com/gitcommit90/1Helm/compare/v0.0.22...v0.0.23
 [0.0.22]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.22
 [0.0.21]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.21
 [0.0.20]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.20
