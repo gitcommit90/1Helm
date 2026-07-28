@@ -376,10 +376,17 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.click('[aria-label="Code editor"] .cm-content');
   await page.keyboard.down(primaryModifier); await page.keyboard.press("a"); await page.keyboard.up(primaryModifier); await page.keyboard.press("ArrowRight");
   await page.keyboard.type(`\n${Array.from({ length: 140 }, (_, index) => `const scrollRow${index + 1} = ${index + 1};`).join("\n")}`);
-  const codeScroll = await page.$eval('[aria-label="Code editor"] .cm-scroller', (scroller) => {
-    scroller.scrollTop = scroller.scrollHeight;
-    return { clientHeight: scroller.clientHeight, scrollHeight: scroller.scrollHeight, scrollTop: scroller.scrollTop, viewportHeight: document.querySelector('[data-cowork-viewport]').clientHeight };
-  });
+  const codeScroller = await page.$('[aria-label="Code editor"] .cm-scroller');
+  const codeScrollerBox = await codeScroller.boundingBox();
+  assert.ok(codeScrollerBox?.height > 0, JSON.stringify(codeScrollerBox));
+  await page.$eval('[aria-label="Code editor"] .cm-scroller', (scroller) => { scroller.scrollTop = 0; });
+  await page.mouse.move(codeScrollerBox.x + codeScrollerBox.width / 2, codeScrollerBox.y + Math.min(codeScrollerBox.height / 2, 120));
+  await page.mouse.wheel({ deltaY: 700 });
+  await page.waitForFunction(() => document.querySelector('[aria-label="Code editor"] .cm-scroller')?.scrollTop > 0);
+  const codeScroll = await page.$eval('[aria-label="Code editor"] .cm-scroller', (scroller) => ({
+    clientHeight: scroller.clientHeight, scrollHeight: scroller.scrollHeight, scrollTop: scroller.scrollTop,
+    viewportHeight: document.querySelector('[data-cowork-viewport]').clientHeight,
+  }));
   assert.ok(codeScroll.clientHeight < codeScroll.scrollHeight && codeScroll.scrollTop > 0 && codeScroll.clientHeight <= codeScroll.viewportHeight, JSON.stringify(codeScroll));
   await page.keyboard.down(primaryModifier); await page.keyboard.press("s"); await page.keyboard.up(primaryModifier);
   await waitFor(async () => (await api(`/api/channels/${channel.id}/files/text?path=code%2Ftool.ts`, {}, token)).file.content.includes("scrollRow140"), "saved long TypeScript editor content");
