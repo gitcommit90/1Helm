@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>Connect to 1Helm</title>
+  <style>
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #17191d; background: #f5f3ec; }
+    * { box-sizing: border-box; }
+    body { min-height: 100vh; margin: 0; padding: 2rem; display: grid; place-items: center; }
+    main { width: min(100%, 27rem); padding: 1.75rem; border: 1px solid #d9d5ca; border-radius: 1rem; background: #fff; box-shadow: 0 24px 60px -42px #000; }
+    .mark { display: block; width: 4rem; height: 4rem; margin: 0 auto 1rem; border-radius: 1rem; object-fit: cover; }
+    h1 { margin: 0; font-size: 1.65rem; text-align: center; }
+    p { margin: .6rem 0 1.25rem; color: #68655e; font-size: .9rem; line-height: 1.55; text-align: center; }
+    label { display: block; margin-bottom: .4rem; font-size: .75rem; font-weight: 700; }
+    input, button { width: 100%; min-height: 3rem; border-radius: .65rem; font: inherit; }
+    input { border: 1px solid #c9c5ba; padding: .75rem; background: #fff; color: #17191d; }
+    button { margin-top: .75rem; border: 0; padding: .7rem 1rem; background: #ef5b2a; color: #fff; font-weight: 750; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: default; }
+    .workspace-field { display: flex; min-height: 3rem; overflow: hidden; border: 1px solid #c9c5ba; border-radius: .65rem; background: #fff; }
+    .workspace-field input { min-width: 0; border: 0; border-radius: 0; text-align: right; outline: none; }
+    .workspace-field:focus-within { border-color: #ef5b2a; box-shadow: 0 0 0 3px color-mix(in srgb, #ef5b2a 18%, transparent); }
+    .suffix { display: flex; align-items: center; padding: 0 .8rem 0 0; color: #77736b; font-weight: 650; white-space: nowrap; }
+    .quiet { min-height: auto; margin-top: .65rem; padding: .35rem; background: transparent; color: #68655e; font-size: .78rem; font-weight: 650; }
+    .new-user { margin-top: 1rem; padding-top: .25rem; border-top: 1px solid #e4e0d6; }
+    .server { border: 1px solid #c9c5ba; background: transparent; color: #17191d; font-size: .86rem; line-height: 1.25; }
+    #status { min-height: 1.25rem; margin: .65rem 0 0; color: #a23024; font-size: .78rem; }
+    small { display: block; margin-top: .9rem; color: #77736b; font-size: .7rem; line-height: 1.5; text-align: center; }
+    [hidden] { display: none !important; }
+    @media (prefers-color-scheme: dark) {
+      :root { color: #f4f2eb; background: #111318; }
+      main { border-color: #34373e; background: #191c22; }
+      p, small, .quiet { color: #a8a59d; }
+      input, .workspace-field { border-color: #3d4149; background: #121419; color: #f4f2eb; }
+      .suffix { color: #a8a59d; }
+      .new-user { border-color: #34373e; }
+      .server { border-color: #3d4149; color: #f4f2eb; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <img class="mark" src="icons/1helm-macos-app-logo.jpg" alt="1Helm">
+    <h1>Connect to 1Helm</h1>
+    <p id="prompt">Enter your workspace name.</p>
+    <form id="connect">
+      <label id="server-label" for="server">Workspace</label>
+      <div id="workspace-field" class="workspace-field">
+        <input id="server" type="text" inputmode="url" autocomplete="url" autocapitalize="none" spellcheck="false" placeholder="your-workspace" required autofocus>
+        <span class="suffix">.1helm.com</span>
+      </div>
+      <button id="submit" type="submit">Connect</button>
+      <button id="alternate" class="quiet" type="button">Connect to a Different URL?</button>
+      <div id="status" role="alert"></div>
+    </form>
+    <div class="new-user">
+      <button id="new-user" class="quiet" type="button" aria-expanded="false">New User?</button>
+      <button id="local-setup" class="server" type="button" hidden>Set this PC up as a 1Helm Server to Get Started</button>
+    </div>
+    <small>Your saved workspace opens here next time. Other links stay outside the app.</small>
+  </main>
+  <script>
+    const query = new URLSearchParams(location.search);
+    const actionOrigin = "https://desktop-action.1helm.invalid";
+    const form = document.getElementById("connect");
+    const input = document.getElementById("server");
+    const submit = document.getElementById("submit");
+    const alternate = document.getElementById("alternate");
+    const field = document.getElementById("workspace-field");
+    const label = document.getElementById("server-label");
+    const prompt = document.getElementById("prompt");
+    const status = document.getElementById("status");
+    const newUser = document.getElementById("new-user");
+    const localSetup = document.getElementById("local-setup");
+    let customUrl = query.get("custom") === "1";
+
+    const normalize = (value) => {
+      const raw = value.trim();
+      const parsed = new URL(raw.includes("://") ? raw : `https://${raw}`);
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash || (parsed.pathname !== "/" && parsed.pathname !== "")) throw new Error("Enter an HTTPS root address without a path, credentials, query, or fragment.");
+      return parsed.origin;
+    };
+    const workspaceOrigin = (value) => {
+      const workspace = value.trim().toLowerCase();
+      if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(workspace)) throw new Error("Enter your workspace name without .1helm.com.");
+      return `https://${workspace}.1helm.com`;
+    };
+    const workspaceFromOrigin = (value) => {
+      try {
+        const parsed = new URL(value);
+        const match = parsed.hostname.match(/^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.1helm\.com$/i);
+        return parsed.protocol === "https:" && !parsed.port && parsed.pathname === "/" && !parsed.search && !parsed.hash ? match?.[1] || "" : "";
+      } catch { return ""; }
+    };
+    const showCustomUrl = (custom, value = "") => {
+      customUrl = custom;
+      field.classList.toggle("workspace-field", !custom);
+      field.querySelector(".suffix").hidden = custom;
+      label.textContent = custom ? "Instance address" : "Workspace";
+      prompt.textContent = custom ? "Choose the HTTPS address of an existing 1Helm instance." : "Enter your workspace name.";
+      input.type = custom ? "url" : "text";
+      input.placeholder = custom ? "https://your-1helm-server.com" : "your-workspace";
+      input.value = value;
+      alternate.textContent = custom ? "Connect to 1Helm URL?" : "Connect to a Different URL?";
+      status.textContent = "";
+      input.focus();
+    };
+    alternate.addEventListener("click", () => {
+      if (customUrl) showCustomUrl(false, workspaceFromOrigin(input.value));
+      else {
+        let value = "";
+        if (input.value) try { value = workspaceOrigin(input.value); } catch { value = input.value; }
+        showCustomUrl(true, value);
+      }
+    });
+    newUser.addEventListener("click", () => {
+      const expanded = localSetup.hidden;
+      localSetup.hidden = !expanded;
+      newUser.setAttribute("aria-expanded", String(expanded));
+    });
+    localSetup.addEventListener("click", () => { location.href = `${actionOrigin}/setup`; });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      status.textContent = "";
+      submit.disabled = true;
+      submit.textContent = "Checking…";
+      try {
+        const origin = customUrl ? normalize(input.value) : workspaceOrigin(input.value);
+        location.href = `${actionOrigin}/connect?origin=${encodeURIComponent(origin)}`;
+      } catch (error) {
+        status.textContent = error && error.message ? error.message : "Could not connect to this instance.";
+        submit.disabled = false;
+        submit.textContent = "Connect";
+      }
+    });
+
+    const prior = query.get("origin") || "";
+    const workspace = workspaceFromOrigin(prior);
+    showCustomUrl(customUrl || Boolean(prior && !workspace), workspace || prior);
+    status.textContent = query.get("error") || "";
+  </script>
+</body>
+</html>

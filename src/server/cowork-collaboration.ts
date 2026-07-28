@@ -118,10 +118,16 @@ yWebsocket.setPersistence({
   },
 });
 
-export function normalizeCoworkPath(input: string): string {
+export function normalizeCoworkFolderPath(input: string): string {
   const path = normalizeWorkspaceDirectoryPath(input);
   const root = path.split("/")[0];
-  if (!path.includes("/") || !COWORK_ROOTS.has(root)) throw new Error("Cowork files must stay in a supported /workspace section.");
+  if (!path || !COWORK_ROOTS.has(root)) throw new Error("Cowork paths must stay in a supported /workspace section.");
+  return path;
+}
+
+export function normalizeCoworkPath(input: string): string {
+  const path = normalizeCoworkFolderPath(input);
+  if (!path.includes("/")) throw new Error("Choose a Cowork file.");
   return path;
 }
 

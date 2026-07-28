@@ -36,7 +36,7 @@ const waitFor = async (fn, label, timeout = 20_000) => {
 };
 
 test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one file-backed product", {
-  timeout: 120_000,
+  timeout: 180_000,
   skip: executablePath ? false : "No local Chrome executable; server and source contracts cover the nonvisual fallback.",
 }, async (t) => {
   rmSync(dataDir, { recursive: true, force: true });
@@ -132,6 +132,16 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.waitForSelector('[data-cowork-surface]');
   assert.deepEqual(await page.$$eval('[aria-label="Cowork sections"] button', (buttons) => buttons.map((button) => button.textContent.trim())), ["Notes", "Whiteboard", "Code", "Docs", "Presentations"]);
   await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent?.includes("field-notes.md"));
+  await page.waitForSelector('.cowork-workspace .cowork-agent-toggle');
+  await page.click('.cowork-workspace .cowork-agent-toggle');
+  await page.waitForSelector('[data-cowork-agent]:not(.hidden) textarea');
+  assert.equal(await page.$eval('[data-cowork-agent] header', (header) => header.textContent.includes('/workspace/notes')), true, "an unopened Cowork section scopes its agent to the current folder");
+  await page.type('[data-cowork-agent] textarea', "Summarize this folder");
+  await page.evaluate(() => [...document.querySelectorAll('[data-cowork-agent] button')].find((button) => button.textContent.includes("Send"))?.click());
+  const folderRootId = await waitFor(async () => page.evaluate((id) => Number(localStorage.getItem(`1helm.cowork.thread.${id}.notes`) || 0), channel.id), "folder-scoped Cowork thread id");
+  const folderThread = await api(`/api/messages/${folderRootId}/thread`, {}, token);
+  assert.match(folderThread.root.body, /^@\S+ Summarize this folder\n\nWorking folder: \/workspace\/notes$/);
+  await page.click('.cowork-workspace .cowork-agent-toggle');
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("field-notes.md"))?.click());
   await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Field notes"));
   const editorContent = '[aria-label="Notes editor"] .cm-content';
@@ -363,6 +373,16 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.keyboard.press("Escape");
   await page.keyboard.down(primaryModifier); await page.keyboard.press("s"); await page.keyboard.up(primaryModifier);
   await waitFor(async () => (await api(`/api/channels/${channel.id}/files/text?path=code%2Ftool.ts`, {}, token)).file.content.includes("searchableValue"), "saved TypeScript editor content");
+  await page.click('[aria-label="Code editor"] .cm-content');
+  await page.keyboard.down(primaryModifier); await page.keyboard.press("a"); await page.keyboard.up(primaryModifier); await page.keyboard.press("ArrowRight");
+  await page.keyboard.type(`\n${Array.from({ length: 140 }, (_, index) => `const scrollRow${index + 1} = ${index + 1};`).join("\n")}`);
+  const codeScroll = await page.$eval('[aria-label="Code editor"] .cm-scroller', (scroller) => {
+    scroller.scrollTop = scroller.scrollHeight;
+    return { clientHeight: scroller.clientHeight, scrollHeight: scroller.scrollHeight, scrollTop: scroller.scrollTop, viewportHeight: document.querySelector('[data-cowork-viewport]').clientHeight };
+  });
+  assert.ok(codeScroll.clientHeight < codeScroll.scrollHeight && codeScroll.scrollTop > 0 && codeScroll.clientHeight <= codeScroll.viewportHeight, JSON.stringify(codeScroll));
+  await page.keyboard.down(primaryModifier); await page.keyboard.press("s"); await page.keyboard.up(primaryModifier);
+  await waitFor(async () => (await api(`/api/channels/${channel.id}/files/text?path=code%2Ftool.ts`, {}, token)).file.content.includes("scrollRow140"), "saved long TypeScript editor content");
 
   // Docs keeps a page-oriented editor and its formatting controls write
   // ordinary Markdown that survives save/reopen.
@@ -417,6 +437,8 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("review.slides.json"));
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("review.slides.json"))?.click());
   await page.waitForSelector('[data-cowork-presentation][data-slide-count="1"] .cowork-slide-canvas .excalidraw');
+  await page.waitForSelector('.cowork-slide-canvas[data-initial-fit="complete"]');
+  assert.ok(await page.$eval('.cowork-slide-canvas', (canvas) => Number(canvas.dataset.initialZoom) < 1), "the initial presentation viewport zooms out to fit the complete printable boundary");
   assert.deepEqual(await page.$eval('.cowork-slide-canvas', (canvas) => ({
     width: Number(canvas.dataset.printableWidth),
     height: Number(canvas.dataset.printableHeight),
@@ -456,6 +478,7 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   assert.ok(await collaboratorPage.$eval('.cowork-slide-canvas', (canvas) => Number(canvas.dataset.sceneElements || 0)) > 0);
   await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent.includes("Slide"))?.click());
   await page.waitForSelector('[data-cowork-presentation][data-slide-count="2"]');
+  await page.waitForSelector('.cowork-slide-canvas[data-initial-fit="complete"]');
   await collaboratorPage.waitForSelector('[data-cowork-presentation][data-slide-count="2"]');
   await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent.trim() === "Duplicate")?.click());
   await page.waitForSelector('[data-cowork-presentation][data-slide-count="3"]');

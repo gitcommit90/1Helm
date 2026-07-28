@@ -944,6 +944,7 @@ html, body { height: 100%; width: 100%; overflow: hidden; overscroll-behavior: n
 .cowork-notes-edit-stage .cowork-codemirror > .cm-editor { height: 100%; }
 .cowork-notes-edit-stage .cm-scroller { overflow-y: auto; }
 .cowork-codemirror-code { background: var(--c-surface); }
+.cowork-codemirror-code .cm-scroller { overflow-y: auto; }
 .dark .cowork-codemirror-code { background: color-mix(in srgb, #071019 72%, var(--c-surface)); }
 .cowork-markdown-preview { min-height: 100%; overflow-y: auto; background: var(--c-surface); padding: 1.5rem 2rem; }
 .cowork-doc-canvas { background: color-mix(in srgb, var(--c-raised) 75%, var(--c-bg)); }

@@ -78,7 +78,7 @@ import { configurePhoton, continuePhotonConversation, deliverPhotonEvent, photon
 import { photonSetupStatus, startPhotonSetup } from "./photon-auth.ts";
 import { completeGmailConnection, gmailConnectionStatus, saveGmailOAuthClient, startGmailConnection } from "./gmail.ts";
 import { cancelMnemosyneRuntimePreparation, ensureAgentMemory, mnemosyneAvailable, prepareMnemosyneRuntime } from "./memory.ts";
-import { attachCoworkClient, coworkPresence, coworkViewerUsernames, flushCoworkDocuments, normalizeCoworkPath } from "./cowork-collaboration.ts";
+import { attachCoworkClient, coworkPresence, coworkViewerUsernames, flushCoworkDocuments, normalizeCoworkFolderPath, normalizeCoworkPath } from "./cowork-collaboration.ts";
 import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
 import { startFollowupLoop, threadFollowupView, bumpThreadFollowup } from "./followups.ts";
@@ -1678,9 +1678,11 @@ const server = createServer(async (req, res) => {
         try {
           let body = String(b.body || "");
           if (b.coworkPath) {
-            const path = normalizeCoworkPath(String(b.coworkPath));
-            const viewers = coworkViewerUsernames(cid, path, Number(user.id));
-            const suffix = b.parentId ? [] : [`Working file: /workspace/${path}`];
+            const folderContext = b.coworkKind === "folder";
+            const path = folderContext ? normalizeCoworkFolderPath(String(b.coworkPath)) : normalizeCoworkPath(String(b.coworkPath));
+            if (folderContext) listWorkspaceDirectory(cid, path);
+            const viewers = folderContext ? [] : coworkViewerUsernames(cid, path, Number(user.id));
+            const suffix = b.parentId ? [] : [`Working ${folderContext ? "folder" : "file"}: /workspace/${path}`];
             if (viewers.length) suffix.push(`Working with: ${viewers.map((username) => `@${username}`).join(" ")}`);
             if (suffix.length) body = `${body.trim()}\n\n${suffix.join("\n")}`;
           }

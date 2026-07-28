@@ -8,6 +8,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const { createNativeUpdateService } = require("./updater.cjs");
+const { allowedRemoteUrl, desktopGatewayAction, isHostedWorkspaceOrigin, normalizeRemoteOrigin } = require("./workspace-target.cjs");
 
 const LOOPBACK = "127.0.0.1";
 let mainWindow = null;
@@ -16,6 +17,23 @@ let localOrigin = "";
 let quitting = false;
 let hostUpdateService = null;
 const remoteWorkspacePath = () => path.join(app.getPath("userData"), "remote-workspace");
+const desktopModePath = () => path.join(app.getPath("userData"), "desktop-mode");
+const localDatabasePath = () => path.join(app.getPath("userData"), "ctrl-pane.db");
+
+function desktopMode() {
+  try {
+    const mode = fs.readFileSync(desktopModePath(), "utf8").trim();
+    if (["client", "server"].includes(mode)) return mode;
+  } catch { /* older installations have no explicit mode */ }
+  if (fs.existsSync(remoteWorkspacePath())) return "client";
+  if (fs.existsSync(localDatabasePath())) return "server";
+  return "choose";
+}
+
+function rememberDesktopMode(mode) {
+  if (!["client", "server"].includes(mode)) return;
+  fs.writeFileSync(desktopModePath(), `${mode}\n`, { mode: 0o600 });
+}
 
 function handleSquirrelEvent() {
   if (process.platform !== "win32") return false;
@@ -38,17 +56,20 @@ function handleSquirrelEvent() {
 }
 
 function preferredWorkspaceOrigin() {
+  if (desktopMode() !== "client") return localOrigin;
   try {
     const value = fs.readFileSync(remoteWorkspacePath(), "utf8").trim();
-    return allowedTeamUrl(value) ? new URL(value).origin : localOrigin;
+    return normalizeRemoteOrigin(value);
   } catch {
-    return localOrigin;
+    return "";
   }
 }
 
 function rememberTeamUrl(raw) {
-  if (!allowedTeamUrl(raw)) return;
-  fs.writeFileSync(remoteWorkspacePath(), new URL(raw).origin + "\n", { mode: 0o600 });
+  const origin = normalizeRemoteOrigin(raw);
+  if (!origin) return;
+  fs.writeFileSync(remoteWorkspacePath(), origin + "\n", { mode: 0o600 });
+  rememberDesktopMode("client");
 }
 
 process.on("1helm-removal-prepared", () => {
@@ -117,6 +138,10 @@ function keepSkipperAvailable() {
   app.setLoginItemSettings({ openAtLogin: true, type: "mainAppService" });
 }
 
+function stopAutomaticServerStartup() {
+  app.setLoginItemSettings({ openAtLogin: false, type: "mainAppService" });
+}
+
 function prepareWindowsWslDataRoot() {
   if (process.platform !== "win32") return;
   // Per-channel virtual disks stay outside the replaceable application
@@ -134,15 +159,60 @@ function allowedLocalUrl(raw) {
 }
 
 function allowedTeamUrl(raw) {
-  try {
-    const url = new URL(raw);
-    return url.protocol === "https:" && /^[a-z0-9](?:[a-z0-9-]{1,46}[a-z0-9])?\.1helm\.com$/i.test(url.hostname) && !["demo.1helm.com", "provision.1helm.com"].includes(url.hostname.toLowerCase());
-  } catch {
-    return false;
-  }
+  return allowedRemoteUrl(raw, preferredWorkspaceOrigin() === localOrigin ? "" : preferredWorkspaceOrigin());
 }
 
 const allowedAppUrl = (raw) => allowedLocalUrl(raw) || allowedTeamUrl(raw);
+
+async function connectRemoteWorkspace(window, origin) {
+  try {
+    const response = await fetch(`${origin}/api/mobile/compatibility`, { signal: AbortSignal.timeout(15_000) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.product !== "1Helm" || result.mobile_api !== 1) throw new Error("That address is not a compatible 1Helm instance.");
+    if (!result.has_users || !result.setup_complete) throw new Error("Finish setting up this 1Helm instance before connecting the app.");
+    rememberTeamUrl(origin);
+    await window.loadURL(origin);
+  } catch (error) {
+    await loadDesktopGateway(window, { origin, error: error instanceof Error ? error.message : "Could not connect to this instance." });
+  }
+}
+
+function loadDesktopGateway(window, state = {}) {
+  return window.loadFile(path.join(__dirname, "gateway.html"), { query: {
+    ...(state.origin ? { origin: state.origin, custom: isHostedWorkspaceOrigin(state.origin) ? "0" : "1" } : {}),
+    ...(state.error ? { error: state.error } : {}),
+  } });
+}
+
+async function loadInitialWorkspace(window) {
+  const mode = desktopMode();
+  if (mode === "server" || process.platform === "linux") { await window.loadURL(localOrigin); return; }
+  if (mode === "client") {
+    const preferred = preferredWorkspaceOrigin();
+    if (preferred) { await window.loadURL(preferred); return; }
+  }
+  await loadDesktopGateway(window);
+}
+
+async function startServerMode(window) {
+  try {
+    keepSkipperAvailable();
+    prepareWindowsWslDataRoot();
+    if (!localOrigin) await startLocalRuntime();
+    rememberDesktopMode("server");
+    hostUpdateService?.schedule();
+    await window.loadURL(localOrigin);
+  } catch (error) {
+    stopAutomaticServerStartup();
+    await dialog.showMessageBox({
+      type: "error",
+      title: "1Helm could not start",
+      message: `The local 1Helm runtime could not start on this ${process.platform === "win32" ? "Windows PC" : "Mac"}.`,
+      detail: error instanceof Error ? error.stack || error.message : String(error),
+    });
+    await loadDesktopGateway(window, { error: "This PC could not start its local 1Helm server." });
+  }
+}
 
 function microphonePermissionAllowed(webContents, permission, details = {}) {
   const pageUrl = webContents?.getURL?.() || "";
@@ -202,6 +272,13 @@ function createWindow(showWhenReady = true) {
     return { action: "deny" };
   });
   window.webContents.on("will-navigate", (event, url) => {
+    const gatewayAction = desktopGatewayAction(url);
+    if (gatewayAction) {
+      event.preventDefault();
+      if (gatewayAction.type === "setup") void startServerMode(window);
+      else void connectRemoteWorkspace(window, gatewayAction.origin);
+      return;
+    }
     if (allowedTeamUrl(url)) { rememberTeamUrl(url); return; }
     if (allowedLocalUrl(url)) return;
     event.preventDefault();
@@ -211,7 +288,7 @@ function createWindow(showWhenReady = true) {
   });
   if (showWhenReady) window.once("ready-to-show", () => window.show());
   window.on("closed", () => { if (mainWindow === window) mainWindow = null; });
-  void window.loadURL(preferredWorkspaceOrigin());
+  void loadInitialWorkspace(window);
   mainWindow = window;
 }
 
@@ -254,8 +331,6 @@ if (handleSquirrelEvent()) {
     });
     try {
       removeLegacyWakeLaunchAgent();
-      keepSkipperAvailable();
-      prepareWindowsWslDataRoot();
       hostUpdateService = createNativeUpdateService({ app, autoUpdater });
       hostUpdateService.initialize();
       globalThis[Symbol.for("1helm.nativeUpdater")] = {
@@ -264,8 +339,15 @@ if (handleSquirrelEvent()) {
         install: hostUpdateService.install,
       };
       process.on("1helm-native-update-ready", () => { hostUpdateService?.commitInstall(); });
-      await startLocalRuntime();
-      hostUpdateService.schedule();
+      const mode = desktopMode();
+      if (mode === "server" || process.platform === "linux") {
+        keepSkipperAvailable();
+        prepareWindowsWslDataRoot();
+        await startLocalRuntime();
+        hostUpdateService.schedule();
+      } else {
+        stopAutomaticServerStartup();
+      }
       const login = app.getLoginItemSettings({ type: "mainAppService" });
       createWindow(!login.wasOpenedAtLogin && !process.argv.includes("--1helm-background"));
     } catch (error) {
@@ -279,7 +361,7 @@ if (handleSquirrelEvent()) {
     }
   });
 
-  app.on("activate", () => { if (!mainWindow && localOrigin) createWindow(); });
+  app.on("activate", () => { if (!mainWindow) createWindow(); });
   app.on("window-all-closed", () => {
     // On macOS 1Helm remains the native scheduler/fleet manager until Cmd-Q.
     if (process.platform !== "darwin") app.quit();
@@ -290,6 +372,6 @@ if (handleSquirrelEvent()) {
     quitting = true;
     // Explicit Quit is respected; the signed main-app login service starts the
     // local control plane hidden again at the next user login.
-    process.emit("SIGTERM", "SIGTERM");
+    if (localOrigin) process.emit("SIGTERM", "SIGTERM");
   });
 }

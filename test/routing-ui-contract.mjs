@@ -15,11 +15,13 @@ test("provider controls expose the live dotted router flow and credential-free h
   assert.match(client, /routing-fabric-path/);
   assert.match(client, /const y = 46 \+ Math\.abs\(index - center\) \* 5/,
     "provider nodes form the requested downward arc");
-  for (const provider of ["ChatGPT", "Claude", "Antigravity", "xAI", "OpenRouter", "NVIDIA", "Cloudflare", "GLM"]) {
+  for (const provider of ["ChatGPT", "Claude", "Antigravity", "xAI", "OpenRouter", "NVIDIA", "Cloudflare", "GLM", "Custom"]) {
     assert.match(client, new RegExp(`name: "${provider}"`), `the fixed route arc includes ${provider}`);
   }
   assert.match(client, /const nodes = routeProviderFamilies/,
-    "the route map always renders the complete eight-provider network");
+    "the route map always renders the complete nine-provider network");
+  assert.match(client, /replace\(\/\^\(\?:openai-compat\|custom\)\$\/, "custom"\)/,
+    "live OpenAI-compatible requests illuminate the collapsed Custom route");
   assert.match(client, /M 360 248[\s\S]*M 360 135/,
     "request paths originate below the router and continue toward providers");
   assert.match(client, /Requested ·[\s\S]*Routed via/,

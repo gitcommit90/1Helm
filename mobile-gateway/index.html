@@ -9,24 +9,33 @@
     :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #17191d; background: #f5f3ec; }
     * { box-sizing: border-box; } body { min-height: 100dvh; margin: 0; padding: max(1.5rem, env(safe-area-inset-top)) 1.25rem max(1.5rem, env(safe-area-inset-bottom)); display: grid; place-items: center; }
     main { width: min(100%, 25rem); padding: 1.5rem; border: 1px solid #d9d5ca; border-radius: 1rem; background: #fff; box-shadow: 0 24px 60px -42px #000; }
-    .mark { display: grid; width: 3.5rem; height: 3.5rem; place-items: center; margin: 0 auto 1rem; border-radius: .9rem; background: #17191d; color: #fff; font-size: 1.55rem; }
+    .mark { display: block; width: 4rem; height: 4rem; margin: 0 auto 1rem; border-radius: 1rem; object-fit: cover; }
     h1 { margin: 0; font-size: 1.6rem; text-align: center; } p { margin: .6rem 0 1.25rem; color: #68655e; font-size: .9rem; line-height: 1.55; text-align: center; }
     label { display: block; margin-bottom: .4rem; font-size: .75rem; font-weight: 700; } input, button { width: 100%; min-height: 3rem; border-radius: .65rem; font: inherit; }
     input { border: 1px solid #c9c5ba; padding: .75rem; background: #fff; color: #17191d; } button { margin-top: .75rem; border: 0; padding: .7rem 1rem; background: #ef5b2a; color: #fff; font-weight: 750; }
+    .workspace-field { display: flex; min-height: 3rem; overflow: hidden; border: 1px solid #c9c5ba; border-radius: .65rem; background: #fff; }
+    .workspace-field input { min-width: 0; border: 0; border-radius: 0; text-align: right; outline: none; }
+    .workspace-field:focus-within { border-color: #ef5b2a; box-shadow: 0 0 0 3px color-mix(in srgb, #ef5b2a 18%, transparent); }
+    .suffix { display: flex; align-items: center; padding: 0 .8rem 0 0; color: #77736b; font-weight: 650; white-space: nowrap; }
+    .alternate { min-height: auto; margin-top: .7rem; padding: .25rem; background: transparent; color: #68655e; font-size: .78rem; font-weight: 650; }
     button:disabled { opacity: .6; } #status { min-height: 1.25rem; margin: .65rem 0 0; color: #a23024; font-size: .78rem; text-align: left; }
     small { display: block; margin-top: .85rem; color: #77736b; font-size: .7rem; line-height: 1.5; text-align: center; }
-    @media (prefers-color-scheme: dark) { :root { color: #f4f2eb; background: #111318; } main { border-color: #34373e; background: #191c22; } .mark { background: #f4f2eb; color: #17191d; } p, small { color: #a8a59d; } input { border-color: #3d4149; background: #121419; color: #f4f2eb; } }
+    @media (prefers-color-scheme: dark) { :root { color: #f4f2eb; background: #111318; } main { border-color: #34373e; background: #191c22; } p, small, .alternate { color: #a8a59d; } input, .workspace-field { border-color: #3d4149; background: #121419; color: #f4f2eb; } .suffix { color: #a8a59d; } }
   </style>
 </head>
 <body>
   <main>
-    <div class="mark" aria-hidden="true">⛵</div>
+    <img class="mark" src="1helm-logo.png" alt="1Helm">
     <h1>Connect to 1Helm</h1>
-    <p>Choose the HTTPS address of an existing 1Helm instance. The app will load that instance’s live interface.</p>
+    <p id="prompt">Enter your workspace name.</p>
     <form id="connect">
-      <label for="server">Instance address</label>
-      <input id="server" type="url" inputmode="url" autocomplete="url" autocapitalize="none" spellcheck="false" placeholder="https://your-1helm-server.com" required>
+      <label id="server-label" for="server">Workspace</label>
+      <div id="workspace-field" class="workspace-field">
+        <input id="server" type="text" inputmode="url" autocomplete="url" autocapitalize="none" spellcheck="false" placeholder="your-workspace" required>
+        <span class="suffix">.1helm.com</span>
+      </div>
       <button id="submit" type="submit">Connect</button>
+      <button id="alternate" class="alternate" type="button">Connect to a different url?</button>
       <div id="status" role="alert"></div>
     </form>
     <small>Only the selected HTTPS origin receives native bridge access. Other links open outside the app.</small>
@@ -36,20 +45,66 @@
     const form = document.getElementById("connect");
     const input = document.getElementById("server");
     const submit = document.getElementById("submit");
+    const alternate = document.getElementById("alternate");
+    const field = document.getElementById("workspace-field");
+    const label = document.getElementById("server-label");
+    const prompt = document.getElementById("prompt");
     const status = document.getElementById("status");
     const gateway = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.InstanceGateway;
+    let customUrl = false;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const splash = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.SplashScreen;
+      if (splash) splash.hide({ fadeOutDuration: 180 }).catch(() => {});
+    }));
     const normalize = (value) => {
       const raw = value.trim();
       const parsed = new URL(raw.includes("://") ? raw : `https://${raw}`);
       if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash || (parsed.pathname !== "/" && parsed.pathname !== "")) throw new Error("Enter an HTTPS root address without a path, credentials, query, or fragment.");
       return parsed.origin;
     };
-    gateway && gateway.getServer().then(({ origin }) => { if (origin) input.value = origin; }).catch(() => {});
+    const workspaceOrigin = (value) => {
+      const workspace = value.trim().toLowerCase();
+      if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(workspace)) throw new Error("Enter your workspace name without .1helm.com.");
+      return `https://${workspace}.1helm.com`;
+    };
+    const workspaceFromOrigin = (value) => {
+      try {
+        const parsed = new URL(value);
+        const match = parsed.hostname.match(/^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.1helm\.com$/i);
+        return parsed.protocol === "https:" && !parsed.port && parsed.pathname === "/" && !parsed.search && !parsed.hash ? match?.[1] || "" : "";
+      } catch { return ""; }
+    };
+    const showCustomUrl = (custom, value = "") => {
+      customUrl = custom;
+      field.classList.toggle("workspace-field", !custom);
+      field.querySelector(".suffix").hidden = custom;
+      label.textContent = custom ? "Instance address" : "Workspace";
+      prompt.textContent = custom ? "Choose the HTTPS address of an existing 1Helm instance." : "Enter your workspace name.";
+      input.type = custom ? "url" : "text";
+      input.placeholder = custom ? "https://your-1helm-server.com" : "your-workspace";
+      input.value = value;
+      alternate.textContent = custom ? "Connect to 1Helm URL?" : "Connect to a different url?";
+      status.textContent = "";
+      input.focus();
+    };
+    alternate.addEventListener("click", () => {
+      if (customUrl) showCustomUrl(false, workspaceFromOrigin(input.value));
+      else {
+        let value = "";
+        if (input.value) try { value = workspaceOrigin(input.value); } catch { value = input.value; }
+        showCustomUrl(true, value);
+      }
+    });
+    gateway && gateway.getServer().then(({ origin }) => {
+      if (!origin) return;
+      const workspace = workspaceFromOrigin(origin);
+      showCustomUrl(!workspace, workspace || origin);
+    }).catch(() => {});
     form.addEventListener("submit", async (event) => {
       event.preventDefault(); status.textContent = ""; submit.disabled = true; submit.textContent = "Checking…";
       try {
         if (!gateway) throw new Error("The native connection service is unavailable. Reinstall this 1Helm app.");
-        const origin = normalize(input.value);
+        const origin = customUrl ? normalize(input.value) : workspaceOrigin(input.value);
         const response = await fetch(`${origin}/api/mobile/compatibility`, { cache: "no-store" });
         const result = await response.json().catch(() => ({}));
         if (!response.ok || result.product !== "1Helm" || result.mobile_api !== 1) throw new Error("That address is not a compatible 1Helm instance.");

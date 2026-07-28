@@ -35,6 +35,7 @@ const routeProviderFamilies = [
   { id: "nvidia", name: "NVIDIA" },
   { id: "cloudflare", name: "Cloudflare" },
   { id: "glm", name: "GLM" },
+  { id: "custom", name: "Custom" },
 ] as const;
 
 const fmt = (value: unknown): string => new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(Number(value || 0));
@@ -327,13 +328,13 @@ function familyRouteMember(familyId: string, model: string, state: RoutingState)
 }
 
 function routingFabric(state: RoutingState): HTMLElement {
-  const connectedFamilies = new Set((state.providers || []).filter((provider) => provider.enabled !== false && !isCustom(provider)).map(providerFamily));
+  const connectedFamilies = new Set((state.providers || []).filter((provider) => provider.enabled !== false).map((provider) => isCustom(provider) ? "custom" : providerFamily(provider)));
   const nodes = routeProviderFamilies;
   if (liveRoutingActivity) applyRoutingActivity(state, liveRoutingActivity);
   const rawEvents = Array.isArray(state.recentActivity) ? state.recentActivity as Array<Record<string, unknown>> : [];
   const latest = rawEvents[0] || ((state.activeRequests || [])[0] ? { type: "routed", request: (state.activeRequests || [])[0] } : null);
   const request = latest?.request && typeof latest.request === "object" ? latest.request as Record<string, unknown> : null;
-  const activeFamily = String(request?.providerType || "").replace(/^codex$/, "chatgpt");
+  const activeFamily = String(request?.providerType || "").replace(/^codex$/, "chatgpt").replace(/^(?:openai-compat|custom)$/, "custom");
   const inFlight = Array.isArray(state.activeRequests) ? state.activeRequests.length : 0;
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 720 280"); svg.setAttribute("class", "routing-fabric-svg");

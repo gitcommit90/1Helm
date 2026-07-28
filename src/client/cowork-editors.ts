@@ -27,6 +27,7 @@ type ExcalidrawApi = {
   updateScene: (scene: Record<string, unknown>) => void;
   getAppState: () => Record<string, unknown>;
   getFiles: () => Record<string, unknown>;
+  scrollToContent: (target: readonly unknown[], options: { fitToContent: boolean; animate: boolean; viewportZoomFactor: number }) => void;
 };
 
 export type MountedEditor = {
@@ -140,6 +141,7 @@ export function mountExcalidraw(
       write: (scene: Scene, content: string) => string;
     };
     exportPdf?: () => void | Promise<void>;
+    fitToContentElementId?: string;
   } = {},
 ): MountedEditor {
   const node = h("div", { class: `cowork-excalidraw ${className}`, "aria-label": label, dataset: { excalidrawCanvas: "" } });
@@ -147,6 +149,7 @@ export function mountExcalidraw(
   let api: ExcalidrawApi | null = null;
   let applyingRemote = false;
   let destroyed = false;
+  let fitFrame = 0;
   let last = collaboration.scene.get("json") || JSON.stringify({ type: "excalidraw", version: 2, elements: [], appState: {}, files: {} });
   const read = options.adapter?.read || parseScene;
   const write = options.adapter?.write || ((next: Scene) => JSON.stringify({ type: "excalidraw", version: 2, ...next }, null, 2));
@@ -179,7 +182,26 @@ export function mountExcalidraw(
   collaboration.provider.awareness.on("change", updatePresence);
   window.addEventListener("themechange", updateTheme);
   const props: React.ComponentProps<typeof Excalidraw> = {
-    excalidrawAPI: (value) => { api = value as unknown as ExcalidrawApi; updatePresence(); },
+    excalidrawAPI: (value) => {
+      api = value as unknown as ExcalidrawApi;
+      updatePresence();
+      if (options.fitToContentElementId) {
+        node.dataset.initialFit = "pending";
+        const fit = (): void => {
+          if (!api || destroyed) return;
+          if (!node.isConnected || node.clientWidth < 1 || node.clientHeight < 1) { fitFrame = requestAnimationFrame(fit); return; }
+          const target = scene.elements.filter((element: any) => element?.id === options.fitToContentElementId);
+          api.scrollToContent(target.length ? target : scene.elements, { fitToContent: true, animate: false, viewportZoomFactor: 0.88 });
+          fitFrame = requestAnimationFrame(() => {
+            if (!api || destroyed) return;
+            const zoom = api.getAppState().zoom as { value?: number } | undefined;
+            node.dataset.initialZoom = String(zoom?.value || "");
+            node.dataset.initialFit = "complete";
+          });
+        };
+        fitFrame = requestAnimationFrame(() => { fitFrame = requestAnimationFrame(fit); });
+      }
+    },
     initialData: { elements: scene.elements as never, appState: { ...scene.appState, collaborators: canvasCollaborators(collaboration, me) } as never, files: scene.files as never },
     theme: document.documentElement.classList.contains("light") ? "light" : "dark",
     name: label,
@@ -213,6 +235,6 @@ export function mountExcalidraw(
   return {
     node,
     focus: () => node.querySelector<HTMLElement>("canvas")?.focus({ preventScroll: true }),
-    destroy: () => { destroyed = true; collaboration.scene.unobserve(updateRemote); collaboration.provider.awareness.off("change", updatePresence); window.removeEventListener("themechange", updateTheme); root.unmount(); },
+    destroy: () => { destroyed = true; if (fitFrame) cancelAnimationFrame(fitFrame); collaboration.scene.unobserve(updateRemote); collaboration.provider.awareness.off("change", updatePresence); window.removeEventListener("themechange", updateTheme); root.unmount(); },
   };
 }

@@ -481,12 +481,12 @@ try {
     const providerNames = [...stage.querySelectorAll('.routing-live-provider span')].map((node) => node.textContent?.trim());
     const router = stage.querySelector('.routing-live-router').getBoundingClientRect();
     const requests = stage.querySelector('.routing-live-source').getBoundingClientRect();
-    return { width: stage.getBoundingClientRect().width, providerNames, providersAboveRouter: providers.length === 8 && providers.every((box) => box.bottom < router.top), routerAboveRequests: router.bottom < requests.top };
+    return { width: stage.getBoundingClientRect().width, providerNames, providersAboveRouter: providers.length === 9 && providers.every((box) => box.bottom < router.top), routerAboveRequests: router.bottom < requests.top };
   });
   await page.screenshot({ path: "/tmp/1helm-routes-bottom-to-top.png" });
   ok(/Requests/.test(fabricText) && /1Helm Router/.test(fabricText) && /Bottom-to-top live route map/.test(fabricAria)
     && fabricGeometry.width >= 500 && fabricGeometry.providersAboveRouter && fabricGeometry.routerAboveRequests
-    && ["ChatGPT", "Claude", "Antigravity", "xAI", "OpenRouter", "NVIDIA", "Cloudflare", "GLM"].every((name) => fabricGeometry.providerNames.includes(name)),
+    && ["ChatGPT", "Claude", "Antigravity", "xAI", "OpenRouter", "NVIDIA", "Cloudflare", "GLM", "Custom"].every((name) => fabricGeometry.providerNames.includes(name)),
   "Providers visualizes a spacious, literal bottom-to-top Requests → 1Helm Router → provider arc");
   await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.getAttribute("aria-label") === "Close settings" || button.textContent?.trim() === "Close")?.click());
   await page.goto(`${base}/c/${channel.slug}`, { waitUntil: "networkidle0" });

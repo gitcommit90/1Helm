@@ -117,6 +117,10 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.equal(parsed.plugins.SplashScreen.launchFadeOutDuration, 180);
   assert.equal(parsed.plugins.SplashScreen.androidScaleType, "CENTER_INSIDE");
   assert.equal(parsed.plugins.SplashScreen.layoutName, "launch_screen");
+  for (const gatewayPage of [gatewayHtml, gatewayError]) {
+    assert.match(gatewayPage, /requestAnimationFrame\(\(\)\s*=>\s*requestAnimationFrame/, "standalone gateway screens wait for their first paint before releasing the native splash");
+    assert.match(gatewayPage, /SplashScreen[\s\S]*hide\(\{\s*fadeOutDuration:\s*180\s*\}\)/, "standalone gateway screens release the native splash");
+  }
 
   assert.match(mobile, /SecureStorage/);
   assert.match(mobile, /KeychainAccess\.whenUnlockedThisDeviceOnly/);
@@ -186,6 +190,10 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.ok(pkg.scripts["mobile:sync"] && pkg.scripts["package:android:release"] && pkg.scripts["package:ios:release"]);
 
   assert.match(gatewayHtml, /Connect to 1Helm[\s\S]*api\/mobile\/compatibility[\s\S]*selectServer/);
+  assert.match(gatewayHtml, /<img[^>]+src="1helm-logo\.png"[^>]+alt="1Helm">/, "the native connection screen uses the real product logo");
+  assert.doesNotMatch(gatewayHtml, /⛵/, "the native connection screen has no emoji placeholder logo");
+  assert.match(gatewayHtml, /\.1helm\.com[\s\S]*Connect to a different url\?[\s\S]*Connect to 1Helm URL\?/, "the primary workspace-name field can switch to the existing custom-URL flow and back");
+  assert.match(gatewayHtml, /customUrl \? normalize\(input\.value\) : workspaceOrigin\(input\.value\)/, "workspace names resolve only beneath 1helm.com while custom URLs retain strict validation");
   assert.match(gatewayError, /Instance unavailable[\s\S]*Retry[\s\S]*Change instance/);
   for (const frozenAsset of ["bundle.js", "app.css", "excalidraw"]) {
     assert.doesNotMatch(gatewayHtml + gatewayError, new RegExp(frozenAsset.replace(".", "\\."), "i"), `gateway contains no frozen ${frozenAsset}`);
