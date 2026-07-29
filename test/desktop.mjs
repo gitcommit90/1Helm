@@ -110,6 +110,9 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(nativeUpdater, /autoUpdater\.quitAndInstall\(false, true\)/);
   assert.match(source, /1helm-native-update-ready/, "Electron replaces the app only after the local host runtime has quiesced");
   assert.match(server, /shutdown\(true\).*1helm-native-update-ready/s, "the host update API closes server work before handing installation back to Electron");
+  const bootstrap = server.slice(server.indexOf("async function bootstrap"), server.indexOf("void bootstrap()"));
+  assert.doesNotMatch(bootstrap, /ensureAgentMemory\(/, "retained resident memory initialization cannot block the event loop during a bounded host update");
+  assert.match(bootstrap, /void memoryRuntime\.catch/, "optional memory-runtime preparation remains asynchronous during startup");
   assert.match(server, /\["native-macos", "native-windows"\]\.includes\(update\.mode\)/, "both packaged host updaters quiesce the local server before replacement");
   assert.match(nativeUpdater, /update\.electronjs\.org\/gitcommit90\/1Helm\/\$\{feedPlatform\}/);
   assert.match(nativeUpdater, /win32-x64/, "Windows checks and installs on its host through the native updater");
@@ -200,7 +203,7 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(await readFile(join(root, "src", "client", "app.ts"), "utf8"), /mailto:build@1helm\.com/, "the in-app Feedback surface exposes the company contact address");
   assert.match(terminalBrowser, /HELM_CHANNEL_COMPUTER_BACKEND: "native"/, "the terminal browser contract uses the explicit development backend on CI hosts without an installed LXC runtime");
   const serverRuntime = await readFile(join(root, "src", "server", "index.ts"), "utf8");
-  assert.match(serverRuntime, /const memoryRuntime = prepareMnemosyneRuntime\(\);[\s\S]*server\.listen\([\s\S]*memoryRuntime\.then/, "the HTTP server becomes ready before optional memory installation and initializes agent databases afterward");
+  assert.match(serverRuntime, /const memoryRuntime = prepareMnemosyneRuntime\(\);[\s\S]*server\.listen\([\s\S]*void memoryRuntime\.catch/, "the HTTP server becomes ready without synchronously initializing every retained agent database");
   const memoryBridge = await readFile(join(root, "scripts", "mnemosyne-bridge.py"), "utf8");
   assert.match(memoryBridge, /sys\.version_info < \(3, 10\)/);
   assert.match(memoryBridge, /zip_longest/);
