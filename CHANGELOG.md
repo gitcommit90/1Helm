@@ -11,9 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fresh Linux installs now create and use the same `/var/lib/1helm-lxc/machines`
-  runtime tree, so a newly created channel can provision, start, and enter its
-  private LXC computer instead of failing with a missing lifecycle path.
+- Fresh Linux channel provisioning now waits for the new LXC guest to acquire
+  its private DHCP address, default route, and working DNS before package
+  bootstrap. A channel no longer repeatedly creates and cleans up its computer
+  after starting `apt` during the guest-network race.
+
+- The host installer now prepares the same `/var/lib/1helm-lxc/machines` tree
+  used by the runtime instead of leaving an obsolete empty `containers` tree.
 
 - Includes the durable installer payload and API-quota corrections from the
   superseded Linux-only `0.0.27` prerelease.

@@ -199,6 +199,9 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.doesNotMatch(hostMigration, /https?:\/\/(?!127\.0\.0\.1)|\beval\b|curl[^\n]*\|[^\n]*(?:sh|bash)/, "the privileged host migration never fetches or evaluates remote code");
   assert.match(lxcHelper, /ownership marker does not match/);
   assert.match(lxcHelper, /cleanup_incomplete_create[\s\S]*rm -rf -- "\$LXC_PATH\/\$name"[\s\S]*created=1[\s\S]*lxc-create/, "a failed create removes only its validated partial container directory");
+  assert.match(lxcHelper, /wait_for_guest_network[\s\S]*10\\\.0\\\.3\\\.[\s\S]*via 10\\\.0\\\.3\\\.1 dev eth0/, "fresh LXC provisioning waits for its DHCP address and default route");
+  assert.match(lxcHelper, /archive\.ubuntu\.com[\s\S]*security\.ubuntu\.com/, "fresh LXC provisioning proves DNS before package bootstrap");
+  assert.match(lxcHelper, /start "\$name"[\s\S]*wait_for_guest_network "\$name"[\s\S]*apt-get update -o APT::Update::Error-Mode=any/, "package bootstrap begins only after bounded guest-network readiness");
   assert.match(lxcHelper, /cpuset\.cpus\.effective/, "LXC CPU limits are selected from the service's actually delegated host CPUs");
   assert.match(lxcHelper, /cpu_count/, "LXC inspection counts noncontiguous delegated CPU lists correctly");
   assert.match(lxcNetwork, /1helm-lxc-net-owned/, "the bridge wrapper stops only a bridge it started");
