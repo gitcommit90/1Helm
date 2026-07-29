@@ -12,6 +12,7 @@ LXC_PATH="$LXC_ROOT/machines"
 CACHE_BASE="/var/cache/1helm-lxc"
 ASSET_ROOT="/opt/1helm/runtime/lxc"
 CONFIG_TEMPLATE="/etc/1helm/lxc-unprivileged.conf"
+NETWORK_HELPER="/usr/libexec/1helm-lxc-net"
 NAME_PATTERN='^1helm-[a-f0-9]{16}-channel-[0-9]+$'
 OWNER_PATTERN='^[a-f0-9]{16}:[0-9]+$'
 
@@ -88,6 +89,24 @@ owned() {
   [[ -f "$(config_path "$1")" ]] || die "container does not exist"
   [[ "$(marker "$1")" == "$2" ]] || die "ownership marker does not match"
 }
+ensure_network() {
+  [[ -x "$NETWORK_HELPER" ]] || die "private network helper is missing"
+  "$NETWORK_HELPER" start
+  "$NETWORK_HELPER" check
+}
+remove_incomplete() {
+  local name="$1" current
+  [[ -e "$(config_path "$name")" || -e "$LXC_PATH/$name" ]] || return
+  if [[ ! -f "$(config_path "$name")" ]]; then
+    rm -rf -- "$LXC_PATH/$name"
+    return
+  fi
+  current="$(marker "$name")"
+  [[ -z "$current" ]] || die "container name already exists with an ownership marker"
+  [[ "$(state "$name")" != RUNNING ]] || lxc-stop -P "$LXC_PATH" -n "$name" -t 10 >/dev/null 2>&1 || true
+  lxc-destroy -P "$LXC_PATH" -n "$name" >/dev/null 2>&1 || true
+  [[ ! -e "$LXC_PATH/$name" ]] || rm -rf -- "$LXC_PATH/$name"
+}
 image_values() {
   case "$1" in
     amd64) printf '%s\n%s\n' "$AMD64_ROOTFS_SHA256" "$AMD64_META_SHA256" ;;
@@ -126,6 +145,7 @@ prepare_cache() {
 attach() {
   local name="$1" owner="$2" user="$3" workdir="$4"; shift 4
   owned "$name" "$owner"
+  ensure_network
   start "$name"
   if [[ "$user" == root ]]; then
     exec lxc-attach -P "$LXC_PATH" -n "$name" --clear-env -- /usr/bin/env -C "$workdir" \
@@ -145,12 +165,21 @@ case "$operation" in
   ready)
     for command in lxc-create lxc-attach lxc-destroy lxc-info lxc-start lxc-stop sha256sum tar; do command -v "$command" >/dev/null || die "missing $command"; done
     [[ -r "$CONFIG_TEMPLATE" ]] || die "unprivileged LXC configuration is missing"
-    [[ -d /sys/fs/cgroup && -d /sys/class/net/lxcbr0 ]] || die "LXC cgroups or the private bridge are not ready"
+    [[ -d /sys/fs/cgroup ]] || die "LXC cgroups are not ready"
+    [[ -x "$NETWORK_HELPER" ]] || die "private network helper is missing"
+    "$NETWORK_HELPER" start || die "private bridge, DNS, DHCP, or NAT could not be repaired"
+    "$NETWORK_HELPER" check || die "private bridge, DNS, DHCP, or NAT is not ready"
     printf '{"ready":true,"version":"%s"}\n' "$RUNTIME_VERSION"
     ;;
   inspect)
     name="${1:-}"; owner="${2:-}"; valid_identity "$name" "$owner"
     if [[ ! -f "$(config_path "$name")" ]]; then printf 'null\n'; exit 0; fi
+    # A crash or failed guest bootstrap can leave the exact validated machine
+    # without the owner marker that is written last. Report only that empty
+    # partial state as missing so create can remove and rebuild it. Any nonempty
+    # mismatched marker remains a hard ownership failure.
+    current_owner="$(marker "$name")"
+    if [[ -z "$current_owner" ]]; then printf 'null\n'; exit 0; fi
     owned "$name" "$owner"
     status="$(state "$name")"
     cpu_set="$(sed -n 's/^lxc\.cgroup2\.cpuset\.cpus[[:space:]]*=[[:space:]]*//p' "$(config_path "$name")" | tail -n1)"
@@ -166,6 +195,7 @@ case "$operation" in
     [[ "$cpus" =~ ^[1-8]$ ]] || die "invalid CPU count"
     [[ "$memory_mb" =~ ^[0-9]+$ ]] && ((memory_mb >= 1024 && memory_mb <= 16384)) || die "invalid memory"
     [[ "$arch" == amd64 || "$arch" == arm64 ]] || die "unsupported architecture"
+    remove_incomplete "$name"
     [[ ! -e "$(config_path "$name")" ]] || die "container name already exists"
     [[ -r "$CONFIG_TEMPLATE" ]] || die "unprivileged configuration is missing"
     created=0
@@ -186,6 +216,7 @@ case "$operation" in
     install -d -m 0711 "$LXC_ROOT" "$LXC_PATH"
     install -d -m 0700 "$CACHE_BASE"
     prepare_cache "$arch"
+    ensure_network
     created=1
     LXC_CACHE_PATH="$CACHE_BASE" lxc-create -P "$LXC_PATH" -n "$name" -f "$CONFIG_TEMPLATE" -t download -- \
       --dist ubuntu --release noble --arch "$arch" --variant default --force-cache
@@ -195,10 +226,8 @@ case "$operation" in
     start "$name"
     lxc-attach -P "$LXC_PATH" -n "$name" --clear-env -- /bin/sh -eu -c '
       export DEBIAN_FRONTEND=noninteractive
-      if [ ! -s /etc/resolv.conf ]; then
-        rm -f /etc/resolv.conf
-        printf "nameserver 10.0.3.1\n" >/etc/resolv.conf
-      fi
+      rm -f /etc/resolv.conf
+      printf "nameserver 10.0.3.1\n" >/etc/resolv.conf
       apt-get update
       apt-get install -y --no-install-recommends bash build-essential ca-certificates coreutils cron curl dbus file findutils git gzip iproute2 iputils-ping jq less locales man-db nano openssh-client procps python3 python3-pip rsync sudo systemd systemd-sysv tar tzdata unzip vim-tiny wget xz-utils zip
       apt-get clean

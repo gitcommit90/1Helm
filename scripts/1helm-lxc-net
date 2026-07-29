@@ -7,6 +7,9 @@ set -euo pipefail
 
 MARKER="/run/1helm-lxc-net-owned"
 RULE_MARKER="/run/1helm-lxc-net-rules-owned"
+DNSMASQ_PID="/run/lxc/dnsmasq.pid"
+BRIDGE="lxcbr0"
+BRIDGE_CIDR="10.0.3.1/24"
 LXC_NET=""
 for candidate in /usr/libexec/lxc/lxc-net /usr/lib/lxc/lxc-net; do [[ -x "$candidate" ]] && LXC_NET="$candidate" && break; done
 [[ -n "$LXC_NET" ]] || { echo "lxc-net is unavailable" >&2; exit 1; }
@@ -43,17 +46,63 @@ remove_rules() {
   fi
 }
 
+bridge_dns_healthy() {
+  local pid command_line executable
+  [[ -d "/sys/class/net/$BRIDGE" ]] || return 1
+  ip link show dev "$BRIDGE" | grep -Eq 'state UP|<[^>]*\bUP\b' || return 1
+  ip -4 -o addr show dev "$BRIDGE" | awk '{print $4}' | grep -Fxq "$BRIDGE_CIDR" || return 1
+  [[ -r "$DNSMASQ_PID" ]] || return 1
+  pid="$(cat "$DNSMASQ_PID")"
+  [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/cmdline" ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  executable="$(basename "$(readlink -f "/proc/$pid/exe")")"
+  [[ "$executable" == dnsmasq ]] || return 1
+  command_line="$(tr '\0' '\n' <"/proc/$pid/cmdline")"
+  if grep -Fxq -- '--listen-address' <<<"$command_line"; then
+    grep -Fxq '10.0.3.1' <<<"$command_line" || return 1
+  else
+    grep -Fxq -- '--listen-address=10.0.3.1' <<<"$command_line" || return 1
+  fi
+  grep -Fxq -- '--interface=lxcbr0' <<<"$command_line" || return 1
+}
+
+network_healthy() {
+  bridge_dns_healthy || return 1
+  [[ -e "$RULE_MARKER" ]] || return 1
+  nft list table inet onehelm_lxc >/dev/null 2>&1 || return 1
+  nft list table ip onehelm_lxc >/dev/null 2>&1 || return 1
+}
+
+ensure_rules() {
+  if [[ -e "$RULE_MARKER" ]] \
+      && nft list table inet onehelm_lxc >/dev/null 2>&1 \
+      && nft list table ip onehelm_lxc >/dev/null 2>&1; then
+    return
+  fi
+  install_rules
+}
+
 case "${1:-}" in
   start)
-    if [[ -d /sys/class/net/lxcbr0 ]]; then
-      ip link show dev lxcbr0 >/dev/null
-      install_rules
+    if network_healthy; then
       exit 0
     fi
+    if bridge_dns_healthy; then
+      ensure_rules
+      network_healthy || { echo "lxcbr0 bridge, DNS, DHCP, or NAT did not become healthy" >&2; exit 1; }
+      exit 0
+    fi
+    # A oneshot service can remain "active" after its forked dnsmasq dies or
+    # its bridge loses its address. Stop only lxc-net's exact private bridge,
+    # then rebuild it instead of adopting the stale interface by name alone.
+    "$LXC_NET" stop force >/dev/null 2>&1 || true
     "$LXC_NET" start
-    [[ -d /sys/class/net/lxcbr0 ]] || { echo "lxcbr0 was not created" >&2; exit 1; }
     install -m 0600 /dev/null "$MARKER"
-    install_rules
+    ensure_rules
+    network_healthy || { echo "lxcbr0 bridge, DNS, DHCP, or NAT did not become healthy" >&2; exit 1; }
+    ;;
+  check)
+    network_healthy || { echo "lxcbr0 bridge, DNS, DHCP, or NAT is not healthy" >&2; exit 1; }
     ;;
   stop)
     remove_rules
@@ -62,5 +111,5 @@ case "${1:-}" in
       rm -f -- "$MARKER"
     fi
     ;;
-  *) echo "Usage: $0 {start|stop}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {start|check|stop}" >&2; exit 2 ;;
 esac

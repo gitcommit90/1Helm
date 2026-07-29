@@ -3,6 +3,7 @@ import type { Socket } from "node:net";
 import { spawn, type IPty } from "node-pty";
 import { WebSocketServer, type WebSocket } from "ws";
 import { existsSync } from "node:fs";
+import { delimiter, join } from "node:path";
 
 /**
  * Embedded, open-terminal-compatible agent (https://github.com/open-webui/open-terminal).
@@ -14,18 +15,42 @@ type Entry = { type: string; data: string };
 type Proc = { id: string; command: string; buf: Entry[]; status: string; exit_code: number | null; pty: IPty; waiters: (() => void)[] };
 type Term = { id: string; pty: IPty; created_at: string; pid: number; scrollback: Buffer[]; bytes: number };
 
-const requestedShell = process.env.SHELL || "/bin/bash";
-const SHELL = requestedShell.startsWith("/") && existsSync(requestedShell)
-  ? requestedShell
-  : ["/bin/zsh", "/bin/bash", "/bin/sh"].find(existsSync) || "/bin/sh";
+export type NativeShell = { executable: string; executeArgs(command: string): string[]; interactiveArgs: string[] };
+
+/** Resolve the host's actual native shell without ever applying Unix paths to
+ * Windows. Keep this pure enough to prove the Windows plan on non-Windows CI. */
+export function resolveNativeShell(
+  hostPlatform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  present: (path: string) => boolean = existsSync,
+): NativeShell {
+  if (hostPlatform === "win32") {
+    const absolute = [env.HELM_NATIVE_SHELL, env.ComSpec, env.SystemRoot ? join(env.SystemRoot, "System32", "cmd.exe") : ""]
+      .filter(Boolean).find((candidate) => present(String(candidate)));
+    const executable = String(absolute || env.HELM_NATIVE_SHELL || env.ComSpec || "cmd.exe");
+    return { executable, executeArgs: (command) => ["/d", "/s", "/c", command], interactiveArgs: ["/d"] };
+  }
+  const requested = env.SHELL || "/bin/bash";
+  const executable = requested.startsWith("/") && present(requested)
+    ? requested
+    : ["/bin/zsh", "/bin/bash", "/bin/sh"].find(present) || "/bin/sh";
+  return {
+    executable,
+    executeArgs: (command) => ["-lc", `export PATH="$HELM_NATIVE_PATH"; unset HELM_NATIVE_PATH; ${command}`],
+    interactiveArgs: executable.endsWith("/zsh") ? ["-f"] : executable.endsWith("/bash") ? ["--noprofile", "--norc", "-i"] : ["-i"],
+  };
+}
+
+const NATIVE_SHELL = resolveNativeShell();
+const SHELL = NATIVE_SHELL.executable;
 export function terminalPromptEnvironment(shell: string): { PROMPT?: string; PS1: string } {
   if (shell.endsWith("/zsh")) return { PROMPT: "%n@%m:%~%# ", PS1: "%n@%m:%~%# " };
   if (shell.endsWith("/bash")) return { PS1: "\\u@\\h:\\w\\$ " };
   return { PS1: "$PWD$ " };
 }
 const nativeEnv = (extra: Record<string, unknown> = {}): Record<string, string> => {
-  const preferred = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
-  const path = [...preferred, ...String(extra.PATH || process.env.PATH || "").split(":")].filter((item, index, all) => item && all.indexOf(item) === index).join(":");
+  const preferred = process.platform === "win32" ? [] : ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+  const path = [...preferred, ...String(extra.PATH || process.env.PATH || "").split(delimiter)].filter((item, index, all) => item && all.indexOf(item) === index).join(delimiter);
   // Prompt escapes are shell-specific. Supplying Bash's `\u`/`\w` escapes to
   // zsh renders those bytes literally, while zsh's `%~` is meaningless to
   // Bash. Set only the syntax understood by the selected native shell. No
@@ -78,10 +103,15 @@ export function startAgent(port: number, apiKey: string, host = "127.0.0.1"): Pr
     if (path === "/execute" && req.method === "POST") {
       const b = await readBody(req);
       const command = String(b.command || "");
-      const cwd = b.cwd ? String(b.cwd) : process.env.HOME || process.cwd();
-      // Login shells can replace the inherited PATH from /etc/zprofile. Export
-      // it again after shell startup so Homebrew CLIs work without profile edits.
-      const pty = spawn(SHELL, ["-lc", `export PATH="$HELM_NATIVE_PATH"; unset HELM_NATIVE_PATH; ${command}`], { cols: 80, rows: 24, cwd, env: nativeEnv((b.env as Record<string, unknown>) || {}) });
+      const cwd = b.cwd ? String(b.cwd) : process.env.HOME || process.env.USERPROFILE || process.cwd();
+      // Unix login shells can replace PATH from their profiles; the resolved
+      // shell plan restores it there. Windows receives cmd.exe's native argv.
+      let pty: IPty;
+      try {
+        pty = spawn(SHELL, NATIVE_SHELL.executeArgs(command), { cols: 80, rows: 24, cwd, env: nativeEnv((b.env as Record<string, unknown>) || {}) });
+      } catch (error) {
+        return send(res, 500, { detail: `Native command shell could not start: ${(error as Error).message}` });
+      }
       const p: Proc = { id: rid("exec-"), command, buf: [], status: "running", exit_code: null, pty, waiters: [] };
       procs.set(p.id, p);
       let responseFinished = false;
@@ -123,14 +153,16 @@ export function startAgent(port: number, apiKey: string, host = "127.0.0.1"): Pr
 
     if (path === "/api/terminals" && req.method === "POST") {
       const b = await readBody(req);
-      const cwd = b.cwd ? String(b.cwd) : process.env.HOME || process.cwd();
+      const cwd = b.cwd ? String(b.cwd) : process.env.HOME || process.env.USERPROFILE || process.cwd();
       // Start the interactive shell with the complete native PATH already in
       // its environment. Skip startup files here because they can replace the
       // inherited PATH; nothing is typed into the live PTY or its history.
-      const shellArgs = SHELL.endsWith("/zsh") ? ["-f"]
-        : SHELL.endsWith("/bash") ? ["--noprofile", "--norc", "-i"]
-          : ["-i"];
-      const pty = spawn(SHELL, shellArgs, { name: "xterm-256color", cols: Number(b.cols) || 80, rows: Number(b.rows) || 24, cwd, env: nativeEnv() });
+      let pty: IPty;
+      try {
+        pty = spawn(SHELL, NATIVE_SHELL.interactiveArgs, { name: "xterm-256color", cols: Number(b.cols) || 80, rows: Number(b.rows) || 24, cwd, env: nativeEnv() });
+      } catch (error) {
+        return send(res, 500, { detail: `Native terminal shell could not start: ${(error as Error).message}` });
+      }
       const t: Term = { id: rid("term-"), pty, created_at: new Date().toISOString(), pid: pty.pid, scrollback: [], bytes: 0 };
       terms.set(t.id, t);
       pty.onData((data) => {

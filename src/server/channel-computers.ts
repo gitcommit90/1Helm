@@ -67,7 +67,7 @@ const APPLE_RUNTIME_VERSION = "1.1.0";
 export const APPLE_RUNTIME_PACKAGE = `container-${APPLE_RUNTIME_VERSION}-installer-signed.pkg`;
 export const APPLE_RUNTIME_URL = `https://github.com/apple/container/releases/download/${APPLE_RUNTIME_VERSION}/${APPLE_RUNTIME_PACKAGE}`;
 export const APPLE_RUNTIME_SHA256 = "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714";
-export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.23";
+export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.24";
 const CONTAINER_CANDIDATES = [process.env.HELM_CONTAINER_CLI, "/usr/local/bin/container", "/opt/homebrew/bin/container", "container"].filter(Boolean) as string[];
 const LXC_RUNTIME_VERSION = "1helm-lxc-runtime-v1";
 const LXC_HELPER_CANDIDATES = [
@@ -275,12 +275,22 @@ function resolveLxcHelper(): string {
 }
 
 function resolveWslCli(): string {
+  if (windowsSystemAccount()) throw new Error("1Helm cannot use WSL while running as Windows Local System. Launch 1Helm in the signed-in Windows user's session so WSL and its retained distributions are available.");
   const candidates = [process.env.HELM_WSL_CLI, process.env.SystemRoot ? join(process.env.SystemRoot, "System32", "wsl.exe") : "", "wsl.exe"].filter(Boolean) as string[];
   for (const candidate of candidates) {
     if (candidate.includes("/") || candidate.includes("\\")) { if (existsSync(candidate)) return candidate; }
     else if (spawnSync(candidate, ["--status"], { stdio: "ignore", timeout: 10_000 }).status === 0) return candidate;
   }
   throw new Error("WSL 2 is not installed. Run Windows' verified 1Helm setup as Administrator once.");
+}
+
+/** WSL distributions are scoped to an interactive Windows user and Microsoft
+ * explicitly rejects Local System. This accepts injected values for CI. */
+export function windowsSystemAccount(env: NodeJS.ProcessEnv = process.env, hostPlatform = platform()): boolean {
+  if (hostPlatform !== "win32") return false;
+  const username = String(env.USERNAME || env.USER || "").trim().toLowerCase();
+  const profile = String(env.USERPROFILE || "").replaceAll("/", "\\").toLowerCase();
+  return username === "system" || profile.endsWith("\\windows\\system32\\config\\systemprofile");
 }
 
 function privateWslInstallRoot(): string {

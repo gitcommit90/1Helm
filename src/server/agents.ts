@@ -209,7 +209,7 @@ export function provisionChannel(opts: { name: string; purpose: string; userId: 
         announcementId, channelId, announcement, now(), now(),
       ).lastInsertRowid;
       run("INSERT INTO thread_summaries (thread_id, content, created) VALUES (?,?,?)", threadId, announcement, now());
-      run("INSERT INTO channel_activity (channel_id, thread_id, kind, summary, actor_type, created) VALUES (?,?,'lifecycle',?,'system',?)", channelId, threadId, `Provisioned @${mentionName} and its channel world.`, now());
+      run("INSERT INTO channel_activity (channel_id, thread_id, kind, summary, status, actor_type, created) VALUES (?,?,'lifecycle',?,'running','system',?)", channelId, threadId, `Created @${mentionName}; provisioning its private channel computer.`, now());
       return { channelId, agentId, botId, announcementId, created: true };
     });
     const createdAgent = agentForChannel(result.channelId);
@@ -226,10 +226,12 @@ export async function provisionChannelWithComputer(opts: { name: string; purpose
   const provisioned = provisionChannel(opts);
   try {
     await provisionChannelComputer(provisioned.channelId);
+    run("UPDATE channel_activity SET summary=?,status='complete',updated=? WHERE channel_id=? AND kind='lifecycle' AND status='running'", `Provisioned the resident and verified its private channel computer.`, now(), provisioned.channelId);
     return { ...provisioned, computerReady: true };
   } catch (error) {
     const message = (error as Error).message || "channel computer provisioning failed";
     run("UPDATE agents SET status='waiting' WHERE id=?", provisioned.agentId);
+    run("UPDATE channel_activity SET summary=?,status='failed',updated=? WHERE channel_id=? AND kind='lifecycle' AND status='running'", `Created the resident, but its private channel computer failed verification: ${message}`.slice(0, 500), now(), provisioned.channelId);
     run("INSERT INTO channel_activity (channel_id,kind,summary,status,actor_type,created) VALUES (?,'computer',?,'failed','skipper',?)", provisioned.channelId, `Channel computer provisioning needs attention: ${message}`.slice(0, 500), now());
     return { ...provisioned, computerReady: false, computerError: message };
   }

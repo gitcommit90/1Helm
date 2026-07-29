@@ -1309,7 +1309,10 @@ const server = createServer(async (req, res) => {
         const channel = channelView(user, row);
         broadcastChannelMeta(provisioned.channelId, "channel_new");
         if (provisioned.announcementId) broadcastToChannel(provisioned.channelId, { type: "message", message: serializeMessage(provisioned.announcementId) });
-        return json(res, provisioned.created ? 201 : 200, { channel, created: provisioned.created });
+        return json(res, provisioned.computerReady ? (provisioned.created ? 201 : 200) : 503, {
+          channel, created: provisioned.created, computer_ready: provisioned.computerReady,
+          ...(provisioned.computerError ? { error: `Channel created, but its private computer failed verification: ${provisioned.computerError}` } : {}),
+        });
       } catch (error) {
         const message = (error as Error).message;
         return json(res, /already exists/i.test(message) ? 409 : 400, { error: message });
