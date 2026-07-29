@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.26] - 2026-07-29
+
+### Fixed
+
+- Linux LXC DHCP leases now live under 1Helm's dedicated writable runtime
+  state instead of the system-wide `/var/lib/misc` tree made read-only by the
+  hardened application service. Network recovery validates that exact lease
+  tree, the running dnsmasq DHCP contract, and the exact DNS, forwarding, and
+  outbound NAT rules before reporting a channel computer ready.
+- Includes the retained-memory startup, Windows host-terminal and WSL
+  identity, Linux LXC recovery, and honest lifecycle/command corrections
+  prepared in `0.0.24` and `0.0.25`; neither version was tagged or published.
+
 ## [0.0.25] - 2026-07-29
 
 ### Fixed
@@ -764,7 +777,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.25...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.26...HEAD
+[0.0.26]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...v0.0.26
 [0.0.25]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...v0.0.25
 [0.0.24]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...v0.0.24
 [0.0.23]: https://github.com/gitcommit90/1Helm/compare/v0.0.22...v0.0.23

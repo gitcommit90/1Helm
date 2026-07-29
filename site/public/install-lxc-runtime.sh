@@ -12,6 +12,7 @@ RUNTIME_ROOT="$INSTALL_ROOT/runtime/lxc"
 LXC_ROOT="/var/lib/1helm-lxc"
 LXC_PATH="$LXC_ROOT/containers"
 CACHE_BASE="/var/cache/1helm-lxc"
+NETWORK_STATE="$LXC_ROOT/network"
 HELPER_PATH="/usr/libexec/1helm-lxc-runtime"
 NETWORK_HELPER_PATH="/usr/libexec/1helm-lxc-net"
 CONFIG_PATH="/etc/1helm/lxc-unprivileged.conf"
@@ -104,6 +105,7 @@ python3 -c 'import ensurepip' >/dev/null 2>&1 || { echo "Python venv support is 
 # computer is provisioned.
 install -d -o root -g root -m 0711 "$LXC_ROOT" "$LXC_PATH"
 install -d -o root -g root -m 0700 "$CACHE_BASE"
+install -d -o root -g root -m 0755 "$NETWORK_STATE" "$NETWORK_STATE/misc"
 
 TEMP_ROOT="$(mktemp -d)"
 trap 'rm -rf -- "$TEMP_ROOT"' EXIT
@@ -221,7 +223,7 @@ EOF
 install -m 0644 /dev/stdin /etc/systemd/system/1helm-lxc-net.service <<EOF
 [Unit]
 Description=1Helm private LXC bridge
-After=network-online.target lxc-net.service
+After=network-online.target
 Wants=network-online.target
 Before=1helm.service
 

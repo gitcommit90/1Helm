@@ -178,7 +178,7 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(lxcInstaller, /namespace_covers_range[\s\S]*65536 65535/, "the installer negotiates a full bare-metal or safe nested-host subordinate ID range");
   assert.match(lxcInstaller, /1helm-update\\\.service[\s\S]*systemd-run[\s\S]*apply-linux-release\.sh/, "a v0.0.11 updater hands the complete verified release transaction outside its obsolete read-only mount namespace");
   assert.match(lxcInstaller, /MainPID[\s\S]*\/proc\/\$pid\/cgroup[\s\S]*\/opt\/1helm\/update-host\.sh[\s\S]*kill -KILL/, "a failed handoff stops only the exact legacy updater main process before its obsolete EXIT rollback can run");
-  assert.match(lxcInstaller, /install -d[^\n]*"\$LXC_ROOT" "\$LXC_PATH"[\s\S]*install -d[^\n]*"\$CACHE_BASE"/, "the host creates every service ReadWritePaths root before starting 1Helm");
+  assert.match(lxcInstaller, /install -d[^\n]*"\$LXC_ROOT" "\$LXC_PATH"[\s\S]*install -d[^\n]*"\$CACHE_BASE"[\s\S]*install -d[^\n]*"\$NETWORK_STATE" "\$NETWORK_STATE\/misc"/, "the host creates every service ReadWritePaths root and the private DHCP lease directory before starting 1Helm");
   assert.match(linuxUnits, /1helm-update\\\.service[\s\S]*systemd-run[\s\S]*HELM_HOST_APPLY_DELEGATED/, "a v0.0.11 updater delegates the verified unit migration outside its obsolete mount namespace");
   assert.match(linuxUnits, /ReadWritePaths=[^\n]*\/usr\/libexec(?:\s|$)[^\n]*\/etc\/default(?:\s|$)[^\n]*\/etc\/systemd\/system(?:\s|$)[^\n]*\/etc\/sudoers\.d(?:\s|$)/, "future updater transactions can atomically replace and roll back only the required host-contract parent trees");
   assert.doesNotMatch(linuxUnits, /ReadWritePaths=[^\n]*\/usr\/libexec\/1helm-lxc-runtime/, "the updater no longer mistakes a writable destination file for atomic parent-directory authority");
@@ -196,12 +196,17 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(lxcHelper, /cpu_count/, "LXC inspection counts noncontiguous delegated CPU lists correctly");
   assert.match(lxcNetwork, /1helm-lxc-net-owned/, "the bridge wrapper stops only a bridge it started");
   assert.match(lxcNetwork, /1helm-lxc-net-rules-owned[\s\S]*table ip onehelm_lxc[\s\S]*masquerade/, "an adopted bridge receives a separately owned, removable outbound NAT contract");
+  assert.match(lxcNetwork, /DNSMASQ_LEASE="\$DNSMASQ_STATE\/misc\/dnsmasq\.lxcbr0\.leases"[\s\S]*lease_state_writable[\s\S]*mktemp[\s\S]*bridge_dns_healthy/, "runtime health proves the exact private dnsmasq lease tree is writable from its current mount namespace");
+  assert.match(lxcNetwork, /start_bridge_dns[\s\S]*dnsmasq[\s\S]*--dhcp-leasefile="\$DNSMASQ_LEASE"/, "1Helm starts its private DHCP server directly instead of inheriting the distro helper's system-wide lease path");
+  assert.match(lxcNetwork, /--dhcp-range[\s\S]*10\.0\.3\.2,10\.0\.3\.254[\s\S]*--dhcp-lease-max=253[\s\S]*--dhcp-authoritative[\s\S]*--dhcp-leasefile=\$DNSMASQ_LEASE/, "runtime health verifies the exact DHCP and private lease-file process contract");
+  assert.match(lxcNetwork, /rules_healthy[\s\S]*nft list chain inet onehelm_lxc input[\s\S]*nft list chain inet onehelm_lxc forward[\s\S]*nft list chain ip onehelm_lxc postrouting[\s\S]*10\\\.0\\\.3\\\.0\/24[\s\S]*masquerade/, "runtime health verifies the exact DNS, DHCP, forwarding, and outbound NAT rules instead of accepting table names alone");
   assert.match(lxcNetwork, /BRIDGE_CIDR="10\.0\.3\.1\/24"[\s\S]*bridge_dns_healthy[\s\S]*state UP[\s\S]*DNSMASQ_PID[\s\S]*--interface=lxcbr0[\s\S]*network_healthy/, "runtime health requires an up/addressed bridge and its exact dnsmasq process");
   assert.match(lxcNetwork, /bridge_dns_healthy[\s\S]*ensure_rules[\s\S]*network_healthy/, "a healthy bridge can restore only its owned firewall rules without disrupting containers");
-  assert.match(lxcNetwork, /"\$LXC_NET" stop force[\s\S]*"\$LXC_NET" start[\s\S]*network_healthy/, "a dead private bridge/DNS stack is rebuilt and reverified instead of adopted by interface name");
+  assert.match(lxcNetwork, /"\$LXC_NET" stop force[\s\S]*start_bridge_dns[\s\S]*network_healthy/, "a dead private bridge/DNS stack is rebuilt with 1Helm-owned DHCP state and reverified instead of adopted by interface name");
   assert.match(lxcHelper, /ready\)[\s\S]*"\$NETWORK_HELPER" start[\s\S]*"\$NETWORK_HELPER" check/, "runtime readiness repairs and then verifies the full network contract");
   assert.match(lxcHelper, /inspect\)[\s\S]*current_owner[\s\S]*printf 'null/, "inspection exposes only marker-less interrupted creates as safely rebuildable partial machines");
   assert.match(lxcHelper, /remove_incomplete[\s\S]*marker[\s\S]*lxc-destroy[\s\S]*rm -rf -- "\$LXC_PATH\/\$name"/, "create recovers only the exact validated marker-less partial container");
+  assert.match(lxcHelper, /remove_incomplete\(\)[\s\S]*\]\] \|\| return 0/, "a missing partial container is a successful no-op under the runtime's fail-closed shell mode");
   assert.match(lxcInstaller, /systemctl enable --now 1helm-lxc-net\.service[\s\S]*"\$NETWORK_HELPER_PATH" start[\s\S]*"\$HELPER_PATH" ready/, "host installs and updates actively repair then verify the bridge contract without disrupting a healthy network");
   assert.match(lxcHelper, /nameserver 10\.0\.3\.1[\s\S]*apt-get update/, "new guests have bridge DNS before package bootstrap");
   assert.match(lxcConfig, /lxc\.apparmor\.profile = generated/);
