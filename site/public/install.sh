@@ -10,7 +10,7 @@ NODE_LINK="$INSTALL_ROOT/node-current"
 STATE_ROOT="/var/lib/1helm"
 SERVICE_USER="1helm"
 NODE_VERSION="22.23.1"
-RELEASE_VERSION="0.0.27"
+RELEASE_VERSION="0.0.28"
 HOST_CONTRACT_PATHS=(
   /usr/libexec/1helm-lxc-runtime
   /usr/libexec/1helm-lxc-net

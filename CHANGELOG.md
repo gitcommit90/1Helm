@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.28] - 2026-07-29
+
+### Fixed
+
+- Fresh Linux installs now create and use the same `/var/lib/1helm-lxc/machines`
+  runtime tree, so a newly created channel can provision, start, and enter its
+  private LXC computer instead of failing with a missing lifecycle path.
+
+- Includes the durable installer payload and API-quota corrections from the
+  superseded Linux-only `0.0.27` prerelease.
+
 ## [0.0.27] - 2026-07-29
 
 ### Fixed
@@ -786,7 +797,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.27...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.28...HEAD
+[0.0.28]: https://github.com/gitcommit90/1Helm/compare/v0.0.27...v0.0.28
 [0.0.27]: https://github.com/gitcommit90/1Helm/compare/v0.0.26...v0.0.27
 [0.0.26]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...v0.0.26
 [0.0.25]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...v0.0.25

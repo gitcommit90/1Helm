@@ -10,7 +10,7 @@ APP_SOURCE="${1:-}"
 INSTALL_ROOT="/opt/1helm"
 RUNTIME_ROOT="$INSTALL_ROOT/runtime/lxc"
 LXC_ROOT="/var/lib/1helm-lxc"
-LXC_PATH="$LXC_ROOT/containers"
+LXC_PATH="$LXC_ROOT/machines"
 CACHE_BASE="/var/cache/1helm-lxc"
 NETWORK_STATE="$LXC_ROOT/network"
 HELPER_PATH="/usr/libexec/1helm-lxc-runtime"
@@ -20,7 +20,7 @@ IDMAP_PATH="/etc/1helm/lxc-idmap"
 SUDOERS_PATH="/etc/sudoers.d/1helm-lxc-runtime"
 SERVICE_USER="1helm"
 IMAGE_BUILD="20260726_07:42"
-IMAGE_RELEASE="0.0.27"
+IMAGE_RELEASE="0.0.28"
 
 # v0.0.11's updater unit made the exact destination files writable under
 # ProtectSystem=strict. Atomic replacement still requires write access to each

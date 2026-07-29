@@ -140,7 +140,7 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(installer, /snapshot_host_contract[\s\S]*rollback_host_contract[\s\S]*TRANSACTION_ACTIVE/, "fresh and repeat installs restore runtime files and unit state after any transactional failure");
   assert.match(installer, /rollback_host_contract[\s\S]*1helm\.service\.active[\s\S]*api\/setup\/status[\s\S]*restored_healthy/, "installer rollback verifies the restored service before claiming recovery");
   assert.match(installer, /NODE_VERSION="22\.23\.1"/);
-  assert.match(installer, /RELEASE_VERSION="0\.0\.27"/, "fresh installs use the deliberately published Linux release instead of a rate-limited API lookup");
+  assert.match(installer, /RELEASE_VERSION="0\.0\.28"/, "fresh installs use the deliberately published Linux release instead of a rate-limited API lookup");
   assert.doesNotMatch(installer, /api\.github\.com/, "fresh installs do not depend on unauthenticated GitHub API quota");
   assert.match(installer, /need=\([^\n]*flock[^\n]*make[^\n]*c\+\+[^\n]*python3[^\n]*\)/, "the host updater and native dependency toolchain are probed even when download prerequisites already exist");
   assert.match(installer, /import ensurepip[\s\S]*python3-venv/, "the Linux host installs Python's venv support required by durable memory instead of accepting a python3 executable alone");
@@ -172,6 +172,9 @@ test("installer assets are explicit and syntax-valid", () => {
   const lxcNetwork = readFileSync(`${root}/scripts/1helm-lxc-net`, "utf8");
   const lxcConfig = readFileSync(`${root}/deploy/1helm-lxc-unprivileged.conf`, "utf8");
   const uninstaller = readFileSync(`${root}/site/public/uninstall-host.sh`, "utf8");
+  assert.match(lxcInstaller, /LXC_PATH="\$LXC_ROOT\/machines"/, "installation and the runtime use the same LXC state directory");
+  assert.match(lxcHelper, /LXC_PATH="\$LXC_ROOT\/machines"/, "the runtime reads the installer-created LXC state directory");
+  assert.doesNotMatch(lxcInstaller, /LXC_ROOT\/containers/, "the obsolete mismatched LXC state directory is not installed");
   assert.match(lxcInstaller, /20260726_07:42/);
   assert.match(lxcInstaller, /9c23724d6d22b3a5adf5d0f79d7e3779ded16a6d45f928bce93e14c48113d955/);
   assert.match(lxcInstaller, /d5351325dc23e344c4974d7ff546e5e0c91b8e47a9caeb26f39cdc60eaad19e8/);
