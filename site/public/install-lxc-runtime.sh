@@ -239,6 +239,7 @@ visudo -cf "$TEMP_ROOT/sudoers" >/dev/null
 install -o root -g root -m 0440 "$TEMP_ROOT/sudoers" "$SUDOERS_PATH"
 systemctl daemon-reload
 systemctl enable --now 1helm-lxc-net.service
+"$NETWORK_HELPER_PATH" start
 "$HELPER_PATH" ready >/dev/null
 sudo -u "$SERVICE_USER" sudo -n "$HELPER_PATH" version | grep -qx '1helm-lxc-runtime-v1'
 printf 'Installed 1Helm LXC runtime v1 with Ubuntu Noble image %s (%s).\n' "$IMAGE_BUILD" "$IMAGE_ARCH"

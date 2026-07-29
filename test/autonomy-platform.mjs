@@ -9,9 +9,10 @@ process.env.CTRL_DATA_DIR = dataDir;
 const dbModule = await import("../src/server/db.ts");
 const { db, q1, run, now, seed } = dbModule;
 const { verifyAuditChain } = await import("../src/server/audit.ts");
-const { buildContext, runtimePromptTiersForChannel, runtimeToolNamesForChannel, validateAskUserInput } = await import("../src/server/bots.ts");
+const { buildContext, runtimePromptTiersForChannel, runtimeToolNamesForChannel, toolActionStatus, validateAskUserInput } = await import("../src/server/bots.ts");
 const { inspectWebSource, isPublicWebAddress, validateWebSourceUrl } = await import("../src/server/web-source.ts");
-const { terminalPromptEnvironment } = await import("../src/server/agent.ts");
+const { resolveNativeShell, terminalPromptEnvironment } = await import("../src/server/agent.ts");
+const { windowsSystemAccount } = await import("../src/server/channel-computers.ts");
 const turns = await import("../src/server/turns.ts");
 const catalog = await import("../src/server/skill-catalog.ts");
 const history = await import("../src/server/history.ts");
@@ -68,6 +69,28 @@ test("native terminal prompts use the selected shell's cwd syntax", () => {
   assert.doesNotMatch(`${zsh.PROMPT}${zsh.PS1}`, /\\u|\\h|\\w|\\\$/);
   assert.equal(bash.PS1, "\\u@\\h:\\w\\$ ");
   assert.equal("PROMPT" in bash, false);
+});
+
+test("native terminals use cmd.exe on Windows and never a Unix fallback", () => {
+  const cmd = "C:\\Windows\\System32\\cmd.exe";
+  const shell = resolveNativeShell("win32", { ComSpec: cmd }, (candidate) => candidate === cmd);
+  assert.equal(shell.executable, cmd);
+  assert.deepEqual(shell.executeArgs("whoami"), ["/d", "/s", "/c", "whoami"]);
+  assert.deepEqual(shell.interactiveArgs, ["/d"]);
+  assert.doesNotMatch(JSON.stringify(shell), /\/bin\/(?:sh|bash|zsh)/);
+});
+
+test("Windows Local System is rejected before WSL access", () => {
+  assert.equal(windowsSystemAccount({ USERNAME: "SYSTEM", USERPROFILE: "C:\\Windows\\System32\\config\\systemprofile" }, "win32"), true);
+  assert.equal(windowsSystemAccount({ USERNAME: "defaultuser0", USERPROFILE: "C:\\Users\\defaultuser0" }, "win32"), false);
+  assert.equal(windowsSystemAccount({ USERNAME: "SYSTEM" }, "linux"), false);
+});
+
+test("nonzero and transport-error command results cannot be stored as complete", () => {
+  assert.equal(toolActionStatus("status=completed\nexit_code=0\nok"), "complete");
+  assert.equal(toolActionStatus("status=failed\nexit_code=100\napt failed"), "failed");
+  assert.equal(toolActionStatus("Error: command could not run: runtime unavailable"), "failed");
+  assert.equal(toolActionStatus("status=running\nexit_code=null"), "running");
 });
 
 test("a finalized turn is immutable to stale stream writers", () => {

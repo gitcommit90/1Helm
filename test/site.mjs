@@ -196,6 +196,13 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(lxcHelper, /cpu_count/, "LXC inspection counts noncontiguous delegated CPU lists correctly");
   assert.match(lxcNetwork, /1helm-lxc-net-owned/, "the bridge wrapper stops only a bridge it started");
   assert.match(lxcNetwork, /1helm-lxc-net-rules-owned[\s\S]*table ip onehelm_lxc[\s\S]*masquerade/, "an adopted bridge receives a separately owned, removable outbound NAT contract");
+  assert.match(lxcNetwork, /BRIDGE_CIDR="10\.0\.3\.1\/24"[\s\S]*bridge_dns_healthy[\s\S]*state UP[\s\S]*DNSMASQ_PID[\s\S]*--interface=lxcbr0[\s\S]*network_healthy/, "runtime health requires an up/addressed bridge and its exact dnsmasq process");
+  assert.match(lxcNetwork, /bridge_dns_healthy[\s\S]*ensure_rules[\s\S]*network_healthy/, "a healthy bridge can restore only its owned firewall rules without disrupting containers");
+  assert.match(lxcNetwork, /"\$LXC_NET" stop force[\s\S]*"\$LXC_NET" start[\s\S]*network_healthy/, "a dead private bridge/DNS stack is rebuilt and reverified instead of adopted by interface name");
+  assert.match(lxcHelper, /ready\)[\s\S]*"\$NETWORK_HELPER" start[\s\S]*"\$NETWORK_HELPER" check/, "runtime readiness repairs and then verifies the full network contract");
+  assert.match(lxcHelper, /inspect\)[\s\S]*current_owner[\s\S]*printf 'null/, "inspection exposes only marker-less interrupted creates as safely rebuildable partial machines");
+  assert.match(lxcHelper, /remove_incomplete[\s\S]*marker[\s\S]*lxc-destroy[\s\S]*rm -rf -- "\$LXC_PATH\/\$name"/, "create recovers only the exact validated marker-less partial container");
+  assert.match(lxcInstaller, /systemctl enable --now 1helm-lxc-net\.service[\s\S]*"\$NETWORK_HELPER_PATH" start[\s\S]*"\$HELPER_PATH" ready/, "host installs and updates actively repair then verify the bridge contract without disrupting a healthy network");
   assert.match(lxcHelper, /nameserver 10\.0\.3\.1[\s\S]*apt-get update/, "new guests have bridge DNS before package bootstrap");
   assert.match(lxcConfig, /lxc\.apparmor\.profile = generated/);
   assert.match(lxcConfig, /lxc\.apparmor\.allow_nesting = 0/);

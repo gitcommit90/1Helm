@@ -1086,10 +1086,11 @@ async function runCommand(bot: Row, agent: RuntimeAgent | undefined, channelId: 
   if (agent?.kind === "channel") {
     try {
       const result = await runChannelCommand(channelId, command, signal);
-      return `status=${result.status}\nexit_code=${result.exit_code}\n${result.output || "(no output)"}`.slice(0, 8000);
+      const status = result.status === "completed" && result.exit_code === 0 ? "completed" : result.status === "running" ? "running" : "failed";
+      return `status=${status}\nexit_code=${result.exit_code}\n${result.output || "(no output)"}`.slice(0, 8000);
     } catch (error) {
       if ((error as Error).name === "AbortError") throw error;
-      return `Error running command: ${(error as Error).message}`;
+      return `Error: command could not run: ${(error as Error).message}`;
     }
   }
   const assignedRows = q(`SELECT c.id, c.name FROM computers c JOIN bot_computers bc ON bc.computer_id=c.id WHERE bc.bot_id=? ORDER BY c.id`, bot.id);
@@ -1114,11 +1115,18 @@ async function runCommand(bot: Row, agent: RuntimeAgent | undefined, channelId: 
   try {
     const result = await execOnComputer(computer, execCommand, cwd, 60, signal);
     const output = cwd ? result.output.split(cwd).join("/workspace") : result.output;
-    return `status=${result.status}\nexit_code=${result.exit_code}\n${output || "(no output)"}`.slice(0, 8000);
+    const status = result.status === "completed" && result.exit_code === 0 ? "completed" : result.status === "running" ? "running" : "failed";
+    return `status=${status}\nexit_code=${result.exit_code}\n${output || "(no output)"}`.slice(0, 8000);
   } catch (error) {
     if ((error as Error).name === "AbortError") throw error;
-    return `Error running command: ${(error as Error).message}`;
+    return `Error: command could not run: ${(error as Error).message}`;
   }
+}
+
+export function toolActionStatus(result: string): "failed" | "running" | "complete" {
+  if (/^Error:/i.test(result) || /^status=failed(?:\n|$)/i.test(result)) return "failed";
+  if (/^status=running(?:\n|$)/i.test(result)) return "running";
+  return "complete";
 }
 
 async function createNativeChannel(nameInput: string, purposeInput: string, userId: number): Promise<string> {
@@ -1801,7 +1809,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
             if ((error as Error).name === "AbortError") throw error;
             result = `Error: ${(error as Error).message}`;
           }
-          const actionStatus = result.startsWith("Error:") ? "failed" : result.startsWith("status=running") ? "running" : "complete";
+          const actionStatus = toolActionStatus(result);
           finishAction(actionId, threadId, channelId, result, actionStatus, actor);
           updateProgress(progressId, `${name.replaceAll("_", " ")}: ${input || "action"}\n${result}`.trim(), actionStatus === "failed" ? "failed" : actionStatus === "running" ? "running" : "complete");
           if (actionStatus === "failed") {

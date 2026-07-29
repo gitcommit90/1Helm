@@ -133,10 +133,14 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(server, /prepareAppRemoval\(\)/, "the control plane performs and verifies the owned-VM cleanup before uninstall");
   assert.match(server, /process\.emit\("1helm-removal-prepared"\)/, "successful cleanup notifies the native shell to disable automatic relaunch");
   const channelComputers = await readFile(join(root, "src", "server", "channel-computers.ts"), "utf8");
+  const embeddedTerminal = await readFile(join(root, "src", "server", "agent.ts"), "utf8");
   assert.match(channelComputers, /\["machine", "delete", computer\.machine_id\]/, "uninstall cleanup uses Apple's complete machine deletion operation");
   assert.match(channelComputers, /printf '\[automount\]/, "private WSL distros disable Windows-drive automount");
   assert.match(channelComputers, /! findmnt -rn \/mnt\/c[\s\S]*rmdir \/mnt\/c \/mnt\/d[\s\S]*test ! -e \/mnt\/c/, "WSL removes only inert drive mountpoint directories after proving they are not mounted");
   assert.match(channelComputers, /test ! -e \/mnt\/c/, "WSL provisioning verifies the host C drive is not visible");
+  assert.match(channelComputers, /windowsSystemAccount\(\)[\s\S]*cannot use WSL while running as Windows Local System/, "WSL fails with an actionable host-identity error before invoking an unsupported SYSTEM session");
+  assert.match(embeddedTerminal, /hostPlatform === "win32"[\s\S]*ComSpec[\s\S]*cmd\.exe[\s\S]*\["\/d", "\/s", "\/c", command\]/, "Windows host commands and #main Terminal use the native cmd shell contract");
+  assert.match(embeddedTerminal, /Native terminal shell could not start/, "a terminal spawn failure returns an HTTP error instead of crashing the server");
   const windowsPackager = await readFile(join(root, "scripts", "package-windows.cjs"), "utf8");
   const macPackager = await readFile(join(root, "scripts", "package-mac-dmg.cjs"), "utf8");
   const windowsRemoval = await readFile(join(root, "scripts", "windows-removal.cjs"), "utf8");

@@ -27,7 +27,7 @@ export function openCreateChannel(onCreated: (channel: Channel) => void): void {
     status.textContent = "";
       submit.disabled = true; submit.textContent = "Preparing agent and private computer…";
     try {
-      const result = await api<{ channel: Channel }>("/api/channels", { body: { name: name.value, purpose: purpose.value, template: selectedTemplate } });
+      const result = await api<{ channel: Channel; computer_ready?: boolean }>("/api/channels", { body: { name: name.value, purpose: purpose.value, template: selectedTemplate } });
       close(); onCreated(result.channel);
     } catch (error) {
       status.textContent = (error as Error).message;

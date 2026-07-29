@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.24] - 2026-07-29
+
+### Fixed
+
+- Windows `#main` host terminals now use the native `cmd.exe` contract and
+  return a bounded API error when PTY startup fails instead of attempting
+  `/bin/sh` or crashing the local server.
+- Windows channel computers now reject Local System hosting with an explicit
+  remediation before invoking WSL. The supported desktop continues to run in
+  the signed-in user's session, where that user's retained WSL distributions
+  are available.
+- Linux LXC readiness now repairs and verifies the bridge address, the exact
+  `dnsmasq` process, DHCP/DNS, and owned NAT rules. Provisioning reconstructs
+  only a validated marker-less partial container left by an interrupted
+  bootstrap, while preserving every ownership-marked channel computer.
+- Channel creation and command activity no longer claim success before the
+  private computer passes verification. Nonzero command exits and runtime
+  transport errors are recorded and shown as failed rather than complete.
+
 ## [0.0.23] - 2026-07-28
 
 ### Added
@@ -732,7 +751,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.24...HEAD
+[0.0.24]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...v0.0.24
 [0.0.23]: https://github.com/gitcommit90/1Helm/compare/v0.0.22...v0.0.23
 [0.0.22]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.22
 [0.0.21]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.21
