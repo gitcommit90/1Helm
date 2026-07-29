@@ -140,6 +140,8 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(installer, /snapshot_host_contract[\s\S]*rollback_host_contract[\s\S]*TRANSACTION_ACTIVE/, "fresh and repeat installs restore runtime files and unit state after any transactional failure");
   assert.match(installer, /rollback_host_contract[\s\S]*1helm\.service\.active[\s\S]*api\/setup\/status[\s\S]*restored_healthy/, "installer rollback verifies the restored service before claiming recovery");
   assert.match(installer, /NODE_VERSION="22\.23\.1"/);
+  assert.match(installer, /RELEASE_VERSION="0\.0\.27"/, "fresh installs use the deliberately published Linux release instead of a rate-limited API lookup");
+  assert.doesNotMatch(installer, /api\.github\.com/, "fresh installs do not depend on unauthenticated GitHub API quota");
   assert.match(installer, /need=\([^\n]*flock[^\n]*make[^\n]*c\+\+[^\n]*python3[^\n]*\)/, "the host updater and native dependency toolchain are probed even when download prerequisites already exist");
   assert.match(installer, /import ensurepip[\s\S]*python3-venv/, "the Linux host installs Python's venv support required by durable memory instead of accepting a python3 executable alone");
   assert.doesNotMatch(installer, /npm[^\n]*ci[^\n]*--omit=optional/, "platform-specific optional build packages are retained");
@@ -170,9 +172,11 @@ test("installer assets are explicit and syntax-valid", () => {
   const lxcNetwork = readFileSync(`${root}/scripts/1helm-lxc-net`, "utf8");
   const lxcConfig = readFileSync(`${root}/deploy/1helm-lxc-unprivileged.conf`, "utf8");
   const uninstaller = readFileSync(`${root}/site/public/uninstall-host.sh`, "utf8");
-  assert.match(lxcInstaller, /20260723_07:42/);
-  assert.match(lxcInstaller, /cbc98489455ce54b5fa8c9abf276f1cb39130376ef70b3b7151d18362cd6354f/);
-  assert.match(lxcInstaller, /f4752ea7e776f329f9f50aca59c1919f3dc841dc3ddf22beef2b1696c4b4e29e/);
+  assert.match(lxcInstaller, /20260726_07:42/);
+  assert.match(lxcInstaller, /9c23724d6d22b3a5adf5d0f79d7e3779ded16a6d45f928bce93e14c48113d955/);
+  assert.match(lxcInstaller, /d5351325dc23e344c4974d7ff546e5e0c91b8e47a9caeb26f39cdc60eaad19e8/);
+  assert.match(lxcInstaller, /github\.com\/gitcommit90\/1Helm\/releases\/download\/v\$IMAGE_RELEASE/, "fresh installs use durable 1Helm-owned LXC release assets");
+  assert.doesNotMatch(lxcInstaller, /images\.linuxcontainers\.org/, "published installs do not depend on the upstream image server's short retention window");
   assert.match(lxcInstaller, /visudo -cf/, "the minimal helper-only sudo policy is validated before installation");
   assert.match(lxcInstaller, /apt-get install[\s\S]*python3-venv[\s\S]*lxc/, "0.0.5 upgrades can install the LXC and durable-memory prerequisites the older host did not have");
   assert.match(lxcInstaller, /namespace_covers_range[\s\S]*65536 65535/, "the installer negotiates a full bare-metal or safe nested-host subordinate ID range");

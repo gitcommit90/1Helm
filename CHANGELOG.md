@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.27] - 2026-07-29
+
+### Fixed
+
+- Fresh Linux installs pin the intended 1Helm version without consuming
+  unauthenticated GitHub API quota, and download digest-pinned Ubuntu LXC
+  payloads retained as 1Helm release assets instead of short-lived upstream
+  image URLs.
+
 ## [0.0.26] - 2026-07-29
 
 ### Fixed
@@ -777,7 +786,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.26...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.27...HEAD
+[0.0.27]: https://github.com/gitcommit90/1Helm/compare/v0.0.26...v0.0.27
 [0.0.26]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...v0.0.26
 [0.0.25]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...v0.0.25
 [0.0.24]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...v0.0.24
