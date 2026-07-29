@@ -96,7 +96,7 @@ ensure_network() {
 }
 remove_incomplete() {
   local name="$1" current
-  [[ -e "$(config_path "$name")" || -e "$LXC_PATH/$name" ]] || return
+  [[ -e "$(config_path "$name")" || -e "$LXC_PATH/$name" ]] || return 0
   if [[ ! -f "$(config_path "$name")" ]]; then
     rm -rf -- "$LXC_PATH/$name"
     return
