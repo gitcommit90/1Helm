@@ -10,6 +10,7 @@ NODE_LINK="$INSTALL_ROOT/node-current"
 STATE_ROOT="/var/lib/1helm"
 SERVICE_USER="1helm"
 NODE_VERSION="22.23.1"
+RELEASE_VERSION="0.0.27"
 HOST_CONTRACT_PATHS=(
   /usr/libexec/1helm-lxc-runtime
   /usr/libexec/1helm-lxc-net
@@ -147,8 +148,7 @@ fi
 ln -sfn "$NODE_RELEASE" "$TEMP_ROOT/node-current"
 mv -Tf "$TEMP_ROOT/node-current" "$NODE_LINK"
 
-VERSION="$(curl -fsSL https://api.github.com/repos/gitcommit90/1Helm/releases/latest | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' | head -n1)"
-[[ -n "$VERSION" ]] || { echo "Could not resolve the latest public 1Helm release." >&2; exit 1; }
+VERSION="$RELEASE_VERSION"
 git clone --depth 1 --branch "v$VERSION" "$REPO" "$TEMP_ROOT/source"
 RELEASE_SHA="$(git -C "$TEMP_ROOT/source" rev-parse HEAD)"
 [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Could not resolve the checked-out release commit." >&2; exit 1; }

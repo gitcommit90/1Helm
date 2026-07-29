@@ -19,7 +19,8 @@ CONFIG_PATH="/etc/1helm/lxc-unprivileged.conf"
 IDMAP_PATH="/etc/1helm/lxc-idmap"
 SUDOERS_PATH="/etc/sudoers.d/1helm-lxc-runtime"
 SERVICE_USER="1helm"
-IMAGE_BUILD="20260723_07:42"
+IMAGE_BUILD="20260726_07:42"
+IMAGE_RELEASE="0.0.27"
 
 # v0.0.11's updater unit made the exact destination files writable under
 # ProtectSystem=strict. Atomic replacement still requires write access to each
@@ -70,13 +71,13 @@ fi
 case "$(uname -m)" in
   x86_64|amd64)
     IMAGE_ARCH="amd64"
-    ROOTFS_SHA256="cbc98489455ce54b5fa8c9abf276f1cb39130376ef70b3b7151d18362cd6354f"
-    META_SHA256="630feddfe5982719a8409cee6356b9abc6297c5bc05c2f6043bc80dee04637cf"
+    ROOTFS_SHA256="9c23724d6d22b3a5adf5d0f79d7e3779ded16a6d45f928bce93e14c48113d955"
+    META_SHA256="f8cdb7423ef4fdb103a134ff3fc7cc10aacd2b3448650ce28e33621de1638288"
     ;;
   aarch64|arm64)
     IMAGE_ARCH="arm64"
-    ROOTFS_SHA256="f4752ea7e776f329f9f50aca59c1919f3dc841dc3ddf22beef2b1696c4b4e29e"
-    META_SHA256="9ef7cfca774a667f8eb187b1a0a7f47f0fd912b6a7da8dfa1c4d24213631f747"
+    ROOTFS_SHA256="d5351325dc23e344c4974d7ff546e5e0c91b8e47a9caeb26f39cdc60eaad19e8"
+    META_SHA256="b36e17b74d0d75c4f6e7a624a047ce5a40a39f52b43702f58ecf7b3f713c0b32"
     ;;
   *) echo "Unsupported LXC architecture: $(uname -m)" >&2; exit 1 ;;
 esac
@@ -109,7 +110,7 @@ install -d -o root -g root -m 0755 "$NETWORK_STATE" "$NETWORK_STATE/misc"
 
 TEMP_ROOT="$(mktemp -d)"
 trap 'rm -rf -- "$TEMP_ROOT"' EXIT
-ASSET_URL="https://images.linuxcontainers.org/images/ubuntu/noble/$IMAGE_ARCH/default/$IMAGE_BUILD"
+ASSET_URL="https://github.com/gitcommit90/1Helm/releases/download/v$IMAGE_RELEASE/1Helm-$IMAGE_RELEASE-lxc-ubuntu-noble-$IMAGE_ARCH"
 ASSET_DIR="$RUNTIME_ROOT/$IMAGE_ARCH"
 install -d -o root -g root -m 0700 "$ASSET_DIR"
 for asset in rootfs.tar.xz meta.tar.xz; do
@@ -118,7 +119,7 @@ for asset in rootfs.tar.xz meta.tar.xz; do
   if [[ -f "$ASSET_DIR/$asset" ]] && printf '%s  %s\n' "$expected" "$ASSET_DIR/$asset" | sha256sum -c - >/dev/null 2>&1; then
     continue
   fi
-  curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --max-time 1800 -o "$TEMP_ROOT/$asset" "$ASSET_URL/$asset"
+  curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --max-time 1800 -o "$TEMP_ROOT/$asset" "$ASSET_URL-$asset"
   printf '%s  %s\n' "$expected" "$TEMP_ROOT/$asset" | sha256sum -c - >/dev/null \
     || { echo "Pinned LXC $asset failed SHA-256 verification." >&2; exit 1; }
   install -o root -g root -m 0600 "$TEMP_ROOT/$asset" "$ASSET_DIR/$asset"
