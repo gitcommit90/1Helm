@@ -78,13 +78,28 @@ cpu_count() {
   printf '%s' "$total"
 }
 start() {
-  [[ "$(state "$1")" == "RUNNING" ]] || lxc-start -P "$LXC_PATH" -n "$1" -d
-  local attempt
-  for attempt in {1..200}; do
-    [[ "$(state "$1")" == "RUNNING" ]] && return
-    sleep 0.1
+  local name="$1" start_attempt state_attempt detail=""
+  [[ "$(state "$name")" == "RUNNING" ]] && return
+  # A freshly unpacked container can hit LXC's daemonized-start socket race:
+  # lxc-start exits after wait_on_daemonized_start loses the state message even
+  # though the container definition is intact and immediately startable. Check
+  # the authoritative state after every invocation and retry that same exact
+  # validated machine instead of failing channel creation on the transient.
+  for start_attempt in {1..3}; do
+    if ! detail="$(lxc-start -P "$LXC_PATH" -n "$name" -d 2>&1)"; then
+      for state_attempt in {1..50}; do
+        [[ "$(state "$name")" == "RUNNING" ]] && return
+        sleep 0.1
+      done
+      continue
+    fi
+    for state_attempt in {1..200}; do
+      [[ "$(state "$name")" == "RUNNING" ]] && return
+      sleep 0.1
+    done
   done
-  die "container did not start"
+  [[ -z "$detail" ]] || printf '%s\n' "$detail" >&2
+  die "container did not start after 3 verified attempts"
 }
 wait_for_guest_network() {
   local name="$1" attempt

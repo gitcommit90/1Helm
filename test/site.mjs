@@ -210,6 +210,7 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(lxcHelper, /wait_for_guest_network[\s\S]*10\\\.0\\\.3\\\.[\s\S]*via 10\\\.0\\\.3\\\.1 dev eth0/, "fresh LXC provisioning waits for its DHCP address and default route");
   assert.match(lxcHelper, /archive\.ubuntu\.com[\s\S]*security\.ubuntu\.com[\s\S]*curl -4[\s\S]*InRelease/, "fresh LXC provisioning proves DNS and outbound IPv4 HTTP before package bootstrap");
   assert.match(lxcHelper, /start "\$name"[\s\S]*wait_for_guest_network "\$name"[\s\S]*apt-get update -o Acquire::ForceIPv4=true -o APT::Update::Error-Mode=any/, "package bootstrap begins only after bounded guest-network readiness");
+  assert.match(lxcHelper, /for start_attempt in \{1\.\.3\}[\s\S]*lxc-start[\s\S]*state "\$name"[\s\S]*continue[\s\S]*container did not start after 3 verified attempts/, "a transient daemonized LXC state-socket failure is retried against the same validated machine");
   assert.match(lxcHelper, /cpuset\.cpus\.effective/, "LXC CPU limits are selected from the service's actually delegated host CPUs");
   assert.match(lxcHelper, /cpu_count/, "LXC inspection counts noncontiguous delegated CPU lists correctly");
   assert.match(lxcNetwork, /1helm-lxc-net-owned/, "the bridge wrapper stops only a bridge it started");
