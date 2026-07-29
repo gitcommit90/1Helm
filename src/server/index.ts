@@ -77,7 +77,7 @@ import { markdownToDocx } from "./docx.ts";
 import { configurePhoton, continuePhotonConversation, deliverPhotonEvent, photonConversation, photonConversations, photonStatus, registerPhotonDispatcher, startPhotonConnector, stopPhotonConnector } from "./photon.ts";
 import { photonSetupStatus, startPhotonSetup } from "./photon-auth.ts";
 import { completeGmailConnection, gmailConnectionStatus, saveGmailOAuthClient, startGmailConnection } from "./gmail.ts";
-import { cancelMnemosyneRuntimePreparation, ensureAgentMemory, mnemosyneAvailable, prepareMnemosyneRuntime } from "./memory.ts";
+import { cancelMnemosyneRuntimePreparation, mnemosyneAvailable, prepareMnemosyneRuntime } from "./memory.ts";
 import { attachCoworkClient, coworkPresence, coworkViewerUsernames, flushCoworkDocuments, normalizeCoworkFolderPath, normalizeCoworkPath } from "./cowork-collaboration.ts";
 import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
@@ -2245,7 +2245,6 @@ async function bootstrap(): Promise<void> {
   run("DELETE FROM bot_computers WHERE computer_id=? AND bot_id IN (SELECT bot_id FROM agents WHERE kind='channel')", computerId);
   for (const channel of q("SELECT id FROM channels WHERE kind='channel' AND status<>'deleted'")) {
     ensureChannelWorkspace(Number(channel.id));
-    const agent = agentForChannel(Number(channel.id)); if (agent) ensureAgentMemory(agent);
   }
   startImprovementLoop();
   startThreadAuditLoop();
@@ -2260,13 +2259,11 @@ async function bootstrap(): Promise<void> {
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : PORT;
     console.log(`1Helm on 1Helm → http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${port}  (local agent on ${agentPort})  data: ${DATA_DIR}`);
-    void memoryRuntime.then((ready) => {
-      if (!ready) return;
-      for (const channel of q("SELECT id FROM channels WHERE kind='channel' AND status<>'deleted'")) {
-        const agent = agentForChannel(Number(channel.id));
-        if (agent) ensureAgentMemory(agent);
-      }
-    }).catch((error) => console.warn(`1Helm could not prepare durable memory: ${(error as Error).message}`));
+    // Runtime preparation remains asynchronous. Resident databases initialize
+    // when agents are created and lazily on their first memory operation; a
+    // retained fleet must never synchronously serialize Python init work on the
+    // server event loop before or after the health port opens.
+    void memoryRuntime.catch((error) => console.warn(`1Helm could not prepare durable memory: ${(error as Error).message}`));
     void queueLinuxHostContractMigration(DATA_DIR).catch((error) => console.warn(`1Helm could not queue its Linux host-contract migration: ${(error as Error).message}`));
   });
 }

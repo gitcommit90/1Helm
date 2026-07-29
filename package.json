@@ -1,7 +1,7 @@
 {
   "name": "1helm",
   "productName": "1Helm",
-  "version": "0.0.24",
+  "version": "0.0.25",
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-only",

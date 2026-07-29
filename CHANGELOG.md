@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.25] - 2026-07-29
+
+### Fixed
+
+- Linux systemd updates now open the health port before initializing every
+  retained resident memory database. Large existing workspaces no longer miss
+  the updater's bounded startup window and roll back an otherwise healthy
+  release while the same durable memory initialization continues in the
+  background.
+- Includes the Windows host-terminal, Windows WSL identity, Linux LXC network
+  recovery, and honest lifecycle/command failure corrections prepared in
+  `0.0.24`; `0.0.24` was never tagged or published.
+
 ## [0.0.24] - 2026-07-29
 
 ### Fixed
@@ -751,7 +764,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.24...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.25...HEAD
+[0.0.25]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...v0.0.25
 [0.0.24]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...v0.0.24
 [0.0.23]: https://github.com/gitcommit90/1Helm/compare/v0.0.22...v0.0.23
 [0.0.22]: https://github.com/gitcommit90/1Helm/releases/tag/v0.0.22
