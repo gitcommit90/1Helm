@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Linux now installs one versioned runtime manifest shared by the application,
+  lifecycle helper, image payloads, and cache. Image sets and caches live under
+  immutable contract-qualified paths, so deploying newer application code can
+  no longer pair it with an older mutable rootfs and disable every channel.
+
+- Systemd installations require their exact root-owned helper instead of
+  silently falling back to a helper in a source checkout. Runtime readiness
+  verifies the complete installed helper, manifest, image, cache, and network
+  contract before a host is accepted, and same-version repair reconstructs a
+  corrupt cache even if its stale contract marker still claims to be current.
+
+- Fresh installations inside a supported unprivileged nested-LXC host now
+  allocate the container's local `1..65535` subordinate-ID range correctly
+  instead of confusing it with the parent namespace IDs reported by the
+  kernel.
+
 - Fresh Linux channel provisioning now waits for the new LXC guest to acquire
   its private DHCP address, default route, and working DNS before package
   bootstrap. A channel no longer repeatedly creates and cleans up its computer
