@@ -176,6 +176,7 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(lxcRuntimeManifest, /ONEHELM_LXC_STATE_PATH="\/var\/lib\/1helm-lxc\/machines"/, "one installed manifest owns the LXC state path");
   assert.match(lxcInstaller, /source "\$APP_SOURCE\/deploy\/1helm-lxc-runtime-v2\.conf"[\s\S]*LXC_PATH="\$ONEHELM_LXC_STATE_PATH"/, "the installer consumes the shared runtime manifest");
   assert.match(lxcHelper, /RUNTIME_MANIFEST="\/etc\/1helm\/lxc-runtime-v2\.conf"[\s\S]*source "\$RUNTIME_MANIFEST"[\s\S]*LXC_PATH="\$ONEHELM_LXC_STATE_PATH"/, "the installed helper consumes the same runtime manifest");
+  assert.match(lxcHelper, /cache_rootfs_ok=0[\s\S]*sha256sum -c -[\s\S]*cache_rootfs_ok=1[\s\S]*cache_contract.*expected_contract.*cache_rootfs_ok.*-ne 1/, "runtime readiness repairs a corrupt cache even when its marker still claims the current contract");
   assert.doesNotMatch(lxcInstaller, /LXC_ROOT\/containers/, "the obsolete mismatched LXC state directory is not installed");
   assert.match(lxcRuntimeManifest, /20260726_07:42/);
   assert.match(lxcRuntimeManifest, /9c23724d6d22b3a5adf5d0f79d7e3779ded16a6d45f928bce93e14c48113d955/);

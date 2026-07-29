@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Systemd installations require their exact root-owned helper instead of
   silently falling back to a helper in a source checkout. Runtime readiness
   verifies the complete installed helper, manifest, image, cache, and network
-  contract before a host is accepted.
+  contract before a host is accepted, and same-version repair reconstructs a
+  corrupt cache even if its stale contract marker still claims to be current.
 
 - Fresh installations inside a supported unprivileged nested-LXC host now
   allocate the container's local `1..65535` subordinate-ID range correctly

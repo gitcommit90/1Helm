@@ -149,7 +149,7 @@ image_values() {
   esac
 }
 prepare_cache() {
-  local arch="$1" rootfs_sha meta_sha asset_dir cache_dir candidate cache_contract expected_contract old_cache
+  local arch="$1" rootfs_sha meta_sha asset_dir cache_dir candidate cache_contract expected_contract old_cache cache_rootfs_ok=0
   mapfile -t values < <(image_values "$arch")
   rootfs_sha="${values[0]}"; meta_sha="${values[1]}"
   asset_dir="$ASSET_ROOT/$arch"
@@ -159,7 +159,11 @@ prepare_cache() {
   printf '%s  %s\n' "$meta_sha" "$asset_dir/meta.tar.xz" | sha256sum -c - >/dev/null || die "pinned LXC metadata digest mismatch"
   expected_contract="$RUNTIME_VERSION:$ONEHELM_LXC_IMAGE_BUILD:$rootfs_sha:$meta_sha"
   cache_contract="$(cat "$cache_dir/1helm-runtime-contract" 2>/dev/null || true)"
-  if [[ "$cache_contract" != "$expected_contract" ]]; then
+  if [[ -f "$cache_dir/rootfs.tar.xz" ]] \
+      && printf '%s  %s\n' "$rootfs_sha" "$cache_dir/rootfs.tar.xz" | sha256sum -c - >/dev/null 2>&1; then
+    cache_rootfs_ok=1
+  fi
+  if [[ "$cache_contract" != "$expected_contract" || "$cache_rootfs_ok" -ne 1 ]]; then
     install -d -m 0700 "$ACTIVE_CACHE_BASE"
     candidate="$(mktemp -d "$ACTIVE_CACHE_BASE/.candidate.XXXXXX")"
     install -d -m 0700 "$candidate/download/ubuntu/noble/$arch/default"
