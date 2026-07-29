@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.28] - 2026-07-29
+
+### Fixed
+
+- Fresh Linux channel provisioning now waits for the new LXC guest to acquire
+  its private DHCP address, default route, and working DNS before package
+  bootstrap. A channel no longer repeatedly creates and cleans up its computer
+  after starting `apt` during the guest-network race.
+
+- 1Helm's narrow owned LXC forwarding rules are inserted ahead of host firewall
+  policies such as Docker's `FORWARD=DROP`, allowing resident guests to reach
+  package mirrors without replacing Docker or Tailscale chains.
+
+- The host installer now prepares the same `/var/lib/1helm-lxc/machines` tree
+  used by the runtime instead of leaving an obsolete empty `containers` tree.
+
+- Includes the durable installer payload and API-quota corrections from the
+  superseded Linux-only `0.0.27` prerelease.
+
 ## [0.0.27] - 2026-07-29
 
 ### Fixed
@@ -786,7 +805,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.27...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.28...HEAD
+[0.0.28]: https://github.com/gitcommit90/1Helm/compare/v0.0.27...v0.0.28
 [0.0.27]: https://github.com/gitcommit90/1Helm/compare/v0.0.26...v0.0.27
 [0.0.26]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...v0.0.26
 [0.0.25]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...v0.0.25

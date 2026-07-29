@@ -76,6 +76,30 @@ start() {
   done
   die "container did not start"
 }
+wait_for_guest_network() {
+  local name="$1" attempt
+  for attempt in {1..300}; do
+    if lxc-attach -P "$LXC_PATH" -n "$name" --clear-env -- /bin/sh -c '
+      ip -4 -o addr show dev eth0 scope global | grep -q " inet 10\.0\.3\." \
+        && ip -4 route show default | grep -q " via 10\.0\.3\.1 dev eth0"
+    ' >/dev/null 2>&1; then
+      lxc-attach -P "$LXC_PATH" -n "$name" --clear-env -- /bin/sh -c '
+        rm -f /etc/resolv.conf
+        printf "nameserver 10.0.3.1\n" >/etc/resolv.conf
+      '
+      if lxc-attach -P "$LXC_PATH" -n "$name" --clear-env -- /bin/sh -c '
+        getent ahostsv4 archive.ubuntu.com >/dev/null \
+          && getent ahostsv4 security.ubuntu.com >/dev/null \
+          && curl -4 -fsS --connect-timeout 2 --max-time 5 \
+            http://archive.ubuntu.com/ubuntu/dists/noble/InRelease >/dev/null
+      ' >/dev/null 2>&1; then
+        return
+      fi
+    fi
+    sleep 0.2
+  done
+  die "container started but its private DHCP route and DNS did not become ready"
+}
 marker() {
   local name="$1" current
   if [[ "$(state "$name")" == "RUNNING" ]]; then
@@ -224,12 +248,11 @@ case "$operation" in
     cpu_set="$(select_cpus "$cpus")"
     printf '\nlxc.cgroup2.cpuset.cpus = %s\nlxc.cgroup2.memory.max = %s\n' "$cpu_set" "$((memory_mb * 1024 * 1024))" >>"$config"
     start "$name"
+    wait_for_guest_network "$name"
     lxc-attach -P "$LXC_PATH" -n "$name" --clear-env -- /bin/sh -eu -c '
       export DEBIAN_FRONTEND=noninteractive
-      rm -f /etc/resolv.conf
-      printf "nameserver 10.0.3.1\n" >/etc/resolv.conf
-      apt-get update
-      apt-get install -y --no-install-recommends bash build-essential ca-certificates coreutils cron curl dbus file findutils git gzip iproute2 iputils-ping jq less locales man-db nano openssh-client procps python3 python3-pip rsync sudo systemd systemd-sysv tar tzdata unzip vim-tiny wget xz-utils zip
+      apt-get update -o Acquire::ForceIPv4=true -o APT::Update::Error-Mode=any
+      apt-get install -y -o Acquire::ForceIPv4=true --no-install-recommends bash build-essential ca-certificates coreutils cron curl dbus file findutils git gzip iproute2 iputils-ping jq less locales man-db nano openssh-client procps python3 python3-pip rsync sudo systemd systemd-sysv tar tzdata unzip vim-tiny wget xz-utils zip
       apt-get clean
       rm -rf /var/lib/apt/lists/*
       existing_group="$(getent group 1000 | cut -d: -f1 || true)"
