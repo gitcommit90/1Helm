@@ -89,7 +89,9 @@ wait_for_guest_network() {
       '
       if lxc-attach -P "$LXC_PATH" -n "$name" --clear-env -- /bin/sh -c '
         getent ahostsv4 archive.ubuntu.com >/dev/null \
-          && getent ahostsv4 security.ubuntu.com >/dev/null
+          && getent ahostsv4 security.ubuntu.com >/dev/null \
+          && curl -4 -fsS --connect-timeout 2 --max-time 5 \
+            http://archive.ubuntu.com/ubuntu/dists/noble/InRelease >/dev/null
       ' >/dev/null 2>&1; then
         return
       fi
@@ -249,8 +251,8 @@ case "$operation" in
     wait_for_guest_network "$name"
     lxc-attach -P "$LXC_PATH" -n "$name" --clear-env -- /bin/sh -eu -c '
       export DEBIAN_FRONTEND=noninteractive
-      apt-get update -o APT::Update::Error-Mode=any
-      apt-get install -y --no-install-recommends bash build-essential ca-certificates coreutils cron curl dbus file findutils git gzip iproute2 iputils-ping jq less locales man-db nano openssh-client procps python3 python3-pip rsync sudo systemd systemd-sysv tar tzdata unzip vim-tiny wget xz-utils zip
+      apt-get update -o Acquire::ForceIPv4=true -o APT::Update::Error-Mode=any
+      apt-get install -y -o Acquire::ForceIPv4=true --no-install-recommends bash build-essential ca-certificates coreutils cron curl dbus file findutils git gzip iproute2 iputils-ping jq less locales man-db nano openssh-client procps python3 python3-pip rsync sudo systemd systemd-sysv tar tzdata unzip vim-tiny wget xz-utils zip
       apt-get clean
       rm -rf /var/lib/apt/lists/*
       existing_group="$(getent group 1000 | cut -d: -f1 || true)"

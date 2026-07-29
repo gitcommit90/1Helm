@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bootstrap. A channel no longer repeatedly creates and cleans up its computer
   after starting `apt` during the guest-network race.
 
+- 1Helm's narrow owned LXC forwarding rules are inserted ahead of host firewall
+  policies such as Docker's `FORWARD=DROP`, allowing resident guests to reach
+  package mirrors without replacing Docker or Tailscale chains.
+
 - The host installer now prepares the same `/var/lib/1helm-lxc/machines` tree
   used by the runtime instead of leaving an obsolete empty `containers` tree.
 
