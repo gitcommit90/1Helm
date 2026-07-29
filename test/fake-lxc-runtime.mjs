@@ -28,8 +28,8 @@ const invoke = (containerArgs, input) => {
 };
 
 const operation = args[0] || "";
-if (operation === "version") { process.stdout.write("1helm-lxc-runtime-v1\n"); process.exit(0); }
-if (operation === "ready") { process.stdout.write('{"ready":true,"version":"1helm-lxc-runtime-v1"}\n'); process.exit(0); }
+if (operation === "version") { process.stdout.write("1helm-lxc-runtime-v2\n"); process.exit(0); }
+if (operation === "ready") { process.stdout.write('{"ready":true,"version":"1helm-lxc-runtime-v2"}\n'); process.exit(0); }
 if (operation === "create") {
   const [, name, owner, cpus, memoryMb] = args;
   const result = spawnSync(process.execPath, [fakeContainer, "machine", "create", "--name", name, "--cpus", cpus, "--memory", `${memoryMb}M`, "--home-mount", "none", "fake"], { env: process.env, encoding: null });

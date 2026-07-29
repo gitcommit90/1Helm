@@ -17,6 +17,7 @@ HOST_CONTRACT_PATHS=(
   /usr/libexec/1helm-lxc-runtime
   /usr/libexec/1helm-lxc-net
   /etc/1helm/lxc-unprivileged.conf
+  /etc/1helm/lxc-runtime-v2.conf
   /etc/1helm/lxc-idmap
   /etc/sudoers.d/1helm-lxc-runtime
   /etc/default/lxc-net
@@ -189,7 +190,8 @@ if [[ "$VERSION_ORDER" != "-1" ]]; then
   # that migration from the already verified, retained release without
   # downloading or running any new remote content.
   if [[ -x /usr/libexec/1helm-lxc-runtime ]] \
-      && [[ "$(/usr/libexec/1helm-lxc-runtime version 2>/dev/null || true)" == "1helm-lxc-runtime-v1" ]] \
+      && [[ "$(/usr/libexec/1helm-lxc-runtime version 2>/dev/null || true)" == "1helm-lxc-runtime-v2" ]] \
+      && /usr/libexec/1helm-lxc-runtime ready >/dev/null 2>&1 \
       && grep -qx 'Environment=HELM_CHANNEL_COMPUTER_BACKEND=lxc' /etc/systemd/system/1helm.service 2>/dev/null; then
     write_status "current" "$TARGET_VERSION" "This 1Helm host is up to date."
     exit 0

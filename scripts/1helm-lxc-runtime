@@ -6,24 +6,34 @@ set -euo pipefail
 # owner marker is validated, and existing containers are adopted or destroyed
 # only after the in-guest marker matches the exact installation and channel.
 
-RUNTIME_VERSION="1helm-lxc-runtime-v1"
+RUNTIME_VERSION="1helm-lxc-runtime-v2"
+RUNTIME_MANIFEST="/etc/1helm/lxc-runtime-v2.conf"
 LXC_ROOT="/var/lib/1helm-lxc"
-LXC_PATH="$LXC_ROOT/machines"
 CACHE_BASE="/var/cache/1helm-lxc"
-ASSET_ROOT="/opt/1helm/runtime/lxc"
 CONFIG_TEMPLATE="/etc/1helm/lxc-unprivileged.conf"
 NETWORK_HELPER="/usr/libexec/1helm-lxc-net"
 NAME_PATTERN='^1helm-[a-f0-9]{16}-channel-[0-9]+$'
 OWNER_PATTERN='^[a-f0-9]{16}:[0-9]+$'
 
-IMAGE_BUILD="20260726_07:42"
-AMD64_ROOTFS_SHA256="9c23724d6d22b3a5adf5d0f79d7e3779ded16a6d45f928bce93e14c48113d955"
-AMD64_META_SHA256="f8cdb7423ef4fdb103a134ff3fc7cc10aacd2b3448650ce28e33621de1638288"
-ARM64_ROOTFS_SHA256="d5351325dc23e344c4974d7ff546e5e0c91b8e47a9caeb26f39cdc60eaad19e8"
-ARM64_META_SHA256="b36e17b74d0d75c4f6e7a624a047ce5a40a39f52b43702f58ecf7b3f713c0b32"
-
 die() { printf '1Helm LXC runtime: %s\n' "$*" >&2; exit 1; }
 need_root() { [[ "${EUID}" -eq 0 ]] || die "must run as root"; }
+load_runtime_manifest() {
+  [[ -r "$RUNTIME_MANIFEST" ]] || die "installed runtime manifest is missing"
+  # Installed root-owned from the same verified release as this helper.
+  # shellcheck source=/dev/null
+  source "$RUNTIME_MANIFEST"
+  [[ "${ONEHELM_LXC_RUNTIME_VERSION:-}" == "$RUNTIME_VERSION" ]] || die "helper and runtime manifest versions do not match"
+  [[ "${ONEHELM_LXC_STATE_PATH:-}" == "/var/lib/1helm-lxc/machines" ]] || die "runtime manifest has an unsafe state path"
+  [[ "${ONEHELM_LXC_IMAGE_SET:-}" =~ ^ubuntu-noble-[0-9]{8}-[0-9]{4}$ ]] || die "runtime manifest has an invalid image set"
+  [[ "${ONEHELM_LXC_IMAGE_BUILD:-}" =~ ^[0-9]{8}_[0-9]{2}:[0-9]{2}$ ]] || die "runtime manifest has an invalid image build"
+  [[ "${ONEHELM_LXC_AMD64_ROOTFS_SHA256:-}" =~ ^[a-f0-9]{64}$ \
+    && "${ONEHELM_LXC_AMD64_META_SHA256:-}" =~ ^[a-f0-9]{64}$ \
+    && "${ONEHELM_LXC_ARM64_ROOTFS_SHA256:-}" =~ ^[a-f0-9]{64}$ \
+    && "${ONEHELM_LXC_ARM64_META_SHA256:-}" =~ ^[a-f0-9]{64}$ ]] || die "runtime manifest has an invalid image digest"
+  LXC_PATH="$ONEHELM_LXC_STATE_PATH"
+  ASSET_ROOT="/opt/1helm/runtime/lxc/images/$ONEHELM_LXC_IMAGE_SET"
+  ACTIVE_CACHE_BASE="$CACHE_BASE/images/$ONEHELM_LXC_IMAGE_SET"
+}
 valid_identity() {
   [[ "${1:-}" =~ $NAME_PATTERN ]] || die "unsafe machine name"
   [[ "${2:-}" =~ $OWNER_PATTERN ]] || die "unsafe owner marker"
@@ -133,26 +143,30 @@ remove_incomplete() {
 }
 image_values() {
   case "$1" in
-    amd64) printf '%s\n%s\n' "$AMD64_ROOTFS_SHA256" "$AMD64_META_SHA256" ;;
-    arm64) printf '%s\n%s\n' "$ARM64_ROOTFS_SHA256" "$ARM64_META_SHA256" ;;
+    amd64) printf '%s\n%s\n' "$ONEHELM_LXC_AMD64_ROOTFS_SHA256" "$ONEHELM_LXC_AMD64_META_SHA256" ;;
+    arm64) printf '%s\n%s\n' "$ONEHELM_LXC_ARM64_ROOTFS_SHA256" "$ONEHELM_LXC_ARM64_META_SHA256" ;;
     *) die "unsupported architecture" ;;
   esac
 }
 prepare_cache() {
-  local arch="$1" rootfs_sha meta_sha asset_dir cache_dir candidate
+  local arch="$1" rootfs_sha meta_sha asset_dir cache_dir candidate cache_contract expected_contract old_cache
   mapfile -t values < <(image_values "$arch")
   rootfs_sha="${values[0]}"; meta_sha="${values[1]}"
   asset_dir="$ASSET_ROOT/$arch"
-  cache_dir="$CACHE_BASE/download/ubuntu/noble/$arch/default"
+  cache_dir="$ACTIVE_CACHE_BASE/download/ubuntu/noble/$arch/default"
   [[ -f "$asset_dir/rootfs.tar.xz" && -f "$asset_dir/meta.tar.xz" ]] || die "pinned LXC image assets are missing"
   printf '%s  %s\n' "$rootfs_sha" "$asset_dir/rootfs.tar.xz" | sha256sum -c - >/dev/null || die "pinned LXC rootfs digest mismatch"
   printf '%s  %s\n' "$meta_sha" "$asset_dir/meta.tar.xz" | sha256sum -c - >/dev/null || die "pinned LXC metadata digest mismatch"
-  if [[ ! -f "$cache_dir/build_id" || "$(cat "$cache_dir/build_id")" != "$IMAGE_BUILD" ]]; then
-    candidate="$(mktemp -d "$CACHE_BASE/.candidate.XXXXXX")"
+  expected_contract="$RUNTIME_VERSION:$ONEHELM_LXC_IMAGE_BUILD:$rootfs_sha:$meta_sha"
+  cache_contract="$(cat "$cache_dir/1helm-runtime-contract" 2>/dev/null || true)"
+  if [[ "$cache_contract" != "$expected_contract" ]]; then
+    install -d -m 0700 "$ACTIVE_CACHE_BASE"
+    candidate="$(mktemp -d "$ACTIVE_CACHE_BASE/.candidate.XXXXXX")"
     install -d -m 0700 "$candidate/download/ubuntu/noble/$arch/default"
     cp -- "$asset_dir/rootfs.tar.xz" "$candidate/download/ubuntu/noble/$arch/default/rootfs.tar.xz"
     tar -xJf "$asset_dir/meta.tar.xz" -C "$candidate/download/ubuntu/noble/$arch/default"
-    printf '%s\n' "$IMAGE_BUILD" >"$candidate/download/ubuntu/noble/$arch/default/build_id"
+    printf '%s\n' "$ONEHELM_LXC_IMAGE_BUILD" >"$candidate/download/ubuntu/noble/$arch/default/build_id"
+    printf '%s\n' "$expected_contract" >"$candidate/download/ubuntu/noble/$arch/default/1helm-runtime-contract"
     install -d -m 0700 "$(dirname "$cache_dir")"
     if [[ -e "$cache_dir" ]]; then
       old_cache="${cache_dir}.old.$$"
@@ -182,6 +196,7 @@ attach() {
 
 need_root
 operation="${1:-}"; shift || true
+[[ "$operation" == version ]] || load_runtime_manifest
 case "$operation" in
   version)
     printf '%s\n' "$RUNTIME_VERSION"
@@ -193,6 +208,7 @@ case "$operation" in
     [[ -x "$NETWORK_HELPER" ]] || die "private network helper is missing"
     "$NETWORK_HELPER" start || die "private bridge, DNS, DHCP, or NAT could not be repaired"
     "$NETWORK_HELPER" check || die "private bridge, DNS, DHCP, or NAT is not ready"
+    case "$(uname -m)" in x86_64|amd64) prepare_cache amd64 ;; aarch64|arm64) prepare_cache arm64 ;; *) die "unsupported architecture" ;; esac
     printf '{"ready":true,"version":"%s"}\n' "$RUNTIME_VERSION"
     ;;
   inspect)
@@ -242,7 +258,7 @@ case "$operation" in
     prepare_cache "$arch"
     ensure_network
     created=1
-    LXC_CACHE_PATH="$CACHE_BASE" lxc-create -P "$LXC_PATH" -n "$name" -f "$CONFIG_TEMPLATE" -t download -- \
+    LXC_CACHE_PATH="$ACTIVE_CACHE_BASE" lxc-create -P "$LXC_PATH" -n "$name" -f "$CONFIG_TEMPLATE" -t download -- \
       --dist ubuntu --release noble --arch "$arch" --variant default --force-cache
     config="$(config_path "$name")"
     cpu_set="$(select_cpus "$cpus")"

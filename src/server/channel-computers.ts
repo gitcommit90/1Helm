@@ -69,7 +69,7 @@ export const APPLE_RUNTIME_URL = `https://github.com/apple/container/releases/do
 export const APPLE_RUNTIME_SHA256 = "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714";
 export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.28";
 const CONTAINER_CANDIDATES = [process.env.HELM_CONTAINER_CLI, "/usr/local/bin/container", "/opt/homebrew/bin/container", "container"].filter(Boolean) as string[];
-const LXC_RUNTIME_VERSION = "1helm-lxc-runtime-v1";
+const LXC_RUNTIME_VERSION = "1helm-lxc-runtime-v2";
 const LXC_HELPER_CANDIDATES = [
   process.env.HELM_LXC_HELPER,
   "/usr/libexec/1helm-lxc-runtime",
@@ -270,6 +270,14 @@ function resolveContainerCli(): string {
 }
 
 function resolveLxcHelper(): string {
+  if (process.env.HELM_INSTALL_KIND === "linux-systemd") {
+    const installed = "/usr/libexec/1helm-lxc-runtime";
+    if (process.env.HELM_LXC_HELPER && process.env.HELM_LXC_HELPER !== installed) {
+      throw new Error("The installed Linux service has an unsafe LXC helper path.");
+    }
+    if (existsSync(installed)) return installed;
+    throw new Error("The installed Linux runtime helper is missing; source-tree fallback is disabled for systemd installations.");
+  }
   for (const candidate of LXC_HELPER_CANDIDATES) if (existsSync(candidate)) return candidate;
   throw new Error("1Helm's root-owned LXC runtime helper is not installed.");
 }

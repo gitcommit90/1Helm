@@ -20,6 +20,7 @@ HOST_CONTRACT_PATHS=(
   /usr/libexec/1helm-lxc-runtime
   /usr/libexec/1helm-lxc-net
   /etc/1helm/lxc-unprivileged.conf
+  /etc/1helm/lxc-runtime-v2.conf
   /etc/1helm/lxc-idmap
   /etc/sudoers.d/1helm-lxc-runtime
   /etc/default/lxc-net

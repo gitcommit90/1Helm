@@ -10,17 +10,15 @@ APP_SOURCE="${1:-}"
 INSTALL_ROOT="/opt/1helm"
 RUNTIME_ROOT="$INSTALL_ROOT/runtime/lxc"
 LXC_ROOT="/var/lib/1helm-lxc"
-LXC_PATH="$LXC_ROOT/machines"
 CACHE_BASE="/var/cache/1helm-lxc"
 NETWORK_STATE="$LXC_ROOT/network"
 HELPER_PATH="/usr/libexec/1helm-lxc-runtime"
 NETWORK_HELPER_PATH="/usr/libexec/1helm-lxc-net"
 CONFIG_PATH="/etc/1helm/lxc-unprivileged.conf"
+RUNTIME_MANIFEST_PATH="/etc/1helm/lxc-runtime-v2.conf"
 IDMAP_PATH="/etc/1helm/lxc-idmap"
 SUDOERS_PATH="/etc/sudoers.d/1helm-lxc-runtime"
 SERVICE_USER="1helm"
-IMAGE_BUILD="20260726_07:42"
-IMAGE_RELEASE="0.0.28"
 
 # v0.0.11's updater unit made the exact destination files writable under
 # ProtectSystem=strict. Atomic replacement still requires write access to each
@@ -68,23 +66,36 @@ if [[ "${HELM_HOST_APPLY_DELEGATED:-}" != "1" ]] \
   exit 1
 fi
 
+[[ "${EUID}" -eq 0 ]] || { echo "The LXC runtime installer must run as root." >&2; exit 1; }
+[[ -f "$APP_SOURCE/scripts/1helm-lxc-runtime" && -f "$APP_SOURCE/scripts/1helm-lxc-net" && -f "$APP_SOURCE/deploy/1helm-lxc-unprivileged.conf" && -f "$APP_SOURCE/deploy/1helm-lxc-runtime-v2.conf" ]] \
+  || { echo "The verified 1Helm release is missing its LXC runtime files." >&2; exit 1; }
+# shellcheck source=/dev/null
+source "$APP_SOURCE/deploy/1helm-lxc-runtime-v2.conf"
+[[ "${ONEHELM_LXC_RUNTIME_VERSION:-}" == "1helm-lxc-runtime-v2" \
+   && "${ONEHELM_LXC_STATE_PATH:-}" == "/var/lib/1helm-lxc/machines" \
+   && "${ONEHELM_LXC_IMAGE_SET:-}" =~ ^ubuntu-noble-[0-9]{8}-[0-9]{4}$ \
+   && "${ONEHELM_LXC_IMAGE_RELEASE:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ \
+   && "${ONEHELM_LXC_AMD64_ROOTFS_SHA256:-}" =~ ^[a-f0-9]{64}$ \
+   && "${ONEHELM_LXC_AMD64_META_SHA256:-}" =~ ^[a-f0-9]{64}$ \
+   && "${ONEHELM_LXC_ARM64_ROOTFS_SHA256:-}" =~ ^[a-f0-9]{64}$ \
+   && "${ONEHELM_LXC_ARM64_META_SHA256:-}" =~ ^[a-f0-9]{64}$ ]] \
+  || { echo "The verified release has an invalid LXC runtime manifest." >&2; exit 1; }
+LXC_PATH="$ONEHELM_LXC_STATE_PATH"
+IMAGE_BUILD="$ONEHELM_LXC_IMAGE_BUILD"
+IMAGE_RELEASE="$ONEHELM_LXC_IMAGE_RELEASE"
 case "$(uname -m)" in
   x86_64|amd64)
     IMAGE_ARCH="amd64"
-    ROOTFS_SHA256="9c23724d6d22b3a5adf5d0f79d7e3779ded16a6d45f928bce93e14c48113d955"
-    META_SHA256="f8cdb7423ef4fdb103a134ff3fc7cc10aacd2b3448650ce28e33621de1638288"
+    ROOTFS_SHA256="$ONEHELM_LXC_AMD64_ROOTFS_SHA256"
+    META_SHA256="$ONEHELM_LXC_AMD64_META_SHA256"
     ;;
   aarch64|arm64)
     IMAGE_ARCH="arm64"
-    ROOTFS_SHA256="d5351325dc23e344c4974d7ff546e5e0c91b8e47a9caeb26f39cdc60eaad19e8"
-    META_SHA256="b36e17b74d0d75c4f6e7a624a047ce5a40a39f52b43702f58ecf7b3f713c0b32"
+    ROOTFS_SHA256="$ONEHELM_LXC_ARM64_ROOTFS_SHA256"
+    META_SHA256="$ONEHELM_LXC_ARM64_META_SHA256"
     ;;
   *) echo "Unsupported LXC architecture: $(uname -m)" >&2; exit 1 ;;
 esac
-
-[[ "${EUID}" -eq 0 ]] || { echo "The LXC runtime installer must run as root." >&2; exit 1; }
-[[ -f "$APP_SOURCE/scripts/1helm-lxc-runtime" && -f "$APP_SOURCE/scripts/1helm-lxc-net" && -f "$APP_SOURCE/deploy/1helm-lxc-unprivileged.conf" ]] \
-  || { echo "The verified 1Helm release is missing its LXC runtime files." >&2; exit 1; }
 id "$SERVICE_USER" >/dev/null 2>&1 || { echo "The 1Helm service account does not exist." >&2; exit 1; }
 command -v apt-get >/dev/null || { echo "The isolated Linux runtime currently requires Ubuntu or Debian with apt." >&2; exit 1; }
 missing=()
@@ -111,7 +122,7 @@ install -d -o root -g root -m 0755 "$NETWORK_STATE" "$NETWORK_STATE/misc"
 TEMP_ROOT="$(mktemp -d)"
 trap 'rm -rf -- "$TEMP_ROOT"' EXIT
 ASSET_URL="https://github.com/gitcommit90/1Helm/releases/download/v$IMAGE_RELEASE/1Helm-$IMAGE_RELEASE-lxc-ubuntu-noble-$IMAGE_ARCH"
-ASSET_DIR="$RUNTIME_ROOT/$IMAGE_ARCH"
+ASSET_DIR="$RUNTIME_ROOT/images/$ONEHELM_LXC_IMAGE_SET/$IMAGE_ARCH"
 install -d -o root -g root -m 0700 "$ASSET_DIR"
 for asset in rootfs.tar.xz meta.tar.xz; do
   expected="$ROOTFS_SHA256"
@@ -122,7 +133,9 @@ for asset in rootfs.tar.xz meta.tar.xz; do
   curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --max-time 1800 -o "$TEMP_ROOT/$asset" "$ASSET_URL-$asset"
   printf '%s  %s\n' "$expected" "$TEMP_ROOT/$asset" | sha256sum -c - >/dev/null \
     || { echo "Pinned LXC $asset failed SHA-256 verification." >&2; exit 1; }
-  install -o root -g root -m 0600 "$TEMP_ROOT/$asset" "$ASSET_DIR/$asset"
+  candidate_asset="$ASSET_DIR/.${asset}.candidate.$$"
+  install -o root -g root -m 0600 "$TEMP_ROOT/$asset" "$candidate_asset"
+  mv -f -- "$candidate_asset" "$ASSET_DIR/$asset"
 done
 
 range_overlaps_nonroot() {
@@ -180,6 +193,23 @@ if [[ -z "$IDMAP_START" ]]; then
   done </etc/subuid
 fi
 if [[ -z "$IDMAP_START" ]]; then
+  # Nested unprivileged hosts expose local IDs rather than their parent IDs in
+  # /proc/self/*id_map. Preserve local root (0) and delegate the remaining
+  # 1..65535 IDs to each 1Helm child. This is the supported nested-LXC shape.
+  candidate=1
+  candidate_count=65535
+  candidate_end=$((candidate + candidate_count - 1))
+  if namespace_covers_range /proc/self/uid_map "$candidate" "$candidate_end" \
+    && namespace_covers_range /proc/self/gid_map "$candidate" "$candidate_end" \
+    && ! range_overlaps_nonroot /etc/subuid "$candidate" "$candidate_end" \
+    && ! range_overlaps_nonroot /etc/subgid "$candidate" "$candidate_end"; then
+    IDMAP_START="$candidate"
+    IDMAP_COUNT="$candidate_count"
+    grep -Fxq "root:$candidate:$candidate_count" /etc/subuid || printf 'root:%s:%s\n' "$candidate" "$candidate_count" >>/etc/subuid
+    grep -Fxq "root:$candidate:$candidate_count" /etc/subgid || printf 'root:%s:%s\n' "$candidate" "$candidate_count" >>/etc/subgid
+  fi
+fi
+if [[ -z "$IDMAP_START" ]]; then
   candidate=100000
   candidate_count=65536
   while ((candidate < 100000000)); do
@@ -199,6 +229,7 @@ if [[ -z "$IDMAP_START" ]]; then
   printf 'root:%s:%s\n' "$IDMAP_START" "$IDMAP_COUNT" >>/etc/subgid
 fi
 install -d -o root -g root -m 0755 /etc/1helm
+install -o root -g root -m 0644 "$APP_SOURCE/deploy/1helm-lxc-runtime-v2.conf" "$RUNTIME_MANIFEST_PATH"
 printf '%s:%s\n' "$IDMAP_START" "$IDMAP_COUNT" >"$TEMP_ROOT/lxc-idmap"
 install -o root -g root -m 0600 "$TEMP_ROOT/lxc-idmap" "$IDMAP_PATH"
 sed -E -e "s/^lxc\.idmap = u 0 [0-9]+ (65535|65536)$/lxc.idmap = u 0 $IDMAP_START $IDMAP_COUNT/" \
@@ -244,5 +275,5 @@ systemctl daemon-reload
 systemctl enable --now 1helm-lxc-net.service
 "$NETWORK_HELPER_PATH" start
 "$HELPER_PATH" ready >/dev/null
-sudo -u "$SERVICE_USER" sudo -n "$HELPER_PATH" version | grep -qx '1helm-lxc-runtime-v1'
-printf 'Installed 1Helm LXC runtime v1 with Ubuntu Noble image %s (%s).\n' "$IMAGE_BUILD" "$IMAGE_ARCH"
+sudo -u "$SERVICE_USER" sudo -n "$HELPER_PATH" version | grep -qx '1helm-lxc-runtime-v2'
+printf 'Installed %s with Ubuntu Noble image %s (%s).\n' "$ONEHELM_LXC_RUNTIME_VERSION" "$IMAGE_BUILD" "$IMAGE_ARCH"
