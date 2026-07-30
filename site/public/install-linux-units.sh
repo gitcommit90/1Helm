@@ -62,11 +62,11 @@ NoNewPrivileges=false
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-# Podman's netavark backend serializes network updates through
-# /run/lock/netavark.lock. The helper is root-owned and narrowly sudo-gated,
-# but it still shares this service mount namespace, so the lock directory must
-# be writable for runtime readiness and channel provisioning to succeed.
-ReadWritePaths=$STATE_ROOT /run/1helm-oci /run/lock /sys/fs/cgroup
+# The root-owned helper keeps persistent Podman state beneath STATE_ROOT and
+# libpod scratch beneath /run/1helm-oci. Podman's OCI/network backends also
+# require these narrow ephemeral host runtime trees inside this mount
+# namespace; no persistent system configuration directory is writable.
+ReadWritePaths=$STATE_ROOT /run/1helm-oci /run/containers /run/crun /run/libpod /run/lock /run/netns /sys/fs/cgroup
 Delegate=yes
 
 [Install]

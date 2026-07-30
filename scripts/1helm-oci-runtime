@@ -31,11 +31,14 @@ AGENT_GID="$ONEHELM_OCI_AGENT_GID"
 STORAGE_ROOT="$STATE_ROOT/storage"
 CHANNELS_ROOT="$STATE_ROOT/channels"
 BACKUPS_ROOT="$STATE_ROOT/backups"
-PODMAN=(podman --root "$STORAGE_ROOT" --runroot "$RUN_ROOT" --cgroup-manager=systemd --events-backend=file --log-level=error)
+NETWORKS_ROOT="$STATE_ROOT/networks"
+LIBPOD_TMP="$RUN_ROOT/libpod"
+PODMAN=(podman --root "$STORAGE_ROOT" --runroot "$RUN_ROOT" --network-config-dir "$NETWORKS_ROOT" --tmpdir "$LIBPOD_TMP" --cgroup-manager=systemd --events-backend=file --log-level=error)
 
 valid_name() { [[ "${1:-}" =~ ^1helm-[a-f0-9]{16}-channel-[0-9]+$ ]]; }
 valid_owner() { [[ "${1:-}" =~ ^[a-f0-9]{16}:[0-9]+$ ]]; }
 valid_image() { [[ "${1:-}" =~ ^local/1helm-channel-(machine|restored):[A-Za-z0-9._-]+$ ]]; }
+podman_image() { valid_image "$1" || die "invalid image reference"; printf 'localhost/%s' "$1"; }
 valid_resources() {
   [[ "${1:-}" =~ ^[1-8]$ && "${2:-}" =~ ^[0-9]+$ ]] || return 1
   (($2 >= 1024 && $2 <= 16384))
@@ -47,8 +50,8 @@ network_name() { printf '1helm-%s' "$(owner_installation "$1")"; }
 
 ensure_roots() {
   install -d -m 0711 "$STATE_ROOT" "$CHANNELS_ROOT"
-  install -d -m 0700 "$STORAGE_ROOT" "$BACKUPS_ROOT"
-  install -d -m 0755 "$RUN_ROOT"
+  install -d -m 0700 "$STORAGE_ROOT" "$BACKUPS_ROOT" "$NETWORKS_ROOT"
+  install -d -m 0755 "$RUN_ROOT" "$LIBPOD_TMP"
 }
 
 container_exists() { "${PODMAN[@]}" container exists "$1" >/dev/null 2>&1; }
@@ -337,8 +340,9 @@ prepare_storage() {
 }
 
 create_container() {
-  local name="$1" owner="$2" cpus="$3" memory_mb="$4" image="$5" root network network_identity ip mac
+  local name="$1" owner="$2" cpus="$3" memory_mb="$4" image="$5" engine_image root network network_identity ip mac
   valid_name "$name" && valid_owner "$owner" && valid_resources "$cpus" "$memory_mb" && valid_image "$image" || die "invalid create arguments"
+  engine_image="$(podman_image "$image")"
   root="$(channel_root "$name")"
   network="$(ensure_network "$owner")"
   network_identity="$(ensure_network_identity "$name" "$owner" "$network")"
@@ -352,7 +356,7 @@ create_container() {
     --mount "type=bind,src=$root/files,dst=/workspace/files" \
     --mount "type=bind,src=$root/home,dst=/home/agent" \
     --mount "type=bind,src=$root/var-lib-1helm,dst=/var/lib/1helm" \
-    "$image" >/dev/null
+    "$engine_image" >/dev/null
   verify_container "$name" "$owner"
 }
 
@@ -403,14 +407,15 @@ PY
 }
 
 build_image() {
-  local image="$1"
+  local image="$1" engine_image
   valid_image "$image" || die "invalid image reference"
+  engine_image="$(podman_image "$image")"
   [[ -r "$CONTAINERFILE" ]] || die "installed OCI image recipe is missing"
-  if "${PODMAN[@]}" image exists "$image"; then return; fi
+  if "${PODMAN[@]}" image exists "$engine_image"; then return; fi
   "${PODMAN[@]}" build --pull=missing \
     --build-arg "AGENT_UID=$AGENT_UID" --build-arg "AGENT_GID=$AGENT_GID" \
-    --tag "$image" --file "$CONTAINERFILE" "$(dirname "$CONTAINERFILE")"
-  "${PODMAN[@]}" image exists "$image" || die "OCI image did not exist after build"
+    --tag "$engine_image" --file "$CONTAINERFILE" "$(dirname "$CONTAINERFILE")"
+  "${PODMAN[@]}" image exists "$engine_image" || die "OCI image did not exist after build"
 }
 
 copy_tree_from_container() {
@@ -484,7 +489,7 @@ restore_container() {
   root="$(channel_root "$name")"
   [[ ! -e "$root" ]] || die "restore target storage already exists"
   temporary="$(mktemp -d "$BACKUPS_ROOT/.restore-$name-XXXXXX")"
-  trap '[[ "${created:-0}" -eq 0 ]] || "${PODMAN[@]}" rm -f "$name" >/dev/null 2>&1 || true; [[ -z "${root:-}" || "$root" != "$CHANNELS_ROOT/"* ]] || rm -rf -- "$root"; [[ -z "${restored_image:-}" ]] || "${PODMAN[@]}" rmi "$restored_image" >/dev/null 2>&1 || true; [[ -z "${temporary:-}" ]] || rm -rf -- "$temporary"' EXIT
+  trap '[[ "${created:-0}" -eq 0 ]] || "${PODMAN[@]}" rm -f "$name" >/dev/null 2>&1 || true; [[ -z "${root:-}" || "$root" != "$CHANNELS_ROOT/"* ]] || rm -rf -- "$root"; [[ -z "${restored_image:-}" ]] || "${PODMAN[@]}" rmi "$(podman_image "$restored_image")" >/dev/null 2>&1 || true; [[ -z "${temporary:-}" ]] || rm -rf -- "$temporary"' EXIT
   metadata="$(tar -tf "$archive")"
   [[ "$metadata" == $'rootfs.tar\nchannel.tar\ncontainer.json' ]] || die "backup members do not match the OCI recovery contract"
   tar -C "$temporary" -xf "$archive"
@@ -505,7 +510,7 @@ PY
 )" || die "backup container metadata could not be verified"
   read -r cpus memory_mb <<<"$resources"
   restored_image="local/1helm-channel-restored:${digest:0:20}"
-  "${PODMAN[@]}" import --change 'CMD ["/sbin/init"]' --change 'STOPSIGNAL SIGRTMIN+3' --change 'ENV container=oci' "$temporary/rootfs.tar" "$restored_image" >/dev/null
+  "${PODMAN[@]}" import --change 'CMD ["/sbin/init"]' --change 'STOPSIGNAL SIGRTMIN+3' --change 'ENV container=oci' "$temporary/rootfs.tar" "$(podman_image "$restored_image")" >/dev/null
   install -d -o root -g root -m 0700 "$temporary/channel"
   python3 - "$temporary/channel.tar" "$temporary/channel" <<'PY'
 import os, sys, tarfile

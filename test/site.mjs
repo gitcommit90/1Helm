@@ -184,7 +184,9 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(ociHelper, /container static network creation contract does not match[\s\S]*running container network identity does not match/, "runtime adoption verifies both declared and live network identity");
   assert.match(ociHelper, /backup_container[\s\S]*sha256sum[\s\S]*restore_container[\s\S]*backup digest does not match/, "backup and recovery are digest-qualified and ownership-gated");
   assert.match(ociHelper, /source\.extractall\(destination, filter="data"\)/, "backup extraction rejects unsafe archive paths");
-  assert.match(ociRecipe, /ubuntu:24\.04@sha256:[a-f0-9]{64}/, "the OCI guest base is digest-pinned");
+  assert.match(ociRecipe, /docker\.io\/library\/ubuntu:24\.04@sha256:[a-f0-9]{64}/, "the OCI guest base is fully qualified and digest-pinned without mutable short-name state");
+  assert.match(ociHelper, /--network-config-dir "\$NETWORKS_ROOT" --tmpdir "\$LIBPOD_TMP"/, "Podman persistent network configuration and libpod scratch stay inside 1Helm-owned roots");
+  assert.match(ociHelper, /podman_image\(\)[^\n]*localhost/, "the helper maps 1Helm's portable local image identity to Podman's explicit localhost transport");
   assert.doesNotMatch([installer, updater, releaseApply, ociInstaller, ociHelper, ociManifest, ociRecipe].join("\n"), /\blxc\b|per-channel WSL|migration-backups/i, "the clean-slate Linux contract has no legacy runtime bridge");
   assert.match(linuxUnits, /ReadWritePaths=[^\n]*\/usr\/libexec(?:\s|$)[^\n]*\/etc\/default(?:\s|$)[^\n]*\/etc\/systemd\/system(?:\s|$)[^\n]*\/etc\/sudoers\.d(?:\s|$)/, "future updater transactions can atomically replace and roll back only the required host-contract parent trees");
   assert.match(updater, /systemd-run[\s\S]*apply-linux-release\.sh[\s\S]*exit 0/, "all post-verification Linux release mutations run in one transient root transaction outside the updater namespace");
@@ -197,7 +199,9 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(linuxUnits, /HELM_INSTALL_KIND=linux-systemd/, "standard Linux installs identify their host-owned update mechanism");
   assert.match(readFileSync(`${root}/src/server/channel-computers.ts`, "utf8"), /HELM_INSTALL_KIND === "linux-systemd"[\s\S]*source-tree fallback is disabled/, "installed Linux services cannot silently execute a helper from a mutable source checkout");
   assert.match(linuxUnits, /Delegate=yes/, "systemd delegates the service cgroup required for nested channel containers");
-  assert.match(linuxUnits, /ReadWritePaths=[^\n]*\/run\/lock(?:\s|$)/, "the sandbox permits Podman netavark to create its required runtime lock");
+  for (const path of ["/run/containers", "/run/crun", "/run/libpod", "/run/lock", "/run/netns"]) {
+    assert.match(linuxUnits, new RegExp(`ReadWritePaths=[^\\n]*${path.replaceAll("/", "\\/")}(?:\\s|$)`), `the sandbox permits Podman's ephemeral ${path} runtime tree`);
+  }
   assert.match(uninstaller, /"\$HELPER" delete "\$name" "\$INSTALLATION_ID:\$channel_id"/, "uninstall deletes only exact installation-owned containers");
   assert.match(uninstaller, /Preserved %s/, "uninstall preserves durable workspace state");
 });

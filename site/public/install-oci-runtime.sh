@@ -26,7 +26,7 @@ for command in crun find flock getfacl podman python3 setfacl sha256sum stat sud
 
 install -d -o root -g root -m 0755 /etc/1helm "$RECIPE_ROOT" /usr/libexec
 install -d -o root -g root -m 0711 "$STATE_ROOT/runtime/oci" "$STATE_ROOT/runtime/oci/channels"
-install -d -o root -g root -m 0700 "$STATE_ROOT/runtime/oci/storage" "$STATE_ROOT/runtime/oci/backups"
+install -d -o root -g root -m 0700 "$STATE_ROOT/runtime/oci/storage" "$STATE_ROOT/runtime/oci/backups" "$STATE_ROOT/runtime/oci/networks"
 install -o root -g root -m 0644 "$APP_SOURCE/deploy/1helm-oci-runtime-v1.conf" "$MANIFEST_PATH"
 install -o root -g root -m 0644 "$APP_SOURCE/container/Containerfile.oci" "$RECIPE_ROOT/Containerfile.oci"
 install -o root -g root -m 0755 "$APP_SOURCE/scripts/1helm-oci-runtime" "$HELPER_PATH"

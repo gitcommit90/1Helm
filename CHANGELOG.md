@@ -30,9 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The embedded ReRouted engine advances to 0.5.10 so Google Antigravity Flash
   and Pro streaming accepts CRLF-delimited Gemini SSE frames instead of
   completing with empty output.
-- The hardened Linux systemd service permits Podman/netavark's narrow runtime
-  lock directory, so the installed service—not only direct root diagnostics—
-  can verify and provision OCI channel computers.
+- The hardened Linux systemd service permits only Podman/netavark's ephemeral
+  runtime trees, while persistent network configuration and libpod scratch
+  stay inside 1Helm-owned roots. The installed service—not only direct root
+  diagnostics—can now verify and provision OCI channel computers.
 - Windows packaging builds the app and Squirrel staging tree beneath one fresh
   drive-root scratch directory, keeping deeply nested runtime dependencies
   inside Squirrel's legacy 260-character path limit.
