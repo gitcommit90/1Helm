@@ -163,26 +163,6 @@ async function requestLinuxUpdate(dataDir: string): Promise<HostUpdateState> {
   }, "unknown");
 }
 
-/**
- * v0.0.5's host updater can install newer application source, but its old
- * systemd unit cannot know about a newly introduced host runtime contract.
- * Once the new server is healthy, queue its own root-owned updater exactly
- * once so the host can transactionally migrate that contract. A recorded
- * error deliberately suppresses automatic retries; the Captain's next update
- * action can request a retry after the failure is visible.
- */
-export async function queueLinuxHostContractMigration(dataDir: string): Promise<boolean> {
-  if (process.env.HELM_INSTALL_KIND !== "linux-systemd" || process.env.HELM_CHANNEL_COMPUTER_BACKEND === "lxc") return false;
-  const requestPath = join(dataDir, LINUX_UPDATE_REQUEST);
-  if (existsSync(requestPath)) return false;
-  try {
-    const saved = JSON.parse(await readFile(join(dataDir, LINUX_UPDATE_STATUS), "utf8")) as Partial<HostUpdateState>;
-    if (String(saved.status) === "error") return false;
-  } catch { /* no prior status is the expected v0.0.5 upgrade path */ }
-  await requestLinuxUpdate(dataDir);
-  return true;
-}
-
 export async function runHostUpdateAction(
   appRoot: string,
   dataDir: string,

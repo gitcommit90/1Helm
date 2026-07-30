@@ -165,14 +165,14 @@ Expect first-run / needs_setup on empty data dir.
   and SHA-256, then stage equivalent release metadata. In a disposable systemd
   host running the prior release, invoke the Captain host-update action,
   observe checking/downloading/installing/restarting, verify the new version
-  and `/var/lib/1helm` identity, and exercise health-failure rollback.
+  and `/var/lib/1helm-oci-v1` identity, and exercise health-failure rollback.
 - **Windows:** on Windows 11 x64, record Authenticode status for Setup, the
   packaged app, and its executable code; confirm `.nupkg` and `RELEASES`
-  consistency; clean install Setup; exercise the real WSL 2 channel lifecycle;
+  consistency; clean install Setup; exercise the real shared-WSL OCI channel lifecycle;
   then expose staged
   Squirrel metadata to the prior public version and prove download,
-  verification, restart installation, new version, loopback health, WSL state,
-  and app-data preservation.
+  verification, restart installation, new version, loopback health, shared
+  runtime state, and current-generation app-data preservation.
 - Before publication, compare each uploaded GitHub asset digest with the local
   verified digest and assert the release contains the complete six-file
   desktop matrix. A missing asset is a release blocker, not “not applicable.”

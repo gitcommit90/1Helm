@@ -118,7 +118,8 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(nativeUpdater, /win32-x64/, "Windows checks and installs on its host through the native updater");
   assert.match(source, /handleSquirrelEvent/);
   assert.match(source, /setAppUserModelId\("com\.squirrel\.1Helm\.1Helm"\)/, "Windows uses Squirrel's stable taskbar identity");
-  assert.match(source, /windows-removal\.cjs/, "Windows uninstall invokes ownership-checked WSL cleanup before removing shortcuts");
+  assert.match(source, /DATA_NAMESPACE = "1Helm-OCI-v1"/, "the clean-slate build uses a fresh durable application-data namespace");
+  assert.match(source, /windows-removal\.cjs/, "Windows uninstall invokes ownership-checked shared-runtime cleanup before removing shortcuts");
   const onboardingClient = await readFile(join(root, "src", "client", "onboarding.ts"), "utf8");
   const clientApi = await readFile(join(root, "src", "client", "api.ts"), "utf8");
   const publicIndex = await readFile(join(root, "public", "index.html"), "utf8");
@@ -138,9 +139,7 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   const channelComputers = await readFile(join(root, "src", "server", "channel-computers.ts"), "utf8");
   const embeddedTerminal = await readFile(join(root, "src", "server", "agent.ts"), "utf8");
   assert.match(channelComputers, /\["machine", "delete", computer\.machine_id\]/, "uninstall cleanup uses Apple's complete machine deletion operation");
-  assert.match(channelComputers, /printf '\[automount\]/, "private WSL distros disable Windows-drive automount");
-  assert.match(channelComputers, /! findmnt -rn \/mnt\/c[\s\S]*rmdir \/mnt\/c \/mnt\/d[\s\S]*test ! -e \/mnt\/c/, "WSL removes only inert drive mountpoint directories after proving they are not mounted");
-  assert.match(channelComputers, /test ! -e \/mnt\/c/, "WSL provisioning verifies the host C drive is not visible");
+  assert.match(channelComputers, /installationScopedRuntimeName\(\)/, "all Windows channel containers share one installation-scoped WSL runtime");
   assert.match(channelComputers, /windowsSystemAccount\(\)[\s\S]*cannot use WSL while running as Windows Local System/, "WSL fails with an actionable host-identity error before invoking an unsupported SYSTEM session");
   assert.match(embeddedTerminal, /hostPlatform === "win32"[\s\S]*ComSpec[\s\S]*cmd\.exe[\s\S]*\["\/d", "\/s", "\/c", command\]/, "Windows host commands and #main Terminal use the native cmd shell contract");
   assert.match(embeddedTerminal, /Native terminal shell could not start/, "a terminal spawn failure returns an HTTP error instead of crashing the server");
@@ -158,7 +157,7 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(windowsPackager, /IGNORE_CLIENT_BUILD_MODULES/, "Windows packaging omits client source already compiled into the browser bundle");
   assert.match(windowsPackager, /path\.join\(DIST, "w"\)/, "Squirrel uses a short private scratch root compatible with legacy Windows path handling");
   for (const [source, requiredPaths] of [
-    [windowsPackager, ["/scripts", "/scripts/mnemosyne-bridge.py", "/scripts/install-wsl-runtime.ps1", "/scripts/windows-removal.cjs"]],
+    [windowsPackager, ["/scripts", "/scripts/1helm-oci-runtime", "/scripts/mnemosyne-bridge.py", "/scripts/install-wsl-runtime.ps1", "/scripts/windows-removal.cjs", "/deploy/1helm-oci-runtime-v1.conf", "/container/Containerfile.oci"]],
     [macPackager, ["/scripts", "/scripts/mnemosyne-bridge.py"]],
   ]) {
     const literal = source.match(/const IGNORE_NON_RUNTIME_ROOTS\s*=\s*(\/\^[^;]+\/);/)?.[1];
@@ -172,8 +171,8 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(windowsRemoval, /ctrl-pane\.db/, "Windows removal reads the real durable 1Helm database");
   assert.doesNotMatch(windowsRemoval, /helm\.sqlite/);
   assert.match(windowsRemoval, /--unregister/);
-  assert.match(channelComputers, /"--exec", \.\.\.args/, "WSL executes argv directly so shell variables reach the requested Bash process unchanged");
-  assert.match(windowsRemoval, /"--exec", "\/bin\/cat"/, "Windows removal checks ownership without an intervening WSL shell");
+  assert.match(channelComputers, /"--exec", "\/usr\/libexec\/1helm-oci-runtime", \.\.\.args/, "Windows enters the installed OCI helper with direct argv instead of an intervening shell");
+  assert.match(windowsRemoval, /"--exec", "\/usr\/libexec\/1helm-oci-runtime"/, "Windows removal delegates ownership checks to the narrow installed OCI helper");
   assert.match(windowsRuntime, /VirtualMachinePlatform/);
   assert.match(windowsRuntime, /2\.7\.10\.0/);
   assert.match(windowsRuntime, /github\.com\/microsoft\/WSL\/releases\/download\/2\.7\.10\/wsl\.2\.7\.10\.0\.x64\.msi/);
@@ -182,6 +181,8 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(windowsRuntime, /CN=Microsoft Corporation/);
   assert.match(windowsRuntime, /msiexec\.exe/);
   assert.match(windowsRuntime, /--set-default-version 2/);
+  assert.match(windowsRuntime, /-HostSetup[\s\S]*-Verb RunAs[\s\S]*\$names = @\(& \$wsl --list --quiet/, "only WSL host components cross UAC while the signed-in owner imports the shared distribution");
+  assert.match(windowsRuntime, /\[automount\][\s\S]*enabled=false[\s\S]*\[interop\][\s\S]*enabled=false/, "the shared runtime exposes neither Windows drives nor process interop");
   assert.doesNotMatch(windowsRuntime, /--update/);
   const helperInstall = await readFile(join(root, "scripts", "ensure-node-pty-helper.cjs"), "utf8");
   assert.match(helperInstall, /process\.platform === "darwin"/);
@@ -201,7 +202,7 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(testRunner, /if \(existsSync\(venv\)\) rmSync\(venv, \{ recursive: true, force: true \}\);[\s\S]*spawnSync\(installer/, "each test-runtime fallback starts clean after a preferred Python leaves a partial venv");
   assert.match(feedbackBrowser, /skip: executablePath \? false :/, "the Feedback browser contract does not hang a Chrome-free release runner");
   assert.match(await readFile(join(root, "src", "client", "app.ts"), "utf8"), /mailto:build@1helm\.com/, "the in-app Feedback surface exposes the company contact address");
-  assert.match(terminalBrowser, /HELM_CHANNEL_COMPUTER_BACKEND: "native"/, "the terminal browser contract uses the explicit development backend on CI hosts without an installed LXC runtime");
+  assert.match(terminalBrowser, /HELM_CHANNEL_COMPUTER_BACKEND: "native"/, "the terminal browser contract uses the explicit development backend on CI hosts without an installed OCI runtime");
   const serverRuntime = await readFile(join(root, "src", "server", "index.ts"), "utf8");
   assert.match(serverRuntime, /const memoryRuntime = prepareMnemosyneRuntime\(\);[\s\S]*server\.listen\([\s\S]*void memoryRuntime\.catch/, "the HTTP server becomes ready without synchronously initializing every retained agent database");
   const memoryBridge = await readFile(join(root, "scripts", "mnemosyne-bridge.py"), "utf8");

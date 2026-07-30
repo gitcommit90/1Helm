@@ -11,6 +11,11 @@ const { createNativeUpdateService } = require("./updater.cjs");
 const { allowedRemoteUrl, desktopGatewayAction, isHostedWorkspaceOrigin, normalizeRemoteOrigin } = require("./workspace-target.cjs");
 
 const LOOPBACK = "127.0.0.1";
+// The OCI architecture is an intentional clean start. Keep the retired
+// installation's Application Support/AppData tree untouched and never import
+// it implicitly into this runtime generation.
+const DATA_NAMESPACE = "1Helm-OCI-v1";
+app.setPath("userData", path.join(app.getPath("appData"), DATA_NAMESPACE));
 let mainWindow = null;
 let authWindow = null;
 let localOrigin = "";
@@ -45,8 +50,8 @@ function handleSquirrelEvent() {
   if (event === "--squirrel-install" || event === "--squirrel-updated") {
     spawnSync(updateExe, ["--createShortcut", exe], { stdio: "ignore", windowsHide: true });
   } else if (event === "--squirrel-uninstall") {
-    const dataRoot = path.join(String(process.env.APPDATA || ""), "1Helm");
-    const wslRoot = path.join(path.dirname(dataRoot), "1Helm-WSL");
+    const dataRoot = app.getPath("userData");
+    const wslRoot = path.join(String(process.env.LOCALAPPDATA || ""), "1Helm-Runtime");
     const cleanup = path.resolve(__dirname, "..", "scripts", "windows-removal.cjs");
     spawnSync(process.execPath, [cleanup, dataRoot, wslRoot], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, stdio: "ignore", windowsHide: true, timeout: 10 * 60_000 });
     spawnSync(updateExe, ["--removeShortcut", exe], { stdio: "ignore", windowsHide: true });
@@ -144,9 +149,8 @@ function stopAutomaticServerStartup() {
 
 function prepareWindowsWslDataRoot() {
   if (process.platform !== "win32") return;
-  // Per-channel virtual disks stay outside the replaceable application
-  // directory and beside the durable Electron userData directory.
-  fs.mkdirSync(path.join(path.dirname(app.getPath("userData")), "1Helm-WSL"), { recursive: true });
+  // One installation-scoped virtual disk stays outside the replaceable app.
+  fs.mkdirSync(path.join(String(process.env.LOCALAPPDATA || ""), "1Helm-Runtime"), { recursive: true });
 }
 
 function allowedLocalUrl(raw) {

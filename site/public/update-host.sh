@@ -6,7 +6,7 @@ INSTALL_ROOT="/opt/1helm"
 RELEASES_ROOT="$INSTALL_ROOT/releases"
 APP_ROOT="$INSTALL_ROOT/current"
 NODE_LINK="$INSTALL_ROOT/node-current"
-STATE_ROOT="/var/lib/1helm"
+STATE_ROOT="/var/lib/1helm-oci-v1"
 SERVICE_USER="1helm"
 REQUEST_FILE="$STATE_ROOT/host-update.request"
 STATUS_FILE="$STATE_ROOT/host-update-status.json"
@@ -14,23 +14,17 @@ LOCK_FILE="$INSTALL_ROOT/host-update.lock"
 SERVICE_NAME="1helm.service"
 PORT="8123"
 HOST_CONTRACT_PATHS=(
-  /usr/libexec/1helm-lxc-runtime
-  /usr/libexec/1helm-lxc-net
-  /etc/1helm/lxc-unprivileged.conf
-  /etc/1helm/lxc-runtime-v2.conf
-  /etc/1helm/lxc-idmap
-  /etc/sudoers.d/1helm-lxc-runtime
-  /etc/default/lxc-net
-  /etc/subuid
-  /etc/subgid
-  /etc/systemd/system/1helm-lxc-net.service
+  /usr/libexec/1helm-oci-runtime
+  /etc/1helm/oci-runtime-v1.conf
+  /etc/sudoers.d/1helm-oci-runtime
+  /usr/lib/1helm-oci/Containerfile.oci
   /etc/systemd/system/1helm.service
   /etc/systemd/system/1helm-update.service
   /etc/systemd/system/1helm-update.path
   /opt/1helm/update-host.sh
   /opt/1helm/uninstall-host.sh
 )
-HOST_UNITS=(1helm-lxc-net.service 1helm.service 1helm-update.path)
+HOST_UNITS=(1helm.service 1helm-update.path)
 TRANSACTION_ACTIVE=0
 ROLLING_BACK=0
 
@@ -95,7 +89,7 @@ snapshot_host_contract() {
 rollback_host_contract() {
   local path encoded unit enabled active restored_healthy=1
   ROLLING_BACK=1
-  systemctl disable --now 1helm-update.path 1helm-lxc-net.service >/dev/null 2>&1 || true
+  systemctl disable --now 1helm-update.path >/dev/null 2>&1 || true
   systemctl stop 1helm.service >/dev/null 2>&1 || true
   for path in "${HOST_CONTRACT_PATHS[@]}"; do
     encoded="${path#/}"
@@ -185,27 +179,23 @@ if [[ "$VERSION_ORDER" != "-1" ]]; then
   # published host. Never downgrade. When the application source is already
   # current/newer, only finish its own retained host-runtime contract.
   TARGET_VERSION="$CURRENT_VERSION"
-  # Older updaters can switch application source before they know about a new
-  # root-owned runtime/unit contract. Let the newly installed updater finish
-  # that migration from the already verified, retained release without
-  # downloading or running any new remote content.
-  if [[ -x /usr/libexec/1helm-lxc-runtime ]] \
-      && [[ "$(/usr/libexec/1helm-lxc-runtime version 2>/dev/null || true)" == "1helm-lxc-runtime-v2" ]] \
-      && /usr/libexec/1helm-lxc-runtime ready >/dev/null 2>&1 \
-      && grep -qx 'Environment=HELM_CHANNEL_COMPUTER_BACKEND=lxc' /etc/systemd/system/1helm.service 2>/dev/null; then
+  if [[ -x /usr/libexec/1helm-oci-runtime ]] \
+      && [[ "$(/usr/libexec/1helm-oci-runtime version 2>/dev/null || true)" == "1helm-oci-runtime-v1" ]] \
+      && /usr/libexec/1helm-oci-runtime ready >/dev/null 2>&1 \
+      && grep -qx 'Environment=HELM_CHANNEL_COMPUTER_BACKEND=oci' /etc/systemd/system/1helm.service 2>/dev/null; then
     write_status "current" "$TARGET_VERSION" "This 1Helm host is up to date."
     exit 0
   fi
   RELEASE_ROOT="$(readlink -f "$APP_ROOT" 2>/dev/null || true)"
   [[ "$RELEASE_ROOT" == "$RELEASES_ROOT/"* && -d "$RELEASE_ROOT" ]] \
     || fail "The current 1Helm release is not inside the verified release store."
-  [[ -x "$RELEASE_ROOT/site/public/migrate-linux-host-contract.sh" && -x "$RELEASE_ROOT/site/public/install-lxc-runtime.sh" && -x "$RELEASE_ROOT/site/public/install-linux-units.sh" && -x "$RELEASE_ROOT/site/public/uninstall-host.sh" && -x "$RELEASE_ROOT/scripts/1helm-lxc-runtime" && -x "$RELEASE_ROOT/scripts/1helm-lxc-net" ]] \
-    || fail "The current verified release is missing its isolated LXC runtime contract."
-  write_status "installing" "$TARGET_VERSION" "The application is current; the host is migrating its verified runtime contract."
-  MIGRATION_UNIT="1helm-host-contract-migration-${TARGET_VERSION//./-}-$$"
-  systemd-run --quiet --collect --wait --pipe --unit="$MIGRATION_UNIT" \
+  [[ -x "$RELEASE_ROOT/site/public/apply-linux-release.sh" && -x "$RELEASE_ROOT/site/public/install-oci-runtime.sh" && -x "$RELEASE_ROOT/site/public/install-linux-units.sh" && -x "$RELEASE_ROOT/site/public/uninstall-host.sh" && -x "$RELEASE_ROOT/scripts/1helm-oci-runtime" ]] \
+    || fail "The current verified release is missing its OCI runtime contract."
+  write_status "installing" "$TARGET_VERSION" "The application is current; the host is applying its verified OCI contract."
+  APPLY_UNIT="1helm-host-contract-apply-${TARGET_VERSION//./-}-$$"
+  systemd-run --quiet --collect --wait --pipe --unit="$APPLY_UNIT" \
     --property=Type=oneshot --property=NoNewPrivileges=false --property=PrivateTmp=true --property=ProtectHome=true \
-    "$RELEASE_ROOT/site/public/migrate-linux-host-contract.sh" "$RELEASE_ROOT" "$TARGET_VERSION" \
+    "$RELEASE_ROOT/site/public/apply-linux-release.sh" "$RELEASE_ROOT" "$TARGET_VERSION" \
     || exit 1
   exit 0
 fi
@@ -227,8 +217,8 @@ PACKAGE_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "
   || fail "The verified Linux artifact version does not match its release tag."
 [[ -x "$STAGE/site/public/update-host.sh" ]] \
   || fail "The verified Linux artifact is missing its host updater."
-[[ -x "$STAGE/site/public/apply-linux-release.sh" && -x "$STAGE/site/public/migrate-linux-host-contract.sh" && -x "$STAGE/site/public/install-lxc-runtime.sh" && -x "$STAGE/site/public/install-linux-units.sh" && -x "$STAGE/site/public/uninstall-host.sh" && -x "$STAGE/scripts/1helm-lxc-runtime" && -x "$STAGE/scripts/1helm-lxc-net" ]] \
-  || fail "The verified Linux artifact is missing its isolated LXC runtime contract."
+[[ -x "$STAGE/site/public/apply-linux-release.sh" && -x "$STAGE/site/public/install-oci-runtime.sh" && -x "$STAGE/site/public/install-linux-units.sh" && -x "$STAGE/site/public/uninstall-host.sh" && -x "$STAGE/scripts/1helm-oci-runtime" && -r "$STAGE/deploy/1helm-oci-runtime-v1.conf" && -r "$STAGE/container/Containerfile.oci" ]] \
+  || fail "The verified Linux artifact is missing its OCI runtime contract."
 chown -R "$SERVICE_USER:$SERVICE_USER" "$STAGE"
 
 write_status "installing" "$TARGET_VERSION" "The host verified v$TARGET_VERSION and is preparing an atomic installation."

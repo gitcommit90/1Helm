@@ -1,0 +1,635 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+RUNTIME_VERSION="1helm-oci-runtime-v1"
+RUNTIME_MANIFEST="${HELM_OCI_RUNTIME_MANIFEST:-/etc/1helm/oci-runtime-v1.conf}"
+[[ -r "$RUNTIME_MANIFEST" ]] || { echo "1Helm OCI runtime: runtime manifest is missing" >&2; exit 1; }
+# shellcheck source=/dev/null
+source "$RUNTIME_MANIFEST"
+if [[ -n "${HELM_OCI_STATE_ROOT_OVERRIDE:-}" ]]; then
+  [[ "${EUID}" -eq 0 && -z "${SUDO_USER:-}" ]] || { echo "1Helm OCI runtime: state override is development-only" >&2; exit 1; }
+  ONEHELM_OCI_STATE_ROOT="$HELM_OCI_STATE_ROOT_OVERRIDE"
+fi
+if [[ -n "${HELM_OCI_CONTAINERFILE_OVERRIDE:-}" ]]; then
+  [[ "${EUID}" -eq 0 && -z "${SUDO_USER:-}" ]] || { echo "1Helm OCI runtime: recipe override is development-only" >&2; exit 1; }
+  ONEHELM_OCI_CONTAINERFILE="$HELM_OCI_CONTAINERFILE_OVERRIDE"
+fi
+
+die() { printf '1Helm OCI runtime: %s\n' "$*" >&2; exit 1; }
+[[ "${ONEHELM_OCI_RUNTIME_VERSION:-}" == "$RUNTIME_VERSION" ]] || die "runtime manifest version mismatch"
+[[ "${ONEHELM_OCI_STATE_ROOT:-}" =~ ^/.+/runtime/oci$ ]] || die "unsafe runtime state root"
+[[ "${ONEHELM_OCI_RUN_ROOT:-}" == /run/1helm-oci ]] || die "unsafe runtime run root"
+[[ "${ONEHELM_OCI_CONTAINERFILE:-}" == /* ]] || die "unsafe container recipe path"
+[[ "${ONEHELM_OCI_SERVICE_USER:-}" =~ ^[a-z0-9_][a-z0-9_-]*$ ]] || die "unsafe service account"
+[[ "${ONEHELM_OCI_AGENT_UID:-}" =~ ^[0-9]+$ && "${ONEHELM_OCI_AGENT_GID:-}" =~ ^[0-9]+$ ]] || die "invalid agent identity"
+
+STATE_ROOT="$ONEHELM_OCI_STATE_ROOT"
+RUN_ROOT="$ONEHELM_OCI_RUN_ROOT"
+CONTAINERFILE="$ONEHELM_OCI_CONTAINERFILE"
+AGENT_UID="$ONEHELM_OCI_AGENT_UID"
+AGENT_GID="$ONEHELM_OCI_AGENT_GID"
+STORAGE_ROOT="$STATE_ROOT/storage"
+CHANNELS_ROOT="$STATE_ROOT/channels"
+BACKUPS_ROOT="$STATE_ROOT/backups"
+PODMAN=(podman --root "$STORAGE_ROOT" --runroot "$RUN_ROOT" --cgroup-manager=systemd --events-backend=file --log-level=error)
+
+valid_name() { [[ "${1:-}" =~ ^1helm-[a-f0-9]{16}-channel-[0-9]+$ ]]; }
+valid_owner() { [[ "${1:-}" =~ ^[a-f0-9]{16}:[0-9]+$ ]]; }
+valid_image() { [[ "${1:-}" =~ ^local/1helm-channel-(machine|restored):[A-Za-z0-9._-]+$ ]]; }
+valid_resources() {
+  [[ "${1:-}" =~ ^[1-8]$ && "${2:-}" =~ ^[0-9]+$ ]] || return 1
+  (($2 >= 1024 && $2 <= 16384))
+}
+owner_installation() { printf '%s' "${1%%:*}"; }
+owner_channel() { printf '%s' "${1#*:}"; }
+channel_root() { printf '%s/%s' "$CHANNELS_ROOT" "$1"; }
+network_name() { printf '1helm-%s' "$(owner_installation "$1")"; }
+
+ensure_roots() {
+  install -d -m 0711 "$STATE_ROOT" "$CHANNELS_ROOT"
+  install -d -m 0700 "$STORAGE_ROOT" "$BACKUPS_ROOT"
+  install -d -m 0755 "$RUN_ROOT"
+}
+
+container_exists() { "${PODMAN[@]}" container exists "$1" >/dev/null 2>&1; }
+container_state() {
+  container_exists "$1" || { printf 'missing'; return; }
+  "${PODMAN[@]}" inspect --type container --format '{{.State.Status}}' "$1"
+}
+
+verify_storage() {
+  local name="$1" owner="$2" root expected identity_stat
+  valid_name "$name" && valid_owner "$owner" || die "invalid container identity"
+  [[ "${name#1helm-}" == "$(owner_installation "$owner")-channel-$(owner_channel "$owner")" ]] || die "container name and owner do not match"
+  root="$(channel_root "$name")"
+  expected="$STATE_ROOT/channels/$name"
+  [[ "$root" == "$expected" && -d "$root/workspace" && -d "$root/files" && -d "$root/home" && -d "$root/var-lib-1helm" ]] || die "channel storage is missing"
+  [[ ! -L "$root" && "$(stat -c '%u:%g:%a' "$root")" == "0:0:711" ]] || die "channel storage root permissions do not match"
+  [[ -f "$root/var-lib-1helm/owner" && "$(tr -d '\r\n' <"$root/var-lib-1helm/owner")" == "$owner" ]] || die "ownership marker does not match"
+  [[ -f "$root/network.json" && ! -L "$root/network.json" ]] || die "network identity is missing"
+  identity_stat="$(stat -c '%u:%g:%a' "$root/network.json")"
+  [[ "$identity_stat" == "0:0:600" ]] || die "network identity permissions do not match"
+}
+
+verify_container() {
+  local name="$1" owner="$2" root network container network_data identity
+  verify_storage "$name" "$owner"
+  container_exists "$name" || die "container does not exist"
+  root="$(channel_root "$name")"
+  network="$(network_name "$owner")"
+  "${PODMAN[@]}" network exists "$network" || die "owned network does not exist"
+  container="$("${PODMAN[@]}" inspect --type container "$name")"
+  network_data="$("${PODMAN[@]}" network inspect "$network")"
+  identity="$(<"$root/network.json")"
+  python3 - "$container" "$network_data" "$identity" "$root" "$name" "$owner" "$network" <<'PY'
+import ipaddress, json, os, re, sys
+
+rows=json.loads(sys.argv[1])
+networks=json.loads(sys.argv[2])
+identity=json.loads(sys.argv[3])
+root=os.path.realpath(sys.argv[4])
+name, owner, network=sys.argv[5:8]
+if not isinstance(rows,list) or len(rows) != 1: raise SystemExit("container metadata is invalid")
+if not isinstance(networks,list) or len(networks) != 1: raise SystemExit("owned network metadata is invalid")
+row=rows[0]
+network_row=networks[0]
+if str((row.get("Config") or {}).get("Hostname") or "") != name:
+    raise SystemExit("container hostname does not match")
+labels=(row.get("Config") or {}).get("Labels") or {}
+expected_labels={"com.1helm.managed":"true","com.1helm.owner":owner,"com.1helm.machine":name}
+if any(str(labels.get(key,"")) != value for key,value in expected_labels.items()):
+    raise SystemExit("container labels do not match")
+network_labels=network_row.get("labels") or network_row.get("Labels") or {}
+if network_labels.get("com.1helm.managed") != "true" or network_labels.get("com.1helm.installation") != owner.split(":",1)[0]:
+    raise SystemExit("network ownership labels do not match")
+subnets=network_row.get("subnets") or network_row.get("Subnets") or []
+if len(subnets) != 1: raise SystemExit("owned network must have exactly one subnet")
+subnet=ipaddress.ip_network(str(subnets[0].get("subnet") or subnets[0].get("Subnet") or ""), strict=True)
+gateway=ipaddress.ip_address(str(subnets[0].get("gateway") or subnets[0].get("Gateway") or ""))
+if subnet.version != 4 or gateway not in subnet or gateway in {subnet.network_address, subnet.broadcast_address}:
+    raise SystemExit("owned network IPv4 metadata is invalid")
+expected_identity={"container":name,"owner":owner,"network":network,"subnet":str(subnet),"gateway":str(gateway)}
+if set(identity) != {*expected_identity,"ip","mac"} or any(str(identity.get(key,"")) != value for key,value in expected_identity.items()):
+    raise SystemExit("network identity does not match this channel")
+try: ip=ipaddress.ip_address(str(identity["ip"]))
+except ValueError: raise SystemExit("network identity IP is invalid")
+mac=str(identity["mac"])
+if ip not in subnet or ip in {subnet.network_address, subnet.broadcast_address, gateway}:
+    raise SystemExit("network identity IP is outside the owned subnet")
+if not re.fullmatch(r"02(?::[0-9a-f]{2}){5}", mac):
+    raise SystemExit("network identity MAC is invalid")
+
+mounts=row.get("Mounts") or []
+expected={
+    "/workspace":os.path.join(root,"workspace"),
+    "/workspace/files":os.path.join(root,"files"),
+    "/home/agent":os.path.join(root,"home"),
+    "/var/lib/1helm":os.path.join(root,"var-lib-1helm"),
+}
+actual={str(m.get("Destination") or m.get("destination")):os.path.realpath(str(m.get("Source") or m.get("source") or "")) for m in mounts}
+if actual != expected:
+    raise SystemExit("container storage mounts do not match")
+
+attached=(row.get("NetworkSettings") or {}).get("Networks") or {}
+if set(attached) != {network}: raise SystemExit("container network attachment does not match")
+attachment=attached[network] or {}
+network_id=str(network_row.get("id") or network_row.get("ID") or "")
+if not network_id or str(attachment.get("NetworkID") or "") != network_id:
+    raise SystemExit("container network ID does not match")
+
+def option_values(flag):
+    command=(row.get("Config") or {}).get("CreateCommand") or []
+    values=[]
+    for index, value in enumerate(command):
+        value=str(value)
+        if value == flag:
+            if index + 1 >= len(command): raise SystemExit(f"container create option {flag} has no value")
+            values.append(str(command[index+1]))
+        elif value.startswith(flag+"="):
+            values.append(value.split("=",1)[1])
+    return values
+if option_values("--network") != [network] or option_values("--ip") != [str(ip)] or option_values("--mac-address") != [mac]:
+    raise SystemExit("container static network creation contract does not match")
+
+state=str((row.get("State") or {}).get("Status") or "")
+if state == "running":
+    if str(attachment.get("IPAddress") or "") != str(ip) or str(attachment.get("MacAddress") or "").lower() != mac:
+        raise SystemExit("running container network identity does not match")
+    prefix=int(attachment.get("IPPrefixLen") or 0)
+    if ipaddress.ip_network(f"{ip}/{prefix}", strict=False) != subnet:
+        raise SystemExit("running container subnet does not match")
+PY
+}
+
+ensure_network() {
+  local owner="$1" installation network labels
+  installation="$(owner_installation "$owner")"
+  network="1helm-$installation"
+  if "${PODMAN[@]}" network exists "$network"; then
+    labels="$("${PODMAN[@]}" network inspect --format '{{json .Labels}}' "$network")"
+    python3 - "$labels" "$installation" <<'PY'
+import json, sys
+labels=json.loads(sys.argv[1] or "{}")
+if labels.get("com.1helm.managed") != "true" or labels.get("com.1helm.installation") != sys.argv[2]:
+    raise SystemExit("network ownership labels do not match")
+PY
+  else
+    "${PODMAN[@]}" network create --disable-dns=false \
+      --label com.1helm.managed=true --label "com.1helm.installation=$installation" "$network" >/dev/null
+  fi
+  printf '%s' "$network"
+}
+
+ensure_network_identity() {
+  local name="$1" owner="$2" network="$3" root identity_path network_data lock_path identity lock_fd
+  root="$(channel_root "$name")"
+  identity_path="$root/network.json"
+  lock_path="$STATE_ROOT/network.lock"
+  [[ ! -e "$lock_path" || (-f "$lock_path" && ! -L "$lock_path") ]] || die "network identity lock is not a safe file"
+  exec {lock_fd}>"$lock_path"
+  chmod 0600 "$lock_path"
+  flock "$lock_fd"
+  network_data="$("${PODMAN[@]}" network inspect "$network")"
+  identity="$(python3 - "$network_data" "$identity_path" "$CHANNELS_ROOT" "$name" "$owner" "$network" <<'PY'
+import glob, hashlib, ipaddress, json, os, re, stat, sys
+
+network_rows=json.loads(sys.argv[1])
+identity_path, channels_root, name, owner, network_name=sys.argv[2:7]
+if not isinstance(network_rows,list) or len(network_rows) != 1: raise SystemExit("owned network metadata is invalid")
+network_row=network_rows[0]
+labels=network_row.get("labels") or network_row.get("Labels") or {}
+installation=owner.split(":",1)[0]
+if labels.get("com.1helm.managed") != "true" or labels.get("com.1helm.installation") != installation:
+    raise SystemExit("network ownership labels do not match")
+if str(network_row.get("name") or network_row.get("Name") or "") != network_name:
+    raise SystemExit("owned network name does not match")
+subnets=network_row.get("subnets") or network_row.get("Subnets") or []
+if len(subnets) != 1: raise SystemExit("owned network must have exactly one subnet")
+try:
+    subnet=ipaddress.ip_network(str(subnets[0].get("subnet") or subnets[0].get("Subnet") or ""), strict=True)
+    gateway=ipaddress.ip_address(str(subnets[0].get("gateway") or subnets[0].get("Gateway") or ""))
+except ValueError: raise SystemExit("owned network IPv4 metadata is invalid")
+if subnet.version != 4 or not 16 <= subnet.prefixlen <= 28 or gateway not in subnet or gateway in {subnet.network_address,subnet.broadcast_address}:
+    raise SystemExit("owned network IPv4 metadata is invalid")
+
+expected={"container":name,"owner":owner,"network":network_name,"subnet":str(subnet),"gateway":str(gateway)}
+mac_pattern=re.compile(r"02(?::[0-9a-f]{2}){5}")
+def validate(value, expected_fields):
+    if not isinstance(value,dict) or set(value) != {*expected_fields,"ip","mac"}: raise SystemExit("network identity fields do not match")
+    if any(str(value.get(key,"")) != expected_value for key,expected_value in expected_fields.items()): raise SystemExit("network identity does not match this channel")
+    try: address=ipaddress.ip_address(str(value["ip"]))
+    except ValueError: raise SystemExit("network identity IP is invalid")
+    mac=str(value["mac"])
+    if address not in subnet or address in {subnet.network_address,subnet.broadcast_address,gateway}: raise SystemExit("network identity IP is outside the owned subnet")
+    if not mac_pattern.fullmatch(mac): raise SystemExit("network identity MAC is invalid")
+    return address,mac
+
+used_ips=set()
+used_macs=set()
+prefix=os.path.join(channels_root,f"1helm-{installation}-channel-*")
+for channel_path in glob.glob(prefix):
+    if os.path.realpath(channel_path) == os.path.realpath(os.path.dirname(identity_path)): continue
+    other_path=os.path.join(channel_path,"network.json")
+    if not os.path.exists(other_path): continue
+    info=os.lstat(other_path)
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
+        raise SystemExit("another channel network identity is not a safe root-owned file")
+    try: other=json.load(open(other_path,encoding="utf-8"))
+    except (OSError,json.JSONDecodeError): raise SystemExit("another channel network identity is invalid")
+    other_name=os.path.basename(channel_path)
+    match=re.fullmatch(rf"1helm-{installation}-channel-([0-9]+)",other_name)
+    if not match: raise SystemExit("another channel storage identity is invalid")
+    other_expected={"container":other_name,"owner":f"{installation}:{match.group(1)}","network":network_name,"subnet":str(subnet),"gateway":str(gateway)}
+    other_ip,other_mac=validate(other,other_expected)
+    if other_ip in used_ips or other_mac in used_macs: raise SystemExit("channel network identities collide")
+    used_ips.add(other_ip); used_macs.add(other_mac)
+
+for attached in (network_row.get("containers") or network_row.get("Containers") or {}).values():
+    for interface in (attached.get("interfaces") or attached.get("Interfaces") or {}).values():
+        for row in interface.get("subnets") or interface.get("Subnets") or []:
+            raw=str(row.get("ipnet") or row.get("IPNet") or "").split("/",1)[0]
+            if raw:
+                try: used_ips.add(ipaddress.ip_address(raw))
+                except ValueError: raise SystemExit("owned network has an invalid attached IP")
+        raw_mac=str(interface.get("mac_address") or interface.get("MacAddress") or "").lower()
+        if raw_mac: used_macs.add(raw_mac)
+
+if os.path.exists(identity_path):
+    info=os.lstat(identity_path)
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
+        raise SystemExit("network identity is not a safe root-owned file")
+    try: identity=json.load(open(identity_path,encoding="utf-8"))
+    except (OSError,json.JSONDecodeError): raise SystemExit("network identity is invalid")
+    address,mac=validate(identity,expected)
+    if address in used_ips or mac in used_macs: raise SystemExit("network identity collides with another channel")
+else:
+    seed=hashlib.sha256(f"{network_name}\0{name}\0{owner}".encode()).digest()
+    first=int(subnet.network_address)+1
+    count=subnet.num_addresses-2
+    offset=int.from_bytes(seed[:8],"big") % count
+    address=None
+    for step in range(count):
+        candidate=ipaddress.ip_address(first+((offset+step)%count))
+        if candidate != gateway and candidate not in used_ips:
+            address=candidate
+            break
+    if address is None: raise SystemExit("owned network has no free channel address")
+    mac=None
+    for attempt in range(256):
+        digest=hashlib.sha256(seed+attempt.to_bytes(2,"big")).digest()
+        candidate="02:"+":".join(f"{byte:02x}" for byte in digest[:5])
+        if candidate not in used_macs:
+            mac=candidate
+            break
+    if mac is None: raise SystemExit("could not allocate a unique channel MAC")
+    identity={**expected,"ip":str(address),"mac":mac}
+    descriptor=os.open(identity_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    with os.fdopen(descriptor,"w",encoding="utf-8") as destination:
+        json.dump(identity,destination,sort_keys=True,separators=(",",":"))
+        destination.write("\n")
+        destination.flush(); os.fsync(destination.fileno())
+print(identity["ip"],identity["mac"])
+PY
+)" || die "channel network identity could not be established"
+  flock -u "$lock_fd"
+  exec {lock_fd}>&-
+  printf '%s' "$identity"
+}
+
+grant_shared_access() {
+  local shared="$1" service_uid=""
+  [[ -d "$shared" && ! -L "$shared" ]] || die "shared channel storage is not a safe directory"
+  if id "$ONEHELM_OCI_SERVICE_USER" >/dev/null 2>&1; then
+    service_uid="$(id -u "$ONEHELM_OCI_SERVICE_USER")"
+  fi
+  while IFS= read -r -d '' directory; do
+    if [[ -n "$service_uid" ]]; then
+      setfacl -m "u:$AGENT_UID:rwx,u:$service_uid:rwx,m::rwx,d:u:$AGENT_UID:rwx,d:u:$service_uid:rwx,d:m::rwx" "$directory"
+    else
+      setfacl -m "u:$AGENT_UID:rwx,m::rwx,d:u:$AGENT_UID:rwx,d:m::rwx" "$directory"
+    fi
+  done < <(find -P "$shared" -xdev -type d -print0)
+  while IFS= read -r -d '' entry; do
+    if [[ -n "$service_uid" ]]; then
+      setfacl -m "u:$AGENT_UID:rw-,u:$service_uid:rw-,m::rw-" "$entry"
+    else
+      setfacl -m "u:$AGENT_UID:rw-,m::rw-" "$entry"
+    fi
+  done < <(find -P "$shared" -xdev -type f -print0)
+}
+
+prepare_storage() {
+  local name="$1" owner="$2" root shared
+  valid_name "$name" && valid_owner "$owner" || die "invalid container identity"
+  [[ "${name#1helm-}" == "$(owner_installation "$owner")-channel-$(owner_channel "$owner")" ]] || die "container name and owner do not match"
+  root="$(channel_root "$name")"
+  if [[ -e "$root" ]]; then
+    [[ -d "$root" && ! -L "$root" ]] || die "channel storage is not a safe directory"
+    [[ ! -e "$root/var-lib-1helm/owner" || "$(tr -d '\r\n' <"$root/var-lib-1helm/owner")" == "$owner" ]] || die "existing channel storage has a different owner"
+  fi
+  install -d -o root -g root -m 0711 "$root"
+  install -d -o "$AGENT_UID" -g "$AGENT_GID" -m 0700 "$root/workspace" "$root/files" "$root/home"
+  chown -R "$AGENT_UID:$AGENT_GID" "$root/workspace" "$root/files" "$root/home"
+  install -d -o root -g root -m 0700 "$root/var-lib-1helm"
+  printf '%s\n' "$owner" >"$root/var-lib-1helm/owner"
+  chmod 0600 "$root/var-lib-1helm/owner"
+  for shared in "$root/workspace" "$root/files" "$root/home"; do grant_shared_access "$shared"; done
+}
+
+create_container() {
+  local name="$1" owner="$2" cpus="$3" memory_mb="$4" image="$5" root network network_identity ip mac
+  valid_name "$name" && valid_owner "$owner" && valid_resources "$cpus" "$memory_mb" && valid_image "$image" || die "invalid create arguments"
+  root="$(channel_root "$name")"
+  network="$(ensure_network "$owner")"
+  network_identity="$(ensure_network_identity "$name" "$owner" "$network")"
+  read -r ip mac <<<"$network_identity"
+  [[ -n "$ip" && -n "$mac" ]] || die "channel network identity was incomplete"
+  "${PODMAN[@]}" create --name "$name" --hostname "$name" --network "$network" --ip "$ip" --mac-address "$mac" \
+    --cpus "$cpus" --memory "${memory_mb}m" --pids-limit 4096 --systemd=always \
+    --stop-signal SIGRTMIN+3 --stop-timeout 90 \
+    --label com.1helm.managed=true --label "com.1helm.owner=$owner" --label "com.1helm.machine=$name" \
+    --mount "type=bind,src=$root/workspace,dst=/workspace" \
+    --mount "type=bind,src=$root/files,dst=/workspace/files" \
+    --mount "type=bind,src=$root/home,dst=/home/agent" \
+    --mount "type=bind,src=$root/var-lib-1helm,dst=/var/lib/1helm" \
+    "$image" >/dev/null
+  verify_container "$name" "$owner"
+}
+
+start_container() {
+  local name="$1" owner="$2" state
+  verify_container "$name" "$owner"
+  state="$(container_state "$name")"
+  if [[ "$state" != running ]]; then "${PODMAN[@]}" start "$name" >/dev/null; fi
+  for _ in {1..100}; do
+    if "${PODMAN[@]}" exec --user root "$name" /bin/sh -c 'test "$(cat /var/lib/1helm/owner)" = "$1" && test -d /workspace && test -d /home/agent' 1helm-start "$owner" >/dev/null 2>&1; then
+      verify_container "$name" "$owner"
+      return
+    fi
+    sleep 0.1
+  done
+  die "container did not pass its ownership and storage health check"
+}
+
+stop_container() {
+  local name="$1" owner="$2" state
+  verify_container "$name" "$owner"
+  state="$(container_state "$name")"
+  [[ "$state" == running ]] || return 0
+  "${PODMAN[@]}" stop --time 90 "$name" >/dev/null
+}
+
+inspect_container() {
+  local name="$1" owner="$2" raw
+  if ! container_exists "$name"; then printf 'null\n'; return; fi
+  verify_container "$name" "$owner"
+  raw="$("${PODMAN[@]}" inspect --type container "$name")"
+  python3 - "$raw" "$name" <<'PY'
+import json, sys
+row=json.loads(sys.argv[1])[0]
+host=row.get("HostConfig") or {}
+quota=int(host.get("CpuQuota") or 0)
+period=int(host.get("CpuPeriod") or 100000)
+cpus=max(1, round(quota/period)) if quota else 0
+print(json.dumps({
+  "id":sys.argv[2],
+  "status":str((row.get("State") or {}).get("Status") or "unknown"),
+  "cpus":cpus,
+  "memory":int(host.get("Memory") or 0),
+  "homeMount":"none",
+  "image":str(row.get("ImageName") or row.get("Image") or ""),
+}, separators=(",",":")))
+PY
+}
+
+build_image() {
+  local image="$1"
+  valid_image "$image" || die "invalid image reference"
+  [[ -r "$CONTAINERFILE" ]] || die "installed OCI image recipe is missing"
+  if "${PODMAN[@]}" image exists "$image"; then return; fi
+  "${PODMAN[@]}" build --pull=missing \
+    --build-arg "AGENT_UID=$AGENT_UID" --build-arg "AGENT_GID=$AGENT_GID" \
+    --tag "$image" --file "$CONTAINERFILE" "$(dirname "$CONTAINERFILE")"
+  "${PODMAN[@]}" image exists "$image" || die "OCI image did not exist after build"
+}
+
+copy_tree_from_container() {
+  local temporary="$1" source="$2" destination="$3"
+  install -d -o "$AGENT_UID" -g "$AGENT_GID" -m 0700 "$destination"
+  if "${PODMAN[@]}" cp "$temporary:$source/." "$destination" >/dev/null 2>&1; then
+    chown -R "$AGENT_UID:$AGENT_GID" "$destination"
+  fi
+}
+
+backup_name_valid() {
+  local name="$1" backup="$2"
+  [[ "$backup" =~ ^${name}-[0-9]{13}-[a-f0-9]{12}\.tar$ ]]
+}
+
+backup_container() {
+  local name="$1" owner="$2" temporary root stamp nonce backup destination digest
+  verify_container "$name" "$owner"
+  [[ "$(container_state "$name")" != running ]] || die "container must be stopped before backup"
+  stamp="$(date +%s%3N)"
+  nonce="$(printf '%s' "$name:$owner:$(date +%s%N):$$" | sha256sum | cut -c1-12)"
+  backup="$name-$stamp-$nonce.tar"
+  backup_name_valid "$name" "$backup" || die "could not create a safe backup identity"
+  destination="$BACKUPS_ROOT/$backup"
+  temporary="$(mktemp -d "$BACKUPS_ROOT/.backup-$name-XXXXXX")"
+  trap '[[ -z "${temporary:-}" ]] || rm -rf -- "$temporary"' EXIT
+  root="$(channel_root "$name")"
+  "${PODMAN[@]}" export --output "$temporary/rootfs.tar" "$name"
+  tar --numeric-owner --xattrs --acls -C "$root" -cf "$temporary/channel.tar" .
+  "${PODMAN[@]}" inspect --type container "$name" >"$temporary/container.json"
+  tar -C "$temporary" -cf "$destination.candidate" rootfs.tar channel.tar container.json
+  chmod 0600 "$destination.candidate"
+  mv -T "$destination.candidate" "$destination"
+  digest="$(sha256sum "$destination" | awk '{print $1}')"
+  printf '{"backup":"%s","sha256":"%s","path":"%s"}\n' "$backup" "$digest" "$destination"
+  rm -rf -- "$temporary"
+  trap - EXIT
+}
+
+list_backups() {
+  local name="$1" owner="$2" root backup digest first=1
+  valid_name "$name" && valid_owner "$owner" || die "invalid container identity"
+  [[ "${name#1helm-}" == "$(owner_installation "$owner")-channel-$(owner_channel "$owner")" ]] || die "container name and owner do not match"
+  root="$(channel_root "$name")"
+  if [[ -e "$root/var-lib-1helm/owner" ]]; then
+    [[ "$(tr -d '\r\n' <"$root/var-lib-1helm/owner")" == "$owner" ]] || die "ownership marker does not match"
+  fi
+  printf '['
+  while IFS= read -r -d '' backup; do
+    backup="${backup##*/}"
+    backup_name_valid "$name" "$backup" || continue
+    digest="$(sha256sum "$BACKUPS_ROOT/$backup" | awk '{print $1}')"
+    [[ "$first" -eq 1 ]] || printf ','
+    first=0
+    printf '{"backup":"%s","sha256":"%s"}' "$backup" "$digest"
+  done < <(find -P "$BACKUPS_ROOT" -maxdepth 1 -type f -name "$name-*.tar" -print0 | sort -zr)
+  printf ']\n'
+}
+
+restore_container() {
+  local name="$1" owner="$2" backup="$3" expected_digest="$4" archive digest temporary root metadata resources cpus memory_mb restored_image created=0
+  valid_name "$name" && valid_owner "$owner" || die "invalid container identity"
+  [[ "${name#1helm-}" == "$(owner_installation "$owner")-channel-$(owner_channel "$owner")" ]] || die "container name and owner do not match"
+  backup_name_valid "$name" "$backup" || die "invalid backup identity"
+  [[ "$expected_digest" =~ ^[a-f0-9]{64}$ ]] || die "invalid backup digest"
+  archive="$BACKUPS_ROOT/$backup"
+  [[ -f "$archive" && ! -L "$archive" ]] || die "backup does not exist"
+  digest="$(sha256sum "$archive" | awk '{print $1}')"
+  [[ "$digest" == "$expected_digest" ]] || die "backup digest does not match"
+  ! container_exists "$name" || die "restore target container already exists"
+  root="$(channel_root "$name")"
+  [[ ! -e "$root" ]] || die "restore target storage already exists"
+  temporary="$(mktemp -d "$BACKUPS_ROOT/.restore-$name-XXXXXX")"
+  trap '[[ "${created:-0}" -eq 0 ]] || "${PODMAN[@]}" rm -f "$name" >/dev/null 2>&1 || true; [[ -z "${root:-}" || "$root" != "$CHANNELS_ROOT/"* ]] || rm -rf -- "$root"; [[ -z "${restored_image:-}" ]] || "${PODMAN[@]}" rmi "$restored_image" >/dev/null 2>&1 || true; [[ -z "${temporary:-}" ]] || rm -rf -- "$temporary"' EXIT
+  metadata="$(tar -tf "$archive")"
+  [[ "$metadata" == $'rootfs.tar\nchannel.tar\ncontainer.json' ]] || die "backup members do not match the OCI recovery contract"
+  tar -C "$temporary" -xf "$archive"
+  resources="$(python3 - "$temporary/container.json" "$name" "$owner" <<'PY'
+import json, sys
+rows=json.load(open(sys.argv[1], encoding="utf-8"))
+if not isinstance(rows,list) or len(rows)!=1: raise SystemExit("backup container metadata is invalid")
+row=rows[0]
+labels=(row.get("Config") or {}).get("Labels") or {}
+expected={"com.1helm.managed":"true","com.1helm.machine":sys.argv[2],"com.1helm.owner":sys.argv[3]}
+if any(str(labels.get(k,"")) != v for k,v in expected.items()): raise SystemExit("backup ownership labels do not match")
+host=row.get("HostConfig") or {}
+quota=int(host.get("CpuQuota") or 0); period=int(host.get("CpuPeriod") or 100000)
+cpus=max(1,min(8,round(quota/period))) if quota else 2
+memory=max(1024,min(16384,round(int(host.get("Memory") or 2147483648)/1048576)))
+print(cpus, memory)
+PY
+)" || die "backup container metadata could not be verified"
+  read -r cpus memory_mb <<<"$resources"
+  restored_image="local/1helm-channel-restored:${digest:0:20}"
+  "${PODMAN[@]}" import --change 'CMD ["/sbin/init"]' --change 'STOPSIGNAL SIGRTMIN+3' --change 'ENV container=oci' "$temporary/rootfs.tar" "$restored_image" >/dev/null
+  install -d -o root -g root -m 0700 "$temporary/channel"
+  python3 - "$temporary/channel.tar" "$temporary/channel" <<'PY'
+import os, sys, tarfile
+archive, destination=sys.argv[1:]
+with tarfile.open(archive, "r:") as source:
+    members=source.getmembers()
+    for member in members:
+        normalized=os.path.normpath(member.name)
+        if os.path.isabs(member.name) or normalized == ".." or normalized.startswith("../"):
+            raise SystemExit("backup channel storage contains an unsafe path")
+    source.extractall(destination, filter="data")
+PY
+  mv -T "$temporary/channel" "$root"
+  chown root:root "$root"
+  chmod 0711 "$root"
+  verify_storage "$name" "$owner"
+  for shared in "$root/workspace" "$root/files" "$root/home"; do
+    chown -R "$AGENT_UID:$AGENT_GID" "$shared"
+    grant_shared_access "$shared"
+  done
+  chown -R root:root "$root/var-lib-1helm"
+  created=1
+  create_container "$name" "$owner" "$cpus" "$memory_mb" "$restored_image"
+  start_container "$name" "$owner"
+  inspect_container "$name" "$owner"
+  created=0
+  rm -rf -- "$temporary"
+  trap - EXIT
+}
+
+operation="${1:-}"
+shift || true
+ensure_roots
+case "$operation" in
+  version)
+    (($# == 0)) || die "version takes no arguments"
+    printf '%s\n' "$RUNTIME_VERSION"
+    ;;
+  ready)
+    (($# == 0)) || die "ready takes no arguments"
+    for command in find flock getfacl podman python3 setfacl sha256sum stat tar; do command -v "$command" >/dev/null || die "missing $command"; done
+    [[ -r "$CONTAINERFILE" ]] || die "installed OCI image recipe is missing"
+    "${PODMAN[@]}" info >/dev/null
+    printf '{"ready":true,"version":"%s","engine":"podman"}\n' "$RUNTIME_VERSION"
+    ;;
+  image)
+    (($# == 1)) || die "image requires a reference"
+    build_image "$1"
+    ;;
+  create)
+    (($# == 5)) || die "create requires name, owner, CPUs, memory MiB, and image"
+    ! container_exists "$1" || die "container already exists"
+    storage_existed=0
+    [[ -e "$(channel_root "$1")" ]] && storage_existed=1
+    prepare_storage "$1" "$2"
+    if ! create_container "$1" "$2" "$3" "$4" "$5"; then
+      container_exists "$1" && "${PODMAN[@]}" rm -f "$1" >/dev/null 2>&1 || true
+      if [[ "$storage_existed" -eq 0 ]]; then
+        failed_root="$(channel_root "$1")"
+        [[ "$failed_root" == "$CHANNELS_ROOT/$1" ]] || die "unsafe failed-create cleanup target"
+        rm -rf -- "$failed_root"
+      fi
+      exit 1
+    fi
+    start_container "$1" "$2"
+    ;;
+  inspect)
+    (($# == 2)) || die "inspect requires name and owner"
+    inspect_container "$1" "$2"
+    ;;
+  list)
+    (($# == 1)) || die "list requires an installation prefix"
+    [[ "$1" =~ ^1helm-[a-f0-9]{16}-channel-$ ]] || die "invalid installation prefix"
+    "${PODMAN[@]}" ps --all --format '{{.Names}}' --filter label=com.1helm.managed=true | awk -v prefix="$1" 'index($0,prefix)==1 {print}' | python3 -c 'import json,sys; print(json.dumps([line.strip() for line in sys.stdin if line.strip()]))'
+    ;;
+  start)
+    (($# == 2)) || die "start requires name and owner"
+    start_container "$1" "$2"
+    ;;
+  stop)
+    (($# == 2)) || die "stop requires name and owner"
+    stop_container "$1" "$2"
+    ;;
+  set)
+    (($# == 4)) || die "set requires name, owner, CPUs, and memory MiB"
+    verify_container "$1" "$2"
+    valid_resources "$3" "$4" || die "invalid resource limits"
+    "${PODMAN[@]}" update --cpus "$3" --memory "${4}m" "$1" >/dev/null
+    ;;
+  exec)
+    (($# >= 6)) || die "exec requires name, owner, user, workdir, --, and command"
+    name="$1"; owner="$2"; user="$3"; workdir="$4"; shift 4
+    [[ "$user" == agent || "$user" == root ]] || die "invalid exec user"
+    [[ "$workdir" == / || "$workdir" == /workspace || "$workdir" == /home/agent ]] || die "invalid exec workdir"
+    [[ "${1:-}" == -- ]] || die "missing exec separator"; shift
+    (($# > 0)) || die "missing exec command"
+    start_container "$name" "$owner"
+    exec "${PODMAN[@]}" exec --interactive --user "$user" --workdir "$workdir" "$name" "$@"
+    ;;
+  terminal)
+    (($# == 2)) || die "terminal requires name and owner"
+    start_container "$1" "$2"
+    exec "${PODMAN[@]}" exec --interactive --tty --user agent --workdir /workspace --env TERM=xterm-256color "$1" /bin/bash -l
+    ;;
+  backup)
+    (($# == 2)) || die "backup requires name and owner"
+    backup_container "$1" "$2"
+    ;;
+  backups)
+    (($# == 2)) || die "backups requires name and owner"
+    list_backups "$1" "$2"
+    ;;
+  restore)
+    (($# == 4)) || die "restore requires name, owner, backup, and SHA-256"
+    restore_container "$1" "$2" "$3" "$4"
+    ;;
+  delete)
+    (($# == 2)) || die "delete requires name and owner"
+    verify_container "$1" "$2"
+    stop_container "$1" "$2"
+    "${PODMAN[@]}" rm "$1" >/dev/null
+    root="$(channel_root "$1")"
+    [[ "$root" == "$CHANNELS_ROOT/$1" ]] || die "unsafe channel cleanup target"
+    rm -rf -- "$root"
+    ;;
+  *) die "unsupported operation" ;;
+esac

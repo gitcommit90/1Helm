@@ -121,14 +121,17 @@ On Apple Silicon:
 4. Complete Captain → Providers → Workspace. If required, approve Apple's
    signed container runtime once during workspace creation.
 
-Application state lives under `~/Library/Application Support/1Helm` and every
+This OCI generation starts in `~/Library/Application Support/1Helm-OCI-v1`;
+the retired data directory is left untouched and is never imported. Every
 update preserves it — credentials, databases, resident state, files, and
 workspaces. Profile → Check for updates asks the Mac running 1Helm—not the
 device displaying the web UI—to download and verify the signed update.
 
 Windows 11 x64 gets a [Setup executable](https://1helm.com/download/windows)
-that provisions one private WSL 2 world per channel. Linux hosts use a verified
-installer that provisions a durable systemd service with an atomic,
+that provisions one installation-scoped WSL 2 runtime and one durable OCI
+container per ordinary channel. Linux hosts run the same channel containers
+natively under Podman. The verified installer provisions a durable systemd
+service with an atomic,
 digest-verified, health-checked updater — see the
 [Linux install guide](https://1helm.com/manual/install-linux). Whichever platform,
 it works best on a dedicated machine: your crew works around the clock, and
@@ -278,8 +281,8 @@ and an audit trail. A prompt saying “use this service” is not a connector.
 | Platform | Current contract |
 |---|---|
 | **Apple Silicon macOS 26** | Native desktop product and real isolated Linux computer per resident (Apple `container machine`, `home-mount=none`). |
-| **Linux / CI** | Supported headless systemd host with one unprivileged LXC per resident (subordinate UID/GID mapping, exact ownership checks); CI may select an explicit test backend. |
-| **Windows 11 x64** | Native desktop product with one private WSL 2 world per resident (Windows-drive mounts and interop disabled); the Setup executable ships with every release and its signature status is disclosed. |
+| **Linux / CI** | Supported headless systemd host with one durable Podman OCI container per resident, runtime-owned storage, and exact ownership checks; CI may select an explicit test backend. |
+| **Windows 11 x64** | Native desktop product with one installation-scoped WSL 2 OCI runtime and one durable container per resident; Windows-drive mounts and interop are disabled. |
 | **iPhone and iPad** | App Store gateway to an already configured HTTPS 1Helm host; sessions live in the device-only iOS Keychain. |
 | **Android 7+** | Directly distributed signed universal APK gateway; sessions are encrypted by a key held in Android Keystore. |
 
@@ -305,9 +308,9 @@ A fresh data directory opens first-run setup. The source runtime defaults to
 | Environment variable | Default | Meaning |
 |---|---|---|
 | `PORT` | `8123` | HTTP/WebSocket control-plane port. |
-| `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and narrow workspace mirrors. |
-| `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `lxc` on Linux, `wsl` on Windows | Host isolation backend; `native` and `mock` are explicit development/test overrides. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.28` | Versioned channel-machine image contract. |
+| `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and non-OCI development/Apple workspace mirrors. |
+| `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `oci` on Linux and Windows | Host isolation backend; `native` and `mock` are explicit development/test overrides. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.29` | Versioned channel-machine image contract. |
 
 ### Agent-first JSON CLI
 
@@ -335,7 +338,7 @@ need an external database or a server transpilation step.
 | Control plane | `node:http`, WebSocket, additive SQLite migrations. |
 | Client | Vanilla TypeScript bundled with esbuild and Tailwind CSS. |
 | Model routing | Embedded ReRouted headless engine, private internal gateway, account pools, retries, routes, quotas, and logs. |
-| Computers | Defensive argv-only Apple `container machine`, narrow root-owned unprivileged LXC, and private WSL 2 backends; explicit `native`/`mock` test seams. |
+| Computers | Defensive argv-only Apple `container machine`; native Podman OCI on Linux; one shared managed WSL 2/Podman runtime on Windows; explicit `native`/`mock` test seams. |
 | Terminal | `node-pty`; ordinary terminals enter their channel VM while Skipper remains native. |
 | Memory | Curated records with provenance plus an isolated Mnemosyne SQLite store per identity. |
 | Scheduling | Durable obligations, wake reconciliation, lifecycle safety, repair, update, and pressure-aware sizing. |
@@ -373,10 +376,12 @@ the complete `npm test` contract.
 ## Security boundary
 
 - Residents use separate Linux worlds: Apple machines with no Mac home mount,
-  unprivileged LXC with subordinate host IDs, or private WSL 2 distributions
-  with Windows-drive mounts and interop disabled.
+  or durable OCI containers on Linux and inside Windows' one shared managed
+  WSL runtime. Windows-drive mounts and interop are disabled.
 - Skipper's host tools require Captain-authorized provenance.
-- Workspace file mirrors are channel-scoped, size-bounded, and symlink-contained.
+- OCI workspace storage is runtime-owned and authoritative; Files and Cowork
+  access it directly through a channel-scoped boundary. Apple mirrors remain
+  size-bounded and symlink-contained.
 - Provider and connection credentials stay in host-owned storage.
 - Registration, sessions, JSON bodies, uploads, collaboration access, and
   gateway keys are bounded and independently controlled.

@@ -87,16 +87,6 @@ test("Linux web action creates only a fixed host request and returns no installe
   assert.deepEqual(Object.keys(request), ["requested_at"]);
   await assert.rejects(() => service.runHostUpdateAction(appRoot, dataDir, "install"), /install automatically/i);
   await rm(join(dataDir, "host-update.request"));
-  process.env.HELM_CHANNEL_COMPUTER_BACKEND = "native";
-  assert.equal(await service.queueLinuxHostContractMigration(dataDir), true, "a newly installed server queues the root-owned runtime migration old updater code could not perform");
-  assert.equal(await service.queueLinuxHostContractMigration(dataDir), false, "the migration request is idempotent while queued");
-  await rm(join(dataDir, "host-update.request"));
-  await writeFile(join(dataDir, "host-update-status.json"), JSON.stringify({ status: "error" }));
-  assert.equal(await service.queueLinuxHostContractMigration(dataDir), false, "a failed host migration waits for a visible Captain retry instead of looping");
-  process.env.HELM_CHANNEL_COMPUTER_BACKEND = "lxc";
-  await rm(join(dataDir, "host-update-status.json"));
-  assert.equal(await service.queueLinuxHostContractMigration(dataDir), false, "an already migrated LXC service does not queue work");
-  delete process.env.HELM_CHANNEL_COMPUTER_BACKEND;
   delete process.env.HELM_INSTALL_KIND;
   const managed = await service.hostUpdateState(appRoot, dataDir);
   assert.equal(managed.status, "managed");

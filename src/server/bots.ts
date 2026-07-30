@@ -16,6 +16,7 @@ import {
   agentForChannel,
   agentViewForChannel,
   attachWorkspaceFileToMessage,
+  channelFiles,
   channelWorkspace,
   ensureChannelWorkspace,
   ensureThread,
@@ -740,10 +741,10 @@ export async function generateAndAttachImage(
   const requested = String(requestedName || "generated-image.png").replace(/[^a-zA-Z0-9._ -]+/g, "-").replace(/\.[^.]+$/, "").slice(0, 100) || "generated-image";
   const fileName = `${requested}-${Date.now().toString(36)}.png`;
   const relativePath = `files/${fileName}`;
-  const root = ensureChannelWorkspace(channelId);
+  ensureChannelWorkspace(channelId);
   const { join } = await import("node:path");
   const { writeFileSync } = await import("node:fs");
-  writeFileSync(join(root, relativePath), await generator(prompt, signal));
+  writeFileSync(join(channelFiles(channelId), fileName), await generator(prompt, signal));
   syncWorkspaceArtifacts(channelId, threadId, actor);
   return attachWorkspaceFileToMessage(channelId, messageId, threadId, relativePath, actor, fileName);
 }
@@ -1634,10 +1635,10 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                 const stem = String(args.name || args.caption || searched.title || "web-image").replace(/[^a-zA-Z0-9._ -]+/g, "-").replace(/\.[^.]+$/, "").slice(0, 100) || "web-image";
                 const fileName = `${stem}-${Date.now().toString(36)}.${extension}`;
                 const relativePath = `files/${fileName}`;
-                const root = ensureChannelWorkspace(channelId);
+                ensureChannelWorkspace(channelId);
                 const { join } = await import("node:path");
                 const { writeFileSync } = await import("node:fs");
-                writeFileSync(join(root, relativePath), fetched.body);
+                writeFileSync(join(channelFiles(channelId), fileName), fetched.body);
                 syncWorkspaceArtifacts(channelId, threadId, actor);
                 const attached = attachWorkspaceFileToMessage(channelId, msgId, threadId, relativePath, actor, fileName);
                 emit();

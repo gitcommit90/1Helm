@@ -1,0 +1,39 @@
+FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+
+ARG AGENT_UID=1000
+ARG AGENT_GID=1000
+ENV container=oci DEBIAN_FRONTEND=noninteractive
+
+RUN test "${AGENT_UID}" -ge 1 && test "${AGENT_GID}" -ge 1 \
+  && apt-get update && apt-get install -y --no-install-recommends \
+    bash build-essential ca-certificates coreutils cron curl dbus file findutils \
+    git gzip iproute2 iputils-ping jq less locales man-db nano openssh-client \
+    procps python3 python3-pip rsync sudo systemd systemd-sysv tar tzdata unzip \
+    vim-tiny wget xz-utils zip \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/* \
+  && existing_group="$(getent group "${AGENT_GID}" | cut -d: -f1 || true)" \
+  && existing_user="$(getent passwd "${AGENT_UID}" | cut -d: -f1 || true)" \
+  && if test -z "${existing_group}"; then groupadd --gid "${AGENT_GID}" agent; elif test "${existing_group}" != agent; then groupmod --new-name agent "${existing_group}"; fi \
+  && if test -z "${existing_user}"; then useradd --uid "${AGENT_UID}" --gid "${AGENT_GID}" --create-home --shell /bin/bash agent; elif test "${existing_user}" != agent; then usermod --login agent --home /home/agent --move-home --gid "${AGENT_GID}" --shell /bin/bash "${existing_user}"; else usermod --home /home/agent --move-home --gid "${AGENT_GID}" --shell /bin/bash agent; fi \
+  && mkdir -p /workspace/files /var/lib/1helm /etc/sudoers.d \
+  && chown -R "${AGENT_UID}:${AGENT_GID}" /workspace /home/agent \
+  && printf 'agent ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/agent \
+  && chmod 0440 /etc/sudoers.d/agent \
+  && printf '%s\n' '1helm-channel-oci-v1' >/var/lib/1helm/image-contract \
+  && : >/etc/machine-id \
+  && mkdir -p /var/lib/dbus \
+  && : >/var/lib/dbus/machine-id \
+  && systemctl set-default multi-user.target \
+  && systemctl mask \
+      apt-daily.service apt-daily.timer apt-daily-upgrade.service apt-daily-upgrade.timer \
+      console-getty.service dev-hugepages.mount getty@.service man-db.timer systemd-logind.service \
+      dpkg-db-backup.timer e2scrub_all.timer e2scrub_reap.service fstrim.timer motd-news.timer \
+      systemd-ask-password-console.path systemd-ask-password-wall.path systemd-pstore.service \
+      systemd-sysext.service systemd-sysext.socket systemd-tmpfiles-clean.service \
+      systemd-tmpfiles-clean.timer systemd-tmpfiles-setup.service systemd-update-utmp.service \
+      sys-fs-fuse-connections.mount \
+  && (systemctl disable cron.service || true)
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

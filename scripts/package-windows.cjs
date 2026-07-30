@@ -16,7 +16,7 @@ const CERT_SHA1 = String(process.env.WINDOWS_SIGN_CERT_SHA1 || "").replace(/\s+/
 // Electron Packager evaluates directories before their children. Keep the
 // scripts directory itself traversable, then retain only the three runtime
 // files below; otherwise the exact-file exceptions can never be reached.
-const IGNORE_NON_RUNTIME_ROOTS = /^\/(?!package\.json$|LICENSE$|NOTICE$|desktop(?:$|\/)|container(?:$|\/)|deploy(?:$|\/)|src(?:$|\/)|public(?:$|\/)|scripts(?:$|\/(?:mnemosyne-bridge\.py|install-wsl-runtime\.ps1|windows-removal\.cjs)$)|node_modules(?:$|\/))/;
+const IGNORE_NON_RUNTIME_ROOTS = /^\/(?!package\.json$|LICENSE$|NOTICE$|desktop(?:$|\/)|container(?:$|\/Containerfile\.oci$)|deploy(?:$|\/1helm-oci-runtime-v1\.conf$)|src(?:$|\/)|public(?:$|\/)|scripts(?:$|\/(?:1helm-oci-runtime|mnemosyne-bridge\.py|install-wsl-runtime\.ps1|windows-removal\.cjs)$)|node_modules(?:$|\/))/;
 // Excalidraw is compiled into public/bundle.js. Shipping its source package as
 // well adds deeply nested Radix paths that legacy Squirrel/NuGet cannot
 // releasify under Windows' 260-character path limit.
@@ -91,6 +91,11 @@ async function main() {
     if (capture("where.exe", ["powershell.exe"])) {
       const script = path.join(appDir, "resources", "app", "scripts", "install-wsl-runtime.ps1");
       if (!fs.existsSync(script)) throw new Error("Packaged Windows app is missing its WSL setup script.");
+      for (const required of [
+        path.join(appDir, "resources", "app", "scripts", "1helm-oci-runtime"),
+        path.join(appDir, "resources", "app", "deploy", "1helm-oci-runtime-v1.conf"),
+        path.join(appDir, "resources", "app", "container", "Containerfile.oci"),
+      ]) if (!fs.existsSync(required)) throw new Error(`Packaged Windows app is missing ${path.basename(required)}.`);
     }
 
     // Squirrel 1.x uses legacy .NET path handling while it expands the NuGet

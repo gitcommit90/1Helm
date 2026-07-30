@@ -3,8 +3,9 @@
 1Helm gives an AI employee a place to work, not merely a chat box in which to
 describe work. Every ordinary channel owns exactly one resident identity, one
 durable workspace, one memory namespace, and one persistent private Linux
-computer: an Apple container machine, unprivileged LXC, or private WSL 2
-distribution according to the host platform. The human is the Captain. Skipper
+computer: an Apple container machine or a durable OCI container according to
+the host platform. Linux runs those containers natively. Windows hosts them in
+one installation-scoped managed WSL 2 runtime. The human is the Captain. Skipper
 is the workspace-wide operator for host, fleet, credentials, connections, and
 cross-channel boundaries.
 
@@ -60,12 +61,17 @@ they are relevant without a behavioral decision tree.
 ## Computer and connection boundaries
 
 On supported Macs, each resident computer is a real Apple container machine
-with the Mac home directory unmounted. Linux systemd hosts use an unprivileged
-LXC with subordinate host IDs and private networking. The accepted Windows
-implementation uses one private WSL 2 distribution with Windows-drive mounts
-and interop disabled. The resident's command tools and the channel Terminal
-share the same `/workspace`. Skipper manages CPU, memory, disk, wake/sleep,
-repair, update, archive, restore, and deletion safety.
+with the Mac home directory unmounted. Linux systemd hosts use native Podman;
+Windows uses one managed WSL 2/Podman runtime with Windows-drive mounts and
+interop disabled. Each ordinary channel still owns a distinct durable OCI
+container, filesystem, process tree, network identity, installed tools, and
+resource limits. The resident's command tools and channel Terminal share the
+same `/workspace`. Runtime-owned storage is authoritative and Files/Cowork
+access it directly. Skipper manages CPU, memory, disk, wake/sleep, repair,
+update, digest-qualified backup/recovery, archive, restore, and deletion safety.
+
+This OCI generation is intentionally a clean start. It does not bridge,
+convert, copy, import, or delete data from retired channel runtimes.
 
 Provider accounts and native connections remain host-owned brokers. Residents
 receive narrow operations, never raw OAuth tokens, Photon project secrets, or a

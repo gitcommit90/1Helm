@@ -159,10 +159,10 @@ scrollback. If the host confirms that the underlying terminal session itself no
 longer exists, 1Helm opens a fresh one.
 Ordinary residents cannot select or enter the Captain's native host. On
 supported Apple Silicon Macs, each resident runs inside its own Apple
-`container machine` with `home-mount=none`; Linux systemd hosts use one
-unprivileged LXC per resident; the accepted Windows implementation uses one
-private WSL 2 distribution per resident with Windows-drive mounts and interop
-disabled. `native` and `mock` remain explicit source/CI test seams.
+`container machine` with `home-mount=none`; Linux systemd hosts use one durable
+Podman OCI container per resident; Windows uses one installation-scoped WSL 2
+runtime hosting one container per resident, with Windows-drive mounts and
+interop disabled. `native` and `mock` remain explicit source/CI test seams.
 
 ![The full-height channel Terminal in its persistent workspace](assets/guide/terminal.png)
 
@@ -371,12 +371,14 @@ Source/developer deployments report that their host operator owns updates.
 Every host update preserves:
 
 ```text
-~/Library/Application Support/1Helm
+~/Library/Application Support/1Helm-OCI-v1
 ```
 
 On macOS that directory contains databases, credentials, workspaces, resident
-state, and narrow mirrors. Linux preserves the equivalent host state under
-`/var/lib/1helm`. Do not delete either data root during replacement.
+state, and Apple mirrors. Linux preserves the equivalent OCI-generation state
+under `/var/lib/1helm-oci-v1`. The retired data roots remain untouched and are
+not imported by this generation. Do not delete either current data root during
+replacement.
 
 Before removing 1Helm, use its removal preparation flow. It is Captain-only,
 requires typed confirmation, reports backend-owned resident machines, and
@@ -425,8 +427,9 @@ fallback.
 
 ## Security summary
 
-- Per-resident Apple Linux VMs have no Mac home mount; Linux LXC uses
-  subordinate IDs; private WSL worlds disable Windows-drive mounts and interop.
+- Per-resident Apple Linux VMs have no Mac home mount. OCI residents use exact
+  container labels and runtime-owned storage; the shared Windows runtime
+  disables Windows-drive mounts and interop.
 - Credentials and connectors remain host-owned and minimally brokered.
 - Membership scopes data and live events; private coworker channels are not
   Captain-readable without invitation.

@@ -1,7 +1,7 @@
 {
   "name": "1helm",
   "productName": "1Helm",
-  "version": "0.0.28",
+  "version": "0.0.29",
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-only",
@@ -75,7 +75,7 @@
     "@codemirror/lang-sql": "6.10.0",
     "@codemirror/lang-yaml": "6.1.3",
     "@excalidraw/excalidraw": "0.18.1",
-    "@gitcommit90/rerouted": "https://github.com/gitcommit90/rerouted/releases/download/v0.5.7/ReRouted-0.5.7-linux-node.tgz",
+    "@gitcommit90/rerouted": "https://github.com/gitcommit90/rerouted/releases/download/v0.5.10/ReRouted-0.5.10-linux-node.tgz",
     "@opencoredev/loginwithchatgpt-server": "^0.2.0",
     "codemirror": "6.0.2",
     "docx": "9.7.1",

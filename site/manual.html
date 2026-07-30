@@ -129,8 +129,8 @@
     <table>
       <tr><th>Host</th><th>Isolation</th></tr>
       <tr><td>macOS (Apple Silicon)</td><td>One Apple <code>container machine</code> per resident, no home-folder mount</td></tr>
-      <tr><td>Linux</td><td>One unprivileged LXC per resident</td></tr>
-      <tr><td>Windows</td><td>One private WSL&nbsp;2 distribution per resident, drive mounts and interop disabled</td></tr>
+      <tr><td>Linux</td><td>One durable Podman OCI container per resident</td></tr>
+      <tr><td>Windows</td><td>One shared managed WSL&nbsp;2 runtime with one OCI container per resident; drive mounts and interop disabled</td></tr>
     </table>
     <p>Different plumbing, same architecture: as far as the resident knows, one computer exists — its own. It can't see into yours.</p>
   </section>
@@ -180,15 +180,16 @@
     <h2><span class="mark">Updates &amp; your data</span></h2>
     <p>Mac releases are signed, notarized, and verified before install — Profile&nbsp;→&nbsp;Check for updates downloads on the helm machine and offers <span class="b">Restart &amp; install</span> only when ready. Linux installs use a root-owned updater that verifies a release digest, installs into a versioned directory, switches atomically, health-checks, and rolls back if needed.</p>
     <p>Every update preserves your data root:</p>
-    <pre><code>macOS:  ~/Library/Application Support/1Helm
-Linux:  /var/lib/1helm</code></pre>
+    <pre><code>macOS:  ~/Library/Application Support/1Helm-OCI-v1
+Linux:  /var/lib/1helm-oci-v1
+Windows: %APPDATA%\1Helm-OCI-v1</code></pre>
     <div class="warnbox"><span class="notetag">careful</span>That directory holds databases, credentials, workspaces, and resident state. Never delete it during a reinstall or migration — and before removing 1Helm entirely, use the built-in removal flow and export irreplaceable channel files first.</div>
   </section>
 
   <section id="security">
     <h2><span class="mark">Security</span></h2>
     <ul>
-      <li>Resident computers have no access to your real machine — no home mount on macOS, unprivileged LXC on Linux, no drive mounts or interop on Windows.</li>
+      <li>Resident computers have no access to your real machine — no home mount on macOS, ownership-checked OCI storage on Linux, and no drive mounts or interop on Windows.</li>
       <li>Credentials and connectors are host-owned and minimally brokered; tokens never enter chat or resident computers.</li>
       <li>Channel membership gates files, terminals, messages, and live events. Private coworker channels aren't Captain-readable without invitation.</li>
       <li>External skills are revision-pinned, bounded, scanned, hashed, and wrapped.</li>
@@ -221,7 +222,7 @@ Linux:  /var/lib/1helm</code></pre>
 
     <details>
       <summary>What operating systems does it run on?</summary>
-      <p>All three, day one: macOS (signed Apple Silicon app), Windows 11 (signed x64 installer with one private WSL&nbsp;2 world per agent), and Linux (systemd install with a verified updater). Resident computers work the same way everywhere — one isolated machine per agent.</p>
+      <p>All three, day one: macOS (signed Apple Silicon app), Windows 11 (x64 installer with one shared WSL&nbsp;2/Podman runtime), and Linux (native Podman with a systemd host and verified updater). Resident computers work the same way everywhere — one isolated computer per agent.</p>
     </details>
 
     <details>
@@ -256,7 +257,7 @@ Linux:  /var/lib/1helm</code></pre>
 
     <details>
       <summary>What if my helm computer dies?</summary>
-      <p>Your data root (<code>~/Library/Application Support/1Helm</code> on macOS, <code>/var/lib/1helm</code> on Linux) holds the workspaces, resident state, and credentials. Back it up, move it to a new machine, reinstall 1Helm, and your crew comes back. Never delete that directory during a move.</p>
+      <p>Your data root (<code>~/Library/Application Support/1Helm-OCI-v1</code> on macOS, <code>/var/lib/1helm-oci-v1</code> on Linux, or <code>%APPDATA%\1Helm-OCI-v1</code> plus <code>%LOCALAPPDATA%\1Helm-Runtime</code> on Windows) holds the control plane and resident worlds. Back it up as one coherent installation, reinstall 1Helm, and your crew comes back. Never delete those paths during a move.</p>
     </details>
 
     <details>

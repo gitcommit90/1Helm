@@ -27,7 +27,7 @@ export type ResidentAgent = {
   capabilities: string[]; skills: Skill[]; runtime?: Bot;
 };
 export type ChannelComputer = {
-  backend: "apple" | "lxc" | "wsl" | "native" | "mock"; machine_id: string; desired_state: string; observed_state: string;
+  backend: "apple" | "oci" | "native" | "mock"; machine_id: string; desired_state: string; observed_state: string;
   cpus: number; memory_bytes: number; mirror_quota_bytes: number; mirror_quota_purpose: string;
   guest_disk_capacity_bytes: number | null; guest_disk_capacity_status: "unknown" | "known";
   home_mount: "none"; provision_status: string;
@@ -72,10 +72,10 @@ export type ActivityItem = {
 };
 export type Computer = { id: number; name: string; base_url: string; has_key: boolean };
 export type ChannelRuntime = {
-  backend: "apple" | "lxc" | "wsl" | "native" | "mock"; supported: boolean; ready: boolean;
+  backend: "apple" | "oci" | "native" | "mock"; supported: boolean; ready: boolean;
   platform?: string; architecture?: string; darwin?: boolean; arm64?: boolean; macos_version?: string | null;
   cli?: string | null; version?: unknown; system?: unknown; runtime_version?: string | null;
-  installer_url?: string; installer_sha256?: string; rootfs_release?: string; rootfs_name?: string | null; rootfs_sha256?: string | null;
+  installer_url?: string; installer_sha256?: string; shared_runtime?: string | null; storage_authority?: string | null;
   status?: string; error?: string | null; development_only?: boolean;
 };
 export type Provider = { id: number; name: string; base_url: string; kind: string; has_key: boolean; bots: number };

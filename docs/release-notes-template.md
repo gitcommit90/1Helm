@@ -42,9 +42,10 @@ Source commit: `<full merged SHA>`
   Gatekeeper, public-download installation on the retained release host, app
   launch/smoke behavior, and Application Support preservation.
 - For Linux, state archive/source/digest verification and the real prior-version
-  systemd update, health-check rollback, and `/var/lib/1helm` preservation.
+  systemd update, health-check rollback, and `/var/lib/1helm-oci-v1`
+  preservation.
 - For Windows, state Authenticode status, Setup clean install, Squirrel
-  prior-version update, WSL lifecycle smoke, loopback health, and app-data
+  prior-version update, shared-WSL OCI lifecycle smoke, loopback health, and app-data
   preservation.
 - Name anything skipped or incomplete; do not call an incomplete release fully
   verified.

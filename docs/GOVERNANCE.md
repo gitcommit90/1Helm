@@ -59,8 +59,8 @@ contract as the slice hardens.
    summary or rely on generated commit notes as the user-facing release record.
 9. Each supported desktop platform owns its native artifact and installed-app
    verification lane. The retained Apple Silicon host owns macOS signing and
-   notarization; Linux owns the systemd/LXC artifact and updater acceptance;
-   Windows 11 x64 owns Squirrel and WSL acceptance. Authenticode is optional
+   notarization; Linux owns the systemd/OCI artifact and updater acceptance;
+   Windows 11 x64 owns Squirrel and shared-WSL OCI acceptance. Authenticode is optional
    until 1Helm adopts a trusted Windows signing identity; unsigned artifacts
    must be identified honestly, but their signature status is not a release
    blocker.
@@ -82,7 +82,8 @@ contract as the slice hardens.
   Application Support, and prove signature/ticket/Gatekeeper, launch, version,
   loopback behavior, and retained state on the retained release host.
 - Linux verification must use the digest-qualified release archive and prove a
-  real systemd update, health-failure rollback, and retained `/var/lib/1helm`.
+  real systemd update, health-failure rollback, and retained
+  `/var/lib/1helm-oci-v1`.
 - Windows verification must prove the Setup/Squirrel signature status, clean
   install, old-to-new update, loopback health, WSL lifecycle, and retained
   application data on Windows 11 x64. Do not substitute a self-signed

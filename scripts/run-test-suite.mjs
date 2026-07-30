@@ -42,8 +42,8 @@ const env = { ...process.env, NODE_ENV: "test", MNEMOSYNE_PYTHON: runtime };
 const suites = [
   ["test/native-world.mjs"],
   ["--test",
-    "test/routing.mjs", "test/routing-disabled-account.mjs", "test/desktop.mjs", "test/update-service.mjs",
-    "test/channel-computers.mjs", "test/channel-computers-isolated-backends.mjs", "test/channel-computers-backend-migration.mjs",
+    "test/routing.mjs", "test/routing-disabled-account.mjs", "test/routing-antigravity.mjs", "test/desktop.mjs", "test/update-service.mjs",
+    "test/channel-computers.mjs", "test/channel-computers-isolated-backends.mjs",
     "test/cloudflare-worker.mjs", "test/connectors.mjs", "test/chatgpt-image.mjs", "test/autonomy-platform.mjs",
     "test/feedback.mjs", "test/feedback-browser.mjs", "test/cowork-browser.mjs", "test/files-latency.mjs", "test/gmail.mjs", "test/photon.mjs", "test/site.mjs", "test/release-license.mjs", "test/release-governance.mjs",
     "test/channel-surfaces.mjs", "test/workspace-interactions.mjs", "test/sweep-fleet-telemetry.mjs", "test/sweep-server-integration.mjs", "test/thread-followup-chat.mjs",

@@ -3,11 +3,11 @@ set -euo pipefail
 
 # Remove the Linux host application and only containers whose exact names and
 # in-guest owner markers belong to this installation. Durable workspace state
-# remains under /var/lib/1helm for a deliberate reinstall or manual backup.
+# remains under /var/lib/1helm-oci-v1 for a deliberate reinstall or backup.
 
 INSTALL_ROOT="/opt/1helm"
-STATE_ROOT="/var/lib/1helm"
-HELPER="/usr/libexec/1helm-lxc-runtime"
+STATE_ROOT="/var/lib/1helm-oci-v1"
+HELPER="/usr/libexec/1helm-oci-runtime"
 NODE="$INSTALL_ROOT/node-current/bin/node"
 
 [[ "${EUID}" -eq 0 ]] || { echo "Run this uninstaller with sudo." >&2; exit 1; }
@@ -29,9 +29,9 @@ for name in "${MACHINES[@]}"; do
   "$HELPER" delete "$name" "$INSTALLATION_ID:$channel_id"
 done
 [[ "$($HELPER list "1helm-$INSTALLATION_ID-channel-")" == "[]" ]] || { echo "Some owned channel containers remained; application files were not removed." >&2; exit 1; }
-systemctl disable --now 1helm-update.path 1helm-lxc-net.service 2>/dev/null || true
-rm -f -- /etc/systemd/system/1helm.service /etc/systemd/system/1helm-update.service /etc/systemd/system/1helm-update.path /etc/systemd/system/1helm-lxc-net.service
-rm -f -- /etc/sudoers.d/1helm-lxc-runtime /etc/1helm/lxc-runtime-v2.conf /usr/libexec/1helm-lxc-runtime /usr/libexec/1helm-lxc-net
+systemctl disable --now 1helm-update.path 2>/dev/null || true
+rm -f -- /etc/systemd/system/1helm.service /etc/systemd/system/1helm-update.service /etc/systemd/system/1helm-update.path
+rm -f -- /etc/sudoers.d/1helm-oci-runtime /etc/1helm/oci-runtime-v1.conf /usr/libexec/1helm-oci-runtime /usr/lib/1helm-oci/Containerfile.oci
 rm -f -- "$INSTALL_ROOT/update-host.sh" "$INSTALL_ROOT/uninstall-host.sh"
 systemctl daemon-reload
 printf 'Removed the 1Helm services and %s owned channel container(s). Preserved %s and versioned release files for recovery.\n' "${#MACHINES[@]}" "$STATE_ROOT"

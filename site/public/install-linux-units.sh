@@ -3,13 +3,13 @@ set -euo pipefail
 
 # Install the root-owned Linux service contract from an already verified 1Helm
 # release. Fresh installs and host updates share this exact path so an update
-# can migrate service/runtime settings instead of only changing the `current`
+# can replace service/runtime settings instead of only changing the `current`
 # symlink beneath an obsolete unit.
 
 RELEASE_ROOT="${1:-}"
 INSTALL_ROOT="/opt/1helm"
 NODE_LINK="$INSTALL_ROOT/node-current"
-STATE_ROOT="/var/lib/1helm"
+STATE_ROOT="/var/lib/1helm-oci-v1"
 SERVICE_USER="1helm"
 
 # Bridge upgrades from v0.0.11's too-narrow ProtectSystem=strict namespace.
@@ -29,7 +29,7 @@ fi
 
 [[ "${EUID}" -eq 0 ]] || { echo "The Linux service installer must run as root." >&2; exit 1; }
 [[ -n "$RELEASE_ROOT" && -d "$RELEASE_ROOT" ]] || { echo "A verified 1Helm release directory is required." >&2; exit 1; }
-[[ -x "$RELEASE_ROOT/site/public/update-host.sh" && -x "$RELEASE_ROOT/site/public/apply-linux-release.sh" && -x "$RELEASE_ROOT/site/public/migrate-linux-host-contract.sh" && -x "$RELEASE_ROOT/site/public/uninstall-host.sh" ]] \
+[[ -x "$RELEASE_ROOT/site/public/update-host.sh" && -x "$RELEASE_ROOT/site/public/apply-linux-release.sh" && -x "$RELEASE_ROOT/site/public/install-oci-runtime.sh" && -x "$RELEASE_ROOT/site/public/uninstall-host.sh" ]] \
   || { echo "The verified 1Helm release is missing its host lifecycle scripts." >&2; exit 1; }
 id "$SERVICE_USER" >/dev/null 2>&1 || { echo "The 1Helm service account does not exist." >&2; exit 1; }
 
@@ -39,8 +39,8 @@ install -o root -g root -m 0755 "$RELEASE_ROOT/site/public/uninstall-host.sh" "$
 install -m 0644 /dev/stdin /etc/systemd/system/1helm.service <<EOF
 [Unit]
 Description=1Helm durable agent workspace
-After=network-online.target 1helm-lxc-net.service
-Wants=network-online.target 1helm-lxc-net.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -51,8 +51,8 @@ Environment=NODE_ENV=production
 Environment=PORT=8123
 Environment=HELM_HOST=0.0.0.0
 Environment=CTRL_DATA_DIR=$STATE_ROOT
-Environment=HELM_CHANNEL_COMPUTER_BACKEND=lxc
-Environment=HELM_LXC_HELPER=/usr/libexec/1helm-lxc-runtime
+Environment=HELM_CHANNEL_COMPUTER_BACKEND=oci
+Environment=HELM_OCI_HELPER=/usr/libexec/1helm-oci-runtime
 Environment=HELM_INSTALL_KIND=linux-systemd
 ExecStart=$NODE_LINK/bin/node --disable-warning=ExperimentalWarning src/server/index.ts
 Restart=on-failure
@@ -62,7 +62,7 @@ NoNewPrivileges=false
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=$STATE_ROOT /var/lib/1helm-lxc /var/cache/1helm-lxc /run/lxc /sys/fs/cgroup
+ReadWritePaths=$STATE_ROOT /run/1helm-oci /sys/fs/cgroup
 Delegate=yes
 
 [Install]
@@ -85,7 +85,7 @@ ProtectSystem=strict
 # Runtime and unit files are installed by atomic rename and removed during a
 # failed-update rollback, so their exact parent directories—not merely the old
 # files—must be writable inside this root-owned transaction.
-ReadWritePaths=$INSTALL_ROOT $STATE_ROOT /var/lib/1helm-lxc /var/cache/1helm-lxc /run/lxc /usr/libexec /etc/1helm /etc/default /etc/systemd/system /etc/sudoers.d /etc/subuid /etc/subgid
+ReadWritePaths=$INSTALL_ROOT $STATE_ROOT /run/1helm-oci /usr/libexec /usr/lib/1helm-oci /etc/1helm /etc/default /etc/systemd/system /etc/sudoers.d /etc/subuid /etc/subgid
 EOF
 
 install -m 0644 /dev/stdin /etc/systemd/system/1helm-update.path <<EOF

@@ -9,7 +9,7 @@ INSTALL_ROOT="/opt/1helm"
 RELEASES_ROOT="$INSTALL_ROOT/releases"
 APP_ROOT="$INSTALL_ROOT/current"
 NODE_LINK="$INSTALL_ROOT/node-current"
-STATE_ROOT="/var/lib/1helm"
+STATE_ROOT="/var/lib/1helm-oci-v1"
 SERVICE_USER="1helm"
 SERVICE_NAME="1helm.service"
 PORT="8123"
@@ -17,23 +17,17 @@ RELEASE_ROOT="$(readlink -f "${1:-}" 2>/dev/null || true)"
 TARGET_VERSION="${2:-}"
 STATUS_FILE="$STATE_ROOT/host-update-status.json"
 HOST_CONTRACT_PATHS=(
-  /usr/libexec/1helm-lxc-runtime
-  /usr/libexec/1helm-lxc-net
-  /etc/1helm/lxc-unprivileged.conf
-  /etc/1helm/lxc-runtime-v2.conf
-  /etc/1helm/lxc-idmap
-  /etc/sudoers.d/1helm-lxc-runtime
-  /etc/default/lxc-net
-  /etc/subuid
-  /etc/subgid
-  /etc/systemd/system/1helm-lxc-net.service
+  /usr/libexec/1helm-oci-runtime
+  /etc/1helm/oci-runtime-v1.conf
+  /etc/sudoers.d/1helm-oci-runtime
+  /usr/lib/1helm-oci/Containerfile.oci
   /etc/systemd/system/1helm.service
   /etc/systemd/system/1helm-update.service
   /etc/systemd/system/1helm-update.path
   /opt/1helm/update-host.sh
   /opt/1helm/uninstall-host.sh
 )
-HOST_UNITS=(1helm-lxc-net.service 1helm.service 1helm-update.path)
+HOST_UNITS=(1helm.service 1helm-update.path)
 TRANSACTION_ACTIVE=0
 ROLLING_BACK=0
 TEMP_ROOT=""
@@ -47,12 +41,13 @@ PREVIOUS_RELEASE=""
 PACKAGE_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "$RELEASE_ROOT/package.json" 2>/dev/null || true)"
 [[ "$PACKAGE_VERSION" == "$TARGET_VERSION" ]] \
   || { echo "The retained release does not match the requested version." >&2; exit 1; }
-[[ -x "$RELEASE_ROOT/site/public/install-lxc-runtime.sh" \
+[[ -x "$RELEASE_ROOT/site/public/install-oci-runtime.sh" \
    && -x "$RELEASE_ROOT/site/public/install-linux-units.sh" \
    && -x "$RELEASE_ROOT/site/public/update-host.sh" \
    && -x "$RELEASE_ROOT/site/public/uninstall-host.sh" \
-   && -x "$RELEASE_ROOT/scripts/1helm-lxc-runtime" \
-   && -x "$RELEASE_ROOT/scripts/1helm-lxc-net" ]] \
+   && -x "$RELEASE_ROOT/scripts/1helm-oci-runtime" \
+   && -r "$RELEASE_ROOT/deploy/1helm-oci-runtime-v1.conf" \
+   && -r "$RELEASE_ROOT/container/Containerfile.oci" ]] \
   || { echo "The verified release is missing its Linux host contract." >&2; exit 1; }
 
 TEMP_ROOT="$(mktemp -d)"
@@ -91,7 +86,7 @@ snapshot_host_contract() {
 rollback_host_contract() {
   local path encoded unit enabled active restored_healthy=1
   ROLLING_BACK=1
-  systemctl disable --now 1helm-update.path 1helm-lxc-net.service >/dev/null 2>&1 || true
+  systemctl disable --now 1helm-update.path >/dev/null 2>&1 || true
   systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
   for path in "${HOST_CONTRACT_PATHS[@]}"; do
     encoded="${path#/}"
@@ -145,7 +140,7 @@ PREVIOUS_RELEASE="$(readlink -f "$APP_ROOT" 2>/dev/null || true)"
 snapshot_host_contract
 TRANSACTION_ACTIVE=1
 write_status "installing" "The host verified v$TARGET_VERSION and is applying one atomic runtime and application transaction."
-HELM_HOST_APPLY_DELEGATED=1 "$RELEASE_ROOT/site/public/install-lxc-runtime.sh" "$RELEASE_ROOT"
+HELM_HOST_APPLY_DELEGATED=1 "$RELEASE_ROOT/site/public/install-oci-runtime.sh" "$RELEASE_ROOT"
 ln -s "$RELEASE_ROOT" "$TEMP_ROOT/current"
 mv -Tf "$TEMP_ROOT/current" "$APP_ROOT"
 HELM_HOST_APPLY_DELEGATED=1 "$RELEASE_ROOT/site/public/install-linux-units.sh" "$RELEASE_ROOT"

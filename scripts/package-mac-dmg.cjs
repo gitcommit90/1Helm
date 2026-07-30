@@ -260,7 +260,7 @@ async function main() {
       fs.writeFileSync(path.join(stage, "Install.txt"), [
         "1Helm", "", "Drag 1Helm.app to Applications, then open it.", "",
         "1Helm runs its workspace, terminals, agents, and data locally on this Mac.",
-        "Persistent data: ~/Library/Application Support/1Helm", "",
+        "Persistent data: ~/Library/Application Support/1Helm-OCI-v1", "",
       ].join("\n"));
       run("hdiutil", ["create", "-volname", `${PRODUCT} ${VERSION}`, "-srcfolder", stage, "-ov", "-format", "UDZO", candidate]);
       if (identity) {

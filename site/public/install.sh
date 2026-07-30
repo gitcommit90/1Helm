@@ -7,28 +7,22 @@ RELEASES_ROOT="$INSTALL_ROOT/releases"
 APP_ROOT="$INSTALL_ROOT/current"
 NODE_ROOT="$INSTALL_ROOT/node"
 NODE_LINK="$INSTALL_ROOT/node-current"
-STATE_ROOT="/var/lib/1helm"
+STATE_ROOT="/var/lib/1helm-oci-v1"
 SERVICE_USER="1helm"
 NODE_VERSION="22.23.1"
 RELEASE_VERSION="0.0.28"
 HOST_CONTRACT_PATHS=(
-  /usr/libexec/1helm-lxc-runtime
-  /usr/libexec/1helm-lxc-net
-  /etc/1helm/lxc-unprivileged.conf
-  /etc/1helm/lxc-runtime-v2.conf
-  /etc/1helm/lxc-idmap
-  /etc/sudoers.d/1helm-lxc-runtime
-  /etc/default/lxc-net
-  /etc/subuid
-  /etc/subgid
-  /etc/systemd/system/1helm-lxc-net.service
+  /usr/libexec/1helm-oci-runtime
+  /etc/1helm/oci-runtime-v1.conf
+  /etc/sudoers.d/1helm-oci-runtime
+  /usr/lib/1helm-oci/Containerfile.oci
   /etc/systemd/system/1helm.service
   /etc/systemd/system/1helm-update.service
   /etc/systemd/system/1helm-update.path
   /opt/1helm/update-host.sh
   /opt/1helm/uninstall-host.sh
 )
-HOST_UNITS=(1helm-lxc-net.service 1helm.service 1helm-update.path)
+HOST_UNITS=(1helm.service 1helm-update.path)
 TRANSACTION_ACTIVE=0
 ROLLING_BACK=0
 
@@ -50,13 +44,13 @@ case "$(uname -m)" in
   *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-need=(curl git tar xz sha256sum flock make c++ python3 lxc-create lxc-attach newuidmap sudo visudo)
+need=(curl git tar xz sha256sum flock make c++ python3 podman crun fuse-overlayfs setfacl getfacl sudo visudo)
 missing=()
 for command in "${need[@]}"; do command -v "$command" >/dev/null || missing+=("$command"); done
 if ((${#missing[@]})) || ! python3 -c 'import ensurepip' >/dev/null 2>&1; then
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y curl git xz-utils ca-certificates util-linux build-essential python3 \
-    python3-venv lxc lxc-templates lxcfs uidmap sudo rsync dnsmasq-base iproute2 iptables nftables
+    python3-venv acl crun fuse-overlayfs podman uidmap sudo rsync
 fi
 
 NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
@@ -82,7 +76,7 @@ snapshot_host_contract() {
 rollback_host_contract() {
   local path encoded unit enabled active restored_healthy=1
   ROLLING_BACK=1
-  systemctl disable --now 1helm-update.path 1helm-lxc-net.service >/dev/null 2>&1 || true
+  systemctl disable --now 1helm-update.path >/dev/null 2>&1 || true
   systemctl stop 1helm.service >/dev/null 2>&1 || true
   for path in "${HOST_CONTRACT_PATHS[@]}"; do
     encoded="${path#/}"
@@ -168,7 +162,7 @@ PREVIOUS_RELEASE="$(readlink -f "$APP_ROOT" 2>/dev/null || true)"
 [[ "$PREVIOUS_RELEASE" == "$RELEASES_ROOT/"* && -d "$PREVIOUS_RELEASE" ]] || PREVIOUS_RELEASE=""
 snapshot_host_contract
 TRANSACTION_ACTIVE=1
-"$RELEASE_ROOT/site/public/install-lxc-runtime.sh" "$RELEASE_ROOT"
+"$RELEASE_ROOT/site/public/install-oci-runtime.sh" "$RELEASE_ROOT"
 
 ln -s "$RELEASE_ROOT" "$TEMP_ROOT/current"
 mv -Tf "$TEMP_ROOT/current" "$APP_ROOT"
@@ -186,4 +180,4 @@ if [[ "$healthy" -ne 1 ]]; then
 fi
 TRANSACTION_ACTIVE=0
 echo "1Helm v$VERSION is running at http://localhost:8123"
-echo "Every ordinary channel now receives its own persistent unprivileged LXC computer."
+echo "Every ordinary channel now receives its own persistent OCI container."

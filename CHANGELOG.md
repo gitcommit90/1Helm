@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.29] - 2026-07-30
+
+### Changed
+
+- Linux and Windows channel computers now use one durable OCI container per
+  ordinary channel. Linux runs Podman natively; Windows hosts all channel
+  containers inside one installation-scoped managed WSL 2 runtime.
+- OCI workspace, Files, home, and channel state are runtime-owned and
+  authoritative. Agent commands, terminals, Files, and Cowork see the same
+  storage directly without whole-workspace synchronization in the command
+  path. Containers retain files, tools, processes, network identity, and live
+  CPU/memory controls across stop/start.
+- Channel archive creates a digest-qualified recovery backup. A missing OCI
+  world can be reconstructed only from an exact ownership-checked backup whose
+  SHA-256 matches; unsafe labels, mounts, paths, or deletion targets fail
+  closed.
+- This runtime generation is a deliberate clean start. Desktop state lives in
+  `1Helm-OCI-v1`, Linux state lives in `/var/lib/1helm-oci-v1`, and retired LXC,
+  per-channel WSL, and application data are neither bridged, copied, imported,
+  converted, nor deleted.
+- The embedded ReRouted engine advances to 0.5.10 so Google Antigravity Flash
+  and Pro streaming accepts CRLF-delimited Gemini SSE frames instead of
+  completing with empty output.
+
 ## [0.0.28] - 2026-07-29
 
 ### Fixed
@@ -826,7 +850,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.28...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.29...HEAD
+[0.0.29]: https://github.com/gitcommit90/1Helm/compare/v0.0.28...v0.0.29
 [0.0.28]: https://github.com/gitcommit90/1Helm/compare/v0.0.27...v0.0.28
 [0.0.27]: https://github.com/gitcommit90/1Helm/compare/v0.0.26...v0.0.27
 [0.0.26]: https://github.com/gitcommit90/1Helm/compare/v0.0.23...v0.0.26

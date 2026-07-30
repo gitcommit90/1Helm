@@ -4,6 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { existsSync, statSync, unlinkSync } from "node:fs";
 import { join, extname } from "node:path";
 import { randomBytes } from "node:crypto";
+import { platform } from "node:os";
 import { WebSocketServer, type WebSocket } from "ws";
 import { db, isMainChannel, normalizeWorkspaceName, q, q1, run, now, hashPassword, verifyPassword, newToken, seed, DATA_DIR, UPLOAD_DIR, type Row } from "./db.ts";
 import { createMessage, deleteMessage, serializeMessage, setModelPref, setModelPolicy, resolvedModelPolicy, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots } from "./store.ts";
@@ -83,7 +84,7 @@ import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from ".
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
 import { startFollowupLoop, threadFollowupView, bumpThreadFollowup } from "./followups.ts";
 import { createWorkflow, listWorkflows, registerWorkflowDispatcher, setWorkflowStatus, startWorkflowLoop, stopWorkflowLoop } from "./workflows.ts";
-import { hostUpdateState, installedAppVersion, queueLinuxHostContractMigration, runHostUpdateAction } from "./updates.ts";
+import { hostUpdateState, installedAppVersion, runHostUpdateAction } from "./updates.ts";
 import { centralFeedbackReports, createFeedback, drainFeedback, feedbackAttachment, localFeedbackReports, startFeedbackLoop } from "./feedback.ts";
 import {
   internalRoutingProviderId,
@@ -1204,9 +1205,9 @@ const server = createServer(async (req, res) => {
       const runtime = runtimeReadiness();
       if (!runtime.ready) return json(res, 409, { error: runtime.backend === "apple"
         ? "Approve and finish the verified Apple channel-computer runtime before creating this workspace."
-        : runtime.backend === "lxc"
-          ? "Finish the verified unprivileged LXC host setup before creating this workspace."
-          : "Finish WSL 2 setup before creating this workspace." });
+        : platform() === "win32"
+          ? "Finish the shared WSL OCI runtime setup before creating this workspace."
+          : "Finish the verified OCI host setup before creating this workspace." });
       const b = await jbody(req);
       try {
         const name = normalizeWorkspaceName(b.name || "My Workspace") || "My Workspace";
@@ -2028,11 +2029,11 @@ const server = createServer(async (req, res) => {
     if (p === "/api/channel-computers/runtime/install" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const runtime = runtimeReadiness();
-      if (runtime.backend === "wsl") {
+      if (runtime.backend === "oci" && platform() === "win32") {
         const installer = await prepareWindowsWslRuntime();
         return json(res, 200, { ok: true, installer, runtime: runtimeReadiness() });
       }
-      if (runtime.backend !== "apple") return json(res, 409, { error: "The root-owned LXC runtime is installed and verified by the 1Helm Linux host installer." });
+      if (runtime.backend !== "apple") return json(res, 409, { error: "The root-owned OCI runtime is installed and verified by the 1Helm Linux host installer." });
       const installer = await prepareAppleRuntimeInstaller();
       return json(res, 200, { ok: true, installer: { sha256: installer.sha256, opened: installer.opened }, runtime: runtimeReadiness() });
     }
@@ -2040,9 +2041,9 @@ const server = createServer(async (req, res) => {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const runtime = runtimeReadiness();
       if (runtime.backend !== "apple") {
-        if (!runtime.ready) return json(res, 409, { error: runtime.backend === "lxc"
-          ? "The unprivileged LXC runtime is not ready; rerun the verified Linux host installer."
-          : "WSL 2 is not ready; complete 1Helm's one-time Windows administrator setup." });
+        if (!runtime.ready) return json(res, 409, { error: platform() === "win32"
+          ? "The shared WSL OCI runtime is not ready; complete 1Helm's one-time Windows administrator setup."
+          : "The OCI runtime is not ready; rerun the verified Linux host installer." });
         return json(res, 200, { ok: true, runtime });
       }
       return json(res, 200, { ok: true, runtime: await startAppleRuntime() });
@@ -2264,7 +2265,6 @@ async function bootstrap(): Promise<void> {
     // retained fleet must never synchronously serialize Python init work on the
     // server event loop before or after the health port opens.
     void memoryRuntime.catch((error) => console.warn(`1Helm could not prepare durable memory: ${(error as Error).message}`));
-    void queueLinuxHostContractMigration(DATA_DIR).catch((error) => console.warn(`1Helm could not queue its Linux host-contract migration: ${(error as Error).message}`));
   });
 }
 void bootstrap();

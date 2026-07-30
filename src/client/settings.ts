@@ -229,7 +229,7 @@ function adminPanel(): HTMLElement {
   const removalStatus = h("p", { class: "min-h-5 text-sm text-muted" }, "Checking for 1Helm channel computers…");
   let removalBackend = "";
   const prepareRemoval = async (): Promise<void> => {
-    const platformLabel = removalBackend === "apple" ? "Apple's VM runtime" : removalBackend === "wsl" ? "WSL 2" : removalBackend === "lxc" ? "the Linux LXC runtime" : "the active runtime";
+    const platformLabel = removalBackend === "apple" ? "Apple's VM runtime" : removalBackend === "oci" ? "the OCI runtime" : "the active runtime";
     const confirmation = await appPrompt(`This deletes every verified 1Helm-owned channel computer from ${platformLabel}. Your durable 1Helm data remains intact.\n\nType **REMOVE 1HELM** to continue:`);
     if (confirmation !== "REMOVE 1HELM") { if (confirmation != null) removalStatus.textContent = "Removal preparation cancelled; confirmation did not match."; return; }
     removalStatus.textContent = "Preserving the latest channel files and deleting owned virtual machines…";
@@ -240,7 +240,7 @@ function adminPanel(): HTMLElement {
   };
   void api<{ backend: string; machines: number }>("/api/app/removal").then((result) => {
     removalBackend = result.backend;
-    removalStatus.textContent = ["apple", "lxc", "wsl"].includes(result.backend)
+    removalStatus.textContent = ["apple", "oci"].includes(result.backend)
       ? `${result.machines} 1Helm-owned channel computer${result.machines === 1 ? "" : "s"} will be removed before uninstall.`
       : "No isolated channel computers are managed by this development installation.";
   }).catch((error) => { removalStatus.textContent = (error as Error).message; });
@@ -667,20 +667,21 @@ function computersPanel(): HTMLElement {
       runtimeBox.append(h("h3", { class: "font-semibold text-fg" }, "Channel computers · development backend"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "This explicit development seam runs without production VM isolation."));
       return;
     }
-    if (runtime.backend === "lxc" || runtime.backend === "wsl") {
-      const label = runtime.backend === "lxc" ? "Unprivileged LXC" : "Private WSL 2";
-      const readyCopy = runtime.backend === "lxc"
-        ? "The root-owned LXC boundary is healthy. Skipper manages one persistent unprivileged Linux container per ordinary channel."
-        : "WSL 2 is healthy. Skipper manages one persistent private Linux distribution per ordinary channel.";
-      const setupCopy = runtime.backend === "lxc"
-        ? "Rerun the verified 1Helm Linux host installer to repair the LXC helper, bridge, cgroups, or pinned image assets."
-        : "Complete 1Helm's one-time Windows administrator setup to enable WSL 2.";
+    if (runtime.backend === "oci") {
+      const windows = Boolean(runtime.shared_runtime);
+      const label = windows ? "Shared Windows OCI runtime" : "Native OCI runtime";
+      const readyCopy = windows
+        ? "The installation-scoped WSL runtime is healthy. Skipper manages one persistent OCI container per ordinary channel."
+        : "The root-owned OCI runtime is healthy. Skipper manages one persistent OCI container per ordinary channel.";
+      const setupCopy = windows
+        ? "Complete 1Helm's one-time Windows administrator setup for the shared OCI runtime."
+        : "Rerun the verified 1Helm Linux host installer to repair Podman, cgroups, or the root-owned helper.";
       const actionStatus = h("p", { class: "mt-2 text-sm text-muted" });
-      const windowsSetup = runtime.backend === "wsl" && !runtime.ready ? h("button", { class: "btn-primary mt-3 text-sm", onclick: async () => {
-        actionStatus.textContent = "Opening Windows' WSL 2 administrator setup…";
+      const windowsSetup = windows && !runtime.ready ? h("button", { class: "btn-primary mt-3 text-sm", onclick: async () => {
+        actionStatus.textContent = "Opening Windows' shared runtime administrator setup…";
         try { await api("/api/channel-computers/runtime/install", { body: {} }); actionStatus.textContent = "Finish the Windows prompt. Restart once if Windows requests it, then reopen 1Helm."; }
         catch (error) { actionStatus.textContent = (error as Error).message; }
-      } }, "Set up WSL 2") : null;
+      } }, "Set up shared runtime") : null;
       runtimeBox.append(
         h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-semibold text-fg" }, "Channel computers"), h("span", { class: "chip border-accent/25" }, runtime.ready ? `${label} ready` : "Setup required")),
         h("p", { class: "mt-1 text-sm leading-6 text-muted" }, runtime.ready ? readyCopy : setupCopy),

@@ -178,13 +178,14 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
             showRuntimeApproval(runtime);
             runtimeMount.scrollIntoView({ behavior: "smooth", block: "nearest" });
           } else {
-            const instruction = runtime.backend === "lxc"
-              ? "The unprivileged LXC runtime is not ready. Rerun the verified 1Helm Linux host installer, then retry."
-              : runtime.backend === "wsl"
-                ? "WSL 2 is not ready. Complete 1Helm's one-time Windows administrator setup, then retry."
+            const windows = Boolean(runtime.shared_runtime);
+            const instruction = windows
+              ? "The shared Windows OCI runtime is not ready. Complete 1Helm's one-time administrator setup, then retry."
+              : runtime.backend === "oci"
+                ? "The OCI runtime is not ready. Rerun the verified 1Helm Linux host installer, then retry."
                 : "The development channel-computer backend is not ready.";
             const message = h("div", { class: "wizard-status-err" }, runtime.error ? `${instruction} ${runtime.error}` : instruction);
-            if (runtime.backend === "wsl") {
+            if (windows) {
               const setupWsl = h("button", { class: "btn-primary mt-3 w-full py-2 sm:w-auto", onclick: async () => {
                 setBusy(setupWsl as HTMLButtonElement, true, "Opening Windows setup…");
                 try {
@@ -192,7 +193,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
                   status.replaceChildren(h("div", { class: "wizard-status-warn" }, "Finish the Windows prompt. Restart once if requested, then reopen 1Helm."));
                 } catch (error) { status.replaceChildren(h("div", { class: "wizard-status-err" }, (error as Error).message)); }
                 finally { setBusy(setupWsl as HTMLButtonElement, false); }
-              } }, "Set up WSL 2");
+              } }, "Set up shared runtime");
               status.replaceChildren(message, setupWsl);
             } else status.replaceChildren(message);
           }

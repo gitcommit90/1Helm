@@ -6,8 +6,8 @@ import { botView, resolveModel } from "./store.ts";
 import { ensureAgentMemory, rememberForAgent } from "./memory.ts";
 import { listSkills, provisionInitialSkills, provisionSkill, skillsForAgent, templateForSlug } from "./skills.ts";
 import { archiveChannelComputer, deleteChannelComputer, ensureChannelComputerRecord, markWorkspaceDirty, provisionChannelComputer, restoreChannelComputer } from "./channel-computers.ts";
+import { channelFilesPath, channelUsesRuntimeStorage, channelWorkspacePath, hostChannelRoot } from "./channel-storage.ts";
 
-const CHANNELS_DIR = join(DATA_DIR, "channels");
 const WORLD_DIRS = ["workspace", "files", "state", "memory", "profile"];
 const COWORK_DIRS = ["notes", "whiteboards", "code", "docs", "presentations"];
 const PROTECTED_WORKSPACE_ROOTS = new Set([...COWORK_DIRS, "files"]);
@@ -41,19 +41,24 @@ export const normalizeChannelName = (value: string): string => value.trim().toLo
 export const channelSlug = (value: string): string => value.trim().toLowerCase()
   .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
 
-export const channelRoot = (channelId: number): string => join(CHANNELS_DIR, String(channelId));
-export const channelWorkspace = (channelId: number): string => join(channelRoot(channelId), "workspace");
+export const channelRoot = hostChannelRoot;
+export const channelWorkspace = channelWorkspacePath;
+export const channelFiles = channelFilesPath;
 
 export function ensureChannelWorkspace(channelId: number): string {
   const channel = q1("SELECT id,name,personal_main_owner_id FROM channels WHERE id=? AND status<>'deleted'", channelId);
   if (!channel) throw new Error("Channel workspace not found.");
   const root = channelRoot(channelId);
-  for (const dir of WORLD_DIRS) mkdirSync(join(root, dir), { recursive: true });
-  for (const dir of COWORK_DIRS) {
-    const path = join(root, "workspace", dir);
-    if (!existsSync(path)) {
-      mkdirSync(path, { recursive: true });
-      markWorkspaceDirty(channelId, `workspace/${dir}`, "upsert");
+  for (const dir of WORLD_DIRS.filter((entry) => entry !== "workspace" && entry !== "files")) mkdirSync(join(root, dir), { recursive: true });
+  if (!channelUsesRuntimeStorage(channelId) || existsSync(channelWorkspace(channelId))) {
+    mkdirSync(channelWorkspace(channelId), { recursive: true });
+    mkdirSync(channelFiles(channelId), { recursive: true });
+    for (const dir of COWORK_DIRS) {
+      const path = join(channelWorkspace(channelId), dir);
+      if (!existsSync(path)) {
+        mkdirSync(path, { recursive: true });
+        markWorkspaceDirty(channelId, `workspace/${dir}`, "upsert");
+      }
     }
   }
   run("INSERT OR IGNORE INTO channel_workspaces (channel_id, root_ref, created) VALUES (?,?,?)", channelId, `channels/${channelId}`, now());
@@ -189,7 +194,11 @@ export function provisionChannel(opts: { name: string; purpose: string; userId: 
       provisionInitialSkills(agentId, String(template?.slug || "general"), purpose, skipper ? Number(skipper.id) : null);
       run("INSERT INTO channel_workspaces (channel_id, root_ref, created) VALUES (?,?,?)", channelId, `channels/${channelId}`, now());
       const root = channelRoot(channelId);
-      for (const dir of WORLD_DIRS) mkdirSync(join(root, dir), { recursive: true });
+      for (const dir of WORLD_DIRS.filter((entry) => entry !== "workspace" && entry !== "files")) mkdirSync(join(root, dir), { recursive: true });
+      if (!channelUsesRuntimeStorage(channelId)) {
+        mkdirSync(channelWorkspace(channelId), { recursive: true });
+        mkdirSync(channelFiles(channelId), { recursive: true });
+      }
       writeFileSync(join(root, "profile", "agent.json"), JSON.stringify({ name: mentionName, purpose, template: template?.slug || "general", workspace: "/workspace", memory_namespace: `channel:${channelId}` }, null, 2));
       ensureChannelComputerRecord(channelId);
       markWorkspaceDirty(channelId, "*", "full");
@@ -538,9 +547,9 @@ export function validateWorkspaceEntryName(input: string): string {
 
 function workspaceApiPathToHost(channelId: number, input: string): { path: string; host: string; base: string } {
   const path = normalizeWorkspaceDirectoryPath(input);
-  const root = ensureChannelWorkspace(channelId);
+  ensureChannelWorkspace(channelId);
   const uploads = path === "files" || path.startsWith("files/");
-  const base = resolve(root, uploads ? "files" : "workspace");
+  const base = resolve(uploads ? channelFiles(channelId) : channelWorkspace(channelId));
   const inside = uploads ? path.slice("files".length).replace(/^\/+/, "") : path;
   const host = resolve(base, inside);
   if (host !== base && !host.startsWith(base + sep)) throw new Error("Folder must stay inside /workspace.");
@@ -579,7 +588,8 @@ export function listWorkspaceDirectory(channelId: number, input = ""): { path: s
     return [{ path, name: entry.name, size: entry.isFile() ? info.size : 0, modified: info.mtimeMs, kind: entry.isDirectory() ? "directory" : "file" }];
   });
   if (!directory.path) {
-    const uploads = join(ensureChannelWorkspace(channelId), "files");
+    ensureChannelWorkspace(channelId);
+    const uploads = channelFiles(channelId);
     const info = statSync(uploads);
     files.push({ path: "files", name: "files", size: 0, modified: info.mtimeMs, kind: "directory" });
   }
@@ -722,7 +732,8 @@ export function listWorkspaceDirectories(channelId: number): WorkspaceFile[] {
     }
   };
   walk("");
-  const uploads = join(ensureChannelWorkspace(channelId), "files");
+  ensureChannelWorkspace(channelId);
+  const uploads = channelFiles(channelId);
   result.push(workspaceFileView("files", uploads));
   const walkUploads = (path: string): void => {
     const directory = existingWorkspaceDirectory(channelId, path);
@@ -775,7 +786,7 @@ export function listWorkspaceFiles(channelId: number): WorkspaceFile[] {
   // Terminal / agent shell CWD is channel workspace/. Present that tree under
   // workspace/... (its absolute path in the agent world, and unambiguous next
   // to the sibling uploads tree, listed as files/...).
-  const root = ensureChannelWorkspace(channelId);
+  ensureChannelWorkspace(channelId);
   const files: WorkspaceFile[] = [];
   const walk = (dir: string, prefix: string): void => {
     if (!existsSync(dir)) return;
@@ -792,24 +803,27 @@ export function listWorkspaceFiles(channelId: number): WorkspaceFile[] {
       }
     }
   };
-  walk(join(root, "workspace"), "workspace");
-  walk(join(root, "files"), "files");
+  walk(channelWorkspace(channelId), "workspace");
+  walk(channelFiles(channelId), "files");
   return files.sort((a, b) => a.path.localeCompare(b.path));
 }
 
 export function resolveWorldFile(channelId: number, requested: string): string {
-  const root = realpathSync(resolve(ensureChannelWorkspace(channelId)));
+  ensureChannelWorkspace(channelId);
+  const root = realpathSync(resolve(channelWorkspace(channelId)));
   // UI paths are relative to /workspace (agent shell). Map bare paths into workspace/.
   let rel = String(requested || "").replace(/^\/+/, "");
   if (rel.startsWith("workspace/")) rel = rel.slice("workspace/".length);
+  const filesRoot = realpathSync(resolve(channelFiles(channelId)));
   const candidates = rel.startsWith("files/")
-    ? [resolve(root, rel)]
-    : [resolve(root, "workspace", rel), resolve(root, rel)];
+    ? [resolve(filesRoot, rel.slice("files/".length))]
+    : [resolve(root, rel)];
   for (const lexicalTarget of candidates) {
-    if (lexicalTarget !== root && !lexicalTarget.startsWith(root + sep)) continue;
+    const expectedRoot = rel.startsWith("files/") ? filesRoot : root;
+    if (lexicalTarget !== expectedRoot && !lexicalTarget.startsWith(expectedRoot + sep)) continue;
     if (!existsSync(lexicalTarget) || !lstatSync(lexicalTarget).isFile()) continue;
     const target = realpathSync(lexicalTarget);
-    if (target !== root && !target.startsWith(root + sep)) continue;
+    if (target !== expectedRoot && !target.startsWith(expectedRoot + sep)) continue;
     return target;
   }
   throw new Error("File not found.");
@@ -893,11 +907,11 @@ export function resolveAgentFilePath(channelId: number, requestedPath: string): 
   const rel = stripWorkspacePrefix(raw);
   const channelRootAbs = ensureChannelWorkspace(channelId);
   const channelWs = channelWorkspace(channelId);
+  const channelUploads = channelFiles(channelId);
   if (rel) {
     pushIfFile(join(channelWs, rel));
     pushIfFile(join(channelRootAbs, rel));
-    pushIfFile(join(channelRootAbs, "files", basename(rel)));
-    pushIfFile(join(channelWs, "files", basename(rel)));
+    pushIfFile(join(channelUploads, basename(rel)));
     // Host-level /workspace dump used by absolute /workspace paths in shell
     pushIfFile(join("/workspace", rel));
     pushIfFile(join("/workspace/files", basename(rel)));
@@ -906,8 +920,8 @@ export function resolveAgentFilePath(channelId: number, requestedPath: string): 
   }
 
   // Prefer files already inside this channel world when both exist.
-  const channelPrefix = realpathSync(channelRootAbs) + sep;
-  const inChannel = candidates.find((p) => p === realpathSync(channelRootAbs) || p.startsWith(channelPrefix));
+  const channelRoots = [channelRootAbs, channelWs, channelUploads].filter(existsSync).map((entry) => realpathSync(entry));
+  const inChannel = candidates.find((candidate) => channelRoots.some((root) => candidate === root || candidate.startsWith(root + sep)));
   if (inChannel) return inChannel;
   if (candidates[0]) return candidates[0];
   throw new Error("File not found.");
@@ -931,7 +945,9 @@ export function attachWorkspaceFileToMessage(
 
   let absolute = resolveAgentFilePath(channelId, requestedPath);
   const channelRootAbs = realpathSync(ensureChannelWorkspace(channelId));
-  const insideChannel = absolute === channelRootAbs || absolute.startsWith(channelRootAbs + sep);
+  const channelWsAbs = realpathSync(channelWorkspace(channelId));
+  const channelFilesAbs = realpathSync(channelFiles(channelId));
+  const insideChannel = [channelRootAbs, channelWsAbs, channelFilesAbs].some((root) => absolute === root || absolute.startsWith(root + sep));
 
   // If the only copy lives on host /workspace, import into channel files/ so the world stays coherent.
   if (!insideChannel) {
@@ -959,7 +975,7 @@ export function attachWorkspaceFileToMessage(
 
   const worldRel = worldRelSafe(channelId, absolute);
   const underChannelFiles = worldRel.startsWith("files/");
-  if (!underChannelFiles && (absolute.startsWith(channelRootAbs + sep) || absolute === channelRootAbs)) {
+  if (!underChannelFiles && (absolute.startsWith(channelWsAbs + sep) || absolute === channelWsAbs)) {
     // Ensure Files tab sees workspace-originated artifacts
     run(
       `INSERT INTO artifacts (channel_id, thread_id, path, kind, created_by, size, modified, created) VALUES (?,?,?,'file',?,?,?,?)
@@ -973,6 +989,10 @@ export function attachWorkspaceFileToMessage(
 
 function worldRelSafe(channelId: number, absolute: string): string {
   try {
+    const workspace = realpathSync(channelWorkspace(channelId));
+    const files = realpathSync(channelFiles(channelId));
+    if (absolute === workspace || absolute.startsWith(workspace + sep)) return `workspace/${relative(workspace, absolute).split(sep).join("/")}`.replace(/\/$/, "");
+    if (absolute === files || absolute.startsWith(files + sep)) return `files/${relative(files, absolute).split(sep).join("/")}`.replace(/\/$/, "");
     return relative(channelRoot(channelId), absolute).split(sep).join("/");
   } catch {
     return basename(absolute);

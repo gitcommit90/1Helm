@@ -71,9 +71,9 @@ try {
   app = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "src/server/index.ts"], {
     cwd: root,
     // This test uses a disposable copy of production data but runs on the
-    // development host, not an installed Linux service with the root-owned LXC
+    // development host, not an installed Linux service with the root-owned OCI
     // helper. Keep the production browser contract on the explicit native seam;
-    // real LXC acceptance is exercised independently on the retained host.
+    // real OCI acceptance is exercised independently on a native host.
     env: { ...process.env, CTRL_DATA_DIR: dataDir, PORT: String(port), HELM_CHANNEL_COMPUTER_BACKEND: "native" },
     stdio: ["ignore", "pipe", "pipe"],
   });

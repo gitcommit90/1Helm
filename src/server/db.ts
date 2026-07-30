@@ -741,7 +741,7 @@ export function migrate(): void {
   CREATE INDEX IF NOT EXISTS idx_followups_thread ON agent_followups(thread_id, status);
   CREATE TABLE IF NOT EXISTS channel_computers (
     channel_id INTEGER PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
-    backend TEXT NOT NULL CHECK (backend IN ('apple','lxc','wsl','native','mock')),
+    backend TEXT NOT NULL CHECK (backend IN ('apple','oci','native','mock')),
     machine_id TEXT NOT NULL UNIQUE,
     image TEXT NOT NULL DEFAULT '',
     desired_state TEXT NOT NULL DEFAULT 'auto' CHECK (desired_state IN ('auto','running','stopped','deleted')),
@@ -791,76 +791,6 @@ export function migrate(): void {
     PRIMARY KEY (channel_id, relative_path)
   );
   `);
-  // 0.0.1/0.0.2 constrained computer backends to Apple and the development
-  // compatibility seams. Rebuild these three tables together so existing
-  // channel worlds and obligations survive while Linux LXC and Windows WSL
-  // become first-class durable backends. SQLite cannot widen a CHECK in place.
-  const computerTableSql = String(q1("SELECT sql FROM sqlite_master WHERE type='table' AND name='channel_computers'")?.sql || "");
-  if (computerTableSql && !computerTableSql.includes("'lxc'")) {
-    db.exec(`
-      PRAGMA foreign_keys=OFF;
-      DROP INDEX IF EXISTS idx_channel_computers_state;
-      DROP INDEX IF EXISTS idx_computer_obligations_active;
-      ALTER TABLE channel_computer_obligations RENAME TO channel_computer_obligations_backend_v1;
-      ALTER TABLE channel_workspace_changes RENAME TO channel_workspace_changes_backend_v1;
-      ALTER TABLE channel_computers RENAME TO channel_computers_backend_v1;
-      CREATE TABLE channel_computers (
-        channel_id INTEGER PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
-        backend TEXT NOT NULL CHECK (backend IN ('apple','lxc','wsl','native','mock')),
-        machine_id TEXT NOT NULL UNIQUE,
-        image TEXT NOT NULL DEFAULT '',
-        desired_state TEXT NOT NULL DEFAULT 'auto' CHECK (desired_state IN ('auto','running','stopped','deleted')),
-        observed_state TEXT NOT NULL DEFAULT 'unknown',
-        cpus INTEGER NOT NULL,
-        memory_bytes INTEGER NOT NULL,
-        disk_bytes INTEGER NOT NULL DEFAULT 0,
-        home_mount TEXT NOT NULL DEFAULT 'none' CHECK (home_mount='none'),
-        provision_status TEXT NOT NULL DEFAULT 'pending' CHECK (provision_status IN ('pending','provisioning','ready','repairing','error','deleted')),
-        maintenance_state TEXT NOT NULL DEFAULT 'idle',
-        host_revision INTEGER NOT NULL DEFAULT 0,
-        synced_host_revision INTEGER NOT NULL DEFAULT 0,
-        guest_revision INTEGER NOT NULL DEFAULT 0,
-        pressure_json TEXT NOT NULL DEFAULT '{}',
-        low_pressure_streak INTEGER NOT NULL DEFAULT 0,
-        last_update INTEGER NOT NULL DEFAULT 0,
-        last_update_attempt INTEGER NOT NULL DEFAULT 0,
-        last_health INTEGER NOT NULL DEFAULT 0,
-        last_used INTEGER NOT NULL DEFAULT 0,
-        last_error TEXT NOT NULL DEFAULT '',
-        created INTEGER NOT NULL,
-        updated INTEGER NOT NULL
-      );
-      INSERT INTO channel_computers SELECT * FROM channel_computers_backend_v1;
-      CREATE INDEX idx_channel_computers_state ON channel_computers(desired_state, observed_state, provision_status);
-      CREATE TABLE channel_computer_obligations (
-        channel_id INTEGER NOT NULL REFERENCES channel_computers(channel_id) ON DELETE CASCADE,
-        kind TEXT NOT NULL,
-        ref TEXT NOT NULL,
-        mode TEXT NOT NULL DEFAULT 'resident' CHECK (mode IN ('resident','wakeable')),
-        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','satisfied','cancelled')),
-        details TEXT NOT NULL DEFAULT '',
-        due_at INTEGER,
-        created INTEGER NOT NULL,
-        updated INTEGER NOT NULL,
-        PRIMARY KEY (channel_id, kind, ref)
-      );
-      INSERT INTO channel_computer_obligations SELECT * FROM channel_computer_obligations_backend_v1;
-      CREATE INDEX idx_computer_obligations_active ON channel_computer_obligations(channel_id, status, mode, due_at);
-      CREATE TABLE channel_workspace_changes (
-        channel_id INTEGER NOT NULL REFERENCES channel_computers(channel_id) ON DELETE CASCADE,
-        relative_path TEXT NOT NULL,
-        operation TEXT NOT NULL DEFAULT 'upsert' CHECK (operation IN ('upsert','delete','full')),
-        created INTEGER NOT NULL,
-        PRIMARY KEY (channel_id, relative_path)
-      );
-      INSERT INTO channel_workspace_changes SELECT * FROM channel_workspace_changes_backend_v1;
-      DROP TABLE channel_computer_obligations_backend_v1;
-      DROP TABLE channel_workspace_changes_backend_v1;
-      DROP TABLE channel_computers_backend_v1;
-      PRAGMA foreign_keys=ON;
-    `);
-    if (q1("PRAGMA foreign_key_check")) throw new Error("Channel-computer backend migration violated a foreign key.");
-  }
   // Append-only cryptographic continuity for the operational surfaces that
   // matter when reconstructing delegated work. SQLite triggers ensure events
   // are chained even when a future code path writes the source table directly.
@@ -1003,22 +933,13 @@ export function migrate(): void {
       run("INSERT INTO agent_channels (agent_id, channel_id, bound_at) VALUES (?,?,?)", agentId, channel.id, now());
     }
 
-    // Existing ordinary channels gain a durable computer control-plane row.
-    // The backend is explicit: each shipped host gets its native isolation
-    // primitive. `native` and `mock` remain deliberate development/test seams.
-    const platformBackend = process.platform === "darwin" ? "apple" : process.platform === "win32" ? "wsl" : "lxc";
+    // Ordinary channels gain a durable computer control-plane row. The OCI
+    // architecture is intentionally a clean start: old runtime records are
+    // neither converted nor imported here.
+    const platformBackend = process.platform === "darwin" ? "apple" : "oci";
     const configuredBackend = String(process.env.HELM_CHANNEL_COMPUTER_BACKEND || platformBackend);
-    const backend = ["apple", "lxc", "wsl", "native", "mock"].includes(configuredBackend) ? configuredBackend : platformBackend;
-    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.28");
-    // Earlier Linux/Windows releases persisted the compatibility `native`
-    // seam into every channel row. A production host update must actually
-    // move those rows onto the platform isolation backend; changing the unit's
-    // environment alone would otherwise leave every existing resident native.
-    // Explicit development/test overrides to native/mock remain untouched.
-    if (["apple", "lxc", "wsl"].includes(backend)) {
-      run(`UPDATE channel_computers SET backend=?,observed_state='missing',provision_status='pending',last_error='',updated=?
-        WHERE backend='native' AND desired_state<>'deleted'`, backend, now());
-    }
+    const backend = ["apple", "oci", "native", "mock"].includes(configuredBackend) ? configuredBackend : platformBackend;
+    const image = String(process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.29");
     for (const channel of q(`SELECT c.id FROM channels c JOIN agent_channels ac ON ac.channel_id=c.id
       WHERE c.kind='channel' AND c.status<>'deleted'`)) {
       const channelId = Number(channel.id);

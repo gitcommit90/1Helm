@@ -306,6 +306,9 @@ try {
     parentId: queueRoot,
     effectiveModelPolicy: { provider_id: queuedPolicy.body.policy.provider_id, model: queuedPolicy.body.policy.model, source: queuedPolicy.body.policy.source },
   } }, captain);
+  if (queuedMessage.status !== 200 || !queuedMessage.body.message?.id) {
+    throw new Error(`Same-thread queued message was not admitted: ${JSON.stringify(queuedMessage)}`);
+  }
   await waitFor(async () => {
     const replies = (await api(`/api/messages/${queueRoot}/thread`, {}, captain)).body.replies || [];
     return replies.find((reply) => reply.progress?.some((item) => /Queued · 1 ahead/.test(item.body || "")));
@@ -912,6 +915,7 @@ try {
     return completed;
   }, "queued turn resume after crash");
   const db2 = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  db2.exec("PRAGMA busy_timeout=10000");
   const stuckWorking = db2.prepare("SELECT count(*) n FROM agents WHERE status='working'").get().n;
   const emptyPlaceholders = db2.prepare("SELECT count(*) n FROM messages WHERE body='' AND bot_id IS NOT NULL AND parent_id IS NOT NULL").get().n;
   const blindlyReplayedRunning = db2.prepare("SELECT COUNT(*) n FROM agent_turns WHERE error='server restart interrupted a running turn' AND state<>'failed'").get().n;

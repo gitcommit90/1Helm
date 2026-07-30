@@ -1151,9 +1151,8 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
   const assignedSkills = h("div", { class: "mt-3 flex flex-wrap gap-2", dataset: { assignedSkills: "" } }, ...((channel.agent?.skills || []).map((skill) => h("span", { class: "chip border-accent/25", dataset: { assignedSkill: skill.slug } }, skill.name))));
   const computer = channel.computer;
   const computerKind = computer?.backend === "apple" ? "Isolated Linux VM"
-    : computer?.backend === "lxc" ? "Unprivileged LXC"
-      : computer?.backend === "wsl" ? "Private WSL 2"
-        : "Development backend";
+    : computer?.backend === "oci" ? "Private OCI container"
+      : "Development backend";
   const computerCard = computer ? h("div", { class: "card p-4" },
     h("div", { class: "flex flex-wrap items-center gap-2" },
       h("h3", { class: "font-semibold text-fg" }, "This channel's computer"),

@@ -154,8 +154,8 @@ workspace state.
 | Install path still works | Clean `CTRL_DATA_DIR` boot through the wizard plus platform acceptance |
 | Named desktop release | One version/commit, changelog, full numbered notes, exact tag, complete Mac + Linux + Windows asset matrix, and clean installation evidence for all three |
 | Mac host update | Published notarized/stapled updater ZIP feed, installed-old-to-new acceptance, and preserved Application Support |
-| Linux host update | Digest-qualified artifact, real systemd old-to-new update, health check/rollback, and preserved `/var/lib/1helm` |
-| Windows host update | Setup + `.nupkg` + `RELEASES` with disclosed signature status, real Squirrel old-to-new update, WSL lifecycle smoke, and preserved app data |
+| Linux host update | Digest-qualified artifact, real systemd install/update, health check/rollback, and preserved `/var/lib/1helm-oci-v1` |
+| Windows host update | Setup + `.nupkg` + `RELEASES` with disclosed signature status, Squirrel install/update, shared-WSL OCI lifecycle smoke, and preserved current-generation app data |
 
 If any platform artifact or acceptance run is skipped, the release is paused,
 not partially shipped. Say exactly what is missing and do not call it “done.”
