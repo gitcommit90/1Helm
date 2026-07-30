@@ -197,6 +197,7 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(linuxUnits, /HELM_INSTALL_KIND=linux-systemd/, "standard Linux installs identify their host-owned update mechanism");
   assert.match(readFileSync(`${root}/src/server/channel-computers.ts`, "utf8"), /HELM_INSTALL_KIND === "linux-systemd"[\s\S]*source-tree fallback is disabled/, "installed Linux services cannot silently execute a helper from a mutable source checkout");
   assert.match(linuxUnits, /Delegate=yes/, "systemd delegates the service cgroup required for nested channel containers");
+  assert.match(linuxUnits, /ReadWritePaths=[^\n]*\/run\/lock(?:\s|$)/, "the sandbox permits Podman netavark to create its required runtime lock");
   assert.match(uninstaller, /"\$HELPER" delete "\$name" "\$INSTALLATION_ID:\$channel_id"/, "uninstall deletes only exact installation-owned containers");
   assert.match(uninstaller, /Preserved %s/, "uninstall preserves durable workspace state");
 });

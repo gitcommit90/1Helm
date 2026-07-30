@@ -64,6 +64,12 @@ function signPackagedExecutables(appDir) {
 async function main() {
   fs.mkdirSync(DIST, { recursive: true });
   const iconRoot = fs.mkdtempSync(path.join(os.tmpdir(), "1helm-win-icon-"));
+  // Squirrel 1.x expands every package file through legacy .NET APIs limited
+  // to 260-character paths. A short release directory alone is insufficient:
+  // its packages/app-version staging tree still includes the packaged app's
+  // full relative paths. Build both the app and installer in one fresh,
+  // drive-root scratch directory, then retain only canonical artifacts.
+  const windowsScratch = fs.mkdtempSync(path.join(path.parse(ROOT).root, "1hw-"));
   const ico = path.join(iconRoot, "1Helm.ico");
   try {
     const pngToIco = require("png-to-ico").default;
@@ -76,7 +82,7 @@ async function main() {
     const [appDir] = await packager({
       dir: ROOT, name: PRODUCT, executableName: PRODUCT, appCopyright: "Copyright (c) 2026 Joseph Yaksich",
       win32metadata: { CompanyName: "Joseph Yaksich", FileDescription: PRODUCT, OriginalFilename: "1Helm.exe", ProductName: PRODUCT, InternalName: PRODUCT },
-      platform: "win32", arch: "x64", out: DIST, overwrite: true, prune: true, asar: false, icon: ico,
+      platform: "win32", arch: "x64", out: windowsScratch, overwrite: true, prune: true, asar: false, icon: ico,
       ignore: [IGNORE_NON_RUNTIME_ROOTS, IGNORE_CLIENT_BUILD_MODULES, /\.DS_Store$/, /\.log$/],
     });
     const appExe = path.join(appDir, "1Helm.exe");
@@ -98,11 +104,7 @@ async function main() {
       ]) if (!fs.existsSync(required)) throw new Error(`Packaged Windows app is missing ${path.basename(required)}.`);
     }
 
-    // Squirrel 1.x uses legacy .NET path handling while it expands the NuGet
-    // package. Keep its private scratch root deliberately short; only the
-    // canonical artifacts copied into DIST below are retained.
-    const installerDir = path.join(DIST, "w");
-    fs.rmSync(installerDir, { recursive: true, force: true });
+    const installerDir = path.join(windowsScratch, "w");
     const { createWindowsInstaller } = require("electron-winstaller");
     await createWindowsInstaller({
       appDirectory: appDir,
@@ -137,7 +139,10 @@ async function main() {
     for (const target of [finalSetup, finalNupkg, finalReleases]) {
       process.stdout.write(`${target}\nSHA-256 ${capture("certutil.exe", ["-hashfile", target, "SHA256"]).split(/\r?\n/).find((line) => /^[a-f0-9 ]{64,}$/i.test(line.trim()))?.replaceAll(" ", "") || "unavailable"}\n`);
     }
-  } finally { fs.rmSync(iconRoot, { recursive: true, force: true }); }
+  } finally {
+    fs.rmSync(iconRoot, { recursive: true, force: true });
+    fs.rmSync(windowsScratch, { recursive: true, force: true });
+  }
 }
 
 main().catch((error) => { console.error(error instanceof Error ? error.stack || error.message : error); process.exit(1); });
