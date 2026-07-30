@@ -21,6 +21,10 @@ const IGNORE_NON_RUNTIME_ROOTS = /^\/(?!package\.json$|LICENSE$|NOTICE$|desktop(
 // well adds deeply nested Radix paths that legacy Squirrel/NuGet cannot
 // releasify under Windows' 260-character path limit.
 const IGNORE_CLIENT_BUILD_MODULES = /^\/node_modules\/@excalidraw(?:$|\/)/;
+// Some production dependencies publish maintainer instruction files. They are
+// useful in source checkouts but are not runtime assets and must not enter an
+// installed app or release package.
+const IGNORE_INSTRUCTION_FILES = /\/AGENTS\.md$/;
 
 if (process.platform !== "win32" || process.arch !== "x64") throw new Error("Windows packaging must run on Windows x64.");
 if (!/^\d+\.\d+\.\d+$/.test(VERSION)) throw new Error("package.json must contain a release version.");
@@ -83,7 +87,7 @@ async function main() {
       dir: ROOT, name: PRODUCT, executableName: PRODUCT, appCopyright: "Copyright (c) 2026 Joseph Yaksich",
       win32metadata: { CompanyName: "Joseph Yaksich", FileDescription: PRODUCT, OriginalFilename: "1Helm.exe", ProductName: PRODUCT, InternalName: PRODUCT },
       platform: "win32", arch: "x64", out: windowsScratch, overwrite: true, prune: true, asar: false, icon: ico,
-      ignore: [IGNORE_NON_RUNTIME_ROOTS, IGNORE_CLIENT_BUILD_MODULES, /\.DS_Store$/, /\.log$/],
+      ignore: [IGNORE_NON_RUNTIME_ROOTS, IGNORE_CLIENT_BUILD_MODULES, IGNORE_INSTRUCTION_FILES, /\.DS_Store$/, /\.log$/],
     });
     const appExe = path.join(appDir, "1Helm.exe");
     if (!fs.existsSync(appExe)) throw new Error("Packaged Windows application is missing 1Helm.exe.");

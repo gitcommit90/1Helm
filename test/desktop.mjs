@@ -155,6 +155,8 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(windowsPackager, /path\.join\(DIST, path\.basename\(nupkg\)\)/, "the uploaded package keeps the exact basename referenced by RELEASES");
   assert.match(windowsPackager, /signPackagedExecutables\(appDir\)/, "release signing covers nested Windows executables before packaging");
   assert.match(windowsPackager, /IGNORE_CLIENT_BUILD_MODULES/, "Windows packaging omits client source already compiled into the browser bundle");
+  assert.match(windowsPackager, /IGNORE_INSTRUCTION_FILES/, "Windows packaging omits dependency maintainer instructions");
+  assert.match(windowsPackager, /\/AGENTS\\\.md\$/, "Windows packages never include dependency AGENTS.md files");
   assert.match(windowsPackager, /fs\.mkdtempSync\(path\.join\(path\.parse\(ROOT\)\.root, "1hw-"\)\)/, "the packaged app and Squirrel staging tree share a drive-root scratch path compatible with legacy Windows path handling");
   for (const [source, requiredPaths] of [
     [windowsPackager, ["/scripts", "/scripts/1helm-oci-runtime", "/scripts/mnemosyne-bridge.py", "/scripts/install-wsl-runtime.ps1", "/scripts/windows-removal.cjs", "/deploy/1helm-oci-runtime-v1.conf", "/container/Containerfile.oci"]],
