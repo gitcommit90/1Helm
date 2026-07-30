@@ -157,7 +157,10 @@ if [[ -e "$RELEASE_ROOT" ]]; then
 else
   mv "$TEMP_ROOT/source" "$RELEASE_ROOT"
 fi
-chown -R "$SERVICE_USER:$SERVICE_USER" "$RELEASE_ROOT" "$STATE_ROOT"
+# The application owns the top-level state directory, while the OCI helper
+# deliberately owns its persistent runtime subtree as root.  A repeat install
+# must never recursively rewrite existing channel storage ownership.
+chown -R "$SERVICE_USER:$SERVICE_USER" "$RELEASE_ROOT"
 PREVIOUS_RELEASE="$(readlink -f "$APP_ROOT" 2>/dev/null || true)"
 [[ "$PREVIOUS_RELEASE" == "$RELEASES_ROOT/"* && -d "$PREVIOUS_RELEASE" ]] || PREVIOUS_RELEASE=""
 snapshot_host_contract

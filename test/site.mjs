@@ -146,6 +146,8 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(installer, /import ensurepip[\s\S]*python3-venv/, "the Linux host installs Python's venv support required by durable memory instead of accepting a python3 executable alone");
   assert.doesNotMatch(installer, /npm[^\n]*ci[^\n]*--omit=optional/, "platform-specific optional build packages are retained");
   assert.match(installer, /EXISTING_SHA="\$\(runuser -u "\$SERVICE_USER" -- git -C "\$RELEASE_ROOT" rev-parse HEAD/, "repeat installs inspect the service-owned release as the service user");
+  assert.doesNotMatch(installer, /chown -R[^\n]*\$STATE_ROOT/, "repeat installs never recursively rewrite root-owned OCI channel storage");
+  assert.match(installer, /chown -R "\$SERVICE_USER:\$SERVICE_USER" "\$RELEASE_ROOT"/, "the extracted application release remains service-owned");
   assert.match(installer, /RELEASES_ROOT=.*releases/);
   assert.match(installer, /mv -Tf .*current/);
   assert.match(installer, /previous release was restored/i);
