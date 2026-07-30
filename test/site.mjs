@@ -201,6 +201,10 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(linuxUnits, /HELM_INSTALL_KIND=linux-systemd/, "standard Linux installs identify their host-owned update mechanism");
   assert.match(readFileSync(`${root}/src/server/channel-computers.ts`, "utf8"), /HELM_INSTALL_KIND === "linux-systemd"[\s\S]*source-tree fallback is disabled/, "installed Linux services cannot silently execute a helper from a mutable source checkout");
   assert.match(linuxUnits, /Delegate=yes/, "systemd delegates the service cgroup required for nested channel containers");
+  assert.match(linuxUnits, /\/etc\/tmpfiles\.d\/1helm-oci\.conf[\s\S]*systemd-tmpfiles --create/, "fresh installs and boot recreate Podman's ephemeral runtime roots before the hardened service namespace is assembled");
+  for (const path of ["/run/1helm-oci", "/run/containers", "/run/crun", "/run/libpod", "/run/netns"]) {
+    assert.match(linuxUnits, new RegExp(`^d ${path.replaceAll("/", "\\/")} [0-7]{4} root root -$`, "m"), `tmpfiles owns the ephemeral ${path} runtime tree across reboot`);
+  }
   for (const path of ["/run/containers", "/run/crun", "/run/libpod", "/run/lock", "/run/netns"]) {
     assert.match(linuxUnits, new RegExp(`ReadWritePaths=[^\\n]*${path.replaceAll("/", "\\/")}(?:\\s|$)`), `the sandbox permits Podman's ephemeral ${path} runtime tree`);
   }

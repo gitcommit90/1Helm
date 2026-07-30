@@ -36,6 +36,19 @@ id "$SERVICE_USER" >/dev/null 2>&1 || { echo "The 1Helm service account does not
 install -o root -g root -m 0755 "$RELEASE_ROOT/site/public/update-host.sh" "$INSTALL_ROOT/update-host.sh"
 install -o root -g root -m 0755 "$RELEASE_ROOT/site/public/uninstall-host.sh" "$INSTALL_ROOT/uninstall-host.sh"
 
+# ProtectSystem=strict resolves ReadWritePaths before it runs the service. Keep
+# Podman's host-only scratch roots present both now and after every reboot so a
+# completely fresh machine never fails mount-namespace setup before 1Helm can
+# invoke its root-owned runtime helper.
+install -m 0644 /dev/stdin /etc/tmpfiles.d/1helm-oci.conf <<'EOF'
+d /run/1helm-oci 0755 root root -
+d /run/containers 0755 root root -
+d /run/crun 0755 root root -
+d /run/libpod 0700 root root -
+d /run/netns 0755 root root -
+EOF
+systemd-tmpfiles --create /etc/tmpfiles.d/1helm-oci.conf
+
 install -m 0644 /dev/stdin /etc/systemd/system/1helm.service <<EOF
 [Unit]
 Description=1Helm durable agent workspace

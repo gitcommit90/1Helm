@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Repeat Linux installation preserves the root-owned OCI runtime and existing
   channel storage permissions instead of recursively rewriting the new state
   namespace as the application service user.
+- Linux installs declare Podman's ephemeral runtime roots through systemd
+  tmpfiles, so the hardened service starts on a fresh host and after reboot
+  before any container has happened to create those directories.
 - Windows packaging builds the app and Squirrel staging tree beneath one fresh
   drive-root scratch directory, keeping deeply nested runtime dependencies
   inside Squirrel's legacy 260-character path limit.

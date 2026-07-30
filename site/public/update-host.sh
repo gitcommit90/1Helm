@@ -17,6 +17,7 @@ HOST_CONTRACT_PATHS=(
   /usr/libexec/1helm-oci-runtime
   /etc/1helm/oci-runtime-v1.conf
   /etc/sudoers.d/1helm-oci-runtime
+  /etc/tmpfiles.d/1helm-oci.conf
   /usr/lib/1helm-oci/Containerfile.oci
   /etc/systemd/system/1helm.service
   /etc/systemd/system/1helm-update.service
