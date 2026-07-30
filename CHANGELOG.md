@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runtime trees, while persistent network configuration and libpod scratch
   stay inside 1Helm-owned roots. The installed service—not only direct root
   diagnostics—can now verify and provision OCI channel computers.
+- Repeat Linux installation preserves the root-owned OCI runtime and existing
+  channel storage permissions instead of recursively rewriting the new state
+  namespace as the application service user.
 - Windows packaging builds the app and Squirrel staging tree beneath one fresh
   drive-root scratch directory, keeping deeply nested runtime dependencies
   inside Squirrel's legacy 260-character path limit.
