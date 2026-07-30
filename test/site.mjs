@@ -182,6 +182,7 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(ociHelper, /setfacl[\s\S]*d:u:\$AGENT_UID:rwx/, "Files and Cowork receive inherited narrow direct access to runtime-owned storage");
   assert.match(ociHelper, /podman[\s\S]*update --cpus[\s\S]*--memory/, "live resource controls use the native OCI engine");
   assert.match(ociHelper, /exec\)[\s\S]*\(\(\$# >= 6\)\)[\s\S]*missing exec separator/, "the helper accepts the six required argv values for one direct command");
+  assert.match(ociHelper, /exec --user 0:0[\s\S]*numeric_user="0:0"[\s\S]*numeric_user="\$AGENT_UID:\$AGENT_GID"[\s\S]*--user "\$AGENT_UID:\$AGENT_GID"/, "host-reboot recovery uses pinned numeric container identities instead of race-prone passwd-name lookup");
   assert.match(ociHelper, /network\.json[\s\S]*--ip "\$ip" --mac-address "\$mac"/, "each channel receives a persistent static IP and locally administered MAC");
   assert.match(ociHelper, /container static network creation contract does not match[\s\S]*running container network identity does not match/, "runtime adoption verifies both declared and live network identity");
   assert.match(ociHelper, /backup_container[\s\S]*sha256sum[\s\S]*restore_container[\s\S]*backup digest does not match/, "backup and recovery are digest-qualified and ownership-gated");
