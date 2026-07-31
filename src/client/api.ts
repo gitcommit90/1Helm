@@ -71,8 +71,29 @@ export type ActivityItem = {
   action_tool?: string | null; action_input?: string | null; action_result?: string | null;
 };
 export type Computer = { id: number; name: string; base_url: string; has_key: boolean };
+export type ChannelComputerPrepare = {
+  status: "idle" | "running" | "complete" | "failed";
+  step: string;
+  progress: number;
+  error: string;
+  image: string;
+  started_at: number;
+  updated_at: number;
+};
+export type WindowsWslSetup = {
+  status: "idle" | "running" | "complete" | "failed" | "restart_required";
+  step: string;
+  progress: number;
+  error: string;
+  log?: string;
+  started_at: number;
+  updated_at: number;
+};
 export type ChannelRuntime = {
   backend: "apple" | "oci" | "native" | "mock"; supported: boolean; ready: boolean;
+  engine_ready?: boolean; image_ready?: boolean; image?: string | null;
+  prepare?: ChannelComputerPrepare | null;
+  windows_setup?: WindowsWslSetup | null;
   platform?: string; architecture?: string; darwin?: boolean; arm64?: boolean; macos_version?: string | null;
   cli?: string | null; version?: unknown; system?: unknown; runtime_version?: string | null;
   installer_url?: string; installer_sha256?: string; shared_runtime?: string | null; storage_authority?: string | null;

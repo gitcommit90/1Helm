@@ -5,7 +5,24 @@ import { DATA_DIR, UPLOAD_DIR, now, q, q1, run, tx, type Row } from "./db.ts";
 import { botView, resolveModel } from "./store.ts";
 import { ensureAgentMemory, rememberForAgent } from "./memory.ts";
 import { listSkills, provisionInitialSkills, provisionSkill, skillsForAgent, templateForSlug } from "./skills.ts";
-import { archiveChannelComputer, deleteChannelComputer, ensureChannelComputerRecord, markWorkspaceDirty, provisionChannelComputer, restoreChannelComputer } from "./channel-computers.ts";
+import {
+  archiveChannelComputer,
+  deleteChannelComputer,
+  ensureChannelComputerRecord,
+  ensureOciChannelWorkspaceDirs,
+  markWorkspaceDirty,
+  provisionChannelComputer,
+  restoreChannelComputer,
+  windowsOciStorageCopy,
+  windowsOciStorageList,
+  windowsOciStorageMkdir,
+  windowsOciStorageRead,
+  windowsOciStorageRename,
+  windowsOciStorageRequired,
+  windowsOciStorageRm,
+  windowsOciStorageStat,
+  windowsOciStorageWrite,
+} from "./channel-computers.ts";
 import { channelFilesPath, channelUsesRuntimeStorage, channelWorkspacePath, hostChannelRoot } from "./channel-storage.ts";
 
 const WORLD_DIRS = ["workspace", "files", "state", "memory", "profile"];
@@ -49,8 +66,14 @@ export function ensureChannelWorkspace(channelId: number): string {
   const channel = q1("SELECT id,name,personal_main_owner_id FROM channels WHERE id=? AND status<>'deleted'", channelId);
   if (!channel) throw new Error("Channel workspace not found.");
   const root = channelRoot(channelId);
+  // Host data-tree metadata (profile/state/memory) stays under DATA_DIR even for OCI channels.
   for (const dir of WORLD_DIRS.filter((entry) => entry !== "workspace" && entry !== "files")) mkdirSync(join(root, dir), { recursive: true });
-  if (!channelUsesRuntimeStorage(channelId) || existsSync(channelWorkspace(channelId))) {
+  if (channelUsesRuntimeStorage(channelId)) {
+    // OCI workspace/files live in runtime storage. On Windows that path is
+    // \\wsl.localhost\\... and host mkdir there fails; create via the WSL runtime.
+    try { ensureOciChannelWorkspaceDirs(channelId); }
+    catch { /* provision path creates these once the computer exists */ }
+  } else {
     mkdirSync(channelWorkspace(channelId), { recursive: true });
     mkdirSync(channelFiles(channelId), { recursive: true });
     for (const dir of COWORK_DIRS) {
@@ -448,6 +471,15 @@ function checkedNoteContent(input: string): string {
 }
 
 function channelNotesDirectory(channelId: number): string {
+  if (windowsOciStorageRequired(channelId)) {
+    ensureChannelWorkspace(channelId);
+    try { windowsOciStorageStat(channelId, "workspace", "notes"); }
+    catch {
+      windowsOciStorageMkdir(channelId, "workspace", "notes");
+      markWorkspaceDirty(channelId, "workspace/notes", "upsert");
+    }
+    return "notes"; // logical path only; never a host path on Windows OCI
+  }
   const workspace = channelWorkspace(channelId);
   ensureChannelWorkspace(channelId);
   const notes = join(workspace, "notes");
@@ -462,8 +494,17 @@ function channelNotesDirectory(channelId: number): string {
   return notes;
 }
 
-function notePath(channelId: number, input: string, requireExisting = true): { name: string; path: string } {
+function notePath(channelId: number, input: string, requireExisting = true): { name: string; path: string; relative?: string } {
   const name = validateNoteFilename(input);
+  if (windowsOciStorageRequired(channelId)) {
+    channelNotesDirectory(channelId);
+    const relative = `notes/${name}`;
+    if (requireExisting) {
+      const st = windowsOciStorageStat(channelId, "workspace", relative);
+      if (st.kind !== "file") throw new Error("Note not found.");
+    }
+    return { name, path: relative, relative };
+  }
   const notes = channelNotesDirectory(channelId);
   const path = join(notes, name);
   if (requireExisting && (!existsSync(path) || lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile())) throw new Error("Note not found.");
@@ -475,12 +516,20 @@ function notePath(channelId: number, input: string, requireExisting = true): { n
   return { name, path };
 }
 
-function noteView(name: string, path: string, content?: string): ChannelNote {
+function noteView(name: string, path: string, content?: string, meta?: { size: number; modified: number }): ChannelNote {
+  if (meta) return { name, size: meta.size, modified: meta.modified, ...(content === undefined ? {} : { content }) };
   const info = statSync(path);
   return { name, size: info.size, modified: info.mtimeMs, ...(content === undefined ? {} : { content }) };
 }
 
 export function listChannelNotes(channelId: number): ChannelNote[] {
+  if (windowsOciStorageRequired(channelId)) {
+    channelNotesDirectory(channelId);
+    return windowsOciStorageList(channelId, "workspace", "notes")
+      .filter((entry) => entry.kind === "file" && entry.name.toLowerCase().endsWith(".md"))
+      .map((entry) => noteView(entry.name, entry.name, undefined, { size: entry.size, modified: entry.modified }))
+      .sort((a, b) => b.modified - a.modified || a.name.localeCompare(b.name));
+  }
   const notes = channelNotesDirectory(channelId);
   return readdirSync(notes, { withFileTypes: true })
     .filter((entry) => entry.isFile() && !entry.isSymbolicLink() && entry.name.toLowerCase().endsWith(".md"))
@@ -490,13 +539,23 @@ export function listChannelNotes(channelId: number): ChannelNote[] {
 
 export function readChannelNote(channelId: number, input: string): ChannelNote {
   const note = notePath(channelId, input);
+  if (windowsOciStorageRequired(channelId) && note.relative) {
+    const body = windowsOciStorageRead(channelId, "workspace", note.relative).toString("utf8");
+    const st = windowsOciStorageStat(channelId, "workspace", note.relative);
+    return noteView(note.name, note.path, body, { size: st.size, modified: st.modified });
+  }
   return noteView(note.name, note.path, readFileSync(note.path, "utf8"));
 }
 
 export function createChannelNote(channelId: number, input: string, initialContent = ""): ChannelNote {
   const note = notePath(channelId, input, false);
-  if (existsSync(note.path)) throw new Error("A note with that name already exists.");
   const content = checkedNoteContent(initialContent);
+  if (windowsOciStorageRequired(channelId) && note.relative) {
+    const st = windowsOciStorageWrite(channelId, "workspace", note.relative, content, "create");
+    markWorkspaceDirty(channelId, `workspace/notes/${note.name}`, "upsert");
+    return noteView(note.name, note.path, content, { size: st.size, modified: st.modified });
+  }
+  if (existsSync(note.path)) throw new Error("A note with that name already exists.");
   writeFileSync(note.path, content, { encoding: "utf8", flag: "wx" });
   markWorkspaceDirty(channelId, `workspace/notes/${note.name}`, "upsert");
   return noteView(note.name, note.path, content);
@@ -505,6 +564,11 @@ export function createChannelNote(channelId: number, input: string, initialConte
 export function saveChannelNote(channelId: number, input: string, nextContent: string): ChannelNote {
   const note = notePath(channelId, input);
   const content = checkedNoteContent(nextContent);
+  if (windowsOciStorageRequired(channelId) && note.relative) {
+    const st = windowsOciStorageWrite(channelId, "workspace", note.relative, content, "overwrite");
+    markWorkspaceDirty(channelId, `workspace/notes/${note.name}`, "upsert");
+    return noteView(note.name, note.path, content, { size: st.size, modified: st.modified });
+  }
   writeFileSync(note.path, content, "utf8");
   markWorkspaceDirty(channelId, `workspace/notes/${note.name}`, "upsert");
   return noteView(note.name, note.path, content);
@@ -545,9 +609,29 @@ export function validateWorkspaceEntryName(input: string): string {
   return name;
 }
 
+function workspaceRealpath(path: string): string {
+  try { return realpathSync(path); }
+  catch { throw new Error("Folder not found."); }
+}
+
+/** Split a Files API path into storage area + relative path inside that area. */
+function workspaceAreaPath(input: string): { area: "workspace" | "files"; relative: string; path: string } {
+  const path = normalizeWorkspaceDirectoryPath(input);
+  if (path === "files" || path.startsWith("files/")) {
+    return { area: "files", relative: path === "files" ? "" : path.slice("files/".length), path };
+  }
+  return { area: "workspace", relative: path, path };
+}
+
 function workspaceApiPathToHost(channelId: number, input: string): { path: string; host: string; base: string } {
   const path = normalizeWorkspaceDirectoryPath(input);
   ensureChannelWorkspace(channelId);
+  // Windows OCI storage is NOT host-reachable (interop=false kills 9p). Callers
+  // that still need a host path (Linux/mac/native) use this; Windows routes
+  // through windowsOciStorage* instead and must not call this for IO.
+  if (windowsOciStorageRequired(channelId)) {
+    throw new Error("Windows OCI channel storage is accessed through the runtime helper, not a host path.");
+  }
   const uploads = path === "files" || path.startsWith("files/");
   const base = resolve(uploads ? channelFiles(channelId) : channelWorkspace(channelId));
   const inside = uploads ? path.slice("files".length).replace(/^\/+/, "") : path;
@@ -557,6 +641,14 @@ function workspaceApiPathToHost(channelId: number, input: string): { path: strin
 }
 
 function existingWorkspaceDirectory(channelId: number, input: string): { path: string; host: string; base: string } {
+  if (windowsOciStorageRequired(channelId)) {
+    const { area, relative, path } = workspaceAreaPath(input);
+    ensureChannelWorkspace(channelId);
+    const st = windowsOciStorageStat(channelId, area, relative);
+    if (st.kind !== "directory") throw new Error("Folder not found.");
+    // host/base are unused on Windows; keep shape for call sites that only need .path.
+    return { path, host: "", base: "" };
+  }
   const resolved = workspaceApiPathToHost(channelId, input);
   if (!existsSync(resolved.host) || lstatSync(resolved.host).isSymbolicLink() || !lstatSync(resolved.host).isDirectory()) throw new Error("Folder not found.");
   const relativeParts = relative(resolved.base, resolved.host).split(sep).filter(Boolean);
@@ -565,8 +657,8 @@ function existingWorkspaceDirectory(channelId: number, input: string): { path: s
     cursor = join(cursor, part);
     if (lstatSync(cursor).isSymbolicLink()) throw new Error("Folder not found.");
   }
-  const realBase = realpathSync(resolved.base);
-  const realHost = realpathSync(resolved.host);
+  const realBase = workspaceRealpath(resolved.base);
+  const realHost = workspaceRealpath(resolved.host);
   if (realHost !== realBase && !realHost.startsWith(realBase + sep)) throw new Error("Folder not found.");
   return resolved;
 }
@@ -577,6 +669,27 @@ function workspaceWorldPath(path: string): string {
 
 /** Direct children for a navigable /workspace file browser. */
 export function listWorkspaceDirectory(channelId: number, input = ""): { path: string; files: WorkspaceFile[] } {
+  if (windowsOciStorageRequired(channelId)) {
+    const { area, relative, path } = workspaceAreaPath(input);
+    ensureChannelWorkspace(channelId);
+    const entries = windowsOciStorageList(channelId, area, relative)
+      .filter((entry) => !(!path && entry.name === "files"))
+      .map((entry) => ({
+        path: path ? `${path}/${entry.name}` : entry.name,
+        name: entry.name,
+        size: entry.size,
+        modified: entry.modified,
+        kind: entry.kind as "file" | "directory",
+      }));
+    if (!path) {
+      try {
+        const uploads = windowsOciStorageStat(channelId, "files", "");
+        entries.push({ path: "files", name: "files", size: 0, modified: uploads.modified, kind: "directory" });
+      } catch { /* uploads tree may not exist yet */ }
+    }
+    entries.sort((a, b) => Number(a.kind !== "directory") - Number(b.kind !== "directory") || a.name.localeCompare(b.name));
+    return { path, files: entries };
+  }
   const directory = existingWorkspaceDirectory(channelId, input);
   const files = readdirSync(directory.host, { withFileTypes: true }).flatMap((entry): WorkspaceFile[] => {
     // /workspace/files is the guest view of the separate host-owned upload mirror.
@@ -598,8 +711,17 @@ export function listWorkspaceDirectory(channelId: number, input = ""): { path: s
 }
 
 export function createWorkspaceDirectory(channelId: number, parentInput: string, nameInput: string): WorkspaceFile {
-  const parent = existingWorkspaceDirectory(channelId, parentInput);
   const name = validateWorkspaceEntryName(nameInput);
+  if (windowsOciStorageRequired(channelId)) {
+    const parent = workspaceAreaPath(parentInput);
+    if (!parent.path && name === "files") throw new Error("The /workspace/files folder is reserved for channel uploads.");
+    const path = parent.path ? `${parent.path}/${name}` : name;
+    const relative = parent.relative ? `${parent.relative}/${name}` : name;
+    const st = windowsOciStorageMkdir(channelId, parent.area, relative);
+    markWorkspaceDirty(channelId, workspaceWorldPath(path), "upsert");
+    return { path, name, size: 0, modified: st.modified, kind: "directory" };
+  }
+  const parent = existingWorkspaceDirectory(channelId, parentInput);
   if (!parent.path && name === "files") throw new Error("The /workspace/files folder is reserved for channel uploads.");
   const path = parent.path ? `${parent.path}/${name}` : name;
   const target = resolve(parent.host, name);
@@ -610,9 +732,22 @@ export function createWorkspaceDirectory(channelId: number, parentInput: string,
   return { path, name, size: 0, modified: info.mtimeMs, kind: "directory" };
 }
 
-function workspaceEntry(channelId: number, input: string): { path: string; host: string; base: string; info: Stats } {
+function workspaceEntry(channelId: number, input: string): { path: string; host: string; base: string; info: Stats; area?: "workspace" | "files"; relative?: string } {
   const path = normalizeWorkspaceDirectoryPath(input);
   if (!path) throw new Error("Choose a file or folder inside /workspace.");
+  if (windowsOciStorageRequired(channelId)) {
+    const { area, relative } = workspaceAreaPath(path);
+    const st = windowsOciStorageStat(channelId, area, relative);
+    // Synthetic Stats-compatible shape for callers that only check isFile/isDirectory/size.
+    const info = {
+      isFile: () => st.kind === "file",
+      isDirectory: () => st.kind === "directory",
+      isSymbolicLink: () => false,
+      size: st.size,
+      mtimeMs: st.modified,
+    } as Stats;
+    return { path, host: "", base: "", info, area, relative };
+  }
   const resolved = workspaceApiPathToHost(channelId, path);
   if (!existsSync(resolved.host) || lstatSync(resolved.host).isSymbolicLink()) throw new Error("File or folder not found.");
   const relativeParts = relative(resolved.base, resolved.host).split(sep).filter(Boolean);
@@ -621,8 +756,8 @@ function workspaceEntry(channelId: number, input: string): { path: string; host:
     cursor = join(cursor, part);
     if (lstatSync(cursor).isSymbolicLink()) throw new Error("File or folder not found.");
   }
-  const realBase = realpathSync(resolved.base);
-  const realHost = realpathSync(resolved.host);
+  const realBase = workspaceRealpath(resolved.base);
+  const realHost = workspaceRealpath(resolved.host);
   if (realHost !== realBase && !realHost.startsWith(realBase + sep)) throw new Error("File or folder not found.");
   return { ...resolved, info: lstatSync(resolved.host) };
 }
@@ -633,7 +768,8 @@ function assertMutableWorkspaceEntry(path: string): void {
   }
 }
 
-function workspaceFileView(path: string, host: string): WorkspaceFile {
+function workspaceFileView(path: string, host: string, meta?: { size: number; modified: number; kind: "file" | "directory" }): WorkspaceFile {
+  if (meta) return { path, name: basename(path) || path, size: meta.size, modified: meta.modified, kind: meta.kind };
   const info = statSync(host);
   return { path, name: basename(host), size: info.isFile() ? info.size : 0, modified: info.mtimeMs, kind: info.isDirectory() ? "directory" : "file" };
 }
@@ -647,8 +783,17 @@ function checkedWorkspaceText(input: string): string {
 
 /** Create a text asset in the same /workspace tree used by agents and Terminal. */
 export function createWorkspaceFile(channelId: number, parentInput: string, nameInput: string, initialContent = ""): WorkspaceFile {
-  const parent = existingWorkspaceDirectory(channelId, parentInput);
   const name = validateWorkspaceEntryName(nameInput);
+  if (windowsOciStorageRequired(channelId)) {
+    const parent = workspaceAreaPath(parentInput);
+    const path = parent.path ? `${parent.path}/${name}` : name;
+    const relative = parent.relative ? `${parent.relative}/${name}` : name;
+    const content = checkedWorkspaceText(initialContent);
+    const st = windowsOciStorageWrite(channelId, parent.area, relative, content, "create");
+    markWorkspaceDirty(channelId, workspaceWorldPath(path), "upsert");
+    return { path, name, size: st.size, modified: st.modified, kind: "file" };
+  }
+  const parent = existingWorkspaceDirectory(channelId, parentInput);
   const path = parent.path ? `${parent.path}/${name}` : name;
   const target = resolve(parent.host, name);
   if (dirname(target) !== parent.host || existsSync(target)) throw new Error("A file or folder with that name already exists.");
@@ -661,6 +806,11 @@ export function readWorkspaceTextFile(channelId: number, input: string): Workspa
   const entry = workspaceEntry(channelId, input);
   if (!entry.info.isFile()) throw new Error("Choose a file to edit.");
   if (entry.info.size > MAX_EDITABLE_FILE_BYTES) throw new Error("This file is too large to edit in 1Helm.");
+  if (windowsOciStorageRequired(channelId) && entry.area && entry.relative != null) {
+    const content = windowsOciStorageRead(channelId, entry.area, entry.relative).toString("utf8");
+    if (content.includes("\0")) throw new Error("This file type is not supported to view.");
+    return { path: entry.path, name: basename(entry.path), size: entry.info.size, modified: entry.info.mtimeMs, kind: "file", content };
+  }
   const content = readFileSync(entry.host, "utf8");
   if (content.includes("\0")) throw new Error("This file type is not supported to view.");
   return { ...workspaceFileView(entry.path, entry.host), content };
@@ -670,6 +820,11 @@ export function saveWorkspaceTextFile(channelId: number, input: string, nextCont
   const entry = workspaceEntry(channelId, input);
   if (!entry.info.isFile()) throw new Error("Choose a file to edit.");
   const content = checkedWorkspaceText(nextContent);
+  if (windowsOciStorageRequired(channelId) && entry.area && entry.relative != null) {
+    const st = windowsOciStorageWrite(channelId, entry.area, entry.relative, content, "overwrite");
+    markWorkspaceDirty(channelId, workspaceWorldPath(entry.path), "upsert");
+    return { path: entry.path, name: basename(entry.path), size: st.size, modified: st.modified, kind: "file", content };
+  }
   writeFileSync(entry.host, content, "utf8");
   markWorkspaceDirty(channelId, workspaceWorldPath(entry.path), "upsert");
   return { ...workspaceFileView(entry.path, entry.host), content };
@@ -680,11 +835,25 @@ export function moveWorkspaceEntry(channelId: number, input: string, parentInput
   const entry = workspaceEntry(channelId, input);
   assertMutableWorkspaceEntry(entry.path);
   const parentPath = parentInput == null ? entry.path.split("/").slice(0, -1).join("/") : normalizeWorkspaceDirectoryPath(parentInput);
-  const parent = existingWorkspaceDirectory(channelId, parentPath);
   const name = nameInput == null ? basename(entry.path) : validateWorkspaceEntryName(nameInput);
-  const nextPath = parent.path ? `${parent.path}/${name}` : name;
-  if (nextPath === entry.path) return workspaceFileView(entry.path, entry.host);
+  const nextPath = parentPath ? `${parentPath}/${name}` : name;
+  if (nextPath === entry.path) {
+    if (windowsOciStorageRequired(channelId)) {
+      return { path: entry.path, name: basename(entry.path), size: entry.info.size, modified: entry.info.mtimeMs, kind: entry.info.isDirectory() ? "directory" : "file" };
+    }
+    return workspaceFileView(entry.path, entry.host);
+  }
   if (entry.info.isDirectory() && (nextPath === entry.path || nextPath.startsWith(entry.path + "/"))) throw new Error("A folder cannot be moved inside itself.");
+  if (windowsOciStorageRequired(channelId) && entry.area) {
+    const from = workspaceAreaPath(entry.path);
+    const to = workspaceAreaPath(nextPath);
+    if (from.area !== to.area) throw new Error("Cannot move entries between workspace and files areas.");
+    const st = windowsOciStorageRename(channelId, from.area, from.relative, to.relative);
+    markWorkspaceDirty(channelId, workspaceWorldPath(entry.path), "delete");
+    markWorkspaceDirty(channelId, workspaceWorldPath(nextPath), "upsert");
+    return { path: nextPath, name, size: st.size, modified: st.modified, kind: st.kind };
+  }
+  const parent = existingWorkspaceDirectory(channelId, parentPath);
   const target = resolve(parent.host, name);
   if (dirname(target) !== parent.host || existsSync(target)) throw new Error("A file or folder with that name already exists.");
   renameSync(entry.host, target);
@@ -697,11 +866,30 @@ export function duplicateWorkspaceEntry(channelId: number, input: string): Works
   const entry = workspaceEntry(channelId, input);
   assertMutableWorkspaceEntry(entry.path);
   const parentPath = entry.path.split("/").slice(0, -1).join("/");
-  const parent = existingWorkspaceDirectory(channelId, parentPath);
   const original = basename(entry.path);
   const dot = entry.info.isFile() ? original.lastIndexOf(".") : -1;
   const stem = dot > 0 ? original.slice(0, dot) : original;
   const ext = dot > 0 ? original.slice(dot) : "";
+  if (windowsOciStorageRequired(channelId) && entry.area) {
+    const parent = workspaceAreaPath(parentPath);
+    let name = `${stem} copy${ext}`;
+    for (let suffix = 2; ; suffix += 1) {
+      const relative = parent.relative ? `${parent.relative}/${name}` : name;
+      try {
+        windowsOciStorageStat(channelId, parent.area, relative);
+        name = `${stem} copy ${suffix}${ext}`;
+      } catch {
+        break;
+      }
+    }
+    const path = parent.path ? `${parent.path}/${name}` : name;
+    const from = workspaceAreaPath(entry.path);
+    const to = workspaceAreaPath(path);
+    const st = windowsOciStorageCopy(channelId, from.area, from.relative, to.relative);
+    markWorkspaceDirty(channelId, workspaceWorldPath(path), "upsert");
+    return { path, name, size: st.size, modified: st.modified, kind: st.kind };
+  }
+  const parent = existingWorkspaceDirectory(channelId, parentPath);
   let name = `${stem} copy${ext}`;
   for (let suffix = 2; existsSync(resolve(parent.host, name)); suffix += 1) name = `${stem} copy ${suffix}${ext}`;
   const path = parent.path ? `${parent.path}/${name}` : name;
@@ -714,12 +902,30 @@ export function duplicateWorkspaceEntry(channelId: number, input: string): Works
 export function deleteWorkspaceEntry(channelId: number, input: string): void {
   const entry = workspaceEntry(channelId, input);
   assertMutableWorkspaceEntry(entry.path);
+  if (windowsOciStorageRequired(channelId) && entry.area && entry.relative != null) {
+    windowsOciStorageRm(channelId, entry.area, entry.relative, entry.info.isDirectory());
+    markWorkspaceDirty(channelId, workspaceWorldPath(entry.path), "delete");
+    return;
+  }
   rmSync(entry.host, { recursive: entry.info.isDirectory(), force: false });
   markWorkspaceDirty(channelId, workspaceWorldPath(entry.path), "delete");
 }
 
 /** A safe folder tree for the Files and Cowork navigation rails. */
 export function listWorkspaceDirectories(channelId: number): WorkspaceFile[] {
+  if (windowsOciStorageRequired(channelId)) {
+    const result: WorkspaceFile[] = [];
+    const walk = (path: string): void => {
+      const listed = listWorkspaceDirectory(channelId, path);
+      for (const entry of listed.files) {
+        if (entry.kind !== "directory") continue;
+        result.push(entry);
+        walk(entry.path);
+      }
+    };
+    walk("");
+    return result.sort((a, b) => a.path.localeCompare(b.path));
+  }
   const result: WorkspaceFile[] = [];
   const walk = (path: string): void => {
     const directory = existingWorkspaceDirectory(channelId, path);
@@ -764,9 +970,29 @@ export function importWorkspaceUpload(channelId: number, threadId: number | null
   if (!/^[a-f0-9]{32,}$/.test(String(token || ""))) return null;
   const source = join(UPLOAD_DIR, token);
   if (!existsSync(source) || !lstatSync(source).isFile()) return null;
-  const directory = existingWorkspaceDirectory(channelId, directoryInput);
   const basenameOnly = basename(String(nameInput || "file"));
   const safe = basenameOnly.replace(/[^a-zA-Z0-9._ -]+/g, "-").replace(/^\.+$/, "") || "file";
+  if (windowsOciStorageRequired(channelId)) {
+    const parent = workspaceAreaPath(directoryInput);
+    let name = safe;
+    for (let suffix = 2; ; suffix++) {
+      const relative = parent.relative ? `${parent.relative}/${name}` : name;
+      try {
+        windowsOciStorageStat(channelId, parent.area, relative);
+        const dot = safe.lastIndexOf(".");
+        name = dot > 0 ? `${safe.slice(0, dot)}-${suffix}${safe.slice(dot)}` : `${safe}-${suffix}`;
+      } catch {
+        const body = readFileSync(source);
+        const st = windowsOciStorageWrite(channelId, parent.area, relative, body, "create");
+        const path = parent.path ? `${parent.path}/${name}` : name;
+        const worldPath = workspaceWorldPath(path);
+        run("INSERT INTO artifacts (channel_id, thread_id, path, kind, created_by, size, modified, created) VALUES (?,?,?,'upload',?,?,?,?)", channelId, threadId, worldPath, createdBy, st.size, st.modified, now());
+        markWorkspaceDirty(channelId, worldPath, "upsert");
+        return worldPath;
+      }
+    }
+  }
+  const directory = existingWorkspaceDirectory(channelId, directoryInput);
   let target = join(directory.host, safe);
   for (let suffix = 2; existsSync(target); suffix++) {
     const dot = safe.lastIndexOf(".");
@@ -787,6 +1013,19 @@ export function listWorkspaceFiles(channelId: number): WorkspaceFile[] {
   // workspace/... (its absolute path in the agent world, and unambiguous next
   // to the sibling uploads tree, listed as files/...).
   ensureChannelWorkspace(channelId);
+  if (windowsOciStorageRequired(channelId)) {
+    const files: WorkspaceFile[] = [];
+    const walk = (area: "workspace" | "files", relative: string, prefix: string): void => {
+      for (const entry of windowsOciStorageList(channelId, area, relative)) {
+        const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+        files.push({ path: rel, name: entry.name, size: entry.size, modified: entry.modified, kind: entry.kind });
+        if (entry.kind === "directory") walk(area, relative ? `${relative}/${entry.name}` : entry.name, rel);
+      }
+    };
+    walk("workspace", "", "workspace");
+    walk("files", "", "files");
+    return files.sort((a, b) => a.path.localeCompare(b.path));
+  }
   const files: WorkspaceFile[] = [];
   const walk = (dir: string, prefix: string): void => {
     if (!existsSync(dir)) return;
@@ -808,12 +1047,29 @@ export function listWorkspaceFiles(channelId: number): WorkspaceFile[] {
   return files.sort((a, b) => a.path.localeCompare(b.path));
 }
 
+/**
+ * Resolve a Files path to either a host absolute path (Linux/mac/native) or,
+ * on Windows OCI, a temporary host file filled from the runtime helper so
+ * callers that stream via readFile still work without UNC.
+ */
 export function resolveWorldFile(channelId: number, requested: string): string {
   ensureChannelWorkspace(channelId);
-  const root = realpathSync(resolve(channelWorkspace(channelId)));
-  // UI paths are relative to /workspace (agent shell). Map bare paths into workspace/.
   let rel = String(requested || "").replace(/^\/+/, "");
   if (rel.startsWith("workspace/")) rel = rel.slice("workspace/".length);
+  if (windowsOciStorageRequired(channelId)) {
+    const { area, relative } = workspaceAreaPath(rel);
+    if (!relative) throw new Error("File not found.");
+    const body = windowsOciStorageRead(channelId, area, relative);
+    const tmpRoot = join(DATA_DIR, "tmp-world-files");
+    mkdirSync(tmpRoot, { recursive: true });
+    const token = randomBytes(16).toString("hex");
+    const safeName = basename(relative).replace(/[^a-zA-Z0-9._-]+/g, "_") || "file";
+    const target = join(tmpRoot, `${token}-${safeName}`);
+    writeFileSync(target, body);
+    return target;
+  }
+  const root = realpathSync(resolve(channelWorkspace(channelId)));
+  // UI paths are relative to /workspace (agent shell). Map bare paths into workspace/.
   const filesRoot = realpathSync(resolve(channelFiles(channelId)));
   const candidates = rel.startsWith("files/")
     ? [resolve(filesRoot, rel.slice("files/".length))]

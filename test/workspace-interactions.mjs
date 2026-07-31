@@ -21,7 +21,7 @@ test("workspace sidebar interactions have durable, member-scoped contracts", () 
   assert.match(app, /title: "Expand navigation"[\s\S]*title: "Collapse navigation"/, "the compact desktop rail always retains an explicit expand control");
   assert.match(settings, /key: "group_unread_channels_first"/, "the setting persists through user UI state");
   assert.match(app, /const members = Array\.isArray\(channel\?\.members\) \? channel\.members : \[\]/, "human suggestions come only from current-channel members");
-  assert.match(app, /channel\?\.kind === "channel" \? \[resident, skipper\] : \[\]/, "agent channels suggest their resident before Skipper");
+  assert.match(app, /channel\?\.kind === "channel"\s*\n\s*\? \[resident, skipper\]\.filter\(\(bot, index, list\) => !!bot && list\.findIndex\(\(other\) => other\?\.id === bot\.id\) === index\)\s*\n\s*: \[\]/, "agent channels suggest their resident before Skipper, deduped when the resident is Skipper");
   assert.match(app, /k\.key === "Tab"[\s\S]*!input\.value\.trim\(\)[\s\S]*`@\$\{channel\.agent\.name\} `/, "Tab in an empty agent composer inserts the resident mention");
 });
 

@@ -14,18 +14,30 @@ if [[ -n "${HELM_OCI_CONTAINERFILE_OVERRIDE:-}" ]]; then
   [[ "${EUID}" -eq 0 && -z "${SUDO_USER:-}" ]] || { echo "1Helm OCI runtime: recipe override is development-only" >&2; exit 1; }
   ONEHELM_OCI_CONTAINERFILE="$HELM_OCI_CONTAINERFILE_OVERRIDE"
 fi
+if [[ -n "${HELM_OCI_IMAGE_ARCHIVE_OVERRIDE:-}" ]]; then
+  [[ "${EUID}" -eq 0 && -z "${SUDO_USER:-}" ]] || { echo "1Helm OCI runtime: image archive override is development-only" >&2; exit 1; }
+  ONEHELM_OCI_IMAGE_ARCHIVE="$HELM_OCI_IMAGE_ARCHIVE_OVERRIDE"
+fi
+if [[ -n "${HELM_OCI_IMAGE_SHA256_FILE_OVERRIDE:-}" ]]; then
+  [[ "${EUID}" -eq 0 && -z "${SUDO_USER:-}" ]] || { echo "1Helm OCI runtime: image digest override is development-only" >&2; exit 1; }
+  ONEHELM_OCI_IMAGE_SHA256_FILE="$HELM_OCI_IMAGE_SHA256_FILE_OVERRIDE"
+fi
 
 die() { printf '1Helm OCI runtime: %s\n' "$*" >&2; exit 1; }
 [[ "${ONEHELM_OCI_RUNTIME_VERSION:-}" == "$RUNTIME_VERSION" ]] || die "runtime manifest version mismatch"
 [[ "${ONEHELM_OCI_STATE_ROOT:-}" =~ ^/.+/runtime/oci$ ]] || die "unsafe runtime state root"
 [[ "${ONEHELM_OCI_RUN_ROOT:-}" == /run/1helm-oci ]] || die "unsafe runtime run root"
 [[ "${ONEHELM_OCI_CONTAINERFILE:-}" == /* ]] || die "unsafe container recipe path"
+[[ "${ONEHELM_OCI_IMAGE_ARCHIVE:-}" == /* ]] || die "unsafe channel image archive path"
+[[ "${ONEHELM_OCI_IMAGE_SHA256_FILE:-}" == /* ]] || die "unsafe channel image digest path"
 [[ "${ONEHELM_OCI_SERVICE_USER:-}" =~ ^[a-z0-9_][a-z0-9_-]*$ ]] || die "unsafe service account"
 [[ "${ONEHELM_OCI_AGENT_UID:-}" =~ ^[0-9]+$ && "${ONEHELM_OCI_AGENT_GID:-}" =~ ^[0-9]+$ ]] || die "invalid agent identity"
 
 STATE_ROOT="$ONEHELM_OCI_STATE_ROOT"
 RUN_ROOT="$ONEHELM_OCI_RUN_ROOT"
 CONTAINERFILE="$ONEHELM_OCI_CONTAINERFILE"
+IMAGE_ARCHIVE="$ONEHELM_OCI_IMAGE_ARCHIVE"
+IMAGE_SHA256_FILE="$ONEHELM_OCI_IMAGE_SHA256_FILE"
 AGENT_UID="$ONEHELM_OCI_AGENT_UID"
 AGENT_GID="$ONEHELM_OCI_AGENT_GID"
 STORAGE_ROOT="$STATE_ROOT/storage"
@@ -136,9 +148,8 @@ if actual != expected:
 attached=(row.get("NetworkSettings") or {}).get("Networks") or {}
 if set(attached) != {network}: raise SystemExit("container network attachment does not match")
 attachment=attached[network] or {}
-network_id=str(network_row.get("id") or network_row.get("ID") or "")
-if not network_id or str(attachment.get("NetworkID") or "") != network_id:
-    raise SystemExit("container network ID does not match")
+network_id=str(network_row.get("id") or network_row.get("ID") or network_row.get("network_id") or "").strip()
+attached_id=str(attachment.get("NetworkID") or attachment.get("network_id") or "").strip()
 
 def option_values(flag):
     command=(row.get("Config") or {}).get("CreateCommand") or []
@@ -154,20 +165,88 @@ def option_values(flag):
 if option_values("--network") != [network] or option_values("--ip") != [str(ip)] or option_values("--mac-address") != [mac]:
     raise SystemExit("container static network creation contract does not match")
 
+def network_ids_compatible(declared, observed, network_name):
+    """Podman/netavark may use full id, short id, network name, or leave NetworkID empty until start."""
+    declared=(declared or "").strip().lower()
+    observed=(observed or "").strip().lower()
+    name=(network_name or "").strip().lower()
+    if not declared and not observed:
+        return True
+    if observed and observed == name:
+        return True
+    if declared and observed and declared == observed:
+        return True
+    if declared and observed and (declared.startswith(observed) or observed.startswith(declared)):
+        return True
+    return False
+
 state=str((row.get("State") or {}).get("Status") or "")
 if state == "running":
+    if not network_id or not network_ids_compatible(network_id, attached_id, network):
+        raise SystemExit("container network ID does not match")
     if str(attachment.get("IPAddress") or "") != str(ip) or str(attachment.get("MacAddress") or "").lower() != mac:
         raise SystemExit("running container network identity does not match")
     prefix=int(attachment.get("IPPrefixLen") or 0)
     if ipaddress.ip_network(f"{ip}/{prefix}", strict=False) != subnet:
         raise SystemExit("running container subnet does not match")
+elif attached_id and network_id and not network_ids_compatible(network_id, attached_id, network):
+    # Created-but-not-running containers sometimes omit NetworkID; only fail when both sides are present and conflict.
+    raise SystemExit("container network ID does not match")
 PY
 }
 
+# Docker (and some host firewalls) set FORWARD policy DROP and only punch holes
+# for their own bridges. 1Helm's netavark networks need explicit accept + NAT so
+# resident guests can reach package mirrors and the public internet. Prefer the
+# DOCKER-USER chain when present so rules stay ahead of Docker's DROP path.
+ensure_guest_egress() {
+  local network="$1" bridge subnet network_json
+  command -v iptables >/dev/null || die "iptables is required for channel computer internet access"
+  # Rootful netavark needs host IPv4 forwarding.
+  if [[ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)" != "1" ]]; then
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null
+  fi
+  network_json="$("${PODMAN[@]}" network inspect "$network")"
+  read -r bridge subnet < <(python3 -c '
+import json, sys
+rows=json.loads(sys.argv[1])
+if not isinstance(rows, list) or not rows: raise SystemExit("owned network metadata is invalid")
+row=rows[0]
+bridge=str(row.get("network_interface") or row.get("NetworkInterface") or "")
+subnets=row.get("subnets") or row.get("Subnets") or []
+if not subnets: raise SystemExit("owned network subnet is missing")
+subnet=str(subnets[0].get("subnet") or subnets[0].get("Subnet") or "")
+if not bridge or bridge == "<no value>": raise SystemExit("owned network interface is missing")
+if "/" not in subnet: raise SystemExit("owned network subnet is invalid")
+print(bridge, subnet)
+' "$network_json") || die "owned network interface/subnet could not be resolved"
+
+  insert_if_missing() {
+    local table="${1:-filter}" chain="$2"; shift 2
+    if [[ "$table" == filter ]]; then
+      iptables -C "$chain" "$@" 2>/dev/null || iptables -I "$chain" 1 "$@"
+    else
+      iptables -t "$table" -C "$chain" "$@" 2>/dev/null || iptables -t "$table" -I "$chain" 1 "$@"
+    fi
+  }
+
+  # Accept guest→world and established replies. Insert at head so Docker DROP cannot bury them.
+  if iptables -nL DOCKER-USER >/dev/null 2>&1; then
+    insert_if_missing filter DOCKER-USER -i "$bridge" -j ACCEPT
+    insert_if_missing filter DOCKER-USER -o "$bridge" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  fi
+  insert_if_missing filter FORWARD -i "$bridge" -j ACCEPT
+  insert_if_missing filter FORWARD -o "$bridge" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  # SNAT guest traffic leaving the host (not hairpin back onto the bridge).
+  insert_if_missing nat POSTROUTING -s "$subnet" ! -o "$bridge" -j MASQUERADE
+}
+
 ensure_network() {
-  local owner="$1" installation network labels
+  local owner="$1" installation network labels bridge_name
   installation="$(owner_installation "$owner")"
   network="1helm-$installation"
+  # Linux IFNAMSIZ is 15 chars; keep a stable, installation-scoped bridge name.
+  bridge_name="1h${installation:0:12}"
   if "${PODMAN[@]}" network exists "$network"; then
     labels="$("${PODMAN[@]}" network inspect --format '{{json .Labels}}' "$network")"
     python3 - "$labels" "$installation" <<'PY'
@@ -177,9 +256,25 @@ if labels.get("com.1helm.managed") != "true" or labels.get("com.1helm.installati
     raise SystemExit("network ownership labels do not match")
 PY
   else
-    "${PODMAN[@]}" network create --disable-dns=false \
-      --label com.1helm.managed=true --label "com.1helm.installation=$installation" "$network" >/dev/null
+    # Prefer a stable IFNAMSIZ-safe bridge name when the backend supports Docker-
+    # style bridge options (netavark). Debian bookworm's CNI backend rejects
+    # com.docker.network.bridge.name; fall back to a labeled default bridge and
+    # let ensure_guest_egress read the real interface from network inspect.
+    create_out=""
+    if ! create_out="$("${PODMAN[@]}" network create --disable-dns=false \
+      --opt "com.docker.network.bridge.name=${bridge_name}" \
+      --label com.1helm.managed=true --label "com.1helm.installation=$installation" "$network" 2>&1)"; then
+      if grep -qiE 'unsupported (bridge )?network option|unknown network option' <<<"$create_out"; then
+        "${PODMAN[@]}" network create --disable-dns=false \
+          --label com.1helm.managed=true --label "com.1helm.installation=$installation" "$network" >/dev/null \
+          || die "channel network could not be created"
+      else
+        printf '%s\n' "$create_out" >&2
+        die "channel network could not be created"
+      fi
+    fi
   fi
+  ensure_guest_egress "$network"
   printf '%s' "$network"
 }
 
@@ -331,12 +426,199 @@ prepare_storage() {
     [[ ! -e "$root/var-lib-1helm/owner" || "$(tr -d '\r\n' <"$root/var-lib-1helm/owner")" == "$owner" ]] || die "existing channel storage has a different owner"
   fi
   install -d -o root -g root -m 0711 "$root"
+  # Agent-owned workspace/files. On Windows, Files/Cowork never touch this tree
+  # via \\wsl.localhost (interop=false kills 9p); they use the storage_* helper
+  # operations instead. Keep modes tight.
   install -d -o "$AGENT_UID" -g "$AGENT_GID" -m 0700 "$root/workspace" "$root/files" "$root/home"
   chown -R "$AGENT_UID:$AGENT_GID" "$root/workspace" "$root/files" "$root/home"
   install -d -o root -g root -m 0700 "$root/var-lib-1helm"
   printf '%s\n' "$owner" >"$root/var-lib-1helm/owner"
   chmod 0600 "$root/var-lib-1helm/owner"
   for shared in "$root/workspace" "$root/files" "$root/home"; do grant_shared_access "$shared"; done
+}
+
+# Resolve a Files/Cowork relative path into an absolute, containment-checked
+# path under the channel's workspace/ or files/ tree. Empty path is the tree root.
+resolve_storage_path() {
+  local name="$1" area="$2" rel="$3" root base candidate
+  root="$(channel_root "$name")"
+  case "$area" in
+    workspace) base="$root/workspace" ;;
+    files) base="$root/files" ;;
+    *) die "invalid storage area" ;;
+  esac
+  [[ -d "$base" && ! -L "$base" ]] || die "storage area is missing"
+  if [[ -z "$rel" || "$rel" == "." ]]; then
+    printf '%s' "$base"
+    return
+  fi
+  # Reject absolute paths. Multi-dot filenames are fine (board.whiteboard.json,
+  # deck.slides.json); only whole-segment "." / ".." are blocked.
+  [[ "$rel" != /* ]] || die "unsafe storage path"
+  local segment
+  IFS='/' read -r -a segments <<<"$rel"
+  for segment in "${segments[@]}"; do
+    [[ -n "$segment" ]] || die "unsafe storage path"
+    [[ "$segment" != "." && "$segment" != ".." ]] || die "unsafe storage path"
+    # Allow letters, digits, dot, underscore, hyphen, space. No slashes (already split).
+    if [[ ! "$segment" =~ ^[A-Za-z0-9._\ -]+$ ]]; then
+      die "unsafe storage path"
+    fi
+  done
+  candidate="$base/$rel"
+  # Containment: realpath of candidate must stay under realpath of base.
+  local real_base real_candidate parent
+  real_base="$(realpath -m "$base")"
+  if [[ -e "$candidate" || -L "$candidate" ]]; then
+    real_candidate="$(realpath -m "$candidate")"
+  else
+    parent="$(realpath -m "$(dirname "$candidate")")"
+    [[ "$parent" == "$real_base" || "$parent" == "$real_base"/* ]] || die "storage path escapes channel tree"
+    real_candidate="$parent/$(basename "$candidate")"
+  fi
+  [[ "$real_candidate" == "$real_base" || "$real_candidate" == "$real_base"/* ]] || die "storage path escapes channel tree"
+  # Refuse any symlink component along the path.
+  local cursor="$real_base" part
+  IFS='/' read -r -a parts <<<"${real_candidate#"$real_base"/}"
+  if [[ "$real_candidate" != "$real_base" ]]; then
+    for part in "${parts[@]}"; do
+      [[ -n "$part" ]] || continue
+      cursor="$cursor/$part"
+      if [[ -L "$cursor" ]]; then die "storage path must not traverse symlinks"; fi
+    done
+  fi
+  printf '%s' "$real_candidate"
+}
+
+storage_list() {
+  local name="$1" owner="$2" area="$3" rel="${4:-}" path
+  verify_storage "$name" "$owner"
+  path="$(resolve_storage_path "$name" "$area" "$rel")"
+  [[ -d "$path" && ! -L "$path" ]] || die "Folder not found."
+  python3 - "$path" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+entries = []
+for name in sorted(os.listdir(path)):
+    full = os.path.join(path, name)
+    if os.path.islink(full):
+        continue
+    if os.path.isdir(full):
+        st = os.stat(full)
+        entries.append({"name": name, "kind": "directory", "size": 0, "modified": int(st.st_mtime * 1000)})
+    elif os.path.isfile(full):
+        st = os.stat(full)
+        entries.append({"name": name, "kind": "file", "size": int(st.st_size), "modified": int(st.st_mtime * 1000)})
+print(json.dumps({"entries": entries}, separators=(",", ":")))
+PY
+}
+
+storage_stat() {
+  local name="$1" owner="$2" area="$3" rel="${4:-}" path
+  verify_storage "$name" "$owner"
+  path="$(resolve_storage_path "$name" "$area" "$rel")"
+  [[ -e "$path" && ! -L "$path" ]] || die "File or folder not found."
+  python3 - "$path" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+st = os.stat(path)
+kind = "directory" if os.path.isdir(path) else "file" if os.path.isfile(path) else "other"
+print(json.dumps({
+  "name": os.path.basename(path) or ".",
+  "kind": kind,
+  "size": 0 if kind == "directory" else int(st.st_size),
+  "modified": int(st.st_mtime * 1000),
+  "exists": True,
+}, separators=(",", ":")))
+PY
+}
+
+storage_mkdir() {
+  local name="$1" owner="$2" area="$3" rel="$4" path parent
+  verify_storage "$name" "$owner"
+  [[ -n "$rel" ]] || die "mkdir requires a path"
+  path="$(resolve_storage_path "$name" "$area" "$rel")"
+  parent="$(dirname "$path")"
+  [[ -d "$parent" && ! -L "$parent" ]] || die "Parent folder not found."
+  [[ ! -e "$path" ]] || die "A file or folder with that name already exists."
+  install -d -o "$AGENT_UID" -g "$AGENT_GID" -m 0700 "$path"
+  storage_stat "$name" "$owner" "$area" "$rel"
+}
+
+storage_write() {
+  local name="$1" owner="$2" area="$3" rel="$4" mode="${5:-overwrite}" path parent
+  verify_storage "$name" "$owner"
+  [[ -n "$rel" ]] || die "write requires a path"
+  path="$(resolve_storage_path "$name" "$area" "$rel")"
+  parent="$(dirname "$path")"
+  [[ -d "$parent" && ! -L "$parent" ]] || die "Parent folder not found."
+  if [[ "$mode" == "create" && -e "$path" ]]; then die "A file or folder with that name already exists."; fi
+  if [[ -e "$path" && ( -L "$path" || -d "$path" ) ]]; then die "Choose a file to edit."; fi
+  # Body arrives on stdin (binary-safe).
+  cat >"$path"
+  chown "$AGENT_UID:$AGENT_GID" "$path"
+  chmod 0600 "$path"
+  storage_stat "$name" "$owner" "$area" "$rel"
+}
+
+storage_read() {
+  local name="$1" owner="$2" area="$3" rel="$4" path
+  verify_storage "$name" "$owner"
+  [[ -n "$rel" ]] || die "read requires a path"
+  path="$(resolve_storage_path "$name" "$area" "$rel")"
+  [[ -f "$path" && ! -L "$path" ]] || die "File not found."
+  cat -- "$path"
+}
+
+storage_rm() {
+  local name="$1" owner="$2" area="$3" rel="$4" recursive="${5:-0}" path
+  verify_storage "$name" "$owner"
+  [[ -n "$rel" ]] || die "rm requires a path"
+  path="$(resolve_storage_path "$name" "$area" "$rel")"
+  local base
+  base="$(resolve_storage_path "$name" "$area" "")"
+  [[ "$path" != "$base" ]] || die "Refusing to remove the storage root."
+  [[ -e "$path" && ! -L "$path" ]] || die "File or folder not found."
+  if [[ -d "$path" ]]; then
+    [[ "$recursive" == "1" ]] || die "Folder is not empty; remove recursively."
+    rm -rf -- "$path"
+  else
+    rm -f -- "$path"
+  fi
+  printf '{"ok":true}\n'
+}
+
+storage_rename() {
+  local name="$1" owner="$2" area="$3" from_rel="$4" to_rel="$5" from to to_parent
+  verify_storage "$name" "$owner"
+  [[ -n "$from_rel" && -n "$to_rel" ]] || die "rename requires source and destination"
+  from="$(resolve_storage_path "$name" "$area" "$from_rel")"
+  to="$(resolve_storage_path "$name" "$area" "$to_rel")"
+  [[ -e "$from" && ! -L "$from" ]] || die "File or folder not found."
+  to_parent="$(dirname "$to")"
+  [[ -d "$to_parent" && ! -L "$to_parent" ]] || die "Parent folder not found."
+  [[ ! -e "$to" ]] || die "A file or folder with that name already exists."
+  mv -- "$from" "$to"
+  storage_stat "$name" "$owner" "$area" "$to_rel"
+}
+
+storage_copy() {
+  local name="$1" owner="$2" area="$3" from_rel="$4" to_rel="$5" from to to_parent
+  verify_storage "$name" "$owner"
+  [[ -n "$from_rel" && -n "$to_rel" ]] || die "copy requires source and destination"
+  from="$(resolve_storage_path "$name" "$area" "$from_rel")"
+  to="$(resolve_storage_path "$name" "$area" "$to_rel")"
+  [[ -e "$from" && ! -L "$from" ]] || die "File or folder not found."
+  to_parent="$(dirname "$to")"
+  [[ -d "$to_parent" && ! -L "$to_parent" ]] || die "Parent folder not found."
+  [[ ! -e "$to" ]] || die "A file or folder with that name already exists."
+  if [[ -d "$from" ]]; then
+    cp -a -- "$from" "$to"
+  else
+    cp -- "$from" "$to"
+  fi
+  chown -R "$AGENT_UID:$AGENT_GID" "$to"
+  storage_stat "$name" "$owner" "$area" "$to_rel"
 }
 
 create_container() {
@@ -361,8 +643,12 @@ create_container() {
 }
 
 start_container() {
-  local name="$1" owner="$2" state
+  local name="$1" owner="$2" state network
   verify_container "$name" "$owner"
+  network="$(network_name "$owner")"
+  # Re-assert egress on every start: Docker and host firewall reloads can drop
+  # our FORWARD/NAT inserts after boot or package updates.
+  if "${PODMAN[@]}" network exists "$network"; then ensure_guest_egress "$network"; fi
   state="$(container_state "$name")"
   if [[ "$state" != running ]]; then "${PODMAN[@]}" start "$name" >/dev/null; fi
   for _ in {1..100}; do
@@ -411,16 +697,48 @@ print(json.dumps({
 PY
 }
 
+load_pinned_image() {
+  local image="$1" engine_image expected actual
+  valid_image "$image" || die "invalid image reference"
+  engine_image="$(podman_image "$image")"
+  if "${PODMAN[@]}" image exists "$engine_image"; then return; fi
+  [[ -f "$IMAGE_ARCHIVE" && ! -L "$IMAGE_ARCHIVE" ]] || die "sealed channel image archive is missing: $IMAGE_ARCHIVE"
+  [[ -f "$IMAGE_SHA256_FILE" && ! -L "$IMAGE_SHA256_FILE" ]] || die "sealed channel image digest file is missing: $IMAGE_SHA256_FILE"
+  expected="$(tr -d '[:space:]' <"$IMAGE_SHA256_FILE")"
+  [[ "$expected" =~ ^[a-f0-9]{64}$ ]] || die "sealed channel image digest is invalid"
+  actual="$(sha256sum "$IMAGE_ARCHIVE" | awk '{print $1}')"
+  [[ "$actual" == "$expected" ]] || die "sealed channel image digest does not match"
+  # Customer hosts load a CI-built archive. They never apt against live mirrors.
+  "${PODMAN[@]}" load --input "$IMAGE_ARCHIVE" >/dev/null
+  if ! "${PODMAN[@]}" image exists "$engine_image"; then
+    # oci-archive load may restore a different local name; retag the only loaded ref if needed.
+    loaded="$("${PODMAN[@]}" images --format '{{.Repository}}:{{.Tag}}' | awk -F: '$1 ~ /1helm-channel-machine$/ {print; exit}')"
+    [[ -n "$loaded" && "$loaded" != "<none>:<none>" ]] || die "sealed channel image did not load under a usable name"
+    "${PODMAN[@]}" tag "$loaded" "$engine_image"
+  fi
+  "${PODMAN[@]}" image exists "$engine_image" || die "sealed channel image was not present after load"
+}
+
 build_image() {
   local image="$1" engine_image
   valid_image "$image" || die "invalid image reference"
   engine_image="$(podman_image "$image")"
-  [[ -r "$CONTAINERFILE" ]] || die "installed OCI image recipe is missing"
   if "${PODMAN[@]}" image exists "$engine_image"; then return; fi
-  "${PODMAN[@]}" build --pull=missing \
-    --build-arg "AGENT_UID=$AGENT_UID" --build-arg "AGENT_GID=$AGENT_GID" \
-    --tag "$engine_image" --file "$CONTAINERFILE" "$(dirname "$CONTAINERFILE")"
-  "${PODMAN[@]}" image exists "$engine_image" || die "OCI image did not exist after build"
+  if [[ -f "$IMAGE_ARCHIVE" && -f "$IMAGE_SHA256_FILE" ]]; then
+    load_pinned_image "$image"
+    return
+  fi
+  # Live Containerfile builds are development-only. Product Linux/Windows installs
+  # ship the sealed archive and must never depend on customer-side apt mirrors.
+  if [[ "${HELM_OCI_ALLOW_LIVE_BUILD:-}" == "1" ]]; then
+    [[ -r "$CONTAINERFILE" ]] || die "installed OCI image recipe is missing"
+    "${PODMAN[@]}" build --network=host --pull=missing \
+      --build-arg "AGENT_UID=$AGENT_UID" --build-arg "AGENT_GID=$AGENT_GID" \
+      --tag "$engine_image" --file "$CONTAINERFILE" "$(dirname "$CONTAINERFILE")"
+    "${PODMAN[@]}" image exists "$engine_image" || die "OCI image did not exist after build"
+    return
+  fi
+  die "sealed channel image archive is not installed; product hosts load a pinned image instead of building live"
 }
 
 copy_tree_from_container() {
@@ -556,7 +874,7 @@ case "$operation" in
     ;;
   ready)
     (($# == 0)) || die "ready takes no arguments"
-    for command in find flock getfacl podman python3 setfacl sha256sum stat tar; do command -v "$command" >/dev/null || die "missing $command"; done
+    for command in find flock getfacl iptables podman python3 setfacl sha256sum stat tar; do command -v "$command" >/dev/null || die "missing $command"; done
     [[ -r "$CONTAINERFILE" ]] || die "installed OCI image recipe is missing"
     "${PODMAN[@]}" info >/dev/null
     printf '{"ready":true,"version":"%s","engine":"podman"}\n' "$RUNTIME_VERSION"
@@ -564,6 +882,16 @@ case "$operation" in
   image)
     (($# == 1)) || die "image requires a reference"
     build_image "$1"
+    ;;
+  image-status)
+    (($# == 1)) || die "image-status requires a reference"
+    valid_image "$1" || die "invalid image reference"
+    engine_image="$(podman_image "$1")"
+    if "${PODMAN[@]}" image exists "$engine_image"; then
+      printf '{"exists":true,"image":"%s"}\n' "$1"
+    else
+      printf '{"exists":false,"image":"%s"}\n' "$1"
+    fi
     ;;
   create)
     (($# == 5)) || die "create requires name, owner, CPUs, memory MiB, and image"
@@ -641,6 +969,41 @@ case "$operation" in
     root="$(channel_root "$1")"
     [[ "$root" == "$CHANNELS_ROOT/$1" ]] || die "unsafe channel cleanup target"
     rm -rf -- "$root"
+    ;;
+  # Host Files/Cowork bridge: Windows cannot use \\wsl.localhost when interop is
+  # disabled (isolation contract). These ops read/write channel storage as root
+  # under the helper's ownership checks, never via the Windows 9p share.
+  storage-list)
+    (($# == 3 || $# == 4)) || die "storage-list requires name, owner, area [, relative path]"
+    storage_list "$1" "$2" "$3" "${4:-}"
+    ;;
+  storage-stat)
+    (($# == 3 || $# == 4)) || die "storage-stat requires name, owner, area [, relative path]"
+    storage_stat "$1" "$2" "$3" "${4:-}"
+    ;;
+  storage-mkdir)
+    (($# == 4)) || die "storage-mkdir requires name, owner, area, relative path"
+    storage_mkdir "$1" "$2" "$3" "$4"
+    ;;
+  storage-write)
+    (($# == 4 || $# == 5)) || die "storage-write requires name, owner, area, relative path [, create|overwrite]"
+    storage_write "$1" "$2" "$3" "$4" "${5:-overwrite}"
+    ;;
+  storage-read)
+    (($# == 4)) || die "storage-read requires name, owner, area, relative path"
+    storage_read "$1" "$2" "$3" "$4"
+    ;;
+  storage-rm)
+    (($# == 4 || $# == 5)) || die "storage-rm requires name, owner, area, relative path [, 0|1 recursive]"
+    storage_rm "$1" "$2" "$3" "$4" "${5:-0}"
+    ;;
+  storage-rename)
+    (($# == 5)) || die "storage-rename requires name, owner, area, from, to"
+    storage_rename "$1" "$2" "$3" "$4" "$5"
+    ;;
+  storage-copy)
+    (($# == 5)) || die "storage-copy requires name, owner, area, from, to"
+    storage_copy "$1" "$2" "$3" "$4" "$5"
     ;;
   *) die "unsupported operation" ;;
 esac

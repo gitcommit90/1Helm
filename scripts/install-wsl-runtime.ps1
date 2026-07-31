@@ -1,7 +1,9 @@
 param(
   [Parameter(Mandatory = $true)][string]$RuntimeName,
   [Parameter(Mandatory = $true)][string]$AppRoot,
-  [switch]$HostSetup
+  [switch]$HostSetup,
+  # Shared status file path so elevated HostSetup can report real errors to the parent/UI.
+  [string]$StatusPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,47 +19,143 @@ if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne [Sys
   throw "This 1Helm build requires Microsoft's x64 WSL runtime."
 }
 
+if ($StatusPath) { $env:HELM_WSL_SETUP_STATUS = $StatusPath }
+
+# Script-scoped: both elevated host setup and the signed-in owner path download files.
+function Fetch-File {
+  param([string]$Url, [string]$Destination)
+  $curl = "curl.exe"
+  if (Get-Command $curl -ErrorAction SilentlyContinue) {
+    & $curl -fsSLo $Destination $Url
+    if ($LASTEXITCODE -ne 0) { throw "curl failed to download $Url" }
+  } else {
+    Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Destination
+  }
+}
+
+# wsl.exe emits UTF-16LE. Captured as a .NET string that still contains NULs, so
+# version/list matches fail unless the NULs are stripped first.
+function Get-WslText {
+  param([Parameter(Mandatory = $true)][string[]]$ArgumentList)
+  $raw = & $wsl @ArgumentList 2>&1 | Out-String
+  $code = $LASTEXITCODE
+  $text = ($raw -replace [char]0, "").Trim()
+  return [pscustomobject]@{ ExitCode = $code; Text = $text }
+}
+
 function Test-PinnedWslRuntime {
-  $output = (& $wsl --version 2>&1 | Out-String)
-  return $LASTEXITCODE -eq 0 -and $output -match [regex]::Escape($wslVersion)
+  $result = Get-WslText -ArgumentList @("--version")
+  return $result.ExitCode -eq 0 -and $result.Text -match [regex]::Escape($wslVersion)
+}
+
+function Test-RestartRequired {
+  param($Feature)
+  if ($null -eq $Feature) { return $false }
+  $value = [string]$Feature.RestartRequired
+  return $value -eq "Required" -or $value -eq "1" -or $value -eq "True"
+}
+
+function Get-WslDistributionNames {
+  $result = Get-WslText -ArgumentList @("--list", "--quiet")
+  if ($result.ExitCode -ne 0) { return @() }
+  return @(
+    $result.Text -split "(\r?\n)+" |
+      ForEach-Object { $_.Trim() } |
+      Where-Object { $_ }
+  )
+}
+
+function Write-SetupStatus {
+  param(
+    [string]$Status,
+    [string]$Step,
+    [int]$Progress,
+    [string]$ErrorMessage = ""
+  )
+  Write-Host $Step
+  $path = $env:HELM_WSL_SETUP_STATUS
+  if (-not $path) { return }
+  try {
+    $dir = Split-Path -Parent $path
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+      New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    $payload = @{
+      status = $Status
+      step = $Step
+      progress = $Progress
+      error = $ErrorMessage
+      updated = (Get-Date).ToUniversalTime().ToString("o")
+    } | ConvertTo-Json -Compress
+    # Windows PowerShell's "utf8" encoding writes a BOM that turns status text into
+    # mojibake (e.g. "base...") in the Electron UI. Write plain UTF-8 instead.
+    [System.IO.File]::WriteAllText($path, $payload, [System.Text.UTF8Encoding]::new($false))
+  } catch {
+    # Status reporting must never abort setup.
+  }
+}
+
+function Fail-Setup {
+  param([string]$Message, [int]$Code = 1)
+  Write-SetupStatus -Status "failed" -Step $Message -Progress 0 -ErrorMessage $Message
+  Write-Host "ERROR: $Message" -ForegroundColor Red
+  exit $Code
 }
 
 if ($HostSetup) {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $principal = [Security.Principal.WindowsPrincipal]::new($identity)
   if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw "The WSL host setup phase requires administrator approval."
+    Fail-Setup "The WSL host setup phase requires administrator approval."
   }
+  Write-SetupStatus -Status "running" -Step "Enabling Windows WSL features..." -Progress 8
   $wslFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux
   $vmFeature = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform
   if ($wslFeature.State -ne "Enabled") { Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -All -NoRestart | Out-Null }
   if ($vmFeature.State -ne "Enabled") { Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart | Out-Null }
-  $restartRequired = (Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux).RestartRequired -or
-    (Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform).RestartRequired
+  $wslFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux
+  $vmFeature = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform
+  $restartRequired = (Test-RestartRequired $wslFeature) -or (Test-RestartRequired $vmFeature)
   $hostTemporary = Join-Path ([System.IO.Path]::GetTempPath()) ("1helm-wsl-host-" + [Guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Path $hostTemporary | Out-Null
   try {
-  if (-not (Test-PinnedWslRuntime)) {
-    $msi = Join-Path $hostTemporary "wsl.candidate.msi"
-    Invoke-WebRequest -UseBasicParsing -Uri $wslInstallerUrl -OutFile $msi
-    if ((Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant() -ne $wslInstallerSha256) {
-      throw "Microsoft WSL installer did not match 1Helm's pinned SHA-256."
+    if (-not (Test-PinnedWslRuntime)) {
+      $msi = Join-Path $hostTemporary "wsl.candidate.msi"
+      Write-SetupStatus -Status "running" -Step "Downloading Microsoft WSL installer..." -Progress 12
+      Fetch-File -Url $wslInstallerUrl -Destination $msi
+      if ((Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant() -ne $wslInstallerSha256) {
+        Fail-Setup "Microsoft WSL installer did not match 1Helm's pinned SHA-256."
+      }
+      $signature = Get-AuthenticodeSignature -LiteralPath $msi
+      if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or $null -eq $signature.SignerCertificate -or
+          $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)') {
+        Fail-Setup "Microsoft WSL installer did not have a valid Microsoft Corporation signature."
+      }
+      Write-SetupStatus -Status "running" -Step "Installing Microsoft WSL $wslVersion..." -Progress 18
+      $installer = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList @("/i", $msi, "/qn", "/norestart") -Wait -PassThru
+      # 0 success; 1641/3010 success+reboot; 1638 already installed (same/newer).
+      # 1603 is a hard fail from msiexec, but on machines that already have the
+      # pinned WSL build (or UTF-16 made detection fail earlier) the package may
+      # still leave a working runtime - re-verify before failing closed.
+      if ($installer.ExitCode -in @(1641, 3010)) { $restartRequired = $true }
+      elseif ($installer.ExitCode -notin @(0, 1638)) {
+        if (Test-PinnedWslRuntime) {
+          Write-Host "Microsoft WSL installer returned $($installer.ExitCode), but pinned WSL $wslVersion is already present; continuing."
+        } else {
+          Fail-Setup "Microsoft WSL installer failed with exit code $($installer.ExitCode)."
+        }
+      }
+    } else {
+      Write-SetupStatus -Status "running" -Step "Microsoft WSL $wslVersion is already installed." -Progress 18
     }
-    $signature = Get-AuthenticodeSignature -LiteralPath $msi
-    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or $null -eq $signature.SignerCertificate -or
-        $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)') {
-      throw "Microsoft WSL installer did not have a valid Microsoft Corporation signature."
+    if ($restartRequired) {
+      Write-SetupStatus -Status "restart_required" -Step "WSL 2 features are enabled. Restart Windows once, then retry 1Helm computer setup." -Progress 20
+      exit 10
     }
-    $installer = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList @("/i", $msi, "/qn", "/norestart") -Wait -PassThru
-    if ($installer.ExitCode -notin @(0, 1641, 3010)) { throw "Microsoft WSL installer failed with exit code $($installer.ExitCode)." }
-    if ($installer.ExitCode -in @(1641, 3010)) { $restartRequired = $true }
-  }
-  if ($restartRequired) {
-    exit 10
-  }
-  if (-not (Test-PinnedWslRuntime)) { throw "Microsoft WSL $wslVersion was installed but could not be verified." }
-  & $wsl --set-default-version 2
-  if ($LASTEXITCODE -ne 0) { throw "WSL could not set version 2 as the default." }
+    if (-not (Test-PinnedWslRuntime)) { Fail-Setup "Microsoft WSL $wslVersion was installed but could not be verified." }
+    Write-SetupStatus -Status "running" -Step "Setting WSL 2 as the default..." -Progress 22
+    $defaultVersion = Get-WslText -ArgumentList @("--set-default-version", "2")
+    if ($defaultVersion.ExitCode -ne 0) { Fail-Setup "WSL could not set version 2 as the default. $($defaultVersion.Text)" }
   } finally {
     if (Test-Path -LiteralPath $hostTemporary) { Remove-Item -LiteralPath $hostTemporary -Recurse -Force }
   }
@@ -68,72 +166,122 @@ if ($HostSetup) {
 # features and Microsoft's signed WSL package cross the UAC boundary; importing
 # the distribution in that child would attach it to a different administrator
 # when over-the-shoulder credentials are used.
-$hostArguments = @(
-  "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"{0}"' -f $PSCommandPath),
-  "-RuntimeName", $RuntimeName, "-AppRoot", ('"{0}"' -f $AppRoot), "-HostSetup"
-) -join " "
-$hostProcess = Start-Process -FilePath "powershell.exe" -ArgumentList $hostArguments -Verb RunAs -Wait -PassThru
-if ($hostProcess.ExitCode -eq 10) {
-  Write-Host "WSL 2 features are enabled. Restart Windows once, then retry 1Helm computer setup."
-  exit 10
-}
-if ($hostProcess.ExitCode -ne 0) { throw "The administrator-approved WSL host setup failed with exit code $($hostProcess.ExitCode)." }
-if (-not (Test-PinnedWslRuntime)) { throw "Microsoft WSL $wslVersion is not ready in the signed-in user's session." }
-
-$AppRoot = [System.IO.Path]::GetFullPath($AppRoot)
-$required = @(
-  (Join-Path $AppRoot "scripts\1helm-oci-runtime"),
-  (Join-Path $AppRoot "deploy\1helm-oci-runtime-v1.conf"),
-  (Join-Path $AppRoot "container\Containerfile.oci")
-)
-foreach ($source in $required) {
-  if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "The packaged OCI runtime contract is incomplete." }
-}
-
-$temporary = Join-Path ([System.IO.Path]::GetTempPath()) ("1helm-oci-runtime-" + [Guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $temporary | Out-Null
 try {
-
-  $names = @(& $wsl --list --quiet | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-  $runtimeRoot = Join-Path $env:LOCALAPPDATA "1Helm-Runtime"
-  $installDirectory = Join-Path $runtimeRoot $RuntimeName
-  if ($names -notcontains $RuntimeName) {
-    if (Test-Path -LiteralPath $installDirectory) { throw "The shared runtime disk directory already exists without a registered runtime." }
-    New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
-    $rootfs = Join-Path $temporary "ubuntu-noble-wsl.rootfs.tar.gz"
-    Invoke-WebRequest -UseBasicParsing -Uri $rootfsUrl -OutFile $rootfs
-    if ((Get-FileHash -LiteralPath $rootfs -Algorithm SHA256).Hash.ToLowerInvariant() -ne $rootfsSha256) {
-      throw "Ubuntu's pinned WSL rootfs failed SHA-256 verification."
+  Write-SetupStatus -Status "running" -Step "Requesting administrator approval for WSL host setup..." -Progress 5
+  $statusArg = if ($env:HELM_WSL_SETUP_STATUS) { $env:HELM_WSL_SETUP_STATUS } else { "" }
+  $hostArguments = @(
+    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"{0}"' -f $PSCommandPath),
+    "-RuntimeName", $RuntimeName, "-AppRoot", ('"{0}"' -f $AppRoot), "-HostSetup"
+  )
+  if ($statusArg) {
+    $hostArguments += @("-StatusPath", ('"{0}"' -f $statusArg))
+  }
+  $hostProcess = Start-Process -FilePath "powershell.exe" -ArgumentList ($hostArguments -join " ") -Verb RunAs -Wait -PassThru
+  if ($null -eq $hostProcess -or $null -eq $hostProcess.ExitCode) {
+    Fail-Setup "Administrator approval was cancelled or Windows did not start the elevated WSL host setup."
+  }
+  if ($hostProcess.ExitCode -eq 10) {
+    Write-SetupStatus -Status "restart_required" -Step "WSL 2 features are enabled. Restart Windows once, then retry 1Helm computer setup." -Progress 20
+    Write-Host "WSL 2 features are enabled. Restart Windows once, then retry 1Helm computer setup."
+    exit 10
+  }
+  if ($hostProcess.ExitCode -ne 0) {
+    $detail = "The administrator-approved WSL host setup failed with exit code $($hostProcess.ExitCode)."
+    if ($env:HELM_WSL_SETUP_STATUS -and (Test-Path -LiteralPath $env:HELM_WSL_SETUP_STATUS)) {
+      try {
+        $reported = Get-Content -LiteralPath $env:HELM_WSL_SETUP_STATUS -Raw | ConvertFrom-Json
+        if ($reported.error) { $detail = [string]$reported.error }
+        elseif ($reported.step -and $reported.status -eq "failed") { $detail = [string]$reported.step }
+      } catch { }
     }
-    & $wsl --import $RuntimeName $installDirectory $rootfs --version 2
-    if ($LASTEXITCODE -ne 0) { throw "The shared 1Helm WSL runtime could not be imported." }
+    Fail-Setup $detail
+  }
+  if (-not (Test-PinnedWslRuntime)) {
+    Fail-Setup "Microsoft WSL $wslVersion is not ready in the signed-in user's session."
   }
 
-  $bootstrap = @'
+  $AppRoot = [System.IO.Path]::GetFullPath($AppRoot)
+  $required = @(
+    (Join-Path $AppRoot "scripts\1helm-oci-runtime"),
+    (Join-Path $AppRoot "deploy\1helm-oci-runtime-v1.conf"),
+    (Join-Path $AppRoot "container\Containerfile.oci"),
+    (Join-Path $AppRoot "container\channel-machine.oci.tar"),
+    (Join-Path $AppRoot "container\channel-machine.oci.sha256")
+  )
+  foreach ($source in $required) {
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+      Fail-Setup "The packaged OCI runtime contract is incomplete: missing $(Split-Path -Leaf $source)."
+    }
+  }
+  $expectedImageSha = (Get-Content -LiteralPath $required[4] -Raw).Trim().ToLowerInvariant()
+  if ($expectedImageSha -notmatch '^[a-f0-9]{64}$') { Fail-Setup "The sealed channel image digest file is invalid." }
+  $actualImageSha = (Get-FileHash -LiteralPath $required[3] -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($actualImageSha -ne $expectedImageSha) { Fail-Setup "The sealed channel image digest does not match." }
+
+  $temporary = Join-Path ([System.IO.Path]::GetTempPath()) ("1helm-oci-runtime-" + [Guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Path $temporary | Out-Null
+  try {
+    Write-SetupStatus -Status "running" -Step "Checking for the shared 1Helm WSL runtime..." -Progress 28
+    $names = @(Get-WslDistributionNames)
+    $runtimeRoot = Join-Path $env:LOCALAPPDATA "1Helm-Runtime"
+    $installDirectory = Join-Path $runtimeRoot $RuntimeName
+    if ($names -notcontains $RuntimeName) {
+      if (Test-Path -LiteralPath $installDirectory) {
+        Fail-Setup "The shared runtime disk directory already exists without a registered runtime. Remove `"$installDirectory`" or unregister the partial distro, then retry."
+      }
+      New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
+      $rootfs = Join-Path $temporary "ubuntu-noble-wsl.rootfs.tar.gz"
+      Write-SetupStatus -Status "running" -Step "Downloading shared Linux runtime base..." -Progress 35
+      Fetch-File -Url $rootfsUrl -Destination $rootfs
+      if ((Get-FileHash -LiteralPath $rootfs -Algorithm SHA256).Hash.ToLowerInvariant() -ne $rootfsSha256) {
+        Fail-Setup "Ubuntu's pinned WSL rootfs failed SHA-256 verification."
+      }
+      Write-SetupStatus -Status "running" -Step "Importing shared Linux runtime..." -Progress 48
+      $imported = Get-WslText -ArgumentList @("--import", $RuntimeName, $installDirectory, $rootfs, "--version", "2")
+      if ($imported.ExitCode -ne 0) { Fail-Setup "The shared 1Helm WSL runtime could not be imported. $($imported.Text)" }
+    }
+
+    Write-SetupStatus -Status "running" -Step "Installing shared runtime packages (podman, crun, ...)..." -Progress 58
+    $bootstrap = @'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends acl ca-certificates crun fuse-overlayfs podman python3 sudo uidmap util-linux
+apt-get install -y --no-install-recommends acl ca-certificates crun fuse-overlayfs iptables podman python3 sudo uidmap util-linux
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 id 1helm >/dev/null 2>&1 || useradd --system --home-dir /var/lib/1helm-oci-v1 --no-create-home --shell /usr/sbin/nologin 1helm
 install -d -m 0755 /etc/1helm /usr/libexec /usr/lib/1helm-oci
 printf '[automount]\nenabled=false\nmountFsTab=false\n\n[interop]\nenabled=false\nappendWindowsPath=false\n\n[user]\ndefault=root\n\n[boot]\nsystemd=true\n' >/etc/wsl.conf
 '@
-  & $wsl --distribution $RuntimeName --user root --exec /bin/bash -lc $bootstrap
-  if ($LASTEXITCODE -ne 0) { throw "The shared 1Helm runtime prerequisites could not be installed." }
+    $bootstrapped = Get-WslText -ArgumentList @("--distribution", $RuntimeName, "--user", "root", "--exec", "/bin/bash", "-lc", $bootstrap)
+    if ($bootstrapped.ExitCode -ne 0) { Fail-Setup "The shared 1Helm runtime prerequisites could not be installed. $($bootstrapped.Text)" }
 
-  $unc = "\\wsl.localhost\$RuntimeName"
-  Copy-Item -LiteralPath $required[0] -Destination "$unc\usr\libexec\1helm-oci-runtime" -Force
-  Copy-Item -LiteralPath $required[1] -Destination "$unc\etc\1helm\oci-runtime-v1.conf" -Force
-  Copy-Item -LiteralPath $required[2] -Destination "$unc\usr\lib\1helm-oci\Containerfile.oci" -Force
-  & $wsl --distribution $RuntimeName --user root --exec /bin/chmod 0755 /usr/libexec/1helm-oci-runtime
-  if ($LASTEXITCODE -ne 0) { throw "The OCI runtime helper permissions could not be applied." }
-  & $wsl --terminate $RuntimeName
-  if ($LASTEXITCODE -ne 0) { throw "The shared runtime could not restart into its isolation policy." }
-  & $wsl --distribution $RuntimeName --user root --exec /usr/libexec/1helm-oci-runtime ready
-  if ($LASTEXITCODE -ne 0) { throw "The shared OCI runtime did not pass readiness verification." }
-  Write-Host "1Helm's shared OCI runtime is installed and ready."
-} finally {
-  if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }
+    Write-SetupStatus -Status "running" -Step "Installing the sealed OCI helper and channel image..." -Progress 78
+    $unc = "\\wsl.localhost\$RuntimeName"
+    Copy-Item -LiteralPath $required[0] -Destination "$unc\usr\libexec\1helm-oci-runtime" -Force
+    Copy-Item -LiteralPath $required[1] -Destination "$unc\etc\1helm\oci-runtime-v1.conf" -Force
+    Copy-Item -LiteralPath $required[2] -Destination "$unc\usr\lib\1helm-oci\Containerfile.oci" -Force
+    Copy-Item -LiteralPath $required[3] -Destination "$unc\usr\lib\1helm-oci\channel-machine.oci.tar" -Force
+    Copy-Item -LiteralPath $required[4] -Destination "$unc\usr\lib\1helm-oci\channel-machine.oci.sha256" -Force
+    $meta = Join-Path $AppRoot "container\channel-machine.oci.json"
+    if (Test-Path -LiteralPath $meta -PathType Leaf) {
+      Copy-Item -LiteralPath $meta -Destination "$unc\usr\lib\1helm-oci\channel-machine.oci.json" -Force
+    }
+    $chmod = Get-WslText -ArgumentList @("--distribution", $RuntimeName, "--user", "root", "--exec", "/bin/chmod", "0755", "/usr/libexec/1helm-oci-runtime")
+    if ($chmod.ExitCode -ne 0) { Fail-Setup "The OCI runtime helper permissions could not be applied. $($chmod.Text)" }
+    Write-SetupStatus -Status "running" -Step "Restarting the shared runtime into its isolation policy..." -Progress 88
+    $terminated = Get-WslText -ArgumentList @("--terminate", $RuntimeName)
+    if ($terminated.ExitCode -ne 0) { Fail-Setup "The shared runtime could not restart into its isolation policy. $($terminated.Text)" }
+    Write-SetupStatus -Status "running" -Step "Verifying the shared OCI runtime..." -Progress 94
+    $ready = Get-WslText -ArgumentList @("--distribution", $RuntimeName, "--user", "root", "--exec", "/usr/libexec/1helm-oci-runtime", "ready")
+    if ($ready.ExitCode -ne 0) { Fail-Setup "The shared OCI runtime did not pass readiness verification. $($ready.Text)" }
+    Write-SetupStatus -Status "complete" -Step "1Helm's shared OCI runtime is installed and ready." -Progress 100
+    Write-Host "1Helm's shared OCI runtime is installed and ready."
+  } finally {
+    if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }
+  }
+} catch {
+  $message = $_.Exception.Message
+  if (-not $message) { $message = "$_" }
+  Fail-Setup $message
 }

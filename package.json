@@ -1,7 +1,7 @@
 {
   "name": "1helm",
   "productName": "1Helm",
-  "version": "0.0.29",
+  "version": "0.0.30",
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-only",
@@ -47,6 +47,7 @@
     "desktop": "electron .",
     "package:mac": "node scripts/package-mac-dmg.cjs",
     "package:dmg:release": "HELM_REQUIRE_NOTARIZATION=1 node scripts/package-mac-dmg.cjs",
+    "package:channel-image": "bash scripts/build-oci-channel-image.sh",
     "package:linux": "node scripts/package-linux-host.mjs",
     "package:windows": "node scripts/package-windows.cjs",
     "package:windows:release": "set HELM_REQUIRE_WINDOWS_SIGNATURE=1&& node scripts/package-windows.cjs",

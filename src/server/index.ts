@@ -98,11 +98,14 @@ import {
   stopRoutingEngine,
 } from "./routing.ts";
 import {
+  beginOciChannelComputerPrepare,
+  channelComputerPrepareStatus,
   channelComputerView,
   runtimeReadiness,
   refreshChannelWorkspaceMirror,
   prepareAppleRuntimeInstaller,
   prepareWindowsWslRuntime,
+  windowsWslSetupStatus,
   startAppleRuntime,
   wakeDueChannelComputers,
   shutdownChannelComputers,
@@ -167,6 +170,35 @@ const SECURITY_HEADERS: Record<string, string> = {
   // Keep camera and location denied, but allow this origin to request the mic.
   "permissions-policy": "camera=(), microphone=(self), geolocation=(), unload=(self)",
 };
+/** Cowork renderers accept exact file contracts. When a Cowork request targets
+ * the presentations or whiteboards world, tell the agent the format up front
+ * so it produces files the tab can actually open. */
+function coworkFormatContract(path: string, folderContext: boolean): string {
+  const inPresentations = folderContext ? (path === "presentations" || path.startsWith("presentations/")) : path.startsWith("presentations/");
+  const inWhiteboards = folderContext ? (path === "whiteboards" || path.startsWith("whiteboards/")) : path.startsWith("whiteboards/");
+  if (inPresentations || (!folderContext && path.endsWith(".slides.json"))) {
+    return [
+      "Format contract for /workspace/presentations — follow it exactly:",
+      "- Create exactly one file per deck, named `<name>.slides.json`. No .html decks, no ad-hoc schemas, no local web servers, no extra files.",
+      "- The Presentations tab renders 1Helm's Excalidraw-based deck format:",
+      '  `{ "type": "1helm-slides", "version": 3, "slides": [{ "name": "Slide title", "scene": { "elements": [...], "appState": {}, "files": {} } }] }`',
+      '  where `elements` are Excalidraw elements (type "text", "rectangle", "ellipse", "arrow", …) positioned on a 1500×1000 canvas.',
+      '- Simpler and recommended unless you know Excalidraw JSON: `{ "theme": { "primary": "#hex", "background": "#hex", "text": "#hex", "accent": "#hex" }, "slides": [{ "title": "Slide title", "body": "Slide body text" }] }` — 1Helm lays these out with the theme colors, sized text, and bullets (lines starting with "- " render as bullet rows). Supply a theme that fits the subject.',
+      "- Verify your JSON parses before finishing.",
+    ].join("\n");
+  }
+  if (inWhiteboards || (!folderContext && path.endsWith(".whiteboard.json"))) {
+    return [
+      "Format contract for /workspace/whiteboards — follow it exactly:",
+      "- Create exactly one file per board, named `<name>.whiteboard.json`. No .html, no ad-hoc schemas.",
+      '- The Whiteboard tab renders an Excalidraw scene: `{ "type": "excalidraw", "version": 2, "elements": [...], "appState": {}, "files": {} }`',
+      '  where `elements` are Excalidraw elements (type "text", "rectangle", "ellipse", "arrow", "line", "freedraw", …).',
+      "- Verify your JSON parses before finishing.",
+    ].join("\n");
+  }
+  return "";
+}
+
 const json = (res: ServerResponse, code: number, body: unknown): void => {
   const s = JSON.stringify(body);
   res.writeHead(code, { "content-type": "application/json", ...SECURITY_HEADERS });
@@ -377,7 +409,7 @@ function visibleChannels(user: Row): Row[] {
 }
 
 /** Fire the bound resident or workspace-wide Skipper mentioned in a message. */
-function triggerBots(channelId: number, msg: Row, authorId: number): void {
+function triggerBots(channelId: number, msg: Row, authorId: number, hiddenContext?: string): void {
   if (["collab", "human"].includes(String(q1("SELECT kind FROM channels WHERE id=?", channelId)?.kind || ""))) return;
   const fresh = msg.parent_id == null;
   const threadRootId = Number(msg.parent_id ?? msg.id);
@@ -385,7 +417,7 @@ function triggerBots(channelId: number, msg: Row, authorId: number): void {
   if (!mentioned.length && msg.parent_id != null) {
     const participant = conversationalAgent(channelId, threadRootId, Number(msg.id));
     if (participant?.automatic) {
-      void launchBot(participant.bot, channelId, msg, authorId, threadRootId, false);
+      void launchBot(participant.bot, channelId, msg, authorId, threadRootId, false, hiddenContext);
       return;
     }
     if (participant && !q1("SELECT muted FROM thread_mention_preferences WHERE thread_id=? AND user_id=? AND muted=1", participant.threadId, authorId)) {
@@ -400,7 +432,7 @@ function triggerBots(channelId: number, msg: Row, authorId: number): void {
   // request identify collaborators/context; they must not launch competing
   // agent turns and duplicate the work.
   const skipper = mentioned.find((bot) => agentForBot(Number(bot.id))?.kind === "skipper");
-  for (const bot of skipper ? [skipper] : mentioned) void launchBot(bot, channelId, msg, authorId, threadRootId, fresh);
+  for (const bot of skipper ? [skipper] : mentioned) void launchBot(bot, channelId, msg, authorId, threadRootId, fresh, hiddenContext);
 }
 
 function offerHumanMemberships(channelId: number, msg: Row, author: Row): void {
@@ -423,7 +455,7 @@ function offerHumanMemberships(channelId: number, msg: Row, author: Row): void {
   }
 }
 
-function launchBot(bot: Row, channelId: number, msg: Row, authorId: number, threadRootId: number, fresh: boolean): void {
+function launchBot(bot: Row, channelId: number, msg: Row, authorId: number, threadRootId: number, fresh: boolean, hiddenContext?: string): void {
   const agent = agentForBot(Number(bot.id));
   if (agent?.kind === "skipper") {
     const threadId = threadIdForRoot(threadRootId, channelId) ?? ensureThread(threadRootId, channelId);
@@ -432,10 +464,10 @@ function launchBot(bot: Row, channelId: number, msg: Row, authorId: number, thre
     run("INSERT INTO channel_activity (channel_id,thread_id,kind,summary,status,actor_type,created) VALUES (?,?,'escalation',?,'open','human',?)", channelId, threadId, String(msg.body).slice(0, 500), now());
     broadcastToChannel(channelId, { type: "escalation", channelId, escalation: { id: escalationId, thread_id: threadId, reason: msg.body, status: "open" } });
     const hostAuthorized = Boolean(q1("SELECT is_admin FROM users WHERE id=?", authorId)?.is_admin);
-    void runBot(bot, channelId, Number(msg.id), threadRootId, fresh, escalationId, hostAuthorized);
+    void runBot(bot, channelId, Number(msg.id), threadRootId, fresh, escalationId, hostAuthorized, hiddenContext);
   } else if (agent?.kind === "channel") {
-    if (Number(agent.channel_id) === channelId) void runBot(bot, channelId, Number(msg.id), threadRootId, fresh);
-  } else if (botIsInChannel(Number(bot.id), channelId)) void runBot(bot, channelId, Number(msg.id), threadRootId, fresh);
+    if (Number(agent.channel_id) === channelId) void runBot(bot, channelId, Number(msg.id), threadRootId, fresh, undefined, undefined, hiddenContext);
+  } else if (botIsInChannel(Number(bot.id), channelId)) void runBot(bot, channelId, Number(msg.id), threadRootId, fresh, undefined, undefined, hiddenContext);
   else sendToUsers([authorId], { type: "bot_prompt", botId: bot.id, botName: bot.name, channelId, triggerId: msg.id, threadRootId, fresh });
 }
 
@@ -494,6 +526,7 @@ function postMessage(
   uploads: { token: string; name: string; mime: string; size: number }[],
   modelPolicy?: { provider_id?: number | null; model?: string | null },
   submittedPolicy?: { provider_id?: number | null; model?: string; source?: string },
+  hiddenContext?: string,
 ): Row {
   const channel = q1("SELECT status,kind FROM channels WHERE id=?", channelId);
   if (!channel) throw new Error("Channel not found.");
@@ -546,7 +579,7 @@ function postMessage(
   const msg = serializeMessage(id)!;
   broadcastToChannel(channelId, { type: "message", message: msg, parent: parentId ? serializeMessage(parentId) : null });
   offerHumanMemberships(channelId, msg, user);
-  triggerBots(channelId, msg, Number(user.id));
+  triggerBots(channelId, msg, Number(user.id), hiddenContext);
   return msg;
 }
 
@@ -1681,6 +1714,7 @@ const server = createServer(async (req, res) => {
         if (b.modelPolicy && !user.is_admin) return json(res, 403, { error: "Only the Captain can choose a thread model." });
         try {
           let body = String(b.body || "");
+          let hiddenContext = "";
           if (b.coworkPath) {
             const folderContext = b.coworkKind === "folder";
             const path = folderContext ? normalizeCoworkFolderPath(String(b.coworkPath)) : normalizeCoworkPath(String(b.coworkPath));
@@ -1689,8 +1723,13 @@ const server = createServer(async (req, res) => {
             const suffix = b.parentId ? [] : [`Working ${folderContext ? "folder" : "file"}: /workspace/${path}`];
             if (viewers.length) suffix.push(`Working with: ${viewers.map((username) => `@${username}`).join(" ")}`);
             if (suffix.length) body = `${body.trim()}\n\n${suffix.join("\n")}`;
+            // The format contract is agent-only context — never shown in chat.
+            // Injected as a hidden system note so it shapes the turn without
+            // cluttering the visible thread.
+            const contract = coworkFormatContract(path, folderContext);
+            if (contract && !b.parentId) hiddenContext = contract;
           }
-          return json(res, 200, { message: postMessage(cid, user, body, b.parentId ? Number(b.parentId) : null, (b.uploads as never[]) || [], b.modelPolicy as never, b.effectiveModelPolicy as never) });
+          return json(res, 200, { message: postMessage(cid, user, body, b.parentId ? Number(b.parentId) : null, (b.uploads as never[]) || [], b.modelPolicy as never, b.effectiveModelPolicy as never, hiddenContext) });
         }
         catch (error) { return json(res, 409, { error: (error as Error).message }); }
       }
@@ -2031,7 +2070,11 @@ const server = createServer(async (req, res) => {
       const runtime = runtimeReadiness();
       if (runtime.backend === "oci" && platform() === "win32") {
         const installer = await prepareWindowsWslRuntime();
-        return json(res, 200, { ok: true, installer, runtime: runtimeReadiness() });
+        return json(res, 200, {
+          ok: true,
+          installer: { opened: installer.opened, setup: installer.setup || windowsWslSetupStatus() },
+          runtime: runtimeReadiness(),
+        });
       }
       if (runtime.backend !== "apple") return json(res, 409, { error: "The root-owned OCI runtime is installed and verified by the 1Helm Linux host installer." });
       const installer = await prepareAppleRuntimeInstaller();
@@ -2041,12 +2084,39 @@ const server = createServer(async (req, res) => {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const runtime = runtimeReadiness();
       if (runtime.backend !== "apple") {
-        if (!runtime.ready) return json(res, 409, { error: platform() === "win32"
-          ? "The shared WSL OCI runtime is not ready; complete 1Helm's one-time Windows administrator setup."
-          : "The OCI runtime is not ready; rerun the verified Linux host installer." });
-        return json(res, 200, { ok: true, runtime });
+        if (!runtime.engine_ready) {
+          const detail = String(runtime.error || "").trim();
+          return json(res, 409, { error: platform() === "win32"
+            ? (detail
+              ? `The shared WSL OCI runtime is not ready: ${detail}`
+              : "The shared WSL OCI runtime is not ready. Open Create workspace / Set up shared runtime and finish the Windows administrator prompt (or reboot if Windows asked).")
+            : "The OCI runtime is not ready; rerun the verified Linux host installer." });
+        }
+        // OCI hosts prepare the shared channel image once so first channel create
+        // is a clone/start, not a cold apt image build.
+        if (!runtime.image_ready) beginOciChannelComputerPrepare();
+        return json(res, 200, { ok: true, runtime: runtimeReadiness(), prepare: channelComputerPrepareStatus() });
       }
       return json(res, 200, { ok: true, runtime: await startAppleRuntime() });
+    }
+    if (p === "/api/channel-computers/runtime/prepare" && m === "POST") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      const runtime = runtimeReadiness();
+      if (runtime.backend !== "oci") return json(res, 409, { error: "Image preparation is only required for the OCI channel-computer backend." });
+      if (!runtime.engine_ready) {
+        const detail = String(runtime.error || "").trim();
+        return json(res, 409, { error: platform() === "win32"
+          ? (detail
+            ? `The shared WSL OCI runtime is not ready: ${detail}`
+            : "The shared WSL OCI runtime is not ready. Finish the Windows shared-runtime setup prompt (reboot if Windows required it), then retry.")
+          : "The OCI runtime is not ready; rerun the verified 1Helm Linux host installer first." });
+      }
+      const prepare = beginOciChannelComputerPrepare();
+      return json(res, 200, { ok: true, prepare, runtime: runtimeReadiness() });
+    }
+    if (p === "/api/channel-computers/runtime/prepare" && m === "GET") {
+      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
+      return json(res, 200, { prepare: channelComputerPrepareStatus(), runtime: runtimeReadiness() });
     }
     if ((mm = p.match(/^\/api\/channels\/(\d+)\/computer$/)) && m === "GET") {
       const channelId = Number(mm[1]);

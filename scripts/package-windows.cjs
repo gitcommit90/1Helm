@@ -13,10 +13,14 @@ const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"))
 const VERSION = String(pkg.version || "").trim();
 const REQUIRE_SIGNATURE = process.env.HELM_REQUIRE_WINDOWS_SIGNATURE === "1";
 const CERT_SHA1 = String(process.env.WINDOWS_SIGN_CERT_SHA1 || "").replace(/\s+/g, "").toUpperCase();
+// Keep the Windows connector pin in lockstep with package-mac-dmg.cjs.
+const CLOUDFLARED_VERSION = "2026.3.0";
+const CLOUDFLARED_URL = `https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-windows-amd64.exe`;
+const CLOUDFLARED_SHA256 = "59b12880b24af581cf5b1013db601c7d843b9b097e9c78aa5957c7f39f741885";
 // Electron Packager evaluates directories before their children. Keep the
 // scripts directory itself traversable, then retain only the three runtime
 // files below; otherwise the exact-file exceptions can never be reached.
-const IGNORE_NON_RUNTIME_ROOTS = /^\/(?!package\.json$|LICENSE$|NOTICE$|desktop(?:$|\/)|container(?:$|\/Containerfile\.oci$)|deploy(?:$|\/1helm-oci-runtime-v1\.conf$)|src(?:$|\/)|public(?:$|\/)|scripts(?:$|\/(?:1helm-oci-runtime|mnemosyne-bridge\.py|install-wsl-runtime\.ps1|windows-removal\.cjs)$)|node_modules(?:$|\/))/;
+const IGNORE_NON_RUNTIME_ROOTS = /^\/(?!package\.json$|LICENSE$|NOTICE$|desktop(?:$|\/)|container(?:$|\/(?:Containerfile\.oci|channel-machine\.oci\.(?:tar|sha256|json))$)|deploy(?:$|\/1helm-oci-runtime-v1\.conf$)|src(?:$|\/)|public(?:$|\/)|scripts(?:$|\/(?:1helm-oci-runtime|mnemosyne-bridge\.py|install-wsl-runtime\.ps1|windows-removal\.cjs)$)|node_modules(?:$|\/))/;
 // Excalidraw is compiled into public/bundle.js. Shipping its source package as
 // well adds deeply nested Radix paths that legacy Squirrel/NuGet cannot
 // releasify under Windows' 260-character path limit.
@@ -65,6 +69,16 @@ function signPackagedExecutables(appDir) {
   for (const target of targets.sort()) sign(target);
 }
 
+function prepareCloudflared(destination) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "1helm-cloudflared-win-"));
+  const binary = path.join(root, "cloudflared.exe");
+  run("curl.exe", ["-fsSL", CLOUDFLARED_URL, "-o", binary]);
+  const digest = capture("certutil.exe", ["-hashfile", binary, "SHA256"]).split(/\r?\n/).find((line) => /^[a-f0-9 ]{64,}$/i.test(line.trim()))?.replaceAll(" ", "").toLowerCase() || "";
+  if (digest !== CLOUDFLARED_SHA256) throw new Error(`Bundled cloudflared digest mismatch (got ${digest || "unavailable"}).`);
+  fs.copyFileSync(binary, destination);
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
 async function main() {
   fs.mkdirSync(DIST, { recursive: true });
   const iconRoot = fs.mkdtempSync(path.join(os.tmpdir(), "1helm-win-icon-"));
@@ -91,6 +105,9 @@ async function main() {
     });
     const appExe = path.join(appDir, "1Helm.exe");
     if (!fs.existsSync(appExe)) throw new Error("Packaged Windows application is missing 1Helm.exe.");
+    const cloudflared = path.join(appDir, "resources", "cloudflared.exe");
+    prepareCloudflared(cloudflared);
+    if (!fs.existsSync(cloudflared)) throw new Error("Packaged Windows app is missing cloudflared.exe.");
     signPackagedExecutables(appDir);
     const pty = path.join(appDir, "resources", "app", "node_modules", "node-pty", "prebuilds", "win32-x64", "pty.node");
     if (!fs.existsSync(pty)) throw new Error("Packaged Windows app is missing the x64 terminal module.");
@@ -105,6 +122,8 @@ async function main() {
         path.join(appDir, "resources", "app", "scripts", "1helm-oci-runtime"),
         path.join(appDir, "resources", "app", "deploy", "1helm-oci-runtime-v1.conf"),
         path.join(appDir, "resources", "app", "container", "Containerfile.oci"),
+        path.join(appDir, "resources", "app", "container", "channel-machine.oci.tar"),
+        path.join(appDir, "resources", "app", "container", "channel-machine.oci.sha256"),
       ]) if (!fs.existsSync(required)) throw new Error(`Packaged Windows app is missing ${path.basename(required)}.`);
     }
 

@@ -15,6 +15,12 @@ public/excalidraw/
 *.sqlite-shm
 dist/
 
+# Sealed OCI channel image (Linux/Windows). Built by scripts/build-oci-channel-image.sh;
+# never commit the multi‑hundred‑MB archive into git.
+container/channel-machine.oci.tar
+container/channel-machine.oci.sha256
+container/channel-machine.oci.json
+
 # local runtime state & session artifacts
 data-refactored/
 .deploy-backups/

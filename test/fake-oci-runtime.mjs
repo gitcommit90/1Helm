@@ -75,7 +75,18 @@ const linkStorage = (name) => {
 const operation = args[0] || "";
 if (operation === "version") { process.stdout.write("1helm-oci-runtime-v1\n"); process.exit(0); }
 if (operation === "ready") { process.stdout.write('{"ready":true,"version":"1helm-oci-runtime-v1","engine":"fake"}\n'); process.exit(0); }
-if (operation === "image") process.exit(0);
+if (operation === "image-status") {
+  const image = args[1] || "";
+  const marker = join(root, "images", image.replaceAll("/", "_"));
+  process.stdout.write(`${JSON.stringify({ exists: existsSync(marker), image })}\n`);
+  process.exit(0);
+}
+if (operation === "image") {
+  const image = args[1] || "";
+  mkdirSync(join(root, "images"), { recursive: true });
+  writeFileSync(join(root, "images", image.replaceAll("/", "_")), "1\n");
+  process.exit(0);
+}
 if (operation === "create") {
   const [, name, owner, cpus, memoryMb] = args;
   if (!valid(name, owner)) fail("invalid create arguments");

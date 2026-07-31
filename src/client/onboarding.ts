@@ -1,4 +1,4 @@
-import { api, getToken, setToken, type ChannelRuntime, type RoutingState } from "./api.ts";
+import { api, getToken, setToken, type ChannelComputerPrepare, type ChannelRuntime, type RoutingState, type WindowsWslSetup } from "./api.ts";
 import { clear, h } from "./dom.ts";
 import { onboardingProviderPicker } from "./routing.ts";
 
@@ -137,6 +137,102 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
       }
     };
 
+    const paintPrepareProgress = (prepare: ChannelComputerPrepare): void => {
+      const width = Math.max(4, Math.min(100, Number(prepare.progress) || 0));
+      status.replaceChildren(h("div", { class: "card border-accent/30 p-4" },
+        h("div", { class: "font-semibold text-fg" }, "Preparing private computers"),
+        h("p", { class: "mt-2 text-sm leading-6 text-muted" }, "One-time setup for this host. 1Helm loads the sealed Linux computer image now so every later channel starts quickly."),
+        h("div", { class: "wizard-progress mt-4" }, h("span", { style: `width:${width}%` })),
+        h("p", { class: "mt-3 text-sm leading-6 text-fg" }, prepare.step || "Working…"),
+        prepare.error ? h("p", { class: "mt-2 text-sm text-danger" }, prepare.error) : null,
+        h("p", { class: "mt-2 text-xs text-muted" }, "This is local image import, not a live package download. Channel creation will not pay this cost again.")));
+    };
+
+    const paintWindowsSetupProgress = (setup: WindowsWslSetup, opts?: { retry?: () => void }): void => {
+      const width = Math.max(4, Math.min(100, Number(setup.progress) || 0));
+      const failed = setup.status === "failed";
+      const restart = setup.status === "restart_required";
+      const children: Array<HTMLElement | string | null> = [
+        h("div", { class: "font-semibold text-fg" }, restart ? "Windows restart required" : failed ? "Shared runtime setup failed" : "Setting up shared Windows runtime"),
+        h("p", { class: "mt-2 text-sm leading-6 text-muted" },
+          restart
+            ? "Windows enabled WSL 2 components that need a reboot. Restart the PC, reopen 1Helm, then create the workspace again."
+            : "One-time administrator setup. Keep the PowerShell window open until it finishes; 1Helm tracks progress here."),
+        h("div", { class: "wizard-progress mt-4" }, h("span", { style: `width:${width}%` })),
+        h("p", { class: "mt-3 text-sm leading-6 text-fg" }, setup.step || "Working…"),
+        setup.error ? h("p", { class: "mt-2 text-sm text-danger" }, setup.error) : null,
+        h("p", { class: "mt-2 text-xs text-muted" }, failed || restart
+          ? "After a successful setup, 1Helm will prepare the sealed channel image automatically."
+          : "This downloads Microsoft's pinned WSL package and the shared Linux runtime, then installs Podman inside it."),
+      ];
+      if ((failed || restart) && opts?.retry) {
+        children.push(h("button", {
+          class: "btn-primary mt-3 w-full py-2 sm:w-auto",
+          onclick: () => { opts.retry?.(); },
+        }, restart ? "I restarted — retry setup" : "Retry shared runtime setup"));
+      }
+      status.replaceChildren(h("div", { class: `card p-4 ${failed || restart ? "border-danger/40" : "border-accent/30"}` }, ...children));
+    };
+
+    const runWindowsRuntimeSetup = async (button: HTMLButtonElement): Promise<void> => {
+      setBusy(button, true, "Setting up shared runtime…");
+      status.textContent = "";
+      try {
+        const started = await api<{ installer?: { opened?: boolean; setup?: WindowsWslSetup }; runtime: ChannelRuntime }>("/api/channel-computers/runtime/install", { body: {} });
+        const initial = started.installer?.setup || started.runtime.windows_setup;
+        if (initial) paintWindowsSetupProgress(initial, { retry: () => { void runWindowsRuntimeSetup(button); } });
+        const deadline = Date.now() + 60 * 60_000;
+        while (Date.now() < deadline) {
+          const snapshot = await api<{ runtime: ChannelRuntime }>("/api/channel-computers/runtime");
+          const setup = snapshot.runtime.windows_setup;
+          if (snapshot.runtime.engine_ready) {
+            status.replaceChildren(h("div", { class: "wizard-status-ok" }, "Shared Windows runtime is ready. Preparing private computers…"));
+            await prepareOciComputers(button);
+            return;
+          }
+          if (setup) {
+            paintWindowsSetupProgress(setup, { retry: () => { void runWindowsRuntimeSetup(button); } });
+            if (setup.status === "failed" || setup.status === "restart_required") {
+              setBusy(button, false);
+              return;
+            }
+          }
+          await new Promise((resolveWait) => setTimeout(resolveWait, 1_500));
+        }
+        throw new Error("Shared Windows runtime setup timed out. Check the PowerShell window for errors, then retry.");
+      } catch (error) {
+        status.replaceChildren(h("div", { class: "wizard-status-err" }, (error as Error).message));
+        setBusy(button, false);
+      }
+    };
+
+    const prepareOciComputers = async (button: HTMLButtonElement): Promise<void> => {
+      setBusy(button, true, "Preparing private computers…");
+      status.textContent = "";
+      try {
+        const started = await api<{ prepare: ChannelComputerPrepare; runtime: ChannelRuntime }>("/api/channel-computers/runtime/prepare", { body: {} });
+        paintPrepareProgress(started.prepare);
+        const deadline = Date.now() + 35 * 60_000;
+        while (Date.now() < deadline) {
+          const snapshot = await api<{ prepare: ChannelComputerPrepare; runtime: ChannelRuntime }>("/api/channel-computers/runtime/prepare");
+          paintPrepareProgress(snapshot.prepare);
+          if (snapshot.prepare.status === "complete" || snapshot.runtime.ready) {
+            clear(runtimeMount);
+            await completeWorkspace(button);
+            return;
+          }
+          if (snapshot.prepare.status === "failed") {
+            throw new Error(snapshot.prepare.error || snapshot.runtime.error || "Private computer setup failed.");
+          }
+          await new Promise((resolveWait) => setTimeout(resolveWait, 1_500));
+        }
+        throw new Error("Private computer setup timed out. Check host DNS and package mirrors, then retry.");
+      } catch (error) {
+        status.replaceChildren(h("div", { class: "wizard-status-err" }, (error as Error).message));
+        setBusy(button, false);
+      }
+    };
+
     const showRuntimeApproval = (runtime: ChannelRuntime): void => {
       clear(runtimeMount);
       const runtimeStatus = h("div");
@@ -172,30 +268,71 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
       status.textContent = "";
       try {
         const { runtime } = await api<{ runtime: ChannelRuntime }>("/api/channel-computers/runtime");
+        if (runtime.backend === "oci") {
+          if (!runtime.supported) {
+            setBusy(button, false);
+            status.replaceChildren(h("div", { class: "wizard-status-err" }, "Private channel computers require a supported Linux or Windows x64 host."));
+            return;
+          }
+          if (!runtime.engine_ready) {
+            const windows = Boolean(runtime.shared_runtime);
+            if (windows) {
+              const setup = runtime.windows_setup;
+              if (setup?.status === "running") {
+                paintWindowsSetupProgress(setup, { retry: () => { void runWindowsRuntimeSetup(button); } });
+                // Reattach to an in-flight setup instead of launching a second installer.
+                void (async () => {
+                  setBusy(button, true, "Setting up shared runtime…");
+                  const deadline = Date.now() + 60 * 60_000;
+                  while (Date.now() < deadline) {
+                    const snapshot = await api<{ runtime: ChannelRuntime }>("/api/channel-computers/runtime");
+                    if (snapshot.runtime.engine_ready) {
+                      status.replaceChildren(h("div", { class: "wizard-status-ok" }, "Shared Windows runtime is ready. Preparing private computers…"));
+                      await prepareOciComputers(button);
+                      return;
+                    }
+                    const current = snapshot.runtime.windows_setup;
+                    if (current) {
+                      paintWindowsSetupProgress(current, { retry: () => { void runWindowsRuntimeSetup(button); } });
+                      if (current.status === "failed" || current.status === "restart_required") {
+                        setBusy(button, false);
+                        return;
+                      }
+                    }
+                    await new Promise((resolveWait) => setTimeout(resolveWait, 1_500));
+                  }
+                  status.replaceChildren(h("div", { class: "wizard-status-err" }, "Shared Windows runtime setup timed out. Retry setup."));
+                  setBusy(button, false);
+                })();
+                return;
+              }
+              if (setup?.status === "failed" || setup?.status === "restart_required") {
+                setBusy(button, false);
+                paintWindowsSetupProgress(setup, { retry: () => { void runWindowsRuntimeSetup(button); } });
+                return;
+              }
+              await runWindowsRuntimeSetup(button);
+              return;
+            }
+            setBusy(button, false);
+            const instruction = "The OCI runtime is not ready. Rerun the verified 1Helm Linux host installer, then retry.";
+            status.replaceChildren(h("div", { class: "wizard-status-err" }, runtime.error ? `${instruction} ${runtime.error}` : instruction));
+            return;
+          }
+          if (!runtime.image_ready || !runtime.ready) {
+            await prepareOciComputers(button);
+            return;
+          }
+          await completeWorkspace(button);
+          return;
+        }
         if (!runtime.ready) {
           setBusy(button, false);
           if (runtime.backend === "apple") {
             showRuntimeApproval(runtime);
             runtimeMount.scrollIntoView({ behavior: "smooth", block: "nearest" });
           } else {
-            const windows = Boolean(runtime.shared_runtime);
-            const instruction = windows
-              ? "The shared Windows OCI runtime is not ready. Complete 1Helm's one-time administrator setup, then retry."
-              : runtime.backend === "oci"
-                ? "The OCI runtime is not ready. Rerun the verified 1Helm Linux host installer, then retry."
-                : "The development channel-computer backend is not ready.";
-            const message = h("div", { class: "wizard-status-err" }, runtime.error ? `${instruction} ${runtime.error}` : instruction);
-            if (windows) {
-              const setupWsl = h("button", { class: "btn-primary mt-3 w-full py-2 sm:w-auto", onclick: async () => {
-                setBusy(setupWsl as HTMLButtonElement, true, "Opening Windows setup…");
-                try {
-                  await api("/api/channel-computers/runtime/install", { body: {} });
-                  status.replaceChildren(h("div", { class: "wizard-status-warn" }, "Finish the Windows prompt. Restart once if requested, then reopen 1Helm."));
-                } catch (error) { status.replaceChildren(h("div", { class: "wizard-status-err" }, (error as Error).message)); }
-                finally { setBusy(setupWsl as HTMLButtonElement, false); }
-              } }, "Set up shared runtime");
-              status.replaceChildren(message, setupWsl);
-            } else status.replaceChildren(message);
+            status.replaceChildren(h("div", { class: "wizard-status-err" }, "The development channel-computer backend is not ready."));
           }
           return;
         }

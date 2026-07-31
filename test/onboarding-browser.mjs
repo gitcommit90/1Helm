@@ -3,6 +3,7 @@ import { createServer as createNetServer } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import puppeteer from "puppeteer";
 
 const root = process.cwd();
@@ -13,6 +14,29 @@ let app;
 let browser;
 let pass = 0;
 let fail = 0;
+
+/** APFS external volumes can race on deep venv trees (ENOTEMPTY) while Python
+ * site-packages are still settling after mnemosyne bootstrap. Cleanup must not
+ * fail a green browser suite. */
+async function removeTree(path) {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      return;
+    } catch (error) {
+      const code = error && typeof error === "object" ? error.code : "";
+      if (!["ENOTEMPTY", "EBUSY", "EPERM", "ENOENT"].includes(String(code)) || attempt === 7) {
+        if (code === "ENOENT") return;
+        // Last-resort: leave the temp tree; the suite already passed.
+        if (attempt === 7) {
+          console.warn(`  warn - could not fully remove ${path}: ${error.message}`);
+          return;
+        }
+      }
+      await delay(100 * (attempt + 1));
+    }
+  }
+}
 
 const freePort = () => new Promise((resolve, reject) => {
   const probe = createNetServer();
@@ -48,7 +72,7 @@ const waitForHeading = (page, title) => page.waitForFunction((text) =>
   [...document.querySelectorAll("h2")].some((heading) => heading.textContent?.trim() === text), {}, title);
 
 try {
-  rmSync(runRoot, { recursive: true, force: true });
+  await removeTree(runRoot);
   mkdirSync(runRoot, { recursive: true });
   const dataDir = join(runRoot, "workspace");
   const mockPort = await freePort();
@@ -204,7 +228,7 @@ try {
     if (app.exitCode == null) app.kill("SIGKILL");
   }
   if (mock && mock.exitCode == null) mock.kill("SIGTERM");
-  rmSync(runRoot, { recursive: true, force: true });
+  await removeTree(runRoot);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
