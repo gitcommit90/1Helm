@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.30] - 2026-07-31
+
+### Fixed
+- Windows shared WSL OCI bootstrap: script-scoped downloads, UTF-16 WSL output handling, tracked setup progress, and honest readiness errors after cold start.
+- Windows channel Files/Cowork no longer depend on `\\wsl.localhost` (interop-off kills 9p). Host IO uses the OCI helper `storage-*` operations.
+- Channel storage root stays `0711` so helper verification and Files layout stay consistent.
+- Mobile keyboard: focus no longer self-dismisses on tall threads; form controls stay at 16px on small screens to avoid iOS auto-zoom.
+- Main-channel `@` suggestions no longer list Skipper twice.
+- Linux OCI channel networks: when Podman rejects Docker-style `com.docker.network.bridge.name` (CNI and some netavark builds), the helper falls back to a labeled network create so channel computers provision on Debian/Ubuntu hosts that previously failed with “owned network missing / labels incomplete”.
+- Linux package archives now include the sealed channel-machine OCI image required by the host installer.
+
+### Notes
+- Desktop train: macOS notarized DMG + updater ZIP, Linux host archive, Windows Setup + Squirrel package from one version.
+
 ## [0.0.29] - 2026-07-30
 
 ### Changed
@@ -863,7 +877,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.29...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...HEAD
+[0.0.30]: https://github.com/gitcommit90/1Helm/compare/v0.0.29...v0.0.30
 [0.0.29]: https://github.com/gitcommit90/1Helm/compare/v0.0.28...v0.0.29
 [0.0.28]: https://github.com/gitcommit90/1Helm/compare/v0.0.27...v0.0.28
 [0.0.27]: https://github.com/gitcommit90/1Helm/compare/v0.0.26...v0.0.27

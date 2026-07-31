@@ -184,7 +184,8 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(ociHelper, /exec\)[\s\S]*\(\(\$# >= 6\)\)[\s\S]*missing exec separator/, "the helper accepts the six required argv values for one direct command");
   assert.match(ociHelper, /exec --user 0:0[\s\S]*numeric_user="0:0"[\s\S]*numeric_user="\$AGENT_UID:\$AGENT_GID"[\s\S]*--user "\$AGENT_UID:\$AGENT_GID"/, "host-reboot recovery uses pinned numeric container identities instead of race-prone passwd-name lookup");
   assert.match(ociHelper, /network\.json[\s\S]*--ip "\$ip" --mac-address "\$mac"/, "each channel receives a persistent static IP and locally administered MAC");
-  assert.match(ociHelper, /container static network creation contract does not match[\s\S]*running container network identity does not match/, "runtime adoption verifies both declared and live network identity");
+  assert.match(ociHelper, /container static network creation contract does not match[\s\S]*container network ID does not match[\s\S]*running container network identity does not match/, "runtime adoption verifies create-time and live network identity");
+  assert.match(ociHelper, /network_ids_compatible/, "network ID checks tolerate short/full ids and pre-start NetworkID gaps");
   assert.match(ociHelper, /backup_container[\s\S]*sha256sum[\s\S]*restore_container[\s\S]*backup digest does not match/, "backup and recovery are digest-qualified and ownership-gated");
   assert.match(ociHelper, /source\.extractall\(destination, filter="data"\)/, "backup extraction rejects unsafe archive paths");
   assert.match(ociRecipe, /docker\.io\/library\/ubuntu:24\.04@sha256:[a-f0-9]{64}/, "the OCI guest base is fully qualified and digest-pinned without mutable short-name state");

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { cpus as hostCpus, freemem, platform, totalmem } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
@@ -8,7 +8,7 @@ import { pipeline } from "node:stream/promises";
 import { spawn as spawnPty, type IPty } from "node-pty";
 import { WebSocket } from "ws";
 import { DATA_DIR, now, q, q1, run, type Row } from "./db.ts";
-import { channelFilesPath, channelFilesystemRoot, channelWorkspacePath, installationScopedRuntimeName, ociHostStateRoot } from "./channel-storage.ts";
+import { channelFilesPath, channelFilesystemRoot, channelUsesRuntimeStorage, channelWorkspacePath, installationScopedRuntimeName, ociHostStateRoot } from "./channel-storage.ts";
 
 export type ChannelComputerBackend = "apple" | "oci" | "native" | "mock";
 export type ChannelComputer = {
@@ -68,7 +68,7 @@ const APPLE_RUNTIME_VERSION = "1.1.0";
 export const APPLE_RUNTIME_PACKAGE = `container-${APPLE_RUNTIME_VERSION}-installer-signed.pkg`;
 export const APPLE_RUNTIME_URL = `https://github.com/apple/container/releases/download/${APPLE_RUNTIME_VERSION}/${APPLE_RUNTIME_PACKAGE}`;
 export const APPLE_RUNTIME_SHA256 = "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714";
-export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.29";
+export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.30";
 const CONTAINER_CANDIDATES = [process.env.HELM_CONTAINER_CLI, "/usr/local/bin/container", "/opt/homebrew/bin/container", "container"].filter(Boolean) as string[];
 const OCI_RUNTIME_VERSION = "1helm-oci-runtime-v1";
 const OCI_HELPER_CANDIDATES = [
@@ -325,8 +325,201 @@ async function apple(args: string[], opts: Parameters<typeof spawnCollected>[2] 
   return spawnCollected(resolveContainerCli(), args, opts);
 }
 
+/** Keep the in-WSL OCI helper synchronized with the packaged app so hotfixes and updates apply. */
+let windowsOciHelperDigest = "";
+function ensureWindowsOciHelperInstalled(): void {
+  if (platform() !== "win32") return;
+  const appRoot = process.env.HELM_APP_ROOT || process.cwd();
+  const source = join(appRoot, "scripts", "1helm-oci-runtime");
+  if (!existsSync(source)) return;
+  const encoded = readFileSync(source);
+  const digest = createHash("sha256").update(encoded).digest("hex");
+  if (windowsOciHelperDigest === digest) return;
+  const runtime = installationScopedRuntimeName();
+  const wsl = resolveWslCli();
+  // Wake the distro first; cold start can exceed a short copy timeout.
+  spawnSync(wsl, ["--distribution", runtime, "--user", "root", "--exec", "/bin/true"], {
+    encoding: "buffer", timeout: 120_000, windowsHide: true,
+  });
+  // Copy via wsl so we never depend on a ready \\wsl.localhost mount race.
+  const result = spawnSync(wsl, [
+    "--distribution", runtime, "--user", "root", "--exec", "/bin/bash", "-lc",
+    "cat > /usr/libexec/1helm-oci-runtime && chmod 0755 /usr/libexec/1helm-oci-runtime",
+  ], { input: encoded, encoding: "buffer", timeout: 60_000, windowsHide: true });
+  if (result.status !== 0) {
+    const detail = Buffer.concat([
+      Buffer.isBuffer(result.stderr) ? result.stderr : Buffer.alloc(0),
+      Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.alloc(0),
+    ]).toString("utf8").replaceAll("\0", " ").trim();
+    throw new Error(detail || "Could not install the shared OCI runtime helper into the Windows WSL runtime.");
+  }
+  windowsOciHelperDigest = digest;
+}
+
+/**
+ * Create OCI channel workspace dirs inside the WSL runtime as root.
+ * Host-side mkdir on \\wsl.localhost\\... fails on Windows (permissions / 9p / distro-not-ready).
+ * The live failure was: UNKNOWN mkdir '...\\workspace\\notes' after a successful container provision.
+ */
+export function ensureOciChannelWorkspaceDirs(channelId: number): void {
+  const machineId = String(channelComputer(channelId)?.machine_id || "").trim()
+    || `1helm-${String(q1("SELECT installation_id FROM workspace WHERE id=1")?.installation_id || "")}-channel-${channelId}`;
+  if (!/^1helm-[a-f0-9]{16}-channel-\d+$/.test(machineId)) {
+    throw new Error("Channel computer identity is not ready for workspace layout.");
+  }
+  if (platform() !== "win32") {
+    const root = channelFilesystemRoot(channelId);
+    mkdirSync(join(root, "workspace"), { recursive: true });
+    mkdirSync(join(root, "files"), { recursive: true });
+    for (const directory of ["notes", "whiteboards", "code", "docs", "presentations"]) {
+      mkdirSync(join(root, "workspace", directory), { recursive: true });
+    }
+    return;
+  }
+  ensureWindowsOciHelperInstalled();
+  const runtime = installationScopedRuntimeName();
+  const wsl = resolveWslCli();
+  // Workspace/files must be reachable from the Windows host Files/Cowork UI via
+  // \\wsl.localhost\...  Mode 0700 agent-only makes Node existsSync/readdir look
+  // like "Folder not found." The distro has no Windows interop/automount, so
+  // opening these trees for the distro owner is the intended host-access path.
+  const script = [
+    "set -euo pipefail",
+    `root="/var/lib/1helm-oci-v1/runtime/oci/channels/${machineId}"`,
+    // 0711 root matches the helper's verify_storage contract. workspace/files
+    // stay agent-owned 0700; Windows Files/Cowork use storage-* helper ops,
+    // never the disabled-interop 9p share.
+    'install -d -o root -g root -m 0711 "$root"',
+    'chmod 0711 "$root" || true',
+    'chown root:root "$root" || true',
+    'install -d -o 1000 -g 1000 -m 0700 "$root/workspace" "$root/files" "$root/home"',
+    "for d in notes whiteboards code docs presentations; do",
+    '  install -d -o 1000 -g 1000 -m 0700 "$root/workspace/$d"',
+    "done",
+  ].join("\n");
+  const result = spawnSync(wsl, [
+    "--distribution", runtime, "--user", "root", "--exec", "/bin/bash", "-lc", script,
+  ], { encoding: "buffer", timeout: 60_000, windowsHide: true });
+  if (result.status !== 0) {
+    const detail = Buffer.concat([
+      Buffer.isBuffer(result.stderr) ? result.stderr : Buffer.alloc(0),
+      Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.alloc(0),
+    ]).toString("utf8").replaceAll("\0", " ").trim();
+    throw new Error(detail || "Could not create the channel workspace directories inside the Windows WSL runtime.");
+  }
+}
+
+/**
+ * Windows OCI host access for Files/Cowork.
+ *
+ * Isolation keeps WSL interop disabled, which also kills the 9p file server
+ * behind \\wsl.localhost. Direct Node fs against that UNC path can never work.
+ * All host-side Files/Cowork IO therefore goes through the OCI helper's
+ * storage-* operations (wsl.exe --exec → 1helm-oci-runtime).
+ */
+export function windowsOciStorageRequired(channelId: number): boolean {
+  return platform() === "win32" && channelUsesRuntimeStorage(channelId);
+}
+
+/** @deprecated No longer probes UNC; kept as a no-op for call-site stability. */
+export function ensureWindowsOciHostAccess(channelId: number): void {
+  if (!windowsOciStorageRequired(channelId)) return;
+  ensureOciChannelWorkspaceDirs(channelId);
+}
+
+type StorageArea = "workspace" | "files";
+type StorageEntry = { name: string; kind: "file" | "directory"; size: number; modified: number };
+
+function storageMachineAndOwner(channelId: number): { name: string; owner: string } {
+  const computer = ensureChannelComputerRecord(channelId);
+  return { name: computer.machine_id, owner: ownerMarker(computer) };
+}
+
+function ociStorageJson(args: string[], opts: { input?: Buffer; timeoutMs?: number } = {}): unknown {
+  const invocation = ociInvocation(args);
+  const result = spawnSync(invocation.command, invocation.args, {
+    encoding: "buffer",
+    timeout: opts.timeoutMs || 60_000,
+    env: invocation.env,
+    windowsHide: true,
+    input: opts.input,
+  });
+  const stdout = Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.alloc(0);
+  const stderr = Buffer.isBuffer(result.stderr) ? result.stderr : Buffer.alloc(0);
+  if (result.status !== 0) {
+    const detail = windowsLines(Buffer.concat([stderr, stdout])).join(" ").replace(/^1Helm OCI runtime:\s*/i, "").trim();
+    throw new Error(detail || `storage operation failed (exit ${result.status ?? "timeout"})`);
+  }
+  const text = windowsLines(stdout).join("\n").trim() || Buffer.from(stdout).toString("utf8").replaceAll("\0", "").trim();
+  if (!text) return null;
+  try { return JSON.parse(text); }
+  catch { throw new Error("storage operation returned unreadable JSON"); }
+}
+
+function ociStorageBytes(args: string[], opts: { input?: Buffer; timeoutMs?: number } = {}): Buffer {
+  const invocation = ociInvocation(args);
+  const result = spawnSync(invocation.command, invocation.args, {
+    encoding: "buffer",
+    timeout: opts.timeoutMs || 60_000,
+    env: invocation.env,
+    windowsHide: true,
+    input: opts.input,
+  });
+  const stdout = Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.alloc(0);
+  const stderr = Buffer.isBuffer(result.stderr) ? result.stderr : Buffer.alloc(0);
+  if (result.status !== 0) {
+    const detail = windowsLines(Buffer.concat([stderr, stdout])).join(" ").replace(/^1Helm OCI runtime:\s*/i, "").trim();
+    throw new Error(detail || `storage operation failed (exit ${result.status ?? "timeout"})`);
+  }
+  // Binary body: do not strip NULs via windowsLines.
+  return Buffer.from(stdout);
+}
+
+export function windowsOciStorageList(channelId: number, area: StorageArea, relative = ""): StorageEntry[] {
+  const { name, owner } = storageMachineAndOwner(channelId);
+  const payload = ociStorageJson(["storage-list", name, owner, area, ...(relative ? [relative] : [])]) as { entries?: StorageEntry[] };
+  return Array.isArray(payload?.entries) ? payload.entries : [];
+}
+
+export function windowsOciStorageStat(channelId: number, area: StorageArea, relative = ""): StorageEntry & { exists: boolean } {
+  const { name, owner } = storageMachineAndOwner(channelId);
+  return ociStorageJson(["storage-stat", name, owner, area, ...(relative ? [relative] : [])]) as StorageEntry & { exists: boolean };
+}
+
+export function windowsOciStorageMkdir(channelId: number, area: StorageArea, relative: string): StorageEntry {
+  const { name, owner } = storageMachineAndOwner(channelId);
+  return ociStorageJson(["storage-mkdir", name, owner, area, relative]) as StorageEntry;
+}
+
+export function windowsOciStorageWrite(channelId: number, area: StorageArea, relative: string, body: Buffer | string, mode: "create" | "overwrite" = "overwrite"): StorageEntry {
+  const { name, owner } = storageMachineAndOwner(channelId);
+  const input = Buffer.isBuffer(body) ? body : Buffer.from(body, "utf8");
+  return ociStorageJson(["storage-write", name, owner, area, relative, mode], { input }) as StorageEntry;
+}
+
+export function windowsOciStorageRead(channelId: number, area: StorageArea, relative: string): Buffer {
+  const { name, owner } = storageMachineAndOwner(channelId);
+  return ociStorageBytes(["storage-read", name, owner, area, relative]);
+}
+
+export function windowsOciStorageRm(channelId: number, area: StorageArea, relative: string, recursive = false): void {
+  const { name, owner } = storageMachineAndOwner(channelId);
+  ociStorageJson(["storage-rm", name, owner, area, relative, recursive ? "1" : "0"]);
+}
+
+export function windowsOciStorageRename(channelId: number, area: StorageArea, from: string, to: string): StorageEntry {
+  const { name, owner } = storageMachineAndOwner(channelId);
+  return ociStorageJson(["storage-rename", name, owner, area, from, to]) as StorageEntry;
+}
+
+export function windowsOciStorageCopy(channelId: number, area: StorageArea, from: string, to: string): StorageEntry {
+  const { name, owner } = storageMachineAndOwner(channelId);
+  return ociStorageJson(["storage-copy", name, owner, area, from, to]) as StorageEntry;
+}
+
 function ociInvocation(args: string[]): { command: string; args: string[]; env?: NodeJS.ProcessEnv } {
   if (platform() === "win32") {
+    ensureWindowsOciHelperInstalled();
     return { command: resolveWslCli(), args: ["--distribution", installationScopedRuntimeName(), "--user", "root", "--exec", "/usr/libexec/1helm-oci-runtime", ...args] };
   }
   const helper = resolveOciHelper();
@@ -341,6 +534,10 @@ function ociInvocation(args: string[]): { command: string; args: string[]; env?:
           HELM_OCI_RUNTIME_MANIFEST: process.env.HELM_OCI_RUNTIME_MANIFEST || join(appRoot, "deploy", "1helm-oci-runtime-v1.conf"),
           HELM_OCI_STATE_ROOT_OVERRIDE: process.env.HELM_OCI_STATE_ROOT_OVERRIDE || ociHostStateRoot(),
           HELM_OCI_CONTAINERFILE_OVERRIDE: process.env.HELM_OCI_CONTAINERFILE_OVERRIDE || join(appRoot, "container", "Containerfile.oci"),
+          HELM_OCI_IMAGE_ARCHIVE_OVERRIDE: process.env.HELM_OCI_IMAGE_ARCHIVE_OVERRIDE || join(appRoot, "container", "channel-machine.oci.tar"),
+          HELM_OCI_IMAGE_SHA256_FILE_OVERRIDE: process.env.HELM_OCI_IMAGE_SHA256_FILE_OVERRIDE || join(appRoot, "container", "channel-machine.oci.sha256"),
+          // Development checkouts without a sealed archive may still live-build.
+          HELM_OCI_ALLOW_LIVE_BUILD: process.env.HELM_OCI_ALLOW_LIVE_BUILD || (existsSync(join(appRoot, "container", "channel-machine.oci.tar")) ? "0" : "1"),
         } : {}),
       },
     };
@@ -496,7 +693,9 @@ async function ensureAppleProvisioned(computer: ChannelComputer): Promise<void> 
 }
 
 async function inspectOci(computer: ChannelComputer): Promise<MachineInspection | null> {
-  const result = await oci(["inspect", computer.machine_id, ownerMarker(computer)], { timeoutMs: 30_000 });
+  // Cold WSL start + helper sync routinely exceeds 30s on Windows; use a longer floor.
+  const inspectTimeout = platform() === "win32" ? 120_000 : 30_000;
+  const result = await oci(["inspect", computer.machine_id, ownerMarker(computer)], { timeoutMs: inspectTimeout });
   if (result.code !== 0) {
     const detail = Buffer.concat([result.stderr, result.stdout]).toString("utf8").trim();
     if (/does not exist/i.test(detail)) return null;
@@ -556,7 +755,8 @@ async function ensureOciProvisioned(computer: ChannelComputer): Promise<void> {
     inspection = await inspectOci(computer);
   }
   recordObserved(computer, inspection);
-  for (const directory of ["notes", "whiteboards", "code", "docs", "presentations"]) mkdirSync(join(hostWorkspace(computer.channel_id), directory), { recursive: true });
+  // Never mkdir through \\wsl.localhost on Windows — that is the post-provision failure mode.
+  ensureOciChannelWorkspaceDirs(computer.channel_id);
   run("DELETE FROM channel_workspace_changes WHERE channel_id=?", computer.channel_id);
   run("UPDATE channel_computers SET provision_status='ready',desired_state='auto',synced_host_revision=host_revision,last_update=?,last_update_attempt=?,last_error='',updated=? WHERE channel_id=?", now(), now(), now(), computer.channel_id);
 }
@@ -1329,6 +1529,211 @@ export async function shutdownChannelComputers(): Promise<void> {
   await Promise.all([...channelLocks.values()].map((pending) => pending.catch(() => undefined)));
 }
 
+export type ChannelComputerPrepareStatus = {
+  status: "idle" | "running" | "complete" | "failed";
+  step: string;
+  progress: number;
+  error: string;
+  image: string;
+  started_at: number;
+  updated_at: number;
+};
+
+export type WindowsWslSetupStatus = {
+  status: "idle" | "running" | "complete" | "failed" | "restart_required";
+  step: string;
+  progress: number;
+  error: string;
+  log: string;
+  started_at: number;
+  updated_at: number;
+};
+
+let ociPrepareState: ChannelComputerPrepareStatus = {
+  status: "idle",
+  step: "Private channel computers have not been prepared yet.",
+  progress: 0,
+  error: "",
+  image: DEFAULT_CHANNEL_IMAGE,
+  started_at: 0,
+  updated_at: 0,
+};
+let ociPreparePass: Promise<void> | null = null;
+
+let windowsWslSetupState: WindowsWslSetupStatus = {
+  status: "idle",
+  step: "Shared Windows WSL runtime setup has not started.",
+  progress: 0,
+  error: "",
+  log: "",
+  started_at: 0,
+  updated_at: 0,
+};
+let windowsWslSetupChild: ChildProcess | null = null;
+let windowsWslSetupLogPath = "";
+let windowsWslSetupStatusPath = "";
+
+function setWindowsWslSetupState(patch: Partial<WindowsWslSetupStatus>): WindowsWslSetupStatus {
+  windowsWslSetupState = {
+    ...windowsWslSetupState,
+    ...patch,
+    updated_at: now(),
+  };
+  return windowsWslSetupState;
+}
+
+export function windowsWslSetupStatus(): WindowsWslSetupStatus {
+  if (windowsWslSetupStatusPath && existsSync(windowsWslSetupStatusPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(windowsWslSetupStatusPath, "utf8")) as {
+        status?: string; step?: string; progress?: number; error?: string;
+      };
+      if (windowsWslSetupState.status === "running" && parsed.step) {
+        const status = parsed.status === "restart_required" || parsed.status === "failed" || parsed.status === "complete"
+          ? parsed.status as WindowsWslSetupStatus["status"]
+          : "running";
+        setWindowsWslSetupState({
+          status: windowsWslSetupChild ? "running" : status,
+          step: String(parsed.step),
+          progress: Math.max(0, Math.min(100, Number(parsed.progress) || windowsWslSetupState.progress)),
+          error: String(parsed.error || windowsWslSetupState.error || ""),
+        });
+      }
+    } catch { /* status file is best-effort */ }
+  }
+  if (windowsWslSetupLogPath && existsSync(windowsWslSetupLogPath)) {
+    try {
+      const log = readFileSync(windowsWslSetupLogPath, "utf8").slice(-8_000);
+      if (log !== windowsWslSetupState.log) setWindowsWslSetupState({ log });
+    } catch { /* log is best-effort */ }
+  }
+  return { ...windowsWslSetupState };
+}
+
+function setOciPrepareState(patch: Partial<ChannelComputerPrepareStatus>): ChannelComputerPrepareStatus {
+  ociPrepareState = {
+    ...ociPrepareState,
+    ...patch,
+    image: DEFAULT_CHANNEL_IMAGE,
+    updated_at: now(),
+  };
+  return ociPrepareState;
+}
+
+export function channelComputerPrepareStatus(): ChannelComputerPrepareStatus {
+  return { ...ociPrepareState, image: DEFAULT_CHANNEL_IMAGE };
+}
+
+async function ociChannelImageExists(image = DEFAULT_CHANNEL_IMAGE): Promise<boolean> {
+  const result = await oci(["image-status", image], { timeoutMs: 30_000 });
+  if (result.code !== 0) return false;
+  try {
+    const parsed = JSON.parse(result.stdout.toString("utf8")) as { exists?: unknown };
+    return Boolean(parsed.exists);
+  } catch {
+    return false;
+  }
+}
+
+function ociChannelImageExistsSync(image = DEFAULT_CHANNEL_IMAGE): boolean {
+  try {
+    const invocation = ociInvocation(["image-status", image]);
+    if (platform() === "win32") {
+      const result = spawnSync(invocation.command, invocation.args, { encoding: "buffer", timeout: 30_000, env: invocation.env });
+      if (result.status !== 0) return false;
+      const parsed = JSON.parse(windowsLines(result.stdout as Buffer).join("") || "{}") as { exists?: unknown };
+      return Boolean(parsed.exists);
+    }
+    const result = spawnSync(invocation.command, invocation.args, { encoding: "utf8", timeout: 30_000, env: invocation.env });
+    if (result.status !== 0) return false;
+    const parsed = JSON.parse(String(result.stdout || "{}")) as { exists?: unknown };
+    return Boolean(parsed.exists);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One-time host prepare: materialize the shared channel-computer image before
+ * the Captain creates channels. Later create_channel calls only clone/start.
+ */
+export function beginOciChannelComputerPrepare(): ChannelComputerPrepareStatus {
+  if (configuredChannelBackend() !== "oci") {
+    return setOciPrepareState({
+      status: "failed",
+      step: "Channel-computer image prepare is only used on the OCI backend.",
+      progress: 0,
+      error: "Channel-computer image prepare is only used on the OCI backend.",
+      started_at: now(),
+    });
+  }
+  if (ociPrepareState.status === "running" && ociPreparePass) return channelComputerPrepareStatus();
+  if (ociChannelImageExistsSync()) {
+    return setOciPrepareState({
+      status: "complete",
+      step: "Channel computer image is ready. New channels can start immediately.",
+      progress: 100,
+      error: "",
+      started_at: ociPrepareState.started_at || now(),
+    });
+  }
+  const startedAt = now();
+  setOciPrepareState({
+    status: "running",
+    step: "Verifying the OCI runtime…",
+    progress: 5,
+    error: "",
+    started_at: startedAt,
+  });
+  const passToken = { current: null as Promise<void> | null };
+  const pass = (async () => {
+    try {
+      const engine = runtimeReadiness();
+      if (!engine.engine_ready) {
+        throw new Error(String(engine.error || "The OCI runtime is not ready. Finish the host installer or Windows shared-runtime setup first."));
+      }
+      setOciPrepareState({
+        status: "running",
+        step: "Loading the sealed channel computer image. This one-time step does not use live package mirrors…",
+        progress: 20,
+        error: "",
+      });
+      const built = await oci(["image", DEFAULT_CHANNEL_IMAGE], { timeoutMs: 30 * 60_000 });
+      if (built.code !== 0) {
+        throw new Error(built.stderr.toString("utf8").trim() || built.stdout.toString("utf8").trim() || "Channel computer image preparation failed.");
+      }
+      setOciPrepareState({
+        status: "running",
+        step: "Verifying the sealed channel computer image…",
+        progress: 90,
+        error: "",
+      });
+      if (!(await ociChannelImageExists(DEFAULT_CHANNEL_IMAGE))) {
+        throw new Error("The channel computer image was not present after preparation completed.");
+      }
+      setOciPrepareState({
+        status: "complete",
+        step: "Channel computer image is ready. New channels can start immediately.",
+        progress: 100,
+        error: "",
+      });
+    } catch (error) {
+      setOciPrepareState({
+        status: "failed",
+        step: "Private computer setup failed.",
+        progress: Math.max(5, Number(ociPrepareState.progress) || 5),
+        error: ((error as Error).message || "Private computer setup failed.").slice(0, 1000),
+      });
+    } finally {
+      if (ociPreparePass === passToken.current) ociPreparePass = null;
+    }
+  })();
+  passToken.current = pass;
+  ociPreparePass = pass;
+  void pass;
+  return channelComputerPrepareStatus();
+}
+
 export function runtimeReadiness(): Record<string, unknown> {
   const backend = configuredChannelBackend();
   const darwin = platform() === "darwin";
@@ -1338,7 +1743,8 @@ export function runtimeReadiness(): Record<string, unknown> {
   const supportedArchitecture = arm64 || process.arch === "x64";
   if (backend === "native" || backend === "mock") {
     return {
-      backend, supported: true, ready: true, platform: platform(), architecture: process.arch,
+      backend, supported: true, ready: true, engine_ready: true, image_ready: true,
+      image: null, prepare: null, platform: platform(), architecture: process.arch,
       development_only: true, runtime_version: null, status: "development",
     };
   }
@@ -1347,19 +1753,43 @@ export function runtimeReadiness(): Record<string, unknown> {
     try {
       if (platform() === "win32") {
         helper = `${installationScopedRuntimeName()}:/usr/libexec/1helm-oci-runtime`;
+        // Cold WSL start after setup routinely exceeds 15–30s. Wake first, then use long floors.
+        try {
+          spawnSync(resolveWslCli(), ["--distribution", installationScopedRuntimeName(), "--user", "root", "--exec", "/bin/true"], {
+            encoding: "buffer", timeout: 180_000, windowsHide: true,
+          });
+        } catch { /* version/ready errors surface below */ }
         const invocation = ociInvocation(["version"]);
-        const versionResult = spawnSync(invocation.command, invocation.args, { encoding: "buffer", timeout: 15_000, env: invocation.env });
-        version = versionResult.status === 0 ? windowsLines(versionResult.stdout as Buffer).join("").trim() : "";
+        const versionResult = spawnSync(invocation.command, invocation.args, { encoding: "buffer", timeout: 120_000, env: invocation.env, windowsHide: true });
+        const versionLines = versionResult.status === 0 ? windowsLines(versionResult.stdout as Buffer) : [];
+        version = (versionLines[0] || "").trim();
+        if (versionResult.status !== 0 && !version) {
+          error = windowsLines(Buffer.concat([
+            Buffer.isBuffer(versionResult.stderr) ? versionResult.stderr : Buffer.alloc(0),
+            Buffer.isBuffer(versionResult.stdout) ? versionResult.stdout : Buffer.alloc(0),
+          ])).join(" ") || `WSL OCI runtime version check failed (exit ${versionResult.status ?? "timeout"}).`;
+        }
         const readyInvocation = ociInvocation(["ready"]);
-        const readyResult = spawnSync(readyInvocation.command, readyInvocation.args, { encoding: "buffer", timeout: 30_000, env: readyInvocation.env });
+        const readyResult = spawnSync(readyInvocation.command, readyInvocation.args, { encoding: "buffer", timeout: 180_000, env: readyInvocation.env, windowsHide: true });
         if (readyResult.status === 0) {
-          try { system = JSON.parse(Buffer.from(readyResult.stdout as Buffer).toString("utf8")); } catch { system = windowsLines(readyResult.stdout as Buffer); }
-        } else error = windowsLines(Buffer.concat([readyResult.stderr as Buffer || Buffer.alloc(0), readyResult.stdout as Buffer || Buffer.alloc(0)])).join(" ") || "OCI runtime readiness check failed.";
+          const readyText = windowsLines(readyResult.stdout as Buffer).join("\n").trim();
+          try { system = JSON.parse(readyText || "{}"); }
+          catch {
+            try { system = JSON.parse(Buffer.from(readyResult.stdout as Buffer).toString("utf8").replaceAll("\0", "").trim() || "{}"); }
+            catch { system = readyText || windowsLines(readyResult.stdout as Buffer); }
+          }
+        } else {
+          const readyErr = windowsLines(Buffer.concat([
+            Buffer.isBuffer(readyResult.stderr) ? readyResult.stderr : Buffer.alloc(0),
+            Buffer.isBuffer(readyResult.stdout) ? readyResult.stdout : Buffer.alloc(0),
+          ])).join(" ") || `OCI runtime readiness check failed (exit ${readyResult.status ?? "timeout"}).`;
+          error = error ? `${error} ${readyErr}` : readyErr;
+        }
       } else {
         const versionInvocation = ociInvocation(["version"]);
         helper = versionInvocation.command;
         const versionResult = spawnSync(versionInvocation.command, versionInvocation.args, { encoding: "utf8", timeout: 15_000, env: versionInvocation.env });
-        version = versionResult.status === 0 ? String(versionResult.stdout || "").trim() : "";
+        version = versionResult.status === 0 ? String(versionResult.stdout || "").trim().split(/\r?\n/)[0] || "" : "";
         const readyInvocation = ociInvocation(["ready"]);
         const readyResult = spawnSync(readyInvocation.command, readyInvocation.args, { encoding: "utf8", timeout: 30_000, env: readyInvocation.env });
         if (readyResult.status === 0) {
@@ -1368,12 +1798,46 @@ export function runtimeReadiness(): Record<string, unknown> {
       }
     } catch (failure) { error = (failure as Error).message; }
     const supported = (linux || windows) && supportedArchitecture;
+    const engineReady = Boolean(supported && helper && version === OCI_RUNTIME_VERSION && system && !error);
+    // While a prepare pass is running, avoid re-probing podman on every UI poll.
+    // Otherwise always trust the runtime helper's image-status, not a stale flag.
+    let imageReady = false;
+    if (engineReady && ociPrepareState.status !== "running") {
+      imageReady = ociChannelImageExistsSync();
+      if (imageReady && ociPrepareState.status !== "complete") {
+        setOciPrepareState({
+          status: "complete",
+          step: "Channel computer image is ready. New channels can start immediately.",
+          progress: 100,
+          error: "",
+          started_at: ociPrepareState.started_at || now(),
+        });
+      } else if (!imageReady && ociPrepareState.status === "complete") {
+        setOciPrepareState({
+          status: "idle",
+          step: "Private channel computers have not been prepared yet.",
+          progress: 0,
+          error: "",
+          started_at: 0,
+        });
+      }
+    }
+    const windowsSetup = windows ? windowsWslSetupStatus() : null;
     return {
-      backend, supported, ready: Boolean(supported && helper && version === OCI_RUNTIME_VERSION && system && !error),
+      backend, supported,
+      engine_ready: engineReady,
+      image_ready: imageReady,
+      image: DEFAULT_CHANNEL_IMAGE,
+      prepare: channelComputerPrepareStatus(),
+      windows_setup: windowsSetup,
+      ready: Boolean(engineReady && imageReady),
       platform: platform(), architecture: process.arch, cli: helper || null, version: version || null, system,
       runtime_version: OCI_RUNTIME_VERSION, shared_runtime: windows ? installationScopedRuntimeName() : null,
       storage_authority: windows ? `\\\\wsl.localhost\\${installationScopedRuntimeName()}\\var\\lib\\1helm-oci-v1\\runtime\\oci` : ociHostStateRoot(),
-      status: error ? "error" : system ? "running" : "missing", error: error || null,
+      status: error ? "error" : !engineReady ? (system ? "running" : "missing") : imageReady ? "running" : "image_pending",
+      error: error
+        || (windowsSetup && (windowsSetup.status === "failed" || windowsSetup.status === "restart_required") ? windowsSetup.error || windowsSetup.step : null)
+        || (ociPrepareState.status === "failed" ? ociPrepareState.error : null),
     };
   }
   let cli = "";
@@ -1401,11 +1865,13 @@ export function runtimeReadiness(): Record<string, unknown> {
     && systemStatus === "running";
   const macosVersion = darwin ? spawnSync("/usr/bin/sw_vers", ["-productVersion"], { encoding: "utf8" }).stdout?.trim() || "" : "";
   const supportedMac = darwin && arm64 && Number(macosVersion.split(".")[0] || 0) >= 26;
+  const ready = Boolean(supportedMac && cli && exactRuntime);
   return {
     backend, supported: supportedMac, darwin, arm64, platform: platform(), architecture: process.arch, macos_version: macosVersion || null, cli: cli || null, version, system,
     runtime_version: APPLE_RUNTIME_VERSION, installer_url: APPLE_RUNTIME_URL, installer_sha256: APPLE_RUNTIME_SHA256,
     status: exactRuntime ? "running" : cli ? "stopped" : "missing", error: null,
-    ready: Boolean(supportedMac && cli && exactRuntime),
+    engine_ready: ready, image_ready: ready, image: DEFAULT_CHANNEL_IMAGE, prepare: null,
+    ready,
   };
 }
 
@@ -1447,20 +1913,156 @@ export async function prepareAppleRuntimeInstaller(): Promise<{ path: string; sh
   return { path: destination, sha256: digest, opened };
 }
 
-/** Open Microsoft's one-time elevated WSL 2 feature setup on Windows. */
-export async function prepareWindowsWslRuntime(): Promise<{ opened: boolean }> {
+/**
+ * Start (or reattach to) the one-time shared WSL/OCI runtime install on Windows.
+ * The PowerShell script elevates only for host features/MSI; the signed-in user
+ * owns the distribution import. Progress is tracked for the onboarding UI.
+ */
+export async function prepareWindowsWslRuntime(): Promise<{ opened: boolean; setup: WindowsWslSetupStatus }> {
   if (platform() !== "win32") throw new Error("WSL 2 setup is available only on Windows.");
+  if (windowsWslSetupChild && windowsWslSetupState.status === "running") {
+    return { opened: true, setup: windowsWslSetupStatus() };
+  }
+  const current = runtimeReadiness();
+  if (current.engine_ready) {
+    return {
+      opened: false,
+      setup: setWindowsWslSetupState({
+        status: "complete",
+        step: "The shared Windows OCI runtime is already ready.",
+        progress: 100,
+        error: "",
+        started_at: windowsWslSetupState.started_at || now(),
+      }),
+    };
+  }
   const script = join(process.env.HELM_APP_ROOT || process.cwd(), "scripts", "install-wsl-runtime.ps1");
   if (!existsSync(script)) throw new Error("1Helm's signed WSL 2 setup script is missing.");
-  const escaped = script.replaceAll("'", "''");
-  const runtime = installationScopedRuntimeName().replaceAll("'", "''");
-  const appRoot = (process.env.HELM_APP_ROOT || process.cwd()).replaceAll("'", "''");
-  const launched = spawnSync("powershell.exe", [
-    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
-    `Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','${escaped}','-RuntimeName','${runtime}','-AppRoot','${appRoot}')`,
-  ], { encoding: "utf8", timeout: 30_000, windowsHide: true });
-  if (launched.status !== 0) throw new Error(String(launched.stderr || launched.stdout || "Windows did not open WSL 2 administrator setup.").trim());
-  return { opened: true };
+  const runtime = installationScopedRuntimeName();
+  const appRoot = process.env.HELM_APP_ROOT || process.cwd();
+  const runtimeRoot = join(String(process.env.LOCALAPPDATA || DATA_DIR), "1Helm-Runtime");
+  mkdirSync(runtimeRoot, { recursive: true });
+  mkdirSync(DATA_DIR, { recursive: true });
+  windowsWslSetupStatusPath = join(runtimeRoot, "setup-status.json");
+  windowsWslSetupLogPath = join(DATA_DIR, "windows-wsl-setup.log");
+  try {
+    writeFileSync(windowsWslSetupStatusPath, `${JSON.stringify({
+      status: "running",
+      step: "Starting Windows shared-runtime setup...",
+      progress: 3,
+      error: "",
+      updated: new Date().toISOString(),
+    })}\n`, "utf8");
+    writeFileSync(windowsWslSetupLogPath, "", "utf8");
+  } catch { /* best-effort seed */ }
+
+  setWindowsWslSetupState({
+    status: "running",
+    step: "Starting Windows shared-runtime setup... Approve the administrator prompt when Windows asks.",
+    progress: 3,
+    error: "",
+    log: "",
+    started_at: now(),
+  });
+
+  const child = spawn("powershell.exe", [
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", script,
+    "-RuntimeName", runtime,
+    "-AppRoot", appRoot,
+  ], {
+    env: {
+      ...process.env,
+      HELM_WSL_SETUP_STATUS: windowsWslSetupStatusPath,
+    },
+    windowsHide: false,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  windowsWslSetupChild = child;
+
+  const appendLog = (chunk: Buffer | string): void => {
+    const text = String(chunk);
+    if (!text) return;
+    try { writeFileSync(windowsWslSetupLogPath, text, { flag: "a", encoding: "utf8" }); } catch { /* ignore */ }
+    const combined = `${windowsWslSetupState.log}${text}`.slice(-8_000);
+    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    let step = windowsWslSetupState.step;
+    let progress = windowsWslSetupState.progress;
+    for (const line of lines) {
+      if (/^ERROR:/i.test(line)) continue;
+      step = line.replace(/^ERROR:\s*/i, "").slice(0, 400);
+      if (/administrator approval/i.test(line)) progress = Math.max(progress, 5);
+      else if (/Enabling Windows WSL/i.test(line)) progress = Math.max(progress, 8);
+      else if (/Downloading Microsoft WSL/i.test(line)) progress = Math.max(progress, 12);
+      else if (/Installing Microsoft WSL/i.test(line)) progress = Math.max(progress, 18);
+      else if (/default/i.test(line) && /WSL/i.test(line)) progress = Math.max(progress, 22);
+      else if (/Checking for the shared/i.test(line)) progress = Math.max(progress, 28);
+      else if (/Downloading shared Linux/i.test(line)) progress = Math.max(progress, 35);
+      else if (/Importing shared/i.test(line)) progress = Math.max(progress, 48);
+      else if (/packages|podman/i.test(line)) progress = Math.max(progress, 58);
+      else if (/sealed OCI|channel image/i.test(line)) progress = Math.max(progress, 78);
+      else if (/Restarting the shared/i.test(line)) progress = Math.max(progress, 88);
+      else if (/Verifying the shared/i.test(line)) progress = Math.max(progress, 94);
+      else if (/installed and ready/i.test(line)) progress = 100;
+    }
+    setWindowsWslSetupState({ log: combined, step, progress });
+  };
+  child.stdout?.on("data", appendLog);
+  child.stderr?.on("data", appendLog);
+  child.on("error", (error) => {
+    windowsWslSetupChild = null;
+    setWindowsWslSetupState({
+      status: "failed",
+      step: "Windows could not start the shared-runtime setup process.",
+      progress: Math.max(3, windowsWslSetupState.progress),
+      error: error.message,
+    });
+  });
+  child.on("close", (code, signal) => {
+    windowsWslSetupChild = null;
+    const setup = windowsWslSetupStatus();
+    if (code === 10 || setup.status === "restart_required") {
+      setWindowsWslSetupState({
+        status: "restart_required",
+        step: "WSL 2 features are enabled. Restart Windows once, reopen 1Helm, then create the workspace again.",
+        progress: Math.max(20, setup.progress),
+        error: "Windows restart required to finish enabling WSL 2.",
+      });
+      return;
+    }
+    if (code === 0) {
+      const readiness = runtimeReadiness();
+      if (readiness.engine_ready) {
+        setWindowsWslSetupState({
+          status: "complete",
+          step: "1Helm's shared OCI runtime is installed and ready.",
+          progress: 100,
+          error: "",
+        });
+        return;
+      }
+      setWindowsWslSetupState({
+        status: "failed",
+        step: "Setup finished but the shared OCI runtime is still not ready.",
+        progress: Math.max(90, setup.progress),
+        error: String(readiness.error || "The shared WSL OCI runtime did not pass readiness after setup."),
+      });
+      return;
+    }
+    const logTail = setup.log.trim().split(/\r?\n/).filter(Boolean).slice(-8).join(" ");
+    const detail = setup.error || logTail || (signal ? `terminated by ${signal}` : `exit code ${code ?? "unknown"}`);
+    setWindowsWslSetupState({
+      status: "failed",
+      step: setup.step && setup.step !== "Starting Windows shared-runtime setup... Approve the administrator prompt when Windows asks."
+        ? setup.step
+        : "Shared Windows runtime setup failed.",
+      progress: Math.max(5, setup.progress),
+      error: detail.slice(0, 1000),
+    });
+  });
+
+  return { opened: true, setup: windowsWslSetupStatus() };
 }
 
 /** Complete runtime activation after the signed package receives approval. */

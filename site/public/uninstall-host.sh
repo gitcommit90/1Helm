@@ -31,7 +31,7 @@ done
 [[ "$($HELPER list "1helm-$INSTALLATION_ID-channel-")" == "[]" ]] || { echo "Some owned channel containers remained; application files were not removed." >&2; exit 1; }
 systemctl disable --now 1helm-update.path 2>/dev/null || true
 rm -f -- /etc/systemd/system/1helm.service /etc/systemd/system/1helm-update.service /etc/systemd/system/1helm-update.path
-rm -f -- /etc/sudoers.d/1helm-oci-runtime /etc/1helm/oci-runtime-v1.conf /usr/libexec/1helm-oci-runtime /usr/lib/1helm-oci/Containerfile.oci
+rm -f -- /etc/sudoers.d/1helm-oci-runtime /etc/1helm/oci-runtime-v1.conf /usr/libexec/1helm-oci-runtime /usr/lib/1helm-oci/Containerfile.oci /usr/lib/1helm-oci/channel-machine.oci.tar /usr/lib/1helm-oci/channel-machine.oci.sha256 /usr/lib/1helm-oci/channel-machine.oci.json
 rm -f -- "$INSTALL_ROOT/update-host.sh" "$INSTALL_ROOT/uninstall-host.sh"
 systemctl daemon-reload
 printf 'Removed the 1Helm services and %s owned channel container(s). Preserved %s and versioned release files for recovery.\n' "${#MACHINES[@]}" "$STATE_ROOT"

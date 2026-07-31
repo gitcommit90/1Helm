@@ -198,6 +198,7 @@ const ICONS: Record<string, string> = {
   api: '<path d="M8 7h8M8 12h8M8 17h8"/><circle cx="7" cy="7" r="1.4"/><circle cx="17" cy="12" r="1.4"/><circle cx="7" cy="17" r="1.4"/>',
   hash: '<line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="10" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="14" y2="20"/>',
   more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
+  history: '<path d="M3 12a9 9 0 109-9 9.7 9.7 0 00-6.7 2.8L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3.5 2"/>',
 };
 export function icon(name: keyof typeof ICONS | string, size = 16): SVGElement {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");

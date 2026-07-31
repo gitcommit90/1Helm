@@ -21,6 +21,7 @@ type SectionSession = {
   loaded: boolean;
   preview: boolean;
   activeSlide: number;
+  slideStripScroll?: number;
   collaboration: CoworkDocument | null;
   mounted: MountedEditor | null;
   view: HTMLElement | null;
@@ -108,18 +109,98 @@ function normalizeDeck(content: string): Deck {
     return { type: "1helm-slides", version: 3, printableArea: printableArea(parsed.printableArea), slides: parsed.slides.length ? parsed.slides.map((slide: Partial<DeckSlide>, index: number) => ({ id: slide.id || crypto.randomUUID(), name: slide.name || `Slide ${index + 1}`, scene: slide.scene?.elements ? sceneWithoutPrintableBoundary(slide.scene) : blankScene() })) : blankDeck().slides };
   }
   if (Array.isArray(parsed?.slides)) {
-    return {
-      type: "1helm-slides", version: 3, printableArea: { ...DEFAULT_PRINTABLE_AREA },
-      slides: parsed.slides.length ? parsed.slides.map((slide: { title?: string; body?: string }, index: number) => ({
-        id: crypto.randomUUID(), name: slide.title || `Slide ${index + 1}`,
-        scene: { ...blankScene(), elements: [
-          ...(slide.title ? [{ type: "text", id: crypto.randomUUID(), x: 120, y: 120, width: 720, height: 70, text: slide.title, originalText: slide.title, fontSize: 42, fontFamily: 1, textAlign: "center", verticalAlign: "top", strokeColor: "#1b1b1f", backgroundColor: "transparent", fillStyle: "solid", strokeWidth: 1, roughness: 1, opacity: 100, angle: 0, seed: 1, version: 1, versionNonce: 1, index: "a0", isDeleted: false, groupIds: [], frameId: null, roundness: null, boundElements: null, link: null, locked: false, containerId: null, autoResize: true, lineHeight: 1.25 }] : []),
-          ...(slide.body ? [{ type: "text", id: crypto.randomUUID(), x: 160, y: 240, width: 640, height: 160, text: slide.body, originalText: slide.body, fontSize: 24, fontFamily: 1, textAlign: "left", verticalAlign: "top", strokeColor: "#495057", backgroundColor: "transparent", fillStyle: "solid", strokeWidth: 1, roughness: 1, opacity: 100, angle: 0, seed: 2, version: 1, versionNonce: 2, index: "a1", isDeleted: false, groupIds: [], frameId: null, roundness: null, boundElements: null, link: null, locked: false, containerId: null, autoResize: true, lineHeight: 1.25 }] : []),
-        ] },
-      })) : blankDeck().slides,
-    };
+    return simpleDeckToScenes(parsed as SimpleDeck);
   }
   throw new Error("Unsupported presentation file");
+}
+
+/** Simple-format decks ({slides:[{title,body}]}) get a real layout: themed
+ * background and title band, content-sized text boxes with word wrap and
+ * font step-down, and per-line bullet rendering. */
+type SimpleDeck = { slides: Array<{ title?: string; body?: string }>; theme?: { primary?: string; secondary?: string; background?: string; text?: string; accent?: string } };
+
+function simpleDeckToScenes(parsed: SimpleDeck): Deck {
+  const area = { ...DEFAULT_PRINTABLE_AREA };
+  const safeColor = (value: unknown, fallback: string): string => typeof value === "string" && /^#[0-9a-fA-F]{3,8}$/.test(value.trim()) ? value.trim() : fallback;
+  const theme = {
+    primary: safeColor(parsed.theme?.primary, "#4c6ef5"),
+    background: safeColor(parsed.theme?.background, "#ffffff"),
+    text: safeColor(parsed.theme?.text, "#1b1b1f"),
+    muted: safeColor(parsed.theme?.secondary, "#495057"),
+    accent: safeColor(parsed.theme?.accent, safeColor(parsed.theme?.primary, "#4c6ef5")),
+  };
+  const margin = 110;
+  const contentWidth = area.width - margin * 2;
+  // Excalidraw's default font is close to 0.6em average glyph width; measure
+  // wrapped lines conservatively so boxes are sized to their contents.
+  const wrapCount = (text: string, fontSize: number): number => {
+    const perLine = Math.max(8, Math.floor(contentWidth / (fontSize * 0.65)));
+    return text.split("\n").reduce((count, line) => count + Math.max(1, Math.ceil(line.length / perLine)), 0);
+  };
+  let seed = 1;
+  const textElement = (text: string, x: number, y: number, width: number, fontSize: number, color: string, align: string, bold = false): Record<string, unknown> => ({
+    type: "text", id: crypto.randomUUID(), x, y, width,
+    height: Math.ceil(wrapCount(text, fontSize) * fontSize * 1.6),
+    text, originalText: text, fontSize, fontFamily: bold ? 2 : 1, textAlign: align, verticalAlign: "top",
+    strokeColor: color, backgroundColor: "transparent", fillStyle: "solid", strokeWidth: 1, roughness: 0, opacity: 100,
+    angle: 0, seed: seed++, version: 1, versionNonce: seed, index: `a${seed}`, isDeleted: false, groupIds: [], frameId: null,
+    roundness: null, boundElements: null, link: null, locked: false, containerId: null, autoResize: true, lineHeight: 1.25,
+  });
+  const bar = (x: number, y: number, width: number, height: number, color: string): Record<string, unknown> => ({
+    type: "rectangle", id: crypto.randomUUID(), x, y, width, height, angle: 0,
+    strokeColor: "transparent", backgroundColor: color, fillStyle: "solid", strokeWidth: 1, strokeStyle: "solid",
+    roughness: 0, opacity: 100, groupIds: [], frameId: null, roundness: { type: 3 }, seed: seed++, version: 1,
+    versionNonce: seed, index: `a${seed}`, isDeleted: false, boundElements: null, updated: 1, link: null, locked: false,
+  });
+  const slides = (parsed.slides.length ? parsed.slides : [{ title: "Slide 1" }]).map((slide, index) => {
+    const title = String(slide.title || "").trim();
+    const body = String(slide.body || "").trim();
+    const elements: Record<string, unknown>[] = [];
+    const titleOnly = title && !body;
+    if (titleOnly) {
+      // Section divider: centered title over an accent underline.
+      elements.push(textElement(title, margin, area.height / 2 - 60, contentWidth, 64, theme.text, "center", true));
+      elements.push(bar(area.width / 2 - 120, area.height / 2 + 40, 240, 10, theme.accent));
+    } else {
+      elements.push(bar(0, 0, area.width, 14, theme.accent));
+      if (title) {
+        elements.push(textElement(title, margin, 70, contentWidth, 52, theme.text, "left", true));
+        elements.push(bar(margin, 150, 150, 7, theme.accent));
+      }
+      if (body) {
+        // Render bullets as separate, spaced rows; prose as one sized block.
+        const lines = body.split("\n").map((line) => line.trim()).filter(Boolean);
+        const bulletish = lines.length > 1 && lines.filter((line) => /^([-*•]|\d+[.)])\s+/.test(line)).length >= Math.ceil(lines.length / 2);
+        const top = title ? 200 : margin;
+        const available = area.height - top - 70;
+        if (bulletish) {
+          let fontSize = 30;
+          const totalRows = (size: number): number => lines.reduce((rows, line) => rows + wrapCount(line.replace(/^([-*•]|\d+[.)])\s+/, ""), size), 0);
+          while (fontSize > 16 && totalRows(fontSize) * fontSize * 1.45 > available) fontSize -= 2;
+          let y = top;
+          for (const line of lines) {
+            const isBullet = /^([-*•]|\d+[.)])\s+/.test(line);
+            const label = line.replace(/^[-*•]\s+/, "");
+            if (isBullet && !/^\d+[.)]/.test(line)) elements.push(bar(margin + 4, y + fontSize * 0.42, fontSize * 0.42, fontSize * 0.42, theme.accent));
+            const x = isBullet ? margin + fontSize * 1.3 : margin;
+            const element = textElement(label, x, y, contentWidth - (x - margin), fontSize, theme.muted, "left");
+            elements.push(element);
+            y += Number(element.height) + fontSize * 0.45;
+          }
+        } else {
+          let fontSize = 30;
+          while (fontSize > 16 && wrapCount(body, fontSize) * fontSize * 1.3 > available) fontSize -= 2;
+          elements.push(textElement(body, margin, top, contentWidth, fontSize, theme.muted, "left"));
+        }
+      }
+      elements.push(textElement(String(index + 1), area.width - 70, area.height - 56, 40, 18, theme.muted, "right"));
+    }
+    return {
+      id: crypto.randomUUID(), name: title || `Slide ${index + 1}`,
+      scene: { elements: elements as never[], appState: { viewBackgroundColor: theme.background }, files: {} },
+    };
+  });
+  return { type: "1helm-slides", version: 3, printableArea: area, slides };
 }
 
 async function presentationPdf(deck: Deck, filename: string): Promise<void> {
@@ -308,12 +389,71 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
     typeof left === "string" ? h("span", { class: "min-w-0 flex-1 truncate font-mono text-[11px] text-muted", title: left }, left) : left,
     ...tools, presence(session), h("button", { class: "btn-primary text-xs", type: "button", onclick: () => { void saveFile(); } }, "Save"));
 
+  /** Resolve same-project relative CSS/JS so a static page previews like a site. */
+  const inlineHtmlAssets = async (html: string, htmlPath: string): Promise<string> => {
+    const baseDir = htmlPath.split("/").slice(0, -1).join("/");
+    const resolve = (ref: string): string | null => {
+      if (/^(?:[a-z]+:)?\/\//i.test(ref) || ref.startsWith("data:") || ref.startsWith("#")) return null;
+      const parts = (ref.startsWith("/") ? ref.slice(1) : `${baseDir}/${ref}`).split("/");
+      const out: string[] = [];
+      for (const part of parts) {
+        if (!part || part === ".") continue;
+        if (part === "..") { out.pop(); continue; }
+        out.push(part);
+      }
+      return out.join("/");
+    };
+    const fetchText = async (path: string): Promise<string | null> => {
+      try { return (await api<{ file: EditableFile }>(`/api/channels/${channelId}/files/text?path=${encodeURIComponent(path)}`)).file.content; }
+      catch { return null; }
+    };
+    let output = html;
+    const linkTags = [...output.matchAll(/<link\b[^>]*?href=["']([^"']+)["'][^>]*>/gi)]
+      .filter((match) => /rel=["']?stylesheet/i.test(match[0]));
+    for (const match of linkTags) {
+      const target = resolve(match[1]);
+      if (!target) continue;
+      const css = await fetchText(target);
+      if (css != null) output = output.replace(match[0], `<style>\n${css}\n</style>`);
+    }
+    const scriptTags = [...output.matchAll(/<script\b[^>]*?src=["']([^"']+)["'][^>]*>\s*<\/script>/gi)];
+    for (const match of scriptTags) {
+      const target = resolve(match[1]);
+      if (!target) continue;
+      const js = await fetchText(target);
+      if (js != null) output = output.replace(match[0], `<script>\n${js.replaceAll("</script>", "<\\/script>")}\n</script>`);
+    }
+    return output;
+  };
+
   const textEditor = (session: SectionSession, mode: "notes" | "code" | "docs"): HTMLElement => {
     const mounted = mountCodeMirror(session.collaboration!, session.path, mode, (content) => markChanged(session, content), () => { void saveFile(); });
     session.mounted = mounted;
     const preview = h("div", { class: "md cowork-markdown-preview hidden" });
     const editStage = h("div", { class: mode === "docs" ? "cowork-doc-page" : "cowork-notes-editor-frame min-h-0 flex-1 overflow-hidden" }, mounted.node);
     const format = (label: string, prefix: string, suffix = prefix, placeholder = "text") => h("button", { class: "btn-ghost text-xs", type: "button", title: label, onclick: () => mounted.format?.(prefix, suffix, placeholder) }, label);
+    const htmlFile = mode === "code" && /\.html?$/i.test(session.path);
+    const htmlStage = htmlFile ? h("div", { class: "hidden min-h-0 flex-1 overflow-hidden bg-white" }) : null;
+    const htmlPreviewButton = htmlFile ? h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => {
+      void (async () => {
+        session.preview = !session.preview;
+        const button = htmlPreviewButton as HTMLButtonElement;
+        if (session.preview) {
+          button.disabled = true; button.textContent = "Loading…";
+          const raw = session.mounted?.getContent?.() || session.content || "";
+          let rendered = raw;
+          try { rendered = await inlineHtmlAssets(raw, session.path); } catch { /* preview raw on failure */ }
+          clear(htmlStage!);
+          const frame = h("iframe", { class: "h-full w-full border-0", sandbox: "allow-scripts", title: `Preview of ${visibleName(session.path)}` }) as HTMLIFrameElement;
+          frame.srcdoc = rendered;
+          htmlStage!.append(frame);
+          button.disabled = false;
+        }
+        htmlStage!.classList.toggle("hidden", !session.preview);
+        editStage.classList.toggle("hidden", session.preview);
+        button.textContent = session.preview ? "Return to code" : "Preview";
+      })();
+    } }, "Preview") : null;
     const previewButton = mode !== "code" ? h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => {
       session.preview = !session.preview; preview.classList.toggle("hidden", !session.preview); editStage.classList.toggle("hidden", session.preview);
       preview.innerHTML = md(session.mounted?.getContent?.() || session.content || "_This file is empty._");
@@ -331,10 +471,10 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
       mode !== "code" ? format("Bold", "**", "**") : null,
       mode !== "code" ? format("Italic", "_", "_") : null,
       mode === "docs" ? format("List", "- ", "", "List item") : null,
-      dictation, previewButton);
+      dictation, htmlPreviewButton, previewButton);
     const stage = mode === "notes"
       ? h("div", { class: "cowork-notes-edit-stage flex min-h-0 flex-1 flex-col overflow-hidden" }, editStage, preview)
-      : h("div", { class: `cowork-text-stage flex min-h-0 flex-1 flex-col ${mode === "code" ? "overflow-hidden" : "overflow-auto"}` }, editStage, preview);
+      : h("div", { class: `cowork-text-stage flex min-h-0 flex-1 flex-col ${mode === "code" ? "overflow-hidden" : "overflow-auto"}` }, editStage, ...(htmlStage ? [htmlStage] : []), preview);
     return h("div", { class: `flex min-h-0 flex-1 flex-col ${mode === "docs" ? "cowork-doc-canvas" : ""}` }, toolbar, stage);
   };
 
@@ -385,6 +525,18 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
     mounted.destroy = () => { session.collaboration?.scene.unobserve(remoteStructure); destroyMounted(); };
     session.mounted = mounted;
     const slides = h("aside", { class: "cowork-slide-strip", "aria-label": "Slides" });
+    // Slide clicks rebuild this whole editor; restore the strip's scroll
+    // position afterwards (and keep the active thumb visible) instead of
+    // snapping back to the top on every selection.
+    slides.addEventListener("scroll", () => { session.slideStripScroll = slides.scrollTop; });
+    requestAnimationFrame(() => {
+      if (typeof session.slideStripScroll === "number") slides.scrollTop = session.slideStripScroll;
+      const active = slides.querySelector<HTMLElement>(".cowork-slide-thumb.is-active");
+      if (active) {
+        const over = active.offsetTop < slides.scrollTop || active.offsetTop + active.offsetHeight > slides.scrollTop + slides.clientHeight;
+        if (over) active.scrollIntoView({ block: "nearest" });
+      }
+    });
     deck.slides.forEach((slide, index) => {
       const open = h("button", { class: "min-w-0 flex-1 text-left", type: "button", onclick: () => { if (session.activeSlide === index) return; session.activeSlide = index; reopen(); } },
         h("span", { class: "text-[10px] text-faint" }, String(index + 1)),
@@ -519,9 +671,10 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
           onclick: () => {
             selectedEntry = file; drawFileActions();
             // Opening a file already redraws the rail and workspace together.
-            // A second concurrent loadFiles() raced that draw, repeatedly
-            // replacing the clicked node and sometimes leaving the editor unopened.
-            if (file.kind === "file") void openPath(file.path); else void loadFiles();
+            // Folders must also navigate on single click: rebuilding the list
+            // here replaced the clicked row before a double-click could land,
+            // which made directories look unopenable.
+            if (file.kind === "file") void openPath(file.path); else openFolder(file.path);
           },
         },
         h("span", { class: file.kind === "directory" ? "text-muted" : "text-accent" }, fileIcon(file)),
@@ -533,15 +686,61 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
     } catch (error) { fileList.replaceChildren(h("p", { class: "p-3 text-xs text-danger" }, (error as Error).message)); }
   };
 
+  let agentWasWorking = false;
+  let historyOpen = false;
+
+  /** Past Cowork sessions for this file/folder: root messages stamped with the
+   * working-context marker at send time. Client-side filter over the channel's
+   * recent roots — no separate index required. */
+  const loadContextHistory = async (context: string, folder: boolean): Promise<Message[]> => {
+    const marker = `Working ${folder ? "folder" : "file"}: /workspace/${context}`;
+    try {
+      const result = await api<{ messages: Message[] }>(`/api/channels/${channelId}/messages`);
+      return (result.messages || []).filter((message) => String(message.body || "").includes(marker)).reverse();
+    } catch { return []; }
+  };
+
   const renderChatMessages = async (): Promise<void> => {
     const stream = agentPanel.querySelector<HTMLElement>("[data-cowork-chat-stream]"); if (!stream || !chatRootId) return;
     const stick = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 60; const top = stream.scrollTop;
     try {
       const result = await api<{ root: Message; replies: Message[] }>(`/api/messages/${chatRootId}/thread`);
-      const signature = [result.root, ...result.replies].map((message) => `${message.id}:${message.body}`).join("|");
+      const rows = [result.root, ...result.replies];
+      const signature = rows.map((message) => `${message.id}:${message.body}:${(message.progress || []).map((step) => `${step.id}${step.status}`).join(",")}`).join("|");
       if (stream.dataset.signature === signature) return;
       stream.dataset.signature = signature; clear(stream);
-      for (const message of [result.root, ...result.replies]) stream.append(h("article", { class: `cowork-chat-message ${message.author.kind === "user" ? "is-user" : ""}` }, h("div", { class: "mb-1 text-[10px] font-semibold text-muted" }, message.author.kind === "user" ? "You" : message.author.name), h("div", { class: "md text-sm text-fg", html: md(message.body) })));
+      // One live status at a time: the latest progress step replaces the
+      // previous. The full chain of thought stays in the main channel thread.
+      let currentStep = "";
+      let anyWorking = false;
+      for (const message of rows) {
+        const working = message.body === "_Working…_" || Boolean(message.progress?.some((step) => step.status === "running"));
+        if (working) {
+          anyWorking = true;
+          const steps = message.progress || [];
+          const live = [...steps].reverse().find((step) => step.status === "running") || steps.at(-1);
+          if (live?.body) currentStep = live.body;
+        }
+        const body = message.body === "_Working…_" ? "" : message.body;
+        if (!body && message.author.kind !== "user") continue;
+        stream.append(h("article", { class: `cowork-chat-message ${message.author.kind === "user" ? "is-user" : ""}` },
+          h("div", { class: "mb-1 text-[10px] font-semibold text-muted" }, message.author.kind === "user" ? "You" : message.author.name),
+          h("div", { class: "md text-sm text-fg", html: md(body) })));
+      }
+      if (anyWorking) {
+        stream.append(h("div", { class: "flex items-start gap-2 px-1 py-1.5", dataset: { coworkWorking: "" } },
+          h("span", { class: "cowork-orb mt-0.5", "aria-hidden": "true" }),
+          h("div", { class: "min-w-0 flex-1" },
+            h("div", { class: "text-[11px] font-medium text-fg" }, `@${channel.agent?.name || "agent"} is working…`),
+            currentStep ? h("div", { class: "cowork-live-step mt-0.5 truncate text-[10px] text-muted", title: currentStep }, currentStep) : null)));
+      }
+      // Agent turns create/rename files in this workspace. Refresh the rail
+      // while a turn runs and once more when it settles so new artifacts
+      // appear without switching sections or reloading the page.
+      if (anyWorking !== agentWasWorking) {
+        agentWasWorking = anyWorking;
+        void loadFiles();
+      } else if (anyWorking) void loadFiles();
       requestAnimationFrame(() => { stream.scrollTop = stick ? stream.scrollHeight : top; });
     } catch { /* a deleted/archived thread stays quiet until the user starts another */ }
   };
@@ -551,7 +750,10 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
     if (!agentOpen) { if (chatTimer != null) window.clearInterval(chatTimer); chatTimer = null; return; }
     const session = activeSession(); const context = contextPath(session); chatRootId = Number(localStorage.getItem(threadKey(context)) || 0);
     const stream = h("div", { class: "min-h-0 flex-1 space-y-3 overflow-y-auto p-3", dataset: { coworkChatStream: "" } });
-    const input = h("textarea", { class: "min-h-20 w-full resize-none bg-transparent p-2 text-sm text-fg outline-none placeholder:text-faint", rows: 3, placeholder: `Ask @${channel.agent?.name || "agent"} about this ${session.path ? "file" : "folder"}…`, value: agentDrafts.get(context) || "" }) as HTMLTextAreaElement;
+    // The rounded wrapper below owns focus indication (focus-within border).
+    // Without the explicit focus-visible suppression, the global a11y outline
+    // draws a square rectangle around this inner textarea and clashes with it.
+    const input = h("textarea", { class: "min-h-20 w-full resize-none bg-transparent p-2 text-sm text-fg outline-none focus-visible:outline-none placeholder:text-faint", rows: 3, placeholder: `Ask @${channel.agent?.name || "agent"} about this ${session.path ? "file" : "folder"}…`, value: agentDrafts.get(context) || "" }) as HTMLTextAreaElement;
     const dictate = mountSpeechToTextControl(input, "Dictate Cowork agent request");
     input.oninput = () => agentDrafts.set(context, input.value);
     input.onfocus = () => setFocusedSpeechTarget(input, dictate);
@@ -567,9 +769,51 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
       finally { input.disabled = false; input.focus(); }
     };
     input.onkeydown = (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } };
+    const historyPane = h("div", { class: "hidden min-h-0 flex-1 overflow-y-auto p-3", dataset: { coworkHistory: "" } });
+    const historyButton = h("button", {
+      class: "grid h-8 w-8 place-items-center rounded text-muted hover:bg-hover",
+      title: "Past sessions with this file", "aria-label": "Past sessions with this file", "aria-pressed": "false",
+      onclick: async () => {
+        historyOpen = !historyOpen;
+        (historyButton as HTMLButtonElement).setAttribute("aria-pressed", String(historyOpen));
+        historyButton.classList.toggle("text-accent", historyOpen);
+        historyPane.classList.toggle("hidden", !historyOpen);
+        stream.classList.toggle("hidden", historyOpen);
+        if (!historyOpen) return;
+        historyPane.replaceChildren(h("p", { class: "py-6 text-center text-xs text-muted" }, "Loading past sessions…"));
+        const roots = await loadContextHistory(context, !session.path);
+        if (!roots.length) {
+          historyPane.replaceChildren(h("p", { class: "py-6 text-center text-xs leading-5 text-muted" }, `No past sessions with this ${session.path ? "file" : "folder"} yet.`));
+          return;
+        }
+        historyPane.replaceChildren(
+          h("p", { class: "mb-2 px-1 text-[10px] font-semibold uppercase tracking-wide text-faint" }, `Past sessions · ${roots.length}`),
+          ...roots.map((root) => {
+            const preview = String(root.body || "").split("\n")[0].replace(/^@\S+\s*/, "").slice(0, 120) || "(untitled session)";
+            const active = root.id === chatRootId;
+            return h("button", {
+              class: `mb-1 block w-full rounded-md border px-2.5 py-2 text-left hover:bg-hover ${active ? "border-accent/50 bg-accent-soft" : "border-line"}`,
+              type: "button",
+              onclick: () => {
+                chatRootId = root.id;
+                localStorage.setItem(threadKey(context), String(chatRootId));
+                coworkContextPending = false;
+                historyOpen = false;
+                drawAgent();
+              },
+            },
+            h("div", { class: "truncate text-xs text-fg" }, preview),
+            h("div", { class: "mt-0.5 flex items-center gap-2 text-[10px] text-faint" },
+              h("span", {}, new Date(root.created).toLocaleString()),
+              root.reply_count ? h("span", {}, `${root.reply_count} repl${root.reply_count === 1 ? "y" : "ies"}`) : null,
+              active ? h("span", { class: "text-accent" }, "current") : null));
+          }));
+      },
+    }, icon("history", 15));
     clear(agentPanel);
-    agentPanel.append(h("header", { class: "flex min-h-14 items-center gap-2 border-b border-line px-3" }, agentAvatar(), h("div", { class: "min-w-0 flex-1" }, h("div", { class: "truncate text-sm font-semibold text-fg" }, channel.agent?.display_name || channel.agent?.name || "Channel agent"), h("div", { class: "truncate text-[10px] text-muted" }, `/workspace/${context}`)), chatRootId ? h("button", { class: "btn-ghost text-xs", onclick: async () => { try { const result = await api<{ root: Message }>(`/api/messages/${chatRootId}/thread`); openThreadCallback(result.root); } catch (error) { void appAlert((error as Error).message); } } }, "Open in Chat") : null, h("button", { class: "grid h-8 w-8 place-items-center rounded text-muted hover:bg-hover", "aria-label": "Close agent panel", onclick: () => { agentOpen = false; drawAgent(); } }, icon("x", 15))), stream,
+    agentPanel.append(h("header", { class: "flex min-h-14 items-center gap-2 border-b border-line px-3" }, agentAvatar(), h("div", { class: "min-w-0 flex-1" }, h("div", { class: "truncate text-sm font-semibold text-fg" }, channel.agent?.display_name || channel.agent?.name || "Channel agent"), h("div", { class: "truncate text-[10px] text-muted" }, `/workspace/${context}`)), historyButton, chatRootId ? h("button", { class: "btn-ghost text-xs", onclick: async () => { try { const result = await api<{ root: Message }>(`/api/messages/${chatRootId}/thread`); openThreadCallback(result.root); } catch (error) { void appAlert((error as Error).message); } } }, "Open in Chat") : null, h("button", { class: "grid h-8 w-8 place-items-center rounded text-muted hover:bg-hover", "aria-label": "Close agent panel", onclick: () => { agentOpen = false; drawAgent(); } }, icon("x", 15))), stream, historyPane,
       h("div", { class: "border-t border-line p-2" }, chatRootId ? h("button", { class: "btn-ghost mb-1 text-[11px]", onclick: () => { chatRootId = 0; coworkContextPending = true; localStorage.removeItem(threadKey(context)); drawAgent(); } }, "New session") : h("p", { class: "px-2 pb-1 text-[11px] leading-4 text-muted" }, `Your first message starts a normal channel session with this ${session.path ? "file and its current collaborators" : "folder"}.`), h("div", { class: "rounded-lg border border-line bg-raised/40 focus-within:border-accent" }, input, h("div", { class: "flex justify-end gap-1 p-1.5" }, dictate, h("button", { class: "btn-primary text-xs", onclick: () => { void send(); } }, icon("send", 13), "Send")))));
+    historyOpen = false;
     void renderChatMessages(); if (chatTimer != null) window.clearInterval(chatTimer); chatTimer = window.setInterval(() => { if (!shell.isConnected || !agentOpen) { if (chatTimer != null) window.clearInterval(chatTimer); chatTimer = null; return; } void renderChatMessages(); }, 1600);
     if (focusAgentOnDraw) requestAnimationFrame(() => input.focus({ preventScroll: true }));
     focusAgentOnDraw = false;

@@ -19,6 +19,8 @@ HOST_CONTRACT_PATHS=(
   /etc/sudoers.d/1helm-oci-runtime
   /etc/tmpfiles.d/1helm-oci.conf
   /usr/lib/1helm-oci/Containerfile.oci
+  /usr/lib/1helm-oci/channel-machine.oci.tar
+  /usr/lib/1helm-oci/channel-machine.oci.sha256
   /etc/systemd/system/1helm.service
   /etc/systemd/system/1helm-update.service
   /etc/systemd/system/1helm-update.path

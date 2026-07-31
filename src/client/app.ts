@@ -3110,7 +3110,10 @@ function composerAutocomplete(input: HTMLTextAreaElement, box: HTMLElement): voi
     const channel = S.channels.find((item) => item.id === S.channelId);
     const resident = channel?.agent?.bot_id ? S.bots.find((bot) => bot.id === channel.agent!.bot_id) : undefined;
     const skipper = S.bots.find((bot) => bot.agent_kind === "skipper");
-    const agentCandidates = channel?.kind === "channel" ? [resident, skipper] : [];
+    // In #main the resident IS Skipper — dedupe by bot id or the list shows Skipper twice.
+    const agentCandidates = channel?.kind === "channel"
+      ? [resident, skipper].filter((bot, index, list) => !!bot && list.findIndex((other) => other?.id === bot.id) === index)
+      : [];
     const agentMatches: ComposerSuggest[] = agentCandidates
       .filter((bot): bot is Bot => !!bot && bot.name.toLowerCase().startsWith(at))
       .map((bot) => ({ kind: "agent", token: bot.name, label: bot.name, detail: bot.agent_kind === "skipper" ? "Workspace Skipper" : bot.model || "Resident agent" }));

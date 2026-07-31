@@ -617,21 +617,58 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.click('[data-sidebar="desktop"] [data-sidebar-collapse-toggle]');
   await page.waitForSelector('[data-sidebar="desktop"][data-sidebar-collapsed="false"]');
 
-  // On a phone, scrolling away blurs the composer (allowing the OS keyboard
-  // to dismiss), settings navigation stays compact, and the visible viewport
-  // owns the application height without clipping below the screen.
+  // On a phone, a deliberate upward finger drag blurs the composer (so the OS
+  // keyboard can dismiss). Programmatic / keyboard-reflow scrolls must not.
+  // Settings navigation stays compact, and the visible viewport owns the
+  // application height without clipping below the screen.
   await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
   await page.goto(`${base}/c/${channel.slug}/chat`, { waitUntil: "networkidle0" });
   await page.waitForSelector('#msgs');
-  const mobile = await page.evaluate(() => {
+  const mobile = await page.evaluate(async () => {
     const input = document.querySelector('textarea[data-composer-parent="root"]');
     const messages = document.getElementById("msgs");
-    input.focus(); messages.scrollTop = Math.max(0, messages.scrollHeight - messages.clientHeight); messages.dispatchEvent(new Event("scroll"));
-    messages.scrollTop = Math.max(1, messages.scrollTop - 160); messages.dispatchEvent(new Event("scroll"));
+    // Guarantee a scrollable conversation so upward drag can change scrollTop.
+    if (messages.scrollHeight <= messages.clientHeight + 40) {
+      const pad = document.createElement("div");
+      pad.style.height = "1200px";
+      pad.setAttribute("data-test-scroll-pad", "");
+      messages.append(pad);
+    }
+    input.focus();
+    // installMobileViewportBehavior ignores blur during the post-focus settle window.
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    const fireTouch = (type, clientY) => {
+      const target = messages;
+      const touchInit = { identifier: 1, target, clientX: 120, clientY, pageX: 120, pageY: clientY, screenX: 120, screenY: clientY, radiusX: 1, radiusY: 1, rotationAngle: 0, force: 1 };
+      const touch = typeof Touch === "function" ? new Touch(touchInit) : touchInit;
+      const list = type === "touchend" || type === "touchcancel" ? [] : [touch];
+      target.dispatchEvent(new TouchEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        touches: list,
+        targetTouches: list,
+        changedTouches: [touch],
+      }));
+    };
+    // Finger moves down the screen → content scrolls toward history (touchDraggedUp).
+    fireTouch("touchstart", 420);
+    fireTouch("touchmove", 480);
+    messages.scrollTop = Math.max(0, messages.scrollHeight - messages.clientHeight);
+    messages.dispatchEvent(new Event("scroll", { bubbles: true }));
+    messages.scrollTop = Math.max(0, messages.scrollTop - 160);
+    messages.dispatchEvent(new Event("scroll", { bubbles: true }));
+    fireTouch("touchend", 480);
     const shell = document.querySelector(".workspace-shell")?.getBoundingClientRect();
-    return { blurred: document.activeElement !== input, shellBottom: shell?.bottom, viewport: innerHeight, cssHeight: getComputedStyle(document.documentElement).getPropertyValue("--app-viewport-height") };
+    return {
+      blurred: document.activeElement !== input,
+      shellBottom: shell?.bottom,
+      viewport: innerHeight,
+      cssHeight: getComputedStyle(document.documentElement).getPropertyValue("--app-viewport-height"),
+      scrollable: messages.scrollHeight > messages.clientHeight,
+    };
   });
-  assert.equal(mobile.blurred, true);
+  assert.equal(mobile.blurred, true, JSON.stringify(mobile));
   assert.ok(Math.abs(mobile.shellBottom - mobile.viewport) <= 1 && mobile.cssHeight.endsWith("px"), JSON.stringify(mobile));
   await page.click('[aria-label="Open navigation"]');
   await page.waitForSelector('[data-sidebar="mobile"] [aria-label="Open settings"]');

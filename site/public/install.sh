@@ -17,6 +17,8 @@ HOST_CONTRACT_PATHS=(
   /etc/sudoers.d/1helm-oci-runtime
   /etc/tmpfiles.d/1helm-oci.conf
   /usr/lib/1helm-oci/Containerfile.oci
+  /usr/lib/1helm-oci/channel-machine.oci.tar
+  /usr/lib/1helm-oci/channel-machine.oci.sha256
   /etc/systemd/system/1helm.service
   /etc/systemd/system/1helm-update.service
   /etc/systemd/system/1helm-update.path
@@ -51,7 +53,7 @@ for command in "${need[@]}"; do command -v "$command" >/dev/null || missing+=("$
 if ((${#missing[@]})) || ! python3 -c 'import ensurepip' >/dev/null 2>&1; then
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y curl git xz-utils ca-certificates util-linux build-essential python3 \
-    python3-venv acl crun fuse-overlayfs podman uidmap sudo rsync
+    python3-venv acl aardvark-dns crun fuse-overlayfs netavark podman uidmap sudo rsync
 fi
 
 NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"

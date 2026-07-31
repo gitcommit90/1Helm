@@ -670,23 +670,69 @@ function computersPanel(): HTMLElement {
     if (runtime.backend === "oci") {
       const windows = Boolean(runtime.shared_runtime);
       const label = windows ? "Shared Windows OCI runtime" : "Native OCI runtime";
+      const engineReady = Boolean(runtime.engine_ready);
+      const imageReady = Boolean(runtime.image_ready);
+      const fullyReady = Boolean(runtime.ready);
       const readyCopy = windows
-        ? "The installation-scoped WSL runtime is healthy. Skipper manages one persistent OCI container per ordinary channel."
-        : "The root-owned OCI runtime is healthy. Skipper manages one persistent OCI container per ordinary channel.";
-      const setupCopy = windows
-        ? "Complete 1Helm's one-time Windows administrator setup for the shared OCI runtime."
-        : "Rerun the verified 1Helm Linux host installer to repair Podman, cgroups, or the root-owned helper.";
+        ? "The installation-scoped WSL runtime and shared channel image are ready. Skipper manages one persistent OCI container per ordinary channel."
+        : "The root-owned OCI runtime and shared channel image are ready. Skipper manages one persistent OCI container per ordinary channel.";
+      const setupCopy = !engineReady
+        ? (windows
+          ? "Complete 1Helm's one-time Windows administrator setup for the shared OCI runtime."
+          : "Rerun the verified 1Helm Linux host installer to repair Podman, cgroups, or the root-owned helper.")
+        : "Load the sealed channel computer image once. Later channels start from that local image instead of touching live package mirrors.";
       const actionStatus = h("p", { class: "mt-2 text-sm text-muted" });
-      const windowsSetup = windows && !runtime.ready ? h("button", { class: "btn-primary mt-3 text-sm", onclick: async () => {
-        actionStatus.textContent = "Opening Windows' shared runtime administrator setup…";
-        try { await api("/api/channel-computers/runtime/install", { body: {} }); actionStatus.textContent = "Finish the Windows prompt. Restart once if Windows requests it, then reopen 1Helm."; }
-        catch (error) { actionStatus.textContent = (error as Error).message; }
+      const chip = fullyReady ? `${label} ready` : !engineReady ? "Setup required" : "Image setup";
+      const windowsSetup = windows && !engineReady ? h("button", { class: "btn-primary mt-3 text-sm", onclick: async () => {
+        actionStatus.textContent = "Starting shared Windows runtime setup… Approve the administrator prompt when Windows asks.";
+        try {
+          await api("/api/channel-computers/runtime/install", { body: {} });
+          const deadline = Date.now() + 60 * 60_000;
+          while (Date.now() < deadline) {
+            const snapshot = await api<{ runtime: ChannelRuntime }>("/api/channel-computers/runtime");
+            const setup = snapshot.runtime.windows_setup;
+            if (snapshot.runtime.engine_ready) {
+              paintRuntime(snapshot.runtime);
+              return;
+            }
+            if (setup?.status === "restart_required") {
+              actionStatus.textContent = setup.step || "Restart Windows once, reopen 1Helm, then retry setup.";
+              return;
+            }
+            if (setup?.status === "failed") {
+              actionStatus.textContent = setup.error || setup.step || "Shared Windows runtime setup failed.";
+              return;
+            }
+            actionStatus.textContent = setup?.step
+              ? `${setup.step} (${Math.max(0, Math.min(100, Number(setup.progress) || 0))}%)`
+              : "Shared Windows runtime setup is running…";
+            await new Promise((resolveWait) => setTimeout(resolveWait, 1_500));
+          }
+          actionStatus.textContent = "Shared Windows runtime setup timed out. Retry setup.";
+        } catch (error) { actionStatus.textContent = (error as Error).message; }
       } }, "Set up shared runtime") : null;
+      const prepareImage = engineReady && !imageReady ? h("button", { class: "btn-primary mt-3 text-sm", onclick: async () => {
+        actionStatus.textContent = "Loading the sealed channel computer image…";
+        try {
+          await api("/api/channel-computers/runtime/prepare", { body: {} });
+          const deadline = Date.now() + 35 * 60_000;
+          while (Date.now() < deadline) {
+            const snapshot = await api<{ prepare: { status: string; step: string; progress: number; error: string }; runtime: ChannelRuntime }>("/api/channel-computers/runtime/prepare");
+            actionStatus.textContent = `${snapshot.prepare.step} (${Math.max(0, Math.min(100, snapshot.prepare.progress))}%)`;
+            if (snapshot.prepare.status === "complete" || snapshot.runtime.ready) { paintRuntime(snapshot.runtime); return; }
+            if (snapshot.prepare.status === "failed") throw new Error(snapshot.prepare.error || "Image preparation failed.");
+            await new Promise((resolveWait) => setTimeout(resolveWait, 1_500));
+          }
+          throw new Error("Image preparation timed out.");
+        } catch (error) { actionStatus.textContent = (error as Error).message; }
+      } }, "Load channel image") : null;
       runtimeBox.append(
-        h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-semibold text-fg" }, "Channel computers"), h("span", { class: "chip border-accent/25" }, runtime.ready ? `${label} ready` : "Setup required")),
-        h("p", { class: "mt-1 text-sm leading-6 text-muted" }, runtime.ready ? readyCopy : setupCopy),
+        h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-semibold text-fg" }, "Channel computers"), h("span", { class: "chip border-accent/25" }, chip)),
+        h("p", { class: "mt-1 text-sm leading-6 text-muted" }, fullyReady ? readyCopy : setupCopy),
         ...(runtime.error ? [h("p", { class: "mt-2 text-sm text-danger" }, runtime.error)] : []),
-        ...(windowsSetup ? [windowsSetup] : []), actionStatus,
+        ...(windowsSetup ? [windowsSetup] : []),
+        ...(prepareImage ? [prepareImage] : []),
+        actionStatus,
       );
       return;
     }

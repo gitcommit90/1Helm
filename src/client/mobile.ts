@@ -52,20 +52,53 @@ export function installMobileViewportBehavior(): void {
     document.documentElement.classList.toggle("keyboard-visible", keyboard > 120);
     window.dispatchEvent(new CustomEvent("1helm:viewport", { detail: { height, keyboard } }));
   };
-  window.visualViewport?.addEventListener("resize", update, { passive: true });
+  // Opening the keyboard resizes the visual viewport, which reflows tall
+  // conversations and fires scroll events that are NOT user gestures. Blurring
+  // on those made the keyboard close itself immediately after opening. Only a
+  // deliberate upward finger drag may dismiss composition, and never during
+  // the settle window right after focus/keyboard-resize.
+  let settleUntil = 0;
+  const markSettle = (): void => { settleUntil = Date.now() + 700; };
+  window.visualViewport?.addEventListener("resize", () => { markSettle(); update(); }, { passive: true });
   window.visualViewport?.addEventListener("scroll", update, { passive: true });
-  window.addEventListener("resize", update, { passive: true });
+  window.addEventListener("resize", () => { markSettle(); update(); }, { passive: true });
+  document.addEventListener("focusin", (event) => {
+    if ((event.target as HTMLElement | null)?.closest?.(".composer-wrap")) markSettle();
+  }, true);
   update();
+  let touchActive = false;
+  let touchStartY = 0;
+  let touchDraggedUp = false;
+  document.addEventListener("touchstart", (event) => {
+    touchActive = true;
+    touchDraggedUp = false;
+    touchStartY = event.touches[0]?.clientY ?? 0;
+  }, { passive: true, capture: true });
+  document.addEventListener("touchmove", (event) => {
+    // Finger moving down the screen = content scrolling up (toward history).
+    const y = event.touches[0]?.clientY ?? 0;
+    if (y - touchStartY > 12) touchDraggedUp = true;
+  }, { passive: true, capture: true });
+  document.addEventListener("touchend", () => {
+    // Momentum scrolling continues after touchend; keep the gesture flag
+    // briefly so an intentional fling still dismisses, then reset.
+    setTimeout(() => { touchActive = false; touchDraggedUp = false; }, 400);
+  }, { passive: true, capture: true });
   const lastTop = new WeakMap<HTMLElement, number>();
   document.addEventListener("scroll", (event) => {
     if (!matchMedia("(max-width: 767px)").matches) return;
     const target = event.target as HTMLElement | null;
     if (!target?.matches?.("#msgs,#threadmsgs,#channelview,[data-cowork-chat-stream]")) return;
-    const previous = lastTop.get(target) ?? target.scrollHeight;
-    const awayFromComposer = target.scrollTop < previous - 2 || target.scrollHeight - target.scrollTop - target.clientHeight > 48;
+    const previous = lastTop.get(target) ?? target.scrollTop;
+    const scrolledUp = target.scrollTop < previous - 2;
     lastTop.set(target, target.scrollTop);
+    // Layout/keyboard-induced scrolls and programmatic stick-to-bottom must
+    // never steal the keyboard: require a real upward touch drag, outside the
+    // focus/resize settle window.
+    if (Date.now() < settleUntil) return;
+    if (!touchActive || !touchDraggedUp || !scrolledUp) return;
     const active = document.activeElement as HTMLElement | null;
-    if (!awayFromComposer || !active?.closest?.(".composer-wrap")) return;
+    if (!active?.closest?.(".composer-wrap")) return;
     active.blur();
     if (native) void Keyboard.hide().catch(() => undefined);
   }, true);

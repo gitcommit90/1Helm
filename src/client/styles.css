@@ -153,6 +153,20 @@ body {
   @apply w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-fg outline-none transition placeholder:text-faint;
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
 }
+
+/* iOS Safari force-zooms the whole page when a focused form control's computed
+ * font-size is below 16px, throwing buttons off-screen. Enforce a 16px floor on
+ * every focusable text surface on small screens so focus never triggers zoom.
+ * Keep pinch-zoom available for accessibility instead of maximum-scale=1. */
+@media (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea,
+  [contenteditable="true"],
+  .cm-editor .cm-content {
+    font-size: 16px !important;
+  }
+}
 .field:focus {
   border-color: color-mix(in srgb, var(--c-accent) 70%, var(--c-line));
   box-shadow: 0 0 0 3px var(--c-accent-soft);
@@ -948,7 +962,8 @@ html, body { height: 100%; width: 100%; overflow: hidden; overscroll-behavior: n
 .dark .cowork-codemirror-code { background: color-mix(in srgb, #071019 72%, var(--c-surface)); }
 .cowork-markdown-preview { min-height: 100%; overflow-y: auto; background: var(--c-surface); padding: 1.5rem 2rem; }
 .cowork-doc-canvas { background: color-mix(in srgb, var(--c-raised) 75%, var(--c-bg)); }
-.cowork-doc-page { width: min(48rem, calc(100% - 2rem)); min-height: min(62rem, calc(100% - 2rem)); margin: 1rem auto; border: 1px solid var(--c-line); border-radius: .2rem; background: var(--c-surface); box-shadow: 0 20px 70px -45px #000; overflow: hidden; }
+.cowork-doc-page { width: min(48rem, calc(100% - 2rem)); min-height: min(62rem, calc(100% - 2rem)); margin: 1rem auto; border: 1px solid var(--c-line); border-radius: .2rem; background: var(--c-surface); box-shadow: 0 20px 70px -45px #000; overflow: auto; }
+.cowork-doc-page > .cm-editor { height: 100%; min-height: 62rem; }
 .cowork-doc-page .cm-content { padding: clamp(1.5rem, 6vw, 4rem) !important; font-family: var(--font-sans); font-size: 15px; line-height: 1.75; }
 .cowork-doc-page .cm-gutters { display: none; }
 .cowork-excalidraw { position: relative; min-width: 0; min-height: 0; flex: 1 1 auto; overflow: hidden; background: var(--c-surface); }
@@ -976,6 +991,22 @@ html, body { height: 100%; width: 100%; overflow: hidden; overscroll-behavior: n
 .cowork-agent-toggle:hover { transform: translateY(-2px); box-shadow: 0 16px 34px -15px #000, 0 0 0 2px var(--c-accent-soft); }
 .cowork-chat-message { margin-right: 1.5rem; border: 1px solid var(--c-line); border-radius: .7rem; background: var(--c-raised); padding: .65rem .75rem; }
 .cowork-chat-message.is-user { margin-right: 0; margin-left: 1.5rem; border-color: color-mix(in srgb, var(--c-accent) 30%, var(--c-line)); background: var(--c-accent-soft); }
+
+/* The Cowork composer's rounded wrapper is the focus indicator
+   (focus-within border). Browsers apply :focus-visible to text fields even on
+   mouse click, which drew a square accent rectangle around the inner textarea
+   on top of the rounded border. Suppress every focus outline inside it. */
+.cowork-agent textarea:focus, .cowork-agent textarea:focus-visible { outline: none !important; box-shadow: none !important; }
+
+/* Cowork working orb: layered breathing sphere (thinking-orbs style), plus a
+   live pulse dot for in-flight progress steps. */
+.cowork-orb { position: relative; display: block; width: 16px; height: 16px; flex-shrink: 0; border-radius: 50%; background: radial-gradient(circle at 32% 30%, color-mix(in srgb, var(--c-accent) 85%, #fff), color-mix(in srgb, var(--c-accent) 55%, transparent) 58%, transparent 72%); animation: cowork-orb-breathe 1.6s ease-in-out infinite; }
+.cowork-orb::before, .cowork-orb::after { content: ""; position: absolute; inset: 0; border-radius: inherit; border: 1px solid color-mix(in srgb, var(--c-accent) 60%, transparent); animation: cowork-orb-ring 1.6s ease-out infinite; }
+.cowork-orb::after { animation-delay: -.8s; }
+@keyframes cowork-orb-breathe { 0%, 100% { transform: scale(.86); opacity: .75; } 50% { transform: scale(1); opacity: 1; } }
+@keyframes cowork-orb-ring { from { transform: scale(.7); opacity: .7; } to { transform: scale(1.9); opacity: 0; } }
+.cowork-live-step { animation: cowork-step-swap .3s ease-out; }
+@keyframes cowork-step-swap { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 .quick-note-panel { max-height: min(34rem, calc(var(--app-viewport-height, 100dvh) - 5rem)); }
 .quick-note-content { height: 14rem; max-height: 14rem; overflow-y: auto; }
 
@@ -1190,7 +1221,7 @@ html, body { height: 100%; width: 100%; overflow: hidden; overscroll-behavior: n
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .mobile-drawer, .listening-orb i, .agent-state-orb > span, .channel-working-dots > span { animation: none !important; }
+  .mobile-drawer, .listening-orb i, .agent-state-orb > span, .channel-working-dots > span, .cowork-orb, .cowork-orb::before, .cowork-orb::after, .cowork-live-step { animation: none !important; }
 }
 
 /* xterm */

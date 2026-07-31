@@ -65,7 +65,10 @@ export async function claimWorkspace(slug: string, workspaceName: string, port: 
       }),
     });
     if (result.connector) saveTunnelConnector(CONNECTOR_ID, result.connector, [result.workspace.hostname], port);
-    if (!connectorConfigured(CONNECTOR_ID)) throw new Error("The workspace address exists, but this Mac does not have its connector credential. Contact 1Helm support to rotate it.");
+    if (!connectorConfigured(CONNECTOR_ID)) throw new Error("The workspace address exists, but this host does not have its connector credential. Contact 1Helm support to rotate it.");
+    if (!connectorAvailable()) {
+      throw new Error("This 1Helm build is missing the Cloudflare tunnel connector (cloudflared). Reinstall a complete desktop package, then re-enable collaboration.");
+    }
     run(`UPDATE workspace SET collaboration_enabled=1,collaboration_slug=?,collaboration_hostname=?,
       collaboration_status='active',collaboration_error='' WHERE id=1`, result.workspace.slug, result.workspace.hostname);
     startTunnelConnector(CONNECTOR_ID);
@@ -86,6 +89,9 @@ export async function setCollaborationEnabled(enabled: boolean): Promise<Record<
     headers: { authorization: `Bearer ${installationManagementSecret()}`, "content-type": "application/json" },
     body: JSON.stringify({ enabled }),
   });
+  if (enabled && !connectorAvailable()) {
+    throw new Error("This 1Helm build is missing the Cloudflare tunnel connector (cloudflared). Reinstall a complete desktop package, then re-enable collaboration.");
+  }
   run("UPDATE workspace SET collaboration_enabled=?,collaboration_status=?,collaboration_error='' WHERE id=1", enabled ? 1 : 0, enabled ? "active" : "off");
   if (enabled) startTunnelConnector(CONNECTOR_ID); else stopTunnelConnector(CONNECTOR_ID);
   return collaborationView();

@@ -42,6 +42,7 @@ install -o root -g root -m 0755 "$RELEASE_ROOT/site/public/uninstall-host.sh" "$
 # invoke its root-owned runtime helper.
 install -m 0644 /dev/stdin /etc/tmpfiles.d/1helm-oci.conf <<'EOF'
 d /run/1helm-oci 0755 root root -
+d /run/1helm-oci/tmp 1777 root root -
 d /run/containers 0755 root root -
 d /run/crun 0755 root root -
 d /run/libpod 0700 root root -
@@ -67,12 +68,17 @@ Environment=CTRL_DATA_DIR=$STATE_ROOT
 Environment=HELM_CHANNEL_COMPUTER_BACKEND=oci
 Environment=HELM_OCI_HELPER=/usr/libexec/1helm-oci-runtime
 Environment=HELM_INSTALL_KIND=linux-systemd
+Environment=TMPDIR=/run/1helm-oci/tmp
 ExecStart=$NODE_LINK/bin/node --disable-warning=ExperimentalWarning src/server/index.ts
 Restart=on-failure
 RestartSec=3
 UMask=0077
 NoNewPrivileges=false
-PrivateTmp=true
+# Podman/netavark creates bind-mounted network namespace handles that must stay
+# visible in the host mount namespace across 1Helm service restarts. PrivateTmp
+# implicitly gives the service a private mount namespace and strands those
+# handles, producing a running container that cannot be rejoined after restart.
+PrivateTmp=false
 ProtectHome=true
 ProtectSystem=strict
 # The root-owned helper keeps persistent Podman state beneath STATE_ROOT and

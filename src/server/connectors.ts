@@ -15,16 +15,24 @@ const RELAUNCH_MS = Math.max(25, Number(process.env.HELM_CONNECTOR_RELAUNCH_MS) 
 let shuttingDown = false;
 
 function connectorBinary(): string {
-  const pathCandidates = String(process.env.PATH || "").split(":").filter(Boolean).map((directory) => join(directory, "cloudflared"));
+  const resources = process.env.HELM_RESOURCES_PATH || "";
+  const appRoot = process.env.HELM_APP_ROOT || "";
+  const pathSep = process.platform === "win32" ? ";" : ":";
+  const pathNames = process.platform === "win32" ? ["cloudflared.exe", "cloudflared"] : ["cloudflared"];
+  const pathCandidates = String(process.env.PATH || "").split(pathSep).filter(Boolean).flatMap((directory) => pathNames.map((name) => join(directory, name)));
   const candidates = [
     process.env.CLOUDFLARED_BIN || "",
-    process.env.HELM_RESOURCES_PATH ? join(process.env.HELM_RESOURCES_PATH, "cloudflared") : "",
+    // Packaged desktop apps (macOS Resources/cloudflared, Windows resources/cloudflared.exe).
+    resources ? join(resources, "cloudflared.exe") : "",
+    resources ? join(resources, "cloudflared") : "",
+    appRoot ? join(appRoot, "cloudflared.exe") : "",
+    appRoot ? join(appRoot, "cloudflared") : "",
     "/opt/homebrew/bin/cloudflared",
     "/usr/local/bin/cloudflared",
     "/usr/bin/cloudflared",
     ...pathCandidates,
   ].filter(Boolean);
-  return candidates.find(existsSync) || "cloudflared";
+  return candidates.find(existsSync) || (process.platform === "win32" ? "cloudflared.exe" : "cloudflared");
 }
 
 const safeId = (value: string): string => value.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 100);
@@ -32,7 +40,8 @@ const connectorDir = (id: string): string => join(ROOT, safeId(id));
 
 export function connectorAvailable(): boolean {
   const binary = connectorBinary();
-  return binary !== "cloudflared" && existsSync(binary);
+  if (binary === "cloudflared" || binary === "cloudflared.exe") return false;
+  return existsSync(binary);
 }
 
 export function saveTunnelConnector(id: string, credential: TunnelCredential, hostnames: string[], port: number): void {
@@ -90,6 +99,7 @@ export function startTunnelConnector(id: string): void {
     const child = spawn(connectorBinary(), ["--no-autoupdate", "--config", config, "tunnel", "run"], {
       stdio: ["ignore", "ignore", "pipe"],
       env: process.env,
+      windowsHide: true,
     });
     let stderr = "";
     let settled = false;

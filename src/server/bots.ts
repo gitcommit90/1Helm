@@ -217,7 +217,7 @@ function systemPromptTiers(bot: Row, agent: RuntimeAgent | undefined, channelId:
     visiting
       ? "You are a temporary thread guest. No shell, workspace, or durable-memory capability is attached to this invitation."
       : "You own an isolated persistent Linux computer for this channel. Its durable workspace is /workspace. The run_command tool executes there; files, memory, and other listed tools belong to this channel.",
-    visiting ? "" : "Where practical, use Markdown for notes and documents, plain text source files for code, .whiteboard.json for whiteboards, and .slides.json for presentations.",
+    visiting ? "" : "Workspace file contracts: Markdown for notes and documents; plain text source files for code. /workspace/whiteboards holds `.whiteboard.json` Excalidraw scenes and /workspace/presentations holds `.slides.json` decks — these two folders are rendered by exact schemas, so never place .html decks or invented JSON formats there. When a request supplies a format contract for a folder, follow it exactly.",
     "The callable tools below are your current capabilities. Their implementations enforce authority and isolation boundaries.",
   ].filter(Boolean).join("\n\n");
   const context = [
@@ -749,7 +749,7 @@ export async function generateAndAttachImage(
   return attachWorkspaceFileToMessage(channelId, messageId, threadId, relativePath, actor, fileName);
 }
 
-export function buildContext(bot: Row, agent: RuntimeAgent | undefined, channelId: number, triggerId: number, threadRootId: number, fresh: boolean, hostAuthorized: boolean): ChatMsg[] {
+export function buildContext(bot: Row, agent: RuntimeAgent | undefined, channelId: number, triggerId: number, threadRootId: number, fresh: boolean, hostAuthorized: boolean, hiddenContext?: string): ChatMsg[] {
   const currentTask = String(q1("SELECT body FROM messages WHERE id=?", triggerId)?.body || "");
   const prompt = systemPromptTiers(bot, agent, channelId, hostAuthorized, currentTask);
   const messages: ChatMsg[] = [
@@ -757,6 +757,7 @@ export function buildContext(bot: Row, agent: RuntimeAgent | undefined, channelI
     { role: "system", content: `<capabilities>\n${prompt.operating}\n</capabilities>` },
   ];
   if (prompt.context) messages.push({ role: "system", content: `<turn-context>\n${prompt.context}\n</turn-context>` });
+  if (hiddenContext) messages.push({ role: "system", content: `<cowork-format-contract>\n${hiddenContext}\n</cowork-format-contract>` });
   const threadId = threadIdForRoot(threadRootId, channelId) ?? ensureThread(threadRootId, channelId);
   const thread = q1("SELECT status, summary FROM threads WHERE id=?", threadId);
   const memories = relevantMemory(channelId, threadId).filter((memory) => Number(memory.thread_id || 0) !== threadId || String(memory.kind) !== "summary");
@@ -1261,7 +1262,7 @@ function requestUserForTurn(triggerId: number, threadRootId: number): number {
   )?.user_id || 0);
 }
 
-export function runBot(bot: Row, channelId: number, triggerId: number, threadRootId: number, fresh: boolean, escalationId?: number, hostAuthorized = false): Promise<void> {
+export function runBot(bot: Row, channelId: number, triggerId: number, threadRootId: number, fresh: boolean, escalationId?: number, hostAuthorized = false, hiddenContext?: string): Promise<void> {
   const botId = Number(bot.id);
   const key = turnLane(botId, channelId, threadRootId);
   const duplicate = q1("SELECT state FROM agent_turns WHERE bot_id=? AND channel_id=? AND thread_root_id=? AND trigger_id=?", botId, channelId, threadRootId, triggerId);
@@ -1294,7 +1295,7 @@ export function runBot(bot: Row, channelId: number, triggerId: number, threadRoo
   agentQueueState.set(key, queue);
   const current = previous.catch(() => undefined).then(() => executeBot(
     bot, channelId, triggerId, threadRootId, fresh, escalationId, hostAuthorized,
-    queuedTurn.messageId, queuedTurn.progressId, turnId,
+    queuedTurn.messageId, queuedTurn.progressId, turnId, hiddenContext,
   ));
   agentQueues.set(key, current);
   const release = (): void => {
@@ -1343,7 +1344,7 @@ export function resumeQueuedAgentTurns(): void {
 }
 
 /** Run a resident agent or Skipper in response to a mention/tool escalation. */
-async function executeBot(bot: Row, channelId: number, triggerId: number, threadRootId: number, fresh: boolean, escalationId?: number, hostAuthorized = false, preparedMessageId?: number, preparedProgressId?: number, turnId?: number): Promise<void> {
+async function executeBot(bot: Row, channelId: number, triggerId: number, threadRootId: number, fresh: boolean, escalationId?: number, hostAuthorized = false, preparedMessageId?: number, preparedProgressId?: number, turnId?: number, hiddenContext?: string): Promise<void> {
   const discardPrepared = (): void => {
     if (!preparedMessageId || !q1("SELECT 1 FROM messages WHERE id=?", preparedMessageId)) return;
     run("DELETE FROM messages WHERE id=?", preparedMessageId);
@@ -1511,7 +1512,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
   emitNow();
   if (!preparedMessageId) broadcastToChannel(channelId, { type: "message", message: serializeMessage(msgId), parent: serializeMessage(threadRootId) });
 
-  const messages = buildContext(bot, agent, channelId, triggerId, threadRootId, fresh, hostAuthorized);
+  const messages = buildContext(bot, agent, channelId, triggerId, threadRootId, fresh, hostAuthorized, hiddenContext);
   const tools = toolsFor(bot, agent, hostAuthorized, channelId);
   const actor = agent?.kind === "skipper" ? "skipper" : "agent";
   try {
