@@ -80,6 +80,7 @@ import { photonSetupStatus, startPhotonSetup } from "./photon-auth.ts";
 import { completeGmailConnection, gmailConnectionStatus, saveGmailOAuthClient, startGmailConnection } from "./gmail.ts";
 import { cancelMnemosyneRuntimePreparation, mnemosyneAvailable, prepareMnemosyneRuntime } from "./memory.ts";
 import { attachCoworkClient, coworkPresence, coworkViewerUsernames, flushCoworkDocuments, normalizeCoworkFolderPath, normalizeCoworkPath } from "./cowork-collaboration.ts";
+import { coworkFormatContract } from "./cowork-contract.ts";
 import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
 import { startFollowupLoop, threadFollowupView, bumpThreadFollowup } from "./followups.ts";
@@ -170,35 +171,6 @@ const SECURITY_HEADERS: Record<string, string> = {
   // Keep camera and location denied, but allow this origin to request the mic.
   "permissions-policy": "camera=(), microphone=(self), geolocation=(), unload=(self)",
 };
-/** Cowork renderers accept exact file contracts. When a Cowork request targets
- * the presentations or whiteboards world, tell the agent the format up front
- * so it produces files the tab can actually open. */
-function coworkFormatContract(path: string, folderContext: boolean): string {
-  const inPresentations = folderContext ? (path === "presentations" || path.startsWith("presentations/")) : path.startsWith("presentations/");
-  const inWhiteboards = folderContext ? (path === "whiteboards" || path.startsWith("whiteboards/")) : path.startsWith("whiteboards/");
-  if (inPresentations || (!folderContext && path.endsWith(".slides.json"))) {
-    return [
-      "Format contract for /workspace/presentations — follow it exactly:",
-      "- Create exactly one file per deck, named `<name>.slides.json`. No .html decks, no ad-hoc schemas, no local web servers, no extra files.",
-      "- The Presentations tab renders 1Helm's Excalidraw-based deck format:",
-      '  `{ "type": "1helm-slides", "version": 3, "slides": [{ "name": "Slide title", "scene": { "elements": [...], "appState": {}, "files": {} } }] }`',
-      '  where `elements` are Excalidraw elements (type "text", "rectangle", "ellipse", "arrow", …) positioned on a 1500×1000 canvas.',
-      '- Simpler and recommended unless you know Excalidraw JSON: `{ "theme": { "primary": "#hex", "background": "#hex", "text": "#hex", "accent": "#hex" }, "slides": [{ "title": "Slide title", "body": "Slide body text" }] }` — 1Helm lays these out with the theme colors, sized text, and bullets (lines starting with "- " render as bullet rows). Supply a theme that fits the subject.',
-      "- Verify your JSON parses before finishing.",
-    ].join("\n");
-  }
-  if (inWhiteboards || (!folderContext && path.endsWith(".whiteboard.json"))) {
-    return [
-      "Format contract for /workspace/whiteboards — follow it exactly:",
-      "- Create exactly one file per board, named `<name>.whiteboard.json`. No .html, no ad-hoc schemas.",
-      '- The Whiteboard tab renders an Excalidraw scene: `{ "type": "excalidraw", "version": 2, "elements": [...], "appState": {}, "files": {} }`',
-      '  where `elements` are Excalidraw elements (type "text", "rectangle", "ellipse", "arrow", "line", "freedraw", …).',
-      "- Verify your JSON parses before finishing.",
-    ].join("\n");
-  }
-  return "";
-}
-
 const json = (res: ServerResponse, code: number, body: unknown): void => {
   const s = JSON.stringify(body);
   res.writeHead(code, { "content-type": "application/json", ...SECURITY_HEADERS });

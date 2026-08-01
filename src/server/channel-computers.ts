@@ -122,6 +122,8 @@ const hostWorldRoot = (channelId: number): string => join(DATA_DIR, "channels", 
 const hostWorkspace = channelWorkspacePath;
 const hostFiles = channelFilesPath;
 const workspaceMirrorRefreshes = new Map<number, Promise<void>>();
+let appleNetworkRepair: Promise<void> | null = null;
+let appleNetworkRepairAt = 0;
 
 function withChannelLock<T>(channelId: number, fn: () => Promise<T>): Promise<T> {
   const previous = channelLocks.get(channelId) || Promise.resolve();
@@ -572,6 +574,53 @@ async function isolated(args: string[], computer: ChannelComputer, user: "agent"
   return spawnCollected(invocation.command, invocation.args, { ...opts, env: invocation.env || opts.env });
 }
 
+const APPLE_GUEST_NETWORK_CHECK = "test \"$(cat /sys/class/net/eth0/operstate 2>/dev/null)\" = up && ip route show default | grep -q .";
+
+async function appleGuestNetworkHealthy(computer: ChannelComputer): Promise<boolean> {
+  if (computer.backend !== "apple") return true;
+  const checked = await isolated(["/bin/sh", "-lc", APPLE_GUEST_NETWORK_CHECK], computer, "root", "/", { timeoutMs: 15_000 });
+  return checked.code === 0;
+}
+
+/** Apple container 1.1.0 can leave every machine reported as running while
+ * its shared vmnet service has detached their NICs. Restart only that service,
+ * then reboot the affected VM so its durable disk receives a fresh attachment. */
+async function repairAppleGuestNetwork(computer: ChannelComputer): Promise<void> {
+  if (computer.backend !== "apple") return;
+  if (!appleNetworkRepair) {
+    appleNetworkRepair = (async () => {
+      // Avoid repeatedly bouncing shared vmnet while several machines detect
+      // the same fleet-wide outage during one reconciliation pass.
+      if (now() - appleNetworkRepairAt > 30_000) {
+        if (platform() === "darwin") {
+          const label = `gui/${process.getuid?.() ?? 501}/com.apple.container.container-network-vmnet.default`;
+          const kicked = await spawnCollected("/bin/launchctl", ["kickstart", "-k", label], { timeoutMs: 30_000 });
+          if (kicked.code !== 0) throw new Error(kicked.stderr.toString("utf8").trim() || "Apple shared VM network service could not restart");
+        }
+        const started = await apple(["system", "start"], { timeoutMs: 90_000 });
+        if (started.code !== 0) throw new Error(started.stderr.toString("utf8").trim() || "Apple container services could not restart");
+        appleNetworkRepairAt = now();
+      }
+    })().finally(() => { appleNetworkRepair = null; });
+  }
+  await appleNetworkRepair;
+  const competingCommands = Number(q1(`SELECT COUNT(*) n FROM channel_computer_obligations
+    WHERE channel_id=? AND kind='command' AND status='active'`, computer.channel_id)?.n || 0);
+  const runningTurns = Number(q1("SELECT COUNT(*) n FROM agent_turns WHERE channel_id=? AND state='running'", computer.channel_id)?.n || 0);
+  if ([...terminalSessions.values()].some((session) => session.channelId === computer.channel_id)
+      || competingCommands > 1 || runningTurns > 1) {
+    throw new Error("resident computer network is unavailable; automatic repair is waiting for concurrent work to finish");
+  }
+  const stopped = await apple(["machine", "stop", computer.machine_id], { timeoutMs: 90_000 });
+  if (stopped.code !== 0 && !/not running|stopped/i.test(Buffer.concat([stopped.stderr, stopped.stdout]).toString("utf8"))) {
+    throw new Error(stopped.stderr.toString("utf8").trim() || "network repair could not stop the channel computer");
+  }
+  const restarted = await apple(["machine", "run", "-n", computer.machine_id, "--", ...guestWords("/bin/sh", "-lc", APPLE_GUEST_NETWORK_CHECK)], { timeoutMs: 90_000 });
+  if (restarted.code !== 0 || !await appleGuestNetworkHealthy(computer)) throw new Error("channel computer network remained unavailable after automatic repair");
+  run("UPDATE channel_computers SET observed_state='running',provision_status='ready',last_health=?,last_error='',updated=? WHERE channel_id=?", now(), now(), computer.channel_id);
+  recordComputerActivity(computer.channel_id, "Recovered the resident computer's network without replacing its Linux disk.", "complete");
+}
+
 const isolatedBackend = (computer: ChannelComputer): boolean => ["apple", "oci"].includes(computer.backend);
 const guestAgentIds = (computer: ChannelComputer): { uid: string; gid: string } => computer.backend === "apple"
   ? { uid: String(process.getuid?.() ?? 501), gid: String(process.getgid?.() ?? 20) }
@@ -794,6 +843,7 @@ export async function ensureChannelComputerRunning(channelId: number, reason = "
       await syncHostChangesToGuest(computer);
       const inspection = await inspectApple(computer.machine_id);
       recordObserved(computer, inspection);
+      if (!await appleGuestNetworkHealthy(computer)) await repairAppleGuestNetwork(computer);
     } else if (computer.backend === "oci") {
       await ensureOciProvisioned(computer);
       computer = channelComputer(channelId)!;
@@ -1480,6 +1530,13 @@ async function reconcileOne(computer: ChannelComputer): Promise<void> {
       await ensureChannelComputerRunning(computer.channel_id, reason);
     }
     return;
+  }
+  if (computer.backend === "apple" && !await appleGuestNetworkHealthy(computer)) {
+    if (!canStopChannelComputer(computer.channel_id)) {
+      throw new Error("resident computer network is unavailable; automatic repair is waiting for its active work to stop");
+    }
+    await repairAppleGuestNetwork(computer);
+    computer = channelComputer(computer.channel_id)!;
   }
   const guest = await inspectGuestObligations(computer);
   run("UPDATE channel_computers SET pressure_json=?,last_health=?,updated=? WHERE channel_id=?", JSON.stringify(guest.pressure), now(), now(), computer.channel_id);

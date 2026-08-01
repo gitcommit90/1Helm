@@ -83,10 +83,6 @@ verification.
 ## Product truth
 
 - `https://1helm.com` is the standalone product and documentation site.
-- `https://demo.1helm.com` currently redirects to the product site. The retired
-  pre-OCI sandbox was removed during the clean-start runtime transition; a
-  future sandbox must be provisioned explicitly with isolated non-production
-  state before it is advertised again.
 - Apple Silicon macOS, Linux systemd, and native Windows x64 + WSL are the
   synchronized public desktop-host product. Every named desktop release must
   publish all three from one version and exact source commit.

@@ -818,6 +818,23 @@ try {
     return residentReplies.length >= 2 && handoff ? { residentReplies: residentReplies.length, handoff } : null;
   }, "automatic Skipper-to-resident return", 20_000);
   ok(Boolean(automaticReturn), "runtime automatically returns a resident escalation after Skipper unblocks it even when the Skipper model omits call_agent");
+  const escalationLoopDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const escalationThread = escalationLoopDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(escalationRoot.body.message.id);
+  const openEscalation = escalationLoopDb.prepare("SELECT id FROM escalations WHERE thread_id=? AND from_agent_id=? ORDER BY id DESC LIMIT 1").get(escalationThread.id, afterRestart.agent.id);
+  if (openEscalation) escalationLoopDb.prepare("UPDATE escalations SET status='open' WHERE id=?").run(openEscalation.id);
+  escalationLoopDb.close();
+  const duplicateEscalationRequest = await api(`/api/channels/${launch.id}/messages`, { body: { body: `@${afterRestart.agent.name} call skipper to run whoami`, parentId: escalationRoot.body.message.id } }, captain);
+  await waitFor(() => {
+    const guardDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+    const turn = guardDb.prepare("SELECT state FROM agent_turns WHERE trigger_id=?").get(duplicateEscalationRequest.body.message.id);
+    guardDb.close();
+    return turn?.state === "completed";
+  }, "duplicate resident escalation guard");
+  const guardedEscalationDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const escalationCount = guardedEscalationDb.prepare("SELECT COUNT(*) n FROM escalations WHERE thread_id=? AND from_agent_id=?").get(escalationThread.id, afterRestart.agent.id).n;
+  if (openEscalation) guardedEscalationDb.prepare("UPDATE escalations SET status='resolved' WHERE id=?").run(openEscalation.id);
+  guardedEscalationDb.close();
+  ok(duplicateEscalationRequest.status === 200 && escalationCount === 1, "an open resident escalation cannot dispatch the same resident-to-Skipper loop again");
 
   // Skipper hand-back: after unblocking, Skipper must re-invoke the resident via call_agent
   // so the Captain never has to re-tag the agent (symmetric with call_skipper).

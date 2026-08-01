@@ -1,4 +1,4 @@
-import { api, downloadAuthenticatedFile, initializeApiTransport, openAuthenticatedFile, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type AgentQuestions, type ThreadFollowup, type ThreadUsage, type RoutingModel } from "./api.ts";
+import { api, downloadAuthenticatedFile, initializeApiTransport, openAuthenticatedFile, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type AgentQuestions, type ThreadFollowup, type ThreadUsage, type RoutingModel, type ResidentAgent } from "./api.ts";
 import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, icon, helmMark, type ChannelLink } from "./dom.ts";
 import { openSettings, finishOpenRouterOAuth, refreshOpenSkillsSettings } from "./settings.ts";
 import { disableNativeNotifications, hydrateNotificationPreferences, playNotification, restoreNativeNotifications, setNativeNotificationNavigation } from "./notifications.ts";
@@ -590,8 +590,7 @@ function onEvent(e: any): void {
       S.view = "chat"; if (S.channelId) void openChannel(S.channelId); else renderApp();
     } else renderSidebar();
   } else if (e.type === "agent_status") {
-    const channel = S.channels.find((item) => item.id === e.channelId);
-    if (channel?.agent) channel.agent.status = e.status;
+    applyAgentStatusEvent(e);
     // Sidebar shows bouncing working dots on every channel row — always refresh.
     renderSidebar();
     if (e.channelId === S.channelId) renderHeader();
@@ -666,6 +665,16 @@ function onEvent(e: any): void {
   } else if (e.type === "user_deleted") {
     S.users = S.users.filter((u) => u.id !== e.userId);
   }
+}
+
+/** Apply live status only when the event belongs to the resident rendered for
+ * that channel. Skipper and invited agents can work inside an ordinary
+ * channel, but their status must never repaint the channel resident. */
+export function applyAgentStatusEvent(e: { channelId: number; agentId: number; status: ResidentAgent["status"] }): boolean {
+  const channel = S.channels.find((item) => Number(item.id) === Number(e.channelId));
+  if (!channel?.agent || Number(channel.agent.id) !== Number(e.agentId)) return false;
+  channel.agent.status = e.status;
+  return true;
 }
 
 function applyMessage(msg: Message, isUpdate: boolean, authoritativeParent?: Message): void {

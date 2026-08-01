@@ -17,7 +17,6 @@ test("desktop first launch can connect to an existing workspace or start this PC
   assert.equal(normalizeRemoteOrigin("https://acme.1helm.com/path"), "https://acme.1helm.com");
   assert.equal(normalizeRemoteOrigin("http://acme.1helm.com"), "");
   assert.equal(isHostedWorkspaceOrigin("https://acme.1helm.com"), true);
-  assert.equal(isHostedWorkspaceOrigin("https://demo.1helm.com"), false);
   assert.equal(allowedRemoteUrl("https://private.example/app", "https://private.example"), true);
   assert.equal(allowedRemoteUrl("https://other.example/app", "https://private.example"), false);
   assert.deepEqual(desktopGatewayAction("https://desktop-action.1helm.invalid/setup"), { type: "setup" });

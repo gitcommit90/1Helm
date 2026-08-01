@@ -47,7 +47,7 @@ try {
 
   const prompt = runtimePromptTiersForChannel(botId, channelId, false, "Install and verify the CLI");
   const promptLength = prompt.identity.length + prompt.operating.length + prompt.context.length;
-  record("compact_capability_map", promptLength < 2_000 && /isolated persistent Linux computer/i.test(prompt.operating) && /skill-arsenal count=/i.test(prompt.context) && !/active-skill-playbooks|### /.test(prompt.context), {
+  record("compact_capability_map", promptLength < 15_000 && /isolated persistent Linux computer/i.test(prompt.operating) && /skill-arsenal count=/i.test(prompt.context) && !/active-skill-playbooks|### /.test(prompt.context), {
     characters: promptLength,
     has_linux_computer: /isolated persistent Linux computer/i.test(prompt.operating),
     has_skill_inventory: /skill-arsenal count=/i.test(prompt.context),

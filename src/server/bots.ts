@@ -49,6 +49,7 @@ import { inspectWebSource } from "./web-source.ts";
 import { fetchPublicWebImage } from "./web-source.ts";
 import { searchWeb } from "./web-search.ts";
 import { readChannelThread, searchChannelHistory } from "./history.ts";
+import { coworkContextFromRootBody, coworkFormatContract, enforceCoworkCommandOutput, snapshotCoworkSurface } from "./cowork-contract.ts";
 
 type ChatMsg = { role: string; content: string; tool_calls?: ToolCall[]; tool_call_id?: string; name?: string };
 type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
@@ -185,23 +186,39 @@ export type RuntimePromptTiers = { identity: string; operating: string; context:
 
 /** Keep stable identity and factual capabilities separate from volatile turn
  * context. This also gives provider prefix caches a stable compact prefix. */
-function systemPromptTiers(bot: Row, agent: RuntimeAgent | undefined, channelId: number, hostAuthorized: boolean, task = ""): RuntimePromptTiers {
+function skipperControlAuthorized(channelId: number, requestUserId: number, hostAuthorized: boolean): boolean {
+  return hostAuthorized || Boolean(requestUserId && q1("SELECT 1 FROM channels WHERE id=? AND personal_main_owner_id=?", channelId, requestUserId));
+}
+
+function systemPromptTiers(bot: Row, agent: RuntimeAgent | undefined, channelId: number, hostAuthorized: boolean, task = "", requestUserId = 0): RuntimePromptTiers {
   const channel = q1("SELECT name, purpose FROM channels WHERE id=?", channelId);
   if (agent?.kind === "skipper") {
     const resident = q1(`SELECT a.name, a.display_name, p.purpose FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id
       LEFT JOIN agent_profiles p ON p.agent_id=a.id WHERE ac.channel_id=?`, channelId);
     const identity = [
-      `You are @${bot.name}, this 1Helm workspace's Skipper.`,
+      `You are @${bot.name}, the single workspace-wide Skipper, chief of staff, and root operator for this 1Helm workspace.`,
+      String(agent.instructions || bot.prompt || ""),
+      "You are the Captain's durable cross-channel operating partner. You retain workspace-wide memory, history, control scope, and the full shared skill arsenal. Ordinary channel residents are intentionally siloed specialists; never claim that a resident has broader cross-channel awareness or persistence than you.",
+      "Stay calm, candid, resourceful, and accountable for closure. Preserve the user's priorities and voice without imitating transient frustration or another agent's persona.",
     ].filter(Boolean).join("\n\n");
     const operating = [
+      "Own personal and operational coordination as well as infrastructure: schedules, reminders, tasks, goals, projects, calendars, relationships, home, health, and finances may live in focused domain channels, while you coordinate the unified cross-channel view and route focused work to those specialists. Never dismiss a scheduling or assistant request as outside Skipper's role.",
+      "Bias toward safe, reversible action. Inspect authoritative state, act with the native tools already available, verify the observable outcome, and report it. Ask only at a real human boundary; never substitute interviews, narration, permission-seeking, or a future promise for work you can perform now.",
+      "Treat tool results as evidence: retry transient failures with a bounded changed strategy, stop repeating an unchanged failure, and preserve one useful evidenced blocker. Never fabricate success or erase a prior useful answer.",
+      "You oversee and unblock. Residents normally use their own Linux computer, internet access, tools, workspace, and memory directly. Skipper becomes involved only for a true host, credential, fleet, cross-channel, or missing-capability boundary—not for routine resident shell, SSH, downloads, or web work.",
       isMainChannel(channelId)
-        ? "#main is the Captain's private authority channel. It has no resident agent. Your assigned Skipper computers and the tools listed for this turn remain available here."
-        : "This ordinary channel has one resident agent. You are present only for the invoking thread; call_agent can return work to that resident.",
+        ? "#main is the user's private Skipper channel. Own requests there directly through completion. It has no resident by design; your durable memory, shared skills, control-plane tools, and assigned Skipper computers remain available."
+        : "This ordinary channel has one siloed resident specialist. Perform only the boundary-crossing work requested, then call_agent with concrete evidence so that resident finishes the original outcome.",
       "You already own automatic pressure-aware channel-computer lifecycle care: periodic fleet reconciliation, safe CPU/RAM resizing, health/update/repair, obligation-aware sleep, and wakeups for due work. Fleet metadata reports live guest load, available memory, and disk-used percentage when known. The mirror quota is only the guest-to-host copy safety limit, never VM storage capacity; actual guest capacity is unknown when 1Helm cannot prove it.",
+      "Never claim that you inspected, ran, created, scheduled, or verified something unless the matching tool completed. Use Markdown, keep answers focused, and attach user-facing artifacts rather than only quoting a path.",
       "The callable tools below are your current capabilities. Their implementations enforce authority and isolation boundaries.",
     ].join("\n\n");
     const context = [
       `<channel name="${channel?.name || "channel"}" purpose="${channel?.purpose || "not yet recorded"}" host_authorized="${hostAuthorized}">${resident ? `Resident: @${resident.name} — ${resident.purpose || "no recorded purpose"}.` : "No resident agent."}</channel>`,
+      "The complete invoking thread is provided below. Do not ask the user to repeat it.",
+      skipperControlAuthorized(channelId, requestUserId, hostAuthorized)
+        ? "This user may use Skipper's scoped native channel controls here. Act directly when requested."
+        : "This user is not authorized for scoped channel-control mutations in this channel. Do not imply the capability is missing; explain the authority boundary if asked.",
       agent?.id ? agentSkillContext(Number(agent.id), task) : "",
     ].filter(Boolean).join("\n\n");
     return { identity, operating, context };
@@ -212,12 +229,19 @@ function systemPromptTiers(bot: Row, agent: RuntimeAgent | undefined, channelId:
     visiting
       ? `You are @${bot.name}, a temporary expert invited into this one thread in #${channel?.name || "channel"}. You remain resident in your own channel. Do not treat this channel, its memory, or its workspace as part of your permanent world.`
       : `You are @${bot.name}, the one resident agent for #${channel?.name || "channel"} inside 1Helm.`,
+    String(agent?.instructions || bot.prompt || ""),
+    visiting ? "" : "You are this channel's durable operating partner, not a generic chatbot. Be calm, candid, resourceful, and accountable for closure while learning durable preferences without mimicking momentary emotion.",
   ].filter(Boolean).join("\n\n");
   const operating = [
     visiting
-      ? "You are a temporary thread guest. No shell, workspace, or durable-memory capability is attached to this invitation."
-      : "You own an isolated persistent Linux computer for this channel. Its durable workspace is /workspace. The run_command tool executes there; files, memory, and other listed tools belong to this channel.",
+      ? "Contribute only the expertise requested in this thread. No shell, workspace, or durable-memory capability is attached to this invitation."
+      : "You own an isolated persistent Linux computer for this channel. Its durable workspace is /workspace. You have direct shell, internet, SSH, package-install, file, memory, and listed-tool autonomy inside it. Routine commands, downloads, browsing, installations, and network access do not require Skipper or user approval.",
+    visiting ? "" : "Own the requested outcome. Inspect and act instead of returning tutorials, interviews, rationalizations, or plans for work you can perform. If you make the wrong artifact or implementation choice, acknowledge it briefly and fix it; do not defend the mistake.",
     visiting ? "" : "Workspace file contracts: Markdown for notes and documents; plain text source files for code. /workspace/whiteboards holds `.whiteboard.json` Excalidraw scenes and /workspace/presentations holds `.slides.json` decks — these two folders are rendered by exact schemas, so never place .html decks or invented JSON formats there. When a request supplies a format contract for a folder, follow it exactly.",
+    "Treat tool results as evidence. Retry transient failures with a bounded changed strategy, stop repeating unchanged failures, and verify before claiming success.",
+    "If work truly crosses the resident boundary—host/native state, credentials, another channel, fleet lifecycle, or a missing capability—call Skipper once with the exact operation and evidence. Do not escalate routine shell, SSH, internet, download, or resident-computer work.",
+    visiting ? "" : "Use ask_user only for consequential human judgment, missing credentials the human must supply, external authority, or an irreversible commitment. Difficulty and harmless implementation choices are not blockers.",
+    "Use Markdown. Keep answers focused and attach user-facing artifacts rather than only naming a path.",
     "The callable tools below are your current capabilities. Their implementations enforce authority and isolation boundaries.",
   ].filter(Boolean).join("\n\n");
   const context = [
@@ -227,13 +251,13 @@ function systemPromptTiers(bot: Row, agent: RuntimeAgent | undefined, channelId:
   return { identity, operating, context };
 }
 
-export function runtimePromptTiersForChannel(botId: number, channelId: number, hostAuthorized = false, task = ""): RuntimePromptTiers {
+export function runtimePromptTiersForChannel(botId: number, channelId: number, hostAuthorized = false, task = "", requestUserId = 0): RuntimePromptTiers {
   const bot = q1("SELECT * FROM bots WHERE id=?", botId);
   if (!bot) throw new Error("Bot not found.");
-  return systemPromptTiers(bot, agentForBot(botId) as RuntimeAgent | undefined, channelId, hostAuthorized, task);
+  return systemPromptTiers(bot, agentForBot(botId) as RuntimeAgent | undefined, channelId, hostAuthorized, task, requestUserId);
 }
 
-function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boolean, channelId: number): unknown[] | undefined {
+function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boolean, channelId: number, requestUserId: number): unknown[] | undefined {
   const computers = q("SELECT computer_id FROM bot_computers WHERE bot_id=?", bot.id);
   const tools: unknown[] = [];
   const skipper = agent?.kind === "skipper";
@@ -283,7 +307,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       },
     });
   }
-  if (skipper && (hostAuthorized || Boolean(q1("SELECT 1 FROM channels WHERE id=? AND personal_main_owner_id IS NOT NULL", channelId)))) {
+  if (skipper && skipperControlAuthorized(channelId, requestUserId, hostAuthorized)) {
     tools.push({
       type: "function",
       function: {
@@ -363,6 +387,16 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
         },
       },
     });
+    tools.push({
+      type: "function",
+      function: {
+        name: "schedule_workflow",
+        description: "Schedule durable recurring work in one scoped resident channel. Use this from #main to coordinate reminders and repeated work across domain channels.",
+        parameters: { type: "object", properties: { channel: { type: "string", description: "Target resident channel name or id." }, name: { type: "string" }, prompt: { type: "string", description: "Self-contained outcome and verification contract for every run." }, interval_seconds: { type: "integer", minimum: 60, maximum: 31536000 }, start_in_seconds: { type: "integer", minimum: 1 }, max_runs: { type: "integer", minimum: 0, maximum: 100000 } }, required: ["channel", "name", "prompt", "interval_seconds"] },
+      },
+    });
+    tools.push({ type: "function", function: { name: "list_workflows", description: "List durable recurring work across the user's scoped channels, or one named channel.", parameters: { type: "object", properties: { channel: { type: "string" } } } } });
+    tools.push({ type: "function", function: { name: "set_workflow_status", description: "Pause, resume, or complete a durable workflow in one scoped resident channel.", parameters: { type: "object", properties: { channel: { type: "string" }, workflow_id: { type: "integer" }, status: { type: "string", enum: ["active", "paused", "complete"] } }, required: ["channel", "workflow_id", "status"] } } });
   }
   if (skipper && hostAuthorized) {
     tools.push({ type: "function", function: { name: "run_thread_audit", description: "Run the authoritative workspace thread-status audit now and report how many threads were examined and changed.", parameters: { type: "object", properties: {} } } });
@@ -411,8 +445,9 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
   if (!visiting) {
     tools.push({ type: "function", function: {
       name: "search_channel_history",
-      description: "Search this channel's raw prior-session transcripts semantically, by exact text/date, or list recent messages. Returns scoped message and session references.",
+      description: skipper ? "Search raw prior-session transcripts in the current or one scoped channel. Skipper uses this for workspace-wide coordination without pretending residents share memory." : "Search this channel's raw prior-session transcripts semantically, by exact text/date, or list recent messages. Returns scoped message and session references.",
       parameters: { type: "object", properties: {
+        ...(skipper ? { channel: { type: "string", description: "Optional scoped channel name or id; defaults to the current channel." } } : {}),
         query: { type: "string", description: "Concept or text to find. Omit to list recent messages." },
         mode: { type: "string", enum: ["semantic", "exact"], default: "semantic" },
         from: { type: "string", description: "Optional ISO date/time lower bound." },
@@ -422,8 +457,8 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
     } });
     tools.push({ type: "function", function: {
       name: "read_channel_session",
-      description: "Read the complete raw transcript for one session returned by search_channel_history.",
-      parameters: { type: "object", properties: { thread_root_id: { type: "integer" } }, required: ["thread_root_id"] },
+      description: skipper ? "Read a complete raw transcript from the current or one scoped channel." : "Read the complete raw transcript for one session returned by search_channel_history.",
+      parameters: { type: "object", properties: { ...(skipper ? { channel: { type: "string", description: "Optional scoped channel name or id; defaults to the current channel." } } : {}), thread_root_id: { type: "integer" } }, required: ["thread_root_id"] },
     } });
     tools.push({ type: "function", function: {
       name: "list_skills",
@@ -696,17 +731,17 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
 
 /** Narrow diagnostic surface used by integration coverage to prove the exact
  * production tool set without duplicating its capability rules. */
-export function runtimeToolNamesForChannel(botId: number, channelId: number, hostAuthorized = false): string[] {
-  return runtimeToolDefinitionsForChannel(botId, channelId, hostAuthorized).map((tool) => tool.name);
+export function runtimeToolNamesForChannel(botId: number, channelId: number, hostAuthorized = false, requestUserId = 0): string[] {
+  return runtimeToolDefinitionsForChannel(botId, channelId, hostAuthorized, requestUserId).map((tool) => tool.name);
 }
 
 /** Narrow diagnostic surface for verifying capability descriptions that carry
  * operationally important safety/automation semantics. */
-export function runtimeToolDefinitionsForChannel(botId: number, channelId: number, hostAuthorized = false): { name: string; description: string }[] {
+export function runtimeToolDefinitionsForChannel(botId: number, channelId: number, hostAuthorized = false, requestUserId = 0): { name: string; description: string }[] {
   const bot = q1("SELECT * FROM bots WHERE id=?", botId);
   if (!bot) return [];
   const agent = agentForBot(botId) as RuntimeAgent | undefined;
-  return (toolsFor(bot, agent, hostAuthorized, channelId) || []).map((tool) =>
+  return (toolsFor(bot, agent, hostAuthorized, channelId, requestUserId) || []).map((tool) =>
     ({
       name: String((tool as { function?: { name?: string } }).function?.name || ""),
       description: String((tool as { function?: { description?: string } }).function?.description || ""),
@@ -749,15 +784,19 @@ export async function generateAndAttachImage(
   return attachWorkspaceFileToMessage(channelId, messageId, threadId, relativePath, actor, fileName);
 }
 
-export function buildContext(bot: Row, agent: RuntimeAgent | undefined, channelId: number, triggerId: number, threadRootId: number, fresh: boolean, hostAuthorized: boolean, hiddenContext?: string): ChatMsg[] {
+export function buildContext(bot: Row, agent: RuntimeAgent | undefined, channelId: number, triggerId: number, threadRootId: number, fresh: boolean, hostAuthorized: boolean, hiddenContext?: string, requestUserId = 0): ChatMsg[] {
   const currentTask = String(q1("SELECT body FROM messages WHERE id=?", triggerId)?.body || "");
-  const prompt = systemPromptTiers(bot, agent, channelId, hostAuthorized, currentTask);
+  const prompt = systemPromptTiers(bot, agent, channelId, hostAuthorized, currentTask, requestUserId);
   const messages: ChatMsg[] = [
     { role: "system", content: `<identity>\n${prompt.identity}\n</identity>` },
     { role: "system", content: `<capabilities>\n${prompt.operating}\n</capabilities>` },
   ];
   if (prompt.context) messages.push({ role: "system", content: `<turn-context>\n${prompt.context}\n</turn-context>` });
-  if (hiddenContext) messages.push({ role: "system", content: `<cowork-format-contract>\n${hiddenContext}\n</cowork-format-contract>` });
+  const rootBody = String(q1("SELECT body FROM messages WHERE id=?", threadRootId)?.body || "");
+  const cowork = coworkContextFromRootBody(rootBody);
+  const durableCoworkContract = cowork ? coworkFormatContract(cowork.path, cowork.kind === "folder") : "";
+  const activeCoworkContract = durableCoworkContract || hiddenContext || "";
+  if (activeCoworkContract) messages.push({ role: "system", content: `<cowork-format-contract>\n${activeCoworkContract}\n</cowork-format-contract>` });
   const threadId = threadIdForRoot(threadRootId, channelId) ?? ensureThread(threadRootId, channelId);
   const thread = q1("SELECT status, summary FROM threads WHERE id=?", threadId);
   const memories = relevantMemory(channelId, threadId).filter((memory) => Number(memory.thread_id || 0) !== threadId || String(memory.kind) !== "summary");
@@ -1072,6 +1111,21 @@ async function executeSkipperControlTool(name: string, args: Record<string, unkn
       : scopedChannelRows(userId, hostAuthorized, true);
     return JSON.stringify({ channels: channels.map((channel) => ({ channel: `#${channel.name}`, obligations: computerObligations(Number(channel.id)), workflows: listWorkflows(Number(channel.id)) })) });
   }
+  if (name === "schedule_workflow") {
+    const channel = scopedChannel(args.channel, userId, hostAuthorized);
+    const workflow = createWorkflow({ channelId: Number(channel.id), name: String(args.name || ""), prompt: String(args.prompt || ""), intervalSeconds: Number(args.interval_seconds), startInSeconds: args.start_in_seconds == null ? undefined : Number(args.start_in_seconds), maxRuns: Number(args.max_runs || 0) });
+    return `Scheduled durable recurring workflow #${workflow.id} (${workflow.name}) in #${channel.name}; next_run=${workflow.next_run}.`;
+  }
+  if (name === "list_workflows") {
+    const channels = args.channel ? [scopedChannel(args.channel, userId, hostAuthorized)] : scopedChannelRows(userId, hostAuthorized, true);
+    return JSON.stringify({ channels: channels.map((channel) => ({ channel: `#${channel.name}`, workflows: listWorkflows(Number(channel.id)) })) });
+  }
+  if (name === "set_workflow_status") {
+    const channel = scopedChannel(args.channel, userId, hostAuthorized);
+    const status = String(args.status || "") as "active" | "paused" | "complete";
+    if (!["active", "paused", "complete"].includes(status)) throw new Error("Workflow status must be active, paused, or complete.");
+    return JSON.stringify(setWorkflowStatus(Number(args.workflow_id), Number(channel.id), status));
+  }
   if (name === "run_thread_audit") return JSON.stringify(await runThreadAuditPass());
   if (name === "run_agent_review") {
     if (args.channel) {
@@ -1156,6 +1210,8 @@ function callSkipper(agent: RuntimeAgent, channelId: number, threadRootId: numbe
   const skipper = q1("SELECT b.* FROM bots b JOIN agents a ON a.bot_id=b.id WHERE a.kind='skipper' AND a.status<>'deleted' LIMIT 1");
   if (!skipper) return "Skipper is not configured yet.";
   const threadId = threadIdForRoot(threadRootId, channelId) ?? ensureThread(threadRootId, channelId);
+  const pending = q1("SELECT id FROM escalations WHERE thread_id=? AND from_agent_id=? AND status='open' ORDER BY id DESC LIMIT 1", threadId, agent.id);
+  if (pending) return `Error: Skipper escalation ${pending.id} is already open for this thread. Do not dispatch the same boundary work again; finish from its result or report one bounded blocker.`;
   const escalationId = run(
     "INSERT INTO escalations (thread_id, channel_id, from_agent_id, reason, status, created) VALUES (?,?,?,?,'open',?)",
     threadId, channelId, agent.id, reason.slice(0, 4000), now(),
@@ -1512,8 +1568,8 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
   emitNow();
   if (!preparedMessageId) broadcastToChannel(channelId, { type: "message", message: serializeMessage(msgId), parent: serializeMessage(threadRootId) });
 
-  const messages = buildContext(bot, agent, channelId, triggerId, threadRootId, fresh, hostAuthorized, hiddenContext);
-  const tools = toolsFor(bot, agent, hostAuthorized, channelId);
+  const messages = buildContext(bot, agent, channelId, triggerId, threadRootId, fresh, hostAuthorized, hiddenContext, requestUserId);
+  const tools = toolsFor(bot, agent, hostAuthorized, channelId, requestUserId);
   const actor = agent?.kind === "skipper" ? "skipper" : "agent";
   try {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
@@ -1612,9 +1668,19 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
             if ((exactToolFailures.get(failureSignature) || 0) >= 1) {
               result = "Error: this unchanged tool call already failed. It was not repeated; change strategy or explain the evidenced blocker.";
             } else if (name === "run_command") {
+              const cowork = agent?.kind === "channel"
+                ? coworkContextFromRootBody(String(q1("SELECT body FROM messages WHERE id=?", threadRootId)?.body || ""))
+                : null;
+              const coworkBefore = cowork ? snapshotCoworkSurface(channelId, cowork) : null;
               result = await runCommand(bot, agent, channelId, input, Number(args.computer_id) || 0, turnSignal);
               requireActiveTurn(channelId, controller.signal);
-              if (agent?.kind === "channel") syncWorkspaceArtifacts(channelId, threadId, "agent");
+              if (agent?.kind === "channel") {
+                syncWorkspaceArtifacts(channelId, threadId, "agent");
+                if (cowork && coworkBefore) {
+                  const contractError = enforceCoworkCommandOutput(channelId, threadId, cowork, coworkBefore);
+                  if (contractError) result = contractError;
+                }
+              }
             } else if (name === "search_web" && !visiting) {
               const searched = await searchWeb(String(args.query || ""), String(args.category || "web"), Number(args.limit) || 10, turnSignal);
               for (const item of searched.results) if (item.image_url) searchedWebImages.set(item.image_url, { sourceUrl: item.url, title: item.title });
@@ -1666,9 +1732,13 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
             } else if (name === "read_skill" && agent?.id && !visiting) {
               result = JSON.stringify(readAgentSkill(Number(agent.id), String(args.slug || "")));
             } else if (name === "search_channel_history" && agent?.id && !visiting) {
-              result = JSON.stringify(searchChannelHistory(agent, channelId, args));
+              const historyChannelId = agent.kind === "skipper" && args.channel && skipperControlAuthorized(channelId, requestUserId, hostAuthorized)
+                ? Number(scopedChannel(args.channel, requestUserId, hostAuthorized).id) : channelId;
+              result = JSON.stringify(searchChannelHistory(agent, historyChannelId, args));
             } else if (name === "read_channel_session" && agent?.id && !visiting) {
-              result = JSON.stringify(readChannelThread(agent, channelId, args.thread_root_id));
+              const historyChannelId = agent.kind === "skipper" && args.channel && skipperControlAuthorized(channelId, requestUserId, hostAuthorized)
+                ? Number(scopedChannel(args.channel, requestUserId, hostAuthorized).id) : channelId;
+              result = JSON.stringify(readChannelThread(agent, historyChannelId, args.thread_root_id));
             } else if (name === "remember") {
               const memoryId = recordMemory({ channelId, threadId, kind: String(args.kind || "fact"), content: input, sourceMessageId: msgId, authorType: actor });
               result = `Recorded channel memory ${memoryId}.`;
@@ -1696,7 +1766,11 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               const interveningAction = priorQuestion?.answered ? q1("SELECT 1 FROM tool_actions WHERE thread_id=? AND created>? AND status='complete' AND tool<>'ask_user' LIMIT 1", threadId, priorQuestion.answered) : undefined;
               const nativeSetupAvailable = /\b(?:connect|set\s*up|authorize)\b[\s\S]{0,80}\bgmail\b|\bgmail\b[\s\S]{0,80}\b(?:connect|set\s*up|authorize)\b/i.test(outcomeRequest);
               const askUserValidation = validateAskUserInput(args);
-              if (nativeSetupAvailable) {
+              const residentEscalation = escalationId && agent?.kind === "skipper"
+                ? Boolean(q1("SELECT 1 FROM escalations WHERE id=? AND from_agent_id IS NOT NULL", escalationId)) : false;
+              if (residentEscalation) {
+                result = "Error: Skipper may not turn an agent coordination failure into a routing interview for the user. Execute the true host boundary if authorized, or return one bounded blocker.";
+              } else if (nativeSetupAvailable) {
                 result = "Error: Gmail setup has a native connect_gmail capability. Use it directly; OAuth authorization is a connector action, not an interview.";
               } else if (priorQuestion?.answered && !interveningAction) {
                 result = "Error: a consecutive interview round is not allowed without intervening action or new evidence. Continue from the existing answer and act.";
@@ -1736,7 +1810,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               const status = String(args.status || "") as "active" | "paused" | "complete";
               if (!["active", "paused", "complete"].includes(status)) result = "Error: workflow status must be active, paused, or complete.";
               else result = JSON.stringify(setWorkflowStatus(Number(args.workflow_id), channelId, status));
-            } else if (["list_channels", "inspect_channel", "archive_channel", "restore_channel", "delete_channel", "inspect_fleet", "care_for_channel_computer", "list_obligations"].includes(name)
+            } else if (["list_channels", "inspect_channel", "archive_channel", "restore_channel", "delete_channel", "inspect_fleet", "care_for_channel_computer", "list_obligations", "schedule_workflow", "list_workflows", "set_workflow_status"].includes(name)
               && agent?.kind === "skipper" && (hostAuthorized || Boolean(q1("SELECT 1 FROM channels WHERE id=? AND personal_main_owner_id=?", channelId, requestUserId)))) {
               result = String(await executeSkipperControlTool(name, args, requestUserId, hostAuthorized));
             } else if (["run_thread_audit", "run_agent_review"].includes(name) && agent?.kind === "skipper" && hostAuthorized) {
@@ -1752,8 +1826,12 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                 ? "Error: resident agents cannot enter #main. Use Skipper's own tools directly."
                 : inviteAgent(agent, channelId, threadId, threadRootId, String(args.agent || ""), String(args.reason || ""));
             } else if (name === "call_agent" && agent?.kind === "skipper") {
+              const residentEscalation = escalationId ? Boolean(q1("SELECT 1 FROM escalations WHERE id=? AND from_agent_id IS NOT NULL", escalationId)) : false;
+              const boundaryEvidence = lastCompletedTool && !["call_agent", "ask_user"].includes(lastCompletedTool.name);
               result = isMainChannel(channelId)
                 ? "Error: resident agents cannot be called or invited into #main. Use Skipper's own tools directly."
+                : residentEscalation && !boundaryEvidence
+                  ? "Error: Skipper cannot hand an unchanged blocker back to the resident. Complete a real boundary action first, or report one bounded failure without re-invoking the resident."
                 : callAgent(agent, channelId, threadId, threadRootId, String(args.agent || ""), String(args.reason || ""), hostAuthorized);
               if (!result.startsWith("Error:")) handedBack = true;
             } else if (name === "create_skill" && agent?.kind === "skipper" && hostAuthorized) {
@@ -1806,7 +1884,9 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               if (!config.can_draft) result = "Error: Gmail draft access is not granted to this channel.";
               else result = JSON.stringify(await createGmailDraft(account, String(args.to || ""), String(args.subject || ""), String(args.body || ""), turnSignal));
             } else if (name === "call_skipper" && agent?.kind === "channel") result = callSkipper(agent, channelId, threadRootId, input);
-            else result = `Error: tool ${name} is not available.`;
+            else result = agent?.kind === "skipper" && ["create_channel", "list_channels", "inspect_channel", "archive_channel", "restore_channel", "delete_channel", "inspect_fleet", "care_for_channel_computer", "list_obligations"].includes(name)
+              ? `Error: this user is not authorized to use ${name} in this channel.`
+              : `Error: tool ${name} is not available.`;
           } catch (error) {
             if ((error as Error).name === "AbortError") throw error;
             result = `Error: ${(error as Error).message}`;
@@ -1894,10 +1974,9 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
       // Skipper model completes the boundary work but forgets call_agent, the
       // harness re-enters the resident automatically with the concrete result.
       const residentEscalation = Boolean(q1("SELECT from_agent_id FROM escalations WHERE id=? AND from_agent_id IS NOT NULL", escalationId));
-      if (residentEscalation && !handedBack && agentForChannel(channelId)?.kind === "channel") {
-        const evidence = lastCompletedTool && lastCompletedTool.name !== "call_agent"
-          ? `${lastCompletedTool.name}: ${lastCompletedTool.result}`
-          : responseBody;
+      const boundaryEvidence = lastCompletedTool && !["call_agent", "ask_user"].includes(lastCompletedTool.name) ? lastCompletedTool : null;
+      if (residentEscalation && boundaryEvidence && !handedBack && agentForChannel(channelId)?.kind === "channel") {
+        const evidence = `${boundaryEvidence.name}: ${boundaryEvidence.result}`;
         const automatic = callAgent(
           agent,
           channelId,

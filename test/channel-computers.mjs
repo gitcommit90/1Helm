@@ -64,6 +64,11 @@ test("Apple channel-computer contract preserves isolation, files, wakes, archive
   assert.equal(readFileSync(join(dataDir, "channels", String(alpha.channelId), "files", "guest.txt"), "utf8"), "upload-from-guest", "guest /workspace/files mirrors to the Files tree");
   assert.equal(existsSync(join(fakeState, "machines", betaComputer.machine_id, "workspace", "agent.txt")), false, "channel B cannot see channel A's workspace");
 
+  writeFileSync(join(fakeState, "machines", alphaComputer.machine_id, ".network-down"), "1");
+  result = await computers.runChannelCommand(alpha.channelId, "printf network-recovered > network.txt");
+  assert.equal(result.exit_code, 0, "a command repairs an Apple VM whose reported-running NIC is actually down");
+  assert.equal(readFileSync(join(fakeState, "machines", alphaComputer.machine_id, "workspace", "network.txt"), "utf8"), "network-recovered");
+
   const betaRoot = join(fakeState, "machines", betaComputer.machine_id);
   db.run("UPDATE channel_computers SET last_used=? WHERE channel_id=?", Date.now() - 120_000, beta.channelId);
   writeFileSync(join(betaRoot, ".uncertain-quiescence"), "1");

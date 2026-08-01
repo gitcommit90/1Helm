@@ -31,7 +31,10 @@ if (args[0] === "system" && args[1] === "status") {
   process.stdout.write(JSON.stringify({ status: "running" }));
   process.exit(0);
 }
-if (args[0] === "system" && args[1] === "start") process.exit(0);
+if (args[0] === "system" && args[1] === "start") {
+  for (const entry of readdirSync(join(stateRoot, "machines"))) rmSync(join(stateRoot, "machines", entry, ".network-down"), { force: true });
+  process.exit(0);
+}
 if (args[0] === "image" && args[1] === "inspect") {
   process.stdout.write(JSON.stringify({ reference: args[2] }));
   process.exit(0);
@@ -163,6 +166,10 @@ if (script.includes("SERVICES=") || script.includes("MemAvailable")) {
   if (existsSync(join(root, ".uncertain-quiescence"))) fail("inspection unavailable");
   const timer = existsSync(join(root, ".resident-runtime")) ? 1 : 0;
   process.stdout.write(`SERVICES=0\nTIMERS=${timer}\nCRON=0\nJOBS=0\nSOCKETS=0\nPATHS=0\nLOAD1=0.01\nMEM_AVAILABLE_KB=1048576\nDISK_USED_PERCENT=1\n`);
+  process.exit(0);
+}
+if (script.includes("/sys/class/net/eth0/operstate") && script.includes("ip route show default")) {
+  if (existsSync(join(root, ".network-down"))) fail("guest network link is down");
   process.exit(0);
 }
 if (script.includes("apt-get update") && script.includes("DEBIAN_FRONTEND")) {
