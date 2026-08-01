@@ -111,6 +111,29 @@ test("standalone 1helm.com website serves independent product and documentation 
   } finally { child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve)); }
 });
 
+test("release metadata stays available when GitHub's unauthenticated API is exhausted", async () => {
+  const port = await freePort();
+  const child = spawn(process.execPath, ["site/server.mjs"], {
+    cwd: root,
+    env: { ...process.env, SITE_PORT: String(port), SITE_RELEASE_FETCH_DISABLED: "1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  try {
+    const base = `http://127.0.0.1:${port}`;
+    await waitFor(`${base}/health`);
+    const response = await fetch(`${base}/api/releases/linux/latest`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      version: "0.0.30",
+      url: "https://github.com/gitcommit90/1Helm/releases/download/v0.0.30/1Helm-0.0.30-linux-node.tgz",
+      sha256: "d96cb1bbc73686562dbff3c797cbd8fcc8962c8cc97602edd1fabf1b1e2e5d64",
+    });
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise((resolve) => child.once("exit", resolve));
+  }
+});
+
 test("public feedback intake validates, deduplicates, and persists to the website state database", async () => {
   const state = mkdtempSync(join(tmpdir(), "1helm-site-feedback-"));
   const token = "feedback-test-admin-token";

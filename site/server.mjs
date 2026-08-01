@@ -30,6 +30,23 @@ const ORIGIN = "https://1helm.com";
 const REPO = "gitcommit90/1Helm";
 const RELEASE_PAGE = `https://github.com/${REPO}/releases/latest`;
 const RELEASE_CACHE_MS = 10 * 60_000;
+const RELEASE_FALLBACK = {
+  tag_name: "v0.0.30",
+  draft: false,
+  prerelease: false,
+  assets: [
+    ["1Helm-0.0.30-arm64.dmg", "597bccdf464e397389511100f254b40b3da266a52e00049d4553bf5476440bcb"],
+    ["1Helm-0.0.30-mac-arm64.zip", "54729c10aee1173f1f4b085826bdfe9838f37dfc61f3999ff8d073e39ccc4e94"],
+    ["1Helm-0.0.30-linux-node.tgz", "d96cb1bbc73686562dbff3c797cbd8fcc8962c8cc97602edd1fabf1b1e2e5d64"],
+    ["1Helm-0.0.30-windows-x64-setup.exe", "ff5b2fa32ea916b88dc08164bb52a55253d9921f73f713b1413bbf4ac1d4669f"],
+    ["1Helm-0.0.30-full.nupkg", "3142069585e3a02290fc8092ff8e1e80683c355aa1e78d2871260f1518ea83bf"],
+    ["RELEASES", "11bc1746bca8f6414f8dd6df254bfcf921dec13ca72b037c03c47152db30f542"],
+  ].map(([name, digest]) => ({
+    name,
+    digest: `sha256:${digest}`,
+    browser_download_url: `https://github.com/${REPO}/releases/download/v0.0.30/${name}`,
+  })),
+};
 const FEEDBACK_DATA_DIR = resolve(process.env.SITE_DATA_DIR || join(ROOT, ".site-data"));
 const FEEDBACK_ADMIN_TOKEN = String(process.env.SITE_FEEDBACK_ADMIN_TOKEN || "");
 const FEEDBACK_BODY_LIMIT = 15 * 1024 * 1024;
@@ -46,12 +63,17 @@ async function latestRelease() {
   if (releaseOverride) {
     release = JSON.parse(releaseOverride);
   } else {
-    const response = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
-      headers: { "user-agent": "1helm-site", accept: "application/vnd.github+json" },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!response.ok) throw new Error(`GitHub API ${response.status}`);
-    release = await response.json();
+    try {
+      if (process.env.SITE_RELEASE_FETCH_DISABLED === "1") throw new Error("release fetch disabled");
+      const response = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+        headers: { "user-agent": "1helm-site", accept: "application/vnd.github+json" },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!response.ok) throw new Error(`GitHub API ${response.status}`);
+      release = await response.json();
+    } catch {
+      release = RELEASE_FALLBACK;
+    }
   }
   const version = String(release.tag_name || "").replace(/^v/, "");
   if (!/^\d+\.\d+\.\d+$/.test(version) || release.draft || release.prerelease) throw new Error("latest release is not stable");
