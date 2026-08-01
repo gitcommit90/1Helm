@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 test("Linux release packaging ships pinned connectors for every supported host architecture", () => {
@@ -16,8 +17,28 @@ test("Linux release packaging ships pinned connectors for every supported host a
   }
   assert.match(packageLinux, /cloudflared-linux-\$\{connector\.arch\}/, "the verified binaries enter the Linux release archive");
   assert.match(packageLinux, /chmodSync\(destination, 0o755\)/, "packaged Linux connectors retain executable mode");
+  assert.match(packageLinux, /rev-parse[\s\S]*--show-toplevel[\s\S]*repositoryRoot !== root[\s\S]*parent repository or source copy is not release authority/, "Linux packaging fails closed when a copied source tree accidentally resolves to a parent Git checkout");
+  assert.match(packageLinux, /git", \["show", "HEAD:package\.json"\][\s\S]*headVersion !== version/, "Linux packaging binds its visible version to the exact Git HEAD");
+  assert.match(packageLinux, /archive\.stdout\?\.length[\s\S]*stagedPackage[\s\S]*versioned package contract/, "Linux packaging rejects an empty or structurally incomplete Git source archive");
   assert.match(resolver, /cloudflared-linux-\$\{process\.arch\}/, "Linux resolves only the binary matching the running host architecture");
   assert.match(resolver, /process\.env\.HELM_APP_ROOT[\s\S]*process\.cwd\(\)/, "an installed Linux service can resolve its bundled connector from its release working directory");
+});
+
+test("Linux release packaging rejects a source copy nested under another Git checkout", async () => {
+  const projectRoot = join(import.meta.dirname, "..");
+  const version = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8")).version;
+  const copiedRoot = await mkdtemp(join(projectRoot, ".package-root-test-"));
+  const copiedScripts = join(copiedRoot, "scripts");
+  await mkdir(copiedScripts);
+  await copyFile(join(projectRoot, "scripts", "package-linux-host.mjs"), join(copiedScripts, "package-linux-host.mjs"));
+  await writeFile(join(copiedRoot, "package.json"), `${JSON.stringify({ version })}\n`);
+  try {
+    const result = spawnSync(process.execPath, [join(copiedScripts, "package-linux-host.mjs")], { cwd: copiedRoot, encoding: "utf8" });
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}\n${result.stderr}`, /parent repository or source copy is not release authority/);
+  } finally {
+    await rm(copiedRoot, { recursive: true, force: true });
+  }
 });
 
 test("Linux service working directory resolves the bundled connector without a legacy app-root environment", async (t) => {

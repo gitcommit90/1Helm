@@ -27,6 +27,18 @@ const sealed = [
   "container/channel-machine.oci.sha256",
   "container/channel-machine.oci.json",
 ];
+
+const repository = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: root, encoding: "utf8" });
+const repositoryRoot = repository.status === 0 ? resolve(String(repository.stdout || "").trim()) : "";
+if (repositoryRoot !== root) {
+  throw new Error("Linux packaging must run from the root of the exact Git checkout; a parent repository or source copy is not release authority");
+}
+const headPackage = spawnSync("git", ["show", "HEAD:package.json"], { cwd: root, encoding: "utf8" });
+let headVersion = "";
+try { headVersion = String(JSON.parse(String(headPackage.stdout || "{}")).version || "").trim(); } catch { }
+if (headPackage.status !== 0 || headVersion !== version) {
+  throw new Error("Linux packaging version does not match package.json at Git HEAD");
+}
 for (const rel of sealed.slice(0, 2)) {
   if (!existsSync(resolve(root, rel))) {
     throw new Error(`Linux packaging requires the sealed channel image at ${rel} (run scripts/build-oci-channel-image.sh on a builder host).`);
@@ -45,8 +57,14 @@ try {
     maxBuffer: 512 * 1024 * 1024,
   });
   if (archive.status !== 0) throw new Error("Could not package the exact Git release source");
+  if (!archive.stdout?.length) throw new Error("Exact Git release source archive was empty");
   const extract = spawnSync("tar", ["-xf", "-", "-C", stage], { input: archive.stdout, stdio: ["pipe", "inherit", "inherit"] });
   if (extract.status !== 0) throw new Error("Could not extract the Git release source for packaging");
+
+  const stagedPackage = resolve(stage, prefix, "package.json");
+  if (!existsSync(stagedPackage) || String(JSON.parse(readFileSync(stagedPackage, "utf8")).version || "") !== version) {
+    throw new Error("Exact Git release source archive is missing its versioned package contract");
+  }
 
   const containerDir = join(stage, prefix, "container");
   mkdirSync(containerDir, { recursive: true });
