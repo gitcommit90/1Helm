@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   playbooks active in every resident turn so imperative setup requests are
   executed instead of answered with tutorials, and evidenced machine-wide
   network failures are escalated directly for repair.
+- Made Linux release packaging fail closed unless it runs in the exact Git
+  checkout whose `HEAD` contains the advertised version and a complete source
+  archive, preventing a nested source copy from silently packaging only sealed
+  runtime assets from a parent repository.
 
 ## [0.0.34] - 2026-08-01
 
