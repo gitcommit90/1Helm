@@ -102,6 +102,13 @@ test("Apple channel-computer contract preserves isolation, files, wakes, archive
   assert.equal(readFileSync(join(dataDir, "channels", String(alpha.channelId), "workspace", "name with spaces.txt"), "utf8"), "semi; quote ' and space", "guest command quoting survives Apple's login-shell handoff");
   assert.equal(existsSync(join(dataDir, "channels", String(alpha.channelId), "files", "guest.txt")), false, "guest deletions do not resurrect stale Files entries");
 
+  result = await computers.runChannelCommand(alpha.channelId, "mkdir -p .venv/bin; ln -s /usr/bin/python3 .venv/bin/python3; ln -s python3 .venv/bin/python; printf venv-ok > .venv/marker");
+  assert.equal(result.exit_code, 0, "a normal Python-style venv does not make the command fail during mirror sync");
+  assert.equal(readFileSync(join(dataDir, "channels", String(alpha.channelId), "workspace", ".venv", "marker"), "utf8"), "venv-ok");
+  assert.equal(existsSync(join(dataDir, "channels", String(alpha.channelId), "workspace", ".venv", "bin", "python3")), false, "guest symlinks stay in the VM instead of crossing the host mirror boundary");
+  result = await computers.runChannelCommand(alpha.channelId, "test -L .venv/bin/python3 && readlink .venv/bin/python3");
+  assert.match(result.output, /\/usr\/bin\/python3/, "the venv symlink remains durable and usable inside the guest");
+
   computers.upsertObligation(alpha.channelId, "command", "held", "resident", "active work");
   await computers.stopChannelComputer(alpha.channelId, "idle");
   assert.equal(db.q1("SELECT observed_state FROM channel_computers WHERE channel_id=?", alpha.channelId).observed_state, "running", "resident work prevents idle sleep");
@@ -167,7 +174,7 @@ test("Apple channel-computer contract preserves isolation, files, wakes, archive
 test("runtime digest and packaged image recipe stay pinned", async () => {
   assert.equal(computers.APPLE_RUNTIME_SHA256, "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714");
   assert.match(computers.APPLE_RUNTIME_URL, /\/1\.1\.0\/container-1\.1\.0-installer-signed\.pkg$/);
-  assert.equal(computers.DEFAULT_CHANNEL_IMAGE, "local/1helm-channel-machine:0.0.31");
+  assert.equal(computers.DEFAULT_CHANNEL_IMAGE, "local/1helm-channel-machine:0.0.32");
   const packaging = await readFile(join(root, "scripts", "package-mac-dmg.cjs"), "utf8");
   assert.match(packaging, /container\(\?:\$\|\\\/\)/, "release packaging includes container/ image assets");
   const image = await readFile(join(root, "container", "Containerfile"), "utf8");
