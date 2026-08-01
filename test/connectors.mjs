@@ -21,6 +21,10 @@ test("Linux release packaging ships pinned connectors for every supported host a
 });
 
 test("Linux service working directory resolves the bundled connector without a legacy app-root environment", async (t) => {
+  if (process.platform !== "linux") {
+    t.skip("Linux systemd working-directory contract");
+    return;
+  }
   const root = await mkdtemp(join(tmpdir(), "1helm-linux-connector-root-"));
   const resources = join(root, "resources");
   const binary = join(resources, `cloudflared-linux-${process.arch}`);
