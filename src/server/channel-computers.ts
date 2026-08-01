@@ -68,7 +68,7 @@ const APPLE_RUNTIME_VERSION = "1.1.0";
 export const APPLE_RUNTIME_PACKAGE = `container-${APPLE_RUNTIME_VERSION}-installer-signed.pkg`;
 export const APPLE_RUNTIME_URL = `https://github.com/apple/container/releases/download/${APPLE_RUNTIME_VERSION}/${APPLE_RUNTIME_PACKAGE}`;
 export const APPLE_RUNTIME_SHA256 = "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714";
-export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.31";
+export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.32";
 const CONTAINER_CANDIDATES = [process.env.HELM_CONTAINER_CLI, "/usr/local/bin/container", "/opt/homebrew/bin/container", "container"].filter(Boolean) as string[];
 const OCI_RUNTIME_VERSION = "1helm-oci-runtime-v1";
 const OCI_HELPER_CANDIDATES = [
@@ -1033,7 +1033,14 @@ async function syncGuestToHostUnlocked(computer: ChannelComputer): Promise<void>
     const staging = `${hostWorldRoot(computer.channel_id)}.guest-sync-${randomBytes(6).toString("hex")}`;
     mkdirSync(staging, { recursive: true });
     try {
-      const invocation = isolatedInvocation(["/bin/tar", "-C", "/", "-cf", "-", "workspace"], computer, "agent", "/workspace");
+      // Guest workspaces legitimately contain symlinks (Python venvs are the
+      // common case). The host mirror deliberately has no symlink semantics,
+      // so export only ordinary directories/files. Symlinks remain durable in
+      // the guest VM and can never be followed across the host boundary.
+      const invocation = isolatedInvocation([
+        "/bin/bash", "-lc",
+        "set -o pipefail; cd /; find -P workspace -xdev \\( -type d -o -type f \\) -print0 | tar --null --no-recursion -T - -cf -",
+      ], computer, "agent", "/workspace");
       const child = spawn(invocation.command, invocation.args, { stdio: ["ignore", "pipe", "pipe"] });
       const extract = spawn("tar", ["-C", staging, "-xf", "-", "--no-same-owner", "--no-same-permissions"], { stdio: ["pipe", "ignore", "pipe"] });
       let archiveBytes = 0, oversized = false;

@@ -119,10 +119,12 @@ if (script.includes("image-contract") && script.includes("/var/lib/1helm/owner")
   writeFileSync(join(root, "var", "lib", "1helm", "owner"), `${ownerValue}\n`);
   process.exit(0);
 }
-if (command[0] === "/bin/tar" && command.includes("-cf")) {
+if ((command[0] === "/bin/tar" && command.includes("-cf")) || (script.includes("find -P workspace") && script.includes("--no-recursion"))) {
   const delay = Math.max(0, Number(process.env.FAKE_CONTAINER_EXPORT_DELAY_MS || 0));
   if (delay) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
-  const tar = spawnSync("tar", ["-C", root, "-cf", "-", "workspace"], { maxBuffer: 256 * 1024 ** 2 });
+  const listed = spawnSync("find", ["-P", "workspace", "-xdev", "(", "-type", "d", "-o", "-type", "f", ")", "-print0"], { cwd: root });
+  if (listed.status !== 0) fail(String(listed.stderr || "fake workspace listing failed"));
+  const tar = spawnSync("tar", ["-C", root, "--null", "--no-recursion", "-T", "-", "-cf", "-"], { input: listed.stdout, maxBuffer: 256 * 1024 ** 2 });
   if (tar.status !== 0) fail(String(tar.stderr || "fake export failed"));
   process.stdout.write(tar.stdout);
   process.exit(0);
