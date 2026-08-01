@@ -445,7 +445,7 @@ fallback.
 - Operational history is locally tamper-evident.
 - Mac artifacts are Developer ID signed, notarized, stapled, and Gatekeeper
   verified. Linux assets are digest-verified, and Windows Authenticode status
-  is disclosed for every release (`NotSigned` for v0.0.30).
+  is disclosed for every release (`NotSigned` for v0.0.31).
 
 For the detailed boundary, see [SECURITY.md](../SECURITY.md). For product intent,
 see [VISION.md](VISION.md).

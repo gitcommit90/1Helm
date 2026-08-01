@@ -80,9 +80,16 @@ ensure_roots() {
   # Prefer netavark on a fresh dedicated store. CNI writes IPAM state beneath
   # /var/lib/cni, which is intentionally read-only to the hardened service;
   # netavark keeps its runtime state under the explicit Podman runroot.
-  if [[ ! -e "$STORAGE_ROOT/defaultNetworkBackend" ]] \
+  if [[ -f "$STORAGE_ROOT/defaultNetworkBackend" ]] \
+      && [[ "$(cat "$STORAGE_ROOT/defaultNetworkBackend")" == netavark ]]; then
+    # Repair selectors written by v0.0.30 as well as creating new ones below.
+    printf '%s' netavark >"$STORAGE_ROOT/defaultNetworkBackend"
+    chmod 0600 "$STORAGE_ROOT/defaultNetworkBackend"
+  elif [[ ! -e "$STORAGE_ROOT/defaultNetworkBackend" ]] \
       && { command -v netavark >/dev/null 2>&1 || [[ -x /usr/lib/podman/netavark || -x /usr/libexec/podman/netavark ]]; }; then
-    printf 'netavark\n' >"$STORAGE_ROOT/defaultNetworkBackend"
+    # Podman reads this as an exact token. Ubuntu 24.04's Podman rejects the
+    # newline that ordinary text-file conventions would otherwise add.
+    printf '%s' netavark >"$STORAGE_ROOT/defaultNetworkBackend"
     chmod 0600 "$STORAGE_ROOT/defaultNetworkBackend"
   fi
 }

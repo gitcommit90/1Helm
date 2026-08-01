@@ -139,7 +139,7 @@ Mac, Linux, and Windows use one synchronized desktop release version. A release
 is held in full until the signed/notarized Mac DMG and updater ZIP, verified
 Linux host archive, and Windows Setup/Squirrel feed have all passed native
 install and update acceptance from the same source commit. Windows
-Authenticode status is disclosed in every release; v0.0.30 is `NotSigned`.
+Authenticode status is disclosed in every release; v0.0.31 is `NotSigned`.
 
 ### Connect from a phone or tablet
 
@@ -152,10 +152,10 @@ frontend; the password is never retained and the resulting session is stored
 in the iOS Keychain or encrypted with a key held by Android Keystore.
 
 - The native iOS and Android gateway source is included in this repository,
-  but neither mobile platform has a current v0.0.30 public build. The most
+  but neither mobile platform has a current v0.0.31 public build. The most
   recent signed Android APK is the older v0.0.23 gateway, and 1Helm is not
   currently listed in the public iOS App Store. Use the HTTPS browser interface
-  for the current v0.0.30 experience.
+  for the current v0.0.31 experience.
 - The native clients require HTTPS, do not contain or initialize the 1Helm
   server or a frozen copy of its product frontend, and do not retain host data
   or provider credentials beyond the selected server address and secure
@@ -277,7 +277,7 @@ and an audit trail. A prompt saying “use this service” is not a connector.
   service with health-check rollback.
 - Signed, Apple-notarized, stapled Apple Silicon DMG releases.
 - Browser access from phones and tablets to an already configured HTTPS 1Helm
-  host; native mobile gateway source is present but has no v0.0.30 public build.
+  host; native mobile gateway source is present but has no v0.0.31 public build.
 
 ### Platform truth
 
@@ -286,7 +286,7 @@ and an audit trail. A prompt saying “use this service” is not a connector.
 | **Apple Silicon macOS 26** | Native desktop product and real isolated Linux computer per resident (Apple `container machine`, `home-mount=none`). |
 | **Linux / CI** | Supported headless systemd host with one durable Podman OCI container per resident, runtime-owned storage, and exact ownership checks; CI may select an explicit test backend. |
 | **Windows 11 x64** | Native desktop product with one installation-scoped WSL 2 OCI runtime and one durable container per resident; Windows-drive mounts and interop are disabled. |
-| **iPhone, iPad, and Android** | Use the current HTTPS browser interface. Native gateway source exists, but v0.0.30 has no public mobile artifact and the iOS app is not publicly listed. |
+| **iPhone, iPad, and Android** | Use the current HTTPS browser interface. Native gateway source exists, but v0.0.31 has no public mobile artifact and the iOS app is not publicly listed. |
 
 Not yet shipped: current public mobile builds, a native Linux desktop shell, a
 hosted control plane, rich Photon attachment fidelity, or blind execution of
@@ -313,7 +313,7 @@ A fresh data directory opens first-run setup. The source runtime defaults to
 | `PORT` | `8123` | HTTP/WebSocket control-plane port. |
 | `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and non-OCI development/Apple workspace mirrors. |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `oci` on Linux and Windows | Host isolation backend; `native` and `mock` are explicit development/test overrides. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.30` | Versioned channel-machine image contract. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.31` | Versioned channel-machine image contract. |
 
 ### Agent-first JSON CLI
 
