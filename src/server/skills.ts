@@ -169,12 +169,17 @@ export function readAgentSkill(agentId: number, slugInput: string): Row {
   };
 }
 
-/** The model gets a compact factual inventory, not every skill's procedure.
- * It can choose a skill and load its full instructions through read_skill. */
+/** The model gets compact usable metadata, not every skill's full procedure.
+ * Names and descriptions are essential capability awareness: a count of
+ * categories made Skipper deny calendar/personal work it already owned. */
 export function agentSkillContext(agentId: number, _task = ""): string {
   const available = skillsForAgent(agentId).filter((skill) => !skill.arsenal_locked);
-  const categories = [...new Set(available.map((skill) => String(skill.category || "general")))].sort();
-  return `<skill-arsenal count="${available.length}" categories="${categories.join(", ")}" />`;
+  return [
+    `<skill-arsenal count="${available.length}">`,
+    ...available.map((skill) => `- ${skill.slug}: ${skill.name} — ${String(skill.description || "").replace(/\s+/g, " ").trim().slice(0, 240)}`),
+    "Use list_skills/read_skill to load a full procedure when its metadata matches the task. Do not ask the user to discover or choose skills for you.",
+    "</skill-arsenal>",
+  ].join("\n");
 }
 
 export function templateForSlug(slug: string): Row | undefined {

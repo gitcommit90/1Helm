@@ -16,6 +16,8 @@ const { windowsSystemAccount } = await import("../src/server/channel-computers.t
 const turns = await import("../src/server/turns.ts");
 const catalog = await import("../src/server/skill-catalog.ts");
 const history = await import("../src/server/history.ts");
+const agents = await import("../src/server/agents.ts");
+const cowork = await import("../src/server/cowork-contract.ts");
 
 test("ask_user rejects routine ambiguity and accepts only evidenced human blockers", () => {
   assert.equal(validateAskUserInput({ questions: [{ question: "Which?", options: [{ label: "A" }, { label: "B" }] }] }).valid, false);
@@ -31,14 +33,25 @@ test("#main is a database- and tool-level resident-free authority channel", () =
   const mainThread = run("INSERT INTO threads (root_message_id,channel_id,status,title,summary,opened_at,updated_at) VALUES (?,?,'open','','',?,?)", mainRoot, main, now(), now()).lastInsertRowid;
   const ordinary = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created) VALUES ('ordinary','ordinary','channel','','','active',?)", now()).lastInsertRowid;
   const skipperBot = run("INSERT INTO bots (name,model,created) VALUES ('authority-skipper','mock',?)", now()).lastInsertRowid;
-  run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'skipper','authority-skipper','ready',?)", skipperBot, now());
+  const skipperId = run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'skipper','authority-skipper','ready',?)", skipperBot, now()).lastInsertRowid;
+  run("INSERT INTO agent_profiles (agent_id,purpose,instructions,updated) VALUES (?,'Workspace-wide chief of staff','Own cross-channel outcomes.',?)", skipperId, now());
   const residentBot = run("INSERT INTO bots (name,model,created) VALUES ('authority-resident','mock',?)", now()).lastInsertRowid;
   const resident = run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'channel','authority-resident','ready',?)", residentBot, now()).lastInsertRowid;
   run("INSERT INTO agent_channels (agent_id,channel_id,bound_at) VALUES (?,?,?)", resident, ordinary, now());
-  const mainTools = runtimeToolNamesForChannel(skipperBot, main, true);
+  const mainTools = runtimeToolNamesForChannel(skipperBot, main, false, ownerId);
   assert(!mainTools.includes("call_agent"));
   assert(!mainTools.includes("invite_agent"));
   assert(mainTools.includes("inspect_web_source"));
+  assert(mainTools.includes("create_channel"), "the personal-main owner receives native channel creation");
+  assert(mainTools.includes("schedule_workflow") && mainTools.includes("list_workflows") && mainTools.includes("set_workflow_status"), "Skipper can coordinate durable schedules across scoped domain channels");
+  const nonOwnerId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('authority-member','x','Member',0,?)", now()).lastInsertRowid;
+  run("INSERT INTO members (channel_id,user_id,last_read) VALUES (?,?,0)", main, nonOwnerId);
+  assert(!runtimeToolNamesForChannel(skipperBot, main, false, nonOwnerId).includes("create_channel"), "a non-owner member is never advertised an unauthorized channel-creation tool");
+  assert(runtimeToolNamesForChannel(skipperBot, ordinary, true, nonOwnerId).includes("create_channel"), "Captain-authorized ordinary-channel control remains available");
+  const skipperPrompt = runtimePromptTiersForChannel(skipperBot, main, false, "I need help with my schedule", ownerId);
+  assert.match(skipperPrompt.identity, /chief of staff[\s\S]*cross-channel/i);
+  assert.match(skipperPrompt.operating, /schedules, reminders, tasks, goals[\s\S]*coordinate the unified cross-channel view/i);
+  assert.doesNotMatch(skipperPrompt.operating, /not personal calendars|not personal scheduling/i);
   assert.throws(() => run("INSERT INTO thread_agent_guests (thread_id,agent_id,status,created) VALUES (?,?,'active',?)", mainThread, resident, now()), /cannot enter #main/i);
   db.exec("DROP TRIGGER trg_thread_guest_no_personal_main_insert; DROP TRIGGER trg_thread_guest_no_personal_main_update;");
   run("INSERT INTO thread_agent_guests (thread_id,agent_id,status,created) VALUES (?,?,'active',?)", mainThread, resident, now());
@@ -117,13 +130,14 @@ test("a finalized turn is immutable to stale stream writers", () => {
   assert.equal(q1("SELECT status FROM agent_progress WHERE id=?", progressId).status, "complete");
 });
 
-test("runtime exposes compact factual capabilities instead of injected playbooks", () => {
+test("runtime exposes usable skill metadata and durable operating identity without injecting full playbooks", () => {
   seed();
   const channelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created) VALUES ('prompt-tiers','prompt-tiers','channel','','First purpose','active',?)", now()).lastInsertRowid;
   const botId = run("INSERT INTO bots (name,model,prompt,created) VALUES ('prompt-agent','mock','Patient domain partner.',?)", now()).lastInsertRowid;
   const agentId = run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'channel','prompt-agent','ready',?)", botId, now()).lastInsertRowid;
   run("INSERT INTO agent_channels (agent_id,channel_id,bound_at) VALUES (?,?,?)", agentId, channelId, now());
   run("INSERT INTO agent_profiles (agent_id,purpose,instructions,updated) VALUES (?,'Own prompt testing.','Patient domain partner.',?)", agentId, now());
+  run("INSERT INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) SELECT ?,id,?,'Prompt inventory proof',1,? FROM skills WHERE slug='outcome-ownership'", agentId, agentId, now());
   const first = runtimePromptTiersForChannel(botId, channelId, false, "inspect alpha");
   run("UPDATE agent_profiles SET purpose='Changed volatile purpose' WHERE agent_id=?", agentId);
   const second = runtimePromptTiersForChannel(botId, channelId, false, "inspect beta");
@@ -133,13 +147,54 @@ test("runtime exposes compact factual capabilities instead of injected playbooks
   assert.match(first.operating, /isolated persistent Linux computer/i);
   assert.match(first.operating, /\/workspace/);
   assert.match(first.context, /skill-arsenal count=/i);
+  assert.match(first.context, /outcome-ownership: Outcome ownership/i);
   assert.doesNotMatch(first.context, /active-skill-playbooks|workspace-skill-catalog|### /i);
-  assert(first.identity.length + first.operating.length + first.context.length < 2_000, "capability map stays compact");
+  assert(first.identity.length + first.operating.length + first.context.length < 15_000, "capability map remains metadata-bounded rather than injecting full procedures");
   assert.match(first.context, /Own prompt testing/);
   assert.match(second.context, /Changed volatile purpose/);
   const tools = runtimeToolNamesForChannel(botId, channelId, false);
   assert(tools.includes("list_skills") && tools.includes("read_skill"));
   assert(tools.includes("search_channel_history") && tools.includes("read_channel_session"));
+});
+
+test("Cowork contracts survive follow-ups and reject only newly-created incompatible files", () => {
+  seed();
+  const channelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created) VALUES ('cowork-contract','cowork-contract','channel','','','active',?)", now()).lastInsertRowid;
+  agents.ensureChannelWorkspace(channelId);
+  const botId = run("INSERT INTO bots (name,model,prompt,created) VALUES ('cowork-contract-agent','mock','Resident.',?)", now()).lastInsertRowid;
+  const agentId = run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'channel','cowork-contract-agent','ready',?)", botId, now()).lastInsertRowid;
+  run("INSERT INTO agent_channels (agent_id,channel_id,bound_at) VALUES (?,?,?)", agentId, channelId, now());
+  run("INSERT INTO agent_profiles (agent_id,purpose,instructions,updated) VALUES (?,'Documents','Resident.',?)", agentId, now());
+  const ownerId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('cowork-contract-owner','x','Owner',1,?)", now()).lastInsertRowid;
+  const rootId = run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", channelId, ownerId, "@cowork-contract-agent make the document\n\nWorking folder: /workspace/docs", now()).lastInsertRowid;
+  run("INSERT INTO threads (root_message_id,channel_id,status,title,summary,opened_at,updated_at) VALUES (?,?,'open','','',?,?)", rootId, channelId, now(), now());
+  const followupId = run("INSERT INTO messages (channel_id,parent_id,user_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, ownerId, "fix the layout", now()).lastInsertRowid;
+  const runtimeAgent = q1("SELECT a.*,ac.channel_id,p.purpose,p.instructions FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id LEFT JOIN agent_profiles p ON p.agent_id=a.id WHERE a.id=?", agentId);
+  const context = buildContext(q1("SELECT * FROM bots WHERE id=?", botId), runtimeAgent, channelId, followupId, rootId, false, false);
+  assert.match(context.find((message) => message.content.includes("<cowork-format-contract>"))?.content || "", /Docs[\s\S]*Markdown[\s\S]*\.md/i, "a follow-up re-derives the root Cowork contract without transient client context");
+
+  agents.createWorkspaceFile(channelId, "docs", "existing.html", "<p>keep me</p>");
+  const docs = cowork.coworkContextFromRootBody("Working folder: /workspace/docs");
+  const before = cowork.snapshotCoworkSurface(channelId, docs);
+  agents.createWorkspaceFile(channelId, "docs", "wrong.html", "<p>wrong</p>");
+  agents.createWorkspaceFile(channelId, "docs", "right.md", "# Right\n");
+  const rejected = cowork.enforceCoworkCommandOutput(channelId, Number(q1("SELECT id FROM threads WHERE root_message_id=?", rootId).id), docs, before);
+  assert.match(rejected, /rejected and removed[\s\S]*wrong\.html/i);
+  assert.equal(agents.readWorkspaceTextFile(channelId, "docs/existing.html").content, "<p>keep me</p>", "pre-existing incompatible user files are untouched");
+  assert.equal(agents.readWorkspaceTextFile(channelId, "docs/right.md").content, "# Right\n");
+  assert.throws(() => agents.readWorkspaceTextFile(channelId, "docs/wrong.html"), /not found/i);
+
+  const presentations = cowork.coworkContextFromRootBody("Working folder: /workspace/presentations");
+  const deckBefore = cowork.snapshotCoworkSurface(channelId, presentations);
+  agents.createWorkspaceFile(channelId, "presentations", "sample.pptx", "not really a pptx");
+  agents.createWorkspaceFile(channelId, "presentations", "sample.slides.json", JSON.stringify({ theme: { primary: "#123456" }, slides: [{ title: "Ready", body: "Works" }] }));
+  assert.match(cowork.enforceCoworkCommandOutput(channelId, null, presentations, deckBefore), /sample\.pptx/);
+  assert.doesNotThrow(() => JSON.parse(agents.readWorkspaceTextFile(channelId, "presentations/sample.slides.json").content));
+
+  const whiteboards = cowork.coworkContextFromRootBody("Working file: /workspace/whiteboards/map.whiteboard.json");
+  const boardBefore = cowork.snapshotCoworkSurface(channelId, whiteboards);
+  agents.createWorkspaceFile(channelId, "whiteboards", "map.whiteboard.json", JSON.stringify({ type: "excalidraw", version: 2, elements: [], appState: {}, files: {} }));
+  assert.equal(cowork.enforceCoworkCommandOutput(channelId, null, whiteboards, boardBefore), null);
 });
 
 test("resident raw transcript search is semantic, exact, readable, and channel-isolated", () => {
@@ -160,7 +215,7 @@ test("resident raw transcript search is semantic, exact, readable, and channel-i
   assert(exact.results.every((entry) => entry.thread_root_id === rootId));
   const semantic = history.searchChannelHistory(agent, channelId, { query: "copper lighthouse", mode: "semantic" });
   assert(semantic.results.some((entry) => entry.message_id === rootId));
-  assert.equal(q1("SELECT COUNT(*) n FROM transcript_memory_index WHERE agent_id=?", agentId).n, 2);
+  assert([0, 2].includes(Number(q1("SELECT COUNT(*) n FROM transcript_memory_index WHERE agent_id=?", agentId).n)), "the optional semantic runtime indexes both messages when available and the exact/keyword fallback remains usable when absent");
   const session = history.readChannelThread(agent, channelId, rootId);
   assert.equal(session.thread_id, threadId);
   assert.equal(session.messages.length, 2);

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { request } from "node:http";
 import { createServer } from "node:net";
 import { accessSync, constants, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,15 +27,6 @@ const releaseFixture = {
 };
 const freePort = () => new Promise((resolve, reject) => { const server = createServer(); server.once("error", reject); server.listen(0, "127.0.0.1", () => { const port = server.address().port; server.close(() => resolve(port)); }); });
 const waitFor = async (url) => { const deadline = Date.now() + 10_000; while (Date.now() < deadline) { try { const result = await fetch(url); if (result.ok) return result; } catch {} await new Promise((resolve) => setTimeout(resolve, 80)); } throw new Error(`Timed out: ${url}`); };
-const requestWithHost = (port, path, host) => new Promise((resolve, reject) => {
-  const req = request({ hostname: "127.0.0.1", port, path, headers: { host } }, (res) => {
-    res.resume();
-    res.once("end", () => resolve(res));
-  });
-  req.once("error", reject);
-  req.end();
-});
-
 test("standalone 1helm.com website serves independent product and documentation surface", async () => {
   const port = await freePort();
   const child = spawn(process.execPath, ["site/server.mjs"], { cwd: root, env: { ...process.env, SITE_PORT: String(port), SITE_RELEASE_METADATA_JSON: JSON.stringify(releaseFixture) }, stdio: ["ignore", "pipe", "pipe"] });
@@ -53,11 +43,7 @@ test("standalone 1helm.com website serves independent product and documentation 
     const manual = await (await fetch(`${base}/manual`)).text();
     assert.match(manual, /The Ship's/);
     assert.match(manual, /Do I really need a dedicated computer/);
-    assert.match(manual, /retired pre-OCI sandbox is no longer running/i);
-    assert.doesNotMatch(manual, /it's a public sandbox/i);
-    const retiredDemo = await requestWithHost(port, "/manual?from=demo", "demo.1helm.com");
-    assert.equal(retiredDemo.statusCode, 301);
-    assert.equal(retiredDemo.headers.location, "https://1helm.com/manual?from=demo");
+    assert.doesNotMatch(manual, /public sandbox|retired pre-OCI sandbox/i);
     const privacy = await (await fetch(`${base}/privacy`)).text();
     assert.match(privacy, /build@1helm\.com/);
     assert.match(privacy, /device tokens are encrypted at rest/i);

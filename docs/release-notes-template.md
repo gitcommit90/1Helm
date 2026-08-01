@@ -37,7 +37,7 @@ Source commit: `<full merged SHA>`
 ## Verification
 
 - Name the exact automated suites and pass counts.
-- Name public demo/site/API checks when applicable.
+- Name public product-site/API checks when applicable.
 - For macOS, state Developer ID signature, Apple notarization, stapling,
   Gatekeeper, public-download installation on the retained release host, app
   launch/smoke behavior, and Application Support preservation.

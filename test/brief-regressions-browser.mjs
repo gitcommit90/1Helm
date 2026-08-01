@@ -127,6 +127,29 @@ try {
   ok(brand.title.includes("1Helm") && brand.appName === "1Helm" && !brand.body.includes("1Herd"), "the browser presents the product as 1Helm throughout");
   ok(brand.favicon === "/brand/1helm-sailboat.png" && brand.workspaceLogo === "/brand/1helm-sailboat.png", "the sailboat is the web favicon and default customizable workspace image");
 
+  const sidebarAgentIdentity = await page.evaluate(async (targetChannelId, skipperAgentId) => {
+    const bundleSrc = document.querySelector('script[type="module"][src*="bundle.js"]')?.getAttribute("src");
+    if (!bundleSrc) throw new Error("App bundle module was not found.");
+    const app = await import(bundleSrc);
+    const target = app.S.channels.find((candidate) => candidate.id === targetChannelId);
+    if (!target?.agent) throw new Error("Target resident was not found.");
+    target.agent.status = "ready";
+    const rejected = app.applyAgentStatusEvent({ channelId: target.id, agentId: skipperAgentId, status: "working" });
+    app.renderSidebar();
+    const dotsAfterSkipper = document.querySelectorAll('[data-sidebar="desktop"] .channel-working-dots').length;
+    const accepted = app.applyAgentStatusEvent({ channelId: target.id, agentId: target.agent.id, status: "working" });
+    app.renderSidebar();
+    const workingRows = [...document.querySelectorAll('[data-sidebar="desktop"] .channel-working-dots')]
+      .map((dots) => dots.closest("button")?.getAttribute("aria-label") || "");
+    app.applyAgentStatusEvent({ channelId: target.id, agentId: target.agent.id, status: "ready" });
+    app.renderSidebar();
+    return { rejected, accepted, dotsAfterSkipper, workingRows };
+  }, channel.id, mainChannel.agent.id);
+  ok(!sidebarAgentIdentity.rejected && sidebarAgentIdentity.dotsAfterSkipper === 0
+    && sidebarAgentIdentity.accepted && sidebarAgentIdentity.workingRows.length === 1
+    && sidebarAgentIdentity.workingRows[0].startsWith(`${channel.name}, working`),
+  `a Skipper turn cannot animate the resident's sidebar row, while one resident turn animates exactly one row (${JSON.stringify(sidebarAgentIdentity)})`);
+
   await page.setRequestInterception(true);
   const interceptReadyUpdate = (request) => {
     if (request.url() === `${base}/api/app/update` && request.method() === "GET") {

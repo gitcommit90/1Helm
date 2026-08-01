@@ -15,7 +15,7 @@ npm package name remains `1helm` (lowercase).
 
 | Role | Who | Authority |
 | --- | --- | --- |
-| Maintainer | Repository owner (`gitcommit90`) | Merge to `main`, deploy demo VPS, tags/releases, policy |
+| Maintainer | Repository owner (`gitcommit90`) | Merge to `main`, maintain the product website, tags/releases, policy |
 | Agents / automation | Resident tools and CI | Branch, test, open PRs, and report verifiable evidence within granted authority |
 | Contributors | GitHub contributors | Issues and focused pull requests under the repository policy |
 

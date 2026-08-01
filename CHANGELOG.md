@@ -15,6 +15,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   create workspace symlinks such as Python virtual environments. Symlinks now
   remain durable inside the isolated Linux computer and are omitted from the
   symlink-free host mirror instead of failing the entire mirror transaction.
+- Repaired Apple resident networking when a VM is still reported running but
+  its NIC or default route has vanished, without replacing the resident disk.
+- Scoped live sidebar status updates to the exact resident identity so Skipper
+  or guest activity cannot animate idle channel rows.
+- Prevented duplicate resident-to-Skipper escalations, unchanged hand-back
+  loops, and user interviews that merely bounce an agent coordination failure.
+- Restored Skipper's durable chief-of-staff and cross-channel coordination
+  contract, including usable skill metadata, personal scheduling and goal
+  coordination, scoped history, and durable workflows across domain channels.
+- Matched Skipper channel-control tool exposure to the requesting user's exact
+  authority. A personal-#main owner can create channels; a non-owner member is
+  no longer offered a tool that execution must reject.
+- Made Cowork file contracts durable across follow-ups, queued turns, and
+  restarts. Docs and Notes require Markdown, Presentations require valid
+  `.slides.json`, Whiteboards require valid `.whiteboard.json`, and newly
+  created incompatible command output is rejected and removed without touching
+  pre-existing user files.
+
+### Documentation
+
+- Removed retired sandbox/test-host references from public documentation and
+  agent-facing product guidance. No test or demo endpoint is represented as a
+  current product environment.
 
 ## [0.0.31] - 2026-08-01
 
@@ -47,8 +70,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed false current-mobile distribution claims: v0.0.30 has no Android APK,
   and 1Helm is not currently listed in the public iOS App Store. The current
   phone/tablet path is the HTTPS browser interface.
-- Retired the stale pre-OCI demo claim. `demo.1helm.com` now redirects to the
-  product site until a new isolated sandbox is deliberately provisioned.
 
 ## [0.0.30] - 2026-07-31
 

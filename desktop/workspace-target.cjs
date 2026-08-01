@@ -1,7 +1,7 @@
 "use strict";
 
 const WORKSPACE_HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.1helm\.com$/i;
-const RESERVED_WORKSPACES = new Set(["demo.1helm.com", "provision.1helm.com"]);
+const RESERVED_WORKSPACE_LABELS = new Set(["demo", "provision"]);
 const DESKTOP_ACTION_ORIGIN = "https://desktop-action.1helm.invalid";
 const CONNECT_PATH = "/connect";
 const LOCAL_SETUP_PATH = "/setup";
@@ -20,7 +20,7 @@ function isHostedWorkspaceOrigin(raw) {
   const origin = normalizeRemoteOrigin(raw);
   if (!origin) return false;
   const url = new URL(origin);
-  return !url.port && WORKSPACE_HOST.test(url.hostname) && !RESERVED_WORKSPACES.has(url.hostname.toLowerCase());
+  return !url.port && WORKSPACE_HOST.test(url.hostname) && !RESERVED_WORKSPACE_LABELS.has(url.hostname.toLowerCase().split(".")[0]);
 }
 
 function allowedRemoteUrl(raw, selectedOrigin = "") {
