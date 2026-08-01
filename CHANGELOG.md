@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.31] - 2026-08-01
+
+### Fixed
+
+- Fixed fresh Linux installation from `1helm.com`: the public installer now
+  downloads and SHA-256-verifies the accepted Linux host artifact instead of
+  pairing its current OCI setup logic with the obsolete source-only v0.0.28
+  tag, which lacked the OCI runtime installer and sealed channel image.
+
 ### Documentation
 
 - Updated the README, standalone website, manual, story, and user guide for the
@@ -899,7 +908,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.31...HEAD
+[0.0.31]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...v0.0.31
 [0.0.30]: https://github.com/gitcommit90/1Helm/compare/v0.0.29...v0.0.30
 [0.0.29]: https://github.com/gitcommit90/1Helm/compare/v0.0.28...v0.0.29
 [0.0.28]: https://github.com/gitcommit90/1Helm/compare/v0.0.27...v0.0.28

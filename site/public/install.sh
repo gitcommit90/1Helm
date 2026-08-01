@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="https://github.com/gitcommit90/1Helm.git"
 INSTALL_ROOT="/opt/1helm"
 RELEASES_ROOT="$INSTALL_ROOT/releases"
 APP_ROOT="$INSTALL_ROOT/current"
@@ -10,7 +9,7 @@ NODE_LINK="$INSTALL_ROOT/node-current"
 STATE_ROOT="/var/lib/1helm-oci-v1"
 SERVICE_USER="1helm"
 NODE_VERSION="22.23.1"
-RELEASE_VERSION="0.0.28"
+RELEASE_METADATA_URL="https://1helm.com/api/releases/linux/latest"
 HOST_CONTRACT_PATHS=(
   /usr/libexec/1helm-oci-runtime
   /etc/1helm/oci-runtime-v1.conf
@@ -47,12 +46,12 @@ case "$(uname -m)" in
   *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-need=(curl git tar xz sha256sum flock make c++ python3 podman crun fuse-overlayfs setfacl getfacl sudo visudo)
+need=(curl tar xz sha256sum flock make c++ python3 podman crun fuse-overlayfs setfacl getfacl sudo visudo)
 missing=()
 for command in "${need[@]}"; do command -v "$command" >/dev/null || missing+=("$command"); done
 if ((${#missing[@]})) || ! python3 -c 'import ensurepip' >/dev/null 2>&1; then
   apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y curl git xz-utils ca-certificates util-linux build-essential python3 \
+  DEBIAN_FRONTEND=noninteractive apt-get install -y curl xz-utils ca-certificates util-linux build-essential python3 \
     python3-venv acl aardvark-dns crun fuse-overlayfs netavark podman uidmap sudo rsync
 fi
 
@@ -146,19 +145,58 @@ fi
 ln -sfn "$NODE_RELEASE" "$TEMP_ROOT/node-current"
 mv -Tf "$TEMP_ROOT/node-current" "$NODE_LINK"
 
-VERSION="$RELEASE_VERSION"
-git clone --depth 1 --branch "v$VERSION" "$REPO" "$TEMP_ROOT/source"
-RELEASE_SHA="$(git -C "$TEMP_ROOT/source" rev-parse HEAD)"
-[[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "Could not resolve the checked-out release commit." >&2; exit 1; }
-RELEASE_ROOT="$RELEASES_ROOT/$VERSION-${RELEASE_SHA:0:12}"
-chown -R "$SERVICE_USER:$SERVICE_USER" "$TEMP_ROOT/source"
-runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH="$NODE_LINK/bin:/usr/bin:/bin" PUPPETEER_SKIP_DOWNLOAD=1 "$NODE_LINK/bin/npm" --prefix "$TEMP_ROOT/source" ci
-runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH="$NODE_LINK/bin:/usr/bin:/bin" "$NODE_LINK/bin/npm" --prefix "$TEMP_ROOT/source" run build
+curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$TEMP_ROOT/release.json" "$RELEASE_METADATA_URL"
+RELEASE_OUTPUT="$("$NODE_LINK/bin/node" - "$TEMP_ROOT/release.json" <<'NODE'
+const fs = require("node:fs");
+const release = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const version = String(release.version || "");
+const url = String(release.url || "");
+const sha256 = String(release.sha256 || "");
+const name = `1Helm-${version}-linux-node.tgz`;
+const expectedUrl = `https://github.com/gitcommit90/1Helm/releases/download/v${version}/${name}`;
+if (!/^\d+\.\d+\.\d+$/.test(version) || url !== expectedUrl || !/^[a-f0-9]{64}$/.test(sha256)) process.exit(2);
+console.log(version);
+console.log(url);
+console.log(sha256);
+NODE
+)" || { echo "1helm.com did not return a complete stable Linux release." >&2; exit 1; }
+mapfile -t RELEASE <<<"$RELEASE_OUTPUT"
+[[ "${#RELEASE[@]}" -eq 3 ]] || { echo "1helm.com returned incomplete Linux release metadata." >&2; exit 1; }
+VERSION="${RELEASE[0]}"
+RELEASE_URL="${RELEASE[1]}"
+RELEASE_SHA256="${RELEASE[2]}"
+RELEASE_ARCHIVE="$TEMP_ROOT/1Helm-$VERSION-linux-node.tgz"
+curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$RELEASE_ARCHIVE" "$RELEASE_URL"
+printf '%s  %s\n' "$RELEASE_SHA256" "$(basename "$RELEASE_ARCHIVE")" \
+  | (cd "$TEMP_ROOT" && sha256sum -c -)
+
+RELEASE_STAGE="$TEMP_ROOT/source"
+install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$RELEASE_STAGE"
+tar -xzf "$RELEASE_ARCHIVE" -C "$RELEASE_STAGE" --strip-components=1
+PACKAGE_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "$RELEASE_STAGE/package.json" 2>/dev/null || true)"
+[[ "$PACKAGE_VERSION" == "$VERSION" ]] || { echo "The verified Linux artifact version does not match v$VERSION." >&2; exit 1; }
+[[ -x "$RELEASE_STAGE/site/public/apply-linux-release.sh" \
+   && -x "$RELEASE_STAGE/site/public/install-oci-runtime.sh" \
+   && -x "$RELEASE_STAGE/site/public/install-linux-units.sh" \
+   && -x "$RELEASE_STAGE/site/public/uninstall-host.sh" \
+   && -x "$RELEASE_STAGE/scripts/1helm-oci-runtime" \
+   && -r "$RELEASE_STAGE/deploy/1helm-oci-runtime-v1.conf" \
+   && -r "$RELEASE_STAGE/container/Containerfile.oci" \
+   && -f "$RELEASE_STAGE/container/channel-machine.oci.tar" \
+   && -f "$RELEASE_STAGE/container/channel-machine.oci.sha256" ]] \
+  || { echo "The verified Linux artifact is missing its complete OCI runtime contract." >&2; exit 1; }
+chown -R "$SERVICE_USER:$SERVICE_USER" "$RELEASE_STAGE"
+runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH="$NODE_LINK/bin:/usr/bin:/bin" PUPPETEER_SKIP_DOWNLOAD=1 "$NODE_LINK/bin/npm" --prefix "$RELEASE_STAGE" ci
+runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH="$NODE_LINK/bin:/usr/bin:/bin" "$NODE_LINK/bin/npm" --prefix "$RELEASE_STAGE" run build
+RELEASE_ROOT="$RELEASES_ROOT/$VERSION-$RELEASE_SHA256"
 if [[ -e "$RELEASE_ROOT" ]]; then
-  EXISTING_SHA="$(runuser -u "$SERVICE_USER" -- git -C "$RELEASE_ROOT" rev-parse HEAD 2>/dev/null || true)"
-  [[ "$EXISTING_SHA" == "$RELEASE_SHA" ]] || { echo "Existing release directory does not match v$VERSION." >&2; exit 1; }
+  EXISTING_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "$RELEASE_ROOT/package.json" 2>/dev/null || true)"
+  [[ "$EXISTING_VERSION" == "$VERSION" \
+     && -f "$RELEASE_ROOT/container/channel-machine.oci.tar" \
+     && -f "$RELEASE_ROOT/container/channel-machine.oci.sha256" ]] \
+    || { echo "Existing release directory does not match the verified v$VERSION Linux artifact." >&2; exit 1; }
 else
-  mv "$TEMP_ROOT/source" "$RELEASE_ROOT"
+  mv "$RELEASE_STAGE" "$RELEASE_ROOT"
 fi
 # The application owns the top-level state directory, while the OCI helper
 # deliberately owns its persistent runtime subtree as root.  A repeat install
@@ -168,6 +206,16 @@ PREVIOUS_RELEASE="$(readlink -f "$APP_ROOT" 2>/dev/null || true)"
 [[ "$PREVIOUS_RELEASE" == "$RELEASES_ROOT/"* && -d "$PREVIOUS_RELEASE" ]] || PREVIOUS_RELEASE=""
 snapshot_host_contract
 TRANSACTION_ACTIVE=1
+# v0.0.30's otherwise accepted Linux artifact wrote this Podman selector with
+# a trailing newline. Fresh Ubuntu 24.04 rejects that byte sequence, so the
+# bootstrap repairs it before invoking either that helper or a newer one. An
+# existing non-netavark selection remains untouched.
+NETWORK_BACKEND_FILE="$STATE_ROOT/runtime/oci/storage/defaultNetworkBackend"
+if [[ ! -e "$NETWORK_BACKEND_FILE" || (-f "$NETWORK_BACKEND_FILE" && "$(cat "$NETWORK_BACKEND_FILE")" == netavark) ]]; then
+  install -d -o root -g root -m 0700 "$(dirname "$NETWORK_BACKEND_FILE")"
+  printf '%s' netavark >"$NETWORK_BACKEND_FILE"
+  chmod 0600 "$NETWORK_BACKEND_FILE"
+fi
 "$RELEASE_ROOT/site/public/install-oci-runtime.sh" "$RELEASE_ROOT"
 
 ln -s "$RELEASE_ROOT" "$TEMP_ROOT/current"

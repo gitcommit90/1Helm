@@ -36,24 +36,56 @@ const FEEDBACK_BODY_LIMIT = 15 * 1024 * 1024;
 const FEEDBACK_RATE_LIMIT = 30;
 const FEEDBACK_RATE_WINDOW_MS = 60_000;
 
-let releaseCache = { at: 0, assets: null };
+let releaseCache = { at: 0, release: null };
 let feedbackDatabase;
 const feedbackRate = new Map();
+async function latestRelease() {
+  if (Date.now() - releaseCache.at < RELEASE_CACHE_MS && releaseCache.release) return releaseCache.release;
+  const releaseOverride = String(process.env.SITE_RELEASE_METADATA_JSON || "");
+  let release;
+  if (releaseOverride) {
+    release = JSON.parse(releaseOverride);
+  } else {
+    const response = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+      headers: { "user-agent": "1helm-site", accept: "application/vnd.github+json" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) throw new Error(`GitHub API ${response.status}`);
+    release = await response.json();
+  }
+  const version = String(release.tag_name || "").replace(/^v/, "");
+  if (!/^\d+\.\d+\.\d+$/.test(version) || release.draft || release.prerelease) throw new Error("latest release is not stable");
+  releaseCache = { at: Date.now(), release };
+  return release;
+}
 async function latestReleaseAssets() {
-  if (Date.now() - releaseCache.at < RELEASE_CACHE_MS && releaseCache.assets) return releaseCache.assets;
-  const response = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
-    headers: { "user-agent": "1helm-site", accept: "application/vnd.github+json" },
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!response.ok) throw new Error(`GitHub API ${response.status}`);
-  const release = await response.json();
-  releaseCache = { at: Date.now(), assets: release.assets || [] };
-  return releaseCache.assets;
+  return (await latestRelease()).assets || [];
 }
 async function latestAssetUrl(pattern) {
   const asset = (await latestReleaseAssets()).find((entry) => pattern.test(String(entry.name || "")));
   if (!asset?.browser_download_url) throw new Error("no matching asset on latest release");
   return asset.browser_download_url;
+}
+async function latestLinuxRelease() {
+  const release = await latestRelease();
+  const version = String(release.tag_name).replace(/^v/, "");
+  const expectedNames = [
+    `1Helm-${version}-arm64.dmg`,
+    `1Helm-${version}-mac-arm64.zip`,
+    `1Helm-${version}-linux-node.tgz`,
+    `1Helm-${version}-windows-x64-setup.exe`,
+    `1Helm-${version}-full.nupkg`,
+    "RELEASES",
+  ];
+  const assets = Array.isArray(release.assets) ? release.assets : [];
+  const matrix = expectedNames.map((name) => assets.find((asset) => asset.name === name));
+  if (matrix.some((asset) => !asset || !/^sha256:[a-f0-9]{64}$/.test(String(asset.digest || "")))) {
+    throw new Error("latest release does not contain the complete digest-qualified desktop matrix");
+  }
+  const linux = matrix[2];
+  const expectedUrl = `https://github.com/${REPO}/releases/download/v${version}/${linux.name}`;
+  if (linux.browser_download_url !== expectedUrl) throw new Error("latest Linux release URL does not match its version");
+  return { version, url: expectedUrl, sha256: linux.digest.slice(7) };
 }
 
 const mime = {
@@ -314,6 +346,20 @@ const server = createServer(async (req, res) => {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
     });
+    return;
+  }
+  if (path === "/api/releases/linux/latest") {
+    try {
+      answer(res, 200, JSON.stringify(await latestLinuxRelease()), {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+      });
+    } catch {
+      answer(res, 503, JSON.stringify({ error: "A complete stable Linux release is not available." }), {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+      });
+    }
     return;
   }
   if (STATIC_PAGES[path]) {

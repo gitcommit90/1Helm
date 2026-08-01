@@ -9,6 +9,23 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 const root = new URL("..", import.meta.url).pathname;
+const releaseFixture = {
+  tag_name: "v0.0.31",
+  draft: false,
+  prerelease: false,
+  assets: [
+    ["1Helm-0.0.31-arm64.dmg", "a"],
+    ["1Helm-0.0.31-mac-arm64.zip", "b"],
+    ["1Helm-0.0.31-linux-node.tgz", "c"],
+    ["1Helm-0.0.31-windows-x64-setup.exe", "d"],
+    ["1Helm-0.0.31-full.nupkg", "e"],
+    ["RELEASES", "f"],
+  ].map(([name, digit]) => ({
+    name,
+    digest: `sha256:${digit.repeat(64)}`,
+    browser_download_url: `https://github.com/gitcommit90/1Helm/releases/download/v0.0.31/${name}`,
+  })),
+};
 const freePort = () => new Promise((resolve, reject) => { const server = createServer(); server.once("error", reject); server.listen(0, "127.0.0.1", () => { const port = server.address().port; server.close(() => resolve(port)); }); });
 const waitFor = async (url) => { const deadline = Date.now() + 10_000; while (Date.now() < deadline) { try { const result = await fetch(url); if (result.ok) return result; } catch {} await new Promise((resolve) => setTimeout(resolve, 80)); } throw new Error(`Timed out: ${url}`); };
 const requestWithHost = (port, path, host) => new Promise((resolve, reject) => {
@@ -22,7 +39,7 @@ const requestWithHost = (port, path, host) => new Promise((resolve, reject) => {
 
 test("standalone 1helm.com website serves independent product and documentation surface", async () => {
   const port = await freePort();
-  const child = spawn(process.execPath, ["site/server.mjs"], { cwd: root, env: { ...process.env, SITE_PORT: String(port) }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, ["site/server.mjs"], { cwd: root, env: { ...process.env, SITE_PORT: String(port), SITE_RELEASE_METADATA_JSON: JSON.stringify(releaseFixture) }, stdio: ["ignore", "pipe", "pipe"] });
   try {
     const base = `http://127.0.0.1:${port}`;
     const health = await (await waitFor(`${base}/health`)).json();
@@ -58,7 +75,7 @@ test("standalone 1helm.com website serves independent product and documentation 
     }
     const gettingStarted = await (await fetch(`${base}/manual/getting-started`)).text();
     assert.match(gettingStarted, /On Windows 11 x64, download the Setup executable/i);
-    assert.match(gettingStarted, /v0\.0\.30 is <code>NotSigned<\/code>/i);
+    assert.match(gettingStarted, /v0\.0\.31 is <code>NotSigned<\/code>/i);
     assert.match(gettingStarted, /connect to an existing HTTPS 1Helm host/i);
     assert.doesNotMatch(gettingStarted, /signed Setup executable/i);
     assert.doesNotMatch(gettingStarted, /withheld/i);
@@ -70,6 +87,12 @@ test("standalone 1helm.com website serves independent product and documentation 
     assert.equal(benchmarkSchema.$id, "https://1helm.com/schemas/autonomy-benchmark-v1.json");
     assert.deepEqual(benchmarkSchema.required, ["schema", "product", "kind", "started_at", "finished_at", "deterministic", "scope", "summary", "checks"]);
     assert.equal((await fetch(`${base}/install.sh`)).status, 200);
+    const linuxRelease = await (await fetch(`${base}/api/releases/linux/latest`)).json();
+    assert.deepEqual(linuxRelease, {
+      version: "0.0.31",
+      url: "https://github.com/gitcommit90/1Helm/releases/download/v0.0.31/1Helm-0.0.31-linux-node.tgz",
+      sha256: "c".repeat(64),
+    });
     assert.equal((await fetch(`${base}/../../package.json`)).status, 404);
     const sitemap = await (await fetch(`${base}/sitemap.xml`)).text();
     assert.match(sitemap, /https:\/\/1helm\.com\/manual\/connections/);
@@ -157,12 +180,17 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(installer, /snapshot_host_contract[\s\S]*rollback_host_contract[\s\S]*TRANSACTION_ACTIVE/, "fresh and repeat installs restore runtime files and unit state after any transactional failure");
   assert.match(installer, /rollback_host_contract[\s\S]*1helm\.service\.active[\s\S]*api\/setup\/status[\s\S]*restored_healthy/, "installer rollback verifies the restored service before claiming recovery");
   assert.match(installer, /NODE_VERSION="22\.23\.1"/);
-  assert.match(installer, /RELEASE_VERSION="0\.0\.28"/, "fresh installs stay on the deliberately published Linux release until the complete private candidate matrix is owner-approved");
+  assert.match(installer, /RELEASE_METADATA_URL="https:\/\/1helm\.com\/api\/releases\/linux\/latest"/, "fresh installs resolve the complete current release from the product site");
+  assert.match(installer, /expectedUrl = `https:\/\/github\.com\/gitcommit90\/1Helm\/releases\/download\/v\$\{version\}\/\$\{name\}`/, "fresh installs accept only the canonical artifact URL for the resolved version");
+  assert.match(installer, /RELEASE_SHA256[\s\S]*sha256sum -c -[\s\S]*tar -xzf/, "fresh installs verify the Linux release digest before extraction");
+  assert.match(installer, /install-oci-runtime\.sh[\s\S]*channel-machine\.oci\.tar[\s\S]*npm[^\n]*ci/, "fresh installs reject an artifact without the complete OCI runtime before running release code");
+  assert.match(installer, /NETWORK_BACKEND_FILE[\s\S]*cat "\$NETWORK_BACKEND_FILE"[\s\S]*printf '%s' netavark[\s\S]*install-oci-runtime\.sh/, "the web bootstrap repairs v0.0.30's newline-terminated Podman backend before invoking release code");
+  assert.doesNotMatch(installer, /git clone|git checkout/, "fresh installs never combine the current installer with an older source-only tag");
   assert.doesNotMatch(installer, /api\.github\.com/, "fresh installs do not depend on unauthenticated GitHub API quota");
   assert.match(installer, /need=\([^\n]*flock[^\n]*make[^\n]*c\+\+[^\n]*python3[^\n]*\)/, "the host updater and native dependency toolchain are probed even when download prerequisites already exist");
   assert.match(installer, /import ensurepip[\s\S]*python3-venv/, "the Linux host installs Python's venv support required by durable memory instead of accepting a python3 executable alone");
   assert.doesNotMatch(installer, /npm[^\n]*ci[^\n]*--omit=optional/, "platform-specific optional build packages are retained");
-  assert.match(installer, /EXISTING_SHA="\$\(runuser -u "\$SERVICE_USER" -- git -C "\$RELEASE_ROOT" rev-parse HEAD/, "repeat installs inspect the service-owned release as the service user");
+  assert.match(installer, /EXISTING_VERSION=.*package\.json[\s\S]*EXISTING_VERSION.*VERSION/, "repeat installs verify the retained release version");
   assert.doesNotMatch(installer, /chown -R[^\n]*\$STATE_ROOT/, "repeat installs never recursively rewrite root-owned OCI channel storage");
   assert.match(installer, /chown -R "\$SERVICE_USER:\$SERVICE_USER" "\$RELEASE_ROOT"/, "the extracted application release remains service-owned");
   assert.match(installer, /RELEASES_ROOT=.*releases/);
@@ -208,6 +236,8 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(ociRecipe, /docker\.io\/library\/ubuntu:24\.04@sha256:[a-f0-9]{64}/, "the OCI guest base is fully qualified and digest-pinned without mutable short-name state");
   assert.match(ociHelper, /--network-config-dir "\$NETWORKS_ROOT" --tmpdir "\$LIBPOD_TMP"/, "Podman persistent network configuration and libpod scratch stay inside 1Helm-owned roots");
   assert.match(ociHelper, /podman_image\(\)[^\n]*localhost/, "the helper maps 1Helm's portable local image identity to Podman's explicit localhost transport");
+  assert.match(ociHelper, /defaultNetworkBackend[\s\S]*cat "\$STORAGE_ROOT\/defaultNetworkBackend"[\s\S]*printf '%s' netavark/, "Podman's backend selector is repaired to the exact netavark token without a trailing newline");
+  assert.doesNotMatch(ociHelper, /printf 'netavark\\n'/, "fresh Ubuntu Podman must never receive a newline-terminated backend selector");
   assert.doesNotMatch([installer, updater, releaseApply, ociInstaller, ociHelper, ociManifest, ociRecipe].join("\n"), /\blxc\b|per-channel WSL|migration-backups/i, "the clean-slate Linux contract has no legacy runtime bridge");
   assert.match(linuxUnits, /ReadWritePaths=[^\n]*\/usr\/libexec(?:\s|$)[^\n]*\/etc\/default(?:\s|$)[^\n]*\/etc\/systemd\/system(?:\s|$)[^\n]*\/etc\/sudoers\.d(?:\s|$)/, "future updater transactions can atomically replace and roll back only the required host-contract parent trees");
   assert.match(updater, /systemd-run[\s\S]*apply-linux-release\.sh[\s\S]*exit 0/, "all post-verification Linux release mutations run in one transient root transaction outside the updater namespace");
