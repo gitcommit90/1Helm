@@ -592,12 +592,14 @@ async function repairAppleGuestNetwork(computer: ChannelComputer): Promise<void>
       // Avoid repeatedly bouncing shared vmnet while several machines detect
       // the same fleet-wide outage during one reconciliation pass.
       if (now() - appleNetworkRepairAt > 30_000) {
-        if (platform() === "darwin") {
-          const label = `gui/${process.getuid?.() ?? 501}/com.apple.container.network.container-network-vmnet.default`;
-          const kicked = await spawnCollected("/bin/launchctl", ["kickstart", "-k", label], { timeoutMs: 30_000 });
-          if (kicked.code !== 0) throw new Error(kicked.stderr.toString("utf8").trim() || "Apple shared VM network service could not restart");
+        const activeCommands = Number(q1("SELECT COUNT(*) n FROM channel_computer_obligations WHERE kind='command' AND status='active'")?.n || 0);
+        const activeTurns = Number(q1("SELECT COUNT(*) n FROM agent_turns WHERE state='running'")?.n || 0);
+        if (terminalSessions.size > 0 || activeCommands > 1 || activeTurns > 1) {
+          throw new Error("resident computer network is unavailable; automatic repair is waiting for concurrent work to finish");
         }
+        const stopped = await apple(["system", "stop"], { timeoutMs: 90_000 });
         const started = await apple(["system", "start"], { timeoutMs: 90_000 });
+        if (stopped.code !== 0) throw new Error(stopped.stderr.toString("utf8").trim() || "Apple container services could not stop for network recovery");
         if (started.code !== 0) throw new Error(started.stderr.toString("utf8").trim() || "Apple container services could not restart");
         appleNetworkRepairAt = now();
       }

@@ -31,6 +31,7 @@ if (args[0] === "system" && args[1] === "status") {
   process.stdout.write(JSON.stringify({ status: "running" }));
   process.exit(0);
 }
+if (args[0] === "system" && args[1] === "stop") process.exit(0);
 if (args[0] === "system" && args[1] === "start") {
   for (const entry of readdirSync(join(stateRoot, "machines"))) rmSync(join(stateRoot, "machines", entry, ".network-down"), { force: true });
   process.exit(0);
