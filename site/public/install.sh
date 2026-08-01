@@ -14,6 +14,7 @@ HOST_CONTRACT_PATHS=(
   /usr/libexec/1helm-oci-runtime
   /etc/1helm/oci-runtime-v1.conf
   /etc/sudoers.d/1helm-oci-runtime
+  /etc/apparmor.d/local/crun
   /etc/tmpfiles.d/1helm-oci.conf
   /usr/lib/1helm-oci/Containerfile.oci
   /usr/lib/1helm-oci/channel-machine.oci.tar

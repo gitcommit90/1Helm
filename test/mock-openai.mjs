@@ -83,6 +83,15 @@ createServer(async (req, res) => {
     const wantsAutonomousInstall = reqBody.tools?.some((tool) => tool.function?.name === "run_command")
       && /(?:download|install|set up) (?:openai )?codex/i.test(latestUser)
       && !hasToolResult;
+    const residentNetworkFailure = [...reqBody.messages].reverse().find((message) => message.role === "tool" && message.name === "run_command" && /Permission denied.*socket|socket.*Permission denied/is.test(String(message.content || "")));
+    const wantsResidentNetworkSetup = reqBody.tools?.some((tool) => tool.function?.name === "run_command")
+      && /set up jellyfin|install jellyfin/i.test(latestUser)
+      && !hasToolResult
+      && /You are @\S+-agent/.test(serialized);
+    const wantsResidentNetworkEscalation = reqBody.tools?.some((tool) => tool.function?.name === "call_skipper")
+      && Boolean(residentNetworkFailure)
+      && !reqBody.messages.some((message) => message.role === "tool" && message.name === "call_skipper")
+      && /You are @\S+-agent/.test(serialized);
     const wantsLearnSkill = reqBody.tools?.some((tool) => tool.function?.name === "create_skill")
       && /Learn one new reusable workspace skill/i.test(latestUser)
       && !hasToolResult;
@@ -191,6 +200,14 @@ createServer(async (req, res) => {
     } else if (wantsScheduleFollowup) {
       const args = { delay_seconds: /browser follow-up countdown/i.test(latestUser) ? 300 : 30, reason: "Check whether the async download finished and report Downloaded or Blocked." };
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "schedule_followup_1", type: "function", function: { name: "schedule_followup", arguments: JSON.stringify(args) } }] } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+    } else if (wantsResidentNetworkSetup) {
+      const args = { command: "printf 'socket Permission denied\\n' >&2; exit 1" };
+      sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "resident_network_probe_1", type: "function", function: { name: "run_command", arguments: JSON.stringify(args) } }] } }] });
+      sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+    } else if (wantsResidentNetworkEscalation) {
+      const args = { reason: "Original outcome: set up Jellyfin locally. Resident network probe failed at socket creation with Permission denied, a machine boundary. Inspect and repair resident-computer networking, then return the verified boundary result so I can finish the setup." };
+      sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "resident_network_skipper_1", type: "function", function: { name: "call_skipper", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else if (wantsAutonomousInstall) {
       const args = { command: "printf 'codex installed\\n' > codex-install.txt" };

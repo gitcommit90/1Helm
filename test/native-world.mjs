@@ -818,6 +818,20 @@ try {
     return residentReplies.length >= 2 && handoff ? { residentReplies: residentReplies.length, handoff } : null;
   }, "automatic Skipper-to-resident return", 20_000);
   ok(Boolean(automaticReturn), "runtime automatically returns a resident escalation after Skipper unblocks it even when the Skipper model omits call_agent");
+  const networkSetupRoot = await api(`/api/channels/${launch.id}/messages`, { body: { body: `@${afterRestart.agent.name} set up Jellyfin locally; can YOU set it up` } }, captain);
+  await waitForAgentReply(networkSetupRoot.body.message.id, captain, afterRestart.agent.name);
+  await waitForAgentReply(networkSetupRoot.body.message.id, captain, "skipper");
+  const networkSetupActivity = await waitFor(async () => {
+    const result = await api(`/api/channels/${launch.id}/activity`, {}, captain);
+    const thread = await api(`/api/messages/${networkSetupRoot.body.message.id}/thread`, {}, captain);
+    const actions = result.body.actions || [];
+    const escalated = (result.body.escalations || []).some((item) => /socket creation with Permission denied/i.test(String(item.reason || "")));
+    const residentFailed = actions.some((item) => item.tool === "run_command" && item.status === "failed" && /socket Permission denied/i.test(String(item.result_summary || "")));
+    const askedHuman = actions.some((item) => item.tool === "ask_user" && item.thread_id === thread.body.thread?.id);
+    const tutorial = (thread.body.replies || []).some((item) => item.author?.name === afterRestart.agent.name && /(?:run|try|use) (?:this )?(?:docker|curl|sudo) command/i.test(String(item.body || "")));
+    return escalated && residentFailed && !askedHuman && !tutorial ? true : null;
+  }, "resident network-boundary escalation", 20_000);
+  ok(Boolean(networkSetupActivity), "an imperative resident install with machine-wide socket denial calls Skipper with evidence instead of returning another tutorial or asking the human");
   const escalationLoopDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
   const escalationThread = escalationLoopDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(escalationRoot.body.message.id);
   const openEscalation = escalationLoopDb.prepare("SELECT id FROM escalations WHERE thread_id=? AND from_agent_id=? ORDER BY id DESC LIMIT 1").get(escalationThread.id, afterRestart.agent.id);

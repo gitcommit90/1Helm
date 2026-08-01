@@ -6,7 +6,7 @@ import { isChatGPTProvider, streamChatGPTCompletion } from "./chatgpt.ts";
 import { generateRoutingChatGPTImage, isInternalRoutingProvider, routingEndpointForUser } from "./routing.ts";
 import { availableGoogleAccounts, createGmailDraft, getGmailMessage, gmailConnectionStatus, normalizeMailConfig, searchGmail, startGmailConnection } from "./gmail.ts";
 import { recallForAgent, rememberForAgent } from "./memory.ts";
-import { agentSkillContext, createSkill, imageGenerationAvailable, listSkills, proposeSkill, provisionSkill, readAgentSkill, requestSkill, skillsForAgent } from "./skills.ts";
+import { agentSkillContext, createSkill, essentialResidentSkillContext, imageGenerationAvailable, listSkills, proposeSkill, provisionSkill, readAgentSkill, requestSkill, skillsForAgent } from "./skills.ts";
 import { inspectCatalogSkill, installCatalogSkill, searchSkillCatalog } from "./skill-catalog.ts";
 import { createWorkflow, listWorkflows, setWorkflowStatus } from "./workflows.ts";
 import { runThreadAuditPass } from "./thread-audit.ts";
@@ -237,15 +237,18 @@ function systemPromptTiers(bot: Row, agent: RuntimeAgent | undefined, channelId:
       ? "Contribute only the expertise requested in this thread. No shell, workspace, or durable-memory capability is attached to this invitation."
       : "You own an isolated persistent Linux computer for this channel. Its durable workspace is /workspace. You have direct shell, internet, SSH, package-install, file, memory, and listed-tool autonomy inside it. Routine commands, downloads, browsing, installations, and network access do not require Skipper or user approval.",
     visiting ? "" : "Own the requested outcome. Inspect and act instead of returning tutorials, interviews, rationalizations, or plans for work you can perform. If you make the wrong artifact or implementation choice, acknowledge it briefly and fix it; do not defend the mistake.",
+    visiting ? "" : "An imperative such as install, set up, make, fix, or can YOU do it authorizes you to perform the work with your tools. Never replace that request with commands for the user to run. Never say you are checking, fetching, creating, or continuing unless you actually invoke the relevant tool in this turn.",
     visiting ? "" : "Workspace file contracts: Markdown for notes and documents; plain text source files for code. /workspace/whiteboards holds `.whiteboard.json` Excalidraw scenes and /workspace/presentations holds `.slides.json` decks — these two folders are rendered by exact schemas, so never place .html decks or invented JSON formats there. When a request supplies a format contract for a folder, follow it exactly.",
     "Treat tool results as evidence. Retry transient failures with a bounded changed strategy, stop repeating unchanged failures, and verify before claiming success.",
     "If work truly crosses the resident boundary—host/native state, credentials, another channel, fleet lifecycle, or a missing capability—call Skipper once with the exact operation and evidence. Do not escalate routine shell, SSH, internet, download, or resident-computer work.",
+    visiting ? "" : "If resident commands cannot create network sockets or consistently fail with Permission denied, No route to host, DNS resolution failures, or equivalent machine-wide egress evidence, treat that as a broken resident-computer boundary: call Skipper directly with the failed probe and original outcome, then resume after hand-back. Do not answer with a Docker, curl, SSH, or package-install tutorial.",
     visiting ? "" : "Use ask_user only for consequential human judgment, missing credentials the human must supply, external authority, or an irreversible commitment. Difficulty and harmless implementation choices are not blockers.",
     "Use Markdown. Keep answers focused and attach user-facing artifacts rather than only naming a path.",
     "The callable tools below are your current capabilities. Their implementations enforce authority and isolation boundaries.",
   ].filter(Boolean).join("\n\n");
   const context = [
     `<channel name="${channel?.name || "channel"}" purpose="${agent?.purpose || channel?.purpose || "not yet recorded"}" visiting="${visiting}" />`,
+    !visiting && agent?.id ? essentialResidentSkillContext(Number(agent.id)) : "",
     agent?.id ? agentSkillContext(Number(agent.id), task) : "",
   ].filter(Boolean).join("\n\n");
   return { identity, operating, context };

@@ -30,6 +30,32 @@ fi
 for command in crun find flock getfacl iptables podman python3 setfacl sha256sum stat sudo tar visudo; do command -v "$command" >/dev/null || { echo "Missing OCI prerequisite after setup: $command" >&2; exit 1; }; done
 [[ "$(stat -fc %T /sys/fs/cgroup)" == cgroup2fs ]] || { echo "1Helm OCI resource controls require cgroup v2." >&2; exit 1; }
 
+# Ubuntu ships an AppArmor attachment for /usr/bin/crun whose nominally
+# unconfined profile can still inherit the outer container host's address-family
+# restrictions. On a nested systemd host that manifests inside every resident
+# as EPERM from socket(2), even though the 1Helm host itself has internet. Add
+# only the missing address-family grants to crun's supported local include; the
+# outer host/container profile remains the isolation boundary.
+NESTED_CRUN_PROFILE="/etc/apparmor.d/local/crun"
+NESTED_CRUN_MARKER="# Managed by 1Helm: allow resident OCI network sockets on nested hosts."
+container_virt="$(systemd-detect-virt --container 2>/dev/null || true)"
+apparmor_enabled="$(cat /sys/module/apparmor/parameters/enabled 2>/dev/null || true)"
+if [[ -n "$container_virt" && "$container_virt" != none && "$apparmor_enabled" =~ ^[Yy]$ && -r /etc/apparmor.d/crun ]]; then
+  command -v apparmor_parser >/dev/null || { echo "Nested AppArmor OCI setup requires apparmor_parser." >&2; exit 1; }
+  if [[ ! -e "$NESTED_CRUN_PROFILE" ]]; then
+    install -d -o root -g root -m 0755 "$(dirname "$NESTED_CRUN_PROFILE")"
+    profile_candidate="$(mktemp)"
+    printf '%s\nnetwork inet,\nnetwork inet6,\n' "$NESTED_CRUN_MARKER" >"$profile_candidate"
+    install -o root -g root -m 0644 "$profile_candidate" "$NESTED_CRUN_PROFILE"
+    rm -f -- "$profile_candidate"
+  elif ! grep -Eq '^[[:space:]]*network[[:space:]]+inet[[:space:]]*,' "$NESTED_CRUN_PROFILE" \
+      || ! grep -Eq '^[[:space:]]*network[[:space:]]+inet6[[:space:]]*,' "$NESTED_CRUN_PROFILE"; then
+    echo "The existing AppArmor local/crun policy does not permit resident IPv4 and IPv6 sockets; 1Helm left the custom policy unchanged." >&2
+    exit 1
+  fi
+  apparmor_parser -r /etc/apparmor.d/crun
+fi
+
 install -d -o root -g root -m 0755 /etc/1helm "$RECIPE_ROOT" /usr/libexec
 install -d -o root -g root -m 0711 "$STATE_ROOT/runtime/oci" "$STATE_ROOT/runtime/oci/channels"
 install -d -o root -g root -m 0700 "$STATE_ROOT/runtime/oci/storage" "$STATE_ROOT/runtime/oci/backups" "$STATE_ROOT/runtime/oci/networks"
