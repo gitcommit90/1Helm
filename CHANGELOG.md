@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   downloads and SHA-256-verifies the accepted Linux host artifact instead of
   pairing its current OCI setup logic with the obsolete source-only v0.0.28
   tag, which lacked the OCI runtime installer and sealed channel image.
+- Kept the website's digest-qualified installer metadata available through an
+  exact last-known-complete release fallback when GitHub's unauthenticated API
+  rate limit is exhausted.
 
 ### Documentation
 
