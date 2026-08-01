@@ -13,6 +13,11 @@ STATUS_FILE="$STATE_ROOT/host-update-status.json"
 LOCK_FILE="$INSTALL_ROOT/host-update.lock"
 SERVICE_NAME="1helm.service"
 PORT="8123"
+case "$(uname -m)" in
+  x86_64|amd64) CONNECTOR_ARCH="x64" ;;
+  aarch64|arm64) CONNECTOR_ARCH="arm64" ;;
+  *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
 HOST_CONTRACT_PATHS=(
   /usr/libexec/1helm-oci-runtime
   /etc/1helm/oci-runtime-v1.conf
@@ -192,7 +197,7 @@ if [[ "$VERSION_ORDER" != "-1" ]]; then
   RELEASE_ROOT="$(readlink -f "$APP_ROOT" 2>/dev/null || true)"
   [[ "$RELEASE_ROOT" == "$RELEASES_ROOT/"* && -d "$RELEASE_ROOT" ]] \
     || fail "The current 1Helm release is not inside the verified release store."
-  [[ -x "$RELEASE_ROOT/site/public/apply-linux-release.sh" && -x "$RELEASE_ROOT/site/public/install-oci-runtime.sh" && -x "$RELEASE_ROOT/site/public/install-linux-units.sh" && -x "$RELEASE_ROOT/site/public/uninstall-host.sh" && -x "$RELEASE_ROOT/scripts/1helm-oci-runtime" ]] \
+  [[ -x "$RELEASE_ROOT/site/public/apply-linux-release.sh" && -x "$RELEASE_ROOT/site/public/install-oci-runtime.sh" && -x "$RELEASE_ROOT/site/public/install-linux-units.sh" && -x "$RELEASE_ROOT/site/public/uninstall-host.sh" && -x "$RELEASE_ROOT/scripts/1helm-oci-runtime" && -x "$RELEASE_ROOT/resources/cloudflared-linux-$CONNECTOR_ARCH" ]] \
     || fail "The current verified release is missing its OCI runtime contract."
   write_status "installing" "$TARGET_VERSION" "The application is current; the host is applying its verified OCI contract."
   APPLY_UNIT="1helm-host-contract-apply-${TARGET_VERSION//./-}-$$"
@@ -220,7 +225,7 @@ PACKAGE_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "
   || fail "The verified Linux artifact version does not match its release tag."
 [[ -x "$STAGE/site/public/update-host.sh" ]] \
   || fail "The verified Linux artifact is missing its host updater."
-[[ -x "$STAGE/site/public/apply-linux-release.sh" && -x "$STAGE/site/public/install-oci-runtime.sh" && -x "$STAGE/site/public/install-linux-units.sh" && -x "$STAGE/site/public/uninstall-host.sh" && -x "$STAGE/scripts/1helm-oci-runtime" && -r "$STAGE/deploy/1helm-oci-runtime-v1.conf" && -r "$STAGE/container/Containerfile.oci" ]] \
+[[ -x "$STAGE/site/public/apply-linux-release.sh" && -x "$STAGE/site/public/install-oci-runtime.sh" && -x "$STAGE/site/public/install-linux-units.sh" && -x "$STAGE/site/public/uninstall-host.sh" && -x "$STAGE/scripts/1helm-oci-runtime" && -r "$STAGE/deploy/1helm-oci-runtime-v1.conf" && -r "$STAGE/container/Containerfile.oci" && -x "$STAGE/resources/cloudflared-linux-$CONNECTOR_ARCH" ]] \
   || fail "The verified Linux artifact is missing its OCI runtime contract."
 chown -R "$SERVICE_USER:$SERVICE_USER" "$STAGE"
 

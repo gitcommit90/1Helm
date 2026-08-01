@@ -183,7 +183,8 @@ PACKAGE_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "
    && -r "$RELEASE_STAGE/deploy/1helm-oci-runtime-v1.conf" \
    && -r "$RELEASE_STAGE/container/Containerfile.oci" \
    && -f "$RELEASE_STAGE/container/channel-machine.oci.tar" \
-   && -f "$RELEASE_STAGE/container/channel-machine.oci.sha256" ]] \
+   && -f "$RELEASE_STAGE/container/channel-machine.oci.sha256" \
+   && -x "$RELEASE_STAGE/resources/cloudflared-linux-$NODE_ARCH" ]] \
   || { echo "The verified Linux artifact is missing its complete OCI runtime contract." >&2; exit 1; }
 chown -R "$SERVICE_USER:$SERVICE_USER" "$RELEASE_STAGE"
 runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH="$NODE_LINK/bin:/usr/bin:/bin" PUPPETEER_SKIP_DOWNLOAD=1 "$NODE_LINK/bin/npm" --prefix "$RELEASE_STAGE" ci
@@ -193,7 +194,8 @@ if [[ -e "$RELEASE_ROOT" ]]; then
   EXISTING_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "$RELEASE_ROOT/package.json" 2>/dev/null || true)"
   [[ "$EXISTING_VERSION" == "$VERSION" \
      && -f "$RELEASE_ROOT/container/channel-machine.oci.tar" \
-     && -f "$RELEASE_ROOT/container/channel-machine.oci.sha256" ]] \
+     && -f "$RELEASE_ROOT/container/channel-machine.oci.sha256" \
+     && -x "$RELEASE_ROOT/resources/cloudflared-linux-$NODE_ARCH" ]] \
     || { echo "Existing release directory does not match the verified v$VERSION Linux artifact." >&2; exit 1; }
 else
   mv "$RELEASE_STAGE" "$RELEASE_ROOT"

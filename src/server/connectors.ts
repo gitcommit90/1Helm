@@ -19,6 +19,9 @@ function connectorBinary(): string {
   const appRoot = process.env.HELM_APP_ROOT || "";
   const pathSep = process.platform === "win32" ? ";" : ":";
   const pathNames = process.platform === "win32" ? ["cloudflared.exe", "cloudflared"] : ["cloudflared"];
+  const linuxConnector = process.platform === "linux" && (process.arch === "x64" || process.arch === "arm64")
+    ? `cloudflared-linux-${process.arch}`
+    : "";
   const pathCandidates = String(process.env.PATH || "").split(pathSep).filter(Boolean).flatMap((directory) => pathNames.map((name) => join(directory, name)));
   const candidates = [
     process.env.CLOUDFLARED_BIN || "",
@@ -27,6 +30,7 @@ function connectorBinary(): string {
     resources ? join(resources, "cloudflared") : "",
     appRoot ? join(appRoot, "cloudflared.exe") : "",
     appRoot ? join(appRoot, "cloudflared") : "",
+    appRoot && linuxConnector ? join(appRoot, "resources", linuxConnector) : "",
     "/opt/homebrew/bin/cloudflared",
     "/usr/local/bin/cloudflared",
     "/usr/bin/cloudflared",

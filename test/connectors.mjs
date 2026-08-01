@@ -1,8 +1,23 @@
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+
+test("Linux release packaging ships pinned connectors for every supported host architecture", () => {
+  const packageLinux = readFileSync(join(import.meta.dirname, "..", "scripts", "package-linux-host.mjs"), "utf8");
+  const resolver = readFileSync(join(import.meta.dirname, "..", "src", "server", "connectors.ts"), "utf8");
+  for (const [arch, asset, digest] of [
+    ["x64", "cloudflared-linux-amd64", "4a9e50e6d6d798e90fcd01933151a90bf7edd99a0a55c28ad18f2e16263a5c30"],
+    ["arm64", "cloudflared-linux-arm64", "0755ba4cbab59980e6148367fcf53a8f3ec85a97deefd63c2420cf7850769bee"],
+  ]) {
+    assert.match(packageLinux, new RegExp(`arch: "${arch}"[\\s\\S]*asset: "${asset}"[\\s\\S]*sha256: "${digest}"`));
+  }
+  assert.match(packageLinux, /cloudflared-linux-\$\{connector\.arch\}/, "the verified binaries enter the Linux release archive");
+  assert.match(packageLinux, /chmodSync\(destination, 0o755\)/, "packaged Linux connectors retain executable mode");
+  assert.match(resolver, /cloudflared-linux-\$\{process\.arch\}/, "Linux resolves only the binary matching the running host architecture");
+});
 
 test("stopping a connector cancels automatic relaunch while preserving its credentials", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "1helm-connector-test-"));

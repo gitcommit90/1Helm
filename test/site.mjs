@@ -193,6 +193,7 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(installer, /expectedUrl = `https:\/\/github\.com\/gitcommit90\/1Helm\/releases\/download\/v\$\{version\}\/\$\{name\}`/, "fresh installs accept only the canonical artifact URL for the resolved version");
   assert.match(installer, /RELEASE_SHA256[\s\S]*sha256sum -c -[\s\S]*tar -xzf/, "fresh installs verify the Linux release digest before extraction");
   assert.match(installer, /install-oci-runtime\.sh[\s\S]*channel-machine\.oci\.tar[\s\S]*npm[^\n]*ci/, "fresh installs reject an artifact without the complete OCI runtime before running release code");
+  assert.match(installer, /resources\/cloudflared-linux-\$NODE_ARCH/, "fresh Linux installs reject archives without the connector for the current architecture");
   assert.match(installer, /NETWORK_BACKEND_FILE[\s\S]*cat "\$NETWORK_BACKEND_FILE"[\s\S]*printf '%s' netavark[\s\S]*install-oci-runtime\.sh/, "the web bootstrap repairs v0.0.30's newline-terminated Podman backend before invoking release code");
   assert.doesNotMatch(installer, /git clone|git checkout/, "fresh installs never combine the current installer with an older source-only tag");
   assert.doesNotMatch(installer, /api\.github\.com/, "fresh installs do not depend on unauthenticated GitHub API quota");
@@ -213,6 +214,7 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(updater, /browser_download_url/);
   assert.match(updater, /\^sha256:\[a-f0-9\]\{64\}\$/, "the Linux updater requires GitHub's exact SHA-256 asset digest");
   assert.match(updater, /sha256sum -c -/);
+  assert.match(updater, /CONNECTOR_ARCH[\s\S]*resources\/cloudflared-linux-\$CONNECTOR_ARCH/, "Linux updates reject archives without the connector for the current architecture");
   assert.match(updater, /mv -Tf .*current/);
   assert.match(updater, /atomic host transaction[\s\S]*rollback was proven healthy/i, "the updater defers rollback reporting to the transaction that can prove restored HTTP health");
   assert.match(updater, /VERSION_ORDER[\s\S]*Never downgrade[\s\S]*TARGET_VERSION="\$CURRENT_VERSION"/, "the root updater never replaces a newer installed host with an older latest-release response");

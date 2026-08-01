@@ -37,8 +37,19 @@ function Fetch-File {
 # version/list matches fail unless the NULs are stripped first.
 function Get-WslText {
   param([Parameter(Mandatory = $true)][string[]]$ArgumentList)
-  $raw = & $wsl @ArgumentList 2>&1 | Out-String
-  $code = $LASTEXITCODE
+  # Windows PowerShell promotes native stderr to ErrorRecord objects. With the
+  # script-wide Stop policy, an expected nonzero probe (such as --version on a
+  # genuinely fresh host) otherwise aborts before we can inspect LASTEXITCODE
+  # and install WSL. Keep the probe non-terminating, then restore fail-closed
+  # behavior for the surrounding setup transaction.
+  $previousErrorAction = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    $raw = & $wsl @ArgumentList 2>&1 | Out-String
+    $code = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorAction
+  }
   $text = ($raw -replace [char]0, "").Trim()
   return [pscustomobject]@{ ExitCode = $code; Text = $text }
 }
@@ -103,63 +114,69 @@ function Fail-Setup {
 }
 
 if ($HostSetup) {
-  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-  $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-  if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Fail-Setup "The WSL host setup phase requires administrator approval."
-  }
-  Write-SetupStatus -Status "running" -Step "Enabling Windows WSL features..." -Progress 8
-  $wslFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux
-  $vmFeature = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform
-  if ($wslFeature.State -ne "Enabled") { Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -All -NoRestart | Out-Null }
-  if ($vmFeature.State -ne "Enabled") { Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart | Out-Null }
-  $wslFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux
-  $vmFeature = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform
-  $restartRequired = (Test-RestartRequired $wslFeature) -or (Test-RestartRequired $vmFeature)
-  $hostTemporary = Join-Path ([System.IO.Path]::GetTempPath()) ("1helm-wsl-host-" + [Guid]::NewGuid().ToString("N"))
-  New-Item -ItemType Directory -Path $hostTemporary | Out-Null
   try {
-    if (-not (Test-PinnedWslRuntime)) {
-      $msi = Join-Path $hostTemporary "wsl.candidate.msi"
-      Write-SetupStatus -Status "running" -Step "Downloading Microsoft WSL installer..." -Progress 12
-      Fetch-File -Url $wslInstallerUrl -Destination $msi
-      if ((Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant() -ne $wslInstallerSha256) {
-        Fail-Setup "Microsoft WSL installer did not match 1Helm's pinned SHA-256."
-      }
-      $signature = Get-AuthenticodeSignature -LiteralPath $msi
-      if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or $null -eq $signature.SignerCertificate -or
-          $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)') {
-        Fail-Setup "Microsoft WSL installer did not have a valid Microsoft Corporation signature."
-      }
-      Write-SetupStatus -Status "running" -Step "Installing Microsoft WSL $wslVersion..." -Progress 18
-      $installer = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList @("/i", $msi, "/qn", "/norestart") -Wait -PassThru
-      # 0 success; 1641/3010 success+reboot; 1638 already installed (same/newer).
-      # 1603 is a hard fail from msiexec, but on machines that already have the
-      # pinned WSL build (or UTF-16 made detection fail earlier) the package may
-      # still leave a working runtime - re-verify before failing closed.
-      if ($installer.ExitCode -in @(1641, 3010)) { $restartRequired = $true }
-      elseif ($installer.ExitCode -notin @(0, 1638)) {
-        if (Test-PinnedWslRuntime) {
-          Write-Host "Microsoft WSL installer returned $($installer.ExitCode), but pinned WSL $wslVersion is already present; continuing."
-        } else {
-          Fail-Setup "Microsoft WSL installer failed with exit code $($installer.ExitCode)."
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+      Fail-Setup "The WSL host setup phase requires administrator approval."
+    }
+    Write-SetupStatus -Status "running" -Step "Enabling Windows WSL features..." -Progress 8
+    $wslFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux
+    $vmFeature = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform
+    if ($wslFeature.State -ne "Enabled") { Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -All -NoRestart | Out-Null }
+    if ($vmFeature.State -ne "Enabled") { Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart | Out-Null }
+    $wslFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux
+    $vmFeature = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform
+    $restartRequired = (Test-RestartRequired $wslFeature) -or (Test-RestartRequired $vmFeature)
+    $hostTemporary = Join-Path ([System.IO.Path]::GetTempPath()) ("1helm-wsl-host-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $hostTemporary | Out-Null
+    try {
+      if (-not (Test-PinnedWslRuntime)) {
+        $msi = Join-Path $hostTemporary "wsl.candidate.msi"
+        Write-SetupStatus -Status "running" -Step "Downloading Microsoft WSL installer..." -Progress 12
+        Fetch-File -Url $wslInstallerUrl -Destination $msi
+        if ((Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant() -ne $wslInstallerSha256) {
+          Fail-Setup "Microsoft WSL installer did not match 1Helm's pinned SHA-256."
         }
+        $signature = Get-AuthenticodeSignature -LiteralPath $msi
+        if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or $null -eq $signature.SignerCertificate -or
+            $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)') {
+          Fail-Setup "Microsoft WSL installer did not have a valid Microsoft Corporation signature."
+        }
+        Write-SetupStatus -Status "running" -Step "Installing Microsoft WSL $wslVersion..." -Progress 18
+        $installer = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList @("/i", $msi, "/qn", "/norestart") -Wait -PassThru
+        # 0 success; 1641/3010 success+reboot; 1638 already installed (same/newer).
+        # 1603 is a hard fail from msiexec, but on machines that already have the
+        # pinned WSL build (or UTF-16 made detection fail earlier) the package may
+        # still leave a working runtime - re-verify before failing closed.
+        if ($installer.ExitCode -in @(1641, 3010)) { $restartRequired = $true }
+        elseif ($installer.ExitCode -notin @(0, 1638)) {
+          if (Test-PinnedWslRuntime) {
+            Write-Host "Microsoft WSL installer returned $($installer.ExitCode), but pinned WSL $wslVersion is already present; continuing."
+          } else {
+            Fail-Setup "Microsoft WSL installer failed with exit code $($installer.ExitCode)."
+          }
+        }
+      } else {
+        Write-SetupStatus -Status "running" -Step "Microsoft WSL $wslVersion is already installed." -Progress 18
       }
-    } else {
-      Write-SetupStatus -Status "running" -Step "Microsoft WSL $wslVersion is already installed." -Progress 18
+      if ($restartRequired) {
+        Write-SetupStatus -Status "restart_required" -Step "WSL 2 features are enabled. Restart Windows once, then retry 1Helm computer setup." -Progress 20
+        exit 10
+      }
+      if (-not (Test-PinnedWslRuntime)) { Fail-Setup "Microsoft WSL $wslVersion was installed but could not be verified." }
+      Write-SetupStatus -Status "running" -Step "Setting WSL 2 as the default..." -Progress 22
+      $defaultVersion = Get-WslText -ArgumentList @("--set-default-version", "2")
+      if ($defaultVersion.ExitCode -ne 0) { Fail-Setup "WSL could not set version 2 as the default. $($defaultVersion.Text)" }
+    } finally {
+      if (Test-Path -LiteralPath $hostTemporary) { Remove-Item -LiteralPath $hostTemporary -Recurse -Force }
     }
-    if ($restartRequired) {
-      Write-SetupStatus -Status "restart_required" -Step "WSL 2 features are enabled. Restart Windows once, then retry 1Helm computer setup." -Progress 20
-      exit 10
-    }
-    if (-not (Test-PinnedWslRuntime)) { Fail-Setup "Microsoft WSL $wslVersion was installed but could not be verified." }
-    Write-SetupStatus -Status "running" -Step "Setting WSL 2 as the default..." -Progress 22
-    $defaultVersion = Get-WslText -ArgumentList @("--set-default-version", "2")
-    if ($defaultVersion.ExitCode -ne 0) { Fail-Setup "WSL could not set version 2 as the default. $($defaultVersion.Text)" }
-  } finally {
-    if (Test-Path -LiteralPath $hostTemporary) { Remove-Item -LiteralPath $hostTemporary -Recurse -Force }
+    exit 0
+  } catch {
+    $message = $_.Exception.Message
+    if (-not $message) { $message = "$_" }
+    Fail-Setup $message
   }
-  exit 0
 }
 
 # Keep the distribution owned by the signed-in Windows account. Only optional
