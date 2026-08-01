@@ -18,8 +18,6 @@
   &nbsp;·&nbsp;
   <a href="https://1helm.com/manual/install-linux"><strong>for Linux</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/gitcommit90/1Helm/releases/latest"><strong>for Android</strong></a>
-  &nbsp;·&nbsp;
   <a href="https://1helm.com">The story</a>
   &nbsp;·&nbsp;
   <a href="https://1helm.com/manual">Ship's manual</a>
@@ -33,8 +31,8 @@
   <code>AGPL-3.0-only</code>&nbsp;&nbsp;
   <code>Self-hosted</code>&nbsp;&nbsp;
   <code>Model-agnostic</code>&nbsp;&nbsp;
-  <code>Signed + notarized</code>&nbsp;&nbsp;
-  <code>macOS · Windows · Linux · iOS · Android</code>
+  <code>Apple signed + notarized</code>&nbsp;&nbsp;
+  <code>macOS · Windows · Linux</code>
 </p>
 
 ---
@@ -138,11 +136,12 @@ it works best on a dedicated machine: your crew works around the clock, and
 your everyday computer takes naps.
 
 Mac, Linux, and Windows use one synchronized desktop release version. A release
-is held in full until the DMG/updater ZIP, Linux host archive, and signed
-Windows Setup/Squirrel feed have all passed native install and update
-acceptance from the same source commit.
+is held in full until the signed/notarized Mac DMG and updater ZIP, verified
+Linux host archive, and Windows Setup/Squirrel feed have all passed native
+install and update acceptance from the same source commit. Windows
+Authenticode status is disclosed in every release; v0.0.30 is `NotSigned`.
 
-### Connect from iPhone, iPad, or Android
+### Connect from a phone or tablet
 
 The mobile apps are thin, native gateways to a 1Helm you already run. Install
 and finish setup on a supported Mac, Windows, or Linux host first, give that
@@ -152,12 +151,11 @@ Android always use the same current interface. Sign-in happens on that live
 frontend; the password is never retained and the resulting session is stored
 in the iOS Keychain or encrypted with a key held by Android Keystore.
 
-- iPhone and iPad use the App Store build under the stable bundle identifier
-  `com.gitcommit90.onehelm.mobile`.
-- Android is distributed directly as `1Helm-<version>-universal.apk` on the
-  matching GitHub Release. Android may ask you to allow installs from the app
-  you used to open the file. Verify the release SHA-256 and install it; future
-  releases signed by the same permanent 1Helm certificate install in place.
+- The native iOS and Android gateway source is included in this repository,
+  but neither mobile platform has a current v0.0.30 public build. The most
+  recent signed Android APK is the older v0.0.23 gateway, and 1Helm is not
+  currently listed in the public iOS App Store. Use the HTTPS browser interface
+  for the current v0.0.30 experience.
 - The native clients require HTTPS, do not contain or initialize the 1Helm
   server or a frozen copy of its product frontend, and do not retain host data
   or provider credentials beyond the selected server address and secure
@@ -244,7 +242,7 @@ and an audit trail. A prompt saying “use this service” is not a connector.
 
 ## What ships now
 
-- Captain → Providers → Workspace onboarding in the signed Mac app.
+- Captain → Providers → Workspace onboarding on every supported host.
 - Exactly one resident for every ordinary channel and one Skipper in `#main`.
 - A persistent, fully isolated Linux computer per ordinary channel on every
   supported platform (exact contracts in the table below).
@@ -257,10 +255,14 @@ and an audit trail. A prompt saying “use this service” is not a connector.
   `/workspace/whiteboards`, `/workspace/code`, `/workspace/docs`, and
   `/workspace/presentations`, with one consistent file rail, live collaborative
   text editors, embedded whiteboard and slide canvases, and an optional
-  channel-agent panel that starts an ordinary thread with the open file path.
+  channel-agent panel with live work status and per-file session history.
+- Cowork Code can preview an HTML file with its same-project CSS and JavaScript
+  in a sandbox; agent-created files appear without a reload, and folders open
+  directly from the shared rail.
 - Presentations define a visible, locked printable area (1500 × 1000 by
   default), allow custom page dimensions, and export the complete bounded slide
-  deck as one multi-page PDF while excluding work outside each page.
+  deck as one multi-page PDF while excluding work outside each page. Simple
+  agent-generated decks receive a themed, wrapping, content-aware layout.
 - Quick Note in the top bar for capturing a Markdown note into
   `/workspace/notes` without leaving or repositioning the current channel view.
 - Durable files, threads, curated memory, Mnemosyne long-term recall,
@@ -269,12 +271,13 @@ and an audit trail. A prompt saying “use this service” is not a connector.
 - Outcome-first Activity with expandable work evidence and a tamper-evident
   SHA-256 chain for new operational events.
 - Local-first collaboration through an optional workspace domain routed to the
-  Captain's Mac; workspace state and provider credentials remain on that Mac.
-- Host-owned updates: a signed native Mac updater plus an atomic,
-  digest-verified Linux system service with health-check rollback.
+  Captain's helm host; workspace state and provider credentials remain there.
+- Host-owned updates: a signed native Mac updater, a Windows Squirrel feed with
+  disclosed Authenticode status, and an atomic digest-verified Linux system
+  service with health-check rollback.
 - Signed, Apple-notarized, stapled Apple Silicon DMG releases.
-- Native iPhone/iPad and directly distributed Android gateway clients for an
-  already configured HTTPS 1Helm host.
+- Browser access from phones and tablets to an already configured HTTPS 1Helm
+  host; native mobile gateway source is present but has no v0.0.30 public build.
 
 ### Platform truth
 
@@ -283,11 +286,11 @@ and an audit trail. A prompt saying “use this service” is not a connector.
 | **Apple Silicon macOS 26** | Native desktop product and real isolated Linux computer per resident (Apple `container machine`, `home-mount=none`). |
 | **Linux / CI** | Supported headless systemd host with one durable Podman OCI container per resident, runtime-owned storage, and exact ownership checks; CI may select an explicit test backend. |
 | **Windows 11 x64** | Native desktop product with one installation-scoped WSL 2 OCI runtime and one durable container per resident; Windows-drive mounts and interop are disabled. |
-| **iPhone and iPad** | App Store gateway to an already configured HTTPS 1Helm host; sessions live in the device-only iOS Keychain. |
-| **Android 7+** | Directly distributed signed universal APK gateway; sessions are encrypted by a key held in Android Keystore. |
+| **iPhone, iPad, and Android** | Use the current HTTPS browser interface. Native gateway source exists, but v0.0.30 has no public mobile artifact and the iOS app is not publicly listed. |
 
-Not yet shipped: a native Linux desktop shell, a hosted control plane, rich
-Photon attachment fidelity, or blind execution of community skills.
+Not yet shipped: current public mobile builds, a native Linux desktop shell, a
+hosted control plane, rich Photon attachment fidelity, or blind execution of
+community skills.
 
 ## Run the source workspace
 

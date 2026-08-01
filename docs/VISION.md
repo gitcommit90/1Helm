@@ -83,14 +83,17 @@ verification.
 ## Product truth
 
 - `https://1helm.com` is the standalone product and documentation site.
-- `https://demo.1helm.com` is a separate public sandbox, not the product site
-  and not a dependency of an installed workspace.
+- `https://demo.1helm.com` currently redirects to the product site. The retired
+  pre-OCI sandbox was removed during the clean-start runtime transition; a
+  future sandbox must be provisioned explicitly with isolated non-production
+  state before it is advertised again.
 - Apple Silicon macOS, Linux systemd, and native Windows x64 + WSL are the
   synchronized public desktop-host product. Every named desktop release must
   publish all three from one version and exact source commit.
-- 1Helm is self-hosted and open source. A hosted control plane, mobile clients,
-  blind community-skill execution, and a native Linux desktop shell are not
-  shipped.
+- 1Helm is self-hosted and open source. Native mobile gateway source is present,
+  but v0.0.30 has no public Android/iOS build and 1Helm is not listed in the
+  public iOS App Store. A hosted control plane, blind community-skill execution,
+  and a native Linux desktop shell are not shipped.
 
 ## What 1Helm borrows—and what it does not
 
