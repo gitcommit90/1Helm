@@ -16,7 +16,10 @@ let shuttingDown = false;
 
 function connectorBinary(): string {
   const resources = process.env.HELM_RESOURCES_PATH || "";
-  const appRoot = process.env.HELM_APP_ROOT || "";
+  // Linux systemd releases run with /opt/1helm/current as their working
+  // directory. Keep that installed-root contract usable even if an older unit
+  // omitted HELM_APP_ROOT, while preferring the explicit packaged root.
+  const appRoots = [...new Set([process.env.HELM_APP_ROOT || "", process.cwd()].filter(Boolean))];
   const pathSep = process.platform === "win32" ? ";" : ":";
   const pathNames = process.platform === "win32" ? ["cloudflared.exe", "cloudflared"] : ["cloudflared"];
   const linuxConnector = process.platform === "linux" && (process.arch === "x64" || process.arch === "arm64")
@@ -28,9 +31,11 @@ function connectorBinary(): string {
     // Packaged desktop apps (macOS Resources/cloudflared, Windows resources/cloudflared.exe).
     resources ? join(resources, "cloudflared.exe") : "",
     resources ? join(resources, "cloudflared") : "",
-    appRoot ? join(appRoot, "cloudflared.exe") : "",
-    appRoot ? join(appRoot, "cloudflared") : "",
-    appRoot && linuxConnector ? join(appRoot, "resources", linuxConnector) : "",
+    ...appRoots.flatMap((appRoot) => [
+      join(appRoot, "cloudflared.exe"),
+      join(appRoot, "cloudflared"),
+      linuxConnector ? join(appRoot, "resources", linuxConnector) : "",
+    ]),
     "/opt/homebrew/bin/cloudflared",
     "/usr/local/bin/cloudflared",
     "/usr/bin/cloudflared",
