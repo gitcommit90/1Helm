@@ -130,7 +130,7 @@ test("a finalized turn is immutable to stale stream writers", () => {
   assert.equal(q1("SELECT status FROM agent_progress WHERE id=?", progressId).status, "complete");
 });
 
-test("runtime exposes usable skill metadata and durable operating identity without injecting full playbooks", () => {
+test("runtime injects the essential resident operating playbooks and keeps the remaining arsenal metadata-bounded", () => {
   seed();
   const channelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created) VALUES ('prompt-tiers','prompt-tiers','channel','','First purpose','active',?)", now()).lastInsertRowid;
   const botId = run("INSERT INTO bots (name,model,prompt,created) VALUES ('prompt-agent','mock','Patient domain partner.',?)", now()).lastInsertRowid;
@@ -148,7 +148,10 @@ test("runtime exposes usable skill metadata and durable operating identity witho
   assert.match(first.operating, /\/workspace/);
   assert.match(first.context, /skill-arsenal count=/i);
   assert.match(first.context, /outcome-ownership: Outcome ownership/i);
-  assert.doesNotMatch(first.context, /active-skill-playbooks|workspace-skill-catalog|### /i);
+  assert.match(first.context, /essential-resident-operations[\s\S]*outcome-ownership[\s\S]*Carry an outcome from request to verified completion/i);
+  assert.match(first.operating, /cannot create network sockets[\s\S]*call Skipper directly[\s\S]*Do not answer with a Docker/i);
+  assert.match(first.operating, /Never say you are checking[\s\S]*unless you actually invoke/i);
+  assert.doesNotMatch(first.context, /workspace-skill-catalog|### /i);
   assert(first.identity.length + first.operating.length + first.context.length < 15_000, "capability map remains metadata-bounded rather than injecting full procedures");
   assert.match(first.context, /Own prompt testing/);
   assert.match(second.context, /Changed volatile purpose/);

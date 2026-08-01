@@ -146,6 +146,7 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   const macPackager = await readFile(join(root, "scripts", "package-mac-dmg.cjs"), "utf8");
   const windowsRemoval = await readFile(join(root, "scripts", "windows-removal.cjs"), "utf8");
   const windowsRuntime = await readFile(join(root, "scripts", "install-wsl-runtime.ps1"), "utf8");
+  const windowsRuntimeStatusTest = await readFile(join(root, "test", "windows-wsl-status.ps1"), "utf8");
   assert.match(windowsPackager, /HELM_REQUIRE_WINDOWS_SIGNATURE/);
   assert.match(windowsPackager, /require\("png-to-ico"\)\.default/, "Windows packaging uses the module's CommonJS default export");
   assert.match(windowsPackager, /1Helm-\$\{VERSION\}-windows-x64-setup\.exe/);
@@ -187,7 +188,7 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(windowsRuntime, /-HostSetup[\s\S]*-Verb RunAs[\s\S]*Get-WslDistributionNames/, "only WSL host components cross UAC while the signed-in owner imports the shared distribution");
   assert.match(windowsRuntime, /function Fetch-File[\s\S]*if \(\$HostSetup\)/, "Fetch-File is script-scoped so the signed-in owner path can download the Ubuntu rootfs after elevation");
   assert.match(windowsRuntime, /Write-SetupStatus/, "Windows setup writes machine-readable progress for the app UI");
-  assert.match(windowsRuntime, /\$null -eq \$hostProcess -or \$null -eq \$hostProcess\.ExitCode/, "cancelled UAC is reported as setup failure instead of a silent no-op");
+  assert.match(windowsRuntime, /\$hostExitCode = if \(\$null -eq \$hostProcess\)[\s\S]*Get-HostSetupOutcome/, "cancelled UAC is reported through the shared host-outcome transaction instead of a silent no-op");
   assert.match(windowsRuntime, /Get-WslText|replace \[char\]0/, "WSL UTF-16 NUL output is normalized before version and distro matching");
   assert.match(windowsRuntime, /function Get-WslText[\s\S]*ErrorActionPreference = "Continue"[\s\S]*\$LASTEXITCODE[\s\S]*ErrorActionPreference = \$previousErrorAction/, "a fresh host's expected failing WSL probe cannot terminate setup before the pinned runtime is installed");
   assert.match(windowsRuntime, /Test-PinnedWslRuntime/, "host setup verifies the pinned Microsoft WSL build");
@@ -197,6 +198,9 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(windowsRuntime, /\$enabledWslFeatureNow[\s\S]*\$enabledVmFeatureNow[\s\S]*\$restartRequired/, "features enabled in the current pass force a reboot before WSL import regardless of DISM enum formatting");
   assert.match(windowsRuntime, /Get-Service -Name vmcompute[\s\S]*\$restartRequired = \$true/, "an enabled-but-not-registered WSL VM compute service stops setup at the reboot boundary");
   assert.match(windowsRuntime, /HCS_E_SERVICE_NOT_AVAILABLE[\s\S]*Require-WindowsRestart|Test-WslRestartFailure[\s\S]*Require-WindowsRestart/, "an unavailable VM compute service is reported as restart-required instead of a broken runtime");
+  assert.match(windowsRuntime, /Get-HostSetupOutcome[\s\S]*Status -eq "restart_required"[\s\S]*Test-PinnedWslRuntime/, "the signed-in setup honors the elevated shared reboot result before probing WSL");
+  assert.doesNotMatch(channelComputers, /status: windowsWslSetupChild \? "running" : status/, "a live parent process cannot mask a terminal shared WSL setup status");
+  assert.match(windowsRuntimeStatusTest, /Get-HostSetupOutcome -ExitCode 0[\s\S]*restart_required[\s\S]*Get-HostSetupOutcome -ExitCode 10/, "the executable PowerShell regression proves shared restart status wins over an unreliable zero exit code");
   assert.match(windowsRuntime, /\.1helm-partial-import[\s\S]*\$ownedPartial[\s\S]*Remove-Item -LiteralPath \$installDirectory/, "an app-owned partial WSL import can recover safely after reboot");
   assert.match(windowsRuntime, /\[automount\][\s\S]*enabled=false[\s\S]*\[interop\][\s\S]*enabled=false/, "the shared runtime exposes neither Windows drives nor process interop");
   assert.doesNotMatch(windowsRuntime, /--update/);

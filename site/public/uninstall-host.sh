@@ -32,6 +32,13 @@ done
 systemctl disable --now 1helm-update.path 2>/dev/null || true
 rm -f -- /etc/systemd/system/1helm.service /etc/systemd/system/1helm-update.service /etc/systemd/system/1helm-update.path
 rm -f -- /etc/sudoers.d/1helm-oci-runtime /etc/1helm/oci-runtime-v1.conf /usr/libexec/1helm-oci-runtime /usr/lib/1helm-oci/Containerfile.oci /usr/lib/1helm-oci/channel-machine.oci.tar /usr/lib/1helm-oci/channel-machine.oci.sha256 /usr/lib/1helm-oci/channel-machine.oci.json
+managed_crun_profile="$(mktemp)"
+printf '%s\nnetwork inet,\nnetwork inet6,\n' '# Managed by 1Helm: allow resident OCI network sockets on nested hosts.' >"$managed_crun_profile"
+if [[ -f /etc/apparmor.d/local/crun ]] && cmp -s "$managed_crun_profile" /etc/apparmor.d/local/crun; then
+  rm -f -- /etc/apparmor.d/local/crun
+  command -v apparmor_parser >/dev/null 2>&1 && [[ -r /etc/apparmor.d/crun ]] && apparmor_parser -r /etc/apparmor.d/crun || true
+fi
+rm -f -- "$managed_crun_profile"
 rm -f -- "$INSTALL_ROOT/update-host.sh" "$INSTALL_ROOT/uninstall-host.sh"
 systemctl daemon-reload
 printf 'Removed the 1Helm services and %s owned channel container(s). Preserved %s and versioned release files for recovery.\n' "${#MACHINES[@]}" "$STATE_ROOT"

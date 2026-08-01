@@ -182,6 +182,21 @@ export function agentSkillContext(agentId: number, _task = ""): string {
   ].join("\n");
 }
 
+/** These three playbooks are the resident execution kernel, not optional
+ * reference material. Models were sometimes reading only skill metadata and
+ * then returning tutorials or failing to escalate a broken resident computer.
+ * Inject the full, compact contracts on every home-resident turn. */
+export function essentialResidentSkillContext(agentId: number): string {
+  const essential = new Set(["outcome-ownership", "blocker-resolution", "skipper-escalation"]);
+  const available = skillsForAgent(agentId).filter((entry) => essential.has(String(entry.slug)) && !entry.arsenal_locked);
+  return [
+    '<essential-resident-operations priority="always">',
+    ...available.map((entry) => `<playbook slug="${entry.slug}">\n${String(entry.instructions || "").trim()}\n</playbook>`),
+    "These playbooks are active instructions for this turn; do not wait for read_skill before following them.",
+    "</essential-resident-operations>",
+  ].join("\n");
+}
+
 export function templateForSlug(slug: string): Row | undefined {
   return q1("SELECT * FROM agent_templates WHERE slug=? AND status='active'", skillSlug(slug));
 }

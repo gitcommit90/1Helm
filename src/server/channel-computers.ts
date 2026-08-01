@@ -68,7 +68,7 @@ const APPLE_RUNTIME_VERSION = "1.1.0";
 export const APPLE_RUNTIME_PACKAGE = `container-${APPLE_RUNTIME_VERSION}-installer-signed.pkg`;
 export const APPLE_RUNTIME_URL = `https://github.com/apple/container/releases/download/${APPLE_RUNTIME_VERSION}/${APPLE_RUNTIME_PACKAGE}`;
 export const APPLE_RUNTIME_SHA256 = "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714";
-export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.34";
+export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.35";
 const CONTAINER_CANDIDATES = [process.env.HELM_CONTAINER_CLI, "/usr/local/bin/container", "/opt/homebrew/bin/container", "container"].filter(Boolean) as string[];
 const OCI_RUNTIME_VERSION = "1helm-oci-runtime-v1";
 const OCI_HELPER_CANDIDATES = [
@@ -1659,7 +1659,10 @@ export function windowsWslSetupStatus(): WindowsWslSetupStatus {
           ? parsed.status as WindowsWslSetupStatus["status"]
           : "running";
         setWindowsWslSetupState({
-          status: windowsWslSetupChild ? "running" : status,
+          // The elevated PowerShell pass reports terminal outcomes through the
+          // shared file before its parent process necessarily closes. Do not
+          // hide a required reboot (or a real failure) behind the live child.
+          status,
           step: String(parsed.step),
           progress: Math.max(0, Math.min(100, Number(parsed.progress) || windowsWslSetupState.progress)),
           error: String(parsed.error || windowsWslSetupState.error || ""),

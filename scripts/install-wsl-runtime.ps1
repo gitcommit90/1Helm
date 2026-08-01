@@ -125,6 +125,50 @@ function Fail-Setup {
   exit $Code
 }
 
+function Read-ReportedSetupStatus {
+  $path = $env:HELM_WSL_SETUP_STATUS
+  if (-not $path -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+  try {
+    return Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+  } catch {
+    return $null
+  }
+}
+
+# The elevated process exit code is not authoritative across every Windows
+# PowerShell/UAC host. The shared status file is the transaction record: in
+# particular, never continue into the signed-in-user WSL probe after the
+# elevated pass has declared that a reboot is required.
+function Get-HostSetupOutcome {
+  param([Nullable[int]]$ExitCode)
+  $reported = Read-ReportedSetupStatus
+  if ($null -ne $reported -and $reported.status -eq "restart_required") {
+    $step = if ($reported.step) { [string]$reported.step } else { "WSL 2 features are enabled. Restart Windows once, then retry 1Helm computer setup." }
+    $errorMessage = if ($reported.error) { [string]$reported.error } else { "Windows restart required to finish enabling WSL 2." }
+    return [pscustomobject]@{ Status = "restart_required"; Step = $step; Detail = $errorMessage }
+  }
+  if ($null -ne $reported -and $reported.status -eq "failed") {
+    $detail = if ($reported.error) { [string]$reported.error } elseif ($reported.step) { [string]$reported.step } else { "The administrator-approved WSL host setup failed." }
+    return [pscustomobject]@{ Status = "failed"; Step = $detail; Detail = $detail }
+  }
+  if ($null -eq $ExitCode) {
+    $detail = "Administrator approval was cancelled or Windows did not start the elevated WSL host setup."
+    return [pscustomobject]@{ Status = "failed"; Step = $detail; Detail = $detail }
+  }
+  if ($ExitCode -eq 10) {
+    return [pscustomobject]@{
+      Status = "restart_required"
+      Step = "WSL 2 features are enabled. Restart Windows once, then retry 1Helm computer setup."
+      Detail = "Windows restart required to finish enabling WSL 2."
+    }
+  }
+  if ($ExitCode -ne 0) {
+    $detail = "The administrator-approved WSL host setup failed with exit code $ExitCode."
+    return [pscustomobject]@{ Status = "failed"; Step = $detail; Detail = $detail }
+  }
+  return [pscustomobject]@{ Status = "continue"; Step = ""; Detail = "" }
+}
+
 if ($HostSetup) {
   try {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -217,25 +261,14 @@ try {
     $hostArguments += @("-StatusPath", ('"{0}"' -f $statusArg))
   }
   $hostProcess = Start-Process -FilePath "powershell.exe" -ArgumentList ($hostArguments -join " ") -Verb RunAs -Wait -PassThru
-  if ($null -eq $hostProcess -or $null -eq $hostProcess.ExitCode) {
-    Fail-Setup "Administrator approval was cancelled or Windows did not start the elevated WSL host setup."
-  }
-  if ($hostProcess.ExitCode -eq 10) {
-    Write-SetupStatus -Status "restart_required" -Step "WSL 2 features are enabled. Restart Windows once, then retry 1Helm computer setup." -Progress 20
-    Write-Host "WSL 2 features are enabled. Restart Windows once, then retry 1Helm computer setup."
+  $hostExitCode = if ($null -eq $hostProcess) { $null } else { $hostProcess.ExitCode }
+  $hostOutcome = Get-HostSetupOutcome -ExitCode $hostExitCode
+  if ($hostOutcome.Status -eq "restart_required") {
+    Write-SetupStatus -Status "restart_required" -Step $hostOutcome.Step -Progress 20 -ErrorMessage $hostOutcome.Detail
+    Write-Host $hostOutcome.Step
     exit 10
   }
-  if ($hostProcess.ExitCode -ne 0) {
-    $detail = "The administrator-approved WSL host setup failed with exit code $($hostProcess.ExitCode)."
-    if ($env:HELM_WSL_SETUP_STATUS -and (Test-Path -LiteralPath $env:HELM_WSL_SETUP_STATUS)) {
-      try {
-        $reported = Get-Content -LiteralPath $env:HELM_WSL_SETUP_STATUS -Raw | ConvertFrom-Json
-        if ($reported.error) { $detail = [string]$reported.error }
-        elseif ($reported.step -and $reported.status -eq "failed") { $detail = [string]$reported.step }
-      } catch { }
-    }
-    Fail-Setup $detail
-  }
+  if ($hostOutcome.Status -eq "failed") { Fail-Setup $hostOutcome.Detail }
   if (-not (Test-PinnedWslRuntime)) {
     Fail-Setup "Microsoft WSL $wslVersion is not ready in the signed-in user's session."
   }

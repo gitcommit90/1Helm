@@ -270,9 +270,10 @@ print(bridge, subnet)
 }
 
 ensure_network() {
-  local owner="$1" installation network labels bridge_name
+  local owner="$1" installation network labels bridge_name network_path
   installation="$(owner_installation "$owner")"
   network="1helm-$installation"
+  network_path="$NETWORKS_ROOT/$network.json"
   # Linux IFNAMSIZ is 15 chars; keep a stable, installation-scoped bridge name.
   bridge_name="1h${installation:0:12}"
   if "${PODMAN[@]}" network exists "$network"; then
@@ -283,17 +284,43 @@ labels=json.loads(sys.argv[1] or "{}")
 if labels.get("com.1helm.managed") != "true" or labels.get("com.1helm.installation") != sys.argv[2]:
     raise SystemExit("network ownership labels do not match")
 PY
+    # Netavark 1.4 starts aardvark-dns through a user systemd scope. A root
+    # helper invoked by the system service has no user bus, so the advertised
+    # gateway DNS listener never exists and every resident lookup times out.
+    # These are 1Helm-owned JSON network definitions; disable only that broken
+    # plugin and let containers inherit the host's working resolvers instead.
+    if [[ -f "$network_path" && ! -L "$network_path" ]] \
+        && grep -q '"dns_enabled"[[:space:]]*:[[:space:]]*true' "$network_path"; then
+      python3 - "$network_path" <<'PY'
+import json, os, stat, sys, tempfile
+path=sys.argv[1]
+info=os.lstat(path)
+if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_gid != 0:
+    raise SystemExit("owned network definition is not a safe root-owned file")
+with open(path, encoding="utf-8") as source: network=json.load(source)
+labels=network.get("labels") or network.get("Labels") or {}
+if labels.get("com.1helm.managed") != "true": raise SystemExit("refusing to change an unmanaged network")
+network["dns_enabled"]=False
+descriptor,candidate=tempfile.mkstemp(prefix=".1helm-network-",dir=os.path.dirname(path))
+try:
+    with os.fdopen(descriptor,"w",encoding="utf-8") as destination:
+        json.dump(network,destination,indent=5); destination.write("\n"); destination.flush(); os.fsync(destination.fileno())
+    os.chmod(candidate,stat.S_IMODE(info.st_mode)); os.chown(candidate,0,0); os.replace(candidate,path)
+finally:
+    if os.path.exists(candidate): os.unlink(candidate)
+PY
+    fi
   else
     # Prefer a stable IFNAMSIZ-safe bridge name when the backend supports Docker-
     # style bridge options (netavark). Debian bookworm's CNI backend rejects
     # com.docker.network.bridge.name; fall back to a labeled default bridge and
     # let ensure_guest_egress read the real interface from network inspect.
     create_out=""
-    if ! create_out="$("${PODMAN[@]}" network create --disable-dns=false \
+    if ! create_out="$("${PODMAN[@]}" network create --disable-dns \
       --opt "com.docker.network.bridge.name=${bridge_name}" \
       --label com.1helm.managed=true --label "com.1helm.installation=$installation" "$network" 2>&1)"; then
       if grep -qiE 'unsupported (bridge )?network option|unknown network option' <<<"$create_out"; then
-        "${PODMAN[@]}" network create --disable-dns=false \
+        "${PODMAN[@]}" network create --disable-dns \
           --label com.1helm.managed=true --label "com.1helm.installation=$installation" "$network" >/dev/null \
           || die "channel network could not be created"
       else
@@ -671,13 +698,22 @@ create_container() {
 }
 
 start_container() {
-  local name="$1" owner="$2" state network
+  local name="$1" owner="$2" state network root network_ready container_ok=0 network_ok=0
   verify_container "$name" "$owner"
-  network="$(network_name "$owner")"
+  root="$(channel_root "$name")"
+  network_ready="$root/network-ready-v1"
+  network="$(ensure_network "$owner")"
   # Re-assert egress on every start: Docker and host firewall reloads can drop
   # our FORWARD/NAT inserts after boot or package updates.
   if "${PODMAN[@]}" network exists "$network"; then ensure_guest_egress "$network"; fi
   state="$(container_state "$name")"
+  # An update from the earlier aardvark-backed contract must restart a running
+  # retained container once so Podman regenerates /etc/resolv.conf from the
+  # now host-inherited network definition.
+  if [[ "$state" == running && ! -f "$network_ready" ]]; then
+    "${PODMAN[@]}" stop --time 90 "$name" >/dev/null
+    state="stopped"
+  fi
   if [[ "$state" != running ]]; then "${PODMAN[@]}" start "$name" >/dev/null; fi
   for _ in {1..100}; do
     # Podman can briefly fail name-based --user lookup while it reconstructs
@@ -685,13 +721,28 @@ start_container() {
     # image passwd database is intact.  These identities are pinned by the
     # installed runtime manifest and image contract, so use their numeric form
     # for the readiness probe and every subsequent exec boundary.
-    if "${PODMAN[@]}" exec --user 0:0 "$name" /bin/sh -c 'test "$(cat /var/lib/1helm/owner)" = "$1" && test -d /workspace && test -d /home/agent' 1helm-start "$owner" >/dev/null 2>&1; then
+    if "${PODMAN[@]}" exec --user 0:0 "$name" /bin/sh -c \
+        'test "$(cat /var/lib/1helm/owner)" = "$1" && test -d /workspace && test -d /home/agent' \
+        1helm-start "$owner" >/dev/null 2>&1; then
       verify_container "$name" "$owner"
-      return
+      container_ok=1
+      break
     fi
     sleep 0.1
   done
-  die "container did not pass its ownership and storage health check"
+  [[ "$container_ok" -eq 1 ]] || die "container did not pass its ownership and storage health check"
+  if [[ ! -f "$network_ready" ]]; then
+    for _ in {1..5}; do
+      if timeout 7 "${PODMAN[@]}" exec --user "$AGENT_UID:$AGENT_GID" "$name" /usr/bin/python3 -c \
+          'import socket; s=socket.socket(socket.AF_INET,socket.SOCK_STREAM); s.close(); socket.getaddrinfo("example.com",443,type=socket.SOCK_STREAM); c=socket.create_connection(("example.com",443),3); c.close()' \
+          >/dev/null 2>&1; then network_ok=1; break; fi
+      sleep 0.2
+    done
+    [[ "$network_ok" -eq 1 ]] || die "container did not pass its network socket, public DNS, and TCP egress health check"
+    printf '%s\n' 'host-dns-and-public-tcp-v1' >"$network_ready"
+    chown root:root "$network_ready"
+    chmod 0600 "$network_ready"
+  fi
 }
 
 stop_container() {
@@ -902,7 +953,7 @@ case "$operation" in
     ;;
   ready)
     (($# == 0)) || die "ready takes no arguments"
-    for command in find flock getfacl iptables podman python3 setfacl sha256sum stat tar; do command -v "$command" >/dev/null || die "missing $command"; done
+    for command in find flock getfacl iptables podman python3 setfacl sha256sum stat tar timeout; do command -v "$command" >/dev/null || die "missing $command"; done
     [[ -r "$CONTAINERFILE" ]] || die "installed OCI image recipe is missing"
     "${PODMAN[@]}" info >/dev/null
     printf '{"ready":true,"version":"%s","engine":"podman"}\n' "$RUNTIME_VERSION"

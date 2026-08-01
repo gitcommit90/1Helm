@@ -233,6 +233,7 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(ociInstaller, /acl[\s\S]*crun[\s\S]*fuse-overlayfs[\s\S]*podman/, "the installer supplies the complete OCI and direct-access prerequisites");
   assert.match(ociInstaller, /visudo -cf/, "the minimal helper-only sudo policy is validated before installation");
   assert.match(ociInstaller, /cgroup2fs/, "live CPU and memory controls require cgroup v2");
+  assert.match(ociInstaller, /\/etc\/apparmor\.d\/local\/crun[\s\S]*systemd-detect-virt --container[\s\S]*network inet,[\s\S]*network inet6,[\s\S]*apparmor_parser -r/, "nested Linux hosts install the narrow crun address-family grants needed for resident sockets");
   assert.match(ociHelper, /com\.1helm\.managed[\s\S]*com\.1helm\.owner[\s\S]*com\.1helm\.machine/, "every container has exact ownership labels");
   assert.match(ociHelper, /actual != expected[\s\S]*container storage mounts do not match/, "runtime adoption verifies the complete authoritative mount set");
   assert.match(ociHelper, /ONEHELM_OCI_SERVICE_USER/, "the installed service identity participates in the direct storage contract");
@@ -243,6 +244,9 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(ociHelper, /network\.json[\s\S]*--ip "\$ip" --mac-address "\$mac"/, "each channel receives a persistent static IP and locally administered MAC");
   assert.match(ociHelper, /container static network creation contract does not match[\s\S]*container network ID does not match[\s\S]*running container network identity does not match/, "runtime adoption verifies create-time and live network identity");
   assert.match(ociHelper, /network_ids_compatible/, "network ID checks tolerate short/full ids and pre-start NetworkID gaps");
+  assert.match(ociHelper, /Netavark 1\.4 starts aardvark-dns[\s\S]*"dns_enabled"[\s\S]*False[\s\S]*--disable-dns/, "system-service OCI networks bypass netavark's unavailable user-bus DNS scope and inherit working host resolvers");
+  assert.doesNotMatch(ociHelper, /network create --disable-dns=false/, "fresh resident networks never point at a gateway DNS listener that cannot start from the system service");
+  assert.match(ociHelper, /network-ready-v1[\s\S]*timeout 7[\s\S]*socket\.socket\(socket\.AF_INET,socket\.SOCK_STREAM\)[\s\S]*socket\.getaddrinfo\("example\.com",443[\s\S]*socket\.create_connection/, "a bounded first-start check requires resident socket creation, public DNS, and TCP egress before the network contract becomes ready");
   assert.match(ociHelper, /backup_container[\s\S]*sha256sum[\s\S]*restore_container[\s\S]*backup digest does not match/, "backup and recovery are digest-qualified and ownership-gated");
   assert.match(ociHelper, /source\.extractall\(destination, filter="data"\)/, "backup extraction rejects unsafe archive paths");
   assert.match(ociRecipe, /docker\.io\/library\/ubuntu:24\.04@sha256:[a-f0-9]{64}/, "the OCI guest base is fully qualified and digest-pinned without mutable short-name state");
@@ -271,6 +275,7 @@ test("installer assets are explicit and syntax-valid", () => {
   }
   assert.match(uninstaller, /"\$HELPER" delete "\$name" "\$INSTALLATION_ID:\$channel_id"/, "uninstall deletes only exact installation-owned containers");
   assert.match(uninstaller, /Preserved %s/, "uninstall preserves durable workspace state");
+  assert.match(uninstaller, /cmp -s[\s\S]*\/etc\/apparmor\.d\/local\/crun[\s\S]*apparmor_parser -r/, "uninstall removes and reloads only the exact app-managed crun profile");
 });
 
 test("standalone deployment runs the website and tunnel without root process authority", () => {

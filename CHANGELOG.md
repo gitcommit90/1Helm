@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.35] - 2026-08-01
+
+### Fixed
+
+- Preserved the elevated Windows setup transaction's restart-required result
+  before the signed-in process probes WSL, including when Windows returns an
+  unreliable zero child-process exit code, and kept terminal setup state
+  visible while the tracked parent process closes.
+- Restored resident internet on nested Linux hosts by installing the narrow
+  AppArmor address-family permissions required by `crun`, bypassing
+  netavark's unavailable user-bus DNS scope, and requiring socket creation,
+  public DNS, and TCP egress before a resident computer becomes ready.
+- Made the essential outcome, blocker-resolution, and Skipper-escalation
+  playbooks active in every resident turn so imperative setup requests are
+  executed instead of answered with tutorials, and evidenced machine-wide
+  network failures are escalated directly for repair.
+
 ## [0.0.34] - 2026-08-01
 
 ### Fixed
@@ -968,7 +985,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.34...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.35...HEAD
+[0.0.35]: https://github.com/gitcommit90/1Helm/compare/v0.0.34...v0.0.35
 [0.0.34]: https://github.com/gitcommit90/1Helm/compare/v0.0.33...v0.0.34
 [0.0.33]: https://github.com/gitcommit90/1Helm/compare/v0.0.32...v0.0.33
 [0.0.32]: https://github.com/gitcommit90/1Helm/compare/v0.0.31...v0.0.32
