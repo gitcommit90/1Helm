@@ -593,7 +593,7 @@ async function repairAppleGuestNetwork(computer: ChannelComputer): Promise<void>
       // the same fleet-wide outage during one reconciliation pass.
       if (now() - appleNetworkRepairAt > 30_000) {
         if (platform() === "darwin") {
-          const label = `gui/${process.getuid?.() ?? 501}/com.apple.container.container-network-vmnet.default`;
+          const label = `gui/${process.getuid?.() ?? 501}/com.apple.container.network.container-network-vmnet.default`;
           const kicked = await spawnCollected("/bin/launchctl", ["kickstart", "-k", label], { timeoutMs: 30_000 });
           if (kicked.code !== 0) throw new Error(kicked.stderr.toString("utf8").trim() || "Apple shared VM network service could not restart");
         }

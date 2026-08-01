@@ -154,6 +154,7 @@ test("Apple channel-computer contract preserves isolation, files, wakes, archive
   assert.ok(calls.some((call) => call.includes("-w") && call.includes("/workspace") && call.some((word) => word.includes("/bin/bash")) && call.some((word) => word.includes("-lc"))), "resident commands execute in the correct VM workspace");
   assert.equal(db.q1("SELECT disk_bytes FROM channel_computers WHERE channel_id=?", beta.channelId).disk_bytes, computers.MANAGED_CHANNEL_DISK_BYTES, "reported storage is the managed writable allocation, not Apple's host-backed virtual capacity");
   const backend = await readFile(join(root, "src", "server", "channel-computers.ts"), "utf8");
+  assert.match(backend, /com\.apple\.container\.network\.container-network-vmnet\.default/, "network recovery restarts Apple's installed vmnet launch service");
   assert.match(backend, /terminal \? \["-it"\] : pipeInput \? \["-i"\]/, "Apple terminal and streamed-stdin invocations request the exact interactive mode they need");
   assert.match(backend, /isolatedInvocation\(\["\/bin\/bash", "-l"\][\s\S]*true\)/, "interactive isolated terminals request an explicit guest login shell");
   assert.match(backend, /args: \[\.\.\.words, \.\.\.guestWords\(\.\.\.args\)\]/, "Apple guest argv remains quoted for the runtime's documented second shell parse");
