@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.33] - 2026-08-01
+
+### Fixed
+
+- Fixed fresh Windows shared-runtime setup so the expected pre-install
+  `wsl.exe --version` failure is inspected instead of terminating PowerShell
+  before the pinned Microsoft WSL package can be downloaded and installed.
+- Preserved unexpected elevated Windows host-setup failures in the shared
+  status file so onboarding reports the actionable cause rather than only the
+  child process exit code.
+- Added SHA-256-pinned x64 and arm64 Cloudflare tunnel connectors to the Linux
+  host archive, selected the connector matching the running host, and made
+  fresh install/update validation reject incomplete Linux packages.
+
 ## [0.0.32] - 2026-08-01
 
 ### Fixed
@@ -941,7 +955,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.32...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.33...HEAD
+[0.0.33]: https://github.com/gitcommit90/1Helm/compare/v0.0.32...v0.0.33
 [0.0.32]: https://github.com/gitcommit90/1Helm/compare/v0.0.31...v0.0.32
 [0.0.31]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...v0.0.31
 [0.0.30]: https://github.com/gitcommit90/1Helm/compare/v0.0.29...v0.0.30

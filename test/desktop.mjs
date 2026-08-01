@@ -189,7 +189,9 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(windowsRuntime, /Write-SetupStatus/, "Windows setup writes machine-readable progress for the app UI");
   assert.match(windowsRuntime, /\$null -eq \$hostProcess -or \$null -eq \$hostProcess\.ExitCode/, "cancelled UAC is reported as setup failure instead of a silent no-op");
   assert.match(windowsRuntime, /Get-WslText|replace \[char\]0/, "WSL UTF-16 NUL output is normalized before version and distro matching");
+  assert.match(windowsRuntime, /function Get-WslText[\s\S]*ErrorActionPreference = "Continue"[\s\S]*\$LASTEXITCODE[\s\S]*ErrorActionPreference = \$previousErrorAction/, "a fresh host's expected failing WSL probe cannot terminate setup before the pinned runtime is installed");
   assert.match(windowsRuntime, /Test-PinnedWslRuntime/, "host setup verifies the pinned Microsoft WSL build");
+  assert.match(windowsRuntime, /if \(\$HostSetup\)[\s\S]*try \{[\s\S]*catch \{[\s\S]*Fail-Setup \$message/, "unexpected elevated host-setup errors are written to shared status instead of collapsing to an unexplained exit code");
   assert.match(windowsRuntime, /StatusPath/, "elevated HostSetup receives the shared status path so real errors reach the app");
   assert.match(windowsRuntime, /1603[\s\S]*Test-PinnedWslRuntime|Test-PinnedWslRuntime[\s\S]*1603/, "MSI 1603 falls back to re-verifying an already-present pinned WSL runtime");
   assert.match(windowsRuntime, /\[automount\][\s\S]*enabled=false[\s\S]*\[interop\][\s\S]*enabled=false/, "the shared runtime exposes neither Windows drives nor process interop");
