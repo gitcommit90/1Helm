@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
+import { request } from "node:http";
 import { createServer } from "node:net";
 import { accessSync, constants, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,6 +11,14 @@ import test from "node:test";
 const root = new URL("..", import.meta.url).pathname;
 const freePort = () => new Promise((resolve, reject) => { const server = createServer(); server.once("error", reject); server.listen(0, "127.0.0.1", () => { const port = server.address().port; server.close(() => resolve(port)); }); });
 const waitFor = async (url) => { const deadline = Date.now() + 10_000; while (Date.now() < deadline) { try { const result = await fetch(url); if (result.ok) return result; } catch {} await new Promise((resolve) => setTimeout(resolve, 80)); } throw new Error(`Timed out: ${url}`); };
+const requestWithHost = (port, path, host) => new Promise((resolve, reject) => {
+  const req = request({ hostname: "127.0.0.1", port, path, headers: { host } }, (res) => {
+    res.resume();
+    res.once("end", () => resolve(res));
+  });
+  req.once("error", reject);
+  req.end();
+});
 
 test("standalone 1helm.com website serves independent product and documentation surface", async () => {
   const port = await freePort();
@@ -27,6 +36,11 @@ test("standalone 1helm.com website serves independent product and documentation 
     const manual = await (await fetch(`${base}/manual`)).text();
     assert.match(manual, /The Ship's/);
     assert.match(manual, /Do I really need a dedicated computer/);
+    assert.match(manual, /retired pre-OCI sandbox is no longer running/i);
+    assert.doesNotMatch(manual, /it's a public sandbox/i);
+    const retiredDemo = await requestWithHost(port, "/manual?from=demo", "demo.1helm.com");
+    assert.equal(retiredDemo.statusCode, 301);
+    assert.equal(retiredDemo.headers.location, "https://1helm.com/manual?from=demo");
     const privacy = await (await fetch(`${base}/privacy`)).text();
     assert.match(privacy, /build@1helm\.com/);
     assert.match(privacy, /device tokens are encrypted at rest/i);
@@ -43,7 +57,10 @@ test("standalone 1helm.com website serves independent product and documentation 
       assert.equal(response.headers.get("cache-control"), "no-cache", `${path} must never be browser-cached`);
     }
     const gettingStarted = await (await fetch(`${base}/manual/getting-started`)).text();
-    assert.match(gettingStarted, /On Windows 11 x64, download the signed Setup executable/i);
+    assert.match(gettingStarted, /On Windows 11 x64, download the Setup executable/i);
+    assert.match(gettingStarted, /v0\.0\.30 is <code>NotSigned<\/code>/i);
+    assert.match(gettingStarted, /connect to an existing HTTPS 1Helm host/i);
+    assert.doesNotMatch(gettingStarted, /signed Setup executable/i);
     assert.doesNotMatch(gettingStarted, /withheld/i);
     assert.equal((await fetch(`${base}/assets/site.css`)).status, 200);
     const windowsIcon = await fetch(`${base}/icons/icon-sailboat.ico`);

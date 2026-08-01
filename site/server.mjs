@@ -272,6 +272,11 @@ function serveFile(req, res, file, cache = "public, max-age=86400") {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const path = url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") : "/";
+  const hostname = String(req.headers.host || "").split(":")[0].toLowerCase();
+  if (hostname === "demo.1helm.com") {
+    redirect(res, `${ORIGIN}${path === "/" ? "" : path}${url.search}`, 301);
+    return;
+  }
   if (path === "/api/feedback" && req.method === "POST") {
     if (feedbackRateLimited(req)) {
       answer(res, 429, JSON.stringify({ error: "Too many feedback reports. Try again shortly." }), {

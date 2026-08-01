@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Updated the README, standalone website, manual, story, and user guide for the
+  OCI computer generation shipped in 0.0.29/0.0.30: Linux uses native Podman,
+  Windows uses one managed WSL 2 runtime with a container per channel, and
+  OCI storage is authoritative.
+- Scoped release-security claims by platform. Mac artifacts are signed and
+  notarized, Linux assets are digest-verified, and Windows Authenticode status
+  is disclosed honestly (`NotSigned` for v0.0.30).
+- Documented the current desktop choice between hosting a new workspace and
+  connecting to an existing HTTPS host, plus host-neutral domains and mobile
+  gateway behavior.
+- Brought the manual up to date with the Captain-to-Skipper Texts model and the
+  Cowork HTML preview, generated-deck layout, direct folder navigation, live
+  work status, automatic file refresh, and per-file session history already
+  present in v0.0.30.
+- Removed false current-mobile distribution claims: v0.0.30 has no Android APK,
+  and 1Helm is not currently listed in the public iOS App Store. The current
+  phone/tablet path is the HTTPS browser interface.
+- Retired the stale pre-OCI demo claim. `demo.1helm.com` now redirects to the
+  product site until a new isolated sandbox is deliberately provisioned.
+
 ## [0.0.30] - 2026-07-31
 
 ### Fixed

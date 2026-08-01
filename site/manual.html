@@ -167,7 +167,7 @@
     <h3>Gmail</h3>
     <p>Settings&nbsp;→&nbsp;Connections&nbsp;→&nbsp;Gmail owns the connection on the helm computer — or just ask <code>@skipper can we set up Gmail</code>. Gmail supports account inventory, search, read, and draft creation. <span class="b">Sending remains disabled.</span> OAuth tokens live in host-owned storage and never enter chat or a resident's computer.</p>
     <h3>Photon / iMessage</h3>
-    <p>Connections walks you through Photon device authorization and conversation mapping. An allowlisted inbound text creates a real thread, invokes the mapped agent, and sends the reply back to that exact conversation. New outbound destinations stay blocked unless you explicitly grant them.</p>
+    <p>Connections walks the Captain through Photon device authorization and phone registration. The configured Captain phone talks directly to Skipper: the first inbound text creates a private thread in <span class="b">#main → Texts</span>, replies return to that conversation, and the context persists across connector restarts until the Captain sends <code>/new</code>. The same saved conversation can continue on desktop without replaying desktop-only turns to iMessage.</p>
   </section>
 
   <section id="workflows">
@@ -178,7 +178,7 @@
 
   <section id="updates">
     <h2><span class="mark">Updates &amp; your data</span></h2>
-    <p>Mac releases are signed, notarized, and verified before install — Profile&nbsp;→&nbsp;Check for updates downloads on the helm machine and offers <span class="b">Restart &amp; install</span> only when ready. Linux installs use a root-owned updater that verifies a release digest, installs into a versioned directory, switches atomically, health-checks, and rolls back if needed.</p>
+    <p>Mac releases are signed, notarized, and verified before install — Profile&nbsp;→&nbsp;Check for updates downloads on the helm machine and offers <span class="b">Restart &amp; install</span> only when ready. Windows uses its native Squirrel feed and discloses Authenticode status in each release. Linux installs use a root-owned updater that verifies a release digest, installs into a versioned directory, switches atomically, health-checks, and rolls back if needed.</p>
     <p>Every update preserves your data root:</p>
     <pre><code>macOS:  ~/Library/Application Support/1Helm-OCI-v1
 Linux:  /var/lib/1helm-oci-v1
@@ -194,7 +194,7 @@ Windows: %APPDATA%\1Helm-OCI-v1</code></pre>
       <li>Channel membership gates files, terminals, messages, and live events. Private coworker channels aren't Captain-readable without invitation.</li>
       <li>External skills are revision-pinned, bounded, scanned, hashed, and wrapped.</li>
       <li>Operational history enters a SHA-256 hash chain — Settings&nbsp;→&nbsp;Audit verifies it and pinpoints tampering.</li>
-      <li>Releases are Developer ID signed, notarized, stapled, and Gatekeeper-verified before publication.</li>
+      <li>Mac artifacts are Developer ID signed, notarized, stapled, and Gatekeeper-verified; Linux assets are digest-verified, and every Windows release discloses its Authenticode status.</li>
     </ul>
   </section>
 
@@ -232,7 +232,7 @@ Windows: %APPDATA%\1Helm-OCI-v1</code></pre>
 
     <details>
       <summary>Can agents see my files?</summary>
-      <p>No. Each resident lives on its own virtual machine with no view into your real computer. It makes folders, saves files, and runs commands entirely inside its own world. Anything it needs beyond that is brokered explicitly, by you or by Skipper, with the narrowest possible grant.</p>
+      <p>No. Each resident lives in its own isolated Linux computer with no view into your real computer. On macOS that is an Apple container machine; on Linux and Windows it is a dedicated OCI container. It makes folders, saves files, and runs commands entirely inside its own world. Anything it needs beyond that is brokered explicitly, by you or by Skipper, with the narrowest possible grant.</p>
     </details>
 
     <details>
@@ -262,7 +262,7 @@ Windows: %APPDATA%\1Helm-OCI-v1</code></pre>
 
     <details>
       <summary>Is demo.1helm.com the product?</summary>
-      <p>No — it's a public sandbox so you can poke around. The real product is the downloadable, self-hosted 1Helm runtime, and your installation's state stays on your machine.</p>
+      <p>No. The retired pre-OCI sandbox is no longer running, and <code>demo.1helm.com</code> now redirects to the product site. A future demo must be provisioned explicitly with isolated non-production state. The real product is the downloadable, self-hosted 1Helm runtime, and your installation's state stays on your machine.</p>
     </details>
 
     <details>

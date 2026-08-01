@@ -128,11 +128,14 @@ Whiteboard, Code, Docs, and Presentations modes map directly to:
 Each mode keeps the same folder rail and nested-folder navigation while the
 center changes to the appropriate editor. Notes and Docs use collaborative
 Markdown editors with formatting and preview; Code adds line numbers, search,
-indentation, and language-aware highlighting while declining unsupported
+indentation, language-aware highlighting, and a sandboxed HTML preview that
+loads same-project relative CSS and JavaScript while declining unsupported
 binary types. Whiteboard embeds a collaborative Excalidraw canvas in one
 readable `.whiteboard.json` file. Presentations use one readable `.slides.json`
 file with an Excalidraw-backed slide canvas, thumbnails, reordering, and
-presentation mode. Drafts and each mode's last open asset remain available
+presentation mode. Simple generated decks receive a themed layout, wrapping,
+bullet spacing, and font step-down rather than raw text boxes. Drafts and each
+mode's last open asset remain available
 while switching modes. Opening one of these assets from Files routes to the
 matching Cowork mode because both surfaces edit the same bytes.
 
@@ -147,8 +150,10 @@ asset on desktop. Its first message starts a normal channel thread and adds the
 current `/workspace/...` path. When other people are actively viewing that
 asset, their usernames are included with the first message so the normal
 thread can include the current collaborators. Later messages continue that
-thread, and **Open in Chat** moves the same session to the channel's regular
-conversation view. The agent harness otherwise remains unchanged.
+thread. The panel shows one current work status, refreshes newly created files,
+and lets you reopen past sessions for the current file or folder; **Open in
+Chat** moves the same session to the channel's regular conversation view. The
+agent harness otherwise remains unchanged.
 
 The terminal prompt displays the live current path and changes after `cd`.
 1Helm sends a terminal heartbeat while the pane is open and automatically
@@ -332,9 +337,10 @@ Open-Terminal endpoints. Residents never receive these computers.
 
 ## Domains, collaboration, members, and privacy
 
-The installed Mac can reserve a local-first `1helm.com` workspace address and
-optionally connect a Cloudflare domain. The Mac remains the only workspace
-server; sleeping or shutting it down makes the workspace unavailable.
+The installed helm host can reserve a local-first `1helm.com` workspace address
+and optionally connect a Cloudflare domain. That Mac, Windows PC, or Linux host
+remains the only workspace server; sleeping or shutting it down makes the
+workspace unavailable.
 
 Public registration closes after the Captain account. Access requests appear in
 Settings → Members and create an LLM-independent notice in the Captain's
@@ -437,8 +443,9 @@ fallback.
 - Agent interviews have a narrow human-only policy.
 - External skills are revision-pinned, bounded, scanned, hashed, and wrapped.
 - Operational history is locally tamper-evident.
-- Signed releases are Developer ID signed, notarized, stapled, and Gatekeeper
-  verified before publication.
+- Mac artifacts are Developer ID signed, notarized, stapled, and Gatekeeper
+  verified. Linux assets are digest-verified, and Windows Authenticode status
+  is disclosed for every release (`NotSigned` for v0.0.30).
 
 For the detailed boundary, see [SECURITY.md](../SECURITY.md). For product intent,
 see [VISION.md](VISION.md).
