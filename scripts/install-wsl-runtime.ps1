@@ -66,6 +66,18 @@ function Test-RestartRequired {
   return $value -eq "Required" -or $value -eq "1" -or $value -eq "True"
 }
 
+function Test-WslRestartFailure {
+  param([string]$Text)
+  return $Text -match 'HCS_E_SERVICE_NOT_AVAILABLE|required feature is not installed'
+}
+
+function Require-WindowsRestart {
+  $message = "WSL 2 features are enabled. Restart Windows once, then retry 1Helm computer setup."
+  Write-SetupStatus -Status "restart_required" -Step $message -Progress 20 -ErrorMessage "Windows restart required to finish enabling WSL 2."
+  Write-Host $message
+  exit 10
+}
+
 function Get-WslDistributionNames {
   $result = Get-WslText -ArgumentList @("--list", "--quiet")
   if ($result.ExitCode -ne 0) { return @() }
@@ -123,11 +135,16 @@ if ($HostSetup) {
     Write-SetupStatus -Status "running" -Step "Enabling Windows WSL features..." -Progress 8
     $wslFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux
     $vmFeature = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform
-    if ($wslFeature.State -ne "Enabled") { Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -All -NoRestart | Out-Null }
-    if ($vmFeature.State -ne "Enabled") { Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart | Out-Null }
+    $enabledWslFeatureNow = $wslFeature.State -ne "Enabled"
+    $enabledVmFeatureNow = $vmFeature.State -ne "Enabled"
+    if ($enabledWslFeatureNow) { Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -All -NoRestart | Out-Null }
+    if ($enabledVmFeatureNow) { Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart | Out-Null }
     $wslFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux
     $vmFeature = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform
-    $restartRequired = (Test-RestartRequired $wslFeature) -or (Test-RestartRequired $vmFeature)
+    # DISM's RestartRequired enum can stringify as "Possible" even though its
+    # numeric value is 1. Enabling either feature in this invocation is itself
+    # authoritative evidence that Windows must reboot before a WSL 2 VM import.
+    $restartRequired = $enabledWslFeatureNow -or $enabledVmFeatureNow -or (Test-RestartRequired $wslFeature) -or (Test-RestartRequired $vmFeature)
     $hostTemporary = Join-Path ([System.IO.Path]::GetTempPath()) ("1helm-wsl-host-" + [Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $hostTemporary | Out-Null
     try {
@@ -160,14 +177,20 @@ if ($HostSetup) {
       } else {
         Write-SetupStatus -Status "running" -Step "Microsoft WSL $wslVersion is already installed." -Progress 18
       }
+      # A feature may already report Enabled before the reboot has registered
+      # WSL's VM compute service. This is the concrete pre-reboot state that
+      # otherwise lets setup continue into HCS_E_SERVICE_NOT_AVAILABLE.
+      if ($null -eq (Get-Service -Name vmcompute -ErrorAction SilentlyContinue)) { $restartRequired = $true }
       if ($restartRequired) {
-        Write-SetupStatus -Status "restart_required" -Step "WSL 2 features are enabled. Restart Windows once, then retry 1Helm computer setup." -Progress 20
-        exit 10
+        Require-WindowsRestart
       }
       if (-not (Test-PinnedWslRuntime)) { Fail-Setup "Microsoft WSL $wslVersion was installed but could not be verified." }
       Write-SetupStatus -Status "running" -Step "Setting WSL 2 as the default..." -Progress 22
       $defaultVersion = Get-WslText -ArgumentList @("--set-default-version", "2")
-      if ($defaultVersion.ExitCode -ne 0) { Fail-Setup "WSL could not set version 2 as the default. $($defaultVersion.Text)" }
+      if ($defaultVersion.ExitCode -ne 0) {
+        if (Test-WslRestartFailure $defaultVersion.Text) { Require-WindowsRestart }
+        Fail-Setup "WSL could not set version 2 as the default. $($defaultVersion.Text)"
+      }
     } finally {
       if (Test-Path -LiteralPath $hostTemporary) { Remove-Item -LiteralPath $hostTemporary -Recurse -Force }
     }
@@ -242,11 +265,22 @@ try {
     $names = @(Get-WslDistributionNames)
     $runtimeRoot = Join-Path $env:LOCALAPPDATA "1Helm-Runtime"
     $installDirectory = Join-Path $runtimeRoot $RuntimeName
+    $partialMarker = "$installDirectory.1helm-partial-import"
     if ($names -notcontains $RuntimeName) {
       if (Test-Path -LiteralPath $installDirectory) {
-        Fail-Setup "The shared runtime disk directory already exists without a registered runtime. Remove `"$installDirectory`" or unregister the partial distro, then retry."
+        $entries = @(Get-ChildItem -LiteralPath $installDirectory -Force -ErrorAction SilentlyContinue)
+        $ownedPartial = (Test-Path -LiteralPath $partialMarker -PathType Leaf) -and ((Get-Content -LiteralPath $partialMarker -Raw).Trim() -eq $RuntimeName)
+        # v0.0.33 could leave an empty app-owned directory when Windows rejected
+        # the import before creating its VM. New attempts carry an ownership
+        # marker so an interrupted partial VHD can also be retried safely.
+        if ($entries.Count -eq 0 -or $ownedPartial) {
+          Remove-Item -LiteralPath $installDirectory -Recurse -Force
+        } else {
+          Fail-Setup "The shared runtime disk directory already exists without a registered runtime. Remove `"$installDirectory`" or unregister the partial distro, then retry."
+        }
       }
       New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
+      [System.IO.File]::WriteAllText($partialMarker, $RuntimeName, [System.Text.UTF8Encoding]::new($false))
       $rootfs = Join-Path $temporary "ubuntu-noble-wsl.rootfs.tar.gz"
       Write-SetupStatus -Status "running" -Step "Downloading shared Linux runtime base..." -Progress 35
       Fetch-File -Url $rootfsUrl -Destination $rootfs
@@ -255,7 +289,11 @@ try {
       }
       Write-SetupStatus -Status "running" -Step "Importing shared Linux runtime..." -Progress 48
       $imported = Get-WslText -ArgumentList @("--import", $RuntimeName, $installDirectory, $rootfs, "--version", "2")
-      if ($imported.ExitCode -ne 0) { Fail-Setup "The shared 1Helm WSL runtime could not be imported. $($imported.Text)" }
+      if ($imported.ExitCode -ne 0) {
+        if (Test-WslRestartFailure $imported.Text) { Require-WindowsRestart }
+        Fail-Setup "The shared 1Helm WSL runtime could not be imported. $($imported.Text)"
+      }
+      Remove-Item -LiteralPath $partialMarker -Force
     }
 
     Write-SetupStatus -Status "running" -Step "Installing shared runtime packages (podman, crun, ...)..." -Progress 58

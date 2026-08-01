@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.34] - 2026-08-01
+
+### Fixed
+
+- Fixed fresh Linux collaboration so the systemd service resolves the
+  architecture-specific Cloudflare connector already shipped inside the
+  verified host archive.
+- Fixed fresh Windows setup so enabling WSL 2 features always stops at the
+  required reboot boundary, and mapped the Windows VM-compute-not-ready import
+  response to that same actionable restart state.
+- Made Windows retries safely recover an app-owned partial shared-runtime
+  import left behind when Windows required the feature-activation reboot.
+
 ## [0.0.33] - 2026-08-01
 
 ### Fixed
@@ -955,7 +968,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.33...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.34...HEAD
+[0.0.34]: https://github.com/gitcommit90/1Helm/compare/v0.0.33...v0.0.34
 [0.0.33]: https://github.com/gitcommit90/1Helm/compare/v0.0.32...v0.0.33
 [0.0.32]: https://github.com/gitcommit90/1Helm/compare/v0.0.31...v0.0.32
 [0.0.31]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...v0.0.31

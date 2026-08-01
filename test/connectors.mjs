@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,33 @@ test("Linux release packaging ships pinned connectors for every supported host a
   assert.match(packageLinux, /cloudflared-linux-\$\{connector\.arch\}/, "the verified binaries enter the Linux release archive");
   assert.match(packageLinux, /chmodSync\(destination, 0o755\)/, "packaged Linux connectors retain executable mode");
   assert.match(resolver, /cloudflared-linux-\$\{process\.arch\}/, "Linux resolves only the binary matching the running host architecture");
+  assert.match(resolver, /process\.env\.HELM_APP_ROOT[\s\S]*process\.cwd\(\)/, "an installed Linux service can resolve its bundled connector from its release working directory");
+});
+
+test("Linux service working directory resolves the bundled connector without a legacy app-root environment", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "1helm-linux-connector-root-"));
+  const resources = join(root, "resources");
+  const binary = join(resources, `cloudflared-linux-${process.arch}`);
+  const originalCwd = process.cwd();
+  const originalAppRoot = process.env.HELM_APP_ROOT;
+  const originalResources = process.env.HELM_RESOURCES_PATH;
+  const originalBinary = process.env.CLOUDFLARED_BIN;
+  await mkdir(resources);
+  await writeFile(binary, "#!/bin/sh\nexit 0\n");
+  await chmod(binary, 0o755);
+  process.chdir(root);
+  delete process.env.HELM_APP_ROOT;
+  delete process.env.HELM_RESOURCES_PATH;
+  delete process.env.CLOUDFLARED_BIN;
+  t.after(async () => {
+    process.chdir(originalCwd);
+    if (originalAppRoot === undefined) delete process.env.HELM_APP_ROOT; else process.env.HELM_APP_ROOT = originalAppRoot;
+    if (originalResources === undefined) delete process.env.HELM_RESOURCES_PATH; else process.env.HELM_RESOURCES_PATH = originalResources;
+    if (originalBinary === undefined) delete process.env.CLOUDFLARED_BIN; else process.env.CLOUDFLARED_BIN = originalBinary;
+    await rm(root, { recursive: true, force: true });
+  });
+  const connectors = await import(`../src/server/connectors.ts?linux-root-test=${Date.now()}`);
+  assert.equal(connectors.connectorAvailable(), true);
 });
 
 test("stopping a connector cancels automatic relaunch while preserving its credentials", async (t) => {

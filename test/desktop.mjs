@@ -194,6 +194,10 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(windowsRuntime, /if \(\$HostSetup\)[\s\S]*try \{[\s\S]*catch \{[\s\S]*Fail-Setup \$message/, "unexpected elevated host-setup errors are written to shared status instead of collapsing to an unexplained exit code");
   assert.match(windowsRuntime, /StatusPath/, "elevated HostSetup receives the shared status path so real errors reach the app");
   assert.match(windowsRuntime, /1603[\s\S]*Test-PinnedWslRuntime|Test-PinnedWslRuntime[\s\S]*1603/, "MSI 1603 falls back to re-verifying an already-present pinned WSL runtime");
+  assert.match(windowsRuntime, /\$enabledWslFeatureNow[\s\S]*\$enabledVmFeatureNow[\s\S]*\$restartRequired/, "features enabled in the current pass force a reboot before WSL import regardless of DISM enum formatting");
+  assert.match(windowsRuntime, /Get-Service -Name vmcompute[\s\S]*\$restartRequired = \$true/, "an enabled-but-not-registered WSL VM compute service stops setup at the reboot boundary");
+  assert.match(windowsRuntime, /HCS_E_SERVICE_NOT_AVAILABLE[\s\S]*Require-WindowsRestart|Test-WslRestartFailure[\s\S]*Require-WindowsRestart/, "an unavailable VM compute service is reported as restart-required instead of a broken runtime");
+  assert.match(windowsRuntime, /\.1helm-partial-import[\s\S]*\$ownedPartial[\s\S]*Remove-Item -LiteralPath \$installDirectory/, "an app-owned partial WSL import can recover safely after reboot");
   assert.match(windowsRuntime, /\[automount\][\s\S]*enabled=false[\s\S]*\[interop\][\s\S]*enabled=false/, "the shared runtime exposes neither Windows drives nor process interop");
   assert.doesNotMatch(windowsRuntime, /--update/);
   assert.match(channelComputers, /HELM_WSL_SETUP_STATUS/, "Windows runtime install is tracked through a status file instead of fire-and-forget Start-Process");

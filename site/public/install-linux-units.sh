@@ -65,6 +65,7 @@ Environment=NODE_ENV=production
 Environment=PORT=8123
 Environment=HELM_HOST=0.0.0.0
 Environment=CTRL_DATA_DIR=$STATE_ROOT
+Environment=HELM_APP_ROOT=$INSTALL_ROOT/current
 Environment=HELM_CHANNEL_COMPUTER_BACKEND=oci
 Environment=HELM_OCI_HELPER=/usr/libexec/1helm-oci-runtime
 Environment=HELM_INSTALL_KIND=linux-systemd
