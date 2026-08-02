@@ -429,6 +429,11 @@ const server = createServer(async (req, res) => {
   }
 
   if (path === "/install.sh" && serveFile(req, res, join(SITE_PUBLIC, "install.sh"), "no-cache")) return;
+  // Windows installs with `irm https://1helm.com/install.ps1 | iex`. That script
+  // fetches the keepalive payload from this same origin, so both must be served
+  // uncached: a stale installer would pair with a current release.
+  if (path === "/install.ps1" && serveFile(req, res, join(SITE_PUBLIC, "install.ps1"), "no-cache")) return;
+  if (path.startsWith("/keepalive/") && serveFile(req, res, safeFile(SITE_PUBLIC, path.slice(1)), "no-cache")) return;
   if (path.startsWith("/schemas/") && serveFile(req, res, safeFile(SITE_PUBLIC, path.slice(1)), "public, max-age=3600")) return;
   if (path.startsWith("/assets/") && serveFile(req, res, safeFile(SITE_PUBLIC, path.slice(1)), "public, max-age=604800")) return;
   if (path.startsWith("/media/") && serveFile(req, res, safeFile(SITE_PUBLIC, path.slice(1)), "public, max-age=604800")) return;

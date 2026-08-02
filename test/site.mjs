@@ -76,6 +76,14 @@ test("standalone 1helm.com website serves independent product and documentation 
     assert.equal(benchmarkSchema.$id, "https://1helm.com/schemas/autonomy-benchmark-v1.json");
     assert.deepEqual(benchmarkSchema.required, ["schema", "product", "kind", "started_at", "finished_at", "deterministic", "scope", "summary", "checks"]);
     assert.equal((await fetch(`${base}/install.sh`)).status, 200);
+    // Windows installs via `irm https://1helm.com/install.ps1 | iex`, and that
+    // script downloads its keepalive payload from this same origin. If either
+    // route 404s the install fails partway, so both are contract surface.
+    assert.equal((await fetch(`${base}/install.ps1`)).status, 200);
+    for (const part of ["keepalive-install.ps1", "keepalive-run.ps1", "keepalive-remove.ps1", "keepalive-hold.sh"]) {
+      assert.equal((await fetch(`${base}/keepalive/${part}`)).status, 200, `/keepalive/${part} must be served`);
+    }
+    assert.equal((await fetch(`${base}/keepalive/../server.mjs`)).status, 404, "the keepalive route must not escape its directory");
     const linuxRelease = await (await fetch(`${base}/api/releases/linux/latest`)).json();
     assert.deepEqual(linuxRelease, {
       version: "0.0.31",
