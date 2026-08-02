@@ -14,7 +14,7 @@
 <p align="center">
   <a href="https://1helm.com/download/macos"><strong>Download for Mac</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://1helm.com/download/windows"><strong>for Windows</strong></a>
+  <a href="https://1helm.com/manual/install-windows"><strong>for Windows</strong></a>
   &nbsp;·&nbsp;
   <a href="https://1helm.com/manual/install-linux"><strong>for Linux</strong></a>
   &nbsp;·&nbsp;
@@ -130,30 +130,74 @@ device displaying the web UI—to download and verify the signed update.
 
 ### Windows 11 x64
 
-1. [Download the current Setup executable](https://1helm.com/download/windows).
-2. Windows Setup is **not yet Authenticode signed**, so SmartScreen shows
-   "Windows protected your PC". Choose **More info** → **Run anyway**.
-3. Open 1Helm and complete Captain → Providers → Workspace.
-4. At the Workspace step, 1Helm builds its WSL 2 runtime. **You do not need WSL
-   installed beforehand.** A stock Windows 11 ships with WSL and
-   VirtualMachinePlatform turned off, and 1Helm enables both itself:
-   - Approve the one administrator (UAC) prompt.
-   - A PowerShell window opens and reports progress. **Leave it open** until it
-     finishes.
-   - Because those Windows features were just turned on, **Windows has to
-     restart once.** 1Helm says so in plain language. This is the normal path
-     on a new PC — it is not an error, and nothing is lost.
-   - Restart, sign back in as the **same** Windows user, then open 1Helm and
-     continue setup. It picks up where it left off; already-completed steps are
-     skipped.
+There is nothing to download and no Windows application to install. 1Helm runs
+its ordinary **Linux** build inside a WSL 2 distribution named `1helm`, and your
+**browser is the interface**, at `http://localhost:8123`. Because no `.exe`
+ships, nothing needs code signing and **SmartScreen never appears**.
 
-Setup downloads Microsoft's pinned WSL 2 package and a pinned Ubuntu 24.04 root
-filesystem, both SHA-256 verified, and the WSL package is additionally checked
-for a valid Microsoft Authenticode signature. The result is one
-installation-scoped WSL 2 runtime hosting one durable OCI container per ordinary
-channel, with Windows-drive mounts and process interop disabled. App state lives
-in `%APPDATA%\1Helm-OCI-v1`; the shared runtime disk lives in
-`%LOCALAPPDATA%\1Helm-Runtime`.
+You need: Windows 11 **x64** (arm64 is not supported), virtualization enabled in
+firmware, internet access, and roughly 10 GB of free disk. **You do not need to
+install WSL first** — this does it for you.
+
+1. Open **PowerShell**. The normal one — do **not** use "Run as
+   Administrator".
+
+2. Run exactly this:
+
+   ```powershell
+   irm https://1helm.com/install.ps1 | iex
+   ```
+
+3. A Windows permission pop-up appears. Click **Yes**. That one approval covers
+   only turning on Windows' WSL features and installing Microsoft's own WSL
+   package; everything after it deliberately runs as you, because WSL state
+   belongs to the signed-in user.
+
+4. Wait about a minute. The window finishes by printing **"Restart required"**
+   and a short numbered list. **This is normal — it is not an error and nothing
+   is lost.**
+
+5. Restart the PC.
+
+6. Sign back in as the **same** Windows user and open PowerShell again.
+
+7. Run the **identical command** a second time:
+
+   ```powershell
+   irm https://1helm.com/install.ps1 | iex
+   ```
+
+8. Wait about six and a half minutes. Pages of `apt` output scroll past — that
+   is normal progress. When it is done it prints the address and opens your
+   default browser on the onboarding page.
+
+9. Complete Captain → Providers → Workspace in the browser.
+
+The whole thing takes about **9 minutes**, restart included.
+
+Two things you may see along the way:
+
+- Microsoft's own **"Welcome to WSL"** window may open during step 8. It belongs
+  to Microsoft, it is harmless, and you can close it.
+- After 1Helm reports that it is running, the channel-computer runtime needs
+  roughly another **40 seconds** to finish preparing before your first channel
+  computer can be created. It has not hung.
+
+If you *download* `install.ps1` instead of piping it, Windows blocks running
+`.ps1` files and you must run it as
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`. The
+`irm | iex` form above is unaffected, because it pipes a string rather than
+executing a file.
+
+One behaviour difference from earlier versions: **`#main`'s Terminal is now bash
+inside the WSL distribution, not `cmd.exe`.** Windows commands do not work
+there. That is deliberate — the host is Linux now.
+
+To remove it later, from the same ordinary PowerShell window:
+
+```powershell
+irm https://1helm.com/uninstall.ps1 | iex
+```
 
 ### Linux (Ubuntu/Debian, systemd)
 
@@ -178,20 +222,26 @@ machines for safe deletion. Export irreplaceable channel files before you start.
 
 - **macOS** — drag 1Helm to the Trash. `~/Library/Application Support/1Helm-OCI-v1`
   is preserved unless you delete it yourself.
-- **Windows** — uninstall from Settings → Apps → Installed apps. The uninstaller
-  removes 1Helm's own containers, unregisters its WSL runtime, and deletes
-  `%LOCALAPPDATA%\1Helm-Runtime`.
+- **Windows** — from an ordinary PowerShell window, run
+  `irm https://1helm.com/uninstall.ps1 | iex`. It stops the keepalive, runs
+  1Helm's own Linux uninstaller inside the distribution, then unregisters the
+  `1helm` distribution and deletes `C:\1helm` and the Start Menu shortcut. It
+  asks you to type `remove` first, because unregistering the distribution
+  **destroys every channel's files and the database** — there is no undo and no
+  copy is kept. Other WSL distributions on the PC are never touched.
 - **Linux** — `sudo /opt/1helm/uninstall-host.sh` removes the services, helper,
   and 1Helm-owned containers while preserving `/var/lib/1helm-oci-v1` for
   recovery.
 
 ### Release discipline
 
-Mac, Linux, and Windows use one synchronized desktop release version. A release
-is held in full until the signed/notarized Mac DMG and updater ZIP, verified
-Linux host archive, and Windows Setup/Squirrel feed have all passed native
-install and update acceptance from the same source commit. Windows
-Authenticode status is disclosed in every release; v0.0.38 is `NotSigned`.
+Mac and Linux use one synchronized desktop release version, and a release is
+held in full until all three artifacts — the signed/notarized Mac DMG, the
+notarized Mac updater ZIP, and the verified Linux host archive — have passed
+native install and update acceptance from the same source commit. Windows ships
+no release artifacts at all: it installs the Linux build through
+`install.ps1`, served from the site, so there is nothing to sign and no
+Authenticode status to disclose.
 
 ### Connect from a phone or tablet
 
@@ -324,9 +374,9 @@ and an audit trail. A prompt saying “use this service” is not a connector.
   SHA-256 chain for new operational events.
 - Local-first collaboration through an optional workspace domain routed to the
   Captain's helm host; workspace state and provider credentials remain there.
-- Host-owned updates: a signed native Mac updater, a Windows Squirrel feed with
-  disclosed Authenticode status, and an atomic digest-verified Linux system
-  service with health-check rollback.
+- Host-owned updates: a signed native Mac updater, and an atomic digest-verified
+  Linux system service with health-check rollback — which is also how a Windows
+  host updates, because Windows runs that same Linux service inside WSL.
 - Signed, Apple-notarized, stapled Apple Silicon DMG releases.
 - Browser access from phones and tablets to an already configured HTTPS 1Helm
   host; native mobile gateway source is present but has no v0.0.38 public build.
@@ -337,7 +387,7 @@ and an audit trail. A prompt saying “use this service” is not a connector.
 |---|---|
 | **Apple Silicon macOS 26** | Native desktop product and real isolated Linux computer per resident (Apple `container machine`, `home-mount=none`). |
 | **Linux / CI** | Supported headless systemd host with one durable Podman OCI container per resident, runtime-owned storage, and exact ownership checks; CI may select an explicit test backend. |
-| **Windows 11 x64** | Native desktop product with one installation-scoped WSL 2 OCI runtime and one durable container per resident; Windows-drive mounts and interop are disabled. |
+| **Windows 11 x64** | The Linux host, installed by `install.ps1` into a WSL 2 distribution named `1helm`, with the browser as the interface at `http://localhost:8123`. One durable Podman OCI container per resident, exactly as on Linux. No Windows application ships. |
 | **iPhone, iPad, and Android** | Use the current HTTPS browser interface. Native gateway source exists, but v0.0.38 has no public mobile artifact and the iOS app is not publicly listed. |
 
 Not yet shipped: current public mobile builds, a native Linux desktop shell, a
@@ -383,9 +433,10 @@ npm run helm -- audit-verify
 
 ## Architecture
 
-1Helm is a compact Node/TypeScript control plane hosted by Electron on macOS
-and in the accepted Windows implementation, or by systemd on Linux. It does not
-need an external database or a server transpilation step.
+1Helm is a compact Node/TypeScript control plane hosted by Electron on macOS, or
+by systemd on Linux — including the Linux inside a Windows host's WSL 2
+distribution. It does not need an external database or a server transpilation
+step.
 
 | Layer | Implementation |
 |---|---|
@@ -393,7 +444,7 @@ need an external database or a server transpilation step.
 | Control plane | `node:http`, WebSocket, additive SQLite migrations. |
 | Client | Vanilla TypeScript bundled with esbuild and Tailwind CSS. |
 | Model routing | Embedded ReRouted headless engine, private internal gateway, account pools, retries, routes, quotas, and logs. |
-| Computers | Defensive argv-only Apple `container machine`; native Podman OCI on Linux; one shared managed WSL 2/Podman runtime on Windows; explicit `native`/`mock` test seams. |
+| Computers | Defensive argv-only Apple `container machine`; native Podman OCI on Linux, including inside a Windows host's WSL 2 distribution; explicit `native`/`mock` test seams. |
 | Terminal | `node-pty`; ordinary terminals enter their channel VM while Skipper remains native. |
 | Memory | Curated records with provenance plus an isolated Mnemosyne SQLite store per identity. |
 | Scheduling | Durable obligations, wake reconciliation, lifecycle safety, repair, update, and pressure-aware sizing. |
@@ -430,9 +481,9 @@ the complete `npm test` contract.
 
 ## Security boundary
 
-- Residents use separate Linux worlds: Apple machines with no Mac home mount,
-  or durable OCI containers on Linux and inside Windows' one shared managed
-  WSL runtime. Windows-drive mounts and interop are disabled.
+- Residents use separate Linux worlds: Apple machines with no Mac home mount, or
+  durable OCI containers on Linux — including the Linux inside a Windows host's
+  WSL 2 distribution.
 - Skipper's host tools require Captain-authorized provenance.
 - OCI workspace storage is runtime-owned and authoritative; Files and Cowork
   access it directly through a channel-scoped boundary. Apple mirrors remain

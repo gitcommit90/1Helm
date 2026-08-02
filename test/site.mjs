@@ -60,14 +60,35 @@ test("standalone 1helm.com website serves independent product and documentation 
       assert.equal(response.headers.get("cache-control"), "no-cache", `${path} must never be browser-cached`);
     }
     const gettingStarted = await (await fetch(`${base}/manual/getting-started`)).text();
-    assert.match(gettingStarted, /On Windows 11 x64, download the Setup executable/i);
-    // The disclosed Authenticode status is release-coupled: assert against the
-    // shipping version so a patch bump cannot silently leave a stale claim.
-    const shippingVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
-    assert.match(gettingStarted, new RegExp(`v${shippingVersion.replaceAll(".", "\\.")} is <code>NotSigned</code>`, "i"));
+    // Windows ships no application and no artifact, so the one thing a Windows
+    // reader needs from this page is the exact install command. The retired
+    // Setup-executable story must not come back either: SmartScreen and
+    // Authenticode cannot apply to a product that ships no .exe, so repeating
+    // them here would warn people about a file that does not exist and tell them
+    // to click through a dialog they will never see.
+    assert.match(gettingStarted, /irm https:\/\/1helm\.com\/install\.ps1 \| iex/);
+    assert.doesNotMatch(gettingStarted, /Setup executable|SmartScreen|Authenticode|NotSigned|Squirrel/i);
     assert.match(gettingStarted, /connect to an existing HTTPS 1Helm host/i);
-    assert.doesNotMatch(gettingStarted, /signed Setup executable/i);
     assert.doesNotMatch(gettingStarted, /withheld/i);
+    // The Windows guide is the only install instructions Windows has. Each of
+    // these is something the user sees on screen and would otherwise read as a
+    // failure: the deliberate stop for a restart, Microsoft's own WSL window,
+    // the runtime's post-install prepare, and the ExecutionPolicy wall that only
+    // appears when the script is downloaded rather than piped.
+    const installWindows = await (await fetch(`${base}/manual/install-windows`)).text();
+    assert.match(installWindows, /irm https:\/\/1helm\.com\/install\.ps1 \| iex/);
+    assert.match(installWindows, /irm https:\/\/1helm\.com\/uninstall\.ps1 \| iex/);
+    assert.match(installWindows, /Restart required/);
+    assert.match(installWindows, /Welcome to WSL/);
+    assert.match(installWindows, /40 seconds/);
+    assert.match(installWindows, /ExecutionPolicy Bypass -File/);
+    assert.match(installWindows, /localhost:8123/);
+    // SmartScreen may only be mentioned to say it does not happen. Telling a
+    // Windows user to click through "More info -> Run anyway", or naming an
+    // artifact or an %APPDATA% data root that no longer exists, would send them
+    // looking for a file this product does not ship.
+    assert.match(installWindows, /SmartScreen never appears/);
+    assert.doesNotMatch(installWindows, /Setup executable|Squirrel|NotSigned|Run anyway|%APPDATA%/i);
     assert.equal((await fetch(`${base}/assets/site.css`)).status, 200);
     const windowsIcon = await fetch(`${base}/icons/icon-sailboat.ico`);
     assert.equal(windowsIcon.status, 200);
@@ -80,6 +101,10 @@ test("standalone 1helm.com website serves independent product and documentation 
     // script downloads its keepalive payload from this same origin. If either
     // route 404s the install fails partway, so both are contract surface.
     assert.equal((await fetch(`${base}/install.ps1`)).status, 200);
+    // Removal is `irm https://1helm.com/uninstall.ps1 | iex` and there is no
+    // Add/Remove Programs entry to fall back on, so a 404 here strands every
+    // Windows installation with no supported way off the machine.
+    assert.equal((await fetch(`${base}/uninstall.ps1`)).status, 200);
     for (const part of ["keepalive-install.ps1", "keepalive-run.ps1", "keepalive-remove.ps1", "keepalive-hold.sh"]) {
       assert.equal((await fetch(`${base}/keepalive/${part}`)).status, 200, `/keepalive/${part} must be served`);
     }
@@ -315,6 +340,19 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(uninstaller, /"\$HELPER" delete "\$name" "\$INSTALLATION_ID:\$channel_id"/, "uninstall deletes only exact installation-owned containers");
   assert.match(uninstaller, /Preserved %s/, "uninstall preserves durable workspace state");
   assert.match(uninstaller, /cmp -s[\s\S]*\/etc\/apparmor\.d\/local\/crun[\s\S]*apparmor_parser -r/, "uninstall removes and reloads only the exact app-managed crun profile");
+  // Windows has no Add/Remove Programs entry behind it, so this script IS the
+  // uninstaller. Its destructive half is `wsl --unregister`, which deletes the
+  // virtual disk holding every channel's files and the entire database - and
+  // `wsl --shutdown` would additionally stop every other distribution on the
+  // machine for every user. Both need to stay behind their guards.
+  const windowsUninstaller = readFileSync(`${root}/site/public/uninstall.ps1`, "utf8");
+  assert.doesNotMatch(windowsUninstaller, /(?:&\s*\$WslExe|wsl\.exe)[^\n]*--shutdown/, "removal never invokes `wsl --shutdown`, which would stop every distribution for every user on the machine");
+  assert.match(windowsUninstaller, /NEVER calls `wsl --shutdown`/, "the shutdown ban is stated where the next maintainer will read it");
+  assert.match(windowsUninstaller, /S-1-5-18/, "removal refuses to run as SYSTEM, which cannot see the user's per-user WSL state");
+  assert.match(windowsUninstaller, /function Test-SafeTarget[\s\S]*IsNullOrWhiteSpace[\s\S]*ProtectedDistroPattern[\s\S]*-ceq \$Name/, "a blank, protected, or inexactly matching distribution name is refused before anything destructive");
+  assert.match(windowsUninstaller, /Test-SafeTarget \$Distro[\s\S]*--terminate[\s\S]*--unregister/, "targeted terminate and unregister both sit behind that exact-name gate");
+  assert.match(windowsUninstaller, /if \(-not \$Force\)[\s\S]*Read-Host[\s\S]*-ne 'remove'/, "destroying the data root requires typed confirmation unless -Force is passed");
+  assert.match(windowsUninstaller, /keepalive-remove\.ps1[\s\S]*uninstall-host\.sh[\s\S]*--unregister/, "the keepalive stops, then 1Helm's own Linux uninstaller runs inside the distribution, and only then is the distribution discarded");
 });
 
 test("standalone deployment runs the website and tunnel without root process authority", () => {
