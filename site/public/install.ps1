@@ -35,6 +35,10 @@
 .PARAMETER LocalInstaller
     Path to a local Linux installer script, used with -LocalArchive.
 
+.PARAMETER LocalArchiveSha256
+    Optional SHA-256 the local archive must match, checked inside the
+    distribution before anything is installed. Catches a truncated or stale copy.
+
 .EXAMPLE
     irm https://1helm.com/install.ps1 | iex
 
@@ -49,6 +53,7 @@ param(
     [string] $InstallerUrl   = 'https://1helm.com/install.sh',
     [string] $LocalArchive   = '',
     [string] $LocalInstaller = '',
+    [string] $LocalArchiveSha256 = '',
     [string] $KeepaliveSource = '',
     [switch] $HostSetup,
     [string] $StatusPath     = ''
@@ -140,11 +145,18 @@ function Get-Distros {
 }
 
 function Invoke-InDistro {
-    param([string[]]$ShellArgs, [switch]$AsRoot, [int]$TimeoutSeconds = 0)
+    param([string[]]$ShellArgs, [switch]$AsRoot)
     $a = @('-d', (ConvertTo-WslArg $Distro))
     if ($AsRoot) { $a += @('-u', 'root') }
     $a += @('--exec') + $ShellArgs
-    & $WslExe @a
+    # The in-distro command's own output must go straight to the console, NOT
+    # into this function's output stream. A PowerShell function returns
+    # everything it emits, so without Out-Host `$code = Invoke-InDistro ...`
+    # collects every line the command printed *and* the exit code into one
+    # array. `$code -ne 0` is then an array filter, which is truthy for any
+    # non-empty output, so a completely successful install is reported as a
+    # failure with the whole transcript interpolated into the error message.
+    & $WslExe @a | Out-Host
     return $LASTEXITCODE
 }
 
@@ -328,8 +340,12 @@ if ($LocalArchive) {
     Copy-Item $LocalArchive   (Join-Path $stage (Split-Path -Leaf $LocalArchive))   -Force
     Copy-Item $LocalInstaller (Join-Path $stage 'install-local.sh')                 -Force
     $stageInDistro = '/mnt/' + $stage.Substring(0,1).ToLowerInvariant() + ($stage.Substring(2) -replace '\\','/')
+    if ($LocalArchiveSha256 -and $LocalArchiveSha256 -notmatch '^[a-fA-F0-9]{64}$') {
+        Die "-LocalArchiveSha256 is not a SHA-256 digest: $LocalArchiveSha256"
+    }
+    $shaEnv = if ($LocalArchiveSha256) { "HELM_RELEASE_SHA256=$($LocalArchiveSha256.ToLowerInvariant()) " } else { '' }
     $code = Invoke-InDistro -AsRoot -ShellArgs @('/bin/sh', '-c',
-        "set -e; cp -f '$stageInDistro/install-local.sh' /tmp/i.sh; tr -d '\r' < /tmp/i.sh > /tmp/install.sh; bash /tmp/install.sh '$stageInDistro/$(Split-Path -Leaf $LocalArchive)'")
+        "set -e; cp -f '$stageInDistro/install-local.sh' /tmp/i.sh; tr -d '\r' < /tmp/i.sh > /tmp/install.sh; ${shaEnv}bash /tmp/install.sh '$stageInDistro/$(Split-Path -Leaf $LocalArchive)'")
 } else {
     $code = Invoke-InDistro -AsRoot -ShellArgs @('/bin/bash', '-c',
         "set -o pipefail; curl -fsSL '$InstallerUrl' | bash")
@@ -379,12 +395,19 @@ if ($LASTEXITCODE -ne 0) { Die "the keepalive could not be registered (exit $LAS
 Step "Finishing up"
 try {
     $programs = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
-    $lnk = Join-Path $programs '1Helm.lnk'
-    $shell = New-Object -ComObject WScript.Shell
-    $s = $shell.CreateShortcut($lnk)
-    $s.TargetPath = "http://localhost:$HealthPort"
-    $s.Description = '1Helm'
-    $s.Save()
+    $null = New-Item -ItemType Directory -Path $programs -Force
+    # A .lnk cannot address a URL. WScript.Shell accepts the assignment without
+    # complaint and then saves a shortcut whose TargetPath is empty, so the Start
+    # Menu entry appears and does nothing when clicked. An Internet Shortcut
+    # (.url) is the supported way to put an address in the Start Menu, and it
+    # opens in whichever browser the user has chosen as default.
+    $url = Join-Path $programs '1Helm.url'
+    Set-Content -LiteralPath $url -Encoding ASCII -Value @(
+        '[InternetShortcut]'
+        "URL=http://localhost:$HealthPort"
+    )
+    # Clear the broken .lnk an earlier version of this installer left behind.
+    Remove-Item (Join-Path $programs '1Helm.lnk') -Force -ErrorAction SilentlyContinue
     Say "    added a Start Menu shortcut"
 } catch { Say "    could not create the Start Menu shortcut: $($_.Exception.Message)" 'Yellow' }
 

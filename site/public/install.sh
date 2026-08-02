@@ -10,6 +10,17 @@ STATE_ROOT="/var/lib/1helm-oci-v1"
 SERVICE_USER="1helm"
 NODE_VERSION="22.23.1"
 RELEASE_METADATA_URL="https://1helm.com/api/releases/linux/latest"
+# Install from a release archive already on this machine instead of resolving the
+# current published release:
+#
+#     install.sh /path/to/1Helm-<version>-linux-node.tgz
+#
+# This is how a candidate build is exercised before it is published, and it is
+# what the Windows installer's -LocalArchive depends on. Resolving the published
+# release stays the default. A local archive needs no network trust - it is
+# already on this filesystem - so its version is read from its own package.json;
+# set HELM_RELEASE_SHA256 to have the digest checked as well.
+LOCAL_ARCHIVE="${1:-${HELM_LOCAL_ARCHIVE:-}}"
 HOST_CONTRACT_PATHS=(
   /usr/libexec/1helm-oci-runtime
   /etc/1helm/oci-runtime-v1.conf
@@ -39,6 +50,12 @@ if ! command -v systemctl >/dev/null || [[ ! -d /run/systemd/system ]]; then
 fi
 if ! command -v apt-get >/dev/null; then
   echo "1Helm's isolated Linux host currently requires Ubuntu or Debian with apt and systemd." >&2
+  exit 1
+fi
+# Checked here rather than where the archive is read, so a mistyped path fails
+# now instead of after several minutes of package and Node installation.
+if [[ -n "$LOCAL_ARCHIVE" && ! -f "$LOCAL_ARCHIVE" ]]; then
+  echo "Local release archive not found: $LOCAL_ARCHIVE" >&2
   exit 1
 fi
 case "$(uname -m)" in
@@ -110,7 +127,9 @@ rollback_host_contract() {
   if [[ "$(cat "$RUNTIME_BACKUP/units/1helm.service.active" 2>/dev/null || true)" == "active" ]]; then
     restored_healthy=0
     for _ in {1..300}; do
-      if curl -fsS http://127.0.0.1:8123/api/setup/status >/dev/null; then restored_healthy=1; break; fi
+      # "connection refused" is the expected state while it comes back up, so
+      # curl's own errors are noise here, not diagnosis.
+      if curl -fsS http://127.0.0.1:8123/api/setup/status >/dev/null 2>&1; then restored_healthy=1; break; fi
       sleep 0.2
     done
   fi
@@ -151,6 +170,23 @@ fi
 ln -sfn "$NODE_RELEASE" "$TEMP_ROOT/node-current"
 mv -Tf "$TEMP_ROOT/node-current" "$NODE_LINK"
 
+if [[ -n "$LOCAL_ARCHIVE" ]]; then
+  RELEASE_ARCHIVE="$LOCAL_ARCHIVE"
+  # The digest is not a trust check here - it names the release directory, and it
+  # lets an operator who pinned HELM_RELEASE_SHA256 catch a truncated or stale copy.
+  RELEASE_SHA256="$(sha256sum -- "$RELEASE_ARCHIVE" | awk '{ print $1 }')"
+  [[ "$RELEASE_SHA256" =~ ^[a-f0-9]{64}$ ]] \
+    || { echo "Could not compute the SHA-256 of $RELEASE_ARCHIVE." >&2; exit 1; }
+  if [[ -n "${HELM_RELEASE_SHA256:-}" && "$HELM_RELEASE_SHA256" != "$RELEASE_SHA256" ]]; then
+    echo "$RELEASE_ARCHIVE does not match the digest you pinned in HELM_RELEASE_SHA256." >&2
+    echo "Expected $HELM_RELEASE_SHA256, got $RELEASE_SHA256. Nothing was installed." >&2
+    exit 1
+  fi
+  # Resolved from the archive's own package.json once it is unpacked, below.
+  VERSION=""
+else
+# Resolve the current published release. Left unindented because the embedded
+# heredoc's NODE terminator has to stay at column 0.
 curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$TEMP_ROOT/release.json" "$RELEASE_METADATA_URL"
 RELEASE_OUTPUT="$("$NODE_LINK/bin/node" - "$TEMP_ROOT/release.json" <<'NODE'
 const fs = require("node:fs");
@@ -175,16 +211,28 @@ RELEASE_ARCHIVE="$TEMP_ROOT/1Helm-$VERSION-linux-node.tgz"
 curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$RELEASE_ARCHIVE" "$RELEASE_URL"
 printf '%s  %s\n' "$RELEASE_SHA256" "$(basename "$RELEASE_ARCHIVE")" \
   | (cd "$TEMP_ROOT" && sha256sum -c -)
+fi
 
 RELEASE_STAGE="$TEMP_ROOT/source"
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$RELEASE_STAGE"
 tar -xzf "$RELEASE_ARCHIVE" -C "$RELEASE_STAGE" --strip-components=1
 PACKAGE_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "$RELEASE_STAGE/package.json" 2>/dev/null || true)"
-[[ "$PACKAGE_VERSION" == "$VERSION" ]] || {
-  echo "This archive contains 1Helm ${PACKAGE_VERSION:-an unreadable version} but the release metadata resolved v$VERSION." >&2
-  echo "Nothing was installed. Retry, or report the mismatch if it persists: the published artifact does not match its release." >&2
-  exit 1
-}
+if [[ -z "$VERSION" ]]; then
+  # Local archive: it carries no release metadata, so it names its own version.
+  [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    echo "$RELEASE_ARCHIVE does not declare a release version in its package.json." >&2
+    echo "Nothing was installed. Rebuild it with npm run package:linux." >&2
+    exit 1
+  }
+  VERSION="$PACKAGE_VERSION"
+  echo "Installing 1Helm v$VERSION from $RELEASE_ARCHIVE"
+else
+  [[ "$PACKAGE_VERSION" == "$VERSION" ]] || {
+    echo "This archive contains 1Helm ${PACKAGE_VERSION:-an unreadable version} but the release metadata resolved v$VERSION." >&2
+    echo "Nothing was installed. Retry, or report the mismatch if it persists: the published artifact does not match its release." >&2
+    exit 1
+  }
+fi
 [[ -x "$RELEASE_STAGE/site/public/apply-linux-release.sh" \
    && -x "$RELEASE_STAGE/site/public/install-oci-runtime.sh" \
    && -x "$RELEASE_STAGE/site/public/install-linux-units.sh" \
@@ -314,7 +362,9 @@ healthy=0
 unit_state=""
 for _ in {1..300}; do
   unit_state="$(systemctl is-active 1helm.service 2>/dev/null || true)"
-  if [[ "$unit_state" == "active" ]] && curl -fsS http://127.0.0.1:8123/api/setup/status >/dev/null; then healthy=1; break; fi
+  # Same here: until the unit finishes binding the port every attempt fails, and
+  # curl printing that hundreds of times buries the real outcome.
+  if [[ "$unit_state" == "active" ]] && curl -fsS http://127.0.0.1:8123/api/setup/status >/dev/null 2>&1; then healthy=1; break; fi
   [[ "$unit_state" == "failed" ]] && break
   sleep 0.2
 done
