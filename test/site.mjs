@@ -198,14 +198,25 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(installer, /RELEASE_METADATA_URL="https:\/\/1helm\.com\/api\/releases\/linux\/latest"/, "fresh installs resolve the complete current release from the product site");
   assert.match(installer, /expectedUrl = `https:\/\/github\.com\/gitcommit90\/1Helm\/releases\/download\/v\$\{version\}\/\$\{name\}`/, "fresh installs accept only the canonical artifact URL for the resolved version");
   assert.match(installer, /RELEASE_SHA256[\s\S]*sha256sum -c -[\s\S]*tar -xzf/, "fresh installs verify the Linux release digest before extraction");
-  assert.match(installer, /install-oci-runtime\.sh[\s\S]*channel-machine\.oci\.tar[\s\S]*npm[^\n]*ci/, "fresh installs reject an artifact without the complete OCI runtime before running release code");
+  assert.match(installer, /install-oci-runtime\.sh[\s\S]*channel-machine\.oci\.tar[\s\S]*verify_ready_to_run "\$RELEASE_STAGE"/, "fresh installs reject an artifact without the complete OCI runtime before executing anything the archive shipped");
   assert.match(installer, /resources\/cloudflared-linux-\$NODE_ARCH/, "fresh Linux installs reject archives without the connector for the current architecture");
   assert.match(installer, /NETWORK_BACKEND_FILE[\s\S]*cat "\$NETWORK_BACKEND_FILE"[\s\S]*printf '%s' netavark[\s\S]*install-oci-runtime\.sh/, "the web bootstrap repairs v0.0.30's newline-terminated Podman backend before invoking release code");
   assert.doesNotMatch(installer, /git clone|git checkout/, "fresh installs never combine the current installer with an older source-only tag");
   assert.doesNotMatch(installer, /api\.github\.com/, "fresh installs do not depend on unauthenticated GitHub API quota");
-  assert.match(installer, /need=\([^\n]*flock[^\n]*make[^\n]*c\+\+[^\n]*python3[^\n]*\)/, "the host updater and native dependency toolchain are probed even when download prerequisites already exist");
+  assert.match(installer, /need=\([^\n]*flock[^\n]*python3[^\n]*\)/, "the host updater and Python prerequisites are probed even when download prerequisites already exist");
+  assert.doesNotMatch(installer, /need=\([^\n]*(?:\bmake\b|c\+\+)/, "no compiler is probed: the release ships native addons already compiled against the oldest supported glibc");
+  assert.doesNotMatch(installer, /build-essential/, "the Linux host never installs a C/C++ toolchain, because nothing on the user's machine builds 1Helm");
   assert.match(installer, /import ensurepip[\s\S]*python3-venv/, "the Linux host installs Python's venv support required by durable memory instead of accepting a python3 executable alone");
-  assert.doesNotMatch(installer, /npm[^\n]*ci[^\n]*--omit=optional/, "platform-specific optional build packages are retained");
+  // The ready-to-run release archive replaces the on-host build entirely. These
+  // assertions are the user-visible contract: no compiler, no npm registry, and
+  // a refusal rather than a broken install when the archive cannot actually run.
+  assert.doesNotMatch(installer, /bin\/npm/, "fresh installs consume the ready-to-run release archive instead of building it on the user's machine");
+  assert.match(installer, /node_modules[\s\S]*resources\/linux-native-modules\.json[\s\S]*public\/bundle\.js/, "fresh installs fail closed on a source-only archive that carries neither vendored dependencies nor built client assets");
+  assert.match(installer, /manifest\.arch !== hostArch[\s\S]*manifest\.nodeAbi[\s\S]*process\.versions\.modules[\s\S]*process\.dlopen[\s\S]*node-pty[\s\S]*spawn/, "fresh installs prove every shipped native addon loads on this host's exact Node ABI and that node-pty can spawn, so terminals cannot silently be dead");
+  assert.match(installer, /verify_ready_to_run "\$RELEASE_STAGE"[\s\S]*RELEASE_ROOT="\$RELEASES_ROOT/, "the staged archive is proven runnable before any release directory is promoted");
+  assert.match(installer, /systemctl stop 1helm\.service[\s\S]*createServer\(\)[\s\S]*listen\(8123[\s\S]*network namespace[\s\S]*systemctl start 1helm\.service/, "installs stop first and then refuse to start behind a foreign listener that would answer the readiness probe instead of 1Helm");
+  assert.doesNotMatch(installer, /if command -v ss[^\n]*then\n\s*echo "Port 8123/, "the port-collision check never depends on ss being installed, which would skip it in silence");
+  assert.match(installer, /systemctl is-active 1helm\.service[\s\S]*api\/setup\/status[\s\S]*journalctl -u 1helm\.service/, "readiness requires this unit to be active rather than any HTTP answer on the port, and prints the journal when it is not");
   assert.match(installer, /EXISTING_VERSION=.*package\.json[\s\S]*EXISTING_VERSION.*VERSION/, "repeat installs verify the retained release version");
   assert.doesNotMatch(installer, /chown -R[^\n]*\$STATE_ROOT/, "repeat installs never recursively rewrite root-owned OCI channel storage");
   assert.match(installer, /chown -R "\$SERVICE_USER:\$SERVICE_USER" "\$RELEASE_ROOT"/, "the extracted application release remains service-owned");
@@ -230,6 +241,17 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(updater, /install-linux-units\.sh/, "updates retain one coherent host service contract");
   assert.match(updater, /snapshot_host_contract[\s\S]*rollback_host_contract[\s\S]*cleanup_transaction/, "updates transactionally restore runtime files, symlink, and unit state");
   assert.doesNotMatch(updater, /eval|curl[^\n]*\|[^\n]*(?:sh|bash)/, "the root updater never evaluates remote shell content");
+  // Updates take the same ready-to-run path as fresh installs. Without this the
+  // first install is fast but every later update is slow and needs a compiler.
+  assert.doesNotMatch(updater, /bin\/npm/, "host updates consume the ready-to-run release archive instead of building it on the user's machine");
+  assert.match(updater, /has_vendored_dependencies "\$STAGE"[\s\S]*bundle\.js[\s\S]*verify_native_addons "\$STAGE"[\s\S]*mv -- "\$STAGE" "\$RELEASE_ROOT"/, "a staged release proves it is runnable before it is promoted into the release store, so a failure leaves nothing half-promoted");
+  assert.match(updater, /manifest\.nodeAbi[\s\S]*process\.versions\.modules[\s\S]*process\.dlopen[\s\S]*node-pty[\s\S]*spawn/, "updates prove every shipped native addon loads on this host's exact Node ABI before promoting the release");
+  assert.match(releaseApply, /node_modules[\s\S]*linux-native-modules\.json[\s\S]*bundle\.js[\s\S]*process\.dlopen[\s\S]*snapshot_host_contract/, "the delegated transaction proves the retained release is runnable before it opens the transaction that moves the current symlink");
+  assert.match(releaseApply, /systemctl is-active "\$SERVICE_NAME"[\s\S]*api\/setup\/status[\s\S]*journalctl/, "the delegated transaction requires its own unit to be active rather than any HTTP answer on the port");
+  const linuxPackaging = readFileSync(`${root}/scripts/package-linux-host.mjs`, "utf8");
+  assert.match(linuxPackaging, /"npm", "ci", "--omit=dev"/, "the release archive vendors exactly the production dependency tree the host will run");
+  assert.doesNotMatch(linuxPackaging, /--omit=optional/, "platform-specific optional build packages are retained in the shipped dependency tree");
+  assert.match(linuxPackaging, /nodeAbi[\s\S]*modules,/, "the shipped manifest records the Node ABI and every native addon the host must be able to load");
   const ociInstaller = readFileSync(`${root}/site/public/install-oci-runtime.sh`, "utf8");
   const ociHelper = readFileSync(`${root}/scripts/1helm-oci-runtime`, "utf8");
   const ociManifest = readFileSync(`${root}/deploy/1helm-oci-runtime-v1.conf`, "utf8");

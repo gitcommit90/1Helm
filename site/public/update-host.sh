@@ -223,7 +223,7 @@ tar -xzf "$ARTIFACT" -C "$STAGE" --strip-components=1 \
   || fail "The verified 1Helm artifact could not be extracted."
 PACKAGE_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "$STAGE/package.json" 2>/dev/null || true)"
 [[ "$PACKAGE_VERSION" == "$TARGET_VERSION" ]] \
-  || fail "The verified Linux artifact version does not match its release tag."
+  || fail "The published artifact contains 1Helm ${PACKAGE_VERSION:-an unreadable version} but is tagged v$TARGET_VERSION, so this host refused it and stayed on its current release."
 [[ -x "$STAGE/site/public/update-host.sh" ]] \
   || fail "The verified Linux artifact is missing its host updater."
 [[ -x "$STAGE/site/public/apply-linux-release.sh" && -x "$STAGE/site/public/install-oci-runtime.sh" && -x "$STAGE/site/public/install-linux-units.sh" && -x "$STAGE/site/public/uninstall-host.sh" && -x "$STAGE/scripts/1helm-oci-runtime" && -r "$STAGE/deploy/1helm-oci-runtime-v1.conf" && -r "$STAGE/container/Containerfile.oci" && -x "$STAGE/resources/cloudflared-linux-$CONNECTOR_ARCH" ]] \
@@ -231,18 +231,58 @@ PACKAGE_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "
 chown -R "$SERVICE_USER:$SERVICE_USER" "$STAGE"
 
 write_status "installing" "$TARGET_VERSION" "The host verified v$TARGET_VERSION and is preparing an atomic installation."
-runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH="$NODE_LINK/bin:/usr/bin:/bin" \
-  PUPPETEER_SKIP_DOWNLOAD=1 "$NODE_LINK/bin/npm" --prefix "$STAGE" ci \
-  || fail "The verified 1Helm release dependencies could not be installed."
-runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH="$NODE_LINK/bin:/usr/bin:/bin" \
-  "$NODE_LINK/bin/npm" --prefix "$STAGE" run build \
-  || fail "The verified 1Helm release could not be built on this host."
+
+# The release arrives ready to run: no npm ci, no npm run build, no compiler and
+# no npm registry on the update path. Every staged release must prove it carries
+# its vendored production node_modules, its built client assets, and native
+# addons this host's Node can actually load. This runs against the staging tree
+# before anything is promoted, so a release that cannot run is never moved into
+# the release store, never linked as current, and never restarted into.
+has_vendored_dependencies() {
+  [[ -d "$1/node_modules" && -f "$1/resources/linux-native-modules.json" ]]
+}
+verify_native_addons() {
+  "$NODE_LINK/bin/node" - "$1" "$CONNECTOR_ARCH" <<'NODE'
+const { existsSync, readFileSync } = require("node:fs");
+const { join } = require("node:path");
+const [, , releaseRoot, hostArch] = process.argv;
+const manifest = JSON.parse(readFileSync(join(releaseRoot, "resources/linux-native-modules.json"), "utf8"));
+if (manifest.platform !== "linux" || manifest.arch !== hostArch) {
+  throw new Error(`release ships ${manifest.platform}-${manifest.arch} native addons, host is linux-${hostArch}`);
+}
+if (String(manifest.nodeAbi) !== process.versions.modules) {
+  throw new Error(`release native addons target Node ABI ${manifest.nodeAbi}, installed Node reports ${process.versions.modules}`);
+}
+const required = "node_modules/node-pty/build/Release/pty.node";
+const paths = (manifest.modules || []).map((entry) => String(entry.path));
+if (!paths.includes(required)) throw new Error(`manifest does not list ${required}`);
+for (const relative of paths) {
+  const file = join(releaseRoot, relative);
+  if (!existsSync(file)) throw new Error(`missing native addon ${relative}`);
+  process.dlopen({ exports: {} }, file);
+}
+if (typeof require(join(releaseRoot, "node_modules/node-pty")).spawn !== "function") {
+  throw new Error("node-pty did not expose spawn()");
+}
+console.log(`verified ${paths.length} prebuilt native addons including a loadable node-pty`);
+NODE
+}
+has_vendored_dependencies "$STAGE" \
+  || fail "1Helm v$TARGET_VERSION does not ship vendored node_modules, so this host cannot install it without building it. Publish a ready-to-run Linux release."
+[[ -s "$STAGE/public/bundle.js" && -s "$STAGE/public/app.css" ]] \
+  || fail "1Helm v$TARGET_VERSION is missing its built client assets, so this host cannot install it without building it."
+verify_native_addons "$STAGE" \
+  || fail "The Linux native addons shipped with 1Helm v$TARGET_VERSION cannot be loaded on this host, so terminals would not work. The update was refused before anything changed."
 
 RELEASE_ROOT="$RELEASES_ROOT/$TARGET_VERSION-$EXPECTED_SHA"
 if [[ -e "$RELEASE_ROOT" ]]; then
   EXISTING_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "$RELEASE_ROOT/package.json" 2>/dev/null || true)"
   [[ "$EXISTING_VERSION" == "$TARGET_VERSION" ]] \
     || fail "An existing host release directory does not match v$TARGET_VERSION."
+  # A retained directory from an interrupted earlier run can be incomplete even
+  # though its name carries the verified digest.
+  { has_vendored_dependencies "$RELEASE_ROOT" && verify_native_addons "$RELEASE_ROOT"; } \
+    || fail "The retained v$TARGET_VERSION release directory is not runnable on this host."
 else
   mv -- "$STAGE" "$RELEASE_ROOT"
 fi
