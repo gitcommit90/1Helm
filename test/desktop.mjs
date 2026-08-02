@@ -319,3 +319,61 @@ test("release packaging is fail-closed and records stable product identity", asy
   assert.match(source, /Cloudflared binary checksum does not match the release pin/, "release packaging verifies the exact upstream tunnel connector before signing");
   assert.match(source, /codesign", \["--verify", "--strict", "--verbose=2", cloudflared\]/, "release packaging verifies the bundled connector's post-signing seal");
 });
+
+test("Windows packaging ships app code in asar and keeps external consumers on real files", async (t) => {
+  const windowsPackager = await readFile(join(root, "scripts", "package-windows.cjs"), "utf8");
+  const mainCjs = await readFile(join(root, "desktop", "main.cjs"), "utf8");
+  const photon = await readFile(join(root, "src", "server", "photon.ts"), "utf8");
+  const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+
+  // Legacy Squirrel expands every loose package file through 260-character
+  // .NET path APIs while releasifying and again on end-user machines during
+  // install/update. Application code must ship inside app.asar.
+  assert.doesNotMatch(windowsPackager, /asar: false/, "loose-file Windows packaging exceeds legacy Squirrel's path budget");
+  assert.match(windowsPackager, /unpack: "\*\*\/\*\.node"/, "native modules are unpacked so they can load from disk");
+  assert.match(windowsPackager, /unpackDir: "\{scripts,container,deploy,public,desktop,node_modules\/node-pty\}"/, "assets read by external processes stay on real disk");
+  assert.match(windowsPackager, /missing app\.asar/, "packaging proves the archive was actually created");
+  assert.match(windowsPackager, /app\.asar\.unpacked/, "packaging verifies required assets in the unpacked tree");
+  assert.match(windowsPackager, /photon-sidecar\.bundle\.mjs is missing/, "packaging refuses to run without the sidecar bundle");
+  assert.ok(String(pkg.scripts.build).includes("build:sidecar"), "the standard build produces the sidecar bundle");
+  assert.ok(String(pkg.scripts["build:sidecar"]).includes("--bundle"), "the sidecar bundle is self-contained");
+
+  assert.match(mainCjs, /function unpackedPath\(/, "the desktop shell can translate asar paths for external consumers");
+  assert.match(mainCjs, /const assetRoot = unpackedPath\(appRoot\)/, "external-asset root leaves the asar in packaged builds");
+  assert.match(mainCjs, /process\.env\.HELM_APP_ROOT = assetRoot/, "server asset consumers receive the real on-disk root");
+  assert.match(mainCjs, /process\.chdir\(assetRoot\)/, "chdir into a virtual asar path would throw at startup");
+  assert.match(mainCjs, /unpackedPath\(path\.resolve\(__dirname, "\.\.", "scripts", "windows-removal\.cjs"\)\)/, "the Squirrel uninstall hook runs the removal script from real disk");
+  assert.ok(photon.includes('join(String(process.env.HELM_APP_ROOT || process.cwd()), "desktop", "photon-sidecar.bundle.mjs")'), "asar builds start the sidecar from the unpacked self-contained bundle");
+
+  if (process.platform === "win32") return;
+  // Prove the sidecar bundle actually builds and resolves every module on its
+  // own: run it from a foreign directory with no credentials and require an
+  // application-level outcome, never a module-resolution failure.
+  const bundleDir = await mkdtemp(join(tmpdir(), "1helm-sidecar-bundle-"));
+  t.after(() => rm(bundleDir, { recursive: true, force: true }));
+  const outfile = join(bundleDir, "photon-sidecar.bundle.mjs");
+  await new Promise((resolveExit, rejectExit) => {
+    const build = spawn(join(root, "node_modules", ".bin", "esbuild"), [
+      "src/server/photon-sidecar.mjs", "--bundle", "--platform=node", "--format=esm", `--outfile=${outfile}`,
+      "--banner:js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
+    ], { cwd: root, stdio: ["ignore", "ignore", "pipe"] });
+    let errors = "";
+    build.stderr.on("data", (chunk) => { errors += chunk; });
+    build.once("exit", (code) => code === 0 ? resolveExit(null) : rejectExit(new Error(`sidecar bundle failed: ${errors.slice(-2000)}`)));
+  });
+  const result = await new Promise((resolveExit) => {
+    const child = spawn(process.execPath, [outfile], {
+      cwd: bundleDir,
+      env: { ...process.env, PHOTON_SIDECAR_PORT: "0", PHOTON_SIDECAR_TOKEN: "test-token", PHOTON_PROJECT_ID: "", PHOTON_PROJECT_SECRET: "" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.stderr.on("data", (chunk) => { output += chunk; });
+    const timer = setTimeout(() => { child.kill("SIGKILL"); resolveExit(output); }, 8_000);
+    child.once("exit", () => { clearTimeout(timer); resolveExit(output); });
+  });
+  for (const signature of ["ERR_MODULE_NOT_FOUND", "Cannot find module", "Cannot find package", "Dynamic require of"]) {
+    assert.ok(!result.includes(signature), `sidecar bundle is not self-contained: ${result.slice(0, 400)}`);
+  }
+});

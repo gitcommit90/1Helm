@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.37] - 2026-08-02
+
+### Fixed
+
+- Fixed Windows packaging failing with `PathTooLongException` during Squirrel
+  releasify. Application code now ships inside `app.asar`, so legacy Squirrel
+  handles a few hundred short paths instead of tens of thousands of deeply
+  nested loose dependency files — both while building the installer and while
+  installing or updating on end-user machines, where the same 260-character
+  .NET path limit applies under `%LOCALAPPDATA%` regardless of username
+  length.
+- Assets consumed by external processes stay on real disk next to the archive:
+  the WSL setup script, OCI runtime and container image, deploy configuration,
+  public assets, the Squirrel uninstall helper, and native terminal modules.
+- The Photon sidecar, which runs as a plain Node child process and cannot read
+  modules inside an asar archive, is now built as a single self-contained
+  bundle during `npm run build` and started from the unpacked tree in packaged
+  Windows builds. macOS, Linux, and development startup paths are unchanged.
+
 ## [0.0.36] - 2026-08-02
 
 ### Fixed
@@ -1001,6 +1020,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Application Support, and isolated Apple container machines.
 
 [Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.36...HEAD
+[0.0.37]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...v0.0.37
 [0.0.36]: https://github.com/gitcommit90/1Helm/compare/v0.0.35...v0.0.36
 [0.0.35]: https://github.com/gitcommit90/1Helm/compare/v0.0.34...v0.0.35
 [0.0.34]: https://github.com/gitcommit90/1Helm/compare/v0.0.33...v0.0.34

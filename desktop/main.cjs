@@ -41,6 +41,14 @@ function rememberDesktopMode(mode) {
   fs.writeFileSync(desktopModePath(), `${mode}\n`, { mode: 0o600 });
 }
 
+// Windows packages ship application code inside app.asar; assets consumed by
+// external processes (Python, PowerShell, WSL, plain-Node sidecars) are
+// unpacked beside the archive. Translate paths for those consumers. Loose
+// packages (macOS, Linux, development) pass through unchanged.
+function unpackedPath(target) {
+  return String(target).replace(/app\.asar(?=[\\/]|$)/, "app.asar.unpacked");
+}
+
 function handleSquirrelEvent() {
   if (process.platform !== "win32") return false;
   const event = process.argv[1];
@@ -53,7 +61,7 @@ function handleSquirrelEvent() {
   } else if (event === "--squirrel-uninstall") {
     const dataRoot = app.getPath("userData");
     const wslRoot = path.join(String(process.env.LOCALAPPDATA || ""), "1Helm-Runtime");
-    const cleanup = path.resolve(__dirname, "..", "scripts", "windows-removal.cjs");
+    const cleanup = unpackedPath(path.resolve(__dirname, "..", "scripts", "windows-removal.cjs"));
     spawnSync(process.execPath, [cleanup, dataRoot, wslRoot], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, stdio: "ignore", windowsHide: true, timeout: 10 * 60_000 });
     spawnSync(updateExe, ["--removeShortcut", exe], { stdio: "ignore", windowsHide: true });
   }
@@ -114,16 +122,21 @@ async function waitForServer(origin, timeoutMs = SERVER_READY_TIMEOUT_MS) {
 
 async function startLocalRuntime() {
   const appRoot = app.getAppPath();
+  // Server code is imported from inside app.asar so dependency resolution
+  // stays within the archive, but HELM_APP_ROOT and the working directory
+  // must be the real on-disk root: scripts, container assets, deploy config,
+  // and public files are read by external processes that cannot open asar.
+  const assetRoot = unpackedPath(appRoot);
   const port = await freePort();
   process.env.HELM_DESKTOP = "1";
-  process.env.HELM_APP_ROOT = appRoot;
+  process.env.HELM_APP_ROOT = assetRoot;
   process.env.HELM_RESOURCES_PATH = process.resourcesPath;
   process.env.HELM_HOST = LOOPBACK;
   process.env.PORT = String(port);
   process.env.CTRL_DATA_DIR = app.getPath("userData");
   if (process.platform !== "win32") process.env.SHELL ||= "/bin/zsh";
   process.env.HELM_INTERNAL_WAKE_TOKEN ||= crypto.randomBytes(32).toString("hex");
-  process.chdir(appRoot);
+  process.chdir(assetRoot);
   localOrigin = `http://${LOOPBACK}:${port}`;
   await import(pathToFileURL(path.join(appRoot, "src", "server", "index.ts")).href);
   await waitForServer(localOrigin);

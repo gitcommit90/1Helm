@@ -4,6 +4,7 @@ data-*/
 public/bundle.js
 public/bundle.css
 public/app.css
+desktop/photon-sidecar.bundle.mjs
 public/excalidraw/
 *.log
 .DS_Store

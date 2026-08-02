@@ -12,6 +12,17 @@ import { agentForChannel, ensureThread, refreshThreadSummary } from "./agents.ts
 const CREDENTIAL_FILE = join(DATA_DIR, "photon-credentials.json");
 const SIDECAR = new URL("./photon-sidecar.mjs", import.meta.url);
 const E164 = /^\+\d{6,15}$/;
+
+// The sidecar runs as a plain Node child process, which cannot read modules
+// packed inside app.asar. Packaged asar builds ship a self-contained bundle
+// under the unpacked desktop directory; loose packages use the source module.
+function sidecarEntry(): string {
+  const override = String(process.env.PHOTON_SIDECAR_PATH || "");
+  if (override) return override;
+  const source = fileURLToPath(SIDECAR);
+  if (!/app\.asar[\\/]/.test(source)) return source;
+  return join(String(process.env.HELM_APP_ROOT || process.cwd()), "desktop", "photon-sidecar.bundle.mjs");
+}
 type PhotonCredential = { project_id: string; project_secret: string; operator_phone: string; assigned_phone: string; dashboard_token?: string; configured_at: number };
 type PhotonEvent = { id: string; space_id: string; space_type: string; sender: string; text: string; timestamp: string };
 type PhotonDispatch = (bot: Row, channelId: number, triggerId: number, threadRootId: number) => Promise<void>;
@@ -317,7 +328,7 @@ export async function startPhotonConnector(): Promise<void> {
   const value = credentials();
   if (!value?.project_id || !value.project_secret || child?.exitCode == null && child) return;
   const port = await freePort(); token = randomBytes(32).toString("hex"); base = `http://127.0.0.1:${port}`;
-  const sidecarPath = String(process.env.PHOTON_SIDECAR_PATH || fileURLToPath(SIDECAR));
+  const sidecarPath = sidecarEntry();
   const sidecarProcess: ChildProcess = spawn(process.execPath, [sidecarPath], {
     stdio: ["pipe", "ignore", "pipe"],
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", PHOTON_PROJECT_ID: value.project_id, PHOTON_PROJECT_SECRET: value.project_secret, PHOTON_SIDECAR_TOKEN: token, PHOTON_SIDECAR_PORT: String(port) },

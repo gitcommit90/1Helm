@@ -1,7 +1,7 @@
 {
   "name": "1helm",
   "productName": "1Helm",
-  "version": "0.0.36",
+  "version": "0.0.37",
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-only",
@@ -21,7 +21,8 @@
     "build:css": "tailwindcss -i src/client/styles.css -o public/app.css --minify",
     "build:stamp": "node src/build/stamp.mjs",
     "build:excalidraw": "node scripts/copy-excalidraw-assets.mjs",
-    "build": "npm run build:excalidraw && npm run build:js && npm run build:css && npm run build:stamp",
+    "build:sidecar": "esbuild src/server/photon-sidecar.mjs --bundle --platform=node --format=esm --outfile=desktop/photon-sidecar.bundle.mjs --minify --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\"",
+    "build": "npm run build:excalidraw && npm run build:js && npm run build:css && npm run build:sidecar && npm run build:stamp",
     "mobile:sync": "node scripts/sync-mobile-version.mjs && npm run assets:mobile && npm run build && cap sync",
     "mobile:check": "npm run typecheck && node --test test/mobile.mjs && cap doctor android",
     "start": "node --disable-warning=ExperimentalWarning src/server/index.ts",
