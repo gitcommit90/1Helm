@@ -108,10 +108,28 @@ function Get-FileWithDigest {
     Say "    verified SHA-256"
 }
 
+# NOTE: Get-WindowsOptionalFeature -Online REQUIRES ELEVATION. It is authoritative
+# only inside the elevated host-setup pass. The unelevated main pass must never
+# call it - use Test-WslReady instead, which proves the same thing from signals a
+# normal user can read.
 function Test-FeatureEnabled {
     param([string]$Name)
-    $f = Get-WindowsOptionalFeature -Online -FeatureName $Name -ErrorAction SilentlyContinue
-    return ($null -ne $f -and [string]$f.State -eq 'Enabled')
+    try {
+        $f = Get-WindowsOptionalFeature -Online -FeatureName $Name -ErrorAction Stop
+        return ([string]$f.State -eq 'Enabled')
+    } catch { return $false }
+}
+
+# Unelevated-safe readiness probe. If Microsoft's pinned WSL is usable, the VM
+# compute service exists, and Windows has no servicing restart pending, then the
+# optional features are necessarily already enabled - vmcompute does not exist
+# until VirtualMachinePlatform is active. Get-Service and an HKLM read both work
+# without administrator rights.
+function Test-WslReady {
+    if (-not (Test-PinnedWsl)) { return $false }
+    if ($null -eq (Get-Service -Name vmcompute -ErrorAction SilentlyContinue)) { return $false }
+    if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') { return $false }
+    return $true
 }
 
 # Windows cannot activate these features without a restart: they sit in
@@ -120,14 +138,20 @@ function Test-FeatureEnabled {
 # means "restart", not "broken".
 function Test-RestartPending {
     if ($null -eq (Get-Service -Name vmcompute -ErrorAction SilentlyContinue)) { return $true }
-    foreach ($name in $Features) {
-        $f = Get-WindowsOptionalFeature -Online -FeatureName $name -ErrorAction SilentlyContinue
-        if ($null -eq $f) { continue }
-        if ([string]$f.State -ne 'Enabled') { return $true }
-        $r = [string]$f.RestartRequired
-        if ($r -eq 'Required' -or $r -eq '1' -or $r -eq 'True') { return $true }
+    if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') { return $true }
+    # Feature state is only readable with elevation, so this deeper check runs in
+    # the elevated pass. Unelevated callers rely on the two signals above.
+    if (Test-Elevated) {
+        foreach ($name in $Features) {
+            try {
+                $f = Get-WindowsOptionalFeature -Online -FeatureName $name -ErrorAction Stop
+                if ([string]$f.State -ne 'Enabled') { return $true }
+                $r = [string]$f.RestartRequired
+                if ($r -eq 'Required' -or $r -eq '1' -or $r -eq 'True') { return $true }
+            } catch { continue }
+        }
     }
-    return (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending')
+    return $false
 }
 
 function Test-PinnedWsl {
@@ -228,8 +252,7 @@ $null = New-Item -ItemType Directory -Path $InstallRoot -Force
 
 # --- 1. Windows features and Microsoft's WSL package (elevated) -------------
 Step "Checking Windows prerequisites"
-$featuresReady = ($Features | ForEach-Object { Test-FeatureEnabled $_ }) -notcontains $false
-if ($featuresReady -and (Test-PinnedWsl) -and -not (Test-RestartPending)) {
+if (Test-WslReady) {
     Say "    WSL 2 is already enabled and Microsoft WSL $WslVersion is installed"
 } else {
     $self = $PSCommandPath
