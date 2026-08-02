@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows first-run no longer reports "Shared runtime setup failed" when all
+  Windows actually needs is a restart. The signed-in pass now blocks on the
+  elevated process handle and waits for a terminal status: `Start-Process
+  -Verb RunAs -Wait` can return while the elevated child is still enabling
+  WSL features, and probing for a WSL runtime in that window reported a
+  failure the Captain could not act on.
+- A reboot Windows has not taken yet is now recognised as `restart_required`
+  rather than a failure, including the `EnablePending` feature state, DISM's
+  ambiguous `Possible` restart flag, an absent `vmcompute` service, and a
+  pending Component Based Servicing restart.
+- The setup card no longer paints a pending restart in the error colour, and
+  gives plain numbered steps: restart the PC, sign back in as the same user,
+  reopen 1Helm and setup resumes where it left off.
+
 ## [0.0.37] - 2026-08-02
 
 ### Fixed
