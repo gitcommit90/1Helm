@@ -204,12 +204,18 @@ not consume half of the visible screen.
 - **Workflows** — recurring resident work, next run, pause/resume, run counts,
   and failures.
 - **Connections** — native host-brokered Gmail and Photon configuration.
+- **Notifications** — per-account global mute and mobile notification opt-in.
+- **Feedback** — send a comment and optional attachments to the 1Helm team,
+  with privacy-bounded diagnostics included only if you check that option.
 - **Audit** — retained events and hash-chain verification.
 - **Domains** — local-first collaboration and optional Cloudflare domain.
 - **Providers** — accounts, keys, models, routes, quotas, logs, and endpoint.
 - **Skipper computers** — optional Captain-owned computers for authorized
   Skipper work; these never replace resident Linux computers.
 - **Members** — coworkers, access requests, and invitations.
+
+Those sections are the Captain/admin view. A signed-in member who is not an
+administrator sees only **Providers** and **Notifications**.
 
 ## Providers, models, and routes
 
@@ -377,14 +383,17 @@ Source/developer deployments report that their host operator owns updates.
 Every host update preserves:
 
 ```text
-~/Library/Application Support/1Helm-OCI-v1
+macOS:    ~/Library/Application Support/1Helm-OCI-v1
+Linux:    /var/lib/1helm-oci-v1
+Windows:  %APPDATA%\1Helm-OCI-v1  (plus %LOCALAPPDATA%\1Helm-Runtime)
 ```
 
 On macOS that directory contains databases, credentials, workspaces, resident
-state, and Apple mirrors. Linux preserves the equivalent OCI-generation state
-under `/var/lib/1helm-oci-v1`. The retired data roots remain untouched and are
-not imported by this generation. Do not delete either current data root during
-replacement.
+state, and Apple mirrors. Linux and Windows preserve the equivalent
+OCI-generation state; on Windows the shared WSL runtime disk lives separately
+under `%LOCALAPPDATA%\1Helm-Runtime`. The retired data roots remain untouched
+and are not imported by this generation. Do not delete a current data root
+during replacement.
 
 Before removing 1Helm, use its removal preparation flow. It is Captain-only,
 requires typed confirmation, reports backend-owned resident machines, and
@@ -402,6 +411,47 @@ Recovery principles:
   result with an ad-hoc build.
 
 ## Troubleshooting
+
+### First run and installation
+
+**Windows asks me to restart in the middle of setup.** That is the expected
+path on a normal Windows 11 PC. WSL and VirtualMachinePlatform ship disabled;
+1Helm turns them on for you, and Windows cannot use them until it restarts.
+Restart, sign back in as the same Windows user, open 1Helm, and continue —
+completed steps are skipped. Nothing is lost and nothing else is required.
+
+**Windows says "Windows protected your PC" when I run Setup.** Windows Setup is
+not yet Authenticode signed, so SmartScreen warns about it. Choose **More info**
+→ **Run anyway**. Every release discloses its Authenticode status; v0.0.38 is
+`NotSigned`. Only run an installer you downloaded from
+[1helm.com](https://1helm.com/download/windows) or the project's GitHub
+releases.
+
+**A PowerShell window opened during Windows setup.** That window is the setup
+itself and shows live progress. Leave it open until it finishes; closing it
+early aborts the step. 1Helm mirrors the same progress in the app and writes a
+log to `%APPDATA%\1Helm-OCI-v1\windows-wsl-setup.log`.
+
+**Windows setup failed or stalled.** Check the PowerShell window for the error,
+then use **Retry shared runtime setup** in onboarding or Settings → Channel
+computers. Setup is idempotent — retrying resumes rather than starting over.
+The runtime requires Windows 11 **x64**; arm64 Windows is not supported by this
+build.
+
+**macOS blocks the app or reports it is damaged.** The Mac release is Developer
+ID signed, notarized, and stapled, so Gatekeeper should accept it after you
+drag it to Applications. If it does not, you are almost certainly running a
+partially downloaded or re-hosted copy — download the DMG again from
+[1helm.com](https://1helm.com/download/macos). Do not strip quarantine
+attributes or re-sign an ad-hoc build to work around a failed verification.
+
+**The Linux installer refuses to run.** It requires root, a running systemd
+host, `apt`, cgroup v2, and an x86-64 or arm64 CPU, and it installs Podman
+rather than Docker. The error names the missing prerequisite. Follow the
+[Linux install guide](https://1helm.com/manual/install-linux); check progress
+with `sudo systemctl status 1helm` and `sudo journalctl -u 1helm -f`.
+
+### In the app
 
 **A button highlights but Continue does nothing.** Ensure every visible question
 has one selected option or typed answer. If it still fails, capture the thread
@@ -445,7 +495,7 @@ fallback.
 - Operational history is locally tamper-evident.
 - Mac artifacts are Developer ID signed, notarized, stapled, and Gatekeeper
   verified. Linux assets are digest-verified, and Windows Authenticode status
-  is disclosed for every release (`NotSigned` for v0.0.31).
+  is disclosed for every release (`NotSigned` for v0.0.38).
 
 For the detailed boundary, see [SECURITY.md](../SECURITY.md). For product intent,
 see [VISION.md](VISION.md).
