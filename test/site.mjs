@@ -102,9 +102,12 @@ test("standalone 1helm.com website serves independent product and documentation 
     const download = await fetch(`${base}/download/macos`, { redirect: "manual" });
     assert.equal(download.status, 302);
     assert.match(download.headers.get("location") || "", /1Helm-[\d.]+-arm64\.dmg$|\/releases\/latest$/);
+    // Windows ships no downloadable installer any more - it is a PowerShell
+    // one-liner that installs the Linux build into WSL - so this must lead to
+    // the instructions, never to a Setup executable that no longer exists.
     const windowsDownload = await fetch(`${base}/download/windows`, { redirect: "manual" });
     assert.equal(windowsDownload.status, 302);
-    assert.match(windowsDownload.headers.get("location") || "", /-windows-x64-setup\.exe$|\/releases\/latest$/);
+    assert.equal(windowsDownload.headers.get("location"), "/manual/install-windows");
   } finally { child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve)); }
 });
 
@@ -349,16 +352,20 @@ test("the website's offline release fallback names the shipping version", () => 
   const block = server.match(/const RELEASE_FALLBACK = \{[\s\S]*?\n\};/)?.[0];
   assert.ok(block, "site/server.mjs still exposes a release fallback block");
   assert.match(server, new RegExp(`RELEASE_FALLBACK_TAG = "v${version.replaceAll(".", "\\.")}"`), "the fallback tag matches package.json");
+  // Three artifacts, not six: Windows publishes nothing, it installs the Linux
+  // archive inside WSL. A fallback still naming a Setup executable or .nupkg
+  // would advertise files the release does not contain.
   for (const asset of [
     `1Helm-${version}-arm64.dmg`,
     `1Helm-${version}-mac-arm64.zip`,
     `1Helm-${version}-linux-node.tgz`,
-    `1Helm-${version}-windows-x64-setup.exe`,
-    `1Helm-${version}-full.nupkg`,
   ]) {
     assert.ok(block.includes(asset), `the release fallback names ${asset}`);
   }
+  for (const gone of ["windows-x64-setup.exe", "full.nupkg", '"RELEASES"']) {
+    assert.ok(!block.includes(gone), `the release fallback must not advertise ${gone}`);
+  }
   const digests = [...block.matchAll(/"([a-f0-9]{64})"/g)].map((m) => m[1]);
-  assert.equal(digests.length, 6, "all six desktop artifacts carry a fallback digest");
-  assert.equal(new Set(digests).size, 6, "no two fallback digests are duplicated");
+  assert.equal(digests.length, 3, "all three desktop artifacts carry a fallback digest");
+  assert.equal(new Set(digests).size, 3, "no two fallback digests are duplicated");
 });

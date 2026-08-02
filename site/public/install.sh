@@ -349,8 +349,15 @@ const server = require("node:net").createServer();
 server.once("error", (error) => { console.error(error.code || error.message); process.exit(1); });
 server.listen(8123, () => server.close(() => process.exit(0)));' >/dev/null 2>&1; then
   echo "Port 8123 is already in use before 1Helm started, so 1helm.service cannot bind it." >&2
-  echo "On Windows/WSL every distribution shares one network namespace: check for another 1Helm" >&2
-  echo "installation, another WSL distribution, or a Windows process listening on 8123." >&2
+  # Only mention the shared network namespace where it is actually true. On a
+  # native host this advice is confusing noise; under WSL it is the likely cause,
+  # because Windows and every distribution share one namespace.
+  if [[ "$(systemd-detect-virt --container 2>/dev/null || true)" == "wsl" ]]; then
+    echo "Windows and every WSL distribution share one network namespace, so the listener may be" >&2
+    echo "in another distribution or a Windows process. Stop whatever owns port 8123." >&2
+  else
+    echo "Stop whatever is listening on port 8123, then run this again." >&2
+  fi
   command -v ss >/dev/null 2>&1 && ss -ltnp 2>/dev/null | grep -E "[:.]8123[[:space:]]" >&2 || true
   exit 1
 fi
