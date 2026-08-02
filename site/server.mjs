@@ -30,21 +30,26 @@ const ORIGIN = "https://1helm.com";
 const REPO = "gitcommit90/1Helm";
 const RELEASE_PAGE = `https://github.com/${REPO}/releases/latest`;
 const RELEASE_CACHE_MS = 10 * 60_000;
+// Served only when GitHub's release API is unreachable or rate limited. It
+// must name the current release: a stale fallback silently hands visitors an
+// older build from the download links. Update the tag and all six digests in
+// the same commit that ships a release.
+const RELEASE_FALLBACK_TAG = "v0.0.38";
 const RELEASE_FALLBACK = {
-  tag_name: "v0.0.30",
+  tag_name: RELEASE_FALLBACK_TAG,
   draft: false,
   prerelease: false,
   assets: [
-    ["1Helm-0.0.30-arm64.dmg", "597bccdf464e397389511100f254b40b3da266a52e00049d4553bf5476440bcb"],
-    ["1Helm-0.0.30-mac-arm64.zip", "54729c10aee1173f1f4b085826bdfe9838f37dfc61f3999ff8d073e39ccc4e94"],
-    ["1Helm-0.0.30-linux-node.tgz", "d96cb1bbc73686562dbff3c797cbd8fcc8962c8cc97602edd1fabf1b1e2e5d64"],
-    ["1Helm-0.0.30-windows-x64-setup.exe", "ff5b2fa32ea916b88dc08164bb52a55253d9921f73f713b1413bbf4ac1d4669f"],
-    ["1Helm-0.0.30-full.nupkg", "3142069585e3a02290fc8092ff8e1e80683c355aa1e78d2871260f1518ea83bf"],
-    ["RELEASES", "11bc1746bca8f6414f8dd6df254bfcf921dec13ca72b037c03c47152db30f542"],
+    ["1Helm-0.0.38-arm64.dmg", "468a5b8d59a23c4419331db20dcdb955f088a046add48296b5d5aa8450120527"],
+    ["1Helm-0.0.38-mac-arm64.zip", "4135defe285f9d7e480802d17d81ff37d083a90f6d7dc928f7061a73f9861302"],
+    ["1Helm-0.0.38-linux-node.tgz", "12d59534b66c325891d5433eb2c7ab8990ee67c9d56a805b65b9633030c424fc"],
+    ["1Helm-0.0.38-windows-x64-setup.exe", "0689afadc996319a22d6a3419d39725453bc46d9bdd8857463a56b7bcf738590"],
+    ["1Helm-0.0.38-full.nupkg", "2b25a71f6b3bbb96d7a62cca4bdbd421daed22a1005b1e93d31a77b3d61e86ae"],
+    ["RELEASES", "a20bf26fc174a48a2ccd30c4b7ab0289d72c00489761981c89a7eb3c9842f454"],
   ].map(([name, digest]) => ({
     name,
     digest: `sha256:${digest}`,
-    browser_download_url: `https://github.com/${REPO}/releases/download/v0.0.30/${name}`,
+    browser_download_url: `https://github.com/${REPO}/releases/download/${RELEASE_FALLBACK_TAG}/${name}`,
   })),
 };
 const FEEDBACK_DATA_DIR = resolve(process.env.SITE_DATA_DIR || join(ROOT, ".site-data"));
