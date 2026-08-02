@@ -31,10 +31,10 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $Distro     = '1helm-spike',
+    [string] $Distro     = '1helm',
     [string] $Service    = '1helm.service',
     [int]    $HealthPort = 8123,
-    [string] $InstallDir = 'C:\1helm-spike\keepalive',
+    [string] $InstallDir = 'C:\1helm\keepalive',
     [string] $TaskPath   = '\1Helm\',
     [string] $TaskName   = '1Helm-WSL-Keepalive',
     [int]    $WaitSeconds = 180,
@@ -134,11 +134,34 @@ $settings = New-ScheduledTaskSettingsSet `
 $settings.DisallowStartOnRemoteAppSession = $false
 $settings.Enabled = $true
 
-$null = Register-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName `
-            -Action $action -Trigger $triggers `
-            -Principal $principal -Settings $settings `
-            -Description "Holds the $Distro WSL 2 distro open for the signed-in user and keeps $Service active, so http://localhost:$HealthPort stays reachable." `
-            -Force
+# Register-ScheduledTask is CIM-backed, so $ErrorActionPreference = 'Stop' does
+# NOT make it terminating: without an explicit -ErrorAction it writes an error
+# and execution continues, and the script goes on to report success. That
+# matters because registration genuinely fails with Access denied (0x80070005)
+# when the task folder was created by an elevated process and this run is not
+# elevated - a real upgrade path. Never infer registration from the health
+# probe below either: a stale task left in place also answers on the port.
+try {
+    $null = Register-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName `
+                -Action $action -Trigger $triggers `
+                -Principal $principal -Settings $settings `
+                -Description "Holds the $Distro WSL 2 distro open for the signed-in user and keeps $Service active, so http://localhost:$HealthPort stays reachable." `
+                -Force -ErrorAction Stop
+} catch {
+    Say "FAILED to register $TaskPath$TaskName : $($_.Exception.Message)" 'Red'
+    if ($_.Exception.Message -match 'Access is denied|0x80070005') {
+        Say "The task folder $TaskPath was most likely created by an elevated process." 'Yellow'
+        Say "Re-run this installer as Administrator, or remove the existing task first with keepalive-remove.ps1." 'Yellow'
+    }
+    exit 1
+}
+
+# Prove the task actually exists and carries our action before claiming success.
+$registered = Get-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -ErrorAction SilentlyContinue
+if (-not $registered) {
+    Say "FAILED: $TaskPath$TaskName is not present after registration reported no error." 'Red'
+    exit 1
+}
 Say "Registered scheduled task $TaskPath$TaskName" 'Green'
 
 # --- start it now ---------------------------------------------------------

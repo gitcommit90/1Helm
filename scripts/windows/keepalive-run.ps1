@@ -33,12 +33,12 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $Distro           = '1helm-spike',
+    [string] $Distro           = '1helm',
     [string] $Service          = '1helm.service',
     [int]    $HealthPort       = 8123,
     [int]    $PollSeconds      = 10,
     [int]    $DeepCheckEvery   = 6,
-    [int]    $MaxDeepFailures  = 3,
+    [int]    $MaxDeepFailures  = 6,
     [int]    $HoldInterval     = 20,
     [string] $ProtectedDistroPattern = '-runtime$',
     [string] $LogPath
@@ -108,7 +108,7 @@ $AnchorIn  = Join-Path $PSScriptRoot 'anchor.stdin'
 
 function ConvertTo-WslArg {
     # wsl.exe does NOT strip surrounding double quotes from its own option
-    # values: `wsl -d "1helm-spike"` fails with WSL_E_DISTRO_NOT_FOUND because it
+    # values: `wsl -d "my-distro"` fails with WSL_E_DISTRO_NOT_FOUND because it
     # looks for a distro whose name literally includes the quote characters.
     # So quote only when there is whitespace that actually needs it.
     param([string]$Value)
@@ -222,8 +222,20 @@ try {
                 } else {
                     $deepFail++
                     Write-Log ("health check FAILED #{0} (distroRunning={1})" -f $deepFail, $running) 'WARN'
+                    # Do not restart a unit that is still coming up. A cold distro
+                    # boot plus 1Helm's own start took 33-80s on an 8-core test box
+                    # and will be slower on modest hardware, so an unconditional
+                    # restart here interrupts the very startup we are waiting for.
+                    # "activating" means systemd is working on it; leave it alone.
                     if ($running) {
-                        try { & $WslExe -d $Distro -u root --exec /usr/bin/systemctl restart $Service 2>&1 | Out-Null } catch { }
+                        $unitState = ''
+                        try { $unitState = (& $WslExe -d $Distro -u root --exec /usr/bin/systemctl is-active $Service 2>&1 | Out-String).Trim() } catch { }
+                        if ($unitState -match 'activating') {
+                            Write-Log "$Service is still activating - waiting rather than restarting it"
+                            $deepFail--
+                        } else {
+                            try { & $WslExe -d $Distro -u root --exec /usr/bin/systemctl restart $Service 2>&1 | Out-Null } catch { }
+                        }
                     }
                     if ($deepFail -ge $MaxDeepFailures) {
                         Write-Log "escalating: recycling anchor and distro" 'WARN'

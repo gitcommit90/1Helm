@@ -24,8 +24,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $Distro     = '1helm-spike',
-    [string] $InstallDir = 'C:\1helm-spike\keepalive',
+    [string] $Distro     = '1helm',
+    [string] $InstallDir = 'C:\1helm\keepalive',
     [string] $TaskPath   = '\1Helm\',
     [string] $TaskName   = '1Helm-WSL-Keepalive',
     [string] $ProtectedDistroPattern = '-runtime$',
