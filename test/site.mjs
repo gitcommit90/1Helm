@@ -112,11 +112,14 @@ test("release metadata stays available when GitHub's unauthenticated API is exha
     await waitFor(`${base}/health`);
     const response = await fetch(`${base}/api/releases/linux/latest`);
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), {
-      version: "0.0.30",
-      url: "https://github.com/gitcommit90/1Helm/releases/download/v0.0.30/1Helm-0.0.30-linux-node.tgz",
-      sha256: "d96cb1bbc73686562dbff3c797cbd8fcc8962c8cc97602edd1fabf1b1e2e5d64",
-    });
+    // Derived from package.json rather than pinned: the point of this contract
+    // is that the offline fallback serves the SHIPPING release, so hardcoding a
+    // version here would keep passing while the fallback silently went stale.
+    const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+    const offline = await response.json();
+    assert.equal(offline.version, version, "the offline fallback serves the shipping version");
+    assert.equal(offline.url, `https://github.com/gitcommit90/1Helm/releases/download/v${version}/1Helm-${version}-linux-node.tgz`);
+    assert.match(offline.sha256, /^[a-f0-9]{64}$/, "the offline fallback carries a real digest");
   } finally {
     child.kill("SIGTERM");
     await new Promise((resolve) => child.once("exit", resolve));
@@ -304,4 +307,28 @@ test("autonomy report names its deterministic scope and live-system limits", () 
   assert.equal(report.summary.failed, 0);
   assert.match(report.scope.validates.join(" "), /wakeable recurring-work persistence/);
   assert.match(report.scope.does_not_validate.join(" "), /live model or provider/);
+});
+
+test("the website's offline release fallback names the shipping version", () => {
+  // This fallback is served when GitHub's release API is unreachable or rate
+  // limited. A stale entry does not fail loudly — it quietly hands every
+  // visitor an older build from the download links, which is exactly how a
+  // release goes out with the previous version behind the buttons.
+  const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+  const server = readFileSync(join(root, "site", "server.mjs"), "utf8");
+  const block = server.match(/const RELEASE_FALLBACK = \{[\s\S]*?\n\};/)?.[0];
+  assert.ok(block, "site/server.mjs still exposes a release fallback block");
+  assert.match(server, new RegExp(`RELEASE_FALLBACK_TAG = "v${version.replaceAll(".", "\\.")}"`), "the fallback tag matches package.json");
+  for (const asset of [
+    `1Helm-${version}-arm64.dmg`,
+    `1Helm-${version}-mac-arm64.zip`,
+    `1Helm-${version}-linux-node.tgz`,
+    `1Helm-${version}-windows-x64-setup.exe`,
+    `1Helm-${version}-full.nupkg`,
+  ]) {
+    assert.ok(block.includes(asset), `the release fallback names ${asset}`);
+  }
+  const digests = [...block.matchAll(/"([a-f0-9]{64})"/g)].map((m) => m[1]);
+  assert.equal(digests.length, 6, "all six desktop artifacts carry a fallback digest");
+  assert.equal(new Set(digests).size, 6, "no two fallback digests are duplicated");
 });
