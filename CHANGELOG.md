@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.38] - 2026-08-02
+
 ### Fixed
 
 - Windows first-run no longer reports "Shared runtime setup failed" when all
@@ -1036,6 +1038,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Application Support, and isolated Apple container machines.
 
 [Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.36...HEAD
+[0.0.38]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...v0.0.38
 [0.0.37]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...v0.0.37
 [0.0.36]: https://github.com/gitcommit90/1Helm/compare/v0.0.35...v0.0.36
 [0.0.35]: https://github.com/gitcommit90/1Helm/compare/v0.0.34...v0.0.35

@@ -200,6 +200,16 @@ Windows: %APPDATA%\1Helm-OCI-v1</code></pre>
 
   <section id="troubleshooting">
     <h2><span class="mark">Troubleshooting</span></h2>
+    <h3>Windows asked me to restart during setup</h3>
+    <p>That's expected, and it's the normal path on a new PC. Windows&nbsp;11 ships with WSL and VirtualMachinePlatform turned off; 1Helm turns them on for you, and Windows can't use them until it restarts. Restart, sign back in as the <span class="b">same</span> Windows user, open 1Helm, and continue — setup picks up where it left off and skips what's already done. Nothing is lost.</p>
+    <h3>Windows says "Windows protected your PC"</h3>
+    <p>Windows Setup isn't Authenticode signed yet, so SmartScreen warns about it. Choose <span class="b">More info</span> → <span class="b">Run anyway</span>. Every release discloses its Authenticode status — v0.0.38 is <code>NotSigned</code>. Only run an installer you got from <a class="b plainlink" href="/download/windows">1helm.com</a> or the project's GitHub releases.</p>
+    <h3>A PowerShell window opened on Windows</h3>
+    <p>That window <em>is</em> the setup, and it shows live progress. Leave it open until it finishes — closing it early aborts the step. If it did close, choose <span class="b">Retry shared runtime setup</span> in onboarding or Settings&nbsp;→&nbsp;Channel computers; setup resumes rather than starting over. The log is at <code>%APPDATA%\1Helm-OCI-v1\windows-wsl-setup.log</code>.</p>
+    <h3>macOS won't open the app</h3>
+    <p>The Mac release is Developer ID signed, notarized, and stapled, so Gatekeeper should accept it once it's in Applications. If it doesn't, you likely have a partial or re-hosted download — get the DMG again from <a class="b plainlink" href="/download/macos">1helm.com</a>. Don't strip quarantine attributes or re-sign an ad-hoc build to get around a failed check.</p>
+    <h3>The Linux installer refuses to run</h3>
+    <p>It needs root, a running systemd host, <code>apt</code>, cgroup&nbsp;v2, and an x86-64 or arm64 CPU — and it installs Podman, not Docker. The error names the missing prerequisite. Check progress with <code>sudo systemctl status 1helm</code> and <code>sudo journalctl -u 1helm -f</code>.</p>
     <h3>Skipper reports only #main</h3>
     <p>Ask <code>@skipper what channels exist</code> — inventory comes from the native control plane and includes every channel in your scope, archived ones on request.</p>
     <h3>Terminal and Files disagree</h3>
@@ -223,6 +233,16 @@ Windows: %APPDATA%\1Helm-OCI-v1</code></pre>
     <details>
       <summary>What operating systems does it run on?</summary>
       <p>All three, day one: macOS (signed Apple Silicon app), Windows 11 (x64 installer with one shared WSL&nbsp;2/Podman runtime), and Linux (native Podman with a systemd host and verified updater). Resident computers work the same way everywhere — one isolated computer per agent.</p>
+    </details>
+
+    <details>
+      <summary>Do I need to install WSL before installing on Windows?</summary>
+      <p>No. A stock Windows&nbsp;11 has WSL and VirtualMachinePlatform turned off, and 1Helm enables them itself during setup. Expect three things: one administrator (UAC) prompt, a PowerShell window showing progress that you should leave open, and <span class="b">one Windows restart</span> — Windows can't use the features it just enabled until it restarts. Restart, sign back in as the same user, reopen 1Helm, and setup continues where it left off. Setup executables aren't Authenticode signed yet, so SmartScreen warns once: <span class="b">More info → Run anyway</span>. Full detail is in the <a class="b plainlink" href="/manual/install-windows">Windows guide</a>.</p>
+    </details>
+
+    <details>
+      <summary>How do I uninstall 1Helm?</summary>
+      <p>Start with Settings&nbsp;→&nbsp;Admin&nbsp;→&nbsp;<span class="b">Prepare to remove 1Helm</span>, which prepares resident machines for safe deletion — export anything irreplaceable first. Then: on macOS drag the app to the Trash; on Windows uninstall from Settings&nbsp;→&nbsp;Apps, which also removes 1Helm's containers and its WSL runtime; on Linux run <code>sudo /opt/1helm/uninstall-host.sh</code>. macOS and Linux deliberately leave your data root in place for recovery — delete it yourself if you truly want it gone.</p>
     </details>
 
     <details>

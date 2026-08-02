@@ -61,7 +61,10 @@ test("standalone 1helm.com website serves independent product and documentation 
     }
     const gettingStarted = await (await fetch(`${base}/manual/getting-started`)).text();
     assert.match(gettingStarted, /On Windows 11 x64, download the Setup executable/i);
-    assert.match(gettingStarted, /v0\.0\.31 is <code>NotSigned<\/code>/i);
+    // The disclosed Authenticode status is release-coupled: assert against the
+    // shipping version so a patch bump cannot silently leave a stale claim.
+    const shippingVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+    assert.match(gettingStarted, new RegExp(`v${shippingVersion.replaceAll(".", "\\.")} is <code>NotSigned</code>`, "i"));
     assert.match(gettingStarted, /connect to an existing HTTPS 1Helm host/i);
     assert.doesNotMatch(gettingStarted, /signed Setup executable/i);
     assert.doesNotMatch(gettingStarted, /withheld/i);

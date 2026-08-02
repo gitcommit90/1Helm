@@ -87,7 +87,7 @@ verification.
   synchronized public desktop-host product. Every named desktop release must
   publish all three from one version and exact source commit.
 - 1Helm is self-hosted and open source. Native mobile gateway source is present,
-  but v0.0.31 has no public Android/iOS build and 1Helm is not listed in the
+  but v0.0.38 has no public Android/iOS build and 1Helm is not listed in the
   public iOS App Store. A hosted control plane, blind community-skill execution,
   and a native Linux desktop shell are not shipped.
 

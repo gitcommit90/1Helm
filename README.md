@@ -110,7 +110,10 @@ Skipper ─── crosses the boundary ─────────┘
 
 ## Install
 
-On Apple Silicon:
+Whichever platform, it works best on a dedicated machine: your crew works
+around the clock, and your everyday computer takes naps.
+
+### macOS (Apple Silicon)
 
 1. [Download the current signed DMG](https://1helm.com/download/macos).
 2. Open it and drag **1Helm** to Applications.
@@ -125,21 +128,70 @@ update preserves it — credentials, databases, resident state, files, and
 workspaces. Profile → Check for updates asks the Mac running 1Helm—not the
 device displaying the web UI—to download and verify the signed update.
 
-Windows 11 x64 gets a [Setup executable](https://1helm.com/download/windows)
-that provisions one installation-scoped WSL 2 runtime and one durable OCI
-container per ordinary channel. Linux hosts run the same channel containers
-natively under Podman. The verified installer provisions a durable systemd
-service with an atomic,
-digest-verified, health-checked updater — see the
-[Linux install guide](https://1helm.com/manual/install-linux). Whichever platform,
-it works best on a dedicated machine: your crew works around the clock, and
-your everyday computer takes naps.
+### Windows 11 x64
+
+1. [Download the current Setup executable](https://1helm.com/download/windows).
+2. Windows Setup is **not yet Authenticode signed**, so SmartScreen shows
+   "Windows protected your PC". Choose **More info** → **Run anyway**.
+3. Open 1Helm and complete Captain → Providers → Workspace.
+4. At the Workspace step, 1Helm builds its WSL 2 runtime. **You do not need WSL
+   installed beforehand.** A stock Windows 11 ships with WSL and
+   VirtualMachinePlatform turned off, and 1Helm enables both itself:
+   - Approve the one administrator (UAC) prompt.
+   - A PowerShell window opens and reports progress. **Leave it open** until it
+     finishes.
+   - Because those Windows features were just turned on, **Windows has to
+     restart once.** 1Helm says so in plain language. This is the normal path
+     on a new PC — it is not an error, and nothing is lost.
+   - Restart, sign back in as the **same** Windows user, then open 1Helm and
+     continue setup. It picks up where it left off; already-completed steps are
+     skipped.
+
+Setup downloads Microsoft's pinned WSL 2 package and a pinned Ubuntu 24.04 root
+filesystem, both SHA-256 verified, and the WSL package is additionally checked
+for a valid Microsoft Authenticode signature. The result is one
+installation-scoped WSL 2 runtime hosting one durable OCI container per ordinary
+channel, with Windows-drive mounts and process interop disabled. App state lives
+in `%APPDATA%\1Helm-OCI-v1`; the shared runtime disk lives in
+`%LOCALAPPDATA%\1Helm-Runtime`.
+
+### Linux (Ubuntu/Debian, systemd)
+
+Linux hosts run the same channel containers natively under Podman. The verified
+installer provisions a durable systemd service with an atomic, digest-verified,
+health-checked updater:
+
+```bash
+curl -fsSLo /tmp/1helm-install.sh https://1helm.com/install.sh
+less /tmp/1helm-install.sh
+sudo bash /tmp/1helm-install.sh
+```
+
+It requires root, systemd, apt, cgroup v2, and x86-64 or arm64 — see the
+[Linux install guide](https://1helm.com/manual/install-linux).
+
+### Removing 1Helm
+
+Use **Settings → Admin → Prepare to remove 1Helm** first on any platform. It is
+Captain-only, requires typed confirmation, and prepares backend-owned resident
+machines for safe deletion. Export irreplaceable channel files before you start.
+
+- **macOS** — drag 1Helm to the Trash. `~/Library/Application Support/1Helm-OCI-v1`
+  is preserved unless you delete it yourself.
+- **Windows** — uninstall from Settings → Apps → Installed apps. The uninstaller
+  removes 1Helm's own containers, unregisters its WSL runtime, and deletes
+  `%LOCALAPPDATA%\1Helm-Runtime`.
+- **Linux** — `sudo /opt/1helm/uninstall-host.sh` removes the services, helper,
+  and 1Helm-owned containers while preserving `/var/lib/1helm-oci-v1` for
+  recovery.
+
+### Release discipline
 
 Mac, Linux, and Windows use one synchronized desktop release version. A release
 is held in full until the signed/notarized Mac DMG and updater ZIP, verified
 Linux host archive, and Windows Setup/Squirrel feed have all passed native
 install and update acceptance from the same source commit. Windows
-Authenticode status is disclosed in every release; v0.0.31 is `NotSigned`.
+Authenticode status is disclosed in every release; v0.0.38 is `NotSigned`.
 
 ### Connect from a phone or tablet
 
@@ -152,10 +204,10 @@ frontend; the password is never retained and the resulting session is stored
 in the iOS Keychain or encrypted with a key held by Android Keystore.
 
 - The native iOS and Android gateway source is included in this repository,
-  but neither mobile platform has a current v0.0.31 public build. The most
+  but neither mobile platform has a current v0.0.38 public build. The most
   recent signed Android APK is the older v0.0.23 gateway, and 1Helm is not
   currently listed in the public iOS App Store. Use the HTTPS browser interface
-  for the current v0.0.31 experience.
+  for the current v0.0.38 experience.
 - The native clients require HTTPS, do not contain or initialize the 1Helm
   server or a frozen copy of its product frontend, and do not retain host data
   or provider credentials beyond the selected server address and secure
@@ -277,7 +329,7 @@ and an audit trail. A prompt saying “use this service” is not a connector.
   service with health-check rollback.
 - Signed, Apple-notarized, stapled Apple Silicon DMG releases.
 - Browser access from phones and tablets to an already configured HTTPS 1Helm
-  host; native mobile gateway source is present but has no v0.0.31 public build.
+  host; native mobile gateway source is present but has no v0.0.38 public build.
 
 ### Platform truth
 
@@ -286,7 +338,7 @@ and an audit trail. A prompt saying “use this service” is not a connector.
 | **Apple Silicon macOS 26** | Native desktop product and real isolated Linux computer per resident (Apple `container machine`, `home-mount=none`). |
 | **Linux / CI** | Supported headless systemd host with one durable Podman OCI container per resident, runtime-owned storage, and exact ownership checks; CI may select an explicit test backend. |
 | **Windows 11 x64** | Native desktop product with one installation-scoped WSL 2 OCI runtime and one durable container per resident; Windows-drive mounts and interop are disabled. |
-| **iPhone, iPad, and Android** | Use the current HTTPS browser interface. Native gateway source exists, but v0.0.31 has no public mobile artifact and the iOS app is not publicly listed. |
+| **iPhone, iPad, and Android** | Use the current HTTPS browser interface. Native gateway source exists, but v0.0.38 has no public mobile artifact and the iOS app is not publicly listed. |
 
 Not yet shipped: current public mobile builds, a native Linux desktop shell, a
 hosted control plane, rich Photon attachment fidelity, or blind execution of
@@ -313,7 +365,7 @@ A fresh data directory opens first-run setup. The source runtime defaults to
 | `PORT` | `8123` | HTTP/WebSocket control-plane port. |
 | `CTRL_DATA_DIR` | `./data` | Databases, routing state, uploads, and non-OCI development/Apple workspace mirrors. |
 | `HELM_CHANNEL_COMPUTER_BACKEND` | `apple` on macOS, `oci` on Linux and Windows | Host isolation backend; `native` and `mock` are explicit development/test overrides. |
-| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.37` | Versioned channel-machine image contract. |
+| `HELM_CHANNEL_MACHINE_IMAGE` | `local/1helm-channel-machine:0.0.38` | Versioned channel-machine image contract. |
 
 ### Agent-first JSON CLI
 

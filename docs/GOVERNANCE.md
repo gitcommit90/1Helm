@@ -86,7 +86,10 @@ contract as the slice hardens.
   `/var/lib/1helm-oci-v1`.
 - Windows verification must prove the Setup/Squirrel signature status, clean
   install, old-to-new update, loopback health, WSL lifecycle, and retained
-  application data on Windows 11 x64. Do not substitute a self-signed
+  application data on Windows 11 x64. Clean install must be exercised on a host
+  where WSL and VirtualMachinePlatform start disabled, covering the elevation
+  prompt, the required Windows restart, and resumed setup after that restart.
+  Do not substitute a self-signed
   certificate or block an otherwise accepted release solely because the
   artifacts are honestly disclosed as unsigned.
 
