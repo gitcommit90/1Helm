@@ -200,6 +200,17 @@ test("Cowork contracts survive follow-ups and reject only newly-created incompat
   assert.equal(cowork.enforceCoworkCommandOutput(channelId, null, whiteboards, boardBefore), null);
 });
 
+test("retained OCI channel metadata can initialize without synchronously touching runtime storage", () => {
+  seed();
+  const channelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created) VALUES ('retained-cold-start','retained-cold-start','channel','','','active',?)", now()).lastInsertRowid;
+  const botId = run("INSERT INTO bots (name,model,prompt,created) VALUES ('retained-cold-agent','mock','Resident.',?)", now()).lastInsertRowid;
+  const agentId = run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'channel','retained-cold-agent','ready',?)", botId, now()).lastInsertRowid;
+  run("INSERT INTO agent_channels (agent_id,channel_id,bound_at) VALUES (?,?,?)", agentId, channelId, now());
+  run("INSERT INTO agent_profiles (agent_id,purpose,instructions,updated) VALUES (?,'Cold start','Resident.',?)", agentId, now());
+  assert.doesNotThrow(() => agents.ensureChannelWorkspace(channelId, { initializeRuntimeStorage: false }));
+  assert.equal(q1("SELECT root_ref FROM channel_workspaces WHERE channel_id=?", channelId).root_ref, `channels/${channelId}`);
+});
+
 test("resident raw transcript search is semantic, exact, readable, and channel-isolated", () => {
   const ownerId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('history-owner','x','History Owner',1,?)", now()).lastInsertRowid;
   const channelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created_by,created) VALUES ('history-home','history-home','channel','','Recall prior sessions','active',?,?)", ownerId, now()).lastInsertRowid;

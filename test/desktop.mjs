@@ -112,12 +112,14 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   const bootstrap = server.slice(server.indexOf("async function bootstrap"), server.indexOf("void bootstrap()"));
   assert.doesNotMatch(bootstrap, /ensureAgentMemory\(/, "retained resident memory initialization cannot block the event loop during a bounded host update");
   assert.match(bootstrap, /void memoryRuntime\.catch/, "optional memory-runtime preparation remains asynchronous during startup");
+  assert.match(bootstrap, /ensureChannelWorkspace\(Number\(channel\.id\), \{ initializeRuntimeStorage: false \}\)/, "retained OCI directories cannot synchronously wake WSL before the HTTP control plane is ready");
   assert.match(server, /\["native-macos", "native-windows"\]\.includes\(update\.mode\)/, "both packaged host updaters quiesce the local server before replacement");
   assert.match(nativeUpdater, /update\.electronjs\.org\/gitcommit90\/1Helm\/\$\{feedPlatform\}/);
   assert.match(nativeUpdater, /win32-x64/, "Windows checks and installs on its host through the native updater");
   assert.match(source, /handleSquirrelEvent/);
   assert.match(source, /setAppUserModelId\("com\.squirrel\.1Helm\.1Helm"\)/, "Windows uses Squirrel's stable taskbar identity");
   assert.match(source, /DATA_NAMESPACE = "1Helm-OCI-v1"/, "the clean-slate build uses a fresh durable application-data namespace");
+  assert.match(source, /SERVER_READY_TIMEOUT_MS = process\.platform === "win32" \? 3 \* 60_000 : 30_000/, "Windows gives a bounded cold WSL host enough time without weakening other desktop startup budgets");
   assert.match(source, /windows-removal\.cjs/, "Windows uninstall invokes ownership-checked shared-runtime cleanup before removing shortcuts");
   const onboardingClient = await readFile(join(root, "src", "client", "onboarding.ts"), "utf8");
   const clientApi = await readFile(join(root, "src", "client", "api.ts"), "utf8");
