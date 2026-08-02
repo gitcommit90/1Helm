@@ -156,14 +156,24 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
         h("div", { class: "font-semibold text-fg" }, restart ? "Windows restart required" : failed ? "Shared runtime setup failed" : "Setting up shared Windows runtime"),
         h("p", { class: "mt-2 text-sm leading-6 text-muted" },
           restart
-            ? "Windows enabled WSL 2 components that need a reboot. Restart the PC, reopen 1Helm, then create the workspace again."
+            ? "Windows finished enabling WSL 2, which needs a restart before it can run. Nothing went wrong and nothing is lost."
             : "One-time administrator setup. Keep the PowerShell window open until it finishes; 1Helm tracks progress here."),
         h("div", { class: "wizard-progress mt-4" }, h("span", { style: `width:${width}%` })),
         h("p", { class: "mt-3 text-sm leading-6 text-fg" }, setup.step || "Working…"),
-        setup.error ? h("p", { class: "mt-2 text-sm text-danger" }, setup.error) : null,
-        h("p", { class: "mt-2 text-xs text-muted" }, failed || restart
-          ? "After a successful setup, 1Helm will prepare the sealed channel image automatically."
-          : "This downloads Microsoft's pinned WSL package and the shared Linux runtime, then installs Podman inside it."),
+        // A pending restart is an expected step, not a fault: never paint it in
+        // the danger colour that tells the Captain their installation broke.
+        setup.error ? h("p", { class: `mt-2 text-sm ${restart ? "text-muted" : "text-danger"}` }, setup.error) : null,
+        restart
+          ? h("ol", { class: "mt-3 list-decimal space-y-1 pl-5 text-sm leading-6 text-fg" },
+              h("li", {}, "Restart this PC."),
+              h("li", {}, "Sign back in as the same Windows user."),
+              h("li", {}, "Open 1Helm and continue — setup picks up where it left off."))
+          : null,
+        h("p", { class: "mt-2 text-xs text-muted" }, restart
+          ? "1Helm keeps this progress. After the restart it finishes the runtime and prepares the sealed channel image automatically."
+          : failed
+            ? "After a successful setup, 1Helm will prepare the sealed channel image automatically."
+            : "This downloads Microsoft's pinned WSL package and the shared Linux runtime, then installs Podman inside it."),
       ];
       if ((failed || restart) && opts?.retry) {
         children.push(h("button", {
@@ -171,7 +181,7 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
           onclick: () => { opts.retry?.(); },
         }, restart ? "I restarted — retry setup" : "Retry shared runtime setup"));
       }
-      status.replaceChildren(h("div", { class: `card p-4 ${failed || restart ? "border-danger/40" : "border-accent/30"}` }, ...children));
+      status.replaceChildren(h("div", { class: `card p-4 ${failed ? "border-danger/40" : "border-accent/30"}` }, ...children));
     };
 
     const runWindowsRuntimeSetup = async (button: HTMLButtonElement): Promise<void> => {

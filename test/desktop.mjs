@@ -181,6 +181,20 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(windowsRemoval, /"--exec", "\/usr\/libexec\/1helm-oci-runtime"/, "Windows removal delegates ownership checks to the narrow installed OCI helper");
   assert.match(windowsRuntime, /VirtualMachinePlatform/);
   assert.match(windowsRuntime, /2\.7\.10\.0/);
+  // A pending Windows reboot must never surface to the Captain as a broken
+  // installation: -Wait can return while the elevated child is still enabling
+  // features, and probing for WSL in that window reports a false failure.
+  assert.match(windowsRuntime, /\$hostProcess\.WaitForExit\(\)/, "the signed-in pass blocks on the real elevated process handle, not only Start-Process -Wait");
+  assert.match(windowsRuntime, /function Test-PendingWslRestart/, "the installer can recognise a reboot Windows has not taken yet");
+  assert.match(windowsRuntime, /vmcompute[\s\S]{0,400}EnablePending|EnablePending[\s\S]{0,400}vmcompute|-ne "Enabled"/, "pending feature activation counts as a restart, not a failure");
+  assert.match(windowsRuntime, /if \(Test-PendingWslRestart\) \{ Require-WindowsRestart \}[\s\S]{0,200}Fail-Setup "Microsoft WSL \$wslVersion is not ready/, "the user-session WSL probe asks for a restart before declaring failure");
+  assert.match(windowsRuntime, /Restart this PC to finish enabling WSL 2/, "the restart status carries plain-language instructions");
+  assert.match(windowsRuntime, /-Status "restart_required"/, "the restart path reports the dedicated restart status");
+  assert.match(windowsRuntime, /@\("restart_required", "failed", "complete"\) -contains/, "the parent waits for a terminal child status instead of racing its last write");
+  const onboardingRuntimeUi = await readFile(join(root, "src", "client", "onboarding.ts"), "utf8");
+  assert.match(onboardingRuntimeUi, /restart \? "text-muted" : "text-danger"/, "a pending restart is not painted as an error");
+  assert.match(onboardingRuntimeUi, /\$\{failed \? "border-danger\/40" : "border-accent\/30"\}/, "only real failures get the danger card treatment");
+  assert.match(onboardingRuntimeUi, /Restart this PC\./, "the restart state gives the Captain explicit numbered steps");
   assert.match(windowsRuntime, /github\.com\/microsoft\/WSL\/releases\/download\/2\.7\.10\/wsl\.2\.7\.10\.0\.x64\.msi/);
   assert.match(windowsRuntime, /1a62f90a43c03cc5bda47dfd0b6faf496ac70fd4389190518120a4f84fc895cf/);
   assert.match(windowsRuntime, /Get-AuthenticodeSignature/);

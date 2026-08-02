@@ -72,10 +72,25 @@ function Test-WslRestartFailure {
 }
 
 function Require-WindowsRestart {
-  $message = "WSL 2 features are enabled. Restart Windows once, then retry 1Helm computer setup."
-  Write-SetupStatus -Status "restart_required" -Step $message -Progress 20 -ErrorMessage "Windows restart required to finish enabling WSL 2."
+  $message = "Restart this PC to finish enabling WSL 2, then open 1Helm again. Setup continues automatically."
+  Write-SetupStatus -Status "restart_required" -Step $message -Progress 20 -ErrorMessage "Windows must restart to finish enabling WSL 2. No other action is needed."
   Write-Host $message
   exit 10
+}
+
+# Windows cannot activate the WSL 2 features until it reboots: the features sit
+# in EnablePending, DISM reports RestartRequired as the ambiguous "Possible",
+# and the vmcompute service does not exist yet. Any of those is a reboot, not a
+# failure, and must never be reported to the Captain as a broken installation.
+function Test-PendingWslRestart {
+  if ($null -eq (Get-Service -Name vmcompute -ErrorAction SilentlyContinue)) { return $true }
+  foreach ($name in @("Microsoft-Windows-Subsystem-Linux", "VirtualMachinePlatform")) {
+    $feature = Get-WindowsOptionalFeature -Online -FeatureName $name -ErrorAction SilentlyContinue
+    if ($null -eq $feature) { continue }
+    if ([string]$feature.State -ne "Enabled") { return $true }
+    if (Test-RestartRequired $feature) { return $true }
+  }
+  return (Test-Path -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending')
 }
 
 function Get-WslDistributionNames {
@@ -261,15 +276,37 @@ try {
     $hostArguments += @("-StatusPath", ('"{0}"' -f $statusArg))
   }
   $hostProcess = Start-Process -FilePath "powershell.exe" -ArgumentList ($hostArguments -join " ") -Verb RunAs -Wait -PassThru
+  # -Wait is not dependable for an elevated ShellExecute launch: it can return
+  # while the child is still enabling Windows features. Continuing here probes
+  # for a WSL runtime the child has not finished installing and reports a false
+  # failure, so block on the real process handle before reading any outcome.
+  if ($null -ne $hostProcess) {
+    try { $hostProcess.WaitForExit() } catch { }
+  }
   $hostExitCode = if ($null -eq $hostProcess) { $null } else { $hostProcess.ExitCode }
+  # The status file is written by the child immediately before it exits. Give a
+  # bounded grace period for a terminal record rather than racing its last write.
+  $settleDeadline = (Get-Date).AddSeconds(30)
+  while ((Get-Date) -lt $settleDeadline) {
+    $pending = Read-ReportedSetupStatus
+    if ($null -ne $pending -and @("restart_required", "failed", "complete") -contains [string]$pending.status) { break }
+    Start-Sleep -Milliseconds 500
+  }
   $hostOutcome = Get-HostSetupOutcome -ExitCode $hostExitCode
   if ($hostOutcome.Status -eq "restart_required") {
     Write-SetupStatus -Status "restart_required" -Step $hostOutcome.Step -Progress 20 -ErrorMessage $hostOutcome.Detail
     Write-Host $hostOutcome.Step
     exit 10
   }
-  if ($hostOutcome.Status -eq "failed") { Fail-Setup $hostOutcome.Detail }
+  if ($hostOutcome.Status -eq "failed") {
+    # A reboot that Windows has not taken yet is the single most common reason
+    # the elevated pass cannot finish. Tell the Captain to restart instead of
+    # presenting a failed installation they cannot act on.
+    if (Test-PendingWslRestart) { Require-WindowsRestart }
+    Fail-Setup $hostOutcome.Detail
+  }
   if (-not (Test-PinnedWslRuntime)) {
+    if (Test-PendingWslRestart) { Require-WindowsRestart }
     Fail-Setup "Microsoft WSL $wslVersion is not ready in the signed-in user's session."
   }
 
