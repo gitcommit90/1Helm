@@ -15,6 +15,7 @@ const LOOPBACK = "127.0.0.1";
 // installation's Application Support/AppData tree untouched and never import
 // it implicitly into this runtime generation.
 const DATA_NAMESPACE = "1Helm-OCI-v1";
+const SERVER_READY_TIMEOUT_MS = process.platform === "win32" ? 3 * 60_000 : 30_000;
 app.setPath("userData", path.join(app.getPath("appData"), DATA_NAMESPACE));
 let mainWindow = null;
 let authWindow = null;
@@ -95,7 +96,7 @@ function freePort() {
   });
 }
 
-async function waitForServer(origin, timeoutMs = 30_000) {
+async function waitForServer(origin, timeoutMs = SERVER_READY_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
   while (Date.now() < deadline) {

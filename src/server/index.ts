@@ -2287,7 +2287,12 @@ async function bootstrap(): Promise<void> {
   // Resident agents own their Linux machine, never the Captain's native Mac.
   run("DELETE FROM bot_computers WHERE computer_id=? AND bot_id IN (SELECT bot_id FROM agents WHERE kind='channel')", computerId);
   for (const channel of q("SELECT id FROM channels WHERE kind='channel' AND status<>'deleted'")) {
-    ensureChannelWorkspace(Number(channel.id));
+    // Retained OCI storage is already authoritative. In particular, a cold
+    // Windows login can take minutes to wake WSL, and that maintenance must
+    // never hold the HTTP control plane behind a synchronous startup probe.
+    // Provisioning, Files/Cowork access, Terminal, and the fleet reconciler
+    // initialize or verify runtime directories when they actually need them.
+    ensureChannelWorkspace(Number(channel.id), { initializeRuntimeStorage: false });
   }
   startImprovementLoop();
   startThreadAuditLoop();

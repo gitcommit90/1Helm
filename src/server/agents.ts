@@ -62,7 +62,7 @@ export const channelRoot = hostChannelRoot;
 export const channelWorkspace = channelWorkspacePath;
 export const channelFiles = channelFilesPath;
 
-export function ensureChannelWorkspace(channelId: number): string {
+export function ensureChannelWorkspace(channelId: number, options: { initializeRuntimeStorage?: boolean } = {}): string {
   const channel = q1("SELECT id,name,personal_main_owner_id FROM channels WHERE id=? AND status<>'deleted'", channelId);
   if (!channel) throw new Error("Channel workspace not found.");
   const root = channelRoot(channelId);
@@ -71,8 +71,10 @@ export function ensureChannelWorkspace(channelId: number): string {
   if (channelUsesRuntimeStorage(channelId)) {
     // OCI workspace/files live in runtime storage. On Windows that path is
     // \\wsl.localhost\\... and host mkdir there fails; create via the WSL runtime.
-    try { ensureOciChannelWorkspaceDirs(channelId); }
-    catch { /* provision path creates these once the computer exists */ }
+    if (options.initializeRuntimeStorage !== false) {
+      try { ensureOciChannelWorkspaceDirs(channelId); }
+      catch { /* provision path creates these once the computer exists */ }
+    }
   } else {
     mkdirSync(channelWorkspace(channelId), { recursive: true });
     mkdirSync(channelFiles(channelId), { recursive: true });

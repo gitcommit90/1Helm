@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.36] - 2026-08-02
+
+### Fixed
+
+- Kept the Windows desktop control plane available across a genuine cold WSL
+  reboot by deferring retained OCI directory maintenance until runtime access
+  or fleet reconciliation actually needs it, instead of synchronously waking
+  WSL before the HTTP server can listen.
+- Gave the Windows desktop a bounded three-minute cold-runtime readiness window
+  while preserving the existing 30-second startup budget on other platforms.
+
 ## [0.0.35] - 2026-08-01
 
 ### Fixed
@@ -989,7 +1000,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notarization, stapled tickets, Gatekeeper verification, persistent
   Application Support, and isolated Apple container machines.
 
-[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.35...HEAD
+[Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.36...HEAD
+[0.0.36]: https://github.com/gitcommit90/1Helm/compare/v0.0.35...v0.0.36
 [0.0.35]: https://github.com/gitcommit90/1Helm/compare/v0.0.34...v0.0.35
 [0.0.34]: https://github.com/gitcommit90/1Helm/compare/v0.0.33...v0.0.34
 [0.0.33]: https://github.com/gitcommit90/1Helm/compare/v0.0.32...v0.0.33
