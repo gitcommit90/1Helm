@@ -80,13 +80,18 @@ function prepareCloudflared(destination) {
 }
 
 async function main() {
+  // The photon sidecar bundle is produced by `npm run build`. Fail before
+  // packaging rather than shipping an app whose sidecar cannot start.
+  if (!fs.existsSync(path.join(ROOT, "desktop", "photon-sidecar.bundle.mjs"))) throw new Error("desktop/photon-sidecar.bundle.mjs is missing; run `npm run build` first.");
   fs.mkdirSync(DIST, { recursive: true });
   const iconRoot = fs.mkdtempSync(path.join(os.tmpdir(), "1helm-win-icon-"));
   // Squirrel 1.x expands every package file through legacy .NET APIs limited
-  // to 260-character paths. A short release directory alone is insufficient:
-  // its packages/app-version staging tree still includes the packaged app's
-  // full relative paths. Build both the app and installer in one fresh,
-  // drive-root scratch directory, then retain only canonical artifacts.
+  // to 260-character paths, both while releasifying here and while installing
+  // or updating on end-user machines under %LOCALAPPDATA%. Loose node_modules
+  // exceed that budget, so application code ships inside app.asar and only
+  // assets consumed by external processes are unpacked (see the asar option
+  // below). The drive-root scratch directory still keeps Squirrel's own
+  // staging prefixes short for the unpacked remainder.
   const windowsScratch = fs.mkdtempSync(path.join(path.parse(ROOT).root, "1hw-"));
   const ico = path.join(iconRoot, "1Helm.ico");
   try {
@@ -100,7 +105,16 @@ async function main() {
     const [appDir] = await packager({
       dir: ROOT, name: PRODUCT, executableName: PRODUCT, appCopyright: "Copyright (c) 2026 Joseph Yaksich",
       win32metadata: { CompanyName: "Joseph Yaksich", FileDescription: PRODUCT, OriginalFilename: "1Helm.exe", ProductName: PRODUCT, InternalName: PRODUCT },
-      platform: "win32", arch: "x64", out: windowsScratch, overwrite: true, prune: true, asar: false, icon: ico,
+      platform: "win32", arch: "x64", out: windowsScratch, overwrite: true, prune: true, icon: ico,
+      // Everything importable stays inside app.asar so legacy Squirrel sees a
+      // handful of short paths instead of tens of thousands of loose files.
+      // Unpacked: assets read by external processes (PowerShell, Python, WSL,
+      // the plain-Node photon sidecar, Squirrel's uninstall hook) plus native
+      // modules that must exist on disk to load.
+      asar: {
+        unpack: "**/*.node",
+        unpackDir: "{scripts,container,deploy,public,desktop,node_modules/node-pty}",
+      },
       ignore: [IGNORE_NON_RUNTIME_ROOTS, IGNORE_CLIENT_BUILD_MODULES, IGNORE_INSTRUCTION_FILES, /\.DS_Store$/, /\.log$/],
     });
     const appExe = path.join(appDir, "1Helm.exe");
@@ -109,21 +123,28 @@ async function main() {
     prepareCloudflared(cloudflared);
     if (!fs.existsSync(cloudflared)) throw new Error("Packaged Windows app is missing cloudflared.exe.");
     signPackagedExecutables(appDir);
-    const pty = path.join(appDir, "resources", "app", "node_modules", "node-pty", "prebuilds", "win32-x64", "pty.node");
+    const asarArchive = path.join(appDir, "resources", "app.asar");
+    if (!fs.existsSync(asarArchive)) throw new Error("Packaged Windows app is missing app.asar.");
+    const unpackedRoot = path.join(appDir, "resources", "app.asar.unpacked");
+    const pty = path.join(unpackedRoot, "node_modules", "node-pty", "prebuilds", "win32-x64", "pty.node");
     if (!fs.existsSync(pty)) throw new Error("Packaged Windows app is missing the x64 terminal module.");
+    const sidecarBundle = path.join(unpackedRoot, "desktop", "photon-sidecar.bundle.mjs");
+    if (!fs.existsSync(sidecarBundle)) throw new Error("Packaged Windows app is missing the self-contained photon sidecar bundle.");
     if (capture("where.exe", ["dumpbin.exe"])) {
       const headers = capture("dumpbin.exe", ["/headers", appExe]);
       if (!/machine \(x64\)/i.test(headers)) throw new Error("Packaged Windows application is not x64.");
     }
     if (capture("where.exe", ["powershell.exe"])) {
-      const script = path.join(appDir, "resources", "app", "scripts", "install-wsl-runtime.ps1");
+      const script = path.join(unpackedRoot, "scripts", "install-wsl-runtime.ps1");
       if (!fs.existsSync(script)) throw new Error("Packaged Windows app is missing its WSL setup script.");
       for (const required of [
-        path.join(appDir, "resources", "app", "scripts", "1helm-oci-runtime"),
-        path.join(appDir, "resources", "app", "deploy", "1helm-oci-runtime-v1.conf"),
-        path.join(appDir, "resources", "app", "container", "Containerfile.oci"),
-        path.join(appDir, "resources", "app", "container", "channel-machine.oci.tar"),
-        path.join(appDir, "resources", "app", "container", "channel-machine.oci.sha256"),
+        path.join(unpackedRoot, "scripts", "1helm-oci-runtime"),
+        path.join(unpackedRoot, "scripts", "mnemosyne-bridge.py"),
+        path.join(unpackedRoot, "scripts", "windows-removal.cjs"),
+        path.join(unpackedRoot, "deploy", "1helm-oci-runtime-v1.conf"),
+        path.join(unpackedRoot, "container", "Containerfile.oci"),
+        path.join(unpackedRoot, "container", "channel-machine.oci.tar"),
+        path.join(unpackedRoot, "container", "channel-machine.oci.sha256"),
       ]) if (!fs.existsSync(required)) throw new Error(`Packaged Windows app is missing ${path.basename(required)}.`);
     }
 
