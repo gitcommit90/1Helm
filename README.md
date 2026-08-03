@@ -5,7 +5,9 @@
   </picture>
 </p>
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/gitcommit90/1Helm)
+<p align="center">
+  <a href="https://deepwiki.com/gitcommit90/1Helm"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
+</p>
 
 <p align="center">
   <strong>Intelligence should not be temporary.</strong><br>
