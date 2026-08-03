@@ -40,16 +40,15 @@ const RELEASE_CACHE_MS = 10 * 60_000;
 // 64 hex characters, so latestLinuxRelease() rejects it and
 // /api/releases/linux/latest answers 503 - failing closed rather than handing
 // an installer a digest that cannot match what it downloads.
-const PENDING_DIGEST = "pending-release-digest";
 const RELEASE_FALLBACK_TAG = "v0.0.40";
 const RELEASE_FALLBACK = {
   tag_name: RELEASE_FALLBACK_TAG,
   draft: false,
   prerelease: false,
   assets: [
-    ["1Helm-0.0.40-arm64.dmg", PENDING_DIGEST],
-    ["1Helm-0.0.40-mac-arm64.zip", PENDING_DIGEST],
-    ["1Helm-0.0.40-linux-node.tgz", PENDING_DIGEST],
+    ["1Helm-0.0.40-arm64.dmg", "d96868530bbeb3708e82d027bd079c129bf064e16e3d1e7482a999dd5a1e439a"],
+    ["1Helm-0.0.40-mac-arm64.zip", "a18f7b3e6e4c1c5f8e060d47a2fd1cba6461e1aa8ccafbbb5a24d6e43051ccfd"],
+    ["1Helm-0.0.40-linux-node.tgz", "95267b23753628a843cec0de54380355a04a6c9826ae60c37ce0da41b41d95e7"],
   ].map(([name, digest]) => ({
     name,
     digest: `sha256:${digest}`,
