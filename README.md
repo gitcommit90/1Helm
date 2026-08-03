@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/gitcommit90/1Helm)
+
 <p align="center">
   <strong>Intelligence should not be temporary.</strong><br>
   1Helm gives every job a permanent AI resident with its own private computer, durable memory,

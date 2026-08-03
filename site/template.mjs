@@ -44,6 +44,9 @@ function footer(version) {
 export function renderPage(page) {
   const title = page.path === "/" ? "1Helm — Your AI team should outlive the tab" : `${page.title} — 1Helm`;
   const canonical = `https://1helm.com${page.path === "/" ? "" : page.path}`;
+  const context7Widget = page.path.startsWith("/manual/")
+    ? '<script src="https://context7.com/widget.js" data-library="/gitcommit90/1helm"></script>'
+    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -72,6 +75,7 @@ export function renderPage(page) {
     ${footer(page.version)}
   </div>
   <script src="/assets/site.js?v=${esc(page.assetVersion || page.version)}" defer></script>
+  ${context7Widget}
 </body>
 </html>`;
 }

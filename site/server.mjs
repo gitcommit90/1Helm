@@ -136,8 +136,11 @@ const mime = {
   ".ps1": "text/plain; charset=utf-8",
 };
 
+const defaultContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+const manualContentSecurityPolicy = "default-src 'self'; script-src 'self' https://context7.com/widget.js; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://context7.com/api/v2/widget/chat; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+
 const securityHeaders = {
-  "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+  "content-security-policy": defaultContentSecurityPolicy,
   "cross-origin-opener-policy": "same-origin",
   "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
   "referrer-policy": "strict-origin-when-cross-origin",
@@ -393,6 +396,7 @@ const server = createServer(async (req, res) => {
     answer(res, 200, STATIC_PAGES[path], {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-cache",
+      ...(path === "/manual" ? { "content-security-policy": manualContentSecurityPolicy } : {}),
     });
     return;
   }
@@ -454,6 +458,7 @@ const server = createServer(async (req, res) => {
     answer(res, 200, renderPage({ ...page, path, version: VERSION, assetVersion: SITE_ASSET_VERSION }), {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-cache",
+      ...(path.startsWith("/manual/") ? { "content-security-policy": manualContentSecurityPolicy } : {}),
     });
     return;
   }

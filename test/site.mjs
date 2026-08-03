@@ -8,6 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 const root = new URL("..", import.meta.url).pathname;
+const context7Widget = /<script src="https:\/\/context7\.com\/widget\.js" data-library="\/gitcommit90\/1helm"><\/script>/;
 const releaseFixture = {
   tag_name: "v0.0.31",
   draft: false,
@@ -43,6 +44,7 @@ test("standalone 1helm.com website serves independent product and documentation 
     const manual = await (await fetch(`${base}/manual`)).text();
     assert.match(manual, /The Ship's/);
     assert.match(manual, /Do I really need a dedicated computer/);
+    assert.match(manual, context7Widget);
     assert.doesNotMatch(manual, /public sandbox|retired pre-OCI sandbox/i);
     const privacy = await (await fetch(`${base}/privacy`)).text();
     assert.match(privacy, /build@1helm\.com/);
@@ -56,8 +58,19 @@ test("standalone 1helm.com website serves independent product and documentation 
     assert.match(home, /assets\/story\/og-card\.png/);
     for (const path of ["/manual", "/terms", "/privacy", "/manual/getting-started", "/manual/architecture", "/manual/outcome-ownership", "/manual/skills", "/manual/verification", "/manual/providers", "/manual/channel-computers", "/manual/connections", "/manual/install-macos", "/manual/install-linux", "/manual/install-windows", "/manual/self-hosting", "/manual/security-model"]) {
       const response = await fetch(base + path); assert.equal(response.status, 200, path);
-      assert.match(response.headers.get("content-security-policy") || "", /default-src 'self'/);
+      const contentSecurityPolicy = response.headers.get("content-security-policy") || "";
+      assert.match(contentSecurityPolicy, /default-src 'self'/);
       assert.equal(response.headers.get("cache-control"), "no-cache", `${path} must never be browser-cached`);
+      const html = await response.text();
+      if (path === "/manual" || path.startsWith("/manual/")) {
+        assert.match(html, context7Widget, `${path} loads the Context7 chat widget`);
+        assert.match(contentSecurityPolicy, /script-src 'self' https:\/\/context7\.com\/widget\.js/);
+        assert.match(contentSecurityPolicy, /connect-src 'self' https:\/\/context7\.com\/api\/v2\/widget\/chat/);
+        assert.match(contentSecurityPolicy, /style-src 'self' 'unsafe-inline'/);
+      } else {
+        assert.doesNotMatch(html, context7Widget, `${path} does not load the manual widget`);
+        assert.doesNotMatch(contentSecurityPolicy, /context7\.com/);
+      }
     }
     const gettingStarted = await (await fetch(`${base}/manual/getting-started`)).text();
     // Windows ships no application and no artifact, so the one thing a Windows
