@@ -41,32 +41,12 @@ function rememberDesktopMode(mode) {
   fs.writeFileSync(desktopModePath(), `${mode}\n`, { mode: 0o600 });
 }
 
-// Windows packages ship application code inside app.asar; assets consumed by
-// external processes (Python, PowerShell, WSL, plain-Node sidecars) are
-// unpacked beside the archive. Translate paths for those consumers. Loose
-// packages (macOS, Linux, development) pass through unchanged.
+// An asar-packaged build keeps application code inside app.asar while assets
+// consumed by external processes (Python, plain-Node sidecars) are unpacked
+// beside the archive. Translate paths for those consumers. Loose packages
+// (macOS, Linux, development) pass through unchanged.
 function unpackedPath(target) {
   return String(target).replace(/app\.asar(?=[\\/]|$)/, "app.asar.unpacked");
-}
-
-function handleSquirrelEvent() {
-  if (process.platform !== "win32") return false;
-  const event = process.argv[1];
-  if (!["--squirrel-install", "--squirrel-updated", "--squirrel-uninstall", "--squirrel-obsolete"].includes(event)) return false;
-  const appFolder = path.resolve(process.execPath, "..");
-  const updateExe = path.resolve(appFolder, "..", "Update.exe");
-  const exe = path.basename(process.execPath);
-  if (event === "--squirrel-install" || event === "--squirrel-updated") {
-    spawnSync(updateExe, ["--createShortcut", exe], { stdio: "ignore", windowsHide: true });
-  } else if (event === "--squirrel-uninstall") {
-    const dataRoot = app.getPath("userData");
-    const wslRoot = path.join(String(process.env.LOCALAPPDATA || ""), "1Helm-Runtime");
-    const cleanup = unpackedPath(path.resolve(__dirname, "..", "scripts", "windows-removal.cjs"));
-    spawnSync(process.execPath, [cleanup, dataRoot, wslRoot], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, stdio: "ignore", windowsHide: true, timeout: 10 * 60_000 });
-    spawnSync(updateExe, ["--removeShortcut", exe], { stdio: "ignore", windowsHide: true });
-  }
-  setTimeout(() => app.quit(), 1000);
-  return true;
 }
 
 function preferredWorkspaceOrigin() {
@@ -310,10 +290,7 @@ function createWindow(showWhenReady = true) {
   mainWindow = window;
 }
 
-if (handleSquirrelEvent()) {
-  // Squirrel install/update/uninstall work must exit before the application
-  // acquires its normal single-instance lock or starts the local server.
-} else if (!app.requestSingleInstanceLock()) {
+if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", (_event, argv) => {
@@ -325,7 +302,6 @@ if (handleSquirrelEvent()) {
   });
 
   app.whenReady().then(async () => {
-    if (process.platform === "win32") app.setAppUserModelId("com.squirrel.1Helm.1Helm");
     session.defaultSession.setPermissionCheckHandler((webContents, permission, _origin, details) => microphonePermissionAllowed(webContents, permission, details));
     session.defaultSession.setPermissionRequestHandler(async (webContents, permission, callback, details) => {
       if (!microphonePermissionAllowed(webContents, permission, details)) { callback(false); return; }

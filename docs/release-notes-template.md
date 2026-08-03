@@ -24,13 +24,24 @@ so plainly instead of silently omitting it.
 | `1Helm-x.y.z-arm64.dmg` | `<digest>` |
 | `1Helm-x.y.z-mac-arm64.zip` | `<digest>` |
 | `1Helm-x.y.z-linux-node.tgz` | `<digest>` |
-| `1Helm-x.y.z-windows-x64-setup.exe` | `<digest>` |
-| `1Helm-x.y.z-full.nupkg` | `<digest>` |
-| `RELEASES` | `<digest>` |
 
-Every desktop row is mandatory and must resolve to the same version and source
-commit. “Not applicable” is forbidden for macOS, Linux, or Windows. If any row
-is unavailable, this release must remain unpublished.
+These three rows are the whole desktop matrix. Every one is mandatory and must
+resolve to the same version and source commit. “Not applicable” is forbidden for
+macOS or Linux. If any row is unavailable, this release must remain unpublished.
+A release is complete only once macOS, Linux, and Windows have each been accepted.
+
+**Windows publishes no artifact.** A Windows host is the Linux host running
+inside a per-user WSL 2 distribution named `1helm`, installed with one command
+in an ordinary PowerShell window:
+
+```powershell
+irm https://1helm.com/install.ps1 | iex
+```
+
+That script, `uninstall.ps1` and the keepalive payload are served from
+`https://1helm.com`, not attached here. No Windows executable ships, so there is
+no code signing and no signature status to disclose. Do not add a Windows row to
+the table above; record Windows under Verification instead.
 
 Source commit: `<full merged SHA>`
 
@@ -44,9 +55,14 @@ Source commit: `<full merged SHA>`
 - For Linux, state archive/source/digest verification and the real prior-version
   systemd update, health-check rollback, and `/var/lib/1helm-oci-v1`
   preservation.
-- For Windows, state Authenticode status, Setup clean install, Squirrel
-  prior-version update, shared-WSL OCI lifecycle smoke, loopback health, and app-data
-  preservation.
+- For Windows, state the behavioural acceptance on real Windows 11 x64 hardware:
+  a clean install via `irm https://1helm.com/install.ps1 | iex` from a
+  non-elevated PowerShell window with exactly one UAC prompt, the mid-install
+  restart and the resumed second run as the same signed-in user, the keepalive
+  surviving a reboot with `1helm.service` active, a browser reaching
+  `http://localhost:8123` and completing onboarding, the prior-version update
+  through the in-distribution Linux updater with `/var/lib/1helm-oci-v1`
+  retained, and removal via the site-served `uninstall.ps1`.
 - Name anything skipped or incomplete; do not call an incomplete release fully
   verified.
 

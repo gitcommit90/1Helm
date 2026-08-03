@@ -60,14 +60,35 @@ test("standalone 1helm.com website serves independent product and documentation 
       assert.equal(response.headers.get("cache-control"), "no-cache", `${path} must never be browser-cached`);
     }
     const gettingStarted = await (await fetch(`${base}/manual/getting-started`)).text();
-    assert.match(gettingStarted, /On Windows 11 x64, download the Setup executable/i);
-    // The disclosed Authenticode status is release-coupled: assert against the
-    // shipping version so a patch bump cannot silently leave a stale claim.
-    const shippingVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
-    assert.match(gettingStarted, new RegExp(`v${shippingVersion.replaceAll(".", "\\.")} is <code>NotSigned</code>`, "i"));
+    // Windows ships no application and no artifact, so the one thing a Windows
+    // reader needs from this page is the exact install command. The retired
+    // Setup-executable story must not come back either: SmartScreen and
+    // Authenticode cannot apply to a product that ships no .exe, so repeating
+    // them here would warn people about a file that does not exist and tell them
+    // to click through a dialog they will never see.
+    assert.match(gettingStarted, /irm https:\/\/1helm\.com\/install\.ps1 \| iex/);
+    assert.doesNotMatch(gettingStarted, /Setup executable|SmartScreen|Authenticode|NotSigned|Squirrel/i);
     assert.match(gettingStarted, /connect to an existing HTTPS 1Helm host/i);
-    assert.doesNotMatch(gettingStarted, /signed Setup executable/i);
     assert.doesNotMatch(gettingStarted, /withheld/i);
+    // The Windows guide is the only install instructions Windows has. Each of
+    // these is something the user sees on screen and would otherwise read as a
+    // failure: the deliberate stop for a restart, Microsoft's own WSL window,
+    // the runtime's post-install prepare, and the ExecutionPolicy wall that only
+    // appears when the script is downloaded rather than piped.
+    const installWindows = await (await fetch(`${base}/manual/install-windows`)).text();
+    assert.match(installWindows, /irm https:\/\/1helm\.com\/install\.ps1 \| iex/);
+    assert.match(installWindows, /irm https:\/\/1helm\.com\/uninstall\.ps1 \| iex/);
+    assert.match(installWindows, /Restart required/);
+    assert.match(installWindows, /Welcome to WSL/);
+    assert.match(installWindows, /40 seconds/);
+    assert.match(installWindows, /ExecutionPolicy Bypass -File/);
+    assert.match(installWindows, /localhost:8123/);
+    // SmartScreen may only be mentioned to say it does not happen. Telling a
+    // Windows user to click through "More info -> Run anyway", or naming an
+    // artifact or an %APPDATA% data root that no longer exists, would send them
+    // looking for a file this product does not ship.
+    assert.match(installWindows, /SmartScreen never appears/);
+    assert.doesNotMatch(installWindows, /Setup executable|Squirrel|NotSigned|Run anyway|%APPDATA%/i);
     assert.equal((await fetch(`${base}/assets/site.css`)).status, 200);
     const windowsIcon = await fetch(`${base}/icons/icon-sailboat.ico`);
     assert.equal(windowsIcon.status, 200);
@@ -76,6 +97,18 @@ test("standalone 1helm.com website serves independent product and documentation 
     assert.equal(benchmarkSchema.$id, "https://1helm.com/schemas/autonomy-benchmark-v1.json");
     assert.deepEqual(benchmarkSchema.required, ["schema", "product", "kind", "started_at", "finished_at", "deterministic", "scope", "summary", "checks"]);
     assert.equal((await fetch(`${base}/install.sh`)).status, 200);
+    // Windows installs via `irm https://1helm.com/install.ps1 | iex`, and that
+    // script downloads its keepalive payload from this same origin. If either
+    // route 404s the install fails partway, so both are contract surface.
+    assert.equal((await fetch(`${base}/install.ps1`)).status, 200);
+    // Removal is `irm https://1helm.com/uninstall.ps1 | iex` and there is no
+    // Add/Remove Programs entry to fall back on, so a 404 here strands every
+    // Windows installation with no supported way off the machine.
+    assert.equal((await fetch(`${base}/uninstall.ps1`)).status, 200);
+    for (const part of ["keepalive-install.ps1", "keepalive-run.ps1", "keepalive-remove.ps1", "keepalive-hold.sh"]) {
+      assert.equal((await fetch(`${base}/keepalive/${part}`)).status, 200, `/keepalive/${part} must be served`);
+    }
+    assert.equal((await fetch(`${base}/keepalive/../server.mjs`)).status, 404, "the keepalive route must not escape its directory");
     const linuxRelease = await (await fetch(`${base}/api/releases/linux/latest`)).json();
     assert.deepEqual(linuxRelease, {
       version: "0.0.31",
@@ -94,9 +127,12 @@ test("standalone 1helm.com website serves independent product and documentation 
     const download = await fetch(`${base}/download/macos`, { redirect: "manual" });
     assert.equal(download.status, 302);
     assert.match(download.headers.get("location") || "", /1Helm-[\d.]+-arm64\.dmg$|\/releases\/latest$/);
+    // Windows ships no downloadable installer any more - it is a PowerShell
+    // one-liner that installs the Linux build into WSL - so this must lead to
+    // the instructions, never to a Setup executable that no longer exists.
     const windowsDownload = await fetch(`${base}/download/windows`, { redirect: "manual" });
     assert.equal(windowsDownload.status, 302);
-    assert.match(windowsDownload.headers.get("location") || "", /-windows-x64-setup\.exe$|\/releases\/latest$/);
+    assert.equal(windowsDownload.headers.get("location"), "/manual/install-windows");
   } finally { child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve)); }
 });
 
@@ -111,15 +147,25 @@ test("release metadata stays available when GitHub's unauthenticated API is exha
     const base = `http://127.0.0.1:${port}`;
     await waitFor(`${base}/health`);
     const response = await fetch(`${base}/api/releases/linux/latest`);
-    assert.equal(response.status, 200);
     // Derived from package.json rather than pinned: the point of this contract
     // is that the offline fallback serves the SHIPPING release, so hardcoding a
     // version here would keep passing while the fallback silently went stale.
     const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
-    const offline = await response.json();
-    assert.equal(offline.version, version, "the offline fallback serves the shipping version");
-    assert.equal(offline.url, `https://github.com/gitcommit90/1Helm/releases/download/v${version}/1Helm-${version}-linux-node.tgz`);
-    assert.match(offline.sha256, /^[a-f0-9]{64}$/, "the offline fallback carries a real digest");
+    const server = readFileSync(join(root, "site", "server.mjs"), "utf8");
+    const pending = server.includes('const PENDING_DIGEST = "pending-release-digest"')
+      && new RegExp(`\\["1Helm-${version.replaceAll(".", "\\.")}-linux-node\\.tgz", PENDING_DIGEST\\]`).test(server);
+    if (pending) {
+      // Digests are the digests OF the release commit's artifacts, so they are
+      // filled in at publish. Until then this must fail closed rather than hand
+      // an installer a digest that cannot match what it downloads.
+      assert.equal(response.status, 503, "a fallback with pending digests must refuse, not serve a wrong digest");
+    } else {
+      assert.equal(response.status, 200);
+      const offline = await response.json();
+      assert.equal(offline.version, version, "the offline fallback serves the shipping version");
+      assert.equal(offline.url, `https://github.com/gitcommit90/1Helm/releases/download/v${version}/1Helm-${version}-linux-node.tgz`);
+      assert.match(offline.sha256, /^[a-f0-9]{64}$/, "the offline fallback carries a real digest");
+    }
   } finally {
     child.kill("SIGTERM");
     await new Promise((resolve) => child.once("exit", resolve));
@@ -198,14 +244,25 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(installer, /RELEASE_METADATA_URL="https:\/\/1helm\.com\/api\/releases\/linux\/latest"/, "fresh installs resolve the complete current release from the product site");
   assert.match(installer, /expectedUrl = `https:\/\/github\.com\/gitcommit90\/1Helm\/releases\/download\/v\$\{version\}\/\$\{name\}`/, "fresh installs accept only the canonical artifact URL for the resolved version");
   assert.match(installer, /RELEASE_SHA256[\s\S]*sha256sum -c -[\s\S]*tar -xzf/, "fresh installs verify the Linux release digest before extraction");
-  assert.match(installer, /install-oci-runtime\.sh[\s\S]*channel-machine\.oci\.tar[\s\S]*npm[^\n]*ci/, "fresh installs reject an artifact without the complete OCI runtime before running release code");
+  assert.match(installer, /install-oci-runtime\.sh[\s\S]*channel-machine\.oci\.tar[\s\S]*verify_ready_to_run "\$RELEASE_STAGE"/, "fresh installs reject an artifact without the complete OCI runtime before executing anything the archive shipped");
   assert.match(installer, /resources\/cloudflared-linux-\$NODE_ARCH/, "fresh Linux installs reject archives without the connector for the current architecture");
   assert.match(installer, /NETWORK_BACKEND_FILE[\s\S]*cat "\$NETWORK_BACKEND_FILE"[\s\S]*printf '%s' netavark[\s\S]*install-oci-runtime\.sh/, "the web bootstrap repairs v0.0.30's newline-terminated Podman backend before invoking release code");
   assert.doesNotMatch(installer, /git clone|git checkout/, "fresh installs never combine the current installer with an older source-only tag");
   assert.doesNotMatch(installer, /api\.github\.com/, "fresh installs do not depend on unauthenticated GitHub API quota");
-  assert.match(installer, /need=\([^\n]*flock[^\n]*make[^\n]*c\+\+[^\n]*python3[^\n]*\)/, "the host updater and native dependency toolchain are probed even when download prerequisites already exist");
+  assert.match(installer, /need=\([^\n]*flock[^\n]*python3[^\n]*\)/, "the host updater and Python prerequisites are probed even when download prerequisites already exist");
+  assert.doesNotMatch(installer, /need=\([^\n]*(?:\bmake\b|c\+\+)/, "no compiler is probed: the release ships native addons already compiled against the oldest supported glibc");
+  assert.doesNotMatch(installer, /build-essential/, "the Linux host never installs a C/C++ toolchain, because nothing on the user's machine builds 1Helm");
   assert.match(installer, /import ensurepip[\s\S]*python3-venv/, "the Linux host installs Python's venv support required by durable memory instead of accepting a python3 executable alone");
-  assert.doesNotMatch(installer, /npm[^\n]*ci[^\n]*--omit=optional/, "platform-specific optional build packages are retained");
+  // The ready-to-run release archive replaces the on-host build entirely. These
+  // assertions are the user-visible contract: no compiler, no npm registry, and
+  // a refusal rather than a broken install when the archive cannot actually run.
+  assert.doesNotMatch(installer, /bin\/npm/, "fresh installs consume the ready-to-run release archive instead of building it on the user's machine");
+  assert.match(installer, /node_modules[\s\S]*resources\/linux-native-modules\.json[\s\S]*public\/bundle\.js/, "fresh installs fail closed on a source-only archive that carries neither vendored dependencies nor built client assets");
+  assert.match(installer, /manifest\.arch !== hostArch[\s\S]*manifest\.nodeAbi[\s\S]*process\.versions\.modules[\s\S]*process\.dlopen[\s\S]*node-pty[\s\S]*spawn/, "fresh installs prove every shipped native addon loads on this host's exact Node ABI and that node-pty can spawn, so terminals cannot silently be dead");
+  assert.match(installer, /verify_ready_to_run "\$RELEASE_STAGE"[\s\S]*RELEASE_ROOT="\$RELEASES_ROOT/, "the staged archive is proven runnable before any release directory is promoted");
+  assert.match(installer, /systemctl stop 1helm\.service[\s\S]*createServer\(\)[\s\S]*listen\(8123[\s\S]*network namespace[\s\S]*systemctl start 1helm\.service/, "installs stop first and then refuse to start behind a foreign listener that would answer the readiness probe instead of 1Helm");
+  assert.doesNotMatch(installer, /if command -v ss[^\n]*then\n\s*echo "Port 8123/, "the port-collision check never depends on ss being installed, which would skip it in silence");
+  assert.match(installer, /systemctl is-active 1helm\.service[\s\S]*api\/setup\/status[\s\S]*journalctl -u 1helm\.service/, "readiness requires this unit to be active rather than any HTTP answer on the port, and prints the journal when it is not");
   assert.match(installer, /EXISTING_VERSION=.*package\.json[\s\S]*EXISTING_VERSION.*VERSION/, "repeat installs verify the retained release version");
   assert.doesNotMatch(installer, /chown -R[^\n]*\$STATE_ROOT/, "repeat installs never recursively rewrite root-owned OCI channel storage");
   assert.match(installer, /chown -R "\$SERVICE_USER:\$SERVICE_USER" "\$RELEASE_ROOT"/, "the extracted application release remains service-owned");
@@ -230,6 +287,17 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(updater, /install-linux-units\.sh/, "updates retain one coherent host service contract");
   assert.match(updater, /snapshot_host_contract[\s\S]*rollback_host_contract[\s\S]*cleanup_transaction/, "updates transactionally restore runtime files, symlink, and unit state");
   assert.doesNotMatch(updater, /eval|curl[^\n]*\|[^\n]*(?:sh|bash)/, "the root updater never evaluates remote shell content");
+  // Updates take the same ready-to-run path as fresh installs. Without this the
+  // first install is fast but every later update is slow and needs a compiler.
+  assert.doesNotMatch(updater, /bin\/npm/, "host updates consume the ready-to-run release archive instead of building it on the user's machine");
+  assert.match(updater, /has_vendored_dependencies "\$STAGE"[\s\S]*bundle\.js[\s\S]*verify_native_addons "\$STAGE"[\s\S]*mv -- "\$STAGE" "\$RELEASE_ROOT"/, "a staged release proves it is runnable before it is promoted into the release store, so a failure leaves nothing half-promoted");
+  assert.match(updater, /manifest\.nodeAbi[\s\S]*process\.versions\.modules[\s\S]*process\.dlopen[\s\S]*node-pty[\s\S]*spawn/, "updates prove every shipped native addon loads on this host's exact Node ABI before promoting the release");
+  assert.match(releaseApply, /node_modules[\s\S]*linux-native-modules\.json[\s\S]*bundle\.js[\s\S]*process\.dlopen[\s\S]*snapshot_host_contract/, "the delegated transaction proves the retained release is runnable before it opens the transaction that moves the current symlink");
+  assert.match(releaseApply, /systemctl is-active "\$SERVICE_NAME"[\s\S]*api\/setup\/status[\s\S]*journalctl/, "the delegated transaction requires its own unit to be active rather than any HTTP answer on the port");
+  const linuxPackaging = readFileSync(`${root}/scripts/package-linux-host.mjs`, "utf8");
+  assert.match(linuxPackaging, /"npm", "ci", "--omit=dev"/, "the release archive vendors exactly the production dependency tree the host will run");
+  assert.doesNotMatch(linuxPackaging, /--omit=optional/, "platform-specific optional build packages are retained in the shipped dependency tree");
+  assert.match(linuxPackaging, /nodeAbi[\s\S]*modules,/, "the shipped manifest records the Node ABI and every native addon the host must be able to load");
   const ociInstaller = readFileSync(`${root}/site/public/install-oci-runtime.sh`, "utf8");
   const ociHelper = readFileSync(`${root}/scripts/1helm-oci-runtime`, "utf8");
   const ociManifest = readFileSync(`${root}/deploy/1helm-oci-runtime-v1.conf`, "utf8");
@@ -282,6 +350,19 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(uninstaller, /"\$HELPER" delete "\$name" "\$INSTALLATION_ID:\$channel_id"/, "uninstall deletes only exact installation-owned containers");
   assert.match(uninstaller, /Preserved %s/, "uninstall preserves durable workspace state");
   assert.match(uninstaller, /cmp -s[\s\S]*\/etc\/apparmor\.d\/local\/crun[\s\S]*apparmor_parser -r/, "uninstall removes and reloads only the exact app-managed crun profile");
+  // Windows has no Add/Remove Programs entry behind it, so this script IS the
+  // uninstaller. Its destructive half is `wsl --unregister`, which deletes the
+  // virtual disk holding every channel's files and the entire database - and
+  // `wsl --shutdown` would additionally stop every other distribution on the
+  // machine for every user. Both need to stay behind their guards.
+  const windowsUninstaller = readFileSync(`${root}/site/public/uninstall.ps1`, "utf8");
+  assert.doesNotMatch(windowsUninstaller, /(?:&\s*\$WslExe|wsl\.exe)[^\n]*--shutdown/, "removal never invokes `wsl --shutdown`, which would stop every distribution for every user on the machine");
+  assert.match(windowsUninstaller, /NEVER calls `wsl --shutdown`/, "the shutdown ban is stated where the next maintainer will read it");
+  assert.match(windowsUninstaller, /S-1-5-18/, "removal refuses to run as SYSTEM, which cannot see the user's per-user WSL state");
+  assert.match(windowsUninstaller, /function Test-SafeTarget[\s\S]*IsNullOrWhiteSpace[\s\S]*ProtectedDistroPattern[\s\S]*-ceq \$Name/, "a blank, protected, or inexactly matching distribution name is refused before anything destructive");
+  assert.match(windowsUninstaller, /Test-SafeTarget \$Distro[\s\S]*--terminate[\s\S]*--unregister/, "targeted terminate and unregister both sit behind that exact-name gate");
+  assert.match(windowsUninstaller, /if \(-not \$Force\)[\s\S]*Read-Host[\s\S]*-ne 'remove'/, "destroying the data root requires typed confirmation unless -Force is passed");
+  assert.match(windowsUninstaller, /keepalive-remove\.ps1[\s\S]*uninstall-host\.sh[\s\S]*--unregister/, "the keepalive stops, then 1Helm's own Linux uninstaller runs inside the distribution, and only then is the distribution discarded");
 });
 
 test("standalone deployment runs the website and tunnel without root process authority", () => {
@@ -319,16 +400,28 @@ test("the website's offline release fallback names the shipping version", () => 
   const block = server.match(/const RELEASE_FALLBACK = \{[\s\S]*?\n\};/)?.[0];
   assert.ok(block, "site/server.mjs still exposes a release fallback block");
   assert.match(server, new RegExp(`RELEASE_FALLBACK_TAG = "v${version.replaceAll(".", "\\.")}"`), "the fallback tag matches package.json");
+  // Three artifacts, not six: Windows publishes nothing, it installs the Linux
+  // archive inside WSL. A fallback still naming a Setup executable or .nupkg
+  // would advertise files the release does not contain.
   for (const asset of [
     `1Helm-${version}-arm64.dmg`,
     `1Helm-${version}-mac-arm64.zip`,
     `1Helm-${version}-linux-node.tgz`,
-    `1Helm-${version}-windows-x64-setup.exe`,
-    `1Helm-${version}-full.nupkg`,
   ]) {
     assert.ok(block.includes(asset), `the release fallback names ${asset}`);
   }
+  for (const gone of ["windows-x64-setup.exe", "full.nupkg", '"RELEASES"']) {
+    assert.ok(!block.includes(gone), `the release fallback must not advertise ${gone}`);
+  }
   const digests = [...block.matchAll(/"([a-f0-9]{64})"/g)].map((m) => m[1]);
-  assert.equal(digests.length, 6, "all six desktop artifacts carry a fallback digest");
-  assert.equal(new Set(digests).size, 6, "no two fallback digests are duplicated");
+  const pendingCount = [...block.matchAll(/PENDING_DIGEST/g)].length;
+  if (pendingCount) {
+    // Pre-publish: every digest must be pending, never a mix. A half-filled
+    // fallback would serve one real and two wrong digests.
+    assert.equal(pendingCount, 3, "either all three fallback digests are pending or none are");
+    assert.equal(digests.length, 0, "a pending fallback must not also carry a stale real digest");
+  } else {
+    assert.equal(digests.length, 3, "all three desktop artifacts carry a fallback digest");
+    assert.equal(new Set(digests).size, 3, "no two fallback digests are duplicated");
+  }
 });

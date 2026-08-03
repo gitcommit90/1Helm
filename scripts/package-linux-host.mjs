@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, cpSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
@@ -27,6 +28,50 @@ const sealed = [
   "container/channel-machine.oci.sha256",
   "container/channel-machine.oci.json",
 ];
+// `git archive` only carries tracked files, so every gitignored build output has
+// to be injected into the staging tree the same way the sealed image already is.
+// Shipping them means the end-user host never runs `npm run build`.
+const builtFiles = [
+  "public/bundle.js",
+  "public/bundle.css",
+  "public/app.css",
+  "public/index.html",
+  "desktop/photon-sidecar.bundle.mjs",
+];
+const builtTrees = ["public/excalidraw"];
+// Native addons are compiled inside this image, never on the packaging host: it
+// is the oldest glibc we support building against (Debian bookworm, glibc 2.36),
+// so the resulting binaries stay forward-compatible with every newer target.
+const nativeBuilderImage = process.env.HELM_LINUX_NATIVE_BUILDER_IMAGE || "docker.io/library/node:22";
+const nativeArchitecture = "x64";
+const nativeManifestPath = "resources/linux-native-modules.json";
+const requiredNativeModule = "node_modules/node-pty/build/Release/pty.node";
+
+const digestOf = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
+const symbolCeiling = (file, prefix) => {
+  const found = new Set();
+  const pattern = new RegExp(`${prefix}_([0-9][0-9.]*)`, "g");
+  for (const match of readFileSync(file).toString("latin1").matchAll(pattern)) found.add(match[1]);
+  const ranked = [...found].sort((left, right) => {
+    const a = left.split(".").map(Number);
+    const b = right.split(".").map(Number);
+    for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+      if ((a[index] || 0) !== (b[index] || 0)) return (a[index] || 0) - (b[index] || 0);
+    }
+    return 0;
+  });
+  return ranked.at(-1) || "";
+};
+const nativeAddons = (directory, base = "") => {
+  const found = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const relative = base ? `${base}/${entry.name}` : entry.name;
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) found.push(...nativeAddons(join(directory, entry.name), relative));
+    else if (entry.isFile() && /\/build\/Release\/[^/]+\.node$/.test(`/${relative}`)) found.push(relative);
+  }
+  return found;
+};
 
 const repository = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: root, encoding: "utf8" });
 const repositoryRoot = repository.status === 0 ? resolve(String(repository.stdout || "").trim()) : "";
@@ -42,6 +87,29 @@ if (headPackage.status !== 0 || headVersion !== version) {
 for (const rel of sealed.slice(0, 2)) {
   if (!existsSync(resolve(root, rel))) {
     throw new Error(`Linux packaging requires the sealed channel image at ${rel} (run scripts/build-oci-channel-image.sh on a builder host).`);
+  }
+}
+
+if (process.platform !== "linux" || process.arch !== nativeArchitecture) {
+  throw new Error(`Linux packaging must run on a linux-${nativeArchitecture} builder so the vendored native addons match the shipped architecture`);
+}
+const containerRuntime = ["podman", "docker"].find((candidate) => spawnSync(candidate, ["--version"], { stdio: "ignore" }).status === 0);
+if (!containerRuntime) {
+  throw new Error("Linux packaging requires podman or docker so production dependencies compile against the oldest supported glibc");
+}
+
+// Build the client and sidecar bundles here, on the release builder, so the
+// installed release is already runnable. Everything below only copies results.
+const clientBuild = spawnSync("npm", ["run", "build"], { cwd: root, stdio: "inherit" });
+if (clientBuild.status !== 0) throw new Error("Could not build the Linux release client and sidecar bundles");
+for (const rel of builtFiles) {
+  const built = resolve(root, rel);
+  if (!existsSync(built) || statSync(built).size === 0) throw new Error(`Linux packaging requires the built asset ${rel}`);
+}
+for (const rel of builtTrees) {
+  const built = resolve(root, rel);
+  if (!existsSync(built) || !statSync(built).isDirectory() || readdirSync(built).length === 0) {
+    throw new Error(`Linux packaging requires the built asset tree ${rel}`);
   }
 }
 
@@ -87,9 +155,73 @@ try {
     chmodSync(destination, 0o755);
   }
 
+  for (const rel of builtFiles) {
+    const destination = join(stage, prefix, rel);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(resolve(root, rel), destination);
+  }
+  for (const rel of builtTrees) {
+    const destination = join(stage, prefix, rel);
+    rmSync(destination, { recursive: true, force: true });
+    cpSync(resolve(root, rel), destination, { recursive: true });
+  }
+
+  // Production dependencies are installed once, here, against the release
+  // lockfile that `git archive` just staged. The end-user host therefore needs
+  // neither a compiler nor npm registry access.
+  const install = spawnSync(containerRuntime, [
+    "run", "--rm", "--network=host",
+    "-v", `${join(stage, prefix)}:/workspace`,
+    "-w", "/workspace",
+    "-e", "PUPPETEER_SKIP_DOWNLOAD=1",
+    "-e", "ELECTRON_SKIP_BINARY_DOWNLOAD=1",
+    "-e", "npm_config_audit=false",
+    "-e", "npm_config_fund=false",
+    "-e", "npm_config_update_notifier=false",
+    nativeBuilderImage,
+    "npm", "ci", "--omit=dev",
+  ], { stdio: "inherit" });
+  if (install.status !== 0) throw new Error("Could not install the Linux release production dependencies inside the native builder image");
+
+  const stagedModules = join(stage, prefix, "node_modules");
+  if (!existsSync(stagedModules)) throw new Error("The native builder image did not produce production node_modules");
+  const stagedPty = join(stage, prefix, requiredNativeModule);
+  if (!existsSync(stagedPty)) throw new Error(`The native builder image did not produce ${requiredNativeModule}; terminals would be unavailable on the target host`);
+  const builderNode = spawnSync(containerRuntime, ["run", "--rm", nativeBuilderImage, "node", "-p", "process.versions.modules + ' ' + process.version"], { encoding: "utf8" });
+  const [builderAbi = "", builderVersion = ""] = String(builderNode.stdout || "").trim().split(/\s+/);
+  if (!/^\d+$/.test(builderAbi)) throw new Error("Could not read the native builder image Node ABI");
+  const modules = nativeAddons(stagedModules).map((rel) => {
+    const file = join(stagedModules, rel);
+    return {
+      path: `node_modules/${rel}`,
+      sha256: digestOf(file),
+      glibc: symbolCeiling(file, "GLIBC"),
+      glibcxx: symbolCeiling(file, "GLIBCXX"),
+    };
+  });
+  if (!modules.some((entry) => entry.path === requiredNativeModule)) throw new Error(`Could not fingerprint ${requiredNativeModule}`);
+  const manifest = {
+    version,
+    platform: "linux",
+    arch: nativeArchitecture,
+    builderImage: nativeBuilderImage,
+    builderNodeVersion: builderVersion,
+    nodeAbi: builderAbi,
+    modules,
+  };
+  const manifestFile = join(stage, prefix, nativeManifestPath);
+  mkdirSync(dirname(manifestFile), { recursive: true });
+  writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+  for (const entry of modules) {
+    console.log(`vendored ${entry.path} — max GLIBC ${entry.glibc || "none"} / GLIBCXX ${entry.glibcxx || "none"}`);
+  }
+
   const pack = spawnSync("tar", ["-czf", output, "-C", stage, prefix], { stdio: "inherit" });
   if (pack.status !== 0) throw new Error("Could not write the Linux host archive");
 } finally {
   rmSync(stage, { recursive: true, force: true });
 }
+const archiveDigest = digestOf(output);
+writeFileSync(`${output}.sha256`, `${archiveDigest}  ${output.split("/").at(-1)}\n`);
+console.log(`sha256 ${archiveDigest}`);
 console.log(output);

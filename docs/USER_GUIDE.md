@@ -165,9 +165,15 @@ longer exists, 1Helm opens a fresh one.
 Ordinary residents cannot select or enter the Captain's native host. On
 supported Apple Silicon Macs, each resident runs inside its own Apple
 `container machine` with `home-mount=none`; Linux systemd hosts use one durable
-Podman OCI container per resident; Windows uses one installation-scoped WSL 2
-runtime hosting one container per resident, with Windows-drive mounts and
-interop disabled. `native` and `mock` remain explicit source/CI test seams.
+Podman OCI container per resident. A Windows host is that same Linux host,
+running inside a WSL 2 distribution named `1helm`, so its residents get the
+identical Podman OCI containers. `native` and `mock` remain explicit source/CI
+test seams.
+
+On Windows, `#main`'s Terminal is therefore **bash inside that WSL
+distribution, not `cmd.exe`** — Windows commands do not work there. This is a
+deliberate change from earlier versions, where the Windows host was a native
+application and Skipper's terminal was the Windows shell.
 
 ![The full-height channel Terminal in its persistent workspace](assets/guide/terminal.png)
 
@@ -385,20 +391,35 @@ Every host update preserves:
 ```text
 macOS:    ~/Library/Application Support/1Helm-OCI-v1
 Linux:    /var/lib/1helm-oci-v1
-Windows:  %APPDATA%\1Helm-OCI-v1  (plus %LOCALAPPDATA%\1Helm-Runtime)
+Windows:  /var/lib/1helm-oci-v1, inside the "1helm" WSL 2 distribution
 ```
 
 On macOS that directory contains databases, credentials, workspaces, resident
-state, and Apple mirrors. Linux and Windows preserve the equivalent
-OCI-generation state; on Windows the shared WSL runtime disk lives separately
-under `%LOCALAPPDATA%\1Helm-Runtime`. The retired data roots remain untouched
-and are not imported by this generation. Do not delete a current data root
-during replacement.
+state, and Apple mirrors. Linux preserves the equivalent OCI-generation state.
+A Windows host has **no data under `%APPDATA%`**: it runs the Linux host inside
+WSL, so the same `/var/lib/1helm-oci-v1` is the data root and it lives on that
+distribution's virtual disk under `C:\1helm\distro`. Reach it from PowerShell
+with `wsl -d 1helm -u root --exec ls /var/lib/1helm-oci-v1`; it is root-owned
+inside the distribution, exactly as on any other Linux host. The
+retired data roots remain untouched and are not imported by this generation. Do
+not delete a current data root during replacement, and do not unregister the
+`1helm` distribution unless you intend to destroy everything on it.
 
 Before removing 1Helm, use its removal preparation flow. It is Captain-only,
 requires typed confirmation, reports backend-owned resident machines, and
 prepares those machines for safe deletion. Export or back up irreplaceable
 channel files first.
+
+Then, per host: on macOS drag the app to the Trash; on Linux run
+`sudo /opt/1helm/uninstall-host.sh`; on Windows run
+`irm https://1helm.com/uninstall.ps1 | iex` from an ordinary PowerShell window,
+signed in as the user who installed it. macOS and Linux deliberately leave the
+data root in place for recovery. **Windows does not**, and cannot: it unregisters
+the `1helm` distribution, which deletes the virtual disk the entire data root
+lives on. It therefore asks you to type `remove` before it starts, states exactly
+what will be lost, and takes `-Force` only for scripted removal. Other WSL
+distributions on the PC are never touched, and Windows' own WSL feature is left
+installed.
 
 Recovery principles:
 
@@ -414,29 +435,40 @@ Recovery principles:
 
 ### First run and installation
 
-**Windows asks me to restart in the middle of setup.** That is the expected
-path on a normal Windows 11 PC. WSL and VirtualMachinePlatform ship disabled;
-1Helm turns them on for you, and Windows cannot use them until it restarts.
-Restart, sign back in as the same Windows user, open 1Helm, and continue —
-completed steps are skipped. Nothing is lost and nothing else is required.
+**Windows printed "Restart required" and stopped.** That is the expected halfway
+point of a Windows install, not a failure. WSL and VirtualMachinePlatform ship
+disabled; the installer turns them on for you, and Windows cannot use them until
+it restarts. Restart, sign back in as the same Windows user, open PowerShell, and
+run the **same command again** — it continues from where it stopped and skips
+what is already done. Nothing is lost. The whole install, restart included, took
+about 8 minutes 49 seconds on a real Windows 11 machine.
 
-**Windows says "Windows protected your PC" when I run Setup.** Windows Setup is
-not yet Authenticode signed, so SmartScreen warns about it. Choose **More info**
-→ **Run anyway**. Every release discloses its Authenticode status; v0.0.38 is
-`NotSigned`. Only run an installer you downloaded from
-[1helm.com](https://1helm.com/download/windows) or the project's GitHub
-releases.
+**Windows refuses to run install.ps1.** You downloaded the script instead of
+piping it, and Windows blocks running `.ps1` files. Use
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`. The
+`irm https://1helm.com/install.ps1 | iex` one-liner is unaffected, because it
+pipes a string into PowerShell rather than executing a file.
 
-**A PowerShell window opened during Windows setup.** That window is the setup
-itself and shows live progress. Leave it open until it finishes; closing it
-early aborts the step. 1Helm mirrors the same progress in the app and writes a
-log to `%APPDATA%\1Helm-OCI-v1\windows-wsl-setup.log`.
+**A "Welcome to WSL" window opened during the Windows install.** That window is
+Microsoft's, not 1Helm's. It is harmless; close it and let the install continue.
 
-**Windows setup failed or stalled.** Check the PowerShell window for the error,
-then use **Retry shared runtime setup** in onboarding or Settings → Channel
-computers. Setup is idempotent — retrying resumes rather than starting over.
-The runtime requires Windows 11 **x64**; arm64 Windows is not supported by this
-build.
+**Windows says nothing is listening on `http://localhost:8123`.** After the
+installer reports 1Helm is running, the channel-computer runtime needs roughly
+another 40 seconds to finish preparing before the first channel computer can be
+created — it has not hung. If the address itself stays unavailable, ask the
+service inside the distribution:
+`wsl -d 1helm -u root --exec systemctl status 1helm`.
+
+**Windows says port 8123 is already in use.** Windows and every WSL distribution
+share one network namespace, so another distribution or an ordinary Windows
+process listening on 8123 stops 1Helm binding it. The installer refuses to
+continue rather than half-install, and names the port. Stop whatever owns it and
+run the command again.
+
+**The Windows install stopped for another reason.** Every step is idempotent:
+read the reason it printed, fix it, and run the same command again — it resumes
+rather than starting over. It requires Windows 11 **x64**; arm64 Windows is not
+supported by this build.
 
 **macOS blocks the app or reports it is damaged.** The Mac release is Developer
 ID signed, notarized, and stapled, so Gatekeeper should accept it after you
@@ -484,8 +516,8 @@ fallback.
 ## Security summary
 
 - Per-resident Apple Linux VMs have no Mac home mount. OCI residents use exact
-  container labels and runtime-owned storage; the shared Windows runtime
-  disables Windows-drive mounts and interop.
+  container labels and runtime-owned storage, including inside a Windows host's
+  WSL 2 distribution.
 - Credentials and connectors remain host-owned and minimally brokered.
 - Membership scopes data and live events; private coworker channels are not
   Captain-readable without invitation.
@@ -494,8 +526,10 @@ fallback.
 - External skills are revision-pinned, bounded, scanned, hashed, and wrapped.
 - Operational history is locally tamper-evident.
 - Mac artifacts are Developer ID signed, notarized, stapled, and Gatekeeper
-  verified. Linux assets are digest-verified, and Windows Authenticode status
-  is disclosed for every release (`NotSigned` for v0.0.38).
+  verified, and Linux assets are digest-verified. Windows ships no artifact of
+  its own; its installer verifies Microsoft's WSL package against a pinned
+  SHA-256 and a valid Microsoft Authenticode signature, and the pinned Ubuntu
+  root filesystem against its SHA-256.
 
 For the detailed boundary, see [SECURITY.md](../SECURITY.md). For product intent,
 see [VISION.md](VISION.md).

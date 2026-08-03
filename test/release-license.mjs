@@ -54,10 +54,7 @@ test("public surfaces state the MIT-to-AGPL release boundary honestly", () => {
 
 test("desktop package filters retain LICENSE and NOTICE and the Mac DMG exposes both", () => {
   const mac = read("scripts/package-mac-dmg.cjs");
-  const windows = read("scripts/package-windows.cjs");
-  for (const source of [mac, windows]) {
-    assert.match(source, /LICENSE\$\|NOTICE\$/);
-  }
+  assert.match(mac, /LICENSE\$\|NOTICE\$/);
   assert.match(mac, /path\.join\(ROOT, "LICENSE"\), path\.join\(stage, "LICENSE\.txt"\)/);
   assert.match(mac, /path\.join\(ROOT, "NOTICE"\), path\.join\(stage, "NOTICE\.txt"\)/);
 });

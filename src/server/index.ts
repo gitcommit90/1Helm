@@ -105,8 +105,6 @@ import {
   runtimeReadiness,
   refreshChannelWorkspaceMirror,
   prepareAppleRuntimeInstaller,
-  prepareWindowsWslRuntime,
-  windowsWslSetupStatus,
   startAppleRuntime,
   wakeDueChannelComputers,
   shutdownChannelComputers,
@@ -2040,14 +2038,8 @@ const server = createServer(async (req, res) => {
     if (p === "/api/channel-computers/runtime/install" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const runtime = runtimeReadiness();
-      if (runtime.backend === "oci" && platform() === "win32") {
-        const installer = await prepareWindowsWslRuntime();
-        return json(res, 200, {
-          ok: true,
-          installer: { opened: installer.opened, setup: installer.setup || windowsWslSetupStatus() },
-          runtime: runtimeReadiness(),
-        });
-      }
+      // A Windows host is the Linux host inside WSL 2, installed and verified by
+      // the site-served install.ps1, so no in-app runtime installer exists here.
       if (runtime.backend !== "apple") return json(res, 409, { error: "The root-owned OCI runtime is installed and verified by the 1Helm Linux host installer." });
       const installer = await prepareAppleRuntimeInstaller();
       return json(res, 200, { ok: true, installer: { sha256: installer.sha256, opened: installer.opened }, runtime: runtimeReadiness() });

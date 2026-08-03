@@ -30,22 +30,28 @@ const ORIGIN = "https://1helm.com";
 const REPO = "gitcommit90/1Helm";
 const RELEASE_PAGE = `https://github.com/${REPO}/releases/latest`;
 const RELEASE_CACHE_MS = 10 * 60_000;
-// Served only when GitHub's release API is unreachable or rate limited. It
+// Served only when GitHub's release API is unreachable or rate limited, and it
 // must name the current release: a stale fallback silently hands visitors an
-// older build from the download links. Update the tag and all six digests in
-// the same commit that ships a release.
-const RELEASE_FALLBACK_TAG = "v0.0.38";
+// older build from the download links.
+//
+// The digests cannot be known when the release commit is made - they are the
+// digests OF that commit's artifacts - so they are filled in at publish time
+// and the site is redeployed. Until then PENDING_DIGEST is deliberately not a
+// 64-character hex string, so latestLinuxRelease() rejects it and
+// /api/releases/linux/latest answers 503. That fails closed: an installer is
+// told no release is available rather than being handed a digest that will not
+// match what it downloads. The macOS download link still works, because it
+// resolves by asset name and needs no digest.
+const PENDING_DIGEST = "pending-release-digest";
+const RELEASE_FALLBACK_TAG = "v0.0.39";
 const RELEASE_FALLBACK = {
   tag_name: RELEASE_FALLBACK_TAG,
   draft: false,
   prerelease: false,
   assets: [
-    ["1Helm-0.0.38-arm64.dmg", "468a5b8d59a23c4419331db20dcdb955f088a046add48296b5d5aa8450120527"],
-    ["1Helm-0.0.38-mac-arm64.zip", "4135defe285f9d7e480802d17d81ff37d083a90f6d7dc928f7061a73f9861302"],
-    ["1Helm-0.0.38-linux-node.tgz", "12d59534b66c325891d5433eb2c7ab8990ee67c9d56a805b65b9633030c424fc"],
-    ["1Helm-0.0.38-windows-x64-setup.exe", "0689afadc996319a22d6a3419d39725453bc46d9bdd8857463a56b7bcf738590"],
-    ["1Helm-0.0.38-full.nupkg", "2b25a71f6b3bbb96d7a62cca4bdbd421daed22a1005b1e93d31a77b3d61e86ae"],
-    ["RELEASES", "a20bf26fc174a48a2ccd30c4b7ab0289d72c00489761981c89a7eb3c9842f454"],
+    ["1Helm-0.0.39-arm64.dmg", PENDING_DIGEST],
+    ["1Helm-0.0.39-mac-arm64.zip", PENDING_DIGEST],
+    ["1Helm-0.0.39-linux-node.tgz", PENDING_DIGEST],
   ].map(([name, digest]) => ({
     name,
     digest: `sha256:${digest}`,
@@ -96,13 +102,15 @@ async function latestAssetUrl(pattern) {
 async function latestLinuxRelease() {
   const release = await latestRelease();
   const version = String(release.tag_name).replace(/^v/, "");
+  // Windows ships no release artifacts: it installs the Linux archive inside WSL
+  // via https://1helm.com/install.ps1. Requiring a Setup executable, .nupkg and
+  // RELEASES here would make this throw for every release after 0.0.38 - and
+  // because install.sh resolves /api/releases/linux/latest, that would break the
+  // public Linux AND Windows installers at once.
   const expectedNames = [
     `1Helm-${version}-arm64.dmg`,
     `1Helm-${version}-mac-arm64.zip`,
     `1Helm-${version}-linux-node.tgz`,
-    `1Helm-${version}-windows-x64-setup.exe`,
-    `1Helm-${version}-full.nupkg`,
-    "RELEASES",
   ];
   const assets = Array.isArray(release.assets) ? release.assets : [];
   const matrix = expectedNames.map((name) => assets.find((asset) => asset.name === name));
@@ -397,10 +405,10 @@ const server = createServer(async (req, res) => {
       .catch(() => redirect(res, RELEASE_PAGE));
     return;
   }
+  // Windows has no downloadable installer: it is a PowerShell one-liner that
+  // installs the Linux build into WSL. Send people to the instructions.
   if (path === "/download/windows") {
-    latestAssetUrl(/-windows-x64-setup\.exe$/i)
-      .then((url) => redirect(res, url))
-      .catch(() => redirect(res, RELEASE_PAGE));
+    redirect(res, "/manual/install-windows");
     return;
   }
   if (path === "/github") {
@@ -429,6 +437,15 @@ const server = createServer(async (req, res) => {
   }
 
   if (path === "/install.sh" && serveFile(req, res, join(SITE_PUBLIC, "install.sh"), "no-cache")) return;
+  // Windows installs with `irm https://1helm.com/install.ps1 | iex`. That script
+  // fetches the keepalive payload from this same origin, so both must be served
+  // uncached: a stale installer would pair with a current release.
+  if (path === "/install.ps1" && serveFile(req, res, join(SITE_PUBLIC, "install.ps1"), "no-cache")) return;
+  // Windows removal is `irm https://1helm.com/uninstall.ps1 | iex`. It is the
+  // documented uninstall route, so it is contract surface exactly like the
+  // installer: a 404 here leaves a user with no supported way to remove 1Helm.
+  if (path === "/uninstall.ps1" && serveFile(req, res, join(SITE_PUBLIC, "uninstall.ps1"), "no-cache")) return;
+  if (path.startsWith("/keepalive/") && serveFile(req, res, safeFile(SITE_PUBLIC, path.slice(1)), "no-cache")) return;
   if (path.startsWith("/schemas/") && serveFile(req, res, safeFile(SITE_PUBLIC, path.slice(1)), "public, max-age=3600")) return;
   if (path.startsWith("/assets/") && serveFile(req, res, safeFile(SITE_PUBLIC, path.slice(1)), "public, max-age=604800")) return;
   if (path.startsWith("/media/") && serveFile(req, res, safeFile(SITE_PUBLIC, path.slice(1)), "public, max-age=604800")) return;

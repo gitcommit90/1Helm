@@ -42,11 +42,17 @@ test("native Mac updater owns check, download state, and restart installation", 
   assert.deepEqual(calls.at(-1), ["install", [false, true]]);
 });
 
-test("native Windows updater uses the host-owned win32-x64 feed", () => {
-  const { updater } = harness({ platform: "win32", arch: "x64" });
-  assert.equal(updater.initialize(), true);
-  assert.equal(updater.state().mode, "native-windows");
-  assert.match(updater.feedUrl, /gitcommit90\/1Helm\/win32-x64\/1\.2\.3$/);
+test("the native updater has no Windows lane and never offers a win32 feed", () => {
+  // Windows is the Linux host inside WSL 2 and updates through the
+  // in-distribution systemd updater. No Electron host, feed, or artifact exists.
+  const { updater, calls } = harness({ platform: "win32", arch: "x64" });
+  assert.equal(updater.initialize(), false, "a Windows platform must never activate the Electron host updater");
+  assert.equal(updater.state().status, "unsupported");
+  assert.equal(updater.state().mode, "native-macos");
+  assert.doesNotMatch(updater.feedUrl, /win32/, "no Windows update feed is ever constructed");
+  assert.match(updater.feedUrl, /gitcommit90\/1Helm\/darwin-arm64\/1\.2\.3$/);
+  updater.check();
+  assert.equal(calls.length, 0, "an unsupported host performs no feed or check calls");
 });
 
 test("native updater refuses unsupported placement and sanitizes errors", () => {

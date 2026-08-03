@@ -21,23 +21,25 @@ function createNativeUpdateService({ app, autoUpdater, platform = process.platfo
   let busy = false;
   let initialTimer = null;
   let intervalTimer = null;
-  const nativeMode = platform === "win32" ? "native-windows" : "native-macos";
+  // Only macOS has a native 1Helm host. A Windows host is the Linux host inside
+  // WSL 2, so it updates through the in-distribution Linux systemd updater and
+  // never through this Electron feed.
   let state = {
-    mode: nativeMode,
+    mode: "native-macos",
     status: "idle",
     current_version: app.getVersion(),
     version: null,
     checked_at: null,
     error: null,
-    message: `Check for a signed 1Helm update on this ${platform === "win32" ? "Windows PC" : "Mac"}.`,
+    message: "Check for a signed 1Helm update on this Mac.",
   };
 
   let inApplications = true;
   if (platform === "darwin" && typeof app.isInApplicationsFolder === "function") {
     try { inApplications = app.isInApplicationsFolder(); } catch { inApplications = false; }
   }
-  const feedPlatform = platform === "win32" && arch === "x64" ? "win32-x64" : "darwin-arm64";
-  const supported = app.isPackaged === true && ((platform === "darwin" && arch === "arm64" && inApplications) || (platform === "win32" && arch === "x64"));
+  const feedPlatform = "darwin-arm64";
+  const supported = app.isPackaged === true && platform === "darwin" && arch === "arm64" && inApplications;
   const feedUrl = `https://update.electronjs.org/gitcommit90/1Helm/${feedPlatform}/${encodeURIComponent(app.getVersion())}`;
 
   const snapshot = () => ({ ...state });
@@ -53,7 +55,7 @@ function createNativeUpdateService({ app, autoUpdater, platform = process.platfo
           ? "Move 1Helm to Applications to enable host updates."
           : null,
         message: app.isPackaged
-          ? "Signed automatic updates are available for supported macOS and Windows hosts."
+          ? "Signed automatic updates are available for supported macOS hosts."
           : "Development builds are updated from their source checkout.",
       });
       return false;
@@ -122,7 +124,7 @@ function createNativeUpdateService({ app, autoUpdater, platform = process.platfo
     if (state.status !== "ready") {
       return { ...snapshot(), error: "No downloaded host update is ready." };
     }
-    setState({ status: "installing", error: null, message: `1Helm is restarting this ${platform === "win32" ? "Windows" : "Mac"} host to install the verified update…` });
+    setState({ status: "installing", error: null, message: "1Helm is restarting this Mac host to install the verified update…" });
     process.env.HELM_UPDATE_INSTALLING = "1";
     return snapshot();
   }

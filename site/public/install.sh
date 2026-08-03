@@ -10,6 +10,17 @@ STATE_ROOT="/var/lib/1helm-oci-v1"
 SERVICE_USER="1helm"
 NODE_VERSION="22.23.1"
 RELEASE_METADATA_URL="https://1helm.com/api/releases/linux/latest"
+# Install from a release archive already on this machine instead of resolving the
+# current published release:
+#
+#     install.sh /path/to/1Helm-<version>-linux-node.tgz
+#
+# This is how a candidate build is exercised before it is published, and it is
+# what the Windows installer's -LocalArchive depends on. Resolving the published
+# release stays the default. A local archive needs no network trust - it is
+# already on this filesystem - so its version is read from its own package.json;
+# set HELM_RELEASE_SHA256 to have the digest checked as well.
+LOCAL_ARCHIVE="${1:-${HELM_LOCAL_ARCHIVE:-}}"
 HOST_CONTRACT_PATHS=(
   /usr/libexec/1helm-oci-runtime
   /etc/1helm/oci-runtime-v1.conf
@@ -41,18 +52,29 @@ if ! command -v apt-get >/dev/null; then
   echo "1Helm's isolated Linux host currently requires Ubuntu or Debian with apt and systemd." >&2
   exit 1
 fi
+# Checked here rather than where the archive is read, so a mistyped path fails
+# now instead of after several minutes of package and Node installation.
+if [[ -n "$LOCAL_ARCHIVE" && ! -f "$LOCAL_ARCHIVE" ]]; then
+  echo "Local release archive not found: $LOCAL_ARCHIVE" >&2
+  exit 1
+fi
 case "$(uname -m)" in
   x86_64|amd64) NODE_ARCH="x64" ;;
   aarch64|arm64) NODE_ARCH="arm64" ;;
   *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-need=(curl tar xz sha256sum flock make c++ python3 podman crun fuse-overlayfs setfacl getfacl sudo visudo)
+# No compiler is probed or installed. The Linux release arrives with its native
+# addons already compiled against the oldest supported glibc, so nothing on this
+# machine builds 1Helm and the C/C++ toolchain package is no longer a host
+# dependency. python3 and python3-venv stay: install-oci-runtime.sh requires
+# python3 and durable memory creates its own virtual environment at first use.
+need=(curl tar xz sha256sum flock python3 podman crun fuse-overlayfs setfacl getfacl sudo visudo)
 missing=()
 for command in "${need[@]}"; do command -v "$command" >/dev/null || missing+=("$command"); done
 if ((${#missing[@]})) || ! python3 -c 'import ensurepip' >/dev/null 2>&1; then
   apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y curl xz-utils ca-certificates util-linux build-essential python3 \
+  DEBIAN_FRONTEND=noninteractive apt-get install -y curl xz-utils ca-certificates util-linux python3 \
     python3-venv acl aardvark-dns crun fuse-overlayfs netavark podman uidmap sudo rsync
 fi
 
@@ -105,7 +127,9 @@ rollback_host_contract() {
   if [[ "$(cat "$RUNTIME_BACKUP/units/1helm.service.active" 2>/dev/null || true)" == "active" ]]; then
     restored_healthy=0
     for _ in {1..300}; do
-      if curl -fsS http://127.0.0.1:8123/api/setup/status >/dev/null; then restored_healthy=1; break; fi
+      # "connection refused" is the expected state while it comes back up, so
+      # curl's own errors are noise here, not diagnosis.
+      if curl -fsS http://127.0.0.1:8123/api/setup/status >/dev/null 2>&1; then restored_healthy=1; break; fi
       sleep 0.2
     done
   fi
@@ -146,6 +170,23 @@ fi
 ln -sfn "$NODE_RELEASE" "$TEMP_ROOT/node-current"
 mv -Tf "$TEMP_ROOT/node-current" "$NODE_LINK"
 
+if [[ -n "$LOCAL_ARCHIVE" ]]; then
+  RELEASE_ARCHIVE="$LOCAL_ARCHIVE"
+  # The digest is not a trust check here - it names the release directory, and it
+  # lets an operator who pinned HELM_RELEASE_SHA256 catch a truncated or stale copy.
+  RELEASE_SHA256="$(sha256sum -- "$RELEASE_ARCHIVE" | awk '{ print $1 }')"
+  [[ "$RELEASE_SHA256" =~ ^[a-f0-9]{64}$ ]] \
+    || { echo "Could not compute the SHA-256 of $RELEASE_ARCHIVE." >&2; exit 1; }
+  if [[ -n "${HELM_RELEASE_SHA256:-}" && "$HELM_RELEASE_SHA256" != "$RELEASE_SHA256" ]]; then
+    echo "$RELEASE_ARCHIVE does not match the digest you pinned in HELM_RELEASE_SHA256." >&2
+    echo "Expected $HELM_RELEASE_SHA256, got $RELEASE_SHA256. Nothing was installed." >&2
+    exit 1
+  fi
+  # Resolved from the archive's own package.json once it is unpacked, below.
+  VERSION=""
+else
+# Resolve the current published release. Left unindented because the embedded
+# heredoc's NODE terminator has to stay at column 0.
 curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$TEMP_ROOT/release.json" "$RELEASE_METADATA_URL"
 RELEASE_OUTPUT="$("$NODE_LINK/bin/node" - "$TEMP_ROOT/release.json" <<'NODE'
 const fs = require("node:fs");
@@ -170,12 +211,28 @@ RELEASE_ARCHIVE="$TEMP_ROOT/1Helm-$VERSION-linux-node.tgz"
 curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$RELEASE_ARCHIVE" "$RELEASE_URL"
 printf '%s  %s\n' "$RELEASE_SHA256" "$(basename "$RELEASE_ARCHIVE")" \
   | (cd "$TEMP_ROOT" && sha256sum -c -)
+fi
 
 RELEASE_STAGE="$TEMP_ROOT/source"
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$RELEASE_STAGE"
 tar -xzf "$RELEASE_ARCHIVE" -C "$RELEASE_STAGE" --strip-components=1
 PACKAGE_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "$RELEASE_STAGE/package.json" 2>/dev/null || true)"
-[[ "$PACKAGE_VERSION" == "$VERSION" ]] || { echo "The verified Linux artifact version does not match v$VERSION." >&2; exit 1; }
+if [[ -z "$VERSION" ]]; then
+  # Local archive: it carries no release metadata, so it names its own version.
+  [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    echo "$RELEASE_ARCHIVE does not declare a release version in its package.json." >&2
+    echo "Nothing was installed. Rebuild it with npm run package:linux." >&2
+    exit 1
+  }
+  VERSION="$PACKAGE_VERSION"
+  echo "Installing 1Helm v$VERSION from $RELEASE_ARCHIVE"
+else
+  [[ "$PACKAGE_VERSION" == "$VERSION" ]] || {
+    echo "This archive contains 1Helm ${PACKAGE_VERSION:-an unreadable version} but the release metadata resolved v$VERSION." >&2
+    echo "Nothing was installed. Retry, or report the mismatch if it persists: the published artifact does not match its release." >&2
+    exit 1
+  }
+fi
 [[ -x "$RELEASE_STAGE/site/public/apply-linux-release.sh" \
    && -x "$RELEASE_STAGE/site/public/install-oci-runtime.sh" \
    && -x "$RELEASE_STAGE/site/public/install-linux-units.sh" \
@@ -188,8 +245,56 @@ PACKAGE_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "
    && -x "$RELEASE_STAGE/resources/cloudflared-linux-$NODE_ARCH" ]] \
   || { echo "The verified Linux artifact is missing its complete OCI runtime contract." >&2; exit 1; }
 chown -R "$SERVICE_USER:$SERVICE_USER" "$RELEASE_STAGE"
-runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH="$NODE_LINK/bin:/usr/bin:/bin" PUPPETEER_SKIP_DOWNLOAD=1 "$NODE_LINK/bin/npm" --prefix "$RELEASE_STAGE" ci
-runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH="$NODE_LINK/bin:/usr/bin:/bin" "$NODE_LINK/bin/npm" --prefix "$RELEASE_STAGE" run build
+
+# The release arrives ready to run: no npm ci, no npm run build, no compiler and
+# no npm registry on the install path. The archive carries its own production
+# node_modules whose native addons were compiled against the oldest supported
+# glibc, plus every built client asset. This fails closed instead of falling
+# back to an on-host build: the host no longer installs a compiler, so a
+# fallback would spend several minutes reaching the same failure with a worse
+# message.
+verify_ready_to_run() {
+  local candidate="$1"
+  [[ -d "$candidate/node_modules" && -f "$candidate/resources/linux-native-modules.json" ]] \
+    || { echo "This 1Helm archive carries no vendored node_modules, so it predates ready-to-run Linux releases." >&2
+         echo "Download the current release; this installer no longer builds 1Helm on your machine." >&2
+         return 1; }
+  [[ -s "$candidate/public/bundle.js" && -s "$candidate/public/app.css" ]] \
+    || { echo "This 1Helm archive is missing its built client assets (public/bundle.js, public/app.css)." >&2
+         echo "Download the current release; this installer no longer builds 1Helm on your machine." >&2
+         return 1; }
+  if ! "$NODE_LINK/bin/node" - "$candidate" "$NODE_ARCH" <<'NODE'
+const { existsSync, readFileSync } = require("node:fs");
+const { join } = require("node:path");
+const [, , releaseRoot, hostArch] = process.argv;
+const manifest = JSON.parse(readFileSync(join(releaseRoot, "resources/linux-native-modules.json"), "utf8"));
+if (manifest.platform !== "linux" || manifest.arch !== hostArch) {
+  throw new Error(`release ships ${manifest.platform}-${manifest.arch} native addons, host is linux-${hostArch}`);
+}
+if (String(manifest.nodeAbi) !== process.versions.modules) {
+  throw new Error(`release native addons target Node ABI ${manifest.nodeAbi}, installed Node reports ${process.versions.modules}`);
+}
+const required = "node_modules/node-pty/build/Release/pty.node";
+const paths = (manifest.modules || []).map((entry) => String(entry.path));
+if (!paths.includes(required)) throw new Error(`manifest does not list ${required}`);
+for (const relative of paths) {
+  const file = join(releaseRoot, relative);
+  if (!existsSync(file)) throw new Error(`missing native addon ${relative}`);
+  process.dlopen({ exports: {} }, file);
+}
+if (typeof require(join(releaseRoot, "node_modules/node-pty")).spawn !== "function") {
+  throw new Error("node-pty did not expose spawn()");
+}
+console.log(`verified ${paths.length} prebuilt native addons including a loadable node-pty`);
+NODE
+  then
+    echo "The Linux native addons shipped with this release cannot be loaded on this host, so" >&2
+    echo "terminals and channel computers would not work. The installation was refused." >&2
+    return 1
+  fi
+}
+verify_ready_to_run "$RELEASE_STAGE" || exit 1
+
 RELEASE_ROOT="$RELEASES_ROOT/$VERSION-$RELEASE_SHA256"
 if [[ -e "$RELEASE_ROOT" ]]; then
   EXISTING_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "$RELEASE_ROOT/package.json" 2>/dev/null || true)"
@@ -198,6 +303,10 @@ if [[ -e "$RELEASE_ROOT" ]]; then
      && -f "$RELEASE_ROOT/container/channel-machine.oci.sha256" \
      && -x "$RELEASE_ROOT/resources/cloudflared-linux-$NODE_ARCH" ]] \
     || { echo "Existing release directory does not match the verified v$VERSION Linux artifact." >&2; exit 1; }
+  # A retained directory from an interrupted earlier run can be incomplete even
+  # though its name carries the verified digest. Prove it is still runnable
+  # before any host file is touched.
+  verify_ready_to_run "$RELEASE_ROOT" || exit 1
 else
   mv "$RELEASE_STAGE" "$RELEASE_ROOT"
 fi
@@ -225,14 +334,51 @@ ln -s "$RELEASE_ROOT" "$TEMP_ROOT/current"
 mv -Tf "$TEMP_ROOT/current" "$APP_ROOT"
 "$RELEASE_ROOT/site/public/install-linux-units.sh" "$RELEASE_ROOT"
 systemctl enable --now 1helm-update.path
-systemctl restart 1helm.service
+
+# Stop first so the port check below sees the truth, then refuse to start on top
+# of a foreign listener. WSL 2 puts every distribution in ONE shared network
+# namespace, so a service in another distribution - or on Windows itself - can
+# own 8123 here. Without this check the readiness probe is answered by that
+# foreign listener and the install reports success while 1helm.service
+# crash-loops on EADDRINUSE. The probe binds the port the way the service will
+# rather than parsing `ss`, which is not guaranteed to be installed and would
+# otherwise skip this check in silence; `ss` is used only to name the culprit.
+systemctl stop 1helm.service >/dev/null 2>&1 || true
+if ! "$NODE_LINK/bin/node" -e '
+const server = require("node:net").createServer();
+server.once("error", (error) => { console.error(error.code || error.message); process.exit(1); });
+server.listen(8123, () => server.close(() => process.exit(0)));' >/dev/null 2>&1; then
+  echo "Port 8123 is already in use before 1Helm started, so 1helm.service cannot bind it." >&2
+  # Only mention the shared network namespace where it is actually true. On a
+  # native host this advice is confusing noise; under WSL it is the likely cause,
+  # because Windows and every distribution share one namespace.
+  if [[ "$(systemd-detect-virt --container 2>/dev/null || true)" == "wsl" ]]; then
+    echo "Windows and every WSL distribution share one network namespace, so the listener may be" >&2
+    echo "in another distribution or a Windows process. Stop whatever owns port 8123." >&2
+  else
+    echo "Stop whatever is listening on port 8123, then run this again." >&2
+  fi
+  command -v ss >/dev/null 2>&1 && ss -ltnp 2>/dev/null | grep -E "[:.]8123[[:space:]]" >&2 || true
+  exit 1
+fi
+systemctl start 1helm.service
+
+# Readiness must prove THIS service is healthy, not merely that something
+# answered on 8123.
 healthy=0
+unit_state=""
 for _ in {1..300}; do
-  if curl -fsS http://127.0.0.1:8123/api/setup/status >/dev/null; then healthy=1; break; fi
+  unit_state="$(systemctl is-active 1helm.service 2>/dev/null || true)"
+  # Same here: until the unit finishes binding the port every attempt fails, and
+  # curl printing that hundreds of times buries the real outcome.
+  if [[ "$unit_state" == "active" ]] && curl -fsS http://127.0.0.1:8123/api/setup/status >/dev/null 2>&1; then healthy=1; break; fi
+  [[ "$unit_state" == "failed" ]] && break
   sleep 0.2
 done
 if [[ "$healthy" -ne 1 ]]; then
   echo "1Helm v$VERSION did not become healthy; the previous release was restored when available." >&2
+  echo "1helm.service reports '${unit_state:-unknown}'. Recent journal:" >&2
+  journalctl -u 1helm.service -n 40 --no-pager >&2 2>/dev/null || true
   exit 1
 fi
 TRANSACTION_ACTIVE=0

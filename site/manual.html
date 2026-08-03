@@ -130,7 +130,7 @@
       <tr><th>Host</th><th>Isolation</th></tr>
       <tr><td>macOS (Apple Silicon)</td><td>One Apple <code>container machine</code> per resident, no home-folder mount</td></tr>
       <tr><td>Linux</td><td>One durable Podman OCI container per resident</td></tr>
-      <tr><td>Windows</td><td>One shared managed WSL&nbsp;2 runtime with one OCI container per resident; drive mounts and interop disabled</td></tr>
+      <tr><td>Windows</td><td>The same Linux host, running inside a WSL&nbsp;2 distribution: one durable Podman OCI container per resident</td></tr>
     </table>
     <p>Different plumbing, same architecture: as far as the resident knows, one computer exists — its own. It can't see into yours.</p>
   </section>
@@ -178,34 +178,36 @@
 
   <section id="updates">
     <h2><span class="mark">Updates &amp; your data</span></h2>
-    <p>Mac releases are signed, notarized, and verified before install — Profile&nbsp;→&nbsp;Check for updates downloads on the helm machine and offers <span class="b">Restart &amp; install</span> only when ready. Windows uses its native Squirrel feed and discloses Authenticode status in each release. Linux installs use a root-owned updater that verifies a release digest, installs into a versioned directory, switches atomically, health-checks, and rolls back if needed.</p>
+    <p>Mac releases are signed, notarized, and verified before install — Profile&nbsp;→&nbsp;Check for updates downloads on the helm machine and offers <span class="b">Restart &amp; install</span> only when ready. Linux installs use a root-owned updater that verifies a release digest, installs into a versioned directory, switches atomically, health-checks, and rolls back if needed. A Windows host uses that same Linux updater, because a Windows host <em>is</em> a Linux host running inside a WSL&nbsp;2 distribution.</p>
     <p>Every update preserves your data root:</p>
     <pre><code>macOS:  ~/Library/Application Support/1Helm-OCI-v1
 Linux:  /var/lib/1helm-oci-v1
-Windows: %APPDATA%\1Helm-OCI-v1</code></pre>
-    <div class="warnbox"><span class="notetag">careful</span>That directory holds databases, credentials, workspaces, and resident state. Never delete it during a reinstall or migration — and before removing 1Helm entirely, use the built-in removal flow and export irreplaceable channel files first.</div>
+Windows: /var/lib/1helm-oci-v1, inside the "1helm" WSL distribution</code></pre>
+    <div class="warnbox"><span class="notetag">careful</span>That directory holds databases, credentials, workspaces, and resident state. Never delete it during a reinstall or migration — and before removing 1Helm entirely, use the built-in removal flow and export irreplaceable channel files first. On Windows the whole data root lives on the WSL distribution's virtual disk, so unregistering that distribution destroys it.</div>
   </section>
 
   <section id="security">
     <h2><span class="mark">Security</span></h2>
     <ul>
-      <li>Resident computers have no access to your real machine — no home mount on macOS, ownership-checked OCI storage on Linux, and no drive mounts or interop on Windows.</li>
+      <li>Resident computers have no access to your real machine — no home mount on macOS, and ownership-checked OCI storage on Linux, including the Linux inside a Windows host's WSL&nbsp;2 distribution.</li>
       <li>Credentials and connectors are host-owned and minimally brokered; tokens never enter chat or resident computers.</li>
       <li>Channel membership gates files, terminals, messages, and live events. Private coworker channels aren't Captain-readable without invitation.</li>
       <li>External skills are revision-pinned, bounded, scanned, hashed, and wrapped.</li>
       <li>Operational history enters a SHA-256 hash chain — Settings&nbsp;→&nbsp;Audit verifies it and pinpoints tampering.</li>
-      <li>Mac artifacts are Developer ID signed, notarized, stapled, and Gatekeeper-verified; Linux assets are digest-verified, and every Windows release discloses its Authenticode status.</li>
+      <li>Mac artifacts are Developer ID signed, notarized, stapled, and Gatekeeper-verified, and Linux assets are digest-verified. Windows ships no artifact of its own; its installer verifies Microsoft's WSL package against a pinned digest <em>and</em> a valid Microsoft Authenticode signature, and the pinned Ubuntu root filesystem against its digest.</li>
     </ul>
   </section>
 
   <section id="troubleshooting">
     <h2><span class="mark">Troubleshooting</span></h2>
-    <h3>Windows asked me to restart during setup</h3>
-    <p>That's expected, and it's the normal path on a new PC. Windows&nbsp;11 ships with WSL and VirtualMachinePlatform turned off; 1Helm turns them on for you, and Windows can't use them until it restarts. Restart, sign back in as the <span class="b">same</span> Windows user, open 1Helm, and continue — setup picks up where it left off and skips what's already done. Nothing is lost.</p>
-    <h3>Windows says "Windows protected your PC"</h3>
-    <p>Windows Setup isn't Authenticode signed yet, so SmartScreen warns about it. Choose <span class="b">More info</span> → <span class="b">Run anyway</span>. Every release discloses its Authenticode status — v0.0.38 is <code>NotSigned</code>. Only run an installer you got from <a class="b plainlink" href="/download/windows">1helm.com</a> or the project's GitHub releases.</p>
-    <h3>A PowerShell window opened on Windows</h3>
-    <p>That window <em>is</em> the setup, and it shows live progress. Leave it open until it finishes — closing it early aborts the step. If it did close, choose <span class="b">Retry shared runtime setup</span> in onboarding or Settings&nbsp;→&nbsp;Channel computers; setup resumes rather than starting over. The log is at <code>%APPDATA%\1Helm-OCI-v1\windows-wsl-setup.log</code>.</p>
+    <h3>Windows printed "Restart required" and stopped</h3>
+    <p>That's the expected halfway point of a Windows install, not a failure. Windows&nbsp;11 ships with WSL and VirtualMachinePlatform turned off; the installer turns them on for you, and Windows can't use them until it restarts. Restart, sign back in as the <span class="b">same</span> Windows user, open PowerShell, and run the <span class="b">same command again</span> — it continues from where it stopped and skips what's already done. Nothing is lost.</p>
+    <h3>Windows won't run install.ps1</h3>
+    <p>If you <em>downloaded</em> the script, Windows blocks running <code>.ps1</code> files and says running scripts is disabled. Run it as <code>powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1</code> instead. The <code>irm https://1helm.com/install.ps1 | iex</code> one-liner is unaffected, because it pipes a string into PowerShell rather than executing a file.</p>
+    <h3>A "Welcome to WSL" window opened</h3>
+    <p>That window is Microsoft's, not ours — WSL shows it the first time it sets itself up. It's harmless. Close it and let the install carry on.</p>
+    <h3>Port 8123 is already in use on Windows</h3>
+    <p>Windows and every WSL distribution share one network namespace, so anything already listening on 8123 — another distribution, or an ordinary Windows process — stops 1Helm binding it. The installer refuses to continue rather than half-install, and names the port. Stop whatever owns it, then run the command again.</p>
     <h3>macOS won't open the app</h3>
     <p>The Mac release is Developer ID signed, notarized, and stapled, so Gatekeeper should accept it once it's in Applications. If it doesn't, you likely have a partial or re-hosted download — get the DMG again from <a class="b plainlink" href="/download/macos">1helm.com</a>. Don't strip quarantine attributes or re-sign an ad-hoc build to get around a failed check.</p>
     <h3>The Linux installer refuses to run</h3>
@@ -232,17 +234,17 @@ Windows: %APPDATA%\1Helm-OCI-v1</code></pre>
 
     <details>
       <summary>What operating systems does it run on?</summary>
-      <p>All three, day one: macOS (signed Apple Silicon app), Windows 11 (x64 installer with one shared WSL&nbsp;2/Podman runtime), and Linux (native Podman with a systemd host and verified updater). Resident computers work the same way everywhere — one isolated computer per agent.</p>
+      <p>All three, day one: macOS (signed Apple Silicon app), Windows 11 x64 (one PowerShell command that installs the Linux build into a WSL&nbsp;2 distribution, with your browser as the interface), and Linux (native Podman with a systemd host and verified updater). Resident computers work the same way everywhere — one isolated computer per agent.</p>
     </details>
 
     <details>
       <summary>Do I need to install WSL before installing on Windows?</summary>
-      <p>No. A stock Windows&nbsp;11 has WSL and VirtualMachinePlatform turned off, and 1Helm enables them itself during setup. Expect three things: one administrator (UAC) prompt, a PowerShell window showing progress that you should leave open, and <span class="b">one Windows restart</span> — Windows can't use the features it just enabled until it restarts. Restart, sign back in as the same user, reopen 1Helm, and setup continues where it left off. Setup executables aren't Authenticode signed yet, so SmartScreen warns once: <span class="b">More info → Run anyway</span>. Full detail is in the <a class="b plainlink" href="/manual/install-windows">Windows guide</a>.</p>
+      <p>No — and there's nothing to download either. Open an ordinary PowerShell window (not "Run as Administrator") and run <code>irm https://1helm.com/install.ps1 | iex</code>. Expect three things: one Windows permission pop-up, which you click <span class="b">Yes</span> to; a first run of about a minute that ends by printing <span class="b">"Restart required"</span>; and then, after you restart and sign back in as the same user, the <span class="b">same command again</span>, which takes about six and a half minutes and finishes by opening your browser at <code>http://localhost:8123</code>. About nine minutes in total. Because no Windows application ships, there's no installer to sign and SmartScreen never appears. Full detail is in the <a class="b plainlink" href="/manual/install-windows">Windows guide</a>.</p>
     </details>
 
     <details>
       <summary>How do I uninstall 1Helm?</summary>
-      <p>Start with Settings&nbsp;→&nbsp;Admin&nbsp;→&nbsp;<span class="b">Prepare to remove 1Helm</span>, which prepares resident machines for safe deletion — export anything irreplaceable first. Then: on macOS drag the app to the Trash; on Windows uninstall from Settings&nbsp;→&nbsp;Apps, which also removes 1Helm's containers and its WSL runtime; on Linux run <code>sudo /opt/1helm/uninstall-host.sh</code>. macOS and Linux deliberately leave your data root in place for recovery — delete it yourself if you truly want it gone.</p>
+      <p>Start with Settings&nbsp;→&nbsp;Admin&nbsp;→&nbsp;<span class="b">Prepare to remove 1Helm</span>, which prepares resident machines for safe deletion — export anything irreplaceable first. Then: on macOS drag the app to the Trash; on Linux run <code>sudo /opt/1helm/uninstall-host.sh</code>; on Windows run <code>irm https://1helm.com/uninstall.ps1 | iex</code> from an ordinary PowerShell window. macOS and Linux deliberately leave your data root in place for recovery — delete it yourself if you truly want it gone. Windows is the exception: it unregisters the <code>1helm</code> WSL distribution, and that deletes the virtual disk your whole data root lives on, so it asks you to type <code>remove</code> first and there is no undo.</p>
     </details>
 
     <details>
@@ -277,7 +279,7 @@ Windows: %APPDATA%\1Helm-OCI-v1</code></pre>
 
     <details>
       <summary>What if my helm computer dies?</summary>
-      <p>Your data root (<code>~/Library/Application Support/1Helm-OCI-v1</code> on macOS, <code>/var/lib/1helm-oci-v1</code> on Linux, or <code>%APPDATA%\1Helm-OCI-v1</code> plus <code>%LOCALAPPDATA%\1Helm-Runtime</code> on Windows) holds the control plane and resident worlds. Back it up as one coherent installation, reinstall 1Helm, and your crew comes back. Never delete those paths during a move.</p>
+      <p>Your data root (<code>~/Library/Application Support/1Helm-OCI-v1</code> on macOS, or <code>/var/lib/1helm-oci-v1</code> on Linux — including inside the <code>1helm</code> WSL distribution on Windows) holds the control plane and resident worlds. Back it up as one coherent installation, reinstall 1Helm, and your crew comes back. Never delete that path during a move.</p>
     </details>
 
     <details>

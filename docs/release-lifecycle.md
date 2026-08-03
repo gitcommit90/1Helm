@@ -5,20 +5,34 @@ Process contract from intent to verified deploy. Commands: [release-checklist.md
 ## Immutable desktop release rule
 
 1Helm has one synchronized desktop-host release train. A named desktop release
-is one version, one exact source commit, and one GitHub Release containing all
-of the following:
+is one version, one exact source commit, and one GitHub Release containing
+exactly these **three** artifacts:
 
-- Apple Silicon macOS DMG and native updater ZIP;
-- Linux host archive;
-- Windows x64 Setup executable, full Squirrel package, and `RELEASES` manifest.
+- `1Helm-<version>-arm64.dmg` — Developer ID signed, Apple-notarized and stapled
+  Apple Silicon macOS DMG;
+- `1Helm-<version>-mac-arm64.zip` — the notarized/stapled native updater ZIP;
+- `1Helm-<version>-linux-node.tgz` — the digest-qualified Linux host archive.
 
-All three platform lanes are mandatory even when a change appears
-platform-specific, because the application source and updater version advance
-together. Do not tag, create or publish a GitHub Release, mark it latest, or
-update public download/feed metadata until every lane is built, signed where
-required, digest-verified, installed, and update-tested from the previous
-release. If any lane is unavailable or fails, pause the whole release. Never
-publish a Mac-only or otherwise partial set under the product version.
+**Windows publishes nothing.** There is no Windows executable, no Windows
+installer package, no Windows update manifest, no Electron host on Windows and
+nothing to code-sign, so no signing status exists to record or disclose. A
+Windows host is the Linux host
+running inside a per-user WSL 2 distribution named `1helm`, installed from
+`https://1helm.com/install.ps1`, with the browser as its interface at
+`http://localhost:8123`. `install.ps1`, `uninstall.ps1` and the keepalive payload
+are served from the site rather than attached to a release, so a release commit
+that changes them is not shipped until the site is deployed.
+
+All three platform lanes — macOS, Linux, and Windows — are mandatory even when a
+change appears platform-specific, because the application source and updater
+version advance together. Windows is accepted by **behaviour** rather than by
+artifact, and since a Windows host installs the Linux archive, a Linux artifact
+that has not passed acceptance blocks Windows too. Do not tag, create or publish
+a GitHub Release, mark it latest, or update public download/feed metadata until
+every lane is built where it has an artifact, digest-verified, installed, and
+update-tested from the previous release. If any lane is unavailable or fails,
+pause the whole release. Never publish a Mac-only or otherwise partial set under
+the product version.
 
 Mobile distribution may have additional store/signing timing, but it never
 weakens the Mac + Linux + Windows desktop invariant.
@@ -45,10 +59,11 @@ weakens the Mac + Linux + Windows desktop invariant.
   exact-commit candidates on every desktop lane
        │
        v
-  Mac DMG + ZIP · Linux host archive · Windows Setup + nupkg + RELEASES
+  Mac DMG + ZIP · Linux host archive  (Windows publishes no artifact)
        │
        v
   clean install + prior→new updater acceptance on Mac, Linux, and Windows
+  (Windows via the site-served install.ps1 into WSL 2)
        │
        v
   full numbered notes · tag · one complete GitHub Release
@@ -116,11 +131,13 @@ Draft PRs are allowed for long slices; mark ready only when the quality bar is m
    user-visible item must appear once, with the same numbering as the request
    when available. Include additional fixes, artifacts/digests, and verification
    evidence in their own sections.
-6. Before creating the tag or GitHub Release, finish the complete desktop
-   matrix from the exact merged commit: verified macOS DMG + updater ZIP,
-   Linux host archive, and Windows Setup + full `.nupkg` + literal `RELEASES`
-   manifest. Record whether Windows artifacts are trusted-signed or unsigned;
-   unsigned is accepted until 1Helm adopts a trusted Windows signing identity.
+6. Before creating the tag or GitHub Release, finish the complete three-artifact
+   desktop matrix from the exact merged commit: verified macOS DMG
+   (`1Helm-<version>-arm64.dmg`), macOS updater ZIP
+   (`1Helm-<version>-mac-arm64.zip`), and Linux host archive
+   (`1Helm-<version>-linux-node.tgz`). Windows produces no artifact and has no
+   signing status to record; complete its behavioural acceptance instead
+   (`docs/release-checklist.md` Section 7).
 7. Publish those desktop artifacts and complete release notes together through
    one GitHub Release. Never publish a subset or attach a platform later to a
    version already described as complete. Include a directly distributed
@@ -152,10 +169,10 @@ workspace state.
 | Code landed | On `origin/main`, CI green |
 | Behavior fixed | Tests + manual/API check |
 | Install path still works | Clean `CTRL_DATA_DIR` boot through the wizard plus platform acceptance |
-| Named desktop release | One version/commit, changelog, full numbered notes, exact tag, complete Mac + Linux + Windows asset matrix, and clean installation evidence for all three |
+| Named desktop release | One version/commit, changelog, full numbered notes, exact tag, the complete three-artifact matrix (`1Helm-<version>-arm64.dmg`, `1Helm-<version>-mac-arm64.zip`, `1Helm-<version>-linux-node.tgz`), and clean installation evidence on macOS, Linux, and Windows |
 | Mac host update | Published notarized/stapled updater ZIP feed, installed-old-to-new acceptance, and preserved Application Support |
 | Linux host update | Digest-qualified artifact, real systemd install/update, health check/rollback, and preserved `/var/lib/1helm-oci-v1` |
-| Windows host update | Setup + `.nupkg` + `RELEASES` with disclosed signature status, Squirrel install/update, shared-WSL OCI lifecycle smoke, and preserved current-generation app data |
+| Windows host | No artifact and no signing status. Install from `https://1helm.com/install.ps1` in a non-elevated PowerShell window with a single UAC prompt, the mid-install restart and resume, a keepalive surviving a reboot, `http://localhost:8123` reached from a browser, a prior-version update through the in-distribution Linux updater with `/var/lib/1helm-oci-v1` retained, and removal via `uninstall.ps1` |
 
 If any platform artifact or acceptance run is skipped, the release is paused,
 not partially shipped. Say exactly what is missing and do not call it “done.”
