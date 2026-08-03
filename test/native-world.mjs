@@ -126,7 +126,7 @@ try {
   const setup = await api("/api/setup/complete", { body: { name: "Native Test", terminals_enabled: true, provider_id: providerId, model: primaryLargeModel } }, captain);
   ok(setup.status === 200, "first-run setup completes with Skipper");
 
-  const hostDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const hostDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const hostComputer = hostDb.prepare("SELECT base_url,api_key FROM computers WHERE name='This Computer' LIMIT 1").get();
   hostDb.close();
   const hostPathResponse = await fetch(`${hostComputer.base_url}/execute?wait=15`, {
@@ -157,7 +157,7 @@ try {
   const personalTurn = await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper prove the effective personal model" } }, captain);
   const personalTurnReply = await waitForAgentReply(personalTurn.body.message.id, captain, "skipper");
   ok(/mock-small/.test(personalTurnReply.body), "the visibly disclosed personal override is the model actually used by Skipper");
-  const personalTurnDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const personalTurnDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const admittedPersonalTurn = personalTurnDb.prepare("SELECT requested_model,requested_provider_id,model_source,request_user_id FROM agent_turns WHERE trigger_id=?").get(personalTurn.body.message.id);
   personalTurnDb.close();
   ok(admittedPersonalTurn?.requested_model === primarySmallModel && admittedPersonalTurn?.requested_provider_id === main.agent.provider_id && admittedPersonalTurn?.model_source === "personal" && admittedPersonalTurn?.request_user_id === registration.body.user.id,
@@ -201,7 +201,7 @@ try {
   ok(true, "Skipper completes the learning thread by adding the reusable skill to the shared arsenal");
   const learnedFromWeb = await api("/api/skills/learn", { body: { url: "https://example.com/openterminal/" } }, captain);
   await waitFor(async () => (await api("/api/skills", {}, captain)).body.skills?.some((skill) => skill.slug === "open-terminal-safe-deployment"), "web-source skill creation");
-  const learnedFromWebDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const learnedFromWebDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const learnedThread = learnedFromWebDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(learnedFromWeb.body.rootMessageId);
   const learnedActions = learnedFromWebDb.prepare("SELECT tool,status,input_summary,result_summary FROM tool_actions WHERE thread_id=? ORDER BY id").all(learnedThread.id);
   const learnedSkill = learnedFromWebDb.prepare("SELECT instructions FROM skills WHERE slug='open-terminal-safe-deployment'").get();
@@ -239,21 +239,21 @@ try {
   skipperLifecycleEvents.length = 0;
   const inventoryRequest = await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper what channels exist" } }, captain);
   await waitForAgentReply(inventoryRequest.body.message.id, captain, "skipper");
-  const inventoryDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const inventoryDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const inventoryThread = inventoryDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(inventoryRequest.body.message.id);
   const inventoryActions = inventoryDb.prepare("SELECT tool,status FROM tool_actions WHERE thread_id=? ORDER BY id").all(inventoryThread.id);
   inventoryDb.close();
   ok(inventoryActions.some((action) => action.tool === "list_channels" && action.status === "complete") && !inventoryActions.some((action) => action.tool === "run_command"), "plain-language channel inventory uses the authoritative Skipper control plane without a filesystem detour");
   const availabilityRequest = await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper do we have a calendar skill?" } }, captain);
   await waitForAgentReply(availabilityRequest.body.message.id, captain, "skipper");
-  const availabilityDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const availabilityDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const availabilityThread = availabilityDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(availabilityRequest.body.message.id);
   const availabilityActions = availabilityDb.prepare("SELECT tool FROM tool_actions WHERE thread_id=? ORDER BY id").all(availabilityThread.id);
   availabilityDb.close();
   ok(!availabilityActions.some((action) => ["install_skill", "run_command", "ask_user"].includes(action.tool)), "a read-only capability question cannot install a skill or package and cannot open an interview");
   const gmailRequest = await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper can we set up gmail" } }, captain);
   await waitForAgentReply(gmailRequest.body.message.id, captain, "skipper");
-  const gmailDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const gmailDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const gmailThread = gmailDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(gmailRequest.body.message.id);
   const gmailActions = gmailDb.prepare("SELECT tool,input_summary,result_summary FROM tool_actions WHERE thread_id=? ORDER BY id").all(gmailThread.id);
   const gmailQuestionCount = gmailDb.prepare("SELECT COUNT(*) n FROM agent_questions aq JOIN messages m ON m.id=aq.message_id WHERE m.parent_id=?").get(gmailRequest.body.message.id).n;
@@ -262,7 +262,7 @@ try {
 
   const eventRequest = await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper give me an update and explanation of the Sunset Boulevard sinkhole in West Hollywood from two days ago" } }, captain);
   const eventReply = await waitForAgentReply(eventRequest.body.message.id, captain, "skipper");
-  const eventDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const eventDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const eventThread = eventDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(eventRequest.body.message.id);
   const eventActions = eventDb.prepare("SELECT tool,status FROM tool_actions WHERE thread_id=? ORDER BY id").all(eventThread.id);
   const eventAgentReplies = eventDb.prepare("SELECT body FROM messages WHERE parent_id=? AND bot_id IS NOT NULL").all(eventRequest.body.message.id);
@@ -279,7 +279,7 @@ try {
     const thread = await api(`/api/messages/${eventRequest.body.message.id}/thread`, {}, captain);
     return thread.body.replies?.find((message) => message.id !== eventReply.id && message.author?.name === "skipper" && /Answer complete/.test(message.body || "") && message.attachments?.length);
   }, "sourced event image attachment", 15_000);
-  const imageDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const imageDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const allImageActions = imageDb.prepare("SELECT tool,status FROM tool_actions WHERE thread_id=? ORDER BY id").all(eventThread.id);
   imageDb.close();
   ok(imageRequest.status === 200
@@ -290,7 +290,7 @@ try {
   const rapidRoots = await Promise.all([1, 2, 3].map((index) => api(`/api/channels/${main.id}/messages`, { body: { body: `@skipper slow-turn run whoami for independent thread ${index}` } }, captain)));
   const rapidIds = rapidRoots.map((result) => result.body.message.id);
   await waitFor(() => {
-    const rapidDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+    const rapidDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
     const running = rapidDb.prepare(`SELECT COUNT(*) n FROM agent_turns WHERE bot_id=? AND trigger_id IN (?,?,?) AND state='running'`).get(main.agent.bot_id, ...rapidIds).n;
     rapidDb.close();
     return running === 3;
@@ -315,13 +315,13 @@ try {
   }, "visible same-thread queue");
   ok(true, "a same-thread follow-up is durably admitted and immediately shows Queued · 1 ahead");
   await api("/api/workspace/model-policy", { method: "PATCH", body: { model: primarySmallModel, personal: true } }, captain);
-  const admittedQueueDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const admittedQueueDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const admittedQueue = admittedQueueDb.prepare("SELECT requested_model,requested_provider_id,model_source,state FROM agent_turns WHERE trigger_id=?").get(queuedMessage.body.message.id);
   admittedQueueDb.close();
   ok(admittedQueue?.requested_model === primaryLargeModel && admittedQueue?.requested_provider_id === main.agent.provider_id && admittedQueue?.model_source === "workspace" && ["queued", "running", "completed"].includes(admittedQueue?.state),
     "a queued turn snapshots the effective workspace model and provider at admission");
   await waitFor(async () => {
-    const queuedDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+    const queuedDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
     const completed = queuedDb.prepare("SELECT t.state,m.body FROM agent_turns t JOIN messages m ON m.id=t.message_id WHERE t.trigger_id=?").get(queuedMessage.body.message.id);
     queuedDb.close();
     return completed?.state === "completed" && /mock-large/.test(completed.body || "") && completed;
@@ -331,7 +331,7 @@ try {
 
   const deleteRequest = await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper sunset and delete #ideas" } }, captain);
   await waitForAgentReply(deleteRequest.body.message.id, captain, "skipper");
-  const deleteDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const deleteDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const deleteThread = deleteDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(deleteRequest.body.message.id);
   const deleteActions = deleteDb.prepare("SELECT tool,status FROM tool_actions WHERE thread_id=? ORDER BY id").all(deleteThread.id);
   const ideasState = deleteDb.prepare("SELECT status FROM channels WHERE id=?").get(ideasCreate.body.channel.id);
@@ -411,7 +411,7 @@ try {
   await waitFor(async () => (await api(`/api/messages/${stopRoot}/thread`, {}, captain)).body.replies?.some((reply) => reply.progress?.some((item) => item.status === "running")), "stoppable turn start");
   const stopped = await api(`/api/messages/${stopRoot}/stop`, { body: {} }, captain);
   await sleep(100);
-  const stopDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const stopDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const stoppedThread = stopDb.prepare("SELECT stopped_followup_pending FROM threads WHERE root_message_id=?").get(stopRoot);
   ok(stopped.status === 200 && stoppedThread.stopped_followup_pending === 1, "Stop immediately aborts only the active thread turn and arms hidden continuation context");
   await api(`/api/channels/${launch.id}/messages`, { body: { body: "continue carefully", parentId: stopRoot } }, captain);
@@ -423,7 +423,7 @@ try {
   const keepRoot = isolatedStopRoots[0].body.message.id;
   const isolatedStopRoot = isolatedStopRoots[1].body.message.id;
   await waitFor(() => {
-    const isolatedDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+    const isolatedDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
     const count = isolatedDb.prepare("SELECT COUNT(*) n FROM agent_turns WHERE trigger_id IN (?,?) AND state='running'").get(keepRoot, isolatedStopRoot).n;
     isolatedDb.close();
     return count === 2;
@@ -433,13 +433,13 @@ try {
   // The visible answer can arrive while asynchronous post-turn memory indexing
   // is still completing; wait for both durable lane states before asserting.
   await waitFor(() => {
-    const stateDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+    const stateDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
     const states = stateDb.prepare("SELECT trigger_id,state FROM agent_turns WHERE trigger_id IN (?,?)").all(keepRoot, isolatedStopRoot);
     stateDb.close();
     return states.find((turn) => turn.trigger_id === keepRoot)?.state === "completed"
       && states.find((turn) => turn.trigger_id === isolatedStopRoot)?.state === "stopped";
   }, "independent resident lane finalization");
-  const isolatedStopDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const isolatedStopDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const laneStates = isolatedStopDb.prepare("SELECT trigger_id,state FROM agent_turns WHERE trigger_id IN (?,?)").all(keepRoot, isolatedStopRoot);
   isolatedStopDb.close();
   ok(laneStates.find((turn) => turn.trigger_id === keepRoot)?.state === "completed"
@@ -455,7 +455,7 @@ try {
   const rejectedMainGuestRoot = (await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper invite @finance-agent into #main for unrelated research" } }, captain)).body.message.id;
   await waitForAgentReply(rejectedMainGuestRoot, captain, "skipper");
   await sleep(300);
-  const rejectedMainGuestDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const rejectedMainGuestDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const rejectedMainThread = rejectedMainGuestDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(rejectedMainGuestRoot);
   const rejectedMainBinding = rejectedMainGuestDb.prepare("SELECT 1 FROM thread_agent_guests WHERE thread_id=? AND status='active'").get(rejectedMainThread.id);
   const rejectedMainResidentTurns = rejectedMainGuestDb.prepare("SELECT COUNT(*) n FROM agent_turns WHERE thread_root_id=? AND bot_id=?").get(rejectedMainGuestRoot, finance.agent.bot_id).n;
@@ -465,7 +465,7 @@ try {
   const rejectedMainCallRoot = (await api(`/api/channels/${main.id}/messages`, { body: { body: "@skipper attempt forbidden direct call_agent in #main" } }, captain)).body.message.id;
   await waitForAgentReply(rejectedMainCallRoot, captain, "skipper");
   await sleep(200);
-  const rejectedMainCallDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const rejectedMainCallDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const rejectedMainCallAction = rejectedMainCallDb.prepare("SELECT status,result_summary FROM tool_actions WHERE thread_id=(SELECT id FROM threads WHERE root_message_id=?) AND tool='call_agent'").get(rejectedMainCallRoot);
   const rejectedMainCallBinding = rejectedMainCallDb.prepare("SELECT 1 FROM thread_agent_guests WHERE thread_id=(SELECT id FROM threads WHERE root_message_id=?) AND status='active'").get(rejectedMainCallRoot);
   const rejectedMainCallTurn = rejectedMainCallDb.prepare("SELECT COUNT(*) n FROM agent_turns WHERE thread_root_id=? AND bot_id=?").get(rejectedMainCallRoot, finance.agent.bot_id).n;
@@ -473,7 +473,7 @@ try {
   ok(rejectedMainCallAction?.status === "failed" && /cannot be called|cannot.*#main/i.test(rejectedMainCallAction.result_summary) && !rejectedMainCallBinding && rejectedMainCallTurn === 0, "a provider-forced cross-channel call_agent invocation is rejected at the #main execution boundary");
   const legacyBot = (await api("/api/bots", { body: { name: "ambient-third-agent", provider_id: providerId, model: "mock-large" } }, captain)).body.bot;
   const rejectedJoin = await api(`/api/bots/${legacyBot.id}/join`, { body: { channelId: launch.id } }, captain);
-  const membershipDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const membershipDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const nativeMembership = membershipDb.prepare("SELECT 1 FROM bot_channels WHERE bot_id=? AND channel_id=?").get(legacyBot.id, launch.id);
   membershipDb.close();
   ok(rejectedJoin.status === 409 && !nativeMembership, "legacy/manual bot joins cannot add an ambient third agent to a native channel");
@@ -491,14 +491,14 @@ try {
   const guestRoot = (await api(`/api/channels/${launch.id}/messages`, { body: { body: "@skipper invite @finance-agent into this thread for one review" } }, captain)).body.message.id;
   await waitForAgentReply(guestRoot, captain, "finance-agent");
   await waitForAgentReply(guestRoot, captain, "skipper");
-  const guestDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const guestDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const guestThread = guestDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(guestRoot);
   const guestBinding = guestDb.prepare("SELECT status FROM thread_agent_guests WHERE thread_id=? AND agent_id=?").get(guestThread.id, finance.agent.id);
   const poisonedMembership = guestDb.prepare("SELECT 1 FROM bot_channels WHERE bot_id=? AND channel_id=?").get(finance.agent.bot_id, launch.id);
   guestDb.close();
   ok(guestBinding?.status === "active" && !poisonedMembership, "Skipper can invite an expert into one thread without adding it to or poisoning the channel");
   await api(`/api/threads/${guestThread.id}`, { method: "PATCH", body: { status: "resolved" } }, captain);
-  const resolvedGuestDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const resolvedGuestDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const removedGuest = resolvedGuestDb.prepare("SELECT status FROM thread_agent_guests WHERE thread_id=? AND agent_id=?").get(guestThread.id, finance.agent.id);
   const stillUnpoisoned = resolvedGuestDb.prepare("SELECT 1 FROM bot_channels WHERE bot_id=? AND channel_id=?").get(finance.agent.bot_id, launch.id);
   resolvedGuestDb.close();
@@ -507,13 +507,13 @@ try {
   const duplicateGuestRoot = (await api(`/api/channels/${launch.id}/messages`, { body: { body: "@skipper invite @finance-agent twice into this thread for one review" } }, captain)).body.message.id;
   await waitForAgentReply(duplicateGuestRoot, captain, "finance-agent");
   await waitForAgentReply(duplicateGuestRoot, captain, "skipper");
-  const duplicateGuestDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const duplicateGuestDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const financeGuestTurns = duplicateGuestDb.prepare("SELECT COUNT(*) n FROM agent_turns WHERE bot_id=? AND thread_root_id=?").get(finance.agent.bot_id, duplicateGuestRoot).n;
   const duplicateInviteActions = duplicateGuestDb.prepare("SELECT status FROM tool_actions WHERE thread_id=(SELECT id FROM threads WHERE root_message_id=?) AND tool='invite_agent'").all(duplicateGuestRoot);
   duplicateGuestDb.close();
   ok(financeGuestTurns === 1 && duplicateInviteActions.length === 2 && duplicateInviteActions.some((action) => action.status === "failed"), "re-inviting an already active thread guest is rejected without dispatching another resident turn");
 
-  const database = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const database = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const duplicateBindings = database.prepare("SELECT channel_id, COUNT(*) n FROM agent_channels GROUP BY channel_id HAVING n<>1").all();
   const launchBinding = database.prepare("SELECT * FROM agent_channels WHERE channel_id=?").get(launch.id);
   const secondBinding = database.prepare("SELECT * FROM agent_channels WHERE channel_id=?").get(finance.id);
@@ -560,7 +560,7 @@ try {
 
   const toolLimitRoot = (await api(`/api/channels/${launch.id}/messages`, { body: { body: `@${launch.agent.name} repeat-tool-limit run whoami` } }, captain)).body.message.id;
   const toolLimitReply = await waitForAgentReply(toolLimitRoot, captain, launch.agent.name);
-  const toolLimitDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const toolLimitDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const toolLimitThread = toolLimitDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(toolLimitRoot);
   const toolLimitActions = toolLimitDb.prepare("SELECT count(*) n FROM tool_actions WHERE thread_id=? AND status='complete'").get(toolLimitThread.id).n;
   toolLimitDb.close();
@@ -603,7 +603,7 @@ try {
   ok(knowledgeOnly.length === 1 && knowledgeOnly[0].kind === "decision" && !knowledgeOnly.some((item) => item.kind === "summary" || /Captain:|agent:/i.test(item.content)), "Memory API contains curated knowledge, not session recaps or transcript dumps");
   const mnemosynePath = join(dataDir, "channels", String(launch.id), "memory", "mnemosyne.db");
   const skipperMemoryPath = join(dataDir, "skipper", "memory", "mnemosyne.db");
-  const memoryDb = new DatabaseSync(mnemosynePath);
+  const memoryDb = new DatabaseSync(mnemosynePath, { timeout: 15_000 });
   const mnemosyneDecision = memoryDb.prepare("SELECT content FROM working_memory WHERE content LIKE '%launch-on-monday%' LIMIT 1").get();
   memoryDb.close();
   ok(existsSync(skipperMemoryPath) && existsSync(mnemosynePath) && mnemosyneDecision, "Skipper and every resident own separate real Mnemosyne databases used for durable writes");
@@ -619,7 +619,7 @@ try {
   // Collaboration access is request/approval based. A new coworker starts in
   // the human-only Collab holding space and cannot see an agent channel until
   // the Captain tags and confirms them in that exact channel.
-  const collaborationDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const collaborationDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   collaborationDb.prepare("UPDATE workspace SET collaboration_enabled=1,collaboration_slug='native-test',collaboration_hostname='native-test.1helm.com',collaboration_status='active'").run();
   collaborationDb.prepare("INSERT INTO workspace_domains (hostname,provider,status,tunnel_id,verified,created,updated) VALUES (?,'cloudflare','active','custom-tunnel',?,?,?)")
     .run("helm.example.com", Date.now(), Date.now(), Date.now());
@@ -650,7 +650,7 @@ try {
   const hiddenRouting = await api("/api/routing/state", {}, requester);
   const hiddenSkills = await api("/api/skills", {}, requester);
   const hiddenCollaboration = await api("/api/collaboration", {}, requester);
-  const holdingDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const holdingDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const collabRuntime = holdingDb.prepare(`SELECT
     (SELECT COUNT(*) FROM agent_channels WHERE channel_id=c.id) agents,
     (SELECT COUNT(*) FROM channel_computers WHERE channel_id=c.id) computers,
@@ -669,7 +669,7 @@ try {
   await waitForAgentReply(requesterChannelRequest.body.message.id, requester, "skipper");
   const requesterNotes = (await api("/api/channels", {}, requester)).body.channels.find((channel) => channel.name === "requester-notes");
   const captainDeniedRequesterNotes = await api(`/api/channels/${requesterNotes.id}/messages`, {}, captain);
-  const privateChannelDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const privateChannelDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const requesterNotesMembers = privateChannelDb.prepare("SELECT user_id FROM members WHERE channel_id=? ORDER BY user_id").all(requesterNotes.id);
   privateChannelDb.close();
   ok(requesterNotes?.agent?.kind === "channel" && requesterNotesMembers.length === 1
@@ -841,19 +841,19 @@ try {
     return escalated && residentFailed && !askedHuman && !tutorial ? true : null;
   }, "resident network-boundary escalation", 20_000);
   ok(Boolean(networkSetupActivity), "an imperative resident install with machine-wide socket denial calls Skipper with evidence instead of returning another tutorial or asking the human");
-  const escalationLoopDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const escalationLoopDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const escalationThread = escalationLoopDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(escalationRoot.body.message.id);
   const openEscalation = escalationLoopDb.prepare("SELECT id FROM escalations WHERE thread_id=? AND from_agent_id=? ORDER BY id DESC LIMIT 1").get(escalationThread.id, afterRestart.agent.id);
   if (openEscalation) escalationLoopDb.prepare("UPDATE escalations SET status='open' WHERE id=?").run(openEscalation.id);
   escalationLoopDb.close();
   const duplicateEscalationRequest = await api(`/api/channels/${launch.id}/messages`, { body: { body: `@${afterRestart.agent.name} call skipper to run whoami`, parentId: escalationRoot.body.message.id } }, captain);
   await waitFor(() => {
-    const guardDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+    const guardDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
     const turn = guardDb.prepare("SELECT state FROM agent_turns WHERE trigger_id=?").get(duplicateEscalationRequest.body.message.id);
     guardDb.close();
     return turn?.state === "completed";
   }, "duplicate resident escalation guard");
-  const guardedEscalationDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const guardedEscalationDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const escalationCount = guardedEscalationDb.prepare("SELECT COUNT(*) n FROM escalations WHERE thread_id=? AND from_agent_id=?").get(escalationThread.id, afterRestart.agent.id).n;
   if (openEscalation) guardedEscalationDb.prepare("UPDATE escalations SET status='resolved' WHERE id=?").run(openEscalation.id);
   guardedEscalationDb.close();
@@ -896,7 +896,7 @@ try {
     const result = await api(`/api/channels/${launch.id}/activity`, {}, captain);
     const actions = result.body.actions || [];
     const scheduled = actions.some((item) => item.tool === "schedule_followup" && item.status === "complete");
-    const db = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+    const db = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
     let row2;
     try {
       row2 = db.prepare("SELECT id, status, due_at, reason FROM agent_followups ORDER BY id DESC LIMIT 1").get();
@@ -920,7 +920,7 @@ try {
   const archive = await api(`/api/channels/${launch.id}/archive`, { body: {} }, captain);
   const blocked = await api(`/api/channels/${launch.id}/messages`, { body: { body: `@${afterRestart.agent.name} should not run` } }, captain);
   ok(archive.body.channel.status === "archived" && archive.body.channel.agent.id === launch.agent.id && blocked.status === 409, "archive pauses work while preserving the same agent world");
-  const archivedObligationDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const archivedObligationDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const activeArchivedFollowups = archivedObligationDb.prepare("SELECT COUNT(*) n FROM channel_computer_obligations WHERE channel_id=? AND kind='followup' AND status='active'").get(launch.id).n;
   archivedObligationDb.close();
   ok(activeArchivedFollowups === 0, "archiving cancels native follow-up wake obligations instead of treating archive like idle sleep");
@@ -932,14 +932,14 @@ try {
   // Crash recovery: start a slow turn, SIGKILL mid-flight, restart, and verify boot recovers.
   const crashRoot = (await api(`/api/channels/${finance.id}/messages`, { body: { body: `@${finance.agent.name} slow-turn run command` } }, captain)).body.message.id;
   await waitFor(() => {
-    const crashDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+    const crashDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
     const running = crashDb.prepare("SELECT 1 FROM agent_turns WHERE trigger_id=? AND state='running'").get(crashRoot);
     crashDb.close();
     return running;
   }, "crash-test turn running");
   const crashQueuedTrigger = (await api(`/api/channels/${finance.id}/messages`, { body: { body: `@${finance.agent.name} run command after restart`, parentId: crashRoot } }, captain)).body.message.id;
   await waitFor(() => {
-    const crashDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+    const crashDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
     const queued = crashDb.prepare("SELECT 1 FROM agent_turns WHERE trigger_id=? AND state='queued'").get(crashQueuedTrigger);
     crashDb.close();
     return queued;
@@ -949,12 +949,12 @@ try {
   await Promise.race([new Promise((resolve) => killedApp.once("exit", resolve)), sleep(2000)]);
   await launchApp();
   await waitFor(() => {
-    const resumedDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+    const resumedDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
     const completed = resumedDb.prepare("SELECT 1 FROM agent_turns WHERE trigger_id=? AND state='completed'").get(crashQueuedTrigger);
     resumedDb.close();
     return completed;
   }, "queued turn resume after crash");
-  const db2 = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const db2 = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   db2.exec("PRAGMA busy_timeout=10000");
   const stuckWorking = db2.prepare("SELECT count(*) n FROM agents WHERE status='working'").get().n;
   const emptyPlaceholders = db2.prepare("SELECT count(*) n FROM messages WHERE body='' AND bot_id IS NOT NULL AND parent_id IS NOT NULL").get().n;
@@ -976,7 +976,7 @@ try {
   appForRecovery.kill("SIGTERM");
   await Promise.race([new Promise((resolve) => appForRecovery.once("exit", resolve)), sleep(2000)]);
   await launchApp();
-  const db3 = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+  const db3 = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
   const stuckProgress = db3.prepare("SELECT count(*) n FROM agent_progress WHERE status='running'").get().n;
   db3.close();
   ok(stuckWorking === 0 && emptyPlaceholders === 0, "boot recovers agents stuck working and sweeps empty placeholder turn messages after a crash");
