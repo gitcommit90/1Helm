@@ -5,7 +5,7 @@ const CHECK_EVERY_MS = Number(process.env.IMPROVEMENT_INTERVAL_MS || 60 * 60_000
 const frustration = /\b(frustrat|annoy|angry|wrong again|not what i asked|stop doing|why (?:do|did) you|i already (?:said|told)|listen to me)\b/i;
 const correction = /\b(no,? |actually|instead|do not|don't|never|always|i prefer|please (?:stop|use|remember))\b/i;
 
-export function runImprovementPass(agentId?: number): number {
+export async function runImprovementPass(agentId?: number): Promise<number> {
   const agents = agentId
     ? q("SELECT a.*,ac.channel_id FROM agents a LEFT JOIN agent_channels ac ON ac.agent_id=a.id WHERE a.id=? AND a.status<>'deleted'", agentId)
     : q("SELECT a.*,ac.channel_id FROM agents a LEFT JOIN agent_channels ac ON ac.agent_id=a.id WHERE a.kind='channel' AND a.status NOT IN ('deleted','archived')");
@@ -39,8 +39,8 @@ export function runImprovementPass(agentId?: number): number {
           `Skipper reviewed recent interaction signals and strengthened @${agent.name}'s response to corrections.`, instruction, source.id, now());
           run("INSERT INTO channel_activity (channel_id,kind,summary,status,actor_type,created) VALUES (?,'improvement',?,'complete','skipper',?)",
             channelId, `Skipper improved @${agent.name}: future turns will adapt faster to corrections and verify the requested outcome.`, now());
-          rememberForAgent(agent, instruction, { source: `skipper-improvement:message:${source.id}`, importance: 0.9, metadata: { kind: "behavior-improvement", channel_id: channelId } });
-          if (skipper) rememberForAgent(skipper, `In #${String(q1("SELECT name FROM channels WHERE id=?", channelId)?.name || channelId)}, @${agent.name} was improved: ${instruction}`,
+          await rememberForAgent(agent, instruction, { source: `skipper-improvement:message:${source.id}`, importance: 0.9, metadata: { kind: "behavior-improvement", channel_id: channelId } });
+          if (skipper) await rememberForAgent(skipper, `In #${String(q1("SELECT name FROM channels WHERE id=?", channelId)?.name || channelId)}, @${agent.name} was improved: ${instruction}`,
             { source: `workspace-improvement:agent:${agent.id}`, importance: 0.8, metadata: { channel_id: channelId, agent_id: agent.id } });
           improved++;
           improvedNames.push(`@${agent.name}`);
@@ -71,13 +71,19 @@ export function runImprovementPass(agentId?: number): number {
 }
 
 let timer: NodeJS.Timeout | null = null;
+/** A background pass owns its own failures; an unhandled rejection here would
+ * take down the host over an optional memory write. */
+const backgroundPass = (agentId?: number): void => {
+  void runImprovementPass(agentId).catch((error) => console.warn("Skipper improvement pass failed:", (error as Error).message));
+};
+
 export function startImprovementLoop(): void {
   if (timer) return;
-  setTimeout(() => runImprovementPass(), Math.min(30_000, CHECK_EVERY_MS)).unref();
-  timer = setInterval(() => runImprovementPass(), Math.max(60_000, CHECK_EVERY_MS));
+  setTimeout(() => backgroundPass(), Math.min(30_000, CHECK_EVERY_MS)).unref();
+  timer = setInterval(() => backgroundPass(), Math.max(60_000, CHECK_EVERY_MS));
   timer.unref();
 }
 
 export function scheduleAgentReview(agentId: number): void {
-  setTimeout(() => runImprovementPass(agentId), 250).unref();
+  setTimeout(() => backgroundPass(agentId), 250).unref();
 }

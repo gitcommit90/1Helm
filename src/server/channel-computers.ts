@@ -327,8 +327,39 @@ async function apple(args: string[], opts: Parameters<typeof spawnCollected>[2] 
   return spawnCollected(resolveContainerCli(), args, opts);
 }
 
+async function resolveContainerCliAsync(): Promise<string> {
+  for (const candidate of CONTAINER_CANDIDATES) {
+    if (candidate.includes("/")) {
+      if (existsSync(candidate)) return candidate;
+      continue;
+    }
+    try {
+      const result = await spawnCollected("/usr/bin/which", [candidate], { timeoutMs: 10_000 });
+      if (result.code === 0) return candidate;
+    } catch { /* try the next supported location */ }
+  }
+  throw new Error("Apple container runtime is not installed. 1Helm can guide the one-time installation from Computer setup.");
+}
+
+async function resolveWslCliAsync(): Promise<string> {
+  if (windowsSystemAccount()) throw new Error("1Helm cannot use WSL while running as Windows Local System. Launch 1Helm in the signed-in Windows user's session so WSL and its retained distributions are available.");
+  const candidates = [process.env.HELM_WSL_CLI, process.env.SystemRoot ? join(process.env.SystemRoot, "System32", "wsl.exe") : "", "wsl.exe"].filter(Boolean) as string[];
+  for (const candidate of candidates) {
+    if (candidate.includes("/") || candidate.includes("\\")) {
+      if (existsSync(candidate)) return candidate;
+      continue;
+    }
+    try {
+      const result = await spawnCollected(candidate, ["--status"], { timeoutMs: 10_000 });
+      if (result.code === 0) return candidate;
+    } catch { /* try the next supported location */ }
+  }
+  throw new Error("WSL 2 is not installed. Run Windows' verified 1Helm setup as Administrator once.");
+}
+
 /** Keep the in-WSL OCI helper synchronized with the packaged app so hotfixes and updates apply. */
 let windowsOciHelperDigest = "";
+let windowsOciHelperInstallPass: Promise<void> | null = null;
 function ensureWindowsOciHelperInstalled(): void {
   if (platform() !== "win32") return;
   const appRoot = process.env.HELM_APP_ROOT || process.cwd();
@@ -356,6 +387,38 @@ function ensureWindowsOciHelperInstalled(): void {
     throw new Error(detail || "Could not install the shared OCI runtime helper into the Windows WSL runtime.");
   }
   windowsOciHelperDigest = digest;
+}
+
+/** Async twin used by readiness and preparation. The older synchronous helper
+ * remains only for synchronous Windows storage APIs, never for HTTP readiness. */
+async function ensureWindowsOciHelperInstalledAsync(): Promise<void> {
+  if (platform() !== "win32") return;
+  const appRoot = process.env.HELM_APP_ROOT || process.cwd();
+  const source = join(appRoot, "scripts", "1helm-oci-runtime");
+  if (!existsSync(source)) return;
+  const encoded = readFileSync(source);
+  const digest = createHash("sha256").update(encoded).digest("hex");
+  if (windowsOciHelperDigest === digest) return;
+  if (windowsOciHelperInstallPass) return windowsOciHelperInstallPass;
+  const pass = (async () => {
+    const runtime = installationScopedRuntimeName();
+    const wsl = await resolveWslCliAsync();
+    try {
+      await spawnCollected(wsl, ["--distribution", runtime, "--user", "root", "--exec", "/bin/true"], { timeoutMs: 120_000 });
+    } catch { /* the copy below reports an actionable error */ }
+    const result = await spawnCollected(wsl, [
+      "--distribution", runtime, "--user", "root", "--exec", "/bin/bash", "-lc",
+      "cat > /usr/libexec/1helm-oci-runtime && chmod 0755 /usr/libexec/1helm-oci-runtime",
+    ], { input: encoded, timeoutMs: 60_000 });
+    if (result.code !== 0) {
+      const detail = windowsLines(Buffer.concat([result.stderr, result.stdout])).join(" ").trim();
+      throw new Error(detail || "Could not install the shared OCI runtime helper into the Windows WSL runtime.");
+    }
+    windowsOciHelperDigest = digest;
+  })();
+  windowsOciHelperInstallPass = pass;
+  try { await pass; }
+  finally { if (windowsOciHelperInstallPass === pass) windowsOciHelperInstallPass = null; }
 }
 
 /**
@@ -519,11 +582,7 @@ export function windowsOciStorageCopy(channelId: number, area: StorageArea, from
   return ociStorageJson(["storage-copy", name, owner, area, from, to]) as StorageEntry;
 }
 
-function ociInvocation(args: string[]): { command: string; args: string[]; env?: NodeJS.ProcessEnv } {
-  if (platform() === "win32") {
-    ensureWindowsOciHelperInstalled();
-    return { command: resolveWslCli(), args: ["--distribution", installationScopedRuntimeName(), "--user", "root", "--exec", "/usr/libexec/1helm-oci-runtime", ...args] };
-  }
+function linuxOciInvocation(args: string[]): { command: string; args: string[]; env?: NodeJS.ProcessEnv } {
   const helper = resolveOciHelper();
   if (process.env.HELM_OCI_HELPER_USE_SUDO === "0" || process.getuid?.() === 0) {
     const appRoot = process.env.HELM_APP_ROOT || process.cwd();
@@ -547,8 +606,32 @@ function ociInvocation(args: string[]): { command: string; args: string[]; env?:
   return { command: "sudo", args: ["-n", helper, ...args] };
 }
 
+function ociInvocation(args: string[]): { command: string; args: string[]; env?: NodeJS.ProcessEnv } {
+  if (platform() === "win32") {
+    ensureWindowsOciHelperInstalled();
+    return { command: resolveWslCli(), args: ["--distribution", installationScopedRuntimeName(), "--user", "root", "--exec", "/usr/libexec/1helm-oci-runtime", ...args] };
+  }
+  return linuxOciInvocation(args);
+}
+
+async function ociAsyncInvocation(args: string[]): Promise<{ command: string; args: string[]; env?: NodeJS.ProcessEnv }> {
+  if (platform() === "win32") {
+    await ensureWindowsOciHelperInstalledAsync();
+    const wsl = await resolveWslCliAsync();
+    return { command: wsl, args: ["--distribution", installationScopedRuntimeName(), "--user", "root", "--exec", "/usr/libexec/1helm-oci-runtime", ...args] };
+  }
+  return linuxOciInvocation(args);
+}
+
 async function oci(args: string[], opts: Parameters<typeof spawnCollected>[2] = {}): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
   const invocation = ociInvocation(args);
+  return spawnCollected(invocation.command, invocation.args, { ...opts, env: invocation.env || opts.env });
+}
+
+/** OCI call path for readiness/preparation: even Windows helper sync and WSL
+ * discovery are asynchronous, so a background refresh can never stall Node. */
+async function ociAsync(args: string[], opts: Parameters<typeof spawnCollected>[2] = {}): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
+  const invocation = await ociAsyncInvocation(args);
   return spawnCollected(invocation.command, invocation.args, { ...opts, env: invocation.env || opts.env });
 }
 
@@ -849,7 +932,8 @@ export async function ensureChannelComputerRunning(channelId: number, reason = "
     } else if (computer.backend === "oci") {
       await ensureOciProvisioned(computer);
       computer = channelComputer(channelId)!;
-      recordObserved(computer, await inspectOci(computer));
+      // ensureOciProvisioned already inspects and recordObserved — a redundant
+      // inspect here doubled the subprocess cost for every OCI channel request.
     } else await ensureNativeProvisioned(computer);
     run("UPDATE channel_computers SET last_used=?,last_error='',updated=? WHERE channel_id=?", now(), now(), channelId);
     recordComputerActivity(channelId, `Computer ready for ${reason}.`, "complete", true);
@@ -1632,28 +1716,13 @@ export function channelComputerPrepareStatus(): ChannelComputerPrepareStatus {
 }
 
 async function ociChannelImageExists(image = DEFAULT_CHANNEL_IMAGE): Promise<boolean> {
-  const result = await oci(["image-status", image], { timeoutMs: 30_000 });
-  if (result.code !== 0) return false;
   try {
-    const parsed = JSON.parse(result.stdout.toString("utf8")) as { exists?: unknown };
-    return Boolean(parsed.exists);
-  } catch {
-    return false;
-  }
-}
-
-function ociChannelImageExistsSync(image = DEFAULT_CHANNEL_IMAGE): boolean {
-  try {
-    const invocation = ociInvocation(["image-status", image]);
-    if (platform() === "win32") {
-      const result = spawnSync(invocation.command, invocation.args, { encoding: "buffer", timeout: 30_000, env: invocation.env });
-      if (result.status !== 0) return false;
-      const parsed = JSON.parse(windowsLines(result.stdout as Buffer).join("") || "{}") as { exists?: unknown };
-      return Boolean(parsed.exists);
-    }
-    const result = spawnSync(invocation.command, invocation.args, { encoding: "utf8", timeout: 30_000, env: invocation.env });
-    if (result.status !== 0) return false;
-    const parsed = JSON.parse(String(result.stdout || "{}")) as { exists?: unknown };
+    const result = await ociAsync(["image-status", image], { timeoutMs: 30_000 });
+    if (result.code !== 0) return false;
+    const text = platform() === "win32"
+      ? windowsLines(result.stdout).join("")
+      : result.stdout.toString("utf8");
+    const parsed = JSON.parse(text || "{}") as { exists?: unknown };
     return Boolean(parsed.exists);
   } catch {
     return false;
@@ -1664,7 +1733,7 @@ function ociChannelImageExistsSync(image = DEFAULT_CHANNEL_IMAGE): boolean {
  * One-time host prepare: materialize the shared channel-computer image before
  * the Captain creates channels. Later create_channel calls only clone/start.
  */
-export function beginOciChannelComputerPrepare(): ChannelComputerPrepareStatus {
+export async function beginOciChannelComputerPrepare(): Promise<ChannelComputerPrepareStatus> {
   if (configuredChannelBackend() !== "oci") {
     return setOciPrepareState({
       status: "failed",
@@ -1675,14 +1744,16 @@ export function beginOciChannelComputerPrepare(): ChannelComputerPrepareStatus {
     });
   }
   if (ociPrepareState.status === "running" && ociPreparePass) return channelComputerPrepareStatus();
-  if (ociChannelImageExistsSync()) {
-    return setOciPrepareState({
+  if (await ociChannelImageExists()) {
+    const state = setOciPrepareState({
       status: "complete",
       step: "Channel computer image is ready. New channels can start immediately.",
       progress: 100,
       error: "",
       started_at: ociPrepareState.started_at || now(),
     });
+    updateCachedOciImageState(true);
+    return state;
   }
   const startedAt = now();
   setOciPrepareState({
@@ -1695,7 +1766,7 @@ export function beginOciChannelComputerPrepare(): ChannelComputerPrepareStatus {
   const passToken = { current: null as Promise<void> | null };
   const pass = (async () => {
     try {
-      const engine = runtimeReadiness();
+      const engine = await refreshRuntimeReadiness(true);
       if (!engine.engine_ready) {
         throw new Error(String(engine.error || "The OCI runtime is not ready. Finish the host installer or Windows shared-runtime setup first."));
       }
@@ -1705,7 +1776,7 @@ export function beginOciChannelComputerPrepare(): ChannelComputerPrepareStatus {
         progress: 20,
         error: "",
       });
-      const built = await oci(["image", DEFAULT_CHANNEL_IMAGE], { timeoutMs: 30 * 60_000 });
+      const built = await ociAsync(["image", DEFAULT_CHANNEL_IMAGE], { timeoutMs: 30 * 60_000 });
       if (built.code !== 0) {
         throw new Error(built.stderr.toString("utf8").trim() || built.stdout.toString("utf8").trim() || "Channel computer image preparation failed.");
       }
@@ -1724,6 +1795,7 @@ export function beginOciChannelComputerPrepare(): ChannelComputerPrepareStatus {
         progress: 100,
         error: "",
       });
+      updateCachedOciImageState(true);
     } catch (error) {
       setOciPrepareState({
         status: "failed",
@@ -1731,6 +1803,7 @@ export function beginOciChannelComputerPrepare(): ChannelComputerPrepareStatus {
         progress: Math.max(5, Number(ociPrepareState.progress) || 5),
         error: ((error as Error).message || "Private computer setup failed.").slice(0, 1000),
       });
+      updateCachedOciImageState(false);
     } finally {
       if (ociPreparePass === passToken.current) ociPreparePass = null;
     }
@@ -1741,76 +1814,129 @@ export function beginOciChannelComputerPrepare(): ChannelComputerPrepareStatus {
   return channelComputerPrepareStatus();
 }
 
-export function runtimeReadiness(): Record<string, unknown> {
+const RUNTIME_READINESS_TTL_MS = Math.max(1_000, Number(process.env.HELM_RUNTIME_READINESS_TTL_MS || 5_000));
+type RuntimeReadinessCache = { key: string; value: Record<string, unknown>; expiresAt: number };
+let runtimeReadinessCache: RuntimeReadinessCache | null = null;
+let runtimeReadinessPass: Promise<Record<string, unknown>> | null = null;
+
+const runtimeReadinessKey = (): string => `${configuredChannelBackend()}:${platform()}:${process.arch}`;
+
+function immediateRuntimeReadiness(): Record<string, unknown> | null {
+  const backend = configuredChannelBackend();
+  if (backend !== "native" && backend !== "mock") return null;
+  return {
+    backend, supported: true, ready: true, engine_ready: true, image_ready: true,
+    image: null, prepare: null, platform: platform(), architecture: process.arch,
+    development_only: true, runtime_version: null, status: "development",
+  };
+}
+
+function pendingRuntimeReadiness(): Record<string, unknown> {
+  const backend = configuredChannelBackend();
+  const darwin = platform() === "darwin";
+  const windows = platform() === "win32";
+  if (backend === "oci") return {
+    backend,
+    supported: (["linux", "win32"].includes(platform()) && ["arm64", "x64"].includes(process.arch)),
+    engine_ready: false,
+    image_ready: false,
+    image: DEFAULT_CHANNEL_IMAGE,
+    prepare: channelComputerPrepareStatus(),
+    ready: false,
+    platform: platform(), architecture: process.arch, cli: null, version: null, system: null,
+    runtime_version: OCI_RUNTIME_VERSION, shared_runtime: windows ? installationScopedRuntimeName() : null,
+    storage_authority: windows ? `\\\\wsl.localhost\\${installationScopedRuntimeName()}\\var\\lib\\1helm-oci-v1\\runtime\\oci` : ociHostStateRoot(),
+    status: "checking", error: null,
+  };
+  return {
+    backend, supported: darwin && process.arch === "arm64", darwin, arm64: process.arch === "arm64",
+    platform: platform(), architecture: process.arch, macos_version: null, cli: null, version: null, system: null,
+    runtime_version: APPLE_RUNTIME_VERSION, installer_url: APPLE_RUNTIME_URL, installer_sha256: APPLE_RUNTIME_SHA256,
+    status: "checking", error: null, engine_ready: false, image_ready: false,
+    image: DEFAULT_CHANNEL_IMAGE, prepare: null, ready: false,
+  };
+}
+
+function updateCachedOciImageState(imageReady: boolean): void {
+  const key = runtimeReadinessKey();
+  if (!runtimeReadinessCache || runtimeReadinessCache.key !== key || runtimeReadinessCache.value.backend !== "oci") return;
+  const engineReady = Boolean(runtimeReadinessCache.value.engine_ready);
+  runtimeReadinessCache = {
+    key,
+    expiresAt: Date.now() + RUNTIME_READINESS_TTL_MS,
+    value: {
+      ...runtimeReadinessCache.value,
+      image_ready: imageReady,
+      ready: Boolean(engineReady && imageReady),
+      prepare: channelComputerPrepareStatus(),
+      status: !engineReady ? runtimeReadinessCache.value.status : imageReady ? "running" : "image_pending",
+    },
+  };
+}
+
+function invalidateRuntimeReadiness(): void {
+  if (runtimeReadinessCache) runtimeReadinessCache.expiresAt = 0;
+  void refreshRuntimeReadiness().catch((error) => console.warn("Channel runtime readiness refresh failed:", (error as Error).message));
+}
+
+async function probeRuntimeReadiness(): Promise<Record<string, unknown>> {
+  const immediate = immediateRuntimeReadiness();
+  if (immediate) return immediate;
   const backend = configuredChannelBackend();
   const darwin = platform() === "darwin";
   const linux = platform() === "linux";
   const windows = platform() === "win32";
   const arm64 = process.arch === "arm64";
   const supportedArchitecture = arm64 || process.arch === "x64";
-  if (backend === "native" || backend === "mock") {
-    return {
-      backend, supported: true, ready: true, engine_ready: true, image_ready: true,
-      image: null, prepare: null, platform: platform(), architecture: process.arch,
-      development_only: true, runtime_version: null, status: "development",
-    };
-  }
   if (backend === "oci") {
     let helper = "", version = "", system: unknown = null, error = "";
     try {
-      if (platform() === "win32") {
+      if (windows) {
         helper = `${installationScopedRuntimeName()}:/usr/libexec/1helm-oci-runtime`;
         // Cold WSL start after setup routinely exceeds 15–30s. Wake first, then use long floors.
         try {
-          spawnSync(resolveWslCli(), ["--distribution", installationScopedRuntimeName(), "--user", "root", "--exec", "/bin/true"], {
-            encoding: "buffer", timeout: 180_000, windowsHide: true,
-          });
+          const wsl = await resolveWslCliAsync();
+          await spawnCollected(wsl, ["--distribution", installationScopedRuntimeName(), "--user", "root", "--exec", "/bin/true"], { timeoutMs: 180_000 });
         } catch { /* version/ready errors surface below */ }
-        const invocation = ociInvocation(["version"]);
-        const versionResult = spawnSync(invocation.command, invocation.args, { encoding: "buffer", timeout: 120_000, env: invocation.env, windowsHide: true });
-        const versionLines = versionResult.status === 0 ? windowsLines(versionResult.stdout as Buffer) : [];
+        const versionResult = await ociAsync(["version"], { timeoutMs: 120_000 });
+        const versionLines = versionResult.code === 0 ? windowsLines(versionResult.stdout) : [];
         version = (versionLines[0] || "").trim();
-        if (versionResult.status !== 0 && !version) {
-          error = windowsLines(Buffer.concat([
-            Buffer.isBuffer(versionResult.stderr) ? versionResult.stderr : Buffer.alloc(0),
-            Buffer.isBuffer(versionResult.stdout) ? versionResult.stdout : Buffer.alloc(0),
-          ])).join(" ") || `WSL OCI runtime version check failed (exit ${versionResult.status ?? "timeout"}).`;
+        if (versionResult.code !== 0 && !version) {
+          error = windowsLines(Buffer.concat([versionResult.stderr, versionResult.stdout])).join(" ")
+            || `WSL OCI runtime version check failed (exit ${versionResult.code}).`;
         }
-        const readyInvocation = ociInvocation(["ready"]);
-        const readyResult = spawnSync(readyInvocation.command, readyInvocation.args, { encoding: "buffer", timeout: 180_000, env: readyInvocation.env, windowsHide: true });
-        if (readyResult.status === 0) {
-          const readyText = windowsLines(readyResult.stdout as Buffer).join("\n").trim();
+        const readyResult = await ociAsync(["ready"], { timeoutMs: 180_000 });
+        if (readyResult.code === 0) {
+          const readyText = windowsLines(readyResult.stdout).join("\n").trim();
           try { system = JSON.parse(readyText || "{}"); }
           catch {
-            try { system = JSON.parse(Buffer.from(readyResult.stdout as Buffer).toString("utf8").replaceAll("\0", "").trim() || "{}"); }
-            catch { system = readyText || windowsLines(readyResult.stdout as Buffer); }
+            try { system = JSON.parse(readyResult.stdout.toString("utf8").replaceAll("\0", "").trim() || "{}"); }
+            catch { system = readyText || windowsLines(readyResult.stdout); }
           }
         } else {
-          const readyErr = windowsLines(Buffer.concat([
-            Buffer.isBuffer(readyResult.stderr) ? readyResult.stderr : Buffer.alloc(0),
-            Buffer.isBuffer(readyResult.stdout) ? readyResult.stdout : Buffer.alloc(0),
-          ])).join(" ") || `OCI runtime readiness check failed (exit ${readyResult.status ?? "timeout"}).`;
+          const readyErr = windowsLines(Buffer.concat([readyResult.stderr, readyResult.stdout])).join(" ")
+            || `OCI runtime readiness check failed (exit ${readyResult.code}).`;
           error = error ? `${error} ${readyErr}` : readyErr;
         }
       } else {
-        const versionInvocation = ociInvocation(["version"]);
-        helper = versionInvocation.command;
-        const versionResult = spawnSync(versionInvocation.command, versionInvocation.args, { encoding: "utf8", timeout: 15_000, env: versionInvocation.env });
-        version = versionResult.status === 0 ? String(versionResult.stdout || "").trim().split(/\r?\n/)[0] || "" : "";
-        const readyInvocation = ociInvocation(["ready"]);
-        const readyResult = spawnSync(readyInvocation.command, readyInvocation.args, { encoding: "utf8", timeout: 30_000, env: readyInvocation.env });
-        if (readyResult.status === 0) {
-          try { system = JSON.parse(String(readyResult.stdout || "")); } catch { system = String(readyResult.stdout || "").trim(); }
-        } else error = String(readyResult.stderr || readyResult.stdout || "OCI runtime readiness check failed.").trim();
+        const invocation = linuxOciInvocation(["version"]);
+        helper = invocation.command;
+        const versionResult = await ociAsync(["version"], { timeoutMs: 15_000 });
+        version = versionResult.code === 0 ? versionResult.stdout.toString("utf8").trim().split(/\r?\n/)[0] || "" : "";
+        const readyResult = await ociAsync(["ready"], { timeoutMs: 30_000 });
+        if (readyResult.code === 0) {
+          const readyText = readyResult.stdout.toString("utf8");
+          try { system = JSON.parse(readyText || "{}"); } catch { system = readyText.trim(); }
+        } else error = Buffer.concat([readyResult.stderr, readyResult.stdout]).toString("utf8").trim() || "OCI runtime readiness check failed.";
       }
     } catch (failure) { error = (failure as Error).message; }
     const supported = (linux || windows) && supportedArchitecture;
     const engineReady = Boolean(supported && helper && version === OCI_RUNTIME_VERSION && system && !error);
-    // While a prepare pass is running, avoid re-probing podman on every UI poll.
-    // Otherwise always trust the runtime helper's image-status, not a stale flag.
+    // During image preparation its explicit verification owns this state. At all
+    // other times the short-lived cache is refreshed from the runtime helper.
     let imageReady = false;
     if (engineReady && ociPrepareState.status !== "running") {
-      imageReady = ociChannelImageExistsSync();
+      imageReady = await ociChannelImageExists();
       if (imageReady && ociPrepareState.status !== "complete") {
         setOciPrepareState({
           status: "complete",
@@ -1840,34 +1966,47 @@ export function runtimeReadiness(): Record<string, unknown> {
       runtime_version: OCI_RUNTIME_VERSION, shared_runtime: windows ? installationScopedRuntimeName() : null,
       storage_authority: windows ? `\\\\wsl.localhost\\${installationScopedRuntimeName()}\\var\\lib\\1helm-oci-v1\\runtime\\oci` : ociHostStateRoot(),
       status: error ? "error" : !engineReady ? (system ? "running" : "missing") : imageReady ? "running" : "image_pending",
-      error: error
-        || (ociPrepareState.status === "failed" ? ociPrepareState.error : null),
+      error: error || (ociPrepareState.status === "failed" ? ociPrepareState.error : null),
     };
   }
+
   let cli = "";
-  try { cli = resolveContainerCli(); } catch { /* missing */ }
+  try { cli = await resolveContainerCliAsync(); } catch { /* missing */ }
   let system: unknown = null;
   let version: unknown = null;
   if (cli) {
-    const versionResult = spawnSync(cli, ["system", "version", "--format", "json"], { encoding: "utf8", timeout: 10_000 });
-    if (versionResult.status === 0) { try { version = JSON.parse(versionResult.stdout); } catch { version = versionResult.stdout.trim(); } }
-    const status = spawnSync(cli, ["system", "status", "--format", "json"], { encoding: "utf8", timeout: 10_000 });
-    if (status.status === 0) { try { system = JSON.parse(status.stdout); } catch { system = status.stdout.trim(); } }
+    try {
+      const versionResult = await spawnCollected(cli, ["system", "version", "--format", "json"], { timeoutMs: 10_000 });
+      if (versionResult.code === 0) {
+        const text = versionResult.stdout.toString("utf8");
+        try { version = JSON.parse(text); } catch { version = text.trim(); }
+      }
+      const status = await spawnCollected(cli, ["system", "status", "--format", "json"], { timeoutMs: 10_000 });
+      if (status.code === 0) {
+        const text = status.stdout.toString("utf8");
+        try { system = JSON.parse(text); } catch { system = text.trim(); }
+      }
+    } catch { /* stopped or unresponsive runtime */ }
   }
   const versions = Array.isArray(version) ? version : version ? [version] : [];
   const cliVersion = versions.find((entry) => entry && typeof entry === "object" && String((entry as Record<string, unknown>).appName || "") === "container") as Record<string, unknown> | undefined;
   const apiVersion = versions.find((entry) => entry && typeof entry === "object" && String((entry as Record<string, unknown>).appName || "") !== "container") as Record<string, unknown> | undefined;
   const systemStatus = system && typeof system === "object" ? String((system as Record<string, unknown>).status || "") : "";
   const apiVersionValue = String(apiVersion?.version || "");
-  // Apple 1.1.0 emits the CLI as a bare semantic version, but the API server
-  // as `container-apiserver version 1.1.0 (build: …)`. Match that exact pinned
-  // version token and reject a different semantic version in either shape.
+  // Apple emits the CLI as a bare semantic version but the API server as
+  // `container-apiserver version …`; accept only the exact pinned token.
   const exactApiVersion = apiVersionValue === APPLE_RUNTIME_VERSION
     || new RegExp(`^container-apiserver version ${APPLE_RUNTIME_VERSION.replaceAll(".", "\\.")}(?:\\s|$)`).test(apiVersionValue);
   const exactRuntime = String(cliVersion?.version || "") === APPLE_RUNTIME_VERSION
     && exactApiVersion
     && systemStatus === "running";
-  const macosVersion = darwin ? spawnSync("/usr/bin/sw_vers", ["-productVersion"], { encoding: "utf8" }).stdout?.trim() || "" : "";
+  let macosVersion = "";
+  if (darwin) {
+    try {
+      const result = await spawnCollected("/usr/bin/sw_vers", ["-productVersion"], { timeoutMs: 10_000 });
+      if (result.code === 0) macosVersion = result.stdout.toString("utf8").trim();
+    } catch { /* unsupported host */ }
+  }
   const supportedMac = darwin && arm64 && Number(macosVersion.split(".")[0] || 0) >= 26;
   const ready = Boolean(supportedMac && cli && exactRuntime);
   return {
@@ -1877,6 +2016,39 @@ export function runtimeReadiness(): Record<string, unknown> {
     engine_ready: ready, image_ready: ready, image: DEFAULT_CHANNEL_IMAGE, prepare: null,
     ready,
   };
+}
+
+/** Refresh in one shared asynchronous pass. Force bypasses only the TTL, never
+ * an already-running probe, so UI polling cannot create subprocess storms. */
+export function refreshRuntimeReadiness(force = false): Promise<Record<string, unknown>> {
+  const immediate = immediateRuntimeReadiness();
+  if (immediate) return Promise.resolve(immediate);
+  const key = runtimeReadinessKey();
+  if (!force && runtimeReadinessCache?.key === key && runtimeReadinessCache.expiresAt > Date.now()) {
+    return Promise.resolve({ ...runtimeReadinessCache.value });
+  }
+  if (runtimeReadinessPass) return runtimeReadinessPass;
+  const pass = probeRuntimeReadiness().then((value) => {
+    runtimeReadinessCache = { key, value, expiresAt: Date.now() + RUNTIME_READINESS_TTL_MS };
+    return { ...value };
+  });
+  runtimeReadinessPass = pass;
+  const clear = (): void => { if (runtimeReadinessPass === pass) runtimeReadinessPass = null; };
+  pass.then(clear, clear);
+  return pass;
+}
+
+/** Request-safe snapshot. A miss or expired value schedules one asynchronous
+ * refresh and returns immediately; no child process is started synchronously. */
+export function runtimeReadiness(): Record<string, unknown> {
+  const immediate = immediateRuntimeReadiness();
+  if (immediate) return immediate;
+  const key = runtimeReadinessKey();
+  const cached = runtimeReadinessCache?.key === key ? runtimeReadinessCache : null;
+  if (!cached || cached.expiresAt <= Date.now()) {
+    void refreshRuntimeReadiness().catch((error) => console.warn("Channel runtime readiness refresh failed:", (error as Error).message));
+  }
+  return cached ? { ...cached.value } : pendingRuntimeReadiness();
 }
 
 async function sha256File(path: string): Promise<string> {
@@ -1923,7 +2095,8 @@ export async function startAppleRuntime(): Promise<Record<string, unknown>> {
   const cli = resolveContainerCli();
   const started = await spawnCollected(cli, ["system", "start", "--enable-kernel-install"], { timeoutMs: 10 * 60_000 });
   if (started.code !== 0) throw new Error(started.stderr.toString("utf8").trim() || started.stdout.toString("utf8").trim() || "Apple container runtime did not start.");
-  const readiness = runtimeReadiness();
+  invalidateRuntimeReadiness();
+  const readiness = await refreshRuntimeReadiness(true);
   if (!readiness.ready) throw new Error("Apple container runtime started but did not pass its health check.");
   void reconcileChannelComputers().catch((error) => console.error("post-install channel computer reconcile failed:", (error as Error).message));
   return readiness;

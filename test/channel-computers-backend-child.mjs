@@ -39,6 +39,11 @@ try {
   assert.equal(provisioned.home_mount, "none");
   assert.equal(provisioned.observed_state, "running");
 
+  const callsBeforeReady = readFileSync(join(fakeState, "oci-calls.log"), "utf8").trim().split("\n").length;
+  await computers.ensureChannelComputerRunning(channelId, "single inspection regression");
+  const readyCalls = readFileSync(join(fakeState, "oci-calls.log"), "utf8").trim().split("\n").slice(callsBeforeReady).map((line) => JSON.parse(line));
+  assert.equal(readyCalls.filter((call) => call[0] === "inspect").length, 1, "an already-running OCI channel is inspected exactly once per readiness interaction");
+
   let result = await computers.runChannelCommand(channelId, "printf runtime-authority > result.txt; printf direct-file > files/direct.txt; nohup sh -c 'sleep 2; printf background > background.txt' >/dev/null 2>&1 &");
   assert.equal(result.exit_code, 0);
   assert.equal(readFileSync(join(authoritativeRoot, "workspace", "result.txt"), "utf8"), "runtime-authority");

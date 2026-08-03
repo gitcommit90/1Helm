@@ -430,6 +430,15 @@ try {
   }, "two independent resident lanes");
   await api(`/api/messages/${isolatedStopRoot}/stop`, { body: {} }, captain);
   await waitForAgentReply(keepRoot, captain, launch.agent.name);
+  // The visible answer can arrive while asynchronous post-turn memory indexing
+  // is still completing; wait for both durable lane states before asserting.
+  await waitFor(() => {
+    const stateDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
+    const states = stateDb.prepare("SELECT trigger_id,state FROM agent_turns WHERE trigger_id IN (?,?)").all(keepRoot, isolatedStopRoot);
+    stateDb.close();
+    return states.find((turn) => turn.trigger_id === keepRoot)?.state === "completed"
+      && states.find((turn) => turn.trigger_id === isolatedStopRoot)?.state === "stopped";
+  }, "independent resident lane finalization");
   const isolatedStopDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"));
   const laneStates = isolatedStopDb.prepare("SELECT trigger_id,state FROM agent_turns WHERE trigger_id IN (?,?)").all(keepRoot, isolatedStopRoot);
   isolatedStopDb.close();

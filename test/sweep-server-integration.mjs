@@ -70,8 +70,8 @@ test("server sweep seams stay scoped, human-only, Unicode-safe, and least-arsena
       db.run("UPDATE workspace SET setup_complete=1 WHERE id=1");
       const botId = db.run("INSERT INTO bots (name,provider_id,model,prompt,avatar,base_url,api_key,created) VALUES ('skipper',NULL,'','Workspace-wide chief of staff.','color:#4F6D7A','','',?)", db.now()).lastInsertRowid;
       const agents = await import('./src/server/agents.ts');
-      agents.ensureSkipperAgent(botId, Number(main.id));
-      const legacy = agents.provisionChannel({ name: 'legacy-research', purpose: 'Legacy resident migration fixture.', userId, templateSlug: 'research' });
+      await agents.ensureSkipperAgent(botId, Number(main.id));
+      const legacy = await agents.provisionChannel({ name: 'legacy-research', purpose: 'Legacy resident migration fixture.', userId, templateSlug: 'research' });
       for (const skill of db.q("SELECT id FROM skills WHERE status='active' AND slug<>'image-generation'")) {
         db.run("INSERT INTO agent_skills (agent_id,skill_id,provisioned_by,reason,permanent,created) " +
           "VALUES (?,?,NULL,'Part of the safe built-in resident arsenal.',1,?) " +
