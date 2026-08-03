@@ -34,24 +34,21 @@ const RELEASE_CACHE_MS = 10 * 60_000;
 // must name the current release: a stale fallback silently hands visitors an
 // older build from the download links.
 //
-// The digests cannot be known when the release commit is made - they are the
-// digests OF that commit's artifacts - so they are filled in at publish time
-// and the site is redeployed. Until then PENDING_DIGEST is deliberately not a
-// 64-character hex string, so latestLinuxRelease() rejects it and
-// /api/releases/linux/latest answers 503. That fails closed: an installer is
-// told no release is available rather than being handed a digest that will not
-// match what it downloads. The macOS download link still works, because it
-// resolves by asset name and needs no digest.
-const PENDING_DIGEST = "pending-release-digest";
+// The digests are the digests OF the release commit's own artifacts, so they
+// are filled in here once those artifacts exist and the site is redeployed.
+// Between the release commit and this one the placeholder is deliberately not
+// 64 hex characters, so latestLinuxRelease() rejects it and
+// /api/releases/linux/latest answers 503 - failing closed rather than handing
+// an installer a digest that cannot match what it downloads.
 const RELEASE_FALLBACK_TAG = "v0.0.39";
 const RELEASE_FALLBACK = {
   tag_name: RELEASE_FALLBACK_TAG,
   draft: false,
   prerelease: false,
   assets: [
-    ["1Helm-0.0.39-arm64.dmg", PENDING_DIGEST],
-    ["1Helm-0.0.39-mac-arm64.zip", PENDING_DIGEST],
-    ["1Helm-0.0.39-linux-node.tgz", PENDING_DIGEST],
+    ["1Helm-0.0.39-arm64.dmg", "de381468a61edc6b5c4d84525792be84f7575ba36777d35119f5878a4298fd0b"],
+    ["1Helm-0.0.39-mac-arm64.zip", "a35ba43a5136592977acfde4e7ba97d1399b4916ff0c90fd192e312a88414547"],
+    ["1Helm-0.0.39-linux-node.tgz", "ac54f11c153e89b8534417b4bfaa8aed22ceb5f0a4b10f164902483ae180b077"],
   ].map(([name, digest]) => ({
     name,
     digest: `sha256:${digest}`,
