@@ -274,6 +274,12 @@ test("installer assets are explicit and syntax-valid", () => {
   const updater = readFileSync(`${root}/site/public/update-host.sh`, "utf8");
   const linuxUnits = readFileSync(`${root}/site/public/install-linux-units.sh`, "utf8");
   const releaseApply = readFileSync(`${root}/site/public/apply-linux-release.sh`, "utf8");
+  // `install /dev/stdin DEST <<EOF` reopens fd 0 through /proc and fails with
+  // ENOENT when this script runs inside a systemd-run oneshot - the exact path a
+  // host UPDATE takes, while fresh installs run it from an operator shell where
+  // it works. That is why the first live update failed and every fresh install
+  // passed. Writing unit files must not depend on reopening stdin.
+  assert.doesNotMatch(linuxUnits, /^\s*install\b[^\n]*\/dev\/stdin/m, "unit files must not be installed by reopening /dev/stdin (breaks under systemd-run)");
   assert.match(updater, /browser_download_url/);
   assert.match(linuxUnits, /Environment=HELM_APP_ROOT=\$INSTALL_ROOT\/current/, "Linux explicitly exposes the active packaged root to runtime resource resolvers");
   assert.match(updater, /\^sha256:\[a-f0-9\]\{64\}\$/, "the Linux updater requires GitHub's exact SHA-256 asset digest");

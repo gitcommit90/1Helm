@@ -33,6 +33,18 @@ fi
   || { echo "The verified 1Helm release is missing its host lifecycle scripts." >&2; exit 1; }
 id "$SERVICE_USER" >/dev/null 2>&1 || { echo "The 1Helm service account does not exist." >&2; exit 1; }
 
+# `install /dev/stdin DEST <<EOF` reopens fd 0 via /proc, which fails with
+# "No such file or directory" when this script runs under systemd-run (the path
+# a host UPDATE takes, as opposed to a fresh install run from an operator
+# shell). Capture the heredoc to a real temp file first, then install that.
+install_stdin() {
+  local mode="$1" dest="$2" tmp
+  tmp="$(mktemp)"
+  cat >"$tmp"
+  install -o root -g root -m "$mode" "$tmp" "$dest"
+  rm -f "$tmp"
+}
+
 install -o root -g root -m 0755 "$RELEASE_ROOT/site/public/update-host.sh" "$INSTALL_ROOT/update-host.sh"
 install -o root -g root -m 0755 "$RELEASE_ROOT/site/public/uninstall-host.sh" "$INSTALL_ROOT/uninstall-host.sh"
 
@@ -40,7 +52,7 @@ install -o root -g root -m 0755 "$RELEASE_ROOT/site/public/uninstall-host.sh" "$
 # Podman's host-only scratch roots present both now and after every reboot so a
 # completely fresh machine never fails mount-namespace setup before 1Helm can
 # invoke its root-owned runtime helper.
-install -m 0644 /dev/stdin /etc/tmpfiles.d/1helm-oci.conf <<'EOF'
+install_stdin 0644 /etc/tmpfiles.d/1helm-oci.conf <<'EOF'
 d /run/1helm-oci 0755 root root -
 d /run/1helm-oci/tmp 1777 root root -
 d /run/containers 0755 root root -
@@ -50,7 +62,7 @@ d /run/netns 0755 root root -
 EOF
 systemd-tmpfiles --create /etc/tmpfiles.d/1helm-oci.conf
 
-install -m 0644 /dev/stdin /etc/systemd/system/1helm.service <<EOF
+install_stdin 0644 /etc/systemd/system/1helm.service <<EOF
 [Unit]
 Description=1Helm durable agent workspace
 After=network-online.target
@@ -93,7 +105,7 @@ Delegate=yes
 WantedBy=multi-user.target
 EOF
 
-install -m 0644 /dev/stdin /etc/systemd/system/1helm-update.service <<EOF
+install_stdin 0644 /etc/systemd/system/1helm-update.service <<EOF
 [Unit]
 Description=Install a verified 1Helm host update
 After=network-online.target
@@ -112,7 +124,7 @@ ProtectSystem=strict
 ReadWritePaths=$INSTALL_ROOT $STATE_ROOT /run/1helm-oci /usr/libexec /usr/lib/1helm-oci /etc/1helm /etc/default /etc/systemd/system /etc/sudoers.d /etc/subuid /etc/subgid
 EOF
 
-install -m 0644 /dev/stdin /etc/systemd/system/1helm-update.path <<EOF
+install_stdin 0644 /etc/systemd/system/1helm-update.path <<EOF
 [Unit]
 Description=Watch for Captain-authorized 1Helm host updates
 
