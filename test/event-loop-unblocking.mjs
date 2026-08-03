@@ -76,10 +76,16 @@ setTimeout(() => {
   const readinessTicks = setInterval(() => { ticks += 1; }, 10);
   const refreshed = await computers.refreshRuntimeReadiness();
   clearInterval(readinessTicks);
-  assert.equal(refreshed.ready, true);
+  // The OCI backend only reports ready on the platforms that can run it
+  // (linux/win32). On macOS the same call correctly returns ready:false, so
+  // assert the platform-appropriate value. The point of THIS test - that the
+  // slow refresh ran off the event loop - holds either way and is checked by
+  // the tick count below, which is what actually regressed.
+  const ociSupportedHere = ["linux", "win32"].includes(process.platform) && ["arm64", "x64"].includes(process.arch);
+  assert.equal(refreshed.ready, ociSupportedHere, `refreshRuntimeReadiness ready mismatch on ${process.platform}/${process.arch}`);
   assert(ticks >= 40, `the event loop ticked only ${ticks} times during slow runtime probes`);
   const callsBeforeCacheRead = (await readFile(ociCalls, "utf8")).trim().split("\n").length;
-  assert.equal(computers.runtimeReadiness().ready, true);
+  assert.equal(computers.runtimeReadiness().ready, ociSupportedHere);
   await new Promise((resolveWait) => setTimeout(resolveWait, 25));
   const callsAfterCacheRead = (await readFile(ociCalls, "utf8")).trim().split("\n").length;
   assert.equal(callsAfterCacheRead, callsBeforeCacheRead, "a fresh readiness cache must not launch another probe");
