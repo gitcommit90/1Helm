@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.41] - 2026-08-03
+
+### Fixed
+
+- Linux host updates failed and rolled back. `install-linux-units.sh` wrote the
+  systemd unit files with `install /dev/stdin`, which works from an operator
+  shell (every fresh install) but fails with ENOENT under `systemd-run` — the
+  only context the update path uses — so the transaction aborted and correctly
+  restored the prior release. Each unit file is now written via a temp file. A
+  fresh install was never affected; the fix is required for updates to succeed.
+
+
 ## [0.0.40] - 2026-08-03
 
 ### Fixed
@@ -1131,6 +1143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Application Support, and isolated Apple container machines.
 
 [Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.36...HEAD
+[0.0.41]: https://github.com/gitcommit90/1Helm/compare/v0.0.40...v0.0.41
 [0.0.40]: https://github.com/gitcommit90/1Helm/compare/v0.0.39...v0.0.40
 [0.0.39]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...v0.0.39
 [0.0.38]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...v0.0.38
