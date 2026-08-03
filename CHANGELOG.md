@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.40] - 2026-08-03
+
+### Fixed
+
+- Clicking a channel or a thread no longer takes seconds. The server made
+  subprocess calls synchronously on the only thread that serves HTTP, so every
+  request queued behind them. Sampling a trivial endpoint that normally answers
+  in 1 ms recorded stalls of 2.9 s, 3.2 s and 21.2 s while the interface was in
+  use — the click was never slow, it was waiting in line.
+  - Durable memory shelled out to its Python bridge with `execFileSync`,
+    blocking the event loop for the whole call: a 20-second timeout for most
+    operations, 120 seconds for transcript sync, and a 771 ms floor just to
+    import the embedding libraries. The 21.2 s stall was that timeout. It is now
+    asynchronous, along with the runtime probes it depends on, which turned out
+    to be reachable from the first memory operation on a request path rather
+    than only at setup.
+  - Runtime readiness ran a synchronous container-image check on request
+    handlers including `/api/computers`, costing 53–73 ms of blocked event loop
+    every time. Readiness is now cached with a short time-to-live and refreshed
+    out of band, with one shared refresh so concurrent requests cannot cause a
+    subprocess storm. Endpoints that act on readiness — setup completion and
+    runtime start or prepare — await a fresh check rather than trusting the
+    cache, and image preparation updates it directly so a stale result cannot
+    persist.
+  - A channel interaction inspected the same container twice in a row; the
+    redundant call is gone.
+
+  This was the same defect that froze the Windows interface before 0.0.39. That
+  release removed the boundary those calls crossed without removing the
+  blocking, so Linux and macOS kept paying it.
+
+
 ## [0.0.39] - 2026-08-03
 
 ### Changed
@@ -1099,6 +1131,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Application Support, and isolated Apple container machines.
 
 [Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.36...HEAD
+[0.0.40]: https://github.com/gitcommit90/1Helm/compare/v0.0.39...v0.0.40
 [0.0.39]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...v0.0.39
 [0.0.38]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...v0.0.38
 [0.0.37]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...v0.0.37

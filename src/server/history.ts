@@ -18,7 +18,7 @@ function ownedChannel(agent: Row, channelId: number): boolean {
 /** Incrementally index authoritative raw messages in the owning agent's
  * Mnemosyne database. Re-index edited rows by body hash; deleted rows can no
  * longer be resolved and are never returned by the read path. */
-export function syncChannelTranscript(agent: Row, channelId: number, maxMessages = MAX_SYNC_MESSAGES): number {
+export async function syncChannelTranscript(agent: Row, channelId: number, maxMessages = MAX_SYNC_MESSAGES): Promise<number> {
   if (!ownedChannel(agent, channelId)) return 0;
   let indexed = 0;
   while (indexed < maxMessages) {
@@ -36,7 +36,7 @@ export function syncChannelTranscript(agent: Row, channelId: number, maxMessages
       ORDER BY m.id LIMIT ?`, agent.id, channelId, Math.min(MAX_SYNC_BATCH, maxMessages - indexed));
     const usable = pending.filter((row) => eligibleBody(row.body));
     if (!usable.length) break;
-    const synced = syncTranscriptForAgent(agent, usable.map((row) => ({
+    const synced = await syncTranscriptForAgent(agent, usable.map((row) => ({
       message_id: Number(row.id),
       content: String(row.body),
       previous_memory_id: row.previous_memory_id ? String(row.previous_memory_id) : undefined,
@@ -104,20 +104,20 @@ function dateBound(value: unknown, end = false): number | null {
   return parsed;
 }
 
-export function searchChannelHistory(agent: Row, channelId: number, options: {
+export async function searchChannelHistory(agent: Row, channelId: number, options: {
   query?: unknown; mode?: unknown; limit?: unknown; from?: unknown; to?: unknown;
-}): ChannelHistorySearch {
+}): Promise<ChannelHistorySearch> {
   if (!ownedChannel(agent, channelId)) throw new Error("Channel history belongs only to its resident agent.");
   const query = String(options.query || "").trim().slice(0, 4_000);
   const mode = String(options.mode || "semantic") === "exact" ? "exact" : "semantic";
   const limit = Math.max(1, Math.min(30, Number(options.limit) || 10));
   const from = dateBound(options.from);
   const to = dateBound(options.to, true);
-  const indexed = syncChannelTranscript(agent, channelId);
+  const indexed = await syncChannelTranscript(agent, channelId);
   let rows: Row[] = [];
   let retrieval: ChannelHistorySearch["retrieval"] = query ? mode : "recent";
   if (query && mode === "semantic") {
-    const hits = recallTranscriptForAgent(agent, query, Math.min(100, Math.max(24, limit * 5)));
+    const hits = await recallTranscriptForAgent(agent, query, Math.min(100, Math.max(24, limit * 5)));
     const ids = hits.map((hit) => Number(hit.metadata?.message_id || 0)).filter(Boolean);
     const rank = new Map(ids.map((id, index) => [id, index]));
     if (ids.length) {

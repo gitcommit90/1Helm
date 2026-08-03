@@ -181,7 +181,7 @@ export async function completeSetup(opts: {
   const channelId = ensureMainChannel(opts.userId);
   const skipperId = await ensureSkipper(Number(provider.id), model, opts.terminalsEnabled);
   addBotToChannel(skipperId, channelId);
-  ensureSkipperAgent(skipperId, channelId);
+  await ensureSkipperAgent(skipperId, channelId);
   ensureChannelWorkspace(channelId);
 
   // Canned welcome — do not wait on an LLM for the first impression.

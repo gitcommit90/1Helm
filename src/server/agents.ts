@@ -170,7 +170,7 @@ export function renameChannel(channelId: number, nameInput: string): void {
   ensureChannelWorkspace(channelId);
 }
 
-export function provisionChannel(opts: { name: string; purpose: string; userId: number; templateSlug?: string }): ProvisionedChannel {
+export async function provisionChannel(opts: { name: string; purpose: string; userId: number; templateSlug?: string }): Promise<ProvisionedChannel> {
   const name = normalizeChannelName(opts.name);
   const purpose = opts.purpose.trim();
   if (!name) throw new Error("Invalid channel name.");
@@ -247,7 +247,7 @@ export function provisionChannel(opts: { name: string; purpose: string; userId: 
       return { channelId, agentId, botId, announcementId, created: true };
     });
     const createdAgent = agentForChannel(result.channelId);
-    if (createdAgent) ensureAgentMemory(createdAgent);
+    if (createdAgent) await ensureAgentMemory(createdAgent);
     return result;
   } catch (error) {
     if (channelId) rmSync(channelRoot(channelId), { recursive: true, force: true });
@@ -257,7 +257,7 @@ export function provisionChannel(opts: { name: string; purpose: string; userId: 
 
 /** Product path: a channel is ready only after its computer is provisioned. */
 export async function provisionChannelWithComputer(opts: { name: string; purpose: string; userId: number; templateSlug?: string }): Promise<ProvisionedChannelComputer> {
-  const provisioned = provisionChannel(opts);
+  const provisioned = await provisionChannel(opts);
   try {
     await provisionChannelComputer(provisioned.channelId);
     run("UPDATE channel_activity SET summary=?,status='complete',updated=? WHERE channel_id=? AND kind='lifecycle' AND status='running'", `Provisioned the resident and verified its private channel computer.`, now(), provisioned.channelId);
@@ -271,7 +271,7 @@ export async function provisionChannelWithComputer(opts: { name: string; purpose
   }
 }
 
-export function ensureSkipperAgent(botId: number, mainChannelId: number): number {
+export async function ensureSkipperAgent(botId: number, mainChannelId: number): Promise<number> {
   const bot = q1("SELECT * FROM bots WHERE id=?", botId);
   if (!bot) throw new Error("Skipper runtime not found.");
   let agent = q1("SELECT * FROM agents WHERE kind='skipper' AND status<>'deleted' LIMIT 1");
@@ -291,7 +291,7 @@ export function ensureSkipperAgent(botId: number, mainChannelId: number): number
   // capability (for example Image Generation) is still locked.
   for (const skill of listSkills()) provisionSkill(Number(agent.id), String(skill.slug), Number(agent.id), "Skipper has the full workspace skill arsenal.");
   ensureChannelWorkspace(mainChannelId);
-  ensureAgentMemory({ ...agent, channel_id: null });
+  await ensureAgentMemory({ ...agent, channel_id: null });
   return Number(agent.id);
 }
 
@@ -410,7 +410,7 @@ export function refreshThreadSummary(rootMessageId: number): void {
   run("INSERT INTO thread_summaries (thread_id, content, created) VALUES (?,?,?)", threadId, summary, now());
 }
 
-export function recordMemory(opts: { channelId: number; threadId?: number | null; kind: string; content: string; sourceMessageId?: number | null; authorType: string; scope?: string }): number {
+export async function recordMemory(opts: { channelId: number; threadId?: number | null; kind: string; content: string; sourceMessageId?: number | null; authorType: string; scope?: string }): Promise<number> {
   const kind = MEMORY_KINDS.has(opts.kind) ? opts.kind : "fact";
   const content = opts.content.trim().slice(0, 10_000);
   if (!content) throw new Error("Memory content is required.");
@@ -423,7 +423,7 @@ export function recordMemory(opts: { channelId: number; threadId?: number | null
   ).lastInsertRowid;
   run("INSERT INTO channel_activity (channel_id, thread_id, kind, summary, actor_type, created) VALUES (?,?,'memory',?,?,?)", opts.channelId, opts.threadId ?? null, `Recorded ${kind}: ${content.slice(0, 180)}`, author, now());
   const owner = agentForChannel(opts.channelId);
-  if (owner) rememberForAgent(owner, content, {
+  if (owner) await rememberForAgent(owner, content, {
     source: opts.sourceMessageId ? `1helm:message:${opts.sourceMessageId}` : `1helm:memory:${id}`,
     importance: kind === "decision" || kind === "preference" ? 0.9 : 0.75,
     metadata: { canonical_memory_id: id, kind, thread_id: opts.threadId ?? null, scope, channel_id: opts.channelId },

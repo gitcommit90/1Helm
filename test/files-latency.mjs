@@ -30,7 +30,7 @@ test("Files directory reads stay responsive while an explicit VM refresh is slow
   const computers = await import("../src/server/channel-computers.ts");
   const userId = db.run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('captain','x','Captain',1,?)", Date.now()).lastInsertRowid;
   db.run("INSERT INTO providers (name,base_url,api_key,kind,created) VALUES ('test','http://127.0.0.1','x','openai',?)", Date.now());
-  const provisioned = agents.provisionChannel({ name: "latency", purpose: "Prove cached Files navigation.", userId });
+  const provisioned = await agents.provisionChannel({ name: "latency", purpose: "Prove cached Files navigation.", userId });
   const computer = await computers.provisionChannelComputer(provisioned.channelId);
   agents.createWorkspaceFile(provisioned.channelId, "", "cached.txt", "cached");
   await computers.ensureChannelComputerRunning(provisioned.channelId, "latency fixture");

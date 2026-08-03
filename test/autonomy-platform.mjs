@@ -160,7 +160,7 @@ test("runtime injects the essential resident operating playbooks and keeps the r
   assert(tools.includes("search_channel_history") && tools.includes("read_channel_session"));
 });
 
-test("Cowork contracts survive follow-ups and reject only newly-created incompatible files", () => {
+test("Cowork contracts survive follow-ups and reject only newly-created incompatible files", async () => {
   seed();
   const channelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created) VALUES ('cowork-contract','cowork-contract','channel','','','active',?)", now()).lastInsertRowid;
   agents.ensureChannelWorkspace(channelId);
@@ -173,7 +173,7 @@ test("Cowork contracts survive follow-ups and reject only newly-created incompat
   run("INSERT INTO threads (root_message_id,channel_id,status,title,summary,opened_at,updated_at) VALUES (?,?,'open','','',?,?)", rootId, channelId, now(), now());
   const followupId = run("INSERT INTO messages (channel_id,parent_id,user_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, ownerId, "fix the layout", now()).lastInsertRowid;
   const runtimeAgent = q1("SELECT a.*,ac.channel_id,p.purpose,p.instructions FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id LEFT JOIN agent_profiles p ON p.agent_id=a.id WHERE a.id=?", agentId);
-  const context = buildContext(q1("SELECT * FROM bots WHERE id=?", botId), runtimeAgent, channelId, followupId, rootId, false, false);
+  const context = await buildContext(q1("SELECT * FROM bots WHERE id=?", botId), runtimeAgent, channelId, followupId, rootId, false, false);
   assert.match(context.find((message) => message.content.includes("<cowork-format-contract>"))?.content || "", /Docs[\s\S]*Markdown[\s\S]*\.md/i, "a follow-up re-derives the root Cowork contract without transient client context");
 
   agents.createWorkspaceFile(channelId, "docs", "existing.html", "<p>keep me</p>");
@@ -211,7 +211,7 @@ test("retained OCI channel metadata can initialize without synchronously touchin
   assert.equal(q1("SELECT root_ref FROM channel_workspaces WHERE channel_id=?", channelId).root_ref, `channels/${channelId}`);
 });
 
-test("resident raw transcript search is semantic, exact, readable, and channel-isolated", () => {
+test("resident raw transcript search is semantic, exact, readable, and channel-isolated", async () => {
   const ownerId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('history-owner','x','History Owner',1,?)", now()).lastInsertRowid;
   const channelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created_by,created) VALUES ('history-home','history-home','channel','','Recall prior sessions','active',?,?)", ownerId, now()).lastInsertRowid;
   const otherChannelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created_by,created) VALUES ('history-other','history-other','channel','','Private other history','active',?,?)", ownerId, now()).lastInsertRowid;
@@ -224,20 +224,20 @@ test("resident raw transcript search is semantic, exact, readable, and channel-i
   run("INSERT INTO messages (channel_id,parent_id,bot_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, botId, fullRawReply, now() - 5_000);
   run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", otherChannelId, ownerId, "secret-other-channel-phrase", now());
   const agent = { id: agentId, bot_id: botId, kind: "channel", channel_id: channelId, name: "history-agent" };
-  const exact = history.searchChannelHistory(agent, channelId, { query: "lighthouse", mode: "exact" });
+  const exact = await history.searchChannelHistory(agent, channelId, { query: "lighthouse", mode: "exact" });
   assert.equal(exact.results.length, 2);
   assert(exact.results.every((entry) => entry.thread_root_id === rootId));
-  const semantic = history.searchChannelHistory(agent, channelId, { query: "copper lighthouse", mode: "semantic" });
+  const semantic = await history.searchChannelHistory(agent, channelId, { query: "copper lighthouse", mode: "semantic" });
   assert(semantic.results.some((entry) => entry.message_id === rootId));
   assert([0, 2].includes(Number(q1("SELECT COUNT(*) n FROM transcript_memory_index WHERE agent_id=?", agentId).n)), "the optional semantic runtime indexes both messages when available and the exact/keyword fallback remains usable when absent");
   const session = history.readChannelThread(agent, channelId, rootId);
   assert.equal(session.thread_id, threadId);
   assert.equal(session.messages.length, 2);
   assert.equal(session.messages[1].text, fullRawReply, "full-session hydration never truncates the authoritative raw message body");
-  assert.throws(() => history.searchChannelHistory(agent, otherChannelId, { query: "secret" }), /belongs only to its resident/i);
+  await assert.rejects(history.searchChannelHistory(agent, otherChannelId, { query: "secret" }), /belongs only to its resident/i);
 });
 
-test("model transcript keeps human display names out of user content", () => {
+test("model transcript keeps human display names out of user content", async () => {
   const userId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('query-owner','x','Joseph Yaksich',1,?)", now()).lastInsertRowid;
   const channelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created_by,created) VALUES ('clean-query','clean-query','channel','','Research','active',?,?)", userId, now()).lastInsertRowid;
   const botId = run("INSERT INTO bots (name,model,prompt,created) VALUES ('clean-agent','mock','Resident.',?)", now()).lastInsertRowid;
@@ -245,7 +245,7 @@ test("model transcript keeps human display names out of user content", () => {
   run("INSERT INTO agent_channels (agent_id,channel_id,bound_at) VALUES (?,?,?)", agentId, channelId, now());
   run("INSERT INTO agent_profiles (agent_id,purpose,instructions,updated) VALUES (?,'Research','Resident.',?)", agentId, now());
   const rootId = run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", channelId, userId, "@clean-agent whats the latest news on that sinkhole situation in weho", now()).lastInsertRowid;
-  const messages = buildContext(q1("SELECT * FROM bots WHERE id=?", botId), q1("SELECT a.*,ac.channel_id,p.purpose,p.instructions FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id LEFT JOIN agent_profiles p ON p.agent_id=a.id WHERE a.id=?", agentId), channelId, rootId, rootId, false, false);
+  const messages = await buildContext(q1("SELECT * FROM bots WHERE id=?", botId), q1("SELECT a.*,ac.channel_id,p.purpose,p.instructions FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id LEFT JOIN agent_profiles p ON p.agent_id=a.id WHERE a.id=?", agentId), channelId, rootId, rootId, false, false);
   const user = messages.findLast((message) => message.role === "user");
   assert.equal(user.content, "whats the latest news on that sinkhole situation in weho");
   assert.doesNotMatch(user.content, /Joseph Yaksich/);

@@ -103,6 +103,7 @@ import {
   channelComputerPrepareStatus,
   channelComputerView,
   runtimeReadiness,
+  refreshRuntimeReadiness,
   refreshChannelWorkspaceMirror,
   prepareAppleRuntimeInstaller,
   startAppleRuntime,
@@ -1055,7 +1056,7 @@ const server = createServer(async (req, res) => {
     }
     if (p === "/api/improvements/run" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
-      return json(res, 200, { improved: runImprovementPass() });
+      return json(res, 200, { improved: await runImprovementPass() });
     }
     if (p === "/api/audit/verify" && m === "GET") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
@@ -1205,7 +1206,7 @@ const server = createServer(async (req, res) => {
     if (p === "/api/setup/complete" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Admin only" });
       if (workspaceView().setup_complete) return json(res, 409, { error: "Setup already completed." });
-      const runtime = runtimeReadiness();
+      const runtime = await refreshRuntimeReadiness(true);
       if (!runtime.ready) return json(res, 409, { error: runtime.backend === "apple"
         ? "Approve and finish the verified Apple channel-computer runtime before creating this workspace."
         : platform() === "win32"
@@ -1409,7 +1410,7 @@ const server = createServer(async (req, res) => {
         const rootId = b.threadRootId ? Number(b.threadRootId) : null;
         const threadId = rootId ? threadIdForRoot(rootId, channelId) : null;
         try {
-          const id = recordMemory({ channelId, threadId, kind: String(b.kind || "fact"), content: String(b.content || ""), authorType: "human", scope: String(b.scope || "channel") });
+          const id = await recordMemory({ channelId, threadId, kind: String(b.kind || "fact"), content: String(b.content || ""), authorType: "human", scope: String(b.scope || "channel") });
           return json(res, 201, { memory: q1("SELECT * FROM memory_items WHERE id=?", id) });
         } catch (error) { return json(res, 400, { error: (error as Error).message }); }
       }
@@ -2046,7 +2047,7 @@ const server = createServer(async (req, res) => {
     }
     if (p === "/api/channel-computers/runtime/start" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
-      const runtime = runtimeReadiness();
+      const runtime = await refreshRuntimeReadiness(true);
       if (runtime.backend !== "apple") {
         if (!runtime.engine_ready) {
           const detail = String(runtime.error || "").trim();
@@ -2058,14 +2059,14 @@ const server = createServer(async (req, res) => {
         }
         // OCI hosts prepare the shared channel image once so first channel create
         // is a clone/start, not a cold apt image build.
-        if (!runtime.image_ready) beginOciChannelComputerPrepare();
+        if (!runtime.image_ready) await beginOciChannelComputerPrepare();
         return json(res, 200, { ok: true, runtime: runtimeReadiness(), prepare: channelComputerPrepareStatus() });
       }
       return json(res, 200, { ok: true, runtime: await startAppleRuntime() });
     }
     if (p === "/api/channel-computers/runtime/prepare" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
-      const runtime = runtimeReadiness();
+      const runtime = await refreshRuntimeReadiness(true);
       if (runtime.backend !== "oci") return json(res, 409, { error: "Image preparation is only required for the OCI channel-computer backend." });
       if (!runtime.engine_ready) {
         const detail = String(runtime.error || "").trim();
@@ -2075,7 +2076,7 @@ const server = createServer(async (req, res) => {
             : "The shared WSL OCI runtime is not ready. Finish the Windows shared-runtime setup prompt (reboot if Windows required it), then retry.")
           : "The OCI runtime is not ready; rerun the verified 1Helm Linux host installer first." });
       }
-      const prepare = beginOciChannelComputerPrepare();
+      const prepare = await beginOciChannelComputerPrepare();
       return json(res, 200, { ok: true, prepare, runtime: runtimeReadiness() });
     }
     if (p === "/api/channel-computers/runtime/prepare" && m === "GET") {
