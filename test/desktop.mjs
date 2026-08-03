@@ -115,12 +115,12 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(bootstrap, /ensureChannelWorkspace\(Number\(channel\.id\), \{ initializeRuntimeStorage: false \}\)/, "retained OCI directories cannot synchronously wake WSL before the HTTP control plane is ready");
   assert.match(server, /\["native-macos", "native-windows"\]\.includes\(update\.mode\)/, "both packaged host updaters quiesce the local server before replacement");
   assert.match(nativeUpdater, /update\.electronjs\.org\/gitcommit90\/1Helm\/\$\{feedPlatform\}/);
-  assert.match(nativeUpdater, /win32-x64/, "Windows checks and installs on its host through the native updater");
-  assert.match(source, /handleSquirrelEvent/);
-  assert.match(source, /setAppUserModelId\("com\.squirrel\.1Helm\.1Helm"\)/, "Windows uses Squirrel's stable taskbar identity");
+  assert.match(nativeUpdater, /const feedPlatform = "darwin-arm64"/, "only the Apple Silicon host has a native Electron update feed");
+  assert.doesNotMatch(nativeUpdater, /win32/, "Windows has no native Electron updater: it updates through the Linux systemd updater inside WSL 2");
+  assert.doesNotMatch(source, /squirrel/i, "no Squirrel install/update/uninstall lane survives in the desktop shell");
   assert.match(source, /DATA_NAMESPACE = "1Helm-OCI-v1"/, "the clean-slate build uses a fresh durable application-data namespace");
-  assert.match(source, /SERVER_READY_TIMEOUT_MS = process\.platform === "win32" \? 3 \* 60_000 : 30_000/, "Windows gives a bounded cold WSL host enough time without weakening other desktop startup budgets");
-  assert.match(source, /windows-removal\.cjs/, "Windows uninstall invokes ownership-checked shared-runtime cleanup before removing shortcuts");
+  assert.match(source, /SERVER_READY_TIMEOUT_MS = process\.platform === "win32" \? 3 \* 60_000 : 30_000/, "a cold WSL host gets a bounded startup budget without weakening other desktop startup budgets");
+  assert.doesNotMatch(source, /windows-removal/, "the retired Windows uninstall hook is gone; removal is the site-served uninstall.ps1");
   const onboardingClient = await readFile(join(root, "src", "client", "onboarding.ts"), "utf8");
   const clientApi = await readFile(join(root, "src", "client", "api.ts"), "utf8");
   const publicIndex = await readFile(join(root, "public", "index.html"), "utf8");
@@ -144,86 +144,16 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(channelComputers, /windowsSystemAccount\(\)[\s\S]*cannot use WSL while running as Windows Local System/, "WSL fails with an actionable host-identity error before invoking an unsupported SYSTEM session");
   assert.match(embeddedTerminal, /hostPlatform === "win32"[\s\S]*ComSpec[\s\S]*cmd\.exe[\s\S]*\["\/d", "\/s", "\/c", command\]/, "Windows host commands and #main Terminal use the native cmd shell contract");
   assert.match(embeddedTerminal, /Native terminal shell could not start/, "a terminal spawn failure returns an HTTP error instead of crashing the server");
-  const windowsPackager = await readFile(join(root, "scripts", "package-windows.cjs"), "utf8");
   const macPackager = await readFile(join(root, "scripts", "package-mac-dmg.cjs"), "utf8");
-  const windowsRemoval = await readFile(join(root, "scripts", "windows-removal.cjs"), "utf8");
-  const windowsRuntime = await readFile(join(root, "scripts", "install-wsl-runtime.ps1"), "utf8");
-  const windowsRuntimeStatusTest = await readFile(join(root, "test", "windows-wsl-status.ps1"), "utf8");
-  assert.match(windowsPackager, /HELM_REQUIRE_WINDOWS_SIGNATURE/);
-  assert.match(windowsPackager, /require\("png-to-ico"\)\.default/, "Windows packaging uses the module's CommonJS default export");
-  assert.match(windowsPackager, /1Helm-\$\{VERSION\}-windows-x64-setup\.exe/);
-  assert.match(windowsPackager, /win32-x64/);
-  assert.match(windowsPackager, /path\.join\(DIST, "RELEASES"\)/, "the GitHub asset keeps Squirrel's required literal RELEASES name");
-  assert.match(windowsPackager, /path\.join\(DIST, path\.basename\(nupkg\)\)/, "the uploaded package keeps the exact basename referenced by RELEASES");
-  assert.match(windowsPackager, /signPackagedExecutables\(appDir\)/, "release signing covers nested Windows executables before packaging");
-  assert.match(windowsPackager, /cloudflared-windows-amd64\.exe/, "Windows packaging ships the Cloudflare tunnel connector");
-  assert.match(windowsPackager, /resources.*cloudflared\.exe|cloudflared\.exe.*resources/, "cloudflared.exe is placed next to the packaged Electron resources root");
-  assert.match(windowsPackager, /IGNORE_CLIENT_BUILD_MODULES/, "Windows packaging omits client source already compiled into the browser bundle");
-  assert.match(windowsPackager, /IGNORE_INSTRUCTION_FILES/, "Windows packaging omits dependency maintainer instructions");
-  assert.match(windowsPackager, /\/AGENTS\\\.md\$/, "Windows packages never include dependency AGENTS.md files");
-  assert.match(windowsPackager, /fs\.mkdtempSync\(path\.join\(path\.parse\(ROOT\)\.root, "1hw-"\)\)/, "the packaged app and Squirrel staging tree share a drive-root scratch path compatible with legacy Windows path handling");
-  for (const [source, requiredPaths] of [
-    [windowsPackager, ["/scripts", "/scripts/1helm-oci-runtime", "/scripts/mnemosyne-bridge.py", "/scripts/install-wsl-runtime.ps1", "/scripts/windows-removal.cjs", "/deploy/1helm-oci-runtime-v1.conf", "/container/Containerfile.oci"]],
-    [macPackager, ["/scripts", "/scripts/mnemosyne-bridge.py"]],
-  ]) {
-    const literal = source.match(/const IGNORE_NON_RUNTIME_ROOTS\s*=\s*(\/\^[^;]+\/);/)?.[1];
-    assert.ok(literal, "desktop packager exposes a testable runtime-root filter");
-    const filter = Function(`"use strict"; return (${literal})`)();
-    for (const requiredPath of requiredPaths) assert.equal(filter.test(requiredPath), false, `${requiredPath} survives desktop packaging`);
-    assert.equal(filter.test("/scripts/release-only-helper.cjs"), true, "non-runtime release helpers stay outside the desktop app");
-    assert.equal(filter.test("/test"), true, "tests stay outside the desktop app");
+  const macFilterLiteral = macPackager.match(/const IGNORE_NON_RUNTIME_ROOTS\s*=\s*(\/\^[^;]+\/);/)?.[1];
+  assert.ok(macFilterLiteral, "the desktop packager exposes a testable runtime-root filter");
+  const macFilter = Function(`"use strict"; return (${macFilterLiteral})`)();
+  for (const requiredPath of ["/scripts", "/scripts/mnemosyne-bridge.py"]) {
+    assert.equal(macFilter.test(requiredPath), false, `${requiredPath} survives desktop packaging`);
   }
-  assert.match(windowsRemoval, /installation_id/);
-  assert.match(windowsRemoval, /ctrl-pane\.db/, "Windows removal reads the real durable 1Helm database");
-  assert.doesNotMatch(windowsRemoval, /helm\.sqlite/);
-  assert.match(windowsRemoval, /--unregister/);
-  assert.match(channelComputers, /"--exec", "\/usr\/libexec\/1helm-oci-runtime", \.\.\.args/, "Windows enters the installed OCI helper with direct argv instead of an intervening shell");
-  assert.match(windowsRemoval, /"--exec", "\/usr\/libexec\/1helm-oci-runtime"/, "Windows removal delegates ownership checks to the narrow installed OCI helper");
-  assert.match(windowsRuntime, /VirtualMachinePlatform/);
-  assert.match(windowsRuntime, /2\.7\.10\.0/);
-  // A pending Windows reboot must never surface to the Captain as a broken
-  // installation: -Wait can return while the elevated child is still enabling
-  // features, and probing for WSL in that window reports a false failure.
-  assert.match(windowsRuntime, /\$hostProcess\.WaitForExit\(\)/, "the signed-in pass blocks on the real elevated process handle, not only Start-Process -Wait");
-  assert.match(windowsRuntime, /function Test-PendingWslRestart/, "the installer can recognise a reboot Windows has not taken yet");
-  assert.match(windowsRuntime, /vmcompute[\s\S]{0,400}EnablePending|EnablePending[\s\S]{0,400}vmcompute|-ne "Enabled"/, "pending feature activation counts as a restart, not a failure");
-  assert.match(windowsRuntime, /if \(Test-PendingWslRestart\) \{ Require-WindowsRestart \}[\s\S]{0,200}Fail-Setup "Microsoft WSL \$wslVersion is not ready/, "the user-session WSL probe asks for a restart before declaring failure");
-  assert.match(windowsRuntime, /Restart this PC to finish enabling WSL 2/, "the restart status carries plain-language instructions");
-  assert.match(windowsRuntime, /-Status "restart_required"/, "the restart path reports the dedicated restart status");
-  assert.match(windowsRuntime, /@\("restart_required", "failed", "complete"\) -contains/, "the parent waits for a terminal child status instead of racing its last write");
-  const onboardingRuntimeUi = await readFile(join(root, "src", "client", "onboarding.ts"), "utf8");
-  assert.match(onboardingRuntimeUi, /restart \? "text-muted" : "text-danger"/, "a pending restart is not painted as an error");
-  assert.match(onboardingRuntimeUi, /\$\{failed \? "border-danger\/40" : "border-accent\/30"\}/, "only real failures get the danger card treatment");
-  assert.match(onboardingRuntimeUi, /Restart this PC\./, "the restart state gives the Captain explicit numbered steps");
-  assert.match(windowsRuntime, /github\.com\/microsoft\/WSL\/releases\/download\/2\.7\.10\/wsl\.2\.7\.10\.0\.x64\.msi/);
-  assert.match(windowsRuntime, /1a62f90a43c03cc5bda47dfd0b6faf496ac70fd4389190518120a4f84fc895cf/);
-  assert.match(windowsRuntime, /Get-AuthenticodeSignature/);
-  assert.match(windowsRuntime, /CN=Microsoft Corporation/);
-  assert.match(windowsRuntime, /msiexec\.exe/);
-  assert.match(windowsRuntime, /--set-default-version["'\s,]+2/);
-  assert.match(windowsRuntime, /-HostSetup[\s\S]*-Verb RunAs[\s\S]*Get-WslDistributionNames/, "only WSL host components cross UAC while the signed-in owner imports the shared distribution");
-  assert.match(windowsRuntime, /function Fetch-File[\s\S]*if \(\$HostSetup\)/, "Fetch-File is script-scoped so the signed-in owner path can download the Ubuntu rootfs after elevation");
-  assert.match(windowsRuntime, /Write-SetupStatus/, "Windows setup writes machine-readable progress for the app UI");
-  assert.match(windowsRuntime, /\$hostExitCode = if \(\$null -eq \$hostProcess\)[\s\S]*Get-HostSetupOutcome/, "cancelled UAC is reported through the shared host-outcome transaction instead of a silent no-op");
-  assert.match(windowsRuntime, /Get-WslText|replace \[char\]0/, "WSL UTF-16 NUL output is normalized before version and distro matching");
-  assert.match(windowsRuntime, /function Get-WslText[\s\S]*ErrorActionPreference = "Continue"[\s\S]*\$LASTEXITCODE[\s\S]*ErrorActionPreference = \$previousErrorAction/, "a fresh host's expected failing WSL probe cannot terminate setup before the pinned runtime is installed");
-  assert.match(windowsRuntime, /Test-PinnedWslRuntime/, "host setup verifies the pinned Microsoft WSL build");
-  assert.match(windowsRuntime, /if \(\$HostSetup\)[\s\S]*try \{[\s\S]*catch \{[\s\S]*Fail-Setup \$message/, "unexpected elevated host-setup errors are written to shared status instead of collapsing to an unexplained exit code");
-  assert.match(windowsRuntime, /StatusPath/, "elevated HostSetup receives the shared status path so real errors reach the app");
-  assert.match(windowsRuntime, /1603[\s\S]*Test-PinnedWslRuntime|Test-PinnedWslRuntime[\s\S]*1603/, "MSI 1603 falls back to re-verifying an already-present pinned WSL runtime");
-  assert.match(windowsRuntime, /\$enabledWslFeatureNow[\s\S]*\$enabledVmFeatureNow[\s\S]*\$restartRequired/, "features enabled in the current pass force a reboot before WSL import regardless of DISM enum formatting");
-  assert.match(windowsRuntime, /Get-Service -Name vmcompute[\s\S]*\$restartRequired = \$true/, "an enabled-but-not-registered WSL VM compute service stops setup at the reboot boundary");
-  assert.match(windowsRuntime, /HCS_E_SERVICE_NOT_AVAILABLE[\s\S]*Require-WindowsRestart|Test-WslRestartFailure[\s\S]*Require-WindowsRestart/, "an unavailable VM compute service is reported as restart-required instead of a broken runtime");
-  assert.match(windowsRuntime, /Get-HostSetupOutcome[\s\S]*Status -eq "restart_required"[\s\S]*Test-PinnedWslRuntime/, "the signed-in setup honors the elevated shared reboot result before probing WSL");
-  assert.doesNotMatch(channelComputers, /status: windowsWslSetupChild \? "running" : status/, "a live parent process cannot mask a terminal shared WSL setup status");
-  assert.match(windowsRuntimeStatusTest, /Get-HostSetupOutcome -ExitCode 0[\s\S]*restart_required[\s\S]*Get-HostSetupOutcome -ExitCode 10/, "the executable PowerShell regression proves shared restart status wins over an unreliable zero exit code");
-  assert.match(windowsRuntime, /\.1helm-partial-import[\s\S]*\$ownedPartial[\s\S]*Remove-Item -LiteralPath \$installDirectory/, "an app-owned partial WSL import can recover safely after reboot");
-  assert.match(windowsRuntime, /\[automount\][\s\S]*enabled=false[\s\S]*\[interop\][\s\S]*enabled=false/, "the shared runtime exposes neither Windows drives nor process interop");
-  assert.doesNotMatch(windowsRuntime, /--update/);
-  assert.match(channelComputers, /HELM_WSL_SETUP_STATUS/, "Windows runtime install is tracked through a status file instead of fire-and-forget Start-Process");
-  assert.match(channelComputers, /windows_setup/, "runtime readiness exposes Windows shared-runtime setup progress");
-  assert.match(channelComputers, /spawn\("powershell\.exe"/, "Windows setup is a tracked child process owned by the app server");
-  assert.doesNotMatch(channelComputers, /Start-Process -FilePath 'powershell\.exe' -ArgumentList @\('-NoProfile','-ExecutionPolicy','Bypass','-File'/, "Windows setup no longer fire-and-forgets an untracked PowerShell window");
+  assert.equal(macFilter.test("/scripts/release-only-helper.cjs"), true, "non-runtime release helpers stay outside the desktop app");
+  assert.equal(macFilter.test("/test"), true, "tests stay outside the desktop app");
+  assert.match(channelComputers, /"--exec", "\/usr\/libexec\/1helm-oci-runtime", \.\.\.args/, "the shared WSL runtime is entered with direct argv instead of an intervening shell");
   const helperInstall = await readFile(join(root, "scripts", "ensure-node-pty-helper.cjs"), "utf8");
   assert.match(helperInstall, /process\.platform === "darwin"/);
   assert.match(helperInstall, /chmodSync\(helper, 0o755\)/, "Mac installs restore node-pty's executable spawn helper before terminals open");
@@ -334,32 +264,25 @@ test("release packaging is fail-closed and records stable product identity", asy
   assert.match(source, /codesign", \["--verify", "--strict", "--verbose=2", cloudflared\]/, "release packaging verifies the bundled connector's post-signing seal");
 });
 
-test("Windows packaging ships app code in asar and keeps external consumers on real files", async (t) => {
-  const windowsPackager = await readFile(join(root, "scripts", "package-windows.cjs"), "utf8");
+test("the desktop shell keeps external consumers on real files and the sidecar bundle is self-contained", async (t) => {
   const mainCjs = await readFile(join(root, "desktop", "main.cjs"), "utf8");
   const photon = await readFile(join(root, "src", "server", "photon.ts"), "utf8");
   const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 
-  // Legacy Squirrel expands every loose package file through 260-character
-  // .NET path APIs while releasifying and again on end-user machines during
-  // install/update. Application code must ship inside app.asar.
-  assert.doesNotMatch(windowsPackager, /asar: false/, "loose-file Windows packaging exceeds legacy Squirrel's path budget");
-  assert.match(windowsPackager, /unpack: "\*\*\/\*\.node"/, "native modules are unpacked so they can load from disk");
-  assert.match(windowsPackager, /unpackDir: "\{scripts,container,deploy,public,desktop,node_modules\/node-pty\}"/, "assets read by external processes stay on real disk");
-  assert.match(windowsPackager, /missing app\.asar/, "packaging proves the archive was actually created");
-  assert.match(windowsPackager, /app\.asar\.unpacked/, "packaging verifies required assets in the unpacked tree");
-  assert.match(windowsPackager, /photon-sidecar\.bundle\.mjs is missing/, "packaging refuses to run without the sidecar bundle");
   assert.ok(String(pkg.scripts.build).includes("build:sidecar"), "the standard build produces the sidecar bundle");
   assert.ok(String(pkg.scripts["build:sidecar"]).includes("--bundle"), "the sidecar bundle is self-contained");
+  assert.equal(pkg.scripts["package:windows"], undefined, "no Windows packaging lane exists: Windows installs the Linux build into WSL 2");
+  assert.equal(pkg.scripts["package:windows:release"], undefined, "no Windows release packaging lane exists");
+  for (const retired of ["electron-winstaller", "png-to-ico"]) {
+    assert.equal(pkg.devDependencies[retired], undefined, `${retired} only existed for Squirrel/Windows packaging`);
+  }
 
   assert.match(mainCjs, /function unpackedPath\(/, "the desktop shell can translate asar paths for external consumers");
   assert.match(mainCjs, /const assetRoot = unpackedPath\(appRoot\)/, "external-asset root leaves the asar in packaged builds");
   assert.match(mainCjs, /process\.env\.HELM_APP_ROOT = assetRoot/, "server asset consumers receive the real on-disk root");
   assert.match(mainCjs, /process\.chdir\(assetRoot\)/, "chdir into a virtual asar path would throw at startup");
-  assert.match(mainCjs, /unpackedPath\(path\.resolve\(__dirname, "\.\.", "scripts", "windows-removal\.cjs"\)\)/, "the Squirrel uninstall hook runs the removal script from real disk");
   assert.ok(photon.includes('join(String(process.env.HELM_APP_ROOT || process.cwd()), "desktop", "photon-sidecar.bundle.mjs")'), "asar builds start the sidecar from the unpacked self-contained bundle");
 
-  if (process.platform === "win32") return;
   // Prove the sidecar bundle actually builds and resolves every module on its
   // own: run it from a foreign directory with no credentials and require an
   // application-level outcome, never a module-resolution failure.

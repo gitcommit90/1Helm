@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { cpus as hostCpus, freemem, platform, totalmem } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
@@ -1605,16 +1605,6 @@ export type ChannelComputerPrepareStatus = {
   updated_at: number;
 };
 
-export type WindowsWslSetupStatus = {
-  status: "idle" | "running" | "complete" | "failed" | "restart_required";
-  step: string;
-  progress: number;
-  error: string;
-  log: string;
-  started_at: number;
-  updated_at: number;
-};
-
 let ociPrepareState: ChannelComputerPrepareStatus = {
   status: "idle",
   step: "Private channel computers have not been prepared yet.",
@@ -1626,58 +1616,6 @@ let ociPrepareState: ChannelComputerPrepareStatus = {
 };
 let ociPreparePass: Promise<void> | null = null;
 
-let windowsWslSetupState: WindowsWslSetupStatus = {
-  status: "idle",
-  step: "Shared Windows WSL runtime setup has not started.",
-  progress: 0,
-  error: "",
-  log: "",
-  started_at: 0,
-  updated_at: 0,
-};
-let windowsWslSetupChild: ChildProcess | null = null;
-let windowsWslSetupLogPath = "";
-let windowsWslSetupStatusPath = "";
-
-function setWindowsWslSetupState(patch: Partial<WindowsWslSetupStatus>): WindowsWslSetupStatus {
-  windowsWslSetupState = {
-    ...windowsWslSetupState,
-    ...patch,
-    updated_at: now(),
-  };
-  return windowsWslSetupState;
-}
-
-export function windowsWslSetupStatus(): WindowsWslSetupStatus {
-  if (windowsWslSetupStatusPath && existsSync(windowsWslSetupStatusPath)) {
-    try {
-      const parsed = JSON.parse(readFileSync(windowsWslSetupStatusPath, "utf8")) as {
-        status?: string; step?: string; progress?: number; error?: string;
-      };
-      if (windowsWslSetupState.status === "running" && parsed.step) {
-        const status = parsed.status === "restart_required" || parsed.status === "failed" || parsed.status === "complete"
-          ? parsed.status as WindowsWslSetupStatus["status"]
-          : "running";
-        setWindowsWslSetupState({
-          // The elevated PowerShell pass reports terminal outcomes through the
-          // shared file before its parent process necessarily closes. Do not
-          // hide a required reboot (or a real failure) behind the live child.
-          status,
-          step: String(parsed.step),
-          progress: Math.max(0, Math.min(100, Number(parsed.progress) || windowsWslSetupState.progress)),
-          error: String(parsed.error || windowsWslSetupState.error || ""),
-        });
-      }
-    } catch { /* status file is best-effort */ }
-  }
-  if (windowsWslSetupLogPath && existsSync(windowsWslSetupLogPath)) {
-    try {
-      const log = readFileSync(windowsWslSetupLogPath, "utf8").slice(-8_000);
-      if (log !== windowsWslSetupState.log) setWindowsWslSetupState({ log });
-    } catch { /* log is best-effort */ }
-  }
-  return { ...windowsWslSetupState };
-}
 
 function setOciPrepareState(patch: Partial<ChannelComputerPrepareStatus>): ChannelComputerPrepareStatus {
   ociPrepareState = {
@@ -1891,21 +1829,18 @@ export function runtimeReadiness(): Record<string, unknown> {
         });
       }
     }
-    const windowsSetup = windows ? windowsWslSetupStatus() : null;
     return {
       backend, supported,
       engine_ready: engineReady,
       image_ready: imageReady,
       image: DEFAULT_CHANNEL_IMAGE,
       prepare: channelComputerPrepareStatus(),
-      windows_setup: windowsSetup,
       ready: Boolean(engineReady && imageReady),
       platform: platform(), architecture: process.arch, cli: helper || null, version: version || null, system,
       runtime_version: OCI_RUNTIME_VERSION, shared_runtime: windows ? installationScopedRuntimeName() : null,
       storage_authority: windows ? `\\\\wsl.localhost\\${installationScopedRuntimeName()}\\var\\lib\\1helm-oci-v1\\runtime\\oci` : ociHostStateRoot(),
       status: error ? "error" : !engineReady ? (system ? "running" : "missing") : imageReady ? "running" : "image_pending",
       error: error
-        || (windowsSetup && (windowsSetup.status === "failed" || windowsSetup.status === "restart_required") ? windowsSetup.error || windowsSetup.step : null)
         || (ociPrepareState.status === "failed" ? ociPrepareState.error : null),
     };
   }
@@ -1980,158 +1915,6 @@ export async function prepareAppleRuntimeInstaller(): Promise<{ path: string; sh
   const opened = spawnSync("/usr/bin/open", [destination], { stdio: "ignore" }).status === 0;
   if (!opened) throw new Error("macOS could not open the verified Apple runtime installer.");
   return { path: destination, sha256: digest, opened };
-}
-
-/**
- * Start (or reattach to) the one-time shared WSL/OCI runtime install on Windows.
- * The PowerShell script elevates only for host features/MSI; the signed-in user
- * owns the distribution import. Progress is tracked for the onboarding UI.
- */
-export async function prepareWindowsWslRuntime(): Promise<{ opened: boolean; setup: WindowsWslSetupStatus }> {
-  if (platform() !== "win32") throw new Error("WSL 2 setup is available only on Windows.");
-  if (windowsWslSetupChild && windowsWslSetupState.status === "running") {
-    return { opened: true, setup: windowsWslSetupStatus() };
-  }
-  const current = runtimeReadiness();
-  if (current.engine_ready) {
-    return {
-      opened: false,
-      setup: setWindowsWslSetupState({
-        status: "complete",
-        step: "The shared Windows OCI runtime is already ready.",
-        progress: 100,
-        error: "",
-        started_at: windowsWslSetupState.started_at || now(),
-      }),
-    };
-  }
-  const script = join(process.env.HELM_APP_ROOT || process.cwd(), "scripts", "install-wsl-runtime.ps1");
-  if (!existsSync(script)) throw new Error("1Helm's signed WSL 2 setup script is missing.");
-  const runtime = installationScopedRuntimeName();
-  const appRoot = process.env.HELM_APP_ROOT || process.cwd();
-  const runtimeRoot = join(String(process.env.LOCALAPPDATA || DATA_DIR), "1Helm-Runtime");
-  mkdirSync(runtimeRoot, { recursive: true });
-  mkdirSync(DATA_DIR, { recursive: true });
-  windowsWslSetupStatusPath = join(runtimeRoot, "setup-status.json");
-  windowsWslSetupLogPath = join(DATA_DIR, "windows-wsl-setup.log");
-  try {
-    writeFileSync(windowsWslSetupStatusPath, `${JSON.stringify({
-      status: "running",
-      step: "Starting Windows shared-runtime setup...",
-      progress: 3,
-      error: "",
-      updated: new Date().toISOString(),
-    })}\n`, "utf8");
-    writeFileSync(windowsWslSetupLogPath, "", "utf8");
-  } catch { /* best-effort seed */ }
-
-  setWindowsWslSetupState({
-    status: "running",
-    step: "Starting Windows shared-runtime setup... Approve the administrator prompt when Windows asks.",
-    progress: 3,
-    error: "",
-    log: "",
-    started_at: now(),
-  });
-
-  const child = spawn("powershell.exe", [
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-File", script,
-    "-RuntimeName", runtime,
-    "-AppRoot", appRoot,
-  ], {
-    env: {
-      ...process.env,
-      HELM_WSL_SETUP_STATUS: windowsWslSetupStatusPath,
-    },
-    windowsHide: false,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  windowsWslSetupChild = child;
-
-  const appendLog = (chunk: Buffer | string): void => {
-    const text = String(chunk);
-    if (!text) return;
-    try { writeFileSync(windowsWslSetupLogPath, text, { flag: "a", encoding: "utf8" }); } catch { /* ignore */ }
-    const combined = `${windowsWslSetupState.log}${text}`.slice(-8_000);
-    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    let step = windowsWslSetupState.step;
-    let progress = windowsWslSetupState.progress;
-    for (const line of lines) {
-      if (/^ERROR:/i.test(line)) continue;
-      step = line.replace(/^ERROR:\s*/i, "").slice(0, 400);
-      if (/administrator approval/i.test(line)) progress = Math.max(progress, 5);
-      else if (/Enabling Windows WSL/i.test(line)) progress = Math.max(progress, 8);
-      else if (/Downloading Microsoft WSL/i.test(line)) progress = Math.max(progress, 12);
-      else if (/Installing Microsoft WSL/i.test(line)) progress = Math.max(progress, 18);
-      else if (/default/i.test(line) && /WSL/i.test(line)) progress = Math.max(progress, 22);
-      else if (/Checking for the shared/i.test(line)) progress = Math.max(progress, 28);
-      else if (/Downloading shared Linux/i.test(line)) progress = Math.max(progress, 35);
-      else if (/Importing shared/i.test(line)) progress = Math.max(progress, 48);
-      else if (/packages|podman/i.test(line)) progress = Math.max(progress, 58);
-      else if (/sealed OCI|channel image/i.test(line)) progress = Math.max(progress, 78);
-      else if (/Restarting the shared/i.test(line)) progress = Math.max(progress, 88);
-      else if (/Verifying the shared/i.test(line)) progress = Math.max(progress, 94);
-      else if (/installed and ready/i.test(line)) progress = 100;
-    }
-    setWindowsWslSetupState({ log: combined, step, progress });
-  };
-  child.stdout?.on("data", appendLog);
-  child.stderr?.on("data", appendLog);
-  child.on("error", (error) => {
-    windowsWslSetupChild = null;
-    setWindowsWslSetupState({
-      status: "failed",
-      step: "Windows could not start the shared-runtime setup process.",
-      progress: Math.max(3, windowsWslSetupState.progress),
-      error: error.message,
-    });
-  });
-  child.on("close", (code, signal) => {
-    windowsWslSetupChild = null;
-    const setup = windowsWslSetupStatus();
-    if (code === 10 || setup.status === "restart_required") {
-      setWindowsWslSetupState({
-        status: "restart_required",
-        step: "WSL 2 features are enabled. Restart Windows once, reopen 1Helm, then create the workspace again.",
-        progress: Math.max(20, setup.progress),
-        error: "Windows restart required to finish enabling WSL 2.",
-      });
-      return;
-    }
-    if (code === 0) {
-      const readiness = runtimeReadiness();
-      if (readiness.engine_ready) {
-        setWindowsWslSetupState({
-          status: "complete",
-          step: "1Helm's shared OCI runtime is installed and ready.",
-          progress: 100,
-          error: "",
-        });
-        return;
-      }
-      setWindowsWslSetupState({
-        status: "failed",
-        step: "Setup finished but the shared OCI runtime is still not ready.",
-        progress: Math.max(90, setup.progress),
-        error: String(readiness.error || "The shared WSL OCI runtime did not pass readiness after setup."),
-      });
-      return;
-    }
-    const logTail = setup.log.trim().split(/\r?\n/).filter(Boolean).slice(-8).join(" ");
-    const detail = setup.error || logTail || (signal ? `terminated by ${signal}` : `exit code ${code ?? "unknown"}`);
-    setWindowsWslSetupState({
-      status: "failed",
-      step: setup.step && setup.step !== "Starting Windows shared-runtime setup... Approve the administrator prompt when Windows asks."
-        ? setup.step
-        : "Shared Windows runtime setup failed.",
-      progress: Math.max(5, setup.progress),
-      error: detail.slice(0, 1000),
-    });
-  });
-
-  return { opened: true, setup: windowsWslSetupStatus() };
 }
 
 /** Complete runtime activation after the signed package receives approval. */
