@@ -30,19 +30,28 @@ const ORIGIN = "https://1helm.com";
 const REPO = "gitcommit90/1Helm";
 const RELEASE_PAGE = `https://github.com/${REPO}/releases/latest`;
 const RELEASE_CACHE_MS = 10 * 60_000;
-// Served only when GitHub's release API is unreachable or rate limited. It
+// Served only when GitHub's release API is unreachable or rate limited, and it
 // must name the current release: a stale fallback silently hands visitors an
-// older build from the download links. Update the tag and all three digests in
-// the same commit that ships a release.
-const RELEASE_FALLBACK_TAG = "v0.0.38";
+// older build from the download links.
+//
+// The digests cannot be known when the release commit is made - they are the
+// digests OF that commit's artifacts - so they are filled in at publish time
+// and the site is redeployed. Until then PENDING_DIGEST is deliberately not a
+// 64-character hex string, so latestLinuxRelease() rejects it and
+// /api/releases/linux/latest answers 503. That fails closed: an installer is
+// told no release is available rather than being handed a digest that will not
+// match what it downloads. The macOS download link still works, because it
+// resolves by asset name and needs no digest.
+const PENDING_DIGEST = "pending-release-digest";
+const RELEASE_FALLBACK_TAG = "v0.0.39";
 const RELEASE_FALLBACK = {
   tag_name: RELEASE_FALLBACK_TAG,
   draft: false,
   prerelease: false,
   assets: [
-    ["1Helm-0.0.38-arm64.dmg", "468a5b8d59a23c4419331db20dcdb955f088a046add48296b5d5aa8450120527"],
-    ["1Helm-0.0.38-mac-arm64.zip", "4135defe285f9d7e480802d17d81ff37d083a90f6d7dc928f7061a73f9861302"],
-    ["1Helm-0.0.38-linux-node.tgz", "12d59534b66c325891d5433eb2c7ab8990ee67c9d56a805b65b9633030c424fc"],
+    ["1Helm-0.0.39-arm64.dmg", PENDING_DIGEST],
+    ["1Helm-0.0.39-mac-arm64.zip", PENDING_DIGEST],
+    ["1Helm-0.0.39-linux-node.tgz", PENDING_DIGEST],
   ].map(([name, digest]) => ({
     name,
     digest: `sha256:${digest}`,

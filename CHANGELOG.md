@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.39] - 2026-08-03
+
+### Changed
+
+- **Windows no longer ships an application.** 1Helm on Windows now runs the
+  ordinary Linux build inside a WSL 2 distribution and serves its interface to
+  the browser at `http://localhost:8123`. Install it with one command in an
+  ordinary PowerShell window:
+
+  ```powershell
+  irm https://1helm.com/install.ps1 | iex
+  ```
+
+  There is no Electron host, no Squirrel installer, no `.exe`, and therefore
+  nothing to code-sign — so SmartScreen never appears. Windows publishes no
+  release artifacts; the desktop matrix is now three files (macOS DMG, macOS
+  updater ZIP, Linux archive), and the Linux archive serves both Linux and
+  Windows.
+- Windows setup asks for administrator approval once, to enable the WSL 2
+  optional features and install Microsoft's digest- and signature-verified WSL
+  package. Everything else — importing the distribution, installing 1Helm,
+  registering the keepalive — runs as the signed-in user, because WSL state is
+  per-user.
+- Windows requires one restart partway through setup, which Windows itself
+  demands before WSL 2 becomes usable. Setup reports that as a restart with
+  numbered steps rather than a failure, and re-running the same command
+  continues from where it stopped.
+- `#main`'s terminal on Windows is now bash inside the distribution rather than
+  `cmd.exe`, matching Linux.
+- Removing 1Helm from Windows is `irm https://1helm.com/uninstall.ps1 | iex`.
+
+### Fixed
+
+- Windows file operations are roughly four times faster. Every channel storage
+  operation previously crossed the Windows-to-WSL boundary through
+  `wsl.exe`, costing a flat ~208 ms per call — measured at 281 ms versus 73 ms
+  for the same work without the crossing. Those crossings no longer exist,
+  because the server now runs inside the distribution.
+- The Windows interface can no longer freeze. Those boundary crossings were
+  synchronous calls on the Electron main thread, which is the thread Windows
+  requires for its message pump, so a file listing could stall the window past
+  the five seconds after which Windows reports "not responding". There is no
+  longer a window to freeze: the browser waits on an HTTP request instead.
+- Linux and Windows installs no longer build 1Helm on the target machine. The
+  release archive now ships production dependencies and prebuilt assets, with
+  native addons compiled against an older glibc and verified on arrival by
+  loading each one and checking its Node ABI. A cold install went from 8m49s to
+  3m40s, and no C/C++ toolchain is installed on the host any more.
+- The Linux installer no longer reports success when another process holds port
+  8123. Its readiness check required only that something answered, which a
+  foreign listener satisfies; it now also requires the unit to be active, and
+  refuses to start when the port is already taken.
+- A version mismatch between installer and archive failed silently after
+  several minutes of work. It now names both versions and states that nothing
+  was installed.
+- The website no longer requires a Windows Setup executable, `.nupkg` and
+  `RELEASES` to exist before it will serve release metadata. That requirement
+  backed the endpoint the Linux installer resolves, so the first release
+  without those files would have broken the public Linux and Windows
+  installers simultaneously.
+
 ## [0.0.38] - 2026-08-02
 
 ### Fixed
@@ -1038,6 +1099,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Application Support, and isolated Apple container machines.
 
 [Unreleased]: https://github.com/gitcommit90/1Helm/compare/v0.0.36...HEAD
+[0.0.39]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...v0.0.39
 [0.0.38]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...v0.0.38
 [0.0.37]: https://github.com/gitcommit90/1Helm/compare/v0.0.30...v0.0.37
 [0.0.36]: https://github.com/gitcommit90/1Helm/compare/v0.0.35...v0.0.36

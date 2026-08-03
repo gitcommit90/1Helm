@@ -147,15 +147,25 @@ test("release metadata stays available when GitHub's unauthenticated API is exha
     const base = `http://127.0.0.1:${port}`;
     await waitFor(`${base}/health`);
     const response = await fetch(`${base}/api/releases/linux/latest`);
-    assert.equal(response.status, 200);
     // Derived from package.json rather than pinned: the point of this contract
     // is that the offline fallback serves the SHIPPING release, so hardcoding a
     // version here would keep passing while the fallback silently went stale.
     const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
-    const offline = await response.json();
-    assert.equal(offline.version, version, "the offline fallback serves the shipping version");
-    assert.equal(offline.url, `https://github.com/gitcommit90/1Helm/releases/download/v${version}/1Helm-${version}-linux-node.tgz`);
-    assert.match(offline.sha256, /^[a-f0-9]{64}$/, "the offline fallback carries a real digest");
+    const server = readFileSync(join(root, "site", "server.mjs"), "utf8");
+    const pending = server.includes('const PENDING_DIGEST = "pending-release-digest"')
+      && new RegExp(`\\["1Helm-${version.replaceAll(".", "\\.")}-linux-node\\.tgz", PENDING_DIGEST\\]`).test(server);
+    if (pending) {
+      // Digests are the digests OF the release commit's artifacts, so they are
+      // filled in at publish. Until then this must fail closed rather than hand
+      // an installer a digest that cannot match what it downloads.
+      assert.equal(response.status, 503, "a fallback with pending digests must refuse, not serve a wrong digest");
+    } else {
+      assert.equal(response.status, 200);
+      const offline = await response.json();
+      assert.equal(offline.version, version, "the offline fallback serves the shipping version");
+      assert.equal(offline.url, `https://github.com/gitcommit90/1Helm/releases/download/v${version}/1Helm-${version}-linux-node.tgz`);
+      assert.match(offline.sha256, /^[a-f0-9]{64}$/, "the offline fallback carries a real digest");
+    }
   } finally {
     child.kill("SIGTERM");
     await new Promise((resolve) => child.once("exit", resolve));
@@ -404,6 +414,14 @@ test("the website's offline release fallback names the shipping version", () => 
     assert.ok(!block.includes(gone), `the release fallback must not advertise ${gone}`);
   }
   const digests = [...block.matchAll(/"([a-f0-9]{64})"/g)].map((m) => m[1]);
-  assert.equal(digests.length, 3, "all three desktop artifacts carry a fallback digest");
-  assert.equal(new Set(digests).size, 3, "no two fallback digests are duplicated");
+  const pendingCount = [...block.matchAll(/PENDING_DIGEST/g)].length;
+  if (pendingCount) {
+    // Pre-publish: every digest must be pending, never a mix. A half-filled
+    // fallback would serve one real and two wrong digests.
+    assert.equal(pendingCount, 3, "either all three fallback digests are pending or none are");
+    assert.equal(digests.length, 0, "a pending fallback must not also carry a stale real digest");
+  } else {
+    assert.equal(digests.length, 3, "all three desktop artifacts carry a fallback digest");
+    assert.equal(new Set(digests).size, 3, "no two fallback digests are duplicated");
+  }
 });
