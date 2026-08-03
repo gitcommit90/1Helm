@@ -12,6 +12,18 @@ Do not create the tag or GitHub Release, publish any platform, mark anything
 latest, or say “done” until all three lanes pass. If one lane is blocked, pause
 the whole release and report it.
 
+**Three release artifacts, not six.** A complete release attaches exactly
+`1Helm-<version>-arm64.dmg`, `1Helm-<version>-mac-arm64.zip` and
+`1Helm-<version>-linux-node.tgz`. **Windows publishes nothing.** There is no
+Windows executable, no Windows installer package, no Windows update manifest, no
+Electron host on Windows and nothing to code-sign, so no signing status exists to
+record or disclose. A Windows host is the Linux host running inside a per-user WSL 2
+distribution named `1helm`, installed from `https://1helm.com/install.ps1`,
+which the site serves rather than a GitHub Release. Windows is therefore
+accepted by behaviour (Section 7) rather than by artifact, and because a Windows
+host installs the Linux archive, a Linux artifact that has not passed acceptance
+blocks Windows too.
+
 ## 1. Prepare
 
 ```bash
@@ -73,18 +85,16 @@ VERSION="$(node -p "require('./package.json').version")"
 HEADLESS="dist/1Helm-${VERSION}-linux-node.tgz"
 DMG="dist/1Helm-${VERSION}-arm64.dmg"
 UPDATE_ZIP="dist/1Helm-${VERSION}-mac-arm64.zip"
-WINDOWS_SETUP="dist/1Helm-${VERSION}-windows-x64-setup.exe"
-WINDOWS_NUPKG="dist/1Helm-${VERSION}-full.nupkg"
-WINDOWS_RELEASES="dist/RELEASES"
 ANDROID_APK="dist/1Helm-${VERSION}-universal.apk"
 RELEASE_NOTES="dist/1Helm-${VERSION}-release-notes.md"
 
 # Build from clean snapshots of the same MERGED_COMMIT on the platform owners:
 # macOS arm64: npm ci && npm run typecheck && npm run build && npm test && npm run package:dmg:release
 # Linux:       npm ci && npm run typecheck && npm run build && npm test && npm run package:linux
-# Windows x64: npm ci && npm run typecheck && npm run build && npm test && npm run package:windows
+# Windows:     no build. A Windows host installs "$HEADLESS" through the
+#              site-served install.ps1; there is no Windows artifact to produce.
 
-for artifact in "$DMG" "$UPDATE_ZIP" "$HEADLESS" "$WINDOWS_SETUP" "$WINDOWS_NUPKG" "$WINDOWS_RELEASES"; do
+for artifact in "$DMG" "$UPDATE_ZIP" "$HEADLESS"; do
   test -s "$artifact"
 done
 # Author RELEASE_NOTES from docs/release-notes-template.md. It must contain the
@@ -94,12 +104,13 @@ test -s "$RELEASE_NOTES"
 rg -q '^1\. ' "$RELEASE_NOTES" # multi-item ships must retain a numbered ledger
 ```
 
-The Windows `.nupkg` basename must exactly match the entry inside `RELEASES`.
-Record Authenticode status for Windows executable code and Setup. Trusted
-signing is optional until 1Helm adopts a Windows signing identity: an honestly
-disclosed `NotSigned` result is accepted and must not block the release. Never
-substitute a self-signed identity. When a trusted identity is configured, use
-the fail-closed `package:windows:release` command.
+Those three files are the whole desktop matrix. Do not invent a fourth desktop
+asset, and do not attach `install.ps1`, `uninstall.ps1` or the keepalive payload
+to the release: they are served from the site, so a release commit that changes
+them is not shipped until the site is deployed. Because Windows ships no
+executable code of its own, there is no Windows signing identity and no Windows
+signature status to record or disclose. Never sign anything with a self-signed
+identity.
 
 Only after Sections 6–8 pass for all three desktop platforms:
 
@@ -108,7 +119,6 @@ git tag -a "v${VERSION}" "$MERGED_COMMIT" -m "1Helm ${VERSION}"
 git push origin "refs/tags/v${VERSION}"
 gh release create "v${VERSION}" \
   "$DMG" "$UPDATE_ZIP" "$HEADLESS" \
-  "$WINDOWS_SETUP" "$WINDOWS_NUPKG" "$WINDOWS_RELEASES" \
   --title "1Helm ${VERSION}" --notes-file "$RELEASE_NOTES" --draft
 # Upload mobile artifacts through their applicable distribution lane; their
 # timing never permits a partial desktop release.
@@ -166,16 +176,39 @@ Expect first-run / needs_setup on empty data dir.
   host running the prior release, invoke the Captain host-update action,
   observe checking/downloading/installing/restarting, verify the new version
   and `/var/lib/1helm-oci-v1` identity, and exercise health-failure rollback.
-- **Windows:** on Windows 11 x64, record Authenticode status for Setup, the
-  packaged app, and its executable code; confirm `.nupkg` and `RELEASES`
-  consistency; clean install Setup; exercise the real shared-WSL OCI channel lifecycle;
-  then expose staged
-  Squirrel metadata to the prior public version and prove download,
-  verification, restart installation, new version, loopback health, shared
-  runtime state, and current-generation app-data preservation.
+- **Windows:** accepted by behaviour on real Windows 11 x64 hardware, not by
+  artifact. There is nothing to sign and no update feed to stage. Prove every
+  one of these:
+  1. **Clean install from the one-liner.** In an ordinary, **non-elevated**
+     PowerShell window, run `irm https://1helm.com/install.ps1 | iex`. Exactly
+     **one** UAC prompt appears, and only the Windows optional features
+     (`Microsoft-Windows-Subsystem-Linux`, `VirtualMachinePlatform`) and
+     Microsoft's own WSL package run elevated. Everything else — importing the
+     distribution, installing 1Helm inside it, registering the keepalive — runs
+     as the signed-in user, because WSL state is per-user.
+  2. **Restart and resume.** The first run reports the required restart and
+     exits without a false failure. After the restart, re-running the identical
+     command as the **same** signed-in Windows user resumes and completes.
+  3. **Keepalive survives a reboot.** The keepalive is registered as that user's
+     scheduled task, starts again at sign-in after a reboot, and holds the
+     distribution up with `1helm.service` active.
+  4. **Browser reaches the host.** A browser on that PC reaches
+     `http://localhost:8123` and completes onboarding.
+  5. **Prior-version update preserves the data root.** Update from the previous
+     release through the in-distribution Linux updater and confirm the new
+     version, loopback health, and a retained data root under
+     `/var/lib/1helm-oci-v1`.
+  6. **Removal.** `irm https://1helm.com/uninstall.ps1 | iex` removes the
+     keepalive, the `1helm` distribution and `C:\1helm`. It must never call
+     `wsl --shutdown` and must never unregister a distribution whose name is not
+     an exact match for the target; other distributions on the PC are untouched.
 - Before publication, compare each uploaded GitHub asset digest with the local
-  verified digest and assert the release contains the complete six-file
-  desktop matrix. A missing asset is a release blocker, not “not applicable.”
+  verified digest and assert the release contains the complete **three-file**
+  desktop matrix: `1Helm-<version>-arm64.dmg`,
+  `1Helm-<version>-mac-arm64.zip`, `1Helm-<version>-linux-node.tgz`. A missing
+  asset is a release blocker, not “not applicable.” Windows contributes no
+  asset, so an absent Windows file is correct — an absent Windows **behavioural
+  record** is a blocker.
 
 ## 8. Clean deployment verify (when shipping install path)
 
@@ -196,8 +229,11 @@ Local setup:    needs_setup verified on clean CTRL_DATA_DIR
 Clean deploy:   <pass / skipped + reason>
 Mac host update:<public artifact installed on release host + state preserved>
 Linux update:  <old → new, digest + health + state preserved>
-Windows update:<old → new, disclosed signature status + Squirrel feed + WSL/app state preserved>
-Desktop matrix:<DMG + Mac ZIP + Linux TGZ + Windows Setup + nupkg + RELEASES, all same version/commit>
+Windows:       <install.ps1 one-liner, single UAC prompt, restart + resume,
+                keepalive survived reboot, localhost:8123 onboarding,
+                old → new update with /var/lib/1helm-oci-v1 retained,
+                uninstall.ps1 removal>
+Desktop matrix:<DMG + Mac ZIP + Linux TGZ, all same version/commit; Windows publishes none>
 Android:      <public APK digest, certificate fingerprint, install/update smoke>
 iOS:          <App Store build number + validation/upload result>
 CI:             Actions green on main

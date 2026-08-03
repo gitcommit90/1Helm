@@ -57,23 +57,31 @@ contract as the slice hardens.
 8. A multi-item user request retains a numbered acceptance ledger in the pull
    request and GitHub Release. Do not collapse completed items into a generic
    summary or rely on generated commit notes as the user-facing release record.
-9. Each supported desktop platform owns its native artifact and installed-app
-   verification lane. The retained Apple Silicon host owns macOS signing and
-   notarization; Linux owns the systemd/OCI artifact and updater acceptance;
-   Windows 11 x64 owns Squirrel and shared-WSL OCI acceptance. Authenticode is optional
-   until 1Helm adopts a trusted Windows signing identity; unsigned artifacts
-   must be identified honestly, but their signature status is not a release
-   blocker.
+9. Each supported desktop platform owns an installed-app verification lane. The
+   retained Apple Silicon host owns macOS signing, notarization, and its two
+   artifacts; Linux owns the systemd/OCI artifact and updater acceptance.
+   **Windows owns no artifact**: it runs the Linux host inside a per-user WSL 2
+   distribution installed from `https://1helm.com/install.ps1`, so Windows 11
+   x64 owns a behavioural acceptance lane instead — non-elevated one-liner
+   install with a single UAC prompt, restart and resume, keepalive across a
+   reboot, `http://localhost:8123` onboarding, prior-version update with the
+   data root retained, and removal via `uninstall.ps1`. Because no Windows
+   executable code ships, there is no signing identity or signature status to
+   record or disclose for it.
 
 ## Versioning
 
 - Semantic versioning on `package.json`.
 - **Do not** reuse a published version tag for different bits.
-- A desktop release requires one unique version and exact commit, changelog,
-  complete Mac + Linux + Windows artifact matrix, and clean-install plus
-  prior-to-new update evidence on every platform. Partial platform releases
-  under the shared product version are prohibited. If one platform is blocked,
-  the entire tag/publication waits.
+- A desktop release requires one unique version and exact commit, changelog, the
+  complete three-artifact matrix (`1Helm-<version>-arm64.dmg`,
+  `1Helm-<version>-mac-arm64.zip`, `1Helm-<version>-linux-node.tgz`), and
+  clean-install plus prior-to-new update evidence on macOS, Linux, and Windows.
+  Windows publishes no artifact; its installer is served by the site, not
+  attached to the release. Partial platform releases under the shared product
+  version are prohibited. If one platform is blocked, the entire
+  tag/publication waits. Because a Windows host installs the Linux archive, a
+  blocked Linux artifact blocks Windows too.
 - GitHub Release notes are a first-class product artifact. They must enumerate
   every user-visible fix and feature accepted for that release, using the same
   numbered ledger as the originating request when one exists. A short summary
@@ -84,14 +92,20 @@ contract as the slice hardens.
 - Linux verification must use the digest-qualified release archive and prove a
   real systemd update, health-failure rollback, and retained
   `/var/lib/1helm-oci-v1`.
-- Windows verification must prove the Setup/Squirrel signature status, clean
-  install, old-to-new update, loopback health, WSL lifecycle, and retained
-  application data on Windows 11 x64. Clean install must be exercised on a host
-  where WSL and VirtualMachinePlatform start disabled, covering the elevation
-  prompt, the required Windows restart, and resumed setup after that restart.
-  Do not substitute a self-signed
-  certificate or block an otherwise accepted release solely because the
-  artifacts are honestly disclosed as unsigned.
+- Windows verification is behavioural and must be performed on real Windows 11
+  x64 hardware. It must prove: a clean install driven by
+  `irm https://1helm.com/install.ps1 | iex` from an ordinary, non-elevated
+  PowerShell window with exactly one UAC prompt, exercised on a host where
+  `Microsoft-Windows-Subsystem-Linux` and `VirtualMachinePlatform` start
+  disabled; the mid-install restart reported without a false failure and the
+  identical command resuming to completion as the same signed-in user; the
+  keepalive registered as that user's scheduled task and surviving a reboot with
+  `1helm.service` active; a browser on that PC reaching `http://localhost:8123`
+  and completing onboarding; a prior-version update through the in-distribution
+  Linux updater with the data root under `/var/lib/1helm-oci-v1` retained; and
+  removal via the site-served `uninstall.ps1`, which must never call
+  `wsl --shutdown` and must never unregister a distribution whose name is not an
+  exact match for the target. No Windows signature status exists to record.
 
 Never hand-edit only a deployment target to fix the product. Fix in git,
 review, merge, and redeploy the exact source commit.
