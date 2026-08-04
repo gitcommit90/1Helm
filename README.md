@@ -412,6 +412,25 @@ npm start                 # http://127.0.0.1:8123
 A fresh data directory opens first-run setup. The source runtime defaults to
 `./data`; do not point development at an existing production data directory.
 
+### Private development preview
+
+Run `npm run preview`, then open **http://127.0.0.1:8124**. Stop it with
+Ctrl+C. Client CSS/JavaScript and server source changes are watched; refresh
+the private page manually after a change.
+
+The command refuses Stable's port and normal app data paths. It always uses
+separate generated test data under `.preview-data/`, so it never changes or
+restarts Stable. If Stable uses a locally customized port, set
+`HELM_STABLE_PORT` before launching the preview so that port is refused too.
+
+### Private Linux dress rehearsal
+
+After trusted `main` passes CI, the candidate workflow prepares one exact,
+attested Linux build for a dedicated private guest and installs it through a
+digest-verified, rollback-aware root boundary. It does not publish a release,
+change Stable, or run PR code on the guest. Private coordinates stay in local
+status configuration. See [Private Linux dress rehearsal](docs/dress-rehearsal.md).
+
 ### Core configuration
 
 | Environment variable | Default | Meaning |

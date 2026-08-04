@@ -159,6 +159,7 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(helperInstall, /chmodSync\(helper, 0o755\)/, "Mac installs restore node-pty's executable spawn helper before terminals open");
   const memoryRuntime = await readFile(join(root, "src", "server", "memory.ts"), "utf8");
   const testRunner = await readFile(join(root, "scripts", "run-test-suite.mjs"), "utf8");
+  const mnemosyneTestRuntime = await readFile(join(root, "scripts", "mnemosyne-test-runtime.mjs"), "utf8");
   const feedbackBrowser = await readFile(join(root, "test", "feedback-browser.mjs"), "utf8");
   const terminalBrowser = await readFile(join(root, "test", "terminal-reconnect-browser.mjs"), "utf8");
   assert.match(memoryRuntime, /assert mnemosyne\.__version__/);
@@ -168,8 +169,10 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(memoryRuntime, /process\.platform === "darwin" \? \["\/usr\/bin\/python3"\]/, "macOS retries its bundled Python when a preferred interpreter cannot create the app-managed memory runtime");
   assert.match(memoryRuntime, /export function prepareMnemosyneRuntime\(\): Promise<boolean>/, "fresh-host memory installation is asynchronous instead of blocking application startup");
   assert.match(memoryRuntime, /export function cancelMnemosyneRuntimePreparation\(\)/, "host shutdown cancels an in-flight app-managed memory installation");
-  assert.match(testRunner, /MNEMOSYNE_PYTHON: runtime/, "the full test suite shares one explicit pinned memory runtime instead of racing app-start installers");
-  assert.match(testRunner, /if \(existsSync\(venv\)\) rmSync\(venv, \{ recursive: true, force: true \}\);[\s\S]*spawnSync\(installer/, "each test-runtime fallback starts clean after a preferred Python leaves a partial venv");
+  assert.match(testRunner, /MNEMOSYNE_PYTHON: prepared\.runtime/, "the full test suite shares one explicit pinned memory runtime instead of racing app-start installers");
+  assert.match(mnemosyneTestRuntime, /\.test-state[\s\S]*mnemosyne[\s\S]*MNEMOSYNE_VERSION/, "local full suites cache only the pinned memory runtime under ignored generated test state");
+  assert.match(mnemosyneTestRuntime, /pinned\(paths\.cachePython[\s\S]*rename\(paths\.environmentRoot, quarantined\)/, "a mismatched test cache is validated and preserved before a clean replacement is prepared");
+  assert.match(mnemosyneTestRuntime, /env\.CI \? "disposable" : "cache"/, "CI keeps an explicit disposable memory-runtime mode");
   assert.match(feedbackBrowser, /skip: executablePath \? false :/, "the Feedback browser contract does not hang a Chrome-free release runner");
   assert.match(await readFile(join(root, "src", "client", "app.ts"), "utf8"), /mailto:build@1helm\.com/, "the in-app Feedback surface exposes the company contact address");
   assert.match(terminalBrowser, /HELM_CHANNEL_COMPUTER_BACKEND: "native"/, "the terminal browser contract uses the explicit development backend on CI hosts without an installed OCI runtime");
