@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { candidateIdentityFromArchive } from "./candidate-manifest.mjs";
+import { PLATFORM_CHECKS, platformEvidenceBlockers } from "./platform-acceptance-lib.mjs";
 import { STABLE_ARTIFACT_ROLES, STABLE_MANIFEST_KIND, STABLE_REPOSITORY, sha256, sha256File, stableArtifactNames, validateStableManifest } from "./stable-manifest-lib.mjs";
 
 export const PROMOTION_KIND = "1helm-stable-promotion-candidate";
@@ -10,12 +11,7 @@ const VERSION = /^\d+\.\d+\.\d+$/;
 const HEX40 = /^[a-f0-9]{40}$/;
 const HEX64 = /^[a-f0-9]{64}$/;
 const ID = /^\d+$/;
-const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
-const PLATFORMS = Object.freeze({
-  macos: ["signature", "notarization", "staple", "gatekeeper", "clean_install", "prior_version_update", "retained_state", "loopback", "version"],
-  linux: ["digest", "clean_install", "prior_version_update", "health_failure_rollback", "retained_state", "systemd_health"],
-  windows: ["non_elevated_install", "single_uac", "restart_resume", "keepalive_reboot", "onboarding", "prior_version_update", "retained_state", "uninstall_safety"],
-});
+const PLATFORMS = PLATFORM_CHECKS;
 
 const digestFile = sha256File;
 const add = (blockers, condition, message) => { if (!condition) blockers.push(message); };
@@ -87,11 +83,37 @@ function validateCandidateManifest(value, expected, blockers) {
   add(blockers, HEX64.test(String(value?.source?.source_archive_sha256 || "")) && HEX64.test(String(value?.sealed_oci?.sha256 || "")), "candidate manifest: source or sealed OCI digest is invalid");
 }
 
+function validateMacCandidateManifest(value, expected, artifacts, blockers) {
+  add(blockers, value?.schema === 1 && value?.kind === "1helm-macos-candidate", "Mac candidate manifest: schema or kind mismatch");
+  add(blockers, value?.repository === STABLE_REPOSITORY && value?.ref === "refs/heads/main"
+    && value?.commit === expected.commit && value?.version === expected.version, "Mac candidate manifest: source identity mismatch");
+  add(blockers, value?.candidate?.workflow === "Candidate dress rehearsal"
+    && value?.candidate?.workflow_path === ".github/workflows/candidate.yml" && value?.candidate?.event === "workflow_run"
+    && String(value?.candidate?.run_id) === expected.runId && String(value?.candidate?.run_attempt) === expected.runAttempt,
+  "Mac candidate manifest: candidate run identity mismatch");
+  add(blockers, value?.source_ci?.workflow === "CI" && String(value?.source_ci?.run_id) === String(expected.ciRunId)
+    && value?.source_ci?.conclusion === "success", "Mac candidate manifest: CI identity mismatch");
+  add(blockers, value?.builder?.type === "dedicated-self-hosted" && value?.builder?.runner_label === "1helm-macos-phase4"
+    && value?.builder?.os === "macOS" && value?.builder?.architecture === "ARM64"
+    && /^[A-Za-z0-9][A-Za-z0-9 ._:/@+()#-]{0,255}$/.test(String(value?.builder?.runner_name || "")),
+  "Mac candidate manifest: dedicated builder identity mismatch");
+  add(blockers, value?.signing?.identity === "developer-id-application" && value?.signing?.notarization === "accepted"
+    && value?.signing?.stapling === "validated" && value?.signing?.gatekeeper === "accepted", "Mac candidate manifest: signing proof is incomplete");
+  const records = Array.isArray(value?.artifacts) ? value.artifacts : [];
+  for (const role of ["mac_dmg", "mac_updater_zip"]) {
+    const item = records.filter((record) => record?.role === role);
+    add(blockers, item.length === 1 && item[0]?.name === artifacts[role]?.name && item[0]?.sha256 === artifacts[role]?.sha256
+      && Number(item[0]?.bytes) === Number(artifacts[role]?.bytes), `Mac candidate manifest: ${role} bytes mismatch`);
+  }
+  add(blockers, records.length === 2, "Mac candidate manifest: artifact records are incomplete or unexpected");
+}
+
 function validateRun(value, expected, blockers) {
   add(blockers, String(value?.id) === expected.runId, "candidate workflow: run ID mismatch");
   add(blockers, value?.name === "Candidate dress rehearsal" && value?.path === ".github/workflows/candidate.yml", "candidate workflow: workflow name or path mismatch");
   add(blockers, value?.event === "workflow_run" && value?.status === "completed" && value?.conclusion === "success", "candidate workflow: run did not complete successfully");
   add(blockers, value?.head_branch === "main" && value?.head_sha === expected.commit && value?.head_repository?.full_name === STABLE_REPOSITORY, "candidate workflow: source is not the exact repository main commit");
+  add(blockers, ID.test(String(value?.run_attempt || "")), "candidate workflow: run attempt identity is missing");
 }
 
 function validateCi(value, expected, blockers) {
@@ -109,17 +131,7 @@ function validateArtifactRecord(value, expected, blockers) {
 
 function validatePlatformEvidence(platform, value, expected, artifacts, blockers) {
   const label = `${platform} acceptance`;
-  add(blockers, value?.schema === 1 && value?.kind === "1helm-platform-acceptance" && value?.platform === platform, `${label}: schema, kind, or platform mismatch`);
-  add(blockers, value?.repository === STABLE_REPOSITORY && value?.ref === "refs/heads/main" && value?.commit === expected.commit && value?.version === expected.version, `${label}: source identity mismatch`);
-  add(blockers, value?.result === "passed" && ISO_TIME.test(String(value?.checked_at || "")), `${label}: retained result is not a timestamped pass`);
-  const checkMap = new Map((Array.isArray(value?.checks) ? value.checks : []).map((item) => [item?.id, item?.result]));
-  for (const check of PLATFORMS[platform]) add(blockers, checkMap.get(check) === "passed", `${label}: ${check} evidence is missing or did not pass`);
-  const expectedRoles = platform === "macos" ? ["mac_dmg", "mac_updater_zip"] : ["linux_tgz"];
-  const records = Array.isArray(value?.artifacts) ? value.artifacts : [];
-  for (const role of expectedRoles) {
-    const matching = records.filter((item) => item?.role === role);
-    add(blockers, matching.length === 1 && matching[0].name === artifacts[role]?.name && matching[0].sha256 === artifacts[role]?.sha256, `${label}: ${role} does not match candidate bytes`);
-  }
+  for (const message of platformEvidenceBlockers(value, { ...expected, platform, artifacts })) blockers.push(`${label}: ${message}`);
 }
 
 function releaseNotes(version, commit, promotion, artifacts, changelog, acceptance) {
@@ -155,6 +167,7 @@ export function validatePromotionBundle(options) {
 
   const records = promotion?.records || {};
   const candidateManifest = checkedRecord(bundle, records.candidate_manifest, blockers, "candidate manifest");
+  const macCandidateManifest = checkedRecord(bundle, records.mac_candidate_manifest, blockers, "Mac candidate manifest");
   const runRecord = checkedRecord(bundle, records.candidate_workflow, blockers, "candidate workflow");
   const ciRecord = checkedRecord(bundle, records.candidate_ci, blockers, "candidate CI");
   const artifactRecord = checkedRecord(bundle, records.candidate_artifact, blockers, "candidate artifact");
@@ -163,7 +176,10 @@ export function validatePromotionBundle(options) {
     expected.ciRunId = String(candidateManifest.value?.ci?.run_id || "");
     validateCandidateManifest(candidateManifest.value, expected, blockers);
   }
-  if (runRecord) validateRun(runRecord.value, expected, blockers);
+  if (runRecord) {
+    expected.runAttempt = String(runRecord.value?.run_attempt || "");
+    validateRun(runRecord.value, expected, blockers);
+  }
   if (ciRecord) validateCi(ciRecord.value, expected, blockers);
   if (artifactRecord) validateArtifactRecord(artifactRecord.value, expected, blockers);
 
@@ -183,15 +199,24 @@ export function validatePromotionBundle(options) {
     if (provenance) {
       add(blockers, provenance.value?.schema === 1 && provenance.value?.kind === "1helm-artifact-provenance", `${role} provenance: schema or kind mismatch`);
       add(blockers, provenance.value?.repository === STABLE_REPOSITORY && provenance.value?.ref === "refs/heads/main" && provenance.value?.commit === expected.commit, `${role} provenance: source identity mismatch`);
-      add(blockers, provenance.value?.artifact?.role === role && provenance.value?.artifact?.name === spec?.name && provenance.value?.artifact?.sha256 === spec?.sha256, `${role} provenance: artifact digest mismatch`);
+      add(blockers, provenance.value?.version === expected.version && String(provenance.value?.candidate_workflow_run_id) === expected.runId
+        && String(provenance.value?.source_ci_run_id) === String(expected.ciRunId), `${role} provenance: version or candidate/CI run identity mismatch`);
+      add(blockers, provenance.value?.artifact?.role === role && provenance.value?.artifact?.name === spec?.name
+        && provenance.value?.artifact?.sha256 === spec?.sha256 && Number(provenance.value?.artifact?.bytes) === Number(spec?.bytes), `${role} provenance: artifact digest or byte count mismatch`);
       if (role === "linux_tgz") {
         add(blockers, provenance.value?.builder === "github-hosted" && provenance.value?.attestation_created === true && provenance.value?.signer_workflow === "gitcommit90/1Helm/.github/workflows/candidate.yml", "linux_tgz provenance: trusted hosted builder attestation record is missing");
         add(blockers, options.linuxAttestationVerified === true, "linux_tgz provenance: GitHub attestation was not cryptographically verified in this promotion run");
       }
-      if (role !== "linux_tgz") add(blockers, provenance.value?.signing === "developer-id" && provenance.value?.notarization === "accepted", `${role} provenance: signing or notarization evidence is missing`);
+      if (role !== "linux_tgz") {
+        add(blockers, provenance.value?.builder === "dedicated-macos"
+          && provenance.value?.signer_workflow === "gitcommit90/1Helm/.github/workflows/candidate.yml", `${role} provenance: dedicated Mac builder/workflow identity is missing`);
+        add(blockers, provenance.value?.signing === "developer-id" && provenance.value?.notarization === "accepted"
+          && provenance.value?.stapling === "validated" && provenance.value?.gatekeeper === "accepted", `${role} provenance: signing, notarization, stapling, or Gatekeeper evidence is missing`);
+      }
     }
   }
   add(blockers, (Array.isArray(promotion?.artifacts) ? promotion.artifacts : []).length === 3, "desktop artifact matrix must contain exactly three artifacts");
+  if (macCandidateManifest) validateMacCandidateManifest(macCandidateManifest.value, expected, artifacts, blockers);
 
   if (candidateManifest && artifacts.linux_tgz?.path) {
     add(blockers, candidateManifest.value?.artifact?.sha256 === artifacts.linux_tgz.sha256 && candidateManifest.value?.artifact?.bytes === artifacts.linux_tgz.bytes, "Linux candidate manifest does not match promoted archive bytes");
@@ -210,7 +235,13 @@ export function validatePromotionBundle(options) {
 
   for (const platform of Object.keys(PLATFORMS)) {
     const record = checkedRecord(bundle, records?.acceptance?.[platform], blockers, `${platform} acceptance`);
-    if (record) validatePlatformEvidence(platform, record.value, expected, artifacts, blockers);
+    if (record) {
+      validatePlatformEvidence(platform, record.value, expected, artifacts, blockers);
+      if (platform === "macos" && macCandidateManifest) {
+        add(blockers, record.value?.runner?.name === macCandidateManifest.value?.builder?.runner_name,
+          "macos acceptance: runner does not match the dedicated Mac builder");
+      }
+    }
   }
 
   const packageRecord = checkedRecord(bundle, records.package, blockers, "package version record");

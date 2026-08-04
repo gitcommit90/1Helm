@@ -67,6 +67,12 @@ previous candidate, and rollback result/time. Historical attempts are retained
 root-only beside it; detailed install logs are root-only under
 `/var/log/1helm-candidate`.
 
+Phase 4 retains this private status as the Linux dress-rehearsal proof and also
+runs an ephemeral hosted Linux acceptance lane for clean install, distinct
+prior Stable to candidate update, state identity, systemd health, and a forced
+failure rollback. The Phase 3 bundle requires both records. Phase 4 does not
+change or repurpose this guest or its unique runner.
+
 Integrate this read-only evidence with Phase 0 without tracking private
 coordinates:
 

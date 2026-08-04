@@ -33,6 +33,7 @@ jobs:
     outputs:
       artifact-name: ${{ steps.identity.outputs.artifact_name }}
       commit: ${{ steps.identity.outputs.commit }}
+      version: ${{ steps.identity.outputs.version }}
       ci-run-id: ${{ steps.identity.outputs.ci_run_id }}
     steps:
       - name: Check out the exact successful CI commit
@@ -102,13 +103,13 @@ jobs:
           archive="dist/1Helm-${version}-linux-node.tgz"
           evidence="dist/candidate-evidence"
           mkdir -p "$evidence"
-          HELM_CANDIDATE_ARCHIVE="$archive" \
-            HELM_CANDIDATE_MANIFEST="$evidence/candidate.json" \
+          HELM_CANDIDATE_ARCHIVE="$archive" HELM_CANDIDATE_MANIFEST="$evidence/candidate.json" \
             node scripts/candidate-manifest.mjs
           cp "$archive.sha256" "$evidence/archive.sha256"
           sha256sum "$evidence/candidate.json" > "$evidence/manifest.sha256"
           printf 'artifact_name=1helm-candidate-%s\n' "$CI_HEAD_SHA" >> "$GITHUB_OUTPUT"
           printf 'commit=%s\n' "$CI_HEAD_SHA" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
           printf 'ci_run_id=%s\n' "$HELM_CANDIDATE_CI_RUN_ID" >> "$GITHUB_OUTPUT"
 
       - name: Attest archive provenance on the hosted builder
@@ -138,14 +139,104 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  build-macos:
+    name: Build signed notarized exact Mac candidate
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.repository.full_name == github.repository &&
+      github.sha == github.event.workflow_run.head_sha &&
+      github.ref == 'refs/heads/main' &&
+      vars.HELM_PHASE4_MACOS_ENABLED == '1'
+    runs-on: [1helm-macos-phase4]
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      HELM_PHASE4_RUNNER_LABEL: 1helm-macos-phase4
+    outputs:
+      artifact-name: ${{ steps.identity.outputs.artifact_name }}
+    steps:
+      - name: Re-verify trusted event before repository code runs
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          EXPECTED_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          EXPECTED_EVENT: ${{ github.event.workflow_run.event }}
+          EXPECTED_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          EXPECTED_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = gitcommit90/1Helm
+          test "$EXPECTED_REPOSITORY" = "$GITHUB_REPOSITORY"
+          test "$EXPECTED_EVENT" = push
+          test "$EXPECTED_BRANCH" = main
+          test "$EXPECTED_CONCLUSION" = success
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checkout and install exact dependencies without privilege
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.workflow_run.head_sha }}"
+          test -z "$(git status --porcelain)"
+          test "$(uname -s)-$(uname -m)" = Darwin-arm64
+          PUPPETEER_SKIP_DOWNLOAD=1 npm ci
+
+      - name: Build, sign, notarize, staple, and Gatekeeper-check both Mac artifacts
+        shell: bash
+        env:
+          HELM_REQUIRE_NOTARIZATION: "1"
+        run: npm run package:dmg:release
+
+      - name: Bind exact Mac bytes to the candidate and CI identities
+        id: identity
+        shell: bash
+        env:
+          HELM_CANDIDATE_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          HELM_CANDIDATE_CI_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          mkdir -p dist/candidate-evidence
+          HELM_CANDIDATE_VERSION="$version" \
+          HELM_MAC_DMG="dist/1Helm-$version-arm64.dmg" \
+          HELM_MAC_ZIP="dist/1Helm-$version-mac-arm64.zip" \
+          HELM_MAC_MANIFEST="dist/candidate-evidence/mac-candidate.json" \
+            node scripts/mac-candidate-manifest.mjs
+          printf 'artifact_name=1helm-macos-candidate-%s\n' "$HELM_CANDIDATE_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload exact retained signed Mac candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.identity.outputs.artifact_name }}
+          path: |
+            dist/1Helm-*-arm64.dmg
+            dist/1Helm-*-mac-arm64.zip
+            dist/candidate-evidence/mac-candidate.json
+            dist/candidate-evidence/mac_dmg-provenance.json
+            dist/candidate-evidence/mac_updater_zip-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+
   deploy:
-    name: Install only on private Phase 2 dress rehearsal
+    name: Retain private Phase 2 Linux dress rehearsal
     needs: build
     runs-on: [1helm-dress-rehearsal-phase2]
     timeout-minutes: 20
     permissions:
       contents: read
       actions: read
+      attestations: read
     steps:
       - name: Download this workflow's exact candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -159,10 +250,12 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = "gitcommit90/1Helm"
+          test "$GITHUB_EVENT_NAME" = workflow_run
           test "$EXPECTED_COMMIT" = "${{ github.event.workflow_run.head_sha }}"
-          test "${{ github.event.workflow_run.head_branch }}" = "main"
+          test "${{ github.event.workflow_run.event }}" = push
+          test "${{ github.event.workflow_run.head_branch }}" = main
           test "${{ github.event.workflow_run.head_repository.full_name }}" = "$GITHUB_REPOSITORY"
-          test "${{ github.event.workflow_run.conclusion }}" = "success"
+          test "${{ github.event.workflow_run.conclusion }}" = success
           archive="$(find candidate-download -maxdepth 1 -type f -name '1Helm-*-linux-node.tgz' -print -quit)"
           test -n "$archive"
           install -m 0600 "$archive" /var/lib/1helm-candidate/inbox/candidate.tgz
@@ -170,15 +263,10 @@ jobs:
           install -m 0600 candidate-download/candidate-evidence/provenance.bundle.json /var/lib/1helm-candidate/inbox/provenance.bundle.json
           sudo -n /usr/local/sbin/1helm-candidate-install
 
-      - name: Publish private installation evidence in the job log
-        run: |
-          test -r /var/lib/1helm-candidate/evidence/status.json
-          python3 /usr/local/lib/1helm-candidate/candidate-boundary.py summary \
-            /var/lib/1helm-candidate/evidence/status.json
-
       - name: Retain exact private dress-rehearsal evidence
         run: |
           set -euo pipefail
+          python3 /usr/local/lib/1helm-candidate/candidate-boundary.py summary /var/lib/1helm-candidate/evidence/status.json
           install -d -m 0700 candidate-result
           install -m 0600 /var/lib/1helm-candidate/evidence/status.json candidate-result/dress-rehearsal.json
 
@@ -190,48 +278,253 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  assemble-promotion:
-    name: Assemble honest Phase 3 promotion candidate
-    needs: [build, deploy]
-    if: needs.deploy.result == 'success'
+  accept-linux:
+    name: Linux clean, update, state, health, and rollback acceptance
+    needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 60
     permissions:
       contents: read
       actions: read
+      attestations: read
     steps:
-      - name: Check out the exact candidate commit
+      - name: Check out the exact candidate verification code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.build.outputs.commit }}
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Download exact built Linux candidate
+      - name: Download exact Linux candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ needs.build.outputs.artifact-name }}
           path: candidate-download
 
-      - name: Download exact dress-rehearsal result
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: 1helm-dress-rehearsal-evidence-${{ needs.build.outputs.commit }}
-          path: rehearsal-download
+      - name: Execute real ephemeral systemd acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HELM_EXPECTED_COMMIT: ${{ needs.build.outputs.commit }}
+          HELM_EXPECTED_CI_RUN_ID: ${{ needs.build.outputs.ci-run-id }}
+          HELM_CANDIDATE_MANIFEST: candidate-download/candidate-evidence/candidate.json
+          HELM_CANDIDATE_PROVENANCE: candidate-download/candidate-evidence/provenance.bundle.json
+          HELM_ACCEPTANCE_OUTPUT: linux-acceptance.json
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = gitcommit90/1Helm
+          test "$GITHUB_EVENT_NAME" = workflow_run
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_SHA" = "$HELM_EXPECTED_COMMIT"
+          test "${{ github.event.workflow_run.event }}" = push
+          test "${{ github.event.workflow_run.head_repository.full_name }}" = "$GITHUB_REPOSITORY"
+          export HELM_CANDIDATE_ARCHIVE="$(find candidate-download -maxdepth 1 -type f -name '1Helm-*-linux-node.tgz' -print -quit)"
+          test -n "$HELM_CANDIDATE_ARCHIVE"
+          bash ops/platform-acceptance/linux.sh
 
-      - name: Assemble retained bytes without rebuilding
+      - name: Upload exact Linux acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: 1helm-linux-acceptance-${{ needs.build.outputs.commit }}
+          path: linux-acceptance.json
+          if-no-files-found: error
+          retention-days: 30
+
+  accept-macos:
+    name: macOS signature, clean install, updater, state, and health acceptance
+    needs: [build, build-macos]
+    if: needs.build-macos.result == 'success' && vars.HELM_PHASE4_MACOS_ENABLED == '1'
+    runs-on: [1helm-macos-phase4]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    env:
+      HELM_PHASE4_RUNNER_LABEL: 1helm-macos-phase4
+    steps:
+      - name: Re-verify trusted event before repository code runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = gitcommit90/1Helm
+          test "$GITHUB_EVENT_NAME" = workflow_run
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_SHA" = "${{ needs.build.outputs.commit }}"
+          test "${{ github.event.workflow_run.event }}" = push
+          test "${{ github.event.workflow_run.head_branch }}" = main
+          test "${{ github.event.workflow_run.head_repository.full_name }}" = "$GITHUB_REPOSITORY"
+          test "${{ github.event.workflow_run.conclusion }}" = success
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.build-macos.outputs.artifact-name }}
+          path: mac-candidate-download
+
+      - name: Execute exact Apple Silicon acceptance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HELM_EXPECTED_COMMIT: ${{ needs.build.outputs.commit }}
+          HELM_EXPECTED_CI_RUN_ID: ${{ needs.build.outputs.ci-run-id }}
+          HELM_MAC_CANDIDATE_DOWNLOAD: mac-candidate-download
+          HELM_ACCEPTANCE_OUTPUT: macos-acceptance.json
+        run: bash ops/platform-acceptance/macos.sh
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: 1helm-macos-acceptance-${{ needs.build.outputs.commit }}
+          path: macos-acceptance.json
+          if-no-files-found: error
+          retention-days: 30
+
+  accept-windows:
+    name: Windows 11 WSL behavior, reboot, update, keepalive, and uninstall acceptance
+    needs: build
+    if: needs.build.result == 'success' && vars.HELM_PHASE4_WINDOWS_ENABLED == '1'
+    runs-on: [1helm-windows-phase4]
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    env:
+      HELM_PHASE4_RUNNER_LABEL: 1helm-windows-phase4
+    steps:
+      - name: Re-verify trusted event before repository code runs
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REPOSITORY -ne 'gitcommit90/1Helm' -or $env:GITHUB_EVENT_NAME -ne 'workflow_run' -or
+              $env:GITHUB_REF -ne 'refs/heads/main' -or $env:GITHUB_SHA -ne '${{ needs.build.outputs.commit }}' -or
+              '${{ github.event.workflow_run.event }}' -ne 'push' -or '${{ github.event.workflow_run.head_branch }}' -ne 'main' -or
+              '${{ github.event.workflow_run.head_repository.full_name }}' -ne $env:GITHUB_REPOSITORY -or
+              '${{ github.event.workflow_run.conclusion }}' -ne 'success') { throw 'Windows runner refused untrusted candidate identity.' }
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: candidate-download
+
+      - name: Execute exact Windows 11 WSL behavior acceptance
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HELM_EXPECTED_COMMIT: ${{ needs.build.outputs.commit }}
+          HELM_EXPECTED_CI_RUN_ID: ${{ needs.build.outputs.ci-run-id }}
+          HELM_CANDIDATE_MANIFEST: candidate-download/candidate-evidence/candidate.json
+          HELM_CANDIDATE_PROVENANCE: candidate-download/candidate-evidence/provenance.bundle.json
+          HELM_ACCEPTANCE_OUTPUT: windows-acceptance.json
+        run: |
+          $archive = Get-ChildItem candidate-download -Filter '1Helm-*-linux-node.tgz' | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $archive) { throw 'Exact Linux candidate archive is missing.' }
+          $env:HELM_CANDIDATE_ARCHIVE = $archive
+          & .\ops\platform-acceptance\windows.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: 1helm-windows-acceptance-${{ needs.build.outputs.commit }}
+          path: windows-acceptance.json
+          if-no-files-found: error
+          retention-days: 30
+
+  assemble-promotion:
+    name: Assemble complete Phase 3 promotion bundle without rebuilding
+    needs: [build, build-macos, deploy, accept-linux, accept-macos, accept-windows]
+    if: >-
+      needs.build.result == 'success' && needs.build-macos.result == 'success' &&
+      needs.deploy.result == 'success' && needs.accept-linux.result == 'success' &&
+      needs.accept-macos.result == 'success' && needs.accept-windows.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: "${{ needs.build.outputs.artifact-name }}", path: candidate-download }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: "${{ needs.build-macos.outputs.artifact-name }}", path: mac-candidate-download }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: "1helm-dress-rehearsal-evidence-${{ needs.build.outputs.commit }}", path: rehearsal-download }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: "1helm-linux-acceptance-${{ needs.build.outputs.commit }}", path: linux-acceptance-download }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: "1helm-macos-acceptance-${{ needs.build.outputs.commit }}", path: macos-acceptance-download }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: "1helm-windows-acceptance-${{ needs.build.outputs.commit }}", path: windows-acceptance-download }
+
+      - name: Assemble only the retained complete matrix and evidence
         env:
           HELM_CANDIDATE_DOWNLOAD: candidate-download
+          HELM_MAC_CANDIDATE_DOWNLOAD: mac-candidate-download
           HELM_REHEARSAL_EVIDENCE: rehearsal-download/dress-rehearsal.json
+          HELM_LINUX_ACCEPTANCE_EVIDENCE: linux-acceptance-download/linux-acceptance.json
+          HELM_MAC_ACCEPTANCE_EVIDENCE: macos-acceptance-download/macos-acceptance.json
+          HELM_WINDOWS_ACCEPTANCE_EVIDENCE: windows-acceptance-download/windows-acceptance.json
+          HELM_ACCEPTANCE_CONTENT: docs/phase4-platform-acceptance.md
           HELM_PROMOTION_OUTPUT: promotion-candidate
           HELM_PROJECT_ROOT: .
           HELM_CANDIDATE_CI_RUN_ID: ${{ needs.build.outputs.ci-run-id }}
         run: node scripts/candidate-promotion-skeleton.mjs
 
-      - name: Upload the exact Phase 3 promotion candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: 1helm-promotion-candidate-${{ needs.build.outputs.commit }}
           path: promotion-candidate/
+          if-no-files-found: error
+          retention-days: 30
+
+  candidate-status:
+    name: Report per-platform Phase 3 readiness
+    needs: [build, build-macos, deploy, accept-linux, accept-macos, accept-windows, assemble-promotion]
+    if: always() && needs.build.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Retain honest pass, failure, and missing-runner blockers
+        env:
+          HELM_CANDIDATE_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          HELM_CANDIDATE_VERSION: ${{ needs.build.outputs.version }}
+          HELM_LINUX_BUILD_RESULT: ${{ needs.build.result }}
+          HELM_LINUX_REHEARSAL_RESULT: ${{ needs.deploy.result }}
+          HELM_MAC_BUILD_RESULT: ${{ needs.build-macos.result }}
+          HELM_LINUX_ACCEPTANCE_RESULT: ${{ needs.accept-linux.result }}
+          HELM_MAC_ACCEPTANCE_RESULT: ${{ needs.accept-macos.result }}
+          HELM_WINDOWS_ACCEPTANCE_RESULT: ${{ needs.accept-windows.result }}
+          HELM_PROMOTION_BUNDLE_RESULT: ${{ needs.assemble-promotion.result }}
+          HELM_CANDIDATE_STATUS_OUTPUT: candidate-matrix-status.json
+        run: node scripts/candidate-matrix-status.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: 1helm-candidate-matrix-status-${{ github.event.workflow_run.head_sha }}
+          path: candidate-matrix-status.json
           if-no-files-found: error
           retention-days: 30

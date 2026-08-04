@@ -44,6 +44,7 @@
     "test:phase1": "node --test test/phase1-tools.mjs test/delivery-status.mjs test/cleanup-report.mjs",
     "test:phase2": "node --test test/phase2-candidate.mjs test/delivery-status.mjs",
     "test:phase3": "node --test test/phase3-promotion.mjs test/site-stable-manifest.mjs",
+    "test:phase4": "node --test test/phase4-platform-acceptance.mjs test/phase3-promotion.mjs",
     "test:fast": "node scripts/run-fast-tests.mjs",
     "delivery:status": "node scripts/delivery-status.mjs",
     "stable:status": "node scripts/promotion-status.mjs",

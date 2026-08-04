@@ -49,10 +49,11 @@ function createBundle() {
   const macZip = artifact("mac_updater_zip", `1Helm-${version}-mac-arm64.zip`, macZipBytes);
   const provenance = (item, extra) => write(`${item.role}-provenance.json`, {
     schema: 1, kind: "1helm-artifact-provenance", repository: "gitcommit90/1Helm", ref: "refs/heads/main", commit,
-    artifact: { role: item.role, name: item.name, sha256: item.sha256 }, ...extra,
+    version, candidate_workflow_run_id: runId, source_ci_run_id: "111",
+    artifact: { role: item.role, name: item.name, sha256: item.sha256, bytes: item.bytes }, ...extra,
   });
-  macDmg.provenance = provenance(macDmg, { signing: "developer-id", notarization: "accepted" });
-  macZip.provenance = provenance(macZip, { signing: "developer-id", notarization: "accepted" });
+  macDmg.provenance = provenance(macDmg, { builder: "dedicated-macos", signer_workflow: "gitcommit90/1Helm/.github/workflows/candidate.yml", signing: "developer-id", notarization: "accepted", stapling: "validated", gatekeeper: "accepted" });
+  macZip.provenance = provenance(macZip, { builder: "dedicated-macos", signer_workflow: "gitcommit90/1Helm/.github/workflows/candidate.yml", signing: "developer-id", notarization: "accepted", stapling: "validated", gatekeeper: "accepted" });
   linux.provenance = provenance(linux, { builder: "github-hosted", attestation_created: true, signer_workflow: "gitcommit90/1Helm/.github/workflows/candidate.yml" });
   const candidateManifest = {
     schema: 1, kind: "1helm-dress-rehearsal-candidate",
@@ -61,9 +62,17 @@ function createBundle() {
     artifact: { name: linux.name, sha256: linux.sha256, bytes: linux.bytes }, sealed_oci: { sha256: identity.sealed_oci_sha256 },
   };
   const candidateRecord = write("candidate.json", candidateManifest);
+  const macCandidateRecord = write("mac-candidate.json", {
+    schema: 1, kind: "1helm-macos-candidate", repository: "gitcommit90/1Helm", ref: "refs/heads/main", commit, version,
+    candidate: { workflow: "Candidate dress rehearsal", workflow_path: ".github/workflows/candidate.yml", event: "workflow_run", run_id: runId, run_attempt: "1" },
+    source_ci: { workflow: "CI", run_id: "111", conclusion: "success" },
+    builder: { type: "dedicated-self-hosted", runner_name: "macos-fixture-runner", runner_label: "1helm-macos-phase4", os: "macOS", architecture: "ARM64" },
+    signing: { identity: "developer-id-application", notarization: "accepted", stapling: "validated", gatekeeper: "accepted", checked_at: "2026-08-04T13:00:00Z" },
+    artifacts: [macDmg, macZip].map(({ role, name, sha256, bytes }) => ({ role, name, sha256, bytes })),
+  });
   const workflowRecord = write("trusted-candidate-workflow.json", {
     id: Number(runId), name: "Candidate dress rehearsal", path: ".github/workflows/candidate.yml", event: "workflow_run",
-    status: "completed", conclusion: "success", head_branch: "main", head_sha: commit, head_repository: { full_name: "gitcommit90/1Helm" },
+    status: "completed", conclusion: "success", run_attempt: 1, head_branch: "main", head_sha: commit, head_repository: { full_name: "gitcommit90/1Helm" },
   });
   const ciRecord = write("trusted-candidate-ci.json", {
     id: 111, name: "CI", path: ".github/workflows/ci.yml", event: "push", status: "completed", conclusion: "success",
@@ -86,10 +95,27 @@ function createBundle() {
   const acceptanceArtifacts = { macos: [macDmg, macZip], linux: [linux], windows: [linux] };
   const acceptance = {};
   for (const platform of Object.keys(checkIds)) {
+    const marker = sha(`${platform}-retained-state`);
     acceptance[platform] = write(`${platform}-acceptance.json`, {
       schema: 1, kind: "1helm-platform-acceptance", platform, repository: "gitcommit90/1Helm", ref: "refs/heads/main", commit, version,
-      result: "passed", checked_at: "2026-08-04T14:00:00Z", checks: checkIds[platform].map((id) => ({ id, result: "passed" })),
-      artifacts: acceptanceArtifacts[platform].map(({ role, name, sha256 }) => ({ role, name, sha256 })),
+      result: "passed", started_at: "2026-08-04T13:30:00Z", checked_at: "2026-08-04T14:00:00Z",
+      candidate: { workflow: "Candidate dress rehearsal", workflow_path: ".github/workflows/candidate.yml", event: "workflow_run", run_id: runId, run_attempt: "1" },
+      source_ci: { workflow: "CI", run_id: "111", conclusion: "success" },
+      machine: {
+        id: `${platform}-fixture-machine`, kind: { linux: "github-hosted-ephemeral", macos: "dedicated-apple-silicon", windows: "dedicated-windows-11-vm" }[platform],
+        os: { linux: "Linux", macos: "macOS", windows: "Windows" }[platform], os_version: "fixture-1",
+        architecture: platform === "macos" ? "ARM64" : "X64", dedicated: true, production_data: false,
+      },
+      runner: { name: `${platform}-fixture-runner`, labels: [platform === "linux" ? "ubuntu-latest" : `1helm-${platform}-phase4`], job: `accept-${platform}` },
+      ...(platform === "windows" ? { continuity: {
+        mode: "snapshot-assisted-equivalent", result: "passed", checked_at: "2026-08-04T14:00:00Z",
+        summary: "Fixture continuity equivalent passed.",
+      } } : {}),
+      checks: checkIds[platform].map((id) => ({ id, result: "passed", checked_at: "2026-08-04T14:00:00Z", summary: `${id} fixture passed.` })),
+      artifacts: acceptanceArtifacts[platform].map(({ role, name, sha256, bytes }) => ({ role, name, sha256, bytes })),
+      state_preservation: { result: "passed", checked_at: "2026-08-04T14:00:00Z", summary: "Fixture state retained byte identity.", before_sha256: marker, after_sha256: marker },
+      recovery: { result: "passed", checked_at: "2026-08-04T14:00:00Z", summary: "Fixture recovery completed.", before_sha256: marker, after_sha256: marker },
+      notes: ["Promotion integration fixture only."],
     });
   }
   const packageRecord = write("package.json", { version });
@@ -99,7 +125,7 @@ function createBundle() {
     schema: 1, kind: "1helm-stable-promotion-candidate", repository: "gitcommit90/1Helm", ref: "refs/heads/main", commit, version,
     acceptance_ledger_required: true,
     candidate: { workflow_run_id: runId, artifact_id: artifactId, artifact_name: `1helm-promotion-candidate-${commit}` },
-    records: { candidate_manifest: candidateRecord, candidate_workflow: workflowRecord, candidate_ci: ciRecord, candidate_artifact: artifactRecord, dress_rehearsal: rehearsal, acceptance, package: packageRecord, changelog, acceptance_content: acceptanceContent },
+    records: { candidate_manifest: candidateRecord, mac_candidate_manifest: macCandidateRecord, candidate_workflow: workflowRecord, candidate_ci: ciRecord, candidate_artifact: artifactRecord, dress_rehearsal: rehearsal, acceptance, package: packageRecord, changelog, acceptance_content: acceptanceContent },
     artifacts: [macDmg, macZip, linux],
   };
   writeFileSync(join(bundle, "promotion.json"), `${JSON.stringify(promotion, null, 2)}\n`);
