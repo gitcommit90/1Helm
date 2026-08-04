@@ -112,6 +112,16 @@ test("workflow routes no PR/fork code, uses unique labels, fans acceptance out, 
   assert.doesNotMatch(workflow, /pull_request_target|workflow_dispatch/);
   assert.doesNotMatch(workflow.match(/assemble-promotion:[\s\S]*?(?=\n  candidate-status:)/)?.[0] || "", /npm (ci|install|run build|run package)/);
   assert.match(workflow, /Upload exact Linux acceptance evidence\n        if: always\(\)/);
+  // Both retained artifacts must be single-rooted under dist/ so consumers find
+  // files at the download root, not nested under dist/ (the layout bug that
+  // broke Linux, Windows, and Phase 2 candidate discovery in one run).
+  const channelUpload = workflow.match(/- name: Retain immutable digest-addressed channel image candidate[\s\S]*?retention-days: 90/)?.[0] || "";
+  assert.doesNotMatch(channelUpload, /container\//);
+  assert.match(channelUpload, /dist\/1Helm-channel-machine-v1-\*\.oci\.tar/);
+  const linuxAccept = read("ops/platform-acceptance/linux.sh");
+  assert.match(linuxAccept, /RUNNER_ENVIRONMENT.*==.*"github-hosted"/);
+  assert.match(linuxAccept, /1helm-standalone/);
+  assert.match(linuxAccept, /refuses to run while port 8123 is already in use/);
   assert.match(workflow.match(/accept-macos:[\s\S]*?(?=\n  accept-windows:)/)?.[0] || "", /if: always\(\)[\s\S]*name: 1helm-macos-acceptance-/);
   assert.match(workflow.match(/accept-windows:[\s\S]*?(?=\n  assemble-promotion:)/)?.[0] || "", /if: always\(\)[\s\S]*name: 1helm-windows-acceptance-/);
 });

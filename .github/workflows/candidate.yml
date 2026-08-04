@@ -190,7 +190,6 @@ jobs:
             dist/1Helm-*-linux-split.json
             dist/artifact-size-report.json
             dist/artifact-size-report.txt
-            container/channel-machine.oci.json
             dist/candidate-evidence/candidate.json
             dist/candidate-evidence/archive.sha256
             dist/candidate-evidence/manifest.sha256
@@ -205,7 +204,6 @@ jobs:
           path: |
             dist/1Helm-channel-machine-v1-*.oci.tar
             dist/1Helm-channel-machine-v1-*.json
-            container/channel-machine.oci.sha256
           if-no-files-found: error
           retention-days: 90
 
@@ -308,6 +306,9 @@ jobs:
       actions: read
       attestations: read
     steps:
+      - name: Clear retained runner workspace from prior candidates
+        run: rm -rf -- candidate-download candidate-result
+
       - name: Download this workflow's exact candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:

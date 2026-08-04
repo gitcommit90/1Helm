@@ -115,6 +115,7 @@ test("rollback fixtures remain local-only and cannot satisfy normal candidate va
 
 test("candidate workflow and guest boundary exclude PR code and broad root access", () => {
   const workflow = read(".github/workflows/candidate.yml");
+  const candidateUpload = workflow.match(/- name: Upload exact candidate and evidence[\s\S]*?retention-days: 30/)?.[0] || "";
   const helper = read("ops/dress-rehearsal/1helm-candidate-install");
   const hook = read("ops/dress-rehearsal/runner-job-started.sh");
   const sudoersExample = "%actions ALL=(root) NOPASSWD: /usr/local/sbin/1helm-candidate-install \"\"\n";
@@ -122,10 +123,14 @@ test("candidate workflow and guest boundary exclude PR code and broad root acces
   assert.match(workflow, /workflow_run\.event == 'push'/);
   assert.match(workflow, /head_repository\.full_name == github\.repository/);
   assert.match(workflow, /runs-on: \[1helm-dress-rehearsal-phase2\]/);
+  assert.match(workflow, /Clear retained runner workspace[\s\S]*rm -rf -- candidate-download candidate-result[\s\S]*Download this workflow's exact candidate/);
   assert.match(workflow, /github\.sha == github\.event\.workflow_run\.head_sha/);
   assert.match(workflow, /attest-build-provenance@[a-f0-9]{40}/);
   assert.match(workflow, /candidate-download\/candidate-evidence\/candidate\.json/);
   assert.match(workflow, /candidate-download\/candidate-evidence\/provenance\.bundle\.json/);
+  assert.match(candidateUpload, /dist\/1Helm-\*-linux-node\.tgz/);
+  assert.match(candidateUpload, /dist\/candidate-evidence\/candidate\.json/);
+  assert.doesNotMatch(candidateUpload, /container\/channel-machine\.oci\.json/);
   assert.match(helper, /--signer-workflow gitcommit90\/1Helm\/\.github\/workflows\/candidate\.yml/);
   assert.match(helper, /--source-ref refs\/heads\/main/);
   assert.match(helper, /--source-digest "\$commit"/);
