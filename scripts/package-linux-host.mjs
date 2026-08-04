@@ -1,108 +1,132 @@
 #!/usr/bin/env node
-import { chmodSync, cpSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync, closeSync, cpSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
+  openSync, readFileSync, readdirSync, readSync, rmSync, statSync, writeFileSync,
+} from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
+import {
+  LINUX_SPLIT_KIND, LINUX_SPLIT_SCHEMA, normalizeChannelImageManifest, offlineBundleName, releasedChannelImageManifest,
+} from "./artifact-contract.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const version = String(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).version || "").trim();
+const packageValue = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
+const version = String(packageValue.version || "").trim();
 if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("package.json must contain a release version");
-const dist = resolve(root, "dist");
+const dist = resolve(process.env.HELM_LINUX_DIST_DIR || join(root, "dist"));
 const output = resolve(dist, `1Helm-${version}-linux-node.tgz`);
+const offlineOutput = resolve(dist, offlineBundleName(version));
+const splitOutput = resolve(dist, `1Helm-${version}-linux-split.json`);
 const cloudflaredVersion = "2026.3.0";
 const cloudflared = [
-  {
-    arch: "x64",
-    asset: "cloudflared-linux-amd64",
-    sha256: "4a9e50e6d6d798e90fcd01933151a90bf7edd99a0a55c28ad18f2e16263a5c30",
-  },
-  {
-    arch: "arm64",
-    asset: "cloudflared-linux-arm64",
-    sha256: "0755ba4cbab59980e6148367fcf53a8f3ec85a97deefd63c2420cf7850769bee",
-  },
+  { arch: "x64", asset: "cloudflared-linux-amd64", sha256: "4a9e50e6d6d798e90fcd01933151a90bf7edd99a0a55c28ad18f2e16263a5c30" },
+  { arch: "arm64", asset: "cloudflared-linux-arm64", sha256: "0755ba4cbab59980e6148367fcf53a8f3ec85a97deefd63c2420cf7850769bee" },
 ];
-const sealed = [
-  "container/channel-machine.oci.tar",
-  "container/channel-machine.oci.sha256",
-  "container/channel-machine.oci.json",
-];
-// `git archive` only carries tracked files, so every gitignored build output has
-// to be injected into the staging tree the same way the sealed image already is.
-// Shipping them means the end-user host never runs `npm run build`.
-const builtFiles = [
-  "public/bundle.js",
-  "public/bundle.css",
-  "public/app.css",
-  "public/index.html",
-  "desktop/photon-sidecar.bundle.mjs",
-];
+const builtFiles = ["public/bundle.js", "public/bundle.css", "public/app.css", "public/index.html", "desktop/photon-sidecar.bundle.mjs"];
 const builtTrees = ["public/excalidraw"];
-// Native addons are compiled inside this image, never on the packaging host: it
-// is the oldest glibc we support building against (Debian bookworm, glibc 2.36),
-// so the resulting binaries stay forward-compatible with every newer target.
 const nativeBuilderImage = process.env.HELM_LINUX_NATIVE_BUILDER_IMAGE || "docker.io/library/node:22";
 const nativeArchitecture = "x64";
+const ociArchitecture = "amd64";
 const nativeManifestPath = "resources/linux-native-modules.json";
 const requiredNativeModule = "node_modules/node-pty/build/Release/pty.node";
 
-const digestOf = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
-const symbolCeiling = (file, prefix) => {
+function digestFile(file) {
+  const hash = createHash("sha256");
+  const fd = openSync(file, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try { let count; while ((count = readSync(fd, buffer, 0, buffer.length, null)) > 0) hash.update(buffer.subarray(0, count)); }
+  finally { closeSync(fd); }
+  return hash.digest("hex");
+}
+const digestBytes = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const digestText = (...values) => digestBytes(values.join("\n"));
+const run = (file, args, options = {}) => spawnSync(file, args, { cwd: root, encoding: "utf8", ...options });
+
+function copyRequired(sourceRoot, destinationRoot, rel) {
+  const source = resolve(sourceRoot, rel);
+  const confined = relative(sourceRoot, source);
+  if (!confined || confined === ".." || confined.startsWith(`..${sep}`) || !existsSync(source) || lstatSync(source).isSymbolicLink()) {
+    throw new Error(`Linux runtime allowlist entry is missing or unsafe: ${rel}`);
+  }
+  const destination = resolve(destinationRoot, rel);
+  mkdirSync(dirname(destination), { recursive: true });
+  cpSync(source, destination, { recursive: true, dereference: false, preserveTimestamps: false });
+}
+
+function symbolCeiling(file, prefix) {
   const found = new Set();
-  const pattern = new RegExp(`${prefix}_([0-9][0-9.]*)`, "g");
-  for (const match of readFileSync(file).toString("latin1").matchAll(pattern)) found.add(match[1]);
-  const ranked = [...found].sort((left, right) => {
-    const a = left.split(".").map(Number);
-    const b = right.split(".").map(Number);
-    for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
-      if ((a[index] || 0) !== (b[index] || 0)) return (a[index] || 0) - (b[index] || 0);
-    }
+  for (const match of readFileSync(file).toString("latin1").matchAll(new RegExp(`${prefix}_([0-9][0-9.]*)`, "g"))) found.add(match[1]);
+  return [...found].sort((left, right) => {
+    const a = left.split(".").map(Number); const b = right.split(".").map(Number);
+    for (let index = 0; index < Math.max(a.length, b.length); index += 1) if ((a[index] || 0) !== (b[index] || 0)) return (a[index] || 0) - (b[index] || 0);
     return 0;
-  });
-  return ranked.at(-1) || "";
-};
-const nativeAddons = (directory, base = "") => {
+  }).at(-1) || "";
+}
+
+function nativeAddons(directory, base = "") {
   const found = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const relative = base ? `${base}/${entry.name}` : entry.name;
+    const rel = base ? `${base}/${entry.name}` : entry.name;
     if (entry.isSymbolicLink()) continue;
-    if (entry.isDirectory()) found.push(...nativeAddons(join(directory, entry.name), relative));
-    else if (entry.isFile() && /\/build\/Release\/[^/]+\.node$/.test(`/${relative}`)) found.push(relative);
+    if (entry.isDirectory()) found.push(...nativeAddons(join(directory, entry.name), rel));
+    else if (entry.isFile() && /\/build\/Release\/[^/]+\.node$/.test(`/${rel}`)) found.push(rel);
   }
-  return found;
-};
+  return found.sort();
+}
 
-const repository = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: root, encoding: "utf8" });
+function slimDependencies(directory) {
+  const excludedDirectories = new Set(runtimePackage.production_dependency_excludes.directory_names);
+  const excludedFiles = new Set(runtimePackage.production_dependency_excludes.file_names);
+  const excludedSuffixes = runtimePackage.production_dependency_excludes.file_suffixes;
+  let files = 0; let bytes = 0;
+  function walk(current) {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (excludedDirectories.has(entry.name)) { rmSync(path, { recursive: true, force: true }); continue; }
+        walk(path);
+      } else if (entry.isFile() && (excludedFiles.has(entry.name) || excludedSuffixes.some((suffix) => entry.name.endsWith(suffix)))) {
+        bytes += statSync(path).size; files += 1; rmSync(path);
+      }
+    }
+  }
+  walk(directory);
+  return { files, bytes };
+}
+
+function deterministicTar(sourceDirectory, prefix, destination) {
+  const tar = spawnSync("tar", ["--sort=name", "--mtime=@0", "--owner=0", "--group=0", "--numeric-owner", "-cf", "-", "-C", sourceDirectory, prefix], {
+    encoding: "buffer", maxBuffer: 1024 * 1024 * 1024,
+  });
+  if (tar.status !== 0) throw new Error(`Could not stage ${basename(destination)}`);
+  const packed = spawnSync("gzip", ["-n", "-c"], { input: tar.stdout, encoding: "buffer", maxBuffer: 1024 * 1024 * 1024 });
+  if (packed.status === 0 && packed.stdout?.length) writeFileSync(destination, packed.stdout);
+  if (packed.status !== 0) throw new Error(`Could not write ${basename(destination)}`);
+}
+
+const repository = run("git", ["rev-parse", "--show-toplevel"]);
 const repositoryRoot = repository.status === 0 ? resolve(String(repository.stdout || "").trim()) : "";
 if (repositoryRoot !== root) {
   throw new Error("Linux packaging must run from the root of the exact Git checkout; a parent repository or source copy is not release authority");
 }
-const headPackage = spawnSync("git", ["show", "HEAD:package.json"], { cwd: root, encoding: "utf8" });
+const headPackage = run("git", ["show", "HEAD:package.json"]);
 let headVersion = "";
-try { headVersion = String(JSON.parse(String(headPackage.stdout || "{}")).version || "").trim(); } catch { }
-if (headPackage.status !== 0 || headVersion !== version) {
-  throw new Error("Linux packaging version does not match package.json at Git HEAD");
-}
-const headResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
-const headSha = String(headResult.stdout || "").trim();
-if (headResult.status !== 0 || !/^[a-f0-9]{40}$/.test(headSha)) throw new Error("Could not resolve the exact Linux package source commit");
+try { headVersion = String(JSON.parse(String(headPackage.stdout || "{}")).version || ""); } catch {}
+if (headPackage.status !== 0 || headVersion !== version) throw new Error("Linux packaging version does not match package.json at Git HEAD");
+const headSha = String(run("git", ["rev-parse", "HEAD"]).stdout || "").trim();
+if (!/^[a-f0-9]{40}$/.test(headSha)) throw new Error("Could not resolve the exact Linux package source commit");
+const runtimePackage = JSON.parse(readFileSync(join(root, "config", "linux-runtime-package.json"), "utf8"));
 
 const candidateRequested = Boolean(process.env.HELM_CANDIDATE_BUILD_ID);
 const candidateIdentity = candidateRequested ? {
-  schema: 1,
-  kind: "1helm-dress-rehearsal-candidate",
-  repository: String(process.env.HELM_CANDIDATE_REPOSITORY || ""),
-  ref: String(process.env.HELM_CANDIDATE_REF || ""),
-  commit: String(process.env.HELM_CANDIDATE_COMMIT || ""),
-  source_state: String(process.env.HELM_CANDIDATE_SOURCE_STATE || ""),
-  build_identity: String(process.env.HELM_CANDIDATE_BUILD_ID || ""),
-  created_at: String(process.env.HELM_CANDIDATE_CREATED_AT || ""),
-  ci: {
-    workflow: String(process.env.HELM_CANDIDATE_CI_WORKFLOW || ""),
-    run_id: String(process.env.HELM_CANDIDATE_CI_RUN_ID || ""),
-    conclusion: String(process.env.HELM_CANDIDATE_CI_CONCLUSION || ""),
-  },
+  schema: 1, kind: "1helm-dress-rehearsal-candidate",
+  repository: String(process.env.HELM_CANDIDATE_REPOSITORY || ""), ref: String(process.env.HELM_CANDIDATE_REF || ""),
+  commit: String(process.env.HELM_CANDIDATE_COMMIT || ""), source_state: String(process.env.HELM_CANDIDATE_SOURCE_STATE || ""),
+  build_identity: String(process.env.HELM_CANDIDATE_BUILD_ID || ""), created_at: String(process.env.HELM_CANDIDATE_CREATED_AT || ""),
+  ci: { workflow: String(process.env.HELM_CANDIDATE_CI_WORKFLOW || ""), run_id: String(process.env.HELM_CANDIDATE_CI_RUN_ID || ""), conclusion: String(process.env.HELM_CANDIDATE_CI_CONCLUSION || "") },
   version,
 } : null;
 if (candidateIdentity) {
@@ -110,182 +134,159 @@ if (candidateIdentity) {
   const validCi = trustedMain
     ? candidateIdentity.ci.workflow === "CI" && /^\d+$/.test(candidateIdentity.ci.run_id) && candidateIdentity.ci.conclusion === "success"
     : candidateIdentity.ci.workflow === "local" && candidateIdentity.ci.run_id === "0" && candidateIdentity.ci.conclusion === "not_run";
-  if (candidateIdentity.repository !== "gitcommit90/1Helm"
-      || candidateIdentity.ref !== "refs/heads/main"
-      || candidateIdentity.commit !== headSha
+  if (candidateIdentity.repository !== "gitcommit90/1Helm" || candidateIdentity.ref !== "refs/heads/main" || candidateIdentity.commit !== headSha
       || !["trusted-main", "local-worktree", "rollback-fixture"].includes(candidateIdentity.source_state)
       || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(candidateIdentity.build_identity)
-      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(candidateIdentity.created_at)
-      || !validCi) {
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(candidateIdentity.created_at) || !validCi) {
     throw new Error("Candidate packaging requires the exact trusted repository/ref/commit, successful CI identity, and bounded build identity");
   }
-  const worktree = spawnSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" });
-  if (worktree.status !== 0) throw new Error("Could not inspect the candidate source worktree");
-  if (candidateIdentity.source_state === "trusted-main" && String(worktree.stdout || "").trim()) {
-    throw new Error("Trusted-main candidate packaging requires a clean exact checkout");
-  }
+  const worktree = run("git", ["status", "--porcelain"]);
+  if (worktree.status !== 0 || (trustedMain && String(worktree.stdout).trim())) throw new Error("Trusted-main candidate packaging requires a clean exact checkout");
 }
-for (const rel of sealed.slice(0, 2)) {
-  if (!existsSync(resolve(root, rel))) {
-    throw new Error(`Linux packaging requires the sealed channel image at ${rel} (run scripts/build-oci-channel-image.sh on a builder host).`);
-  }
+if (process.platform !== "linux" || process.arch !== nativeArchitecture) throw new Error(`Linux packaging must run on linux-${nativeArchitecture}`);
+const containerRuntime = ["podman", "docker"].find((name) => spawnSync(name, ["--version"], { stdio: "ignore" }).status === 0);
+if (!containerRuntime) throw new Error("Linux packaging requires podman or docker for ABI-pinned production dependencies");
+
+const imageTar = join(root, "container", "channel-machine.oci.tar");
+const imageMetaPath = join(root, "container", "channel-machine.oci.json");
+if (!existsSync(imageTar) || !existsSync(imageMetaPath)) throw new Error("Linux packaging requires the sealed channel image and manifest; run npm run package:channel-image");
+const channelImage = normalizeChannelImageManifest(JSON.parse(readFileSync(imageMetaPath, "utf8")));
+if (channelImage.architecture !== ociArchitecture || digestFile(imageTar) !== channelImage.sha256 || statSync(imageTar).size !== channelImage.bytes) {
+  throw new Error("Sealed channel image bytes, architecture, or manifest do not match");
 }
 
-if (process.platform !== "linux" || process.arch !== nativeArchitecture) {
-  throw new Error(`Linux packaging must run on a linux-${nativeArchitecture} builder so the vendored native addons match the shipped architecture`);
-}
-const containerRuntime = ["podman", "docker"].find((candidate) => spawnSync(candidate, ["--version"], { stdio: "ignore" }).status === 0);
-if (!containerRuntime) {
-  throw new Error("Linux packaging requires podman or docker so production dependencies compile against the oldest supported glibc");
-}
-
-// Build the client and sidecar bundles here, on the release builder, so the
-// installed release is already runnable. Everything below only copies results.
+for (const path of [output, offlineOutput, splitOutput]) if (existsSync(path)) throw new Error(`Refusing to overwrite existing artifact: ${relative(root, path)}`);
 const clientBuild = spawnSync("npm", ["run", "build"], { cwd: root, stdio: "inherit" });
 if (clientBuild.status !== 0) throw new Error("Could not build the Linux release client and sidecar bundles");
-for (const rel of builtFiles) {
-  const built = resolve(root, rel);
-  if (!existsSync(built) || statSync(built).size === 0) throw new Error(`Linux packaging requires the built asset ${rel}`);
-}
-for (const rel of builtTrees) {
-  const built = resolve(root, rel);
-  if (!existsSync(built) || !statSync(built).isDirectory() || readdirSync(built).length === 0) {
-    throw new Error(`Linux packaging requires the built asset tree ${rel}`);
-  }
-}
+for (const rel of builtFiles) if (!existsSync(join(root, rel)) || statSync(join(root, rel)).size === 0) throw new Error(`Missing built asset ${rel}`);
+for (const rel of builtTrees) if (!existsSync(join(root, rel)) || readdirSync(join(root, rel)).length === 0) throw new Error(`Missing built asset tree ${rel}`);
 
 mkdirSync(dist, { recursive: true });
-rmSync(output, { force: true });
-
 const stage = mkdtempSync(join(tmpdir(), "1helm-linux-pkg-"));
 try {
   const prefix = `1Helm-${version}`;
-  let archive;
+  const sourceRoot = join(stage, "source");
+  const releaseRoot = join(stage, "online", prefix);
+  mkdirSync(sourceRoot, { recursive: true }); mkdirSync(releaseRoot, { recursive: true });
+  let sourceArchive;
   if (["local-worktree", "rollback-fixture"].includes(candidateIdentity?.source_state)) {
-    const files = spawnSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
-      cwd: root, encoding: "buffer", maxBuffer: 64 * 1024 * 1024,
-    });
-    if (files.status !== 0 || !files.stdout?.length) throw new Error("Could not enumerate the local candidate worktree");
-    archive = spawnSync("tar", ["-cf", "-", "--null", "--files-from=-", `--transform=s,^,${prefix}/,`], {
-      cwd: root, input: files.stdout, encoding: "buffer", maxBuffer: 512 * 1024 * 1024,
-    });
+    const listed = run("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 });
+    sourceArchive = spawnSync("tar", ["-cf", "-", "--null", "--files-from=-"], { cwd: root, input: listed.stdout, encoding: "buffer", maxBuffer: 512 * 1024 * 1024 });
   } else {
-    archive = spawnSync("git", ["archive", "--format=tar", `--prefix=${prefix}/`, "HEAD"], {
-      cwd: root,
-      encoding: "buffer",
-      maxBuffer: 512 * 1024 * 1024,
-    });
+    sourceArchive = run("git", ["archive", "--format=tar", "HEAD"], { encoding: "buffer", maxBuffer: 512 * 1024 * 1024 });
   }
-  if (archive.status !== 0) throw new Error("Could not package the exact Git candidate source");
-  if (!archive.stdout?.length) throw new Error("Exact Git candidate source archive was empty");
-  const sourceArchiveSha256 = createHash("sha256").update(archive.stdout).digest("hex");
-  const extract = spawnSync("tar", ["-xf", "-", "-C", stage], { input: archive.stdout, stdio: ["pipe", "inherit", "inherit"] });
-  if (extract.status !== 0) throw new Error("Could not extract the Git release source for packaging");
+  const archive = sourceArchive;
+  if (archive.status !== 0 || !archive.stdout?.length) throw new Error("Could not create exact Git source identity archive");
+  const sourceArchiveSha256 = digestBytes(sourceArchive.stdout);
+  const extracted = spawnSync("tar", ["-xf", "-", "-C", sourceRoot], { input: sourceArchive.stdout, stdio: ["pipe", "inherit", "inherit"] });
+  if (extracted.status !== 0) throw new Error("Could not inspect exact Git source archive");
+  const stagedPackage = join(sourceRoot, "package.json");
+  let stagedVersion = "";
+  try { stagedVersion = String(JSON.parse(readFileSync(stagedPackage, "utf8")).version || "").trim(); } catch {}
+  if (stagedVersion !== version) throw new Error("Git source archive is missing its versioned package contract");
+  for (const rel of runtimePackage.source) copyRequired(sourceRoot, releaseRoot, rel);
+  for (const rel of runtimePackage.built) copyRequired(root, releaseRoot, rel);
 
-  const stagedPackage = resolve(stage, prefix, "package.json");
-  if (!existsSync(stagedPackage) || String(JSON.parse(readFileSync(stagedPackage, "utf8")).version || "") !== version) {
-    throw new Error("Exact Git release source archive is missing its versioned package contract");
-  }
-
-  const containerDir = join(stage, prefix, "container");
-  mkdirSync(containerDir, { recursive: true });
-  for (const rel of sealed) {
-    const src = resolve(root, rel);
-    if (!existsSync(src)) continue;
-    copyFileSync(src, join(stage, prefix, rel));
-  }
-  if (candidateIdentity) {
-    const imageSha256 = String(readFileSync(resolve(root, "container/channel-machine.oci.sha256"), "utf8")).trim();
-    if (!/^[a-f0-9]{64}$/.test(imageSha256)) throw new Error("Candidate packaging requires the sealed OCI image SHA-256");
-    const identityFile = join(stage, prefix, "resources", "candidate-build.json");
-    mkdirSync(dirname(identityFile), { recursive: true });
-    writeFileSync(identityFile, `${JSON.stringify({
-      ...candidateIdentity,
-      source_archive_sha256: sourceArchiveSha256,
-      sealed_oci_sha256: imageSha256,
-    }, null, 2)}\n`);
-  }
-
-  const resourcesDir = join(stage, prefix, "resources");
+  const resourcesDir = join(releaseRoot, "resources");
   mkdirSync(resourcesDir, { recursive: true });
+  const releasedImageManifest = releasedChannelImageManifest(channelImage);
+  writeFileSync(join(resourcesDir, "channel-image.json"), `${JSON.stringify(releasedImageManifest, null, 2)}\n`);
+  if (candidateIdentity) writeFileSync(join(resourcesDir, "candidate-build.json"), `${JSON.stringify({
+    ...candidateIdentity, source_archive_sha256: sourceArchiveSha256, sealed_oci_sha256: channelImage.sha256,
+    channel_image: releasedImageManifest, sealed_oci_cache: channelImage.cache,
+  }, null, 2)}\n`);
+
   for (const connector of cloudflared) {
     const destination = join(resourcesDir, `cloudflared-linux-${connector.arch}`);
-    const url = `https://github.com/cloudflare/cloudflared/releases/download/${cloudflaredVersion}/${connector.asset}`;
-    const download = spawnSync("curl", ["-fsSL", "--proto", "=https", "--tlsv1.2", "--retry", "3", "-o", destination, url], { stdio: "inherit" });
-    if (download.status !== 0) throw new Error(`Could not download pinned cloudflared for Linux ${connector.arch}`);
-    const digest = spawnSync("sha256sum", [destination], { encoding: "utf8" });
-    const actual = digest.status === 0 ? String(digest.stdout || "").trim().split(/\s+/)[0] : "";
-    if (actual !== connector.sha256) throw new Error(`Pinned cloudflared digest mismatch for Linux ${connector.arch} (got ${actual || "unavailable"})`);
+    const download = spawnSync("curl", ["-fsSL", "--proto", "=https", "--tlsv1.2", "--retry", "3", "-o", destination,
+      `https://github.com/cloudflare/cloudflared/releases/download/${cloudflaredVersion}/${connector.asset}`], { stdio: "inherit" });
+    if (download.status !== 0 || digestFile(destination) !== connector.sha256) throw new Error(`Pinned cloudflared digest mismatch for ${connector.arch}`);
     chmodSync(destination, 0o755);
   }
 
-  for (const rel of builtFiles) {
-    const destination = join(stage, prefix, rel);
-    mkdirSync(dirname(destination), { recursive: true });
-    copyFileSync(resolve(root, rel), destination);
-  }
-  for (const rel of builtTrees) {
-    const destination = join(stage, prefix, rel);
-    rmSync(destination, { recursive: true, force: true });
-    cpSync(resolve(root, rel), destination, { recursive: true });
-  }
-
-  // Production dependencies are installed once, here, against the release
-  // lockfile that `git archive` just staged. The end-user host therefore needs
-  // neither a compiler nor npm registry access.
-  const install = spawnSync(containerRuntime, [
-    "run", "--rm", "--network=host",
-    "-v", `${join(stage, prefix)}:/workspace`,
-    "-w", "/workspace",
-    "-e", "PUPPETEER_SKIP_DOWNLOAD=1",
-    "-e", "ELECTRON_SKIP_BINARY_DOWNLOAD=1",
-    "-e", "npm_config_audit=false",
-    "-e", "npm_config_fund=false",
-    "-e", "npm_config_update_notifier=false",
-    nativeBuilderImage,
-    "npm", "ci", "--omit=dev",
-  ], { stdio: "inherit" });
-  if (install.status !== 0) throw new Error("Could not install the Linux release production dependencies inside the native builder image");
-
-  const stagedModules = join(stage, prefix, "node_modules");
-  if (!existsSync(stagedModules)) throw new Error("The native builder image did not produce production node_modules");
-  const stagedPty = join(stage, prefix, requiredNativeModule);
-  if (!existsSync(stagedPty)) throw new Error(`The native builder image did not produce ${requiredNativeModule}; terminals would be unavailable on the target host`);
   const builderNode = spawnSync(containerRuntime, ["run", "--rm", nativeBuilderImage, "node", "-p", "process.versions.modules + ' ' + process.version"], { encoding: "utf8" });
   const [builderAbi = "", builderVersion = ""] = String(builderNode.stdout || "").trim().split(/\s+/);
-  if (!/^\d+$/.test(builderAbi)) throw new Error("Could not read the native builder image Node ABI");
+  if (builderNode.status !== 0 || !/^\d+$/.test(builderAbi)) throw new Error("Could not read native builder Node ABI");
+  const inspect = spawnSync(containerRuntime, ["image", "inspect", nativeBuilderImage, "--format", "{{.Digest}}"], { encoding: "utf8" });
+  const builderDigestMatch = String(inspect.stdout || "").match(/^sha256:([a-f0-9]{64})\s*$/);
+  if (!builderDigestMatch) throw new Error("Native builder image must resolve to an exact repository digest");
+  const builderDigest = builderDigestMatch[1];
+  const runtimePackageSha256 = digestFile(join(root, "config", "linux-runtime-package.json"));
+  const dependencyCacheKey = digestText(digestFile(join(releaseRoot, "package-lock.json")), runtimePackageSha256,
+    builderAbi, nativeArchitecture, builderDigest);
+  const cacheRoot = resolve(process.env.HELM_PRODUCTION_CACHE_DIR || join(dist, "cache", "production-dependencies"));
+  const cacheTar = join(cacheRoot, `${dependencyCacheKey}.tar`);
+  const cacheMeta = join(cacheRoot, `${dependencyCacheKey}.json`);
+  let dependencyCacheReused = false;
+  if (existsSync(cacheTar) && existsSync(cacheMeta)) {
+    const meta = JSON.parse(readFileSync(cacheMeta, "utf8"));
+    if (meta.key === dependencyCacheKey && meta.node_abi === builderAbi && meta.architecture === nativeArchitecture
+        && meta.builder_image_digest === builderDigest && meta.runtime_package_sha256 === runtimePackageSha256
+        && meta.tar_sha256 === digestFile(cacheTar)) {
+      const restore = spawnSync("tar", ["-xf", cacheTar, "-C", releaseRoot], { stdio: "inherit" });
+      if (restore.status !== 0) throw new Error("Verified production dependency cache could not be extracted");
+      dependencyCacheReused = true;
+    }
+  }
+  if (!dependencyCacheReused) {
+    const install = spawnSync(containerRuntime, [
+      "run", "--rm", "--network=host", "-v", `${releaseRoot}:/workspace`, "-w", "/workspace",
+      "-e", "PUPPETEER_SKIP_DOWNLOAD=1", "-e", "ELECTRON_SKIP_BINARY_DOWNLOAD=1",
+      "-e", "npm_config_audit=false", "-e", "npm_config_fund=false", "-e", "npm_config_update_notifier=false",
+      nativeBuilderImage, "npm", "ci", "--omit=dev",
+    ], { stdio: "inherit" });
+    if (install.status !== 0) throw new Error("Could not install production dependencies inside the native builder image");
+    const pruning = slimDependencies(join(releaseRoot, "node_modules"));
+    console.log(`runtime dependency allowlist excluded ${pruning.files} files / ${pruning.bytes} bytes`);
+  }
+  const stagedModules = join(releaseRoot, "node_modules");
+  if (!existsSync(join(releaseRoot, requiredNativeModule))) throw new Error(`Production dependencies are missing ${requiredNativeModule}`);
   const modules = nativeAddons(stagedModules).map((rel) => {
     const file = join(stagedModules, rel);
-    return {
-      path: `node_modules/${rel}`,
-      sha256: digestOf(file),
-      glibc: symbolCeiling(file, "GLIBC"),
-      glibcxx: symbolCeiling(file, "GLIBCXX"),
-    };
+    return { path: `node_modules/${rel}`, sha256: digestFile(file), glibc: symbolCeiling(file, "GLIBC"), glibcxx: symbolCeiling(file, "GLIBCXX") };
   });
   if (!modules.some((entry) => entry.path === requiredNativeModule)) throw new Error(`Could not fingerprint ${requiredNativeModule}`);
-  const manifest = {
-    version,
-    platform: "linux",
-    arch: nativeArchitecture,
-    builderImage: nativeBuilderImage,
-    builderNodeVersion: builderVersion,
-    nodeAbi: builderAbi,
-    modules,
+  const nativeManifest = {
+    version, platform: "linux", arch: nativeArchitecture, builderImage: nativeBuilderImage,
+    builderImageDigest: builderDigest, builderNodeVersion: builderVersion, nodeAbi: builderAbi, modules,
+    cache: { key: dependencyCacheKey, reused: dependencyCacheReused },
   };
-  const manifestFile = join(stage, prefix, nativeManifestPath);
-  mkdirSync(dirname(manifestFile), { recursive: true });
-  writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
-  for (const entry of modules) {
-    console.log(`vendored ${entry.path} — max GLIBC ${entry.glibc || "none"} / GLIBCXX ${entry.glibcxx || "none"}`);
+  writeFileSync(join(releaseRoot, nativeManifestPath), `${JSON.stringify(nativeManifest, null, 2)}\n`);
+  if (!dependencyCacheReused) {
+    mkdirSync(cacheRoot, { recursive: true });
+    const cacheWrite = spawnSync("tar", ["--sort=name", "--mtime=@0", "--owner=0", "--group=0", "--numeric-owner", "-cf", cacheTar,
+      "-C", releaseRoot, "node_modules", nativeManifestPath], { stdio: "inherit" });
+    if (cacheWrite.status !== 0) throw new Error("Could not retain production dependency cache");
+    writeFileSync(cacheMeta, `${JSON.stringify({ key: dependencyCacheKey, node_abi: builderAbi, architecture: nativeArchitecture,
+      builder_image_digest: builderDigest, lockfile_sha256: digestFile(join(releaseRoot, "package-lock.json")),
+      runtime_package_sha256: runtimePackageSha256, tar_sha256: digestFile(cacheTar) }, null, 2)}\n`);
   }
 
-  const pack = spawnSync("tar", ["-czf", output, "-C", stage, prefix], { stdio: "inherit" });
-  if (pack.status !== 0) throw new Error("Could not write the Linux host archive");
+  deterministicTar(join(stage, "online"), prefix, output);
+  const onlineDigest = digestFile(output);
+  writeFileSync(`${output}.sha256`, `${onlineDigest}  ${basename(output)}\n`);
+
+  const offlineRoot = join(stage, "offline", prefix);
+  cpSync(releaseRoot, offlineRoot, { recursive: true, preserveTimestamps: false });
+  mkdirSync(join(offlineRoot, "container"), { recursive: true });
+  copyFileSync(imageTar, join(offlineRoot, "container", "channel-machine.oci.tar"));
+  writeFileSync(join(offlineRoot, "container", "channel-machine.oci.sha256"), `${channelImage.sha256}\n`);
+  copyFileSync(imageMetaPath, join(offlineRoot, "container", "channel-machine.oci.json"));
+  deterministicTar(join(stage, "offline"), prefix, offlineOutput);
+  const offlineDigest = digestFile(offlineOutput);
+  writeFileSync(`${offlineOutput}.sha256`, `${offlineDigest}  ${basename(offlineOutput)}\n`);
+  const split = {
+    schema: LINUX_SPLIT_SCHEMA, kind: LINUX_SPLIT_KIND, version,
+    app: { name: basename(output), sha256: onlineDigest, bytes: statSync(output).size, contains_channel_image: false },
+    offline: { name: basename(offlineOutput), sha256: offlineDigest, bytes: statSync(offlineOutput).size, contains_channel_image: true },
+    channel_image: releasedImageManifest,
+    production_dependencies: { key: dependencyCacheKey, reused: dependencyCacheReused, node_abi: builderAbi,
+      architecture: nativeArchitecture, builder_image_digest: builderDigest, runtime_package_sha256: runtimePackageSha256 },
+  };
+  writeFileSync(splitOutput, `${JSON.stringify(split, null, 2)}\n`);
+  console.log(`online ${basename(output)} ${statSync(output).size} bytes sha256=${onlineDigest}`);
+  console.log(`offline ${basename(offlineOutput)} ${statSync(offlineOutput).size} bytes sha256=${offlineDigest}`);
+  console.log(`production dependency cache ${dependencyCacheReused ? "reused" : "created"} key=${dependencyCacheKey}`);
 } finally {
   rmSync(stage, { recursive: true, force: true });
 }
-const archiveDigest = digestOf(output);
-writeFileSync(`${output}.sha256`, `${archiveDigest}  ${output.split("/").at(-1)}\n`);
-console.log(`sha256 ${archiveDigest}`);
-console.log(output);

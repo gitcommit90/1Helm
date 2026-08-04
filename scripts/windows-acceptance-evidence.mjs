@@ -22,7 +22,11 @@ const evidence = normalizePlatformEvidence({
     mode: "snapshot-assisted-equivalent", result: "passed", checked_at: checkedAt,
     summary: "Accepted clean VM snapshot plus exact-candidate WSL cold start proved same-user keepalive, service, and localhost recovery.",
   },
-  artifacts: [{ role: "linux_tgz", name: basename(env.HELM_CANDIDATE_ARCHIVE), sha256: candidate.artifact.sha256, bytes: candidate.artifact.bytes }],
+  artifacts: [
+    { role: "linux_tgz", name: basename(env.HELM_CANDIDATE_ARCHIVE), sha256: candidate.artifact.sha256, bytes: candidate.artifact.bytes },
+    { role: "linux_offline_tgz", name: basename(env.HELM_CANDIDATE_OFFLINE_ARCHIVE), sha256: candidate.offline_bundle.sha256, bytes: candidate.offline_bundle.bytes },
+  ],
+  channel_image: candidate.sealed_oci,
   checks: [
     { id: "non_elevated_install", ...pass("Exact candidate clean-installed through the tracked site path as the dedicated ordinary signed-in user.") },
     { id: "single_uac", ...pass("Root-owned provisioning evidence records exactly one UAC approval for Windows features and Microsoft WSL.") },

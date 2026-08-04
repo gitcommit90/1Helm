@@ -4,9 +4,11 @@ import { copyFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "
 import { basename, join, resolve } from "node:path";
 import { platformEvidenceBlockers } from "./platform-acceptance-lib.mjs";
 import { sha256File, STABLE_REPOSITORY } from "./stable-manifest-lib.mjs";
+import { normalizeChannelImageManifest, releasedChannelImageManifest } from "./artifact-contract.mjs";
 
 const env = process.env;
 const linuxSource = resolve(env.HELM_CANDIDATE_DOWNLOAD || "");
+const imageSource = resolve(env.HELM_CHANNEL_IMAGE_DOWNLOAD || "");
 const macSource = resolve(env.HELM_MAC_CANDIDATE_DOWNLOAD || "");
 const rehearsalPath = resolve(env.HELM_REHEARSAL_EVIDENCE || "");
 const acceptancePaths = {
@@ -19,7 +21,7 @@ const output = resolve(env.HELM_PROMOTION_OUTPUT || "");
 const project = resolve(env.HELM_PROJECT_ROOT || ".");
 const workflowRunId = String(env.GITHUB_RUN_ID || "");
 const ciRunId = String(env.HELM_CANDIDATE_CI_RUN_ID || "");
-if (!env.HELM_CANDIDATE_DOWNLOAD || !env.HELM_MAC_CANDIDATE_DOWNLOAD || !env.HELM_REHEARSAL_EVIDENCE
+if (!env.HELM_CANDIDATE_DOWNLOAD || !env.HELM_CHANNEL_IMAGE_DOWNLOAD || !env.HELM_MAC_CANDIDATE_DOWNLOAD || !env.HELM_REHEARSAL_EVIDENCE
     || !env.HELM_LINUX_ACCEPTANCE_EVIDENCE || !env.HELM_MAC_ACCEPTANCE_EVIDENCE
     || !env.HELM_WINDOWS_ACCEPTANCE_EVIDENCE || !env.HELM_ACCEPTANCE_CONTENT
     || !env.HELM_PROMOTION_OUTPUT || !/^\d+$/.test(workflowRunId) || !/^\d+$/.test(ciRunId)) {
@@ -47,6 +49,19 @@ const linuxArchiveSource = join(linuxSource, candidate.artifact.name);
 if (digest(linuxArchiveSource) !== candidate.artifact.sha256 || statSync(linuxArchiveSource).size !== candidate.artifact.bytes) {
   throw new Error("Candidate Linux archive no longer matches its manifest");
 }
+const linuxOfflineSource = join(linuxSource, candidate.offline_bundle.name);
+if (digest(linuxOfflineSource) !== candidate.offline_bundle.sha256 || statSync(linuxOfflineSource).size !== candidate.offline_bundle.bytes) {
+  throw new Error("Candidate Linux offline bundle no longer matches its manifest");
+}
+const channelImageSource = join(imageSource, candidate.sealed_oci.artifact.name);
+const channelImageManifestSource = join(imageSource, candidate.sealed_oci.artifact.name.replace(/\.oci\.tar$/, ".json"));
+const retainedChannelImage = normalizeChannelImageManifest(JSON.parse(readFileSync(channelImageManifestSource, "utf8")));
+if (digest(channelImageSource) !== candidate.sealed_oci.sha256 || statSync(channelImageSource).size !== candidate.sealed_oci.bytes
+    || JSON.stringify(releasedChannelImageManifest(retainedChannelImage)) !== JSON.stringify(candidate.sealed_oci)
+    || retainedChannelImage.cache.key !== candidate.build?.sealed_oci_cache?.key
+    || retainedChannelImage.cache.reused !== candidate.build?.sealed_oci_cache?.reused) {
+  throw new Error("Retained immutable channel image candidate does not match the application candidate contract");
+}
 
 const macManifestPath = join(macSource, "candidate-evidence", "mac-candidate.json");
 const mac = JSON.parse(readFileSync(macManifestPath, "utf8"));
@@ -66,6 +81,8 @@ if (mac?.schema !== 1 || mac?.kind !== "1helm-macos-candidate" || mac?.repositor
 const artifacts = {};
 const linuxArchive = record(linuxArchiveSource, candidate.artifact.name);
 artifacts.linux_tgz = { role: "linux_tgz", name: basename(linuxArchive.path), path: linuxArchive.path, sha256: candidate.artifact.sha256, bytes: candidate.artifact.bytes };
+const linuxOffline = record(linuxOfflineSource, candidate.offline_bundle.name);
+artifacts.linux_offline_tgz = { role: "linux_offline_tgz", name: basename(linuxOffline.path), path: linuxOffline.path, sha256: candidate.offline_bundle.sha256, bytes: candidate.offline_bundle.bytes };
 for (const role of ["mac_dmg", "mac_updater_zip"]) {
   const item = (Array.isArray(mac.artifacts) ? mac.artifacts : []).find((artifact) => artifact?.role === role);
   if (!item || !/^[a-f0-9]{64}$/.test(String(item.sha256 || "")) || !Number.isSafeInteger(item.bytes) || item.bytes <= 0) {
@@ -89,6 +106,27 @@ const linuxProvenanceValue = {
 const linuxProvenanceBytes = Buffer.from(`${JSON.stringify(linuxProvenanceValue, null, 2)}\n`);
 writeFileSync(join(output, "linux-provenance.json"), linuxProvenanceBytes, { mode: 0o600 });
 artifacts.linux_tgz.provenance = { path: "linux-provenance.json", sha256: createHash("sha256").update(linuxProvenanceBytes).digest("hex") };
+const offlineProvenanceValue = {
+  ...linuxProvenanceValue,
+  artifact: { role: "linux_offline_tgz", name: artifacts.linux_offline_tgz.name, sha256: artifacts.linux_offline_tgz.sha256, bytes: artifacts.linux_offline_tgz.bytes },
+};
+const offlineProvenanceBytes = Buffer.from(`${JSON.stringify(offlineProvenanceValue, null, 2)}\n`);
+writeFileSync(join(output, "linux-offline-provenance.json"), offlineProvenanceBytes, { mode: 0o600 });
+artifacts.linux_offline_tgz.provenance = { path: "linux-offline-provenance.json", sha256: createHash("sha256").update(offlineProvenanceBytes).digest("hex") };
+const imageRecord = record(channelImageSource, candidate.sealed_oci.artifact.name);
+const releasedImageManifestBytes = Buffer.from(`${JSON.stringify(candidate.sealed_oci, null, 2)}\n`);
+writeFileSync(join(output, "channel-image.json"), releasedImageManifestBytes, { mode: 0o600 });
+const imageManifestRecord = { path: "channel-image.json", sha256: createHash("sha256").update(releasedImageManifestBytes).digest("hex") };
+const imageProvenance = {
+  schema: 1, kind: "1helm-channel-image-provenance", repository: STABLE_REPOSITORY, ref: "refs/heads/main",
+  source_commit: commit, candidate_workflow_run_id: workflowRunId, source_ci_run_id: ciRunId,
+  artifact: { name: basename(imageRecord.path), sha256: candidate.sealed_oci.sha256, bytes: candidate.sealed_oci.bytes },
+  manifest: imageManifestRecord,
+  inputs: candidate.sealed_oci.inputs, cache: candidate.build.sealed_oci_cache,
+  signer_workflow: `${STABLE_REPOSITORY}/.github/workflows/candidate.yml`, attestation_created: true,
+};
+const imageProvenanceBytes = Buffer.from(`${JSON.stringify(imageProvenance, null, 2)}\n`);
+writeFileSync(join(output, "channel-image-provenance.json"), imageProvenanceBytes, { mode: 0o600 });
 for (const role of ["mac_dmg", "mac_updater_zip"]) {
   const provenanceSource = join(macSource, "candidate-evidence", `${role}-provenance.json`);
   const provenanceValue = JSON.parse(readFileSync(provenanceSource, "utf8"));
@@ -111,7 +149,7 @@ const acceptance = {};
 for (const platform of ["macos", "linux", "windows"]) {
   const value = JSON.parse(readFileSync(acceptancePaths[platform], "utf8"));
   const blockers = platformEvidenceBlockers(value, { platform, commit, version, runId: workflowRunId,
-    runAttempt: String(mac.candidate.run_attempt), ciRunId, artifacts });
+    runAttempt: String(mac.candidate.run_attempt), ciRunId, artifacts, channelImage: candidate.sealed_oci });
   if (platform === "macos" && value?.runner?.name !== mac?.builder?.runner_name) {
     blockers.push("acceptance runner does not match the dedicated Mac builder");
   }
@@ -134,6 +172,14 @@ const promotion = {
     acceptance_content: record(acceptanceContentPath, "acceptance.md"),
   },
   acceptance_ledger_required: true,
-  artifacts: [artifacts.mac_dmg, artifacts.mac_updater_zip, artifacts.linux_tgz],
+  artifacts: [artifacts.mac_dmg, artifacts.mac_updater_zip, artifacts.linux_tgz, artifacts.linux_offline_tgz],
+  channel_image: {
+    ...candidate.sealed_oci,
+    candidate: {
+      artifact: imageRecord,
+      manifest: imageManifestRecord,
+      provenance: { path: "channel-image-provenance.json", sha256: createHash("sha256").update(imageProvenanceBytes).digest("hex") },
+    },
+  },
 };
 writeFileSync(join(output, "promotion.json"), `${JSON.stringify(promotion, null, 2)}\n`, { mode: 0o600 });

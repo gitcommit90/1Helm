@@ -29,6 +29,26 @@ export async function assertRemoteVersionAbsent(version, token, fetchImpl) {
   }
 }
 
+export async function remoteTagAndRelease(tag, token, fetchImpl) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(String(tag || "")) || !token) {
+    throw new Error("Remote immutable artifact check received invalid inputs");
+  }
+  const records = {};
+  for (const [kind, path] of [
+    ["tag", `/git/ref/tags/${encodeURIComponent(tag)}`],
+    ["release", `/releases/tags/${encodeURIComponent(tag)}`],
+  ]) {
+    const response = await github(path, token, fetchImpl);
+    if (response.status === 404) { records[kind] = null; continue; }
+    if (!response.ok) throw new Error(`Could not inspect ${kind} ${tag}: GitHub API ${response.status}`);
+    records[kind] = await response.json();
+  }
+  if (Boolean(records.tag) !== Boolean(records.release)) {
+    throw new Error(`Immutable artifact ${tag} has a partial tag/Release identity`);
+  }
+  return records;
+}
+
 if (process.argv[1] && new URL(`file://${process.argv[1]}`).href === import.meta.url) {
   const command = process.argv[2];
   try {

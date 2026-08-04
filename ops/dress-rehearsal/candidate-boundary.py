@@ -51,7 +51,7 @@ def expect(value, pattern, label: str) -> str:
     return text
 
 
-def validate(manifest_path: Path, archive_path: Path, allow_local: bool) -> dict:
+def validate(manifest_path: Path, archive_path: Path, offline_path: Path, allow_local: bool) -> dict:
     manifest = load_json(manifest_path)
     if manifest.get("schema") != 1 or manifest.get("kind") != KIND:
         fail("candidate manifest schema or kind mismatch")
@@ -86,6 +86,15 @@ def validate(manifest_path: Path, archive_path: Path, allow_local: bool) -> dict
         if sha256_stream(stream) != archive_sha:
             fail("candidate archive SHA-256 mismatch")
     oci_sha = expect((manifest.get("sealed_oci") or {}).get("sha256"), HEX64, "sealed OCI digest")
+    offline = manifest.get("offline_bundle") or {}
+    if offline.get("name") != f"1Helm-{version}-linux-node-offline.tgz":
+        fail("candidate offline bundle name/version mismatch")
+    offline_sha = expect(offline.get("sha256"), HEX64, "offline bundle digest")
+    if not offline_path.is_file() or offline_path.stat().st_size != offline.get("bytes"):
+        fail("candidate offline bundle size mismatch")
+    with offline_path.open("rb") as stream:
+        if sha256_stream(stream) != offline_sha:
+            fail("candidate offline bundle SHA-256 mismatch")
 
     with tarfile.open(archive_path, "r:gz") as archive:
         members = archive.getmembers()
@@ -96,16 +105,33 @@ def validate(manifest_path: Path, archive_path: Path, allow_local: bool) -> dict
         identity_members = [member for member in members if re.fullmatch(r"[^/]+/resources/candidate-build\.json", member.name)]
         package_members = [member for member in members if re.fullmatch(r"[^/]+/package\.json", member.name)]
         oci_members = [member for member in members if re.fullmatch(r"[^/]+/container/channel-machine\.oci\.tar", member.name)]
-        if len(identity_members) != 1 or len(package_members) != 1 or len(oci_members) != 1:
-            fail("candidate archive identity/package/sealed OCI layout mismatch")
+        image_manifests = [member for member in members if re.fullmatch(r"[^/]+/resources/channel-image\.json", member.name)]
+        if len(identity_members) != 1 or len(package_members) != 1 or len(image_manifests) != 1 or oci_members:
+            fail("online candidate archive identity/package/split OCI layout mismatch")
         try:
             identity = json.load(archive.extractfile(identity_members[0]))
             package = json.load(archive.extractfile(package_members[0]))
         except (TypeError, json.JSONDecodeError) as error:
             fail(f"candidate embedded identity is invalid: {error}")
+        try:
+            embedded_image = json.load(archive.extractfile(image_manifests[0]))
+        except (TypeError, json.JSONDecodeError) as error:
+            fail(f"candidate channel image manifest is invalid: {error}")
+        if embedded_image != identity.get("channel_image") or embedded_image != manifest.get("sealed_oci"):
+            fail("channel image manifest does not match the candidate identity")
+
+    with tarfile.open(offline_path, "r:gz") as archive:
+        members = archive.getmembers()
+        for member in members:
+            path = PurePosixPath(member.name)
+            if path.is_absolute() or ".." in path.parts or member.isdev():
+                fail("candidate offline bundle contains an unsafe entry")
+        oci_members = [member for member in members if re.fullmatch(r"[^/]+/container/channel-machine\.oci\.tar", member.name)]
+        if len(oci_members) != 1:
+            fail("candidate offline bundle must contain exactly one sealed OCI image")
         embedded_oci = archive.extractfile(oci_members[0])
         if embedded_oci is None or sha256_stream(embedded_oci) != oci_sha:
-            fail("sealed OCI bytes do not match the candidate identity")
+            fail("offline sealed OCI bytes do not match the candidate identity")
 
     comparisons = {
         "schema": 1,
@@ -197,6 +223,7 @@ def main() -> None:
     check = sub.add_parser("validate")
     check.add_argument("manifest", type=Path)
     check.add_argument("archive", type=Path)
+    check.add_argument("offline", type=Path)
     check.add_argument("output", type=Path)
     check.add_argument("--allow-local", action="store_true")
     evidence = sub.add_parser("record")
@@ -212,7 +239,7 @@ def main() -> None:
     args = parser.parse_args()
     try:
         if args.command == "validate":
-            value = validate(args.manifest, args.archive, args.allow_local)
+            value = validate(args.manifest, args.archive, args.offline, args.allow_local)
             args.output.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
         elif args.command == "record":
             record(args.manifest, args.previous, args.output, args.result, args.health, args.rollback, args.message)

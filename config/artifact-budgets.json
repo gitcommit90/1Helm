@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "kind": "1helm-artifact-size-budgets",
+  "units": "bytes",
+  "baselines": {
+    "legacy_linux_complete_tgz": 401045903,
+    "sealed_oci_image": 203846656,
+    "legacy_linux_unpacked_node_modules": 447486065
+  },
+  "budgets": {
+    "linux_app_tgz": 220000000,
+    "linux_offline_tgz": 390000000,
+    "sealed_oci_image": 220000000,
+    "linux_unpacked_node_modules": 320000000,
+    "linux_client_assets": 32000000,
+    "duplicate_bytes": 50000000
+  },
+  "notes": [
+    "The v0.0.41 complete Linux archive and sealed OCI figures were measured from retained local release outputs.",
+    "Mac artifacts are intentionally unbaselined until their exact signed bytes are present on a Mac builder.",
+    "Budgets are regression ceilings, not targets, and do not authorize removal of runtime files."
+  ]
+}

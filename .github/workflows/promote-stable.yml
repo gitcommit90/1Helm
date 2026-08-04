@@ -166,6 +166,10 @@ jobs:
             promotion-bundle/1Helm-${{ inputs.version }}-arm64.dmg
             promotion-bundle/1Helm-${{ inputs.version }}-mac-arm64.zip
             promotion-bundle/1Helm-${{ inputs.version }}-linux-node.tgz
+            promotion-bundle/1Helm-${{ inputs.version }}-linux-node-offline.tgz
+            promotion-bundle/1Helm-channel-machine-v1-*.oci.tar
+            promotion-bundle/channel-image.json
+            promotion-bundle/channel-image-provenance.json
             promotion-bundle/1Helm-${{ inputs.version }}-stable.json
             promotion-bundle/1Helm-${{ inputs.version }}-release-notes.md
             promotion-bundle/verified-promotion.json

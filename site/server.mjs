@@ -161,7 +161,16 @@ async function latestLinuxRelease() {
   const linux = matrix[2];
   const expectedUrl = `https://github.com/${REPO}/releases/download/v${version}/${linux.name}`;
   if (linux.url !== expectedUrl) throw new Error("latest Linux release URL does not match its version");
-  return { version, url: expectedUrl, sha256: linux.sha256 };
+  const response = { version, url: expectedUrl, sha256: linux.sha256 };
+  if (manifest.schema === 2) {
+    const offline = manifest.artifacts.find((asset) => asset.role === "linux_offline_tgz");
+    if (!offline || !/^[a-f0-9]{64}$/.test(String(offline.sha256 || "")) || !manifest.channel_image) {
+      throw new Error("latest split Linux release is missing offline or channel image metadata");
+    }
+    response.offline = { url: offline.url, sha256: offline.sha256, bytes: offline.bytes };
+    response.channel_image = manifest.channel_image;
+  }
+  return response;
 }
 
 const mime = {

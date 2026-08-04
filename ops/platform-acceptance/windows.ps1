@@ -4,6 +4,7 @@ param()
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $Archive = (Resolve-Path $env:HELM_CANDIDATE_ARCHIVE).Path
+$OfflineArchive = (Resolve-Path $env:HELM_CANDIDATE_OFFLINE_ARCHIVE).Path
 $ManifestPath = (Resolve-Path $env:HELM_CANDIDATE_MANIFEST).Path
 $ProvenancePath = (Resolve-Path $env:HELM_CANDIDATE_PROVENANCE).Path
 $Output = $env:HELM_ACCEPTANCE_OUTPUT
@@ -12,6 +13,7 @@ $Manifest = Get-Content -Raw $ManifestPath | ConvertFrom-Json
 $Commit = [string]$Manifest.source.commit
 $Version = [string]$Manifest.version
 $Digest = [string]$Manifest.artifact.sha256
+$OfflineDigest = [string]$Manifest.offline_bundle.sha256
 $CiRun = [string]$Manifest.ci.run_id
 $Wsl = Join-Path $env:SystemRoot 'System32\wsl.exe'
 $Distro = '1helm-phase4'
@@ -62,10 +64,15 @@ if ($Provision.schema -ne 1 -or $Provision.kind -ne '1helm-windows-runner-provis
     Refuse 'one-time real-restart and accepted-snapshot provisioning proof is incomplete'
 }
 if ((Get-FileHash $Archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Digest) { Refuse 'Linux TGZ digest changed' }
+if ((Get-FileHash $OfflineArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $OfflineDigest) { Refuse 'Linux offline TGZ digest changed' }
 gh attestation verify $Archive --bundle $ProvenancePath `
     --repo gitcommit90/1Helm --signer-workflow gitcommit90/1Helm/.github/workflows/candidate.yml `
     --source-ref refs/heads/main --source-digest $Commit --deny-self-hosted-runners
 if ($LASTEXITCODE -ne 0) { Refuse 'hosted Linux candidate attestation verification failed' }
+gh attestation verify $OfflineArchive --bundle $ProvenancePath `
+    --repo gitcommit90/1Helm --signer-workflow gitcommit90/1Helm/.github/workflows/candidate.yml `
+    --source-ref refs/heads/main --source-digest $Commit --deny-self-hosted-runners
+if ($LASTEXITCODE -ne 0) { Refuse 'hosted Linux offline candidate attestation verification failed' }
 
 $Rootfs = 'C:\ProgramData\1Helm-Phase4\ubuntu-noble-wsl-amd64.rootfs.tar.gz'
 if (-not (Test-Path $Rootfs)) { Refuse 'pinned offline WSL rootfs is missing from the dedicated runner' }
@@ -82,8 +89,8 @@ try {
 # Windows entry point, prove onboarding and health, then remove only that target
 # so the same VM can exercise the distinct prior-to-candidate path.
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $InstallScript `
-    -Distro $Distro -InstallRoot $InstallRoot -LocalArchive $Archive `
-    -LocalInstaller (Join-Path $Root 'site\public\install.sh') -LocalArchiveSha256 $Digest `
+    -Distro $Distro -InstallRoot $InstallRoot -LocalArchive $OfflineArchive `
+    -LocalInstaller (Join-Path $Root 'site\public\install.sh') -LocalArchiveSha256 $OfflineDigest `
     -LocalRootfs $Rootfs -LocalRootfsSha256 $RootfsSha `
     -KeepaliveSource $KeepaliveSource
 if ($LASTEXITCODE -ne 0) { Refuse "exact candidate clean install failed with exit $LASTEXITCODE" }

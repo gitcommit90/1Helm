@@ -58,6 +58,9 @@ PACKAGE_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "
    && -r "$RELEASE_ROOT/deploy/1helm-oci-runtime-v1.conf" \
    && -r "$RELEASE_ROOT/container/Containerfile.oci" ]] \
   || { echo "The verified release is missing its Linux host contract." >&2; exit 1; }
+{ [[ -f "$RELEASE_ROOT/resources/channel-image.json" ]] \
+  || [[ -f "$RELEASE_ROOT/container/channel-machine.oci.tar" && -f "$RELEASE_ROOT/container/channel-machine.oci.sha256" ]]; } \
+  || { echo "The verified release is missing its split or legacy channel image contract." >&2; exit 1; }
 
 TEMP_ROOT="$(mktemp -d)"
 chmod 0700 "$TEMP_ROOT"

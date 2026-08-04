@@ -29,8 +29,8 @@ export const PLATFORM_CHECKS = Object.freeze({
 
 export const PLATFORM_ARTIFACT_ROLES = Object.freeze({
   macos: Object.freeze(["mac_dmg", "mac_updater_zip"]),
-  linux: Object.freeze(["linux_tgz"]),
-  windows: Object.freeze(["linux_tgz"]),
+  linux: Object.freeze(["linux_tgz", "linux_offline_tgz"]),
+  windows: Object.freeze(["linux_tgz", "linux_offline_tgz"]),
 });
 
 const HEX40 = /^[a-f0-9]{40}$/;
@@ -155,6 +155,17 @@ export function normalizePlatformEvidence(input) {
     throw new Error(`${platform} artifact binding is incomplete or duplicated`);
   }
   if (artifacts.some((item) => !Number.isSafeInteger(item.bytes) || item.bytes <= 0)) throw new Error(`${platform} artifact byte count is invalid`);
+  let channelImage = null;
+  if (platform !== "macos") {
+    const value = input.channel_image || {};
+    channelImage = {
+      version: exact(value.version, /^1$/, `${platform} channel image contract version`),
+      architecture: value.architecture === "amd64" ? "amd64" : (() => { throw new Error(`${platform} channel image architecture is invalid`); })(),
+      sha256: exact(value.sha256, HEX64, `${platform} channel image digest`),
+      bytes: Number(value.bytes),
+    };
+    if (!Number.isSafeInteger(channelImage.bytes) || channelImage.bytes < 1) throw new Error(`${platform} channel image byte count is invalid`);
+  }
   const candidate = input?.candidate || {};
   const sourceCi = input?.source_ci || {};
   const machine = normalizeMachine(input.machine, platform);
@@ -197,6 +208,7 @@ export function normalizePlatformEvidence(input) {
     runner,
     ...(continuity ? { continuity } : {}),
     artifacts,
+    ...(channelImage ? { channel_image: channelImage } : {}),
     checks,
     state_preservation: statePreservation,
     recovery,
@@ -246,5 +258,11 @@ export function platformEvidenceBlockers(value, expected) {
       && Number(actual[0]?.bytes) === Number(wanted?.bytes), `${role} does not match exact candidate bytes`);
   }
   add(records.length === PLATFORM_ARTIFACT_ROLES[platform].length, "artifact evidence contains unexpected records");
+  if (platform !== "macos") {
+    const wanted = expected.channelImage;
+    add(value?.channel_image?.version === wanted?.version && value?.channel_image?.architecture === wanted?.architecture
+      && value?.channel_image?.sha256 === wanted?.sha256 && Number(value?.channel_image?.bytes) === Number(wanted?.bytes),
+    "shared channel image contract does not match exact candidate bytes/architecture/version");
+  }
   return blockers;
 }

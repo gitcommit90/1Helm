@@ -240,10 +240,11 @@ fi
    && -x "$RELEASE_STAGE/scripts/1helm-oci-runtime" \
    && -r "$RELEASE_STAGE/deploy/1helm-oci-runtime-v1.conf" \
    && -r "$RELEASE_STAGE/container/Containerfile.oci" \
-   && -f "$RELEASE_STAGE/container/channel-machine.oci.tar" \
-   && -f "$RELEASE_STAGE/container/channel-machine.oci.sha256" \
    && -x "$RELEASE_STAGE/resources/cloudflared-linux-$NODE_ARCH" ]] \
-  || { echo "The verified Linux artifact is missing its complete OCI runtime contract." >&2; exit 1; }
+  || { echo "The verified Linux artifact is missing its split or legacy-complete OCI runtime contract." >&2; exit 1; }
+{ [[ -f "$RELEASE_STAGE/resources/channel-image.json" && ! -f "$RELEASE_STAGE/container/channel-machine.oci.tar" ]] \
+  || [[ -f "$RELEASE_STAGE/container/channel-machine.oci.tar" && -f "$RELEASE_STAGE/container/channel-machine.oci.sha256" ]]; } \
+  || { echo "The verified Linux artifact has neither an online split nor legacy complete channel image contract." >&2; exit 1; }
 chown -R "$SERVICE_USER:$SERVICE_USER" "$RELEASE_STAGE"
 
 # The release arrives ready to run: no npm ci, no npm run build, no compiler and
@@ -298,11 +299,11 @@ verify_ready_to_run "$RELEASE_STAGE" || exit 1
 RELEASE_ROOT="$RELEASES_ROOT/$VERSION-$RELEASE_SHA256"
 if [[ -e "$RELEASE_ROOT" ]]; then
   EXISTING_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "$RELEASE_ROOT/package.json" 2>/dev/null || true)"
-  [[ "$EXISTING_VERSION" == "$VERSION" \
-     && -f "$RELEASE_ROOT/container/channel-machine.oci.tar" \
-     && -f "$RELEASE_ROOT/container/channel-machine.oci.sha256" \
-     && -x "$RELEASE_ROOT/resources/cloudflared-linux-$NODE_ARCH" ]] \
+  [[ "$EXISTING_VERSION" == "$VERSION" && -x "$RELEASE_ROOT/resources/cloudflared-linux-$NODE_ARCH" ]] \
     || { echo "Existing release directory does not match the verified v$VERSION Linux artifact." >&2; exit 1; }
+  { [[ -f "$RELEASE_ROOT/resources/channel-image.json" ]] \
+    || [[ -f "$RELEASE_ROOT/container/channel-machine.oci.tar" && -f "$RELEASE_ROOT/container/channel-machine.oci.sha256" ]]; } \
+    || { echo "Existing release directory is missing its channel image contract." >&2; exit 1; }
   # A retained directory from an interrupted earlier run can be incomplete even
   # though its name carries the verified digest. Prove it is still runnable
   # before any host file is touched.
