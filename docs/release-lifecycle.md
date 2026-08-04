@@ -156,8 +156,14 @@ current `main`; successful
 CI and candidate workflow identities; Linux attestation, archive digest, and
 embedded commit; private dress-rehearsal health for that digest; all three
 retained artifact records; and retained macOS, Linux, and Windows acceptance.
-Phase 3 does not manufacture platform records: until Phase 4 supplies them, the
-dry run reports them as blockers and publication remains paused.
+The trusted-main candidate workflow now retains the complete Phase 4 matrix:
+hosted Linux candidate and acceptance, signed/notarized Mac bytes and Apple
+Silicon acceptance, and Windows 11 behavior acceptance bound to the Linux TGZ.
+It assembles the Phase 3 promotion bundle only when every exact byte and record
+passes. Missing credentials, disabled/offline runners, failed checks, or absent
+evidence appear in the retained per-platform status as blockers; they never
+become skipped success. Provisioning and recovery are documented in
+[phase4-platform-acceptance.md](./phase4-platform-acceptance.md).
 
 Publication additionally requires `mode=publish`, the exact identity-bound
 confirmation printed by the dry run, and owner approval in the protected

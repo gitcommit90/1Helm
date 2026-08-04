@@ -39,6 +39,10 @@
     Optional SHA-256 the local archive must match, checked inside the
     distribution before anything is installed. Catches a truncated or stale copy.
 
+.PARAMETER LocalRootfs
+    Repo-scoped acceptance override for the pinned Ubuntu WSL rootfs. Requires
+    -LocalRootfsSha256, which must also equal the product's compiled-in pin.
+
 .EXAMPLE
     irm https://1helm.com/install.ps1 | iex
 
@@ -54,6 +58,8 @@ param(
     [string] $LocalArchive   = '',
     [string] $LocalInstaller = '',
     [string] $LocalArchiveSha256 = '',
+    [string] $LocalRootfs = '',
+    [string] $LocalRootfsSha256 = '',
     [string] $KeepaliveSource = '',
     [switch] $HostSetup,
     [string] $StatusPath     = ''
@@ -247,6 +253,8 @@ if ([Environment]::OSVersion.Version.Build -lt 22000) {
     Die "1Helm requires Windows 11 (build 22000 or newer). This is build $([Environment]::OSVersion.Version.Build)."
 }
 if ($LocalArchive -and -not $LocalInstaller) { Die "-LocalArchive requires -LocalInstaller." }
+if ($LocalRootfs -and -not $LocalRootfsSha256) { Die "-LocalRootfs requires -LocalRootfsSha256." }
+if ($LocalRootfsSha256 -and $LocalRootfsSha256 -notmatch '^[a-fA-F0-9]{64}$') { Die "-LocalRootfsSha256 is not a SHA-256 digest." }
 
 $null = New-Item -ItemType Directory -Path $InstallRoot -Force
 
@@ -330,7 +338,16 @@ if ((Get-Distros) -contains $Distro) {
     Say "    distribution '$Distro' already exists"
 } else {
     $rootfs = Join-Path $InstallRoot 'ubuntu-noble-wsl-amd64.rootfs.tar.gz'
-    Get-FileWithDigest -Url $RootfsUrl -Destination $rootfs -ExpectedSha $RootfsSha
+    if ($LocalRootfs) {
+        if (-not (Test-Path $LocalRootfs)) { Die "-LocalRootfs not found: $LocalRootfs" }
+        $expectedRootfs = $LocalRootfsSha256.ToLowerInvariant()
+        if ($expectedRootfs -ne $RootfsSha) { Die "-LocalRootfsSha256 does not match the product's pinned Ubuntu rootfs." }
+        if ((Get-FileHash $LocalRootfs -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedRootfs) { Die "-LocalRootfs did not match its expected SHA-256." }
+        Copy-Item $LocalRootfs $rootfs -Force
+        Say "    using the digest-verified local Ubuntu rootfs"
+    } else {
+        Get-FileWithDigest -Url $RootfsUrl -Destination $rootfs -ExpectedSha $RootfsSha
+    }
     $distroDir = Join-Path $InstallRoot 'distro'
     $null = New-Item -ItemType Directory -Path $distroDir -Force
     Say "    importing '$Distro' (this takes about a minute) ..."
