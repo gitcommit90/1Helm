@@ -69,14 +69,14 @@ mkdir -p "$DATA_ROOT"
 printf '%s\n' server >"$DATA_ROOT/desktop-mode"
 open -n "$installed" --args --1helm-background
 for _ in {1..180}; do
-  PORT="$(lsof -nP -a -c 1Helm -iTCP -sTCP:LISTEN 2>/dev/null | awk '/127\.0\.0\.1:/ {split($9,a,":"); print a[length(a)]; exit}')"
+  PORT="$(lsof -nP -a -u "$(id -un)" -c 1Helm -iTCP -sTCP:LISTEN 2>/dev/null | awk '/127\.0\.0\.1:/ {split($9,a,":"); print a[length(a)]; exit}')"
   [[ "$PORT" =~ ^[0-9]+$ ]] && curl -fsS "http://127.0.0.1:$PORT/api/setup/status" >"$work/clean-health.json" && break
   sleep 1
 done
 [[ -s "$work/clean-health.json" ]]
 osascript -e 'tell application id "com.gitcommit90.1helm" to quit' || true
-for _ in {1..30}; do pgrep -x 1Helm >/dev/null || break; sleep 1; done
-! pgrep -x 1Helm >/dev/null
+for _ in {1..30}; do pgrep -x -U "$(id -u)" 1Helm >/dev/null || break; sleep 1; done
+! pgrep -x -U "$(id -u)" 1Helm >/dev/null
 
 # Reset the dedicated account, install the latest immutable prior Stable DMG,
 # then apply the exact candidate updater ZIP while Application Support remains.
@@ -123,20 +123,20 @@ printf '%s\n' "phase4-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >"$DATA_ROOT/phase4-ac
 STATE_BEFORE="$(shasum -a 256 "$DATA_ROOT/phase4-acceptance-state" | awk '{print $1}')"
 open -n "$installed" --args --1helm-background
 for _ in {1..180}; do
-  PORT="$(lsof -nP -a -c 1Helm -iTCP -sTCP:LISTEN 2>/dev/null | awk '/127\.0\.0\.1:/ {split($9,a,":"); print a[length(a)]; exit}')"
+  PORT="$(lsof -nP -a -u "$(id -un)" -c 1Helm -iTCP -sTCP:LISTEN 2>/dev/null | awk '/127\.0\.0\.1:/ {split($9,a,":"); print a[length(a)]; exit}')"
   [[ "$PORT" =~ ^[0-9]+$ ]] && curl -fsS "http://127.0.0.1:$PORT/api/setup/status" >"$work/prior-health.json" && break
   sleep 1
 done
 [[ -s "$work/prior-health.json" ]]
 osascript -e 'tell application id "com.gitcommit90.1helm" to quit' || true
-for _ in {1..30}; do pgrep -x 1Helm >/dev/null || break; sleep 1; done
-! pgrep -x 1Helm >/dev/null
+for _ in {1..30}; do pgrep -x -U "$(id -u)" 1Helm >/dev/null || break; sleep 1; done
+! pgrep -x -U "$(id -u)" 1Helm >/dev/null
 rm -rf -- "$installed"
 ditto "$work/update/1Helm.app" "$installed"
 [[ "$(defaults read "$installed/Contents/Info" CFBundleShortVersionString)" == "$VERSION" ]]
 open -n "$installed" --args --1helm-background
 for _ in {1..180}; do
-  PORT="$(lsof -nP -a -c 1Helm -iTCP -sTCP:LISTEN 2>/dev/null | awk '/127\.0\.0\.1:/ {split($9,a,":"); print a[length(a)]; exit}')"
+  PORT="$(lsof -nP -a -u "$(id -un)" -c 1Helm -iTCP -sTCP:LISTEN 2>/dev/null | awk '/127\.0\.0\.1:/ {split($9,a,":"); print a[length(a)]; exit}')"
   [[ "$PORT" =~ ^[0-9]+$ ]] && curl -fsS "http://127.0.0.1:$PORT/api/setup/status" >"$work/update-health.json" && break
   sleep 1
 done
@@ -144,8 +144,8 @@ done
 STATE_AFTER="$(shasum -a 256 "$DATA_ROOT/phase4-acceptance-state" | awk '{print $1}')"
 [[ "$STATE_BEFORE" == "$STATE_AFTER" ]]
 osascript -e 'tell application id "com.gitcommit90.1helm" to quit' || true
-for _ in {1..30}; do pgrep -x 1Helm >/dev/null || break; sleep 1; done
-! pgrep -x 1Helm >/dev/null
+for _ in {1..30}; do pgrep -x -U "$(id -u)" 1Helm >/dev/null || break; sleep 1; done
+! pgrep -x -U "$(id -u)" 1Helm >/dev/null
 
 export HELM_STATE_BEFORE_SHA256="$STATE_BEFORE" HELM_STATE_AFTER_SHA256="$STATE_AFTER"
 export HELM_PREVIOUS_VERSION="$PREVIOUS_VERSION"
