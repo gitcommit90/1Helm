@@ -24,6 +24,23 @@ export HELM_ACCEPTANCE_STARTED_AT="$STARTED_AT"
 export HELM_PHASE4_RUNNER_LABEL=ubuntu-latest
 node "$ROOT/scripts/pending-acceptance-evidence.mjs"
 [[ "$(id -u)" -ne 0 ]] || { echo "Linux acceptance must begin as the hosted ordinary runner user." >&2; exit 1; }
+
+# This lane performs a REAL root install of 1Helm on its runner: it binds port
+# 8123, writes /var/lib/1helm-oci-v1, and installs the 1helm systemd units. That
+# is only safe on a disposable GitHub-hosted runner that holds no user or
+# production data. Refuse anywhere that looks persistent, self-hosted, or
+# already-inhabited so a misrouted job can never clobber a real host's live
+# 1Helm or standalone state. Blocked evidence was already retained above.
+[[ "${RUNNER_ENVIRONMENT:-}" == "github-hosted" ]] \
+  || { echo "Linux acceptance refuses to boot a real 1Helm outside a disposable GitHub-hosted runner." >&2; exit 1; }
+for guarded in /var/lib/1helm-oci-v1 /var/lib/1helm-standalone /opt/1helm; do
+  [[ ! -e "$guarded" ]] \
+    || { echo "Linux acceptance refuses to run where 1Helm host state already exists: $guarded" >&2; exit 1; }
+done
+if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -qE '[:.]8123[[:space:]]'; then
+  echo "Linux acceptance refuses to run while port 8123 is already in use." >&2
+  exit 1
+fi
 [[ "$(sha256sum "$ARCHIVE" | awk '{print $1}')" == "$DIGEST" ]] \
   || { echo "Linux candidate digest mismatch." >&2; exit 1; }
 [[ "$(sha256sum "$OFFLINE_ARCHIVE" | awk '{print $1}')" == "$OFFLINE_DIGEST" ]] \
