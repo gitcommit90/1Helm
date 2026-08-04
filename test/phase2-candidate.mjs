@@ -93,7 +93,7 @@ test("rollback fixtures remain local-only and cannot satisfy normal candidate va
 test("candidate workflow and guest boundary exclude PR code and broad root access", () => {
   const workflow = read(".github/workflows/candidate.yml");
   const helper = read("ops/dress-rehearsal/1helm-candidate-install");
-  const hook = read("ops/dress-rehearsal/runner-job-started");
+  const hook = read("ops/dress-rehearsal/runner-job-started.sh");
   const sudoersExample = "%actions ALL=(root) NOPASSWD: /usr/local/sbin/1helm-candidate-install \"\"\n";
   assert.match(workflow, /workflow_run:[\s\S]*workflows: \[CI\][\s\S]*branches: \[main\]/);
   assert.match(workflow, /workflow_run\.event == 'push'/);
@@ -111,8 +111,11 @@ test("candidate workflow and guest boundary exclude PR code and broad root acces
   assert.doesNotMatch(helper, /--local-proof/);
   assert.match(helper, /awk -F\/.*!found.*found=1/, "large archive inspection consumes tar output instead of causing SIGPIPE under pipefail");
   assert.match(helper, /actions\\\.runner[\s\S]*systemd-run[\s\S]*\/usr\/local\/sbin\/1helm-candidate-install/);
-  assert.match(helper, /unlink "\$INBOX\/candidate\.json" "\$INBOX\/candidate\.tgz"/);
+  assert.match(helper, /^unlink "\$INBOX\/candidate\.json"$/m);
+  assert.match(helper, /^unlink "\$INBOX\/candidate\.tgz"$/m);
+  assert.doesNotMatch(helper, /unlink "\$INBOX\/candidate\.json" "\$INBOX\/candidate\.tgz"/);
   assert.match(read("ops/dress-rehearsal/runner.service.override.conf"), /ProtectSystem=strict[\s\S]*ReadWritePaths=.*candidate\/inbox/);
+  assert.match(read("ops/dress-rehearsal/runner.service.override.conf"), /ACTIONS_RUNNER_HOOK_JOB_STARTED=\/usr\/local\/lib\/1helm-candidate\/runner-job-started\.sh/);
   assert.match(hook, /GITHUB_EVENT_NAME.*workflow_run/);
   assert.match(hook, /run\.get\("event"\) == "push"/);
   assert.doesNotMatch(sudoersExample, /NOPASSWD:\s*ALL/);

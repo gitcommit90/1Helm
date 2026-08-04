@@ -41,7 +41,8 @@ candidate as running after the failed attempt.
 
 The runner service account has no Proxmox, Stable, production, website, or
 release credentials and is not a member of privileged container/runtime groups.
-Its start hook rejects every repository, workflow, job, and event except the
+Its root-owned `runner-job-started.sh` start hook rejects every repository,
+workflow, job, and event except the
 Phase 2 deployment job resulting from successful `CI` for `main`. Ordinary PR
 workflows do not carry the unique runner label. The runner is registered with
 `--no-default-labels`, so generic `self-hosted`, OS, or architecture selectors

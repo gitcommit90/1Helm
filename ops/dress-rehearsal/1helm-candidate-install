@@ -43,7 +43,8 @@ if [[ "$LOCAL_PROOF" -eq 0 ]]; then
 fi
 # Consume the fixed inbox payloads after the root copy. The unprivileged runner
 # can then create a fresh set without owning retained candidate bytes.
-unlink "$INBOX/candidate.json" "$INBOX/candidate.tgz"
+unlink "$INBOX/candidate.json"
+unlink "$INBOX/candidate.tgz"
 [[ "$LOCAL_PROOF" -eq 1 ]] || unlink "$INBOX/provenance.bundle.json"
 
 validate_args=(validate "$work/candidate.json" "$work/candidate.tgz" "$work/verified.json")
