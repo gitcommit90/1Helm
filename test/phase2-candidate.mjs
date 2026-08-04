@@ -111,7 +111,9 @@ test("candidate workflow and guest boundary exclude PR code and broad root acces
   assert.doesNotMatch(helper, /--local-proof/);
   assert.match(helper, /awk -F\/.*!found.*found=1/, "large archive inspection consumes tar output instead of causing SIGPIPE under pipefail");
   assert.match(helper, /actions\\\.runner[\s\S]*systemd-run[\s\S]*\/usr\/local\/sbin\/1helm-candidate-install/);
-  assert.match(helper, /unlink "\$INBOX\/candidate\.json" "\$INBOX\/candidate\.tgz"/);
+  assert.match(helper, /^unlink "\$INBOX\/candidate\.json"$/m);
+  assert.match(helper, /^unlink "\$INBOX\/candidate\.tgz"$/m);
+  assert.doesNotMatch(helper, /unlink "\$INBOX\/candidate\.json" "\$INBOX\/candidate\.tgz"/);
   assert.match(read("ops/dress-rehearsal/runner.service.override.conf"), /ProtectSystem=strict[\s\S]*ReadWritePaths=.*candidate\/inbox/);
   assert.match(read("ops/dress-rehearsal/runner.service.override.conf"), /ACTIONS_RUNNER_HOOK_JOB_STARTED=\/usr\/local\/lib\/1helm-candidate\/runner-job-started\.sh/);
   assert.match(hook, /GITHUB_EVENT_NAME.*workflow_run/);
