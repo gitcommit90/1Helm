@@ -33,6 +33,7 @@ jobs:
     outputs:
       artifact-name: ${{ steps.identity.outputs.artifact_name }}
       commit: ${{ steps.identity.outputs.commit }}
+      ci-run-id: ${{ steps.identity.outputs.ci_run_id }}
     steps:
       - name: Check out the exact successful CI commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -94,6 +95,7 @@ jobs:
         id: identity
         env:
           CI_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HELM_CANDIDATE_CI_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
           version="$(node -p 'require("./package.json").version')"
@@ -107,6 +109,7 @@ jobs:
           sha256sum "$evidence/candidate.json" > "$evidence/manifest.sha256"
           printf 'artifact_name=1helm-candidate-%s\n' "$CI_HEAD_SHA" >> "$GITHUB_OUTPUT"
           printf 'commit=%s\n' "$CI_HEAD_SHA" >> "$GITHUB_OUTPUT"
+          printf 'ci_run_id=%s\n' "$HELM_CANDIDATE_CI_RUN_ID" >> "$GITHUB_OUTPUT"
 
       - name: Attest archive provenance on the hosted builder
         id: attest
@@ -168,8 +171,67 @@ jobs:
           sudo -n /usr/local/sbin/1helm-candidate-install
 
       - name: Publish private installation evidence in the job log
-        if: always()
         run: |
           test -r /var/lib/1helm-candidate/evidence/status.json
           python3 /usr/local/lib/1helm-candidate/candidate-boundary.py summary \
             /var/lib/1helm-candidate/evidence/status.json
+
+      - name: Retain exact private dress-rehearsal evidence
+        run: |
+          set -euo pipefail
+          install -d -m 0700 candidate-result
+          install -m 0600 /var/lib/1helm-candidate/evidence/status.json candidate-result/dress-rehearsal.json
+
+      - name: Upload private evidence for hosted promotion assembly
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: 1helm-dress-rehearsal-evidence-${{ needs.build.outputs.commit }}
+          path: candidate-result/dress-rehearsal.json
+          if-no-files-found: error
+          retention-days: 30
+
+  assemble-promotion:
+    name: Assemble honest Phase 3 promotion candidate
+    needs: [build, deploy]
+    if: needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out the exact candidate commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download exact built Linux candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: candidate-download
+
+      - name: Download exact dress-rehearsal result
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: 1helm-dress-rehearsal-evidence-${{ needs.build.outputs.commit }}
+          path: rehearsal-download
+
+      - name: Assemble retained bytes without rebuilding
+        env:
+          HELM_CANDIDATE_DOWNLOAD: candidate-download
+          HELM_REHEARSAL_EVIDENCE: rehearsal-download/dress-rehearsal.json
+          HELM_PROMOTION_OUTPUT: promotion-candidate
+          HELM_PROJECT_ROOT: .
+          HELM_CANDIDATE_CI_RUN_ID: ${{ needs.build.outputs.ci-run-id }}
+        run: node scripts/candidate-promotion-skeleton.mjs
+
+      - name: Upload the exact Phase 3 promotion candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: 1helm-promotion-candidate-${{ needs.build.outputs.commit }}
+          path: promotion-candidate/
+          if-no-files-found: error
+          retention-days: 30

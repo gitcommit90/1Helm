@@ -86,6 +86,15 @@ contract as the slice hardens.
   every user-visible fix and feature accepted for that release, using the same
   numbered ledger as the originating request when one exists. A short summary
   can introduce that ledger but cannot replace it.
+- Desktop Stable publication uses only the manual promotion workflow. It
+  verifies and republishes exact retained candidate bytes without rebuilding,
+  requires an explicit identity-bound owner confirmation and approval in the
+  protected **Stable publication** Environment, and refuses any existing tag or
+  Release. Repository automation does not create or configure that Environment.
+- Every promoted Release includes a digest-qualified machine-readable Stable
+  manifest. The site retains the last manifest it validated and must fail closed
+  instead of inventing metadata. Tags and Release assets are never rewritten;
+  rollback uses a new version or a supported installed-updater rollback policy.
 - macOS verification must use the exact publicly downloaded artifact, preserve
   Application Support, and prove signature/ticket/Gatekeeper, launch, version,
   loopback behavior, and retained state on the retained release host.

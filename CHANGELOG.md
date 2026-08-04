@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Stable desktop releases now use a fail-closed manual promotion gate that
+  verifies and republishes exact retained candidate bytes, keeps publication
+  behind explicit owner approval, and serves digest-validated last-known-good
+  website metadata without a follow-up digest commit.
+
 ## [0.0.41] - 2026-08-03
 
 ### Fixed

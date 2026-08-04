@@ -139,11 +139,41 @@ Draft PRs are allowed for long slices; mark ready only when the quality bar is m
    signing status to record; complete its behavioural acceptance instead
    (`docs/release-checklist.md` Section 7).
 7. Publish those desktop artifacts and complete release notes together through
-   one GitHub Release. Never publish a subset or attach a platform later to a
+   the manual `Promote exact candidate to Stable` workflow. Supply the exact
+   retained candidate workflow run ID, immutable artifact ID, and intended
+   version; run its default dry-run first. Never rebuild in promotion, publish
+   a subset, or attach a platform later to a
    version already described as complete. Include a directly distributed
    signed Android APK when applicable. Submit iOS through App Store Connect
    rather than publishing an installable IPA as a generic download. Do not use
    GitHub's generated notes as the sole or primary body.
+
+### Stable promotion gate
+
+The manual workflow is the only supported desktop publication path. Its
+read-only verification job checks that the exact candidate commit remains on
+current `main`; successful
+CI and candidate workflow identities; Linux attestation, archive digest, and
+embedded commit; private dress-rehearsal health for that digest; all three
+retained artifact records; and retained macOS, Linux, and Windows acceptance.
+Phase 3 does not manufacture platform records: until Phase 4 supplies them, the
+dry run reports them as blockers and publication remains paused.
+
+Publication additionally requires `mode=publish`, the exact identity-bound
+confirmation printed by the dry run, and owner approval in the protected
+GitHub Environment named **Stable publication**. That environment must also
+contain `STABLE_PUBLICATION_ENABLED` with the documented enablement value. It is
+intentionally absent until the owner separately creates and protects the
+environment. The publish job rechecks that the tag and release do not exist and
+that the candidate remains on `origin/main`. It creates an annotated tag and one GitHub
+Release from the already verified bytes; there is no package/build command.
+
+The Release includes `1Helm-<version>-stable.json`. The site accepts GitHub
+metadata only when that manifest asset's digest and the complete Release matrix
+match. It retains the last validated manifest in website state, so GitHub
+unavailability does not move Stable backward or cause invented metadata. The
+bootstrap manifest in `site/stable-manifest.json` represents the last release
+before this mechanism and is not edited per release.
 
 ## 7. Deploy
 
@@ -176,3 +206,15 @@ workspace state.
 
 If any platform artifact or acceptance run is skipped, the release is paused,
 not partially shipped. Say exactly what is missing and do not call it “done.”
+
+## 9. Rollback after publication
+
+Tags and assets are immutable. Never delete, move, reuse, or force-update a tag,
+and never silently replace an asset. To restore older behavior, select a
+previously verified immutable artifact set and promote it under a **new semantic
+version** after the same complete verification, or use an explicitly supported
+host-updater rollback policy that preserves the installed prior release. If
+publication fails after its annotated tag is pushed but before the complete
+Release exists, that version is stranded: do not reuse it; correct the cause and
+promote a new version. The website continues serving its last validated Stable
+manifest until a complete new promotion validates.
