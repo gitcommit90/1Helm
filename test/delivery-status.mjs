@@ -161,6 +161,7 @@ test("website probing uses the structured health identity instead of scraping HT
   const site = report.environments.find(({ id }) => id === "website");
   assert.equal(site.health, "healthy");
   assert.equal(site.version, "0.0.41");
-  assert.ok(urls.includes("https://site.example/health"));
-  assert.ok(!urls.includes("https://site.example/"));
+  const requested = urls.map((value) => new URL(value));
+  assert.ok(requested.some((url) => url.origin === "https://site.example" && url.pathname === "/health" && url.search === "" && url.hash === ""));
+  assert.ok(!requested.some((url) => url.origin === "https://site.example" && url.pathname === "/" && url.search === "" && url.hash === ""));
 });
