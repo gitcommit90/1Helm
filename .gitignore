@@ -27,3 +27,16 @@ data-refactored/
 .deploy-backups/
 .claude/
 .design/
+
+# generated local delivery/test state
+# Host tooling may ignore agent instruction files globally; these are tracked.
+!/AGENTS.md
+!/CLAUDE.md
+/.release-tmp/
+/.native-test-data/
+/.preview-data/
+/.test-state/
+/.delivery-status.local
+__pycache__/
+*.py[cod]
+/src/server/agent.ts.bak-normal-terminal-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]

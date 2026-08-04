@@ -84,6 +84,47 @@ try { headVersion = String(JSON.parse(String(headPackage.stdout || "{}")).versio
 if (headPackage.status !== 0 || headVersion !== version) {
   throw new Error("Linux packaging version does not match package.json at Git HEAD");
 }
+const headResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
+const headSha = String(headResult.stdout || "").trim();
+if (headResult.status !== 0 || !/^[a-f0-9]{40}$/.test(headSha)) throw new Error("Could not resolve the exact Linux package source commit");
+
+const candidateRequested = Boolean(process.env.HELM_CANDIDATE_BUILD_ID);
+const candidateIdentity = candidateRequested ? {
+  schema: 1,
+  kind: "1helm-dress-rehearsal-candidate",
+  repository: String(process.env.HELM_CANDIDATE_REPOSITORY || ""),
+  ref: String(process.env.HELM_CANDIDATE_REF || ""),
+  commit: String(process.env.HELM_CANDIDATE_COMMIT || ""),
+  source_state: String(process.env.HELM_CANDIDATE_SOURCE_STATE || ""),
+  build_identity: String(process.env.HELM_CANDIDATE_BUILD_ID || ""),
+  created_at: String(process.env.HELM_CANDIDATE_CREATED_AT || ""),
+  ci: {
+    workflow: String(process.env.HELM_CANDIDATE_CI_WORKFLOW || ""),
+    run_id: String(process.env.HELM_CANDIDATE_CI_RUN_ID || ""),
+    conclusion: String(process.env.HELM_CANDIDATE_CI_CONCLUSION || ""),
+  },
+  version,
+} : null;
+if (candidateIdentity) {
+  const trustedMain = candidateIdentity.source_state === "trusted-main";
+  const validCi = trustedMain
+    ? candidateIdentity.ci.workflow === "CI" && /^\d+$/.test(candidateIdentity.ci.run_id) && candidateIdentity.ci.conclusion === "success"
+    : candidateIdentity.ci.workflow === "local" && candidateIdentity.ci.run_id === "0" && candidateIdentity.ci.conclusion === "not_run";
+  if (candidateIdentity.repository !== "gitcommit90/1Helm"
+      || candidateIdentity.ref !== "refs/heads/main"
+      || candidateIdentity.commit !== headSha
+      || !["trusted-main", "local-worktree", "rollback-fixture"].includes(candidateIdentity.source_state)
+      || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(candidateIdentity.build_identity)
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(candidateIdentity.created_at)
+      || !validCi) {
+    throw new Error("Candidate packaging requires the exact trusted repository/ref/commit, successful CI identity, and bounded build identity");
+  }
+  const worktree = spawnSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" });
+  if (worktree.status !== 0) throw new Error("Could not inspect the candidate source worktree");
+  if (candidateIdentity.source_state === "trusted-main" && String(worktree.stdout || "").trim()) {
+    throw new Error("Trusted-main candidate packaging requires a clean exact checkout");
+  }
+}
 for (const rel of sealed.slice(0, 2)) {
   if (!existsSync(resolve(root, rel))) {
     throw new Error(`Linux packaging requires the sealed channel image at ${rel} (run scripts/build-oci-channel-image.sh on a builder host).`);
@@ -119,13 +160,25 @@ rmSync(output, { force: true });
 const stage = mkdtempSync(join(tmpdir(), "1helm-linux-pkg-"));
 try {
   const prefix = `1Helm-${version}`;
-  const archive = spawnSync("git", ["archive", "--format=tar", `--prefix=${prefix}/`, "HEAD"], {
-    cwd: root,
-    encoding: "buffer",
-    maxBuffer: 512 * 1024 * 1024,
-  });
-  if (archive.status !== 0) throw new Error("Could not package the exact Git release source");
-  if (!archive.stdout?.length) throw new Error("Exact Git release source archive was empty");
+  let archive;
+  if (["local-worktree", "rollback-fixture"].includes(candidateIdentity?.source_state)) {
+    const files = spawnSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+      cwd: root, encoding: "buffer", maxBuffer: 64 * 1024 * 1024,
+    });
+    if (files.status !== 0 || !files.stdout?.length) throw new Error("Could not enumerate the local candidate worktree");
+    archive = spawnSync("tar", ["-cf", "-", "--null", "--files-from=-", `--transform=s,^,${prefix}/,`], {
+      cwd: root, input: files.stdout, encoding: "buffer", maxBuffer: 512 * 1024 * 1024,
+    });
+  } else {
+    archive = spawnSync("git", ["archive", "--format=tar", `--prefix=${prefix}/`, "HEAD"], {
+      cwd: root,
+      encoding: "buffer",
+      maxBuffer: 512 * 1024 * 1024,
+    });
+  }
+  if (archive.status !== 0) throw new Error("Could not package the exact Git candidate source");
+  if (!archive.stdout?.length) throw new Error("Exact Git candidate source archive was empty");
+  const sourceArchiveSha256 = createHash("sha256").update(archive.stdout).digest("hex");
   const extract = spawnSync("tar", ["-xf", "-", "-C", stage], { input: archive.stdout, stdio: ["pipe", "inherit", "inherit"] });
   if (extract.status !== 0) throw new Error("Could not extract the Git release source for packaging");
 
@@ -140,6 +193,17 @@ try {
     const src = resolve(root, rel);
     if (!existsSync(src)) continue;
     copyFileSync(src, join(stage, prefix, rel));
+  }
+  if (candidateIdentity) {
+    const imageSha256 = String(readFileSync(resolve(root, "container/channel-machine.oci.sha256"), "utf8")).trim();
+    if (!/^[a-f0-9]{64}$/.test(imageSha256)) throw new Error("Candidate packaging requires the sealed OCI image SHA-256");
+    const identityFile = join(stage, prefix, "resources", "candidate-build.json");
+    mkdirSync(dirname(identityFile), { recursive: true });
+    writeFileSync(identityFile, `${JSON.stringify({
+      ...candidateIdentity,
+      source_archive_sha256: sourceArchiveSha256,
+      sealed_oci_sha256: imageSha256,
+    }, null, 2)}\n`);
   }
 
   const resourcesDir = join(stage, prefix, "resources");

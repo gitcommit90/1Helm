@@ -1,0 +1,175 @@
+name: Candidate dress rehearsal
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: 1helm-private-dress-rehearsal
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build exact trusted-main Linux candidate
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.repository.full_name == github.repository &&
+      github.sha == github.event.workflow_run.head_sha &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      artifact-name: ${{ steps.identity.outputs.artifact_name }}
+      commit: ${{ steps.identity.outputs.commit }}
+    steps:
+      - name: Check out the exact successful CI commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Re-verify trusted repository, ref, event, and SHA
+        env:
+          CI_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          CI_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CI_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          CI_EVENT: ${{ github.event.workflow_run.event }}
+          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          CI_WORKFLOW: ${{ github.event.workflow_run.name }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "gitcommit90/1Helm"
+          test "$CI_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          test "$CI_HEAD_BRANCH" = "main"
+          test "$CI_EVENT" = "push"
+          test "$CI_CONCLUSION" = "success"
+          test "$CI_WORKFLOW" = "CI"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_SHA" = "$CI_HEAD_SHA"
+          test "$(git rev-parse HEAD)" = "$CI_HEAD_SHA"
+          test -z "$(git status --porcelain)"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install exact dependencies and builder runtime
+        run: |
+          set -euo pipefail
+          PUPPETEER_SKIP_DOWNLOAD=1 npm ci
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Build sealed OCI image and ready-to-run Linux archive
+        env:
+          HELM_CANDIDATE_REPOSITORY: gitcommit90/1Helm
+          HELM_CANDIDATE_REF: refs/heads/main
+          HELM_CANDIDATE_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          HELM_CANDIDATE_SOURCE_STATE: trusted-main
+          HELM_CANDIDATE_BUILD_ID: candidate-${{ github.event.workflow_run.id }}-${{ github.run_id }}.${{ github.run_attempt }}
+          HELM_CANDIDATE_CREATED_AT: ${{ github.event.workflow_run.updated_at }}
+          HELM_CANDIDATE_CI_WORKFLOW: CI
+          HELM_CANDIDATE_CI_RUN_ID: ${{ github.event.workflow_run.id }}
+          HELM_CANDIDATE_CI_CONCLUSION: success
+        run: |
+          set -euo pipefail
+          npm run package:channel-image
+          npm run package:linux
+
+      - name: Generate candidate manifest and evidence
+        id: identity
+        env:
+          CI_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          archive="dist/1Helm-${version}-linux-node.tgz"
+          evidence="dist/candidate-evidence"
+          mkdir -p "$evidence"
+          HELM_CANDIDATE_ARCHIVE="$archive" \
+            HELM_CANDIDATE_MANIFEST="$evidence/candidate.json" \
+            node scripts/candidate-manifest.mjs
+          cp "$archive.sha256" "$evidence/archive.sha256"
+          sha256sum "$evidence/candidate.json" > "$evidence/manifest.sha256"
+          printf 'artifact_name=1helm-candidate-%s\n' "$CI_HEAD_SHA" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\n' "$CI_HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Attest archive provenance on the hosted builder
+        id: attest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: dist/1Helm-*-linux-node.tgz
+
+      - name: Retain signed provenance bundle
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          test -s "$BUNDLE_PATH"
+          install -m 0644 "$BUNDLE_PATH" dist/candidate-evidence/provenance.bundle.json
+
+      - name: Upload exact candidate and evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.identity.outputs.artifact_name }}
+          path: |
+            dist/1Helm-*-linux-node.tgz
+            dist/candidate-evidence/candidate.json
+            dist/candidate-evidence/archive.sha256
+            dist/candidate-evidence/manifest.sha256
+            dist/candidate-evidence/provenance.bundle.json
+          if-no-files-found: error
+          retention-days: 30
+
+  deploy:
+    name: Install only on private Phase 2 dress rehearsal
+    needs: build
+    runs-on: [1helm-dress-rehearsal-phase2]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Download this workflow's exact candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: candidate-download
+
+      - name: Submit fixed candidate inputs to the root-owned boundary
+        env:
+          EXPECTED_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "gitcommit90/1Helm"
+          test "$EXPECTED_COMMIT" = "${{ github.event.workflow_run.head_sha }}"
+          test "${{ github.event.workflow_run.head_branch }}" = "main"
+          test "${{ github.event.workflow_run.head_repository.full_name }}" = "$GITHUB_REPOSITORY"
+          test "${{ github.event.workflow_run.conclusion }}" = "success"
+          archive="$(find candidate-download -maxdepth 1 -type f -name '1Helm-*-linux-node.tgz' -print -quit)"
+          test -n "$archive"
+          install -m 0600 "$archive" /var/lib/1helm-candidate/inbox/candidate.tgz
+          install -m 0600 candidate-download/candidate-evidence/candidate.json /var/lib/1helm-candidate/inbox/candidate.json
+          install -m 0600 candidate-download/candidate-evidence/provenance.bundle.json /var/lib/1helm-candidate/inbox/provenance.bundle.json
+          sudo -n /usr/local/sbin/1helm-candidate-install
+
+      - name: Publish private installation evidence in the job log
+        if: always()
+        run: |
+          test -r /var/lib/1helm-candidate/evidence/status.json
+          python3 /usr/local/lib/1helm-candidate/candidate-boundary.py summary \
+            /var/lib/1helm-candidate/evidence/status.json

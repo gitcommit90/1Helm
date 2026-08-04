@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+INBOX=/var/lib/1helm-candidate/inbox
+EVIDENCE=/var/lib/1helm-candidate/evidence
+HISTORY="$EVIDENCE/history"
+BOUNDARY=/usr/local/lib/1helm-candidate/candidate-boundary.py
+LOCK=/run/lock/1helm-candidate-install.lock
+INSTALL_LOG=/var/log/1helm-candidate
+LOCAL_PROOF=0
+LOCAL_PROOF_MARKER=/var/lib/1helm-candidate/local-proof-authorized
+
+[[ "$EUID" -eq 0 ]] || { echo "The candidate boundary must run through its fixed sudo rule." >&2; exit 1; }
+[[ "$#" -eq 0 ]] || { echo "The candidate boundary accepts no arguments." >&2; exit 2; }
+# Keep the long-lived runner inside a read-only systemd namespace. Sudo grants
+# only this file; this root-owned file asks PID 1 to run the same fixed,
+# argument-free transaction in a fresh transient unit outside that namespace.
+if awk -F: '$3 ~ /actions\.runner\.gitcommit90-1Helm\.1helm-dress-rehearsal-p2\.service(\/|$)/ { found=1 } END { exit found ? 0 : 1 }' /proc/self/cgroup; then
+  exec systemd-run --quiet --collect --wait --pipe \
+    --unit="1helm-candidate-install-$(date +%s)-$$" \
+    --property=Type=oneshot --property=NoNewPrivileges=false --property=PrivateTmp=true --property=ProtectHome=true \
+    /usr/local/sbin/1helm-candidate-install
+fi
+if [[ -f "$LOCAL_PROOF_MARKER" && ! -L "$LOCAL_PROOF_MARKER" \
+    && "$(stat -c '%U:%G:%a' "$LOCAL_PROOF_MARKER")" == "root:root:600" ]]; then
+  LOCAL_PROOF=1
+  unlink "$LOCAL_PROOF_MARKER"
+fi
+[[ -x "$BOUNDARY" ]] || { echo "The root-owned candidate validator is missing." >&2; exit 1; }
+for file in candidate.json candidate.tgz; do
+  [[ -f "$INBOX/$file" && ! -L "$INBOX/$file" ]] || { echo "Candidate inbox is incomplete." >&2; exit 1; }
+done
+
+exec 9>"$LOCK"
+flock -n 9 || { echo "Another candidate installation is active." >&2; exit 1; }
+work="$(mktemp -d /var/lib/1helm-candidate/.install.XXXXXX)"
+trap 'rm -rf -- "$work"' EXIT
+install -o root -g root -m 0600 "$INBOX/candidate.json" "$work/candidate.json"
+install -o root -g root -m 0600 "$INBOX/candidate.tgz" "$work/candidate.tgz"
+if [[ "$LOCAL_PROOF" -eq 0 ]]; then
+  [[ -f "$INBOX/provenance.bundle.json" && ! -L "$INBOX/provenance.bundle.json" ]] || { echo "Signed candidate provenance is required." >&2; exit 1; }
+  install -o root -g root -m 0600 "$INBOX/provenance.bundle.json" "$work/provenance.bundle.json"
+fi
+# Consume the fixed inbox payloads after the root copy. The unprivileged runner
+# can then create a fresh set without owning retained candidate bytes.
+unlink "$INBOX/candidate.json" "$INBOX/candidate.tgz"
+[[ "$LOCAL_PROOF" -eq 1 ]] || unlink "$INBOX/provenance.bundle.json"
+
+validate_args=(validate "$work/candidate.json" "$work/candidate.tgz" "$work/verified.json")
+[[ "$LOCAL_PROOF" -eq 1 ]] && validate_args+=(--allow-local)
+python3 "$BOUNDARY" "${validate_args[@]}"
+commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source"]["commit"])' "$work/verified.json")"
+version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$work/verified.json")"
+digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["artifact"]["sha256"])' "$work/verified.json")"
+if [[ "$LOCAL_PROOF" -eq 0 ]]; then
+  gh attestation verify "$work/candidate.tgz" \
+    --bundle "$work/provenance.bundle.json" \
+    --repo gitcommit90/1Helm \
+    --signer-workflow gitcommit90/1Helm/.github/workflows/candidate.yml \
+    --source-ref refs/heads/main \
+    --source-digest "$commit" \
+    --deny-self-hosted-runners >/dev/null
+fi
+
+previous_link="$(readlink -f /opt/1helm/current 2>/dev/null || true)"
+mkdir -p "$EVIDENCE" "$HISTORY" "$INSTALL_LOG"
+chmod 0755 "$EVIDENCE"; chmod 0700 "$HISTORY" "$INSTALL_LOG"
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+log="$INSTALL_LOG/$timestamp-$commit.log"
+prefix="$(tar -tzf "$work/candidate.tgz" | awk -F/ '/^[^/]+\/site\/public\/install\.sh$/ && !found { print $1; found=1 }')"
+[[ -n "$prefix" ]] || { echo "Candidate installer is missing." >&2; exit 1; }
+mkdir "$work/source"
+tar -xzf "$work/candidate.tgz" -C "$work/source" "$prefix/site/public/install.sh"
+
+set +e
+HELM_RELEASE_SHA256="$digest" bash "$work/source/$prefix/site/public/install.sh" "$work/candidate.tgz" >"$log" 2>&1
+install_status=$?
+set -e
+result=failed
+health=unhealthy
+rollback=unavailable
+message="Candidate v$version failed installation."
+current_link="$(readlink -f /opt/1helm/current 2>/dev/null || true)"
+if [[ "$install_status" -eq 0 ]] && systemctl is-active --quiet 1helm.service \
+    && curl -fsS http://127.0.0.1:8123/api/setup/status >/dev/null 2>&1; then
+  result=healthy
+  health=healthy
+  rollback=not_needed
+  message="Candidate v$version is installed and healthy."
+elif [[ -n "$previous_link" && "$current_link" == "$previous_link" ]] \
+    && systemctl is-active --quiet 1helm.service \
+    && curl -fsS http://127.0.0.1:8123/api/setup/status >/dev/null 2>&1; then
+  health=healthy
+  rollback=healthy
+  message="Candidate v$version failed; the prior candidate was restored and proved healthy."
+elif [[ -n "$previous_link" ]]; then
+  rollback=failed
+  message="Candidate v$version failed and the prior candidate could not be proven healthy."
+fi
+
+python3 "$BOUNDARY" record "$work/verified.json" "$EVIDENCE/status.json" "$work/status.json" \
+  "$result" "$health" "$rollback" "$message"
+install -o root -g root -m 0644 "$work/status.json" "$EVIDENCE/status.json"
+install -o root -g root -m 0600 "$work/status.json" "$HISTORY/$timestamp-$commit.json"
+python3 "$BOUNDARY" summary "$EVIDENCE/status.json"
+[[ "$result" == healthy ]]
