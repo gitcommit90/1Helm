@@ -120,6 +120,21 @@ site-equivalent path without touching the public website. It creates an
 unrelated WSL control distribution and proves uninstall retains it. It never
 claims Windows artifact creation or signing.
 
+### Retained host provisioning
+
+`ops/platform-acceptance/windows-host/` tracks the bootstrap media for this host:
+the answer file, the first-boot driver/guest-agent/OpenSSH setup, and a
+reproducible ISO build. Its README records two host constraints that are easy to
+get wrong. Proxmox always creates the TPM state volume as raw, and a raw volume
+on directory storage blocks snapshots for the entire VM even when every other
+disk is qcow2 — so the acceptance host cannot honour "restore the accepted clean
+snapshot before routing" unless that small volume sits on snapshot-capable
+storage. Verify with `qm snapshot <vmid> probe` before provisioning. Separately,
+Windows 11 25H2 (build 26200) does not auto-apply an answer file from secondary
+media and ignores `setup.exe /unattend:`; the README documents the offline
+`dism /apply-image` path that still runs the specialize, oobeSystem and
+auditUser passes.
+
 ## Recovery and teardown
 
 First disable the applicable repository variable so new jobs cannot route.
