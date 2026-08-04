@@ -21,6 +21,24 @@ const digestFile = sha256File;
 const add = (blockers, condition, message) => { if (!condition) blockers.push(message); };
 const json = (path) => JSON.parse(readFileSync(path, "utf8"));
 
+function isChangelogDate(value) {
+  if (value.length !== 10 || value[4] !== "-" || value[7] !== "-") return false;
+  for (const index of [0, 1, 2, 3, 5, 6, 8, 9]) {
+    if (value[index] < "0" || value[index] > "9") return false;
+  }
+  return true;
+}
+
+function hasVersionedChangelogHeading(changelog, version) {
+  const prefix = `## [${version}] - `;
+  return String(changelog).split("\n").some((rawLine) => {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    return line.startsWith(prefix)
+      && line.length === prefix.length + 10
+      && isChangelogDate(line.slice(prefix.length));
+  });
+}
+
 function confinedFile(bundle, relativePath, blockers, label) {
   if (typeof relativePath !== "string" || !relativePath || relativePath.startsWith("/") || relativePath.includes("\\")) {
     blockers.push(`${label}: path is invalid`);
@@ -203,7 +221,7 @@ export function validatePromotionBundle(options) {
   if (changelogPath) {
     changelog = readFileSync(changelogPath, "utf8");
     add(blockers, digestFile(changelogPath) === records.changelog.sha256, "authored changelog: SHA-256 mismatch");
-    add(blockers, new RegExp(`^## \\[${expected.version.replaceAll(".", "\\.")}\\] - \\d{4}-\\d{2}-\\d{2}$`, "m").test(changelog), "authored changelog: named version section is missing");
+    add(blockers, hasVersionedChangelogHeading(changelog, expected.version), "authored changelog: named version section is missing");
   }
   if (acceptancePath) {
     acceptance = readFileSync(acceptancePath, "utf8");

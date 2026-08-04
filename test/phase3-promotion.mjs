@@ -141,6 +141,17 @@ test("missing and mismatched evidence fail closed", () => {
   } finally { rmSync(bundle, { recursive: true, force: true }); }
 });
 
+test("metacharacters in the version input are compared literally without regex construction", () => {
+  const bundle = createBundle();
+  try {
+    let report;
+    assert.doesNotThrow(() => { report = validatePromotionBundle(options(bundle, { version: "9.8.7(" })); });
+    assert.equal(report.eligible, false);
+    assert.ok(report.blockers.includes("intended version is not three-part semantic versioning"));
+    assert.ok(report.blockers.includes("authored changelog: named version section is missing"));
+  } finally { rmSync(bundle, { recursive: true, force: true }); }
+});
+
 test("existing or unproven tag and release absence are blockers", () => {
   const bundle = createBundle();
   try {
