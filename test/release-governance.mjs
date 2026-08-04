@@ -37,8 +37,9 @@ test("one retained Mac Studio owns the complete macOS release gate", () => {
   assert.match(tracked, /Application Support preservation/i);
 });
 
-// The tracked release authority: three published artifacts, and Windows accepted
-// by behaviour because it publishes nothing at all.
+// The tracked release authority: four application artifacts plus one separately
+// retained immutable image contract, and Windows accepted by behaviour because
+// it publishes nothing at all.
 const RELEASE_DOCS = {
   "docs/release-checklist.md": read("docs/release-checklist.md"),
   "docs/release-lifecycle.md": read("docs/release-lifecycle.md"),
@@ -61,25 +62,25 @@ test("desktop releases fail closed unless Mac, Linux, and Windows ship together"
   assert.doesNotMatch(notes, /Other published artifact, or `Not applicable`/i);
 });
 
-test("every release document names the same three published artifacts", () => {
+test("every release document names the same split application artifacts", () => {
   for (const [path, source] of Object.entries(RELEASE_DOCS)) {
-    for (const artifact of ["arm64.dmg", "mac-arm64.zip", "linux-node.tgz"]) {
+    for (const artifact of ["arm64.dmg", "mac-arm64.zip", "linux-node.tgz", "linux-node-offline.tgz"]) {
       assert.match(source, new RegExp(`1Helm-[^\\s\`]*${artifact.replaceAll(".", "\\.")}`, "i"),
         `${path} must name the ${artifact} release artifact`);
     }
-    assert.match(source, /three[\s\S]{0,40}(?:artifacts?|files?|rows?)/i,
-      `${path} must state that the desktop matrix is exactly three artifacts`);
+    assert.match(source, /four[\s\S]{0,60}(?:artifacts?|files?|rows?)/i,
+      `${path} must state that the application desktop matrix is exactly four artifacts`);
     assert.doesNotMatch(source, /six[- ](?:file|artifact)|complete six/i,
       `${path} must not describe a six-artifact desktop matrix`);
   }
   const checklist = RELEASE_DOCS["docs/release-checklist.md"];
-  assert.match(checklist, /for artifact in "\$DMG" "\$UPDATE_ZIP" "\$HEADLESS"; do/,
-    "the checklist verifies exactly the three built artifacts");
+  assert.match(checklist, /for artifact in "\$DMG" "\$UPDATE_ZIP" "\$HEADLESS" "\$OFFLINE"; do/,
+    "the checklist verifies exactly the four application artifacts");
   const promotion = read("scripts/publish-promotion.mjs");
   assert.match(promotion, /STABLE_ARTIFACT_ROLES\.map/,
-    "the publish command derives exactly the three validated artifact roles");
+    "the publish command derives exactly the four validated application artifact roles");
   assert.match(promotion, /"release", "create", tag, \.\.\.artifactPaths, stablePath/,
-    "the publish command attaches the three artifacts plus their Stable manifest");
+    "the publish command attaches the four application artifacts plus their Stable manifest");
   assert.match(promotion, /"--draft"[\s\S]*expectedAssets[\s\S]*"--draft=false"/,
     "publication exposes Stable only after the complete draft matrix is digest-verified");
 });

@@ -74,8 +74,10 @@ contract as the slice hardens.
 - Semantic versioning on `package.json`.
 - **Do not** reuse a published version tag for different bits.
 - A desktop release requires one unique version and exact commit, changelog, the
-  complete three-artifact matrix (`1Helm-<version>-arm64.dmg`,
-  `1Helm-<version>-mac-arm64.zip`, `1Helm-<version>-linux-node.tgz`), and
+  complete **four-artifact** split desktop matrix (`1Helm-<version>-arm64.dmg`,
+  `1Helm-<version>-mac-arm64.zip`, online `1Helm-<version>-linux-node.tgz`,
+  complete `1Helm-<version>-linux-node-offline.tgz`), plus the exact immutable
+  digest-addressed channel-image manifest, and
   clean-install plus prior-to-new update evidence on macOS, Linux, and Windows.
   Windows publishes no artifact; its installer is served by the site, not
   attached to the release. Partial platform releases under the shared product

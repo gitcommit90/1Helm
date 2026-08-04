@@ -31,6 +31,7 @@ test("Linux release packaging rejects a source copy nested under another Git che
   const copiedScripts = join(copiedRoot, "scripts");
   await mkdir(copiedScripts);
   await copyFile(join(projectRoot, "scripts", "package-linux-host.mjs"), join(copiedScripts, "package-linux-host.mjs"));
+  await copyFile(join(projectRoot, "scripts", "artifact-contract.mjs"), join(copiedScripts, "artifact-contract.mjs"));
   await writeFile(join(copiedRoot, "package.json"), `${JSON.stringify({ version })}\n`);
   try {
     const result = spawnSync(process.execPath, [join(copiedScripts, "package-linux-host.mjs")], { cwd: copiedRoot, encoding: "utf8" });

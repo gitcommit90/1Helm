@@ -27,7 +27,7 @@ if [[ -f "$LOCAL_PROOF_MARKER" && ! -L "$LOCAL_PROOF_MARKER" \
   unlink "$LOCAL_PROOF_MARKER"
 fi
 [[ -x "$BOUNDARY" ]] || { echo "The root-owned candidate validator is missing." >&2; exit 1; }
-for file in candidate.json candidate.tgz; do
+for file in candidate.json candidate.tgz candidate-offline.tgz; do
   [[ -f "$INBOX/$file" && ! -L "$INBOX/$file" ]] || { echo "Candidate inbox is incomplete." >&2; exit 1; }
 done
 
@@ -37,6 +37,7 @@ work="$(mktemp -d /var/lib/1helm-candidate/.install.XXXXXX)"
 trap 'rm -rf -- "$work"' EXIT
 install -o root -g root -m 0600 "$INBOX/candidate.json" "$work/candidate.json"
 install -o root -g root -m 0600 "$INBOX/candidate.tgz" "$work/candidate.tgz"
+install -o root -g root -m 0600 "$INBOX/candidate-offline.tgz" "$work/candidate-offline.tgz"
 if [[ "$LOCAL_PROOF" -eq 0 ]]; then
   [[ -f "$INBOX/provenance.bundle.json" && ! -L "$INBOX/provenance.bundle.json" ]] || { echo "Signed candidate provenance is required." >&2; exit 1; }
   install -o root -g root -m 0600 "$INBOX/provenance.bundle.json" "$work/provenance.bundle.json"
@@ -45,9 +46,10 @@ fi
 # can then create a fresh set without owning retained candidate bytes.
 unlink "$INBOX/candidate.json"
 unlink "$INBOX/candidate.tgz"
+unlink "$INBOX/candidate-offline.tgz"
 [[ "$LOCAL_PROOF" -eq 1 ]] || unlink "$INBOX/provenance.bundle.json"
 
-validate_args=(validate "$work/candidate.json" "$work/candidate.tgz" "$work/verified.json")
+validate_args=(validate "$work/candidate.json" "$work/candidate.tgz" "$work/candidate-offline.tgz" "$work/verified.json")
 [[ "$LOCAL_PROOF" -eq 1 ]] && validate_args+=(--allow-local)
 python3 "$BOUNDARY" "${validate_args[@]}"
 commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source"]["commit"])' "$work/verified.json")"
@@ -74,7 +76,8 @@ mkdir "$work/source"
 tar -xzf "$work/candidate.tgz" -C "$work/source" "$prefix/site/public/install.sh"
 
 set +e
-HELM_RELEASE_SHA256="$digest" bash "$work/source/$prefix/site/public/install.sh" "$work/candidate.tgz" >"$log" 2>&1
+offline_digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["offline_bundle"]["sha256"])' "$work/verified.json")"
+HELM_RELEASE_SHA256="$offline_digest" bash "$work/source/$prefix/site/public/install.sh" "$work/candidate-offline.tgz" >"$log" 2>&1
 install_status=$?
 set -e
 result=failed

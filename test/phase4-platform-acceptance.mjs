@@ -17,7 +17,9 @@ const artifactMap = {
   mac_dmg: { role: "mac_dmg", name: `1Helm-${version}-arm64.dmg`, sha256: hash("dmg"), bytes: 3 },
   mac_updater_zip: { role: "mac_updater_zip", name: `1Helm-${version}-mac-arm64.zip`, sha256: hash("zip"), bytes: 3 },
   linux_tgz: { role: "linux_tgz", name: `1Helm-${version}-linux-node.tgz`, sha256: hash("tgz"), bytes: 3 },
+  linux_offline_tgz: { role: "linux_offline_tgz", name: `1Helm-${version}-linux-node-offline.tgz`, sha256: hash("offline"), bytes: 7 },
 };
+const channelImage = { version: "1", architecture: "amd64", sha256: hash("image"), bytes: 5 };
 
 function fixture(platform) {
   const checkedAt = "2026-08-04T14:00:00Z";
@@ -38,6 +40,7 @@ function fixture(platform) {
       summary: "Fixture continuity equivalent passed.",
     } } : {}),
     artifacts: PLATFORM_ARTIFACT_ROLES[platform].map((role) => artifactMap[role]),
+    ...(platform === "macos" ? {} : { channel_image: channelImage }),
     checks: PLATFORM_CHECKS[platform].map((id) => ({ id, result: "passed", checked_at: checkedAt, summary: `${id} passed on fixture.` })),
     state_preservation: { result: "passed", checked_at: checkedAt, summary: "State retained byte identity.", before_sha256: marker, after_sha256: marker },
     recovery: { result: "passed", checked_at: checkedAt, summary: "Recovery completed safely.", before_sha256: marker, after_sha256: marker },
@@ -52,7 +55,7 @@ test("all platform schemas normalize exact run, CI, machine, state, recovery, an
     assert.equal(evidence.candidate.run_id, runId);
     assert.equal(evidence.source_ci.run_id, ciRunId);
     assert.equal(evidence.machine.production_data, false);
-    assert.deepEqual(platformEvidenceBlockers(evidence, { platform, commit, version, runId, runAttempt: "1", ciRunId, artifacts: artifactMap }), []);
+    assert.deepEqual(platformEvidenceBlockers(evidence, { platform, commit, version, runId, runAttempt: "1", ciRunId, artifacts: artifactMap, channelImage }), []);
   }
 });
 
@@ -76,18 +79,18 @@ test("digest, byte count, CI run, state mismatch, and default runner label are b
   evidence.source_ci.run_id = "100";
   evidence.state_preservation.after_sha256 = hash("changed");
   evidence.runner.labels = ["self-hosted"];
-  const blockers = platformEvidenceBlockers(evidence, { platform: "linux", commit, version, runId, runAttempt: "1", ciRunId, artifacts: artifactMap });
+  const blockers = platformEvidenceBlockers(evidence, { platform: "linux", commit, version, runId, runAttempt: "1", ciRunId, artifacts: artifactMap, channelImage });
   assert.ok(blockers.some((item) => /CI identity/.test(item)));
   assert.ok(blockers.some((item) => /state preservation/.test(item)));
   assert.ok(blockers.some((item) => /runner label/.test(item)));
   assert.ok(blockers.some((item) => /linux_tgz/.test(item)));
   const wrongMachine = normalizePlatformEvidence(fixture("linux"));
   wrongMachine.machine.kind = "dedicated-fixture";
-  assert.ok(platformEvidenceBlockers(wrongMachine, { platform: "linux", commit, version, runId, runAttempt: "1", ciRunId, artifacts: artifactMap })
+  assert.ok(platformEvidenceBlockers(wrongMachine, { platform: "linux", commit, version, runId, runAttempt: "1", ciRunId, artifacts: artifactMap, channelImage })
     .some((item) => /machine identity/.test(item)));
   const windows = normalizePlatformEvidence(fixture("windows"));
   delete windows.continuity;
-  assert.ok(platformEvidenceBlockers(windows, { platform: "windows", commit, version, runId, runAttempt: "1", ciRunId, artifacts: artifactMap })
+  assert.ok(platformEvidenceBlockers(windows, { platform: "windows", commit, version, runId, runAttempt: "1", ciRunId, artifacts: artifactMap, channelImage })
     .some((item) => /snapshot-assisted/.test(item)));
 });
 
@@ -121,6 +124,8 @@ test("an interrupted lane retains normalized blocked evidence before it can pass
     writeFileSync(manifest, JSON.stringify({
       version, source: { commit }, ci: { workflow: "CI", run_id: ciRunId, conclusion: "success" },
       artifact: artifactMap.linux_tgz,
+      offline_bundle: artifactMap.linux_offline_tgz,
+      sealed_oci: channelImage,
     }));
     const { spawnSync } = await import("node:child_process");
     const result = spawnSync(process.execPath, [join(root, "scripts/pending-acceptance-evidence.mjs")], {
@@ -128,6 +133,7 @@ test("an interrupted lane retains normalized blocked evidence before it can pass
       env: { ...process.env, HELM_ACCEPTANCE_PLATFORM: "linux", HELM_ACCEPTANCE_OUTPUT: output,
         HELM_ACCEPTANCE_STARTED_AT: "2026-08-04T13:00:00Z", HELM_CANDIDATE_MANIFEST: manifest,
         HELM_CANDIDATE_ARCHIVE: artifactMap.linux_tgz.name, HELM_PHASE4_RUNNER_LABEL: "ubuntu-latest",
+        HELM_CANDIDATE_OFFLINE_ARCHIVE: artifactMap.linux_offline_tgz.name,
         GITHUB_RUN_ID: runId, GITHUB_RUN_ATTEMPT: "1", GITHUB_JOB: "accept-linux",
         RUNNER_NAME: "GitHub Actions 1", RUNNER_OS: "Linux", RUNNER_ARCH: "X64" },
     });
@@ -135,7 +141,7 @@ test("an interrupted lane retains normalized blocked evidence before it can pass
     const evidence = JSON.parse(readFileSync(output, "utf8"));
     assert.equal(evidence.result, "blocked");
     assert.ok(evidence.checks.every((item) => item.result === "blocked"));
-    assert.notDeepEqual(platformEvidenceBlockers(evidence, { platform: "linux", commit, version, runId, runAttempt: "1", ciRunId, artifacts: artifactMap }), []);
+    assert.notDeepEqual(platformEvidenceBlockers(evidence, { platform: "linux", commit, version, runId, runAttempt: "1", ciRunId, artifacts: artifactMap, channelImage }), []);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 

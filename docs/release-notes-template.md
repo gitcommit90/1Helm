@@ -24,11 +24,17 @@ so plainly instead of silently omitting it.
 | `1Helm-x.y.z-arm64.dmg` | `<digest>` |
 | `1Helm-x.y.z-mac-arm64.zip` | `<digest>` |
 | `1Helm-x.y.z-linux-node.tgz` | `<digest>` |
+| `1Helm-x.y.z-linux-node-offline.tgz` | `<digest>` |
 
-These three rows are the whole desktop matrix. Every one is mandatory and must
+These four rows are the whole application desktop matrix. Every one is mandatory and must
 resolve to the same version and source commit. “Not applicable” is forbidden for
 macOS or Linux. If any row is unavailable, this release must remain unpublished.
 A release is complete only once macOS, Linux, and Windows have each been accepted.
+
+Shared channel image: `sha256:<digest>` (`<architecture>`, contract v`<version>`,
+`<bytes>` bytes). It is retained in its separate immutable digest-addressed
+Release with its manifest and provenance and is not duplicated in this
+application Release.
 
 **Windows publishes no artifact.** A Windows host is the Linux host running
 inside a per-user WSL 2 distribution named `1helm`, installed with one command

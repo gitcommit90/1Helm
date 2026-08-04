@@ -3,12 +3,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ARCHIVE="${HELM_CANDIDATE_ARCHIVE:?exact Linux candidate archive is required}"
+OFFLINE_ARCHIVE="${HELM_CANDIDATE_OFFLINE_ARCHIVE:?exact Linux offline candidate archive is required}"
 MANIFEST="${HELM_CANDIDATE_MANIFEST:?exact candidate manifest is required}"
 PROVENANCE="${HELM_CANDIDATE_PROVENANCE:?exact hosted provenance bundle is required}"
 OUTPUT="${HELM_ACCEPTANCE_OUTPUT:?acceptance output is required}"
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 VERSION="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).version' "$MANIFEST")"
 DIGEST="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).artifact.sha256' "$MANIFEST")"
+OFFLINE_DIGEST="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).offline_bundle.sha256' "$MANIFEST")"
+IMAGE_DIGEST="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).sealed_oci.sha256' "$MANIFEST")"
 COMMIT="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).source.commit' "$MANIFEST")"
 CI_RUN="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).ci.run_id' "$MANIFEST")"
 
@@ -23,23 +26,30 @@ node "$ROOT/scripts/pending-acceptance-evidence.mjs"
 [[ "$(id -u)" -ne 0 ]] || { echo "Linux acceptance must begin as the hosted ordinary runner user." >&2; exit 1; }
 [[ "$(sha256sum "$ARCHIVE" | awk '{print $1}')" == "$DIGEST" ]] \
   || { echo "Linux candidate digest mismatch." >&2; exit 1; }
+[[ "$(sha256sum "$OFFLINE_ARCHIVE" | awk '{print $1}')" == "$OFFLINE_DIGEST" ]] \
+  || { echo "Linux offline candidate digest mismatch." >&2; exit 1; }
 node -e 'import("./scripts/candidate-manifest.mjs").then(({candidateIdentityFromArchive})=>{const x=candidateIdentityFromArchive(process.argv[1]); if(x.commit!==process.argv[2]) process.exit(2)})' "$ARCHIVE" "$COMMIT"
 gh attestation verify "$ARCHIVE" --bundle "$PROVENANCE" \
+  --repo gitcommit90/1Helm --signer-workflow gitcommit90/1Helm/.github/workflows/candidate.yml \
+  --source-ref refs/heads/main --source-digest "$COMMIT" --deny-self-hosted-runners
+gh attestation verify "$OFFLINE_ARCHIVE" --bundle "$PROVENANCE" \
   --repo gitcommit90/1Helm --signer-workflow gitcommit90/1Helm/.github/workflows/candidate.yml \
   --source-ref refs/heads/main --source-digest "$COMMIT" --deny-self-hosted-runners
 
 work="$(mktemp -d)"
 trap 'rm -rf -- "$work"' EXIT
-prefix="$(tar -tzf "$ARCHIVE" | awk -F/ '/^[^/]+\/site\/public\/install\.sh$/ && !found { print $1; found=1 }')"
+prefix="$(tar -tzf "$OFFLINE_ARCHIVE" | awk -F/ '/^[^/]+\/site\/public\/install\.sh$/ && !found { print $1; found=1 }')"
 [[ -n "$prefix" ]] || { echo "Candidate installer is missing." >&2; exit 1; }
-tar -xzf "$ARCHIVE" -C "$work" "$prefix/site/public/install.sh"
+tar -xzf "$OFFLINE_ARCHIVE" -C "$work" "$prefix/site/public/install.sh"
 
 # The hosted VM is disposable and contains no user or production data. Its
 # first installation is therefore an actual clean systemd installation.
-sudo env HELM_RELEASE_SHA256="$DIGEST" bash "$work/$prefix/site/public/install.sh" "$ARCHIVE"
+sudo env HELM_RELEASE_SHA256="$OFFLINE_DIGEST" bash "$work/$prefix/site/public/install.sh" "$OFFLINE_ARCHIVE"
 sudo systemctl is-active --quiet 1helm.service
 curl -fsS http://127.0.0.1:8123/api/setup/status >"$work/clean-health.json"
-[[ "$(readlink -f /opt/1helm/current)" == "/opt/1helm/releases/$VERSION-$DIGEST" ]]
+[[ "$(readlink -f /opt/1helm/current)" == "/opt/1helm/releases/$VERSION-$OFFLINE_DIGEST" ]]
+RETAINED_IMAGE="/var/lib/1helm-oci-v1/shared-images/sha256/$IMAGE_DIGEST"
+[[ -d "$RETAINED_IMAGE" && "$(find "$RETAINED_IMAGE" -maxdepth 1 -type f -name '*.oci.tar' -exec sha256sum {} \; | awk '{print $1}')" == "$IMAGE_DIGEST" ]]
 
 # Resolve the newest immutable public Stable release distinct from this
 # candidate version. Candidate versions normally remain unchanged during
@@ -83,7 +93,10 @@ openssl rand -hex 32 | sudo tee "$MARKER" >/dev/null
 sudo chown 1helm:1helm "$MARKER"
 STATE_BEFORE="$(sudo sha256sum "$MARKER" | awk '{print $1}')"
 CANDIDATE_RELEASE="/opt/1helm/releases/$VERSION-$DIGEST"
-[[ -d "$CANDIDATE_RELEASE" ]] || { echo "Clean candidate release was not retained for updater acceptance." >&2; exit 1; }
+sudo mkdir -p "$CANDIDATE_RELEASE.tmp"
+sudo tar -xzf "$ARCHIVE" -C "$CANDIDATE_RELEASE.tmp" --strip-components=1
+sudo chown -R 1helm:1helm "$CANDIDATE_RELEASE.tmp"
+sudo mv "$CANDIDATE_RELEASE.tmp" "$CANDIDATE_RELEASE"
 sudo "$CANDIDATE_RELEASE/site/public/apply-linux-release.sh" "$CANDIDATE_RELEASE" "$VERSION"
 [[ "$(node -p 'require("/opt/1helm/current/package.json").version')" == "$VERSION" ]]
 sudo systemctl is-active --quiet 1helm.service
@@ -104,6 +117,7 @@ sudo systemctl is-active --quiet 1helm.service
 curl -fsS http://127.0.0.1:8123/api/setup/status >"$work/rollback-health.json"
 STATE_AFTER="$(sudo sha256sum "$MARKER" | awk '{print $1}')"
 [[ "$STATE_BEFORE" == "$STATE_AFTER" ]]
+[[ -d "$RETAINED_IMAGE" && "$(find "$RETAINED_IMAGE" -maxdepth 1 -type f -name '*.oci.tar' -exec sha256sum {} \; | awk '{print $1}')" == "$IMAGE_DIGEST" ]]
 sudo rm -rf -- "$FAILURE_RELEASE"
 
 export HELM_PREVIOUS_VERSION="$PREVIOUS_VERSION"

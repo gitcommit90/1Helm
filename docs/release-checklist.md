@@ -12,9 +12,13 @@ Do not create the tag or GitHub Release, publish any platform, mark anything
 latest, or say “done” until all three lanes pass. If one lane is blocked, pause
 the whole release and report it.
 
-**Three release artifacts, not six.** A complete release attaches exactly
-`1Helm-<version>-arm64.dmg`, `1Helm-<version>-mac-arm64.zip` and
-`1Helm-<version>-linux-node.tgz`. **Windows publishes nothing.** There is no
+**Four application release artifacts, not six.** A complete application release
+attaches exactly `1Helm-<version>-arm64.dmg`,
+`1Helm-<version>-mac-arm64.zip`, `1Helm-<version>-linux-node.tgz`, and the
+complete disconnected-install `1Helm-<version>-linux-node-offline.tgz`. The
+Stable manifest also binds the exact immutable channel-image Release by digest,
+byte count, architecture, and contract version; unchanged OCI bytes are not
+uploaded to the application Release again. **Windows publishes nothing.** There is no
 Windows executable, no Windows installer package, no Windows update manifest, no
 Electron host on Windows and nothing to code-sign, so no signing status exists to
 record or disclose. A Windows host is the Linux host running inside a per-user WSL 2
@@ -83,6 +87,7 @@ VERSION="$(node -p "require('./package.json').version")"
 
 ```bash
 HEADLESS="dist/1Helm-${VERSION}-linux-node.tgz"
+OFFLINE="dist/1Helm-${VERSION}-linux-node-offline.tgz"
 DMG="dist/1Helm-${VERSION}-arm64.dmg"
 UPDATE_ZIP="dist/1Helm-${VERSION}-mac-arm64.zip"
 ANDROID_APK="dist/1Helm-${VERSION}-universal.apk"
@@ -94,7 +99,7 @@ RELEASE_NOTES="dist/1Helm-${VERSION}-release-notes.md"
 # Windows:     no build. A Windows host installs "$HEADLESS" through the
 #              site-served install.ps1; there is no Windows artifact to produce.
 
-for artifact in "$DMG" "$UPDATE_ZIP" "$HEADLESS"; do
+for artifact in "$DMG" "$UPDATE_ZIP" "$HEADLESS" "$OFFLINE"; do
   test -s "$artifact"
 done
 # Author RELEASE_NOTES from docs/release-notes-template.md. It must contain the
@@ -104,8 +109,10 @@ test -s "$RELEASE_NOTES"
 rg -q '^1\. ' "$RELEASE_NOTES" # multi-item ships must retain a numbered ledger
 ```
 
-Those three files are the whole desktop matrix. Do not invent a fourth desktop
-asset, and do not attach `install.ps1`, `uninstall.ps1` or the keepalive payload
+Those four files are the whole application desktop matrix. The digest-addressed
+channel image, manifest, and provenance live in their own immutable Release; do
+not duplicate the image in the application Release. Do not attach `install.ps1`,
+`uninstall.ps1` or the keepalive payload
 to the release: they are served from the site, so a release commit that changes
 them is not shipped until the site is deployed. Because Windows ships no
 executable code of its own, there is no Windows signing identity and no Windows
@@ -148,8 +155,9 @@ secret `STABLE_PUBLICATION_ENABLED=PROTECTED STABLE ENVIRONMENT ENABLED`, an
 eligible candidate may be dispatched again with `mode=publish` and the exact
 confirmation string printed by the dry run. Those settings are not created by
 this repository or by the workflow. The publish job refuses an existing tag or
-release and uploads only the verified DMG, updater ZIP, Linux TGZ, and Stable
-manifest. It never rebuilds.
+release and uploads only the verified DMG, updater ZIP, online Linux TGZ,
+offline Linux TGZ, and Stable manifest. It creates or exactly reuses the
+separate immutable channel-image Release and never rebuilds.
 
 ### Mobile release gates
 
@@ -190,8 +198,9 @@ Expect first-run / needs_setup on empty data dir.
   install the **publicly downloaded** DMG/update with preserved Application
   Support, then verify the new version, loopback health, resident state, and
   data-directory identity.
-- **Linux:** verify the exact `npm run package:linux` archive, its source commit
-  and SHA-256, then stage equivalent release metadata. In a disposable systemd
+- **Linux:** verify the exact online and offline `npm run package:linux`
+  archives, their source commit and SHA-256 identities, and the split image
+  contract, then stage equivalent release metadata. In a disposable systemd
   host running the prior release, invoke the Captain host-update action,
   observe checking/downloading/installing/restarting, verify the new version
   and `/var/lib/1helm-oci-v1` identity, and exercise health-failure rollback.
@@ -222,10 +231,12 @@ Expect first-run / needs_setup on empty data dir.
      `wsl --shutdown` and must never unregister a distribution whose name is not
      an exact match for the target; other distributions on the PC are untouched.
 - Before publication, compare each uploaded GitHub asset digest with the local
-  verified digest and assert the release contains the complete **three-file**
-  desktop matrix: `1Helm-<version>-arm64.dmg`,
-  `1Helm-<version>-mac-arm64.zip`, `1Helm-<version>-linux-node.tgz`. A missing
-  asset is a release blocker, not “not applicable.” Windows contributes no
+  verified digest and assert the application Release contains the complete
+  **four-file** desktop matrix: `1Helm-<version>-arm64.dmg`,
+  `1Helm-<version>-mac-arm64.zip`, `1Helm-<version>-linux-node.tgz`, and
+  `1Helm-<version>-linux-node-offline.tgz`; also prove its Stable manifest binds
+  the exact separate immutable channel-image Release. A missing asset is a
+  release blocker, not “not applicable.” Windows contributes no
   asset, so an absent Windows file is correct — an absent Windows **behavioural
   record** is a blocker.
 
@@ -252,7 +263,7 @@ Windows:       <install.ps1 one-liner, single UAC prompt, restart + resume,
                 keepalive survived reboot, localhost:8123 onboarding,
                 old → new update with /var/lib/1helm-oci-v1 retained,
                 uninstall.ps1 removal>
-Desktop matrix:<DMG + Mac ZIP + Linux TGZ, all same version/commit; Windows publishes none>
+Desktop matrix:<DMG + Mac ZIP + online Linux TGZ + offline Linux TGZ, all same version/commit; exact shared image manifest; Windows publishes none>
 Android:      <public APK digest, certificate fingerprint, install/update smoke>
 iOS:          <App Store build number + validation/upload result>
 CI:             Actions green on main

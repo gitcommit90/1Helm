@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "kind": "1helm-linux-runtime-package-allowlist",
+  "description": "Files needed by the ready-to-run Linux host. Generated assets and production dependencies are added by the packager.",
+  "source": [
+    "LICENSE",
+    "NOTICE",
+    "package.json",
+    "package-lock.json",
+    "src/server",
+    "scripts/1helm-oci-runtime",
+    "scripts/mnemosyne-bridge.py",
+    "scripts/ensure-node-pty-helper.cjs",
+    "site/public/apply-linux-release.sh",
+    "site/public/install-linux-units.sh",
+    "site/public/install-oci-runtime.sh",
+    "site/public/install.sh",
+    "site/public/uninstall-host.sh",
+    "site/public/update-host.sh",
+    "deploy/1helm-oci-runtime-v1.conf",
+    "container/Containerfile.oci"
+  ],
+  "built": [
+    "public",
+    "desktop/photon-sidecar.bundle.mjs"
+  ],
+  "production_dependency_excludes": {
+    "directory_names": [".cache", ".github", "__tests__", "doc", "docs", "example", "examples", "test", "tests"],
+    "file_suffixes": [".d.ts", ".map"],
+    "file_names": ["CHANGELOG", "CHANGELOG.md", "README", "README.md"]
+  }
+}

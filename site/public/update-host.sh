@@ -13,6 +13,7 @@ STATUS_FILE="$STATE_ROOT/host-update-status.json"
 LOCK_FILE="$INSTALL_ROOT/host-update.lock"
 SERVICE_NAME="1helm.service"
 PORT="8123"
+RELEASE_METADATA_URL="https://1helm.com/api/releases/linux/latest"
 case "$(uname -m)" in
   x86_64|amd64) CONNECTOR_ARCH="x64" ;;
   aarch64|arm64) CONNECTOR_ARCH="arm64" ;;
@@ -144,27 +145,24 @@ cleanup_transaction() {
 }
 trap cleanup_transaction EXIT
 
-write_status "checking" "" "The 1Helm host is checking the stable release metadata."
-curl -fsSL --proto '=https' --tlsv1.2 \
-  -H 'Accept: application/vnd.github+json' \
-  -H 'User-Agent: 1Helm-host-updater' \
-  "https://api.github.com/repos/$REPOSITORY/releases/latest" \
+write_status "checking" "" "The 1Helm host is checking the exact promoted Stable release metadata."
+curl -fsSL --proto '=https' --tlsv1.2 --retry 3 \
+  "$RELEASE_METADATA_URL" \
   -o "$TEMP_ROOT/release.json" || fail "The host could not reach the 1Helm release service."
 
 RELEASE_OUTPUT="$("$NODE_LINK/bin/node" - "$TEMP_ROOT/release.json" <<'NODE'
 const fs = require("node:fs");
 const release = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-const version = String(release.tag_name || "").replace(/^v/, "");
-if (!/^\d+\.\d+\.\d+$/.test(version) || release.draft || release.prerelease) process.exit(2);
+const version = String(release.version || "");
+if (!/^\d+\.\d+\.\d+$/.test(version)) process.exit(2);
 const name = `1Helm-${version}-linux-node.tgz`;
-const asset = (release.assets || []).find((candidate) => candidate.name === name);
-const digest = String(asset?.digest || "");
-const url = String(asset?.browser_download_url || "");
+const digest = String(release.sha256 || "");
+const url = String(release.url || "");
 const expectedUrl = `https://github.com/gitcommit90/1Helm/releases/download/v${version}/${name}`;
-if (!asset || !/^sha256:[a-f0-9]{64}$/.test(digest) || url !== expectedUrl) process.exit(3);
+if (!/^[a-f0-9]{64}$/.test(digest) || url !== expectedUrl) process.exit(3);
 console.log(version);
 console.log(url);
-console.log(digest.slice(7));
+console.log(digest);
 NODE
 )" || fail "The latest release does not contain a digest-qualified Linux host artifact."
 mapfile -t RELEASE <<<"$RELEASE_OUTPUT"
@@ -228,6 +226,8 @@ PACKAGE_VERSION="$("$NODE_LINK/bin/node" -p 'require(process.argv[1]).version' "
   || fail "The verified Linux artifact is missing its host updater."
 [[ -x "$STAGE/site/public/apply-linux-release.sh" && -x "$STAGE/site/public/install-oci-runtime.sh" && -x "$STAGE/site/public/install-linux-units.sh" && -x "$STAGE/site/public/uninstall-host.sh" && -x "$STAGE/scripts/1helm-oci-runtime" && -r "$STAGE/deploy/1helm-oci-runtime-v1.conf" && -r "$STAGE/container/Containerfile.oci" && -x "$STAGE/resources/cloudflared-linux-$CONNECTOR_ARCH" ]] \
   || fail "The verified Linux artifact is missing its OCI runtime contract."
+{ [[ -f "$STAGE/resources/channel-image.json" ]] || [[ -f "$STAGE/container/channel-machine.oci.tar" && -f "$STAGE/container/channel-machine.oci.sha256" ]]; } \
+  || fail "The verified Linux artifact has neither a split nor legacy complete channel image contract."
 chown -R "$SERVICE_USER:$SERVICE_USER" "$STAGE"
 
 write_status "installing" "$TARGET_VERSION" "The host verified v$TARGET_VERSION and is preparing an atomic installation."

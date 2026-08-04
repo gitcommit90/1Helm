@@ -3,8 +3,9 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { confirmationText } from "./promotion-lib.mjs";
-import { sha256File, STABLE_ARTIFACT_ROLES, validateStableManifest } from "./stable-manifest-lib.mjs";
-import { assertRemoteVersionAbsent } from "./github-promotion-gates.mjs";
+import { sha256, sha256File, STABLE_ARTIFACT_ROLES, validateStableManifest } from "./stable-manifest-lib.mjs";
+import { assertRemoteVersionAbsent, remoteTagAndRelease } from "./github-promotion-gates.mjs";
+import { channelImageManifestName, channelImageProvenanceName, channelImageReleaseTag } from "./artifact-contract.mjs";
 
 const bundle = resolve(process.env.HELM_PROMOTION_BUNDLE || "");
 const version = String(process.env.HELM_PROMOTION_VERSION || "");
@@ -38,7 +39,6 @@ if (JSON.stringify(stable) !== JSON.stringify(verified.stable_manifest)
 }
 
 const run = (file, args, options = {}) => execFileSync(file, args, { encoding: "utf8", stdio: options.capture ? ["ignore", "pipe", "pipe"] : "inherit" });
-const captured = (file, args) => run(file, args, { capture: true }).trim();
 const tag = `v${version}`;
 await assertRemoteVersionAbsent(version, githubToken);
 run("git", ["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"]);
@@ -53,6 +53,111 @@ const artifactPaths = STABLE_ARTIFACT_ROLES.map((role) => {
 });
 const notes = join(bundle, `1Helm-${version}-release-notes.md`);
 if (hash(notes) !== verified.release_notes_sha256) throw new Error("Refusing changed authored release notes after verification");
+
+// The sealed channel machine has its own immutable digest-addressed Release.
+// Reuse an exact existing Release or publish the retained candidate once. It is
+// never copied into the ordinary application Release, so unchanged app updates
+// cannot redownload it.
+const image = stable.channel_image;
+const imageTag = channelImageReleaseTag(image);
+const imagePath = join(bundle, image.artifact.name);
+const imageManifestCandidate = join(bundle, "channel-image.json");
+const imageManifestName = channelImageManifestName(image);
+const imageManifestPath = join(bundle, imageManifestName);
+const imageProvenanceCandidate = join(bundle, "channel-image-provenance.json");
+const imageProvenanceName = channelImageProvenanceName(image);
+const imageProvenancePath = join(bundle, imageProvenanceName);
+if (hash(imagePath) !== image.sha256) throw new Error("Refusing changed channel image bytes after verification");
+const imageManifestValue = JSON.parse(readFileSync(imageManifestCandidate, "utf8"));
+if (imageManifestValue.sha256 !== image.sha256 || imageManifestValue.architecture !== image.architecture
+    || imageManifestValue.version !== image.version) throw new Error("Refusing changed channel image manifest after verification");
+run("cp", [imageManifestCandidate, imageManifestPath]);
+run("cp", [imageProvenanceCandidate, imageProvenancePath]);
+function validateImageProvenance(value, { requireCurrentCandidate = false } = {}) {
+  if (value?.schema !== 1 || value?.kind !== "1helm-channel-image-provenance"
+      || value?.repository !== stable.repository || value?.ref !== "refs/heads/main"
+      || !/^\d+$/.test(String(value?.candidate_workflow_run_id || ""))
+      || !/^\d+$/.test(String(value?.source_ci_run_id || ""))
+      || !/^[a-f0-9]{40}$/.test(String(value?.source_commit || ""))
+      || value?.artifact?.name !== image.artifact.name || value?.artifact?.sha256 !== image.sha256
+      || value?.artifact?.bytes !== image.bytes || value?.manifest?.sha256 !== hash(imageManifestPath)
+      || value?.inputs?.containerfile_sha256 !== image.inputs.containerfile_sha256
+      || value?.inputs?.context_sha256 !== image.inputs.context_sha256
+      || value?.inputs?.base_image_digest !== image.inputs.base_image_digest
+      || value?.cache?.key !== image.cache.key || typeof value?.cache?.reused !== "boolean"
+      || value?.signer_workflow !== `${stable.repository}/.github/workflows/candidate.yml`
+      || value?.attestation_created !== true) {
+    throw new Error("Channel image provenance is incomplete or does not bind the immutable image contract");
+  }
+  if (requireCurrentCandidate && String(value.candidate_workflow_run_id) !== runId) {
+    throw new Error("Channel image provenance is not from the exact promoted candidate workflow");
+  }
+  if (requireCurrentCandidate && value.source_commit !== stable.commit) {
+    throw new Error("Channel image provenance is not from the exact promoted source commit");
+  }
+}
+validateImageProvenance(JSON.parse(readFileSync(imageProvenancePath, "utf8")), { requireCurrentCandidate: true });
+const imageRemote = await remoteTagAndRelease(imageTag, githubToken);
+const imageRelease = imageRemote.release;
+const expectedImageAssets = [
+  { name: image.artifact.name, sha256: image.sha256 },
+  { name: imageManifestName, sha256: hash(imageManifestPath) },
+  { name: imageProvenanceName, sha256: hash(imageProvenancePath) },
+];
+function assertImageReleaseAssets(release, { draft }) {
+  if (!release || release.draft !== draft || release.prerelease || release.tag_name !== imageTag) {
+    throw new Error("Channel image Release identity is not the expected immutable state");
+  }
+  if (!Array.isArray(release.assets) || release.assets.length !== expectedImageAssets.length) {
+    throw new Error("Channel image Release asset set is incomplete or unexpected");
+  }
+  for (const item of expectedImageAssets) {
+    const url = `https://github.com/${stable.repository}/releases/download/${imageTag}/${item.name}`;
+    if (release.assets.filter((asset) => asset?.name === item.name && asset?.digest === `sha256:${item.sha256}`
+        && asset?.browser_download_url === url).length !== 1) {
+      throw new Error(`Channel image Release does not match ${item.name}`);
+    }
+  }
+}
+if (imageRelease) {
+  // A reused image's provenance belongs to the candidate that first published
+  // these immutable bytes. Validate that retained record separately from the
+  // current candidate's honest cache-reuse provenance above.
+  if (imageRelease.draft || imageRelease.prerelease || imageRelease.tag_name !== imageTag
+      || !Array.isArray(imageRelease.assets) || imageRelease.assets.length !== expectedImageAssets.length) {
+    throw new Error("Existing channel image Release identity or asset set is incomplete");
+  }
+  for (const item of expectedImageAssets.slice(0, 2)) {
+    const url = `https://github.com/${stable.repository}/releases/download/${imageTag}/${item.name}`;
+    if (imageRelease.assets.filter((asset) => asset?.name === item.name && asset?.digest === `sha256:${item.sha256}`
+        && asset?.browser_download_url === url).length !== 1) throw new Error(`Existing channel image Release does not match ${item.name}`);
+  }
+  const provenanceMatches = imageRelease.assets.filter((asset) => asset?.name === imageProvenanceName
+    && /^sha256:[a-f0-9]{64}$/.test(String(asset?.digest || ""))
+    && asset?.browser_download_url === `https://github.com/${stable.repository}/releases/download/${imageTag}/${imageProvenanceName}`);
+  if (provenanceMatches.length !== 1) throw new Error("Existing channel image Release provenance identity is missing or duplicated");
+  const provenanceResponse = await fetch(provenanceMatches[0].browser_download_url, {
+    headers: { accept: "application/json", "user-agent": "1helm-stable-promotion" }, signal: AbortSignal.timeout(10_000),
+  });
+  if (!provenanceResponse.ok) throw new Error(`Could not download existing channel image provenance: HTTP ${provenanceResponse.status}`);
+  const provenanceBytes = Buffer.from(await provenanceResponse.arrayBuffer());
+  if (sha256(provenanceBytes) !== provenanceMatches[0].digest.slice(7)) throw new Error("Existing channel image provenance digest does not match GitHub");
+  validateImageProvenance(JSON.parse(provenanceBytes.toString("utf8")));
+} else {
+  run("git", ["tag", "-a", imageTag, stable.commit, "-m", `1Helm channel image v${image.version} ${image.architecture} sha256:${image.sha256}`]);
+  run("git", ["push", "origin", `refs/tags/${imageTag}:refs/tags/${imageTag}`]);
+  run("gh", ["release", "create", imageTag, imagePath, imageManifestPath, imageProvenancePath, "--repo", stable.repository, "--verify-tag",
+    "--draft",
+    "--title", `1Helm immutable channel image ${image.architecture} sha256:${image.sha256.slice(0, 16)}`,
+    "--notes", `Immutable channel-machine OCI contract v${image.version}; architecture ${image.architecture}; SHA-256 ${image.sha256}. Retain for application rollback.`]);
+  const imageResponse = await fetch(`https://api.github.com/repos/${stable.repository}/releases/tags/${encodeURIComponent(imageTag)}`, {
+    headers: { accept: "application/vnd.github+json", authorization: `Bearer ${githubToken}`, "user-agent": "1helm-stable-promotion", "x-github-api-version": "2022-11-28" },
+    redirect: "error", signal: AbortSignal.timeout(10_000),
+  });
+  if (!imageResponse.ok) throw new Error(`Could not verify draft channel image Release assets: GitHub API ${imageResponse.status}`);
+  assertImageReleaseAssets(await imageResponse.json(), { draft: true });
+  run("gh", ["release", "edit", imageTag, "--repo", stable.repository, "--draft=false"]);
+}
 
 // GitHub cannot atomically create an annotated tag and Release. Push the one
 // immutable tag only after every check, then create the complete Release in one

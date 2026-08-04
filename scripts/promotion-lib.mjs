@@ -3,6 +3,7 @@ import { basename, join, relative, resolve, sep } from "node:path";
 import { candidateIdentityFromArchive } from "./candidate-manifest.mjs";
 import { PLATFORM_CHECKS, platformEvidenceBlockers } from "./platform-acceptance-lib.mjs";
 import { STABLE_ARTIFACT_ROLES, STABLE_MANIFEST_KIND, STABLE_REPOSITORY, sha256, sha256File, stableArtifactNames, validateStableManifest } from "./stable-manifest-lib.mjs";
+import { normalizeChannelImageManifest, releasedChannelImageManifest } from "./artifact-contract.mjs";
 
 export const PROMOTION_KIND = "1helm-stable-promotion-candidate";
 export const CONFIRMATION_PREFIX = "PROMOTE EXACT CANDIDATE";
@@ -80,6 +81,8 @@ function validateCandidateManifest(value, expected, blockers) {
   add(blockers, value?.version === expected.version, "candidate manifest: version does not match intended version");
   add(blockers, value?.ci?.workflow === "CI" && ID.test(String(value?.ci?.run_id || "")) && value?.ci?.conclusion === "success", "candidate manifest: CI did not succeed");
   add(blockers, value?.artifact?.name === stableArtifactNames(expected.version).linux_tgz && HEX64.test(String(value?.artifact?.sha256 || "")), "candidate manifest: Linux artifact identity is invalid");
+  add(blockers, value?.offline_bundle?.name === stableArtifactNames(expected.version).linux_offline_tgz
+    && HEX64.test(String(value?.offline_bundle?.sha256 || "")), "candidate manifest: Linux offline artifact identity is invalid");
   add(blockers, HEX64.test(String(value?.source?.source_archive_sha256 || "")) && HEX64.test(String(value?.sealed_oci?.sha256 || "")), "candidate manifest: source or sealed OCI digest is invalid");
 }
 
@@ -129,14 +132,14 @@ function validateArtifactRecord(value, expected, blockers) {
   add(blockers, String(value?.workflow_run?.id) === expected.runId, "candidate artifact: workflow run mismatch");
 }
 
-function validatePlatformEvidence(platform, value, expected, artifacts, blockers) {
+function validatePlatformEvidence(platform, value, expected, artifacts, channelImage, blockers) {
   const label = `${platform} acceptance`;
-  for (const message of platformEvidenceBlockers(value, { ...expected, platform, artifacts })) blockers.push(`${label}: ${message}`);
+  for (const message of platformEvidenceBlockers(value, { ...expected, platform, artifacts, channelImage })) blockers.push(`${label}: ${message}`);
 }
 
-function releaseNotes(version, commit, promotion, artifacts, changelog, acceptance) {
+function releaseNotes(version, commit, promotion, artifacts, channelImage, changelog, acceptance) {
   const digestLines = STABLE_ARTIFACT_ROLES.map((role) => `- \`${artifacts[role].name}\` — \`${artifacts[role].sha256}\``).join("\n");
-  return `# 1Helm ${version}\n\n${acceptance.trim()}\n\n## Authored changelog\n\n${changelog.trim()}\n\n## Promoted candidate evidence\n\n- Source: \`${STABLE_REPOSITORY}@${commit}\` on \`main\`\n- Candidate workflow run: \`${promotion.candidate.workflow_run_id}\`\n- Candidate artifact: \`${promotion.candidate.artifact_id}\` (\`${promotion.candidate.artifact_name}\`)\n- Private dress rehearsal: exact Linux commit and digest healthy\n- Platform acceptance: retained macOS, Linux, and Windows records all passed\n\n## Exact release artifacts\n\n${digestLines}\n`;
+  return `# 1Helm ${version}\n\n${acceptance.trim()}\n\n## Authored changelog\n\n${changelog.trim()}\n\n## Promoted candidate evidence\n\n- Source: \`${STABLE_REPOSITORY}@${commit}\` on \`main\`\n- Candidate workflow run: \`${promotion.candidate.workflow_run_id}\`\n- Candidate artifact: \`${promotion.candidate.artifact_id}\` (\`${promotion.candidate.artifact_name}\`)\n- Private dress rehearsal: exact Linux commit and digest healthy\n- Platform acceptance: retained macOS, Linux, and Windows records all passed\n- Shared channel image: \`${channelImage.architecture}\`, contract v\`${channelImage.version}\`, SHA-256 \`${channelImage.sha256}\`\n- The ordinary Linux artifact omits the shared image; the explicit offline bundle includes its exact bytes.\n\n## Exact release artifacts\n\n${digestLines}\n`;
 }
 
 export function confirmationText(version, runId, artifactId) {
@@ -203,11 +206,11 @@ export function validatePromotionBundle(options) {
         && String(provenance.value?.source_ci_run_id) === String(expected.ciRunId), `${role} provenance: version or candidate/CI run identity mismatch`);
       add(blockers, provenance.value?.artifact?.role === role && provenance.value?.artifact?.name === spec?.name
         && provenance.value?.artifact?.sha256 === spec?.sha256 && Number(provenance.value?.artifact?.bytes) === Number(spec?.bytes), `${role} provenance: artifact digest or byte count mismatch`);
-      if (role === "linux_tgz") {
+      if (["linux_tgz", "linux_offline_tgz"].includes(role)) {
         add(blockers, provenance.value?.builder === "github-hosted" && provenance.value?.attestation_created === true && provenance.value?.signer_workflow === "gitcommit90/1Helm/.github/workflows/candidate.yml", "linux_tgz provenance: trusted hosted builder attestation record is missing");
         add(blockers, options.linuxAttestationVerified === true, "linux_tgz provenance: GitHub attestation was not cryptographically verified in this promotion run");
       }
-      if (role !== "linux_tgz") {
+      if (["mac_dmg", "mac_updater_zip"].includes(role)) {
         add(blockers, provenance.value?.builder === "dedicated-macos"
           && provenance.value?.signer_workflow === "gitcommit90/1Helm/.github/workflows/candidate.yml", `${role} provenance: dedicated Mac builder/workflow identity is missing`);
         add(blockers, provenance.value?.signing === "developer-id" && provenance.value?.notarization === "accepted"
@@ -215,11 +218,52 @@ export function validatePromotionBundle(options) {
       }
     }
   }
-  add(blockers, (Array.isArray(promotion?.artifacts) ? promotion.artifacts : []).length === 3, "desktop artifact matrix must contain exactly three artifacts");
+  add(blockers, (Array.isArray(promotion?.artifacts) ? promotion.artifacts : []).length === STABLE_ARTIFACT_ROLES.length, "desktop artifact matrix must contain the complete split artifact set");
   if (macCandidateManifest) validateMacCandidateManifest(macCandidateManifest.value, expected, artifacts, blockers);
+
+  let channelImage = null;
+  try { channelImage = normalizeChannelImageManifest(promotion?.channel_image, { requireUrl: true }); }
+  catch (error) { blockers.push(`channel image manifest: ${error.message}`); }
+  const imageArtifact = confinedFile(bundle, promotion?.channel_image?.candidate?.artifact?.path, blockers, "channel image artifact");
+  const imageManifest = checkedRecord(bundle, promotion?.channel_image?.candidate?.manifest, blockers, "channel image retained manifest");
+  const imageProvenance = checkedRecord(bundle, promotion?.channel_image?.candidate?.provenance, blockers, "channel image provenance");
+  if (channelImage && imageArtifact) {
+    add(blockers, basename(imageArtifact) === channelImage.artifact.name && digestFile(imageArtifact) === channelImage.sha256
+      && statSync(imageArtifact).size === channelImage.bytes, "channel image exact bytes do not match its immutable manifest");
+  }
+  if (channelImage && imageManifest) {
+    try {
+      const retained = normalizeChannelImageManifest(imageManifest.value);
+      add(blockers, JSON.stringify(releasedChannelImageManifest(retained)) === JSON.stringify(channelImage),
+        "channel image retained build manifest does not match promotion contract");
+    } catch (error) { blockers.push(`channel image retained build manifest: ${error.message}`); }
+  }
+  if (channelImage && imageProvenance) {
+    add(blockers, imageProvenance.value?.schema === 1 && imageProvenance.value?.kind === "1helm-channel-image-provenance"
+      && imageProvenance.value?.repository === STABLE_REPOSITORY && imageProvenance.value?.ref === "refs/heads/main"
+      && imageProvenance.value?.source_commit === expected.commit
+      && String(imageProvenance.value?.candidate_workflow_run_id) === expected.runId
+      && String(imageProvenance.value?.source_ci_run_id) === String(expected.ciRunId)
+      && imageProvenance.value?.artifact?.name === channelImage.artifact.name
+      && imageProvenance.value?.artifact?.sha256 === channelImage.sha256
+      && Number(imageProvenance.value?.artifact?.bytes) === channelImage.bytes
+      && imageProvenance.value?.manifest?.sha256 === promotion?.channel_image?.candidate?.manifest?.sha256
+      && imageProvenance.value?.inputs?.containerfile_sha256 === channelImage.inputs.containerfile_sha256
+      && imageProvenance.value?.inputs?.context_sha256 === channelImage.inputs.context_sha256
+      && imageProvenance.value?.inputs?.base_image_digest === channelImage.inputs.base_image_digest
+      && imageProvenance.value?.cache?.key === channelImage.cache.key
+      && typeof imageProvenance.value?.cache?.reused === "boolean"
+      && imageProvenance.value?.cache?.key === candidateManifest?.value?.build?.sealed_oci_cache?.key
+      && imageProvenance.value?.cache?.reused === candidateManifest?.value?.build?.sealed_oci_cache?.reused
+      && imageProvenance.value?.signer_workflow === `${STABLE_REPOSITORY}/.github/workflows/candidate.yml`
+      && imageProvenance.value?.attestation_created === true, "channel image provenance is incomplete or mismatched");
+    add(blockers, options.linuxAttestationVerified === true, "channel image provenance was not cryptographically verified");
+  }
 
   if (candidateManifest && artifacts.linux_tgz?.path) {
     add(blockers, candidateManifest.value?.artifact?.sha256 === artifacts.linux_tgz.sha256 && candidateManifest.value?.artifact?.bytes === artifacts.linux_tgz.bytes, "Linux candidate manifest does not match promoted archive bytes");
+    add(blockers, candidateManifest.value?.offline_bundle?.sha256 === artifacts.linux_offline_tgz?.sha256
+      && candidateManifest.value?.offline_bundle?.bytes === artifacts.linux_offline_tgz?.bytes, "Linux candidate manifest does not match promoted offline bundle bytes");
     try {
       const identity = candidateIdentityFromArchive(artifacts.linux_tgz.path);
       add(blockers, identity.commit === expected.commit && identity.version === expected.version, "Linux embedded commit/version does not match promotion identity");
@@ -236,7 +280,7 @@ export function validatePromotionBundle(options) {
   for (const platform of Object.keys(PLATFORMS)) {
     const record = checkedRecord(bundle, records?.acceptance?.[platform], blockers, `${platform} acceptance`);
     if (record) {
-      validatePlatformEvidence(platform, record.value, expected, artifacts, blockers);
+      validatePlatformEvidence(platform, record.value, expected, artifacts, channelImage, blockers);
       if (platform === "macos" && macCandidateManifest) {
         add(blockers, record.value?.runner?.name === macCandidateManifest.value?.builder?.runner_name,
           "macos acceptance: runner does not match the dedicated Mac builder");
@@ -262,7 +306,7 @@ export function validatePromotionBundle(options) {
 
   const digest = promotion ? digestFile(join(bundle, "promotion.json")) : "";
   const stableManifest = blockers.length ? null : validateStableManifest({
-    schema: 1, kind: STABLE_MANIFEST_KIND, repository: STABLE_REPOSITORY, ref: "refs/heads/main",
+    schema: 2, kind: STABLE_MANIFEST_KIND, repository: STABLE_REPOSITORY, ref: "refs/heads/main",
     version: expected.version, tag: `v${expected.version}`, commit: expected.commit,
     promoted_at: options.promotedAt || new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
     promotion: { candidate_workflow_run_id: expected.runId, candidate_artifact_id: expected.artifactId, manifest_sha256: digest },
@@ -270,6 +314,7 @@ export function validatePromotionBundle(options) {
       role, name: artifacts[role].name, sha256: artifacts[role].sha256, bytes: artifacts[role].bytes,
       url: `https://github.com/${STABLE_REPOSITORY}/releases/download/v${expected.version}/${artifacts[role].name}`,
     })),
+    channel_image: channelImage,
   });
   return {
     schema: 1, kind: "1helm-stable-promotion-report", mode: "dry-run", repository: STABLE_REPOSITORY,
@@ -278,7 +323,7 @@ export function validatePromotionBundle(options) {
     evidence: Object.fromEntries(Object.keys(PLATFORMS).map((platform) => [platform, blockers.some((item) => item.startsWith(`${platform} acceptance`)) ? "blocked" : "passed"])),
     artifacts: STABLE_ARTIFACT_ROLES.map((role) => ({ role, name: artifacts[role]?.name || expectedNames[role], sha256: artifacts[role]?.sha256 || null })),
     eligible: blockers.length === 0, blockers, stable_touched: false, stable_manifest: stableManifest,
-    release_notes: blockers.length ? null : releaseNotes(expected.version, expected.commit, promotion, artifacts, changelog, acceptance),
+    release_notes: blockers.length ? null : releaseNotes(expected.version, expected.commit, promotion, artifacts, channelImage, changelog, acceptance),
   };
 }
 

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { confirmationText, validatePromotionBundle } from "../scripts/promotion-lib.mjs";
-import { assertRemoteVersionAbsent } from "../scripts/github-promotion-gates.mjs";
+import { assertRemoteVersionAbsent, remoteTagAndRelease } from "../scripts/github-promotion-gates.mjs";
 
 const root = join(import.meta.dirname, "..");
 const sha = (value) => createHash("sha256").update(value).digest("hex");
@@ -23,22 +23,51 @@ function createBundle() {
     return { path: name, sha256: sha(content) };
   };
   const oci = Buffer.from("sealed-oci-phase3");
+  const imageDigest = sha(oci);
+  const imageName = `1Helm-channel-machine-v1-amd64-${imageDigest}.oci.tar`;
+  const imageTag = `channel-image-v1-amd64-${imageDigest}`;
+  const image = {
+    schema: 1, kind: "1helm-sealed-channel-image", version: "1", architecture: "amd64", sha256: imageDigest, bytes: oci.length,
+    artifact: { name: imageName, url: `https://github.com/gitcommit90/1Helm/releases/download/${imageTag}/${imageName}`,
+      manifest_url: `https://github.com/gitcommit90/1Helm/releases/download/${imageTag}/${imageName.replace(/\.oci\.tar$/, ".json")}` },
+    inputs: { containerfile_sha256: "1".repeat(64), context_sha256: "2".repeat(64), base_image_digest: "3".repeat(64) },
+    cache: { key: "4".repeat(64), reused: false }, platforms: ["linux", "windows-wsl"],
+  };
   const identity = {
     schema: 1, kind: "1helm-dress-rehearsal-candidate", repository: "gitcommit90/1Helm", ref: "refs/heads/main",
     commit, source_state: "trusted-main", build_identity: "candidate-111-12345.1", created_at: "2026-08-04T12:00:00Z",
     ci: { workflow: "CI", run_id: "111", conclusion: "success" }, version,
     source_archive_sha256: "b".repeat(64), sealed_oci_sha256: sha(oci),
+    sealed_oci_cache: { ...image.cache, reused: true }, channel_image: image,
   };
   const stage = join(bundle, "stage", `1Helm-${version}`);
   mkdirSync(join(stage, "resources"), { recursive: true });
   mkdirSync(join(stage, "container"), { recursive: true });
   writeFileSync(join(stage, "resources", "candidate-build.json"), JSON.stringify(identity));
+  writeFileSync(join(stage, "resources", "channel-image.json"), JSON.stringify(image));
   writeFileSync(join(stage, "package.json"), JSON.stringify({ version }));
-  writeFileSync(join(stage, "container", "channel-machine.oci.tar"), oci);
   const linuxName = `1Helm-${version}-linux-node.tgz`;
   execFileSync("tar", ["-czf", join(bundle, linuxName), "-C", join(bundle, "stage"), `1Helm-${version}`]);
   const linuxBytes = readFileSync(join(bundle, linuxName));
   const linux = { role: "linux_tgz", name: linuxName, path: linuxName, sha256: sha(linuxBytes), bytes: linuxBytes.length };
+  const offlineStage = join(bundle, "offline-stage", `1Helm-${version}`);
+  mkdirSync(join(bundle, "offline-stage"), { recursive: true });
+  execFileSync("cp", ["-a", stage, offlineStage]);
+  mkdirSync(join(offlineStage, "container"), { recursive: true });
+  writeFileSync(join(offlineStage, "container", "channel-machine.oci.tar"), oci);
+  const offlineName = `1Helm-${version}-linux-node-offline.tgz`;
+  execFileSync("tar", ["-czf", join(bundle, offlineName), "-C", join(bundle, "offline-stage"), `1Helm-${version}`]);
+  const offlineBytes = readFileSync(join(bundle, offlineName));
+  const offline = { role: "linux_offline_tgz", name: offlineName, path: offlineName, sha256: sha(offlineBytes), bytes: offlineBytes.length };
+  writeFileSync(join(bundle, imageName), oci);
+  const imageManifestRecord = write("channel-image.json", image);
+  const imageProvenanceRecord = write("channel-image-provenance.json", {
+    schema: 1, kind: "1helm-channel-image-provenance", repository: "gitcommit90/1Helm", ref: "refs/heads/main",
+    source_commit: commit, candidate_workflow_run_id: runId, source_ci_run_id: "111",
+    artifact: { name: imageName, sha256: imageDigest, bytes: oci.length }, manifest: imageManifestRecord,
+    inputs: image.inputs, cache: identity.sealed_oci_cache,
+    signer_workflow: "gitcommit90/1Helm/.github/workflows/candidate.yml", attestation_created: true,
+  });
   const macDmgBytes = Buffer.from("exact retained signed notarized DMG bytes");
   const macZipBytes = Buffer.from("exact retained signed notarized updater bytes");
   const artifact = (role, name, bytes) => {
@@ -55,11 +84,13 @@ function createBundle() {
   macDmg.provenance = provenance(macDmg, { builder: "dedicated-macos", signer_workflow: "gitcommit90/1Helm/.github/workflows/candidate.yml", signing: "developer-id", notarization: "accepted", stapling: "validated", gatekeeper: "accepted" });
   macZip.provenance = provenance(macZip, { builder: "dedicated-macos", signer_workflow: "gitcommit90/1Helm/.github/workflows/candidate.yml", signing: "developer-id", notarization: "accepted", stapling: "validated", gatekeeper: "accepted" });
   linux.provenance = provenance(linux, { builder: "github-hosted", attestation_created: true, signer_workflow: "gitcommit90/1Helm/.github/workflows/candidate.yml" });
+  offline.provenance = provenance(offline, { builder: "github-hosted", attestation_created: true, signer_workflow: "gitcommit90/1Helm/.github/workflows/candidate.yml" });
   const candidateManifest = {
     schema: 1, kind: "1helm-dress-rehearsal-candidate",
     source: { repository: "gitcommit90/1Helm", ref: "refs/heads/main", commit, state: "trusted-main", source_archive_sha256: identity.source_archive_sha256 },
-    version, build: { identity: identity.build_identity, created_at: identity.created_at }, ci: identity.ci,
-    artifact: { name: linux.name, sha256: linux.sha256, bytes: linux.bytes }, sealed_oci: { sha256: identity.sealed_oci_sha256 },
+    version, build: { identity: identity.build_identity, created_at: identity.created_at, sealed_oci_cache: identity.sealed_oci_cache }, ci: identity.ci,
+    artifact: { name: linux.name, sha256: linux.sha256, bytes: linux.bytes },
+    offline_bundle: { name: offline.name, sha256: offline.sha256, bytes: offline.bytes }, sealed_oci: image,
   };
   const candidateRecord = write("candidate.json", candidateManifest);
   const macCandidateRecord = write("mac-candidate.json", {
@@ -92,7 +123,7 @@ function createBundle() {
     linux: ["digest", "clean_install", "prior_version_update", "health_failure_rollback", "retained_state", "systemd_health"],
     windows: ["non_elevated_install", "single_uac", "restart_resume", "keepalive_reboot", "onboarding", "prior_version_update", "retained_state", "uninstall_safety"],
   };
-  const acceptanceArtifacts = { macos: [macDmg, macZip], linux: [linux], windows: [linux] };
+  const acceptanceArtifacts = { macos: [macDmg, macZip], linux: [linux, offline], windows: [linux, offline] };
   const acceptance = {};
   for (const platform of Object.keys(checkIds)) {
     const marker = sha(`${platform}-retained-state`);
@@ -113,6 +144,7 @@ function createBundle() {
       } } : {}),
       checks: checkIds[platform].map((id) => ({ id, result: "passed", checked_at: "2026-08-04T14:00:00Z", summary: `${id} fixture passed.` })),
       artifacts: acceptanceArtifacts[platform].map(({ role, name, sha256, bytes }) => ({ role, name, sha256, bytes })),
+      ...(platform === "macos" ? {} : { channel_image: { version: image.version, architecture: image.architecture, sha256: image.sha256, bytes: image.bytes } }),
       state_preservation: { result: "passed", checked_at: "2026-08-04T14:00:00Z", summary: "Fixture state retained byte identity.", before_sha256: marker, after_sha256: marker },
       recovery: { result: "passed", checked_at: "2026-08-04T14:00:00Z", summary: "Fixture recovery completed.", before_sha256: marker, after_sha256: marker },
       notes: ["Promotion integration fixture only."],
@@ -126,10 +158,14 @@ function createBundle() {
     acceptance_ledger_required: true,
     candidate: { workflow_run_id: runId, artifact_id: artifactId, artifact_name: `1helm-promotion-candidate-${commit}` },
     records: { candidate_manifest: candidateRecord, mac_candidate_manifest: macCandidateRecord, candidate_workflow: workflowRecord, candidate_ci: ciRecord, candidate_artifact: artifactRecord, dress_rehearsal: rehearsal, acceptance, package: packageRecord, changelog, acceptance_content: acceptanceContent },
-    artifacts: [macDmg, macZip, linux],
+    artifacts: [macDmg, macZip, linux, offline],
+    channel_image: { ...image, candidate: {
+      artifact: { path: imageName, sha256: imageDigest }, manifest: imageManifestRecord, provenance: imageProvenanceRecord,
+    } },
   };
   writeFileSync(join(bundle, "promotion.json"), `${JSON.stringify(promotion, null, 2)}\n`);
   rmSync(join(bundle, "stage"), { recursive: true, force: true });
+  rmSync(join(bundle, "offline-stage"), { recursive: true, force: true });
   return bundle;
 }
 
@@ -144,7 +180,7 @@ test("complete retained evidence is eligible and generated output names only exa
     const report = validatePromotionBundle(options(bundle));
     assert.equal(report.eligible, true, report.blockers.join("\n"));
     assert.equal(report.stable_touched, false);
-    assert.equal(report.stable_manifest.artifacts.length, 3);
+    assert.equal(report.stable_manifest.artifacts.length, 4);
     assert.deepEqual(report.stable_manifest.artifacts.map(({ sha256 }) => sha256), report.artifacts.map(({ sha256 }) => sha256));
     assert.match(report.release_notes, /Authored changelog/);
     assert.doesNotMatch(report.release_notes, /generated notes/i);
@@ -164,6 +200,23 @@ test("missing and mismatched evidence fail closed", () => {
     writeFileSync(join(bundle, `1Helm-${version}-arm64.dmg`), "changed bytes");
     report = validatePromotionBundle(options(bundle));
     assert.ok(report.blockers.some((item) => /mac_dmg artifact: exact-byte SHA-256 mismatch/.test(item)));
+  } finally { rmSync(bundle, { recursive: true, force: true }); }
+});
+
+test("image manifest inputs and provenance identities are exact promotion blockers", () => {
+  const bundle = createBundle();
+  try {
+    const promotionPath = join(bundle, "promotion.json");
+    const promotion = JSON.parse(readFileSync(promotionPath, "utf8"));
+    const provenancePath = join(bundle, promotion.channel_image.candidate.provenance.path);
+    const provenance = JSON.parse(readFileSync(provenancePath, "utf8"));
+    provenance.source_commit = "0".repeat(40);
+    writeFileSync(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`);
+    promotion.channel_image.candidate.provenance.sha256 = sha(readFileSync(provenancePath));
+    writeFileSync(promotionPath, `${JSON.stringify(promotion, null, 2)}\n`);
+    const report = validatePromotionBundle(options(bundle));
+    assert.equal(report.eligible, false);
+    assert.ok(report.blockers.some((item) => /channel image provenance is incomplete or mismatched/.test(item)));
   } finally { rmSync(bundle, { recursive: true, force: true }); }
 });
 
@@ -196,6 +249,19 @@ test("remote tag/release gates distinguish absence from API failure", async () =
   await assertRemoteVersionAbsent(version, "fixture-token", responses([404, 404]));
   await assert.rejects(assertRemoteVersionAbsent(version, "fixture-token", responses([500])), /Could not prove tag.*absent/);
   await assert.rejects(assertRemoteVersionAbsent(version, "fixture-token", responses([200])), /tag v9\.8\.7 already exists/);
+});
+
+test("immutable image reuse requires both its exact tag and Release identity", async () => {
+  const present = (value) => new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
+  let calls = 0;
+  const complete = await remoteTagAndRelease("channel-image-v1-amd64-" + "a".repeat(64), "token", async () => present(
+    ++calls === 1 ? { ref: "refs/tags/image" } : { tag_name: "image", assets: [] },
+  ));
+  assert.ok(complete.tag && complete.release);
+  calls = 0;
+  await assert.rejects(() => remoteTagAndRelease("channel-image-v1-amd64-" + "a".repeat(64), "token", async () => (
+    ++calls === 1 ? present({ ref: "refs/tags/image" }) : new Response("", { status: 404 })
+  )), /partial tag\/Release identity/);
 });
 
 test("the owner command reports dry-run eligibility, platform evidence, blockers, and Stable state", () => {
@@ -245,4 +311,12 @@ test("workflow is manual-only, permission-separated, environment-gated, and cont
   assert.doesNotMatch(workflow, /npm (ci|install|run build|run package)|package:(mac|linux|dmg)/);
   assert.doesNotMatch(readFileSync(join(root, "scripts/publish-promotion.mjs"), "utf8"), /npm|package-linux|package-mac/);
   assert.match(readFileSync(join(root, "scripts/publish-promotion.mjs"), "utf8"), /"--draft"[\s\S]*Draft Release bytes[\s\S]*"--draft=false"/);
+});
+
+test("shared image publication requires immutable bytes, manifest, and provenance assets", () => {
+  const publisher = readFileSync(join(root, "scripts", "publish-promotion.mjs"), "utf8");
+  assert.match(publisher, /channelImageProvenanceName[\s\S]*expectedImageAssets[\s\S]*assets\.length !== expectedImageAssets\.length/);
+  assert.match(publisher, /provenanceMatches[\s\S]*provenanceResponse[\s\S]*provenance digest does not match GitHub/);
+  assert.match(publisher, /release", "create", imageTag, imagePath, imageManifestPath, imageProvenancePath[\s\S]*"--draft"[\s\S]*assertImageReleaseAssets/);
+  assert.match(publisher, /requireCurrentCandidate: true/);
 });

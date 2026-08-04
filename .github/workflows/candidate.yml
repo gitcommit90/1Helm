@@ -35,6 +35,7 @@ jobs:
       commit: ${{ steps.identity.outputs.commit }}
       version: ${{ steps.identity.outputs.version }}
       ci-run-id: ${{ steps.identity.outputs.ci_run_id }}
+      image-digest: ${{ steps.identity.outputs.image_digest }}
     steps:
       - name: Check out the exact successful CI commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -76,6 +77,39 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y podman
 
+      - name: Resolve exact OCI and production dependency cache identities
+        id: packaging-cache
+        run: |
+          set -euo pipefail
+          builder_image=docker.io/library/node:22
+          podman pull "$builder_image"
+          builder_digest="$(podman image inspect "$builder_image" --format '{{.Digest}}' | sed 's/^sha256://')"
+          node_abi="$(podman run --rm "$builder_image" node -p process.versions.modules)"
+          case "$(uname -m)" in x86_64|amd64) image_arch=amd64; native_arch=x64 ;; aarch64|arm64) image_arch=arm64; native_arch=arm64 ;; *) exit 1 ;; esac
+          base_digest="$(sed -n 's/^FROM .*@sha256:\([a-f0-9]\{64\}\)$/\1/p' container/Containerfile.oci)"
+          containerfile_sha="$(sha256sum container/Containerfile.oci | awk '{print $1}')"
+          context_sha="$(git ls-files -z container | while IFS= read -r -d '' file; do
+            case "$file" in container/channel-machine.oci.tar|container/channel-machine.oci.sha256|container/channel-machine.oci.json) continue ;; esac
+            printf '%s\0' "$file"
+            sha256sum "$file" | awk '{printf "%s\0", $1}'
+          done | sha256sum | awk '{print $1}')"
+          oci_key="$(printf '1helm-channel-image-v1\n%s\n%s\n%s\n%s\n' "$image_arch" "$base_digest" "$containerfile_sha" "$context_sha" | sha256sum | awk '{print $1}')"
+          dependency_key="$(printf '%s\n%s\n%s\n%s\n%s' "$(sha256sum package-lock.json | awk '{print $1}')" "$(sha256sum config/linux-runtime-package.json | awk '{print $1}')" "$node_abi" "$native_arch" "$builder_digest" | sha256sum | awk '{print $1}')"
+          [[ "$builder_digest" =~ ^[a-f0-9]{64}$ && "$node_abi" =~ ^[0-9]+$ && "$oci_key" =~ ^[a-f0-9]{64}$ && "$dependency_key" =~ ^[a-f0-9]{64}$ ]]
+          printf 'oci_key=%s\ndependency_key=%s\n' "$oci_key" "$dependency_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore only the exact sealed OCI cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: dist/cache/channel-images
+          key: 1helm-phase5-channel-image-${{ steps.packaging-cache.outputs.oci_key }}
+
+      - name: Restore only the exact production dependency cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: dist/cache/production-dependencies
+          key: 1helm-phase5-production-dependencies-${{ steps.packaging-cache.outputs.dependency_key }}
+
       - name: Build sealed OCI image and ready-to-run Linux archive
         env:
           HELM_CANDIDATE_REPOSITORY: gitcommit90/1Helm
@@ -91,6 +125,17 @@ jobs:
           set -euo pipefail
           npm run package:channel-image
           npm run package:linux
+          image_name="$(node -p 'require("./container/channel-machine.oci.json").artifact.name')"
+          cp container/channel-machine.oci.tar "dist/$image_name"
+          cp container/channel-machine.oci.json "dist/${image_name%.oci.tar}.json"
+
+      - name: Measure split artifact composition and enforce regression budgets
+        run: |
+          set -euo pipefail
+          node scripts/artifact-size-report.mjs \
+            --json dist/artifact-size-report.json \
+            --text dist/artifact-size-report.txt \
+            --check
 
       - name: Generate candidate manifest and evidence
         id: identity
@@ -101,9 +146,14 @@ jobs:
           set -euo pipefail
           version="$(node -p 'require("./package.json").version')"
           archive="dist/1Helm-${version}-linux-node.tgz"
+          offline="dist/1Helm-${version}-linux-node-offline.tgz"
+          split="dist/1Helm-${version}-linux-split.json"
           evidence="dist/candidate-evidence"
           mkdir -p "$evidence"
-          HELM_CANDIDATE_ARCHIVE="$archive" HELM_CANDIDATE_MANIFEST="$evidence/candidate.json" \
+          HELM_CANDIDATE_ARCHIVE="$archive" \
+          HELM_CANDIDATE_OFFLINE_ARCHIVE="$offline" \
+          HELM_CANDIDATE_SPLIT_MANIFEST="$split" \
+          HELM_CANDIDATE_MANIFEST="$evidence/candidate.json" \
             node scripts/candidate-manifest.mjs
           cp "$archive.sha256" "$evidence/archive.sha256"
           sha256sum "$evidence/candidate.json" > "$evidence/manifest.sha256"
@@ -111,12 +161,16 @@ jobs:
           printf 'commit=%s\n' "$CI_HEAD_SHA" >> "$GITHUB_OUTPUT"
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
           printf 'ci_run_id=%s\n' "$HELM_CANDIDATE_CI_RUN_ID" >> "$GITHUB_OUTPUT"
+          printf 'image_digest=%s\n' "$(node -p 'require("./container/channel-machine.oci.json").sha256')" >> "$GITHUB_OUTPUT"
 
       - name: Attest archive provenance on the hosted builder
         id: attest
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
-          subject-path: dist/1Helm-*-linux-node.tgz
+          subject-path: |
+            dist/1Helm-*-linux-node.tgz
+            dist/1Helm-*-linux-node-offline.tgz
+            container/channel-machine.oci.tar
 
       - name: Retain signed provenance bundle
         env:
@@ -132,12 +186,28 @@ jobs:
           name: ${{ steps.identity.outputs.artifact_name }}
           path: |
             dist/1Helm-*-linux-node.tgz
+            dist/1Helm-*-linux-node-offline.tgz
+            dist/1Helm-*-linux-split.json
+            dist/artifact-size-report.json
+            dist/artifact-size-report.txt
+            container/channel-machine.oci.json
             dist/candidate-evidence/candidate.json
             dist/candidate-evidence/archive.sha256
             dist/candidate-evidence/manifest.sha256
             dist/candidate-evidence/provenance.bundle.json
           if-no-files-found: error
           retention-days: 30
+
+      - name: Retain immutable digest-addressed channel image candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: 1helm-channel-image-${{ steps.identity.outputs.image_digest }}
+          path: |
+            dist/1Helm-channel-machine-v1-*.oci.tar
+            dist/1Helm-channel-machine-v1-*.json
+            container/channel-machine.oci.sha256
+          if-no-files-found: error
+          retention-days: 90
 
   build-macos:
     name: Build signed notarized exact Mac candidate
@@ -259,6 +329,9 @@ jobs:
           archive="$(find candidate-download -maxdepth 1 -type f -name '1Helm-*-linux-node.tgz' -print -quit)"
           test -n "$archive"
           install -m 0600 "$archive" /var/lib/1helm-candidate/inbox/candidate.tgz
+          offline="$(find candidate-download -maxdepth 1 -type f -name '1Helm-*-linux-node-offline.tgz' -print -quit)"
+          test -n "$offline"
+          install -m 0600 "$offline" /var/lib/1helm-candidate/inbox/candidate-offline.tgz
           install -m 0600 candidate-download/candidate-evidence/candidate.json /var/lib/1helm-candidate/inbox/candidate.json
           install -m 0600 candidate-download/candidate-evidence/provenance.bundle.json /var/lib/1helm-candidate/inbox/provenance.bundle.json
           sudo -n /usr/local/sbin/1helm-candidate-install
@@ -318,7 +391,9 @@ jobs:
           test "${{ github.event.workflow_run.event }}" = push
           test "${{ github.event.workflow_run.head_repository.full_name }}" = "$GITHUB_REPOSITORY"
           export HELM_CANDIDATE_ARCHIVE="$(find candidate-download -maxdepth 1 -type f -name '1Helm-*-linux-node.tgz' -print -quit)"
+          export HELM_CANDIDATE_OFFLINE_ARCHIVE="$(find candidate-download -maxdepth 1 -type f -name '1Helm-*-linux-node-offline.tgz' -print -quit)"
           test -n "$HELM_CANDIDATE_ARCHIVE"
+          test -n "$HELM_CANDIDATE_OFFLINE_ARCHIVE"
           bash ops/platform-acceptance/linux.sh
 
       - name: Upload exact Linux acceptance evidence
@@ -431,6 +506,9 @@ jobs:
           $archive = Get-ChildItem candidate-download -Filter '1Helm-*-linux-node.tgz' | Select-Object -First 1 -ExpandProperty FullName
           if (-not $archive) { throw 'Exact Linux candidate archive is missing.' }
           $env:HELM_CANDIDATE_ARCHIVE = $archive
+          $offline = Get-ChildItem candidate-download -Filter '1Helm-*-linux-node-offline.tgz' | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $offline) { throw 'Exact Linux offline candidate archive is missing.' }
+          $env:HELM_CANDIDATE_OFFLINE_ARCHIVE = $offline
           & .\ops\platform-acceptance\windows.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -464,6 +542,8 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with: { name: "${{ needs.build.outputs.artifact-name }}", path: candidate-download }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: "1helm-channel-image-${{ needs.build.outputs.image-digest }}", path: channel-image-download }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with: { name: "${{ needs.build-macos.outputs.artifact-name }}", path: mac-candidate-download }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with: { name: "1helm-dress-rehearsal-evidence-${{ needs.build.outputs.commit }}", path: rehearsal-download }
@@ -477,6 +557,7 @@ jobs:
       - name: Assemble only the retained complete matrix and evidence
         env:
           HELM_CANDIDATE_DOWNLOAD: candidate-download
+          HELM_CHANNEL_IMAGE_DOWNLOAD: channel-image-download
           HELM_MAC_CANDIDATE_DOWNLOAD: mac-candidate-download
           HELM_REHEARSAL_EVIDENCE: rehearsal-download/dress-rehearsal.json
           HELM_LINUX_ACCEPTANCE_EVIDENCE: linux-acceptance-download/linux-acceptance.json

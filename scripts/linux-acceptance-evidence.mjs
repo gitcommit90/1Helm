@@ -29,7 +29,11 @@ const evidence = normalizePlatformEvidence({
   artifacts: [{
     role: "linux_tgz", name: basename(env.HELM_CANDIDATE_ARCHIVE),
     sha256: candidate.artifact.sha256, bytes: candidate.artifact.bytes,
+  }, {
+    role: "linux_offline_tgz", name: basename(env.HELM_CANDIDATE_OFFLINE_ARCHIVE),
+    sha256: candidate.offline_bundle.sha256, bytes: candidate.offline_bundle.bytes,
   }],
+  channel_image: candidate.sealed_oci,
   checks: [
     { id: "digest", ...summary("Archive, manifest, embedded identity, and hosted provenance matched the exact candidate.") },
     { id: "clean_install", ...summary("Exact candidate installed on a fresh hosted Linux VM and passed loopback health.") },

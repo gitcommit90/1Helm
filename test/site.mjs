@@ -292,9 +292,9 @@ test("installer assets are explicit and syntax-valid", () => {
   // it works. That is why the first live update failed and every fresh install
   // passed. Writing unit files must not depend on reopening stdin.
   assert.doesNotMatch(linuxUnits, /^\s*install\b[^\n]*\/dev\/stdin/m, "unit files must not be installed by reopening /dev/stdin (breaks under systemd-run)");
-  assert.match(updater, /browser_download_url/);
+  assert.match(updater, /RELEASE_METADATA_URL="https:\/\/1helm\.com\/api\/releases\/linux\/latest"/, "updates consume the website's already validated Stable manifest projection");
   assert.match(linuxUnits, /Environment=HELM_APP_ROOT=\$INSTALL_ROOT\/current/, "Linux explicitly exposes the active packaged root to runtime resource resolvers");
-  assert.match(updater, /\^sha256:\[a-f0-9\]\{64\}\$/, "the Linux updater requires GitHub's exact SHA-256 asset digest");
+  assert.match(updater, /\^\[a-f0-9\]\{64\}\$/, "the Linux updater requires the website's exact SHA-256 asset digest");
   assert.match(updater, /sha256sum -c -/);
   assert.match(updater, /CONNECTOR_ARCH[\s\S]*resources\/cloudflared-linux-\$CONNECTOR_ARCH/, "Linux updates reject archives without the connector for the current architecture");
   assert.match(updater, /mv -Tf .*current/);

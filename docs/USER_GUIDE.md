@@ -384,6 +384,12 @@ that one fixed operation, but cannot choose an arbitrary URL, command, or target
 path. The host updater requires a stable GitHub release and its SHA-256 asset
 digest, installs into a versioned directory, switches the current symlink
 atomically, restarts, health-checks, and restores the prior release if needed.
+The normal online archive omits the large sealed channel image: its exact
+digest/architecture/version manifest lets the host reuse already verified bytes
+from the shared image store, or fetch and verify them once. For disconnected
+recovery, use the complete `linux-node-offline.tgz` bundle; legacy v0.0.41-style
+complete archives also remain accepted. Image cleanup is report-only, so
+rollback-referenced bytes are retained.
 Source/developer deployments report that their host operator owns updates.
 
 Every host update preserves:

@@ -1,6 +1,7 @@
 # Phase 4 cross-platform candidate acceptance
 
-1. Build the ready-to-run Linux TGZ on the hosted builder and retain its
+1. Build the ready-to-run online Linux TGZ, complete offline TGZ, and immutable
+   digest-addressed channel image on the hosted builder and retain their
    GitHub-hosted provenance attestation.
 2. Build the Apple Silicon DMG and updater ZIP on the dedicated Mac runner;
    Developer ID-sign, notarize, staple, and Gatekeeper-check both exact
@@ -8,10 +9,12 @@
 3. Run Linux, macOS, and Windows 11 acceptance concurrently after their exact
    bytes exist. Each job rechecks repository, workflow, push event, main ref,
    candidate SHA, CI run, and candidate run before repository code executes.
-4. Retain normalized JSON with exact artifact SHA-256 and byte counts, candidate
+4. Retain normalized JSON with exact online/offline artifact SHA-256 and byte
+   counts plus channel-image architecture, contract version, and SHA-256, candidate
    and CI run identities, machine/runner identity, check timestamps, state
    digests, and rollback or scoped-uninstall outcome. Windows binds behavior to
-   the Linux TGZ and publishes no artifact or signing claim.
+   the Linux online/offline pair and shared image contract, and publishes no
+   Windows artifact or signing claim.
 5. Assemble Phase 3's promotion bundle only after all builds, the private Linux
    dress rehearsal, and all three acceptance records pass. The assembler copies
    retained bytes and cannot build. Missing, failed, skipped, or unavailable

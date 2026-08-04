@@ -6,12 +6,19 @@ Process contract from intent to verified deploy. Commands: [release-checklist.md
 
 1Helm has one synchronized desktop-host release train. A named desktop release
 is one version, one exact source commit, and one GitHub Release containing
-exactly these **three** artifacts:
+exactly these **four** application desktop artifacts:
 
 - `1Helm-<version>-arm64.dmg` — Developer ID signed, Apple-notarized and stapled
   Apple Silicon macOS DMG;
 - `1Helm-<version>-mac-arm64.zip` — the notarized/stapled native updater ZIP;
 - `1Helm-<version>-linux-node.tgz` — the digest-qualified Linux host archive.
+- `1Helm-<version>-linux-node-offline.tgz` — the complete disconnected-install
+  bundle containing the exact referenced channel image.
+
+Linux and Windows manifests also bind the immutable digest-addressed channel
+image by SHA-256, byte count, architecture, and contract version. That image has
+its own retained candidate/provenance and immutable Release and is not uploaded
+again when an application release references unchanged bytes.
 
 **Windows publishes nothing.** There is no Windows executable, no Windows
 installer package, no Windows update manifest, no Electron host on Windows and
@@ -131,11 +138,12 @@ Draft PRs are allowed for long slices; mark ready only when the quality bar is m
    user-visible item must appear once, with the same numbering as the request
    when available. Include additional fixes, artifacts/digests, and verification
    evidence in their own sections.
-6. Before creating the tag or GitHub Release, finish the complete three-artifact
+6. Before creating the tag or GitHub Release, finish the complete split-artifact
    desktop matrix from the exact merged commit: verified macOS DMG
    (`1Helm-<version>-arm64.dmg`), macOS updater ZIP
    (`1Helm-<version>-mac-arm64.zip`), and Linux host archive
-   (`1Helm-<version>-linux-node.tgz`). Windows produces no artifact and has no
+   (`1Helm-<version>-linux-node.tgz`) plus its complete offline bundle and exact
+   shared-image contract. Windows produces no artifact and has no
    signing status to record; complete its behavioural acceptance instead
    (`docs/release-checklist.md` Section 7).
 7. Publish those desktop artifacts and complete release notes together through
@@ -205,7 +213,7 @@ workspace state.
 | Code landed | On `origin/main`, CI green |
 | Behavior fixed | Tests + manual/API check |
 | Install path still works | Clean `CTRL_DATA_DIR` boot through the wizard plus platform acceptance |
-| Named desktop release | One version/commit, changelog, full numbered notes, exact tag, the complete three-artifact matrix (`1Helm-<version>-arm64.dmg`, `1Helm-<version>-mac-arm64.zip`, `1Helm-<version>-linux-node.tgz`), and clean installation evidence on macOS, Linux, and Windows |
+| Named desktop release | One version/commit, changelog, full numbered notes, exact tag, the complete four-artifact application matrix (`1Helm-<version>-arm64.dmg`, `1Helm-<version>-mac-arm64.zip`, online `1Helm-<version>-linux-node.tgz`, offline `1Helm-<version>-linux-node-offline.tgz`), an exact immutable shared-image manifest/provenance, and clean installation evidence on macOS, Linux, and Windows |
 | Mac host update | Published notarized/stapled updater ZIP feed, installed-old-to-new acceptance, and preserved Application Support |
 | Linux host update | Digest-qualified artifact, real systemd install/update, health check/rollback, and preserved `/var/lib/1helm-oci-v1` |
 | Windows host | No artifact and no signing status. Install from `https://1helm.com/install.ps1` in a non-elevated PowerShell window with a single UAC prompt, the mid-install restart and resume, a keepalive surviving a reboot, `http://localhost:8123` reached from a browser, a prior-version update through the in-distribution Linux updater with `/var/lib/1helm-oci-v1` retained, and removal via `uninstall.ps1` |

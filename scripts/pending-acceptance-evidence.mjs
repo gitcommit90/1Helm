@@ -22,6 +22,11 @@ if (platform === "macos") {
     name: basename(env.HELM_CANDIDATE_ARCHIVE || source.artifact.name),
     sha256: source.artifact.sha256,
     bytes: source.artifact.bytes,
+  }, {
+    role: "linux_offline_tgz",
+    name: basename(env.HELM_CANDIDATE_OFFLINE_ARCHIVE || source.offline_bundle.name),
+    sha256: source.offline_bundle.sha256,
+    bytes: source.offline_bundle.bytes,
   }];
 }
 const commit = platform === "macos" ? source.commit : source.source.commit;
@@ -54,6 +59,7 @@ const evidence = normalizePlatformEvidence({
     summary: "Continuity mode selected; the exact-candidate exercise has not completed.",
   } } : {}),
   artifacts: PLATFORM_ARTIFACT_ROLES[platform].map((role) => artifacts.find((item) => item.role === role)),
+  ...(platform === "macos" ? {} : { channel_image: source.sealed_oci }),
   checks: PLATFORM_CHECKS[platform].map((id) => ({ id, ...pending("Required acceptance check has not completed.") })),
   state_preservation: { ...pending("State-preservation proof has not completed."), before_sha256: null, after_sha256: null },
   recovery: { ...pending(platform === "windows" ? "Scoped uninstall proof has not completed." : "Rollback or recovery proof has not completed."), before_sha256: null, after_sha256: null },
