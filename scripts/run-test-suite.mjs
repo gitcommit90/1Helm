@@ -12,6 +12,7 @@ const env = { ...process.env, NODE_ENV: "test", MNEMOSYNE_PYTHON: prepared.runti
 const suites = [
   ["test/native-world.mjs"],
   ["--test",
+    "test/phase6-modules.mjs",
     "test/routing.mjs", "test/routing-disabled-account.mjs", "test/routing-antigravity.mjs", "test/desktop.mjs", "test/update-service.mjs",
     "test/channel-computers.mjs", "test/channel-computers-isolated-backends.mjs", "test/event-loop-unblocking.mjs",
     "test/cloudflare-worker.mjs", "test/connectors.mjs", "test/chatgpt-image.mjs", "test/autonomy-platform.mjs",

@@ -1,0 +1,39 @@
+{
+  "thresholds": {
+    "lines": 800,
+    "fanIn": 8,
+    "fanOut": 20
+  },
+  "legacy": {
+    "lines": {
+      "src/client/app.ts": 3321,
+      "src/client/channel.ts": 1208,
+      "src/client/cowork.ts": 858,
+      "src/client/routing.ts": 864,
+      "src/client/settings.ts": 801,
+      "src/server/agents.ts": 1353,
+      "src/server/bots.ts": 2008,
+      "src/server/channel-computers.ts": 2130,
+      "src/server/db.ts": 1155,
+      "src/server/index.ts": 2234,
+      "src/server/routing.ts": 1293
+    },
+    "fanIn": {
+      "scripts/platform-acceptance-lib.mjs": 9,
+      "src/client/api.ts": 11,
+      "src/client/dom.ts": 9,
+      "src/server/agents.ts": 10,
+      "src/server/db.ts": 30,
+      "src/server/store.ts": 9
+    },
+    "fanOut": {
+      "src/server/bots.ts": 23,
+      "src/server/index.ts": 33
+    },
+    "cycles": [
+      ["src/client/app.ts", "src/client/channel.ts", "src/client/cowork.ts", "src/client/settings.ts", "src/client/term.ts"],
+      ["src/server/bots.ts", "src/server/followups.ts"],
+      ["src/server/routing.ts", "src/server/skills.ts"]
+    ]
+  }
+}

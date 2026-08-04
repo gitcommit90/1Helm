@@ -15,6 +15,11 @@ Keep changes focused. Run the narrowest relevant tests while iterating, then run
 the full CI contract (`npm run ci`) before merge. Never weaken a check to make a
 change pass.
 
+Modify the module that owns the behavior; extract a cohesive seam when that
+keeps ordinary work local. Avoid unrelated refactors, and pause before a change
+spreads across several domains. Use `npm run architecture:report` to spot legacy
+hotspots and ratchet a budget down after making one smaller.
+
 Every handoff must briefly name changed files, checks run and their results,
 known risks, rollback steps, and whether stable or any external system was
 touched.
