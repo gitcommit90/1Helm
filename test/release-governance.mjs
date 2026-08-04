@@ -16,7 +16,7 @@ test("multi-item releases retain the complete numbered acceptance ledger", () =>
   for (const source of [checklist, lifecycle, governance, pullRequest, notesTemplate]) {
     assert.match(source, /numbered acceptance\s+ledger/i);
   }
-  assert.match(checklist, /--notes-file "\$RELEASE_NOTES"/);
+  assert.match(checklist + read(".github/workflows/promote-stable.yml") + read("scripts/publish-promotion.mjs"), /--notes-file/);
   assert.doesNotMatch(checklist, /gh release create[^\n]+--generate-notes/);
   assert.match(notesTemplate, /^1\. \*\*Feature or fix name\*\*/m);
   assert.match(notesTemplate, /artifact/i);
@@ -75,8 +75,13 @@ test("every release document names the same three published artifacts", () => {
   const checklist = RELEASE_DOCS["docs/release-checklist.md"];
   assert.match(checklist, /for artifact in "\$DMG" "\$UPDATE_ZIP" "\$HEADLESS"; do/,
     "the checklist verifies exactly the three built artifacts");
-  assert.match(checklist, /gh release create "v\$\{VERSION\}" \\\n  "\$DMG" "\$UPDATE_ZIP" "\$HEADLESS" \\\n  --title/,
-    "the publish command attaches exactly the three artifacts");
+  const promotion = read("scripts/publish-promotion.mjs");
+  assert.match(promotion, /STABLE_ARTIFACT_ROLES\.map/,
+    "the publish command derives exactly the three validated artifact roles");
+  assert.match(promotion, /"release", "create", tag, \.\.\.artifactPaths, stablePath/,
+    "the publish command attaches the three artifacts plus their Stable manifest");
+  assert.match(promotion, /"--draft"[\s\S]*expectedAssets[\s\S]*"--draft=false"/,
+    "publication exposes Stable only after the complete draft matrix is digest-verified");
 });
 
 test("release documents never reintroduce a Windows artifact, installer or signing lane", () => {

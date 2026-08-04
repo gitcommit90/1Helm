@@ -112,18 +112,14 @@ executable code of its own, there is no Windows signing identity and no Windows
 signature status to record or disclose. Never sign anything with a self-signed
 identity.
 
-Only after Sections 6–8 pass for all three desktop platforms:
+Only after Sections 6–8 pass for all three desktop platforms, use the manual
+GitHub workflow. Direct tag or release commands are not a supported path:
 
 ```bash
-git tag -a "v${VERSION}" "$MERGED_COMMIT" -m "1Helm ${VERSION}"
-git push origin "refs/tags/v${VERSION}"
-gh release create "v${VERSION}" \
-  "$DMG" "$UPDATE_ZIP" "$HEADLESS" \
-  --title "1Helm ${VERSION}" --notes-file "$RELEASE_NOTES" --draft
-# Upload mobile artifacts through their applicable distribution lane; their
-# timing never permits a partial desktop release.
-# review notes, then:
-gh release edit "v${VERSION}" --draft=false
+gh workflow run "Promote exact candidate to Stable" --ref main \
+  -f candidate_workflow_run_id="$CANDIDATE_RUN_ID" \
+  -f candidate_artifact_id="$CANDIDATE_ARTIFACT_ID" \
+  -f version="$VERSION" -f mode=dry-run
 ```
 
 `--generate-notes` is not an acceptable replacement for the authored notes.
@@ -131,6 +127,29 @@ Generated commit/PR lists may be appended as secondary metadata, but the public
 body must lead with the complete user-visible acceptance ledger. Before
 publication, compare the notes item-by-item with the originating request and
 the versioned `CHANGELOG.md` entry.
+
+Review the dry-run's single plain-English report. It must name the candidate
+identity, exact dress-rehearsal result, required Mac/Linux/Windows evidence,
+eligibility, every publish blocker, and `Stable touched: NO`. Phase 3 honestly
+blocks on missing retained Mac bytes and all retained platform acceptance
+records until Phase 4 supplies them.
+
+The workflow runs this same owner-facing reporter; for an already downloaded
+promotion bundle it can also be invoked locally without any network mutation:
+
+```bash
+npm run stable:status -- --bundle <promotion-bundle> --version "$VERSION" \
+  --candidate-run "$CANDIDATE_RUN_ID" --candidate-artifact "$CANDIDATE_ARTIFACT_ID"
+```
+
+After the owner separately creates and protects the GitHub Environment
+**Stable publication**, sets its required reviewer, and adds the environment
+secret `STABLE_PUBLICATION_ENABLED=PROTECTED STABLE ENVIRONMENT ENABLED`, an
+eligible candidate may be dispatched again with `mode=publish` and the exact
+confirmation string printed by the dry run. Those settings are not created by
+this repository or by the workflow. The publish job refuses an existing tag or
+release and uploads only the verified DMG, updater ZIP, Linux TGZ, and Stable
+manifest. It never rebuilds.
 
 ### Mobile release gates
 
@@ -238,3 +257,14 @@ Android:      <public APK digest, certificate fingerprint, install/update smoke>
 iOS:          <App Store build number + validation/upload result>
 CI:             Actions green on main
 ```
+
+## 10. Publication rollback
+
+Never rewrite, move, delete for reuse, or silently replace a published tag or
+asset. Roll back by promoting a previously verified immutable artifact set
+through a new semantic version after all current gates pass, or through a
+documented supported updater rollback that restores an already installed prior
+release. If the annotated tag push succeeds but Release creation fails, that
+version is permanently unavailable for reuse; fix the issue and choose a new
+version. The website retains the last digest-validated Stable manifest until a
+complete later promotion succeeds.

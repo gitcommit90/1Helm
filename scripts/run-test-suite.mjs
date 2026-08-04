@@ -18,7 +18,7 @@ const suites = [
     "test/feedback.mjs", "test/feedback-browser.mjs", "test/cowork-browser.mjs", "test/files-latency.mjs", "test/gmail.mjs", "test/photon.mjs", "test/site.mjs", "test/release-license.mjs", "test/release-governance.mjs",
     "test/channel-surfaces.mjs", "test/workspace-interactions.mjs", "test/sweep-fleet-telemetry.mjs", "test/sweep-server-integration.mjs", "test/thread-followup-chat.mjs",
     "test/notifications.mjs", "test/mobile-push.mjs", "test/terminal-reconnect-contract.mjs", "test/terminal-reconnect-browser.mjs", "test/mobile.mjs", "test/web-research.mjs", "test/workflows.mjs",
-    "test/delivery-status.mjs", "test/cleanup-report.mjs", "test/delivery-governance.mjs", "test/phase1-tools.mjs", "test/phase2-candidate.mjs"],
+    "test/delivery-status.mjs", "test/cleanup-report.mjs", "test/delivery-governance.mjs", "test/phase1-tools.mjs", "test/phase2-candidate.mjs", "test/phase3-promotion.mjs", "test/site-stable-manifest.mjs"],
 ];
 
 let status = 0;

@@ -1,0 +1,211 @@
+name: Promote exact candidate to Stable
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_workflow_run_id:
+        description: Exact successful Candidate dress rehearsal workflow run ID
+        required: true
+        type: string
+      candidate_artifact_id:
+        description: Exact immutable candidate artifact ID from that run
+        required: true
+        type: string
+      version:
+        description: Intended three-part semantic version (without v)
+        required: true
+        type: string
+      mode:
+        description: Dry-run validates without publishing; publish enters the protected gate
+        required: true
+        default: dry-run
+        type: choice
+        options: [dry-run, publish]
+      confirmation:
+        description: Publish only - PROMOTE EXACT CANDIDATE vX.Y.Z RUN N ARTIFACT N
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: 1helm-stable-promotion
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify exact candidate bytes (never publishes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      confirmation: ${{ steps.identity.outputs.confirmation }}
+    steps:
+      - name: Validate allowlisted dispatch inputs
+        id: identity
+        env:
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_workflow_run_id }}
+          CANDIDATE_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
+          VERSION: ${{ inputs.version }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$CANDIDATE_ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$MODE" == dry-run || "$MODE" == publish ]]
+          printf 'confirmation=PROMOTE EXACT CANDIDATE v%s RUN %s ARTIFACT %s\n' "$VERSION" "$CANDIDATE_RUN_ID" "$CANDIDATE_ARTIFACT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse publish mode without the exact owner confirmation
+        if: inputs.mode == 'publish'
+        env:
+          OWNER_CONFIRMATION: ${{ inputs.confirmation }}
+          EXPECTED_CONFIRMATION: ${{ steps.identity.outputs.confirmation }}
+        run: test "$OWNER_CONFIRMATION" = "$EXPECTED_CONFIRMATION"
+
+      - name: Check out current main verification code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch exact trusted GitHub identities
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_workflow_run_id }}
+          CANDIDATE_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
+        run: |
+          set -euo pipefail
+          mkdir -m 0700 promotion-api promotion-bundle
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" > promotion-api/run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$CANDIDATE_ARTIFACT_ID" > promotion-api/artifact.json
+
+      - name: Download only the exact candidate artifact ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ inputs.candidate_artifact_id }}
+          path: promotion-bundle
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_workflow_run_id }}
+
+      - name: Bind trusted candidate API records and derive the exact CI run ID
+        id: candidate_api
+        env:
+          HELM_PROMOTION_BUNDLE: promotion-bundle
+          HELM_PROMOTION_RUN_JSON: promotion-api/run.json
+          HELM_PROMOTION_ARTIFACT_JSON: promotion-api/artifact.json
+        run: node scripts/prepare-promotion-bundle.mjs
+
+      - name: Fetch and bind the exact trusted CI run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_RUN_ID: ${{ steps.candidate_api.outputs.ci_run_id }}
+          HELM_PROMOTION_BUNDLE: promotion-bundle
+          HELM_PROMOTION_RUN_JSON: promotion-api/run.json
+          HELM_PROMOTION_ARTIFACT_JSON: promotion-api/artifact.json
+          HELM_PROMOTION_CI_JSON: promotion-api/ci.json
+        run: |
+          set -euo pipefail
+          [[ "$CI_RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID" > promotion-api/ci.json
+          node scripts/prepare-promotion-bundle.mjs
+
+      - name: Cryptographically verify Linux provenance on the hosted verifier
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HELM_PROMOTION_BUNDLE: promotion-bundle
+        run: node scripts/verify-promotion-attestation.mjs
+
+      - name: Verify current main, absent tag, and absent release
+        id: repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          main_commit="$(git rev-parse refs/remotes/origin/main)"
+          candidate_commit="$(node -p 'require("./promotion-bundle/promotion.json").commit')"
+          git merge-base --is-ancestor "$candidate_commit" refs/remotes/origin/main
+          node scripts/github-promotion-gates.mjs version-absent "$VERSION"
+          printf 'main_commit=%s\n' "$main_commit" >> "$GITHUB_OUTPUT"
+
+      - name: Verify complete evidence, exact bytes, and no-rebuild promotion outputs
+        env:
+          VERSION: ${{ inputs.version }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_workflow_run_id }}
+          CANDIDATE_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
+          HELM_PROMOTION_MAIN_COMMIT: ${{ steps.repository.outputs.main_commit }}
+          HELM_PROMOTION_MAIN_CONTAINS_CANDIDATE: "1"
+          HELM_PROMOTION_TAG_ABSENT: "1"
+          HELM_PROMOTION_RELEASE_ABSENT: "1"
+          HELM_PROMOTION_LINUX_ATTESTATION_VERIFIED: "1"
+        run: |
+          set -euo pipefail
+          node scripts/promotion-status.mjs \
+            --bundle promotion-bundle \
+            --version "$VERSION" \
+            --candidate-run "$CANDIDATE_RUN_ID" \
+            --candidate-artifact "$CANDIDATE_ARTIFACT_ID" \
+            --write-verified promotion-bundle
+
+      - name: Retain verified exact bytes only for an explicitly confirmed publish request
+        if: >-
+          inputs.mode == 'publish' &&
+          inputs.confirmation == steps.identity.outputs.confirmation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-stable-promotion-${{ inputs.candidate_artifact_id }}
+          path: |
+            promotion-bundle/1Helm-${{ inputs.version }}-arm64.dmg
+            promotion-bundle/1Helm-${{ inputs.version }}-mac-arm64.zip
+            promotion-bundle/1Helm-${{ inputs.version }}-linux-node.tgz
+            promotion-bundle/1Helm-${{ inputs.version }}-stable.json
+            promotion-bundle/1Helm-${{ inputs.version }}-release-notes.md
+            promotion-bundle/verified-promotion.json
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Protected owner approval - publish Stable
+    needs: verify
+    if: >-
+      inputs.mode == 'publish' &&
+      inputs.confirmation == needs.verify.outputs.confirmation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: Stable publication
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Check out current main for the guarded tag push
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Download the complete verified promotion output
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verified-stable-promotion-${{ inputs.candidate_artifact_id }}
+          path: verified-promotion
+
+      - name: Publish annotated immutable tag and one complete GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STABLE_PUBLICATION_ENABLED: ${{ secrets.STABLE_PUBLICATION_ENABLED }}
+          HELM_PROMOTION_BUNDLE: verified-promotion
+          HELM_PROMOTION_MODE: ${{ inputs.mode }}
+          HELM_PROMOTION_VERSION: ${{ inputs.version }}
+          HELM_PROMOTION_RUN_ID: ${{ inputs.candidate_workflow_run_id }}
+          HELM_PROMOTION_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
+          HELM_PROMOTION_CONFIRMATION: ${{ inputs.confirmation }}
+        run: node scripts/publish-promotion.mjs

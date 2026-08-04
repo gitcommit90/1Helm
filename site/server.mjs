@@ -1,10 +1,16 @@
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pages, redirects, sitemapPaths } from "./content.mjs";
 import { renderPage } from "./template.mjs";
+import {
+  manifestAssetForRelease,
+  readStableManifest,
+  validateDownloadedManifest,
+  validateManifestRelease,
+} from "../scripts/stable-manifest-lib.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const SITE_PUBLIC = join(import.meta.dirname, "public");
@@ -30,31 +36,12 @@ const ORIGIN = "https://1helm.com";
 const REPO = "gitcommit90/1Helm";
 const RELEASE_PAGE = `https://github.com/${REPO}/releases/latest`;
 const RELEASE_CACHE_MS = 10 * 60_000;
-// Served only when GitHub's release API is unreachable or rate limited, and it
-// must name the current release: a stale fallback silently hands visitors an
-// older build from the download links.
-//
-// The digests are the digests OF the release commit's own artifacts, so they
-// are filled in here once those artifacts exist and the site is redeployed.
-// Between the release commit and this one the placeholder is deliberately not
-// 64 hex characters, so latestLinuxRelease() rejects it and
-// /api/releases/linux/latest answers 503 - failing closed rather than handing
-// an installer a digest that cannot match what it downloads.
-const RELEASE_FALLBACK_TAG = "v0.0.41";
-const RELEASE_FALLBACK = {
-  tag_name: RELEASE_FALLBACK_TAG,
-  draft: false,
-  prerelease: false,
-  assets: [
-    ["1Helm-0.0.41-arm64.dmg", "dd95d6012db5519581871a9c0b0379988ee4e9a38ac388d2762f71a29ea4548a"],
-    ["1Helm-0.0.41-mac-arm64.zip", "59da24ff56d736fd953060be4990add8dd373b5caac07a6ed6906206378f748a"],
-    ["1Helm-0.0.41-linux-node.tgz", "001ea971c2a1e8079802554a893deacb99eb9220a47735b40513d657098e7992"],
-  ].map(([name, digest]) => ({
-    name,
-    digest: `sha256:${digest}`,
-    browser_download_url: `https://github.com/${REPO}/releases/download/${RELEASE_FALLBACK_TAG}/${name}`,
-  })),
-};
+// Promotion stores a digest-qualified manifest both as a GitHub Release asset
+// and in the site's writable state directory. GitHub metadata is used only
+// after its manifest asset and complete artifact matrix validate. If GitHub is
+// unavailable or inconsistent, the last locally validated manifest remains the
+// source of stable download metadata. No tag or digest is invented in source.
+const BOOTSTRAP_STABLE_MANIFEST = join(import.meta.dirname, "stable-manifest.json");
 const FEEDBACK_DATA_DIR = resolve(process.env.SITE_DATA_DIR || join(ROOT, ".site-data"));
 const FEEDBACK_ADMIN_TOKEN = String(process.env.SITE_FEEDBACK_ADMIN_TOKEN || "");
 const FEEDBACK_BODY_LIMIT = 15 * 1024 * 1024;
@@ -62,16 +49,63 @@ const FEEDBACK_RATE_LIMIT = 30;
 const FEEDBACK_RATE_WINDOW_MS = 60_000;
 
 let releaseCache = { at: 0, release: null };
+let stableManifestCache = null;
 let feedbackDatabase;
 const feedbackRate = new Map();
-async function latestRelease() {
+function manifestAsRelease(manifest) {
+  return {
+    tag_name: manifest.tag,
+    draft: false,
+    prerelease: false,
+    assets: manifest.artifacts.map((artifact) => ({
+      name: artifact.name,
+      digest: `sha256:${artifact.sha256}`,
+      browser_download_url: artifact.url,
+    })),
+  };
+}
+function lastKnownStableManifest() {
+  if (stableManifestCache) return stableManifestCache;
+  const statePath = join(FEEDBACK_DATA_DIR, "stable-manifest.json");
+  for (const path of [statePath, BOOTSTRAP_STABLE_MANIFEST]) {
+    try { return (stableManifestCache = readStableManifest(path)); } catch {}
+  }
+  throw new Error("no validated last-known-good stable manifest");
+}
+function retainStableManifest(manifest) {
+  const path = join(FEEDBACK_DATA_DIR, "stable-manifest.json");
+  const temporary = `${path}.candidate`;
+  mkdirSync(FEEDBACK_DATA_DIR, { recursive: true, mode: 0o700 });
+  writeFileSync(temporary, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporary, path);
+  stableManifestCache = manifest;
+}
+function stableOrder(version) {
+  return String(version).split(".").map(Number);
+}
+function isNewerStable(candidate, current) {
+  const left = stableOrder(candidate.version);
+  const right = stableOrder(current.version);
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] > right[index];
+  }
+  return JSON.stringify(candidate) === JSON.stringify(current);
+}
+async function latestReleaseAndManifest() {
   if (Date.now() - releaseCache.at < RELEASE_CACHE_MS && releaseCache.release) return releaseCache.release;
   const releaseOverride = String(process.env.SITE_RELEASE_METADATA_JSON || "");
-  let release;
-  if (releaseOverride) {
-    release = JSON.parse(releaseOverride);
-  } else {
-    try {
+  try {
+    let release;
+    if (releaseOverride) {
+      release = JSON.parse(releaseOverride);
+      const manifestOverride = String(process.env.SITE_STABLE_MANIFEST_JSON || "");
+      const manifest = manifestOverride
+        ? validateManifestRelease(JSON.parse(manifestOverride), release)
+        : validateManifestRelease(lastKnownStableManifest(), release);
+      stableManifestCache = manifest;
+      releaseCache = { at: Date.now(), release: { release, manifest } };
+      return releaseCache.release;
+    } else {
       if (process.env.SITE_RELEASE_FETCH_DISABLED === "1") throw new Error("release fetch disabled");
       const response = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
         headers: { "user-agent": "1helm-site", accept: "application/vnd.github+json" },
@@ -79,17 +113,28 @@ async function latestRelease() {
       });
       if (!response.ok) throw new Error(`GitHub API ${response.status}`);
       release = await response.json();
-    } catch {
-      release = RELEASE_FALLBACK;
+      const manifestAsset = manifestAssetForRelease(release);
+      const manifestResponse = await fetch(manifestAsset.browser_download_url, {
+        headers: { "user-agent": "1helm-site", accept: "application/json" },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!manifestResponse.ok) throw new Error(`stable manifest download ${manifestResponse.status}`);
+      const manifest = validateDownloadedManifest(Buffer.from(await manifestResponse.arrayBuffer()), release);
+      const current = lastKnownStableManifest();
+      if (!isNewerStable(manifest, current)) throw new Error("GitHub Stable manifest would move or rewrite Stable");
+      retainStableManifest(manifest);
+      releaseCache = { at: Date.now(), release: { release, manifest } };
+      return releaseCache.release;
     }
+  } catch {
+    const manifest = lastKnownStableManifest();
+    const release = manifestAsRelease(manifest);
+    releaseCache = { at: Date.now(), release: { release, manifest } };
+    return releaseCache.release;
   }
-  const version = String(release.tag_name || "").replace(/^v/, "");
-  if (!/^\d+\.\d+\.\d+$/.test(version) || release.draft || release.prerelease) throw new Error("latest release is not stable");
-  releaseCache = { at: Date.now(), release };
-  return release;
 }
 async function latestReleaseAssets() {
-  return (await latestRelease()).assets || [];
+  return (await latestReleaseAndManifest()).release.assets || [];
 }
 async function latestAssetUrl(pattern) {
   const asset = (await latestReleaseAssets()).find((entry) => pattern.test(String(entry.name || "")));
@@ -97,8 +142,8 @@ async function latestAssetUrl(pattern) {
   return asset.browser_download_url;
 }
 async function latestLinuxRelease() {
-  const release = await latestRelease();
-  const version = String(release.tag_name).replace(/^v/, "");
+  const { manifest } = await latestReleaseAndManifest();
+  const version = manifest.version;
   // Windows ships no release artifacts: it installs the Linux archive inside WSL
   // via https://1helm.com/install.ps1. Requiring a Setup executable, .nupkg and
   // RELEASES here would make this throw for every release after 0.0.38 - and
@@ -109,15 +154,14 @@ async function latestLinuxRelease() {
     `1Helm-${version}-mac-arm64.zip`,
     `1Helm-${version}-linux-node.tgz`,
   ];
-  const assets = Array.isArray(release.assets) ? release.assets : [];
-  const matrix = expectedNames.map((name) => assets.find((asset) => asset.name === name));
-  if (matrix.some((asset) => !asset || !/^sha256:[a-f0-9]{64}$/.test(String(asset.digest || "")))) {
+  const matrix = expectedNames.map((name) => manifest.artifacts.find((asset) => asset.name === name));
+  if (matrix.some((asset) => !asset || !/^[a-f0-9]{64}$/.test(String(asset.sha256 || "")))) {
     throw new Error("latest release does not contain the complete digest-qualified desktop matrix");
   }
   const linux = matrix[2];
   const expectedUrl = `https://github.com/${REPO}/releases/download/v${version}/${linux.name}`;
-  if (linux.browser_download_url !== expectedUrl) throw new Error("latest Linux release URL does not match its version");
-  return { version, url: expectedUrl, sha256: linux.digest.slice(7) };
+  if (linux.url !== expectedUrl) throw new Error("latest Linux release URL does not match its version");
+  return { version, url: expectedUrl, sha256: linux.sha256 };
 }
 
 const mime = {
@@ -386,6 +430,20 @@ const server = createServer(async (req, res) => {
       });
     } catch {
       answer(res, 503, JSON.stringify({ error: "A complete stable Linux release is not available." }), {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+      });
+    }
+    return;
+  }
+  if (path === "/api/releases/stable/manifest") {
+    try {
+      answer(res, 200, JSON.stringify((await latestReleaseAndManifest()).manifest), {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+      });
+    } catch {
+      answer(res, 503, JSON.stringify({ error: "No validated Stable manifest is available." }), {
         "content-type": "application/json; charset=utf-8",
         "cache-control": "no-store",
       });

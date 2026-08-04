@@ -30,7 +30,16 @@ const freePort = () => new Promise((resolve, reject) => { const server = createS
 const waitFor = async (url) => { const deadline = Date.now() + 10_000; while (Date.now() < deadline) { try { const result = await fetch(url); if (result.ok) return result; } catch {} await new Promise((resolve) => setTimeout(resolve, 80)); } throw new Error(`Timed out: ${url}`); };
 test("standalone 1helm.com website serves independent product and documentation surface", async () => {
   const port = await freePort();
-  const child = spawn(process.execPath, ["site/server.mjs"], { cwd: root, env: { ...process.env, SITE_PORT: String(port), SITE_RELEASE_METADATA_JSON: JSON.stringify(releaseFixture) }, stdio: ["ignore", "pipe", "pipe"] });
+  const releaseManifestFixture = {
+    schema: 1, kind: "1helm-promoted-stable", repository: "gitcommit90/1Helm", ref: "refs/heads/main",
+    version: "0.0.31", tag: "v0.0.31", commit: "a".repeat(40), promoted_at: "2026-08-04T12:00:00Z",
+    promotion: { candidate_workflow_run_id: "1", candidate_artifact_id: "2", manifest_sha256: "b".repeat(64) },
+    artifacts: releaseFixture.assets.slice(0, 3).map((asset, index) => ({
+      role: ["mac_dmg", "mac_updater_zip", "linux_tgz"][index], name: asset.name,
+      sha256: asset.digest.slice(7), url: asset.browser_download_url,
+    })),
+  };
+  const child = spawn(process.execPath, ["site/server.mjs"], { cwd: root, env: { ...process.env, SITE_PORT: String(port), SITE_RELEASE_METADATA_JSON: JSON.stringify(releaseFixture), SITE_STABLE_MANIFEST_JSON: JSON.stringify(releaseManifestFixture) }, stdio: ["ignore", "pipe", "pipe"] });
   try {
     const base = `http://127.0.0.1:${port}`;
     const health = await (await waitFor(`${base}/health`)).json();
@@ -128,6 +137,9 @@ test("standalone 1helm.com website serves independent product and documentation 
       url: "https://github.com/gitcommit90/1Helm/releases/download/v0.0.31/1Helm-0.0.31-linux-node.tgz",
       sha256: "c".repeat(64),
     });
+    const stableManifest = await (await fetch(`${base}/api/releases/stable/manifest`)).json();
+    assert.equal(stableManifest.version, "0.0.31");
+    assert.equal(stableManifest.artifacts.length, 3);
     assert.equal((await fetch(`${base}/../../package.json`)).status, 404);
     const sitemap = await (await fetch(`${base}/sitemap.xml`)).text();
     assert.match(sitemap, /https:\/\/1helm\.com\/manual\/connections/);
@@ -160,25 +172,12 @@ test("release metadata stays available when GitHub's unauthenticated API is exha
     const base = `http://127.0.0.1:${port}`;
     await waitFor(`${base}/health`);
     const response = await fetch(`${base}/api/releases/linux/latest`);
-    // Derived from package.json rather than pinned: the point of this contract
-    // is that the offline fallback serves the SHIPPING release, so hardcoding a
-    // version here would keep passing while the fallback silently went stale.
-    const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
-    const server = readFileSync(join(root, "site", "server.mjs"), "utf8");
-    const pending = server.includes('const PENDING_DIGEST = "pending-release-digest"')
-      && new RegExp(`\\["1Helm-${version.replaceAll(".", "\\.")}-linux-node\\.tgz", PENDING_DIGEST\\]`).test(server);
-    if (pending) {
-      // Digests are the digests OF the release commit's artifacts, so they are
-      // filled in at publish. Until then this must fail closed rather than hand
-      // an installer a digest that cannot match what it downloads.
-      assert.equal(response.status, 503, "a fallback with pending digests must refuse, not serve a wrong digest");
-    } else {
-      assert.equal(response.status, 200);
-      const offline = await response.json();
-      assert.equal(offline.version, version, "the offline fallback serves the shipping version");
-      assert.equal(offline.url, `https://github.com/gitcommit90/1Helm/releases/download/v${version}/1Helm-${version}-linux-node.tgz`);
-      assert.match(offline.sha256, /^[a-f0-9]{64}$/, "the offline fallback carries a real digest");
-    }
+    const stable = JSON.parse(readFileSync(join(root, "site", "stable-manifest.json"), "utf8"));
+    assert.equal(response.status, 200);
+    const offline = await response.json();
+    assert.equal(offline.version, stable.version, "the validated manifest retains the last promoted stable version");
+    assert.equal(offline.url, stable.artifacts.find(({ role }) => role === "linux_tgz").url);
+    assert.equal(offline.sha256, stable.artifacts.find(({ role }) => role === "linux_tgz").sha256);
   } finally {
     child.kill("SIGTERM");
     await new Promise((resolve) => child.once("exit", resolve));
@@ -409,38 +408,27 @@ test("autonomy report names its deterministic scope and live-system limits", () 
   assert.match(report.scope.does_not_validate.join(" "), /live model or provider/);
 });
 
-test("the website's offline release fallback names the shipping version", () => {
-  // This fallback is served when GitHub's release API is unreachable or rate
-  // limited. A stale entry does not fail loudly — it quietly hands every
-  // visitor an older build from the download links, which is exactly how a
-  // release goes out with the previous version behind the buttons.
-  const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+test("the website's last-known-good release metadata is a validated manifest, not server source", () => {
+  const stable = JSON.parse(readFileSync(join(root, "site", "stable-manifest.json"), "utf8"));
   const server = readFileSync(join(root, "site", "server.mjs"), "utf8");
-  const block = server.match(/const RELEASE_FALLBACK = \{[\s\S]*?\n\};/)?.[0];
-  assert.ok(block, "site/server.mjs still exposes a release fallback block");
-  assert.match(server, new RegExp(`RELEASE_FALLBACK_TAG = "v${version.replaceAll(".", "\\.")}"`), "the fallback tag matches package.json");
+  assert.doesNotMatch(server, /RELEASE_FALLBACK_TAG|const RELEASE_FALLBACK/);
+  assert.equal(stable.schema, 1);
+  assert.equal(stable.kind, "1helm-promoted-stable");
+  assert.equal(stable.repository, "gitcommit90/1Helm");
   // Three artifacts, not six: Windows publishes nothing, it installs the Linux
   // archive inside WSL. A fallback still naming a Setup executable or .nupkg
   // would advertise files the release does not contain.
   for (const asset of [
-    `1Helm-${version}-arm64.dmg`,
-    `1Helm-${version}-mac-arm64.zip`,
-    `1Helm-${version}-linux-node.tgz`,
+    `1Helm-${stable.version}-arm64.dmg`,
+    `1Helm-${stable.version}-mac-arm64.zip`,
+    `1Helm-${stable.version}-linux-node.tgz`,
   ]) {
-    assert.ok(block.includes(asset), `the release fallback names ${asset}`);
+    assert.ok(stable.artifacts.some(({ name }) => name === asset), `the stable manifest names ${asset}`);
   }
   for (const gone of ["windows-x64-setup.exe", "full.nupkg", '"RELEASES"']) {
-    assert.ok(!block.includes(gone), `the release fallback must not advertise ${gone}`);
+    assert.ok(!JSON.stringify(stable).includes(gone), `the stable manifest must not advertise ${gone}`);
   }
-  const digests = [...block.matchAll(/"([a-f0-9]{64})"/g)].map((m) => m[1]);
-  const pendingCount = [...block.matchAll(/PENDING_DIGEST/g)].length;
-  if (pendingCount) {
-    // Pre-publish: every digest must be pending, never a mix. A half-filled
-    // fallback would serve one real and two wrong digests.
-    assert.equal(pendingCount, 3, "either all three fallback digests are pending or none are");
-    assert.equal(digests.length, 0, "a pending fallback must not also carry a stale real digest");
-  } else {
-    assert.equal(digests.length, 3, "all three desktop artifacts carry a fallback digest");
-    assert.equal(new Set(digests).size, 3, "no two fallback digests are duplicated");
-  }
+  const digests = stable.artifacts.map(({ sha256 }) => sha256);
+  assert.ok(digests.every((digest) => /^[a-f0-9]{64}$/.test(digest)), "all three desktop artifacts carry a real digest");
+  assert.equal(new Set(digests).size, 3, "no two stable artifact digests are duplicated");
 });

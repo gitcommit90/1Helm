@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "kind": "1helm-promoted-stable",
+  "repository": "gitcommit90/1Helm",
+  "ref": "refs/heads/main",
+  "version": "0.0.41",
+  "tag": "v0.0.41",
+  "commit": "c8415119ed97aee6ef9d68aca15c2209ea8cb29a",
+  "promoted_at": "2026-08-03T18:44:30Z",
+  "promotion": {
+    "candidate_workflow_run_id": "0",
+    "candidate_artifact_id": "0",
+    "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "artifacts": [
+    {
+      "role": "mac_dmg",
+      "name": "1Helm-0.0.41-arm64.dmg",
+      "sha256": "dd95d6012db5519581871a9c0b0379988ee4e9a38ac388d2762f71a29ea4548a",
+      "url": "https://github.com/gitcommit90/1Helm/releases/download/v0.0.41/1Helm-0.0.41-arm64.dmg"
+    },
+    {
+      "role": "mac_updater_zip",
+      "name": "1Helm-0.0.41-mac-arm64.zip",
+      "sha256": "59da24ff56d736fd953060be4990add8dd373b5caac07a6ed6906206378f748a",
+      "url": "https://github.com/gitcommit90/1Helm/releases/download/v0.0.41/1Helm-0.0.41-mac-arm64.zip"
+    },
+    {
+      "role": "linux_tgz",
+      "name": "1Helm-0.0.41-linux-node.tgz",
+      "sha256": "001ea971c2a1e8079802554a893deacb99eb9220a47735b40513d657098e7992",
+      "url": "https://github.com/gitcommit90/1Helm/releases/download/v0.0.41/1Helm-0.0.41-linux-node.tgz"
+    }
+  ]
+}
