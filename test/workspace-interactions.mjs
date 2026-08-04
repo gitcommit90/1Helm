@@ -9,6 +9,7 @@ const settings = await readFile(resolve(root, "src/client/settings.ts"), "utf8")
 const routing = await readFile(resolve(root, "src/client/routing.ts"), "utf8");
 const desktop = await readFile(resolve(root, "desktop/main.cjs"), "utf8");
 const server = await readFile(resolve(root, "src/server/index.ts"), "utf8");
+const http = await readFile(resolve(root, "src/server/http.ts"), "utf8");
 const serviceWorker = await readFile(resolve(root, "public/sw.js"), "utf8");
 
 test("workspace sidebar interactions have durable, member-scoped contracts", () => {
@@ -26,7 +27,7 @@ test("workspace sidebar interactions have durable, member-scoped contracts", () 
 });
 
 test("speech-to-text is explicit, graceful, and combination-safe", () => {
-  assert.ok(server.includes('"permissions-policy": "camera=(), microphone=(self), geolocation=(), unload=(self)"'), "the web control plane permits first-party microphone access for explicit dictation");
+  assert.ok(http.includes('"permissions-policy": "camera=(), microphone=(self), geolocation=(), unload=(self)"'), "the web control plane permits first-party microphone access for explicit dictation");
   assert.match(app, /SpeechRecognition\?[^\n]+webkitSpeechRecognition/, "standard and prefixed browser recognition are supported");
   assert.match(app, /dataset: \{ speechToggle: "" \}/, "the composer exposes an explicit mic control");
   assert.match(app, /export function mountSpeechToTextControl/, "other text surfaces reuse the same dictation control and shortcut behavior");

@@ -8,6 +8,19 @@ import { defaultTerminalComputer, openTerminals, refitChannelTerminals, getTermi
 import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderNotes, renderTexts, renderThreads, type ChannelView } from "./channel.ts";
 import { renderCowork, setActiveCoworkChannel, stageCoworkPath } from "./cowork.ts";
 import { apiUrl, finishNativeLaunch, forgetMobileServer, getServerOrigin, isNativeMobile, serverAssetUrl } from "./mobile.ts";
+import {
+  formatThreadFollowupCountdown,
+  progressCounts,
+  progressPreviewLine,
+  progressStatusLabel,
+  progressStatusTone,
+  parseToolBody,
+  stickyThoughtFromProgress,
+  stickyWorkingLabel,
+  threadUsageLabel as threadUsageLabelValue,
+  workingChipLabel,
+  workingDisplayBody,
+} from "./thread-formatters.ts";
 
 /** Per-channel layout bound to the user profile (server user_ui_state). */
 type ChannelUiView = {
@@ -2295,94 +2308,6 @@ function snapshotProgressOpenState(root: ParentNode | null = document): void {
   });
 }
 
-function progressStatusTone(status: string): string {
-  if (status === "running") return "animate-pulse bg-amber-400";
-  if (status === "failed") return "bg-danger";
-  return "bg-ok";
-}
-
-function progressStatusLabel(status: string): string {
-  if (status === "running") return "running";
-  if (status === "failed") return "failed";
-  return "done";
-}
-
-function humanToolName(raw: string): string {
-  return raw.replaceAll("_", " ").replace(/\s+/g, " ").trim();
-}
-
-/** Split tool progress body: "name: input" then optional "\\nresult". */
-function parseToolBody(body: string): { title: string; input: string; output: string } {
-  const text = body || "";
-  const nl = text.indexOf("\n");
-  const head = nl >= 0 ? text.slice(0, nl) : text;
-  const rest = nl >= 0 ? text.slice(nl + 1).trim() : "";
-  const colon = head.indexOf(":");
-  if (colon < 0) return { title: humanToolName(head) || "tool", input: "", output: rest };
-  return {
-    title: humanToolName(head.slice(0, colon)) || "tool",
-    input: head.slice(colon + 1).trim(),
-    output: rest,
-  };
-}
-
-function progressPreviewLine(items: AgentProgress[]): string {
-  // Live current step only (running tool / thinking / status). Do NOT fall back to a
-  // completed thought — that forced the summary preview to snap after every tool tick.
-  const running = [...items].reverse().find((item) => item.status === "running") || items[items.length - 1];
-  if (!running) return "";
-  if (running.kind === "tool") {
-    const { title, input } = parseToolBody(running.body);
-    return input ? `${title} · ${input.slice(0, 72)}` : title;
-  }
-  if (running.kind === "thinking") {
-    const line = running.body.trim().split(/\n+/).find(Boolean) || "Thinking…";
-    return line.slice(0, 80) + (line.length > 80 ? "…" : "");
-  }
-  return (running.body || "Working…").slice(0, 80);
-}
-
-function stickyThoughtFromProgress(items: AgentProgress[] | undefined): string {
-  if (!items?.length) return "";
-  const thought = [...items].reverse().find((item) => item.kind === "thinking" && item.body.trim());
-  return thought?.body.trim() || "";
-}
-
-/** Replace only the literal "Working…" label — not the whole summary row. */
-function stickyWorkingLabel(items: AgentProgress[] | undefined): string {
-  const sticky = stickyThoughtFromProgress(items);
-  if (!sticky) return "Working…";
-  const line = sticky.split(/\n+/).find(Boolean) || sticky;
-  return line.length > 72 ? `${line.slice(0, 72)}…` : line;
-}
-
-/** Body shown while an agent turn is mid-flight — keep last real thought sticky. */
-function workingDisplayBody(m: Message): string {
-  if (m.body && m.body !== "_Working…_") return m.body;
-  const sticky = stickyThoughtFromProgress(m.progress);
-  return sticky || m.body || "_Working…_";
-}
-
-function workingChipLabel(m: Message): string {
-  // Same rule as the work-log left label: sticky thought, else Working…
-  if (m.progress?.length) return stickyWorkingLabel(m.progress);
-  if (m.body && m.body !== "_Working…_") {
-    const line = m.body.trim().split(/\n+/).find(Boolean) || "Working…";
-    return line.length > 72 ? `${line.slice(0, 72)}…` : line;
-  }
-  return "Working…";
-}
-
-function progressCounts(items: AgentProgress[]): string {
-  const tools = items.filter((i) => i.kind === "tool").length;
-  const thoughts = items.filter((i) => i.kind === "thinking").length;
-  const parts: string[] = [];
-  if (tools) parts.push(`${tools} tool${tools === 1 ? "" : "s"}`);
-  if (thoughts) parts.push(`${thoughts} thought${thoughts === 1 ? "" : "s"}`);
-  if (!parts.length) parts.push(`${items.length} step${items.length === 1 ? "" : "s"}`);
-  return parts.join(" · ");
-}
-
 function progressStepCard(messageId: number, item: AgentProgress): HTMLElement {
   const key = `${messageId}:${item.id}`;
   const tone = progressStatusTone(item.status);
@@ -2646,22 +2571,8 @@ function closeDockedNotes(): void {
   renderMain();
 }
 
-/** Compact token count for the thread header (1.2k, 340, …). */
-function formatRoughTokens(n: number): string {
-  const v = Math.max(0, Math.round(Number(n) || 0));
-  if (v >= 1_000_000) {
-    const m = v / 1_000_000;
-    return `${m >= 10 ? Math.round(m) : m.toFixed(1).replace(/\.0$/, "")}M`;
-  }
-  if (v >= 1000) {
-    const k = v / 1000;
-    return `${k >= 10 ? Math.round(k) : k.toFixed(1).replace(/\.0$/, "")}k`;
-  }
-  return String(v);
-}
-
 function threadUsageLabel(usage: ThreadUsage = S.threadUsage): string {
-  return `Used ${formatRoughTokens(usage.input_tokens)} in · ${formatRoughTokens(usage.output_tokens)} out`;
+  return threadUsageLabelValue(usage);
 }
 
 function paintThreadCtx(): void {
@@ -2671,17 +2582,6 @@ function paintThreadCtx(): void {
   el.textContent = label;
   el.setAttribute("title", `Cumulative provider-reported usage for this thread · ${S.threadUsage.input_tokens} input tokens · ${S.threadUsage.output_tokens} output tokens. This is usage, not remaining context-window capacity.`);
   el.classList.toggle("hidden", !(S.threadUsage.input_tokens || S.threadUsage.output_tokens));
-}
-
-function formatThreadFollowupCountdown(dueAt: number, nowMs = Date.now()): string {
-  const remaining = Math.max(0, Math.floor((dueAt - nowMs) / 1000));
-  if (remaining <= 0) return "now";
-  const hours = Math.floor(remaining / 3600);
-  const minutes = Math.floor((remaining % 3600) / 60);
-  const seconds = remaining % 60;
-  if (hours) return `${hours}h ${String(minutes).padStart(2, "0")}m ${String(seconds).padStart(2, "0")}s`;
-  if (minutes) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
-  return `${seconds}s`;
 }
 
 let threadFollowupTimer: number | null = null;
