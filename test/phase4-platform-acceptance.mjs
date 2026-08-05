@@ -212,6 +212,7 @@ test("Windows code publishes no artifact/signing claim and requires honest reboo
   assert.match(windows, /apply-linux-release\.sh/);
   assert.match(windows, /function Assert-DistroVersion/);
   assert.equal((windows.match(/Assert-DistroVersion \$(?:Version|PreviousVersion)/g) || []).length, 4);
+  assert.match(windows, /\/opt\/1helm\/node-current\/bin\/node/);
   assert.match(windows, /UTF8Encoding\(\$false\)/);
   assert.match(windows, /\[IO\.File\]::WriteAllText/);
   assert.match(windows, /\/bin\/bash -lc "bash '\$scriptInDistro'"/);

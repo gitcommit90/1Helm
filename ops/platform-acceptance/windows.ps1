@@ -52,9 +52,12 @@ function Assert-DistroVersion([string] $ExpectedVersion) {
     # which ended the PowerShell string and executed `systemctl` on Windows.
     # Substitute only the already-validated semver after constructing the exact
     # bash command, so every service/version assertion really runs inside WSL.
+    # 1Helm bundles its own Node at the installed /opt/1helm/node-current
+    # contract path; there is no global `node` on the distro PATH, so invoke
+    # the bundled binary by absolute path.
     $command = @'
 test "$(systemctl is-active 1helm.service)" = active
-test "$(node -p 'require("/opt/1helm/current/package.json").version')" = '__EXPECTED__'
+test "$(/opt/1helm/node-current/bin/node -p 'require("/opt/1helm/current/package.json").version')" = '__EXPECTED__'
 '@
     Invoke-Distro ($command.Replace('__EXPECTED__', $ExpectedVersion))
 }
