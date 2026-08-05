@@ -70,7 +70,7 @@ tar -xzf "$OFFLINE_ARCHIVE" -C "$work" "$prefix/site/public/install.sh"
 sudo env HELM_RELEASE_SHA256="$OFFLINE_DIGEST" bash "$work/$prefix/site/public/install.sh" "$OFFLINE_ARCHIVE"
 sudo systemctl is-active --quiet 1helm.service
 curl -fsS http://127.0.0.1:8123/api/setup/status >"$work/clean-health.json"
-[[ "$(readlink -f /opt/1helm/current)" == "/opt/1helm/releases/$VERSION-$OFFLINE_DIGEST" ]]
+[[ "$(sudo readlink -f /opt/1helm/current)" == "/opt/1helm/releases/$VERSION-$OFFLINE_DIGEST" ]]
 RETAINED_IMAGE="/var/lib/1helm-oci-v1/shared-images/sha256/$IMAGE_DIGEST"
 sudo test -d "$RETAINED_IMAGE"
 [[ "$(sudo find "$RETAINED_IMAGE" -maxdepth 1 -type f -name '*.oci.tar' -exec sha256sum {} \; | awk '{print $1}')" == "$IMAGE_DIGEST" ]]
@@ -110,7 +110,7 @@ PREVIOUS_DIGEST="$(sha256sum "$work/$PREVIOUS_NAME" | awk '{print $1}')"
 previous_prefix="$(tar -tzf "$work/$PREVIOUS_NAME" | awk -F/ '/^[^/]+\/site\/public\/install\.sh$/ && !found { print $1; found=1 }')"
 tar -xzf "$work/$PREVIOUS_NAME" -C "$work" "$previous_prefix/site/public/install.sh"
 sudo env HELM_RELEASE_SHA256="$PREVIOUS_DIGEST" bash "$work/$previous_prefix/site/public/install.sh" "$work/$PREVIOUS_NAME"
-[[ "$(node -p 'require("/opt/1helm/current/package.json").version')" == "$PREVIOUS_VERSION" ]]
+[[ "$(sudo cat /opt/1helm/current/package.json | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).version')" == "$PREVIOUS_VERSION" ]]
 
 MARKER=/var/lib/1helm-oci-v1/phase4-acceptance-state
 openssl rand -hex 32 | sudo tee "$MARKER" >/dev/null
@@ -122,13 +122,13 @@ sudo tar -xzf "$ARCHIVE" -C "$CANDIDATE_RELEASE.tmp" --strip-components=1
 sudo chown -R 1helm:1helm "$CANDIDATE_RELEASE.tmp"
 sudo mv "$CANDIDATE_RELEASE.tmp" "$CANDIDATE_RELEASE"
 sudo "$CANDIDATE_RELEASE/site/public/apply-linux-release.sh" "$CANDIDATE_RELEASE" "$VERSION"
-[[ "$(node -p 'require("/opt/1helm/current/package.json").version')" == "$VERSION" ]]
+[[ "$(sudo cat /opt/1helm/current/package.json | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).version')" == "$VERSION" ]]
 sudo systemctl is-active --quiet 1helm.service
 curl -fsS http://127.0.0.1:8123/api/setup/status >"$work/update-health.json"
 
 # Exercise the candidate's real atomic host transaction with a derived local
 # startup-failure fixture. The fixture is never uploaded as candidate bytes.
-[[ "$(readlink -f /opt/1helm/current)" == "$CANDIDATE_RELEASE" ]]
+[[ "$(sudo readlink -f /opt/1helm/current)" == "$CANDIDATE_RELEASE" ]]
 FAILURE_RELEASE="/opt/1helm/releases/$VERSION-$DIGEST-phase4-failure"
 sudo cp -a "$CANDIDATE_RELEASE" "$FAILURE_RELEASE"
 printf '%s\n' 'throw new Error("Phase 4 controlled startup failure");' | sudo tee "$FAILURE_RELEASE/src/server/index.ts" >/dev/null
@@ -136,7 +136,7 @@ if sudo "$CANDIDATE_RELEASE/site/public/apply-linux-release.sh" "$FAILURE_RELEAS
   echo "Controlled failure unexpectedly passed." >&2
   exit 1
 fi
-[[ "$(readlink -f /opt/1helm/current)" == "$CANDIDATE_RELEASE" ]]
+[[ "$(sudo readlink -f /opt/1helm/current)" == "$CANDIDATE_RELEASE" ]]
 sudo systemctl is-active --quiet 1helm.service
 curl -fsS http://127.0.0.1:8123/api/setup/status >"$work/rollback-health.json"
 STATE_AFTER="$(sudo sha256sum "$MARKER" | awk '{print $1}')"
