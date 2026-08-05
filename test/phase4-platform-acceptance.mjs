@@ -212,7 +212,10 @@ test("Windows code publishes no artifact/signing claim and requires honest reboo
   assert.match(windows, /apply-linux-release\.sh/);
   assert.match(windows, /function Assert-DistroVersion/);
   assert.equal((windows.match(/Assert-DistroVersion \$(?:Version|PreviousVersion)/g) || []).length, 4);
-  assert.match(windows, /\$Command \| & \$Wsl -d \$Distro -u root --exec \/bin\/bash -s/);
+  assert.match(windows, /UTF8Encoding\(\$false\)/);
+  assert.match(windows, /\[IO\.File\]::WriteAllText/);
+  assert.match(windows, /\/bin\/bash -lc "bash '\$scriptInDistro'"/);
+  assert.doesNotMatch(windows, /\$Command \| & \$Wsl/);
   assert.doesNotMatch(windows, /\/bin\/bash -lc \$Command/);
   assert.doesNotMatch(windows, /Invoke-Distro "test .*systemctl/);
   assert.match(windows, /LocalRootfs/);

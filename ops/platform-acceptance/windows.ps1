@@ -29,12 +29,21 @@ function Get-Distros {
     return @($raw -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 }
 function Invoke-Distro([string] $Command) {
-    # PowerShell 5 re-quotes native command arguments before invoking wsl.exe.
-    # That mangles bash substitutions and nested quotes even when the
-    # PowerShell string itself is literal. Send the script over stdin instead;
-    # this preserves the exact bytes and was proven under the real runner user.
-    $Command | & $Wsl -d $Distro -u root --exec /bin/bash -s | Out-Host
-    if ($LASTEXITCODE -ne 0) { Refuse "in-distribution command failed: $Command" }
+    # PowerShell 5 either re-quotes native arguments or adds a BOM when piping
+    # text to wsl.exe. Write exact UTF-8 without a BOM to the runner temp mount,
+    # then execute it from a login shell so the installed node path is present.
+    $tempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+    $script = Join-Path $tempRoot ("1helm-distro-{0}.sh" -f [guid]::NewGuid().ToString('N'))
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($script, $Command + "`n", $encoding)
+    $drive = $script.Substring(0, 1).ToLowerInvariant()
+    $scriptInDistro = "/mnt/$drive/" + ($script.Substring(3) -replace '\\', '/')
+    try {
+        & $Wsl -d $Distro -u root --exec /bin/bash -lc "bash '$scriptInDistro'" | Out-Host
+        if ($LASTEXITCODE -ne 0) { Refuse "in-distribution command failed: $Command" }
+    } finally {
+        Remove-Item $script -Force -ErrorAction SilentlyContinue
+    }
 }
 function Assert-DistroVersion([string] $ExpectedVersion) {
     if ($ExpectedVersion -notmatch '^\d+\.\d+\.\d+$') { Refuse 'expected distribution version is invalid' }
