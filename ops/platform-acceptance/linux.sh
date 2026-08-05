@@ -72,7 +72,8 @@ sudo systemctl is-active --quiet 1helm.service
 curl -fsS http://127.0.0.1:8123/api/setup/status >"$work/clean-health.json"
 [[ "$(readlink -f /opt/1helm/current)" == "/opt/1helm/releases/$VERSION-$OFFLINE_DIGEST" ]]
 RETAINED_IMAGE="/var/lib/1helm-oci-v1/shared-images/sha256/$IMAGE_DIGEST"
-[[ -d "$RETAINED_IMAGE" && "$(find "$RETAINED_IMAGE" -maxdepth 1 -type f -name '*.oci.tar' -exec sha256sum {} \; | awk '{print $1}')" == "$IMAGE_DIGEST" ]]
+sudo test -d "$RETAINED_IMAGE"
+[[ "$(sudo find "$RETAINED_IMAGE" -maxdepth 1 -type f -name '*.oci.tar' -exec sha256sum {} \; | awk '{print $1}')" == "$IMAGE_DIGEST" ]]
 
 # Resolve the newest immutable public Stable release distinct from this
 # candidate version. Candidate versions normally remain unchanged during
@@ -140,7 +141,8 @@ sudo systemctl is-active --quiet 1helm.service
 curl -fsS http://127.0.0.1:8123/api/setup/status >"$work/rollback-health.json"
 STATE_AFTER="$(sudo sha256sum "$MARKER" | awk '{print $1}')"
 [[ "$STATE_BEFORE" == "$STATE_AFTER" ]]
-[[ -d "$RETAINED_IMAGE" && "$(find "$RETAINED_IMAGE" -maxdepth 1 -type f -name '*.oci.tar' -exec sha256sum {} \; | awk '{print $1}')" == "$IMAGE_DIGEST" ]]
+sudo test -d "$RETAINED_IMAGE"
+[[ "$(sudo find "$RETAINED_IMAGE" -maxdepth 1 -type f -name '*.oci.tar' -exec sha256sum {} \; | awk '{print $1}')" == "$IMAGE_DIGEST" ]]
 sudo rm -rf -- "$FAILURE_RELEASE"
 
 export HELM_PREVIOUS_VERSION="$PREVIOUS_VERSION"
