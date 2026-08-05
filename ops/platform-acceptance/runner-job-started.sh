@@ -30,3 +30,22 @@ if not (
 ):
     raise SystemExit("Phase 4 runner refused an untrusted repository/ref/SHA/CI event.")
 PY
+
+# macOS only: prepare the dedicated signing account's login keychain for this
+# now-validated, trusted job. Code signing resolves its identity through the
+# keychain search list, but notarytool resolves its credential profile through
+# the session DEFAULT keychain, and a launchd runner job otherwise has no
+# default keychain, so notarization fails with "No Keychain password item
+# found". Set login as the default (and search) keychain and unlock it. The
+# password is read from a machine-local file owned by the runner account; it is
+# never stored in this repository or exported into the job environment.
+if [[ "$(uname)" == "Darwin" ]]; then
+  kc="$HOME/Library/Keychains/login.keychain-db"
+  kc_pw_file="$HOME/.config/1helm/mac-keychain-password"
+  if [[ -f "$kc" && -r "$kc_pw_file" ]]; then
+    security list-keychains -d user -s "$kc" /Library/Keychains/System.keychain >/dev/null 2>&1 || true
+    security default-keychain -d user -s "$kc" >/dev/null 2>&1 || true
+    security set-keychain-settings "$kc" >/dev/null 2>&1 || true
+    security unlock-keychain -p "$(cat "$kc_pw_file")" "$kc" >/dev/null 2>&1 || true
+  fi
+fi
