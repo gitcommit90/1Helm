@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Many acceptance checks are bare `[[ ... ]]` or `--quiet` assertions that exit
+# non-zero with no output, so a failure surfaces only as "exit code 1" with no
+# clue which check failed. Report the exact line and command instead, so a
+# failing candidate is diagnosable from the log alone rather than by rerunning.
+trap 'status=$?; echo "::error::Linux acceptance failed at line ${LINENO} (exit ${status}): ${BASH_COMMAND}" >&2' ERR
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ARCHIVE="${HELM_CANDIDATE_ARCHIVE:?exact Linux candidate archive is required}"
 OFFLINE_ARCHIVE="${HELM_CANDIDATE_OFFLINE_ARCHIVE:?exact Linux offline candidate archive is required}"
