@@ -122,6 +122,10 @@ test("workflow routes no PR/fork code, uses unique labels, fans acceptance out, 
   assert.match(linuxAccept, /RUNNER_ENVIRONMENT.*==.*"github-hosted"/);
   assert.match(linuxAccept, /1helm-standalone/);
   assert.match(linuxAccept, /refuses to run while port 8123 is already in use/);
+  const macAccept = read("ops/platform-acceptance/macos.sh");
+  assert.match(macAccept, /wait_for_setup_health/);
+  assert.match(macAccept, /lsof[\s\S]*awk[\s\S]*\|\| true/);
+  assert.doesNotMatch(macAccept, /print a\[length\(a\)\]; exit/);
   assert.match(workflow.match(/accept-macos:[\s\S]*?(?=\n  accept-windows:)/)?.[0] || "", /if: always\(\)[\s\S]*name: 1helm-macos-acceptance-/);
   assert.match(workflow.match(/accept-windows:[\s\S]*?(?=\n  assemble-promotion:)/)?.[0] || "", /if: always\(\)[\s\S]*name: 1helm-windows-acceptance-/);
 });
@@ -206,6 +210,9 @@ test("Windows code publishes no artifact/signing claim and requires honest reboo
   assert.match(windows, /snapshot_baseline/);
   assert.doesNotMatch(windows, /reboot-evidence\.json/);
   assert.match(windows, /apply-linux-release\.sh/);
+  assert.match(windows, /function Assert-DistroVersion/);
+  assert.equal((windows.match(/Assert-DistroVersion \$(?:Version|PreviousVersion)/g) || []).length, 4);
+  assert.doesNotMatch(windows, /Invoke-Distro "test .*systemctl/);
   assert.match(windows, /LocalRootfs/);
   assert.match(read("site/public/install.ps1"), /LocalRootfsSha256/);
   assert.match(windows, /no distinct prior Stable release/);

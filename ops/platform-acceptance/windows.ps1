@@ -32,6 +32,19 @@ function Invoke-Distro([string] $Command) {
     & $Wsl -d $Distro -u root --exec /bin/bash -lc $Command | Out-Host
     if ($LASTEXITCODE -ne 0) { Refuse "in-distribution command failed: $Command" }
 }
+function Assert-DistroVersion([string] $ExpectedVersion) {
+    if ($ExpectedVersion -notmatch '^\d+\.\d+\.\d+$') { Refuse 'expected distribution version is invalid' }
+    # A single-quoted here-string is literal PowerShell text. The previous calls
+    # used backslash-escaped double quotes (shell syntax, not PowerShell syntax),
+    # which ended the PowerShell string and executed `systemctl` on Windows.
+    # Substitute only the already-validated semver after constructing the exact
+    # bash command, so every service/version assertion really runs inside WSL.
+    $command = @'
+test "$(systemctl is-active 1helm.service)" = active
+test "$(node -p 'require("/opt/1helm/current/package.json").version')" = '__EXPECTED__'
+'@
+    Invoke-Distro ($command.Replace('__EXPECTED__', $ExpectedVersion))
+}
 
 if ($env:GITHUB_REPOSITORY -ne 'gitcommit90/1Helm' -or $env:GITHUB_EVENT_NAME -ne 'workflow_run' -or
     $env:GITHUB_REF -ne 'refs/heads/main' -or $env:GITHUB_SHA -ne $Commit -or
@@ -97,7 +110,7 @@ if ($LASTEXITCODE -ne 0) { Refuse "exact candidate clean install failed with exi
 if (-not ((Get-Distros) -ccontains $Distro) -or -not ((Get-Distros) -ccontains $Unrelated)) { Refuse 'clean install did not retain both target and unrelated control distributions' }
 $cleanHealth = Invoke-WebRequest -Uri 'http://localhost:8123/api/setup/status' -UseBasicParsing -TimeoutSec 10
 if ($cleanHealth.StatusCode -ne 200 -or -not (($cleanHealth.Content | ConvertFrom-Json).needs_setup)) { Refuse 'candidate clean install did not expose localhost onboarding health' }
-Invoke-Distro "test \"`$(systemctl is-active 1helm.service)\" = active; test \"`$(node -p 'require(\"/opt/1helm/current/package.json\").version')\" = '$Version'"
+Assert-DistroVersion $Version
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $UninstallScript -Distro $Distro -InstallRoot $InstallRoot -Force
 if ($LASTEXITCODE -ne 0 -or (Get-Distros) -ccontains $Distro -or -not ((Get-Distros) -ccontains $Unrelated) -or (Test-Path $InstallRoot)) {
     Refuse 'clean-install teardown was not scoped to the exact target'
@@ -133,7 +146,7 @@ if (-not ((Get-Distros) -ccontains $Unrelated)) { Refuse 'unrelated WSL control 
 
 $health = Invoke-WebRequest -Uri 'http://localhost:8123/api/setup/status' -UseBasicParsing -TimeoutSec 10
 if ($health.StatusCode -ne 200 -or -not (($health.Content | ConvertFrom-Json).needs_setup)) { Refuse 'prior Stable localhost health did not report a clean install' }
-Invoke-Distro "test \"`$(systemctl is-active 1helm.service)\" = active; test \"`$(node -p 'require(\"/opt/1helm/current/package.json\").version')\" = '$PreviousVersion'"
+Assert-DistroVersion $PreviousVersion
 
 # Stage the exact candidate as a verified retained release, then apply its real
 # atomic Linux update transaction from prior Stable to candidate.
@@ -145,7 +158,7 @@ Copy-Item $Archive (Join-Path $Stage 'candidate.tgz') -Force
 $StageInDistro = '/mnt/' + $Stage.Substring(0,1).ToLowerInvariant() + ($Stage.Substring(2) -replace '\\','/')
 $CandidateRelease = "/opt/1helm/releases/$Version-$Digest"
 Invoke-Distro "set -e; rm -rf '$CandidateRelease.tmp'; mkdir -p '$CandidateRelease.tmp'; tar -xzf '$StageInDistro/candidate.tgz' -C '$CandidateRelease.tmp' --strip-components=1; chown -R 1helm:1helm '$CandidateRelease.tmp'; mv '$CandidateRelease.tmp' '$CandidateRelease'; '$CandidateRelease/site/public/apply-linux-release.sh' '$CandidateRelease' '$Version'"
-Invoke-Distro "test \"`$(systemctl is-active 1helm.service)\" = active; test \"`$(node -p 'require(\"/opt/1helm/current/package.json\").version')\" = '$Version'"
+Assert-DistroVersion $Version
 $StateAfterUpdate = (& $Wsl -d $Distro -u root --exec sha256sum /var/lib/1helm-oci-v1/phase4-acceptance-state | Out-String).Split()[0]
 if ($StateBefore -ne $StateAfterUpdate) { Refuse 'WSL data marker changed across update' }
 
@@ -178,7 +191,7 @@ for ($i = 0; $i -lt 90; $i++) {
     Start-Sleep -Seconds 2
 }
 if (-not $Recovered) { Refuse 'snapshot-assisted WSL cold-start equivalent did not recover localhost health' }
-Invoke-Distro "test \"`$(systemctl is-active 1helm.service)\" = active; test \"`$(node -p 'require(\"/opt/1helm/current/package.json\").version')\" = '$Version'"
+Assert-DistroVersion $Version
 $StateAfter = (& $Wsl -d $Distro -u root --exec sha256sum /var/lib/1helm-oci-v1/phase4-acceptance-state | Out-String).Split()[0]
 if ($StateBefore -ne $StateAfter) { Refuse 'WSL data marker changed across update or cold-start equivalent' }
 

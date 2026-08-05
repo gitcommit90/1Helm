@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Preserve exact artifact checks while making silent `[[ ... ]]` failures
+# diagnosable from the job log. Without this, a failed launch/version/state
+# assertion surfaces only as "exit code 1" after minutes of signature output.
+trap 'status=$?; echo "::error::macOS acceptance failed at line ${LINENO} (exit ${status}): ${BASH_COMMAND}" >&2' ERR
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DOWNLOAD="${HELM_MAC_CANDIDATE_DOWNLOAD:?exact Mac candidate directory is required}"
 OUTPUT="${HELM_ACCEPTANCE_OUTPUT:?acceptance output is required}"
@@ -26,6 +31,22 @@ node "$ROOT/scripts/pending-acceptance-evidence.mjs"
 
 artifact_field() {
   node -p 'const m=JSON.parse(require("fs").readFileSync(process.argv[1])); const a=m.artifacts.find(x=>x.role===process.argv[2]); if(!a)process.exit(2); a[process.argv[3]]' "$MANIFEST" "$1" "$2"
+}
+wait_for_setup_health() {
+  local output="$1" port
+  for _ in {1..180}; do
+    while IFS= read -r port; do
+      [[ "$port" =~ ^[0-9]+$ ]] || continue
+      if curl -fsS "http://127.0.0.1:$port/api/setup/status" >"$output.tmp"; then
+        mv "$output.tmp" "$output"
+        return 0
+      fi
+      rm -f -- "$output.tmp"
+    done < <(lsof -nP -a -u "$(id -un)" -c 1Helm -iTCP -sTCP:LISTEN 2>/dev/null \
+      | awk '/127\.0\.0\.1:/ {split($9,a,":"); print a[length(a)]}' || true)
+    sleep 1
+  done
+  return 1
 }
 DMG_SHA="$(artifact_field mac_dmg sha256)"; ZIP_SHA="$(artifact_field mac_updater_zip sha256)"
 [[ "$(shasum -a 256 "$DMG" | awk '{print $1}')" == "$DMG_SHA" ]]
@@ -68,12 +89,7 @@ spctl --assess --type execute --verbose=4 "$work/update/1Helm.app"
 mkdir -p "$DATA_ROOT"
 printf '%s\n' server >"$DATA_ROOT/desktop-mode"
 open -n "$installed" --args --1helm-background
-for _ in {1..180}; do
-  PORT="$(lsof -nP -a -u "$(id -un)" -c 1Helm -iTCP -sTCP:LISTEN 2>/dev/null | awk '/127\.0\.0\.1:/ {split($9,a,":"); print a[length(a)]; exit}')"
-  [[ "$PORT" =~ ^[0-9]+$ ]] && curl -fsS "http://127.0.0.1:$PORT/api/setup/status" >"$work/clean-health.json" && break
-  sleep 1
-done
-[[ -s "$work/clean-health.json" ]]
+wait_for_setup_health "$work/clean-health.json"
 osascript -e 'tell application id "com.gitcommit90.1helm" to quit' || true
 for _ in {1..30}; do pgrep -x -U "$(id -u)" 1Helm >/dev/null || break; sleep 1; done
 ! pgrep -x -U "$(id -u)" 1Helm >/dev/null
@@ -122,12 +138,7 @@ printf '%s\n' server >"$DATA_ROOT/desktop-mode"
 printf '%s\n' "phase4-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >"$DATA_ROOT/phase4-acceptance-state"
 STATE_BEFORE="$(shasum -a 256 "$DATA_ROOT/phase4-acceptance-state" | awk '{print $1}')"
 open -n "$installed" --args --1helm-background
-for _ in {1..180}; do
-  PORT="$(lsof -nP -a -u "$(id -un)" -c 1Helm -iTCP -sTCP:LISTEN 2>/dev/null | awk '/127\.0\.0\.1:/ {split($9,a,":"); print a[length(a)]; exit}')"
-  [[ "$PORT" =~ ^[0-9]+$ ]] && curl -fsS "http://127.0.0.1:$PORT/api/setup/status" >"$work/prior-health.json" && break
-  sleep 1
-done
-[[ -s "$work/prior-health.json" ]]
+wait_for_setup_health "$work/prior-health.json"
 osascript -e 'tell application id "com.gitcommit90.1helm" to quit' || true
 for _ in {1..30}; do pgrep -x -U "$(id -u)" 1Helm >/dev/null || break; sleep 1; done
 ! pgrep -x -U "$(id -u)" 1Helm >/dev/null
@@ -135,12 +146,7 @@ rm -rf -- "$installed"
 ditto "$work/update/1Helm.app" "$installed"
 [[ "$(defaults read "$installed/Contents/Info" CFBundleShortVersionString)" == "$VERSION" ]]
 open -n "$installed" --args --1helm-background
-for _ in {1..180}; do
-  PORT="$(lsof -nP -a -u "$(id -un)" -c 1Helm -iTCP -sTCP:LISTEN 2>/dev/null | awk '/127\.0\.0\.1:/ {split($9,a,":"); print a[length(a)]; exit}')"
-  [[ "$PORT" =~ ^[0-9]+$ ]] && curl -fsS "http://127.0.0.1:$PORT/api/setup/status" >"$work/update-health.json" && break
-  sleep 1
-done
-[[ -s "$work/update-health.json" ]]
+wait_for_setup_health "$work/update-health.json"
 STATE_AFTER="$(shasum -a 256 "$DATA_ROOT/phase4-acceptance-state" | awk '{print $1}')"
 [[ "$STATE_BEFORE" == "$STATE_AFTER" ]]
 osascript -e 'tell application id "com.gitcommit90.1helm" to quit' || true
