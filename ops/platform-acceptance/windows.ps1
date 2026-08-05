@@ -29,7 +29,11 @@ function Get-Distros {
     return @($raw -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 }
 function Invoke-Distro([string] $Command) {
-    & $Wsl -d $Distro -u root --exec /bin/bash -lc $Command | Out-Host
+    # PowerShell 5 re-quotes native command arguments before invoking wsl.exe.
+    # That mangles bash substitutions and nested quotes even when the
+    # PowerShell string itself is literal. Send the script over stdin instead;
+    # this preserves the exact bytes and was proven under the real runner user.
+    $Command | & $Wsl -d $Distro -u root --exec /bin/bash -s | Out-Host
     if ($LASTEXITCODE -ne 0) { Refuse "in-distribution command failed: $Command" }
 }
 function Assert-DistroVersion([string] $ExpectedVersion) {

@@ -212,6 +212,8 @@ test("Windows code publishes no artifact/signing claim and requires honest reboo
   assert.match(windows, /apply-linux-release\.sh/);
   assert.match(windows, /function Assert-DistroVersion/);
   assert.equal((windows.match(/Assert-DistroVersion \$(?:Version|PreviousVersion)/g) || []).length, 4);
+  assert.match(windows, /\$Command \| & \$Wsl -d \$Distro -u root --exec \/bin\/bash -s/);
+  assert.doesNotMatch(windows, /\/bin\/bash -lc \$Command/);
   assert.doesNotMatch(windows, /Invoke-Distro "test .*systemctl/);
   assert.match(windows, /LocalRootfs/);
   assert.match(read("site/public/install.ps1"), /LocalRootfsSha256/);
