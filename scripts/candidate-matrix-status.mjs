@@ -23,8 +23,7 @@ const status = {
   candidate_workflow_run_id: String(env.GITHUB_RUN_ID || ""),
   checked_at: isoNow(),
   platforms,
-  promotion_bundle: result(env.HELM_PROMOTION_BUNDLE_RESULT),
-  complete: Object.values(platforms).every((value) => value.result === "passed") && result(env.HELM_PROMOTION_BUNDLE_RESULT) === "passed",
+  complete: Object.values(platforms).every((value) => value.result === "passed"),
   stable_touched: false,
 };
 if (!/^[a-f0-9]{40}$/.test(status.commit) || !/^\d+\.\d+\.\d+$/.test(status.version) || !/^\d+$/.test(status.candidate_workflow_run_id)) {
@@ -32,4 +31,4 @@ if (!/^[a-f0-9]{40}$/.test(status.commit) || !/^\d+\.\d+\.\d+$/.test(status.vers
 }
 writeFileSync(resolve(env.HELM_CANDIDATE_STATUS_OUTPUT || "candidate-matrix-status.json"), `${JSON.stringify(status, null, 2)}\n`, { mode: 0o600 });
 for (const [platform, value] of Object.entries(platforms)) process.stdout.write(`${platform}: ${value.result}\n`);
-process.stdout.write(`promotion bundle: ${status.complete ? "ready" : "blocked"}\nStable touched: NO\n`);
+process.stdout.write(`exact-candidate rehearsal: ${status.complete ? "complete" : "blocked"}\nStable touched: NO\n`);

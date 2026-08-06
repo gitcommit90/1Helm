@@ -38,7 +38,11 @@ function Invoke-Distro([string] $Command) {
     $tempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
     $script = Join-Path $tempRoot ("1helm-distro-{0}.sh" -f [guid]::NewGuid().ToString('N'))
     $encoding = New-Object System.Text.UTF8Encoding($false)
-    [IO.File]::WriteAllText($script, $Command + "`n", $encoding)
+    # Checked-out PowerShell source uses Windows CRLF. Normalize generated
+    # multi-line Bash before WSL sees it; otherwise Bash reads `set -e\r`
+    # and every following argument retains a literal carriage return.
+    $normalizedCommand = ($Command -replace "`r`n", "`n") -replace "`r", "`n"
+    [IO.File]::WriteAllText($script, $normalizedCommand + "`n", $encoding)
     $drive = $script.Substring(0, 1).ToLowerInvariant()
     $scriptInDistro = "/mnt/$drive/" + ($script.Substring(3) -replace '\\', '/')
     try {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -94,7 +94,7 @@ test("digest, byte count, CI run, state mismatch, and default runner label are b
     .some((item) => /snapshot-assisted/.test(item)));
 });
 
-test("workflow routes no PR/fork code, uses unique labels, fans acceptance out, and assembles only after all pass", () => {
+test("workflow routes no PR/fork code, uses unique labels, and reports only after every rehearsal lane", () => {
   const workflow = read(".github/workflows/candidate.yml");
   assert.match(workflow, /workflow_run:[\s\S]*workflows: \[CI\][\s\S]*branches: \[main\]/);
   assert.doesNotMatch(workflow, /pull_request:/);
@@ -102,15 +102,14 @@ test("workflow routes no PR/fork code, uses unique labels, fans acceptance out, 
   assert.match(workflow, /github\.event\.workflow_run\.event == 'push'/);
   assert.match(workflow, /runs-on: \[1helm-macos-phase4\]/);
   assert.match(workflow, /runs-on: \[1helm-windows-phase4\]/);
-  assert.match(workflow, /accept-linux:[\s\S]*accept-macos:[\s\S]*accept-windows:/);
-  assert.match(workflow, /needs: \[build, build-macos, deploy, accept-linux, accept-macos, accept-windows\]/);
-  assert.match(workflow, /needs\.accept-linux\.result == 'success'[\s\S]*needs\.accept-macos\.result == 'success'[\s\S]*needs\.accept-windows\.result == 'success'/);
+  assert.match(workflow, /accept-macos:[\s\S]*accept-linux:[\s\S]*accept-windows:/);
+  assert.match(workflow, /needs: \[build, deploy, accept-linux, accept-macos, accept-windows\]/);
   assert.match(workflow, /vars\.HELM_PHASE4_MACOS_ENABLED == '1'/);
   assert.match(workflow, /vars\.HELM_PHASE4_WINDOWS_ENABLED == '1'/);
   assert.doesNotMatch(workflow, /runs-on: \[self-hosted/);
   assert.doesNotMatch(workflow, /secrets\./);
   assert.doesNotMatch(workflow, /pull_request_target|workflow_dispatch/);
-  assert.doesNotMatch(workflow.match(/assemble-promotion:[\s\S]*?(?=\n  candidate-status:)/)?.[0] || "", /npm (ci|install|run build|run package)/);
+  assert.doesNotMatch(workflow, /assemble-promotion:|1helm-promotion-candidate-/);
   assert.match(workflow, /Upload exact Linux acceptance evidence\n        if: always\(\)/);
   // Both retained artifacts must be single-rooted under dist/ so consumers find
   // files at the download root, not nested under dist/ (the layout bug that
@@ -118,15 +117,11 @@ test("workflow routes no PR/fork code, uses unique labels, fans acceptance out, 
   const channelUpload = workflow.match(/- name: Retain immutable digest-addressed channel image candidate[\s\S]*?retention-days: 90/)?.[0] || "";
   assert.doesNotMatch(channelUpload, /container\//);
   assert.match(channelUpload, /dist\/1Helm-channel-machine-v1-\*\.oci\.tar/);
-  const macBuild = workflow.match(/build-macos:[\s\S]*?(?=\n  deploy:)/)?.[0] || "";
-  assert.match(macBuild, /tar -cf "dist\/\$artifact_name"[\s\S]*artifact_name=%s/);
-  assert.match(macBuild, /id: upload_macos[\s\S]*continue-on-error: true[\s\S]*actions\/upload-artifact@[a-f0-9]{40}[\s\S]*archive: false/);
-  assert.match(macBuild, /Retry exact Mac candidate upload after a transport stall[\s\S]*if: steps\.upload_macos\.outcome == 'failure'[\s\S]*archive: false[\s\S]*overwrite: true/);
-  assert.doesNotMatch(macBuild, /compression-level:/);
-  const macAcceptJob = workflow.match(/accept-macos:[\s\S]*?(?=\n  accept-windows:)/)?.[0] || "";
-  assert.match(macAcceptJob, /actions\/download-artifact@[a-f0-9]{40}[\s\S]*Unpack exact retained Mac candidate[\s\S]*tar -xf/);
-  const promotion = workflow.match(/assemble-promotion:[\s\S]*?(?=\n  candidate-status:)/)?.[0] || "";
-  assert.match(promotion, /actions\/download-artifact@[a-f0-9]{40}[\s\S]*Unpack exact retained Mac candidate[\s\S]*tar -xf/);
+  const macAcceptJob = workflow.match(/accept-macos:[\s\S]*?(?=\n  deploy:)/)?.[0] || "";
+  assert.match(macAcceptJob, /package:dmg:release[\s\S]*mac-candidate-manifest\.mjs[\s\S]*platform-acceptance\/macos\.sh/);
+  assert.match(macAcceptJob, /1Helm-Candidates\/\$GITHUB_RUN_ID-\$GITHUB_RUN_ATTEMPT[\s\S]*verify-retained-mac-candidate\.mjs/);
+  assert.doesNotMatch(macAcceptJob, /download-artifact|Upload exact retained signed Mac candidate|Retry exact Mac candidate upload/);
+  assert.match(macAcceptJob, /Upload compact Mac acceptance evidence[\s\S]*macos-acceptance\.json/);
   const linuxAccept = read("ops/platform-acceptance/linux.sh");
   assert.match(linuxAccept, /RUNNER_ENVIRONMENT.*==.*"github-hosted"/);
   assert.match(linuxAccept, /1helm-standalone/);
@@ -135,8 +130,46 @@ test("workflow routes no PR/fork code, uses unique labels, fans acceptance out, 
   assert.match(macAccept, /wait_for_setup_health/);
   assert.match(macAccept, /lsof[\s\S]*awk[\s\S]*\|\| true/);
   assert.doesNotMatch(macAccept, /print a\[length\(a\)\]; exit/);
-  assert.match(workflow.match(/accept-macos:[\s\S]*?(?=\n  accept-windows:)/)?.[0] || "", /if: always\(\)[\s\S]*name: 1helm-macos-acceptance-/);
-  assert.match(workflow.match(/accept-windows:[\s\S]*?(?=\n  assemble-promotion:)/)?.[0] || "", /if: always\(\)[\s\S]*name: 1helm-windows-acceptance-/);
+  assert.match(macAcceptJob, /if: always\(\)[\s\S]*name: 1helm-macos-acceptance-/);
+  assert.match(workflow.match(/accept-windows:[\s\S]*?(?=\n  candidate-status:)/)?.[0] || "", /if: always\(\)[\s\S]*name: 1helm-windows-acceptance-/);
+});
+
+test("locally retained Mac candidates require exact accepted bytes and provenance", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "1helm-retained-mac-"));
+  try {
+    const evidenceDir = join(scratch, "candidate-evidence");
+    mkdirSync(evidenceDir);
+    writeFileSync(join(scratch, artifactMap.mac_dmg.name), "dmg");
+    writeFileSync(join(scratch, artifactMap.mac_updater_zip.name), "zip");
+    const manifest = {
+      schema: 1, kind: "1helm-macos-candidate", repository: "gitcommit90/1Helm", ref: "refs/heads/main",
+      commit, version, candidate: { workflow: "Candidate dress rehearsal", workflow_path: ".github/workflows/candidate.yml", event: "workflow_run", run_id: runId, run_attempt: "1" },
+      source_ci: { workflow: "CI", run_id: ciRunId, conclusion: "success" },
+      builder: { type: "dedicated-self-hosted", runner_name: "macos-runner", runner_label: "1helm-macos-phase4", os: "macOS", architecture: "ARM64" },
+      signing: { identity: "developer-id-application", notarization: "accepted", stapling: "validated", gatekeeper: "accepted" },
+      artifacts: [artifactMap.mac_dmg, artifactMap.mac_updater_zip],
+    };
+    writeFileSync(join(evidenceDir, "mac-candidate.json"), JSON.stringify(manifest));
+    for (const role of ["mac_dmg", "mac_updater_zip"]) {
+      writeFileSync(join(evidenceDir, `${role}-provenance.json`), JSON.stringify({
+        schema: 1, kind: "1helm-artifact-provenance", commit, version,
+        candidate_workflow_run_id: runId, source_ci_run_id: ciRunId,
+        signing: "developer-id", notarization: "accepted", stapling: "validated", gatekeeper: "accepted",
+        artifact: artifactMap[role],
+      }));
+    }
+    writeFileSync(join(scratch, "macos-acceptance.json"), JSON.stringify(normalizePlatformEvidence(fixture("macos"))));
+    const { spawnSync } = await import("node:child_process");
+    const verify = () => spawnSync(process.execPath, [join(root, "scripts/verify-retained-mac-candidate.mjs")], {
+      env: { ...process.env, HELM_RETAINED_MAC_CANDIDATE: scratch }, encoding: "utf8",
+    });
+    const pass = verify();
+    assert.equal(pass.status, 0, pass.stderr);
+    writeFileSync(join(scratch, artifactMap.mac_dmg.name), "changed");
+    const refused = verify();
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /bytes do not match/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 
 test("an interrupted lane retains normalized blocked evidence before it can pass", async () => {
@@ -175,7 +208,6 @@ test("native runner hooks structurally reject every event/job outside the exact 
   assert.match(hook, /GITHUB_WORKFLOW.*Candidate dress rehearsal/);
   assert.match(hook, /GITHUB_WORKFLOW_REF.*\.github\/workflows\/candidate\.yml@refs\/heads\/main/);
   assert.match(hook, /GITHUB_EVENT_NAME.*workflow_run/);
-  assert.match(hook, /build-macos/);
   assert.match(hook, /accept-macos/);
   assert.match(hook, /run\.get\("event"\) == "push"/);
   assert.match(hook, /run\.get\("head_branch"\) == "main"/);
@@ -195,7 +227,7 @@ test("matrix status reports disabled or missing machines as blockers, never skip
     const previous = { ...process.env,
       GITHUB_RUN_ID: "123", HELM_CANDIDATE_COMMIT: commit, HELM_CANDIDATE_VERSION: version,
       HELM_LINUX_BUILD_RESULT: "success", HELM_MAC_BUILD_RESULT: "skipped",
-      HELM_LINUX_REHEARSAL_RESULT: "success", HELM_PROMOTION_BUNDLE_RESULT: "skipped",
+      HELM_LINUX_REHEARSAL_RESULT: "success",
       HELM_LINUX_ACCEPTANCE_RESULT: "success", HELM_MAC_ACCEPTANCE_RESULT: "skipped",
       HELM_WINDOWS_ACCEPTANCE_RESULT: "skipped", HELM_CANDIDATE_STATUS_OUTPUT: output,
     };
@@ -224,6 +256,8 @@ test("Windows code publishes no artifact/signing claim and requires honest reboo
   assert.match(windows, /\/opt\/1helm\/node-current\/bin\/node/);
   assert.match(windows, /UTF8Encoding\(\$false\)/);
   assert.match(windows, /\[IO\.File\]::WriteAllText/);
+  assert.match(windows, /\$normalizedCommand = \(\$Command -replace "`r`n", "`n"\) -replace "`r", "`n"/);
+  assert.match(windows, /WriteAllText\(\$script, \$normalizedCommand \+ "`n"/);
   assert.match(windows, /\/bin\/bash -lc "bash '\$scriptInDistro'"/);
   assert.doesNotMatch(windows, /\$Command \| & \$Wsl/);
   assert.doesNotMatch(windows, /\/bin\/bash -lc \$Command/);

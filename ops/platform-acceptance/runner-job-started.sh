@@ -6,7 +6,6 @@ set -euo pipefail
 [[ "${GITHUB_WORKFLOW_REF:-}" == "gitcommit90/1Helm/.github/workflows/candidate.yml@refs/heads/main" ]] || { echo "Phase 4 runner refused another workflow path or ref." >&2; exit 1; }
 [[ "${GITHUB_EVENT_NAME:-}" == "workflow_run" ]] || { echo "Phase 4 runner refused PR, fork, dispatch, and direct-push events." >&2; exit 1; }
 case "${GITHUB_JOB:-}" in
-  build-macos) expected_label=1helm-macos-phase4 ;;
   accept-macos) expected_label=1helm-macos-phase4 ;;
   *) echo "Phase 4 runner refused job ${GITHUB_JOB:-missing}." >&2; exit 1 ;;
 esac
