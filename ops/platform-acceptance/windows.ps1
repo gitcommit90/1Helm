@@ -240,9 +240,22 @@ $KeepaliveTaskPath = '\1Helm\'
 $KeepaliveTaskName = '1Helm-WSL-Keepalive'
 $KeepaliveTask = Get-ScheduledTask -TaskPath $KeepaliveTaskPath -TaskName $KeepaliveTaskName -ErrorAction SilentlyContinue
 if ($null -eq $KeepaliveTask) { Refuse 'limited same-user logon keepalive task is missing' }
-$CurrentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$TaskUser = [string]$KeepaliveTask.Principal.UserId
+try {
+    # Task Scheduler is allowed to return the same account as DOMAIN\user,
+    # .\user, user, or a SID. Compare the resolved SID instead of its display
+    # spelling so a correctly user-scoped task is not rejected by formatting.
+    $TaskSid = if ($TaskUser -match '^S-1-') {
+        (New-Object Security.Principal.SecurityIdentifier($TaskUser)).Value
+    } else {
+        (New-Object Security.Principal.NTAccount($TaskUser)).Translate([Security.Principal.SecurityIdentifier]).Value
+    }
+} catch {
+    Refuse "limited keepalive task account could not be resolved: $TaskUser"
+}
 $HasLogonTrigger = @($KeepaliveTask.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' }).Count -ge 1
-if ($KeepaliveTask.Principal.UserId -ne $CurrentUser -or
+if ($TaskSid -ne $CurrentIdentity.User.Value -or
     [string]$KeepaliveTask.Principal.RunLevel -ne 'Limited' -or -not $HasLogonTrigger) {
     Refuse 'limited same-user logon keepalive task is missing or changed'
 }

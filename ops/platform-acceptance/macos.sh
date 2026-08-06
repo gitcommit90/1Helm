@@ -110,29 +110,38 @@ process.stdout.write(JSON.stringify(release));
 NODE
 PREVIOUS_VERSION="$(node -p 'String(JSON.parse(require("fs").readFileSync(process.argv[1])).tag_name||"").replace(/^v/,"")' "$work/previous-release.json")"
 [[ "$PREVIOUS_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$PREVIOUS_VERSION" != "$VERSION" ]]
-PREVIOUS_NAME="1Helm-$PREVIOUS_VERSION-arm64.dmg"
-previous_metadata="$(node - "$work/previous-release.json" "$PREVIOUS_NAME" <<'NODE'
+PREVIOUS_NAME="1Helm-$PREVIOUS_VERSION-mac-arm64.zip"
+PREVIOUS_SHA="$(node - "$work/previous-release.json" "$PREVIOUS_NAME" <<'NODE'
 const fs = require("fs");
 const release = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const asset = (release.assets || []).find((item) => item.name === process.argv[3]);
 if (!asset || !/^sha256:[a-f0-9]{64}$/.test(String(asset.digest || ""))) process.exit(2);
-console.log(asset.browser_download_url);
 console.log(asset.digest.slice(7));
 NODE
 )"
-PREVIOUS_URL="$(printf '%s\n' "$previous_metadata" | sed -n '1p')"
-PREVIOUS_SHA="$(printf '%s\n' "$previous_metadata" | sed -n '2p')"
-[[ "$PREVIOUS_URL" == https://github.com/gitcommit90/1Helm/releases/download/v* && "$PREVIOUS_SHA" =~ ^[a-f0-9]{64}$ ]] \
-  || { echo "Prior Stable Mac asset lacks digest-qualified metadata." >&2; exit 1; }
-curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$work/previous/$PREVIOUS_NAME" "$PREVIOUS_URL"
+[[ "$PREVIOUS_SHA" =~ ^[a-f0-9]{64}$ ]] \
+  || { echo "Prior Stable Mac updater lacks digest-qualified metadata." >&2; exit 1; }
+# GitHub's browser-download redirect repeatedly returned 404/401 and then a
+# partial file on this dedicated Mac. Use the already-authenticated GitHub CLI
+# against the release API, and download the smaller signed updater ZIP whose
+# app bytes are exactly what a real prior-version update replaces.
+previous_downloaded=0
+for attempt in 1 2 3; do
+  if gh release download "v$PREVIOUS_VERSION" --repo "$GITHUB_REPOSITORY" \
+      --pattern "$PREVIOUS_NAME" --dir "$work/previous" --clobber; then
+    previous_downloaded=1
+    break
+  fi
+  [[ "$attempt" = 3 ]] || sleep 5
+done
+[[ "$previous_downloaded" = 1 && -f "$work/previous/$PREVIOUS_NAME" ]]
 [[ "$(shasum -a 256 "$work/previous/$PREVIOUS_NAME" | awk '{print $1}')" == "$PREVIOUS_SHA" ]]
-previous_attach="$(hdiutil attach "$work/previous/$PREVIOUS_NAME" -nobrowse)"
-mount="$(printf '%s\n' "$previous_attach" | awk 'index($0,"/Volumes/"){print substr($0,index($0,"/Volumes/")); exit}')"
-codesign --verify --deep --strict --verbose=2 "$mount/1Helm.app"
-xcrun stapler validate "$mount/1Helm.app"
-spctl --assess --type execute --verbose=4 "$mount/1Helm.app"
-ditto "$mount/1Helm.app" "$installed"
-hdiutil detach "$mount" >/dev/null; mount=""
+ditto -x -k "$work/previous/$PREVIOUS_NAME" "$work/previous/app"
+codesign --verify --deep --strict --verbose=2 "$work/previous/app/1Helm.app"
+xcrun stapler validate "$work/previous/app/1Helm.app"
+spctl --assess --type execute --verbose=4 "$work/previous/app/1Helm.app"
+ditto "$work/previous/app/1Helm.app" "$installed"
+[[ "$(defaults read "$installed/Contents/Info" CFBundleShortVersionString)" == "$PREVIOUS_VERSION" ]]
 mkdir -p "$DATA_ROOT"
 printf '%s\n' server >"$DATA_ROOT/desktop-mode"
 printf '%s\n' "phase4-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >"$DATA_ROOT/phase4-acceptance-state"

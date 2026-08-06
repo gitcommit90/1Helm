@@ -258,6 +258,8 @@ test("Windows code publishes no artifact/signing claim and requires honest reboo
   assert.match(windows, /\[IO\.File\]::WriteAllText/);
   assert.match(windows, /\$normalizedCommand = \(\$Command -replace "`r`n", "`n"\) -replace "`r", "`n"/);
   assert.match(windows, /WriteAllText\(\$script, \$normalizedCommand \+ "`n"/);
+  assert.match(windows, /NTAccount\(\$TaskUser\)[\s\S]*Translate\(\[Security\.Principal\.SecurityIdentifier\]\)/);
+  assert.match(windows, /\$TaskSid -ne \$CurrentIdentity\.User\.Value/);
   assert.match(windows, /\/bin\/bash -lc "bash '\$scriptInDistro'"/);
   assert.doesNotMatch(windows, /\$Command \| & \$Wsl/);
   assert.doesNotMatch(windows, /\/bin\/bash -lc \$Command/);
@@ -266,6 +268,11 @@ test("Windows code publishes no artifact/signing claim and requires honest reboo
   assert.match(read("site/public/install.ps1"), /LocalRootfsSha256/);
   assert.match(windows, /no distinct prior Stable release/);
   assert.match(windows, /gh release download "v\$PreviousVersion"[\s\S]*--pattern \$PreviousName[\s\S]*--clobber/);
+  const macos = read("ops/platform-acceptance/macos.sh");
+  assert.match(macos, /PREVIOUS_NAME="1Helm-\$PREVIOUS_VERSION-mac-arm64\.zip"/);
+  assert.match(macos, /for attempt in 1 2 3[\s\S]*gh release download "v\$PREVIOUS_VERSION"[\s\S]*--pattern "\$PREVIOUS_NAME"[\s\S]*--clobber/);
+  assert.match(macos, /CFBundleShortVersionString\)" == "\$PREVIOUS_VERSION"/);
+  assert.doesNotMatch(macos, /PREVIOUS_URL|browser_download_url/);
   assert.doesNotMatch(windows, /Invoke-WebRequest -Uri \$PreviousAsset\.browser_download_url/);
   assert.match(windows, /candidate-offline\.tgz[\s\S]*shared-images\/sha256\/\$ImageDigest/);
   assert.match(windows, /tar -xOzf[\s\S]*stat -c %s[\s\S]*sha256sum[\s\S]*resources\/channel-image\.json/);
