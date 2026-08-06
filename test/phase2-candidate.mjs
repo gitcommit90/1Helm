@@ -113,40 +113,14 @@ test("rollback fixtures remain local-only and cannot satisfy normal candidate va
   } finally { rmSync(item.scratch, { recursive: true, force: true }); }
 });
 
-test("candidate workflow and guest boundary exclude PR code and broad root access", () => {
+test("the current rehearsal no longer routes through the retired Phase 2 evidence boundary", () => {
   const workflow = read(".github/workflows/candidate.yml");
-  const candidateUpload = workflow.match(/- name: Upload exact candidate and evidence[\s\S]*?retention-days: 30/)?.[0] || "";
-  const helper = read("ops/dress-rehearsal/1helm-candidate-install");
-  const hook = read("ops/dress-rehearsal/runner-job-started.sh");
-  const sudoersExample = "%actions ALL=(root) NOPASSWD: /usr/local/sbin/1helm-candidate-install \"\"\n";
   assert.match(workflow, /workflow_run:[\s\S]*workflows: \[CI\][\s\S]*branches: \[main\]/);
   assert.match(workflow, /workflow_run\.event == 'push'/);
   assert.match(workflow, /head_repository\.full_name == github\.repository/);
-  assert.match(workflow, /runs-on: \[1helm-dress-rehearsal-phase2\]/);
-  assert.match(workflow, /Clear retained runner workspace[\s\S]*rm -rf -- candidate-download candidate-result[\s\S]*Download this workflow's exact candidate/);
-  assert.match(workflow, /github\.sha == github\.event\.workflow_run\.head_sha/);
-  assert.match(workflow, /attest-build-provenance@[a-f0-9]{40}/);
-  assert.match(workflow, /candidate-download\/candidate-evidence\/candidate\.json/);
-  assert.match(workflow, /candidate-download\/candidate-evidence\/provenance\.bundle\.json/);
-  assert.match(candidateUpload, /dist\/1Helm-\*-linux-node\.tgz/);
-  assert.match(candidateUpload, /dist\/candidate-evidence\/candidate\.json/);
-  assert.doesNotMatch(candidateUpload, /container\/channel-machine\.oci\.json/);
-  assert.match(helper, /--signer-workflow gitcommit90\/1Helm\/\.github\/workflows\/candidate\.yml/);
-  assert.match(helper, /--source-ref refs\/heads\/main/);
-  assert.match(helper, /--source-digest "\$commit"/);
-  assert.match(helper, /--deny-self-hosted-runners/);
-  assert.match(helper, /local-proof-authorized/);
-  assert.doesNotMatch(helper, /--local-proof/);
-  assert.match(helper, /awk -F\/.*!found.*found=1/, "large archive inspection consumes tar output instead of causing SIGPIPE under pipefail");
-  assert.match(helper, /actions\\\.runner[\s\S]*systemd-run[\s\S]*\/usr\/local\/sbin\/1helm-candidate-install/);
-  assert.match(helper, /^unlink "\$INBOX\/candidate\.json"$/m);
-  assert.match(helper, /^unlink "\$INBOX\/candidate\.tgz"$/m);
-  assert.doesNotMatch(helper, /unlink "\$INBOX\/candidate\.json" "\$INBOX\/candidate\.tgz"/);
-  assert.match(read("ops/dress-rehearsal/runner.service.override.conf"), /ProtectSystem=strict[\s\S]*ReadWritePaths=.*candidate\/inbox/);
-  assert.match(read("ops/dress-rehearsal/runner.service.override.conf"), /ACTIONS_RUNNER_HOOK_JOB_STARTED=\/usr\/local\/lib\/1helm-candidate\/runner-job-started\.sh/);
-  assert.match(hook, /GITHUB_EVENT_NAME.*workflow_run/);
-  assert.match(hook, /run\.get\("event"\) == "push"/);
-  assert.doesNotMatch(sudoersExample, /NOPASSWD:\s*ALL/);
+  assert.match(workflow, /vars\.HELM_DRESS_REHEARSAL_SHA/);
+  assert.match(workflow, /runs-on: \[1helm-linux-phase4\]/);
+  assert.doesNotMatch(workflow, /1helm-dress-rehearsal-phase2|1helm-candidate-install|candidate-evidence|provenance\.bundle|attest-build-provenance/);
   assert.doesNotMatch(workflow, /pull_request:/);
 });
 
@@ -155,7 +129,7 @@ test("candidate status evidence names running, previous, CI, install, and rollba
   for (const field of ["running_candidate", "last_attempt", "previous_candidate", "install", "rollback", "last_rollback", "checked_at"]) {
     assert.match(boundary, new RegExp(`["]${field}["]`));
   }
-  assert.match(read("docs/dress-rehearsal.md"), /Teardown and rollback/);
+  assert.match(read("docs/dress-rehearsal.md"), /What it tests/);
   assert.match(read("scripts/delivery-status-lib.mjs"), /Private dress-rehearsal candidate/);
 });
 

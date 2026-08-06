@@ -21,10 +21,10 @@ const suites = [
     "test/routing.mjs", "test/routing-disabled-account.mjs", "test/routing-antigravity.mjs", "test/desktop.mjs", "test/update-service.mjs",
     "test/channel-computers.mjs", "test/channel-computers-isolated-backends.mjs", "test/event-loop-unblocking.mjs",
     "test/cloudflare-worker.mjs", "test/connectors.mjs", "test/chatgpt-image.mjs", "test/autonomy-platform.mjs",
-    "test/feedback.mjs", "test/feedback-browser.mjs", "test/cowork-browser.mjs", "test/files-latency.mjs", "test/gmail.mjs", "test/photon.mjs", "test/site.mjs", "test/release-license.mjs", "test/release-governance.mjs",
+    "test/feedback.mjs", "test/feedback-browser.mjs", "test/cowork-browser.mjs", "test/files-latency.mjs", "test/gmail.mjs", "test/photon.mjs", "test/site.mjs", "test/release-license.mjs",
     "test/channel-surfaces.mjs", "test/workspace-interactions.mjs", "test/sweep-fleet-telemetry.mjs", "test/sweep-server-integration.mjs", "test/thread-followup-chat.mjs",
     "test/notifications.mjs", "test/mobile-push.mjs", "test/terminal-reconnect-contract.mjs", "test/terminal-reconnect-browser.mjs", "test/mobile.mjs", "test/web-research.mjs", "test/workflows.mjs",
-    "test/delivery-status.mjs", "test/cleanup-report.mjs", "test/delivery-governance.mjs", "test/phase1-tools.mjs", "test/phase2-candidate.mjs", "test/phase3-promotion.mjs", "test/phase4-platform-acceptance.mjs", "test/site-stable-manifest.mjs"],
+    "test/phase4-platform-acceptance.mjs"],
 ];
 
 let status = 0;

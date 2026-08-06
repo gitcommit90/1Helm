@@ -7,6 +7,7 @@ set -euo pipefail
 [[ "${GITHUB_EVENT_NAME:-}" == "workflow_run" ]] || { echo "Phase 4 runner refused PR, fork, dispatch, and direct-push events." >&2; exit 1; }
 case "${GITHUB_JOB:-}" in
   accept-macos) expected_label=1helm-macos-phase4 ;;
+  accept-linux) expected_label=1helm-linux-phase4 ;;
   *) echo "Phase 4 runner refused job ${GITHUB_JOB:-missing}." >&2; exit 1 ;;
 esac
 [[ "${GITHUB_REF:-}" == "refs/heads/main" && "${GITHUB_SHA:-}" =~ ^[a-f0-9]{40}$ ]] \
@@ -38,7 +39,7 @@ PY
 # found". Set login as the default (and search) keychain and unlock it. The
 # password is read from a machine-local file owned by the runner account; it is
 # never stored in this repository or exported into the job environment.
-if [[ "$(uname)" == "Darwin" ]]; then
+if [[ "$expected_label" == "1helm-macos-phase4" ]]; then
   kc="$HOME/Library/Keychains/login.keychain-db"
   kc_pw_file="$HOME/.config/1helm/mac-keychain-password"
   if [[ -f "$kc" && -r "$kc_pw_file" ]]; then

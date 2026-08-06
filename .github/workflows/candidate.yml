@@ -10,517 +10,219 @@ permissions:
   contents: read
 
 concurrency:
-  group: 1helm-private-dress-rehearsal
+  group: 1helm-dress-rehearsal
   cancel-in-progress: false
 
+# Normal pushes only run CI. To rehearse one exact main commit, set the
+# HELM_DRESS_REHEARSAL_SHA repository variable to its full 40-character SHA
+# before that commit's CI run finishes. The dedicated Mac and Windows runner
+# hooks already trust only this successful-CI workflow_run path.
 jobs:
   build:
-    name: Build exact trusted-main Linux candidate
+    name: Build Linux candidate
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
-      github.event.repository.full_name == github.repository &&
-      github.sha == github.event.workflow_run.head_sha &&
-      github.ref == 'refs/heads/main'
+      github.event.workflow_run.head_sha == vars.HELM_DRESS_REHEARSAL_SHA
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
     outputs:
-      artifact-name: ${{ steps.identity.outputs.artifact_name }}
-      commit: ${{ steps.identity.outputs.commit }}
-      version: ${{ steps.identity.outputs.version }}
-      ci-run-id: ${{ steps.identity.outputs.ci_run_id }}
-      image-digest: ${{ steps.identity.outputs.image_digest }}
+      artifact-name: ${{ steps.package.outputs.artifact_name }}
+      commit: ${{ steps.package.outputs.commit }}
+      version: ${{ steps.package.outputs.version }}
+      archive-sha256: ${{ steps.package.outputs.archive_sha256 }}
+      offline-sha256: ${{ steps.package.outputs.offline_sha256 }}
+      image-sha256: ${{ steps.package.outputs.image_sha256 }}
+      image-bytes: ${{ steps.package.outputs.image_bytes }}
+      image-name: ${{ steps.package.outputs.image_name }}
     steps:
-      - name: Check out the exact successful CI commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Re-verify trusted repository, ref, event, and SHA
-        env:
-          CI_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          CI_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          CI_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
-          CI_EVENT: ${{ github.event.workflow_run.event }}
-          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          CI_WORKFLOW: ${{ github.event.workflow_run.name }}
-        run: |
-          set -euo pipefail
-          test "$GITHUB_REPOSITORY" = "gitcommit90/1Helm"
-          test "$CI_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
-          test "$CI_HEAD_BRANCH" = "main"
-          test "$CI_EVENT" = "push"
-          test "$CI_CONCLUSION" = "success"
-          test "$CI_WORKFLOW" = "CI"
-          test "$GITHUB_REF" = "refs/heads/main"
-          test "$GITHUB_SHA" = "$CI_HEAD_SHA"
-          test "$(git rev-parse HEAD)" = "$CI_HEAD_SHA"
-          test -z "$(git status --porcelain)"
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
 
-      - name: Install exact dependencies and builder runtime
-        run: |
-          set -euo pipefail
-          PUPPETEER_SKIP_DOWNLOAD=1 npm ci
-          sudo apt-get update
-          sudo apt-get install -y podman
-
-      - name: Resolve exact OCI and production dependency cache identities
-        id: packaging-cache
-        run: |
-          set -euo pipefail
-          builder_image=docker.io/library/node:22
-          podman pull "$builder_image"
-          builder_digest="$(podman image inspect "$builder_image" --format '{{.Digest}}' | sed 's/^sha256://')"
-          node_abi="$(podman run --rm "$builder_image" node -p process.versions.modules)"
-          case "$(uname -m)" in x86_64|amd64) image_arch=amd64; native_arch=x64 ;; aarch64|arm64) image_arch=arm64; native_arch=arm64 ;; *) exit 1 ;; esac
-          base_digest="$(sed -n 's/^FROM .*@sha256:\([a-f0-9]\{64\}\)$/\1/p' container/Containerfile.oci)"
-          containerfile_sha="$(sha256sum container/Containerfile.oci | awk '{print $1}')"
-          context_sha="$(git ls-files -z container | while IFS= read -r -d '' file; do
-            case "$file" in container/channel-machine.oci.tar|container/channel-machine.oci.sha256|container/channel-machine.oci.json) continue ;; esac
-            printf '%s\0' "$file"
-            sha256sum "$file" | awk '{printf "%s\0", $1}'
-          done | sha256sum | awk '{print $1}')"
-          oci_key="$(printf '1helm-channel-image-v1\n%s\n%s\n%s\n%s\n' "$image_arch" "$base_digest" "$containerfile_sha" "$context_sha" | sha256sum | awk '{print $1}')"
-          dependency_key="$(printf '%s\n%s\n%s\n%s\n%s' "$(sha256sum package-lock.json | awk '{print $1}')" "$(sha256sum config/linux-runtime-package.json | awk '{print $1}')" "$node_abi" "$native_arch" "$builder_digest" | sha256sum | awk '{print $1}')"
-          [[ "$builder_digest" =~ ^[a-f0-9]{64}$ && "$node_abi" =~ ^[0-9]+$ && "$oci_key" =~ ^[a-f0-9]{64}$ && "$dependency_key" =~ ^[a-f0-9]{64}$ ]]
-          printf 'oci_key=%s\ndependency_key=%s\n' "$oci_key" "$dependency_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore only the exact sealed OCI cache
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: dist/cache/channel-images
-          key: 1helm-phase5-channel-image-${{ steps.packaging-cache.outputs.oci_key }}
-
-      - name: Restore only the exact production dependency cache
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: dist/cache/production-dependencies
-          key: 1helm-phase5-production-dependencies-${{ steps.packaging-cache.outputs.dependency_key }}
-
-      - name: Build sealed OCI image and ready-to-run Linux archive
+      - name: Build the two Linux archives
+        id: package
         env:
-          HELM_CANDIDATE_REPOSITORY: gitcommit90/1Helm
+          HELM_CANDIDATE_REPOSITORY: ${{ github.repository }}
           HELM_CANDIDATE_REF: refs/heads/main
           HELM_CANDIDATE_COMMIT: ${{ github.event.workflow_run.head_sha }}
           HELM_CANDIDATE_SOURCE_STATE: trusted-main
-          HELM_CANDIDATE_BUILD_ID: candidate-${{ github.event.workflow_run.id }}-${{ github.run_id }}.${{ github.run_attempt }}
+          HELM_CANDIDATE_BUILD_ID: rehearsal-${{ github.run_id }}.${{ github.run_attempt }}
           HELM_CANDIDATE_CREATED_AT: ${{ github.event.workflow_run.updated_at }}
           HELM_CANDIDATE_CI_WORKFLOW: CI
           HELM_CANDIDATE_CI_RUN_ID: ${{ github.event.workflow_run.id }}
           HELM_CANDIDATE_CI_CONCLUSION: success
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$HELM_CANDIDATE_COMMIT"
+          test -z "$(git status --porcelain)"
+          PUPPETEER_SKIP_DOWNLOAD=1 npm ci
+          sudo apt-get update
+          sudo apt-get install -y podman
           npm run package:channel-image
           npm run package:linux
-          image_name="$(node -p 'require("./container/channel-machine.oci.json").artifact.name')"
-          cp container/channel-machine.oci.tar "dist/$image_name"
-          cp container/channel-machine.oci.json "dist/${image_name%.oci.tar}.json"
 
-      - name: Measure split artifact composition and enforce regression budgets
-        run: |
-          set -euo pipefail
-          node scripts/artifact-size-report.mjs \
-            --json dist/artifact-size-report.json \
-            --text dist/artifact-size-report.txt \
-            --check
-
-      - name: Generate candidate manifest and evidence
-        id: identity
-        env:
-          CI_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          HELM_CANDIDATE_CI_RUN_ID: ${{ github.event.workflow_run.id }}
-        run: |
-          set -euo pipefail
           version="$(node -p 'require("./package.json").version')"
-          archive="dist/1Helm-${version}-linux-node.tgz"
-          offline="dist/1Helm-${version}-linux-node-offline.tgz"
-          split="dist/1Helm-${version}-linux-split.json"
-          evidence="dist/candidate-evidence"
-          mkdir -p "$evidence"
-          HELM_CANDIDATE_ARCHIVE="$archive" \
-          HELM_CANDIDATE_OFFLINE_ARCHIVE="$offline" \
-          HELM_CANDIDATE_SPLIT_MANIFEST="$split" \
-          HELM_CANDIDATE_MANIFEST="$evidence/candidate.json" \
-            node scripts/candidate-manifest.mjs
-          cp "$archive.sha256" "$evidence/archive.sha256"
-          sha256sum "$evidence/candidate.json" > "$evidence/manifest.sha256"
-          printf 'artifact_name=1helm-candidate-%s\n' "$CI_HEAD_SHA" >> "$GITHUB_OUTPUT"
-          printf 'commit=%s\n' "$CI_HEAD_SHA" >> "$GITHUB_OUTPUT"
+          archive="dist/1Helm-$version-linux-node.tgz"
+          offline="dist/1Helm-$version-linux-node-offline.tgz"
+          image_meta="container/channel-machine.oci.json"
+          test -s "$archive"
+          test -s "$offline"
+          test -s "$image_meta"
+          printf 'artifact_name=1helm-rehearsal-%s\n' "$HELM_CANDIDATE_COMMIT" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\n' "$HELM_CANDIDATE_COMMIT" >> "$GITHUB_OUTPUT"
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
-          printf 'ci_run_id=%s\n' "$HELM_CANDIDATE_CI_RUN_ID" >> "$GITHUB_OUTPUT"
-          printf 'image_digest=%s\n' "$(node -p 'require("./container/channel-machine.oci.json").sha256')" >> "$GITHUB_OUTPUT"
+          printf 'archive_sha256=%s\n' "$(sha256sum "$archive" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          printf 'offline_sha256=%s\n' "$(sha256sum "$offline" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          printf 'image_sha256=%s\n' "$(node -p 'require("./container/channel-machine.oci.json").sha256')" >> "$GITHUB_OUTPUT"
+          printf 'image_bytes=%s\n' "$(node -p 'require("./container/channel-machine.oci.json").bytes')" >> "$GITHUB_OUTPUT"
+          printf 'image_name=%s\n' "$(node -p 'require("./container/channel-machine.oci.json").artifact.name')" >> "$GITHUB_OUTPUT"
 
-      - name: Attest archive provenance on the hosted builder
-        id: attest
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+      - name: Share the exact Linux bytes with the test computers
+        uses: actions/upload-artifact@v4
         with:
-          subject-path: |
-            dist/1Helm-*-linux-node.tgz
-            dist/1Helm-*-linux-node-offline.tgz
-            container/channel-machine.oci.tar
-
-      - name: Retain signed provenance bundle
-        env:
-          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
-        run: |
-          set -euo pipefail
-          test -s "$BUNDLE_PATH"
-          install -m 0644 "$BUNDLE_PATH" dist/candidate-evidence/provenance.bundle.json
-
-      - name: Upload exact candidate and evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: ${{ steps.identity.outputs.artifact_name }}
+          name: ${{ steps.package.outputs.artifact_name }}
           path: |
             dist/1Helm-*-linux-node.tgz
             dist/1Helm-*-linux-node-offline.tgz
-            dist/1Helm-*-linux-split.json
-            dist/artifact-size-report.json
-            dist/artifact-size-report.txt
-            dist/candidate-evidence/candidate.json
-            dist/candidate-evidence/archive.sha256
-            dist/candidate-evidence/manifest.sha256
-            dist/candidate-evidence/provenance.bundle.json
           if-no-files-found: error
-          retention-days: 30
-
-      - name: Retain immutable digest-addressed channel image candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: 1helm-channel-image-${{ steps.identity.outputs.image_digest }}
-          path: |
-            dist/1Helm-channel-machine-v1-*.oci.tar
-            dist/1Helm-channel-machine-v1-*.json
-          if-no-files-found: error
-          retention-days: 90
-
-  accept-macos:
-    name: Build, retain, and accept the exact Mac candidate
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.head_repository.full_name == github.repository &&
-      github.event.repository.full_name == github.repository &&
-      github.sha == github.event.workflow_run.head_sha &&
-      github.ref == 'refs/heads/main' &&
-      vars.HELM_PHASE4_MACOS_ENABLED == '1'
-    runs-on: [1helm-macos-phase4]
-    timeout-minutes: 90
-    permissions:
-      contents: read
-      actions: read
-    env:
-      HELM_PHASE4_RUNNER_LABEL: 1helm-macos-phase4
-    steps:
-      - name: Re-verify trusted event before repository code runs
-        shell: bash
-        env:
-          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
-          EXPECTED_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
-          EXPECTED_EVENT: ${{ github.event.workflow_run.event }}
-          EXPECTED_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          EXPECTED_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-        run: |
-          set -euo pipefail
-          test "$GITHUB_REPOSITORY" = gitcommit90/1Helm
-          test "$EXPECTED_REPOSITORY" = "$GITHUB_REPOSITORY"
-          test "$EXPECTED_EVENT" = push
-          test "$EXPECTED_BRANCH" = main
-          test "$EXPECTED_CONCLUSION" = success
-          test "$GITHUB_REF" = refs/heads/main
-          test "$GITHUB_SHA" = "$EXPECTED_SHA"
-
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Verify checkout and install exact dependencies without privilege
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${{ github.event.workflow_run.head_sha }}"
-          test -z "$(git status --porcelain)"
-          test "$(uname -s)-$(uname -m)" = Darwin-arm64
-          PUPPETEER_SKIP_DOWNLOAD=1 npm ci
-
-      - name: Build, sign, notarize, staple, and Gatekeeper-check both Mac artifacts
-        shell: bash
-        env:
-          HELM_REQUIRE_NOTARIZATION: "1"
-        run: npm run package:dmg:release
-
-      - name: Bind exact Mac bytes to the candidate and CI identities
-        shell: bash
-        env:
-          HELM_CANDIDATE_COMMIT: ${{ github.event.workflow_run.head_sha }}
-          HELM_CANDIDATE_CI_RUN_ID: ${{ github.event.workflow_run.id }}
-        run: |
-          set -euo pipefail
-          version="$(node -p 'require("./package.json").version')"
-          mkdir -p dist/candidate-evidence
-          HELM_CANDIDATE_VERSION="$version" \
-          HELM_MAC_DMG="dist/1Helm-$version-arm64.dmg" \
-          HELM_MAC_ZIP="dist/1Helm-$version-mac-arm64.zip" \
-          HELM_MAC_MANIFEST="dist/candidate-evidence/mac-candidate.json" \
-            node scripts/mac-candidate-manifest.mjs
-
-      - name: Execute exact Apple Silicon acceptance on those same local bytes
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HELM_EXPECTED_COMMIT: ${{ github.event.workflow_run.head_sha }}
-          HELM_EXPECTED_CI_RUN_ID: ${{ github.event.workflow_run.id }}
-          HELM_MAC_CANDIDATE_DOWNLOAD: dist
-          HELM_ACCEPTANCE_OUTPUT: macos-acceptance.json
-        run: bash ops/platform-acceptance/macos.sh
-
-      - name: Retain the accepted Mac bytes and evidence on the dedicated Mac
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="$(node -p 'require("./package.json").version')"
-          retained="$HOME/1Helm-Candidates/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          test ! -e "$retained"
-          install -d -m 0700 "$retained/candidate-evidence"
-          install -m 0600 "dist/1Helm-$version-arm64.dmg" "$retained/"
-          install -m 0600 "dist/1Helm-$version-mac-arm64.zip" "$retained/"
-          install -m 0600 dist/candidate-evidence/mac-candidate.json "$retained/candidate-evidence/"
-          install -m 0600 dist/candidate-evidence/mac_dmg-provenance.json "$retained/candidate-evidence/"
-          install -m 0600 dist/candidate-evidence/mac_updater_zip-provenance.json "$retained/candidate-evidence/"
-          install -m 0600 macos-acceptance.json "$retained/"
-          HELM_RETAINED_MAC_CANDIDATE="$retained" node scripts/verify-retained-mac-candidate.mjs
-          printf 'Accepted Mac candidate retained locally for run %s attempt %s at %s\n' \
-            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$retained"
-
-      - name: Upload compact Mac acceptance evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: 1helm-macos-acceptance-${{ github.event.workflow_run.head_sha }}
-          path: |
-            macos-acceptance.json
-            dist/candidate-evidence/mac-candidate.json
-            dist/candidate-evidence/mac_dmg-provenance.json
-            dist/candidate-evidence/mac_updater_zip-provenance.json
-          if-no-files-found: error
-          retention-days: 30
-
-  deploy:
-    name: Retain private Phase 2 Linux dress rehearsal
-    needs: build
-    runs-on: [1helm-dress-rehearsal-phase2]
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      actions: read
-      attestations: read
-    steps:
-      - name: Clear retained runner workspace from prior candidates
-        run: rm -rf -- candidate-download candidate-result
-
-      - name: Download this workflow's exact candidate
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: ${{ needs.build.outputs.artifact-name }}
-          path: candidate-download
-
-      - name: Submit fixed candidate inputs to the root-owned boundary
-        env:
-          EXPECTED_COMMIT: ${{ needs.build.outputs.commit }}
-        run: |
-          set -euo pipefail
-          test "$GITHUB_REPOSITORY" = "gitcommit90/1Helm"
-          test "$GITHUB_EVENT_NAME" = workflow_run
-          test "$EXPECTED_COMMIT" = "${{ github.event.workflow_run.head_sha }}"
-          test "${{ github.event.workflow_run.event }}" = push
-          test "${{ github.event.workflow_run.head_branch }}" = main
-          test "${{ github.event.workflow_run.head_repository.full_name }}" = "$GITHUB_REPOSITORY"
-          test "${{ github.event.workflow_run.conclusion }}" = success
-          archive="$(find candidate-download -maxdepth 1 -type f -name '1Helm-*-linux-node.tgz' -print -quit)"
-          test -n "$archive"
-          install -m 0600 "$archive" /var/lib/1helm-candidate/inbox/candidate.tgz
-          offline="$(find candidate-download -maxdepth 1 -type f -name '1Helm-*-linux-node-offline.tgz' -print -quit)"
-          test -n "$offline"
-          install -m 0600 "$offline" /var/lib/1helm-candidate/inbox/candidate-offline.tgz
-          install -m 0600 candidate-download/candidate-evidence/candidate.json /var/lib/1helm-candidate/inbox/candidate.json
-          install -m 0600 candidate-download/candidate-evidence/provenance.bundle.json /var/lib/1helm-candidate/inbox/provenance.bundle.json
-          sudo -n /usr/local/sbin/1helm-candidate-install
-
-      - name: Retain exact private dress-rehearsal evidence
-        run: |
-          set -euo pipefail
-          python3 /usr/local/lib/1helm-candidate/candidate-boundary.py summary /var/lib/1helm-candidate/evidence/status.json
-          install -d -m 0700 candidate-result
-          install -m 0600 /var/lib/1helm-candidate/evidence/status.json candidate-result/dress-rehearsal.json
-
-      - name: Upload private Linux dress-rehearsal evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: 1helm-dress-rehearsal-evidence-${{ needs.build.outputs.commit }}
-          path: candidate-result/dress-rehearsal.json
-          if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
 
   accept-linux:
-    name: Linux clean, update, state, health, and rollback acceptance
+    name: Linux install, update, start, data, and uninstall
     needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-      actions: read
-      attestations: read
+    runs-on: [1helm-linux-phase4]
+    timeout-minutes: 45
     steps:
-      - name: Check out the exact candidate verification code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ needs.build.outputs.commit }}
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Download exact Linux candidate
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build.outputs.artifact-name }}
           path: candidate-download
 
-      - name: Execute real ephemeral systemd acceptance
+      - name: Test the real Linux host
         env:
           GH_TOKEN: ${{ github.token }}
-          HELM_EXPECTED_COMMIT: ${{ needs.build.outputs.commit }}
-          HELM_EXPECTED_CI_RUN_ID: ${{ needs.build.outputs.ci-run-id }}
-          HELM_CANDIDATE_MANIFEST: candidate-download/candidate-evidence/candidate.json
-          HELM_CANDIDATE_PROVENANCE: candidate-download/candidate-evidence/provenance.bundle.json
-          HELM_ACCEPTANCE_OUTPUT: linux-acceptance.json
+          HELM_EXPECTED_VERSION: ${{ needs.build.outputs.version }}
+          HELM_CANDIDATE_SHA256: ${{ needs.build.outputs.archive-sha256 }}
+          HELM_CANDIDATE_OFFLINE_SHA256: ${{ needs.build.outputs.offline-sha256 }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REPOSITORY" = gitcommit90/1Helm
-          test "$GITHUB_EVENT_NAME" = workflow_run
-          test "$GITHUB_REF" = refs/heads/main
-          test "$GITHUB_SHA" = "$HELM_EXPECTED_COMMIT"
-          test "${{ github.event.workflow_run.event }}" = push
-          test "${{ github.event.workflow_run.head_repository.full_name }}" = "$GITHUB_REPOSITORY"
           export HELM_CANDIDATE_ARCHIVE="$(find candidate-download -maxdepth 1 -type f -name '1Helm-*-linux-node.tgz' -print -quit)"
           export HELM_CANDIDATE_OFFLINE_ARCHIVE="$(find candidate-download -maxdepth 1 -type f -name '1Helm-*-linux-node-offline.tgz' -print -quit)"
           test -n "$HELM_CANDIDATE_ARCHIVE"
           test -n "$HELM_CANDIDATE_OFFLINE_ARCHIVE"
           bash ops/platform-acceptance/linux.sh
 
-      - name: Upload exact Linux acceptance evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: 1helm-linux-acceptance-${{ needs.build.outputs.commit }}
-          path: linux-acceptance.json
-          if-no-files-found: error
-          retention-days: 30
-
   accept-windows:
-    name: Windows 11 WSL behavior, reboot, update, keepalive, and uninstall acceptance
+    name: Windows install, update, start, data, and uninstall
     needs: build
-    if: needs.build.result == 'success' && vars.HELM_PHASE4_WINDOWS_ENABLED == '1'
     runs-on: [1helm-windows-phase4]
-    timeout-minutes: 90
-    permissions:
-      contents: read
-      actions: read
-      attestations: read
-    env:
-      HELM_PHASE4_RUNNER_LABEL: 1helm-windows-phase4
+    timeout-minutes: 60
     steps:
-      - name: Re-verify trusted event before repository code runs
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if ($env:GITHUB_REPOSITORY -ne 'gitcommit90/1Helm' -or $env:GITHUB_EVENT_NAME -ne 'workflow_run' -or
-              $env:GITHUB_REF -ne 'refs/heads/main' -or $env:GITHUB_SHA -ne '${{ needs.build.outputs.commit }}' -or
-              '${{ github.event.workflow_run.event }}' -ne 'push' -or '${{ github.event.workflow_run.head_branch }}' -ne 'main' -or
-              '${{ github.event.workflow_run.head_repository.full_name }}' -ne $env:GITHUB_REPOSITORY -or
-              '${{ github.event.workflow_run.conclusion }}' -ne 'success') { throw 'Windows runner refused untrusted candidate identity.' }
-
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ needs.build.outputs.commit }}
           fetch-depth: 1
           persist-credentials: false
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build.outputs.artifact-name }}
           path: candidate-download
 
-      - name: Execute exact Windows 11 WSL behavior acceptance
+      - name: Test the real Windows WSL install
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
-          HELM_EXPECTED_COMMIT: ${{ needs.build.outputs.commit }}
-          HELM_EXPECTED_CI_RUN_ID: ${{ needs.build.outputs.ci-run-id }}
-          HELM_CANDIDATE_MANIFEST: candidate-download/candidate-evidence/candidate.json
-          HELM_CANDIDATE_PROVENANCE: candidate-download/candidate-evidence/provenance.bundle.json
-          HELM_ACCEPTANCE_OUTPUT: windows-acceptance.json
+          HELM_EXPECTED_VERSION: ${{ needs.build.outputs.version }}
+          HELM_CANDIDATE_SHA256: ${{ needs.build.outputs.archive-sha256 }}
+          HELM_CANDIDATE_OFFLINE_SHA256: ${{ needs.build.outputs.offline-sha256 }}
+          HELM_CHANNEL_IMAGE_SHA256: ${{ needs.build.outputs.image-sha256 }}
+          HELM_CHANNEL_IMAGE_BYTES: ${{ needs.build.outputs.image-bytes }}
+          HELM_CHANNEL_IMAGE_NAME: ${{ needs.build.outputs.image-name }}
         run: |
-          $archive = Get-ChildItem candidate-download -Filter '1Helm-*-linux-node.tgz' | Select-Object -First 1 -ExpandProperty FullName
-          if (-not $archive) { throw 'Exact Linux candidate archive is missing.' }
-          $env:HELM_CANDIDATE_ARCHIVE = $archive
-          $offline = Get-ChildItem candidate-download -Filter '1Helm-*-linux-node-offline.tgz' | Select-Object -First 1 -ExpandProperty FullName
-          if (-not $offline) { throw 'Exact Linux offline candidate archive is missing.' }
-          $env:HELM_CANDIDATE_OFFLINE_ARCHIVE = $offline
+          $env:HELM_CANDIDATE_ARCHIVE = Get-ChildItem candidate-download -Filter '1Helm-*-linux-node.tgz' | Select-Object -First 1 -ExpandProperty FullName
+          $env:HELM_CANDIDATE_OFFLINE_ARCHIVE = Get-ChildItem candidate-download -Filter '1Helm-*-linux-node-offline.tgz' | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $env:HELM_CANDIDATE_ARCHIVE -or -not $env:HELM_CANDIDATE_OFFLINE_ARCHIVE) { throw 'Linux candidate archives are missing.' }
           & .\ops\platform-acceptance\windows.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: 1helm-windows-acceptance-${{ needs.build.outputs.commit }}
-          path: windows-acceptance.json
-          if-no-files-found: error
-          retention-days: 30
-
-  candidate-status:
-    name: Report the complete exact-candidate rehearsal
-    needs: [build, deploy, accept-linux, accept-macos, accept-windows]
-    if: always() && needs.build.result != 'skipped'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
+  accept-macos:
+    name: Mac build, install, update, start, and data
+    needs: build
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_sha == vars.HELM_DRESS_REHEARSAL_SHA
+    runs-on: [1helm-macos-phase4]
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Retain honest pass, failure, and missing-runner blockers
+
+      - name: Build, sign, notarize, and staple the Mac app
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.workflow_run.head_sha }}"
+          test -z "$(git status --porcelain)"
+          PUPPETEER_SKIP_DOWNLOAD=1 npm ci
+          npm run package:dmg:release
+
+      - name: Test the real Mac app
+        shell: bash
         env:
-          HELM_CANDIDATE_COMMIT: ${{ github.event.workflow_run.head_sha }}
-          HELM_CANDIDATE_VERSION: ${{ needs.build.outputs.version }}
-          HELM_LINUX_BUILD_RESULT: ${{ needs.build.result }}
-          HELM_LINUX_REHEARSAL_RESULT: ${{ needs.deploy.result }}
-          HELM_MAC_BUILD_RESULT: ${{ needs.accept-macos.result }}
-          HELM_LINUX_ACCEPTANCE_RESULT: ${{ needs.accept-linux.result }}
-          HELM_MAC_ACCEPTANCE_RESULT: ${{ needs.accept-macos.result }}
-          HELM_WINDOWS_ACCEPTANCE_RESULT: ${{ needs.accept-windows.result }}
-          HELM_CANDIDATE_STATUS_OUTPUT: candidate-matrix-status.json
-        run: node scripts/candidate-matrix-status.mjs
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: 1helm-candidate-matrix-status-${{ github.event.workflow_run.head_sha }}
-          path: candidate-matrix-status.json
-          if-no-files-found: error
-          retention-days: 30
+          GH_TOKEN: ${{ github.token }}
+          HELM_EXPECTED_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          HELM_EXPECTED_VERSION: ${{ needs.build.outputs.version }}
+          HELM_MAC_CANDIDATE_DOWNLOAD: dist
+        run: bash ops/platform-acceptance/macos.sh
+
+  result:
+    name: Three-computer result
+    needs: [build, accept-linux, accept-windows, accept-macos]
+    if: always() && needs.build.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report one plain result
+        env:
+          BUILD: ${{ needs.build.result }}
+          LINUX: ${{ needs.accept-linux.result }}
+          WINDOWS: ${{ needs.accept-windows.result }}
+          MACOS: ${{ needs.accept-macos.result }}
+        run: |
+          {
+            echo '## 1Helm dress rehearsal'
+            echo
+            echo "- Build: $BUILD"
+            echo "- Linux: $LINUX"
+            echo "- Windows: $WINDOWS"
+            echo "- Mac: $MACOS"
+            echo
+            echo 'Stable/public release touched: no'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$BUILD" = success
+          test "$LINUX" = success
+          test "$WINDOWS" = success
+          test "$MACOS" = success

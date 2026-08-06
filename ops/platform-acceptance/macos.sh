@@ -8,30 +8,17 @@ trap 'status=$?; echo "::error::macOS acceptance failed at line ${LINENO} (exit 
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DOWNLOAD="${HELM_MAC_CANDIDATE_DOWNLOAD:?exact Mac candidate directory is required}"
-OUTPUT="${HELM_ACCEPTANCE_OUTPUT:?acceptance output is required}"
-MANIFEST="$DOWNLOAD/candidate-evidence/mac-candidate.json"
-STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 [[ ! -e "$HOME/Library/Application Support/1Helm-OCI-v1" ]] \
   || { echo "Dedicated Mac account has acceptance residue before this job." >&2; exit 1; }
-VERSION="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).version' "$MANIFEST")"
-COMMIT="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).commit' "$MANIFEST")"
-CI_RUN="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).source_ci.run_id' "$MANIFEST")"
+VERSION="$(node -p 'require("./package.json").version')"
 DMG="$DOWNLOAD/1Helm-$VERSION-arm64.dmg"
 ZIP="$DOWNLOAD/1Helm-$VERSION-mac-arm64.zip"
 
-[[ "$GITHUB_REPOSITORY" == "gitcommit90/1Helm" && "$GITHUB_EVENT_NAME" == workflow_run \
-   && "$GITHUB_REF" == refs/heads/main && "$GITHUB_SHA" == "$COMMIT" \
-   && "$COMMIT" == "${HELM_EXPECTED_COMMIT:?}" && "$CI_RUN" == "${HELM_EXPECTED_CI_RUN_ID:?}" ]] \
-  || { echo "macOS acceptance refused an untrusted candidate identity." >&2; exit 1; }
+[[ "$GITHUB_SHA" == "${HELM_EXPECTED_COMMIT:?}" ]]
+[[ "$VERSION" == "${HELM_EXPECTED_VERSION:?}" ]]
 [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]
-export HELM_ACCEPTANCE_PLATFORM=macos
-export HELM_ACCEPTANCE_STARTED_AT="$STARTED_AT"
-node "$ROOT/scripts/pending-acceptance-evidence.mjs"
 [[ "$(id -u)" -ne 0 ]] || { echo "macOS acceptance must run as the dedicated ordinary user." >&2; exit 1; }
 
-artifact_field() {
-  node -p 'const m=JSON.parse(require("fs").readFileSync(process.argv[1])); const a=m.artifacts.find(x=>x.role===process.argv[2]); if(!a)process.exit(2); a[process.argv[3]]' "$MANIFEST" "$1" "$2"
-}
 wait_for_setup_health() {
   local output="$1" port
   for _ in {1..180}; do
@@ -48,9 +35,7 @@ wait_for_setup_health() {
   done
   return 1
 }
-DMG_SHA="$(artifact_field mac_dmg sha256)"; ZIP_SHA="$(artifact_field mac_updater_zip sha256)"
-[[ "$(shasum -a 256 "$DMG" | awk '{print $1}')" == "$DMG_SHA" ]]
-[[ "$(shasum -a 256 "$ZIP" | awk '{print $1}')" == "$ZIP_SHA" ]]
+[[ -s "$DMG" && -s "$ZIP" ]]
 xcrun stapler validate "$DMG"
 spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
 
@@ -77,7 +62,8 @@ xcrun stapler validate "$mount/1Helm.app"
 spctl --assess --type execute --verbose=4 "$mount/1Helm.app"
 ditto "$mount/1Helm.app" "$installed"
 hdiutil detach "$mount" >/dev/null; mount=""
-ditto -x -k "$ZIP" "$work/update"
+/usr/bin/unzip -q "$ZIP" -d "$work/update"
+rm -rf -- "$work/update/__MACOSX"
 codesign --verify --deep --strict --verbose=2 "$work/update/1Helm.app"
 xcrun stapler validate "$work/update/1Helm.app"
 spctl --assess --type execute --verbose=4 "$work/update/1Helm.app"
@@ -119,24 +105,15 @@ if (!asset || !/^sha256:[a-f0-9]{64}$/.test(String(asset.digest || ""))) process
 console.log(asset.digest.slice(7));
 NODE
 )"
+PREVIOUS_API_URL="$(node -p 'const r=JSON.parse(require("fs").readFileSync(process.argv[1])); const a=(r.assets||[]).find(x=>x.name===process.argv[2]); if(!a?.url)process.exit(2); a.url' "$work/previous-release.json" "$PREVIOUS_NAME")"
 [[ "$PREVIOUS_SHA" =~ ^[a-f0-9]{64}$ ]] \
   || { echo "Prior Stable Mac updater lacks digest-qualified metadata." >&2; exit 1; }
-# GitHub's browser-download redirect repeatedly returned 404/401 and then a
-# partial file on this dedicated Mac. Use the already-authenticated GitHub CLI
-# against the release API, and download the smaller signed updater ZIP whose
-# app bytes are exactly what a real prior-version update replaces.
-previous_downloaded=0
-for attempt in 1 2 3; do
-  if gh release download "v$PREVIOUS_VERSION" --repo "$GITHUB_REPOSITORY" \
-      --pattern "$PREVIOUS_NAME" --dir "$work/previous" --clobber; then
-    previous_downloaded=1
-    break
-  fi
-  [[ "$attempt" = 3 ]] || sleep 5
-done
-[[ "$previous_downloaded" = 1 && -f "$work/previous/$PREVIOUS_NAME" ]]
+curl -fsSL --http1.1 --retry 1 --retry-all-errors --connect-timeout 15 --max-time 900 \
+  -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/octet-stream' \
+  -o "$work/previous/$PREVIOUS_NAME" "$PREVIOUS_API_URL"
 [[ "$(shasum -a 256 "$work/previous/$PREVIOUS_NAME" | awk '{print $1}')" == "$PREVIOUS_SHA" ]]
-ditto -x -k "$work/previous/$PREVIOUS_NAME" "$work/previous/app"
+/usr/bin/unzip -q "$work/previous/$PREVIOUS_NAME" -d "$work/previous/app"
+rm -rf -- "$work/previous/app/__MACOSX"
 codesign --verify --deep --strict --verbose=2 "$work/previous/app/1Helm.app"
 xcrun stapler validate "$work/previous/app/1Helm.app"
 spctl --assess --type execute --verbose=4 "$work/previous/app/1Helm.app"
@@ -162,8 +139,6 @@ osascript -e 'tell application id "com.gitcommit90.1helm" to quit' || true
 for _ in {1..30}; do pgrep -x -U "$(id -u)" 1Helm >/dev/null || break; sleep 1; done
 ! pgrep -x -U "$(id -u)" 1Helm >/dev/null
 
-export HELM_STATE_BEFORE_SHA256="$STATE_BEFORE" HELM_STATE_AFTER_SHA256="$STATE_AFTER"
-export HELM_PREVIOUS_VERSION="$PREVIOUS_VERSION"
-export HELM_MACHINE_OS_VERSION="$(sw_vers -productVersion)"
-node "$ROOT/scripts/macos-acceptance-evidence.mjs"
+printf 'Mac passed: Stable %s -> candidate %s; signing, notarization, start, update, and data preservation all worked.\n' \
+  "$PREVIOUS_VERSION" "$VERSION"
 completed=1

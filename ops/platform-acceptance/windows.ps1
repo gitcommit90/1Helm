@@ -5,19 +5,12 @@ $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $Archive = (Resolve-Path $env:HELM_CANDIDATE_ARCHIVE).Path
 $OfflineArchive = (Resolve-Path $env:HELM_CANDIDATE_OFFLINE_ARCHIVE).Path
-$ManifestPath = (Resolve-Path $env:HELM_CANDIDATE_MANIFEST).Path
-$ProvenancePath = (Resolve-Path $env:HELM_CANDIDATE_PROVENANCE).Path
-$Output = $env:HELM_ACCEPTANCE_OUTPUT
-$StartedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-$Manifest = Get-Content -Raw $ManifestPath | ConvertFrom-Json
-$Commit = [string]$Manifest.source.commit
-$Version = [string]$Manifest.version
-$Digest = [string]$Manifest.artifact.sha256
-$OfflineDigest = [string]$Manifest.offline_bundle.sha256
-$ImageDigest = [string]$Manifest.sealed_oci.sha256
-$ImageBytes = [int64]$Manifest.sealed_oci.bytes
-$ImageName = [string]$Manifest.sealed_oci.artifact.name
-$CiRun = [string]$Manifest.ci.run_id
+$Version = [string]$env:HELM_EXPECTED_VERSION
+$Digest = [string]$env:HELM_CANDIDATE_SHA256
+$OfflineDigest = [string]$env:HELM_CANDIDATE_OFFLINE_SHA256
+$ImageDigest = [string]$env:HELM_CHANNEL_IMAGE_SHA256
+$ImageBytes = [int64]$env:HELM_CHANNEL_IMAGE_BYTES
+$ImageName = [string]$env:HELM_CHANNEL_IMAGE_NAME
 $Wsl = Join-Path $env:SystemRoot 'System32\wsl.exe'
 $Distro = '1helm-phase4'
 $Unrelated = '1helm-phase4-unrelated'
@@ -69,21 +62,16 @@ test "$(/opt/1helm/node-current/bin/node -p 'require("/opt/1helm/current/package
     Invoke-Distro ($command.Replace('__EXPECTED__', $ExpectedVersion))
 }
 
-if ($env:GITHUB_REPOSITORY -ne 'gitcommit90/1Helm' -or $env:GITHUB_EVENT_NAME -ne 'workflow_run' -or
-    $env:GITHUB_REF -ne 'refs/heads/main' -or $env:GITHUB_SHA -ne $Commit -or
-    $env:HELM_EXPECTED_COMMIT -ne $Commit -or $env:HELM_EXPECTED_CI_RUN_ID -ne $CiRun -or
-    $Manifest.source.state -ne 'trusted-main' -or $Manifest.ci.workflow -ne 'CI' -or $Manifest.ci.conclusion -ne 'success') {
-    Refuse 'repository, event, ref, commit, or successful CI identity changed'
+if ($Version -notmatch '^\d+\.\d+\.\d+$' -or $Digest -notmatch '^[a-f0-9]{64}$' -or
+    $OfflineDigest -notmatch '^[a-f0-9]{64}$' -or $ImageDigest -notmatch '^[a-f0-9]{64}$' -or
+    $ImageBytes -lt 1 -or $ImageName -ne "1Helm-channel-machine-v1-amd64-$ImageDigest.oci.tar") {
+    Refuse 'candidate version or digests are invalid'
 }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if ($identity.User.Value -eq 'S-1-5-18' -or $identity.Name -match '^NT AUTHORITY') { Refuse 'runner is not the dedicated signed-in user account' }
 if (([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Refuse 'runner account must not be elevated' }
 if (Test-Path $InstallRoot) { Refuse "dedicated install root is not clean: $InstallRoot" }
 foreach ($name in @($Distro, $Unrelated)) { if ((Get-Distros) -contains $name) { Refuse "dedicated distribution already exists: $name" } }
-$env:HELM_ACCEPTANCE_PLATFORM = 'windows'
-$env:HELM_ACCEPTANCE_STARTED_AT = $StartedAt
-node (Join-Path $Root 'scripts\pending-acceptance-evidence.mjs')
-if ($LASTEXITCODE -ne 0) { Refuse 'could not retain pending Windows evidence' }
 
 # This runner is provisioned after its one-time WSL feature/reboot proof. The
 # provisioning record is root-owned outside the work directory and is consumed
@@ -101,20 +89,6 @@ if ($Provision.schema -ne 1 -or $Provision.kind -ne '1helm-windows-runner-provis
 }
 if ((Get-FileHash $Archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Digest) { Refuse 'Linux TGZ digest changed' }
 if ((Get-FileHash $OfflineArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $OfflineDigest) { Refuse 'Linux offline TGZ digest changed' }
-if ($ImageDigest -notmatch '^[a-f0-9]{64}$' -or $ImageBytes -lt 1 -or
-    $ImageName -ne "1Helm-channel-machine-v1-amd64-$ImageDigest.oci.tar" -or
-    [string]$Manifest.sealed_oci.architecture -ne 'amd64' -or
-    -not (@($Manifest.sealed_oci.platforms) -ccontains 'windows-wsl')) {
-    Refuse 'candidate channel image identity is invalid for Windows WSL'
-}
-gh attestation verify $Archive --bundle $ProvenancePath `
-    --repo gitcommit90/1Helm --signer-workflow gitcommit90/1Helm/.github/workflows/candidate.yml `
-    --source-ref refs/heads/main --source-digest $Commit --deny-self-hosted-runners
-if ($LASTEXITCODE -ne 0) { Refuse 'hosted Linux candidate attestation verification failed' }
-gh attestation verify $OfflineArchive --bundle $ProvenancePath `
-    --repo gitcommit90/1Helm --signer-workflow gitcommit90/1Helm/.github/workflows/candidate.yml `
-    --source-ref refs/heads/main --source-digest $Commit --deny-self-hosted-runners
-if ($LASTEXITCODE -ne 0) { Refuse 'hosted Linux offline candidate attestation verification failed' }
 
 $Rootfs = 'C:\ProgramData\1Helm-Phase4\ubuntu-noble-wsl-amd64.rootfs.tar.gz'
 if (-not (Test-Path $Rootfs)) { Refuse 'pinned offline WSL rootfs is missing from the dedicated runner' }
@@ -283,13 +257,7 @@ if ($distrosAfter -ccontains $Distro) { Refuse 'target distribution survived uni
 if (-not ($distrosAfter -ccontains $Unrelated)) { Refuse 'uninstall touched the unrelated WSL control' }
 if (Test-Path $InstallRoot) { Refuse 'target install root survived uninstall' }
 
-$env:HELM_STATE_BEFORE_SHA256 = $StateBefore
-$env:HELM_STATE_AFTER_SHA256 = $StateAfter
-$env:HELM_PREVIOUS_VERSION = $PreviousVersion
-$env:HELM_MACHINE_OS_VERSION = [Environment]::OSVersion.Version.ToString()
-$env:HELM_PROVISIONING_EVIDENCE = $Provisioning
-node (Join-Path $Root 'scripts\windows-acceptance-evidence.mjs')
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Write-Host "Windows passed: Stable $PreviousVersion -> candidate $Version; start, data preservation, cold start, and scoped uninstall all worked."
 } finally {
     # Best-effort teardown touches only the exact Phase 4 names. Any failure
     # remains blocked evidence and leaves the VM snapshot disposable.

@@ -46,6 +46,7 @@
     "test:phase3": "node --test test/phase3-promotion.mjs test/site-stable-manifest.mjs",
     "test:phase4": "node --test test/phase4-platform-acceptance.mjs test/phase3-promotion.mjs",
     "test:phase5": "node --test test/phase5-artifacts.mjs test/phase4-platform-acceptance.mjs test/phase3-promotion.mjs test/site-stable-manifest.mjs",
+    "test:release-process": "node --test test/delivery-status.mjs test/cleanup-report.mjs test/delivery-governance.mjs test/phase1-tools.mjs test/phase2-candidate.mjs test/phase3-promotion.mjs test/release-governance.mjs test/site-stable-manifest.mjs",
     "test:fast": "node scripts/run-fast-tests.mjs",
     "test:phase6": "node --test test/phase6-modules.mjs test/autonomy-platform.mjs test/sweep-fleet-telemetry.mjs",
     "delivery:status": "node scripts/delivery-status.mjs",
