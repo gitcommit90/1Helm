@@ -284,6 +284,8 @@ jobs:
           printf 'artifact_name=1helm-macos-candidate-%s\n' "$HELM_CANDIDATE_COMMIT" >> "$GITHUB_OUTPUT"
 
       - name: Upload exact retained signed Mac candidate
+        id: upload_macos
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ steps.identity.outputs.artifact_name }}
@@ -295,6 +297,25 @@ jobs:
             dist/candidate-evidence/mac_updater_zip-provenance.json
           if-no-files-found: error
           retention-days: 30
+          # DMG and ZIP bytes are already compressed. Avoid spending runner
+          # CPU recompressing ~600 MB and use the transport's direct path.
+          compression-level: 0
+
+      - name: Retry exact Mac candidate upload after a transport stall
+        if: steps.upload_macos.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.identity.outputs.artifact_name }}
+          path: |
+            dist/1Helm-*-arm64.dmg
+            dist/1Helm-*-mac-arm64.zip
+            dist/candidate-evidence/mac-candidate.json
+            dist/candidate-evidence/mac_dmg-provenance.json
+            dist/candidate-evidence/mac_updater_zip-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+          overwrite: true
 
   deploy:
     name: Retain private Phase 2 Linux dress rehearsal

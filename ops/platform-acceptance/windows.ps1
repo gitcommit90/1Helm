@@ -145,8 +145,14 @@ $PreviousAsset = @($previous.assets | Where-Object name -eq $PreviousName)[0]
 if ($null -eq $PreviousAsset -or [string]$PreviousAsset.digest -notmatch '^sha256:[a-f0-9]{64}$') { Refuse 'prior Stable Linux asset lacks digest-qualified metadata' }
 $PreviousArchive = Join-Path $env:TEMP $PreviousName
 $previousArchive = $PreviousArchive
-Invoke-WebRequest -Uri $PreviousAsset.browser_download_url -OutFile $PreviousArchive -UseBasicParsing
 $PreviousDigest = ([string]$PreviousAsset.digest).Substring(7)
+# PowerShell 5's generic web client has repeatedly spent nearly an hour
+# streaming this ~400 MB release asset only to leave bytes that fail the
+# published digest. The authenticated GitHub CLI is already required above for
+# provenance verification and writes the release asset directly as binary.
+gh release download "v$PreviousVersion" --repo $env:GITHUB_REPOSITORY `
+    --pattern $PreviousName --dir $env:TEMP --clobber
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $PreviousArchive)) { Refuse 'prior Stable Linux download failed' }
 if ((Get-FileHash $PreviousArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $PreviousDigest) { Refuse 'prior Stable Linux digest mismatch' }
 
 # Site-equivalent prior Stable install. This is the tracked site installer with

@@ -118,6 +118,9 @@ test("workflow routes no PR/fork code, uses unique labels, fans acceptance out, 
   const channelUpload = workflow.match(/- name: Retain immutable digest-addressed channel image candidate[\s\S]*?retention-days: 90/)?.[0] || "";
   assert.doesNotMatch(channelUpload, /container\//);
   assert.match(channelUpload, /dist\/1Helm-channel-machine-v1-\*\.oci\.tar/);
+  const macBuild = workflow.match(/build-macos:[\s\S]*?(?=\n  deploy:)/)?.[0] || "";
+  assert.match(macBuild, /id: upload_macos[\s\S]*continue-on-error: true[\s\S]*compression-level: 0/);
+  assert.match(macBuild, /Retry exact Mac candidate upload after a transport stall[\s\S]*if: steps\.upload_macos\.outcome == 'failure'[\s\S]*compression-level: 0[\s\S]*overwrite: true/);
   const linuxAccept = read("ops/platform-acceptance/linux.sh");
   assert.match(linuxAccept, /RUNNER_ENVIRONMENT.*==.*"github-hosted"/);
   assert.match(linuxAccept, /1helm-standalone/);
@@ -222,6 +225,8 @@ test("Windows code publishes no artifact/signing claim and requires honest reboo
   assert.match(windows, /LocalRootfs/);
   assert.match(read("site/public/install.ps1"), /LocalRootfsSha256/);
   assert.match(windows, /no distinct prior Stable release/);
+  assert.match(windows, /gh release download "v\$PreviousVersion"[\s\S]*--pattern \$PreviousName[\s\S]*--clobber/);
+  assert.doesNotMatch(windows, /Invoke-WebRequest -Uri \$PreviousAsset\.browser_download_url/);
   assert.match(windows, /unrelated WSL control/);
   assert.match(windows, /Windows publishes no artifact and has no signing claim/);
   assert.match(read("ops/platform-acceptance/macos.sh"), /acceptance residue before this job/);
