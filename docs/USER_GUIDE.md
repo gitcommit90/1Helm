@@ -321,13 +321,21 @@ Connections guides Photon device authorization, project setup, secret rotation,
 phone registration, and sidecar health. There are no channel mappings: the
 Captain's configured phone always talks directly to Skipper.
 
-The first inbound text creates a private conversation in `#main`'s **Texts**
-tab. Phone messages and Skipper's iMessage replies are retained there, and the
-conversation keeps one context across connector restarts and Photon space-ID
-changes until the Captain sends `/new`. The Captain can continue the same
-thread inside 1Helm and return to the phone later; desktop-only turns stay in
-1Helm rather than being replayed as iMessages. Rich attachment fidelity is not
-yet part of the verified contract.
+Ask Skipper to text you now or to remind you by text later. Skipper can also
+offer a text when it would be useful, but sends only after the Captain clearly
+asks, naturally continues an existing text request, or accepts the offer. The destination is fixed to the one
+Captain phone configured in Connections; Skipper cannot choose another number.
+On a shared Photon line, the Captain may need to send one first text to the
+number shown in Connections before Photon permits Skipper to initiate an
+outbound conversation.
+
+An outbound Skipper text or the first inbound phone text creates a private
+conversation in `#main`'s **Texts** tab. Phone messages and Skipper's iMessage
+replies are retained there, and the conversation keeps one context across
+connector restarts and Photon space-ID changes until the Captain sends `/new`.
+The Captain can continue the same thread inside 1Helm and return to the phone
+later; ordinary desktop-only turns stay in 1Helm rather than being replayed as
+iMessages. Rich attachment fidelity is not yet part of the verified contract.
 
 ## Workflows, follow-ups, and computer care
 

@@ -4,9 +4,17 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import test from "node:test";
+import test, { after } from "node:test";
+
+// connectors.ts reads DATA_DIR at import time. Isolate the entire test module
+// before any query-string variant imports it, even when the parent command was
+// launched from a running 1Helm service with CTRL_DATA_DIR in its environment.
+const connectorSuiteRoot = await mkdtemp(join(tmpdir(), "1helm-connector-suite-"));
+process.env.CTRL_DATA_DIR = join(connectorSuiteRoot, "data");
+after(async () => { await rm(connectorSuiteRoot, { recursive: true, force: true }); });
 
 test("Linux release packaging ships pinned connectors for every supported host architecture", () => {
+  const suiteRunner = readFileSync(join(import.meta.dirname, "..", "scripts", "run-test-suite.mjs"), "utf8");
   const packageLinux = readFileSync(join(import.meta.dirname, "..", "scripts", "package-linux-host.mjs"), "utf8");
   const resolver = readFileSync(join(import.meta.dirname, "..", "src", "server", "connectors.ts"), "utf8");
   for (const [arch, asset, digest] of [
@@ -22,6 +30,7 @@ test("Linux release packaging ships pinned connectors for every supported host a
   assert.match(packageLinux, /archive\.stdout\?\.length[\s\S]*stagedPackage[\s\S]*versioned package contract/, "Linux packaging rejects an empty or structurally incomplete Git source archive");
   assert.match(resolver, /cloudflared-linux-\$\{process\.arch\}/, "Linux resolves only the binary matching the running host architecture");
   assert.match(resolver, /process\.env\.HELM_APP_ROOT[\s\S]*process\.cwd\(\)/, "an installed Linux service can resolve its bundled connector from its release working directory");
+  assert.match(suiteRunner, /delete env\.CTRL_DATA_DIR/, "the full test command never inherits a running 1Helm service's durable data path");
 });
 
 test("Linux release packaging rejects a source copy nested under another Git checkout", async () => {

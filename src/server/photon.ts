@@ -142,6 +142,49 @@ export function photonConversation(ownerUserId: number, conversationId: number):
   return { ...conversation, messages };
 }
 
+/** Start a Captain-authorized outbound Texts conversation. The only possible
+ * destination is the operator phone sealed into the host-owned Photon
+ * credentials; callers cannot supply or override a phone number. */
+export async function textPhotonCaptain(input: { owner_user_id: number; bot_id: number; body: string }): Promise<Record<string, unknown>> {
+  const main = photonMainChannel();
+  const value = credentials();
+  const body = String(input.body || "").trim();
+  if (!main || Number(main.personal_main_owner_id) !== Number(input.owner_user_id)) throw new Error("Texts are available only to the Captain in private #main.");
+  const skipper = q1("SELECT 1 FROM agents WHERE bot_id=? AND kind='skipper' AND status<>'deleted'", input.bot_id);
+  if (!skipper) throw new Error("Only Skipper can text the Captain.");
+  if (!value?.project_id || !value.project_secret || !E164.test(String(value.operator_phone || ""))) throw new Error("Photon is not configured with a Captain phone.");
+  if (!body) throw new Error("Write the text for Skipper to send.");
+  if (body.length > 50_000) throw new Error("Texts are limited to 50,000 characters.");
+  if (!base) await startPhotonConnector();
+  if (!base) throw new Error("Photon is reconnecting. Try the text again in a moment.");
+
+  const timestamp = now();
+  const previousConversation = activePhotonConversation(value.operator_phone);
+  run("UPDATE photon_conversations SET active=0,closed=COALESCE(closed,?),updated=? WHERE sender=? AND active=1", timestamp, timestamp, value.operator_phone);
+  const messageId = createMessage({ channelId: Number(main.id), parentId: null, botId: Number(input.bot_id), body });
+  const threadId = ensureThread(messageId, Number(main.id));
+  const conversationId = run(`INSERT INTO photon_conversations
+    (channel_id,sender,space_id,root_message_id,thread_id,active,started,updated)
+    VALUES (?,?,?,?,?,1,?,?)`, main.id, value.operator_phone, value.operator_phone, messageId, threadId, timestamp, timestamp).lastInsertRowid;
+  run("UPDATE messages SET photon_conversation_id=? WHERE id=?", conversationId, messageId);
+  queuePhotonDelivery(Number(main.id), value.operator_phone, body, messageId, `photon:captain-text:${messageId}`);
+  run("INSERT INTO channel_activity (channel_id,thread_id,kind,summary,status,actor_type,created) VALUES (?,?,'connector',?,'pending','skipper',?)",
+    main.id, threadId, "Skipper queued an explicitly authorized text to the configured Captain phone.", timestamp);
+  refreshThreadSummary(messageId);
+  await drainPhotonDeliveries();
+  const delivery = q1("SELECT state,error FROM connector_deliveries WHERE idempotency_key=?", `photon:captain-text:${messageId}`);
+  if (String(delivery?.state || "") !== "delivered") {
+    run("UPDATE photon_conversations SET active=0,closed=?,updated=? WHERE id=?", now(), now(), conversationId);
+    if (previousConversation?.id) run("UPDATE photon_conversations SET active=1,closed=NULL,updated=? WHERE id=?", now(), previousConversation.id);
+    run("UPDATE threads SET status='failed',updated_at=? WHERE id=?", now(), threadId);
+    sendToUsers([Number(input.owner_user_id)], { type: "photon_update", conversationId });
+    throw new Error(String(delivery?.error || "Photon did not confirm the text delivery."));
+  }
+  sendToUsers([Number(input.owner_user_id)], { type: "photon_update", conversationId, message: serializeMessage(messageId) });
+  sendToUsers([Number(input.owner_user_id)], { type: "photon_update", conversationId });
+  return { delivered: true, conversation_id: conversationId, destination: "configured Captain phone" };
+}
+
 /** Continue any saved Texts thread from the desktop. It uses the same Skipper
  * context but deliberately does not mirror the exchange back to the phone. */
 export async function continuePhotonConversation(ownerUserId: number, conversationId: number, text: string): Promise<Record<string, unknown>> {
@@ -227,8 +270,11 @@ export async function drainPhotonDeliveries(): Promise<void> {
     try {
       const result = await sidecar("/send", { method: "POST", body: JSON.stringify({ space_id: String(delivery.destination), text: String(delivery.body).slice(0, 50_000) }) });
       const externalId = String(result.message_id || "");
+      const deliveredSpaceId = String(result.space_id || delivery.destination);
       run("INSERT INTO photon_messages (channel_id,external_id,space_id,sender,direction,body,received_at,message_id) VALUES (?,?,?,?, 'outbound',?,?,?)",
-        delivery.channel_id, externalId, delivery.destination, "1Helm", String(delivery.body), now(), delivery.source_message_id);
+        delivery.channel_id, externalId, deliveredSpaceId, "1Helm", String(delivery.body), now(), delivery.source_message_id);
+      if (delivery.source_message_id) run(`UPDATE photon_conversations SET space_id=?,updated=?
+        WHERE id=(SELECT photon_conversation_id FROM messages WHERE id=?)`, deliveredSpaceId, now(), delivery.source_message_id);
       run("UPDATE connector_deliveries SET state='delivered',external_id=?,error='',updated=? WHERE id=? AND state='attempting'", externalId, now(), delivery.id);
     } catch (error) {
       const detail = String((error as Error).message || error).slice(0, 500);
@@ -263,7 +309,10 @@ export async function deliverPhotonEvent(event: PhotonEvent): Promise<boolean> {
   // Source/direction/sender already live in photon_messages. Keep the visible
   // transcript human and avoid repeating a robotic transport label + phone number.
   const body = event.text;
-  const messageId = createMessage({ channelId, parentId: rootMessageId || null, botId: null, body });
+  // The sender has already passed the exact configured-operator check above,
+  // so retain the Captain identity for runtime authority while system_message
+  // keeps transport presentation distinct in the Texts UI.
+  const messageId = createMessage({ channelId, parentId: rootMessageId || null, userId: Number(main.owner_user_id), body });
   run("UPDATE messages SET system_message=1 WHERE id=?", messageId);
   if (!rootMessageId) {
     rootMessageId = messageId;

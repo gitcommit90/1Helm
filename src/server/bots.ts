@@ -33,7 +33,7 @@ import {
   deleteChannelWorld,
   restoreChannel,
 } from "./agents.ts";
-import { scheduleAgentFollowup } from "./followups.ts";
+import { captainTextConsent, captainTextingPrompt, captainTextToolDefinitions, followupToolDefinition, scheduleRuntimeFollowup, sendCaptainTextForTurn } from "./followups.ts";
 import { closeChannelSessions } from "./terms.ts";
 import { claimAgentTurn, finalizeAgentTurn, ownsAgentTurnWriter, updateAgentTurnProgress, writeAgentTurnBody } from "./turns.ts";
 import {
@@ -53,6 +53,7 @@ import { coworkContextFromRootBody, coworkFormatContract, enforceCoworkCommandOu
 import { actionSummary, completedToolAnswer, toolActionStatus } from "./bot-output.ts";
 
 export { toolActionStatus } from "./bot-output.ts";
+export { captainTextConsent } from "./followups.ts";
 
 type ChatMsg = { role: string; content: string; tool_calls?: ToolCall[]; tool_call_id?: string; name?: string };
 type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
@@ -151,6 +152,7 @@ function skipperControlAuthorized(channelId: number, requestUserId: number, host
 function systemPromptTiers(bot: Row, agent: RuntimeAgent | undefined, channelId: number, hostAuthorized: boolean, task = "", requestUserId = 0): RuntimePromptTiers {
   const channel = q1("SELECT name, purpose FROM channels WHERE id=?", channelId);
   if (agent?.kind === "skipper") {
+    const captainTexting = captainTextingPrompt(isMainChannel(channelId) && skipperControlAuthorized(channelId, requestUserId, hostAuthorized));
     const resident = q1(`SELECT a.name, a.display_name, p.purpose FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id
       LEFT JOIN agent_profiles p ON p.agent_id=a.id WHERE ac.channel_id=?`, channelId);
     const identity = [
@@ -161,6 +163,7 @@ function systemPromptTiers(bot: Row, agent: RuntimeAgent | undefined, channelId:
     ].filter(Boolean).join("\n\n");
     const operating = [
       "Own personal and operational coordination as well as infrastructure: schedules, reminders, tasks, goals, projects, calendars, relationships, home, health, and finances may live in focused domain channels, while you coordinate the unified cross-channel view and route focused work to those specialists. Never dismiss a scheduling or assistant request as outside Skipper's role.",
+      captainTexting.operating,
       "Bias toward safe, reversible action. Inspect authoritative state, act with the native tools already available, verify the observable outcome, and report it. Ask only at a real human boundary; never substitute interviews, narration, permission-seeking, or a future promise for work you can perform now.",
       "Treat tool results as evidence: retry transient failures with a bounded changed strategy, stop repeating an unchanged failure, and preserve one useful evidenced blocker. Never fabricate success or erase a prior useful answer.",
       "You oversee and unblock. Residents normally use their own Linux computer, internet access, tools, workspace, and memory directly. Skipper becomes involved only for a true host, credential, fleet, cross-channel, or missing-capability boundary—not for routine resident shell, SSH, downloads, or web work.",
@@ -177,6 +180,7 @@ function systemPromptTiers(bot: Row, agent: RuntimeAgent | undefined, channelId:
       skipperControlAuthorized(channelId, requestUserId, hostAuthorized)
         ? "This user may use Skipper's scoped native channel controls here. Act directly when requested."
         : "This user is not authorized for scoped channel-control mutations in this channel. Do not imply the capability is missing; explain the authority boundary if asked.",
+      captainTexting.context,
       agent?.id ? agentSkillContext(Number(agent.id), task) : "",
     ].filter(Boolean).join("\n\n");
     return { identity, operating, context };
@@ -359,6 +363,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
     tools.push({ type: "function", function: { name: "list_workflows", description: "List durable recurring work across the user's scoped channels, or one named channel.", parameters: { type: "object", properties: { channel: { type: "string" } } } } });
     tools.push({ type: "function", function: { name: "set_workflow_status", description: "Pause, resume, or complete a durable workflow in one scoped resident channel.", parameters: { type: "object", properties: { channel: { type: "string" }, workflow_id: { type: "integer" }, status: { type: "string", enum: ["active", "paused", "complete"] } }, required: ["channel", "workflow_id", "status"] } } });
   }
+  tools.push(...captainTextToolDefinitions(Boolean(skipper && mainChannel && skipperControlAuthorized(channelId, requestUserId, hostAuthorized))));
   if (skipper && hostAuthorized) {
     tools.push({ type: "function", function: { name: "run_thread_audit", description: "Run the authoritative workspace thread-status audit now and report how many threads were examined and changed.", parameters: { type: "object", properties: {} } } });
     tools.push({ type: "function", function: { name: "run_agent_review", description: "Run Skipper's deterministic behavior review for one scoped channel resident or every resident in the Captain workspace.", parameters: { type: "object", properties: { channel: { type: "string" } } } } });
@@ -584,8 +589,8 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       },
     },
   });
-  // Durable re-entry for async work (downloads, long jobs). Home residents only.
-  if (agent?.kind === "channel" && !visiting) {
+  // Durable re-entry for async resident work and one-shot Skipper reminders.
+  if ((agent?.kind === "channel" && !visiting) || (skipper && mainChannel && skipperControlAuthorized(channelId, requestUserId, hostAuthorized))) {
     tools.push({
       type: "function",
       function: {
@@ -611,23 +616,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
         },
       },
     });
-    tools.push({
-      type: "function",
-      function: {
-        name: "schedule_followup",
-        description: "Schedule a durable re-invocation of yourself in this thread after a delay. Survives session end and server restart.",
-        parameters: {
-          type: "object",
-          properties: {
-            delay_seconds: { type: "integer", minimum: 30, maximum: 21600, description: "Seconds until re-entry (min 30, max 6h). Use ~120–300 for downloads." },
-            reason: { type: "string", description: "What to check or finish when you wake (e.g. Sonarr S19 episode files / Jellyfin import)." },
-            check_hint: { type: "string", description: "Optional concrete command or API check to run on wake." },
-            max_attempts: { type: "integer", minimum: 1, maximum: 200, description: "Optional cap on wake cycles (default 48)." },
-          },
-          required: ["delay_seconds", "reason"],
-        },
-      },
-    });
+    tools.push(followupToolDefinition(skipper));
   }
   if (agent?.kind === "channel" && agent.id) {
     const mail = normalizeMailConfig(q1("SELECT config FROM agent_capabilities WHERE agent_id=? AND capability='gmail'", agent.id)?.config);
@@ -1537,6 +1526,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                         ? `${String(args.account || "")}: draft to ${String(args.to || "")} — ${String(args.subject || "")}`
                   : name === "gmail_list_accounts"
                           ? "List channel-scoped Gmail accounts"
+                  : name === "text_captain" ? String(args.message || "")
                   : name === "inspect_web_source" ? String(args.url || "")
                   : name === "search_web" ? `${String(args.category || "web")}: ${String(args.query || "")}`
                   : name === "search_channel_history" ? `${String(args.mode || "semantic")}: ${String(args.query || "recent messages")}`
@@ -1680,14 +1670,20 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                 result = `Displayed ${questions.length} structured question${questions.length === 1 ? "" : "s"} and paused for the user's answers.`;
                 emit();
               }
-            } else if (name === "schedule_followup" && agent?.kind === "channel" && !visiting) {
+            } else if (name === "text_captain" && agent?.kind === "skipper" && isMainChannel(channelId)
+              && skipperControlAuthorized(channelId, requestUserId, hostAuthorized)) {
+              result = await sendCaptainTextForTurn({ triggerId, threadRootId, botId: Number(bot.id), ownerUserId: requestUserId, message: String(args.message || "") });
+            } else if (name === "schedule_followup" && ((agent?.kind === "channel" && !visiting)
+              || (agent?.kind === "skipper" && isMainChannel(channelId) && skipperControlAuthorized(channelId, requestUserId, hostAuthorized)))) {
               try {
-                const scheduled = scheduleAgentFollowup({
+                const scheduled = scheduleRuntimeFollowup({
+                  agentKind: String(agent.kind),
                   agentId: Number(agent.id),
                   botId: Number(bot.id),
                   channelId,
                   threadId,
                   rootMessageId: threadRootId,
+                  triggerId,
                   delaySeconds: Number(args.delay_seconds) || 120,
                   reason: String(args.reason || ""),
                   checkHint: args.check_hint ? String(args.check_hint) : "",
@@ -1795,7 +1791,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
           }
           if (actionStatus === "complete") {
             lastCompletedTool = { name, result };
-            if (name === "schedule_followup") scheduledSilentFollowup = true;
+            if (name === "schedule_followup" && agent?.kind === "channel") scheduledSilentFollowup = true;
             if (name === "inspect_web_source") {
               try {
                 const inspected = JSON.parse(result) as { requested_url?: string; final_url?: string };
@@ -1842,7 +1838,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
       const candidate = String(content || "").trim();
       if (candidate && candidate !== responseBody.trim()) setBody(candidate);
       const wakeTurn = isInternalMessageBody(String(q1("SELECT body FROM messages WHERE id=?", triggerId)?.body || ""));
-      const silentReschedule = lastCompletedTool?.name === "schedule_followup" && !String(lastCompletedTool.result || "").startsWith("Error:");
+      const silentReschedule = agent?.kind === "channel" && lastCompletedTool?.name === "schedule_followup" && !String(lastCompletedTool.result || "").startsWith("Error:");
       const echoedScaffold = wakeTurn && (
         /^\[scheduled-followup\b/i.test(responseBody.trim())
         || /<memory-context>|Mnemosyne Context|You were re-invoked by a durable/i.test(responseBody)
@@ -1858,7 +1854,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
     }
     requireActiveTurn(channelId, controller.signal);
     if (!meaningfulAnswer(responseBody) && lastCompletedTool) {
-      if (lastCompletedTool.name === "schedule_followup" && !lastCompletedTool.result.startsWith("Error:")) {
+      if (agent?.kind === "channel" && lastCompletedTool.name === "schedule_followup" && !lastCompletedTool.result.startsWith("Error:")) {
         discardSilentTurnMessage();
         return;
       }

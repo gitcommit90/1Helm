@@ -437,7 +437,7 @@ function connectionsPanel(): HTMLElement {
       clear(box);
       box.append(
         h("div", { class: "flex flex-wrap items-start justify-between gap-3" },
-          h("div", {}, h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-display text-lg text-fg" }, "Photon · iMessage"), h("span", { class: `chip ${photon.connected ? "border-emerald-500/30 text-emerald-700 dark:text-emerald-300" : "border-amber-400/40 text-amber-700 dark:text-amber-300"}` }, photon.connected ? "Connected" : photon.configured ? "Reconnecting" : "Not configured")), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Text your 1Helm number to talk directly with Skipper. Conversations stay private to your Texts inbox and continue until you send /new. Photon credentials stay on the 1Helm host.")),
+          h("div", {}, h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-display text-lg text-fg" }, "Photon · iMessage"), h("span", { class: `chip ${photon.connected ? "border-emerald-500/30 text-emerald-700 dark:text-emerald-300" : "border-amber-400/40 text-amber-700 dark:text-amber-300"}` }, photon.connected ? "Connected" : photon.configured ? "Reconnecting" : "Not configured")), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Ask Skipper to text you now or remind you by text later, or text your 1Helm number to start from your phone. Skipper follows clear conversational permission and never sends an unsolicited text. Conversations stay private to your Texts inbox, and Photon credentials stay on the 1Helm host.")),
           photon.assigned_phone ? h("div", { class: "text-right text-xs text-muted" }, "Text 1Helm at", h("strong", { class: "mt-1 block text-sm text-fg" }, photon.assigned_phone)) : null),
       );
       if (!photon.configured || ["waiting", "provisioning", "failed", "expired"].includes(String(setup.status || ""))) {
@@ -459,7 +459,7 @@ function connectionsPanel(): HTMLElement {
       if (photon.configured) {
         box.append(h("div", { class: "rounded-lg border border-line bg-panel p-4" },
           h("div", { class: "flex flex-wrap items-center justify-between gap-3" },
-            h("div", {}, h("h4", { class: "font-semibold text-fg" }, "Texts inbox"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, `Messages from ${photon.operator_phone} talk to @skipper without belonging to any channel. Continue on phone or desktop; only phone-originated turns receive iMessage replies.`)),
+            h("div", {}, h("h4", { class: "font-semibold text-fg" }, "Texts inbox"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, `Messages from ${photon.operator_phone} talk to @skipper without belonging to any channel. Continue on phone or desktop; only phone-originated turns receive iMessage replies. A shared Photon line may require one first text from your phone before Skipper can initiate outbound messages.`)),
             h("span", { class: "chip" }, `${photon.thread_count || 0} thread${photon.thread_count === 1 ? "" : "s"}`))));
       }
       if (setup.active) { stopPolling(); timer = setTimeout(() => { void refresh(); }, 2000); }

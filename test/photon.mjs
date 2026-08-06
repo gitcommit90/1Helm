@@ -38,8 +38,11 @@ process.stdin.resume(); process.stdin.on("end",()=>process.exit(0));
 
 const { db, migrate, now, q, q1, run, seed } = await import("../src/server/db.ts");
 const photon = await import("../src/server/photon.ts");
+const bots = await import("../src/server/bots.ts");
 const photonAuth = await import("../src/server/photon-auth.ts");
+const followups = await import("../src/server/followups.ts");
 const { createPhotonInboundQueue } = await import("../src/server/photon-queue.mjs");
+const { publicPhotonError } = await import("../src/server/photon-errors.mjs");
 
 function skipperFixture() {
   seed();
@@ -72,6 +75,12 @@ test("Photon setup validates before saving and redacts credentials from status",
   assert.equal(spectrumRequests >= 2, true);
 });
 
+test("Photon exposes recipient activation failures without leaking unknown provider details", () => {
+  assert.match(publicPhotonError(new Error("Target not allowed for this project")), /one text[\s\S]*Settings → Connections/i);
+  assert.match(publicPhotonError(new Error("send failed", { cause: new Error("Target not allowed for this project") })), /one text/i);
+  assert.equal(publicPhotonError(new Error("private upstream detail")), "Photon operation failed");
+});
+
 test("Photon is bound only to private #main Skipper and exposes no channel mappings", () => {
   const { channelId } = skipperFixture();
   const coworkerId = run("INSERT INTO users (username,display,pass,is_admin,created) VALUES ('photon-coworker','Coworker','x',0,?)", now()).lastInsertRowid;
@@ -80,6 +89,47 @@ test("Photon is bound only to private #main Skipper and exposes no channel mappi
   assert.equal(q1("SELECT COUNT(*) n FROM photon_channel_mappings WHERE channel_id=?", channelId).n, 0);
   assert.equal(q1("SELECT COUNT(*) n FROM photon_channel_mappings WHERE channel_id=?", coworkerMain).n, 0, "a coworker's private #main can never become the Captain's Texts inbox");
   assert.equal(photon.photonStatus().mappings, undefined);
+});
+
+test("Skipper can initiate an explicitly authorized text only to the configured Captain phone", async () => {
+  const { channelId, ownerId } = skipperFixture();
+  const bot = q1("SELECT b.id FROM bots b JOIN agents a ON a.bot_id=b.id WHERE a.kind='skipper'");
+  const sent = await photon.textPhotonCaptain({ owner_user_id: ownerId, bot_id: Number(bot.id), body: "A Captain-authorized outbound text" });
+  assert.equal(sent.delivered, true);
+  const conversation = q1("SELECT * FROM photon_conversations WHERE id=?", sent.conversation_id);
+  assert.equal(conversation.sender, "+15551234567");
+  assert.notEqual(conversation.space_id, "", "the sidecar resolves and returns the outbound Photon space");
+  assert.equal(q1("SELECT direction FROM photon_messages WHERE message_id=?", conversation.root_message_id).direction, "outbound");
+  assert.equal(q1("SELECT state FROM connector_deliveries WHERE source_message_id=?", conversation.root_message_id).state, "delivered");
+  assert.equal(q1("SELECT photon_conversation_id FROM messages WHERE id=?", conversation.root_message_id).photon_conversation_id, conversation.id);
+  await assert.rejects(() => photon.textPhotonCaptain({ owner_user_id: ownerId + 1, bot_id: Number(bot.id), body: "wrong owner" }), /Captain.*private #main/i);
+  await assert.rejects(() => photon.textPhotonCaptain({ owner_user_id: ownerId, bot_id: Number(bot.id) + 999, body: "wrong bot" }), /Only Skipper/i);
+
+  const tools = bots.runtimeToolNamesForChannel(Number(bot.id), channelId, false, ownerId);
+  const prompt = bots.runtimePromptTiersForChannel(Number(bot.id), channelId, false, "Can you text me?", ownerId);
+  assert(tools.includes("text_captain") && tools.includes("schedule_followup"), "connected Captain #main exposes immediate and reminder text capabilities");
+  assert.match(prompt.operating, /Photon\/iMessage is connected[\s\S]*clearly requests[\s\S]*naturally continues/i);
+  assert.match(prompt.operating, /not activated[\s\S]*Settings → Connections[\s\S]*Do not tell the Captain to reconnect/i, "Skipper retains the shared-line activation troubleshooting playbook");
+});
+
+test("Skipper text reminders can use a one-shot durable wake beyond six hours", () => {
+  const { channelId, agentId } = skipperFixture();
+  const agent = q1("SELECT * FROM agents WHERE id=?", agentId);
+  const rootMessageId = run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", channelId, skipperFixture().ownerId, "Text me next week", now()).lastInsertRowid;
+  const threadId = followups.ensureFollowupThread(rootMessageId, channelId);
+  const scheduledAt = now();
+  const scheduled = followups.scheduleAgentFollowup({
+    agentId,
+    botId: Number(agent.bot_id),
+    channelId,
+    threadId,
+    rootMessageId,
+    delaySeconds: 7 * 24 * 60 * 60,
+    reason: "[captain-text-authorized] Call text_captain with: This is your one-week reminder.",
+  });
+  assert.equal(scheduled.delay_seconds, 7 * 24 * 60 * 60);
+  assert(scheduled.due_at >= scheduledAt + 7 * 24 * 60 * 60 * 1000);
+  assert.match(q1("SELECT reason FROM agent_followups WHERE id=?", scheduled.id).reason, /captain-text-authorized[\s\S]*text_captain/i);
 });
 
 test("Photon inbound delivery accepts only the Captain and invokes Skipper", async () => {
@@ -93,6 +143,7 @@ test("Photon inbound delivery accepts only the Captain and invokes Skipper", asy
   assert.equal(await photon.deliverPhotonEvent(event), true);
   assert.equal(await photon.deliverPhotonEvent(event), false);
   assert.equal(q1("SELECT COUNT(*) n FROM photon_messages WHERE external_id='allowed-1'").n, 1);
+  assert.equal(q1("SELECT user_id FROM messages WHERE id=(SELECT message_id FROM photon_messages WHERE external_id='allowed-1')").user_id, skipperFixture().ownerId, "the verified operator phone retains Captain authority for Skipper's runtime tools");
   assert.equal(q("SELECT * FROM messages WHERE channel_id=? AND system_message=1", channel.id).length, 1);
   assert.equal(dispatched.length, 1);
   assert.equal(dispatched[0].channelId, channel.id);

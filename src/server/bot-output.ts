@@ -33,7 +33,7 @@ export function completedToolAnswer(tool: string, result: string): string {
       return parsed.setup?.error || "Gmail has no connected accounts yet. Open Settings → Connections to add the one-time Google OAuth client and authorize an account.";
     } catch { return result; }
   }
-  if (["grant_gmail_access", "connect_gmail", "create_channel", "list_channels", "inspect_channel", "archive_channel", "restore_channel", "delete_channel", "inspect_fleet", "care_for_channel_computer", "list_obligations", "run_thread_audit", "run_agent_review", "remember", "search_channel_history", "read_channel_session", "call_skipper", "call_agent", "request_skill", "propose_skill", "create_skill", "search_skill_catalog", "inspect_skill", "install_skill", "invite_agent", "search_web", "inspect_web_source", "attach_web_image", "attach_file", "generate_image", "schedule_followup", "schedule_workflow", "list_workflows", "set_workflow_status"].includes(tool)) return result;
+  if (["grant_gmail_access", "connect_gmail", "create_channel", "list_channels", "inspect_channel", "archive_channel", "restore_channel", "delete_channel", "inspect_fleet", "care_for_channel_computer", "list_obligations", "run_thread_audit", "run_agent_review", "remember", "search_channel_history", "read_channel_session", "call_skipper", "call_agent", "request_skill", "propose_skill", "create_skill", "search_skill_catalog", "inspect_skill", "install_skill", "invite_agent", "search_web", "inspect_web_source", "attach_web_image", "attach_file", "generate_image", "text_captain", "schedule_followup", "schedule_workflow", "list_workflows", "set_workflow_status"].includes(tool)) return result;
   if (tool === "gmail_list_accounts") {
     try {
       const parsed = JSON.parse(result) as { accounts?: string[] };
@@ -53,6 +53,7 @@ function actionObject(tool: string, input: string, actor: string): string {
   if (tool === "gmail_search") return "granted Gmail";
   if (tool === "gmail_get") return "a granted Gmail message";
   if (tool === "gmail_create_draft") return "a Gmail draft";
+  if (tool === "text_captain") return "the configured Captain phone";
   if (tool === "run_command") return actor === "skipper" ? "the host workspace" : "the resident workspace";
   if (tool === "schedule_followup") return "a durable wake";
   if (tool === "schedule_workflow") return "a recurring workflow";
@@ -72,6 +73,7 @@ function actionVerb(tool: string): string {
     search_channel_history: "Searched", read_channel_session: "Read", inspect_web_source: "Inspected",
     attach_web_image: "Attached", install_skill: "Installed", grant_gmail_access: "Granted",
     gmail_list_accounts: "Listed", gmail_search: "Searched", gmail_get: "Read", gmail_create_draft: "Created",
+    text_captain: "Texted",
     schedule_followup: "Scheduled", schedule_workflow: "Scheduled", list_workflows: "Listed",
     set_workflow_status: "Updated", generate_image: "Generated", ask_user: "Opened",
   };

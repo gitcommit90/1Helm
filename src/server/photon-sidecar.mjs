@@ -3,6 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import { Spectrum, text as spectrumText } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
 import { createPhotonInboundQueue } from "./photon-queue.mjs";
+import { publicPhotonError } from "./photon-errors.mjs";
 
 const projectId = String(process.env.PHOTON_PROJECT_ID || "");
 const projectSecret = String(process.env.PHOTON_PROJECT_SECRET || "");
@@ -96,8 +97,9 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/send") {
       const body = await readJson(req);
       if (!body.space_id || typeof body.text !== "string" || !body.text.trim()) return respond(res, 400, { ok: false, error: "space_id and text are required" });
-      const message = await (await resolveSpace(String(body.space_id))).send(spectrumText(body.text.slice(0, 50_000)));
-      return respond(res, 200, { ok: true, message_id: message?.id || "" });
+      const space = await resolveSpace(String(body.space_id));
+      const message = await space.send(spectrumText(body.text.slice(0, 50_000)));
+      return respond(res, 200, { ok: true, message_id: message?.id || "", space_id: space?.id || body.space_id });
     }
     if (req.method === "POST" && req.url === "/shutdown") {
       respond(res, 200, { ok: true });
@@ -106,7 +108,7 @@ const server = createServer(async (req, res) => {
     respond(res, 404, { ok: false, error: "not found" });
   } catch (error) {
     console.error(`1Helm Photon sidecar request failed: ${error?.stack || error}`);
-    respond(res, 500, { ok: false, error: "Photon operation failed" });
+    respond(res, 500, { ok: false, error: publicPhotonError(error) });
   }
 });
 server.listen(port, "127.0.0.1", () => console.error(`1Helm Photon sidecar ready on 127.0.0.1:${port}`));

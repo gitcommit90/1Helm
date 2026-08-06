@@ -9,6 +9,11 @@ const prepared = prepareMnemosyneTestRuntime(root);
 process.stdout.write(`Using pinned Mnemosyne 3.14.0 from ${prepared.source}.\n`);
 
 const env = { ...process.env, NODE_ENV: "test", MNEMOSYNE_PYTHON: prepared.runtime };
+// This command is commonly launched from 1Helm's own terminal, which inherits
+// the running service's durable data path. Individual suites must opt into an
+// explicit disposable CTRL_DATA_DIR; never let a test fall back to live data.
+delete env.CTRL_DATA_DIR;
+delete env.HELM_APP_ROOT;
 const suites = [
   ["test/native-world.mjs"],
   ["--test",

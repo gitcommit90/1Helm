@@ -9,7 +9,7 @@ process.env.CTRL_DATA_DIR = dataDir;
 const dbModule = await import("../src/server/db.ts");
 const { db, q1, run, now, seed } = dbModule;
 const { verifyAuditChain } = await import("../src/server/audit.ts");
-const { buildContext, runtimePromptTiersForChannel, runtimeToolNamesForChannel, toolActionStatus, validateAskUserInput } = await import("../src/server/bots.ts");
+const { buildContext, captainTextConsent, runtimePromptTiersForChannel, runtimeToolNamesForChannel, toolActionStatus, validateAskUserInput } = await import("../src/server/bots.ts");
 const { inspectWebSource, isPublicWebAddress, validateWebSourceUrl } = await import("../src/server/web-source.ts");
 const { resolveNativeShell, terminalPromptEnvironment } = await import("../src/server/agent.ts");
 const { windowsSystemAccount } = await import("../src/server/channel-computers.ts");
@@ -23,6 +23,19 @@ test("ask_user rejects routine ambiguity and accepts only evidenced human blocke
   assert.equal(validateAskUserInput({ questions: [{ question: "Which?", options: [{ label: "A" }, { label: "B" }] }] }).valid, false);
   assert.equal(validateAskUserInput({ blocker_kind: "human_judgment", evidence: "I am not sure", questions: [{ question: "Which?", options: [{ label: "A" }, { label: "B" }] }] }).valid, false);
   assert.equal(validateAskUserInput({ blocker_kind: "external_authority", evidence: "The vendor requires the account owner to accept its binding contract.", questions: [{ question: "Authorize it?", options: [{ label: "Authorize" }, { label: "Stop" }] }] }).valid, true);
+});
+
+test("outbound Captain texting follows clear conversational permission", () => {
+  assert.equal(captainTextConsent("Text me that the package arrived."), true);
+  assert.equal(captainTextConsent("Can you text me when this finishes?"), true);
+  assert.equal(captainTextConsent("Yes", "Would you like me to text you about this?"), true);
+  assert.equal(captainTextConsent("Done try now", "Connect Photon, then ask me again.", '@skipper text me "hello"'), true);
+  assert.equal(captainTextConsent("Send hello now", "Photon is connected.", '@skipper text me "hello"'), true);
+  assert.equal(captainTextConsent("Yeah, go ahead", "I can text you when it is ready."), true);
+  assert.equal(captainTextConsent("Skipper should be able to text me someday."), false);
+  assert.equal(captainTextConsent("Yes", "Would you like me to save a note?"), false);
+  assert.equal(captainTextConsent("Yeah, but don't text me yet", "I can text you when it is ready."), false);
+  assert.equal(captainTextConsent("Send the report now", "The report is ready."), false);
 });
 
 test("#main is a database- and tool-level resident-free authority channel", () => {

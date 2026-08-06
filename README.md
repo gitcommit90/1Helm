@@ -338,9 +338,14 @@ keys per member.
 Connections are host-owned brokers, not secrets copied into every resident's
 shell. Gmail exposes scoped account listing, search, read, and draft creation;
 sending remains disabled by default. Photon gives the Captain one direct line
-to Skipper: every text stays in a private Texts thread until `/new`, and that
-same context can continue on desktop without echoing desktop-only turns back to
-iMessage. Provider, Gmail, and Photon credentials stay on the host.
+to Skipper: ask Skipper to text now or remind you by text later, or initiate the
+conversation from your phone. Outbound texts require clear conversational
+permission from the Captain and can reach only the configured Captain number. Every
+text stays in a private Texts thread until `/new`, and that same context can
+continue on desktop without echoing ordinary desktop-only turns back to
+iMessage. Shared Photon lines may require one first text from the Captain's
+phone before Skipper can initiate outbound messages. Provider, Gmail, and
+Photon credentials stay on the host.
 
 New connection types have to earn their place with least-privilege scoping,
 secret isolation, reconnect and recovery, deduplication, deterministic tests,

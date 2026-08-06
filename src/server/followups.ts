@@ -1,13 +1,36 @@
 import { q, q1, run, now, type Row } from "./db.ts";
-import { createMessage } from "./store.ts";
+import { createMessage, isInternalMessageBody } from "./store.ts";
 import { broadcastToChannel } from "./events.ts";
 import { agentForBot, ensureThread, refreshThreadSummary, threadIdForRoot } from "./agents.ts";
 import { ensureChannelComputerRunning, satisfyObligation, upsertObligation } from "./channel-computers.ts";
+import { captainTextConsent, deliverCaptainText } from "./captain-texting.ts";
+
+export { captainTextConsent, captainTextingPrompt, captainTextToolDefinitions } from "./captain-texting.ts";
+
+export function followupToolDefinition(skipper: boolean): unknown {
+  return {
+    type: "function",
+    function: {
+      name: "schedule_followup",
+      description: skipper ? "Schedule a one-shot durable re-invocation of Skipper in this private thread. For an explicitly authorized text reminder, put the exact reminder and the instruction to call text_captain in reason. Survives server restarts." : "Schedule a durable re-invocation of yourself in this thread after a delay. Survives session end and server restart.",
+      parameters: {
+        type: "object",
+        properties: {
+          delay_seconds: { type: "integer", minimum: 30, maximum: 31536000, description: "Seconds until re-entry (min 30, max 1 year)." },
+          reason: { type: "string", description: "What to check or finish when you wake (e.g. Sonarr S19 episode files / Jellyfin import)." },
+          check_hint: { type: "string", description: "Optional concrete command or API check to run on wake." },
+          max_attempts: { type: "integer", minimum: 1, maximum: 200, description: "Optional cap on wake cycles (default 48)." },
+        },
+        required: ["delay_seconds", "reason"],
+      },
+    },
+  };
+}
 
 /** Poll due follow-ups often enough for media downloads without burning CPU. */
 const CHECK_EVERY_MS = Number(process.env.FOLLOWUP_INTERVAL_MS || 15_000);
 const MIN_DELAY_SEC = 30;
-const MAX_DELAY_SEC = 6 * 60 * 60;
+const MAX_DELAY_SEC = 365 * 24 * 60 * 60;
 const DEFAULT_MAX_ATTEMPTS = 48;
 const MAX_PENDING_PER_THREAD = 3;
 
@@ -106,6 +129,35 @@ export function scheduleAgentFollowup(opts: ScheduleOpts): { id: number; due_at:
     followup,
   });
   return { id, due_at: dueAt, delay_seconds: delay };
+}
+
+function captainTextAuthorizedForTurn(triggerId: number, threadRootId: number, botId: number): boolean {
+  const current = String(q1("SELECT body FROM messages WHERE id=?", triggerId)?.body || "");
+  if (isInternalMessageBody(current) && /\[captain-text-authorized\]/i.test(current)) return true;
+  const prior = q1(`SELECT body FROM messages WHERE bot_id=? AND id<? AND (id=? OR parent_id=?)
+    AND trim(body)<>'' AND body<>'_Working…_' ORDER BY id DESC LIMIT 1`, botId, triggerId, threadRootId, threadRootId);
+  const earlierCaptain = q(`SELECT body FROM messages WHERE user_id IS NOT NULL AND id<? AND (id=? OR parent_id=?)
+    AND trim(body)<>'' ORDER BY id DESC`, triggerId, threadRootId, threadRootId)
+    .find((message) => captainTextConsent(String(message.body || "")));
+  return captainTextConsent(current, String(prior?.body || ""), String(earlierCaptain?.body || ""));
+}
+
+export async function sendCaptainTextForTurn(input: { triggerId: number; threadRootId: number; botId: number; ownerUserId: number; message: string }): Promise<string> {
+  if (!captainTextAuthorizedForTurn(input.triggerId, input.threadRootId, input.botId)) {
+    return "Error: outbound texting requires a clear Captain request, a natural continuation of an existing text request, or acceptance of Skipper's offer in this thread.";
+  }
+  return deliverCaptainText(input.ownerUserId, input.botId, input.message);
+}
+
+export function scheduleRuntimeFollowup(opts: ScheduleOpts & { agentKind: string; triggerId: number }): { id: number; due_at: number; delay_seconds: number } {
+  let reason = String(opts.reason || "");
+  if (opts.agentKind === "skipper" && /\btext_captain\b|\b(?:text|iMessage)\s+(?:the\s+)?(?:Captain|user)\b|\b(?:send|deliver)[\s\S]{0,40}\b(?:text|iMessage)\b/i.test(reason)) {
+    if (!captainTextAuthorizedForTurn(opts.triggerId, opts.rootMessageId, opts.botId)) {
+      throw new Error("A text reminder requires clear conversational permission from the Captain in this thread.");
+    }
+    reason = `[captain-text-authorized] ${reason}`;
+  }
+  return scheduleAgentFollowup({ ...opts, reason });
 }
 
 /** Next pending wake for a thread (soonest due_at), or null. */
@@ -346,7 +398,9 @@ async function fireFollowup(row: Row): Promise<void> {
   // No WS message broadcast — wakes are invisible; only the agent's final reply (if any) is public.
 
   try {
-    await ensureChannelComputerRunning(channelId, `scheduled follow-up #${id}`);
+    // Skipper lives in the control plane and has no resident channel computer.
+    // Ordinary residents still wake their isolated computer before re-entry.
+    if (String(agent.kind) !== "skipper") await ensureChannelComputerRunning(channelId, `scheduled follow-up #${id}`);
     // Dynamic import avoids a static cycle with bots.ts (which imports scheduleAgentFollowup).
     const { runBot } = await import("./bots.ts");
     await runBot(bot, channelId, triggerId, rootMessageId, false, undefined, false);
