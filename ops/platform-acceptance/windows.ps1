@@ -14,6 +14,9 @@ $Commit = [string]$Manifest.source.commit
 $Version = [string]$Manifest.version
 $Digest = [string]$Manifest.artifact.sha256
 $OfflineDigest = [string]$Manifest.offline_bundle.sha256
+$ImageDigest = [string]$Manifest.sealed_oci.sha256
+$ImageBytes = [int64]$Manifest.sealed_oci.bytes
+$ImageName = [string]$Manifest.sealed_oci.artifact.name
 $CiRun = [string]$Manifest.ci.run_id
 $Wsl = Join-Path $env:SystemRoot 'System32\wsl.exe'
 $Distro = '1helm-phase4'
@@ -94,6 +97,12 @@ if ($Provision.schema -ne 1 -or $Provision.kind -ne '1helm-windows-runner-provis
 }
 if ((Get-FileHash $Archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Digest) { Refuse 'Linux TGZ digest changed' }
 if ((Get-FileHash $OfflineArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $OfflineDigest) { Refuse 'Linux offline TGZ digest changed' }
+if ($ImageDigest -notmatch '^[a-f0-9]{64}$' -or $ImageBytes -lt 1 -or
+    $ImageName -ne "1Helm-channel-machine-v1-amd64-$ImageDigest.oci.tar" -or
+    [string]$Manifest.sealed_oci.architecture -ne 'amd64' -or
+    -not (@($Manifest.sealed_oci.platforms) -ccontains 'windows-wsl')) {
+    Refuse 'candidate channel image identity is invalid for Windows WSL'
+}
 gh attestation verify $Archive --bundle $ProvenancePath `
     --repo gitcommit90/1Helm --signer-workflow gitcommit90/1Helm/.github/workflows/candidate.yml `
     --source-ref refs/heads/main --source-digest $Commit --deny-self-hosted-runners
@@ -177,9 +186,42 @@ $StateBefore = (& $Wsl -d $Distro -u root --exec sha256sum /var/lib/1helm-oci-v1
 $Stage = Join-Path $InstallRoot 'candidate-stage'
 New-Item -ItemType Directory -Path $Stage -Force | Out-Null
 Copy-Item $Archive (Join-Path $Stage 'candidate.tgz') -Force
+Copy-Item $OfflineArchive (Join-Path $Stage 'candidate-offline.tgz') -Force
 $StageInDistro = '/mnt/' + $Stage.Substring(0,1).ToLowerInvariant() + ($Stage.Substring(2) -replace '\\','/')
 $CandidateRelease = "/opt/1helm/releases/$Version-$Digest"
-Invoke-Distro "set -e; rm -rf '$CandidateRelease.tmp'; mkdir -p '$CandidateRelease.tmp'; tar -xzf '$StageInDistro/candidate.tgz' -C '$CandidateRelease.tmp' --strip-components=1; chown -R 1helm:1helm '$CandidateRelease.tmp'; mv '$CandidateRelease.tmp' '$CandidateRelease'; '$CandidateRelease/site/public/apply-linux-release.sh' '$CandidateRelease' '$Version'"
+$RetainedImage = "/var/lib/1helm-oci-v1/shared-images/sha256/$ImageDigest"
+# The candidate's immutable image Release deliberately does not exist until
+# publication. Seed the exact image already bound inside the attested offline
+# candidate into the same digest-addressed store that the public updater uses,
+# then update from the online archive. This exercises the real split updater
+# without pretending an unreleased URL should work.
+$updateCommand = @'
+set -e
+rm -rf '__CANDIDATE_RELEASE__.tmp'
+mkdir -p '__CANDIDATE_RELEASE__.tmp'
+tar -xzf '__STAGE__/candidate.tgz' -C '__CANDIDATE_RELEASE__.tmp' --strip-components=1
+chown -R 1helm:1helm '__CANDIDATE_RELEASE__.tmp'
+mv '__CANDIDATE_RELEASE__.tmp' '__CANDIDATE_RELEASE__'
+mapfile -t image_members < <(tar -tzf '__STAGE__/candidate-offline.tgz' | grep -E '^[^/]+/container/channel-machine\.oci\.tar$')
+test "${#image_members[@]}" = 1
+install -d -o root -g root -m 0700 '__RETAINED_IMAGE__'
+tar -xOzf '__STAGE__/candidate-offline.tgz' "${image_members[0]}" > '__RETAINED_IMAGE__/image.tmp'
+test "$(stat -c %s '__RETAINED_IMAGE__/image.tmp')" = '__IMAGE_BYTES__'
+test "$(sha256sum '__RETAINED_IMAGE__/image.tmp' | awk '{print $1}')" = '__IMAGE_DIGEST__'
+install -o root -g root -m 0600 '__RETAINED_IMAGE__/image.tmp' '__RETAINED_IMAGE__/__IMAGE_NAME__'
+install -o root -g root -m 0600 '__CANDIDATE_RELEASE__/resources/channel-image.json' '__RETAINED_IMAGE__/manifest.json'
+rm -f '__RETAINED_IMAGE__/image.tmp'
+'__CANDIDATE_RELEASE__/site/public/apply-linux-release.sh' '__CANDIDATE_RELEASE__' '__VERSION__'
+test "$(sha256sum /usr/lib/1helm-oci/channel-machine.oci.tar | awk '{print $1}')" = '__IMAGE_DIGEST__'
+'@
+$updateCommand = $updateCommand.Replace('__CANDIDATE_RELEASE__', $CandidateRelease)
+$updateCommand = $updateCommand.Replace('__STAGE__', $StageInDistro)
+$updateCommand = $updateCommand.Replace('__RETAINED_IMAGE__', $RetainedImage)
+$updateCommand = $updateCommand.Replace('__IMAGE_BYTES__', [string]$ImageBytes)
+$updateCommand = $updateCommand.Replace('__IMAGE_DIGEST__', $ImageDigest)
+$updateCommand = $updateCommand.Replace('__IMAGE_NAME__', $ImageName)
+$updateCommand = $updateCommand.Replace('__VERSION__', $Version)
+Invoke-Distro $updateCommand
 Assert-DistroVersion $Version
 $StateAfterUpdate = (& $Wsl -d $Distro -u root --exec sha256sum /var/lib/1helm-oci-v1/phase4-acceptance-state | Out-String).Split()[0]
 if ($StateBefore -ne $StateAfterUpdate) { Refuse 'WSL data marker changed across update' }

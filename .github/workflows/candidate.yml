@@ -281,40 +281,37 @@ jobs:
           HELM_MAC_ZIP="dist/1Helm-$version-mac-arm64.zip" \
           HELM_MAC_MANIFEST="dist/candidate-evidence/mac-candidate.json" \
             node scripts/mac-candidate-manifest.mjs
-          printf 'artifact_name=1helm-macos-candidate-%s\n' "$HELM_CANDIDATE_COMMIT" >> "$GITHUB_OUTPUT"
+          artifact_name="1helm-macos-candidate-$HELM_CANDIDATE_COMMIT.tar"
+          tar -cf "dist/$artifact_name" -C dist \
+            "1Helm-$version-arm64.dmg" \
+            "1Helm-$version-mac-arm64.zip" \
+            candidate-evidence/mac-candidate.json \
+            candidate-evidence/mac_dmg-provenance.json \
+            candidate-evidence/mac_updater_zip-provenance.json
+          printf 'artifact_name=%s\n' "$artifact_name" >> "$GITHUB_OUTPUT"
 
       - name: Upload exact retained signed Mac candidate
         id: upload_macos
         continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.identity.outputs.artifact_name }}
-          path: |
-            dist/1Helm-*-arm64.dmg
-            dist/1Helm-*-mac-arm64.zip
-            dist/candidate-evidence/mac-candidate.json
-            dist/candidate-evidence/mac_dmg-provenance.json
-            dist/candidate-evidence/mac_updater_zip-provenance.json
+          path: dist/${{ steps.identity.outputs.artifact_name }}
           if-no-files-found: error
           retention-days: 30
-          # DMG and ZIP bytes are already compressed. Avoid spending runner
-          # CPU recompressing ~600 MB and use the transport's direct path.
-          compression-level: 0
+          # Stream one already-bundled file directly. The older ZIP-streaming
+          # transport repeatedly stalled before acknowledging even one byte.
+          archive: false
 
       - name: Retry exact Mac candidate upload after a transport stall
         if: steps.upload_macos.outcome == 'failure'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.identity.outputs.artifact_name }}
-          path: |
-            dist/1Helm-*-arm64.dmg
-            dist/1Helm-*-mac-arm64.zip
-            dist/candidate-evidence/mac-candidate.json
-            dist/candidate-evidence/mac_dmg-provenance.json
-            dist/candidate-evidence/mac_updater_zip-provenance.json
+          path: dist/${{ steps.identity.outputs.artifact_name }}
           if-no-files-found: error
           retention-days: 30
-          compression-level: 0
+          archive: false
           overwrite: true
 
   deploy:
@@ -458,10 +455,18 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.build-macos.outputs.artifact-name }}
           path: mac-candidate-download
+
+      - name: Unpack exact retained Mac candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="mac-candidate-download/${{ needs.build-macos.outputs.artifact-name }}"
+          test -f "$bundle"
+          tar -xf "$bundle" -C mac-candidate-download
 
       - name: Execute exact Apple Silicon acceptance
         shell: bash
@@ -565,8 +570,14 @@ jobs:
         with: { name: "${{ needs.build.outputs.artifact-name }}", path: candidate-download }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with: { name: "1helm-channel-image-${{ needs.build.outputs.image-digest }}", path: channel-image-download }
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with: { name: "${{ needs.build-macos.outputs.artifact-name }}", path: mac-candidate-download }
+      - name: Unpack exact retained Mac candidate
+        run: |
+          set -euo pipefail
+          bundle="mac-candidate-download/${{ needs.build-macos.outputs.artifact-name }}"
+          test -f "$bundle"
+          tar -xf "$bundle" -C mac-candidate-download
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with: { name: "1helm-dress-rehearsal-evidence-${{ needs.build.outputs.commit }}", path: rehearsal-download }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

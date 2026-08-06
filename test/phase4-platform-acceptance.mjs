@@ -119,8 +119,14 @@ test("workflow routes no PR/fork code, uses unique labels, fans acceptance out, 
   assert.doesNotMatch(channelUpload, /container\//);
   assert.match(channelUpload, /dist\/1Helm-channel-machine-v1-\*\.oci\.tar/);
   const macBuild = workflow.match(/build-macos:[\s\S]*?(?=\n  deploy:)/)?.[0] || "";
-  assert.match(macBuild, /id: upload_macos[\s\S]*continue-on-error: true[\s\S]*compression-level: 0/);
-  assert.match(macBuild, /Retry exact Mac candidate upload after a transport stall[\s\S]*if: steps\.upload_macos\.outcome == 'failure'[\s\S]*compression-level: 0[\s\S]*overwrite: true/);
+  assert.match(macBuild, /tar -cf "dist\/\$artifact_name"[\s\S]*artifact_name=%s/);
+  assert.match(macBuild, /id: upload_macos[\s\S]*continue-on-error: true[\s\S]*actions\/upload-artifact@[a-f0-9]{40}[\s\S]*archive: false/);
+  assert.match(macBuild, /Retry exact Mac candidate upload after a transport stall[\s\S]*if: steps\.upload_macos\.outcome == 'failure'[\s\S]*archive: false[\s\S]*overwrite: true/);
+  assert.doesNotMatch(macBuild, /compression-level:/);
+  const macAcceptJob = workflow.match(/accept-macos:[\s\S]*?(?=\n  accept-windows:)/)?.[0] || "";
+  assert.match(macAcceptJob, /actions\/download-artifact@[a-f0-9]{40}[\s\S]*Unpack exact retained Mac candidate[\s\S]*tar -xf/);
+  const promotion = workflow.match(/assemble-promotion:[\s\S]*?(?=\n  candidate-status:)/)?.[0] || "";
+  assert.match(promotion, /actions\/download-artifact@[a-f0-9]{40}[\s\S]*Unpack exact retained Mac candidate[\s\S]*tar -xf/);
   const linuxAccept = read("ops/platform-acceptance/linux.sh");
   assert.match(linuxAccept, /RUNNER_ENVIRONMENT.*==.*"github-hosted"/);
   assert.match(linuxAccept, /1helm-standalone/);
@@ -227,6 +233,9 @@ test("Windows code publishes no artifact/signing claim and requires honest reboo
   assert.match(windows, /no distinct prior Stable release/);
   assert.match(windows, /gh release download "v\$PreviousVersion"[\s\S]*--pattern \$PreviousName[\s\S]*--clobber/);
   assert.doesNotMatch(windows, /Invoke-WebRequest -Uri \$PreviousAsset\.browser_download_url/);
+  assert.match(windows, /candidate-offline\.tgz[\s\S]*shared-images\/sha256\/\$ImageDigest/);
+  assert.match(windows, /tar -xOzf[\s\S]*stat -c %s[\s\S]*sha256sum[\s\S]*resources\/channel-image\.json/);
+  assert.match(windows, /apply-linux-release\.sh[\s\S]*sha256sum \/usr\/lib\/1helm-oci\/channel-machine\.oci\.tar/);
   assert.match(windows, /unrelated WSL control/);
   assert.match(windows, /Windows publishes no artifact and has no signing claim/);
   assert.match(read("ops/platform-acceptance/macos.sh"), /acceptance residue before this job/);
