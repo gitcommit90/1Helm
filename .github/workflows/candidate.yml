@@ -76,6 +76,9 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      asset-url: ${{ steps.archive.outputs.asset-url }}
+      asset-sha256: ${{ steps.archive.outputs.asset-sha256 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -87,6 +90,7 @@ jobs:
           node-version: "22"
           cache: npm
       - name: Build and upload the complete archive
+        id: archive
         env:
           GH_TOKEN: ${{ github.token }}
           COMMIT: ${{ needs.prepare.outputs.commit }}
@@ -104,13 +108,13 @@ jobs:
           test -s "$archive"
           tar -tzf "$archive" | grep '^1Helm-[^/]*/container/channel-machine\.oci\.tar$' >/dev/null
           gh release upload "$TAG" "$archive" --repo "$GITHUB_REPOSITORY" --clobber
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
-              --jq ".assets[] | select(.name == \"$(basename "$archive")\") | .digest" | grep -q '^sha256:[a-f0-9]\{64\}$'; then
-            :
-          else
-            echo 'GitHub did not expose a SHA-256 digest for the uploaded Linux archive.' >&2
-            exit 1
-          fi
+          asset_url="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq ".assets[] | select(.name == \"$(basename "$archive")\") | .apiUrl")"
+          asset_digest="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq ".assets[] | select(.name == \"$(basename "$archive")\") | .digest")"
+          [[ "$asset_url" == https://api.github.com/repos/*/releases/assets/* ]]
+          [[ "$asset_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          printf 'asset-url=%s\nasset-sha256=%s\n' "$asset_url" "${asset_digest#sha256:}" >>"$GITHUB_OUTPUT"
 
   accept-linux:
     name: Fresh install and start — Linux
@@ -126,19 +130,21 @@ jobs:
       - name: Download the draft release archive
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.prepare.outputs.tag }}
+          ASSET_URL: ${{ needs.linux-build.outputs.asset-url }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p release
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "1Helm-$VERSION-linux-node.tgz" --dir release --clobber
+          curl --fail --location --retry 3 --retry-all-errors \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/octet-stream' \
+            --output "release/1Helm-$VERSION-linux-node.tgz" "$ASSET_URL"
       - name: Install, start, check version and health
         env:
           HELM_RELEASE_ARCHIVE: ${{ github.workspace }}/release/1Helm-${{ needs.prepare.outputs.version }}-linux-node.tgz
           HELM_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          HELM_RELEASE_SHA256: ${{ needs.linux-build.outputs.asset-sha256 }}
         run: |
-          export HELM_RELEASE_SHA256="$(sha256sum "$HELM_RELEASE_ARCHIVE" | awk '{print $1}')"
           sudo --preserve-env=RUNNER_NAME,HELM_RELEASE_ARCHIVE,HELM_RELEASE_VERSION,HELM_RELEASE_SHA256 \
             bash ops/release/fresh-install-linux.sh
 
@@ -157,20 +163,25 @@ jobs:
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.prepare.outputs.tag }}
+          ASSET_URL: ${{ needs.linux-build.outputs.asset-url }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
+          $ProgressPreference = 'SilentlyContinue'
           New-Item -ItemType Directory -Force -Path release | Out-Null
-          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY `
-            --pattern "1Helm-$env:VERSION-linux-node.tgz" --dir release --clobber
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/octet-stream'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          Invoke-WebRequest -Uri $env:ASSET_URL -Headers $headers `
+            -OutFile "release\1Helm-$env:VERSION-linux-node.tgz" -UseBasicParsing
       - name: Install through WSL, start, check version and health
         shell: powershell
         env:
           HELM_RELEASE_ARCHIVE: ${{ github.workspace }}\release\1Helm-${{ needs.prepare.outputs.version }}-linux-node.tgz
           HELM_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          HELM_RELEASE_SHA256: ${{ needs.linux-build.outputs.asset-sha256 }}
         run: |
-          $env:HELM_RELEASE_SHA256 = (Get-FileHash $env:HELM_RELEASE_ARCHIVE -Algorithm SHA256).Hash.ToLowerInvariant()
           & .\ops\release\fresh-install-windows.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
