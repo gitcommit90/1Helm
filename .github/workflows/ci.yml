@@ -15,14 +15,14 @@ concurrency:
 jobs:
   release-transport:
     name: release transport
-    if: github.event_name == 'push' && github.event.head_commit.message == 'release: build Mac fix'
+    if: github.event_name == 'push' && github.event.head_commit.message == 'release: build Mac fix now'
     runs-on: ubuntu-latest
     steps:
       - run: echo 'Authorizing the dedicated Mac signing runner; no tests requested.'
 
   verify:
     name: verify
-    if: github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'release:')
+    if: github.event_name != 'push' || startsWith(github.event.head_commit.message, 'release:') == false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
