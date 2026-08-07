@@ -58,12 +58,8 @@ jobs:
             awk -v heading="## [$version]" 'index($0, heading) == 1 {found=1; next} found && /^## \[/ {exit} found {print}' CHANGELOG.md
           } >"$notes"
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish >existing.json 2>/dev/null; then
-            EXISTING_JSON=existing.json COMMIT="$COMMIT" node <<'NODE'
-            const release = JSON.parse(require('node:fs').readFileSync(process.env.EXISTING_JSON, 'utf8'));
-            if (!release.isDraft || ![process.env.COMMIT, 'main'].includes(release.targetCommitish)) {
-              throw new Error('an existing release or unrelated draft already owns this version');
-            }
-            NODE
+            EXISTING_JSON=existing.json COMMIT="$COMMIT" node -e \
+              'const r=JSON.parse(require("node:fs").readFileSync(process.env.EXISTING_JSON,"utf8")); if(!r.isDraft||![process.env.COMMIT,"main"].includes(r.targetCommitish)) throw new Error("an existing release or unrelated draft already owns this version")'
             gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" \
               --title "1Helm $version" --notes-file "$notes"
             gh release delete-asset "$tag" "1Helm-$version-stable.json" \
@@ -237,38 +233,15 @@ jobs:
           set -euo pipefail
           assets="$(mktemp)"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish,assets >"$assets"
-          ASSETS_JSON="$assets" node <<'NODE'
-          const fs = require('node:fs');
-          const release = JSON.parse(fs.readFileSync(process.env.ASSETS_JSON, 'utf8'));
-          if (!release.isDraft || ![process.env.COMMIT, 'main'].includes(release.targetCommitish)) throw new Error('draft release identity changed');
-          const expected = [
-            `1Helm-${process.env.VERSION}-arm64.dmg`,
-            `1Helm-${process.env.VERSION}-mac-arm64.zip`,
-            `1Helm-${process.env.VERSION}-linux-node.tgz`,
-          ];
-          if (release.assets.length !== 3) throw new Error(`expected 3 release files, found ${release.assets.length}`);
-          for (const name of expected) {
-            const matches = release.assets.filter((asset) => asset.name === name);
-            if (matches.length !== 1 || !/^sha256:[a-f0-9]{64}$/.test(matches[0].digest || '') || matches[0].size < 1) {
-              throw new Error(`missing digest-qualified release file ${name}`);
-            }
-          }
-          const roles = ['mac_dmg', 'mac_updater_zip', 'linux_tgz'];
-          const artifacts = expected.map((name, index) => {
-            const asset = release.assets.find((entry) => entry.name === name);
-            return {
-              role: roles[index], name, sha256: asset.digest.slice(7), bytes: asset.size,
-              url: `https://github.com/gitcommit90/1Helm/releases/download/${process.env.TAG}/${name}`,
-            };
-          });
-          const manifest = {
-            schema: 3, kind: '1helm-promoted-stable', repository: 'gitcommit90/1Helm', ref: 'refs/heads/main',
-            version: process.env.VERSION, tag: process.env.TAG, commit: process.env.COMMIT,
-            promoted_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
-            publication: { workflow_run_id: process.env.RELEASE_RUN_ID }, artifacts,
-          };
-          fs.writeFileSync(`/tmp/1Helm-${process.env.VERSION}-stable.json`, `${JSON.stringify(manifest, null, 2)}\n`);
-          NODE
+          ASSETS_JSON="$assets" node -e '
+            const fs=require("node:fs"),r=JSON.parse(fs.readFileSync(process.env.ASSETS_JSON,"utf8"));
+            if(!r.isDraft||![process.env.COMMIT,"main"].includes(r.targetCommitish))throw new Error("draft release identity changed");
+            const names=[`1Helm-${process.env.VERSION}-arm64.dmg`,`1Helm-${process.env.VERSION}-mac-arm64.zip`,`1Helm-${process.env.VERSION}-linux-node.tgz`];
+            if(r.assets.length!==3)throw new Error(`expected 3 release files, found ${r.assets.length}`);
+            for(const n of names){const m=r.assets.filter(a=>a.name===n);if(m.length!==1||!/^sha256:[a-f0-9]{64}$/.test(m[0].digest||"")||m[0].size<1)throw new Error(`missing digest-qualified release file ${n}`)}
+            const roles=["mac_dmg","mac_updater_zip","linux_tgz"],artifacts=names.map((name,i)=>{const a=r.assets.find(x=>x.name===name);return{role:roles[i],name,sha256:a.digest.slice(7),bytes:a.size,url:`https://github.com/gitcommit90/1Helm/releases/download/${process.env.TAG}/${name}`}});
+            const manifest={schema:3,kind:"1helm-promoted-stable",repository:"gitcommit90/1Helm",ref:"refs/heads/main",version:process.env.VERSION,tag:process.env.TAG,commit:process.env.COMMIT,promoted_at:new Date().toISOString().replace(/\.\d{3}Z$/,"Z"),publication:{workflow_run_id:process.env.RELEASE_RUN_ID},artifacts};
+            fs.writeFileSync(`/tmp/1Helm-${process.env.VERSION}-stable.json`,`${JSON.stringify(manifest,null,2)}\n`);'
           manifest="/tmp/1Helm-$VERSION-stable.json"
           gh release upload "$TAG" "$manifest" --repo "$GITHUB_REPOSITORY"
           local_sha="$(sha256sum "$manifest" | awk '{print $1}')"
