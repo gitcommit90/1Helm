@@ -43,8 +43,10 @@ try {
     if (-not ((Get-Distros) -ccontains $Distro)) { Refuse 'WSL distribution was not installed' }
     $health = Invoke-WebRequest -Uri 'http://localhost:8123/api/setup/status' -UseBasicParsing -TimeoutSec 15
     if ($health.StatusCode -ne 200 -or -not (($health.Content | ConvertFrom-Json).needs_setup)) { Refuse 'localhost onboarding is not healthy' }
-    $installed = (& $Wsl -d $Distro -u root --exec /opt/1helm/node-current/bin/node -p 'require("/opt/1helm/current/package.json").version' | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $installed -ne $Version) { Refuse "installed version is '$installed'" }
+    $installedPackage = (& $Wsl -d $Distro -u root --exec /bin/cat /opt/1helm/current/package.json | Out-String)
+    if ($LASTEXITCODE -ne 0) { Refuse 'installed package metadata could not be read' }
+    $installed = [string](($installedPackage | ConvertFrom-Json).version)
+    if ($installed -ne $Version) { Refuse "installed version is '$installed'" }
     Write-Host "Windows fresh install passed for 1Helm $Version."
 } finally {
     if ((Get-Distros) -ccontains $Distro) {
