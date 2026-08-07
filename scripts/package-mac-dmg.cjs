@@ -130,6 +130,15 @@ function verifyProductIcon(appPath) {
   }
 }
 
+function buildRuntimeAssets() {
+  console.log("Building the browser, stylesheet, and packaged sidecar assets…");
+  run("npm", ["run", "build"], { cwd: ROOT });
+  for (const relative of ["public/index.html", "public/bundle.js", "public/app.css", "desktop/photon-sidecar.bundle.mjs"]) {
+    const file = path.join(ROOT, relative);
+    if (!fs.existsSync(file) || fs.statSync(file).size === 0) throw new Error(`Mac release build is missing ${relative}`);
+  }
+}
+
 function prepareCloudflared() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "1helm-cloudflared-"));
   const cache = path.resolve(process.env.HELM_CLOUDFLARED_CACHE_DIR || path.join(os.homedir(), "Library", "Caches", "1Helm", "release"));
@@ -179,6 +188,11 @@ function verifyApp(appPath, expectTicket) {
   // Mach-O bytes, so the sealed app must verify its signature—not the
   // pre-signing whole-file hash.
   run("codesign", ["--verify", "--strict", "--verbose=2", cloudflared]);
+  const packagedRoot = path.join(appPath, "Contents", "Resources", "app");
+  for (const relative of ["public/index.html", "public/bundle.js", "public/app.css", "desktop/photon-sidecar.bundle.mjs"]) {
+    const file = path.join(packagedRoot, relative);
+    if (!fs.existsSync(file) || fs.statSync(file).size === 0) throw new Error(`Packaged app is missing ${relative}`);
+  }
   verifyProductIcon(appPath);
   if (expectTicket) {
     run("xcrun", ["stapler", "validate", appPath]);
@@ -201,6 +215,7 @@ async function main() {
   const identity = resolveIdentity();
   if (REQUIRE_NOTARIZATION && !identity) throw new Error("A matching Developer ID Application identity is required");
 
+  buildRuntimeAssets();
   fs.mkdirSync(DIST, { recursive: true });
   const dmg = path.join(DIST, `${PRODUCT}-${VERSION}-${ARCH}.dmg`);
   const candidate = path.join(DIST, `${PRODUCT}-${VERSION}-${ARCH}.candidate.dmg`);

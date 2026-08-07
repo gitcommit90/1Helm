@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-07
+
+### Fixed
+
+- The Mac release now builds and verifies its browser bundle and stylesheet
+  before signing. Version 1.0.0 omitted those generated files, so the server
+  returned the HTML fallback for `bundle.js` and the interface could not load.
+
 ## [1.0.0] - 2026-08-07
 
 ### Added
