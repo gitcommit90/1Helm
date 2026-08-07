@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { DATA_DIR, UPLOAD_DIR, now, q, q1, run, tx, type Row } from "./db.ts";
 import { botView, resolveModel } from "./store.ts";
@@ -1000,7 +1000,7 @@ export function importWorkspaceUpload(channelId: number, threadId: number | null
     const dot = safe.lastIndexOf(".");
     target = join(directory.host, dot > 0 ? `${safe.slice(0, dot)}-${suffix}${safe.slice(dot)}` : `${safe}-${suffix}`);
   }
-  copyFileSync(source, target);
+  copyFileSync(source, target); if (channelUsesRuntimeStorage(channelId)) chmodSync(target, 0o660); // Linux OCI restores the inherited resident ACL mask.
   const name = basename(target);
   const path = directory.path ? `${directory.path}/${name}` : name;
   const worldPath = workspaceWorldPath(path);

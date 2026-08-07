@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -25,6 +25,7 @@ process.env.HELM_FLEET_INTERVAL_MS = "600000";
 const db = await import("../src/server/db.ts");
 db.seed();
 const computers = await import("../src/server/channel-computers.ts");
+const agents = await import("../src/server/agents.ts");
 const stamp = Date.now();
 const channelId = Number(db.run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created) VALUES ('backend','backend','channel','backend','backend','active',?)", stamp).lastInsertRowid);
 const botId = Number(db.run("INSERT INTO bots (name,created) VALUES ('backend-agent',?)", stamp).lastInsertRowid);
@@ -48,6 +49,12 @@ try {
   assert.equal(result.exit_code, 0);
   assert.equal(readFileSync(join(authoritativeRoot, "workspace", "result.txt"), "utf8"), "runtime-authority");
   assert.equal(readFileSync(join(authoritativeRoot, "files", "direct.txt"), "utf8"), "direct-file");
+  const uploadToken = "a".repeat(40);
+  writeFileSync(join(db.UPLOAD_DIR, uploadToken), "human-upload", { mode: 0o600 });
+  assert.equal(agents.importAttachment(channelId, null, uploadToken, "human.txt", "human"), "files/human.txt");
+  assert.equal(statSync(join(authoritativeRoot, "files", "human.txt")).mode & 0o777, 0o660, "Linux OCI imports restore the inherited resident ACL mask after a 0600 upload");
+  result = await computers.runChannelCommand(channelId, "cat files/human.txt");
+  assert.match(result.output, /human-upload/, "a resident can read a human upload through the authoritative OCI mount");
   writeFileSync(join(authoritativeRoot, "workspace", "human.txt"), "human-direct");
   result = await computers.runChannelCommand(channelId, "cat human.txt");
   assert.match(result.output, /human-direct/);
