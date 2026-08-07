@@ -5,36 +5,27 @@ on:
     workflows: [CI]
     types: [completed]
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      commit:
-        description: Exact previously qualified commit whose retained Mac files should be resumed
-        required: true
-        type: string
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: 1helm-release
   cancel-in-progress: false
 
-# The legacy workflow name/path and three accept-* job IDs are retained only
-# because the dedicated self-hosted runners allowlist those identities before a
-# job starts. The old candidate/evidence/promotion system is gone. This workflow
-# builds one draft release, installs those exact bytes on three clean computers,
-# and publishes the same files after all three apps start and answer health.
+# This workflow is retired. Its name/path and accept-macos job ID are retained
+# for one final trusted-runner transport: the v1.0.0 Mac sandbox check. The
+# publication job disables this workflow after that exact check succeeds.
 jobs:
   prepare:
     name: Prepare one draft release
     if: >-
-      github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_branch == 'main' &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
-       (github.event.workflow_run.head_sha == vars.HELM_RELEASE_SHA ||
-        github.event.workflow_run.head_sha == vars.HELM_MAC_RESUME_HARNESS_SHA))
+       github.event.workflow_run.head_commit.message == 'release: replace dress rehearsal with platform checks')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -44,14 +35,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ (github.event_name == 'workflow_dispatch' && inputs.commit) || (github.event.workflow_run.head_sha == vars.HELM_MAC_RESUME_HARNESS_SHA && vars.HELM_MAC_RESUME_SHA) || github.event.workflow_run.head_sha }}
+          ref: 11f1f73cf18c7c59609ab98c43ce8d8098de66d8
           fetch-depth: 1
           persist-credentials: false
       - name: Create the empty draft
         id: release
         env:
-          GH_TOKEN: ${{ (github.event_name == 'workflow_dispatch' || github.event.workflow_run.head_sha == vars.HELM_MAC_RESUME_HARNESS_SHA) && secrets.HELM_RELEASE_TOKEN || github.token }}
-          COMMIT: ${{ (github.event_name == 'workflow_dispatch' && inputs.commit) || (github.event.workflow_run.head_sha == vars.HELM_MAC_RESUME_HARNESS_SHA && vars.HELM_MAC_RESUME_SHA) || github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: 11f1f73cf18c7c59609ab98c43ce8d8098de66d8
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$COMMIT"
@@ -82,7 +73,7 @@ jobs:
   linux-build:
     name: Build the Linux release once
     needs: prepare
-    if: github.event_name != 'workflow_dispatch' && github.event.workflow_run.head_sha != vars.HELM_MAC_RESUME_HARNESS_SHA
+    if: github.event.workflow_run.head_commit.message != 'release: replace dress rehearsal with platform checks'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -128,7 +119,7 @@ jobs:
   accept-linux:
     name: Fresh install and start — Linux
     needs: [prepare, linux-build]
-    if: github.event_name != 'workflow_dispatch' && github.event.workflow_run.head_sha != vars.HELM_MAC_RESUME_HARNESS_SHA
+    if: github.event.workflow_run.head_commit.message != 'release: replace dress rehearsal with platform checks'
     runs-on: [1helm-linux-phase4]
     timeout-minutes: 30
     steps:
@@ -161,7 +152,7 @@ jobs:
   accept-windows:
     name: Fresh install and start — Windows
     needs: [prepare, linux-build]
-    if: github.event_name != 'workflow_dispatch' && github.event.workflow_run.head_sha != vars.HELM_MAC_RESUME_HARNESS_SHA
+    if: github.event.workflow_run.head_commit.message != 'release: replace dress rehearsal with platform checks'
     runs-on: [1helm-windows-phase4]
     timeout-minutes: 30
     steps:
@@ -207,9 +198,9 @@ jobs:
           ref: ${{ needs.prepare.outputs.commit }}
           fetch-depth: 1
           persist-credentials: false
-          clean: ${{ github.event_name != 'workflow_dispatch' && github.event.workflow_run.head_sha != vars.HELM_MAC_RESUME_HARNESS_SHA }}
+          clean: false
       - name: Build, sign and notarize
-        if: github.event_name != 'workflow_dispatch' && github.event.workflow_run.head_sha != vars.HELM_MAC_RESUME_HARNESS_SHA
+        if: false
         env:
           HELM_CLOUDFLARED_CACHE_DIR: ${{ runner.temp }}/../1helm-release-cache
         run: |
@@ -219,7 +210,7 @@ jobs:
           PUPPETEER_SKIP_DOWNLOAD=1 npm ci
           npm run package:dmg:release
       - name: Resume the exact retained Mac files
-        if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.head_sha == vars.HELM_MAC_RESUME_HARNESS_SHA
+        if: true
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           EXPECTED_DMG_SHA256: 38531c1949b24e4c01882ebb18c75df9fea04b97f3deffe57d4e8e2090bc45ab
@@ -247,23 +238,19 @@ jobs:
         env:
           HELM_RELEASE_DIST: ${{ github.workspace }}/dist
           HELM_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-          HARNESS_COMMIT: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.workflow_run.head_sha }}
+          HARNESS_COMMIT: ${{ github.event.workflow_run.head_sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == workflow_dispatch || "${{ github.event.workflow_run.head_sha }}" == "${{ vars.HELM_MAC_RESUME_HARNESS_SHA }}" ]]; then
-            curl --fail --location \
-              --header "Authorization: Bearer $GH_TOKEN" \
-              --header 'Accept: application/vnd.github.raw+json' \
-              --output "$RUNNER_TEMP/fresh-install-macos.sh" \
-              "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/ops/release/fresh-install-macos.sh?ref=$HARNESS_COMMIT"
-            bash "$RUNNER_TEMP/fresh-install-macos.sh"
-          else
-            bash ops/release/fresh-install-macos.sh
-          fi
+          curl --fail --location \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github.raw+json' \
+            --output "$RUNNER_TEMP/fresh-install-macos.sh" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/ops/release/fresh-install-macos.sh?ref=$HARNESS_COMMIT"
+          bash "$RUNNER_TEMP/fresh-install-macos.sh"
       - name: Upload the exact tested Mac files
         env:
-          GH_TOKEN: ${{ (github.event_name == 'workflow_dispatch' || github.event.workflow_run.head_sha == vars.HELM_MAC_RESUME_HARNESS_SHA) && secrets.HELM_RELEASE_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
@@ -277,11 +264,17 @@ jobs:
             digest="$(printf '%s' "$assets" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const a=JSON.parse(s).assets.find(x=>x.name===process.argv[1]);process.stdout.write(a?.digest||"")})' "$name")"
             [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           done
+      - name: Disable the retired workflow
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow disable candidate.yml --repo "$GITHUB_REPOSITORY"
 
   publish:
     name: Publish the three tested files
-    needs: [prepare, linux-build, accept-linux, accept-windows, accept-macos]
-    if: github.event_name != 'workflow_dispatch' && github.event.workflow_run.head_sha != vars.HELM_MAC_RESUME_HARNESS_SHA
+    needs: [prepare, accept-macos]
+    if: github.event.workflow_run.head_commit.message == 'release: replace dress rehearsal with platform checks'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -313,4 +306,3 @@ jobs:
           test "$local_sha" = "$remote_sha"
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --draft=false --latest
           test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "$TAG"
-          gh variable delete HELM_RELEASE_SHA --repo "$GITHUB_REPOSITORY" || true

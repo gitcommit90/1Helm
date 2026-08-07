@@ -46,8 +46,14 @@ mkdir -p "$data"
 printf '%s\n' server >"$data/desktop-mode"
 open -n "$installed" --args --1helm-background
 for _ in {1..180}; do
-  port="$(lsof -nP -a -u "$(id -un)" -c 1Helm -iTCP -sTCP:LISTEN 2>/dev/null | awk '/127\.0\.0\.1:/ {split($9,a,":"); print a[length(a)]; exit}' || true)"
-  if [[ "$port" =~ ^[0-9]+$ ]] && curl -fsS "http://127.0.0.1:$port/api/setup/status" >"$work/health.json"; then break; fi
+  while IFS= read -r port; do
+    [[ "$port" =~ ^[0-9]+$ ]] || continue
+    if curl -fsS "http://127.0.0.1:$port/api/setup/status" >"$work/health.candidate"; then
+      mv "$work/health.candidate" "$work/health.json"
+      break 2
+    fi
+  done < <(lsof -nP -a -u "$(id -un)" -c 1Helm -iTCP -sTCP:LISTEN 2>/dev/null |
+    awk '/127\.0\.0\.1:/ {split($9,a,":"); ports[a[length(a)]]=1} END {for (port in ports) print port}' || true)
   sleep 1
 done
 [[ -s "$work/health.json" ]]
