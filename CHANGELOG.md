@@ -7,12 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.42] - 2026-08-07
+
+### Added
+
+- Skipper can send an explicitly authorized text to the configured Captain
+  through Photon, including durable one-shot reminders that wake later.
+
 ### Changed
 
 - Stable desktop releases now use a fail-closed manual promotion gate that
   verifies and republishes exact retained candidate bytes, keeps publication
   behind explicit owner approval, and serves digest-validated last-known-good
   website metadata without a follow-up digest commit.
+
+### Fixed
+
+- Human-uploaded files in Linux OCI channels now remain readable to the
+  resident agent instead of inheriting a service-owned `0600` mode that denied
+  access through `/workspace/files`.
 
 ## [0.0.41] - 2026-08-03
 
