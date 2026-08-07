@@ -5,6 +5,12 @@ on:
     workflows: [CI]
     types: [completed]
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Exact previously qualified commit whose retained Mac files should be resumed
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -22,11 +28,12 @@ jobs:
   prepare:
     name: Prepare one draft release
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.head_repository.full_name == github.repository &&
-      github.event.workflow_run.head_sha == vars.HELM_RELEASE_SHA
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.head_sha == vars.HELM_RELEASE_SHA)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -36,14 +43,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.commit || github.event.workflow_run.head_sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Create the empty draft
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
-          COMMIT: ${{ github.event.workflow_run.head_sha }}
+          COMMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.commit || github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$COMMIT"
@@ -74,6 +81,7 @@ jobs:
   linux-build:
     name: Build the Linux release once
     needs: prepare
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -119,6 +127,7 @@ jobs:
   accept-linux:
     name: Fresh install and start — Linux
     needs: [prepare, linux-build]
+    if: github.event_name != 'workflow_dispatch'
     runs-on: [1helm-linux-phase4]
     timeout-minutes: 30
     steps:
@@ -151,6 +160,7 @@ jobs:
   accept-windows:
     name: Fresh install and start — Windows
     needs: [prepare, linux-build]
+    if: github.event_name != 'workflow_dispatch'
     runs-on: [1helm-windows-phase4]
     timeout-minutes: 30
     steps:
@@ -196,7 +206,9 @@ jobs:
           ref: ${{ needs.prepare.outputs.commit }}
           fetch-depth: 1
           persist-credentials: false
+          clean: ${{ github.event_name != 'workflow_dispatch' }}
       - name: Build, sign and notarize
+        if: github.event_name != 'workflow_dispatch'
         env:
           HELM_CLOUDFLARED_CACHE_DIR: ${{ runner.temp }}/../1helm-release-cache
         run: |
@@ -205,11 +217,49 @@ jobs:
           test "$(node -p 'require("./package.json").version')" = "${{ needs.prepare.outputs.version }}"
           PUPPETEER_SKIP_DOWNLOAD=1 npm ci
           npm run package:dmg:release
+      - name: Resume the exact retained Mac files
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          EXPECTED_DMG_SHA256: 38531c1949b24e4c01882ebb18c75df9fea04b97f3deffe57d4e8e2090bc45ab
+          EXPECTED_ZIP_SHA256: d991bc508e34dc38ba7a763d7bfbac06ad1f97d1174c4450eadc12b60b501ea4
+          HELM_CLOUDFLARED_CACHE_DIR: ${{ runner.temp }}/../1helm-release-cache
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ needs.prepare.outputs.commit }}"
+          dmg="dist/1Helm-$VERSION-arm64.dmg"
+          zip="dist/1Helm-$VERSION-mac-arm64.zip"
+          actual_dmg="$(shasum -a 256 "$dmg" 2>/dev/null | awk '{print $1}' || true)"
+          actual_zip="$(shasum -a 256 "$zip" 2>/dev/null | awk '{print $1}' || true)"
+          if [[ "$actual_dmg" == "$EXPECTED_DMG_SHA256" && "$actual_zip" == "$EXPECTED_ZIP_SHA256" ]]; then
+            echo 'Reusing the exact signed and notarized Mac files retained from run 31190172319.'
+          else
+            echo 'The retained files are unavailable; rebuilding Mac only from the same exact product commit.'
+            PUPPETEER_SKIP_DOWNLOAD=1 npm ci
+            npm run package:dmg:release
+          fi
+          test -s "$dmg"
+          test -s "$zip"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
       - name: Install, start, check version and health
         env:
           HELM_RELEASE_DIST: ${{ github.workspace }}/dist
           HELM_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-        run: bash ops/release/fresh-install-macos.sh
+          HARNESS_COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == workflow_dispatch ]]; then
+            curl --fail --location \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header 'Accept: application/vnd.github.raw+json' \
+              --output "$RUNNER_TEMP/fresh-install-macos.sh" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/ops/release/fresh-install-macos.sh?ref=$HARNESS_COMMIT"
+            bash "$RUNNER_TEMP/fresh-install-macos.sh"
+          else
+            bash ops/release/fresh-install-macos.sh
+          fi
       - name: Upload the exact tested Mac files
         env:
           GH_TOKEN: ${{ github.token }}
@@ -230,6 +280,7 @@ jobs:
   publish:
     name: Publish the three tested files
     needs: [prepare, linux-build, accept-linux, accept-windows, accept-macos]
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
