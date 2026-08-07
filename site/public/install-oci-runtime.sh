@@ -112,7 +112,11 @@ NESTED_CRUN_PROFILE="/etc/apparmor.d/local/crun"
 NESTED_CRUN_MARKER="# Managed by 1Helm: allow resident OCI network sockets on nested hosts."
 container_virt="$(systemd-detect-virt --container 2>/dev/null || true)"
 apparmor_enabled="$(cat /sys/module/apparmor/parameters/enabled 2>/dev/null || true)"
-if [[ -n "$container_virt" && "$container_virt" != none && "$apparmor_enabled" =~ ^[Yy]$ && -r /etc/apparmor.d/crun ]]; then
+# An outer container host can expose the AppArmor kernel module flag without
+# mounting securityfs in this guest. In that state apparmor_parser cannot reload
+# a profile and Podman is not using AppArmor here, so there is nothing to patch.
+if [[ -n "$container_virt" && "$container_virt" != none && "$apparmor_enabled" =~ ^[Yy]$ \
+    && -r /sys/kernel/security/apparmor/profiles && -r /etc/apparmor.d/crun ]]; then
   command -v apparmor_parser >/dev/null || { echo "Nested AppArmor OCI setup requires apparmor_parser." >&2; exit 1; }
   if [[ ! -e "$NESTED_CRUN_PROFILE" ]]; then
     install -d -o root -g root -m 0755 "$(dirname "$NESTED_CRUN_PROFILE")"
@@ -133,7 +137,10 @@ install -d -o root -g root -m 0711 "$STATE_ROOT/runtime/oci" "$STATE_ROOT/runtim
 install -d -o root -g root -m 0700 "$STATE_ROOT/runtime/oci/storage" "$STATE_ROOT/runtime/oci/backups" "$STATE_ROOT/runtime/oci/networks"
 install -o root -g root -m 0644 "$APP_SOURCE/deploy/1helm-oci-runtime-v1.conf" "$MANIFEST_PATH"
 install -o root -g root -m 0644 "$APP_SOURCE/container/Containerfile.oci" "$RECIPE_ROOT/Containerfile.oci"
-ln -sfn "$RESOLVED_IMAGE_TAR" "$RECIPE_ROOT/channel-machine.oci.tar"
+# The root-owned helper intentionally rejects a symlinked image archive. Keep
+# the fixed recipe path a regular, immutable-by-service file even when its
+# verified source came from the shared digest-addressed image store.
+install -o root -g root -m 0600 "$RESOLVED_IMAGE_TAR" "$RECIPE_ROOT/channel-machine.oci.tar"
 printf '%s\n' "$expected_image_sha" >"$RECIPE_ROOT/channel-machine.oci.sha256"
 chmod 0644 "$RECIPE_ROOT/channel-machine.oci.sha256"
 if [[ -n "$RESOLVED_IMAGE_MANIFEST" ]]; then

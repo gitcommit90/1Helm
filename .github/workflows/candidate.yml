@@ -7,222 +7,274 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: 1helm-dress-rehearsal
+  group: 1helm-release
   cancel-in-progress: false
 
-# Normal pushes only run CI. To rehearse one exact main commit, set the
-# HELM_DRESS_REHEARSAL_SHA repository variable to its full 40-character SHA
-# before that commit's CI run finishes. The dedicated Mac and Windows runner
-# hooks already trust only this successful-CI workflow_run path.
+# The legacy workflow name/path and three accept-* job IDs are retained only
+# because the dedicated self-hosted runners allowlist those identities before a
+# job starts. The old candidate/evidence/promotion system is gone. This workflow
+# builds one draft release, installs those exact bytes on three clean computers,
+# and publishes the same files after all three apps start and answer health.
 jobs:
-  build:
-    name: Build Linux candidate
+  prepare:
+    name: Prepare one draft release
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
-      github.event.workflow_run.head_sha == vars.HELM_DRESS_REHEARSAL_SHA
+      github.event.workflow_run.head_sha == vars.HELM_RELEASE_SHA
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 5
     outputs:
-      artifact-name: ${{ steps.package.outputs.artifact_name }}
-      commit: ${{ steps.package.outputs.commit }}
-      version: ${{ steps.package.outputs.version }}
-      archive-sha256: ${{ steps.package.outputs.archive_sha256 }}
-      offline-sha256: ${{ steps.package.outputs.offline_sha256 }}
-      image-sha256: ${{ steps.package.outputs.image_sha256 }}
-      image-bytes: ${{ steps.package.outputs.image_bytes }}
-      image-name: ${{ steps.package.outputs.image_name }}
+      commit: ${{ steps.release.outputs.commit }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 1
           persist-credentials: false
+      - name: Create the empty draft
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+          test -z "$(git status --porcelain)"
+          version="$(node -p 'require("./package.json").version')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          tag="v$version"
+          notes="$(mktemp)"
+          {
+            echo "Fresh installation and startup verified on Linux, Windows through WSL 2, and Apple Silicon Mac."
+            echo
+            awk -v heading="## [$version]" 'index($0, heading) == 1 {found=1; next} found && /^## \[/ {exit} found {print}' CHANGELOG.md
+          } >"$notes"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish >existing.json 2>/dev/null; then
+            EXISTING_JSON=existing.json COMMIT="$COMMIT" node <<'NODE'
+            const release = JSON.parse(require('node:fs').readFileSync(process.env.EXISTING_JSON, 'utf8'));
+            if (!release.isDraft || ![process.env.COMMIT, 'main'].includes(release.targetCommitish)) {
+              throw new Error('an existing release or unrelated draft already owns this version');
+            }
+            NODE
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" \
+              --title "1Helm $version" --notes-file "$notes"
+            gh release delete-asset "$tag" "1Helm-$version-stable.json" \
+              --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" \
+              --title "1Helm $version" --notes-file "$notes" --draft
+          fi
+          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          printf 'commit=%s\ntag=%s\nversion=%s\n' "$COMMIT" "$tag" "$version" >>"$GITHUB_OUTPUT"
 
+  linux-build:
+    name: Build the Linux release once
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 1
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-
-      - name: Build the two Linux archives
-        id: package
+      - name: Build and upload the complete archive
         env:
-          HELM_CANDIDATE_REPOSITORY: ${{ github.repository }}
-          HELM_CANDIDATE_REF: refs/heads/main
-          HELM_CANDIDATE_COMMIT: ${{ github.event.workflow_run.head_sha }}
-          HELM_CANDIDATE_SOURCE_STATE: trusted-main
-          HELM_CANDIDATE_BUILD_ID: rehearsal-${{ github.run_id }}.${{ github.run_attempt }}
-          HELM_CANDIDATE_CREATED_AT: ${{ github.event.workflow_run.updated_at }}
-          HELM_CANDIDATE_CI_WORKFLOW: CI
-          HELM_CANDIDATE_CI_RUN_ID: ${{ github.event.workflow_run.id }}
-          HELM_CANDIDATE_CI_CONCLUSION: success
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$HELM_CANDIDATE_COMMIT"
-          test -z "$(git status --porcelain)"
+          test "$(git rev-parse HEAD)" = "$COMMIT"
           PUPPETEER_SKIP_DOWNLOAD=1 npm ci
           sudo apt-get update
           sudo apt-get install -y podman
           npm run package:channel-image
           npm run package:linux
-
-          version="$(node -p 'require("./package.json").version')"
-          archive="dist/1Helm-$version-linux-node.tgz"
-          offline="dist/1Helm-$version-linux-node-offline.tgz"
-          image_meta="container/channel-machine.oci.json"
+          archive="dist/1Helm-$VERSION-linux-node.tgz"
           test -s "$archive"
-          test -s "$offline"
-          test -s "$image_meta"
-          printf 'artifact_name=1helm-rehearsal-%s\n' "$HELM_CANDIDATE_COMMIT" >> "$GITHUB_OUTPUT"
-          printf 'commit=%s\n' "$HELM_CANDIDATE_COMMIT" >> "$GITHUB_OUTPUT"
-          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
-          printf 'archive_sha256=%s\n' "$(sha256sum "$archive" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          printf 'offline_sha256=%s\n' "$(sha256sum "$offline" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          printf 'image_sha256=%s\n' "$(node -p 'require("./container/channel-machine.oci.json").sha256')" >> "$GITHUB_OUTPUT"
-          printf 'image_bytes=%s\n' "$(node -p 'require("./container/channel-machine.oci.json").bytes')" >> "$GITHUB_OUTPUT"
-          printf 'image_name=%s\n' "$(node -p 'require("./container/channel-machine.oci.json").artifact.name')" >> "$GITHUB_OUTPUT"
-
-      - name: Share the exact Linux bytes with the test computers
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.package.outputs.artifact_name }}
-          path: |
-            dist/1Helm-*-linux-node.tgz
-            dist/1Helm-*-linux-node-offline.tgz
-          if-no-files-found: error
-          retention-days: 7
+          tar -tzf "$archive" | grep -m1 '^1Helm-[^/]*/container/channel-machine\.oci\.tar$' >/dev/null
+          gh release upload "$TAG" "$archive" --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq ".assets[] | select(.name == \"$(basename "$archive")\") | .digest" | grep -q '^sha256:[a-f0-9]\{64\}$'; then
+            :
+          else
+            echo 'GitHub did not expose a SHA-256 digest for the uploaded Linux archive.' >&2
+            exit 1
+          fi
 
   accept-linux:
-    name: Linux install, update, start, data, and uninstall
-    needs: build
+    name: Fresh install and start — Linux
+    needs: [prepare, linux-build]
     runs-on: [1helm-linux-phase4]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download the draft release archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "1Helm-$VERSION-linux-node.tgz" --dir release --clobber
+      - name: Install, start, check version and health
+        env:
+          HELM_RELEASE_ARCHIVE: ${{ github.workspace }}/release/1Helm-${{ needs.prepare.outputs.version }}-linux-node.tgz
+          HELM_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          export HELM_RELEASE_SHA256="$(sha256sum "$HELM_RELEASE_ARCHIVE" | awk '{print $1}')"
+          sudo --preserve-env=RUNNER_NAME,HELM_RELEASE_ARCHIVE,HELM_RELEASE_VERSION,HELM_RELEASE_SHA256 \
+            bash ops/release/fresh-install-linux.sh
+
+  accept-windows:
+    name: Fresh install and start — Windows
+    needs: [prepare, linux-build]
+    runs-on: [1helm-windows-phase4]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download the draft release archive
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY `
+            --pattern "1Helm-$env:VERSION-linux-node.tgz" --dir release --clobber
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install through WSL, start, check version and health
+        shell: powershell
+        env:
+          HELM_RELEASE_ARCHIVE: ${{ github.workspace }}\release\1Helm-${{ needs.prepare.outputs.version }}-linux-node.tgz
+          HELM_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          $env:HELM_RELEASE_SHA256 = (Get-FileHash $env:HELM_RELEASE_ARCHIVE -Algorithm SHA256).Hash.ToLowerInvariant()
+          & .\ops\release\fresh-install-windows.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  accept-macos:
+    name: Fresh install and start — Mac
+    needs: prepare
+    runs-on: [1helm-macos-phase4]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.build.outputs.commit }}
+          ref: ${{ needs.prepare.outputs.commit }}
           fetch-depth: 1
           persist-credentials: false
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.build.outputs.artifact-name }}
-          path: candidate-download
-
-      - name: Test the real Linux host
+      - name: Build, sign and notarize
         env:
-          GH_TOKEN: ${{ github.token }}
-          HELM_EXPECTED_VERSION: ${{ needs.build.outputs.version }}
-          HELM_CANDIDATE_SHA256: ${{ needs.build.outputs.archive-sha256 }}
-          HELM_CANDIDATE_OFFLINE_SHA256: ${{ needs.build.outputs.offline-sha256 }}
+          HELM_CLOUDFLARED_CACHE_DIR: ${{ runner.temp }}/../1helm-release-cache
         run: |
           set -euo pipefail
-          export HELM_CANDIDATE_ARCHIVE="$(find candidate-download -maxdepth 1 -type f -name '1Helm-*-linux-node.tgz' -print -quit)"
-          export HELM_CANDIDATE_OFFLINE_ARCHIVE="$(find candidate-download -maxdepth 1 -type f -name '1Helm-*-linux-node-offline.tgz' -print -quit)"
-          test -n "$HELM_CANDIDATE_ARCHIVE"
-          test -n "$HELM_CANDIDATE_OFFLINE_ARCHIVE"
-          bash ops/platform-acceptance/linux.sh
-
-  accept-windows:
-    name: Windows install, update, start, data, and uninstall
-    needs: build
-    runs-on: [1helm-windows-phase4]
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.build.outputs.commit }}
-          fetch-depth: 1
-          persist-credentials: false
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.build.outputs.artifact-name }}
-          path: candidate-download
-
-      - name: Test the real Windows WSL install
-        shell: powershell
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HELM_EXPECTED_VERSION: ${{ needs.build.outputs.version }}
-          HELM_CANDIDATE_SHA256: ${{ needs.build.outputs.archive-sha256 }}
-          HELM_CANDIDATE_OFFLINE_SHA256: ${{ needs.build.outputs.offline-sha256 }}
-          HELM_CHANNEL_IMAGE_SHA256: ${{ needs.build.outputs.image-sha256 }}
-          HELM_CHANNEL_IMAGE_BYTES: ${{ needs.build.outputs.image-bytes }}
-          HELM_CHANNEL_IMAGE_NAME: ${{ needs.build.outputs.image-name }}
-        run: |
-          $env:HELM_CANDIDATE_ARCHIVE = Get-ChildItem candidate-download -Filter '1Helm-*-linux-node.tgz' | Select-Object -First 1 -ExpandProperty FullName
-          $env:HELM_CANDIDATE_OFFLINE_ARCHIVE = Get-ChildItem candidate-download -Filter '1Helm-*-linux-node-offline.tgz' | Select-Object -First 1 -ExpandProperty FullName
-          if (-not $env:HELM_CANDIDATE_ARCHIVE -or -not $env:HELM_CANDIDATE_OFFLINE_ARCHIVE) { throw 'Linux candidate archives are missing.' }
-          & .\ops\platform-acceptance\windows.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-  accept-macos:
-    name: Mac build, install, update, start, and data
-    needs: build
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.head_repository.full_name == github.repository &&
-      github.event.workflow_run.head_sha == vars.HELM_DRESS_REHEARSAL_SHA
-    runs-on: [1helm-macos-phase4]
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Build, sign, notarize, and staple the Mac app
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${{ github.event.workflow_run.head_sha }}"
-          test -z "$(git status --porcelain)"
+          test "$(git rev-parse HEAD)" = "${{ needs.prepare.outputs.commit }}"
+          test "$(node -p 'require("./package.json").version')" = "${{ needs.prepare.outputs.version }}"
           PUPPETEER_SKIP_DOWNLOAD=1 npm ci
           npm run package:dmg:release
-
-      - name: Test the real Mac app
-        shell: bash
+      - name: Install, start, check version and health
+        env:
+          HELM_RELEASE_DIST: ${{ github.workspace }}/dist
+          HELM_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: bash ops/release/fresh-install-macos.sh
+      - name: Upload the exact tested Mac files
         env:
           GH_TOKEN: ${{ github.token }}
-          HELM_EXPECTED_COMMIT: ${{ github.event.workflow_run.head_sha }}
-          HELM_EXPECTED_VERSION: ${{ needs.build.outputs.version }}
-          HELM_MAC_CANDIDATE_DOWNLOAD: dist
-        run: bash ops/platform-acceptance/macos.sh
-
-  result:
-    name: Three-computer result
-    needs: [build, accept-linux, accept-windows, accept-macos]
-    if: always() && needs.build.result != 'skipped'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Report one plain result
-        env:
-          BUILD: ${{ needs.build.result }}
-          LINUX: ${{ needs.accept-linux.result }}
-          WINDOWS: ${{ needs.accept-windows.result }}
-          MACOS: ${{ needs.accept-macos.result }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          {
-            echo '## 1Helm dress rehearsal'
-            echo
-            echo "- Build: $BUILD"
-            echo "- Linux: $LINUX"
-            echo "- Windows: $WINDOWS"
-            echo "- Mac: $MACOS"
-            echo
-            echo 'Stable/public release touched: no'
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-          test "$BUILD" = success
-          test "$LINUX" = success
-          test "$WINDOWS" = success
-          test "$MACOS" = success
+          set -euo pipefail
+          gh release upload "$TAG" \
+            "dist/1Helm-$VERSION-arm64.dmg" \
+            "dist/1Helm-$VERSION-mac-arm64.zip" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          assets="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets)"
+          for name in "1Helm-$VERSION-arm64.dmg" "1Helm-$VERSION-mac-arm64.zip"; do
+            digest="$(printf '%s' "$assets" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const a=JSON.parse(s).assets.find(x=>x.name===process.argv[1]);process.stdout.write(a?.digest||"")})' "$name")"
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          done
+
+  publish:
+    name: Publish the three tested files
+    needs: [prepare, linux-build, accept-linux, accept-windows, accept-macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Bind digests, publish and verify Latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          assets="$(mktemp)"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish,assets >"$assets"
+          ASSETS_JSON="$assets" node <<'NODE'
+          const fs = require('node:fs');
+          const release = JSON.parse(fs.readFileSync(process.env.ASSETS_JSON, 'utf8'));
+          if (!release.isDraft || ![process.env.COMMIT, 'main'].includes(release.targetCommitish)) throw new Error('draft release identity changed');
+          const expected = [
+            `1Helm-${process.env.VERSION}-arm64.dmg`,
+            `1Helm-${process.env.VERSION}-mac-arm64.zip`,
+            `1Helm-${process.env.VERSION}-linux-node.tgz`,
+          ];
+          if (release.assets.length !== 3) throw new Error(`expected 3 release files, found ${release.assets.length}`);
+          for (const name of expected) {
+            const matches = release.assets.filter((asset) => asset.name === name);
+            if (matches.length !== 1 || !/^sha256:[a-f0-9]{64}$/.test(matches[0].digest || '') || matches[0].size < 1) {
+              throw new Error(`missing digest-qualified release file ${name}`);
+            }
+          }
+          const roles = ['mac_dmg', 'mac_updater_zip', 'linux_tgz'];
+          const artifacts = expected.map((name, index) => {
+            const asset = release.assets.find((entry) => entry.name === name);
+            return {
+              role: roles[index], name, sha256: asset.digest.slice(7), bytes: asset.size,
+              url: `https://github.com/gitcommit90/1Helm/releases/download/${process.env.TAG}/${name}`,
+            };
+          });
+          const manifest = {
+            schema: 3, kind: '1helm-promoted-stable', repository: 'gitcommit90/1Helm', ref: 'refs/heads/main',
+            version: process.env.VERSION, tag: process.env.TAG, commit: process.env.COMMIT,
+            promoted_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+            publication: { workflow_run_id: process.env.RELEASE_RUN_ID }, artifacts,
+          };
+          fs.writeFileSync(`/tmp/1Helm-${process.env.VERSION}-stable.json`, `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
+          manifest="/tmp/1Helm-$VERSION-stable.json"
+          gh release upload "$TAG" "$manifest" --repo "$GITHUB_REPOSITORY"
+          local_sha="$(sha256sum "$manifest" | awk '{print $1}')"
+          remote_sha="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq ".assets[] | select(.name == \"$(basename "$manifest")\") | .digest" | sed 's/^sha256://')"
+          test "$local_sha" = "$remote_sha"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --draft=false --latest
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "$TAG"
+          gh variable delete HELM_RELEASE_SHA --repo "$GITHUB_REPOSITORY" || true

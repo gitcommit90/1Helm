@@ -116,8 +116,21 @@ function verifyProductIcon(appPath) {
 
 function prepareCloudflared() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "1helm-cloudflared-"));
+  const cache = path.resolve(process.env.HELM_CLOUDFLARED_CACHE_DIR || path.join(os.homedir(), "Library", "Caches", "1Helm", "release"));
+  const cachedArchive = path.join(cache, `cloudflared-${CLOUDFLARED_VERSION}-darwin-arm64.tgz`);
+  fs.mkdirSync(cache, { recursive: true });
+  const valid = fs.existsSync(cachedArchive)
+    && capture("shasum", ["-a", "256", cachedArchive]).split(/\s+/)[0] === CLOUDFLARED_ARCHIVE_SHA256;
+  if (!valid) {
+    if (fs.existsSync(cachedArchive)) fs.unlinkSync(cachedArchive);
+    const partial = `${cachedArchive}.partial`;
+    run("curl", ["--fail", "--location", "--retry", "3", "--retry-all-errors", "--continue-at", "-",
+      "--connect-timeout", "15", "--speed-time", "30", "--speed-limit", "1024", "--max-time", "300",
+      "--output", partial, CLOUDFLARED_ARCHIVE_URL]);
+    fs.renameSync(partial, cachedArchive);
+  }
   const archive = path.join(root, "cloudflared.tgz");
-  run("curl", ["--fail", "--location", "--retry", "3", "--output", archive, CLOUDFLARED_ARCHIVE_URL]);
+  fs.copyFileSync(cachedArchive, archive);
   if (capture("shasum", ["-a", "256", archive]).split(/\s+/)[0] !== CLOUDFLARED_ARCHIVE_SHA256) throw new Error("Cloudflared archive checksum does not match the release pin");
   run("tar", ["-xzf", archive, "-C", root]);
   const binary = path.join(root, "cloudflared");

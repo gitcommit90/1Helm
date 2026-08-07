@@ -50,3 +50,13 @@ test("invalid last-known-good manifests fail closed instead of inventing metadat
   manifest.artifacts[2].url = "https://example.invalid/fake.tgz";
   assert.throws(() => parseStableManifest(JSON.stringify(manifest)), /name, digest, or URL mismatch/);
 });
+
+test("the direct release manifest needs one workflow and the three real files", () => {
+  const manifest = JSON.parse(readFileSync(stablePath, "utf8"));
+  manifest.schema = 3;
+  delete manifest.promotion;
+  manifest.publication = { workflow_run_id: "123" };
+  assert.equal(parseStableManifest(JSON.stringify(manifest)).publication.workflow_run_id, "123");
+  delete manifest.publication;
+  assert.throws(() => parseStableManifest(JSON.stringify(manifest)), /publication workflow identity/);
+});

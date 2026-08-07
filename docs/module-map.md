@@ -35,6 +35,5 @@ and do not raise it for unrelated growth.
 `test/phase6-modules.mjs` directly characterizes the three extracted contracts.
 Runtime integration remains covered by `test/autonomy-platform.mjs`,
 `test/sweep-fleet-telemetry.mjs`, browser/native suites, and the full
-`npm run ci` contract. Delivery Phases 1–5 retain their named `test:phase*`
-commands; modular work must not alter their artifact, promotion, or release
-semantics.
+`npm run ci` contract. Release checks are separately limited to fresh install,
+version, startup, and health on Linux, Windows, and Mac.

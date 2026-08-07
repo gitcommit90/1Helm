@@ -428,13 +428,13 @@ separate generated test data under `.preview-data/`, so it never changes or
 restarts Stable. If Stable uses a locally customized port, set
 `HELM_STABLE_PORT` before launching the preview so that port is refused too.
 
-### Private Linux dress rehearsal
+### Releases
 
-After trusted `main` passes CI, the candidate workflow prepares one exact,
-attested Linux build for a dedicated private guest and installs it through a
-digest-verified, rollback-aware root boundary. It does not publish a release,
-change Stable, or run PR code on the guest. Private coordinates stay in local
-status configuration. See [Private Linux dress rehearsal](docs/dress-rehearsal.md).
+The release workflow creates one draft and installs those exact files on clean
+Linux, Windows through WSL 2, and Apple Silicon Mac hosts. Each host checks the
+installed version, successful startup, and setup endpoint health. The draft
+becomes public only when all three checks pass; there is no candidate evidence
+or promotion pipeline. See [Release check](docs/dress-rehearsal.md).
 
 ### Core configuration
 

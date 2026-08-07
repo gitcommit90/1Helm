@@ -3,9 +3,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 
 export const DEFAULT_FAST_TESTS = Object.freeze([
   "test/phase1-tools.mjs",
-  "test/delivery-status.mjs",
-  "test/cleanup-report.mjs",
-  "test/delivery-governance.mjs",
+  "test/photon.mjs",
 ]);
 
 export function selectFastTests(root, args, exists = existsSync) {

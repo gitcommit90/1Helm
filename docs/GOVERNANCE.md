@@ -57,66 +57,40 @@ contract as the slice hardens.
 8. A multi-item user request retains a numbered acceptance ledger in the pull
    request and GitHub Release. Do not collapse completed items into a generic
    summary or rely on generated commit notes as the user-facing release record.
-9. Each supported desktop platform owns an installed-app verification lane. The
-   retained Apple Silicon host owns macOS signing, notarization, and its two
-   artifacts; Linux owns the systemd/OCI artifact and updater acceptance.
-   **Windows owns no artifact**: it runs the Linux host inside a per-user WSL 2
-   distribution installed from `https://1helm.com/install.ps1`, so Windows 11
-   x64 owns a behavioural acceptance lane instead — non-elevated one-liner
-   install with a single UAC prompt, restart and resume, keepalive across a
-   reboot, `http://localhost:8123` onboarding, prior-version update with the
-   data root retained, and removal via `uninstall.ps1`. Because no Windows
-   executable code ships, there is no signing identity or signature status to
-   record or disclose for it.
+9. Each supported desktop platform owns one fresh-install verification lane.
+   The Apple Silicon host owns macOS signing/notarization and its two files;
+   Linux owns the systemd/OCI archive; Windows runs that archive through WSL 2
+   and therefore publishes no separate artifact. Each lane checks the installed
+   version, startup, and setup endpoint health.
 
 ## Versioning
 
 - Semantic versioning on `package.json`.
 - **Do not** reuse a published version tag for different bits.
-- A desktop release requires one unique version and exact commit, changelog, the
-  complete **four-artifact** split desktop matrix (`1Helm-<version>-arm64.dmg`,
-  `1Helm-<version>-mac-arm64.zip`, online `1Helm-<version>-linux-node.tgz`,
-  complete `1Helm-<version>-linux-node-offline.tgz`), plus the exact immutable
-  digest-addressed channel-image manifest, and
-  clean-install plus prior-to-new update evidence on macOS, Linux, and Windows.
-  Windows publishes no artifact; its installer is served by the site, not
-  attached to the release. Partial platform releases under the shared product
-  version are prohibited. If one platform is blocked, the entire
-  tag/publication waits. Because a Windows host installs the Linux archive, a
-  blocked Linux artifact blocks Windows too.
+- A desktop release requires one unique version and exact commit, changelog,
+  the signed/notarized Mac DMG and updater ZIP, and one complete Linux archive.
+  Windows publishes no artifact; it installs the Linux archive through WSL 2.
+  The exact files must fresh-install, report the intended version, start, and
+  answer health on macOS, Linux, and Windows before publication.
 - GitHub Release notes are a first-class product artifact. They must enumerate
   every user-visible fix and feature accepted for that release, using the same
   numbered ledger as the originating request when one exists. A short summary
   can introduce that ledger but cannot replace it.
-- Desktop Stable publication uses only the manual promotion workflow. It
-  verifies and republishes exact retained candidate bytes without rebuilding,
-  requires an explicit identity-bound owner confirmation and approval in the
-  protected **Stable publication** Environment, and refuses any existing tag or
-  Release. Repository automation does not create or configure that Environment.
+- Desktop Stable publication uses one draft Release. The same exact files are
+  tested on the three computers and that draft becomes public only after every
+  fresh-install lane succeeds.
 - Every promoted Release includes a digest-qualified machine-readable Stable
   manifest. The site retains the last manifest it validated and must fail closed
   instead of inventing metadata. Tags and Release assets are never rewritten;
   rollback uses a new version or a supported installed-updater rollback policy.
-- macOS verification must use the exact publicly downloaded artifact, preserve
-  Application Support, and prove signature/ticket/Gatekeeper, launch, version,
-  loopback behavior, and retained state on the retained release host.
-- Linux verification must use the digest-qualified release archive and prove a
-  real systemd update, health-failure rollback, and retained
-  `/var/lib/1helm-oci-v1`.
-- Windows verification is behavioural and must be performed on real Windows 11
-  x64 hardware. It must prove: a clean install driven by
-  `irm https://1helm.com/install.ps1 | iex` from an ordinary, non-elevated
-  PowerShell window with exactly one UAC prompt, exercised on a host where
-  `Microsoft-Windows-Subsystem-Linux` and `VirtualMachinePlatform` start
-  disabled; the mid-install restart reported without a false failure and the
-  identical command resuming to completion as the same signed-in user; the
-  keepalive registered as that user's scheduled task and surviving a reboot with
-  `1helm.service` active; a browser on that PC reaching `http://localhost:8123`
-  and completing onboarding; a prior-version update through the in-distribution
-  Linux updater with the data root under `/var/lib/1helm-oci-v1` retained; and
-  removal via the site-served `uninstall.ps1`, which must never call
-  `wsl --shutdown` and must never unregister a distribution whose name is not an
-  exact match for the target. No Windows signature status exists to record.
+- macOS verification proves the draft DMG and app are signed, notarized,
+  stapled, accepted by Gatekeeper, installed at the intended version, launched,
+  and healthy on loopback.
+- Linux verification installs the draft archive as the real systemd/OCI host,
+  checks the intended version, and requires the setup endpoint to answer.
+- Windows verification runs as an ordinary Windows 11 user, installs that same
+  Linux archive into a clean WSL 2 distribution, checks the intended version,
+  and requires `http://localhost:8123/api/setup/status` to answer.
 
 Never hand-edit only a deployment target to fix the product. Fix in git,
 review, merge, and redeploy the exact source commit.

@@ -85,6 +85,10 @@ Environment=TMPDIR=/run/1helm-oci/tmp
 ExecStart=$NODE_LINK/bin/node --disable-warning=ExperimentalWarning src/server/index.ts
 Restart=on-failure
 RestartSec=3
+# Resident OCI containers outlive an ordinary control-plane restart. Podman's
+# monitor processes therefore must not receive the service cgroup's stop
+# signal after the Node process has already shut its own connectors down.
+KillMode=process
 UMask=0077
 NoNewPrivileges=false
 # Podman/netavark creates bind-mounted network namespace handles that must stay

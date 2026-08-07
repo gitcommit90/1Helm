@@ -8,7 +8,6 @@ import test from "node:test";
 import {
   channelImageArtifactName, normalizeChannelImageManifest, validateSplitArtifactManifest,
 } from "../scripts/artifact-contract.mjs";
-import { candidateIdentityFromArchive, createCandidateManifest } from "../scripts/candidate-manifest.mjs";
 
 const root = join(import.meta.dirname, "..");
 const sha = (value) => createHash("sha256").update(value).digest("hex");
@@ -37,17 +36,9 @@ function fixture() {
   const prefix = join(scratch, "online", "1Helm-1.2.3");
   const offlinePrefix = join(scratch, "offline", "1Helm-1.2.3");
   const image = imageManifest();
-  const identity = {
-    schema: 1, kind: "1helm-dress-rehearsal-candidate", repository: "gitcommit90/1Helm", ref: "refs/heads/main",
-    commit: "e".repeat(40), source_state: "trusted-main", build_identity: "candidate-1-2.1",
-    created_at: "2026-08-04T12:00:00Z", ci: { workflow: "CI", run_id: "1", conclusion: "success" },
-    version: "1.2.3", source_archive_sha256: "f".repeat(64), sealed_oci_sha256: image.sha256,
-    sealed_oci_cache: { ...image.cache, reused: true }, channel_image: image,
-  };
   for (const dir of [prefix, offlinePrefix]) {
     mkdirSync(join(dir, "resources"), { recursive: true }); mkdirSync(join(dir, "container"), { recursive: true });
     writeFileSync(join(dir, "package.json"), JSON.stringify({ version: "1.2.3" }));
-    writeFileSync(join(dir, "resources", "candidate-build.json"), JSON.stringify(identity));
     writeFileSync(join(dir, "resources", "channel-image.json"), JSON.stringify(image));
   }
   writeFileSync(join(offlinePrefix, "container", "channel-machine.oci.tar"), imageBytes);
@@ -64,7 +55,7 @@ function fixture() {
     channel_image: image,
     production_dependencies: { key: "1".repeat(64), reused: false, node_abi: "127", architecture: "x64", builder_image_digest: "2".repeat(64) },
   }));
-  return { scratch, online, offline, split, identity, image };
+  return { scratch, online, offline, split, image };
 }
 
 test("online candidate excludes OCI bytes while offline bundle includes exact bytes", () => {
@@ -74,21 +65,6 @@ test("online candidate excludes OCI bytes while offline bundle includes exact by
     assert.doesNotMatch(onlineEntries, /channel-machine\.oci\.tar/);
     const offlineBytes = execFileSync("tar", ["-xOzf", item.offline, "1Helm-1.2.3/container/channel-machine.oci.tar"]);
     assert.equal(sha(offlineBytes), imageDigest);
-    assert.equal(candidateIdentityFromArchive(item.online).sealed_oci_sha256, imageDigest);
-  } finally { rmSync(item.scratch, { recursive: true, force: true }); }
-});
-
-test("split candidate binds online, offline, and channel image exact bytes", () => {
-  const item = fixture();
-  try {
-    const output = join(item.scratch, "candidate.json");
-    const candidate = createCandidateManifest({ archivePath: item.online, offlinePath: item.offline, splitPath: item.split, outputPath: output });
-    assert.equal(candidate.artifact.layout, "online-app");
-    assert.equal(candidate.offline_bundle.sha256, sha(readFileSync(item.offline)));
-    assert.equal(candidate.sealed_oci.sha256, imageDigest);
-    assert.equal(candidate.build.sealed_oci_cache.reused, true);
-    const changed = JSON.parse(readFileSync(item.split)); changed.offline.sha256 = "0".repeat(64); writeFileSync(item.split, JSON.stringify(changed));
-    assert.throws(() => createCandidateManifest({ archivePath: item.online, offlinePath: item.offline, splitPath: item.split, outputPath: output }), /[Oo]ffline candidate archive/);
   } finally { rmSync(item.scratch, { recursive: true, force: true }); }
 });
 
@@ -100,32 +76,21 @@ test("immutable image manifests do not change when a later candidate reuses the 
   assert.equal(releasedChannelImageManifest(reused).cache.reused, false);
 });
 
-test("image digest, missing manifest, architecture, and cache input mismatches fail closed", () => {
+test("image digest, architecture, and cache input mismatches fail closed", () => {
   assert.throws(() => normalizeChannelImageManifest({ ...imageManifest(), sha256: "0".repeat(64) }, { requireUrl: true }), /artifact name/);
   assert.throws(() => normalizeChannelImageManifest({ ...imageManifest(), architecture: "s390x" }), /architecture/);
   const missingInput = imageManifest(); delete missingInput.inputs.context_sha256;
   assert.throws(() => normalizeChannelImageManifest(missingInput), /context_sha256/);
-  const item = fixture();
-  try {
-    rmSync(join(item.scratch, "online", "1Helm-1.2.3", "resources", "channel-image.json"));
-    execFileSync("tar", ["-czf", item.online, "-C", join(item.scratch, "online"), "1Helm-1.2.3"]);
-    assert.throws(() => candidateIdentityFromArchive(item.online), /channel image manifest/);
-  } finally { rmSync(item.scratch, { recursive: true, force: true }); }
 });
 
 test("cache keys cover exact architecture, ABI, lockfile, builder, and Containerfile inputs", () => {
   const packager = read("scripts/package-linux-host.mjs");
   const imageBuilder = read("scripts/build-oci-channel-image.sh");
-  const workflow = read(".github/workflows/candidate.yml");
   assert.match(packager, /digestText\(digestFile\(join\(releaseRoot, "package-lock\.json"\)\), runtimePackageSha256,[\s\S]*builderAbi, nativeArchitecture, builderDigest\)/);
-  assert.match(workflow, /sha256sum config\/linux-runtime-package\.json/);
   assert.match(imageBuilder, /ARCH.*BASE_DIGEST.*CONTAINERFILE_SHA.*CONTEXT_SHA/s);
   assert.match(packager, /dependencyCacheReused = true/);
   assert.match(imageBuilder, /CACHE_REUSED=true/);
   assert.doesNotMatch(imageBuilder, /VERSION=.*package\.json/);
-  assert.match(workflow, /actions\/cache@[a-f0-9]{40}[\s\S]*channel-images[\s\S]*packaging-cache\.outputs\.oci_key/);
-  assert.match(workflow, /actions\/cache@[a-f0-9]{40}[\s\S]*production-dependencies[\s\S]*packaging-cache\.outputs\.dependency_key/);
-  assert.doesNotMatch(workflow, /restore-keys:/, "hosted caches never fall back to a prefix-matched ABI, architecture, or source identity");
 });
 
 test("legacy complete bundles remain supported and image GC is report-only", () => {

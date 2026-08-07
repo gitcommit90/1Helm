@@ -38,7 +38,7 @@ function refuse(message) {
 }
 
 export function validateStableManifest(value) {
-  if (!value || Array.isArray(value) || ![1, 2].includes(value.schema) || value.kind !== STABLE_MANIFEST_KIND) {
+  if (!value || Array.isArray(value) || ![1, 2, 3].includes(value.schema) || value.kind !== STABLE_MANIFEST_KIND) {
     refuse("schema or kind mismatch");
   }
   if (value.repository !== STABLE_REPOSITORY || value.ref !== "refs/heads/main") {
@@ -49,12 +49,16 @@ export function validateStableManifest(value) {
   if (!VERSION.test(version) || value.tag !== `v${version}` || !HEX40.test(commit)) refuse("version, tag, or commit is invalid");
   if (!ISO_TIME.test(String(value.promoted_at || ""))) refuse("promotion time is invalid");
   const promotion = value.promotion || {};
-  if (!/^\d+$/.test(String(promotion.candidate_workflow_run_id || ""))
+  const publication = value.publication || {};
+  if (value.schema < 3 && (!/^\d+$/.test(String(promotion.candidate_workflow_run_id || ""))
       || !/^\d+$/.test(String(promotion.candidate_artifact_id || ""))
-      || !HEX64.test(String(promotion.manifest_sha256 || ""))) {
+      || !HEX64.test(String(promotion.manifest_sha256 || "")))) {
     refuse("promotion identity is incomplete");
   }
-  const roles = value.schema === 1 ? LEGACY_STABLE_ARTIFACT_ROLES : STABLE_ARTIFACT_ROLES;
+  if (value.schema === 3 && !/^\d+$/.test(String(publication.workflow_run_id || ""))) {
+    refuse("publication workflow identity is incomplete");
+  }
+  const roles = value.schema === 2 ? STABLE_ARTIFACT_ROLES : LEGACY_STABLE_ARTIFACT_ROLES;
   if (!Array.isArray(value.artifacts) || value.artifacts.length !== roles.length) {
     refuse("desktop artifact matrix is incomplete");
   }
@@ -82,11 +86,11 @@ export function validateStableManifest(value) {
     ...value,
     version,
     commit,
-    promotion: {
+    ...(value.schema < 3 ? { promotion: {
       candidate_workflow_run_id: String(promotion.candidate_workflow_run_id),
       candidate_artifact_id: String(promotion.candidate_artifact_id),
       manifest_sha256: String(promotion.manifest_sha256),
-    },
+    } } : { publication: { workflow_run_id: String(publication.workflow_run_id) } }),
     artifacts: roles.map((role) => byRole.get(role)),
     ...(channelImage ? { channel_image: channelImage } : {}),
   };

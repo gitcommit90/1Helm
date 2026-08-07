@@ -19,7 +19,6 @@
       "src/server/routing.ts": 1293
     },
     "fanIn": {
-      "scripts/platform-acceptance-lib.mjs": 9,
       "src/client/api.ts": 11,
       "src/client/dom.ts": 9,
       "src/server/agents.ts": 10,

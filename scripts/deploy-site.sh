@@ -6,10 +6,9 @@
 # `current` points at the live one, and 1helm-site.service runs
 # `node site/server.mjs` from there behind 1helm-site-cloudflared.service.
 #
-# This exists because the site gates a release. install.ps1 and install.sh are
-# served from here, and install.sh resolves /api/releases/linux/latest to find
-# the archive - so a release published without deploying the site leaves Windows
-# with no installer and Linux unable to resolve a version.
+# install.ps1 and install.sh are served from here, and install.sh resolves
+# /api/releases/linux/latest to find the archive. A release command therefore
+# deploys the same pushed commit after GitHub publishes it.
 #
 #     scripts/deploy-site.sh <commit-ish>
 #

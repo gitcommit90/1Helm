@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.0.42] - 2026-08-07
+## [1.0.0] - 2026-08-07
 
 ### Added
 
@@ -16,10 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Stable desktop releases now use a fail-closed manual promotion gate that
-  verifies and republishes exact retained candidate bytes, keeps publication
-  behind explicit owner approval, and serves digest-validated last-known-good
-  website metadata without a follow-up digest commit.
+- Releases now have one job: prove that the exact public files install, report
+  the intended version, start, and answer health on Linux, Windows through WSL
+  2, and Apple Silicon Mac. The candidate/evidence/update/rollback/promotion
+  matrices and duplicate aggregate failures are gone.
+- Release files go directly to one draft GitHub Release instead of making
+  repeated round trips through temporary Actions artifacts. The Mac packager
+  resumes its pinned Cloudflare download and stops quickly on a stalled link.
 
 ### Fixed
 
