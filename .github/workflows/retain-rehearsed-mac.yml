@@ -1,0 +1,143 @@
+name: Retain rehearsed Mac release bytes
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_workflow_run_id:
+        description: Successful Candidate dress rehearsal run ID
+        required: true
+        type: string
+      candidate_commit:
+        description: Exact rehearsed 40-character commit
+        required: true
+        type: string
+      version:
+        description: Exact rehearsed version
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: 1helm-retain-rehearsed-mac
+  cancel-in-progress: false
+
+# The simplified rehearsal intentionally leaves its signed Mac bytes on the
+# dedicated runner. This manual, read-only handoff retains those exact bytes
+# after all three rehearsal jobs pass; it never rebuilds or publishes them.
+jobs:
+  retain:
+    name: Retain exact signed Mac bytes from a green rehearsal
+    runs-on: [1helm-macos-phase4]
+    timeout-minutes: 30
+    steps:
+      - name: Verify the green rehearsal and retained workspace identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_workflow_run_id }}
+          CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$CANDIDATE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$GITHUB_REPOSITORY" = gitcommit90/1Helm
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_COMMIT"
+          test "$(node -p 'require(\"./package.json\").version')" = "$VERSION"
+
+          evidence="$(mktemp -d)"
+          curl -fsS \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" \
+            > "$evidence/run.json"
+          curl -fsS \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID/jobs?per_page=100" \
+            > "$evidence/jobs.json"
+          CANDIDATE_RUN_JSON="$evidence/run.json" CANDIDATE_JOBS_JSON="$evidence/jobs.json" node <<'NODE'
+          const fs = require('node:fs');
+          const run = JSON.parse(fs.readFileSync(process.env.CANDIDATE_RUN_JSON, 'utf8'));
+          const jobs = JSON.parse(fs.readFileSync(process.env.CANDIDATE_JOBS_JSON, 'utf8')).jobs || [];
+          const required = [
+            'Build Linux candidate',
+            'Linux install, update, start, data, and uninstall',
+            'Windows install, update, start, data, and uninstall',
+            'Mac build, install, update, start, and data',
+            'Three-computer result',
+          ];
+          if (String(run.id) !== process.env.CANDIDATE_RUN_ID
+              || run.name !== 'Candidate dress rehearsal'
+              || run.event !== 'workflow_run'
+              || run.head_sha !== process.env.CANDIDATE_COMMIT
+              || run.status !== 'completed' || run.conclusion !== 'success') {
+            throw new Error('Candidate workflow identity or result is not the exact green rehearsal');
+          }
+          for (const name of required) {
+            const matches = jobs.filter((job) => job.name === name && job.status === 'completed' && job.conclusion === 'success');
+            if (matches.length !== 1) throw new Error(`Required successful rehearsal job is missing: ${name}`);
+          }
+          NODE
+
+      - name: Recheck and record the exact signed artifacts
+        id: artifacts
+        shell: bash
+        env:
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_workflow_run_id }}
+          CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          dmg="dist/1Helm-$VERSION-arm64.dmg"
+          zip="dist/1Helm-$VERSION-mac-arm64.zip"
+          test -s "$dmg"
+          test -s "$zip"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+          work="$(mktemp -d)"
+          /usr/bin/unzip -q "$zip" -d "$work/app"
+          codesign --verify --deep --strict --verbose=2 "$work/app/1Helm.app"
+          xcrun stapler validate "$work/app/1Helm.app"
+          spctl --assess --type execute --verbose=4 "$work/app/1Helm.app"
+
+          dmg_sha="$(shasum -a 256 "$dmg" | awk '{print $1}')"
+          zip_sha="$(shasum -a 256 "$zip" | awk '{print $1}')"
+          dmg_bytes="$(stat -f %z "$dmg")"
+          zip_bytes="$(stat -f %z "$zip")"
+          mkdir -p retained-mac
+          cp "$dmg" "$zip" retained-mac/
+          RUN_ID="$CANDIDATE_RUN_ID" COMMIT="$CANDIDATE_COMMIT" VERSION="$VERSION" \
+            DMG_SHA="$dmg_sha" ZIP_SHA="$zip_sha" DMG_BYTES="$dmg_bytes" ZIP_BYTES="$zip_bytes" \
+            node <<'NODE'
+          const fs = require('node:fs');
+          const value = {
+            schema: 1,
+            kind: '1helm-retained-rehearsed-mac',
+            repository: 'gitcommit90/1Helm',
+            candidate_workflow_run_id: process.env.RUN_ID,
+            commit: process.env.COMMIT,
+            version: process.env.VERSION,
+            artifacts: [
+              { role: 'mac_dmg', name: `1Helm-${process.env.VERSION}-arm64.dmg`, sha256: process.env.DMG_SHA, bytes: Number(process.env.DMG_BYTES) },
+              { role: 'mac_updater_zip', name: `1Helm-${process.env.VERSION}-mac-arm64.zip`, sha256: process.env.ZIP_SHA, bytes: Number(process.env.ZIP_BYTES) },
+            ],
+            signing: { identity: 'developer-id-application', notarization: 'accepted', stapling: 'validated', gatekeeper: 'accepted' },
+          };
+          fs.writeFileSync('retained-mac/retention.json', `${JSON.stringify(value, null, 2)}\n`);
+          NODE
+          printf 'artifact_name=1helm-rehearsed-mac-%s\n' "$CANDIDATE_RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Upload only those retained exact bytes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.artifacts.outputs.artifact_name }}
+          path: retained-mac
+          if-no-files-found: error
+          retention-days: 7
