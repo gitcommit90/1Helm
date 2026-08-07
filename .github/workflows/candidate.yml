@@ -1,0 +1,57 @@
+name: Candidate dress rehearsal
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+# Temporary transport for the dedicated Mac account's host allowlist. This is
+# one independent four-assertion sandbox check. It has no release gate, Linux
+# or Windows job, evidence system, promotion step, or publication step.
+jobs:
+  accept-macos:
+    name: Fresh install and start — Mac
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_commit.message == 'release: run independent Mac platform check'
+    runs-on: [1helm-macos-phase4]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 11f1f73cf18c7c59609ab98c43ce8d8098de66d8
+          fetch-depth: 1
+          persist-credentials: false
+          clean: false
+      - name: Verify retained files and run the four checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HARNESS_SHA: ${{ github.event.workflow_run.head_sha }}
+          HELM_RELEASE_DIST: ${{ github.workspace }}/dist
+          HELM_RELEASE_VERSION: 1.0.0
+          EXPECTED_DMG_SHA256: 38531c1949b24e4c01882ebb18c75df9fea04b97f3deffe57d4e8e2090bc45ab
+          EXPECTED_ZIP_SHA256: d991bc508e34dc38ba7a763d7bfbac06ad1f97d1174c4450eadc12b60b501ea4
+        run: |
+          set -euo pipefail
+          test "$(shasum -a 256 "$HELM_RELEASE_DIST/1Helm-1.0.0-arm64.dmg" | awk '{print $1}')" = "$EXPECTED_DMG_SHA256"
+          test "$(shasum -a 256 "$HELM_RELEASE_DIST/1Helm-1.0.0-mac-arm64.zip" | awk '{print $1}')" = "$EXPECTED_ZIP_SHA256"
+          curl --fail --location \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github.raw+json' \
+            --output "$RUNNER_TEMP/fresh-install-macos.sh" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/ops/release/fresh-install-macos.sh?ref=$HARNESS_SHA"
+          bash "$RUNNER_TEMP/fresh-install-macos.sh"
+      - name: Upload the exact tested Mac files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload v1.0.0 \
+            dist/1Helm-1.0.0-arm64.dmg \
+            dist/1Helm-1.0.0-mac-arm64.zip \
+            --repo "$GITHUB_REPOSITORY" --clobber
