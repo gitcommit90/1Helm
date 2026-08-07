@@ -10,5 +10,5 @@ draft as Latest.
 
 There is no parallel candidate store, normalized evidence record, update or
 rollback test matrix, promotion bundle, retention handoff, or aggregate job.
-The retired Candidate dress rehearsal is disabled and is not a release gate.
+The retired Candidate dress rehearsal is removed and is not a release gate.
 Ordinary application tests remain separate from publication.

@@ -1,6 +1,6 @@
 # Retired dress rehearsal
 
-The Candidate dress rehearsal is disabled and does not gate a release.
+The Candidate dress rehearsal has been removed and does not gate a release.
 
 Before publication, run the release files independently on the three dedicated
 sandbox computers. Each check has only four product assertions: fresh install,

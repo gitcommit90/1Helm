@@ -8,7 +8,7 @@
    Windows/WSL 2, and Apple Silicon Mac sandboxes. On each, check only fresh
    install, exact version, startup, and setup endpoint health. Stop on failure.
 4. If all three pass, attach the digest-qualified Stable manifest and publish
-   the exact draft as Latest. The disabled Candidate dress rehearsal is not a
+   the exact draft as Latest. The removed Candidate dress rehearsal is not a
    release gate.
 5. Deploy the same commit with `sudo scripts/deploy-site.sh <sha>`, update the
    owner's installation using the published Linux archive, and verify the
