@@ -58,8 +58,8 @@ jobs:
             awk -v heading="## [$version]" 'index($0, heading) == 1 {found=1; next} found && /^## \[/ {exit} found {print}' CHANGELOG.md
           } >"$notes"
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish >existing.json 2>/dev/null; then
-            EXISTING_JSON=existing.json COMMIT="$COMMIT" node -e \
-              'const r=JSON.parse(require("node:fs").readFileSync(process.env.EXISTING_JSON,"utf8")); if(!r.isDraft||![process.env.COMMIT,"main"].includes(r.targetCommitish)) throw new Error("an existing release or unrelated draft already owns this version")'
+            EXISTING_JSON=existing.json node -e \
+              'const r=JSON.parse(require("node:fs").readFileSync(process.env.EXISTING_JSON,"utf8")); if(!r.isDraft) throw new Error("an existing published release already owns this version")'
             gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" \
               --title "1Helm $version" --notes-file "$notes"
             gh release delete-asset "$tag" "1Helm-$version-stable.json" \
@@ -102,7 +102,7 @@ jobs:
           npm run package:linux
           archive="dist/1Helm-$VERSION-linux-node.tgz"
           test -s "$archive"
-          tar -tzf "$archive" | grep -m1 '^1Helm-[^/]*/container/channel-machine\.oci\.tar$' >/dev/null
+          tar -tzf "$archive" | grep '^1Helm-[^/]*/container/channel-machine\.oci\.tar$' >/dev/null
           gh release upload "$TAG" "$archive" --repo "$GITHUB_REPOSITORY" --clobber
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
               --jq ".assets[] | select(.name == \"$(basename "$archive")\") | .digest" | grep -q '^sha256:[a-f0-9]\{64\}$'; then

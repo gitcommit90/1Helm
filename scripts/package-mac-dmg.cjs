@@ -79,6 +79,22 @@ function notarize(file) {
   run("xcrun", ["notarytool", "submit", file, "--keychain-profile", NOTARY_PROFILE, "--wait"]);
 }
 
+async function signWithTimestampRetry(options) {
+  const { sign } = require("@electron/osx-sign");
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await sign(options);
+      return;
+    } catch (error) {
+      const message = String(error?.stack || error?.message || error);
+      const transient = /timestamp was expected but was not found|timestamp service is not available/i.test(message);
+      if (!transient || attempt === 3) throw error;
+      console.warn(`Apple timestamp service failed transiently; retrying signature (${attempt}/3).`);
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, attempt * 5_000));
+    }
+  }
+}
+
 function createIcon() {
   const source = MACOS_APP_ICON_SOURCE;
   if (!fs.existsSync(source)) throw new Error("desktop/icons/1helm-macos-app-logo.jpg is required");
@@ -228,8 +244,7 @@ async function main() {
 
     if (identity) {
       console.log("Signing 1Helm with the matching Developer ID Application identity.");
-      const { sign } = require("@electron/osx-sign");
-      await sign({ app: appPath, identity: identity.hash, platform: "darwin" });
+      await signWithTimestampRetry({ app: appPath, identity: identity.hash, platform: "darwin" });
     } else {
       console.log("Signing an ad-hoc local build (not for distribution)." );
       run("codesign", ["--force", "--deep", "--sign", "-", appPath]);
