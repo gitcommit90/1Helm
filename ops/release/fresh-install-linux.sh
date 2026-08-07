@@ -31,7 +31,7 @@ HELM_RELEASE_SHA256="$DIGEST" bash "$work/$prefix/site/public/install.sh" "$ARCH
 
 systemctl is-active --quiet 1helm.service
 curl -fsS http://127.0.0.1:8123/api/setup/status >"$work/health.json"
-node -e 'const value=require(process.argv[1]); if(value.needs_setup!==true)process.exit(1)' "$work/health.json"
+/opt/1helm/node-current/bin/node -e 'const value=require(process.argv[1]); if(value.needs_setup!==true)process.exit(1)' "$work/health.json"
 [[ "$(/opt/1helm/node-current/bin/node -p 'require("/opt/1helm/current/package.json").version')" == "$VERSION" ]]
 
 printf 'Linux fresh install passed for 1Helm %s.\n' "$VERSION"
