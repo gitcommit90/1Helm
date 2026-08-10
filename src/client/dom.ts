@@ -106,6 +106,142 @@ export function md(src: string, opts?: { channels?: ChannelLink[] }): string {
   return out.join("\n").replace(/\u0000(\d+)\u0000/g, (_m, i) => blocks[Number(i)]);
 }
 
+/**
+ * Best-effort HTML → Markdown for the Cowork document surface.
+ * Durable on-disk format stays Markdown for agents; people edit rendered prose.
+ * Round-trips the subset `md()` emits (headings, p, lists, quotes, code, hr, tables, inline).
+ */
+export function markdownFromHtml(root: HTMLElement): string {
+  const blocks: string[] = [];
+
+  const inlineFrom = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) return (node.textContent || "").replace(/\s+/g, " ");
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+    const el = node as HTMLElement;
+    const tag = el.tagName.toLowerCase();
+    const kids = () => [...el.childNodes].map(inlineFrom).join("");
+    if (tag === "br") return "\n";
+    if (tag === "strong" || tag === "b") return `**${kids()}**`;
+    if (tag === "em" || tag === "i") return `_${kids()}_`;
+    if (tag === "del" || tag === "s") return `~~${kids()}~~`;
+    if (tag === "code") return `\`${el.textContent || ""}\``;
+    if (tag === "a") {
+      const href = el.getAttribute("href") || "";
+      const label = kids() || href;
+      return href ? `[${label}](${href})` : label;
+    }
+    if (tag === "span" && el.classList.contains("font-medium")) return kids();
+    return kids();
+  };
+
+  const blockFrom = (el: HTMLElement): void => {
+    const tag = el.tagName.toLowerCase();
+    if (tag === "h1" || tag === "h2" || tag === "h3" || tag === "h4" || tag === "h5" || tag === "h6") {
+      const level = Number(tag[1]);
+      blocks.push(`${"#".repeat(level)} ${inlineFrom(el).trim()}`);
+      return;
+    }
+    if (tag === "p") {
+      const text = [...el.childNodes].map(inlineFrom).join("").replace(/\n+/g, "  \n").trim();
+      if (text) blocks.push(text);
+      return;
+    }
+    if (tag === "blockquote") {
+      const text = inlineFrom(el).trim();
+      if (text) blocks.push(text.split(/\n/).map((line) => `> ${line}`).join("\n"));
+      return;
+    }
+    if (tag === "hr") { blocks.push("---"); return; }
+    if (tag === "pre") {
+      const code = el.textContent || "";
+      blocks.push("```\n" + code.replace(/\n$/, "") + "\n```");
+      return;
+    }
+    if (tag === "ul") {
+      for (const li of el.querySelectorAll(":scope > li")) {
+        blocks.push(`- ${inlineFrom(li).trim()}`);
+      }
+      return;
+    }
+    if (tag === "ol") {
+      let n = 1;
+      for (const li of el.querySelectorAll(":scope > li")) {
+        blocks.push(`${n}. ${inlineFrom(li).trim()}`);
+        n += 1;
+      }
+      return;
+    }
+    if (tag === "table") {
+      const rows = [...el.querySelectorAll("tr")].map((tr) =>
+        [...tr.querySelectorAll("th,td")].map((cell) => inlineFrom(cell).trim()));
+      if (!rows.length) return;
+      const width = Math.max(...rows.map((r) => r.length));
+      const pad = (row: string[]) => Array.from({ length: width }, (_, i) => row[i] || "");
+      const head = pad(rows[0]);
+      blocks.push(`| ${head.join(" | ")} |`);
+      blocks.push(`| ${head.map(() => "---").join(" | ")} |`);
+      for (const row of rows.slice(1)) blocks.push(`| ${pad(row).join(" | ")} |`);
+      return;
+    }
+    if (tag === "div" || tag === "section" || tag === "article") {
+      // contenteditable often uses bare <div> lines with only text nodes.
+      if (!el.children.length) {
+        const text = inlineFrom(el).replace(/\u00a0/g, " ").trim();
+        if (text) blocks.push(text);
+        else if (el.querySelector("br") || !(el.textContent || "").trim()) blocks.push("");
+        return;
+      }
+      for (const child of el.children) blockFrom(child as HTMLElement);
+      return;
+    }
+    // Unknown block: fall back to text.
+    const text = (el.textContent || "").trim();
+    if (text) blocks.push(text);
+  };
+
+  // contenteditable often wraps bare text; walk top-level children.
+  if (!root.children.length) {
+    const text = (root.innerText || root.textContent || "").replace(/\u00a0/g, " ").trim();
+    return text ? text + "\n" : "";
+  }
+  for (const child of root.children) blockFrom(child as HTMLElement);
+  // If the browser left only a text node / br soup without block tags:
+  if (!blocks.length) {
+    const text = (root.innerText || "").replace(/\n{3,}/g, "\n\n").trim();
+    return text ? text + "\n" : "";
+  }
+  // Preserve single newlines between successive short div-lines; blank string
+  // entries become paragraph breaks.
+  const joined: string[] = [];
+  for (const block of blocks) {
+    if (block === "") {
+      if (joined.length && joined[joined.length - 1] !== "") joined.push("");
+      continue;
+    }
+    joined.push(block);
+  }
+  return joined.join("\n\n").replace(/\n{3,}/g, "\n\n").trim() + (joined.length ? "\n" : "");
+}
+
+/** Surgical string edit span — same idea as server-side Y.Text external refresh. */
+export function textReplaceOps(prev: string, next: string): { start: number; deleteLen: number; insert: string } | null {
+  if (prev === next) return null;
+  let start = 0;
+  const minLen = Math.min(prev.length, next.length);
+  while (start < minLen && prev.charCodeAt(start) === next.charCodeAt(start)) start += 1;
+  let endPrev = prev.length - 1;
+  let endNext = next.length - 1;
+  while (endPrev >= start && endNext >= start && prev.charCodeAt(endPrev) === next.charCodeAt(endNext)) {
+    endPrev -= 1;
+    endNext -= 1;
+  }
+  return {
+    start,
+    deleteLen: Math.max(0, endPrev - start + 1),
+    insert: next.slice(start, endNext + 1),
+  };
+}
+
 /* Restrained stone/ink identity tones — high-contrast monogram fields. */
 const PALETTE = ["#c8552f", "#3f5f73", "#8a5a3b", "#6b4f63", "#2f6b57", "#5c5346"];
 export const color = (seed: string): string => PALETTE[[...seed].reduce((a, c) => a + c.charCodeAt(0), 0) % PALETTE.length];

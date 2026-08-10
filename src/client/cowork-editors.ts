@@ -14,8 +14,169 @@ import React from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Excalidraw, MainMenu } from "@excalidraw/excalidraw";
 import type { User } from "./api.ts";
-import { h } from "./dom.ts";
+import { h, markdownFromHtml, md, textReplaceOps } from "./dom.ts";
 import type { CoworkDocument } from "./cowork-collaboration.ts";
+
+/** True when at least one transaction in the update was produced by local typing. */
+function updateFromLocalUser(update: { transactions: readonly { isUserEvent: (event: string) => boolean }[] }): boolean {
+  return update.transactions.some((transaction) =>
+    transaction.isUserEvent("input")
+    || transaction.isUserEvent("delete")
+    || transaction.isUserEvent("move")
+    || transaction.isUserEvent("undo")
+    || transaction.isUserEvent("redo")
+    || transaction.isUserEvent("paste"));
+}
+
+function applyYTextContent(text: { toString: () => string; delete: (start: number, len: number) => void; insert: (start: number, value: string) => void }, content: string): void {
+  const ops = textReplaceOps(text.toString(), content);
+  if (!ops) return;
+  if (ops.deleteLen > 0) text.delete(ops.start, ops.deleteLen);
+  if (ops.insert) text.insert(ops.start, ops.insert);
+}
+
+/**
+ * Notes/Docs: people edit rendered prose, never raw Markdown.
+ * Durable storage + Yjs stay Markdown for agents and collaboration.
+ */
+export function mountDocumentSurface(
+  collaboration: CoworkDocument,
+  mode: "notes" | "docs",
+  onChange: (content: string) => void,
+  onSave: () => void,
+): MountedEditor {
+  const label = mode === "docs" ? "Docs editor" : "Notes editor";
+  const node = h("div", {
+    class: `cowork-document-surface cowork-document-surface-${mode}`,
+    dataset: { coworkEditor: mode },
+  });
+  const surface = h("div", {
+    class: "md cowork-document-body",
+    contenteditable: "true",
+    role: "textbox",
+    spellcheck: "true",
+    "aria-multiline": "true",
+    "aria-label": label,
+    dataset: { coworkDocumentBody: mode },
+  }) as HTMLDivElement;
+  node.append(surface);
+
+  let applyingRemote = false;
+  let lastMarkdown = collaboration.text.toString();
+  let paintGeneration = 0;
+
+  const paintFromMarkdown = (source: string): void => {
+    const gen = ++paintGeneration;
+    const scrollTop = surface.scrollTop;
+    applyingRemote = true;
+    const html = md(source || "");
+    surface.innerHTML = html || "<p><br></p>";
+    // Restore scroll after remote/agent rewrites so idle reading mid-doc holds.
+    requestAnimationFrame(() => {
+      if (gen !== paintGeneration) return;
+      const max = Math.max(0, surface.scrollHeight - surface.clientHeight);
+      surface.scrollTop = Math.min(scrollTop, max);
+      applyingRemote = false;
+    });
+  };
+
+  paintFromMarkdown(lastMarkdown);
+
+  const pushLocal = (): void => {
+    if (applyingRemote) return;
+    const next = markdownFromHtml(surface);
+    if (next === lastMarkdown) return;
+    lastMarkdown = next;
+    applyingRemote = true;
+    collaboration.doc.transact(() => {
+      applyYTextContent(collaboration.text, next);
+    });
+    applyingRemote = false;
+    onChange(next);
+  };
+
+  // input covers typing; debounce coalesces rapid keystrokes / IME.
+  let inputTimer: number | null = null;
+  const schedulePush = (): void => {
+    if (applyingRemote) return;
+    if (inputTimer != null) window.clearTimeout(inputTimer);
+    inputTimer = window.setTimeout(() => {
+      inputTimer = null;
+      pushLocal();
+    }, 40);
+  };
+  surface.addEventListener("input", schedulePush);
+  surface.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      if (inputTimer != null) { window.clearTimeout(inputTimer); inputTimer = null; }
+      pushLocal();
+      onSave();
+    }
+  });
+
+  const onY = (): void => {
+    if (applyingRemote) return;
+    const remote = collaboration.text.toString();
+    if (remote === lastMarkdown) return;
+    lastMarkdown = remote;
+    paintFromMarkdown(remote);
+    onChange(remote);
+  };
+  collaboration.text.observe(onY);
+
+  const runFormat = (command: string, value?: string): void => {
+    surface.focus();
+    try { document.execCommand(command, false, value); } catch { /* ignore unsupported */ }
+    pushLocal();
+  };
+
+  return {
+    node,
+    focus: () => surface.focus(),
+    destroy: () => {
+      if (inputTimer != null) window.clearTimeout(inputTimer);
+      collaboration.text.unobserve(onY);
+    },
+    getContent: () => {
+      if (inputTimer != null) { window.clearTimeout(inputTimer); inputTimer = null; }
+      pushLocal();
+      return lastMarkdown;
+    },
+    replaceContent: (content) => {
+      lastMarkdown = content;
+      applyingRemote = true;
+      collaboration.doc.transact(() => applyYTextContent(collaboration.text, content));
+      paintFromMarkdown(content);
+      onChange(content);
+      surface.focus();
+    },
+    format: (prefix, suffix = prefix, placeholder = "text") => {
+      // Toolbar maps semantic actions; ignore raw md wrappers when possible.
+      if (prefix.startsWith("#")) {
+        const level = Math.min(6, Math.max(1, prefix.replace(/[^#]/g, "").length || 2));
+        runFormat("formatBlock", `h${level}`);
+        return;
+      }
+      if (prefix === "**" && suffix === "**") { runFormat("bold"); return; }
+      if ((prefix === "_" || prefix === "*") && (suffix === "_" || suffix === "*")) { runFormat("italic"); return; }
+      if (prefix.startsWith("- ") || prefix.startsWith("* ")) { runFormat("insertUnorderedList"); return; }
+      if (/^\d+[.)]\s/.test(prefix)) { runFormat("insertOrderedList"); return; }
+      // Fallback: wrap selection as plain text insertion of md (rare).
+      const selection = window.getSelection();
+      if (!selection || !selection.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      const selected = range.toString() || placeholder;
+      range.deleteContents();
+      range.insertNode(document.createTextNode(`${prefix}${selected}${suffix}`));
+      pushLocal();
+    },
+    selection: () => {
+      const text = surface.innerText || "";
+      return { from: 0, to: text.length };
+    },
+  };
+}
 
 declare global { interface Window { EXCALIDRAW_ASSET_PATH?: string | string[] } }
 // This module is eagerly bundled, and Excalidraw reads the global while its
@@ -74,13 +235,32 @@ export function mountCodeMirror(
   const node = h("div", { class: `cowork-codemirror cowork-codemirror-${mode}`, dataset: { coworkEditor: mode }, "aria-label": `${mode === "code" ? "Code" : mode === "docs" ? "Docs" : "Notes"} editor` });
   const language = languageFor(path);
   node.dataset.coworkLanguage = language.name;
+  // Remote Yjs → CodeMirror updates (server reseed, collaborator, agent write)
+  // have no userEvent annotation. Capture scroll before layout settles and
+  // restore after so idle readers mid-document are not slammed to the top.
+  let pendingRemoteScroll: number | null = null;
   const extensions = [
     basicSetup,
     keymap.of([indentWithTab, { key: "Mod-s", run: () => { onSave(); return true; } }]),
     editorTheme,
     language.extension,
     yCollab(collaboration.text, collaboration.provider.awareness),
-    EditorView.updateListener.of((update) => { if (update.docChanged) onChange(update.state.doc.toString()); }),
+    EditorView.updateListener.of((update) => {
+      if (!update.docChanged) return;
+      if (!updateFromLocalUser(update)) {
+        if (pendingRemoteScroll == null) pendingRemoteScroll = update.view.scrollDOM.scrollTop;
+        const keep = pendingRemoteScroll;
+        requestAnimationFrame(() => {
+          const scroller = update.view.scrollDOM;
+          const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+          scroller.scrollTop = Math.min(keep, max);
+          pendingRemoteScroll = null;
+        });
+      } else {
+        pendingRemoteScroll = null;
+      }
+      onChange(update.state.doc.toString());
+    }),
     EditorView.lineWrapping,
   ];
   const view = new EditorView({ parent: node, doc: collaboration.text.toString(), extensions });

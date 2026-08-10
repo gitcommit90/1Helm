@@ -9,7 +9,18 @@ process.env.CTRL_DATA_DIR = dataDir;
 const dbModule = await import("../src/server/db.ts");
 const { db, q1, run, now, seed } = dbModule;
 const { verifyAuditChain } = await import("../src/server/audit.ts");
-const { buildContext, captainTextConsent, runtimePromptTiersForChannel, runtimeToolNamesForChannel, toolActionStatus, validateAskUserInput } = await import("../src/server/bots.ts");
+const {
+  agentReadableAttachmentPath,
+  attachmentsForMessages,
+  buildContext,
+  captainTextConsent,
+  formatMessageAttachmentsBlock,
+  runtimePromptTiersForChannel,
+  runtimeToolNamesForChannel,
+  toolActionStatus,
+  userMessageContentWithAttachments,
+  validateAskUserInput,
+} = await import("../src/server/bots.ts");
 const { inspectWebSource, isPublicWebAddress, validateWebSourceUrl } = await import("../src/server/web-source.ts");
 const { resolveNativeShell, terminalPromptEnvironment } = await import("../src/server/agent.ts");
 const { windowsSystemAccount } = await import("../src/server/channel-computers.ts");
@@ -262,6 +273,110 @@ test("model transcript keeps human display names out of user content", async () 
   const user = messages.findLast((message) => message.role === "user");
   assert.equal(user.content, "whats the latest news on that sinkhole situation in weho");
   assert.doesNotMatch(user.content, /Joseph Yaksich/);
+});
+
+test("agentReadableAttachmentPath maps world-relative uploads under /workspace", () => {
+  assert.equal(agentReadableAttachmentPath("files/report.pdf"), "/workspace/files/report.pdf");
+  assert.equal(agentReadableAttachmentPath("workspace/notes/a.md"), "/workspace/notes/a.md");
+  assert.equal(agentReadableAttachmentPath("/workspace/files/x.png"), "/workspace/files/x.png");
+  assert.equal(agentReadableAttachmentPath(""), "");
+  assert.equal(agentReadableAttachmentPath("/etc/passwd"), "", "host absolute paths outside /workspace must not enter the prompt");
+});
+
+test("buildContext attaches structured per-message file paths and isolates channels", async () => {
+  seed();
+  const userId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('attach-owner','x','Attach Owner',1,?)", now()).lastInsertRowid;
+  const channelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created_by,created) VALUES ('attach-home','attach-home','channel','','Files','active',?,?)", userId, now()).lastInsertRowid;
+  const otherChannelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created_by,created) VALUES ('attach-other','attach-other','channel','','Private','active',?,?)", userId, now()).lastInsertRowid;
+  const botId = run("INSERT INTO bots (name,model,prompt,created) VALUES ('attach-agent','mock','Resident.',?)", now()).lastInsertRowid;
+  const agentId = run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'channel','attach-agent','ready',?)", botId, now()).lastInsertRowid;
+  run("INSERT INTO agent_channels (agent_id,channel_id,bound_at) VALUES (?,?,?)", agentId, channelId, now());
+  run("INSERT INTO agent_profiles (agent_id,purpose,instructions,updated) VALUES (?,'Files','Resident.',?)", agentId, now());
+  const runtimeAgent = q1("SELECT a.*,ac.channel_id,p.purpose,p.instructions FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id LEFT JOIN agent_profiles p ON p.agent_id=a.id WHERE a.id=?", agentId);
+  const bot = q1("SELECT * FROM bots WHERE id=?", botId);
+
+  // Text + single attachment on the root.
+  const rootId = run(
+    "INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)",
+    channelId, userId, "@attach-agent please review this report", now(),
+  ).lastInsertRowid;
+  run("INSERT INTO threads (root_message_id,channel_id,status,title,summary,opened_at,updated_at) VALUES (?,?,'open','','',?,?)", rootId, channelId, now(), now());
+  const rootAttId = run(
+    "INSERT INTO attachments (message_id, name, mime, size, path, workspace_path) VALUES (?,?,?,?,?,?)",
+    rootId, "report.pdf", "application/pdf", 4096, "tok_report", "files/report.pdf",
+  ).lastInsertRowid;
+
+  // Attachment-only reply (empty body) with two files.
+  const replyId = run(
+    "INSERT INTO messages (channel_id,parent_id,user_id,body,created) VALUES (?,?,?,?,?)",
+    channelId, rootId, userId, "", now() + 1,
+  ).lastInsertRowid;
+  const replyAttA = run(
+    "INSERT INTO attachments (message_id, name, mime, size, path, workspace_path) VALUES (?,?,?,?,?,?)",
+    replyId, "notes.md", "text/markdown", 120, "tok_notes", "files/notes.md",
+  ).lastInsertRowid;
+  const replyAttB = run(
+    "INSERT INTO attachments (message_id, name, mime, size, path, workspace_path) VALUES (?,?,?,?,?,?)",
+    replyId, 'evil"name<.txt', "text/plain", 8, "tok_evil", "files/evil-name.txt",
+  ).lastInsertRowid;
+
+  // Foreign-channel attachment must never appear when querying this channel.
+  const foreignMsg = run(
+    "INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)",
+    otherChannelId, userId, "secret other channel", now(),
+  ).lastInsertRowid;
+  run(
+    "INSERT INTO attachments (message_id, name, mime, size, path, workspace_path) VALUES (?,?,?,?,?,?)",
+    foreignMsg, "secret.pdf", "application/pdf", 99, "tok_secret", "files/secret.pdf",
+  );
+
+  // Cross-channel isolation on the join helper.
+  const leaked = attachmentsForMessages(channelId, [rootId, replyId, foreignMsg]);
+  assert.equal(leaked.has(foreignMsg), false, "foreign message ids must not yield rows for this channel");
+  assert.equal(leaked.get(rootId)?.length, 1);
+  assert.equal(leaked.get(replyId)?.length, 2);
+
+  // Unit: attachment-only content is non-empty and structured.
+  const onlyBlock = userMessageContentWithAttachments("", "attach-agent", replyId, leaked.get(replyId) || []);
+  assert.match(onlyBlock, /The user attached the following file\(s\) with no accompanying text/);
+  assert.match(onlyBlock, /<user-attachments>/);
+  assert.match(onlyBlock, new RegExp(`attachment_id="${replyAttA}"`));
+  assert.match(onlyBlock, new RegExp(`attachment_id="${replyAttB}"`));
+  assert.match(onlyBlock, /workspace_path="\/workspace\/files\/notes\.md"/);
+  assert.match(onlyBlock, /workspace_path="\/workspace\/files\/evil-name\.txt"/);
+  assert.match(onlyBlock, /name="evil&quot;name&lt;\.txt"/, "user-controlled names are escaped");
+  assert.doesNotMatch(onlyBlock, /secret\.pdf|files\/secret/);
+
+  // Full context: text+attachment root + attachment-only reply.
+  const messages = await buildContext(bot, runtimeAgent, channelId, replyId, rootId, false, false);
+  const userTurns = messages.filter((message) => message.role === "user");
+  assert.equal(userTurns.length, 2);
+
+  const rootTurn = userTurns[0].content;
+  assert.match(rootTurn, /please review this report/);
+  assert.match(rootTurn, /<user-attachments>/);
+  assert.match(rootTurn, new RegExp(`message_id="${rootId}"`));
+  assert.match(rootTurn, new RegExp(`attachment_id="${rootAttId}"`));
+  assert.match(rootTurn, /name="report\.pdf"/);
+  assert.match(rootTurn, /mime="application\/pdf"/);
+  assert.match(rootTurn, /bytes="4096"/);
+  assert.match(rootTurn, /workspace_path="\/workspace\/files\/report\.pdf"/);
+  assert.match(rootTurn, /status="imported"/);
+  assert.doesNotMatch(rootTurn, /secret\.pdf/);
+
+  const replyTurn = userTurns[1].content;
+  assert.match(replyTurn, /The user attached the following file\(s\) with no accompanying text/);
+  assert.match(replyTurn, /workspace_path="\/workspace\/files\/notes\.md"/);
+  assert.match(replyTurn, /workspace_path="\/workspace\/files\/evil-name\.txt"/);
+  assert.match(replyTurn, new RegExp(`message_id="${replyId}"`));
+  assert.doesNotMatch(replyTurn, /secret\.pdf|other channel/);
+
+  // Unavailable import (empty workspace_path) still surfaces metadata with status.
+  const missingBlock = formatMessageAttachmentsBlock(1, [{
+    id: 9, message_id: 1, name: "pending.bin", mime: "application/octet-stream", size: 1, workspace_path: "", path: "tok",
+  }]);
+  assert.match(missingBlock, /status="unavailable"/);
+  assert.match(missingBlock, /workspace_path=""/);
 });
 
 test("procedure crystallization rejects generic snippets and retains complete verified procedures", async () => {

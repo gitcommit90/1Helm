@@ -1937,7 +1937,9 @@ const server = createServer(async (req, res) => {
     }
     if (p === "/api/channel-computers/runtime" && m === "GET") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
-      return json(res, 200, { runtime: runtimeReadiness() });
+      // Await the shared readiness probe so onboarding never receives the
+      // temporary pending snapshot (engine_ready: false, status: "checking").
+      return json(res, 200, { runtime: await refreshRuntimeReadiness() });
     }
     if (p === "/api/channel-computers/runtime/install" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });

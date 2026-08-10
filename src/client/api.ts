@@ -2,7 +2,7 @@ export type User = {
   id: number; username: string; display: string; is_admin: boolean;
   description: string; job_title: string; avatar: string; tour_complete: boolean;
 };
-export type Author = { kind: "user" | "bot" | "system"; id: number; name: string };
+export type Author = { kind: "user" | "bot" | "system"; id: number; name: string; avatar?: string; agent_id?: number | null };
 export type Attachment = { id: number; name: string; mime: string; size: number; workspace_path?: string };
 export type AgentProgress = { id: number; kind: "thinking" | "tool" | "status"; body: string; status: "running" | "complete" | "failed"; created: number; updated: number };
 export type ThreadUsage = { input_tokens: number; output_tokens: number };
@@ -92,7 +92,46 @@ export type ChannelRuntime = {
 export type Provider = { id: number; name: string; base_url: string; kind: string; has_key: boolean; bots: number };
 export type RoutingProviderModel = { id: string; gatewayId: string; name: string; enabled: boolean };
 export type RoutingDiscoveredModel = { id: string; name: string; free?: boolean; pricing?: Record<string, string | number | null> };
-export type RoutingModel = { id: string; name: string; kind: "model" | "route"; providerType?: string; providerName?: string; accountCount?: number };
+export type RoutingModel = { id: string; name: string; kind: "model" | "route"; providerId?: string; providerType?: string; providerName?: string; accountCount?: number };
+export type RoutingModelGroup = { key: string; label: string; models: RoutingModel[] };
+
+/** Stable selector group for one routed model. Named routes stay one group.
+ * The server sets providerId only on custom/OpenAI-compatible sources, so
+ * those stay individually selectable while branded families (OpenRouter,
+ * NVIDIA, ChatGPT…) keep pooling every connected account into one entry via
+ * the provider-type fallback. */
+export function routingModelGroupKey(model: RoutingModel): string {
+  if (model.kind === "route") return "routes";
+  if (model.providerId) return `provider:${model.providerId}`;
+  return String(model.providerType || model.providerName || "models");
+}
+
+/** The one grouping used by every model selection surface (welcome tour,
+ * personal/workspace policy, thread popover, channel settings). Option values
+ * remain the collision-safe routed model IDs; groups only organize them.
+ * Providers sharing a display name get a numbered suffix so labels stay
+ * unambiguous. */
+export function groupRoutingModels(models: RoutingModel[]): RoutingModelGroup[] {
+  const groups = new Map<string, RoutingModelGroup>();
+  for (const model of models || []) {
+    const key = routingModelGroupKey(model);
+    const label = model.kind === "route" ? "Named routes" : String(model.providerName || model.providerType || "Provider");
+    const group = groups.get(key);
+    if (group) group.models.push(model);
+    else groups.set(key, { key, label, models: [model] });
+  }
+  const ordered = [...groups.values()];
+  const labelCounts = new Map<string, number>();
+  for (const group of ordered) labelCounts.set(group.label, (labelCounts.get(group.label) || 0) + 1);
+  const labelIndex = new Map<string, number>();
+  for (const group of ordered) {
+    if ((labelCounts.get(group.label) || 1) < 2) continue;
+    const index = (labelIndex.get(group.label) || 0) + 1;
+    labelIndex.set(group.label, index);
+    group.label = `${group.label} (${index})`;
+  }
+  return ordered;
+}
 export type RoutingProvider = {
   id: string; type: string; name: string; accountAlias?: string | null; email?: string | null;
   profileName?: string | null; enabled: boolean; hasToken: boolean; baseUrl?: string;

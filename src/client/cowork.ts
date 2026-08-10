@@ -2,7 +2,7 @@ import { api, type Channel, type ChannelFile, type Message, type User } from "./
 import { clear, color, h, icon, initials, md } from "./dom.ts";
 import { appAlert, appConfirm, appPrompt, mountSpeechToTextControl, setFocusedSpeechTarget } from "./app.ts";
 import { connectCoworkDocument, type CoworkDocument } from "./cowork-collaboration.ts";
-import { mountCodeMirror, mountExcalidraw, type MountedEditor } from "./cowork-editors.ts";
+import { mountCodeMirror, mountDocumentSurface, mountExcalidraw, type MountedEditor } from "./cowork-editors.ts";
 import { exportToCanvas, getCommonBounds } from "@excalidraw/excalidraw";
 import { PDFDocument } from "pdf-lib";
 
@@ -427,11 +427,23 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
   };
 
   const textEditor = (session: SectionSession, mode: "notes" | "code" | "docs"): HTMLElement => {
-    const mounted = mountCodeMirror(session.collaboration!, session.path, mode, (content) => markChanged(session, content), () => { void saveFile(); });
+    // Notes/Docs: rendered document surface (people never see raw Markdown).
+    // Code: CodeMirror source editor. HTML files keep an optional site preview.
+    const mounted = mode === "code"
+      ? mountCodeMirror(session.collaboration!, session.path, "code", (content) => markChanged(session, content), () => { void saveFile(); })
+      : mountDocumentSurface(session.collaboration!, mode, (content) => markChanged(session, content), () => { void saveFile(); });
     session.mounted = mounted;
-    const preview = h("div", { class: "md cowork-markdown-preview hidden" });
-    const editStage = h("div", { class: mode === "docs" ? "cowork-doc-page" : "cowork-notes-editor-frame min-h-0 flex-1 overflow-hidden" }, mounted.node);
-    const format = (label: string, prefix: string, suffix = prefix, placeholder = "text") => h("button", { class: "btn-ghost text-xs", type: "button", title: label, onclick: () => mounted.format?.(prefix, suffix, placeholder) }, label);
+    const editStage = h("div", {
+      class: mode === "docs"
+        ? "cowork-doc-page"
+        : mode === "notes"
+          ? "cowork-notes-editor-frame min-h-0 flex-1 overflow-hidden"
+          : "min-h-0 flex-1 overflow-hidden",
+    }, mounted.node);
+    const format = (label: string, prefix: string, suffix = prefix, placeholder = "text") => h("button", {
+      class: "btn-ghost text-xs", type: "button", title: label,
+      onclick: () => mounted.format?.(prefix, suffix, placeholder),
+    }, label);
     const htmlFile = mode === "code" && /\.html?$/i.test(session.path);
     const htmlStage = htmlFile ? h("div", { class: "hidden min-h-0 flex-1 overflow-hidden bg-white" }) : null;
     const htmlPreviewButton = htmlFile ? h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => {
@@ -454,11 +466,6 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
         button.textContent = session.preview ? "Return to code" : "Preview";
       })();
     } }, "Preview") : null;
-    const previewButton = mode !== "code" ? h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => {
-      session.preview = !session.preview; preview.classList.toggle("hidden", !session.preview); editStage.classList.toggle("hidden", session.preview);
-      preview.innerHTML = md(session.mounted?.getContent?.() || session.content || "_This file is empty._");
-      (previewButton as HTMLButtonElement).textContent = session.preview ? "Write" : "Preview";
-    } }, "Preview") : null;
     const speechTarget = {
       value: () => mounted.getContent?.() || "",
       replace: (content: string) => mounted.replaceContent?.(content),
@@ -470,11 +477,11 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
       mode !== "code" ? format("Heading", "## ", "", "Heading") : null,
       mode !== "code" ? format("Bold", "**", "**") : null,
       mode !== "code" ? format("Italic", "_", "_") : null,
-      mode === "docs" ? format("List", "- ", "", "List item") : null,
-      dictation, htmlPreviewButton, previewButton);
+      mode === "docs" || mode === "notes" ? format("List", "- ", "", "List item") : null,
+      dictation, htmlPreviewButton);
     const stage = mode === "notes"
-      ? h("div", { class: "cowork-notes-edit-stage flex min-h-0 flex-1 flex-col overflow-hidden" }, editStage, preview)
-      : h("div", { class: `cowork-text-stage flex min-h-0 flex-1 flex-col ${mode === "code" ? "overflow-hidden" : "overflow-auto"}` }, editStage, ...(htmlStage ? [htmlStage] : []), preview);
+      ? h("div", { class: "cowork-notes-edit-stage flex min-h-0 flex-1 flex-col overflow-hidden" }, editStage)
+      : h("div", { class: `cowork-text-stage flex min-h-0 flex-1 flex-col ${mode === "code" ? "overflow-hidden" : "overflow-auto"}` }, editStage, ...(htmlStage ? [htmlStage] : []));
     return h("div", { class: `flex min-h-0 flex-1 flex-col ${mode === "docs" ? "cowork-doc-canvas" : ""}` }, toolbar, stage);
   };
 
@@ -618,6 +625,20 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
           if (openingCollaboration!.provider.synced) synced(true);
         });
         if (session.loadVersion !== loadVersion || session.path !== openingPath || session.collaboration !== openingCollaboration) return;
+        // y-websocket auto-reconnects this same Y.Doc after a silent socket
+        // drop (laptop sleep, frozen background tab, server restart). When we
+        // were the last viewer the server room was torn down, and reconnecting
+        // reseeds a fresh doc from the file — syncing the old doc into it
+        // merges two unrelated histories of the same text and duplicates the
+        // document. Deliberate disconnect()/destroy() clears shouldConnect, so
+        // only unexpected drops reach the reset: throw the stale doc away and
+        // reload the authoritative file into a new one.
+        openingCollaboration.provider.on("connection-close", () => {
+          if (!openingCollaboration!.provider.shouldConnect) return;
+          if (session.collaboration !== openingCollaboration || session.path !== openingPath) return;
+          resetEditor(session);
+          if (surfaceActive && activeSession() === session) void drawWorkspace();
+        });
         const shared = openingPath.endsWith(".whiteboard.json") || openingPath.endsWith(".slides.json") ? openingCollaboration.scene.get("json") || "" : openingCollaboration.text.toString();
         // The synchronized file is authoritative. Keeping a second recovery
         // copy in localStorage previously resurrected stale text after agents or

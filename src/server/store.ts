@@ -78,15 +78,27 @@ export function serializeMessage(id: number): Row | undefined {
   // Never ship internal follow-up wake scaffolds to the client.
   if (isInternalMessageBody(String(m.body || ""))) return undefined;
   const author = m.system_message
-    ? { kind: "system", id: 0, name: "1Helm" }
+    ? { kind: "system", id: 0, name: "1Helm", avatar: "" }
     : m.bot_id
-    ? {
-      kind: "bot",
-      id: m.bot_id,
-      agent_id: q1("SELECT id FROM agents WHERE bot_id=? AND status<>'deleted'", m.bot_id)?.id || null,
-      name: (q1("SELECT name FROM bots WHERE id=?", m.bot_id)?.name as string) || "agent",
-    }
-    : { kind: "user", id: m.user_id, name: (q1("SELECT display FROM users WHERE id=?", m.user_id)?.display as string) || "user" };
+    ? (() => {
+      const bot = q1("SELECT name, avatar FROM bots WHERE id=?", m.bot_id);
+      return {
+        kind: "bot",
+        id: m.bot_id,
+        agent_id: q1("SELECT id FROM agents WHERE bot_id=? AND status<>'deleted'", m.bot_id)?.id || null,
+        name: (bot?.name as string) || "agent",
+        avatar: String(bot?.avatar || ""),
+      };
+    })()
+    : (() => {
+      const person = q1("SELECT display, avatar FROM users WHERE id=?", m.user_id);
+      return {
+        kind: "user",
+        id: m.user_id,
+        name: (person?.display as string) || "user",
+        avatar: String(person?.avatar || ""),
+      };
+    })();
   const attachments = q("SELECT id, name, mime, size, workspace_path FROM attachments WHERE message_id=?", id);
   // A transient Working placeholder is visible activity, not a completed
   // reply. Compute the user-facing total from durable reply bodies so it can

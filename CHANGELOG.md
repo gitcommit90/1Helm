@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-08-10
+
+### Added
+
+- Cowork Notes and Docs now edit as rendered documents with toolbar
+  formatting; storage and collaboration remain plain Markdown for agents.
+
+### Fixed
+
+- Cowork no longer duplicates a document's text when its only editor's
+  connection silently drops and reconnects (laptop sleep, frozen background
+  tab, host restart).
+- Host update checks cache the GitHub release lookup, poll far less often,
+  and explain GitHub rate limiting instead of surfacing a raw HTTP error.
+- Model pickers keep each custom/OpenAI-compatible provider individually
+  selectable instead of collapsing them into one "Custom" group. Branded
+  provider families still pool all connected accounts into one entry.
+
 ## [1.0.1] - 2026-08-07
 
 ### Fixed

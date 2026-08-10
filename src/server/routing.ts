@@ -141,6 +141,11 @@ export type RoutingModel = {
   id: string;
   name: string;
   kind: "model" | "route";
+  /** Stable source-provider identity, set ONLY for custom/OpenAI-compatible
+   * sources: several of those are genuinely different services that must stay
+   * individually selectable. Branded families (OpenRouter, NVIDIA, ChatGPT…)
+   * omit it so every connected account keeps pooling into one picker entry. */
+  providerId?: string;
   providerType?: string;
   providerName?: string;
   accountCount?: number;
@@ -1164,10 +1169,15 @@ export async function routingModels(userId = 0): Promise<RoutingModel[]> {
     const id = String(model.id || "").trim();
     const provider = model.providerId ? providers.get(model.providerId) : null;
     const family = String(model.owned_by || provider?.type || "");
+    // Per-provider identity is deliberately limited to custom sources; a
+    // second OpenRouter/NVIDIA/OAuth account must merge into its family, not
+    // spawn a duplicate provider entry in the pickers.
+    const customSource = /^(?:openai-compat|custom)$/i.test(String(provider?.type || ""));
     return {
       id,
       name: String(model.name || id),
       kind: model.combo ? "route" : "model",
+      providerId: model.combo || !customSource ? undefined : String(model.providerId || "") || undefined,
       providerType: model.combo ? undefined : family,
       providerName: model.combo ? undefined : String(provider?.name || family || "Provider"),
       accountCount: model.combo

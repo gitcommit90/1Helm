@@ -86,7 +86,7 @@ function normalizedState(state: Partial<HostUpdateState>, currentVersion: string
   };
 }
 
-async function latestVersion(): Promise<string> {
+async function fetchLatestVersion(): Promise<string> {
   let response: Response;
   try {
     response = await fetch(UPDATE_MANIFEST_URL, {
@@ -96,12 +96,48 @@ async function latestVersion(): Promise<string> {
   } catch {
     throw new Error("Could not reach 1Helm's update service. Check the host's connection and try again.");
   }
+  if (response.status === 403 || response.status === 429) {
+    throw new Error("GitHub is rate-limiting update checks from this host. 1Helm keeps the last known release and retries automatically.");
+  }
   if (!response.ok) throw new Error(`Could not check 1Helm updates (HTTP ${response.status}).`);
   const manifest = await response.json() as UpdateManifest;
   if (manifest.draft === true || manifest.prerelease === true) throw new Error("1Helm's update service did not return a stable release.");
   const version = String(manifest.version || manifest.tag_name || "").trim().replace(/^v/i, "");
   if (!versionParts(version)) throw new Error("1Helm's update service returned an invalid version.");
   return version;
+}
+
+// GitHub's unauthenticated API allows 60 requests/hour per address, and every
+// open admin tab polls /api/app/update. Serve the release lookup from a cache:
+// one shared request per TTL window, concurrent checks coalesced onto the same
+// fetch, and — when GitHub throttles or hiccups — the last known release
+// instead of an error on an otherwise healthy install.
+const RELEASE_CACHE_TTL_MS = 15 * 60_000;
+const RELEASE_RETRY_COOLDOWN_MS = 2 * 60_000;
+let cachedRelease: { version: string; at: number } | null = null;
+let releaseFailure: { error: Error; at: number } | null = null;
+let releaseFetch: Promise<string> | null = null;
+
+async function latestVersion(): Promise<string> {
+  if (cachedRelease && Date.now() - cachedRelease.at < RELEASE_CACHE_TTL_MS) return cachedRelease.version;
+  if (releaseFetch) return releaseFetch;
+  if (releaseFailure && Date.now() - releaseFailure.at < RELEASE_RETRY_COOLDOWN_MS) {
+    if (cachedRelease) return cachedRelease.version;
+    throw releaseFailure.error;
+  }
+  releaseFetch = fetchLatestVersion()
+    .then((version) => {
+      cachedRelease = { version, at: Date.now() };
+      releaseFailure = null;
+      return version;
+    })
+    .catch((error: Error) => {
+      releaseFailure = { error, at: Date.now() };
+      if (cachedRelease) return cachedRelease.version;
+      throw error;
+    })
+    .finally(() => { releaseFetch = null; });
+  return releaseFetch;
 }
 
 async function linuxState(appRoot: string, dataDir: string): Promise<HostUpdateState> {

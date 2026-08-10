@@ -151,31 +151,42 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   assert.match(folderThread.root.body, /^@\S+ Summarize this folder\n\nWorking folder: \/workspace\/notes$/);
   await page.click('.cowork-workspace .cowork-agent-toggle');
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("field-notes.md"))?.click());
-  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Field notes"));
-  const editorContent = '[aria-label="Notes editor"] .cm-content';
+  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"]')?.textContent.includes("Field notes"));
+  // Notes/Docs render Markdown as prose — people never see raw **md** / # headings.
+  assert.equal(await page.$eval('[aria-label="Notes editor"] h1', (node) => node.textContent.trim()), "Field notes");
+  assert.equal(await page.$eval('[aria-label="Notes editor"] strong', (node) => node.textContent.trim()), "Goal");
+  assert.equal(await page.$('.cowork-markdown-preview'), null, "Write/Preview dual mode is gone");
+  assert.equal(
+    await page.$$eval('.cowork-editor-toolbar button', (buttons) => buttons.some((button) => ["Preview", "Write"].includes(button.textContent.trim()))),
+    false,
+    "no Preview/Write toggle on notes/docs",
+  );
+  const editorContent = '[aria-label="Notes editor"]';
   await page.click(editorContent);
   await page.keyboard.down(primaryModifier); await page.keyboard.press("a"); await page.keyboard.up(primaryModifier); await page.keyboard.press("ArrowRight");
   await page.keyboard.type("\nUnsaved continuity proof.");
-  await page.click('[aria-label="Notes editor"] .cm-line');
-  await page.keyboard.down(primaryModifier); await page.keyboard.press("a"); await page.keyboard.up(primaryModifier); await page.keyboard.press("ArrowLeft");
-  for (let index = 0; index < 3; index++) await page.keyboard.press("ArrowRight");
-  await page.keyboard.down("Shift"); for (let index = 0; index < 8; index++) await page.keyboard.press("ArrowRight"); await page.keyboard.up("Shift");
-  await page.evaluate(() => { window.__coworkEditor = document.querySelector('[aria-label="Notes editor"] .cm-content'); });
+  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"]')?.textContent.includes("Unsaved continuity proof"));
+  await page.evaluate(() => { window.__coworkEditor = document.querySelector('[aria-label="Notes editor"]'); });
   await page.evaluate(() => [...document.querySelectorAll('button[title^="Switch to"]')][0]?.click());
-  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content') === window.__coworkEditor);
+  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"]') === window.__coworkEditor);
   const continuity = await page.evaluate(() => {
-    const editor = document.querySelector('[aria-label="Notes editor"] .cm-content');
-    return { same: editor === window.__coworkEditor, focused: document.activeElement === editor, lines: [...document.querySelectorAll('[aria-label="Notes editor"] .cm-line')].map((line) => line.textContent) };
+    const editor = document.querySelector('[aria-label="Notes editor"]');
+    return {
+      same: editor === window.__coworkEditor,
+      focused: document.activeElement === editor || editor.contains(document.activeElement),
+      text: (editor?.innerText || "").replace(/\s+/g, " ").trim(),
+    };
   });
-  assert.deepEqual(continuity, { same: true, focused: true, lines: ["# Field notes", "", "**Goal**", "", "Unsaved continuity proof."] });
-  await page.keyboard.type("PRESERVED");
-  assert.deepEqual(await page.$$eval('[aria-label="Notes editor"] .cm-line', (lines) => lines.map((line) => line.textContent)), ["# FPRESERVEDes", "", "**Goal**", "", "Unsaved continuity proof."]);
+  assert.equal(continuity.same, true);
+  assert.equal(continuity.focused, true);
+  assert.match(continuity.text, /Field notes/);
+  assert.match(continuity.text, /Goal/);
+  assert.match(continuity.text, /Unsaved continuity proof/);
   await page.keyboard.down(primaryModifier); await page.keyboard.press("s"); await page.keyboard.up(primaryModifier);
   await waitFor(async () => (await api(`/api/channels/${channel.id}/files/text?path=notes%2Ffield-notes.md`, {}, token)).file.content.includes("Unsaved continuity proof"), "saved Cowork note");
   assert.equal(await page.$$eval('[data-speech-toggle]', (buttons) => buttons.some((button) => button.getAttribute("aria-label") === "Dictate note")), true, "Cowork Notes exposes dictation");
   // Install a deterministic SpeechRecognition seam in the page and exercise
-  // the real bare Alt event path while CodeMirror owns focus. This previously
-  // failed because the shortcut knew the editor target but not its mic button.
+  // the real bare Alt event path while the document surface owns focus.
   await page.evaluate(() => {
     class FakeRecognition {
       start() { window.__speechStarts = (window.__speechStarts || 0) + 1; }
@@ -193,12 +204,11 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await new Promise((resolve) => setTimeout(resolve, 350));
   assert.equal(await page.evaluate(() => window.__speechStarts), 1, "an Option/Alt character combination does not start dictation");
 
-  // The CodeMirror scroller itself must own a finite viewport and scroll—not
-  // an outer wrapper whose inner editor clips overflowing content.
+  // Document body owns a finite viewport and scrolls — not a clipped outer shell.
   await page.click(editorContent);
   await page.keyboard.down(primaryModifier); await page.keyboard.press("End"); await page.keyboard.up(primaryModifier);
   await page.keyboard.type(`\n${Array.from({ length: 120 }, (_, index) => `Scrollable note row ${index + 1}`).join("\n")}`);
-  const noteScroll = await page.$eval('[aria-label="Notes editor"] .cm-scroller', (scroller) => {
+  const noteScroll = await page.$eval('[aria-label="Notes editor"]', (scroller) => {
     const before = scroller.scrollTop;
     scroller.scrollTop = Math.max(1, scroller.scrollHeight - scroller.clientHeight);
     return { before, after: scroller.scrollTop, clientHeight: scroller.clientHeight, scrollHeight: scroller.scrollHeight };
@@ -215,9 +225,9 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Notes")?.click());
   await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("field-notes.md"));
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("field-notes.md"))?.click());
-  await page.waitForSelector('[aria-label="Notes editor"] .cm-content');
-  await page.$eval('[aria-label="Notes editor"] .cm-scroller', (scroller) => { scroller.scrollTop = scroller.scrollHeight; });
-  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Scrollable note row 120"));
+  await page.waitForSelector('[aria-label="Notes editor"]');
+  await page.$eval('[aria-label="Notes editor"]', (scroller) => { scroller.scrollTop = scroller.scrollHeight; });
+  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"]')?.textContent.includes("Scrollable note row 120"));
   await new Promise((resolve) => setTimeout(resolve, 800));
   const sectionReopenedText = (await api(`/api/channels/${channel.id}/files/text?path=notes%2Ffield-notes.md`, {}, token)).file.content;
   assert.equal((sectionReopenedText.match(/Scrollable note row 120/g) || []).length, 1, "switching Cowork sections never duplicates saved text");
@@ -228,15 +238,15 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Docs")?.click());
   await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("proposal.md"));
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("proposal.md"))?.click());
-  await page.waitForSelector('[aria-label="Docs editor"] .cm-content');
+  await page.waitForSelector('[aria-label="Docs editor"]');
   await api(`/api/channels/${channel.id}/files/text`, { method: "PATCH", body: { path: "docs/proposal.md", content: "Hello World\n".repeat(5) } }, token);
-  await page.waitForFunction(() => (document.querySelector('[aria-label="Docs editor"] .cm-content')?.textContent.match(/Hello World/g) || []).length === 5);
+  await page.waitForFunction(() => (document.querySelector('[aria-label="Docs editor"]')?.textContent.match(/Hello World/g) || []).length === 5);
   await page.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Notes")?.click());
   await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("field-notes.md"));
   await page.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Docs")?.click());
   await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("proposal.md"));
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("proposal.md"))?.click());
-  await page.waitForFunction(() => document.querySelector('[aria-label="Docs editor"] .cm-content')?.textContent.includes("Hello World"));
+  await page.waitForFunction(() => document.querySelector('[aria-label="Docs editor"]')?.textContent.includes("Hello World"));
   await new Promise((resolve) => setTimeout(resolve, 800));
   const externallyReopened = (await api(`/api/channels/${channel.id}/files/text?path=docs%2Fproposal.md`, {}, token)).file.content;
   assert.equal((externallyReopened.match(/Hello World/g) || []).length, 5, "an agent-style replacement remains exactly-once after leaving and reopening a document");
@@ -244,7 +254,7 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.evaluate(() => [...document.querySelectorAll('[aria-label="Cowork sections"] button')].find((button) => button.textContent.trim() === "Notes")?.click());
   await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("field-notes.md"));
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("field-notes.md"))?.click());
-  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Unsaved continuity proof"));
+  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"]')?.textContent.includes("Unsaved continuity proof"));
   // Leave the sole Cowork client and return. The old document transport must
   // never merge its stale Yjs history with a fresh server room and duplicate
   // the complete file.
@@ -253,8 +263,8 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.evaluate(() => [...document.querySelectorAll("nav button")].find((button) => button.textContent.includes("Cowork"))?.click());
   await page.waitForSelector('[data-cowork-surface]');
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("field-notes.md"))?.click());
-  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Unsaved continuity proof"));
-  const reopenedText = await page.$eval('[aria-label="Notes editor"] .cm-content', (editor) => editor.textContent || "");
+  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"]')?.textContent.includes("Unsaved continuity proof"));
+  const reopenedText = await page.$eval('[aria-label="Notes editor"]', (editor) => editor.textContent || "");
   assert.equal((reopenedText.match(/Unsaved continuity proof/g) || []).length, 1, "leaving and reopening Cowork never duplicates saved text");
 
   // Focus the actual Cowork agent textarea and prove the same bare Alt route
@@ -282,22 +292,17 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await collaboratorPage.evaluate((value) => localStorage.setItem("ctrl.token", value), collaboratorToken);
   await collaboratorPage.goto(`${base}/c/${channel.slug}/cowork`, { waitUntil: "networkidle0" });
   await collaboratorPage.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("field-notes.md"))?.click());
-  await collaboratorPage.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("continuity proof"));
+  await collaboratorPage.waitForFunction(() => document.querySelector('[aria-label="Notes editor"]')?.textContent.includes("continuity proof"));
   await page.waitForSelector('[data-cowork-viewer="crew"]');
   await collaboratorPage.waitForSelector('[data-cowork-viewer="captain"]');
-  await collaboratorPage.click('[aria-label="Notes editor"] .cm-content');
+  await collaboratorPage.click('[aria-label="Notes editor"]');
   await collaboratorPage.keyboard.down(primaryModifier); await collaboratorPage.keyboard.press("a"); await collaboratorPage.keyboard.up(primaryModifier); await collaboratorPage.keyboard.press("ArrowRight");
   await collaboratorPage.keyboard.type("\nLive words from Crew.");
-  await page.$eval('[aria-label="Notes editor"] .cm-scroller', (scroller) => { scroller.scrollTop = scroller.scrollHeight; });
-  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"] .cm-content')?.textContent.includes("Live words from Crew"));
-  await collaboratorPage.evaluate(() => {
-    const editor = document.querySelector('[aria-label="Notes editor"] .cm-content');
-    const last = [...document.querySelectorAll('[aria-label="Notes editor"] .cm-line')].at(-1)?.firstChild;
-    editor.focus(); window.getSelection().setBaseAndExtent(last, 1, last, 5); document.dispatchEvent(new Event("selectionchange"));
-  });
-  await page.waitForSelector('.cm-ySelectionCaret');
-  await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent.trim() === "Preview")?.click());
-  await page.waitForSelector(".cowork-markdown-preview:not(.hidden) strong");
+  await page.$eval('[aria-label="Notes editor"]', (scroller) => { scroller.scrollTop = scroller.scrollHeight; });
+  await page.waitForFunction(() => document.querySelector('[aria-label="Notes editor"]')?.textContent.includes("Live words from Crew"));
+  // Presence avatars prove live collaboration; remote CM carets are code-only.
+  await page.waitForSelector('[data-cowork-viewer="crew"]');
+  await collaboratorPage.waitForSelector('[data-cowork-viewer="captain"]');
 
   // Every mode is file-backed, and the agent drawer starts an ordinary thread
   // whose first human message carries only the open file path as context.
@@ -405,13 +410,15 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.waitForFunction(() => document.querySelector('[data-cowork-files]')?.textContent.includes("proposal.md"));
   await page.evaluate(() => [...document.querySelectorAll('[data-cowork-files] button')].find((button) => button.textContent.includes("proposal.md"))?.click());
   await page.waitForSelector('.cowork-doc-page [aria-label="Docs editor"]');
-  await page.click('[aria-label="Docs editor"] .cm-content');
+  await page.click('[aria-label="Docs editor"]');
   await page.keyboard.down(primaryModifier); await page.keyboard.press("a"); await page.keyboard.up(primaryModifier); await page.keyboard.press("ArrowRight");
   await page.keyboard.press("Enter");
   await page.evaluate(() => [...document.querySelectorAll('.cowork-editor-toolbar button')].find((button) => button.textContent.trim() === "Bold")?.click());
   await page.keyboard.type("shared proposal");
   await page.keyboard.down(primaryModifier); await page.keyboard.press("s"); await page.keyboard.up(primaryModifier);
   await waitFor(async () => (await api(`/api/channels/${channel.id}/files/text?path=docs%2Fproposal.md`, {}, token)).file.content.includes("**shared proposal**"), "saved formatted document");
+  // UI shows rendered bold, never raw asterisks.
+  await page.waitForFunction(() => [...document.querySelectorAll('[aria-label="Docs editor"] strong')].some((node) => node.textContent.includes("shared proposal")));
 
   // Cowork-local Explorer actions operate in nested folders over the same
   // /workspace tree as the main Files browser.

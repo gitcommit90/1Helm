@@ -209,11 +209,29 @@ export function openOnboarding(root: HTMLElement, opts: WizardOptions): void {
       setBusy(button, true, "Preparing workspace…");
       status.textContent = "";
       try {
-        const { runtime } = await api<{ runtime: ChannelRuntime }>("/api/channel-computers/runtime");
+        // Poll while the server is still probing; never treat status "checking"
+        // as a hard installer failure.
+        let runtime: ChannelRuntime | null = null;
+        const deadline = Date.now() + 45_000;
+        while (Date.now() < deadline) {
+          const snapshot = await api<{ runtime: ChannelRuntime }>("/api/channel-computers/runtime");
+          runtime = snapshot.runtime;
+          if (runtime.status !== "checking") break;
+          status.replaceChildren(h("div", { class: "wizard-status-info text-sm text-muted" }, "Checking private-computer runtime…"));
+          setBusy(button, true, "Checking runtime…");
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+        }
+        if (!runtime) throw new Error("Could not load channel-computer runtime status.");
         if (runtime.backend === "oci") {
           if (!runtime.supported) {
             setBusy(button, false);
             status.replaceChildren(h("div", { class: "wizard-status-err" }, "Private channel computers require a supported Linux or Windows x64 host."));
+            return;
+          }
+          if (runtime.status === "checking" || (!runtime.engine_ready && !runtime.error)) {
+            // Still probing or empty pending snapshot — do not blame the installer.
+            setBusy(button, false);
+            status.replaceChildren(h("div", { class: "wizard-status-err" }, "Still checking the private-computer runtime. Wait a moment and retry."));
             return;
           }
           if (!runtime.engine_ready) {

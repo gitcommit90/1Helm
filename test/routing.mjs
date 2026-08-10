@@ -529,6 +529,17 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     assert.notEqual(reconciledWorkspace.model, editedRoundRoute.name, "deleting a selected route immediately reconciles stale workspace and agent policy");
     assert(reconciledWorkspace.models.some((model) => model.id === reconciledWorkspace.model), "reconciled model policy always names a live catalog entry");
 
+    // Several OpenAI-compatible sources expose the same model names. Each
+    // direct entry must keep its source provider's identity so client pickers
+    // can group by provider:<id> instead of collapsing every source into one
+    // ambiguous "Custom" family. Routed IDs stay the collision-safe values.
+    const directMockLarge = reconciledWorkspace.models.filter((model) => model.kind === "model" && model.name === "mock-large");
+    assert(directMockLarge.length >= 2, "multiple custom sources expose the same-named model directly");
+    assert.equal(new Set(directMockLarge.map((model) => model.providerId)).size, directMockLarge.length, "every direct model retains its own source providerId");
+    assert.equal(new Set(directMockLarge.map((model) => model.id)).size, directMockLarge.length, "collision-safe routed IDs stay unique per source");
+    assert(directMockLarge.every((model) => model.providerId && model.id !== model.name), "direct custom models carry providerId alongside collision-safe IDs");
+    assert(new Set(directMockLarge.map((model) => model.providerName)).size >= 2, "distinct sources keep distinct display names for selector labels");
+
     await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {
       method: "POST", body: JSON.stringify({ action: "app:set-provider-enabled", payload: { id: backupProvider, enabled: false } }),
     });

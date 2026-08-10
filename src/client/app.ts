@@ -1,4 +1,4 @@
-import { api, downloadAuthenticatedFile, initializeApiTransport, openAuthenticatedFile, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type AgentQuestions, type ThreadFollowup, type ThreadUsage, type RoutingModel, type ResidentAgent } from "./api.ts";
+import { api, downloadAuthenticatedFile, initializeApiTransport, openAuthenticatedFile, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, groupRoutingModels, routingModelGroupKey, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type AgentQuestions, type ThreadFollowup, type ThreadUsage, type RoutingModel, type ResidentAgent } from "./api.ts";
 import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, icon, helmMark, type ChannelLink } from "./dom.ts";
 import { openSettings, finishOpenRouterOAuth, refreshOpenSkillsSettings } from "./settings.ts";
 import { disableNativeNotifications, hydrateNotificationPreferences, playNotification, restoreNativeNotifications, setNativeNotificationNavigation } from "./notifications.ts";
@@ -190,7 +190,9 @@ function scheduleHostUpdatePromptChecks(): void {
   const poll = async (): Promise<void> => {
     try { maybeShowUpdateReadyPrompt(await api<HostUpdate>("/api/app/update")); }
     catch { /* Profile retains the visible manual retry path. */ }
-    updateReadyPoll = window.setTimeout(() => { void poll(); }, 30_000);
+    // This background prompt only needs to notice a finished download
+    // eventually; every open admin tab polls, so keep the cadence gentle.
+    updateReadyPoll = window.setTimeout(() => { void poll(); }, 300_000);
   };
   updateReadyPoll = window.setTimeout(() => { void poll(); }, 25_000);
 }
@@ -245,6 +247,7 @@ export function restoreUiContinuity(snapshot: UiContinuity): void {
     if (element) {
       if ((element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) && snapshot.active.value != null) element.value = snapshot.active.value;
       if (element instanceof HTMLInputElement && snapshot.active.checked != null) element.checked = snapshot.active.checked;
+      if (element instanceof HTMLTextAreaElement) resizeComposer(element);
       element.focus({ preventScroll: true });
       if ((element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) && snapshot.active.start != null && snapshot.active.end != null) element.setSelectionRange(snapshot.active.start, snapshot.active.end);
     }
@@ -255,7 +258,69 @@ export function restoreUiContinuity(snapshot: UiContinuity): void {
   }
   requestAnimationFrame(() => {
     for (const saved of snapshot.scroll) { const element = document.querySelector<HTMLElement>(saved.key); if (element) { element.scrollTop = saved.top; element.scrollLeft = saved.left; } }
+    // Re-measure multi-line composers after layout so restored drafts stay tall.
+    document.querySelectorAll<HTMLTextAreaElement>("textarea[data-composer-parent]").forEach((input) => {
+      if (input.value) resizeComposer(input);
+    });
   });
+}
+
+const COMPOSER_MAX_HEIGHT_PX = 176;
+
+/** Shared autosize for chat/thread composers. Call on mount, draft restore, input, and speech. */
+export function resizeComposer(input: HTMLTextAreaElement): void {
+  input.style.height = "auto";
+  input.style.height = `${Math.min(Math.max(input.scrollHeight, 24), COMPOSER_MAX_HEIGHT_PX)}px`;
+}
+
+type ComposerContinuity = {
+  parentKey: string;
+  value: string;
+  start: number | null;
+  end: number | null;
+  height: number;
+  focused: boolean;
+  speechActive: boolean;
+};
+
+function composerParentKey(parentId: number | null): string {
+  return parentId == null ? "root" : String(parentId);
+}
+
+function captureComposerContinuity(parentId: number | null): ComposerContinuity | null {
+  const parentKey = composerParentKey(parentId);
+  const input = document.querySelector<HTMLTextAreaElement>(`textarea[data-composer-parent="${CSS.escape(parentKey)}"]`);
+  if (!input) return null;
+  return {
+    parentKey,
+    value: input.value,
+    start: input.selectionStart,
+    end: input.selectionEnd,
+    height: input.offsetHeight || 0,
+    focused: document.activeElement === input,
+    speechActive: Boolean(activeSpeech?.parentKey === parentKey),
+  };
+}
+
+function restoreComposerContinuity(snapshot: ComposerContinuity | null): void {
+  if (!snapshot) return;
+  const input = document.querySelector<HTMLTextAreaElement>(`textarea[data-composer-parent="${CSS.escape(snapshot.parentKey)}"]`);
+  if (!input) return;
+  if (input.value !== snapshot.value) {
+    input.value = snapshot.value;
+    localStorage.setItem(`1helm.draft.${S.me.id}.${S.channelId}.${snapshot.parentKey}`, snapshot.value);
+  }
+  resizeComposer(input);
+  if (snapshot.height > input.offsetHeight) {
+    input.style.height = `${Math.min(snapshot.height, COMPOSER_MAX_HEIGHT_PX)}px`;
+  }
+  if (snapshot.focused) {
+    input.focus({ preventScroll: true });
+    if (snapshot.start != null && snapshot.end != null) {
+      try { input.setSelectionRange(snapshot.start, snapshot.end); } catch { /* ignore */ }
+    }
+  }
+  if (snapshot.speechActive) rebindActiveSpeechToComposer(input);
 }
 
 function showToast(message: string): void {
@@ -354,12 +419,7 @@ async function openWelcomeTour(): Promise<void> {
   const overlay = h("div", { id: "welcome-tour", class: "modal-overlay fixed inset-0 z-[80] grid place-items-center bg-black/65 p-4 backdrop-blur-sm" });
   const provider = h("select", { class: "field" }) as HTMLSelectElement;
   const model = h("select", { class: "field" }) as HTMLSelectElement;
-  const families = new Map<string, { label: string; models: RoutingModel[] }>();
-  for (const candidate of data.models || []) {
-    const id = candidate.kind === "route" ? "routes" : String(candidate.providerType || candidate.providerName || "models");
-    const label = candidate.kind === "route" ? "Named routes" : String(candidate.providerName || candidate.providerType || "Provider");
-    const group = families.get(id) || { label, models: [] }; group.models.push(candidate); families.set(id, group);
-  }
+  const families = new Map(groupRoutingModels(data.models || []).map((group) => [group.key, group]));
   for (const [id, group] of families) provider.append(h("option", { value: id, selected: group.models.some((candidate) => candidate.id === data.model) }, group.label));
   const drawModels = (): void => {
     clear(model); const group = families.get(provider.value);
@@ -674,7 +734,16 @@ function onEvent(e: any): void {
   } else if (e.type === "user_update" && e.user) {
     const i = S.users.findIndex((u) => u.id === e.user.id);
     if (i >= 0) S.users[i] = e.user; else S.users = [...S.users, e.user];
-    if (e.user.id === S.me.id) { S.me = { ...S.me, ...e.user }; renderSidebar(); }
+    if (e.user.id === S.me.id) S.me = { ...S.me, ...e.user };
+    // Keep already-loaded message authors in sync so chat/thread faces update
+    // without a hard reload when someone changes their profile photo.
+    applyUserAvatarToMessages(e.user);
+    renderSidebar();
+    if (e.user.id === S.me.id) renderHeader();
+    if (S.view === "chat") {
+      renderMessages();
+      if (S.threadRoot) renderThread();
+    }
   } else if (e.type === "user_deleted") {
     S.users = S.users.filter((u) => u.id !== e.userId);
   }
@@ -1409,6 +1478,8 @@ function renderMain(preserveChannelSurface = false, continuity?: UiContinuity): 
   // #msgs is destroyed on every shell rebuild. Capture scroll *before* clear so
   // open/close thread doesn't dump the user at the oldest message.
   const priorMsgs = document.getElementById("msgs");
+  const rootComposerSnap = S.view === "chat" ? captureComposerContinuity(null) : null;
+  const threadComposerSnap = S.threadRoot ? captureComposerContinuity(S.threadRoot.id) : null;
   if (forceMsgsScrollBottom) {
     pendingMsgsScroll = { top: 0, stick: true };
   } else if (priorMsgs) {
@@ -1467,6 +1538,10 @@ function renderMain(preserveChannelSurface = false, continuity?: UiContinuity): 
   main.append(...parts);
   renderHeader(); renderMessages();
   if (showRhs) renderRhs();
+  // Channel composer is rebuilt with the shell; restore multi-line height/focus
+  // after paint. Thread composer is restored inside paintThreadPanel as well.
+  restoreComposerContinuity(rootComposerSnap);
+  if (S.threadRoot) restoreComposerContinuity(threadComposerSnap);
 }
 
 function renderRhs(): void {
@@ -1479,6 +1554,8 @@ function renderRhs(): void {
   const forceBottom = forceThreadScrollBottom;
   const stickThread = forceBottom || (priorThread ? shouldStickScroll(priorThread) : true);
   if (forceBottom) forceThreadScrollBottom = false;
+  // Capture before clear(el) destroys the thread composer DOM.
+  const threadComposerSnap = S.threadRoot ? captureComposerContinuity(S.threadRoot.id) : null;
   snapshotProgressOpenState(el);
   snapshotProgressOpenState(document.getElementById("msgs"));
   clear(el);
@@ -1517,7 +1594,7 @@ function renderRhs(): void {
       class: paneClass(),
     });
     el.append(threadBox);
-    paintThreadPanel(threadBox, priorTop, stickThread, forceBottom);
+    paintThreadPanel(threadBox, priorTop, stickThread, forceBottom, threadComposerSnap);
   }
   if (S.terminalOpen) {
     const termBox = h("div", {
@@ -1876,6 +1953,111 @@ function renderMessageBody(body: string): HTMLElement {
   return el;
 }
 
+// --- Long message collapse (rendered height, not character count) -------------
+// Policy: over-threshold bodies start collapsed for the session; a manual
+// Expand sticks by message id so channel + thread surfaces stay consistent.
+/** Tunable visual clamp; keep in sync with --message-body-collapse-px in styles.css.
+ * ~10–12 lines of body text — tall enough for a normal reply, short enough that
+ * multi-paragraph agent dumps don't own the channel. */
+const MESSAGE_BODY_COLLAPSE_PX = 200;
+const messageExpandedById = new Map<number, boolean>();
+const bodyCollapseBindings = new WeakMap<HTMLElement, ResizeObserver>();
+
+function messageBodyDomId(messageId: number, surface: "channel" | "thread"): string {
+  return `message-${messageId}-${surface}`;
+}
+
+function syncMessageBodyShell(shell: HTMLElement): void {
+  const messageId = Number(shell.dataset.messageBodyShell);
+  const surface = (shell.dataset.messageSurface === "thread" ? "thread" : "channel") as "channel" | "thread";
+  const body = shell.querySelector<HTMLElement>('[data-live-slot="body"]');
+  const toggle = shell.querySelector<HTMLButtonElement>("[data-message-body-toggle]");
+  if (!body || !toggle || !Number.isFinite(messageId)) return;
+
+  const contentId = messageBodyDomId(messageId, surface);
+  if (body.id !== contentId) body.id = contentId;
+  toggle.setAttribute("aria-controls", contentId);
+
+  // Measure the body itself so a parent max-height clamp does not hide true height.
+  const natural = body.scrollHeight;
+  const over = natural > MESSAGE_BODY_COLLAPSE_PX + 1;
+  const expanded = messageExpandedById.get(messageId) === true;
+
+  shell.classList.toggle("is-collapsible", over);
+  shell.classList.toggle("is-collapsed", over && !expanded);
+  shell.classList.toggle("is-expanded", over && expanded);
+  toggle.hidden = !over;
+  toggle.setAttribute("aria-expanded", String(over && expanded));
+  toggle.textContent = over && expanded ? "Collapse message" : "Expand message";
+}
+
+function bindMessageBodyCollapse(shell: HTMLElement): void {
+  const messageId = Number(shell.dataset.messageBodyShell);
+  const body = shell.querySelector<HTMLElement>('[data-live-slot="body"]');
+  const toggle = shell.querySelector<HTMLButtonElement>("[data-message-body-toggle]");
+  if (!body || !toggle || !Number.isFinite(messageId)) return;
+
+  bodyCollapseBindings.get(shell)?.disconnect();
+  const apply = (): void => syncMessageBodyShell(shell);
+  const ro = new ResizeObserver(() => apply());
+  ro.observe(body);
+  ro.observe(shell);
+  bodyCollapseBindings.set(shell, ro);
+
+  body.querySelectorAll("img").forEach((img) => {
+    if (!img.complete) {
+      img.addEventListener("load", apply, { once: true });
+      img.addEventListener("error", apply, { once: true });
+    }
+  });
+
+  if (toggle.dataset.collapseBound !== "1") {
+    toggle.dataset.collapseBound = "1";
+    toggle.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const wasExpanded = messageExpandedById.get(messageId) === true;
+      messageExpandedById.set(messageId, !wasExpanded);
+      // Collapsing: if keyboard focus lived inside the body, return it to the control.
+      if (wasExpanded) {
+        const active = document.activeElement as HTMLElement | null;
+        if (active) {
+          for (const node of document.querySelectorAll(`[data-message-body-shell="${messageId}"] [data-live-slot="body"]`)) {
+            if (node.contains(active)) {
+              toggle.focus();
+              break;
+            }
+          }
+        }
+      }
+      document.querySelectorAll<HTMLElement>(`[data-message-body-shell="${messageId}"]`).forEach(syncMessageBodyShell);
+    });
+  }
+
+  requestAnimationFrame(apply);
+}
+
+/** Wrap a rendered body so tall content can clamp after layout measurement. */
+function wrapMessageBody(bodyEl: HTMLElement, messageId: number, surface: "channel" | "thread"): HTMLElement {
+  const contentId = messageBodyDomId(messageId, surface);
+  bodyEl.id = contentId;
+  const clamp = h("div", { class: "message-body-clamp" }, bodyEl);
+  const toggle = h("button", {
+    type: "button",
+    class: "message-body-expand",
+    hidden: true,
+    dataset: { messageBodyToggle: String(messageId) },
+    "aria-controls": contentId,
+    "aria-expanded": "false",
+  }, "Expand message");
+  const shell = h("div", {
+    class: "message-body-shell",
+    dataset: { messageBodyShell: String(messageId), messageSurface: surface },
+  }, clamp, toggle);
+  bindMessageBodyCollapse(shell);
+  return shell;
+}
+
 function renderMessages(): void {
   const box = document.getElementById("msgs"); if (!box) return;
   snapshotProgressOpenState(box);
@@ -2025,6 +2207,8 @@ function patchLiveMessageRow(current: HTMLElement, next: HTMLElement): void {
   if (currentBody && nextBody) {
     currentBody.className = nextBody.className;
     currentBody.replaceChildren(...Array.from(nextBody.childNodes));
+    // Keep surface-qualified id for aria-controls (channel vs thread).
+    if (currentBody.id) nextBody.id = currentBody.id;
     nextBody.replaceWith(currentBody);
   }
   current.className = next.className;
@@ -2033,6 +2217,10 @@ function patchLiveMessageRow(current: HTMLElement, next: HTMLElement): void {
     current.setAttribute(name, next.getAttribute(name) || "");
   }
   current.replaceChildren(...Array.from(next.childNodes));
+  // Live body swaps change height; re-measure collapse without losing expand state.
+  current.querySelectorAll<HTMLElement>("[data-message-body-shell]").forEach((shell) => {
+    bindMessageBodyCollapse(shell);
+  });
 }
 
 function emptyState(c: Channel | undefined): HTMLElement {
@@ -2083,7 +2271,7 @@ function wireMessageActionReveal(row: HTMLElement, actions: HTMLElement, moreBtn
 
   row.addEventListener("pointerdown", (e) => {
     if (e.pointerType === "mouse") return;
-    if ((e.target as HTMLElement | null)?.closest?.("button,a,input,textarea,summary")) return;
+    if ((e.target as HTMLElement | null)?.closest?.("button,a,input,textarea,summary,[data-message-body-toggle]")) return;
     clearPress();
     pressTimer = window.setTimeout(() => setOpen(true, e), 420);
   });
@@ -2121,12 +2309,46 @@ function rootHasWorkingActivity(root: Message): boolean {
   return Boolean(root.progress?.some((item) => item.status === "running"));
 }
 
+/** Resolve the image/color to paint beside a message. Prefer author payload,
+ * then live bot/user state so a just-saved profile photo shows without reload. */
+function messageAuthorAvatar(m: Message): string | undefined {
+  if (m.author.kind === "bot") {
+    return m.author.avatar
+      || S.channelBots.find((bot) => bot.id === m.author.id || bot.name === m.author.name)?.avatar
+      || S.bots.find((bot) => bot.id === m.author.id || bot.name === m.author.name)?.avatar
+      || undefined;
+  }
+  if (m.author.kind === "user") {
+    if (Number(m.author.id) === Number(S.me.id) && S.me.avatar) return S.me.avatar;
+    return m.author.avatar
+      || S.users.find((user) => user.id === m.author.id)?.avatar
+      || undefined;
+  }
+  return undefined;
+}
+
+/** Patch author.avatar on every in-memory message for this user (channel + thread). */
+function applyUserAvatarToMessages(user: User): void {
+  const paint = (message: Message): void => {
+    if (message.author.kind !== "user" || Number(message.author.id) !== Number(user.id)) return;
+    message.author = {
+      ...message.author,
+      name: user.display || message.author.name,
+      avatar: user.avatar || "",
+    };
+  };
+  for (const message of S.messages || []) paint(message);
+  if (S.threadRoot) paint(S.threadRoot);
+  for (const message of S.threadReplies || []) paint(message);
+}
+
 function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): HTMLElement {
   const isBot = m.author.kind === "bot";
   const running = opts.inThread ? messageIsWorking(m) : (m.parent_id == null ? rootHasWorkingActivity(m) : messageIsWorking(m));
   // Sticky thought: show real interim text instead of flashing "_Working…_" between tools.
   const body = isBot && running ? workingDisplayBody(m) : (m.body || (isBot ? "_Working…_" : ""));
-  const bodyHtml = renderMessageBody(body);
+  const surface: "channel" | "thread" = opts.inThread ? "thread" : "channel";
+  const bodyHtml = wrapMessageBody(renderMessageBody(body), m.id, surface);
   const canDelete = S.me.is_admin || (!isBot && m.author.kind === "user" && m.author.id === S.me.id);
   const replyBtn = h("button", {
     class: "message-action grid h-11 w-11 place-items-center rounded text-muted hover:bg-hover hover:text-fg sm:h-7 sm:w-7",
@@ -2191,13 +2413,13 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
       workingChip),
     bodyHtml, structuredQuestions(m), progressDisclosure(m), attachments(m), threadFooter(m, opts.inThread));
 
-  const botAvatar = (bot: Bot | undefined) => bot?.avatar || undefined;
+  const authorAvatar = messageAuthorAvatar(m);
   const row = opts.grouped
     ? h("div", { class: "group relative flex min-w-0 max-w-full items-start gap-2.5 px-3 py-0.5 hover:bg-hover sm:px-4" },
       h("span", { class: "w-9 shrink-0 pt-0.5 text-right font-mono text-[9.5px] leading-5 text-transparent group-hover:text-faint" }, new Date(m.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }).replace(/\s?[AP]M/i, "")),
       content, actions)
     : h("div", { class: "group relative flex min-w-0 max-w-full items-start gap-2.5 px-3 py-0.5 hover:bg-hover sm:px-4" },
-      avatar(m.author.name, m.author.kind, 9, isBot ? botAvatar(S.channelBots.find((b) => b.name === m.author.name)) : undefined),
+      avatar(m.author.name, m.author.kind, 9, authorAvatar),
       content, actions);
 
   row.dataset.messageId = String(m.id);
@@ -2207,7 +2429,7 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
     row.classList.add("cursor-pointer");
     row.addEventListener("click", (e) => {
       const target = e.target as HTMLElement | null;
-      if (target?.closest("button, a, input, textarea, summary, details, .message-actions, .attachments")) return;
+      if (target?.closest("button, a, input, textarea, summary, details, .message-actions, .attachments, .message-body-expand")) return;
       void openThread(m.parent_id != null ? (S.messages.find((x) => x.id === m.parent_id) || m) : m);
     });
   }
@@ -2629,8 +2851,16 @@ function paintThreadFollowup(): void {
 }
 
 /** Fill the thread half (or full RHS) inside an already-built #thread shell. */
-function paintThreadPanel(box: HTMLElement, priorTop = 0, stickThread = true, forceBottom = false): void {
+function paintThreadPanel(
+  box: HTMLElement,
+  priorTop = 0,
+  stickThread = true,
+  forceBottom = false,
+  preCapturedComposer: ComposerContinuity | null = null,
+): void {
   if (!S.threadRoot) return;
+  // Prefer a snapshot taken before an ancestor clear destroyed the old DOM.
+  const composerSnap = preCapturedComposer || captureComposerContinuity(S.threadRoot.id);
   clear(box);
   const channelName = S.channels.find((c) => c.id === S.channelId)?.name || "";
   const hasUsage = !!(S.threadUsage.input_tokens || S.threadUsage.output_tokens);
@@ -2669,6 +2899,7 @@ function paintThreadPanel(box: HTMLElement, priorTop = 0, stickThread = true, fo
   if (S.threadFollowup) { tickThreadFollowup(); threadFollowupTimer = window.setInterval(tickThreadFollowup, 1000); }
   restoreScroll(tm, priorTop, stickThread);
   if (forceBottom) pinScrollBottom("threadmsgs");
+  restoreComposerContinuity(composerSnap);
 }
 
 /** Live message updates while thread is open — surgically refresh thread half when possible. */
@@ -2683,11 +2914,12 @@ function renderThread(): void {
   if (panel) {
     const prior = document.getElementById("threadmsgs");
     const priorTop = prior?.scrollTop ?? 0;
+    const composerSnap = S.threadRoot ? captureComposerContinuity(S.threadRoot.id) : null;
     snapshotProgressOpenState(panel);
     const forceBottom = forceThreadScrollBottom;
     const stickThread = forceBottom || (prior ? shouldStickScroll(prior) : true);
     if (forceBottom) forceThreadScrollBottom = false;
-    paintThreadPanel(panel, priorTop, stickThread, forceBottom);
+    paintThreadPanel(panel, priorTop, stickThread, forceBottom, composerSnap);
     return;
   }
   // RHS missing thread half (e.g. only terminal was open) — rebuild shell.
@@ -2708,7 +2940,17 @@ type BrowserSpeechRecognition = {
 type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
 type SpeechTextTarget = HTMLTextAreaElement | { value: () => string; replace: (value: string) => void; focus: () => void };
 type FocusedSpeechTarget = { input: SpeechTextTarget; button: HTMLButtonElement | null };
-let activeSpeech: { recognition: BrowserSpeechRecognition; input: SpeechTextTarget; button: HTMLButtonElement } | null = null;
+/** Speech session keyed so remounts rebind to the live textarea instead of a detached node. */
+type ActiveSpeechSession = {
+  recognition: BrowserSpeechRecognition;
+  input: SpeechTextTarget;
+  button: HTMLButtonElement;
+  parentKey: string | null;
+  base: string;
+  joiner: string;
+  finalTranscript: string;
+};
+let activeSpeech: ActiveSpeechSession | null = null;
 let focusedSpeechTarget: FocusedSpeechTarget | null = null;
 
 function setListeningIndicator(listening: boolean): void {
@@ -2739,10 +2981,58 @@ function activeComposerInput(): HTMLTextAreaElement | null {
   const parent = S.threadRoot ? String(S.threadRoot.id) : "root";
   return document.querySelector<HTMLTextAreaElement>(`textarea[data-composer-parent="${parent}"]`);
 }
+function speechParentKey(input: SpeechTextTarget): string | null {
+  if (input instanceof HTMLTextAreaElement) return input.dataset.composerParent || null;
+  return null;
+}
+
+function liveSpeechTarget(session: ActiveSpeechSession): { input: SpeechTextTarget; button: HTMLButtonElement } | null {
+  if (session.parentKey) {
+    const input = document.querySelector<HTMLTextAreaElement>(`textarea[data-composer-parent="${CSS.escape(session.parentKey)}"]`);
+    const button = input?.closest(".composer-wrap")?.querySelector<HTMLButtonElement>("[data-speech-toggle]") || null;
+    if (input && button) return { input, button };
+    return null;
+  }
+  if (session.input instanceof HTMLTextAreaElement) {
+    if (session.input.isConnected && session.button.isConnected) return { input: session.input, button: session.button };
+    return null;
+  }
+  return session.button.isConnected ? { input: session.input, button: session.button } : null;
+}
+
+function applySpeechTranscript(session: ActiveSpeechSession, interim = ""): void {
+  const live = liveSpeechTarget(session);
+  if (!live) return;
+  session.input = live.input;
+  session.button = live.button;
+  const next = session.base + session.joiner + session.finalTranscript + interim;
+  if (live.input instanceof HTMLTextAreaElement) {
+    live.input.value = next;
+    live.input.selectionStart = live.input.selectionEnd = live.input.value.length;
+    resizeComposer(live.input);
+    live.input.dispatchEvent(new Event("input"));
+  } else live.input.replace(next);
+}
+
+/** Point an in-flight recognition session at the replacement composer DOM. */
+function rebindActiveSpeechToComposer(input: HTMLTextAreaElement): void {
+  if (!activeSpeech || activeSpeech.parentKey !== input.dataset.composerParent) return;
+  const button = input.closest(".composer-wrap")?.querySelector<HTMLButtonElement>("[data-speech-toggle]");
+  if (!button) return;
+  activeSpeech.input = input;
+  activeSpeech.button = button;
+  button.setAttribute("aria-pressed", "true");
+  button.classList.add("bg-danger/15", "text-danger");
+  button.title = "Listening… tap again or tap Option/Alt to stop";
+  setFocusedSpeechTarget(input, button);
+}
+
 async function toggleSpeechToText(input: SpeechTextTarget | null = activeComposerInput(), explicitButton?: HTMLButtonElement): Promise<void> {
   if (!input) return;
   if (activeSpeech) {
-    const wasThisInput = activeSpeech.input === input;
+    const parentKey = speechParentKey(input);
+    const wasThisInput = activeSpeech.input === input
+      || (parentKey != null && activeSpeech.parentKey === parentKey);
     activeSpeech.recognition.stop();
     if (wasThisInput) return;
   }
@@ -2756,7 +3046,15 @@ async function toggleSpeechToText(input: SpeechTextTarget | null = activeCompose
   const recognition = new Recognition();
   const original = input instanceof HTMLTextAreaElement ? input.value : input.value();
   const joiner = original && !/\s$/.test(original) ? " " : "";
-  let finalTranscript = "";
+  const session: ActiveSpeechSession = {
+    recognition,
+    input,
+    button,
+    parentKey: speechParentKey(input),
+    base: original,
+    joiner,
+    finalTranscript: "",
+  };
   recognition.continuous = true;
   recognition.interimResults = true;
   recognition.lang = document.documentElement.lang || navigator.language || "en-US";
@@ -2764,28 +3062,29 @@ async function toggleSpeechToText(input: SpeechTextTarget | null = activeCompose
     let interim = "";
     for (let index = Number(event.resultIndex || 0); index < Number(event.results?.length || 0); index += 1) {
       const transcript = String(event.results[index]?.[0]?.transcript || "");
-      if (event.results[index]?.isFinal) finalTranscript += transcript;
+      if (event.results[index]?.isFinal) session.finalTranscript += transcript;
       else interim += transcript;
     }
-    const next = original + joiner + finalTranscript + interim;
-    if (input instanceof HTMLTextAreaElement) {
-      input.value = next;
-      input.selectionStart = input.selectionEnd = input.value.length;
-      input.dispatchEvent(new Event("input"));
-    } else input.replace(next);
+    applySpeechTranscript(session, interim);
   };
   recognition.onerror = (event: any) => {
     const reason = String(event.error || "speech recognition failed");
-    button.title = reason === "not-allowed" ? "Microphone access was not allowed" : `Speech-to-text stopped: ${reason}`;
+    const live = liveSpeechTarget(session);
+    const target = live?.button || button;
+    target.title = reason === "not-allowed" ? "Microphone access was not allowed" : `Speech-to-text stopped: ${reason}`;
   };
   recognition.onend = () => {
-    button.setAttribute("aria-pressed", "false");
-    button.classList.remove("bg-danger/15", "text-danger");
-    button.title = "Dictate · tap Option/Alt to toggle";
+    const live = liveSpeechTarget(session);
+    const target = live?.button || button;
+    target.setAttribute("aria-pressed", "false");
+    target.classList.remove("bg-danger/15", "text-danger");
+    target.title = "Dictate · tap Option/Alt to toggle";
+    // Commit any finalized text once to the live composer if the session was remounted mid-flight.
+    if (session.finalTranscript) applySpeechTranscript(session, "");
     if (activeSpeech?.recognition === recognition) activeSpeech = null;
     setListeningIndicator(false);
   };
-  activeSpeech = { recognition, input, button };
+  activeSpeech = session;
   button.setAttribute("aria-pressed", "true");
   button.classList.add("bg-danger/15", "text-danger");
   button.title = "Listening… tap again or tap Option/Alt to stop";
@@ -2829,6 +3128,9 @@ function composer(parentId: number | null): HTMLElement {
   const draftKey = `1helm.draft.${S.me.id}.${S.channelId}.${parentId == null ? "root" : parentId}`;
   const savedDraft = localStorage.getItem(draftKey);
   if (savedDraft) input.value = savedDraft;
+  // Measure multi-line restored drafts immediately so the composer does not
+  // open as a single-line box until the first keystroke.
+  if (savedDraft) requestAnimationFrame(() => resizeComposer(input));
   let selectedPolicy: ModelPolicy | null = null;
   const agent = channel?.agent;
   const modelButton = h("button", {
@@ -2860,18 +3162,18 @@ function composer(parentId: number | null): HTMLElement {
     }
     const uploads = pending.slice();
     const originalValue = input.value;
-    input.value = ""; input.style.height = "auto"; localStorage.removeItem(draftKey);
+    input.value = ""; resizeComposer(input); localStorage.removeItem(draftKey);
     pending.splice(0, uploads.length); drawAttach();
     try {
       await api(`/api/channels/${S.channelId}/messages`, { body: { body, parentId, uploads, modelPolicy: selectedPolicy && !parentId && selectedPolicy.source === "thread" ? { provider_id: selectedPolicy.provider_id, model: selectedPolicy.model } : undefined, effectiveModelPolicy: selectedPolicy ? { provider_id: selectedPolicy.provider_id, model: selectedPolicy.model, source: selectedPolicy.source } : undefined } });
     } catch (error) {
-      if (!input.value) { input.value = originalValue; input.dispatchEvent(new Event("input")); }
+      if (!input.value) { input.value = originalValue; resizeComposer(input); input.dispatchEvent(new Event("input")); }
       pending.unshift(...uploads); drawAttach();
       if (/effective model policy changed/i.test((error as Error).message)) await refreshPolicy().catch(() => undefined);
       void appAlert((error as Error).message || "Could not send message");
     }
   };
-  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 176) + "px"; localStorage.setItem(draftKey, input.value); composerAutocomplete(input, mentionBox); });
+  input.addEventListener("input", () => { resizeComposer(input); localStorage.setItem(draftKey, input.value); composerAutocomplete(input, mentionBox); });
   input.addEventListener("keydown", (ev) => {
     const k = ev as KeyboardEvent;
     if (!mentionBox.classList.contains("hidden") && ["Enter", "Tab", "ArrowDown", "ArrowUp"].includes(k.key)) { if (handleComposerSuggestKey(k, mentionBox, input)) { k.preventDefault(); return; } }
@@ -2934,7 +3236,6 @@ async function composerModelPopover(event: MouseEvent, threadRootId: number | nu
   const status = h("p", { class: "min-h-5 text-xs text-muted" }, personalMode ? "This choice follows your 1Helm account." : threadRootId ? "Changes persist for this thread." : "Your choice will be saved when this new thread is sent.");
   let sequence = 0;
   let routedModels: RoutingModel[] = [];
-  const providerKey = (item: RoutingModel): string => item.kind === "route" ? "routes" : String(item.providerType || item.providerName || "models");
   const load = async (): Promise<void> => {
     const active = ++sequence;
     clear(model); model.disabled = true;
@@ -2942,7 +3243,7 @@ async function composerModelPopover(event: MouseEvent, threadRootId: number | nu
     if (!provider.value) { model.disabled = false; return; }
     try {
       if (!routedModels.length) routedModels = (await api<{ models: RoutingModel[] }>("/api/workspace/model-policy")).models;
-      const models = routedModels.filter((item) => providerKey(item) === provider.value);
+      const models = routedModels.filter((item) => routingModelGroupKey(item) === provider.value);
       if (active !== sequence) return;
       clear(model); model.append(h("option", { value: "" }, "Choose a model"));
       for (const item of models) model.append(h("option", { value: item.id, selected: item.id === current?.model }, item.name || item.id));
@@ -2991,10 +3292,9 @@ async function composerModelPopover(event: MouseEvent, threadRootId: number | nu
   document.body.append(pop);
   setTimeout(() => { document.addEventListener("mousedown", outside); document.addEventListener("keydown", keydown); }, 0);
   void api<{ models: RoutingModel[] }>("/api/workspace/model-policy").then(({ models }) => {
-    routedModels = models; const groups = new Map<string, string>();
-    for (const item of models) groups.set(providerKey(item), item.kind === "route" ? "Named routes" : String(item.providerName || item.providerType || "Provider"));
+    routedModels = models;
     const selected = models.find((item) => item.id === current?.model);
-    provider.append(...[...groups].map(([value, label]) => h("option", { value, selected: selected ? providerKey(selected) === value : false }, label)));
+    provider.append(...groupRoutingModels(models).map((group) => h("option", { value: group.key, selected: selected ? routingModelGroupKey(selected) === group.key : false }, group.label)));
     if (selected) void load();
   }).catch((error) => { status.textContent = (error as Error).message; });
 }
@@ -3053,7 +3353,11 @@ function drawComposerSuggest(box: HTMLElement, input: HTMLTextAreaElement, match
     dataset: { kind: item.kind, token: item.token },
     onclick: () => applyComposerSuggest(input, item.kind, item.token, box),
   },
-    item.kind === "agent" ? avatar(item.label, "bot", 6) : item.kind === "human" ? avatar(item.label, "user", 6) : h("span", { class: "grid h-6 w-6 place-items-center rounded bg-raised text-muted" }, icon("hash", 14)),
+    item.kind === "agent"
+      ? avatar(item.label, "bot", 6, S.bots.find((bot) => bot.name === item.token)?.avatar)
+      : item.kind === "human"
+        ? avatar(item.label, "user", 6, S.users.find((user) => user.username === item.token)?.avatar || (item.token === S.me.username ? S.me.avatar : undefined))
+        : h("span", { class: "grid h-6 w-6 place-items-center rounded bg-raised text-muted" }, icon("hash", 14)),
     h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block truncate font-medium text-fg" }, kind === "channel" ? `#${item.label}` : item.label), h("span", { class: "block break-all text-[11px] leading-4 text-muted", title: item.detail }, item.detail)))));
 }
 

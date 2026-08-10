@@ -45,14 +45,44 @@ function value(room: Room, doc: Y.Doc): string {
   return room.scene ? String(doc.getMap<string>("scene").get("json") || "") : doc.getText("content").toString();
 }
 
+/**
+ * Minimal middle-span edit between two strings. Used so external file refresh
+ * does not delete+reinsert the entire Y.Text (which resets every client's
+ * CodeMirror scroll/caret to the top even when the text is unchanged or only
+ * a small region moved).
+ */
+export function textReplaceOps(prev: string, next: string): { start: number; deleteLen: number; insert: string } | null {
+  if (prev === next) return null;
+  let start = 0;
+  const minLen = Math.min(prev.length, next.length);
+  while (start < minLen && prev.charCodeAt(start) === next.charCodeAt(start)) start += 1;
+  let endPrev = prev.length - 1;
+  let endNext = next.length - 1;
+  while (endPrev >= start && endNext >= start && prev.charCodeAt(endPrev) === next.charCodeAt(endNext)) {
+    endPrev -= 1;
+    endNext -= 1;
+  }
+  return {
+    start,
+    deleteLen: Math.max(0, endPrev - start + 1),
+    insert: next.slice(start, endNext + 1),
+  };
+}
+
+function applyTextContent(text: Y.Text, content: string): void {
+  const ops = textReplaceOps(text.toString(), content);
+  if (!ops) return;
+  if (ops.deleteLen > 0) text.delete(ops.start, ops.deleteLen);
+  if (ops.insert) text.insert(ops.start, ops.insert);
+}
+
 function replaceValue(room: Room, doc: Y.Doc, content: string, origin: unknown): void {
+  // No-op when the live collaborative doc already matches disk — avoids a full
+  // Yjs transaction that would still thrash editors if lastContent drifted.
+  if (value(room, doc) === content) return;
   doc.transact(() => {
     if (room.scene) doc.getMap<string>("scene").set("json", content);
-    else {
-      const text = doc.getText("content");
-      if (text.length) text.delete(0, text.length);
-      if (content) text.insert(0, content);
-    }
+    else applyTextContent(doc.getText("content"), content);
   }, origin);
 }
 
@@ -77,11 +107,18 @@ function queueSave(room: Room): void {
 }
 
 function refreshFromFile(room: Room): void {
+  // Never clobber in-flight local edits. While dirty, the open Y.Doc is the
+  // source of truth until the debounce flush lands.
   if (!room.doc || room.dirty) return;
   try {
     const content = readWorkspaceTextFile(room.channelId, room.path).content;
     if (content === room.lastContent) return;
+    // Keep lastContent aligned even when Y already matches (e.g. after a
+    // same-bytes rewrite on disk). replaceValue is a no-op in that case, but
+    // skipping the call entirely avoids an unnecessary transaction setup.
+    const live = value(room, room.doc);
     room.lastContent = content;
+    if (live === content) return;
     replaceValue(room, room.doc, content, EXTERNAL_ORIGIN);
   } catch {
     // A move/delete closes or reconnects the browser room. Until then, keep the

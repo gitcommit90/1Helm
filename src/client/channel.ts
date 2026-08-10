@@ -1,4 +1,4 @@
-import { api, downloadAuthenticatedFile, openAuthenticatedFile, uploadFile, type ActivityItem, type AgentTemplate, type Channel, type ChannelFile, type GlobalThread, type MemoryItem, type Message, type TextConversation, type ThreadState, type RoutingModel } from "./api.ts";
+import { api, downloadAuthenticatedFile, openAuthenticatedFile, uploadFile, groupRoutingModels, routingModelGroupKey, type ActivityItem, type AgentTemplate, type Channel, type ChannelFile, type GlobalThread, type MemoryItem, type Message, type TextConversation, type ThreadState, type RoutingModel } from "./api.ts";
 import { h, clear, icon, md, timeLabel } from "./dom.ts";
 import { S, avatar, appAlert, appConfirm, appPrompt } from "./app.ts";
 import { NOTIFICATION_SOUNDS, channelNotificationPreference, previewNotification, setChannelNotificationPreference } from "./notifications.ts";
@@ -1035,7 +1035,6 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
   let modelLoading = false;
   let changeModelButton: HTMLButtonElement | null = null;
   let routedModels: RoutingModel[] = [];
-  const providerKey = (item: RoutingModel): string => item.kind === "route" ? "routes" : String(item.providerType || item.providerName || "models");
   const loadModels = async (): Promise<void> => {
     const family = provider.value;
     const sequence = ++loadSequence;
@@ -1045,7 +1044,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
     try {
       if (!routedModels.length) routedModels = (await api<{ models: RoutingModel[] }>("/api/workspace/model-policy")).models;
       if (sequence !== loadSequence || provider.value !== family) return;
-      const models = routedModels.filter((item) => providerKey(item) === family);
+      const models = routedModels.filter((item) => routingModelGroupKey(item) === family);
       clear(model); model.append(...models.map((item) => h("option", { value: item.id, selected: item.id === channel.agent?.model }, item.name || item.id)));
       status.textContent = `${models.length} models available.`;
     } catch (error) {
@@ -1057,10 +1056,8 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
   provider.onchange = () => { void loadModels(); };
   void api<{ models: RoutingModel[] }>("/api/workspace/model-policy").then(async ({ models }) => {
     routedModels = models;
-    const groups = new Map<string, string>();
-    for (const item of models) groups.set(providerKey(item), item.kind === "route" ? "Named routes" : String(item.providerName || item.providerType || "Provider"));
     const current = models.find((item) => item.id === channel.agent?.model);
-    clear(provider); provider.append(h("option", { value: "" }, "Choose a provider"), ...[...groups].map(([value, label]) => h("option", { value, selected: current ? providerKey(current) === value : false }, label)));
+    clear(provider); provider.append(h("option", { value: "" }, "Choose a provider"), ...groupRoutingModels(models).map((group) => h("option", { value: group.key, selected: current ? routingModelGroupKey(current) === group.key : false }, group.label)));
     await loadModels();
     onPaint?.();
   }).catch((error) => { status.textContent = (error as Error).message; });

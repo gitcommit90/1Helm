@@ -50,6 +50,19 @@ test("model refresh is a preview-confirm contract with OpenRouter free metadata"
   assert.match(server, /The selection contains a model that was not in this preview/);
 });
 
+test("every model selector groups direct models by stable provider identity", () => {
+  const apiClient = readFileSync(new URL("src/client/api.ts", ROOT), "utf8");
+  assert.match(apiClient, /export function groupRoutingModels/);
+  assert.match(apiClient, /provider:\$\{model\.providerId\}/, "custom direct models group by provider:<providerId>, never by generic type");
+  assert.match(server, /customSource = \/\^\(\?:openai-compat\|custom\)\$\/i/, "per-provider identity is limited to custom/OpenAI-compatible sources");
+  assert.match(server, /providerId: model\.combo \|\| !customSource \? undefined/, "branded families (OpenRouter, NVIDIA, OAuth accounts) keep pooling into one picker entry");
+  for (const name of ["src/client/app.ts", "src/client/channel.ts"]) {
+    const surface = readFileSync(new URL(name, ROOT), "utf8");
+    assert.match(surface, /groupRoutingModels\(/, `${name} uses the one shared grouping helper`);
+    assert.doesNotMatch(surface, /kind === "route" \? "routes" : String\(.*providerType/, `${name} does not re-implement provider grouping by type`);
+  }
+});
+
 test("user-scoped usage honors every Activity period and hydrates provider identity", () => {
   for (const period of ["1h", "24h", "7d", "30d", "all"]) assert.match(server, new RegExp(`\\"${period}\\"|${period}:`));
   assert.match(server, /created>=\?/);

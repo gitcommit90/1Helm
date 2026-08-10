@@ -98,3 +98,52 @@ test("Linux web action creates only a fixed host request and returns no installe
   assert.equal(managed.status, "managed");
   assert.match(managed.message, /will not send an installer to this browser/i);
 });
+
+test("Linux update checks share one cached release lookup across polls and tabs", async (t) => {
+  const appRoot = await mkdtemp(join(tmpdir(), "1helm-update-app-"));
+  const dataDir = await mkdtemp(join(tmpdir(), "1helm-update-data-"));
+  await writeFile(join(appRoot, "package.json"), JSON.stringify({ version: "1.2.3" }));
+  let hits = 0;
+  const server = createServer((_request, response) => {
+    hits += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ tag_name: "v1.2.4", draft: false, prerelease: false }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  process.env.HELM_INSTALL_KIND = "linux-systemd";
+  process.env.HELM_UPDATE_MANIFEST_URL = `http://127.0.0.1:${server.address().port}/latest`;
+  t.after(() => { delete process.env.HELM_INSTALL_KIND; delete process.env.HELM_UPDATE_MANIFEST_URL; });
+  const service = await import(`../src/server/updates.ts?test=${Date.now()}-cache`);
+  const [first, second] = await Promise.all([
+    service.hostUpdateState(appRoot, dataDir),
+    service.hostUpdateState(appRoot, dataDir),
+  ]);
+  assert.equal(first.status, "available");
+  assert.equal(second.status, "available");
+  assert.equal(hits, 1, "concurrent checks coalesce onto one GitHub request");
+  const third = await service.hostUpdateState(appRoot, dataDir);
+  assert.equal(third.version, "1.2.4");
+  assert.equal(hits, 1, "a fresh cache serves repeat polls without new GitHub requests");
+});
+
+test("a rate-limited release lookup explains the throttle instead of a raw HTTP error", async (t) => {
+  const appRoot = await mkdtemp(join(tmpdir(), "1helm-update-app-"));
+  const dataDir = await mkdtemp(join(tmpdir(), "1helm-update-data-"));
+  await writeFile(join(appRoot, "package.json"), JSON.stringify({ version: "1.2.3" }));
+  let hits = 0;
+  const server = createServer((_request, response) => {
+    hits += 1;
+    response.writeHead(403, { "content-type": "application/json" });
+    response.end(JSON.stringify({ message: "API rate limit exceeded" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  process.env.HELM_INSTALL_KIND = "linux-systemd";
+  process.env.HELM_UPDATE_MANIFEST_URL = `http://127.0.0.1:${server.address().port}/latest`;
+  t.after(() => { delete process.env.HELM_INSTALL_KIND; delete process.env.HELM_UPDATE_MANIFEST_URL; });
+  const service = await import(`../src/server/updates.ts?test=${Date.now()}-limited`);
+  await assert.rejects(() => service.hostUpdateState(appRoot, dataDir), /rate-limiting/i);
+  await assert.rejects(() => service.hostUpdateState(appRoot, dataDir), /rate-limiting/i);
+  assert.equal(hits, 1, "failed lookups back off instead of hammering GitHub during the cooldown");
+});

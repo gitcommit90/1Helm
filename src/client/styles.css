@@ -882,6 +882,76 @@ html.light .channel-unread-badge {
 .thread-messages { min-width: 0; overflow-x: hidden; }
 .thread-messages > * { min-width: 0; max-width: 100%; }
 
+/* Long message body: clamp by rendered height after layout (not char count).
+   Content stays in the DOM for copy / AT / find-in-page; only the viewport is masked. */
+:root, .dark, .light {
+  --message-body-collapse-px: 200px;
+}
+.message-body-shell {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+}
+.message-body-clamp {
+  min-width: 0;
+  max-width: 100%;
+  /* Keep code blocks / pre from forcing the row wider than the column. */
+  overflow-x: auto;
+}
+.message-body-shell.is-collapsed .message-body-clamp {
+  max-height: var(--message-body-collapse-px);
+  overflow: hidden;
+  overflow-x: auto;
+  position: relative;
+  /* Soft mask so code blocks / tables aren't hard-clipped mid-glyph. */
+  mask-image: linear-gradient(to bottom, #000 0%, #000 calc(100% - 2.75rem), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 calc(100% - 2.75rem), transparent 100%);
+}
+.message-body-shell.is-collapsed .message-body-clamp::after {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2.75rem;
+  /* Row hover uses translucent --c-hover over --c-bg; blend so the fade still reads. */
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in srgb, var(--c-bg) 88%, var(--c-surface))
+  );
+}
+.message-body-expand {
+  display: none;
+  margin-top: 0.35rem;
+  padding: 0.2rem 0;
+  border: 0;
+  background: transparent;
+  color: var(--c-accent);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  text-align: left;
+  max-width: 100%;
+}
+.message-body-shell.is-collapsible > .message-body-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.message-body-expand:hover { text-decoration: underline; }
+.message-body-expand:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+/* Keep the control out of the hover-open-thread hit target on coarse pointers. */
+.message-body-expand { touch-action: manipulation; }
+
 html, body { height: 100%; width: 100%; overflow: hidden; overscroll-behavior: none; }
 #app, .app-shell, .workspace-shell { height: 100%; height: var(--app-viewport-height, 100dvh); max-height: var(--app-viewport-height, 100dvh); }
 
@@ -952,20 +1022,56 @@ html, body { height: 100%; width: 100%; overflow: hidden; overscroll-behavior: n
 .cowork-editor-toolbar { display: flex; min-height: 3rem; flex-shrink: 0; align-items: center; gap: .5rem; border-bottom: 1px solid var(--c-line); background: color-mix(in srgb, var(--c-surface) 92%, transparent); padding: .45rem .7rem; }
 .cowork-codemirror { min-height: 0; flex: 1 1 auto; overflow: hidden; background: color-mix(in srgb, var(--c-surface) 95%, transparent); font-size: 13px; }
 .cowork-codemirror > .cm-editor { height: 100%; }
-.cowork-codemirror-notes { font-size: 14px; }
 .cowork-notes-editor-frame { min-height: 0; flex: 1 1 0%; height: 0; }
-.cowork-notes-edit-stage .cowork-codemirror { min-height: 0; height: 100%; }
-.cowork-notes-edit-stage .cowork-codemirror > .cm-editor { height: 100%; }
-.cowork-notes-edit-stage .cm-scroller { overflow-y: auto; }
+.cowork-notes-edit-stage .cowork-document-surface { min-height: 0; height: 100%; }
 .cowork-codemirror-code { height: 100%; background: var(--c-surface); }
 .cowork-codemirror-code .cm-scroller { overflow-y: auto; }
 .dark .cowork-codemirror-code { background: color-mix(in srgb, #071019 72%, var(--c-surface)); }
-.cowork-markdown-preview { min-height: 100%; overflow-y: auto; background: var(--c-surface); padding: 1.5rem 2rem; }
+/* Notes/Docs: people edit rendered prose. Markdown is on disk only. */
+.cowork-document-surface {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--c-surface);
+}
+.cowork-document-body {
+  min-height: 100%;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  outline: none;
+  padding: 1.25rem 1.5rem;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--c-fg);
+  caret-color: var(--c-accent);
+  white-space: normal;
+  word-break: break-word;
+}
+.cowork-document-body:focus-visible {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--c-accent) 35%, transparent);
+}
+.cowork-document-body > :first-child { margin-top: 0; }
+.cowork-document-body > :last-child { margin-bottom: 0; }
 .cowork-doc-canvas { background: color-mix(in srgb, var(--c-raised) 75%, var(--c-bg)); }
-.cowork-doc-page { width: min(48rem, calc(100% - 2rem)); min-height: min(62rem, calc(100% - 2rem)); margin: 1rem auto; border: 1px solid var(--c-line); border-radius: .2rem; background: var(--c-surface); box-shadow: 0 20px 70px -45px #000; overflow: auto; }
-.cowork-doc-page > .cm-editor { height: 100%; min-height: 62rem; }
-.cowork-doc-page .cm-content { padding: clamp(1.5rem, 6vw, 4rem) !important; font-family: var(--font-sans); font-size: 15px; line-height: 1.75; }
-.cowork-doc-page .cm-gutters { display: none; }
+.cowork-doc-page {
+  width: min(48rem, calc(100% - 2rem));
+  min-height: min(62rem, calc(100% - 2rem));
+  margin: 1rem auto;
+  border: 1px solid var(--c-line);
+  border-radius: .2rem;
+  background: var(--c-surface);
+  box-shadow: 0 20px 70px -45px #000;
+  overflow: auto;
+}
+.cowork-doc-page .cowork-document-surface { min-height: 62rem; }
+.cowork-doc-page .cowork-document-body {
+  padding: clamp(1.5rem, 6vw, 4rem);
+  font-size: 15px;
+  line-height: 1.75;
+}
 .cowork-excalidraw { position: relative; min-width: 0; min-height: 0; flex: 1 1 auto; overflow: hidden; background: var(--c-surface); }
 .cowork-excalidraw > .excalidraw { height: 100%; }
 .cowork-whiteboard-canvas { min-height: 32rem; }

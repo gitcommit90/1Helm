@@ -670,20 +670,31 @@ function computersPanel(): HTMLElement {
     if (runtime.backend === "oci") {
       const windows = Boolean(runtime.shared_runtime);
       const label = windows ? "Shared Windows OCI runtime" : "Native OCI runtime";
+      const checking = runtime.status === "checking";
       const engineReady = Boolean(runtime.engine_ready);
       const imageReady = Boolean(runtime.image_ready);
       const fullyReady = Boolean(runtime.ready);
       const readyCopy = windows
         ? "The installation-scoped WSL runtime and shared channel image are ready. Skipper manages one persistent OCI container per ordinary channel."
         : "The root-owned OCI runtime and shared channel image are ready. Skipper manages one persistent OCI container per ordinary channel.";
-      const setupCopy = !engineReady
+      const setupCopy = checking
+        ? "Checking private-computer runtime…"
+        : !engineReady
         ? (windows
           ? "Rerun 1Helm's Windows installer from https://1helm.com/install.ps1 to repair the WSL distribution and its OCI runtime."
           : "Rerun the verified 1Helm Linux host installer to repair Podman, cgroups, or the root-owned helper.")
         : "Load the sealed channel computer image once. Later channels start from that local image instead of touching live package mirrors.";
-      const actionStatus = h("p", { class: "mt-2 text-sm text-muted" });
-      const chip = fullyReady ? `${label} ready` : !engineReady ? "Setup required" : "Image setup";
-      const prepareImage = engineReady && !imageReady ? h("button", { class: "btn-primary mt-3 text-sm", onclick: async () => {
+      const actionStatus = h("p", { class: "mt-2 text-sm text-muted" }, checking ? "Checking private-computer runtime…" : "");
+      const chip = checking ? "Checking…" : fullyReady ? `${label} ready` : !engineReady ? "Setup required" : "Image setup";
+      if (checking) {
+        // Soft poll once the server finishes its shared readiness probe.
+        window.setTimeout(() => {
+          void api<{ runtime: ChannelRuntime }>("/api/channel-computers/runtime")
+            .then(({ runtime: next }) => paintRuntime(next))
+            .catch(() => undefined);
+        }, 1_200);
+      }
+      const prepareImage = !checking && engineReady && !imageReady ? h("button", { class: "btn-primary mt-3 text-sm", onclick: async () => {
         actionStatus.textContent = "Loading the sealed channel computer image…";
         try {
           await api("/api/channel-computers/runtime/prepare", { body: {} });
@@ -701,7 +712,7 @@ function computersPanel(): HTMLElement {
       runtimeBox.append(
         h("div", { class: "flex flex-wrap items-center gap-2" }, h("h3", { class: "font-semibold text-fg" }, "Channel computers"), h("span", { class: "chip border-accent/25" }, chip)),
         h("p", { class: "mt-1 text-sm leading-6 text-muted" }, fullyReady ? readyCopy : setupCopy),
-        ...(runtime.error ? [h("p", { class: "mt-2 text-sm text-danger" }, runtime.error)] : []),
+        ...(!checking && runtime.error ? [h("p", { class: "mt-2 text-sm text-danger" }, runtime.error)] : []),
         ...(prepareImage ? [prepareImage] : []),
         actionStatus,
       );
@@ -790,7 +801,7 @@ function membersPanel(): HTMLElement {
       } }, icon("plus"), "Add member"))));
     S.users.forEach((u) => wrap.append(h("div", { class: "card flex min-w-0 flex-col gap-3 overflow-hidden p-3 sm:flex-row sm:items-center" },
       h("div", { class: "flex min-w-0 items-center gap-3" },
-        avatar(u.display, "user", 9),
+        avatar(u.display, "user", 9, u.avatar),
         h("div", { class: "min-w-0 flex-1" }, h("div", { class: "truncate font-semibold text-fg" }, u.display), h("div", { class: "truncate text-xs text-muted" }, "@" + u.username))),
       h("div", { class: "flex flex-wrap items-center gap-2 sm:shrink-0 sm:justify-end" },
         h("label", { class: "flex min-h-11 items-center gap-1.5 text-xs text-muted sm:min-h-0" }, h("input", { type: "checkbox", class: "accent-accent", checked: u.is_admin, disabled: u.id === S.me.id, onchange: async (e: Event) => { await api(`/api/admin/users/${u.id}`, { method: "PATCH", body: { is_admin: (e.target as HTMLInputElement).checked } }); } }), "admin"),
