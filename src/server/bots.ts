@@ -33,7 +33,7 @@ import {
   deleteChannelWorld,
   restoreChannel,
 } from "./agents.ts";
-import { captainTextConsent, captainTextingPrompt, captainTextToolDefinitions, followupToolDefinition, scheduleRuntimeFollowup, sendCaptainTextForTurn } from "./followups.ts";
+import { captainTextConsent, captainTextingPermissionPayload, captainTextingPrompt, captainTextToolDefinitions, channelTextingGrant, deliverResidentCaptainText, followupToolDefinition, scheduleRuntimeFollowup, sendCaptainTextForTurn } from "./followups.ts";
 import { closeChannelSessions } from "./terms.ts";
 import { claimAgentTurn, finalizeAgentTurn, ownsAgentTurnWriter, updateAgentTurnProgress, writeAgentTurnBody } from "./turns.ts";
 import {
@@ -206,6 +206,7 @@ function systemPromptTiers(bot: Row, agent: RuntimeAgent | undefined, channelId:
     "If work truly crosses the resident boundary—host/native state, credentials, another channel, fleet lifecycle, or a missing capability—call Skipper once with the exact operation and evidence. Do not escalate routine shell, SSH, internet, download, or resident-computer work.",
     visiting ? "" : "If resident commands cannot create network sockets or consistently fail with Permission denied, No route to host, DNS resolution failures, or equivalent machine-wide egress evidence, treat that as a broken resident-computer boundary: call Skipper directly with the failed probe and original outcome, then resume after hand-back. Do not answer with a Docker, curl, SSH, or package-install tutorial.",
     visiting ? "" : "Use ask_user only for consequential human judgment, missing credentials the human must supply, external authority, or an irreversible commitment. Difficulty and harmless implementation choices are not blockers.",
+    visiting ? "" : captainTextingPrompt(true, "resident").operating,
     "Use Markdown. Keep answers focused and attach user-facing artifacts rather than only naming a path.",
     "The callable tools below are your current capabilities. Their implementations enforce authority and isolation boundaries.",
   ].filter(Boolean).join("\n\n");
@@ -364,7 +365,12 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
     tools.push({ type: "function", function: { name: "list_workflows", description: "List durable recurring work across the user's scoped channels, or one named channel.", parameters: { type: "object", properties: { channel: { type: "string" } } } } });
     tools.push({ type: "function", function: { name: "set_workflow_status", description: "Pause, resume, or complete a durable workflow in one scoped resident channel.", parameters: { type: "object", properties: { channel: { type: "string" }, workflow_id: { type: "integer" }, status: { type: "string", enum: ["active", "paused", "complete"] } }, required: ["channel", "workflow_id", "status"] } } });
   }
-  tools.push(...captainTextToolDefinitions(Boolean(skipper && mainChannel && skipperControlAuthorized(channelId, requestUserId, hostAuthorized))));
+  // Skipper texts from authorized #main; channel residents text from their own
+  // channel ("monitor X and text me"). Destination is always the Captain phone.
+  tools.push(...captainTextToolDefinitions(Boolean(
+    (skipper && mainChannel && skipperControlAuthorized(channelId, requestUserId, hostAuthorized))
+    || (agent?.kind === "channel" && !visiting),
+  )));
   if (skipper && hostAuthorized) {
     tools.push({ type: "function", function: { name: "run_thread_audit", description: "Run the authoritative workspace thread-status audit now and report how many threads were examined and changed.", parameters: { type: "object", properties: {} } } });
     tools.push({ type: "function", function: { name: "run_agent_review", description: "Run Skipper's deterministic behavior review for one scoped channel resident or every resident in the Captain workspace.", parameters: { type: "object", properties: { channel: { type: "string" } } } } });
@@ -1800,6 +1806,28 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                 result = `Displayed ${questions.length} structured question${questions.length === 1 ? "" : "s"} and paused for the user's answers.`;
                 emit();
               }
+            } else if (name === "text_captain" && agent?.kind === "channel" && !visiting) {
+              // Residents text on a durable channel grant, not phrasing analysis.
+              // No grant yet → the runtime (never the model) displays a one-time
+              // permission question; accept unlocks the channel, decline is
+              // one-time. Workflow-run turns have no requesting user, so the
+              // owner resolves to the Captain — the destination is fixed anyway.
+              if (!channelTextingGrant(channelId).granted) {
+                const channelName = String(q1("SELECT name FROM channels WHERE id=?", channelId)?.name || "channel");
+                const pendingQuestion = q1("SELECT 1 FROM agent_questions WHERE message_id=? AND status='pending'", msgId);
+                if (pendingQuestion) result = "Error: the texting permission question is already displayed. Wait for the Captain's answer.";
+                else {
+                  run("INSERT INTO agent_questions (message_id,payload,status,created) VALUES (?,?,'pending',?)", msgId, JSON.stringify(captainTextingPermissionPayload(channelName)), now());
+                  awaitingQuestions = true;
+                  emit();
+                  result = "This channel is not unlocked for texting yet. A one-time permission question is now displayed to the Captain; the turn pauses for their answer. If they enable it, retry text_captain — the grant is durable for this channel. If they decline, continue without texting.";
+                }
+              } else {
+                // The grant belongs to the channel and the destination is fixed
+                // to the Captain; a channel member triggering the resident does
+                // not become the Photon owner.
+                result = await deliverResidentCaptainText(Number(bot.id), String(args.message || ""));
+              }
             } else if (name === "text_captain" && agent?.kind === "skipper" && isMainChannel(channelId)
               && skipperControlAuthorized(channelId, requestUserId, hostAuthorized)) {
               result = await sendCaptainTextForTurn({ triggerId, threadRootId, botId: Number(bot.id), ownerUserId: requestUserId, message: String(args.message || "") });
@@ -1824,6 +1852,8 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                 result = `Error: ${(error as Error).message}`;
               }
             } else if (name === "schedule_workflow" && agent?.kind === "channel" && !visiting) {
+              // Texting inside future runs needs no prompt stamping: the channel
+              // grant is checked at every text_captain call, whoever triggered it.
               const workflow = createWorkflow({ channelId, name: String(args.name || ""), prompt: String(args.prompt || ""), intervalSeconds: Number(args.interval_seconds), startInSeconds: args.start_in_seconds == null ? undefined : Number(args.start_in_seconds), maxRuns: Number(args.max_runs || 0) });
               result = `Scheduled durable recurring workflow #${workflow.id} (${workflow.name}); next_run=${workflow.next_run}.`;
             } else if (name === "list_workflows" && agent?.kind === "channel" && !visiting) {

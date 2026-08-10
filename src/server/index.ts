@@ -84,7 +84,7 @@ import { attachCoworkClient, coworkPresence, coworkViewerUsernames, flushCoworkD
 import { coworkFormatContract } from "./cowork-contract.ts";
 import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
-import { startFollowupLoop, threadFollowupView, bumpThreadFollowup } from "./followups.ts";
+import { CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_PERMISSION_KIND, bumpThreadFollowup, channelTextingGrant, grantChannelTexting, revokeChannelTexting, startFollowupLoop, threadFollowupView } from "./followups.ts";
 import { createWorkflow, listWorkflows, registerWorkflowDispatcher, setWorkflowStatus, startWorkflowLoop, stopWorkflowLoop } from "./workflows.ts";
 import { hostUpdateState, installedAppVersion, runHostUpdateAction } from "./updates.ts";
 import { centralFeedbackReports, createFeedback, drainFeedback, feedbackAttachment, localFeedbackReports, startFeedbackLoop } from "./feedback.ts";
@@ -240,10 +240,17 @@ function messageIsSettledSql(alias = "m"): string {
   )`;
 }
 
+function outsideWorkflowSql(alias: string): string {
+  return `${alias}.workflow_id IS NULL AND NOT EXISTS (
+    SELECT 1 FROM messages workflow_root
+    WHERE workflow_root.id=${alias}.parent_id AND workflow_root.workflow_id IS NOT NULL
+  )`;
+}
+
 function maxSettledMessageId(channelId: number): number {
   return Number(q1(
     `SELECT MAX(m.id) x FROM messages m
-     WHERE m.channel_id=? AND m.photon_conversation_id IS NULL AND ${messageIsSettledSql("m")}`,
+     WHERE m.channel_id=? AND m.photon_conversation_id IS NULL AND ${outsideWorkflowSql("m")} AND ${messageIsSettledSql("m")}`,
     channelId,
   )?.x || 0);
 }
@@ -251,7 +258,7 @@ function maxSettledMessageId(channelId: number): number {
 function channelUnreadCount(userId: number, channelId: number, lastRead: number): number {
   return Number(q1(
     `SELECT COUNT(*) n FROM messages m
-     WHERE m.channel_id=? AND m.photon_conversation_id IS NULL AND m.id>? AND (m.user_id IS NULL OR m.user_id<>?)
+     WHERE m.channel_id=? AND m.photon_conversation_id IS NULL AND ${outsideWorkflowSql("m")} AND m.id>? AND (m.user_id IS NULL OR m.user_id<>?)
        AND ${messageIsSettledSql("m")}`,
     channelId, lastRead, userId,
   )?.n || 0);
@@ -1040,8 +1047,10 @@ const server = createServer(async (req, res) => {
       return json(res, 200, await runThreadAuditPass());
     }
     if (p === "/api/workflows" && m === "GET") {
-      if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       const channelId = Number(url.searchParams.get("channel_id") || 0);
+      // Channel-scoped listing powers the channel Workflows tab (member access);
+      // the unscoped listing remains Captain/admin-only (Settings → Workflows).
+      if (channelId ? !canSee(user, channelId) : !user.is_admin) return json(res, 403, { error: channelId ? "No access" : "Captain/admin only" });
       return json(res, 200, { workflows: listWorkflows(channelId || undefined) });
     }
     if (p === "/api/workflows" && m === "POST") {
@@ -1049,6 +1058,20 @@ const server = createServer(async (req, res) => {
       const b = await jbody(req);
       try { return json(res, 201, { workflow: createWorkflow({ channelId: Number(b.channel_id), name: String(b.name || ""), prompt: String(b.prompt || ""), intervalSeconds: Number(b.interval_seconds), startInSeconds: b.start_in_seconds == null ? undefined : Number(b.start_in_seconds), maxRuns: Number(b.max_runs || 0) }) }); }
       catch (error) { return json(res, 400, { error: (error as Error).message }); }
+    }
+    const workflowRuns = p.match(/^\/api\/workflows\/(\d+)\/runs$/);
+    if (workflowRuns && m === "GET") {
+      const workflow = q1("SELECT * FROM agent_workflows WHERE id=?", Number(workflowRuns[1]));
+      if (!workflow || !canSee(user, Number(workflow.channel_id))) return json(res, 404, { error: "Workflow not found" });
+      const runs = q("SELECT id FROM messages WHERE workflow_id=? AND parent_id IS NULL ORDER BY id", workflow.id)
+        .map((row) => {
+          const message = serializeMessage(Number(row.id));
+          if (!message) return null;
+          const thread = q1("SELECT id,status,title,summary,updated_at FROM threads WHERE root_message_id=?", row.id);
+          return { ...message, thread: thread || null };
+        })
+        .filter(Boolean);
+      return json(res, 200, { workflow, runs });
     }
     const workflowRoute = p.match(/^\/api\/workflows\/(\d+)$/);
     if (workflowRoute && m === "PATCH") {
@@ -1182,7 +1205,7 @@ const server = createServer(async (req, res) => {
           ensureThread(Number(root.id), channelId);
         }
         const lastRead = Number(q1("SELECT last_read FROM members WHERE channel_id=? AND user_id=?", channelId, user.id)?.last_read || 0);
-        for (const thread of q("SELECT t.* FROM threads t JOIN messages m ON m.id=t.root_message_id WHERE t.channel_id=? AND m.photon_conversation_id IS NULL ORDER BY t.updated_at DESC", channelId)) {
+        for (const thread of q("SELECT t.* FROM threads t JOIN messages m ON m.id=t.root_message_id WHERE t.channel_id=? AND m.photon_conversation_id IS NULL AND m.workflow_id IS NULL ORDER BY t.updated_at DESC", channelId)) {
           const rootId = Number(thread.root_message_id);
           const unread = Number(q1(
             `SELECT COUNT(*) n FROM messages m
@@ -1289,7 +1312,7 @@ const server = createServer(async (req, res) => {
       }
       if (action === "threads" && m === "GET") {
         for (const root of q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL AND photon_conversation_id IS NULL ORDER BY id", channelId)) ensureThread(Number(root.id), channelId);
-        const threads = q("SELECT t.* FROM threads t JOIN messages m ON m.id=t.root_message_id WHERE t.channel_id=? AND m.photon_conversation_id IS NULL ORDER BY t.updated_at DESC", channelId).map((thread) => ({
+        const threads = q("SELECT t.* FROM threads t JOIN messages m ON m.id=t.root_message_id WHERE t.channel_id=? AND m.photon_conversation_id IS NULL AND m.workflow_id IS NULL ORDER BY t.updated_at DESC", channelId).map((thread) => ({
           ...thread,
           followup: threadFollowupView(Number(thread.id)),
           root: serializeMessage(Number(thread.root_message_id)),
@@ -1320,9 +1343,13 @@ const server = createServer(async (req, res) => {
       if (action === "activity" && m === "GET") return json(res, 200, {
         activity: q(`SELECT ca.*, ta.tool AS action_tool, ta.input_summary AS action_input, ta.result_summary AS action_result
           FROM channel_activity ca LEFT JOIN tool_actions ta ON ta.id=ca.action_id
-          WHERE ca.channel_id=? ORDER BY CASE WHEN ca.updated>0 THEN ca.updated ELSE ca.created END DESC LIMIT 200`, channelId),
-        actions: q(`SELECT ta.* FROM tool_actions ta JOIN threads t ON t.id=ta.thread_id WHERE t.channel_id=? ORDER BY ta.created DESC LIMIT 100`, channelId),
-        escalations: q("SELECT * FROM escalations WHERE channel_id=? ORDER BY created DESC LIMIT 100", channelId),
+          LEFT JOIN threads cat ON cat.id=ca.thread_id LEFT JOIN messages car ON car.id=cat.root_message_id
+          WHERE ca.channel_id=? AND ca.kind<>'workflow' AND (car.id IS NULL OR car.workflow_id IS NULL)
+          ORDER BY CASE WHEN ca.updated>0 THEN ca.updated ELSE ca.created END DESC LIMIT 200`, channelId),
+        actions: q(`SELECT ta.* FROM tool_actions ta JOIN threads t ON t.id=ta.thread_id JOIN messages root ON root.id=t.root_message_id
+          WHERE t.channel_id=? AND root.workflow_id IS NULL ORDER BY ta.created DESC LIMIT 100`, channelId),
+        escalations: q(`SELECT e.* FROM escalations e JOIN threads t ON t.id=e.thread_id JOIN messages root ON root.id=t.root_message_id
+          WHERE e.channel_id=? AND root.workflow_id IS NULL ORDER BY e.created DESC LIMIT 100`, channelId),
       });
       if (action === "agent-policy" && m === "PATCH") {
         if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
@@ -1565,6 +1592,20 @@ const server = createServer(async (req, res) => {
       });
     }
     // Lightweight mark-read so live viewing + Threads/sidebar stay aligned without a full message fetch.
+    if ((mm = p.match(/^\/api\/channels\/(\d+)\/captain-texting$/))) {
+      const cid = Number(mm[1]);
+      if (!canSee(user, cid)) return json(res, 403, { error: "No access" });
+      if (m === "GET") return json(res, 200, { ...channelTextingGrant(cid), photon_configured: photonStatus().configured });
+      if (!user.is_admin) return json(res, 403, { error: "Only the Captain can change channel texting." });
+      if (m === "POST") {
+        if (!grantChannelTexting(cid, Number(user.id))) return json(res, 409, { error: "This channel has no resident agent to grant texting to." });
+        return json(res, 200, { ...channelTextingGrant(cid), photon_configured: photonStatus().configured });
+      }
+      if (m === "DELETE") {
+        revokeChannelTexting(cid);
+        return json(res, 200, { ...channelTextingGrant(cid), photon_configured: photonStatus().configured });
+      }
+    }
     if ((mm = p.match(/^\/api\/channels\/(\d+)\/read$/)) && m === "POST") {
       const cid = Number(mm[1]);
       if (!canSee(user, cid)) return json(res, 403, { error: "No access" });
@@ -1580,7 +1621,7 @@ const server = createServer(async (req, res) => {
       if (m === "GET") {
         run("INSERT INTO members (channel_id, user_id, last_read) VALUES (?,?,?) ON CONFLICT(channel_id,user_id) DO UPDATE SET last_read=excluded.last_read",
           cid, user.id, maxSettledMessageId(cid));
-        const rows = q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL AND photon_conversation_id IS NULL ORDER BY id DESC LIMIT 100", cid).reverse();
+        const rows = q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL AND photon_conversation_id IS NULL AND workflow_id IS NULL ORDER BY id DESC LIMIT 100", cid).reverse();
         return json(res, 200, { messages: rows.map((r) => serializeMessage(Number(r.id))), bots: botsInChannel(cid).map(botView), agent: agentViewForChannel(cid) });
       }
       if (m === "POST") {
@@ -1675,6 +1716,13 @@ const server = createServer(async (req, res) => {
         return { question_id: String(question.id || ""), question: String(question.question || ""), values: selected, custom };
       });
       run("UPDATE agent_questions SET answers=?,status='answered',answered=? WHERE id=? AND status='pending'", JSON.stringify(answers), now(), questionRow.id);
+      // Channel texting grant: the accept click on the runtime-authored
+      // permission question is the durable consent artifact. Only the Captain
+      // can grant; a decline stores nothing and the agent may ask again later.
+      if (String((payload as Record<string, unknown>).kind || "") === CAPTAIN_TEXTING_PERMISSION_KIND
+        && user.is_admin && answers.some((answer) => answer.values.includes(CAPTAIN_TEXTING_ACCEPT))) {
+        grantChannelTexting(Number(agentMessage.channel_id), Number(user.id));
+      }
       const visible = ["Here are my answers:", ...answers.map((answer, index) => `${index + 1}. **${answer.question}**\n${[...answer.values, answer.custom].filter(Boolean).join(answer.values.length > 1 ? ", " : "")}`)].join("\n\n");
       const message = postMessage(Number(agentMessage.channel_id), user, visible, Number(agentMessage.parent_id), []);
       broadcastToChannel(Number(agentMessage.channel_id), { type: "message_update", message: serializeMessage(Number(agentMessage.id)) });

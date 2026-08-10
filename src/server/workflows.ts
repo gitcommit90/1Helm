@@ -73,7 +73,8 @@ export async function runWorkflowPass(timestamp = now()): Promise<number> {
       const runNumber = Number(workflow.run_count) + 1;
       const body = `[Recurring workflow: ${workflow.name}; run ${runNumber}]\n${workflow.prompt}`;
       const messageId = createMessage({ channelId: Number(workflow.channel_id), parentId: null, botId: null, body });
-      run("UPDATE messages SET system_message=1 WHERE id=?", messageId);
+      // Tag the run root with its workflow so it renders only in the Workflows tab.
+      run("UPDATE messages SET system_message=1, workflow_id=? WHERE id=?", workflow.id, messageId);
       const threadId = ensureThread(messageId, Number(workflow.channel_id));
       const complete = Number(workflow.max_runs) > 0 && runNumber >= Number(workflow.max_runs);
       run(`UPDATE agent_workflows SET last_run=?,last_message_id=?,run_count=?,next_run=?,status=?,last_error='',updated=? WHERE id=?`,

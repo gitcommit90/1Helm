@@ -32,7 +32,10 @@ boundaries.
 If work depends on time passing, it becomes a persisted obligation. 1Helm does
 not equate a model ending a turn with background execution. Follow-ups and
 recurring workflows have due times, retry state, computer wake obligations,
-and observable completion or failure.
+and observable completion or failure. Each channel's Workflows surface is the
+sole visual home for recurring work and its chronological run history; workflow
+runs do not spill into Chat, Board, or Threads, while each run remains a normal
+interactive thread when opened.
 
 ## Durable growth
 
@@ -78,7 +81,11 @@ receive narrow operations, never raw OAuth tokens, Photon project secrets, or a
 private host database. Gmail currently supports scoped account listing, search,
 message retrieval, and draft creation. Photon/iMessage currently treats text
 as the reliable contract; richer attachment fidelity remains under
-verification.
+verification. Outbound texting is fixed to the configured Captain phone.
+Skipper retains conversational authorization in private #main; an ordinary
+resident receives a durable per-channel grant only through a runtime-authored
+Captain choice, and that grant remains visible and revocable in Channel
+Settings. The delivery path attributes every text to its sending agent.
 
 ## Product truth
 

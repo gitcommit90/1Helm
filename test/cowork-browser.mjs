@@ -389,8 +389,12 @@ test("Cowork, Files, Quick Note, Markdown, and mobile continuity work as one fil
   await page.click('[aria-label="Code editor"] .cm-content');
   await page.keyboard.down(primaryModifier); await page.keyboard.press("a"); await page.keyboard.up(primaryModifier); await page.keyboard.press("ArrowRight");
   await page.keyboard.type(`\n${Array.from({ length: 140 }, (_, index) => `const scrollRow${index + 1} = ${index + 1};`).join("\n")}`);
-  const codeScroller = await page.$('[aria-label="Code editor"] .cm-scroller');
-  const codeScrollerBox = await codeScroller.boundingBox();
+  // Collaboration transport recovery intentionally remounts CodeMirror. Query
+  // and measure atomically so a handle cannot go stale between CDP requests.
+  const codeScrollerBox = await waitFor(async () => page.$eval('[aria-label="Code editor"] .cm-scroller', (scroller) => {
+    const { x, y, width, height } = scroller.getBoundingClientRect();
+    return width > 0 && height > 0 ? { x, y, width, height } : null;
+  }), "visible Code editor scroller");
   assert.ok(codeScrollerBox?.height > 0, JSON.stringify(codeScrollerBox));
   await page.$eval('[aria-label="Code editor"] .cm-scroller', (scroller) => { scroller.scrollTop = 0; });
   await page.mouse.move(codeScrollerBox.x + codeScrollerBox.width / 2, codeScrollerBox.y + Math.min(codeScrollerBox.height / 2, 120));

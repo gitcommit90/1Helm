@@ -6,17 +6,17 @@
   },
   "legacy": {
     "lines": {
-      "src/client/app.ts": 3321,
-      "src/client/channel.ts": 1208,
-      "src/client/cowork.ts": 858,
+      "src/client/app.ts": 3630,
+      "src/client/channel.ts": 1205,
+      "src/client/cowork.ts": 879,
       "src/client/routing.ts": 864,
-      "src/client/settings.ts": 801,
+      "src/client/settings.ts": 812,
       "src/server/agents.ts": 1353,
-      "src/server/bots.ts": 2008,
+      "src/server/bots.ts": 2164,
       "src/server/channel-computers.ts": 2130,
       "src/server/db.ts": 1155,
-      "src/server/index.ts": 2234,
-      "src/server/routing.ts": 1293
+      "src/server/index.ts": 2284,
+      "src/server/routing.ts": 1303
     },
     "fanIn": {
       "src/client/api.ts": 11,

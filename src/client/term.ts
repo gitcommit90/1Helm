@@ -348,6 +348,27 @@ function makePane(state: TerminalState, sessionId: string | null = null, compute
   const el = h("div", { class: "min-h-0 flex-1 bg-[#070b10]" });
   const pane: Pane = { id, sessionId, computerId, term, fit, ws: null, el, ro: null as unknown as ResizeObserver, disposed: false, reconnectTimer: null, heartbeatTimer: null, reconnectAttempt: 0, connectionGeneration: 0, state };
   requestAnimationFrame(() => { term.open(el); void connect(pane); });
+  // xterm has no working touch scrolling (its scrollable viewport sits beneath
+  // the screen layer, so touches never reach it — upstream xterm.js #1101).
+  // Translate vertical drags into scrollback lines so mobile can read output.
+  let touchY: number | null = null;
+  let touchAcc = 0;
+  el.addEventListener("touchstart", (event) => {
+    if (event.touches.length === 1) { touchY = event.touches[0].clientY; touchAcc = 0; }
+  }, { passive: true });
+  el.addEventListener("touchmove", (event) => {
+    if (touchY == null || event.touches.length !== 1) return;
+    // Keep the drag out of pull-to-refresh / page overscroll.
+    event.preventDefault();
+    const y = event.touches[0].clientY;
+    touchAcc += touchY - y;
+    touchY = y;
+    const cell = term.rows > 0 ? el.clientHeight / term.rows : 17;
+    const lines = Math.trunc(touchAcc / cell);
+    if (lines) { touchAcc -= lines * cell; term.scrollLines(lines); }
+  }, { passive: false });
+  el.addEventListener("touchend", () => { touchY = null; }, { passive: true });
+  el.addEventListener("touchcancel", () => { touchY = null; }, { passive: true });
   pane.ro = new ResizeObserver(() => { try { fit.fit(); sendResize(pane); } catch { /* detached */ } });
   pane.ro.observe(el);
   term.onData((data) => pane.ws?.readyState === WebSocket.OPEN && pane.ws.send(JSON.stringify({ type: "input", data })));

@@ -72,14 +72,14 @@ export async function startChatGPTOAuth(): Promise<void> {
 }
 
 // ============================================================ settings application page
-type Tab = "admin" | "agents" | "skills" | "workflows" | "connections" | "notifications" | "feedback" | "audit" | "domains" | "providers" | "computers" | "members";
+type Tab = "admin" | "agents" | "skills" | "connections" | "notifications" | "feedback" | "audit" | "domains" | "providers" | "computers" | "members";
 export function openSettings(tab: Tab = "agents"): void {
   document.querySelector<HTMLElement>("[data-settings-overlay]")?.remove();
   const overlay = h("div", { class: "modal-overlay fixed inset-0 z-40 bg-surface", dataset: { settingsOverlay: "", settingsTab: tab } });
   const bodyEl = h("main", { class: "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 sm:p-6 lg:p-8" });
   const page = h("div", { class: "flex h-full w-full flex-col overflow-hidden bg-surface" });
   const tabs: [Tab, string][] = S.me.is_admin
-    ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["workflows", "Workflows"], ["connections", "Connections"], ["notifications", "Notifications"], ["feedback", "Feedback"], ["audit", "Audit"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]]
+    ? [["admin", "Admin"], ["agents", "Agents"], ["skills", "Skills"], ["connections", "Connections"], ["notifications", "Notifications"], ["feedback", "Feedback"], ["audit", "Audit"], ["domains", "Domains"], ["providers", "Providers"], ["computers", "Skipper computers"], ["members", "Members"]]
     : [["providers", "Providers"], ["notifications", "Notifications"]];
   if (!tabs.length) return;
   const tabBar = h("nav", { class: "settings-nav flex w-full shrink-0 gap-1 overflow-x-auto border-b border-line bg-raised/30 p-2 lg:w-64 lg:flex-col lg:overflow-y-auto lg:border-b-0 lg:border-r lg:p-4", "aria-label": "Settings sections" });
@@ -88,7 +88,7 @@ export function openSettings(tab: Tab = "agents"): void {
     clear(tabBar);
     tabs.forEach(([id, label]) => tabBar.append(h("button", { class: `shrink-0 rounded-lg px-3 py-2 text-left text-xs font-semibold transition lg:w-full lg:py-2.5 lg:text-sm ${t === id ? "bg-accent text-white shadow-sm" : "text-muted hover:bg-hover hover:text-fg"}`, type: "button", "aria-current": t === id ? "page" : undefined, onclick: () => draw(id) }, label)));
     clear(bodyEl);
-    const content = t === "admin" ? adminPanel() : t === "agents" ? agentsPanel() : t === "skills" ? skillsPanel() : t === "workflows" ? workflowsPanel() : t === "connections" ? connectionsPanel() : t === "notifications" ? notificationsPanel() : t === "feedback" ? feedbackPanel() : t === "audit" ? auditPanel() : t === "domains" ? domainsPanel() : t === "providers" ? providersPanel() : t === "computers" ? computersPanel() : membersPanel();
+    const content = t === "admin" ? adminPanel() : t === "agents" ? agentsPanel() : t === "skills" ? skillsPanel() : t === "connections" ? connectionsPanel() : t === "notifications" ? notificationsPanel() : t === "feedback" ? feedbackPanel() : t === "audit" ? auditPanel() : t === "domains" ? domainsPanel() : t === "providers" ? providersPanel() : t === "computers" ? computersPanel() : membersPanel();
     bodyEl.append(h("div", { class: `mx-auto w-full ${t === "providers" ? "max-w-7xl" : "max-w-5xl"}` }, h("div", { class: "mb-5" }, h("div", { class: "eyebrow text-accent" }, "Settings"), h("h1", { class: "font-display mt-1 text-3xl text-fg" }, tabs.find(([id]) => id === t)?.[1] || "Settings")), content));
   };
   page.append(
@@ -524,44 +524,6 @@ function feedbackPanel(): HTMLElement {
     wrap.append(h("p", { class: "text-sm text-danger" }, (error as Error).message));
   });
   return wrap;
-}
-
-type AgentWorkflow = { id: number; channel_id: number; agent_id: number; name: string; prompt: string; interval_seconds: number; next_run: number; last_run: number | null; run_count: number; max_runs: number; status: "active" | "paused" | "complete" | "failed"; last_error: string };
-function workflowsPanel(): HTMLElement {
-  const wrap = h("div", { class: "space-y-4" });
-  const list = h("div", { class: "space-y-2" }, h("p", { class: "text-sm text-muted" }, "Loading recurring workflows…"));
-  const load = async (): Promise<void> => {
-    try {
-      const { workflows } = await api<{ workflows: AgentWorkflow[] }>("/api/workflows");
-      clear(list);
-      if (!workflows.length) list.append(h("p", { class: "card p-5 text-center text-sm text-muted" }, "No recurring workflows yet. Ask a resident to repeat an outcome on a schedule, or create one here."));
-      for (const workflow of workflows) {
-        const channel = S.channels.find((entry) => entry.id === workflow.channel_id);
-        const action = workflow.status === "active" ? "paused" : workflow.status === "paused" ? "active" : "complete";
-        const details = h("div", { class: "min-w-0 flex-1" },
-          h("div", { class: "flex flex-wrap items-center gap-2" },
-            h("h3", { class: "font-semibold text-fg" }, workflow.name),
-            h("span", { class: "chip" }, workflow.status),
-            channel ? h("span", { class: "chip" }, `#${channel.name}`) : null),
-          h("p", { class: "mt-2 whitespace-pre-wrap text-sm leading-6 text-muted" }, workflow.prompt),
-          h("p", { class: "mt-2 text-xs text-faint" }, `Every ${workflow.interval_seconds.toLocaleString()}s · ${workflow.run_count}${workflow.max_runs ? ` / ${workflow.max_runs}` : ""} runs · next ${new Date(workflow.next_run).toLocaleString()}${workflow.last_run ? ` · last ${new Date(workflow.last_run).toLocaleString()}` : ""}${workflow.last_error ? ` · ${workflow.last_error}` : ""}`));
-        const control = workflow.status === "active" || workflow.status === "paused"
-          ? h("button", { class: "btn-subtle shrink-0 text-xs", onclick: async () => { await api(`/api/workflows/${workflow.id}`, { method: "PATCH", body: { channel_id: workflow.channel_id, status: action } }); await load(); } }, action === "active" ? "Resume" : "Pause")
-          : null;
-        list.append(h("article", { class: "card p-4" }, h("div", { class: "flex flex-wrap items-start gap-2" }, details, control)));
-      }
-    } catch (error) { clear(list); list.append(h("p", { class: "text-danger" }, (error as Error).message)); }
-  };
-  const channel = h("select", { class: "field" }, h("option", { value: "" }, "Choose resident channel"), ...S.channels.filter((entry) => entry.kind === "channel" && entry.name !== "main" && entry.agent).map((entry) => h("option", { value: String(entry.id) }, `#${entry.name} · @${entry.agent!.name}`))) as HTMLSelectElement;
-  const name = h("input", { class: "field", placeholder: "Weekly launch evidence" }) as HTMLInputElement;
-  const prompt = h("textarea", { class: "field min-h-28 resize-y", placeholder: "Inspect the launch evidence, resolve routine gaps, and publish a verified status report with source links." }) as HTMLTextAreaElement;
-  const interval = h("input", { class: "field", type: "number", min: "60", value: "604800", title: "Interval in seconds" }) as HTMLInputElement;
-  const maxRuns = h("input", { class: "field", type: "number", min: "0", value: "0", title: "Maximum runs; 0 repeats indefinitely" }) as HTMLInputElement;
-  const status = h("p", { class: "min-h-5 text-sm text-muted" });
-  const create = async (): Promise<void> => { status.textContent = "Creating durable workflow…"; try { await api("/api/workflows", { body: { channel_id: Number(channel.value), name: name.value, prompt: prompt.value, interval_seconds: Number(interval.value), max_runs: Number(maxRuns.value) } }); name.value = ""; prompt.value = ""; status.textContent = "Workflow scheduled."; await load(); } catch (error) { status.textContent = (error as Error).message; } };
-  wrap.append(h("div", { class: "rounded-lg border border-accent/25 bg-accent-soft px-4 py-3 text-sm leading-6 text-fg" }, "Recurring workflows are durable obligations, not haunted cron jobs. Each due run opens a real thread and invokes the same resident with its computer, memory, skills, and verification contract."),
-    h("section", { class: "card space-y-3 p-4" }, h("h3", { class: "font-display text-lg text-fg" }, "Create recurring workflow"), h("div", { class: "grid gap-2 sm:grid-cols-2" }, channel, name), prompt, h("div", { class: "grid gap-2 sm:grid-cols-[1fr_1fr_auto]" }, h("label", { class: "text-xs font-semibold text-muted" }, "Interval seconds", interval), h("label", { class: "text-xs font-semibold text-muted" }, "Maximum runs · 0 forever", maxRuns), h("button", { class: "btn-primary self-end", onclick: () => { void create(); } }, "Schedule")), status), list);
-  void load(); return wrap;
 }
 
 type AuditVerification = { valid: boolean; events: number; head: string; first_invalid_sequence: number | null };

@@ -25,6 +25,7 @@ const { inspectWebSource, isPublicWebAddress, validateWebSourceUrl } = await imp
 const { resolveNativeShell, terminalPromptEnvironment } = await import("../src/server/agent.ts");
 const { windowsSystemAccount } = await import("../src/server/channel-computers.ts");
 const turns = await import("../src/server/turns.ts");
+const { CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_DECLINE, CAPTAIN_TEXTING_PERMISSION_KIND, captainTextingPermissionPayload, channelTextingGrant, grantChannelTexting, revokeChannelTexting } = await import("../src/server/followups.ts");
 const catalog = await import("../src/server/skill-catalog.ts");
 const history = await import("../src/server/history.ts");
 const agents = await import("../src/server/agents.ts");
@@ -47,6 +48,25 @@ test("outbound Captain texting follows clear conversational permission", () => {
   assert.equal(captainTextConsent("Yes", "Would you like me to save a note?"), false);
   assert.equal(captainTextConsent("Yeah, but don't text me yet", "I can text you when it is ready."), false);
   assert.equal(captainTextConsent("Send the report now", "The report is ready."), false);
+});
+
+test("resident texting uses a durable channel grant and runtime-owned permission choices", () => {
+  seed();
+  const ownerId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('text-grant-owner','x','Owner',1,?)", now()).lastInsertRowid;
+  const channelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created_by,created) VALUES ('text-grant','text-grant','channel','','','active',?,?)", ownerId, now()).lastInsertRowid;
+  const botId = run("INSERT INTO bots (name,model,created) VALUES ('text-grant-agent','mock',?)", now()).lastInsertRowid;
+  const agentId = run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'channel','text-grant-agent','ready',?)", botId, now()).lastInsertRowid;
+  run("INSERT INTO agent_channels (agent_id,channel_id,bound_at) VALUES (?,?,?)", agentId, channelId, now());
+
+  assert.deepEqual(channelTextingGrant(Number(channelId)), { granted: false, granted_by: null, created: null });
+  const payload = captainTextingPermissionPayload("text-grant");
+  assert.equal(payload.kind, CAPTAIN_TEXTING_PERMISSION_KIND);
+  assert.deepEqual(payload.questions[0].options.map((option) => option.label), [CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_DECLINE]);
+  assert.equal(grantChannelTexting(Number(channelId), Number(ownerId)), true);
+  assert.equal(channelTextingGrant(Number(channelId)).granted, true);
+  assert.equal(channelTextingGrant(Number(channelId)).granted_by, Number(ownerId));
+  assert.equal(revokeChannelTexting(Number(channelId)), true);
+  assert.deepEqual(channelTextingGrant(Number(channelId)), { granted: false, granted_by: null, created: null });
 });
 
 test("#main is a database- and tool-level resident-free authority channel", () => {

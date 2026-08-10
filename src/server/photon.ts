@@ -145,15 +145,27 @@ export function photonConversation(ownerUserId: number, conversationId: number):
 /** Start a Captain-authorized outbound Texts conversation. The only possible
  * destination is the operator phone sealed into the host-owned Photon
  * credentials; callers cannot supply or override a phone number. */
+/** The Captain: owner of the Photon-bearing private #main. Runtime-triggered
+ * turns (workflow runs) have no requesting user and resolve the owner here. */
+export function photonCaptainOwnerId(): number {
+  return Number(photonMainChannel()?.personal_main_owner_id || 0);
+}
+
 export async function textPhotonCaptain(input: { owner_user_id: number; bot_id: number; body: string }): Promise<Record<string, unknown>> {
   const main = photonMainChannel();
   const value = credentials();
-  const body = String(input.body || "").trim();
+  let body = String(input.body || "").trim();
   if (!main || Number(main.personal_main_owner_id) !== Number(input.owner_user_id)) throw new Error("Texts are available only to the Captain in private #main.");
-  const skipper = q1("SELECT 1 FROM agents WHERE bot_id=? AND kind='skipper' AND status<>'deleted'", input.bot_id);
-  if (!skipper) throw new Error("Only Skipper can text the Captain.");
+  // Skipper and channel resident agents may text; the destination is always the
+  // configured Captain phone regardless of sender.
+  const sender = q1("SELECT kind, name FROM agents WHERE bot_id=? AND kind IN ('skipper','channel') AND status<>'deleted'", input.bot_id);
+  if (!sender) throw new Error("Only Skipper or a channel resident agent can text the Captain.");
   if (!value?.project_id || !value.project_secret || !E164.test(String(value.operator_phone || ""))) throw new Error("Photon is not configured with a Captain phone.");
   if (!body) throw new Error("Write the text for Skipper to send.");
+  // Every outbound text is attributed to its sending agent, model-independent:
+  // "(agent name) - message". Strip a model-written copy so it never doubles.
+  const senderName = String(sender.name || "agent");
+  body = `(${senderName}) - ${body.replace(new RegExp(`^\\(${senderName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)\\s*-\\s*`, "i"), "")}`;
   if (body.length > 50_000) throw new Error("Texts are limited to 50,000 characters.");
   if (!base) await startPhotonConnector();
   if (!base) throw new Error("Photon is reconnecting. Try the text again in a moment.");
@@ -168,8 +180,8 @@ export async function textPhotonCaptain(input: { owner_user_id: number; bot_id: 
     VALUES (?,?,?,?,?,1,?,?)`, main.id, value.operator_phone, value.operator_phone, messageId, threadId, timestamp, timestamp).lastInsertRowid;
   run("UPDATE messages SET photon_conversation_id=? WHERE id=?", conversationId, messageId);
   queuePhotonDelivery(Number(main.id), value.operator_phone, body, messageId, `photon:captain-text:${messageId}`);
-  run("INSERT INTO channel_activity (channel_id,thread_id,kind,summary,status,actor_type,created) VALUES (?,?,'connector',?,'pending','skipper',?)",
-    main.id, threadId, "Skipper queued an explicitly authorized text to the configured Captain phone.", timestamp);
+  run("INSERT INTO channel_activity (channel_id,thread_id,kind,summary,status,actor_type,created) VALUES (?,?,'connector',?,'pending',?,?)",
+    main.id, threadId, `${sender.kind === "skipper" ? "Skipper" : "A channel resident agent"} queued an explicitly authorized text to the configured Captain phone.`, sender.kind === "skipper" ? "skipper" : "agent", timestamp);
   refreshThreadSummary(messageId);
   await drainPhotonDeliveries();
   const delivery = q1("SELECT state,error FROM connector_deliveries WHERE idempotency_key=?", `photon:captain-text:${messageId}`);

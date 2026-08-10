@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-08-10
+
+### Added
+
+- Every agent channel now has a dedicated Workflows tab. Workflows and their
+  chronological run histories live there exclusively; selecting a run opens its
+  normal thread in the side panel.
+- Channel residents can text the configured Captain phone directly through
+  Photon after the Captain grants durable permission for that channel. The
+  runtime owns the permission prompt, grants are revocable in Channel Settings,
+  and every outbound text identifies the sending agent.
+
+### Fixed
+
+- Expand Message, work-log, thinking, and tool disclosures remain clickable
+  while an agent is streaming instead of being replaced before a click can land.
+- One-finger vertical drags scroll terminal history on mobile layouts.
+
 ## [1.0.2] - 2026-08-10
 
 ### Added

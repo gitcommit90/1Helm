@@ -2,14 +2,11 @@ import { api, downloadAuthenticatedFile, openAuthenticatedFile, uploadFile, grou
 import { h, clear, icon, md, timeLabel } from "./dom.ts";
 import { S, avatar, appAlert, appConfirm, appPrompt } from "./app.ts";
 import { NOTIFICATION_SOUNDS, channelNotificationPreference, previewNotification, setChannelNotificationPreference } from "./notifications.ts";
+import { channelTextingSettings } from "./workflows.ts";
 
-export type ChannelView = "chat" | "texts" | "board" | "threads" | "cowork" | "notes" | "files" | "terminal" | "memory" | "activity" | "settings";
+export type ChannelView = "chat" | "texts" | "board" | "workflows" | "threads" | "cowork" | "notes" | "files" | "terminal" | "memory" | "activity" | "settings";
 
-type RenderRefreshOptions = {
-  preserveExisting?: boolean;
-  isCurrent?: () => boolean;
-  onPaint?: () => void;
-};
+type RenderRefreshOptions = { preserveExisting?: boolean; isCurrent?: () => boolean; onPaint?: () => void };
 
 function refreshIsCurrent(options: RenderRefreshOptions): boolean {
   return options.isCurrent?.() !== false;
@@ -1146,6 +1143,8 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
       } }, icon("trash", 14), "Delete permanently") : null));
 
   const assignedSkills = h("div", { class: "mt-3 flex flex-wrap gap-2", dataset: { assignedSkills: "" } }, ...((channel.agent?.skills || []).map((skill) => h("span", { class: "chip border-accent/25", dataset: { assignedSkill: skill.slug } }, skill.name))));
+
+  const textingCard = channelTextingSettings(channel.id, channel.name, Boolean(S.me.is_admin));
   const computer = channel.computer;
   const computerKind = computer?.backend === "apple" ? "Isolated Linux VM"
     : computer?.backend === "oci" ? "Private OCI container"
@@ -1189,6 +1188,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
       h("div", { class: "flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, S.me.is_admin ? changeModelButton : null)),
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Assigned skills"), h("p", { class: "mt-1 text-sm text-muted" }, "This resident starts with a small shared core plus skills for its channel template. It can search the complete workspace catalog and ask Skipper for another skill when needed."), assignedSkills),
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Capabilities"), h("div", { class: "mt-3 flex flex-wrap gap-2" }, ...(channel.agent?.capabilities || []).map((capability) => h("span", { class: "chip" }, capability))), h("p", { class: "mt-3 text-xs text-muted" }, "The resident agent is channel-scoped. It calls @skipper for host-level, cross-channel, credential, guest-expert, or missing-capability work.")),
+    textingCard,
     computerCard,
     lifecycle));
   onPaint?.();

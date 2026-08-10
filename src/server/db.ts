@@ -828,7 +828,7 @@ export function migrate(): void {
   addColumn("channel_computers", "low_pressure_streak", "low_pressure_streak INTEGER NOT NULL DEFAULT 0");
   addColumn("channel_computers", "last_update", "last_update INTEGER NOT NULL DEFAULT 0");
   addColumn("channel_computers", "last_update_attempt", "last_update_attempt INTEGER NOT NULL DEFAULT 0");
-
+  addColumn("messages", "workflow_id", "workflow_id INTEGER REFERENCES agent_workflows(id) ON DELETE SET NULL");
   tx(() => {
     let installationId = String(q1("SELECT installation_id FROM workspace WHERE id=1")?.installation_id || "");
     if (!/^[a-f0-9]{16}$/.test(installationId)) {

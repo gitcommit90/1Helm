@@ -141,6 +141,11 @@ export function mountDocumentSurface(
     getContent: () => {
       if (inputTimer != null) { window.clearTimeout(inputTimer); inputTimer = null; }
       pushLocal();
+      // Native contenteditable formatting uses browser-specific tags (`<b>` in
+      // Chromium). Save already canonicalizes those to Markdown; repaint only at
+      // this explicit boundary so the live editor becomes canonical rendered
+      // HTML (`<strong>`) without replacing the DOM during typing.
+      paintFromMarkdown(lastMarkdown);
       return lastMarkdown;
     },
     replaceContent: (content) => {

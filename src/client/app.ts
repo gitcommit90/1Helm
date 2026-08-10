@@ -6,6 +6,8 @@ import { openRoutingPopover, pushRoutingActivity } from "./routing.ts";
 import { openOnboarding } from "./onboarding.ts";
 import { defaultTerminalComputer, openTerminals, refitChannelTerminals, getTerminalChrome } from "./term.ts";
 import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderNotes, renderTexts, renderThreads, type ChannelView } from "./channel.ts";
+import { configureWorkflowUi, renderWorkflows } from "./workflows.ts";
+import { patchLiveMessageRow } from "./live-message-patch.ts";
 import { renderCowork, setActiveCoworkChannel, stageCoworkPath } from "./cowork.ts";
 import { apiUrl, finishNativeLaunch, forgetMobileServer, getServerOrigin, isNativeMobile, serverAssetUrl } from "./mobile.ts";
 import {
@@ -21,6 +23,8 @@ import {
   workingChipLabel,
   workingDisplayBody,
 } from "./thread-formatters.ts";
+
+configureWorkflowUi({ api, h, clear, icon, md, timeLabel });
 
 /** Per-channel layout bound to the user profile (server user_ui_state). */
 type ChannelUiView = {
@@ -340,7 +344,7 @@ export function toggleTheme(): void {
 }
 
 type AppRoute = { slug: string | null; view: ChannelView; threadRootId: number | null };
-const VIEWS = new Set<ChannelView>(["chat", "texts", "board", "threads", "cowork", "notes", "files", "terminal", "memory", "activity", "settings"]);
+const VIEWS = new Set<ChannelView>(["chat", "texts", "board", "workflows", "threads", "cowork", "notes", "files", "terminal", "memory", "activity", "settings"]);
 function readRoute(): AppRoute {
   const parts = location.pathname.split("/").filter(Boolean);
   if (parts[0] !== "c" || !parts[1]) return { slug: null, view: "chat", threadRootId: null };
@@ -590,6 +594,21 @@ function onEvent(e: any): void {
       if (S.view === "texts") refreshChannelViewWithContinuity();
       return;
     }
+    // Workflow run roots and replies live solely in Workflows. The reply itself
+    // has no workflow_id, but its authoritative parent does. Keep an opened run
+    // thread streaming live and refresh history when settled, without creating
+    // ordinary Chat unread state or notifications.
+    const workflowId = Number(msg.workflow_id || (e.parent as Message | undefined)?.workflow_id || 0);
+    if (workflowId) {
+      const viewingWorkflow = !S.globalThreadsOpen && msg.channel_id === S.channelId && S.view === "workflows";
+      const openRun = S.threadRoot && Number(S.threadRoot.id) === Number(msg.parent_id ?? msg.id);
+      if (viewingWorkflow && openRun) {
+        applyMessage(msg, e.type === "message_update", e.parent as Message | undefined);
+        paintLiveMessage(msg);
+      }
+      if (viewingWorkflow && (msg.parent_id == null || messageIsSettled(msg))) refreshChannelViewWithContinuity();
+      return;
+    }
     const mine = msg.author?.kind === "user" && msg.author.id === S.me.id;
     const mentionsMe = new RegExp(`@${S.me.username}\\b`, "i").test(msg.body || "");
     // Only "viewing" a channel when its chat surface is open — not while sitting in global Threads.
@@ -672,7 +691,7 @@ function onEvent(e: any): void {
   } else if (e.type === "thread_update") {
     // Skipper (or API) changed durable session status — refresh board/threads/activity surfaces.
     if (S.globalThreadsOpen) refreshMainWithContinuity();
-    else if (Number(e.channelId) === Number(S.channelId) && (S.view === "board" || S.view === "threads" || S.view === "activity")) {
+    else if (Number(e.channelId) === Number(S.channelId) && (S.view === "board" || S.view === "threads" || S.view === "activity" || S.view === "workflows")) {
       refreshChannelViewWithContinuity();
     }
   } else if (e.type === "followup") {
@@ -1517,8 +1536,13 @@ function renderMain(preserveChannelSurface = false, continuity?: UiContinuity): 
   const channel = S.channels.find((item) => item.id === S.channelId);
   if (channel?.kind !== "channel") { S.view = "chat"; S.terminalOpen = false; S.notesOpen = false; }
   if (S.view !== "chat") {
+    // Workflows hosts the standard docked thread panel in place — runs open
+    // threads without bouncing the user to Chat (workflow threads never show there).
+    const workflowThread = S.view === "workflows" && !!S.threadRoot;
     main.append(h("section", { class: "flex min-w-0 flex-1 flex-col" }, h("div", { id: "hdr" }), channelTabs(), h("div", { id: "channelview", class: "min-h-0 flex-1 overflow-y-auto" })));
+    if (workflowThread) main.append(h("aside", { id: "thread", class: "thread-pane flex shrink-0 flex-col border-l border-line bg-surface" }));
     renderHeader(); renderChannelView(preserveChannelSurface);
+    if (workflowThread) renderRhs();
     return;
   }
   const showRhs = !!(S.threadRoot
@@ -1547,7 +1571,10 @@ function renderMain(preserveChannelSurface = false, continuity?: UiContinuity): 
 function renderRhs(): void {
   const el = document.getElementById("thread");
   if (!el) return;
-  const rhsCount = Number(Boolean(S.threadRoot)) + Number(Boolean(S.terminalOpen)) + Number(Boolean(S.notesOpen));
+  // Terminal / Notes docks belong to the chat shell; the Workflows tab hosts
+  // only the thread pane.
+  const inChat = S.view === "chat";
+  const rhsCount = Number(Boolean(S.threadRoot)) + Number(inChat && S.terminalOpen) + Number(inChat && S.notesOpen);
   const split = rhsCount > 1;
   const priorThread = document.getElementById("threadmsgs");
   const priorTop = priorThread?.scrollTop ?? 0;
@@ -1596,7 +1623,7 @@ function renderRhs(): void {
     el.append(threadBox);
     paintThreadPanel(threadBox, priorTop, stickThread, forceBottom, threadComposerSnap);
   }
-  if (S.terminalOpen) {
+  if (inChat && S.terminalOpen) {
     const termBox = h("div", {
       id: "term-dock",
       class: `term-dock ${paneClass()}`,
@@ -1604,7 +1631,7 @@ function renderRhs(): void {
     el.append(termBox);
     paintDockedTerminal(termBox);
   }
-  if (S.notesOpen) {
+  if (inChat && S.notesOpen) {
     const notesBox = h("div", { id: "notes-dock", class: paneClass() });
     el.append(notesBox);
     renderNotes(notesBox, S.channelId, closeDockedNotes);
@@ -1657,7 +1684,7 @@ function textsAvailable(channel?: Channel): boolean {
 function channelTabs(): HTMLElement {
   const currentChannel = S.channels.find((channel) => channel.id === S.channelId);
   const tabs: [ChannelView, string][] = [
-    ["chat", "Chat"], ["texts", "Texts"], ["board", "Board"], ["threads", "Threads"], ["cowork", "Cowork"], ["files", "Files"],
+    ["chat", "Chat"], ["texts", "Texts"], ["board", "Board"], ["workflows", "Workflows"], ["threads", "Threads"], ["cowork", "Cowork"], ["files", "Files"],
     ["terminal", "Terminal"], ["memory", "Memory"], ["activity", "Activity"], ["settings", "Settings"],
   ];
   return h("nav", { class: "flex shrink-0 gap-2 overflow-x-auto border-b border-line bg-surface px-3" }, ...tabs
@@ -1793,6 +1820,7 @@ export function renderChannelView(preserveSurface = false, onPaint?: () => void)
     renderApp();
     void openThread(root);
   }, options);
+  else if (S.view === "workflows") renderWorkflows(container, channel.id, Boolean(S.me.is_admin), (root) => { void openThread(root); }, options);
   else if (S.view === "threads") renderThreads(container, channel.id, (thread) => { S.view = "chat"; renderApp(); void openThread(thread.root); }, options);
   else if (S.view === "cowork" || S.view === "notes") renderCowork(container, channel.id, channel, S.me, (root) => { S.view = "chat"; renderApp(); void openThread(root); }, preserveSurface);
   else if (S.view === "files") renderFiles(container, channel.id, "", (path) => { stageCoworkPath(channel.id, path); navigateChannelView("cowork"); }, preserveSurface);
@@ -2128,7 +2156,7 @@ function paintLiveChannelMessage(messageId: number): void {
     const prior = box.querySelector<HTMLElement>(messageRowSelector("channel", message.id));
     if (!prior) return false;
     snapshotProgressOpenState(prior);
-    patchLiveMessageRow(prior, messageRow(message, { grouped: messageGroupedAt(S.messages, at), inThread: false }));
+    patchLiveMessageRow(prior, messageRow(message, { grouped: messageGroupedAt(S.messages, at), inThread: false }), bindMessageBodyCollapse);
     return true;
   };
 
@@ -2183,7 +2211,7 @@ function paintLiveThreadMessage(message: Message): void {
     const prior = box.querySelector<HTMLElement>(messageRowSelector("thread", target.id));
     if (prior) {
       snapshotProgressOpenState(prior);
-      patchLiveMessageRow(prior, messageRow(target, { grouped: false, inThread: true }));
+      patchLiveMessageRow(prior, messageRow(target, { grouped: false, inThread: true }), bindMessageBodyCollapse);
     } else if (Number(target.parent_id) === Number(S.threadRoot.id)
       && S.threadReplies.at(-1)?.id === target.id) {
       box.append(messageRow(target, { grouped: false, inThread: true }));
@@ -2196,31 +2224,6 @@ function paintLiveThreadMessage(message: Message): void {
   if (count) count.textContent = `${S.threadReplies.length} ${S.threadReplies.length === 1 ? "reply" : "replies"}`;
   restoreScroll(box, priorTop, stick);
   if (stick) pinScrollBottom("threadmsgs", 1);
-}
-
-/** Keep the row and rendered-body node stable while a streamed message changes.
- * This preserves selection/focus owned by adjacent UI and avoids the visible
- * whole-row teardown that previously happened every ~75 ms. */
-function patchLiveMessageRow(current: HTMLElement, next: HTMLElement): void {
-  const currentBody = current.querySelector<HTMLElement>('[data-live-slot="body"]');
-  const nextBody = next.querySelector<HTMLElement>('[data-live-slot="body"]');
-  if (currentBody && nextBody) {
-    currentBody.className = nextBody.className;
-    currentBody.replaceChildren(...Array.from(nextBody.childNodes));
-    // Keep surface-qualified id for aria-controls (channel vs thread).
-    if (currentBody.id) nextBody.id = currentBody.id;
-    nextBody.replaceWith(currentBody);
-  }
-  current.className = next.className;
-  for (const name of next.getAttributeNames()) {
-    if (name === "class") continue;
-    current.setAttribute(name, next.getAttribute(name) || "");
-  }
-  current.replaceChildren(...Array.from(next.childNodes));
-  // Live body swaps change height; re-measure collapse without losing expand state.
-  current.querySelectorAll<HTMLElement>("[data-message-body-shell]").forEach((shell) => {
-    bindMessageBodyCollapse(shell);
-  });
 }
 
 function emptyState(c: Channel | undefined): HTMLElement {
@@ -2764,13 +2767,15 @@ async function openThread(root: Message, replaceRoute = false): Promise<void> {
     input_tokens: Math.max(0, Number(data.usage?.input_tokens || 0)),
     output_tokens: Math.max(0, Number(data.usage?.output_tokens || 0)),
   };
-  // Ensure chat shell + RHS (thread may split with docked terminal).
-  if (S.view !== "chat") S.view = "chat";
+  // Ensure a shell that hosts the RHS thread pane. Workflows opens run threads
+  // in place; every other surface bounces to chat (thread may split with docked terminal).
+  if (S.view !== "chat" && S.view !== "workflows") S.view = "chat";
   // Fresh thread open always lands on latest replies (same class of bug as channel hop).
   forceThreadScrollBottom = true;
   renderMain();
   persistCurrentChannelView();
-  writeRoute(S.channels.find((channel) => channel.id === S.channelId), "chat", root.id, replaceRoute);
+  // Workflow threads have no chat deep link — the /thread/:id route reloads into chat.
+  writeRoute(S.channels.find((channel) => channel.id === S.channelId), S.view, S.view === "chat" ? root.id : null, replaceRoute);
 }
 function closeThread(): void {
   S.threadRoot = null;
@@ -2778,7 +2783,7 @@ function closeThread(): void {
   S.threadUsage = { input_tokens: 0, output_tokens: 0 };
   persistCurrentChannelView();
   renderMain();
-  writeRoute(S.channels.find((channel) => channel.id === S.channelId), "chat", null);
+  writeRoute(S.channels.find((channel) => channel.id === S.channelId), S.view, null);
 }
 function closeDockedTerminal(): void {
   S.terminalOpen = false;

@@ -1,0 +1,130 @@
+type Message = { id: number; channel_id: number; parent_id: number | null; body: string; created: number; reply_count: number; last_reply: number | null; author: unknown; attachments: unknown[]; workflow_id?: number | null };
+type ApiOptions = { method?: string; body?: unknown };
+type WorkflowUiDeps = {
+  api: <T>(path: string, options?: ApiOptions) => Promise<T>;
+  h: any;
+  clear: (element: Element) => void;
+  icon: (name: string, size?: number) => SVGElement;
+  md: (source: string) => string;
+  timeLabel: (timestamp: number) => string;
+};
+let ui: WorkflowUiDeps;
+export function configureWorkflowUi(value: WorkflowUiDeps): void { ui = value; }
+const api = <T>(path: string, options?: ApiOptions): Promise<T> => ui.api<T>(path, options);
+const h = (tag: string, attrs?: Record<string, unknown>, ...children: any[]): HTMLElement => ui.h(tag, attrs, ...children);
+const clear = (element: Element): void => ui.clear(element);
+const icon = (name: string, size?: number): SVGElement => ui.icon(name, size);
+const md = (source: string): string => ui.md(source);
+const timeLabel = (timestamp: number): string => ui.timeLabel(timestamp);
+
+export type WorkflowRefreshOptions = {
+  preserveExisting?: boolean;
+  isCurrent?: () => boolean;
+  onPaint?: () => void;
+};
+
+type AgentWorkflow = { id: number; channel_id: number; agent_id: number; name: string; prompt: string; interval_seconds: number; next_run: number; last_run: number | null; run_count: number; max_runs: number; status: "active" | "paused" | "complete" | "failed"; last_error: string };
+type WorkflowRun = Message & { thread: { id: number; status: string; title: string; summary: string; updated_at: number } | null };
+
+const openWorkflowByChannel = new Map<number, number>();
+const isCurrent = (options: WorkflowRefreshOptions): boolean => options.isCurrent?.() !== false;
+
+/** Durable Captain grant shown in channel Settings; the runtime permission
+ * question and this control operate on the same server record. */
+export function channelTextingSettings(channelId: number, channelName: string, isAdmin: boolean): HTMLElement | null {
+  if (channelName === "main") return null;
+  const body = h("div", { class: "flex flex-wrap items-center gap-3" }, h("span", { class: "text-sm text-muted" }, "Loading…"));
+  const card = h("div", { class: "card space-y-3 p-4" },
+    h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Texting"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "When enabled, this channel's agent can send iMessages via Photon — always and only to the configured Captain phone. The agent can also request this itself with a one-time permission question.")), body);
+  const paint = async (): Promise<void> => {
+    try {
+      const grant = await api<{ granted: boolean; created: number | null; photon_configured: boolean }>(`/api/channels/${channelId}/captain-texting`);
+      clear(body);
+      if (!grant.photon_configured) { body.append(h("span", { class: "text-sm text-muted" }, "Photon/iMessage is not connected. Connect it in Settings → Connections first.")); return; }
+      body.append(h("div", { class: "flex flex-wrap items-center gap-3" },
+        h("span", { class: `chip ${grant.granted ? "border-ok/30 bg-ok/10 text-ok" : "border-line text-muted"}` }, grant.granted ? "Enabled" : "Not enabled"),
+        grant.granted && grant.created ? h("span", { class: "text-xs text-faint" }, `Granted ${timeLabel(grant.created)}`) : null,
+        isAdmin ? h("button", { class: grant.granted ? "btn-subtle text-xs" : "btn-primary text-xs", type: "button", onclick: async () => {
+          try { await api(`/api/channels/${channelId}/captain-texting`, { method: grant.granted ? "DELETE" : "POST" }); await paint(); }
+          catch (value) { clear(body); body.append(h("span", { class: "text-sm text-danger" }, (value as Error).message)); }
+        } }, grant.granted ? "Revoke" : "Enable texting") : null));
+    } catch (value) { clear(body); body.append(h("span", { class: "text-sm text-danger" }, (value as Error).message)); }
+  };
+  void paint();
+  return card;
+}
+
+function panel(container: HTMLElement, title: string, subtitle: string, content: HTMLElement): void {
+  clear(container);
+  container.append(h("div", { class: "mx-auto w-full max-w-5xl p-6" },
+    h("div", { class: "mb-6" }, h("h2", { class: "font-display text-[1.75rem] leading-tight text-fg" }, title), h("p", { class: "mt-1.5 text-sm text-muted" }, subtitle)), content));
+}
+function loading(container: HTMLElement, title: string, subtitle: string): void { panel(container, title, subtitle, h("div", { class: "py-12 text-center text-sm text-muted" }, "Loading…")); }
+function error(container: HTMLElement, value: unknown): void { container.replaceChildren(h("div", { class: "m-6 rounded-lg border border-danger/30 bg-danger/10 p-4 text-sm text-danger" }, (value as Error).message)); }
+function empty(title: string, copy: string): HTMLElement { return h("div", { class: "py-14 text-center" }, h("div", { class: "font-display text-xl text-fg" }, title), h("p", { class: "mx-auto mt-2 max-w-md text-sm leading-6 text-muted" }, copy)); }
+
+function cadence(seconds: number): string {
+  if (seconds % 86_400 === 0) { const days = seconds / 86_400; return days === 1 ? "daily" : `every ${days} days`; }
+  if (seconds % 3_600 === 0) { const hours = seconds / 3_600; return hours === 1 ? "hourly" : `every ${hours} hours`; }
+  if (seconds % 60 === 0) { const minutes = seconds / 60; return minutes === 1 ? "every minute" : `every ${minutes} minutes`; }
+  return `every ${seconds.toLocaleString()}s`;
+}
+
+function statusChip(status: string): HTMLElement {
+  const tone = status === "active" || status === "open" ? "border-ok/30 bg-ok/10 text-ok" : status === "failed" ? "border-danger/30 bg-danger/10 text-danger" : "border-line text-muted";
+  return h("span", { class: `chip shrink-0 text-xs ${tone}` }, status);
+}
+
+/** Sole visual home of recurring workflows and their chronological runs. */
+export function renderWorkflows(container: HTMLElement, channelId: number, isAdmin: boolean, onOpenRun: (root: any) => void, refresh: WorkflowRefreshOptions = {}): void {
+  const openId = openWorkflowByChannel.get(channelId);
+  if (openId != null) { renderHistory(container, channelId, openId, isAdmin, onOpenRun, refresh); return; }
+  const subtitle = "Recurring work, delivered here. Each run is a real session with the resident agent.";
+  if (!refresh.preserveExisting) loading(container, "Workflows", subtitle);
+  void api<{ workflows: AgentWorkflow[] }>(`/api/workflows?channel_id=${channelId}`).then(({ workflows }) => {
+    if (!isCurrent(refresh)) return;
+    const list = h("div", { class: "space-y-2" });
+    if (!workflows.length) list.append(empty("No workflows yet", "Ask the resident to repeat an outcome on a schedule. Every run will land here."));
+    for (const workflow of workflows) {
+      const rerender = (): void => renderWorkflows(container, channelId, isAdmin, onOpenRun, { ...refresh, preserveExisting: false });
+      const control = isAdmin && (workflow.status === "active" || workflow.status === "paused")
+        ? h("button", {
+          class: "btn-subtle shrink-0 text-xs", type: "button",
+          onclick: async (event: MouseEvent) => {
+            event.stopPropagation();
+            try { await api(`/api/workflows/${workflow.id}`, { method: "PATCH", body: { channel_id: channelId, status: workflow.status === "active" ? "paused" : "active" } }); rerender(); }
+            catch (value) { error(container, value); }
+          },
+        }, workflow.status === "active" ? "Pause" : "Resume") : null;
+      list.append(h("article", { class: "card flex w-full min-w-0 items-start gap-2.5 p-3" },
+        h("span", { class: "mt-0.5 shrink-0 text-accent" }, icon("history", 18)),
+        h("button", { class: "min-w-0 flex-1 text-left", type: "button", dataset: { workflowOpen: String(workflow.id), continuityKey: `workflow-${workflow.id}` }, onclick: () => { openWorkflowByChannel.set(channelId, workflow.id); rerender(); } },
+          h("div", { class: "flex min-w-0 items-center gap-2" }, h("span", { class: "truncate font-semibold text-fg hover:text-accent" }, workflow.name), statusChip(workflow.status)),
+          h("div", { class: "mt-0.5 line-clamp-2 text-[13px] leading-snug text-muted" }, workflow.prompt),
+          h("div", { class: "mt-2 text-xs text-faint" }, `${cadence(workflow.interval_seconds)} · ${workflow.run_count}${workflow.max_runs ? ` / ${workflow.max_runs}` : ""} run${workflow.run_count === 1 ? "" : "s"}${workflow.status === "active" ? ` · next ${new Date(workflow.next_run).toLocaleString()}` : ""}${workflow.last_error ? ` · ${workflow.last_error}` : ""}`)),
+        control));
+    }
+    panel(container, "Workflows", subtitle, list);
+    refresh.onPaint?.();
+  }).catch((value) => { if (isCurrent(refresh)) error(container, value); });
+}
+
+function renderHistory(container: HTMLElement, channelId: number, workflowId: number, isAdmin: boolean, onOpenRun: (root: any) => void, refresh: WorkflowRefreshOptions): void {
+  if (!refresh.preserveExisting) loading(container, "Workflows", "Loading run history…");
+  void api<{ workflow: AgentWorkflow; runs: WorkflowRun[] }>(`/api/workflows/${workflowId}/runs`).then(({ workflow, runs }) => {
+    if (!isCurrent(refresh)) return;
+    const back = h("button", { class: "btn-subtle min-h-9 shrink-0 text-xs", type: "button", onclick: () => { openWorkflowByChannel.delete(channelId); renderWorkflows(container, channelId, isAdmin, onOpenRun, { ...refresh, preserveExisting: false }); } }, "← All workflows");
+    const list = h("div", { class: "space-y-2" });
+    if (!runs.length) list.append(empty("No runs yet", workflow.status === "active" ? `First run ${new Date(workflow.next_run).toLocaleString()}.` : "This workflow has not produced a run."));
+    for (let i = 0; i < runs.length; i++) {
+      const run = runs[i], previous = i > 0 ? runs[i - 1] : null;
+      if (!previous || new Date(previous.created).toDateString() !== new Date(run.created).toDateString()) list.append(h("div", { class: "flex items-center gap-3 pt-2" }, h("div", { class: "h-px flex-1 bg-line" }), h("span", { class: "shrink-0 font-mono text-[10px] uppercase tracking-[0.12em] text-faint" }, new Date(run.created).toLocaleDateString()), h("div", { class: "h-px flex-1 bg-line" })));
+      list.append(h("button", { class: "card block w-full min-w-0 p-3 text-left transition hover:border-accent/40", type: "button", dataset: { threadOpen: String(run.id), continuityKey: `workflow-run-${run.id}` }, onclick: () => onOpenRun(run) },
+        h("div", { class: "flex flex-wrap items-center gap-2 text-xs text-faint" }, h("span", { class: "font-semibold text-fg" }, `Run ${i + 1}`), h("span", {}, timeLabel(run.created)), run.thread ? statusChip(run.thread.status) : null, h("span", {}, `· ${run.reply_count} repl${run.reply_count === 1 ? "y" : "ies"}`)),
+        h("div", { class: "md mt-1.5 line-clamp-3 text-[13px] leading-snug text-muted", html: md(run.thread?.summary || run.body || "No summary yet.") })));
+    }
+    panel(container, workflow.name, `${cadence(workflow.interval_seconds)} · ${runs.length} run${runs.length === 1 ? "" : "s"}`, h("div", { class: "space-y-3" }, back, list));
+    if (!refresh.preserveExisting) requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
+    refresh.onPaint?.();
+  }).catch((value) => { if (isCurrent(refresh)) error(container, value); });
+}

@@ -3,9 +3,35 @@ import { createMessage, isInternalMessageBody } from "./store.ts";
 import { broadcastToChannel } from "./events.ts";
 import { agentForBot, ensureThread, refreshThreadSummary, threadIdForRoot } from "./agents.ts";
 import { ensureChannelComputerRunning, satisfyObligation, upsertObligation } from "./channel-computers.ts";
-import { captainTextConsent, deliverCaptainText } from "./captain-texting.ts";
+import { captainTextConsent, deliverCaptainText, mentionsCaptainTexting } from "./captain-texting.ts";
 
-export { captainTextConsent, captainTextingPrompt, captainTextToolDefinitions } from "./captain-texting.ts";
+export { CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_DECLINE, CAPTAIN_TEXTING_PERMISSION_KIND, captainTextConsent, captainTextingPermissionPayload, captainTextingPrompt, captainTextToolDefinitions, deliverCaptainText, deliverResidentCaptainText, mentionsCaptainTexting } from "./captain-texting.ts";
+
+const CAPTAIN_TEXTING_CAPABILITY = "captain_texting";
+function residentAgentId(channelId: number): number {
+  return Number(q1(`SELECT a.id FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id
+    WHERE ac.channel_id=? AND a.kind='channel' AND a.status<>'deleted'`, channelId)?.id || 0);
+}
+export function channelTextingGrant(channelId: number): { granted: boolean; granted_by: number | null; created: number | null } {
+  const agentId = residentAgentId(channelId);
+  const row = agentId ? q1("SELECT granted_by, created FROM agent_capabilities WHERE agent_id=? AND capability=?", agentId, CAPTAIN_TEXTING_CAPABILITY) : undefined;
+  return row ? { granted: true, granted_by: row.granted_by == null ? null : Number(row.granted_by), created: Number(row.created) } : { granted: false, granted_by: null, created: null };
+}
+export function grantChannelTexting(channelId: number, grantedBy: number): boolean {
+  const agentId = residentAgentId(channelId);
+  if (!agentId) return false;
+  run(`INSERT INTO agent_capabilities (agent_id,capability,config,granted_by,created) VALUES (?,?,?,?,?)
+    ON CONFLICT(agent_id,capability) DO UPDATE SET granted_by=excluded.granted_by,created=excluded.created`, agentId, CAPTAIN_TEXTING_CAPABILITY, JSON.stringify({ channel_id: channelId }), grantedBy, now());
+  run("INSERT INTO channel_activity (channel_id,kind,summary,status,actor_type,created) VALUES (?,'connector',?,'complete','user',?)", channelId, "The Captain enabled outbound texting for this channel.", now());
+  return true;
+}
+export function revokeChannelTexting(channelId: number): boolean {
+  const agentId = residentAgentId(channelId);
+  if (!agentId) return false;
+  const changed = run("DELETE FROM agent_capabilities WHERE agent_id=? AND capability=?", agentId, CAPTAIN_TEXTING_CAPABILITY).changes > 0;
+  if (changed) run("INSERT INTO channel_activity (channel_id,kind,summary,status,actor_type,created) VALUES (?,'connector',?,'complete','user',?)", channelId, "The Captain revoked outbound texting for this channel.", now());
+  return changed;
+}
 
 export function followupToolDefinition(skipper: boolean): unknown {
   return {
@@ -150,8 +176,11 @@ export async function sendCaptainTextForTurn(input: { triggerId: number; threadR
 }
 
 export function scheduleRuntimeFollowup(opts: ScheduleOpts & { agentKind: string; triggerId: number }): { id: number; due_at: number; delay_seconds: number } {
-  let reason = String(opts.reason || "");
-  if (opts.agentKind === "skipper" && /\btext_captain\b|\b(?:text|iMessage)\s+(?:the\s+)?(?:Captain|user)\b|\b(?:send|deliver)[\s\S]{0,40}\b(?:text|iMessage)\b/i.test(reason)) {
+  // Strip any model-written sentinel — only the runtime stamp below, issued
+  // after the consent check, may carry authorization into the wake. Channel
+  // residents need no stamp: their texting runs on the durable channel grant.
+  let reason = String(opts.reason || "").replace(/\[captain-text-authorized\]\s*/gi, "");
+  if (opts.agentKind === "skipper" && mentionsCaptainTexting(reason)) {
     if (!captainTextAuthorizedForTurn(opts.triggerId, opts.rootMessageId, opts.botId)) {
       throw new Error("A text reminder requires clear conversational permission from the Captain in this thread.");
     }

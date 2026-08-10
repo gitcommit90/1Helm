@@ -203,7 +203,7 @@ test("channel UI source exposes file-backed Cowork, traditional Files, audio pre
   assert.match(channelSource, /CORE_WORKSPACE_FOLDERS = \["notes", "whiteboards", "code", "docs", "presentations"\]/, "Files visually prioritizes the five Cowork roots");
   assert.match(channelSource, /fileOtherToggle/, "Files groups non-core root entries behind a visual Other disclosure");
   assert.match(channelSource, /files\/docx[\s\S]*catch\(\(error\) => appAlert\(`DOCX download failed:[\s\S]*Download - DOCX/, "Markdown files expose a real DOCX export action with visible failure handling");
-  assert.match(stylesSource, /\.cowork-notes-edit-stage \.cm-scroller \{ overflow-y: auto; \}/, "long Cowork Notes edit sessions scroll in CodeMirror's real viewport");
+  assert.match(stylesSource, /\.cowork-document-body \{[\s\S]*?overflow-y: auto;[\s\S]*?\}/, "long Cowork Notes and Docs edit sessions scroll in the rendered document viewport");
   assert.match(coworkSource, /mode === "code" \? "overflow-hidden" : "overflow-auto"/, "Cowork Code gives its finite editor viewport control of scrolling");
   assert.match(stylesSource, /\.cowork-codemirror-code \.cm-scroller \{ overflow-y: auto; \}/, "long Cowork Code files scroll inside CodeMirror");
   assert.match(stylesSource, /\.cowork-codemirror-code \{[^}]*background: var\(--c-surface\);[^}]*\}[\s\S]*\.dark \.cowork-codemirror-code/, "Code uses a bounded, legible light surface without changing its dark treatment");
