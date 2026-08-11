@@ -1,4 +1,5 @@
 import { q, q1, run, now, type Row } from "./db.ts";
+export { queueLastRead, shutdownReadStateWorker } from "./read-state.ts";
 
 export type Msg = { channelId: number; parentId: number | null; userId?: number | null; botId?: number | null; body: string };
 

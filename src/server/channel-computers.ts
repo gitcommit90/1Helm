@@ -79,8 +79,8 @@ const OCI_HELPER_CANDIDATES = [
 ].filter(Boolean) as string[];
 const COMMAND_TIMEOUT_MS = Math.max(5_000, Number(process.env.HELM_MACHINE_COMMAND_TIMEOUT_MS || 120_000));
 const IDLE_AFTER_MS = Math.max(60_000, Number(process.env.HELM_MACHINE_IDLE_MS || 15 * 60_000));
-const RECONCILE_EVERY_MS = Math.max(15_000, Number(process.env.HELM_FLEET_INTERVAL_MS || 60_000));
-const INITIAL_RECONCILE_MS = Math.max(25, Number(process.env.HELM_FLEET_INITIAL_MS || 2_000));
+const RECONCILE_EVERY_MS = Math.max(15_000, Number(process.env.HELM_FLEET_INTERVAL_MS || 5 * 60_000));
+const INITIAL_RECONCILE_MS = Math.max(25, Number(process.env.HELM_FLEET_INITIAL_MS || 30_000));
 const UPDATE_EVERY_MS = Math.max(24 * 60 * 60_000, Number(process.env.HELM_MACHINE_UPDATE_MS || 7 * 24 * 60 * 60_000));
 const UPDATE_RETRY_MS = Math.max(60 * 60_000, Number(process.env.HELM_MACHINE_UPDATE_RETRY_MS || 6 * 60 * 60_000));
 const MAX_WORKSPACE_SYNC_BYTES = Math.max(64 * 1024 ** 2, Number(process.env.HELM_WORKSPACE_SYNC_MAX_BYTES || 2 * 1024 ** 3));

@@ -15,7 +15,7 @@ mkdirSync(UPLOAD_DIR, { recursive: true });
 
 export const db = new DatabaseSync(join(DATA_DIR, "ctrl-pane.db"));
 db.function("sha256", { deterministic: true }, (value: unknown) => createHash("sha256").update(String(value ?? "")).digest("hex"));
-db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA wal_autocheckpoint = 0; PRAGMA foreign_keys = ON;");
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
