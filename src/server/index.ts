@@ -8,7 +8,7 @@ import { platform } from "node:os";
 import { WebSocketServer, type WebSocket } from "ws";
 import { applyMobileCors, body, clearRateLimit, jbody, json, MIME, rateLimited, requestAddress, SECURITY_HEADERS, UPLOAD_BODY_LIMIT } from "./http.ts";
 import { db, isMainChannel, normalizeWorkspaceName, q, q1, run, now, hashPassword, verifyPassword, newToken, seed, DATA_DIR, UPLOAD_DIR, type Row } from "./db.ts";
-import { createMessage, deleteMessage, serializeMessage, setModelPref, setModelPolicy, resolvedModelPolicy, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots } from "./store.ts";
+import { createMessage, deleteMessage, serializeMessage, setModelPref, setModelPolicy, resolvedModelPolicy, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots, queueLastRead, shutdownReadStateWorker } from "./store.ts";
 import { computerRowView, fetchModels } from "./computer.ts";
 import { cancelChannelTurns, resumeQueuedAgentTurns, runBot, stopThreadTurn } from "./bots.ts";
 import { register, unregister, broadcastToChannel, broadcastAll, broadcastAdmins, sendToUsers } from "./events.ts";
@@ -35,6 +35,7 @@ import {
   listChannelNotes,
   listWorkspaceDirectory,
   listWorkspaceDirectories,
+  listWorkspaceFiles,
   moveWorkspaceEntry,
   normalizeChannelName,
   provisionChannelWithComputer,
@@ -48,7 +49,6 @@ import {
   restoreChannel,
   saveChannelNote,
   saveWorkspaceTextFile,
-  syncWorkspaceArtifacts,
   threadIdForRoot,
   updateChannelPurpose,
 } from "./agents.ts";
@@ -1321,13 +1321,9 @@ const server = createServer(async (req, res) => {
       }
       if (action === "files" && m === "GET") {
         try {
-          if (!url.searchParams.has("path")) {
-            await refreshChannelWorkspaceMirror(channelId);
-            const files = syncWorkspaceArtifacts(channelId, null, "agent");
-            return json(res, 200, { path: "", files, artifacts: q("SELECT * FROM artifacts WHERE channel_id=? ORDER BY modified DESC", channelId) });
-          }
+          if (!url.searchParams.has("path")) return json(res, 200, { path: "", files: listWorkspaceFiles(channelId) });
           const directory = listWorkspaceDirectory(channelId, url.searchParams.get("path") || "");
-          return json(res, 200, { ...directory, artifacts: q("SELECT * FROM artifacts WHERE channel_id=? ORDER BY modified DESC", channelId) });
+          return json(res, 200, directory);
         } catch (error) { return json(res, 400, { error: (error as Error).message }); }
       }
       if (action === "memory" && m === "GET") return json(res, 200, { memory: q("SELECT m.*, t.root_message_id FROM memory_items m LEFT JOIN threads t ON t.id=m.thread_id WHERE m.channel_id=? AND m.kind<>'summary' ORDER BY m.status, m.created DESC", channelId) });
@@ -1611,16 +1607,14 @@ const server = createServer(async (req, res) => {
       if (!canSee(user, cid)) return json(res, 403, { error: "No access" });
       // Never advance past an in-flight Working placeholder — that ate finished agent turns.
       const maxId = maxSettledMessageId(cid);
-      run("INSERT INTO members (channel_id, user_id, last_read) VALUES (?,?,?) ON CONFLICT(channel_id,user_id) DO UPDATE SET last_read=excluded.last_read",
-        cid, user.id, maxId);
+      queueLastRead(Number(user.id), cid, maxId);
       return json(res, 200, { ok: true, last_read: maxId });
     }
     if ((mm = p.match(/^\/api\/channels\/(\d+)\/messages$/))) {
       const cid = Number(mm[1]);
       if (!canSee(user, cid)) return json(res, 403, { error: "No access" });
       if (m === "GET") {
-        run("INSERT INTO members (channel_id, user_id, last_read) VALUES (?,?,?) ON CONFLICT(channel_id,user_id) DO UPDATE SET last_read=excluded.last_read",
-          cid, user.id, maxSettledMessageId(cid));
+        queueLastRead(Number(user.id), cid, maxSettledMessageId(cid));
         const rows = q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL AND photon_conversation_id IS NULL AND workflow_id IS NULL ORDER BY id DESC LIMIT 100", cid).reverse();
         return json(res, 200, { messages: rows.map((r) => serializeMessage(Number(r.id))), bots: botsInChannel(cid).map(botView), agent: agentViewForChannel(cid) });
       }
@@ -2278,6 +2272,7 @@ const shutdown = async (forNativeUpdate = false): Promise<void> => {
     new Promise<void>((resolve) => server.close(() => resolve())),
     new Promise<void>((resolve) => { const timer = setTimeout(resolve, 12_000); timer.unref(); }),
   ]);
+  await shutdownReadStateWorker().catch(() => undefined);
   if (!forNativeUpdate) process.exit(0);
 };
 process.once("SIGTERM", () => { void shutdown(); });

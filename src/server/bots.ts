@@ -26,7 +26,6 @@ import {
   refreshThreadSummary,
   relevantMemory,
   setAgentStatus,
-  syncWorkspaceArtifacts,
   threadIdForRoot,
   addThreadUsage,
   archiveChannel,
@@ -737,7 +736,6 @@ export async function generateAndAttachImage(
   const { join } = await import("node:path");
   const { writeFileSync } = await import("node:fs");
   writeFileSync(join(channelFiles(channelId), fileName), await generator(prompt, signal));
-  syncWorkspaceArtifacts(channelId, threadId, actor);
   return attachWorkspaceFileToMessage(channelId, messageId, threadId, relativePath, actor, fileName);
 }
 
@@ -1697,7 +1695,6 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               result = await runCommand(bot, agent, channelId, input, Number(args.computer_id) || 0, turnSignal);
               requireActiveTurn(channelId, controller.signal);
               if (agent?.kind === "channel") {
-                syncWorkspaceArtifacts(channelId, threadId, "agent");
                 if (cowork && coworkBefore) {
                   const contractError = enforceCoworkCommandOutput(channelId, threadId, cowork, coworkBefore);
                   if (contractError) result = contractError;
@@ -1728,7 +1725,6 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                 const { join } = await import("node:path");
                 const { writeFileSync } = await import("node:fs");
                 writeFileSync(join(channelFiles(channelId), fileName), fetched.body);
-                syncWorkspaceArtifacts(channelId, threadId, actor);
                 const attached = attachWorkspaceFileToMessage(channelId, msgId, threadId, relativePath, actor, fileName);
                 emit();
                 result = `Attached real sourced image ${attached.name} (${attached.mime}, ${attached.size} bytes). Caption: ${String(args.caption || searched.title)}. Source: ${sourceUrl}. Image URL: ${fetched.final_url}. Retrieved SHA-256: ${fetched.sha256}.`;

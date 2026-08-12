@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-08-12
+
+### Fixed
+
+- Opening Files in a large resident workspace no longer blocks every channel,
+  thread, or health request while recursively walking dependency and cache
+  trees. Files now loads one bounded directory at a time, upgrade cleanup
+  removes obsolete auto-indexed metadata while preserving uploads and explicit
+  attachments, and ordinary shell commands no longer rebuild that metadata.
+- Channel history no longer repeats the same inline profile photo in every
+  message. The client reuses the user and agent records it already loaded,
+  keeping channel switches fast on bandwidth- or latency-sensitive links.
+- SQLite write durability, read receipts, checkpoints, and fleet reconciliation
+  no longer put avoidable synchronous storage pressure on foreground requests.
+- Denied service-user `sudo` calls no longer start mail delivery processes that
+  can retry forever inside the hardened Linux service sandbox.
+
 ## [1.0.3] - 2026-08-10
 
 ### Added

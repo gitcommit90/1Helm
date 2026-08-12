@@ -915,44 +915,46 @@ export function deleteWorkspaceEntry(channelId: number, input: string): void {
 
 /** A safe folder tree for the Files and Cowork navigation rails. */
 export function listWorkspaceDirectories(channelId: number): WorkspaceFile[] {
+  const maxDepth = 2;
   if (windowsOciStorageRequired(channelId)) {
     const result: WorkspaceFile[] = [];
-    const walk = (path: string): void => {
+    const walk = (path: string, depth: number): void => {
       const listed = listWorkspaceDirectory(channelId, path);
       for (const entry of listed.files) {
         if (entry.kind !== "directory") continue;
         result.push(entry);
-        walk(entry.path);
+        if (depth + 1 < maxDepth) walk(entry.path, depth + 1);
       }
     };
-    walk("");
+    walk("", 0);
     return result.sort((a, b) => a.path.localeCompare(b.path));
   }
   const result: WorkspaceFile[] = [];
-  const walk = (path: string): void => {
+  const walk = (path: string, depth: number): void => {
     const directory = existingWorkspaceDirectory(channelId, path);
     for (const entry of readdirSync(directory.host, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      if (!directory.path && entry.name === "files") continue;
       const child = directory.path ? `${directory.path}/${entry.name}` : entry.name;
       const host = join(directory.host, entry.name);
       result.push(workspaceFileView(child, host));
-      walk(child);
+      if (depth + 1 < maxDepth) walk(child, depth + 1);
     }
   };
-  walk("");
+  walk("", 0);
   ensureChannelWorkspace(channelId);
   const uploads = channelFiles(channelId);
   result.push(workspaceFileView("files", uploads));
-  const walkUploads = (path: string): void => {
+  const walkUploads = (path: string, depth: number): void => {
     const directory = existingWorkspaceDirectory(channelId, path);
     for (const entry of readdirSync(directory.host, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
       const child = `${directory.path}/${entry.name}`;
       result.push(workspaceFileView(child, join(directory.host, entry.name)));
-      walkUploads(child);
+      if (depth + 1 < maxDepth) walkUploads(child, depth + 1);
     }
   };
-  walkUploads("files");
+  walkUploads("files", 1);
   return result.sort((a, b) => a.path.localeCompare(b.path));
 }
 
@@ -1087,20 +1089,6 @@ export function resolveWorldFile(channelId: number, requested: string): string {
   throw new Error("File not found.");
 }
 
-export function syncWorkspaceArtifacts(channelId: number, threadId: number | null, createdBy = "agent"): WorkspaceFile[] {
-  const files = listWorkspaceFiles(channelId);
-  const paths = new Set(files.filter((entry) => entry.kind === "file").map((entry) => entry.path));
-  for (const artifact of q("SELECT id, path FROM artifacts WHERE channel_id=?", channelId)) {
-    if (!paths.has(String(artifact.path))) run("DELETE FROM artifacts WHERE id=?", artifact.id);
-  }
-  for (const file of files.filter((entry) => entry.kind === "file")) {
-    run(`INSERT INTO artifacts (channel_id, thread_id, path, kind, created_by, size, modified, created) VALUES (?,?,?,'file',?,?,?,?)
-      ON CONFLICT(channel_id,path) DO UPDATE SET thread_id=COALESCE(excluded.thread_id,artifacts.thread_id),size=excluded.size,modified=excluded.modified`,
-      channelId, threadId, file.path, createdBy, file.size, file.modified, now());
-  }
-  return files;
-}
-
 export function importAttachment(channelId: number, threadId: number | null, token: string, name: string, createdBy: string): string | null {
   return importWorkspaceUpload(channelId, threadId, token, name, createdBy, "files");
 }
@@ -1232,13 +1220,12 @@ export function attachWorkspaceFileToMessage(
   ).lastInsertRowid;
 
   const worldRel = worldRelSafe(channelId, absolute);
-  const underChannelFiles = worldRel.startsWith("files/");
-  if (!underChannelFiles && (absolute.startsWith(channelWsAbs + sep) || absolute === channelWsAbs)) {
-    // Ensure Files tab sees workspace-originated artifacts
+  if ([channelWsAbs, channelFilesAbs].some((root) => absolute.startsWith(root + sep) || absolute === root)) {
+    // Explicitly attached files are durable artifacts; dependency trees are not.
     run(
       `INSERT INTO artifacts (channel_id, thread_id, path, kind, created_by, size, modified, created) VALUES (?,?,?,'file',?,?,?,?)
        ON CONFLICT(channel_id,path) DO UPDATE SET thread_id=COALESCE(excluded.thread_id,artifacts.thread_id),size=excluded.size,modified=excluded.modified`,
-      channelId, threadId, worldRel.startsWith("workspace/") ? worldRel : `workspace/${basename(absolute)}`, createdBy, stat.size, stat.mtimeMs, now(),
+      channelId, threadId, worldRel, createdBy, stat.size, stat.mtimeMs, now(),
     );
   }
 

@@ -1,4 +1,4 @@
-import { deleteWorkspaceEntry, listWorkspaceFiles, readWorkspaceTextFile, syncWorkspaceArtifacts } from "./agents.ts";
+import { deleteWorkspaceEntry, listWorkspaceFiles, readWorkspaceTextFile } from "./agents.ts";
 
 export type CoworkContext = {
   kind: "file" | "folder";
@@ -105,7 +105,6 @@ export function enforceCoworkCommandOutput(channelId: number, threadId: number |
   const rejected = created.filter((path) => !compatibleCoworkFile(channelId, context, path));
   for (const path of rejected) deleteWorkspaceEntry(channelId, path);
   if (!rejected.length) return null;
-  syncWorkspaceArtifacts(channelId, threadId || null, "agent");
   const expected = context.surface === "presentations" ? "one valid `.slides.json` deck"
     : context.surface === "whiteboards" ? "one valid `.whiteboard.json` Excalidraw scene"
       : context.surface === "docs" || context.surface === "notes" ? "Markdown `.md`"

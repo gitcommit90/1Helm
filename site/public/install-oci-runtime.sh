@@ -152,7 +152,8 @@ install -o root -g root -m 0755 "$APP_SOURCE/scripts/1helm-oci-runtime" "$HELPER
 
 TEMP_ROOT="$(mktemp -d)"
 trap 'rm -rf -- "$TEMP_ROOT"' EXIT
-printf '%s ALL=(root) NOPASSWD: %s *\n' "$SERVICE_USER" "$HELPER_PATH" >"$TEMP_ROOT/sudoers"
+printf 'Defaults:%s !mail_badpass, !mail_no_user\n%s ALL=(root) NOPASSWD: %s *\n' \
+  "$SERVICE_USER" "$SERVICE_USER" "$HELPER_PATH" >"$TEMP_ROOT/sudoers"
 visudo -cf "$TEMP_ROOT/sudoers" >/dev/null
 install -o root -g root -m 0440 "$TEMP_ROOT/sudoers" "$SUDOERS_PATH"
 
