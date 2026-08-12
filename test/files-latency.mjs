@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -33,6 +33,12 @@ test("Files directory reads stay responsive while an explicit VM refresh is slow
   const provisioned = await agents.provisionChannel({ name: "latency", purpose: "Prove cached Files navigation.", userId });
   const computer = await computers.provisionChannelComputer(provisioned.channelId);
   agents.createWorkspaceFile(provisioned.channelId, "", "cached.txt", "cached");
+  agents.createWorkspaceDirectory(provisioned.channelId, "", "large-project");
+  agents.createWorkspaceDirectory(provisioned.channelId, "large-project", "node_modules");
+  agents.createWorkspaceDirectory(provisioned.channelId, "large-project/node_modules", "dependency");
+  const navigation = agents.listWorkspaceDirectories(provisioned.channelId);
+  assert.ok(navigation.some((entry) => entry.path === "large-project/node_modules"), "the navigation rail includes one useful nested level");
+  assert.equal(navigation.some((entry) => entry.path === "large-project/node_modules/dependency"), false, "the navigation rail never recursively walks an unbounded dependency tree");
   await computers.ensureChannelComputerRunning(provisioned.channelId, "latency fixture");
   writeFileSync(join(fakeState, "machines", computer.machine_id, "workspace", "guest-only.txt"), "guest");
 
@@ -48,4 +54,8 @@ test("Files directory reads stay responsive while an explicit VM refresh is slow
   assert.ok(cached.files.some((entry) => entry.name === "cached.txt"));
   await Promise.all([refreshOne, refreshTwo]);
   assert.ok(agents.listWorkspaceDirectory(provisioned.channelId, "").files.some((entry) => entry.name === "guest-only.txt"));
+
+  const server = await readFile(join(root, "src", "server", "index.ts"), "utf8");
+  const filesRoute = server.slice(server.indexOf('if (action === "files"'), server.indexOf('if (action === "memory"'));
+  assert.doesNotMatch(filesRoute, /syncWorkspaceArtifacts|SELECT \* FROM artifacts/, "Files navigation never writes or returns the entire workspace artifact table");
 });

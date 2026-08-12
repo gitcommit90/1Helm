@@ -324,6 +324,7 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(ociManifest, /ONEHELM_OCI_STATE_ROOT="\/var\/lib\/1helm-oci-v1\/runtime\/oci"/, "the clean-slate OCI state has its own fixed data root");
   assert.match(ociInstaller, /acl[\s\S]*crun[\s\S]*fuse-overlayfs[\s\S]*podman/, "the installer supplies the complete OCI and direct-access prerequisites");
   assert.match(ociInstaller, /visudo -cf/, "the minimal helper-only sudo policy is validated before installation");
+  assert.match(ociInstaller, /Defaults:%s !mail_badpass, !mail_no_user/, "denied service-user sudo calls never start a mail delivery process inside the hardened service sandbox");
   assert.match(ociInstaller, /cgroup2fs/, "live CPU and memory controls require cgroup v2");
   assert.match(ociInstaller, /\/etc\/apparmor\.d\/local\/crun[\s\S]*systemd-detect-virt --container[\s\S]*network inet,[\s\S]*network inet6,[\s\S]*apparmor_parser -r/, "nested Linux hosts install the narrow crun address-family grants needed for resident sockets");
   assert.match(ociHelper, /com\.1helm\.managed[\s\S]*com\.1helm\.owner[\s\S]*com\.1helm\.machine/, "every container has exact ownership labels");

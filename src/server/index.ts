@@ -35,6 +35,7 @@ import {
   listChannelNotes,
   listWorkspaceDirectory,
   listWorkspaceDirectories,
+  listWorkspaceFiles,
   moveWorkspaceEntry,
   normalizeChannelName,
   provisionChannelWithComputer,
@@ -48,7 +49,6 @@ import {
   restoreChannel,
   saveChannelNote,
   saveWorkspaceTextFile,
-  syncWorkspaceArtifacts,
   threadIdForRoot,
   updateChannelPurpose,
 } from "./agents.ts";
@@ -1321,13 +1321,9 @@ const server = createServer(async (req, res) => {
       }
       if (action === "files" && m === "GET") {
         try {
-          if (!url.searchParams.has("path")) {
-            await refreshChannelWorkspaceMirror(channelId);
-            const files = syncWorkspaceArtifacts(channelId, null, "agent");
-            return json(res, 200, { path: "", files, artifacts: q("SELECT * FROM artifacts WHERE channel_id=? ORDER BY modified DESC", channelId) });
-          }
+          if (!url.searchParams.has("path")) return json(res, 200, { path: "", files: listWorkspaceFiles(channelId) });
           const directory = listWorkspaceDirectory(channelId, url.searchParams.get("path") || "");
-          return json(res, 200, { ...directory, artifacts: q("SELECT * FROM artifacts WHERE channel_id=? ORDER BY modified DESC", channelId) });
+          return json(res, 200, directory);
         } catch (error) { return json(res, 400, { error: (error as Error).message }); }
       }
       if (action === "memory" && m === "GET") return json(res, 200, { memory: q("SELECT m.*, t.root_message_id FROM memory_items m LEFT JOIN threads t ON t.id=m.thread_id WHERE m.channel_id=? AND m.kind<>'summary' ORDER BY m.status, m.created DESC", channelId) });

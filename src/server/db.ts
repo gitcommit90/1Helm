@@ -295,7 +295,7 @@ export function migrate(): void {
     modified INTEGER NOT NULL DEFAULT 0,
     created INTEGER NOT NULL,
     UNIQUE(channel_id, path)
-  );
+  ); CREATE INDEX IF NOT EXISTS idx_artifacts_channel_modified ON artifacts(channel_id, modified DESC);
   CREATE TABLE IF NOT EXISTS tool_actions (
     id INTEGER PRIMARY KEY,
     agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
