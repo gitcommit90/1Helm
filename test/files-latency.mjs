@@ -31,6 +31,10 @@ test("Files directory reads stay responsive while an explicit VM refresh is slow
   const userId = db.run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('captain','x','Captain',1,?)", Date.now()).lastInsertRowid;
   db.run("INSERT INTO providers (name,base_url,api_key,kind,created) VALUES ('test','http://127.0.0.1','x','openai',?)", Date.now());
   const provisioned = await agents.provisionChannel({ name: "latency", purpose: "Prove cached Files navigation.", userId });
+  const store = await import("../src/server/store.ts");
+  db.run("UPDATE users SET avatar=? WHERE id=?", `data:image/png;base64,${"a".repeat(30_000)}`, userId);
+  const messageId = store.createMessage({ channelId: provisioned.channelId, parentId: null, userId, body: "Compact navigation payload" });
+  assert.equal(Object.hasOwn(store.serializeMessage(messageId).author, "avatar"), false, "message history references the already-loaded user record instead of repeating its avatar per message");
   const computer = await computers.provisionChannelComputer(provisioned.channelId);
   agents.createWorkspaceFile(provisioned.channelId, "", "cached.txt", "cached");
   agents.createWorkspaceDirectory(provisioned.channelId, "", "large-project");
