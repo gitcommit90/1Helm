@@ -35,6 +35,13 @@ test("Files directory reads stay responsive while an explicit VM refresh is slow
   db.run("UPDATE users SET avatar=? WHERE id=?", `data:image/png;base64,${"a".repeat(30_000)}`, userId);
   const messageId = store.createMessage({ channelId: provisioned.channelId, parentId: null, userId, body: "Compact navigation payload" });
   assert.equal(Object.hasOwn(store.serializeMessage(messageId).author, "avatar"), false, "message history references the already-loaded user record instead of repeating its avatar per message");
+  db.run("INSERT INTO artifacts (channel_id,path,kind,created_by,created) VALUES (?,?, 'file','agent',?)", provisioned.channelId, "workspace/node_modules/dependency.js", Date.now());
+  db.run("INSERT INTO artifacts (channel_id,path,kind,created_by,created) VALUES (?,?, 'file','agent',?)", provisioned.channelId, "workspace/attached.md", Date.now());
+  db.run("INSERT INTO artifacts (channel_id,path,kind,created_by,created) VALUES (?,?, 'upload','user',?)", provisioned.channelId, "files/upload.txt", Date.now());
+  db.run("INSERT INTO attachments (message_id,name,mime,size,path,workspace_path) VALUES (?,?,?,?,?,?)", messageId, "attached.md", "text/markdown", 7, "token", "workspace/attached.md");
+  db.migrate();
+  assert.equal(db.q1("SELECT COUNT(*) n FROM artifacts WHERE channel_id=? AND path='workspace/node_modules/dependency.js'", provisioned.channelId).n, 0, "upgrade migration removes recursively indexed workspace internals");
+  assert.equal(db.q1("SELECT COUNT(*) n FROM artifacts WHERE channel_id=? AND path IN ('workspace/attached.md','files/upload.txt')", provisioned.channelId).n, 2, "upgrade migration preserves explicit attachments and uploads");
   const computer = await computers.provisionChannelComputer(provisioned.channelId);
   agents.createWorkspaceFile(provisioned.channelId, "", "cached.txt", "cached");
   agents.createWorkspaceDirectory(provisioned.channelId, "", "large-project");

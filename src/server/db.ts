@@ -3,6 +3,7 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypt
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BUILTIN_SKILLS } from "./builtin-skills.ts";
+import { cleanupLegacyWorkspaceArtifacts } from "./database-migrations.ts";
 
 export const UNIVERSAL_RESIDENT_SKILL_SLUGS = [
   "outcome-ownership", "blocker-resolution", "skipper-escalation", "capability-discovery",
@@ -10,8 +11,7 @@ export const UNIVERSAL_RESIDENT_SKILL_SLUGS = [
 ] as const;
 
 export const DATA_DIR = process.env.CTRL_DATA_DIR || join(process.cwd(), "data");
-export const UPLOAD_DIR = join(DATA_DIR, "uploads");
-mkdirSync(UPLOAD_DIR, { recursive: true });
+export const UPLOAD_DIR = join(DATA_DIR, "uploads"); mkdirSync(UPLOAD_DIR, { recursive: true });
 
 export const db = new DatabaseSync(join(DATA_DIR, "ctrl-pane.db"));
 db.function("sha256", { deterministic: true }, (value: unknown) => createHash("sha256").update(String(value ?? "")).digest("hex"));
@@ -113,7 +113,6 @@ const addColumn = (table: string, name: string, ddl: string): void => {
 
 const hostLabel = (url: string): string => { try { return new URL(url).host; } catch { return url || "provider"; } };
 const providerKind = (url: string): string => /openrouter\.ai/i.test(url) ? "openrouter" : "openai";
-
 /** Additive migrations keep the legacy bot runtime usable while agents become canonical. */
 export function migrate(): void {
   addColumn("bots", "provider_id", "provider_id INTEGER");
@@ -586,6 +585,7 @@ export function migrate(): void {
     SELECT bot_id, NEW.channel_id FROM agents WHERE id=NEW.agent_id AND bot_id IS NOT NULL;
   END;
   `);
+  cleanupLegacyWorkspaceArtifacts(run);
   // Photon is a private Captain ↔ Skipper inbox. Legacy channel mappings are
   // retained only long enough to migrate conversation history; they are no
   // longer a user-facing routing primitive.
