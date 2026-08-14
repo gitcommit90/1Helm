@@ -1526,32 +1526,6 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
     responseBody = text;
     paintBody(responseBody);
   };
-  const discardSilentTurnMessage = (): void => {
-    run("DELETE FROM agent_progress WHERE message_id=?", msgId);
-    run("DELETE FROM messages WHERE id=?", msgId);
-    if (threadRootId) {
-      const remaining = q(
-        `SELECT created FROM messages WHERE parent_id=?
-         AND body NOT LIKE '[scheduled-followup%'
-         AND body NOT LIKE '⟦followup⟧%'
-         AND body <> '_Working…_'
-         ORDER BY id`,
-        threadRootId,
-      );
-      const last = remaining.length ? Number(remaining[remaining.length - 1].created) : null;
-      run("UPDATE messages SET reply_count=?, last_reply=? WHERE id=?", remaining.length, last, threadRootId);
-      broadcastToChannel(channelId, {
-        type: "message_deleted",
-        channelId,
-        id: msgId,
-        deleted_ids: [msgId],
-        parent_id: threadRootId,
-        parent: { id: threadRootId, reply_count: remaining.length, last_reply: last },
-      });
-    }
-    refreshThreadSummary(threadRootId);
-    setStatus(agent, channelId, "ready");
-  };
   /** Body while tools/thinking are mid-flight: keep last real thought, never flash back to Working… */
   const paintStickyWorkingBody = (): void => {
     if (responseBody.trim()) {
@@ -1959,10 +1933,15 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
           messages.push({ role: "tool", tool_call_id: toolCall.id, name, content: result });
         }
         // A successful durable wake is the continuation. End this turn at the
-        // tool boundary so there is no second model request and no transient
-        // fake completion for clients to observe before cleanup.
+        // tool boundary, but retain its message and work log as ordinary thread
+        // context for the scheduled wake.
         if (scheduledSilentFollowup) {
-          discardSilentTurnMessage();
+          if (!responseBody.trim()) setBody(liveThought.trim() || "_Waiting for the scheduled follow-up._");
+          run("UPDATE agent_progress SET status='complete',updated=? WHERE message_id=? AND status='running'", now(), msgId);
+          refreshThreadSummary(threadRootId);
+          setStatus(agent, channelId, "waiting");
+          emitNow();
+          if (turnId) finalizeAgentTurn(turnId, "waiting", "", "running", writerGeneration);
           return;
         }
         if (awaitingQuestions) {
@@ -1999,21 +1978,25 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
         /^\[scheduled-followup\b/i.test(responseBody.trim())
         || /<memory-context>|Mnemosyne Context|You were re-invoked by a durable/i.test(responseBody)
       );
-      // Wake turns that only re-schedule (or that echo the internal scaffold) must not pollute chat.
-      if (silentReschedule || echoedScaffold) {
-        discardSilentTurnMessage();
+      // The successful schedule path above already retained and finished this
+      // turn. If a wake only echoed its internal scaffold, retain the work log
+      // with a neutral body instead of deleting the whole turn.
+      if (silentReschedule) {
+        if (!responseBody.trim()) setBody(liveThought.trim() || "_Waiting for the scheduled follow-up._");
+        run("UPDATE agent_progress SET status='complete',updated=? WHERE message_id=? AND status='running'", now(), msgId);
+        refreshThreadSummary(threadRootId);
+        setStatus(agent, channelId, "waiting");
+        emitNow();
+        if (turnId) finalizeAgentTurn(turnId, "waiting", "", "running", writerGeneration);
         return;
       }
+      if (echoedScaffold) setBody(liveThought.trim() || "_Scheduled follow-up finished without a user-facing result._");
       if (!meaningfulAnswer(responseBody) && lastCompletedTool) setBody(completedToolAnswer(lastCompletedTool.name, lastCompletedTool.result));
       if (!meaningfulAnswer(responseBody)) throw new Error("The model returned no usable answer. Please retry; no work was lost.");
       break;
     }
     requireActiveTurn(channelId, controller.signal);
     if (!meaningfulAnswer(responseBody) && lastCompletedTool) {
-      if (agent?.kind === "channel" && lastCompletedTool.name === "schedule_followup" && !lastCompletedTool.result.startsWith("Error:")) {
-        discardSilentTurnMessage();
-        return;
-      }
       setBody(completedToolAnswer(lastCompletedTool.name, lastCompletedTool.result));
     }
     if (!meaningfulAnswer(responseBody)) throw new Error("The agent reached its tool limit without a usable final answer. Please retry with a narrower request.");

@@ -909,11 +909,12 @@ try {
   const followThread = await api(`/api/messages/${followRoot.body.message.id}/thread`, {}, captain);
   ok(followThread.body.followup?.id === followEvidence.row.id && followThread.body.followup?.due_at === followEvidence.row.due_at,
     "open-thread payload exposes the same persisted next follow-up that drives Board countdowns");
-  const visibleFollowupReply = followThread.body.replies?.some((message) => message.author?.name === afterRestart.agent.name && message.body && message.body !== "_Working…_");
+  const retainedFollowupReply = followThread.body.replies?.find((message) => message.author?.name === afterRestart.agent.name && message.body && message.body !== "_Working…_");
+  const retainedFollowupWork = retainedFollowupReply?.progress?.some((item) => item.kind === "tool" && item.status === "complete" && /schedule followup/i.test(item.body || ""));
   const followupRequestStats = await fetch(`http://127.0.0.1:${mockPort}/request-stats`).then((response) => response.json());
   ok(
-    Boolean(followEvidence) && !visibleFollowupReply && followupRequestStats.schedule_followup_continuations === 0,
-    "resident schedule_followup creates a durable pending re-entry without another model request or a fake user-facing completion",
+    Boolean(followEvidence) && Boolean(retainedFollowupReply) && Boolean(retainedFollowupWork) && followupRequestStats.schedule_followup_continuations === 0,
+    "resident schedule_followup retains the finished agent turn and work log while creating a durable pending re-entry without another model request",
   );
 
   await api(`/api/threads/${taskThread.id}`, { method: "PATCH", body: { status: "waiting" } }, captain);
