@@ -5,6 +5,7 @@ import test from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
 const app = await readFile(resolve(root, "src/client/app.ts"), "utf8");
+const styles = await readFile(resolve(root, "src/client/styles.css"), "utf8");
 const settings = await readFile(resolve(root, "src/client/settings.ts"), "utf8");
 const routing = await readFile(resolve(root, "src/client/routing.ts"), "utf8");
 const desktop = await readFile(resolve(root, "desktop/main.cjs"), "utf8");
@@ -19,6 +20,14 @@ test("workspace sidebar interactions have durable, member-scoped contracts", () 
   assert.match(app, /group_unread_channels_first/, "the sidebar loads the per-user unread grouping preference");
   assert.match(app, /desktop_sidebar_collapsed/, "desktop sidebar collapse is a profile-bound UI preference");
   assert.match(app, /dataset: \{ sidebar: drawer \? "mobile" : "desktop", sidebarCollapsed: collapsed \? "true" : "false" \}/, "desktop collapse state is visible for behavioral and accessibility checks");
+  assert.match(app, /class: "mobile-menu-button grid h-11 w-11[^\n]+"/, "every channel header renders the navigation button");
+  assert.doesNotMatch(app, /mobile-menu-button[^\n]+(?:sm|md|lg|xl|2xl):hidden/, "no viewport is allowed to hide the channel navigation button");
+  assert.match(app, /id: "mobile-navigation", class: "fixed inset-0 z-40"/, "the navigation drawer can open at every viewport size");
+  assert.match(app, /app-topbar flex min-h-12 flex-col items-stretch[^\n]+md:flex-row md:items-center md:gap-3/, "the channel header stays stacked through the 640–767px tablet gap so its title and hamburger cannot be squeezed out");
+  assert.doesNotMatch(app, /app-topbar flex min-h-12 flex-col[^\n]+sm:flex-row/, "the channel header never enters its single-row layout at 640px");
+  assert.match(app, /workspace-sidebar hidden[^\n]+md:flex/, "the standard persistent-sidebar breakpoint remains intact");
+  assert.match(styles, /@media \(min-width: 768px\) and \(max-width: 1199px\) and \(orientation: portrait\)[\s\S]*\.workspace-sidebar\[data-sidebar="desktop"\] \{ display: none !important; \}/, "tablet portrait uses the drawer while tablet landscape retains the sidebar");
+  assert.match(app, /matchMedia\("\(min-width: 1200px\), \(\(min-width: 768px\) and \(orientation: landscape\)\)"\)/, "rotation into the persistent-sidebar layout closes the tablet drawer");
   assert.match(app, /title: "Expand navigation"[\s\S]*title: "Collapse navigation"/, "the compact desktop rail always retains an explicit expand control");
   assert.match(settings, /key: "group_unread_channels_first"/, "the setting persists through user UI state");
   assert.match(app, /const members = Array\.isArray\(channel\?\.members\) \? channel\.members : \[\]/, "human suggestions come only from current-channel members");
@@ -52,7 +61,7 @@ test("profile, naming, routing, and usage language match the visible product con
   assert.match(app, /dataset: \{ workspaceName: "" \}/, "the complete workspace name has a stable wrapping hook");
   assert.match(settings, /Connection availability/, "connections use direct availability wording");
   assert.doesNotMatch(settings, /More connections/, "the ambiguous connections heading is gone");
-  assert.match(app, /openRoutingPopover\(event\)/, "the router-symbol header action opens live routing activity");
+  assert.match(app, /openRoutingPopoverLazy\(event\)/, "the router-symbol header action lazily opens live routing activity");
   assert.match(routing, /popover\.append\(content\)/, "the live routing popover mounts its rendered content");
   assert.match(app, /Cumulative provider-reported usage for this thread/, "thread token totals are labeled as actual cumulative usage");
   assert.doesNotMatch(app, /`Ctx /, "usage is not presented as context-window capacity");

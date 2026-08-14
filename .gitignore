@@ -6,6 +6,12 @@ public/bundle.css
 public/app.css
 desktop/photon-sidecar.bundle.mjs
 public/excalidraw/
+public/assets/
+public/*.br
+public/*.gz
+public/brand/**/*.br
+public/brand/**/*.gz
+public/xterm.css
 *.log
 .DS_Store
 .env

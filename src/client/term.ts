@@ -1,10 +1,9 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import "@xterm/xterm/css/xterm.css";
 import { api, getToken } from "./api.ts";
 import { serverWebSocketUrl } from "./mobile.ts";
 import { h, clear, icon } from "./dom.ts";
-import { S } from "./app.ts";
+import { S } from "./state.ts";
 
 type Pane = {
   id: string;

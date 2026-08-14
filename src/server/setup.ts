@@ -5,6 +5,8 @@ import { fetchModels } from "./computer.ts";
 import { CHATGPT_KIND, listChatGPTModels } from "./chatgpt.ts";
 import { ensureChannelWorkspace, ensureSkipperAgent } from "./agents.ts";
 import { internalRoutingProviderId, routingModels } from "./routing.ts";
+import type { URL } from "node:url";
+export { channelMetaView, channelView, publicUser } from "./bootstrap-view.ts";
 
 export type Workspace = {
   name: string;
@@ -40,7 +42,7 @@ export function workspaceView(row: Row = workspaceRow()): Workspace {
     name: String(row.name || "My Workspace"),
     terminals_enabled: Boolean(row.terminals_enabled),
     setup_complete: Boolean(row.setup_complete),
-    photo_url: row.photo_mime ? "/api/workspace/photo" : null,
+    photo_url: row.photo_mime ? `/api/workspace/photo?v=${Number(row.photo_version || 0)}` : null,
     theme: String(row.theme || "graphite"),
   };
 }
@@ -60,6 +62,46 @@ export function setupStatus(): {
     setup_complete: ws.setup_complete,
     workspace: workspaceView(),
     provider_count: Number(q1("SELECT COUNT(*) n FROM providers")?.n || 0),
+  };
+}
+
+export function bootstrapView(user: Row, url: URL, helpers: {
+  visibleChannels: (user: Row) => Row[];
+  channelSummary: (user: Row, channel: Row) => Record<string, unknown>;
+  maxSettledMessageId: (channelId: number) => number;
+  photonConfigured: () => unknown;
+  publicUser: (row: Row) => Record<string, unknown>;
+  queueLastRead: (userId: number, channelId: number, messageId: number) => void;
+  serializeMessages: (ids: number[], mode: "summary") => Row[];
+  bots: (channelId: number) => Record<string, unknown>[];
+  computers: () => Record<string, unknown>[];
+}): Record<string, unknown> {
+  const channels = helpers.visibleChannels(user);
+  const state: Record<string, unknown> = {};
+  for (const row of q("SELECT key,value FROM user_ui_state WHERE user_id=?", user.id)) {
+    try { state[String(row.key)] = JSON.parse(String(row.value || "{}")); }
+    catch { state[String(row.key)] = String(row.value || ""); }
+  }
+  let active: Row | undefined;
+  if (url.searchParams.get("include_messages") === "1") {
+    const slug = String(url.searchParams.get("channel") || "");
+    active = channels.find((channel) => slug && String(channel.slug || channel.id) === slug)
+      || channels.find((channel) => channel.kind === "channel" && channel.name === "main") || channels[0];
+  }
+  let messages: Row[] = [], channelBots: Record<string, unknown>[] = [];
+  if (active) {
+    const channelId = Number(active.id);
+    helpers.queueLastRead(Number(user.id), channelId, helpers.maxSettledMessageId(channelId));
+    const roots = q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL AND photon_conversation_id IS NULL AND workflow_id IS NULL ORDER BY id DESC LIMIT 100", channelId).reverse();
+    messages = helpers.serializeMessages(roots.map((row) => Number(row.id)), "summary");
+    channelBots = helpers.bots(channelId);
+  }
+  return {
+    channels: channels.map((channel) => helpers.channelSummary(user, channel)),
+    users: q("SELECT * FROM users ORDER BY display").map(helpers.publicUser),
+    computers: user.is_admin ? helpers.computers() : [],
+    workspace: workspaceView(), state, photon_configured: Boolean(user.is_admin && helpers.photonConfigured()),
+    active_channel_id: active ? Number(active.id) : null, messages, bots: channelBots,
   };
 }
 

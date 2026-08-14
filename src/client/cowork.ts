@@ -1,13 +1,14 @@
 import { api, type Channel, type ChannelFile, type Message, type User } from "./api.ts";
 import { clear, color, h, icon, initials, md } from "./dom.ts";
-import { appAlert, appConfirm, appPrompt, mountSpeechToTextControl, setFocusedSpeechTarget } from "./app.ts";
+import { appAlert, appConfirm, appPrompt } from "./dialogs.ts";
 import { connectCoworkDocument, type CoworkDocument } from "./cowork-collaboration.ts";
 import { mountCodeMirror, mountDocumentSurface, mountExcalidraw, type MountedEditor } from "./cowork-editors.ts";
 import { exportToCanvas, getCommonBounds } from "@excalidraw/excalidraw";
 import { PDFDocument } from "pdf-lib";
-
+import { authenticatedAssetSrc } from "./avatar-assets.ts";
+import { configureSpeechUi } from "./speech-ui.ts";
+const { mount: mountSpeechToTextControl, focus: setFocusedSpeechTarget } = configureSpeechUi();
 export type CoworkSection = "notes" | "whiteboards" | "code" | "docs" | "presentations";
-
 type EditableFile = ChannelFile & { content: string };
 type SlideScene = { elements: readonly unknown[]; appState?: Record<string, unknown>; files?: Record<string, unknown> };
 type DeckSlide = { id: string; name: string; scene: SlideScene };
@@ -29,7 +30,6 @@ type SectionSession = {
   loadVersion: number;
 };
 type CoworkSurface = { node: HTMLElement; openPath: (path: string) => Promise<void>; reload: () => Promise<void>; setOpenThread: (callback: (root: Message) => void) => void; setActive: (active: boolean) => void };
-
 const SECTIONS: Array<{ id: CoworkSection; label: string; folder: string; icon: string; defaultExtension: string }> = [
   { id: "notes", label: "Notes", folder: "notes", icon: "fileText", defaultExtension: ".md" },
   { id: "whiteboards", label: "Whiteboard", folder: "whiteboards", icon: "board", defaultExtension: ".whiteboard.json" },
@@ -37,7 +37,6 @@ const SECTIONS: Array<{ id: CoworkSection; label: string; folder: string; icon: 
   { id: "docs", label: "Docs", folder: "docs", icon: "fileText", defaultExtension: ".md" },
   { id: "presentations", label: "Presentations", folder: "presentations", icon: "presentation", defaultExtension: ".slides.json" },
 ];
-
 const surfaces = new Map<number, CoworkSurface>();
 const pendingPaths = new Map<number, string>();
 
@@ -279,7 +278,7 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
     const image = /^agent:([1-9]):#[0-9a-f]{6}$/i.exec(value);
     if (!value && channel.agent?.kind === "skipper") return h("img", { class: "h-9 w-9 rounded-full object-cover", src: "/brand/1helm-sailboat.png", alt: name, title: name });
     if (image) return h("span", { class: "grid h-9 w-9 place-items-center overflow-hidden rounded-full", style: `background:${swatch}`, title: name, "aria-label": name }, h("img", { class: "h-full w-full object-contain", src: `/agent-avatars/agent-${image[1]}.png`, alt: "" }));
-    if (value.startsWith("data:image/") || value.startsWith("/")) return h("img", { class: "h-9 w-9 rounded-full object-cover", src: value, alt: name, title: name });
+    if (value.startsWith("data:image/") || value.startsWith("/")) return h("img", { class: "h-9 w-9 rounded-full object-cover", src: authenticatedAssetSrc(value), alt: name, title: name });
     return h("span", { class: "grid h-9 w-9 place-items-center rounded-full text-xs font-bold text-white", style: `background:${swatch}` }, initials(name));
   };
   const agentToggle = h("button", { class: "cowork-agent-toggle", type: "button", title: "Work with the channel agent", "aria-label": "Open Cowork agent panel", "aria-expanded": "false" }, agentAvatar());
@@ -716,7 +715,7 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
   const loadContextHistory = async (context: string, folder: boolean): Promise<Message[]> => {
     const marker = `Working ${folder ? "folder" : "file"}: /workspace/${context}`;
     try {
-      const result = await api<{ messages: Message[] }>(`/api/channels/${channelId}/messages`);
+      const result = await api<{ messages: Message[] }>(`/api/channels/${channelId}/messages?progress=summary`);
       return (result.messages || []).filter((message) => String(message.body || "").includes(marker)).reverse();
     } catch { return []; }
   };
@@ -725,7 +724,7 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
     const stream = agentPanel.querySelector<HTMLElement>("[data-cowork-chat-stream]"); if (!stream || !chatRootId) return;
     const stick = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 60; const top = stream.scrollTop;
     try {
-      const result = await api<{ root: Message; replies: Message[] }>(`/api/messages/${chatRootId}/thread`);
+      const result = await api<{ root: Message; replies: Message[] }>(`/api/messages/${chatRootId}/thread?progress=summary`);
       const rows = [result.root, ...result.replies];
       const signature = rows.map((message) => `${message.id}:${message.body}:${(message.progress || []).map((step) => `${step.id}${step.status}`).join(",")}`).join("|");
       if (stream.dataset.signature === signature) return;
@@ -832,7 +831,7 @@ export function renderCowork(container: HTMLElement, channelId: number, channel:
       },
     }, icon("history", 15));
     clear(agentPanel);
-    agentPanel.append(h("header", { class: "flex min-h-14 items-center gap-2 border-b border-line px-3" }, agentAvatar(), h("div", { class: "min-w-0 flex-1" }, h("div", { class: "truncate text-sm font-semibold text-fg" }, channel.agent?.display_name || channel.agent?.name || "Channel agent"), h("div", { class: "truncate text-[10px] text-muted" }, `/workspace/${context}`)), historyButton, chatRootId ? h("button", { class: "btn-ghost text-xs", onclick: async () => { try { const result = await api<{ root: Message }>(`/api/messages/${chatRootId}/thread`); openThreadCallback(result.root); } catch (error) { void appAlert((error as Error).message); } } }, "Open in Chat") : null, h("button", { class: "grid h-8 w-8 place-items-center rounded text-muted hover:bg-hover", "aria-label": "Close agent panel", onclick: () => { agentOpen = false; drawAgent(); } }, icon("x", 15))), stream, historyPane,
+    agentPanel.append(h("header", { class: "flex min-h-14 items-center gap-2 border-b border-line px-3" }, agentAvatar(), h("div", { class: "min-w-0 flex-1" }, h("div", { class: "truncate text-sm font-semibold text-fg" }, channel.agent?.display_name || channel.agent?.name || "Channel agent"), h("div", { class: "truncate text-[10px] text-muted" }, `/workspace/${context}`)), historyButton, chatRootId ? h("button", { class: "btn-ghost text-xs", onclick: async () => { try { const result = await api<{ root: Message }>(`/api/messages/${chatRootId}/thread?progress=summary`); openThreadCallback(result.root); } catch (error) { void appAlert((error as Error).message); } } }, "Open in Chat") : null, h("button", { class: "grid h-8 w-8 place-items-center rounded text-muted hover:bg-hover", "aria-label": "Close agent panel", onclick: () => { agentOpen = false; drawAgent(); } }, icon("x", 15))), stream, historyPane,
       h("div", { class: "border-t border-line p-2" }, chatRootId ? h("button", { class: "btn-ghost mb-1 text-[11px]", onclick: () => { chatRootId = 0; coworkContextPending = true; localStorage.removeItem(threadKey(context)); drawAgent(); } }, "New session") : h("p", { class: "px-2 pb-1 text-[11px] leading-4 text-muted" }, `Your first message starts a normal channel session with this ${session.path ? "file and its current collaborators" : "folder"}.`), h("div", { class: "rounded-lg border border-line bg-raised/40 focus-within:border-accent" }, input, h("div", { class: "flex justify-end gap-1 p-1.5" }, dictate, h("button", { class: "btn-primary text-xs", onclick: () => { void send(); } }, icon("send", 13), "Send")))));
     historyOpen = false;
     void renderChatMessages(); if (chatTimer != null) window.clearInterval(chatTimer); chatTimer = window.setInterval(() => { if (!shell.isConnected || !agentOpen) { if (chatTimer != null) window.clearInterval(chatTimer); chatTimer = null; return; } void renderChatMessages(); }, 1600);

@@ -1482,8 +1482,8 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
     emitTimer = null;
     broadcastToChannel(channelId, {
       type: "message_update",
-      message: serializeMessage(msgId),
-      parent: serializeMessage(threadRootId),
+      message: serializeMessage(msgId, "summary"),
+      parent: serializeMessage(threadRootId, "summary"),
     });
   };
   const emit = (): void => {
@@ -1585,7 +1585,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
   let startProgressId = preparedProgressId || addProgress("status", "Starting agent turn…", "running");
   if (preparedProgressId) updateProgress(preparedProgressId, "Starting agent turn…", "running");
   emitNow();
-  if (!preparedMessageId) broadcastToChannel(channelId, { type: "message", message: serializeMessage(msgId), parent: serializeMessage(threadRootId) });
+  if (!preparedMessageId) broadcastToChannel(channelId, { type: "message", message: serializeMessage(msgId, "summary"), parent: serializeMessage(threadRootId, "summary") });
 
   const messages = await buildContext(bot, agent, channelId, triggerId, threadRootId, fresh, hostAuthorized, hiddenContext, requestUserId);
   const tools = toolsFor(bot, agent, hostAuthorized, channelId, requestUserId);

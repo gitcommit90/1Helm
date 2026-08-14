@@ -1,4 +1,6 @@
-import type { AgentProgress, Message, ThreadUsage } from "./api.ts";
+type AgentProgress = { kind: "thinking" | "tool" | "status"; body: string; status: "running" | "complete" | "failed" };
+type Message = { body: string; progress?: AgentProgress[] };
+type ThreadUsage = { input_tokens: number; output_tokens: number };
 
 /** Pure presentation rules shared by the thread transcript and work log. */
 export function progressStatusTone(status: string): string {

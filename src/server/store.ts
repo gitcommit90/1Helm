@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { q, q1, run, now, type Row } from "./db.ts";
 export { queueLastRead, shutdownReadStateWorker } from "./read-state.ts";
 
@@ -73,7 +74,19 @@ export function deleteMessage(id: number, actorUserId: number, isAdmin: boolean)
   return { id: Number(msg.id), channel_id: channelId, parent_id: parentId, deleted_ids: ids, parent };
 }
 
-export function serializeMessage(id: number): Row | undefined {
+export type MessageProgressMode = "full" | "summary" | "none";
+
+function progressRows(messageId: number, mode: MessageProgressMode): Row[] {
+  if (mode === "none") return [];
+  if (mode === "full") return q("SELECT id, kind, body, status, created, updated FROM agent_progress WHERE message_id=? ORDER BY id", messageId);
+  // Channel and thread transcripts need current-state cues, not every historic
+  // tool result. Keep the latest step for the label plus any running steps.
+  return q(`SELECT id,kind,body,status,created,updated FROM agent_progress
+    WHERE message_id=? AND (status='running' OR id=(SELECT MAX(id) FROM agent_progress WHERE message_id=?))
+    ORDER BY id`, messageId, messageId);
+}
+
+export function serializeMessage(id: number, progressMode: MessageProgressMode = "full"): Row | undefined {
   const m = q1("SELECT * FROM messages WHERE id=?", id);
   if (!m) return undefined;
   // Never ship internal follow-up wake scaffolds to the client.
@@ -112,7 +125,10 @@ export function serializeMessage(id: number): Row | undefined {
     replyCount = replies.length;
     lastReply = replies.length ? Number(replies[replies.length - 1].created) : null;
   }
-  const progress = q("SELECT id, kind, body, status, created, updated FROM agent_progress WHERE message_id=? ORDER BY id", id);
+  const progress = progressRows(id, progressMode);
+  const progressCount = progressMode === "full"
+    ? progress.length
+    : Number(q1("SELECT COUNT(*) n FROM agent_progress WHERE message_id=?", id)?.n || 0);
   const questionRow = q1("SELECT payload,answers,status,answered FROM agent_questions WHERE message_id=?", id);
   let questions: unknown = null;
   if (questionRow) {
@@ -127,7 +143,96 @@ export function serializeMessage(id: number): Row | undefined {
   }
   // stopped_followup is backend-only prompt context and must never be exposed.
   const { stopped_followup: _stoppedFollowup, ...publicMessage } = m;
-  return { ...publicMessage, reply_count: replyCount, last_reply: lastReply, author, attachments, progress, questions };
+  return { ...publicMessage, reply_count: replyCount, last_reply: lastReply, author, attachments, progress, progress_count: progressCount, questions };
+}
+
+export function serializeMessages(ids: number[], progressMode: MessageProgressMode = "full"): Row[] {
+  const orderedIds = [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))];
+  if (!orderedIds.length) return [];
+  const marks = orderedIds.map(() => "?").join(",");
+  const messages = q(`SELECT * FROM messages WHERE id IN (${marks})`, ...orderedIds)
+    .filter((message) => !isInternalMessageBody(String(message.body || "")));
+  if (!messages.length) return [];
+  const messageIds = messages.map((message) => Number(message.id));
+  const messageMarks = messageIds.map(() => "?").join(",");
+  const userIds = [...new Set(messages.map((message) => Number(message.user_id || 0)).filter(Boolean))];
+  const botIds = [...new Set(messages.map((message) => Number(message.bot_id || 0)).filter(Boolean))];
+  const users = new Map(userIds.length
+    ? q(`SELECT id,display FROM users WHERE id IN (${userIds.map(() => "?").join(",")})`, ...userIds).map((user) => [Number(user.id), user])
+    : []);
+  const bots = new Map(botIds.length
+    ? q(`SELECT id,name FROM bots WHERE id IN (${botIds.map(() => "?").join(",")})`, ...botIds).map((bot) => [Number(bot.id), bot])
+    : []);
+  const agents = new Map(botIds.length
+    ? q(`SELECT bot_id,id FROM agents WHERE status<>'deleted' AND bot_id IN (${botIds.map(() => "?").join(",")})`, ...botIds).map((agent) => [Number(agent.bot_id), agent])
+    : []);
+  const grouped = (rows: Row[], key: string): Map<number, Row[]> => {
+    const out = new Map<number, Row[]>();
+    for (const row of rows) {
+      const id = Number(row[key]);
+      const list = out.get(id) || [];
+      list.push(row); out.set(id, list);
+    }
+    return out;
+  };
+  const attachments = grouped(q(`SELECT id,message_id,name,mime,size,workspace_path FROM attachments WHERE message_id IN (${messageMarks}) ORDER BY id`, ...messageIds), "message_id");
+  const allProgress = progressMode === "none" ? [] : q(progressMode === "full"
+    ? `SELECT id,message_id,kind,body,status,created,updated FROM agent_progress WHERE message_id IN (${messageMarks}) ORDER BY message_id,id`
+    : `SELECT ap.id,ap.message_id,ap.kind,ap.body,ap.status,ap.created,ap.updated FROM agent_progress ap
+       WHERE ap.message_id IN (${messageMarks}) AND (ap.status='running' OR ap.id=(SELECT MAX(latest.id) FROM agent_progress latest WHERE latest.message_id=ap.message_id))
+       ORDER BY ap.message_id,ap.id`, ...messageIds);
+  const progress = grouped(allProgress, "message_id");
+  const progressCounts = new Map(q(`SELECT message_id,COUNT(*) n FROM agent_progress WHERE message_id IN (${messageMarks}) GROUP BY message_id`, ...messageIds)
+    .map((row) => [Number(row.message_id), Number(row.n)]));
+  const questions = new Map(q(`SELECT message_id,payload,answers,status,answered FROM agent_questions WHERE message_id IN (${messageMarks})`, ...messageIds)
+    .map((row) => [Number(row.message_id), row]));
+  const rootIds = messages.filter((message) => message.parent_id == null).map((message) => Number(message.id));
+  const replies = new Map<number, { count: number; last: number | null }>();
+  if (rootIds.length) {
+    const rootMarks = rootIds.map(() => "?").join(",");
+    for (const row of q(`SELECT r.parent_id,COUNT(*) n,MAX(r.created) last FROM messages r
+      WHERE r.parent_id IN (${rootMarks}) AND trim(r.body)<>'' AND r.body<>'_Working…_'
+        AND r.body NOT LIKE '[scheduled-followup%' AND r.body NOT LIKE '⟦followup⟧%'
+        AND NOT EXISTS (SELECT 1 FROM agent_progress ap WHERE ap.message_id=r.id AND ap.status='running')
+      GROUP BY r.parent_id`, ...rootIds)) {
+      replies.set(Number(row.parent_id), { count: Number(row.n), last: row.last == null ? null : Number(row.last) });
+    }
+  }
+  const byId = new Map(messages.map((message) => [Number(message.id), message]));
+  return orderedIds.flatMap((id) => {
+    const message = byId.get(id);
+    if (!message) return [];
+    const botId = Number(message.bot_id || 0);
+    const userId = Number(message.user_id || 0);
+    const author = message.system_message
+      ? { kind: "system", id: 0, name: "1Helm", avatar: "" }
+      : botId
+      ? { kind: "bot", id: botId, agent_id: agents.get(botId)?.id || null, name: String(bots.get(botId)?.name || "agent") }
+      : { kind: "user", id: userId, name: String(users.get(userId)?.display || "user") };
+    const questionRow = questions.get(id);
+    let publicQuestions: unknown = null;
+    if (questionRow) {
+      try {
+        publicQuestions = {
+          ...JSON.parse(String(questionRow.payload || "{}")), status: String(questionRow.status),
+          answers: questionRow.answers ? JSON.parse(String(questionRow.answers)) : null,
+          answered: questionRow.answered == null ? null : Number(questionRow.answered),
+        };
+      } catch { publicQuestions = null; }
+    }
+    const settled = message.parent_id == null ? replies.get(id) : undefined;
+    const { stopped_followup: _stoppedFollowup, ...publicMessage } = message;
+    return [{
+      ...publicMessage,
+      reply_count: settled?.count ?? Number(message.reply_count || 0),
+      last_reply: settled ? settled.last : message.last_reply == null ? null : Number(message.last_reply),
+      author,
+      attachments: attachments.get(id) || [],
+      progress: progress.get(id) || [],
+      progress_count: progressCounts.get(id) || 0,
+      questions: publicQuestions,
+    }];
+  });
 }
 
 /**
@@ -233,7 +338,10 @@ export function botView(r: Row): Record<string, unknown> {
   const agent = q1(`SELECT a.id, a.kind, a.display_name, a.status, ac.channel_id
     FROM agents a LEFT JOIN agent_channels ac ON ac.agent_id=a.id WHERE a.bot_id=? AND a.status<>'deleted'`, r.id);
   return {
-    id: r.id, name: r.name, model: r.model, avatar: r.avatar,
+    id: r.id, name: r.name, model: r.model,
+    avatar: String(r.avatar || "").startsWith("data:image/")
+      ? `/api/bots/${Number(r.id)}/avatar?v=${createHash("sha256").update(String(r.avatar)).digest("hex").slice(0, 12)}`
+      : r.avatar,
     provider_id: provider ? Number(r.provider_id) : null,
     provider_name: provider ? String(provider.name) : null,
     provider_kind: provider ? String(provider.kind) : null,

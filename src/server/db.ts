@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS workspace (
   terminals_enabled INTEGER NOT NULL DEFAULT 1, setup_complete INTEGER NOT NULL DEFAULT 0,
   created INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_msg_channel ON messages(channel_id, parent_id, id);
+CREATE INDEX IF NOT EXISTS idx_msg_channel ON messages(channel_id, parent_id, id); CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_id, id); CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id, id);
 `);
 
 export type Row = Record<string, unknown>;
@@ -122,7 +122,7 @@ export function migrate(): void {
   addColumn("channels", "personal_main_owner_id", "personal_main_owner_id INTEGER");
   addColumn("workspace", "default_provider_id", "default_provider_id INTEGER");
   addColumn("workspace", "default_model", "default_model TEXT NOT NULL DEFAULT ''");
-  addColumn("workspace", "photo_mime", "photo_mime TEXT NOT NULL DEFAULT ''");
+  addColumn("workspace", "photo_mime", "photo_mime TEXT NOT NULL DEFAULT ''"); addColumn("workspace", "photo_version", "photo_version INTEGER NOT NULL DEFAULT 0");
   addColumn("workspace", "theme", "theme TEXT NOT NULL DEFAULT 'graphite'");
   addColumn("attachments", "workspace_path", "workspace_path TEXT NOT NULL DEFAULT ''");
   db.exec(`

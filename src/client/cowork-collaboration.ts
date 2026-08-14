@@ -1,7 +1,8 @@
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
-import { getToken, type User } from "./api.ts";
+import { getToken } from "./api.ts";
 import { serverWebSocketUrl } from "./mobile.ts";
+type User = { id: number; username: string; display: string; avatar: string };
 
 export type CoworkAwarenessUser = {
   id: number;
