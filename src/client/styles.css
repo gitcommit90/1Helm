@@ -1123,6 +1123,11 @@ html, body { height: 100%; width: 100%; overflow: hidden; overscroll-behavior: n
 }
 .mobile-drawer { animation: drawer-in .18s ease-out; }
 
+/* Tablets keep the full channel rail in landscape and use the drawer in portrait. */
+@media (min-width: 768px) and (max-width: 1199px) and (orientation: portrait) {
+  .workspace-sidebar[data-sidebar="desktop"] { display: none !important; }
+}
+
 @media (max-width: 900px) {
   #main { position: relative; }
   #thread.thread-pane:not(.hidden) {

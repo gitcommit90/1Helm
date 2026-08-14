@@ -13,7 +13,8 @@ import { yCollab } from "y-codemirror.next";
 import React from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Excalidraw, MainMenu } from "@excalidraw/excalidraw";
-import type { User } from "./api.ts";
+type User = { id: number; username: string; display: string; avatar: string };
+import { authenticatedAssetSrc } from "./avatar-assets.ts";
 import { h, markdownFromHtml, md, textReplaceOps } from "./dom.ts";
 import type { CoworkDocument } from "./cowork-collaboration.ts";
 
@@ -306,7 +307,7 @@ function canvasCollaborators(collaboration: CoworkDocument, me: User) {
     id: String(user.id),
     socketId: String(user.id),
     username: user.name,
-    avatarUrl: user.avatar || undefined,
+    avatarUrl: user.avatar ? authenticatedAssetSrc(user.avatar) : undefined,
     color: { background: user.color, stroke: user.color },
     pointer: states.find((state: Record<string, any>) => state.user?.id === user.id)?.canvasPointer,
   }]));

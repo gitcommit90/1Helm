@@ -1,10 +1,4 @@
-import { App } from "@capacitor/app";
-import { Browser } from "@capacitor/browser";
 import { Capacitor, registerPlugin } from "@capacitor/core";
-import { Keyboard, KeyboardResize } from "@capacitor/keyboard";
-import { SecureStorage, KeychainAccess } from "@aparajita/capacitor-secure-storage";
-import { SplashScreen } from "@capacitor/splash-screen";
-import { StatusBar, Style } from "@capacitor/status-bar";
 
 const SESSION_KEY = "session";
 const SERVER_PREFIX = "1helm_mobile_";
@@ -19,13 +13,33 @@ type InstanceGateway = {
 const instanceGateway = registerPlugin<InstanceGateway>("InstanceGateway");
 
 const native = Capacitor.isNativePlatform();
+const nativeModules = native ? Promise.all([
+  import("@capacitor/app"),
+  import("@capacitor/browser"),
+  import("@capacitor/keyboard"),
+  import("@aparajita/capacitor-secure-storage"),
+  import("@capacitor/splash-screen"),
+  import("@capacitor/status-bar"),
+]).then(([app, browser, keyboard, secure, splash, status]) => ({
+  App: app.App,
+  Browser: browser.Browser,
+  Keyboard: keyboard.Keyboard,
+  KeyboardResize: keyboard.KeyboardResize,
+  SecureStorage: secure.SecureStorage,
+  KeychainAccess: secure.KeychainAccess,
+  SplashScreen: splash.SplashScreen,
+  StatusBar: status.StatusBar,
+  Style: status.Style,
+})) : null;
 let serverOrigin = "";
+let authenticatedAssetToken = "";
 let launchFinishQueued = false;
 let viewportInstalled = false;
 
 /** Keep the reserved native status surface visually joined to the app header. */
 export async function syncNativeStatusSurface(): Promise<void> {
   if (!native) return;
+  const { StatusBar, Style } = await nativeModules!;
   const surface = getComputedStyle(document.documentElement).getPropertyValue("--c-surface").trim() || "#111318";
   const statusStyle = document.documentElement.classList.contains("light") ? Style.Light : Style.Dark;
   await Promise.allSettled([
@@ -100,7 +114,7 @@ export function installMobileViewportBehavior(): void {
     const active = document.activeElement as HTMLElement | null;
     if (!active?.closest?.(".composer-wrap")) return;
     active.blur();
-    if (native) void Keyboard.hide().catch(() => undefined);
+    if (native) void nativeModules!.then(({ Keyboard }) => Keyboard.hide()).catch(() => undefined);
   }, true);
 }
 
@@ -109,7 +123,7 @@ export function finishNativeLaunch(): void {
   if (!native || launchFinishQueued) return;
   launchFinishQueued = true;
   requestAnimationFrame(() => requestAnimationFrame(() => {
-    void SplashScreen.hide({ fadeOutDuration: 180 }).catch(() => undefined);
+    void nativeModules!.then(({ SplashScreen }) => SplashScreen.hide({ fadeOutDuration: 180 })).catch(() => undefined);
   }));
 }
 
@@ -149,6 +163,16 @@ export function serverAssetUrl(path: string): string {
   return path;
 }
 
+/** Auth-gated image endpoints need the current session in their URL because
+ * browser image requests cannot attach the API Authorization header. */
+export function setAuthenticatedAssetToken(token: string): void { authenticatedAssetToken = token; }
+export function authenticatedAssetSrc(source: string, token = authenticatedAssetToken): string {
+  if (!source.startsWith("/api/")) return serverAssetUrl(source);
+  const url = new URL(serverAssetUrl(source), location.href);
+  if (token) url.searchParams.set("token", token);
+  return url.toString();
+}
+
 export function serverWebSocketUrl(path: string): string {
   const target = new URL(location.origin);
   if (native && (!serverOrigin || location.origin !== serverOrigin)) throw new Error("The selected 1Helm instance is unavailable.");
@@ -163,6 +187,7 @@ export async function initializeMobileRuntime(): Promise<string> {
   if (!native) return localStorage.getItem("ctrl.token") || "";
   const platform = mobilePlatform();
   document.documentElement.dataset.nativeMobile = platform;
+  const { App, Browser, Keyboard, KeyboardResize, SecureStorage, KeychainAccess, StatusBar } = await nativeModules!;
   const selected = await instanceGateway.getServer().catch(() => ({ origin: "" }));
   serverOrigin = normalizeServerOrigin(selected.origin || location.origin);
   if (serverOrigin !== location.origin) throw new Error("The native bridge is restricted to the selected 1Helm origin.");
@@ -200,17 +225,20 @@ export async function initializeMobileRuntime(): Promise<string> {
 
 export async function persistSecureSession(token: string): Promise<void> {
   if (!native) { localStorage.setItem("ctrl.token", token); return; }
+  const { SecureStorage, KeychainAccess } = await nativeModules!;
   if (!serverOrigin) throw new Error("Choose a 1Helm server before signing in.");
   await SecureStorage.set(SESSION_KEY, { server: serverOrigin, token }, true, false, KeychainAccess.whenUnlockedThisDeviceOnly);
 }
 
 export async function removeSecureSession(): Promise<void> {
   if (!native) { localStorage.removeItem("ctrl.token"); return; }
+  const { SecureStorage } = await nativeModules!;
   await SecureStorage.remove(SESSION_KEY).catch(() => false);
 }
 
 export async function openExternalUrl(url: string): Promise<void> {
   if (!native) { window.open(url, "_blank", "noopener,noreferrer"); return; }
+  const { Browser } = await nativeModules!;
   await Browser.open({ url, presentationStyle: "fullscreen", toolbarColor: "#15171c" });
 }
 

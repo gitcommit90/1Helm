@@ -1,7 +1,12 @@
 import { api } from "./api.ts";
 import { beep, type NotificationSound } from "./dom.ts";
 import { getServerOrigin, isNativeMobile, mobilePlatform } from "./mobile.ts";
-import { PushNotifications, type PermissionStatus } from "@capacitor/push-notifications";
+import type { PermissionStatus } from "@capacitor/push-notifications";
+
+let pushNotificationsPromise: Promise<typeof import("@capacitor/push-notifications")["PushNotifications"]> | null = null;
+function pushNotifications(): Promise<typeof import("@capacitor/push-notifications")["PushNotifications"]> {
+  return pushNotificationsPromise ||= import("@capacitor/push-notifications").then((module) => module.PushNotifications);
+}
 
 export const NOTIFICATION_SOUNDS: ReadonlyArray<{ value: NotificationSound; label: string }> = [
   { value: "helm", label: "Helm chirp" },
@@ -106,6 +111,7 @@ export function setNativeNotificationNavigation(handler: (channelId: number, roo
 async function installNativeListeners(): Promise<void> {
   if (!isNativeMobile() || nativeListenersReady) return;
   nativeListenersReady = true;
+  const PushNotifications = await pushNotifications();
   await PushNotifications.addListener("registration", ({ value }) => {
     nativeDeviceToken = value;
     nativeRegistrationError = "";
@@ -136,6 +142,7 @@ async function registerNativeDevice(): Promise<void> {
       timer = setTimeout(() => reject(new Error("Notification registration timed out. Please try again.")), 20_000);
     });
     try {
+      const PushNotifications = await pushNotifications();
       await PushNotifications.register();
       await completion;
     } finally {
@@ -158,6 +165,7 @@ export type NativeNotificationState = {
 export async function nativeNotificationState(): Promise<NativeNotificationState> {
   if (!isNativeMobile() || mobilePlatform() !== "ios") return { available: false, permission: "unavailable", registered: false, platforms: [], error: "" };
   await installNativeListeners();
+  const PushNotifications = await pushNotifications();
   nativePermission = (await PushNotifications.checkPermissions()).receive;
   if (!nativeNotificationsEnabled() || nativePermission !== "granted") return { available: true, permission: nativePermission, registered: false, platforms: [], error: nativeRegistrationError };
   if (!nativeDeviceToken) {
@@ -175,6 +183,7 @@ export async function nativeNotificationState(): Promise<NativeNotificationState
 export async function enableNativeNotifications(): Promise<NativeNotificationState> {
   if (!isNativeMobile() || mobilePlatform() !== "ios") return nativeNotificationState();
   await installNativeListeners();
+  const PushNotifications = await pushNotifications();
   let permission = await PushNotifications.checkPermissions();
   if (permission.receive === "prompt" || permission.receive === "prompt-with-rationale") permission = await PushNotifications.requestPermissions();
   nativePermission = permission.receive;
@@ -188,6 +197,7 @@ export async function enableNativeNotifications(): Promise<NativeNotificationSta
 
 export async function disableNativeNotifications(): Promise<NativeNotificationState> {
   if (!isNativeMobile() || mobilePlatform() !== "ios") return nativeNotificationState();
+  const PushNotifications = await pushNotifications();
   if (!nativeDeviceToken && nativeNotificationsEnabled() && nativePermission === "granted") await registerNativeDevice().catch(() => undefined);
   if (nativeDeviceToken) await api("/api/mobile/push", { method: "DELETE", body: { platform: mobilePlatform(), token: nativeDeviceToken } }).catch(() => undefined);
   await PushNotifications.unregister().catch(() => undefined);
@@ -200,6 +210,7 @@ export async function disableNativeNotifications(): Promise<NativeNotificationSt
 export async function restoreNativeNotifications(): Promise<void> {
   if (!isNativeMobile() || mobilePlatform() !== "ios" || !nativeNotificationsEnabled()) return;
   await installNativeListeners();
+  const PushNotifications = await pushNotifications();
   const permission = await PushNotifications.checkPermissions();
   nativePermission = permission.receive;
   if (permission.receive === "granted") {

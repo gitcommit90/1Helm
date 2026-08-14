@@ -1,9 +1,13 @@
 import { api, getToken, openAuthenticatedFile, workspacePhotoSrc, type AccessRequest, type ChannelRuntime, type Collaboration, type Computer, type Skill, type SkillCatalogResult, type SkillCatalogStatus, type User, type WorkspaceDomain } from "./api.ts";
 import { h, clear, add, icon } from "./dom.ts";
-import { S, avatar, reloadProviders, renderApp, appAlert, appConfirm, appPrompt } from "./app.ts";
+import { S } from "./state.ts";
+import { configureSettingsUi } from "./settings-ui.ts";
+import { appAlert, appConfirm, appPrompt } from "./dialogs.ts";
 import { connectRoutingOauth, routingPanel } from "./routing.ts";
 import { disableNativeNotifications, enableNativeNotifications, globalNotificationsMuted, nativeNotificationState, setGlobalNotificationsMuted } from "./notifications.ts";
 import { apiUrl, isNativeMobile, openExternalUrl } from "./mobile.ts";
+
+const { avatar, reloadProviders, renderApp } = configureSettingsUi();
 
 // ============================================================ OpenRouter OAuth (PKCE)
 const b64url = (buf: ArrayBuffer): string => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");

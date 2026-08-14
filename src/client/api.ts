@@ -13,7 +13,7 @@ export type AgentQuestions = {
   answers?: Array<{ question_id: string; question: string; values: string[]; custom: string }> | null;
   answered?: number | null;
 };
-export type Message = { id: number; channel_id: number; parent_id: number | null; body: string; created: number; reply_count: number; last_reply: number | null; author: Author; attachments: Attachment[]; progress?: AgentProgress[]; questions?: AgentQuestions | null; photon_conversation_id?: number | null; workflow_id?: number | null; transport?: "inbound" | "outbound" | "app" };
+export type Message = { id: number; channel_id: number; parent_id: number | null; body: string; created: number; reply_count: number; last_reply: number | null; author: Author; attachments: Attachment[]; progress?: AgentProgress[]; progress_count?: number; questions?: AgentQuestions | null; photon_conversation_id?: number | null; workflow_id?: number | null; transport?: "inbound" | "outbound" | "app" };
 export type ModelPolicy = {
   provider_id: number | null; provider_name: string | null; provider_kind: string | null;
   model: string; requested_model?: string; source?: "thread" | "channel" | "personal" | "workspace" | "agent";
@@ -37,7 +37,7 @@ export type ChannelComputer = {
   obligations: Array<{ kind: string; ref: string; mode: "resident" | "wakeable"; details: string; due_at?: number | null }>;
 };
 export type ChannelMember = { id: number; username: string; display: string; avatar: string };
-export type Channel = { id: number; name: string; slug: string; kind: string; topic: string; purpose: string; status: "active" | "archived"; unread: number; favorite?: boolean; members?: ChannelMember[]; agent: ResidentAgent | null; computer?: ChannelComputer | null; personal_main?: boolean; can_manage?: boolean };
+export type Channel = { id: number; name: string; slug: string; kind: string; topic: string; purpose: string; status: "active" | "archived"; unread: number; favorite?: boolean; members?: ChannelMember[]; agent: ResidentAgent | null; computer?: ChannelComputer | null; personal_main?: boolean; can_manage?: boolean; detailed?: boolean };
 export type Bot = { id: number; name: string; model: string; avatar: string; provider_id: number | null; provider_name: string | null; provider_kind: string | null; computers: number[]; prefs: Record<string, string>; agent_id?: number | null; agent_kind?: string | null; agent_status?: string | null; resident_channel_id?: number | null };
 export type ThreadFollowup = {
   id: number;
@@ -191,7 +191,7 @@ export type Workspace = { name: string; terminals_enabled: boolean; setup_comple
 
 let token = "";
 export const getToken = (): string => token;
-export async function initializeApiTransport(): Promise<void> { token = await initializeMobileRuntime(); }
+export async function initializeApiTransport(): Promise<void> { token = await initializeMobileRuntime(); setAuthenticatedAssetToken(token); }
 
 /** Workspace photo is auth-gated; <img> cannot send Bearer — attach session token. */
 export function workspacePhotoSrc(photoUrl: string | null | undefined, cacheBust?: string | number): string {
@@ -199,13 +199,15 @@ export function workspacePhotoSrc(photoUrl: string | null | undefined, cacheBust
   const t = getToken();
   const params = new URLSearchParams();
   if (t) params.set("token", t);
-  if (cacheBust != null && cacheBust !== "") params.set("v", String(cacheBust));
-  const q = params.toString();
   const source = serverAssetUrl(photoUrl);
+  if (cacheBust === "sidebar") params.set("size", "sidebar");
+  else if (cacheBust != null && cacheBust !== "" && !new URL(source, location.origin).searchParams.has("v")) params.set("v", String(cacheBust));
+  const q = params.toString();
   return q ? `${source}${source.includes("?") ? "&" : "?"}${q}` : source;
 }
-export const setToken = async (t: string): Promise<void> => { token = t; await persistSecureSession(t); };
-export const clearToken = async (): Promise<void> => { token = ""; await removeSecureSession(); };
+
+export const setToken = async (t: string): Promise<void> => { token = t; setAuthenticatedAssetToken(t); await persistSecureSession(t); };
+export const clearToken = async (): Promise<void> => { token = ""; setAuthenticatedAssetToken(""); await removeSecureSession(); };
 
 export async function api<T = any>(path: string, opts: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
   const res = await fetch(apiUrl(path), {
@@ -297,4 +299,4 @@ export function connectEvents(onMessage: Handler, hooks: EventSocketHooks = {}):
   };
   return ws;
 }
-import { apiUrl, initializeMobileRuntime, persistSecureSession, removeSecureSession, serverAssetUrl, serverWebSocketUrl } from "./mobile.ts";
+import { apiUrl, initializeMobileRuntime, persistSecureSession, removeSecureSession, serverAssetUrl, serverWebSocketUrl, setAuthenticatedAssetToken } from "./mobile.ts";

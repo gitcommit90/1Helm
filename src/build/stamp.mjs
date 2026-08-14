@@ -8,18 +8,14 @@ import { fileURLToPath } from "node:url";
 
 const PUBLIC = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "public");
 
-const hash = (name) => {
-  const buf = readFileSync(join(PUBLIC, name));
-  return createHash("sha256").update(buf).digest("hex").slice(0, 12);
-};
-
 let html = readFileSync(join(PUBLIC, "index.html"), "utf-8");
+const hash = (name) => createHash("sha256").update(readFileSync(join(PUBLIC, name))).digest("hex").slice(0, 12);
 const bv = hash("bundle.js");
 const cv = hash("app.css");
 
 // strip any existing ?v=... on these two asset references, then re-stamp
 html = html
-  .replace(/(\/bundle\.js)(\?v=[0-9a-f]*)?/g, `$1?v=${bv}`)
+  .replace(/<script type="module" src="[^"]*"><\/script>/, `<script type="module" src="/bundle.js?v=${bv}"></script>`)
   .replace(/(\/app\.css)(\?v=[0-9a-f]*)?/g, `$1?v=${cv}`);
 
 writeFileSync(join(PUBLIC, "index.html"), html);

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-08-14
+
+### Changed
+
+- The initial interface is substantially smaller and faster: heavyweight
+  Cowork, terminal, routing, settings, avatar, speech, and dialog features load
+  only when opened, while a strict client performance budget prevents the
+  critical path from silently growing again.
+- Startup now uses one compact, viewer-scoped bootstrap response and fetches
+  channel details, older sessions, and complete work logs only when needed.
+- Generated JavaScript, CSS, fonts, and other static assets are precompressed
+  with Brotli and gzip and served directly with durable cache validators.
+- Repeated UI work is bounded and shared: initial message rendering is capped,
+  message-collapse observation is batched, cached workspace surfaces are
+  reused, and native/mobile integration loads concurrently.
+- Avatar and workspace images are delivered as cacheable authenticated assets
+  instead of repeatedly embedding large image payloads in ordinary JSON.
+- SQLite hot paths now have direct message-parent and attachment-message
+  indexes, and server views batch related counts and metadata instead of
+  issuing repeated per-item queries.
+
+### Fixed
+
+- The channel hamburger and channel name remain visible through the 640–767px
+  tablet layout gap. The hamburger is available at every channel viewport and
+  always opens the channel drawer; tablet landscape still keeps its full
+  sidebar layout.
+
 ## [1.0.4] - 2026-08-12
 
 ### Fixed

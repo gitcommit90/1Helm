@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { cp, mkdir, copyFile, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, copyFile, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import * as esbuild from "esbuild";
 import {
@@ -97,27 +97,37 @@ function startTailwindWatcher() {
   });
 }
 
-async function localizeExcalidrawFonts() {
-  const bundle = join(root, "public", "bundle.js");
-  const source = await readFile(bundle, "utf8");
-  const pattern = /`https:\/\/esm\.sh\/\$\{.*?\}\/dist\/prod\/`/g;
-  const matches = source.match(pattern) || [];
-  if (matches.length !== 1) throw new Error(`Expected one Excalidraw CDN fallback in preview bundle.js, found ${matches.length}.`);
-  await writeFile(bundle, source.replace(pattern, 'window.location.origin+"/excalidraw/"'));
-}
-
 async function startClientWatcher() {
+  await rm(join(root, "public", "assets"), { recursive: true, force: true });
   esbuildContext = await esbuild.context({
-    entryPoints: [join(root, "src", "client", "app.ts")],
+    entryPoints: { bundle: join(root, "src", "client", "app.ts") },
     bundle: true,
+    splitting: true,
     format: "esm",
-    outfile: join(root, "public", "bundle.js"),
+    outdir: join(root, "public"),
+    entryNames: "[name]",
+    chunkNames: "assets/chunks/[name]-[hash]",
+    assetNames: "assets/files/[name]-[hash]",
     loader: { ".css": "css" },
     plugins: [{
       name: "preview-self-host-excalidraw",
       setup(build) {
         build.onEnd(async (result) => {
-          if (result.errors.length === 0) await localizeExcalidrawFonts();
+          if (result.errors.length === 0) {
+            const files = [join(root, "public", "bundle.js")];
+            const walk = async (directory) => {
+              for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+                const path = join(directory, entry.name);
+                if (entry.isDirectory()) await walk(path); else if (entry.name.endsWith(".js")) files.push(path);
+              }
+            };
+            await walk(join(root, "public", "assets"));
+            for (const file of files) {
+              const source = await readFile(file, "utf8");
+              const next = source.replace(/`https:\/\/esm\.sh\/\$\{.*?\}\/dist\/prod\/`/g, 'window.location.origin+"/excalidraw/"');
+              if (next !== source) await writeFile(file, next);
+            }
+          }
         });
       },
     }],

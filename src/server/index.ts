@@ -5,10 +5,11 @@ import { existsSync, statSync, unlinkSync } from "node:fs";
 import { join, extname } from "node:path";
 import { randomBytes } from "node:crypto";
 import { platform } from "node:os";
+import sharp from "sharp";
 import { WebSocketServer, type WebSocket } from "ws";
 import { applyMobileCors, body, clearRateLimit, jbody, json, MIME, rateLimited, requestAddress, SECURITY_HEADERS, UPLOAD_BODY_LIMIT } from "./http.ts";
 import { db, isMainChannel, normalizeWorkspaceName, q, q1, run, now, hashPassword, verifyPassword, newToken, seed, DATA_DIR, UPLOAD_DIR, type Row } from "./db.ts";
-import { createMessage, deleteMessage, serializeMessage, setModelPref, setModelPolicy, resolvedModelPolicy, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots, queueLastRead, shutdownReadStateWorker } from "./store.ts";
+import { createMessage, deleteMessage, serializeMessage, serializeMessages, setModelPref, setModelPolicy, resolvedModelPolicy, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots, queueLastRead, shutdownReadStateWorker } from "./store.ts";
 import { computerRowView, fetchModels } from "./computer.ts";
 import { cancelChannelTurns, resumeQueuedAgentTurns, runBot, stopThreadTurn } from "./bots.ts";
 import { register, unregister, broadcastToChannel, broadcastAll, broadcastAdmins, sendToUsers } from "./events.ts";
@@ -53,7 +54,7 @@ import {
   updateChannelPurpose,
 } from "./agents.ts";
 import { CHATGPT_KIND, bindChatGPTProviderFromCookie, chatgptSessionStatus, chatgptWebResponse, disconnectChatGPTProvider, listChatGPTModels, writeChatGPTWebResponse } from "./chatgpt.ts";
-import { completeSetup, setupStatus, workspaceView } from "./setup.ts";
+import { bootstrapView, completeSetup, setupStatus, workspaceView } from "./setup.ts";
 import { connectCloudflareDomain, domainsView, startCustomDomainConnectors } from "./cloudflare.ts";
 import {
   accessRequestByToken,
@@ -87,6 +88,7 @@ import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
 import { CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_PERMISSION_KIND, bumpThreadFollowup, channelTextingGrant, grantChannelTexting, revokeChannelTexting, startFollowupLoop, threadFollowupView } from "./followups.ts";
 import { createWorkflow, listWorkflows, registerWorkflowDispatcher, setWorkflowStatus, startWorkflowLoop, stopWorkflowLoop } from "./workflows.ts";
 import { hostUpdateState, installedAppVersion, runHostUpdateAction } from "./updates.ts";
+import { channelMetaView as baseChannelMetaView, channelView as baseChannelView, publicUser } from "./setup.ts";
 import { centralFeedbackReports, createFeedback, drainFeedback, feedbackAttachment, localFeedbackReports, startFeedbackLoop } from "./feedback.ts";
 import {
   internalRoutingProviderId,
@@ -115,17 +117,16 @@ import {
   prepareAppRemoval,
   reactivateComputersAfterPreparedRemoval,
 } from "./channel-computers.ts";
-
 const PORT = Number(process.env.PORT || 8123);
 const HOST = process.env.HELM_HOST || "0.0.0.0";
 const APP_ROOT = process.env.HELM_APP_ROOT || process.cwd();
 const PUBLIC = join(APP_ROOT, "public");
 const WORKSPACE_PHOTO = join(DATA_DIR, "workspace-photo");
+const WORKSPACE_PHOTO_THUMB = join(DATA_DIR, "workspace-photo-thumb.webp");
 const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
 const INTERNAL_WAKE_TOKEN = String(process.env.HELM_INTERNAL_WAKE_TOKEN || "");
 const MOBILE_API_VERSION = 1;
 seed();
-
 const userFromToken = (token: string | null): Row | undefined => {
   if (!token) return undefined;
   const s = q1("SELECT user_id, created FROM sessions WHERE token=?", token);
@@ -142,7 +143,6 @@ const authUser = (req: IncomingMessage): Row | undefined => {
   } catch { /* ignore */ }
   return undefined;
 };
-
 const canSee = (user: Row, channelId: number): boolean => {
   return !!q1("SELECT 1 FROM members WHERE channel_id=? AND user_id=?", channelId, user.id);
 };
@@ -168,59 +168,6 @@ const captainMainChannel = (): Row | undefined => q1(`SELECT c.* FROM channels c
   JOIN users u ON u.id=c.personal_main_owner_id
   WHERE c.kind='channel' AND c.name='main' AND c.status='active' AND u.is_admin=1
   ORDER BY u.id,c.id LIMIT 1`);
-
-const publicUser = (r: Row): Record<string, unknown> => ({
-  id: r.id,
-  username: r.username,
-  display: r.display,
-  is_admin: Boolean(r.is_admin),
-  description: String(r.description || ""),
-  job_title: String(r.job_title || ""),
-  avatar: String(r.avatar || ""),
-  tour_complete: Boolean(r.tour_complete),
-});
-
-const channelFavoriteKey = (channelId: number): string => `channel_favorite:${channelId}`;
-const channelIsFavorite = (userId: number, channelId: number): boolean => {
-  const value = q1("SELECT value FROM user_ui_state WHERE user_id=? AND key=?", userId, channelFavoriteKey(channelId))?.value;
-  if (value == null) return false;
-  try { return JSON.parse(String(value)) === true; } catch { return String(value) === "true"; }
-};
-const channelMemberSummaries = (channelId: number): Record<string, unknown>[] => q(`SELECT u.id,u.username,u.display,u.avatar
-  FROM members m JOIN users u ON u.id=m.user_id WHERE m.channel_id=? ORDER BY lower(u.display),lower(u.username),u.id`, channelId)
-  .map((member) => ({
-    id: Number(member.id),
-    username: String(member.username),
-    display: String(member.display),
-    avatar: String(member.avatar || ""),
-  }));
-
-/** Shared channel fields for live fan-out — never includes per-user unread. */
-function channelMetaView(c: Row, viewer?: Row | null): Record<string, unknown> {
-  let name = c.name as string;
-  if (c.kind === "dm" && viewer) {
-    const other = q1("SELECT u.* FROM members m JOIN users u ON u.id=m.user_id WHERE m.channel_id=? AND m.user_id<>?", c.id, viewer.id);
-    name = other ? (other.display as string) : "Direct message";
-  }
-  return {
-    id: c.id,
-    name,
-    slug: c.slug || String(c.id),
-    kind: c.kind,
-    topic: c.topic,
-    purpose: c.purpose || c.topic,
-    status: c.status || "active",
-    agent: c.kind === "channel" ? agentViewForChannel(Number(c.id)) : null,
-    computer: c.kind === "channel" ? channelComputerView(Number(c.id)) : null,
-    personal_main: c.kind === "channel" && c.name === "main" && c.personal_main_owner_id != null,
-    ...(viewer ? {
-      can_manage: canManageChannel(viewer, Number(c.id)),
-      favorite: channelIsFavorite(Number(viewer.id), Number(c.id)),
-      members: channelMemberSummaries(Number(c.id)),
-    } : {}),
-  };
-}
-
 /** True when a message is durable activity the Captain should see as unread.
  *  Agent turns reuse one row: create `_Working…_` then stream into the same id.
  *  Marking that placeholder as last_read made finished turns invisible forever. */
@@ -239,14 +186,12 @@ function messageIsSettledSql(alias = "m"): string {
     )
   )`;
 }
-
 function outsideWorkflowSql(alias: string): string {
   return `${alias}.workflow_id IS NULL AND NOT EXISTS (
     SELECT 1 FROM messages workflow_root
     WHERE workflow_root.id=${alias}.parent_id AND workflow_root.workflow_id IS NOT NULL
   )`;
 }
-
 function maxSettledMessageId(channelId: number): number {
   return Number(q1(
     `SELECT MAX(m.id) x FROM messages m
@@ -254,7 +199,6 @@ function maxSettledMessageId(channelId: number): number {
     channelId,
   )?.x || 0);
 }
-
 function channelUnreadCount(userId: number, channelId: number, lastRead: number): number {
   return Number(q1(
     `SELECT COUNT(*) n FROM messages m
@@ -263,14 +207,22 @@ function channelUnreadCount(userId: number, channelId: number, lastRead: number)
     channelId, lastRead, userId,
   )?.n || 0);
 }
-
+const channelRules = {
+  canManageChannel,
+  channelUnreadCount,
+  detailedAgent: agentViewForChannel,
+  computer: channelComputerView,
+  agentForChannel,
+  resolvedModel: (botId: number, channelId: number) => String(resolvedModelPolicy(botId, channelId, null).model || ""),
+  q, q1,
+};
+const channelMetaView = (channel: Row, viewer?: Row | null, detailed = true): Record<string, unknown> =>
+  baseChannelMetaView(channel, viewer, detailed, channelRules);
+const channelSummaryView = (user: Row, channel: Row): Record<string, unknown> =>
+  baseChannelView(user, channel, false, channelRules);
 function channelView(user: Row, c: Row): Record<string, unknown> {
-  const lastRead = Number(q1("SELECT last_read FROM members WHERE channel_id=? AND user_id=?", c.id, user.id)?.last_read || 0);
-  // Settled roots + replies only — never count in-flight Working placeholders.
-  const unread = channelUnreadCount(Number(user.id), Number(c.id), lastRead);
-  return { ...channelMetaView(c, user), unread };
+  return baseChannelView(user, c, true, channelRules);
 }
-
 function broadcastChannelMeta(channelId: number, type: "channel_update" | "channel_new" = "channel_update"): void {
   const row = q1("SELECT * FROM channels WHERE id=?", channelId);
   if (!row) return;
@@ -279,16 +231,14 @@ function broadcastChannelMeta(channelId: number, type: "channel_update" | "chann
   for (const member of q("SELECT user_id FROM members WHERE channel_id=?", channelId)) {
     const viewer = q1("SELECT * FROM users WHERE id=?", member.user_id);
     if (!viewer) continue;
-    sendToUsers([Number(member.user_id)], { type, channel: channelMetaView(row, viewer) });
+    sendToUsers([Number(member.user_id)], { type, channel: channelMetaView(row, viewer, false) });
   }
 }
-
 function visibleChannels(user: Row): Row[] {
   return q(`SELECT c.* FROM channels c JOIN members m ON m.channel_id=c.id
     WHERE m.user_id=? AND c.status<>'deleted'
     ORDER BY CASE WHEN c.status='archived' THEN 1 ELSE 0 END, c.kind, lower(c.name), c.id`, user.id);
 }
-
 /** Fire the bound resident or workspace-wide Skipper mentioned in a message. */
 function triggerBots(channelId: number, msg: Row, authorId: number, hiddenContext?: string): void {
   if (["collab", "human"].includes(String(q1("SELECT kind FROM channels WHERE id=?", channelId)?.kind || ""))) return;
@@ -315,7 +265,6 @@ function triggerBots(channelId: number, msg: Row, authorId: number, hiddenContex
   const skipper = mentioned.find((bot) => agentForBot(Number(bot.id))?.kind === "skipper");
   for (const bot of skipper ? [skipper] : mentioned) void launchBot(bot, channelId, msg, authorId, threadRootId, fresh, hiddenContext);
 }
-
 function offerHumanMemberships(channelId: number, msg: Row, author: Row): void {
   const channel = q1("SELECT kind FROM channels WHERE id=?", channelId);
   if (!channel || !["channel", "collab", "human"].includes(String(channel.kind))) return;
@@ -335,7 +284,6 @@ function offerHumanMemberships(channelId: number, msg: Row, author: Row): void {
     });
   }
 }
-
 function launchBot(bot: Row, channelId: number, msg: Row, authorId: number, threadRootId: number, fresh: boolean, hiddenContext?: string): void {
   const agent = agentForBot(Number(bot.id));
   if (agent?.kind === "skipper") {
@@ -351,7 +299,6 @@ function launchBot(bot: Row, channelId: number, msg: Row, authorId: number, thre
   } else if (botIsInChannel(Number(bot.id), channelId)) void runBot(bot, channelId, Number(msg.id), threadRootId, fresh, undefined, undefined, hiddenContext);
   else sendToUsers([authorId], { type: "bot_prompt", botId: bot.id, botName: bot.name, channelId, triggerId: msg.id, threadRootId, fresh });
 }
-
 /** A one-human/one-agent thread stays conversational until another named or
  * participating human/agent joins it. */
 function conversationalAgent(channelId: number, threadRootId: number, beforeMessageId: number): { bot: Row; threadId: number; automatic: boolean } | null {
@@ -390,7 +337,6 @@ function conversationalAgent(channelId: number, threadRootId: number, beforeMess
   if (!bot) return null;
   return { bot, threadId, automatic: botIds.size === 1 && humanIds.size === 1 };
 }
-
 function setBotComputers(botId: number, computerIds: unknown[]): void {
   run("DELETE FROM bot_computers WHERE bot_id=?", botId);
   for (const c of computerIds) {
@@ -398,7 +344,6 @@ function setBotComputers(botId: number, computerIds: unknown[]): void {
     if (cid && q1("SELECT 1 FROM computers WHERE id=?", cid)) run("INSERT OR IGNORE INTO bot_computers (bot_id, computer_id) VALUES (?,?)", botId, cid);
   }
 }
-
 function postMessage(
   channelId: number,
   user: Row,
@@ -491,16 +436,25 @@ const server = createServer(async (req, res) => {
       const file = join(PUBLIC, rel);
       if (file.startsWith(PUBLIC) && existsSync(file)) {
         const ct = MIME[extname(file)] || "application/octet-stream";
+        const accepted = String(req.headers["accept-encoding"] || "");
+        const encoded = accepted.includes("br") && existsSync(`${file}.br`)
+          ? { file: `${file}.br`, encoding: "br" }
+          : accepted.includes("gzip") && existsSync(`${file}.gz`)
+          ? { file: `${file}.gz`, encoding: "gzip" }
+          : { file, encoding: "" };
         // index.html: always revalidate so a freshly built bundle.js?v=... is picked up.
         // versioned assets (bundle.js?..., app.css?...): cached hard for a year.
         const isHtml = rel === "/index.html" || extname(file) === ".html";
         const isSw = rel === "/sw.js" || rel.endsWith("/sw.js");
         const isManifest = extname(file) === ".webmanifest";
         const headers: Record<string, string> = { "content-type": ct, ...SECURITY_HEADERS };
+        headers["vary"] = "Accept-Encoding";
+        headers["content-length"] = String(statSync(encoded.file).size);
+        if (encoded.encoding) headers["content-encoding"] = encoded.encoding;
         if (isHtml || isSw || isManifest) headers["cache-control"] = "no-cache, must-revalidate";
         else headers["cache-control"] = "public, max-age=31536000, immutable";
         res.writeHead(200, headers);
-        res.end(m === "HEAD" ? undefined : await readFile(file));
+        res.end(m === "HEAD" ? undefined : await readFile(encoded.file));
         return;
       }
       res.writeHead(200, { "content-type": "text/html", "cache-control": "no-cache, must-revalidate", ...SECURITY_HEADERS });
@@ -657,6 +611,38 @@ const server = createServer(async (req, res) => {
     }
 
     if (p === "/api/me") return json(res, 200, { user: publicUser(user), workspace: workspaceView() });
+    if (p === "/api/bootstrap" && m === "GET") {
+      return json(res, 200, bootstrapView(user, url, {
+        visibleChannels, channelSummary: channelSummaryView, maxSettledMessageId,
+        photonConfigured: () => photonStatus().configured, publicUser,
+        queueLastRead, serializeMessages,
+        bots: (channelId) => botsInChannel(channelId).map(botView),
+        computers: () => q("SELECT * FROM computers ORDER BY id").map(computerRowView),
+      }));
+    }
+    const userAvatar = p.match(/^\/api\/users\/(\d+)\/avatar$/);
+    if (userAvatar && m === "GET") {
+      const target = q1("SELECT id,avatar FROM users WHERE id=?", Number(userAvatar[1]));
+      const source = String(target?.avatar || "");
+      const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([a-z0-9+/=]+)$/i.exec(source);
+      if (!target || !match) return json(res, 404, { error: "Avatar not found" });
+      const bytes = Buffer.from(match[2], "base64");
+      res.writeHead(200, { "content-type": match[1], "content-length": bytes.length, "cache-control": "private, max-age=31536000, immutable", ...SECURITY_HEADERS });
+      return res.end(bytes);
+    }
+    const botAvatar = p.match(/^\/api\/bots\/(\d+)\/avatar$/);
+    if (botAvatar && m === "GET") {
+      const target = q1(`SELECT b.avatar FROM bots b WHERE b.id=? AND (
+        EXISTS (SELECT 1 FROM bot_channels bc JOIN members member ON member.channel_id=bc.channel_id WHERE bc.bot_id=b.id AND member.user_id=?)
+        OR EXISTS (SELECT 1 FROM agents a WHERE a.bot_id=b.id AND a.kind='skipper' AND a.status<>'deleted')
+      )`, Number(botAvatar[1]), user.id);
+      const source = String(target?.avatar || "");
+      const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([a-z0-9+/=]+)$/i.exec(source);
+      if (!target || !match) return json(res, 404, { error: "Avatar not found" });
+      const bytes = Buffer.from(match[2], "base64");
+      res.writeHead(200, { "content-type": match[1], "content-length": bytes.length, "cache-control": "private, max-age=31536000, immutable", ...SECURITY_HEADERS });
+      return res.end(bytes);
+    }
     if (p === "/api/feedback" && m === "POST") {
       const b = await jbody(req);
       const recent = Number(q1("SELECT COUNT(*) n FROM feedback_reports WHERE user_id=? AND created>?", user.id, now() - 60 * 60_000)?.n || 0);
@@ -859,8 +845,11 @@ const server = createServer(async (req, res) => {
     if (p === "/api/workspace/photo" && m === "GET") {
       const mime = String(q1("SELECT photo_mime FROM workspace WHERE id=1")?.photo_mime || "");
       if (!mime || !existsSync(WORKSPACE_PHOTO)) return json(res, 404, { error: "No workspace photo." });
-      res.writeHead(200, { "content-type": mime, "cache-control": "no-cache", ...SECURITY_HEADERS });
-      res.end(await readFile(WORKSPACE_PHOTO)); return;
+      const thumbnail = url.searchParams.get("size") === "sidebar" && existsSync(WORKSPACE_PHOTO_THUMB);
+      const file = thumbnail ? WORKSPACE_PHOTO_THUMB : WORKSPACE_PHOTO;
+      const bytes = await readFile(file);
+      res.writeHead(200, { "content-type": thumbnail ? "image/webp" : mime, "content-length": bytes.length, "cache-control": "private, max-age=31536000, immutable", ...SECURITY_HEADERS });
+      res.end(bytes); return;
     }
     if (p === "/api/workspace/photo" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
@@ -869,7 +858,9 @@ const server = createServer(async (req, res) => {
       const bytes = await body(req, 5 * 1024 * 1024);
       if (!bytes.length) return json(res, 400, { error: "Choose an image." });
       await writeFile(WORKSPACE_PHOTO, bytes, { mode: 0o600 });
-      run("UPDATE workspace SET photo_mime=? WHERE id=1", mime);
+      try { await sharp(bytes).rotate().resize(96, 96, { fit: "cover" }).webp({ quality: 78 }).toFile(WORKSPACE_PHOTO_THUMB); }
+      catch { try { unlinkSync(WORKSPACE_PHOTO_THUMB); } catch { /* absent */ } }
+      run("UPDATE workspace SET photo_mime=?,photo_version=? WHERE id=1", mime, now());
       const workspace = workspaceView();
       broadcastAll({ type: "workspace_update", workspace });
       return json(res, 200, { workspace });
@@ -877,7 +868,8 @@ const server = createServer(async (req, res) => {
     if (p === "/api/workspace/photo" && m === "DELETE") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
       try { unlinkSync(WORKSPACE_PHOTO); } catch { /* absent */ }
-      run("UPDATE workspace SET photo_mime='' WHERE id=1");
+      try { unlinkSync(WORKSPACE_PHOTO_THUMB); } catch { /* absent */ }
+      run("UPDATE workspace SET photo_mime='',photo_version=? WHERE id=1", now());
       const workspace = workspaceView();
       broadcastAll({ type: "workspace_update", workspace });
       return json(res, 200, { workspace });
@@ -1158,7 +1150,7 @@ const server = createServer(async (req, res) => {
     if (p === "/api/users" && m === "GET") return json(res, 200, { users: q("SELECT * FROM users ORDER BY display").map(publicUser) });
 
     // channels
-    if (p === "/api/channels" && m === "GET") return json(res, 200, { channels: visibleChannels(user).map((c) => channelView(user, c)) });
+    if (p === "/api/channels" && m === "GET") return json(res, 200, { channels: visibleChannels(user).map((c) => url.searchParams.get("summary") === "1" ? channelSummaryView(user, c) : channelView(user, c)) });
     if (p === "/api/human-channels" && m === "POST") {
       const b = await jbody(req);
       const name = Array.from(String(b.name || "").trim()).slice(0, 100).join("").trim();
@@ -1256,6 +1248,9 @@ const server = createServer(async (req, res) => {
       if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
       const channelKind = String(q1("SELECT kind FROM channels WHERE id=?", channelId)?.kind || "");
       if (channelKind !== "channel") return json(res, 404, { error: "Agent-channel surface not found." });
+      if (action === "channel" && m === "GET") {
+        return json(res, 200, { channel: channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!) });
+      }
       if (action === "channel" && m === "PATCH") {
         if (!canManageChannel(user, channelId)) return json(res, 403, { error: "Only this channel's creator can manage it." });
         const b = await jbody(req);
@@ -1397,7 +1392,7 @@ const server = createServer(async (req, res) => {
       const b = m === "DELETE" ? {} : await jbody(req);
       const favorite = m === "DELETE" ? false : "favorite" in b ? b.favorite === true : "value" in b ? b.value === true : true;
       run(`INSERT INTO user_ui_state (user_id,key,value,updated) VALUES (?,?,?,?)
-        ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value,updated=excluded.updated`, user.id, channelFavoriteKey(channelId), JSON.stringify(favorite), now());
+        ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value,updated=excluded.updated`, user.id, `channel_favorite:${channelId}`, JSON.stringify(favorite), now());
       const row = q1("SELECT * FROM channels WHERE id=?", channelId)!;
       const channel = channelView(user, row);
       sendToUsers([Number(user.id)], { type: "channel_update", channel: channelMetaView(row, user) });
@@ -1616,7 +1611,8 @@ const server = createServer(async (req, res) => {
       if (m === "GET") {
         queueLastRead(Number(user.id), cid, maxSettledMessageId(cid));
         const rows = q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL AND photon_conversation_id IS NULL AND workflow_id IS NULL ORDER BY id DESC LIMIT 100", cid).reverse();
-        return json(res, 200, { messages: rows.map((r) => serializeMessage(Number(r.id))), bots: botsInChannel(cid).map(botView), agent: agentViewForChannel(cid) });
+        const progressMode = url.searchParams.get("progress") === "summary" ? "summary" : "full";
+        return json(res, 200, { messages: serializeMessages(rows.map((r) => Number(r.id)), progressMode), bots: botsInChannel(cid).map(botView), agent: agentViewForChannel(cid) });
       }
       if (m === "POST") {
         const b = await jbody(req);
@@ -1657,8 +1653,8 @@ const server = createServer(async (req, res) => {
       const threadId = threadIdForRoot(Number(root.id), Number(root.channel_id)) ?? ensureThread(Number(root.id), Number(root.channel_id));
       const thread = q1("SELECT * FROM threads WHERE id=?", threadId);
       return json(res, 200, {
-        root: serializeMessage(Number(root.id)),
-        replies: replies.map((r) => serializeMessage(Number(r.id))).filter(Boolean),
+        root: serializeMessages([Number(root.id)], url.searchParams.get("progress") === "summary" ? "summary" : "full")[0],
+        replies: serializeMessages(replies.map((r) => Number(r.id)), url.searchParams.get("progress") === "summary" ? "summary" : "full"),
         thread,
         followup: threadFollowupView(Number(threadId)),
         usage: {
@@ -1666,6 +1662,15 @@ const server = createServer(async (req, res) => {
           output_tokens: Math.max(0, Number(thread?.output_tokens || 0)),
         },
       });
+    }
+    if ((mm = p.match(/^\/api\/messages\/(\d+)\/progress$/)) && m === "GET") {
+      const message = q1("SELECT id,channel_id FROM messages WHERE id=?", Number(mm[1]));
+      if (!message || !canSee(user, Number(message.channel_id))) return json(res, 404, { error: "Not found" });
+      const before = Math.max(0, Number(url.searchParams.get("before") || 0));
+      const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 40)));
+      const rows = q(`SELECT id,kind,body,status,created,updated FROM agent_progress
+        WHERE message_id=? ${before ? "AND id<?" : ""} ORDER BY id DESC LIMIT ?`, Number(message.id), ...(before ? [before] : []), limit + 1);
+      return json(res, 200, { progress: rows.slice(0, limit).reverse(), has_more: rows.length > limit });
     }
     if ((mm = p.match(/^\/api\/messages\/(\d+)\/model-policy$/))) {
       const root = q1("SELECT * FROM messages WHERE id=? AND parent_id IS NULL", Number(mm[1]));

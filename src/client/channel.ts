@@ -1,17 +1,16 @@
 import { api, downloadAuthenticatedFile, openAuthenticatedFile, uploadFile, groupRoutingModels, routingModelGroupKey, type ActivityItem, type AgentTemplate, type Channel, type ChannelFile, type GlobalThread, type MemoryItem, type Message, type TextConversation, type ThreadState, type RoutingModel } from "./api.ts";
 import { h, clear, icon, md, timeLabel } from "./dom.ts";
-import { S, avatar, appAlert, appConfirm, appPrompt } from "./app.ts";
+import { S } from "./state.ts";
+import { avatar } from "./avatar-ui.ts";
+import { appAlert, appConfirm, appPrompt } from "./dialogs.ts";
 import { NOTIFICATION_SOUNDS, channelNotificationPreference, previewNotification, setChannelNotificationPreference } from "./notifications.ts";
 import { channelTextingSettings } from "./workflows.ts";
-
+import { authenticatedAssetSrc } from "./avatar-assets.ts";
 export type ChannelView = "chat" | "texts" | "board" | "workflows" | "threads" | "cowork" | "notes" | "files" | "terminal" | "memory" | "activity" | "settings";
-
 type RenderRefreshOptions = { preserveExisting?: boolean; isCurrent?: () => boolean; onPaint?: () => void };
-
 function refreshIsCurrent(options: RenderRefreshOptions): boolean {
   return options.isCurrent?.() !== false;
 }
-
 export function openCreateChannel(onCreated: (channel: Channel) => void): void {
   const name = h("input", { class: "field", placeholder: "launch", autocomplete: "off" }) as HTMLInputElement;
   const purpose = h("textarea", { class: "field min-h-28", placeholder: "This channel owns planning and coordinating the product launch." }) as HTMLTextAreaElement;
@@ -1096,7 +1095,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
       // Solid color is the entire avatar plate — no initials on top.
       avatarPreview.append(h("div", { class: "h-12 w-12 rounded-xl identity-solid", style: `background:${value.slice(6)}`, title: channel.agent?.name || "Agent" }));
     } else if (value.startsWith("data:image/") || value.startsWith("/")) {
-      avatarPreview.append(h("img", { class: "h-12 w-12 rounded-xl object-cover identity-photo", src: value, alt: "Agent" }));
+      avatarPreview.append(h("img", { class: "h-12 w-12 rounded-xl object-cover identity-photo", src: authenticatedAssetSrc(value), alt: "Agent" }));
     } else {
       avatarPreview.append(avatar(channel.agent?.name || "A", "bot", 12));
     }
