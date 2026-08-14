@@ -2184,7 +2184,7 @@ function paintLiveChannelMessage(messageId: number): void {
       renderMessages();
       return;
     }
-    if (box.querySelector(":scope > :not(.msg-day-section)")) clear(box);
+    if (!box.querySelector(":scope > .msg-day-section")) clear(box);
     const message = S.messages[index];
     const previous = index > 0 ? S.messages[index - 1] : null;
     let section = previous && sameDay(previous.created, message.created)

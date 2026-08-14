@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-08-14
+
+### Fixed
+
+- Sending a new message no longer clears the visible channel history when the
+  bounded initial history includes the control for loading older sessions.
+
 ## [1.0.6] - 2026-08-14
 
 ### Fixed
