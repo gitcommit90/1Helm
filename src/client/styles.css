@@ -878,7 +878,7 @@ html.light .channel-unread-badge {
 .progress-step summary { list-style: none; }
 .progress-step summary::-webkit-details-marker { display: none; }
 .progress-output { tab-size: 2; }
-.progress-timeline { max-height: min(28rem, 55vh); overflow-y: auto; overscroll-behavior: contain; }
+.progress-timeline { max-height: min(28rem, 55vh); overflow-y: auto; overflow-anchor: none; overscroll-behavior: contain; }
 .thread-messages { min-width: 0; overflow-x: hidden; }
 .thread-messages > * { min-width: 0; max-width: 100%; }
 

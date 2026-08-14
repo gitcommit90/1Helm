@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-08-14
+
+### Fixed
+
+- Expanded agent work logs preserve their exact inner scroll position as new
+  thoughts and tool results arrive, while keeping the complete loaded history
+  visible throughout live updates.
+- Scheduling a durable follow-up now finishes and retains the current agent
+  message and work log in its thread, so the next wake continues from the work
+  already completed instead of starting the original request over.
+
 ## [1.0.5] - 2026-08-14
 
 ### Changed

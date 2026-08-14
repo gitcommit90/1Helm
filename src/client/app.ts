@@ -4,6 +4,7 @@ import { disableNativeNotifications, hydrateNotificationPreferences, playNotific
 import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderNotes, renderTexts, renderThreads, type ChannelView } from "./channel.ts";
 import { configureWorkflowUi, renderWorkflows } from "./workflows.ts";
 import { patchLiveMessageRow } from "./live-message-patch.ts";
+import { progressOpenByMessage, progressStepOpen, progressTimelineItems, progressTimelineScroll, retainLoadedProgress, snapshotProgressOpenState } from "./progress-state.ts";
 import { finishOpenRouterOAuthLazy, lazySurfacePlaceholder, openOnboardingLazy, openRoutingPopoverLazy, openSettingsLazy, pushRoutingActivityLazy, refreshOpenSkillsSettingsLazy, renderCoworkLazy, setActiveCoworkChannelLazy, stageCoworkPathLazy, terminal } from "./lazy-features.ts";
 import { apiUrl, finishNativeLaunch, forgetMobileServer, getServerOrigin, isNativeMobile, serverAssetUrl } from "./mobile.ts";
 import {
@@ -740,6 +741,7 @@ export function applyAgentStatusEvent(e: { channelId: number; agentId: number; s
 function applyMessage(msg: Message, isUpdate: boolean, authoritativeParent?: Message): void {
   const list = msg.parent_id == null ? S.messages : (S.threadRoot && msg.parent_id === S.threadRoot.id ? S.threadReplies : null);
   const i = list?.findIndex((m) => m.id === msg.id) ?? -1;
+  if (i >= 0 && list) msg = retainLoadedProgress(list[i], msg);
   if (msg.parent_id != null) {
     const parent = S.messages.find((m) => m.id === msg.parent_id);
     if (parent && authoritativeParent) {
@@ -2520,34 +2522,6 @@ function structuredQuestions(message: Message): HTMLElement | null {
   return body;
 }
 
-// Survives full message-list re-renders. DOM query alone fails because
-// renderMessages/renderThread call clear() before rebuilding rows, so the old
-// <details open> is already gone when progressDisclosure runs.
-const progressOpenByMessage = new Map<number, boolean>();
-const progressStepOpen = new Map<string, boolean>(); // `${messageId}:${progressId}`
-// Inner work-log scroller (`.progress-timeline`). Full rebuilds reset scrollTop to 0
-// unless we snapshot + restore — that felt like "auto-scroll up" on every tick.
-const progressTimelineScroll = new Map<number, { top: number; stick: boolean }>();
-
-function snapshotProgressOpenState(root: ParentNode | null = document): void {
-  root?.querySelectorAll("details.agent-progress[data-progress-for]").forEach((node) => {
-    const el = node as HTMLDetailsElement;
-    const id = Number(el.dataset.progressFor);
-    if (!Number.isFinite(id)) return;
-    progressOpenByMessage.set(id, el.open);
-    const timeline = el.querySelector(".progress-timeline") as HTMLElement | null;
-    if (timeline) {
-      const nearBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 48;
-      progressTimelineScroll.set(id, { top: timeline.scrollTop, stick: nearBottom });
-    }
-  });
-  root?.querySelectorAll("details.progress-step[data-step-key]").forEach((node) => {
-    const el = node as HTMLDetailsElement;
-    const key = el.dataset.stepKey;
-    if (key) progressStepOpen.set(key, el.open);
-  });
-}
-
 function progressStepCard(messageId: number, item: AgentProgress): HTMLElement {
   const key = `${messageId}:${item.id}`;
   const tone = progressStatusTone(item.status);
@@ -2559,7 +2533,7 @@ function progressStepCard(messageId: number, item: AgentProgress): HTMLElement {
   }, progressStatusLabel(item.status));
 
   if (item.kind === "status") {
-    return h("div", { class: "progress-step progress-step-status flex items-start gap-2.5 rounded-lg border border-line/80 bg-surface/80 px-3 py-2" },
+    return h("div", { class: "progress-step progress-step-status flex items-start gap-2.5 rounded-lg border border-line/80 bg-surface/80 px-3 py-2", dataset: { progressStep: key } },
       h("span", { class: `mt-1.5 h-2 w-2 shrink-0 rounded-full ${tone}` }),
       h("div", { class: "min-w-0 flex-1 text-xs leading-5 text-muted" }, item.body || "…"),
       statusChip);
@@ -2570,7 +2544,7 @@ function progressStepCard(messageId: number, item: AgentProgress): HTMLElement {
     const long = text.length > 280 || text.split("\n").length > 4;
     const wasOpen = progressStepOpen.get(key) === true;
     if (!long) {
-      return h("div", { class: "progress-step progress-step-thinking rounded-lg border border-line/80 bg-raised/40 px-3 py-2" },
+      return h("div", { class: "progress-step progress-step-thinking rounded-lg border border-line/80 bg-raised/40 px-3 py-2", dataset: { progressStep: key } },
         h("div", { class: "mb-1.5 flex items-center gap-2" },
           h("span", { class: `h-2 w-2 shrink-0 rounded-full ${tone}` }),
           h("span", { class: "font-mono text-[9.5px] uppercase tracking-[0.16em] text-faint" }, "Thinking"),
@@ -2582,7 +2556,7 @@ function progressStepCard(messageId: number, item: AgentProgress): HTMLElement {
     progressStepOpen.set(key, open);
     const d = h("details", {
       class: "progress-step progress-step-thinking rounded-lg border border-line/80 bg-raised/40",
-      dataset: { stepKey: key },
+      dataset: { stepKey: key, progressStep: key },
       open: open || undefined,
     },
       h("summary", { class: "flex cursor-pointer select-none items-center gap-2 px-3 py-2" },
@@ -2613,11 +2587,11 @@ function progressStepCard(messageId: number, item: AgentProgress): HTMLElement {
     h("pre", { class: `progress-output m-0 ${maxH} overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-4 text-muted` }, output));
 
   if (!output) {
-    return h("div", { class: "progress-step progress-step-tool rounded-lg border border-line bg-surface px-3 py-2" }, titleRow, inputEl);
+    return h("div", { class: "progress-step progress-step-tool rounded-lg border border-line bg-surface px-3 py-2", dataset: { progressStep: key } }, titleRow, inputEl);
   }
 
   if (!longOut) {
-    return h("div", { class: "progress-step progress-step-tool rounded-lg border border-line bg-surface" },
+    return h("div", { class: "progress-step progress-step-tool rounded-lg border border-line bg-surface", dataset: { progressStep: key } },
       h("div", { class: "px-3 py-2" }, titleRow, inputEl),
       resultBlock("max-h-48"));
   }
@@ -2627,7 +2601,7 @@ function progressStepCard(messageId: number, item: AgentProgress): HTMLElement {
     outOpen ? "Hide result" : `Show result · ${output.length.toLocaleString()} chars`);
   const d = h("details", {
     class: "progress-step progress-step-tool rounded-lg border border-line bg-surface",
-    dataset: { stepKey: key },
+    dataset: { stepKey: key, progressStep: key },
     open: outOpen || undefined,
   },
     h("summary", { class: "cursor-pointer select-none px-3 py-2" },
@@ -2669,13 +2643,21 @@ function progressDisclosure(message: Message): HTMLElement | null {
     dataset: { progressTimelineFor: String(message.id) },
   });
   const paintTimeline = (): void => {
-    timeline.replaceChildren(...(message.progress || []).map((item) => progressStepCard(message.id, item)));
+    timeline.replaceChildren(...(progressTimelineItems.get(message.id) || message.progress || []).map((item) => progressStepCard(message.id, item)));
   };
   const loadTimeline = async (): Promise<void> => {
-    if (loadedFull) { paintTimeline(); return; }
+    // Live message events carry a compact progress summary. Once this panel has
+    // fetched its expanded history, retain that in-memory history across ticks;
+    // replacing it with a one-line loading state collapses the scroll range and
+    // forces the user's inner work-log position back to zero.
+    if (loadedFull || progressTimelineItems.has(message.id)) { paintTimeline(); return; }
     timeline.replaceChildren(h("div", { class: "py-2 text-xs text-faint" }, "Loading work log…"));
     const result = await api<{ progress: AgentProgress[]; has_more: boolean }>(`/api/messages/${message.id}/progress?limit=100`);
+    progressTimelineItems.set(message.id, result.progress);
     message.progress = result.progress;
+    const liveMessage = [...(S.messages || []), ...(S.threadReplies || []), ...(S.threadRoot ? [S.threadRoot] : [])]
+      .find((item) => Number(item.id) === Number(message.id));
+    if (liveMessage) liveMessage.progress = result.progress;
     loadedFull = !result.has_more;
     paintTimeline();
     if (result.has_more) timeline.prepend(h("div", { class: "pb-1 text-center text-[11px] text-faint" }, `Showing the latest ${result.progress.length} of ${knownCount} steps`));

@@ -6,7 +6,28 @@ function adopt(mounted: HTMLElement, next: HTMLElement): void {
   next.replaceWith(mounted);
 }
 
+/** Update only changed/new work-log cards. Replacing every card on every live
+ * tick makes Chromium's nested scroll anchoring walk the viewport upward. */
+function patchProgressTimeline(mounted: HTMLElement, next: HTMLElement): void {
+  mounted.className = next.className;
+  const current = new Map(Array.from(mounted.children).flatMap((child) => {
+    const key = (child as HTMLElement).dataset.progressStep;
+    return key ? [[key, child as HTMLElement] as const] : [];
+  }));
+  const retained = new Set<string>();
+  for (const child of Array.from(next.children) as HTMLElement[]) {
+    const key = child.dataset.progressStep;
+    if (!key) continue;
+    retained.add(key);
+    const prior = current.get(key);
+    if (!prior) mounted.append(child);
+    else if (!prior.isEqualNode(child)) prior.replaceWith(child);
+  }
+  for (const [key, child] of current) if (!retained.has(key)) child.remove();
+}
+
 export function patchLiveMessageRow(current: HTMLElement, next: HTMLElement, bindBodyCollapse: (shell: HTMLElement) => void): void {
+  let timelineScroll: { element: HTMLElement; top: number; left: number } | null = null;
   const currentBody = current.querySelector<HTMLElement>('[data-live-slot="body"]');
   const nextBody = next.querySelector<HTMLElement>('[data-live-slot="body"]');
   if (currentBody && nextBody) {
@@ -26,13 +47,12 @@ export function patchLiveMessageRow(current: HTMLElement, next: HTMLElement, bin
   const currentProgress = current.querySelector<HTMLElement>("details.agent-progress");
   const nextProgress = next.querySelector<HTMLElement>("details.agent-progress");
   if (currentProgress && nextProgress) {
-    for (const currentStep of Array.from(currentProgress.querySelectorAll<HTMLElement>("details[data-step-key]"))) {
-      const nextStep = nextProgress.querySelector<HTMLElement>(`details[data-step-key="${currentStep.dataset.stepKey || ""}"]`);
-      if (!nextStep) continue;
-      const currentStepSummary = currentStep.querySelector<HTMLElement>(":scope > summary");
-      const nextStepSummary = nextStep.querySelector<HTMLElement>(":scope > summary");
-      if (currentStepSummary && nextStepSummary) adopt(currentStepSummary, nextStepSummary);
-      adopt(currentStep, nextStep);
+    const currentTimeline = currentProgress.querySelector<HTMLElement>(".progress-timeline");
+    const nextTimeline = nextProgress.querySelector<HTMLElement>(".progress-timeline");
+    if (currentTimeline && nextTimeline) {
+      timelineScroll = { element: currentTimeline, top: currentTimeline.scrollTop, left: currentTimeline.scrollLeft };
+      patchProgressTimeline(currentTimeline, nextTimeline);
+      nextTimeline.replaceWith(currentTimeline);
     }
     const currentSummary = currentProgress.querySelector<HTMLElement>(":scope > summary");
     const nextSummary = nextProgress.querySelector<HTMLElement>(":scope > summary");
@@ -44,5 +64,16 @@ export function patchLiveMessageRow(current: HTMLElement, next: HTMLElement, bin
     if (name !== "class") current.setAttribute(name, next.getAttribute(name) || "");
   }
   current.replaceChildren(...Array.from(next.childNodes));
+  // The timeline is temporarily detached while it moves through `next` above.
+  // Restore only after the full row is mounted again; detached scrollers have
+  // no layout height and browsers clamp an earlier scrollTop assignment to 0.
+  if (timelineScroll) {
+    timelineScroll.element.scrollTop = timelineScroll.top;
+    timelineScroll.element.scrollLeft = timelineScroll.left;
+    requestAnimationFrame(() => {
+      timelineScroll!.element.scrollTop = timelineScroll!.top;
+      timelineScroll!.element.scrollLeft = timelineScroll!.left;
+    });
+  }
   current.querySelectorAll<HTMLElement>("[data-message-body-shell]").forEach(bindBodyCollapse);
 }
