@@ -324,7 +324,8 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(ociManifest, /ONEHELM_OCI_STATE_ROOT="\/var\/lib\/1helm-oci-v1\/runtime\/oci"/, "the clean-slate OCI state has its own fixed data root");
   assert.match(ociInstaller, /acl[\s\S]*crun[\s\S]*fuse-overlayfs[\s\S]*podman/, "the installer supplies the complete OCI and direct-access prerequisites");
   assert.match(ociInstaller, /visudo -cf/, "the minimal helper-only sudo policy is validated before installation");
-  assert.match(ociInstaller, /Defaults:%s !mail_badpass, !mail_no_user/, "denied service-user sudo calls never start a mail delivery process inside the hardened service sandbox");
+  assert.match(ociInstaller, /Defaults:%s !mail_badpass\\n/, "denied service-user sudo calls never start a mail delivery process inside the hardened service sandbox");
+  assert.doesNotMatch(ociInstaller, /mail_no_user/, "the sudo policy remains valid under Ubuntu's sudo-rs implementation");
   assert.match(ociInstaller, /cgroup2fs/, "live CPU and memory controls require cgroup v2");
   assert.match(ociInstaller, /\/etc\/apparmor\.d\/local\/crun[\s\S]*systemd-detect-virt --container[\s\S]*network inet,[\s\S]*network inet6,[\s\S]*apparmor_parser -r/, "nested Linux hosts install the narrow crun address-family grants needed for resident sockets");
   assert.match(ociHelper, /com\.1helm\.managed[\s\S]*com\.1helm\.owner[\s\S]*com\.1helm\.machine/, "every container has exact ownership labels");
@@ -352,6 +353,8 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(updater, /systemd-run[\s\S]*apply-linux-release\.sh[\s\S]*exit 0/, "all post-verification Linux release mutations run in one transient root transaction outside the updater namespace");
   assert.match(releaseApply, /RELEASE_ROOT.*RELEASES_ROOT[\s\S]*snapshot_host_contract[\s\S]*install-oci-runtime\.sh[\s\S]*mv -Tf[\s\S]*install-linux-units\.sh[\s\S]*api\/setup\/status/, "the delegated release transaction owns runtime, source switch, units, and health together");
   assert.match(releaseApply, /rollback_host_contract[\s\S]*rollback-current[\s\S]*SERVICE_NAME\.active[\s\S]*api\/setup\/status/, "a failed delegated release restores the exact prior source and proves its service healthy");
+  assert.match(releaseApply, /TRANSACTION_ERROR_FILE="\$TEMP_ROOT\/transaction-error\.log"[\s\S]*run_transaction_step/, "host transaction steps retain their concrete stderr for rollback reporting");
+  assert.match(releaseApply, /tail -n 1 [^\n]*TRANSACTION_ERROR_FILE[\s\S]*Host update failed and was rolled back: [^\n]*transaction_error/, "a rolled-back host update reports the transaction's concrete failure instead of only the generic rollback result");
   assert.doesNotMatch(releaseApply, /https?:\/\/(?!127\.0\.0\.1)|\beval\b|curl[^\n]*\|[^\n]*(?:sh|bash)/, "the privileged release transaction never fetches or evaluates remote code");
   assert.match(uninstaller, /installation_id/);
   assert.match(uninstaller, /ctrl-pane\.db/, "Linux removal reads the real durable 1Helm database");

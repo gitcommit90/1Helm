@@ -41,6 +41,7 @@ TRANSACTION_ACTIVE=0
 ROLLING_BACK=0
 TEMP_ROOT=""
 PREVIOUS_RELEASE=""
+TRANSACTION_ERROR_FILE=""
 
 [[ "${EUID}" -eq 0 ]] || { echo "The Linux release transaction must run as root." >&2; exit 1; }
 [[ "$RELEASE_ROOT" == "$RELEASES_ROOT/"* && -d "$RELEASE_ROOT" ]] \
@@ -77,6 +78,14 @@ write_status() {
   chown "$SERVICE_USER:$SERVICE_USER" "$candidate"
   chmod 0600 "$candidate"
   mv -f -- "$candidate" "$STATUS_FILE"
+}
+
+run_transaction_step() {
+  local command_status=0
+  : >"$TRANSACTION_ERROR_FILE"
+  "$@" 2>"$TRANSACTION_ERROR_FILE" || command_status=$?
+  cat "$TRANSACTION_ERROR_FILE" >&2
+  return "$command_status"
 }
 
 snapshot_host_contract() {
@@ -132,13 +141,15 @@ rollback_host_contract() {
 }
 
 cleanup_transaction() {
-  local command_status=$?
+  local command_status=$? transaction_error=""
   trap - EXIT
   if [[ "$TRANSACTION_ACTIVE" -eq 1 && "$ROLLING_BACK" -eq 0 ]]; then
+    transaction_error="$(tail -n 1 "$TRANSACTION_ERROR_FILE" 2>/dev/null || true)"
+    [[ -n "$transaction_error" ]] || transaction_error="The atomic host transaction failed."
     if rollback_host_contract; then
-      write_status "error" "1Helm v$TARGET_VERSION failed its host health transaction; the prior healthy release was restored." "Host update failed and was rolled back." || true
+      write_status "error" "1Helm v$TARGET_VERSION failed its host transaction: $transaction_error The prior healthy release was restored." "Host update failed and was rolled back: $transaction_error" || true
     else
-      write_status "error" "1Helm v$TARGET_VERSION failed and the prior host could not be proven healthy after rollback." "Host update and rollback health check failed." || true
+      write_status "error" "1Helm v$TARGET_VERSION failed its host transaction: $transaction_error The prior host could not be proven healthy after rollback." "Host update and rollback health check failed: $transaction_error" || true
     fi
   fi
   [[ -z "$TEMP_ROOT" ]] || rm -rf -- "$TEMP_ROOT"
@@ -193,11 +204,12 @@ PREVIOUS_RELEASE="$(readlink -f "$APP_ROOT" 2>/dev/null || true)"
   || { echo "The currently installed 1Helm release is not inside the verified release store." >&2; exit 1; }
 snapshot_host_contract
 TRANSACTION_ACTIVE=1
+TRANSACTION_ERROR_FILE="$TEMP_ROOT/transaction-error.log"
 write_status "installing" "The host verified v$TARGET_VERSION and is applying one atomic runtime and application transaction."
-HELM_HOST_APPLY_DELEGATED=1 "$RELEASE_ROOT/site/public/install-oci-runtime.sh" "$RELEASE_ROOT"
+HELM_HOST_APPLY_DELEGATED=1 run_transaction_step "$RELEASE_ROOT/site/public/install-oci-runtime.sh" "$RELEASE_ROOT"
 ln -s "$RELEASE_ROOT" "$TEMP_ROOT/current"
 mv -Tf "$TEMP_ROOT/current" "$APP_ROOT"
-HELM_HOST_APPLY_DELEGATED=1 "$RELEASE_ROOT/site/public/install-linux-units.sh" "$RELEASE_ROOT"
+HELM_HOST_APPLY_DELEGATED=1 run_transaction_step "$RELEASE_ROOT/site/public/install-linux-units.sh" "$RELEASE_ROOT"
 write_status "restarting" "The host installed v$TARGET_VERSION and is restarting 1Helm."
 systemctl restart "$SERVICE_NAME"
 # Health must prove THIS unit is running, not merely that something answered on

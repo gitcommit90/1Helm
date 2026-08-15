@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-08-15
+
+### Fixed
+
+- Linux host installs and updates accept Ubuntu 26.04's default `sudo-rs`
+  implementation instead of rolling back on its unsupported `mail_no_user`
+  setting. Rolled-back updates now surface the concrete transaction error.
+
 ## [1.0.7] - 2026-08-14
 
 ### Fixed
