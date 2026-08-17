@@ -14,6 +14,27 @@ export const progressStepOpen = new Map<string, boolean>(); // `${messageId}:${p
 export const progressTimelineItems = new Map<number, ProgressItem[]>();
 export const progressTimelineScroll = new Map<number, { top: number; stick: boolean }>();
 
+/** Deleted SQLite row ids may be reused. Never let an old message's expanded
+ * work log attach to a later message that receives the same numeric id. */
+export function clearProgressState(messageIds?: Iterable<number>): void {
+  if (!messageIds) {
+    progressOpenByMessage.clear();
+    progressStepOpen.clear();
+    progressTimelineItems.clear();
+    progressTimelineScroll.clear();
+    return;
+  }
+  const ids = new Set(Array.from(messageIds, Number));
+  for (const id of ids) {
+    progressOpenByMessage.delete(id);
+    progressTimelineItems.delete(id);
+    progressTimelineScroll.delete(id);
+  }
+  for (const key of progressStepOpen.keys()) {
+    if (ids.has(Number(key.slice(0, key.indexOf(":"))))) progressStepOpen.delete(key);
+  }
+}
+
 export function retainLoadedProgress<T extends ProgressMessage>(prior: T | undefined, next: T): T {
   const priorItems = progressTimelineItems.get(next.id) || prior?.progress || [];
   const nextItems = next.progress || [];

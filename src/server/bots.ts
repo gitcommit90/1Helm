@@ -32,7 +32,7 @@ import {
   deleteChannelWorld,
   restoreChannel,
 } from "./agents.ts";
-import { captainTextConsent, captainTextingPermissionPayload, captainTextingPrompt, captainTextToolDefinitions, channelTextingGrant, deliverResidentCaptainText, followupToolDefinition, scheduleRuntimeFollowup, sendCaptainTextForTurn } from "./followups.ts";
+import { captainTextConsent, captainTextingPermissionPayload, captainTextingPrompt, captainTextToolDefinitions, channelTextingGrant, deliverResidentCaptainText, followupToolDefinition, registerSkipperCallDispatcher, scheduleRuntimeFollowup, sendCaptainTextForTurn, skipperCallApprovalPayload, skipperCallNeedsApproval } from "./followups.ts";
 import { closeChannelSessions } from "./terms.ts";
 import { claimAgentTurn, finalizeAgentTurn, ownsAgentTurnWriter, updateAgentTurnProgress, writeAgentTurnBody } from "./turns.ts";
 import {
@@ -1248,6 +1248,8 @@ function callSkipper(agent: RuntimeAgent, channelId: number, threadRootId: numbe
   return `Skipper was called into this thread (escalation ${escalationId}).`;
 }
 
+registerSkipperCallDispatcher(callSkipper);
+
 function inviteAgent(inviter: RuntimeAgent, channelId: number, threadId: number, threadRootId: number, agentName: string, reason: string): string {
   if (isMainChannel(channelId)) return "Error: resident agents cannot enter #main. #main is Skipper's protected authority channel; use Skipper's own tools directly.";
   const target = q1(`SELECT a.*,ac.channel_id FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id
@@ -1905,7 +1907,19 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               const { account, config } = grantedGmail(agent, args.account, hostAuthorized);
               if (!config.can_draft) result = "Error: Gmail draft access is not granted to this channel.";
               else result = JSON.stringify(await createGmailDraft(account, String(args.to || ""), String(args.subject || ""), String(args.body || ""), turnSignal));
-            } else if (name === "call_skipper" && agent?.kind === "channel") result = callSkipper(agent, channelId, threadRootId, input);
+            } else if (name === "call_skipper" && agent?.kind === "channel") {
+              if (skipperCallNeedsApproval(channelId, threadId)) {
+                const pendingQuestion = q1("SELECT 1 FROM agent_questions WHERE message_id=? AND status='pending'", msgId);
+                if (pendingQuestion) result = "Error: the Skipper approval question is already displayed. Wait for the user's answer.";
+                else {
+                  run("INSERT INTO agent_questions (message_id,payload,status,created) VALUES (?,?,'pending',?)", msgId, JSON.stringify(skipperCallApprovalPayload(input, actionId, progressId)), now());
+                  awaitingQuestions = true;
+                  setBody("Approval required before calling Skipper.");
+                  emit();
+                  result = "status=running\nWaiting for the user's Skipper approval choice.";
+                }
+              } else result = callSkipper(agent, channelId, threadRootId, input);
+            }
             else result = agent?.kind === "skipper" && ["create_channel", "list_channels", "inspect_channel", "archive_channel", "restore_channel", "delete_channel", "inspect_fleet", "care_for_channel_computer", "list_obligations"].includes(name)
               ? `Error: this user is not authorized to use ${name} in this channel.`
               : `Error: tool ${name} is not available.`;

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-08-17
+
+### Added
+
+- Resident channel settings can require an in-thread confirmation before the
+  resident calls Skipper, with one-time approval, thread-wide approval, and
+  denial choices. Existing direct-call behavior remains enabled by default.
+
+### Fixed
+
+- ChatGPT stream failures after successful web tools no longer expose a raw
+  tool result as the agent's final response; upstream failures are surfaced
+  and source/search fallbacks remain concise and user-facing.
+- Deleting a thread can no longer let a later message that reuses its SQLite
+  row ID inherit the deleted thread's cached expanded work log in another
+  channel.
+
 ## [1.0.8] - 2026-08-15
 
 ### Fixed

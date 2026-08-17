@@ -60,6 +60,7 @@ export function channelMetaView(channel: Row, viewer: Row | null | undefined, de
   return {
     id: channel.id, name, slug: channel.slug || String(channel.id), kind: channel.kind, topic: channel.topic,
     purpose: channel.purpose || channel.topic, status: channel.status || "active",
+    call_skipper_without_confirmation: channel.call_skipper_without_confirmation == null || Boolean(channel.call_skipper_without_confirmation),
     agent: channel.kind === "channel" ? (detailed ? rules.detailedAgent(Number(channel.id)) : agentSummary(Number(channel.id), rules)) : null,
     ...(detailed ? { computer: channel.kind === "channel" ? rules.computer(Number(channel.id)) : null } : {}),
     personal_main: channel.kind === "channel" && channel.name === "main" && channel.personal_main_owner_id != null, detailed,

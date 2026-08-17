@@ -2,9 +2,9 @@ import { api, downloadAuthenticatedFile, initializeApiTransport, openAuthenticat
 import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, icon, helmMark, type ChannelLink } from "./dom.ts";
 import { disableNativeNotifications, hydrateNotificationPreferences, playNotification, restoreNativeNotifications, setNativeNotificationNavigation } from "./notifications.ts";
 import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderNotes, renderTexts, renderThreads, type ChannelView } from "./channel.ts";
-import { configureWorkflowUi, renderWorkflows } from "./workflows.ts";
+import { configureWorkflowUi, renderWorkflows, skipperCallApprovalQuestions } from "./workflows.ts";
 import { patchLiveMessageRow } from "./live-message-patch.ts";
-import { progressOpenByMessage, progressStepOpen, progressTimelineItems, progressTimelineScroll, retainLoadedProgress, snapshotProgressOpenState } from "./progress-state.ts";
+import { clearProgressState, progressOpenByMessage, progressStepOpen, progressTimelineItems, progressTimelineScroll, retainLoadedProgress, snapshotProgressOpenState } from "./progress-state.ts";
 import { finishOpenRouterOAuthLazy, lazySurfacePlaceholder, openOnboardingLazy, openRoutingPopoverLazy, openSettingsLazy, pushRoutingActivityLazy, refreshOpenSkillsSettingsLazy, renderCoworkLazy, setActiveCoworkChannelLazy, stageCoworkPathLazy, terminal } from "./lazy-features.ts";
 import { apiUrl, finishNativeLaunch, forgetMobileServer, getServerOrigin, isNativeMobile, serverAssetUrl } from "./mobile.ts";
 import {
@@ -486,7 +486,7 @@ async function openChannel(id: number, view: ChannelView = "chat", threadRootId:
   forceMsgsScrollBottom = view === "chat";
   forceThreadScrollBottom = false;
   lastMsgsStick = true;
-  progressOpenByMessage.clear();
+  clearProgressState();
   visibleRootCount = 40;
   // Ordinary channel hops keep the application shell mounted. Only the two
   // navigation surfaces whose active/read state changed are repainted.
@@ -796,8 +796,10 @@ function applyMessageDeleted(e: {
 }): void {
   // Coerce: JSON/WS and HTTP can deliver string ids depending on path.
   const channelId = Number(e.channelId);
-  if (channelId !== Number(S.channelId)) return;
   const deleted = new Set((e.deletedIds && e.deletedIds.length ? e.deletedIds : [e.messageId]).map(Number));
+  clearProgressState(deleted);
+  clearQuestionDrafts(deleted);
+  if (channelId !== Number(S.channelId)) return;
   const before = S.messages.length + S.threadReplies.length;
   S.messages = S.messages.filter((m) => !deleted.has(Number(m.id)));
   S.threadReplies = S.threadReplies.filter((m) => !deleted.has(Number(m.id)));
@@ -2461,10 +2463,16 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
 type QuestionDraft = { values: Set<string>; custom: string; customOpen: boolean };
 const questionDrafts = new Map<string, QuestionDraft>();
 const questionDraftKey = (messageId: number, questionId: string): string => `${messageId}:${questionId}`;
+function clearQuestionDrafts(messageIds?: Iterable<number>): void {
+  if (!messageIds) { questionDrafts.clear(); return; }
+  const ids = new Set(Array.from(messageIds, Number));
+  for (const key of questionDrafts.keys()) if (ids.has(Number(key.slice(0, key.indexOf(":"))))) questionDrafts.delete(key);
+}
 
 function structuredQuestions(message: Message): HTMLElement | null {
   const interview = message.questions;
   if (!interview?.questions?.length) return null;
+  if (interview.kind === "skipper_call_approval") return skipperCallApprovalQuestions(message, () => paintLiveMessage(message));
   if (interview.status !== "pending") {
     for (const question of interview.questions) questionDrafts.delete(questionDraftKey(message.id, question.id));
     return h("div", { class: "mt-3 rounded-lg border border-line bg-raised/40 p-3" },

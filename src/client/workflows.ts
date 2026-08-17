@@ -26,6 +26,20 @@ export type WorkflowRefreshOptions = {
 type AgentWorkflow = { id: number; channel_id: number; agent_id: number; name: string; prompt: string; interval_seconds: number; next_run: number; last_run: number | null; run_count: number; max_runs: number; status: "active" | "paused" | "complete" | "failed"; last_error: string };
 type WorkflowRun = Message & { thread: { id: number; status: string; title: string; summary: string; updated_at: number } | null };
 
+export function skipperCallApprovalQuestions(message: any, onUpdated: () => void): HTMLElement | null {
+  const interview = message.questions;
+  if (interview?.kind !== "skipper_call_approval" || !interview.questions?.length) return null;
+  const answer = interview.answers?.[0]?.values?.[0] || "";
+  if (interview.status !== "pending") return h("div", { class: "mt-3 rounded-lg border border-line bg-raised/40 p-3" }, h("div", { class: "flex items-center gap-2 text-xs font-semibold text-fg" }, icon(answer === "Deny" ? "x" : "check", 14), answer || "Skipper call resolved"));
+  const status = h("p", { class: "min-h-5 text-xs text-muted" }), buttons: HTMLButtonElement[] = [];
+  const choose = async (label: string): Promise<void> => {
+    buttons.forEach((button) => { button.disabled = true; }); status.textContent = "Saving…";
+    try { const result = await api<{ questions?: unknown }>(`/api/messages/${message.id}/questions/answer`, { body: { answers: [{ question_id: "q1", values: [label], custom: "" }] } }); if (result.questions) { message.questions = result.questions; onUpdated(); } }
+    catch (error) { status.textContent = (error as Error).message; buttons.forEach((button) => { button.disabled = false; }); }
+  };
+  return h("div", { class: "mt-3 rounded-xl border border-accent/30 bg-accent-soft p-3.5" }, h("div", { class: "flex items-center gap-2 font-semibold text-fg" }, icon("help", 16), "Call Skipper?"), h("p", { class: "mt-1 text-sm leading-5 text-muted" }, interview.intro || "This resident wants to call Skipper into the thread."), h("div", { class: "mt-3 flex flex-wrap gap-2" }, ...interview.questions[0].options.map((option: { label: string }) => { const button = h("button", { class: option.label === "Deny" ? "btn-subtle text-sm" : "btn-primary text-sm", type: "button", onclick: (event: MouseEvent) => { event.preventDefault(); event.stopPropagation(); void choose(option.label); } }, option.label) as HTMLButtonElement; buttons.push(button); return button; })), status);
+}
+
 const openWorkflowByChannel = new Map<number, number>();
 const isCurrent = (options: WorkflowRefreshOptions): boolean => options.isCurrent?.() !== false;
 
@@ -52,6 +66,20 @@ export function channelTextingSettings(channelId: number, channelName: string, i
   };
   void paint();
   return card;
+}
+
+export function skipperCallSettings(channel: { id: number; name: string; can_manage?: boolean; call_skipper_without_confirmation?: boolean }, onChanged: () => void): HTMLElement {
+  const enabled = h("input", { type: "checkbox", checked: channel.call_skipper_without_confirmation !== false, class: "accent-accent", disabled: !channel.can_manage ? true : undefined }) as HTMLInputElement;
+  const status = h("p", { class: "min-h-5 text-sm text-muted" });
+  enabled.onchange = async () => {
+    const next = enabled.checked; enabled.disabled = true; status.textContent = "Saving…";
+    try { await api(`/api/channels/${channel.id}`, { method: "PATCH", body: { call_skipper_without_confirmation: next } }); status.textContent = next ? "Residents call Skipper immediately." : "Each thread asks before its first Skipper call."; onChanged(); }
+    catch (error) { enabled.checked = !next; status.textContent = (error as Error).message; }
+    finally { enabled.disabled = !channel.can_manage; }
+  };
+  return h("div", { class: "card space-y-3 p-4" },
+    h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Skipper calls"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Turn this off to approve or deny calls from this resident inside each thread.")),
+    h("label", { class: "flex items-center gap-3 rounded-lg border border-line bg-panel p-3 text-sm font-semibold text-fg" }, enabled, "Call Skipper without confirmation"), status);
 }
 
 function panel(container: HTMLElement, title: string, subtitle: string, content: HTMLElement): void {

@@ -9,6 +9,7 @@ export type ThreadUsage = { input_tokens: number; output_tokens: number };
 export type AgentQuestionOption = { label: string; description?: string };
 export type AgentQuestion = { id: string; header?: string; question: string; multi_select?: boolean; options: AgentQuestionOption[] };
 export type AgentQuestions = {
+  kind?: string;
   intro?: string; questions: AgentQuestion[]; status: "pending" | "answered" | "cancelled";
   answers?: Array<{ question_id: string; question: string; values: string[]; custom: string }> | null;
   answered?: number | null;
@@ -37,7 +38,7 @@ export type ChannelComputer = {
   obligations: Array<{ kind: string; ref: string; mode: "resident" | "wakeable"; details: string; due_at?: number | null }>;
 };
 export type ChannelMember = { id: number; username: string; display: string; avatar: string };
-export type Channel = { id: number; name: string; slug: string; kind: string; topic: string; purpose: string; status: "active" | "archived"; unread: number; favorite?: boolean; members?: ChannelMember[]; agent: ResidentAgent | null; computer?: ChannelComputer | null; personal_main?: boolean; can_manage?: boolean; detailed?: boolean };
+export type Channel = { id: number; name: string; slug: string; kind: string; topic: string; purpose: string; status: "active" | "archived"; unread: number; favorite?: boolean; members?: ChannelMember[]; agent: ResidentAgent | null; computer?: ChannelComputer | null; personal_main?: boolean; can_manage?: boolean; detailed?: boolean; call_skipper_without_confirmation?: boolean };
 export type Bot = { id: number; name: string; model: string; avatar: string; provider_id: number | null; provider_name: string | null; provider_kind: string | null; computers: number[]; prefs: Record<string, string>; agent_id?: number | null; agent_kind?: string | null; agent_status?: string | null; resident_channel_id?: number | null };
 export type ThreadFollowup = {
   id: number;

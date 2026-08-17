@@ -4,7 +4,7 @@ import { S } from "./state.ts";
 import { avatar } from "./avatar-ui.ts";
 import { appAlert, appConfirm, appPrompt } from "./dialogs.ts";
 import { NOTIFICATION_SOUNDS, channelNotificationPreference, previewNotification, setChannelNotificationPreference } from "./notifications.ts";
-import { channelTextingSettings } from "./workflows.ts";
+import { channelTextingSettings, skipperCallSettings } from "./workflows.ts";
 import { authenticatedAssetSrc } from "./avatar-assets.ts";
 export type ChannelView = "chat" | "texts" | "board" | "workflows" | "threads" | "cowork" | "notes" | "files" | "terminal" | "memory" | "activity" | "settings";
 type RenderRefreshOptions = { preserveExisting?: boolean; isCurrent?: () => boolean; onPaint?: () => void };
@@ -1187,6 +1187,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
       h("div", { class: "flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, S.me.is_admin ? changeModelButton : null)),
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Assigned skills"), h("p", { class: "mt-1 text-sm text-muted" }, "This resident starts with a small shared core plus skills for its channel template. It can search the complete workspace catalog and ask Skipper for another skill when needed."), assignedSkills),
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Capabilities"), h("div", { class: "mt-3 flex flex-wrap gap-2" }, ...(channel.agent?.capabilities || []).map((capability) => h("span", { class: "chip" }, capability))), h("p", { class: "mt-3 text-xs text-muted" }, "The resident agent is channel-scoped. It calls @skipper for host-level, cross-channel, credential, guest-expert, or missing-capability work.")),
+    channel.agent?.kind === "channel" ? skipperCallSettings(channel, onChanged) : null,
     textingCard,
     computerCard,
     lifecycle));

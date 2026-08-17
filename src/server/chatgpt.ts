@@ -359,6 +359,17 @@ export async function streamChatGPTCompletion(
     throw new Error(`ChatGPT responses failed (${response.status}): ${(await response.text().catch(() => "")).slice(0, 300)}`);
   }
 
+  return readChatGPTCompletionStream(response, onDelta);
+}
+
+/** Parse the native Responses SSE stream and fail closed when the upstream
+ * reports an error instead of silently treating it as an empty answer. */
+export async function readChatGPTCompletionStream(
+  response: Response,
+  onDelta: (d: string) => void,
+): Promise<{ content: string; toolCalls: { id: string; type: "function"; function: { name: string; arguments: string } }[]; usage: { input_tokens: number; output_tokens: number } }> {
+  if (!response.body) throw new Error("ChatGPT response stream is unavailable.");
+
   let content = "";
   const toolMap = new Map<string, { id: string; type: "function"; function: { name: string; arguments: string } }>();
   let usage = { input_tokens: 0, output_tokens: 0 };
@@ -382,6 +393,17 @@ export async function streamChatGPTCompletion(
       let data: any;
       try { data = JSON.parse(payload); } catch { continue; }
       const type = String(data.type || event || "");
+      if (type === "error" || type === "response.failed" || data.error || data.response?.error) {
+        const upstream = data.error && typeof data.error === "object"
+          ? data.error
+          : data.response?.error && typeof data.response.error === "object"
+            ? data.response.error
+            : data.error || data.response?.error || data;
+        const detail = typeof upstream === "string"
+          ? upstream
+          : String(upstream.message || upstream.code || upstream.type || "The upstream response failed.");
+        throw new Error(`ChatGPT stream failed: ${detail}`);
+      }
       if (type.includes("response.output_text.delta") || type === "response.output_text.delta") {
         const delta = String(data.delta || data.text || "");
         if (delta) { content += delta; onDelta(delta); }

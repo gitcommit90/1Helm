@@ -66,6 +66,8 @@ test("bot output extraction preserves exact completion and audit wording", () =>
     "Created a Gmail draft in **captain@example.test** (draft d1). It was not sent.");
   assert.equal(completedToolAnswer("gmail_search", "not json"),
     "Gmail search completed, but the model did not produce a final explanation. The result remains available in this session.");
+  assert.equal(completedToolAnswer("inspect_web_source", '{"content":"large raw result"}'),
+    "The source was inspected successfully, but the model did not produce a final answer. The retrieved result remains available in this session.");
   assert.equal(actionSummary("run_command", "printf ok", "complete", "resident"), "Ran work in the resident workspace → complete.");
   assert.equal(actionSummary("install_skill", "bounded-research", "failed", "skipper"), "Installed bounded-research → failed.");
 });

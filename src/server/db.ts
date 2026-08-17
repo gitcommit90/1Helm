@@ -119,7 +119,7 @@ export function migrate(): void {
   addColumn("channels", "purpose", "purpose TEXT NOT NULL DEFAULT ''");
   addColumn("channels", "status", "status TEXT NOT NULL DEFAULT 'active'");
   addColumn("channels", "slug", "slug TEXT NOT NULL DEFAULT ''");
-  addColumn("channels", "personal_main_owner_id", "personal_main_owner_id INTEGER");
+  addColumn("channels", "personal_main_owner_id", "personal_main_owner_id INTEGER"); addColumn("channels", "call_skipper_without_confirmation", "call_skipper_without_confirmation INTEGER NOT NULL DEFAULT 1 CHECK (call_skipper_without_confirmation IN (0,1))");
   addColumn("workspace", "default_provider_id", "default_provider_id INTEGER");
   addColumn("workspace", "default_model", "default_model TEXT NOT NULL DEFAULT ''");
   addColumn("workspace", "photo_mime", "photo_mime TEXT NOT NULL DEFAULT ''"); addColumn("workspace", "photo_version", "photo_version INTEGER NOT NULL DEFAULT 0");
@@ -684,7 +684,7 @@ export function migrate(): void {
   // Per-thread rough model usage (sum of provider-reported prompt/completion tokens).
   addColumn("threads", "input_tokens", "input_tokens INTEGER NOT NULL DEFAULT 0");
   addColumn("threads", "output_tokens", "output_tokens INTEGER NOT NULL DEFAULT 0");
-  addColumn("threads", "stopped_followup_pending", "stopped_followup_pending INTEGER NOT NULL DEFAULT 0");
+  addColumn("threads", "stopped_followup_pending", "stopped_followup_pending INTEGER NOT NULL DEFAULT 0"); addColumn("threads", "skipper_call_approved", "skipper_call_approved INTEGER NOT NULL DEFAULT 0 CHECK (skipper_call_approved IN (0,1))");
   addColumn("messages", "stopped_followup", "stopped_followup INTEGER NOT NULL DEFAULT 0");
   addColumn("channel_activity", "action_id", "action_id INTEGER REFERENCES tool_actions(id) ON DELETE SET NULL");
   addColumn("channel_activity", "updated", "updated INTEGER NOT NULL DEFAULT 0");

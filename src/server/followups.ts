@@ -1,11 +1,37 @@
 import { q, q1, run, now, type Row } from "./db.ts";
 import { createMessage, isInternalMessageBody } from "./store.ts";
 import { broadcastToChannel } from "./events.ts";
-import { agentForBot, ensureThread, refreshThreadSummary, threadIdForRoot } from "./agents.ts";
+import { agentForBot, ensureThread, refreshThreadSummary, setAgentStatus, threadIdForRoot } from "./agents.ts";
 import { ensureChannelComputerRunning, satisfyObligation, upsertObligation } from "./channel-computers.ts";
 import { captainTextConsent, deliverCaptainText, mentionsCaptainTexting } from "./captain-texting.ts";
+import { SKIPPER_CALL_APPROVAL_KIND, SKIPPER_CALL_APPROVE_ONCE, SKIPPER_CALL_APPROVE_THREAD, SKIPPER_CALL_DENY } from "./bot-output.ts";
 
 export { CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_DECLINE, CAPTAIN_TEXTING_PERMISSION_KIND, captainTextConsent, captainTextingPermissionPayload, captainTextingPrompt, captainTextToolDefinitions, deliverCaptainText, deliverResidentCaptainText, mentionsCaptainTexting } from "./captain-texting.ts";
+export { SKIPPER_CALL_APPROVAL_KIND, skipperCallApprovalPayload } from "./bot-output.ts";
+
+type SkipperDispatcher = (agent: Row, channelId: number, rootMessageId: number, reason: string) => string;
+let skipperDispatcher: SkipperDispatcher | null = null;
+export const registerSkipperCallDispatcher = (dispatcher: SkipperDispatcher): void => { skipperDispatcher = dispatcher; };
+export const skipperCallNeedsApproval = (channelId: number, threadId: number): boolean => {
+  const policy = q1(`SELECT c.call_skipper_without_confirmation,t.skipper_call_approved FROM channels c JOIN threads t ON t.channel_id=c.id WHERE c.id=? AND t.id=?`, channelId, threadId);
+  return !Boolean(policy?.call_skipper_without_confirmation) && !Boolean(policy?.skipper_call_approved);
+};
+export function resolveSkipperCallApproval(messageId: number, decision: string, userId: number): string {
+  const row = q1(`SELECT m.channel_id,m.parent_id,m.bot_id,aq.payload,t.id thread_id FROM messages m JOIN agent_questions aq ON aq.message_id=m.id JOIN threads t ON t.root_message_id=m.parent_id WHERE m.id=?`, messageId);
+  if (!row?.parent_id || !row.bot_id || !skipperDispatcher) throw new Error("Skipper approval request not found.");
+  let payload: Record<string, unknown> = {}; try { payload = JSON.parse(String(row.payload || "{}")); } catch { /* rejected below */ }
+  if (String(payload.kind || "") !== SKIPPER_CALL_APPROVAL_KIND) throw new Error("This is not a Skipper approval request.");
+  const agent = agentForBot(Number(row.bot_id)); if (!agent || agent.kind !== "channel") throw new Error("Resident agent not found.");
+  if (![SKIPPER_CALL_APPROVE_ONCE, SKIPPER_CALL_APPROVE_THREAD, SKIPPER_CALL_DENY].includes(decision)) throw new Error("Choose Approve once, Approve always for thread, or Deny.");
+  if (decision === SKIPPER_CALL_APPROVE_THREAD) run("UPDATE threads SET skipper_call_approved=1,updated_at=? WHERE id=?", now(), row.thread_id);
+  const outcome = decision === SKIPPER_CALL_DENY ? "Skipper call denied." : skipperDispatcher(agent, Number(row.channel_id), Number(row.parent_id), String(payload.reason || "").slice(0, 4000));
+  const actionId = Number(payload.action_id || 0), progressId = Number(payload.progress_id || 0), updated = now();
+  if (actionId) { run("UPDATE tool_actions SET result_summary=?,status='complete' WHERE id=?", outcome, actionId); run("UPDATE channel_activity SET summary=?,status='complete',updated=? WHERE action_id=?", outcome, updated, actionId); }
+  if (progressId) run("UPDATE agent_progress SET body=?,status='complete',updated=? WHERE id=?", outcome, updated, progressId);
+  if (decision === SKIPPER_CALL_DENY) { setAgentStatus(Number(agent.id), "ready", Number(row.channel_id)); broadcastToChannel(Number(row.channel_id), { type: "agent_status", channelId: Number(row.channel_id), agentId: agent.id, status: "ready" }); }
+  run("INSERT INTO channel_activity (channel_id,thread_id,kind,summary,status,actor_type,created) VALUES (?,?,'escalation_approval',?,'complete','user',?)", row.channel_id, row.thread_id, `${decision} by user ${userId}.`, updated);
+  broadcastToChannel(Number(row.channel_id), { type: "activity", channelId: Number(row.channel_id) }); refreshThreadSummary(Number(row.parent_id)); return outcome;
+}
 
 const CAPTAIN_TEXTING_CAPABILITY = "captain_texting";
 function residentAgentId(channelId: number): number {

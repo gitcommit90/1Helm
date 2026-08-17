@@ -1,4 +1,17 @@
 /** Pure user-facing fallbacks used when a model finishes after a tool call. */
+export const SKIPPER_CALL_APPROVAL_KIND = "skipper_call_approval";
+export const SKIPPER_CALL_APPROVE_ONCE = "Approve (once)";
+export const SKIPPER_CALL_APPROVE_THREAD = "Approve (always for thread)";
+export const SKIPPER_CALL_DENY = "Deny";
+export const skipperCallApprovalPayload = (reason: string, actionId: number, progressId: number): Record<string, unknown> => ({
+  kind: SKIPPER_CALL_APPROVAL_KIND, reason: String(reason || "").slice(0, 4000), action_id: actionId, progress_id: progressId,
+  intro: "This resident wants to call Skipper into the thread.", questions: [{ id: "q1", header: "Skipper", question: "Allow this call to Skipper?", multi_select: false, options: [
+    { label: SKIPPER_CALL_APPROVE_ONCE, description: "Allows this call only." },
+    { label: SKIPPER_CALL_APPROVE_THREAD, description: "Allows this call and future Skipper calls in this thread." },
+    { label: SKIPPER_CALL_DENY, description: "Does not call Skipper." },
+  ] }],
+});
+
 export function completedToolAnswer(tool: string, result: string): string {
   if (tool === "gmail_search") {
     try {
@@ -33,6 +46,8 @@ export function completedToolAnswer(tool: string, result: string): string {
       return parsed.setup?.error || "Gmail has no connected accounts yet. Open Settings → Connections to add the one-time Google OAuth client and authorize an account.";
     } catch { return result; }
   }
+  if (tool === "inspect_web_source") return "The source was inspected successfully, but the model did not produce a final answer. The retrieved result remains available in this session.";
+  if (tool === "search_web") return "The web search completed successfully, but the model did not produce a final answer. The retrieved results remain available in this session.";
   if (["grant_gmail_access", "connect_gmail", "create_channel", "list_channels", "inspect_channel", "archive_channel", "restore_channel", "delete_channel", "inspect_fleet", "care_for_channel_computer", "list_obligations", "run_thread_audit", "run_agent_review", "remember", "search_channel_history", "read_channel_session", "call_skipper", "call_agent", "request_skill", "propose_skill", "create_skill", "search_skill_catalog", "inspect_skill", "install_skill", "invite_agent", "search_web", "inspect_web_source", "attach_web_image", "attach_file", "generate_image", "text_captain", "schedule_followup", "schedule_workflow", "list_workflows", "set_workflow_status"].includes(tool)) return result;
   if (tool === "gmail_list_accounts") {
     try {

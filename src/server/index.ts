@@ -85,7 +85,7 @@ import { attachCoworkClient, coworkPresence, coworkViewerUsernames, flushCoworkD
 import { coworkFormatContract } from "./cowork-contract.ts";
 import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
-import { CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_PERMISSION_KIND, bumpThreadFollowup, channelTextingGrant, grantChannelTexting, revokeChannelTexting, startFollowupLoop, threadFollowupView } from "./followups.ts";
+import { CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_PERMISSION_KIND, SKIPPER_CALL_APPROVAL_KIND, bumpThreadFollowup, channelTextingGrant, grantChannelTexting, resolveSkipperCallApproval, revokeChannelTexting, startFollowupLoop, threadFollowupView } from "./followups.ts";
 import { createWorkflow, listWorkflows, registerWorkflowDispatcher, setWorkflowStatus, startWorkflowLoop, stopWorkflowLoop } from "./workflows.ts";
 import { hostUpdateState, installedAppVersion, runHostUpdateAction } from "./updates.ts";
 import { channelMetaView as baseChannelMetaView, channelView as baseChannelView, publicUser } from "./setup.ts";
@@ -1248,24 +1248,21 @@ const server = createServer(async (req, res) => {
       if (!canSee(user, channelId)) return json(res, 403, { error: "No access" });
       const channelKind = String(q1("SELECT kind FROM channels WHERE id=?", channelId)?.kind || "");
       if (channelKind !== "channel") return json(res, 404, { error: "Agent-channel surface not found." });
-      if (action === "channel" && m === "GET") {
-        return json(res, 200, { channel: channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!) });
-      }
+      if (action === "channel" && m === "GET") return json(res, 200, { channel: channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!) });
       if (action === "channel" && m === "PATCH") {
         if (!canManageChannel(user, channelId)) return json(res, 403, { error: "Only this channel's creator can manage it." });
         const b = await jbody(req);
-        const purposeIn = "purpose" in b || "topic" in b;
-        const nameIn = "name" in b;
-        if (!purposeIn && !nameIn) return json(res, 400, { error: "Nothing to update." });
-        try {
-          if (nameIn) {
-            renameChannel(channelId, String(b.name || ""));
-          }
+        const purposeIn = "purpose" in b || "topic" in b, nameIn = "name" in b, skipperConfirmationIn = "call_skipper_without_confirmation" in b;
+        if (!purposeIn && !nameIn && !skipperConfirmationIn) return json(res, 400, { error: "Nothing to update." });
+        try { if (nameIn) renameChannel(channelId, String(b.name || ""));
           if (purposeIn) {
             const purpose = String(b.purpose ?? b.topic ?? "").trim();
             if (!purpose) return json(res, 400, { error: "Purpose is required." });
             updateChannelPurpose(channelId, purpose);
           }
+          if (skipperConfirmationIn && typeof b.call_skipper_without_confirmation !== "boolean") return json(res, 400, { error: "Call Skipper without confirmation must be true or false." });
+          if (skipperConfirmationIn && agentForChannel(channelId)?.kind !== "channel") return json(res, 400, { error: "This channel has no resident agent." });
+          if (skipperConfirmationIn) run("UPDATE channels SET call_skipper_without_confirmation=? WHERE id=?", b.call_skipper_without_confirmation ? 1 : 0, channelId);
         } catch (error) { return json(res, 400, { error: (error as Error).message }); }
         const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
         broadcastChannelMeta(channelId);
@@ -1701,10 +1698,8 @@ const server = createServer(async (req, res) => {
       if (!agentMessage?.parent_id || !canSee(user, Number(agentMessage.channel_id))) return json(res, 404, { error: "Questions not found" });
       const questionRow = q1("SELECT * FROM agent_questions WHERE message_id=?", agentMessage.id);
       if (!questionRow || questionRow.status !== "pending") return json(res, 409, { error: "These questions have already been answered." });
-      const b = await jbody(req);
-      const submitted = Array.isArray(b.answers) ? b.answers.slice(0, 3) : [];
-      let payload: { questions?: Array<{ id?: string; question?: string; multi_select?: boolean; options?: Array<{ label?: string }> }> };
-      try { payload = JSON.parse(String(questionRow.payload || "{}")); } catch { payload = {}; }
+      const b = await jbody(req), submitted = Array.isArray(b.answers) ? b.answers.slice(0, 3) : [];
+      let payload: { kind?: string; questions?: Array<{ id?: string; question?: string; multi_select?: boolean; options?: Array<{ label?: string }> }> }; try { payload = JSON.parse(String(questionRow.payload || "{}")); } catch { payload = {}; }
       const answers = (payload.questions || []).map((question) => {
         const input = submitted.find((item) => item && typeof item === "object" && String((item as Record<string, unknown>).question_id || "") === String(question.id || "")) as Record<string, unknown> | undefined;
         const values = Array.isArray(input?.values) ? input!.values.map(String) : [];
@@ -1715,6 +1710,11 @@ const server = createServer(async (req, res) => {
         return { question_id: String(question.id || ""), question: String(question.question || ""), values: selected, custom };
       });
       run("UPDATE agent_questions SET answers=?,status='answered',answered=? WHERE id=? AND status='pending'", JSON.stringify(answers), now(), questionRow.id);
+      if (String(payload.kind || "") === SKIPPER_CALL_APPROVAL_KIND) {
+        const outcome = resolveSkipperCallApproval(Number(agentMessage.id), answers[0]?.values[0] || "", Number(user.id)), updated = serializeMessage(Number(agentMessage.id));
+        broadcastToChannel(Number(agentMessage.channel_id), { type: "message_update", message: updated });
+        return json(res, 200, { ok: true, outcome, questions: updated?.questions });
+      }
       // Channel texting grant: the accept click on the runtime-authored
       // permission question is the durable consent artifact. Only the Captain
       // can grant; a decline stores nothing and the agent may ask again later.
