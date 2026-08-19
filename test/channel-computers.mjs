@@ -50,6 +50,13 @@ test("Apple channel-computer contract preserves isolation, files, wakes, archive
   assert.equal(alphaComputer.home_mount, "none");
   assert.equal(betaComputer.home_mount, "none");
   assert.equal(db.q1("SELECT COUNT(*) n FROM bot_computers WHERE bot_id IN (?,?)", alpha.botId, beta.botId).n, 0, "residents have no native This Computer assignment");
+  const callsBeforeRuntimeRecovery = readFileSync(join(fakeState, "calls.log"), "utf8").trim().split("\n").length;
+  writeFileSync(join(fakeState, "system-status"), "unregistered\n");
+  const recoveredRuntime = await computers.reconcileChannelComputers();
+  assert.deepEqual(recoveredRuntime, { checked: 2, errors: 0 }, "fleet reconciliation recovers Apple Container after the user's launchd session is recreated");
+  const recoveryCalls = readFileSync(join(fakeState, "calls.log"), "utf8").trim().split("\n").slice(callsBeforeRuntimeRecovery).map(JSON.parse);
+  assert.equal(recoveryCalls.filter((call) => call[0] === "system" && call[1] === "start").length, 1, "one shared runtime start recovers the entire resident fleet");
+  assert.equal(readFileSync(join(fakeState, "system-status"), "utf8").trim(), "running");
   const staleUpdate = Date.now() - 8 * 24 * 60 * 60_000;
   db.run("UPDATE channel_computers SET last_update=?,last_update_attempt=0 WHERE channel_id IN (?,?)", staleUpdate, alpha.channelId, beta.channelId);
   const scopedReconcile = await computers.reconcileChannelComputers([alpha.channelId]);

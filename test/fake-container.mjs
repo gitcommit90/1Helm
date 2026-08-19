@@ -11,6 +11,7 @@ writeFileSync(join(stateRoot, "calls.log"), `${JSON.stringify(args)}\n`, { flag:
 
 const machineDir = (name) => join(stateRoot, "machines", name);
 const configPath = (name) => join(machineDir(name), "config.json");
+const systemStatusPath = join(stateRoot, "system-status");
 const readConfig = (name) => existsSync(configPath(name)) ? JSON.parse(readFileSync(configPath(name), "utf8")) : null;
 const writeConfig = (name, value) => writeFileSync(configPath(name), JSON.stringify(value));
 const valueAfter = (flag) => {
@@ -28,11 +29,15 @@ if (args[0] === "system" && args[1] === "version") {
   process.exit(0);
 }
 if (args[0] === "system" && args[1] === "status") {
-  process.stdout.write(JSON.stringify({ status: "running" }));
+  process.stdout.write(JSON.stringify({ status: existsSync(systemStatusPath) ? readFileSync(systemStatusPath, "utf8").trim() : "running" }));
   process.exit(0);
 }
-if (args[0] === "system" && args[1] === "stop") process.exit(0);
+if (args[0] === "system" && args[1] === "stop") {
+  writeFileSync(systemStatusPath, "stopped\n");
+  process.exit(0);
+}
 if (args[0] === "system" && args[1] === "start") {
+  writeFileSync(systemStatusPath, "running\n");
   for (const entry of readdirSync(join(stateRoot, "machines"))) rmSync(join(stateRoot, "machines", entry, ".network-down"), { force: true });
   process.exit(0);
 }

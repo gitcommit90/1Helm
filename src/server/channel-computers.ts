@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn as spawnPty, type IPty } from "node-pty";
 import { WebSocket } from "ws";
+import { APPLE_RUNTIME_VERSION, ensureAppleRuntimeRunning, exactAppleRuntimeVersion } from "./apple-container-runtime.ts";
 import { DATA_DIR, now, q, q1, run, type Row } from "./db.ts";
 import { channelFilesPath, channelFilesystemRoot, channelUsesRuntimeStorage, channelWorkspacePath, installationScopedRuntimeName, ociHostStateRoot } from "./channel-storage.ts";
 
@@ -64,7 +65,6 @@ type MachineInspection = {
   image?: { reference?: string; descriptor?: { digest?: string } } | string;
 };
 
-const APPLE_RUNTIME_VERSION = "1.1.0";
 export const APPLE_RUNTIME_PACKAGE = `container-${APPLE_RUNTIME_VERSION}-installer-signed.pkg`;
 export const APPLE_RUNTIME_URL = `https://github.com/apple/container/releases/download/${APPLE_RUNTIME_VERSION}/${APPLE_RUNTIME_PACKAGE}`;
 export const APPLE_RUNTIME_SHA256 = "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714";
@@ -904,7 +904,7 @@ async function ensureNativeProvisioned(computer: ChannelComputer): Promise<void>
 export async function provisionChannelComputer(channelId: number): Promise<ChannelComputer> {
   return withChannelLock(channelId, async () => {
     let computer = ensureChannelComputerRecord(channelId);
-    if (computer.backend === "apple") await ensureAppleProvisioned(computer);
+    if (computer.backend === "apple") { await ensureAppleRuntimeRunning(apple); await ensureAppleProvisioned(computer); }
     else if (computer.backend === "oci") await ensureOciProvisioned(computer);
     else await ensureNativeProvisioned(computer);
     computer = channelComputer(channelId)!;
@@ -920,6 +920,7 @@ export async function ensureChannelComputerRunning(channelId: number, reason = "
     if (!channel || channel.status !== "active") throw new Error("Restore the channel before using its computer.");
     if (computer.desired_state === "stopped" || computer.desired_state === "deleted") throw new Error("Restore the channel before using its computer.");
     if (computer.backend === "apple") {
+      await ensureAppleRuntimeRunning(apple);
       await ensureAppleProvisioned(computer);
       computer = channelComputer(channelId)!;
       // machine run is the supported boot path; this no-op also verifies the guest.
@@ -1637,9 +1638,15 @@ async function reconcileOne(computer: ChannelComputer): Promise<void> {
 
 export async function reconcileChannelComputers(channelIds?: Iterable<number>): Promise<{ checked: number; errors: number }> {
   const scope = channelIds === undefined ? null : new Set([...channelIds].map(Number).filter(Number.isFinite));
+  const computers = q("SELECT * FROM channel_computers WHERE desired_state<>'deleted' ORDER BY channel_id") as ChannelComputer[];
+  let appleRuntimeError: unknown = null;
+  if (computers.some((computer) => computer.backend === "apple" && (!scope || scope.has(Number(computer.channel_id))))) {
+    try { await ensureAppleRuntimeRunning(apple); } catch (error) { appleRuntimeError = error; }
+  }
   let checked = 0, errors = 0;
-  for (const row of q("SELECT * FROM channel_computers WHERE desired_state<>'deleted' ORDER BY channel_id") as ChannelComputer[]) {
+  for (const row of computers) {
     if (scope && !scope.has(Number(row.channel_id))) continue;
+    if (row.backend === "apple" && appleRuntimeError) { errors++; recordComputerError(row.channel_id, appleRuntimeError); checked++; continue; }
     try { await reconcileOne(row); } catch (error) { errors++; recordComputerError(row.channel_id, error); }
     checked++;
   }
@@ -1988,18 +1995,8 @@ async function probeRuntimeReadiness(): Promise<Record<string, unknown>> {
       }
     } catch { /* stopped or unresponsive runtime */ }
   }
-  const versions = Array.isArray(version) ? version : version ? [version] : [];
-  const cliVersion = versions.find((entry) => entry && typeof entry === "object" && String((entry as Record<string, unknown>).appName || "") === "container") as Record<string, unknown> | undefined;
-  const apiVersion = versions.find((entry) => entry && typeof entry === "object" && String((entry as Record<string, unknown>).appName || "") !== "container") as Record<string, unknown> | undefined;
   const systemStatus = system && typeof system === "object" ? String((system as Record<string, unknown>).status || "") : "";
-  const apiVersionValue = String(apiVersion?.version || "");
-  // Apple emits the CLI as a bare semantic version but the API server as
-  // `container-apiserver version …`; accept only the exact pinned token.
-  const exactApiVersion = apiVersionValue === APPLE_RUNTIME_VERSION
-    || new RegExp(`^container-apiserver version ${APPLE_RUNTIME_VERSION.replaceAll(".", "\\.")}(?:\\s|$)`).test(apiVersionValue);
-  const exactRuntime = String(cliVersion?.version || "") === APPLE_RUNTIME_VERSION
-    && exactApiVersion
-    && systemStatus === "running";
+  const exactRuntime = exactAppleRuntimeVersion(version) && systemStatus === "running";
   let macosVersion = "";
   if (darwin) {
     try {

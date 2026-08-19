@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-19
+
+### Fixed
+
+- On macOS, 1Helm now restarts the shared Apple Container service after a
+  logout or recreated login session before reconciling resident computers.
+  Retained Linux disks recover in place instead of every resident repeatedly
+  reporting an invalid XPC connection.
+
 ## [1.0.9] - 2026-08-17
 
 ### Added
