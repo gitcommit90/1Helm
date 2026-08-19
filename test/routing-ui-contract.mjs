@@ -68,4 +68,6 @@ test("user-scoped usage honors every Activity period and hydrates provider ident
   assert.match(server, /created>=\?/);
   assert.match(server, /current\?\.email \|\| current\?\.profileName \|\| accountAlias \|\| humanCurrentName/);
   assert.match(server, /Disconnected account/);
+  assert.match(client, /usage\.prompt_tokens\), "Input"[\s\S]*usage\.completion_tokens\), "Output"[\s\S]*usage\.cached_tokens\), "Cached"[\s\S]*usage\.total_tokens\), "Total"/,
+    "Activity shows the input, output, cached, and total token breakdown");
 });

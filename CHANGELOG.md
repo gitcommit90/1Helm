@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-08-19
+
+### Added
+
+- Uploads to a resident computer's Files workspace now continue after leaving
+  the Files view, with persistent cross-channel progress and completion status.
+
+### Changed
+
+- Activity now reports input, output, cached, and total tokens separately.
+- Embedded ReRouted is updated from 0.5.10 to 0.5.12 for safer connection
+  retries and route fallback, and upstream model requests now wait up to three
+  minutes for productive output instead of one minute.
+
 ## [1.1.1] - 2026-08-19
 
 ### Fixed

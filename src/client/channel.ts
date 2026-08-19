@@ -1,4 +1,4 @@
-import { api, downloadAuthenticatedFile, openAuthenticatedFile, uploadFile, groupRoutingModels, routingModelGroupKey, type ActivityItem, type AgentTemplate, type Channel, type ChannelFile, type GlobalThread, type MemoryItem, type Message, type TextConversation, type ThreadState, type RoutingModel } from "./api.ts";
+import { api, downloadAuthenticatedFile, openAuthenticatedFile, uploadFileWithProgress, groupRoutingModels, routingModelGroupKey, type ActivityItem, type AgentTemplate, type Channel, type ChannelFile, type GlobalThread, type MemoryItem, type Message, type TextConversation, type ThreadState, type RoutingModel } from "./api.ts";
 import { h, clear, icon, md, timeLabel } from "./dom.ts";
 import { S } from "./state.ts";
 import { avatar } from "./avatar-ui.ts";
@@ -6,6 +6,7 @@ import { appAlert, appConfirm, appPrompt } from "./dialogs.ts";
 import { NOTIFICATION_SOUNDS, channelNotificationPreference, previewNotification, setChannelNotificationPreference } from "./notifications.ts";
 import { channelTextingSettings, skipperCallSettings } from "./workflows.ts";
 import { authenticatedAssetSrc } from "./avatar-assets.ts";
+import { bindResidentFileUploads } from "./file-uploads.ts";
 export type ChannelView = "chat" | "texts" | "board" | "workflows" | "threads" | "cowork" | "notes" | "files" | "terminal" | "memory" | "activity" | "settings";
 type RenderRefreshOptions = { preserveExisting?: boolean; isCurrent?: () => boolean; onPaint?: () => void };
 function refreshIsCurrent(options: RenderRefreshOptions): boolean {
@@ -618,7 +619,7 @@ export function renderFiles(container: HTMLElement, channelId: number, initialPa
   const sortSelect = h("select", { class: "field h-9 w-auto min-w-28 text-xs", "aria-label": "Sort files", onchange: (event: Event) => { sort = (event.target as HTMLSelectElement).value as typeof sort; void load(); } }, h("option", { value: "name" }, "Name"), h("option", { value: "modified" }, "Modified"), h("option", { value: "size" }, "Size"));
   const newFolder = async (): Promise<void> => { const name = await appPrompt("Folder name"); if (!name) return; try { await api(`/api/channels/${channelId}/files/directories`, { body: { path: currentPath, name } }); directoryCache = null; await load(); } catch (error) { status.textContent = (error as Error).message; } };
   const newFile = async (): Promise<void> => { const name = await appPrompt("File name", "untitled.md"); if (!name) return; try { await api(`/api/channels/${channelId}/files/entries`, { body: { parent: currentPath, name, content: "" } }); await load(); } catch (error) { status.textContent = (error as Error).message; } };
-  fileInput.onchange = async () => { const chosen = Array.from(fileInput.files || []); if (!chosen.length) return; status.textContent = `Uploading ${chosen.length} item${chosen.length === 1 ? "" : "s"}…`; try { for (const file of chosen) { const upload = await uploadFile(file); await api(`/api/channels/${channelId}/files/upload`, { body: { ...upload, path: currentPath } }); } fileInput.value = ""; await load(); } catch (error) { status.textContent = (error as Error).message; } };
+  bindResidentFileUploads({ channelId, channelName: () => S.channels.find((channel) => channel.id === channelId)?.name || String(channelId), path: () => currentPath, fileInput, status, origin: root, uploadFile: uploadFileWithProgress, importFile: async (upload, path) => { await api(`/api/channels/${channelId}/files/upload`, { body: { ...upload, path } }); }, onComplete: async () => { directoryCache = null; await Promise.all([load(), refreshDirectories()]); } });
   root.append(
     h("header", { class: "flex min-h-14 flex-wrap items-center gap-2 border-b border-line px-3 py-2 sm:px-4" }, h("span", { class: "text-accent" }, icon("folderOpen", 20)), heading, h("div", { class: "flex-1" }), status, h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void newFile(); } }, icon("plus", 14), "New file"), h("button", { class: "btn-subtle text-xs", type: "button", onclick: () => { void newFolder(); } }, icon("folder", 14), "New folder"), h("button", { class: "btn-primary text-xs", type: "button", onclick: () => fileInput.click() }, "Upload"), fileInput),
     h("div", { class: "flex min-h-0 flex-1" },
@@ -1194,7 +1195,6 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
   onPaint?.();
   if (channel.agent?.provider_id) void loadModels();
 }
-
 function panelLoading(container: HTMLElement, title: string, subtitle: string): void { panelContent(container, title, subtitle, h("div", { class: "py-12 text-center text-sm text-muted" }, "Loading…")); }
 function panelError(container: HTMLElement, error: unknown): void { container.replaceChildren(h("div", { class: "m-6 rounded-lg border border-danger/30 bg-danger/10 p-4 text-sm text-danger" }, (error as Error).message)); }
 function panelContent(container: HTMLElement, title: string, subtitle: string, content: HTMLElement): void {

@@ -7,6 +7,7 @@ import { patchLiveMessageRow } from "./live-message-patch.ts";
 import { clearProgressState, progressOpenByMessage, progressStepOpen, progressTimelineItems, progressTimelineScroll, retainLoadedProgress, snapshotProgressOpenState } from "./progress-state.ts";
 import { finishOpenRouterOAuthLazy, lazySurfacePlaceholder, openOnboardingLazy, openRoutingPopoverLazy, openSettingsLazy, pushRoutingActivityLazy, refreshOpenSkillsSettingsLazy, renderCoworkLazy, setActiveCoworkChannelLazy, stageCoworkPathLazy, terminal } from "./lazy-features.ts";
 import { apiUrl, finishNativeLaunch, forgetMobileServer, getServerOrigin, isNativeMobile, serverAssetUrl } from "./mobile.ts";
+import { refreshResidentFileUploadIndicator } from "./file-uploads.ts";
 import {
   formatThreadFollowupCountdown,
   progressCounts,
@@ -935,6 +936,7 @@ export function renderApp(): void {
   root.append(shell);
   if (S.mobileMenuOpen) shell.append(mobileNavigation());
   renderMain(preserveChannelSurface);
+  refreshResidentFileUploadIndicator();
   restoreUiContinuity(continuity);
   finishNativeLaunch();
 }
@@ -1477,6 +1479,7 @@ function renderMain(preserveChannelSurface = false, continuity?: UiContinuity): 
     pendingMsgsScroll = { top: 0, stick: true };
   }
   clear(main);
+  refreshResidentFileUploadIndicator();
   if (S.globalThreadsOpen) {
     main.append(h("section", { class: "flex min-w-0 flex-1 flex-col" },
       h("div", { id: "hdr" }),

@@ -168,6 +168,7 @@ test("agent attachment MIME recognizes MP3 and M4A audio", () => {
 
 test("channel UI source exposes file-backed Cowork, traditional Files, audio preview, and compact global threads contracts", () => {
   const channelSource = readFileSync(join(root, "src", "client", "channel.ts"), "utf8");
+  const fileUploadsSource = readFileSync(join(root, "src", "client", "file-uploads.ts"), "utf8");
   const apiSource = readFileSync(join(root, "src", "client", "api.ts"), "utf8");
   const appSource = readFileSync(join(root, "src", "client", "app.ts"), "utf8");
   const coworkSource = readFileSync(join(root, "src", "client", "cowork.ts"), "utf8");
@@ -179,7 +180,9 @@ test("channel UI source exposes file-backed Cowork, traditional Files, audio pre
   assert.match(channelSource, /\/api\/channels\/\$\{channelId\}\/notes/);
   assert.match(channelSource, /\/files\?path=\$\{encodeURIComponent\(requestedPath\)\}/);
   assert.match(channelSource, /\/files\/directories/);
-  assert.match(channelSource, /body: \{ \.\.\.upload, path: currentPath \}/);
+  assert.match(fileUploadsSource, /batch\.importFile\(upload, batch\.path\)/);
+  assert.match(channelSource, /bindResidentFileUploads\([\s\S]*origin: root[\s\S]*uploadFile: uploadFileWithProgress/, "Files hands uploads to app-level state before its view can be detached");
+  assert.match(fileUploadsSource, /batch\.origin\.isConnected[\s\S]*residentUploadIndicator[\s\S]*batch\.uploadFile/, "backgrounded Files uploads retain byte progress in a global indicator");
   assert.match(channelSource, /data(?:set)?: \{ globalThreadsList: "compact" \}/);
   assert.match(channelSource, /class: "md text-sm leading-5 text-fg", html: md\(item\.summary\)/, "Markdown is rendered in status and Activity summaries too");
   assert.match(apiSource, /blob\.type\.startsWith\("audio\/"\)/);

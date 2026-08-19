@@ -7,11 +7,10 @@ import { request as httpRequest } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { DATA_DIR, q, q1, run, now } from "./db.ts";
 import { imageBytesFromChatGPTResponse } from "./chatgpt.ts";
+import "./routing-network.ts";
 
 const require = createRequire(import.meta.url);
-const { createHeadlessRuntime } = require("@gitcommit90/rerouted/src/lib/headless-runtime.js") as {
-  createHeadlessRuntime: (options: Record<string, unknown>) => RoutingRuntime;
-};
+const { createHeadlessRuntime } = require("@gitcommit90/rerouted/src/lib/headless-runtime.js") as { createHeadlessRuntime: (options: Record<string, unknown>) => RoutingRuntime };
 const openaiCompat = require("@gitcommit90/rerouted/src/lib/providers/openai-compat.js") as {
   listModels: (provider: RoutingProvider, options?: Record<string, unknown>) => Promise<Array<{ id: string; name?: string }>>;
   chat: (provider: RoutingProvider, options?: Record<string, unknown>) => Promise<Response>;

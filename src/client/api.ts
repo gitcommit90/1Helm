@@ -280,6 +280,34 @@ export async function uploadFile(file: File): Promise<{ token: string; name: str
   return { token: data.token, name: file.name, mime: file.type || "application/octet-stream", size: file.size };
 }
 
+/** Upload bytes without coupling the request lifetime to the view that selected
+ * the file. XMLHttpRequest is used here because fetch does not expose browser
+ * upload progress. */
+export function uploadFileWithProgress(file: File, onProgress: (sent: number, total: number) => void): Promise<{ token: string; name: string; mime: string; size: number }> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", apiUrl("/api/upload"));
+    if (token) request.setRequestHeader("authorization", `Bearer ${token}`);
+    request.setRequestHeader("content-type", file.type || "application/octet-stream");
+    request.setRequestHeader("x-filename", encodeURIComponent(file.name));
+    request.upload.onprogress = (event) => onProgress(event.loaded, event.lengthComputable ? event.total : file.size);
+    request.onerror = () => reject(new Error("The upload connection failed."));
+    request.onabort = () => reject(new Error("The upload was cancelled."));
+    request.onload = () => {
+      let data: { token?: string; error?: string } = {};
+      try { data = JSON.parse(request.responseText || "{}"); } catch { /* handled below */ }
+      if (request.status < 200 || request.status >= 300) {
+        reject(new Error(data.error || `Upload failed with HTTP ${request.status}.`));
+        return;
+      }
+      if (!data.token) { reject(new Error("The upload did not return a file token.")); return; }
+      onProgress(file.size, file.size);
+      resolve({ token: data.token, name: file.name, mime: file.type || "application/octet-stream", size: file.size });
+    };
+    request.send(file);
+  });
+}
+
 type Handler = (msg: any) => void;
 export type EventSocketHooks = {
   onOpen?: () => void;
