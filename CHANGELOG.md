@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-19
+
+### Fixed
+
+- On macOS, an unregistered Apple Container system is now re-registered with
+  kernel installation explicitly enabled before retained resident computers
+  are reconciled. This repairs the shipped 1.1.0 recovery command without
+  recreating any resident machine or disk.
+
 ## [1.1.0] - 2026-08-19
 
 ### Fixed

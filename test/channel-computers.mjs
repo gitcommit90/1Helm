@@ -55,7 +55,8 @@ test("Apple channel-computer contract preserves isolation, files, wakes, archive
   const recoveredRuntime = await computers.reconcileChannelComputers();
   assert.deepEqual(recoveredRuntime, { checked: 2, errors: 0 }, "fleet reconciliation recovers Apple Container after the user's launchd session is recreated");
   const recoveryCalls = readFileSync(join(fakeState, "calls.log"), "utf8").trim().split("\n").slice(callsBeforeRuntimeRecovery).map(JSON.parse);
-  assert.equal(recoveryCalls.filter((call) => call[0] === "system" && call[1] === "start").length, 1, "one shared runtime start recovers the entire resident fleet");
+  assert.deepEqual(recoveryCalls.filter((call) => call[0] === "system" && call[1] === "start"), [["system", "start", "--enable-kernel-install"]], "one shared re-registration recovers the entire resident fleet");
+  assert.equal(recoveryCalls.some((call) => call[0] === "machine" && ["create", "rm", "delete"].includes(call[1])), false, "runtime recovery never recreates resident machines or their retained disks");
   assert.equal(readFileSync(join(fakeState, "system-status"), "utf8").trim(), "running");
   const staleUpdate = Date.now() - 8 * 24 * 60 * 60_000;
   db.run("UPDATE channel_computers SET last_update=?,last_update_attempt=0 WHERE channel_id IN (?,?)", staleUpdate, alpha.channelId, beta.channelId);

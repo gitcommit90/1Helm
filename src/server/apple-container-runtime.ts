@@ -29,7 +29,10 @@ export async function ensureAppleRuntimeRunning(apple: AppleCommand): Promise<vo
         if (!new Set(["stopped", "unregistered"]).has(status)) {
           throw new Error(Buffer.concat([current.stderr, current.stdout]).toString("utf8").trim() || "Apple container runtime status was unreadable.");
         }
-        const started = await apple(["system", "start"], { timeoutMs: 90_000 });
+        const started = await apple(
+          status === "unregistered" ? ["system", "start", "--enable-kernel-install"] : ["system", "start"],
+          { timeoutMs: status === "unregistered" ? 10 * 60_000 : 90_000 },
+        );
         if (started.code !== 0) throw new Error(started.stderr.toString("utf8").trim() || started.stdout.toString("utf8").trim() || "Apple container services could not start.");
       }
       const [verifiedStatus, verifiedVersion] = await Promise.all([

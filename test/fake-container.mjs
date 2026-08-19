@@ -37,6 +37,10 @@ if (args[0] === "system" && args[1] === "stop") {
   process.exit(0);
 }
 if (args[0] === "system" && args[1] === "start") {
+  const status = existsSync(systemStatusPath) ? readFileSync(systemStatusPath, "utf8").trim() : "running";
+  if (status === "unregistered" && !args.includes("--enable-kernel-install")) {
+    fail("unregistered container system requires --enable-kernel-install");
+  }
   writeFileSync(systemStatusPath, "running\n");
   for (const entry of readdirSync(join(stateRoot, "machines"))) rmSync(join(stateRoot, "machines", entry, ".network-down"), { force: true });
   process.exit(0);
