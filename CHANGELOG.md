@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-08-21
+
+### Added
+
+- Every resident channel can choose one model for all recurring workflow runs,
+  independently of its ordinary serving model. Existing channels default to
+  following the channel model, and clearing the workflow choice restores that
+  inherited behavior.
+
+### Fixed
+
+- Durable Skipper follow-ups now retain only the host-command authorization
+  and assigned-computer scope captured by the originating turn. A later wake
+  cannot gain newly assigned computers or execute an unauthorized host command.
+- Automatic follow-up wakes reschedule only after a tool directly confirms
+  that work is still running. Completed work terminates cleanly, unavailable or
+  failed inspection reports a useful blocker, retry limits continue across
+  successor wakes, and interrupted wakes recover safely after server restart.
+
 ## [1.1.2] - 2026-08-19
 
 ### Added

@@ -72,6 +72,7 @@ export function followupToolDefinition(skipper: boolean): unknown {
           reason: { type: "string", description: "What to check or finish when you wake (e.g. Sonarr S19 episode files / Jellyfin import)." },
           check_hint: { type: "string", description: "Optional concrete command or API check to run on wake." },
           max_attempts: { type: "integer", minimum: 1, maximum: 200, description: "Optional cap on wake cycles (default 48)." },
+          observed_state: { type: "string", enum: ["confirmed_running"], description: "On an automatic follow-up wake only: set this only after an available tool directly confirms the task is still running. Omit it when first scheduling, when complete, or when state is unknown." },
         },
         required: ["delay_seconds", "reason"],
       },
@@ -96,6 +97,12 @@ type ScheduleOpts = {
   reason: string;
   checkHint?: string;
   maxAttempts?: number;
+  /** Host authority already admitted for the creating turn. Residents ignore it. */
+  hostAuthorized?: boolean;
+  /** Assigned computer IDs admitted for host run_command on the creating turn. */
+  hostAuthorizedComputerIds?: number[];
+  /** Runtime-owned lineage for a confirmed-running wake reschedule. */
+  sourceFollowupId?: number;
   /** When true, mark the durable thread waiting (async work, not human input). */
   markWaiting?: boolean;
 };
@@ -106,6 +113,14 @@ function clampDelay(seconds: number): number {
   return Math.max(MIN_DELAY_SEC, Math.min(MAX_DELAY_SEC, n));
 }
 
+export function normalizedAuthorizationComputerIds(value: unknown): number[] {
+  return [...new Set((Array.isArray(value) ? value : []).map(Number).filter((id) => Number.isInteger(id) && id > 0))].sort((a, b) => a - b);
+}
+
+function storedComputerIds(value: unknown): number[] {
+  try { return normalizedAuthorizationComputerIds(JSON.parse(String(value || "[]"))); } catch { return []; }
+}
+
 /** Persist a durable re-entry for an agent on a thread. Survives process restart. */
 export function scheduleAgentFollowup(opts: ScheduleOpts): { id: number; due_at: number; delay_seconds: number } {
   const delay = clampDelay(opts.delaySeconds);
@@ -114,6 +129,39 @@ export function scheduleAgentFollowup(opts: ScheduleOpts): { id: number; due_at:
   if (!reason) throw new Error("schedule_followup requires a reason describing what to check or finish.");
   if (!opts.agentId || !opts.botId || !opts.channelId || !opts.threadId || !opts.rootMessageId) {
     throw new Error("schedule_followup is missing thread/agent context.");
+  }
+  const creatingAgent = q1("SELECT kind,bot_id FROM agents WHERE id=?", opts.agentId);
+  if (!creatingAgent || Number(creatingAgent.bot_id) !== Number(opts.botId)) {
+    throw new Error("schedule_followup agent and bot context do not match.");
+  }
+  let hostAuthorized = String(creatingAgent.kind) === "skipper" && opts.hostAuthorized === true;
+  let hostAuthorizedComputerIds = hostAuthorized
+    ? normalizedAuthorizationComputerIds(opts.hostAuthorizedComputerIds ?? q("SELECT computer_id FROM bot_computers WHERE bot_id=?", opts.botId).map((row) => row.computer_id))
+    : [];
+  let initialAttempts = 0;
+  let maxAttempts = Math.max(1, Math.min(200, Number(opts.maxAttempts) || DEFAULT_MAX_ATTEMPTS));
+  let sourceFollowupId: number | null = null;
+  if (opts.sourceFollowupId) {
+    const source = q1(
+      `SELECT id,host_authorized,host_authorized_computer_ids,attempts,max_attempts FROM agent_followups
+       WHERE id=? AND agent_id=? AND bot_id=? AND channel_id=? AND thread_id=? AND root_message_id=? AND status='running'`,
+      opts.sourceFollowupId, opts.agentId, opts.botId, opts.channelId, opts.threadId, opts.rootMessageId,
+    );
+    if (!source) throw new Error("The originating scheduled wake is no longer active.");
+    if (q1("SELECT 1 FROM agent_followups WHERE source_followup_id=?", source.id)) {
+      throw new Error("This scheduled wake already created its one allowed subsequent check.");
+    }
+    initialAttempts = Number(source.attempts || 0);
+    maxAttempts = Math.max(1, Number(source.max_attempts || DEFAULT_MAX_ATTEMPTS));
+    if (initialAttempts >= maxAttempts) {
+      throw new Error(`The scheduled follow-up reached its ${maxAttempts}-check limit; report the unresolved state instead of scheduling again.`);
+    }
+    // Defense in depth: even a malformed or stale invocation cannot gain more
+    // authority than both the admitted wake and its persisted parent possessed.
+    hostAuthorized = hostAuthorized && Number(source.host_authorized || 0) === 1;
+    const sourceComputerIds = new Set(storedComputerIds(source.host_authorized_computer_ids));
+    hostAuthorizedComputerIds = hostAuthorized ? hostAuthorizedComputerIds.filter((id) => sourceComputerIds.has(id)) : [];
+    sourceFollowupId = Number(source.id);
   }
   const channel = q1("SELECT status FROM channels WHERE id=?", opts.channelId);
   if (!channel || channel.status !== "active") throw new Error("Cannot schedule a follow-up on an inactive channel.");
@@ -132,8 +180,8 @@ export function scheduleAgentFollowup(opts: ScheduleOpts): { id: number; due_at:
 
   const id = run(
     `INSERT INTO agent_followups
-      (agent_id, bot_id, channel_id, thread_id, root_message_id, due_at, reason, check_hint, status, attempts, max_attempts, created, updated)
-     VALUES (?,?,?,?,?,?,?,?,'pending',0,?,?,?)`,
+      (agent_id, bot_id, channel_id, thread_id, root_message_id, due_at, reason, check_hint, host_authorized, host_authorized_computer_ids, source_followup_id, status, attempts, max_attempts, created, updated)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?,?)`,
     opts.agentId,
     opts.botId,
     opts.channelId,
@@ -142,7 +190,11 @@ export function scheduleAgentFollowup(opts: ScheduleOpts): { id: number; due_at:
     dueAt,
     reason,
     String(opts.checkHint || "").slice(0, 2000),
-    Math.max(1, Math.min(200, Number(opts.maxAttempts) || DEFAULT_MAX_ATTEMPTS)),
+    hostAuthorized ? 1 : 0,
+    JSON.stringify(hostAuthorizedComputerIds),
+    sourceFollowupId,
+    initialAttempts,
+    maxAttempts,
     now(),
     now(),
   ).lastInsertRowid;
@@ -169,7 +221,7 @@ export function scheduleAgentFollowup(opts: ScheduleOpts): { id: number; due_at:
     due_at: dueAt,
     reason,
     attempts: 0,
-    max_attempts: Math.max(1, Math.min(200, Number(opts.maxAttempts) || DEFAULT_MAX_ATTEMPTS)),
+    max_attempts: maxAttempts,
     status: "pending" as const,
     check_hint: String(opts.checkHint || ""),
   };
@@ -201,7 +253,7 @@ export async function sendCaptainTextForTurn(input: { triggerId: number; threadR
   return deliverCaptainText(input.ownerUserId, input.botId, input.message);
 }
 
-export function scheduleRuntimeFollowup(opts: ScheduleOpts & { agentKind: string; triggerId: number }): { id: number; due_at: number; delay_seconds: number } {
+export function scheduleRuntimeFollowup(opts: ScheduleOpts & { agentKind: string; triggerId: number; observedState?: string }): { id: number; due_at: number; delay_seconds: number } {
   // Strip any model-written sentinel — only the runtime stamp below, issued
   // after the consent check, may carry authorization into the wake. Channel
   // residents need no stamp: their texting runs on the durable channel grant.
@@ -212,7 +264,45 @@ export function scheduleRuntimeFollowup(opts: ScheduleOpts & { agentKind: string
     }
     reason = `[captain-text-authorized] ${reason}`;
   }
-  return scheduleAgentFollowup({ ...opts, reason });
+  const trigger = q1("SELECT bot_id,body FROM messages WHERE id=?", opts.triggerId);
+  const creatingTurn = q1("SELECT host_authorized,host_authorized_computer_ids FROM agent_turns WHERE trigger_id=? AND bot_id=? AND channel_id=? AND thread_root_id=?", opts.triggerId, opts.botId, opts.channelId, opts.rootMessageId);
+  const admittedHostAuthorized = opts.agentKind === "skipper" && opts.hostAuthorized === true && Number(creatingTurn?.host_authorized || 0) === 1;
+  const admittedTurnComputers = new Set(storedComputerIds(creatingTurn?.host_authorized_computer_ids));
+  const admittedHostComputerIds = admittedHostAuthorized
+    ? normalizedAuthorizationComputerIds(opts.hostAuthorizedComputerIds).filter((id) => admittedTurnComputers.has(id))
+    : [];
+  const wakeId = Number(String(trigger?.body || "").match(/^\[scheduled-followup\s+id=(\d+)\b/i)?.[1] || 0);
+  const source = wakeId && Number(trigger?.bot_id || 0) === Number(opts.botId)
+    ? q1(`SELECT id,host_authorized FROM agent_followups WHERE id=? AND agent_id=? AND bot_id=? AND channel_id=?
+        AND thread_id=? AND root_message_id=? AND status='running'`, wakeId, opts.agentId, opts.botId, opts.channelId, opts.threadId, opts.rootMessageId)
+    : undefined;
+  if (source && opts.observedState !== "confirmed_running") {
+    throw new Error("A scheduled wake may create another check only after available tools confirm the task is still running. If inspection is unavailable or failed, task state is unknown: report one useful blocker and do not reschedule.");
+  }
+  if (source) {
+    const admitted = q1("SELECT queued_at FROM agent_turns WHERE trigger_id=? AND bot_id=? AND channel_id=? AND thread_root_id=?", opts.triggerId, opts.botId, opts.channelId, opts.rootMessageId);
+    const observableTool = admitted && q1(`SELECT 1 FROM tool_actions WHERE agent_id=? AND thread_id=? AND created>=? AND status IN ('complete','running')
+      AND tool IN ('run_command','search_web','inspect_web_source','gmail_search','gmail_get','inspect_channel','inspect_fleet') LIMIT 1`, opts.agentId, opts.threadId, admitted.queued_at);
+    if (!observableTool) {
+      throw new Error("Task state is unknown: no available inspection tool completed successfully on this wake. Report one useful blocker and do not reschedule.");
+    }
+  }
+  return scheduleAgentFollowup({
+    ...opts,
+    reason,
+    hostAuthorized: admittedHostAuthorized,
+    hostAuthorizedComputerIds: admittedHostComputerIds,
+    sourceFollowupId: source ? Number(source.id) : undefined,
+  });
+}
+
+export function followupWakeStateInstructions(hostCommand: "available" | "unavailable" | "resident"): string {
+  const capability = hostCommand === "available"
+    ? "Host run_command capability: available for Skipper's currently assigned computers, under the authority captured when this follow-up was created."
+    : hostCommand === "resident"
+      ? "Host run_command capability: unavailable. Any run_command you receive is confined to this channel's resident computer."
+      : "Host run_command capability: unavailable for this wake. If the requested check depends on host files or processes, its state is unknown.";
+  return `${capability}\nClassify the task from direct evidence as exactly one of: confirmed still running; confirmed complete; or state unknown because inspection capability is unavailable or the check failed. Only a directly confirmed-running task may call schedule_followup, exactly once, with observed_state=confirmed_running. A complete task must report completion and not reschedule. An unknown task must report one useful blocker and not reschedule. Never interpret inability to inspect as evidence that work is still running.`;
 }
 
 /** Next pending wake for a thread (soonest due_at), or null. */
@@ -342,24 +432,23 @@ function finishFollowup(
   status: "done" | "failed" | "pending" | "cancelled",
   error = "",
   nextDueAt?: number,
-): void {
+): boolean {
   if (status === "pending" && nextDueAt) {
-    run(
-      "UPDATE agent_followups SET status='pending', due_at=?, last_error=?, updated=? WHERE id=?",
+    return run(
+      "UPDATE agent_followups SET status='pending', due_at=?, last_error=?, updated=? WHERE id=? AND status='running'",
       nextDueAt,
       error.slice(0, 500),
       now(),
       id,
-    );
-    return;
+    ).changes > 0;
   }
-  run(
-    "UPDATE agent_followups SET status=?, last_error=?, updated=? WHERE id=?",
+  return run(
+    "UPDATE agent_followups SET status=?, last_error=?, updated=? WHERE id=? AND status='running'",
     status,
     error.slice(0, 500),
     now(),
     id,
-  );
+  ).changes > 0;
 }
 
 /** Fire one due follow-up: create a wake trigger and run the agent turn. */
@@ -373,6 +462,8 @@ async function fireFollowup(row: Row): Promise<void> {
   const maxAttempts = Number(row.max_attempts || DEFAULT_MAX_ATTEMPTS);
   const reason = String(row.reason || "");
   const checkHint = String(row.check_hint || "");
+  const hostAuthorized = String(agentForBot(botId)?.kind || "") === "skipper" && Number(row.host_authorized || 0) === 1;
+  const hostAuthorizedComputerIds = hostAuthorized ? storedComputerIds(row.host_authorized_computer_ids) : [];
 
   const channel = q1("SELECT status FROM channels WHERE id=?", channelId);
   if (!channel || channel.status !== "active") {
@@ -430,8 +521,7 @@ async function fireFollowup(row: Row): Promise<void> {
     `You were re-invoked by a durable scheduled follow-up (not a new human message).`,
     `Check / finish: ${reason}`,
     checkHint ? `Hint: ${checkHint}` : "",
-    `If the work is still in progress, call schedule_followup again (do not invent a silent background wait) and produce NO user-facing chat.`,
-    `If finished or hard-blocked, post only the final user-facing result (e.g. Downloaded / Blocked + reason) and do not reschedule.`,
+    followupWakeStateInstructions(String(agent.kind) === "skipper" ? (hostAuthorized ? "available" : "unavailable") : "resident"),
     `Never echo this scaffold, never paste raw memory dumps, never paste <memory-context> / tool journals into chat.`,
   ].filter(Boolean).join("\n");
 
@@ -458,7 +548,7 @@ async function fireFollowup(row: Row): Promise<void> {
     if (String(agent.kind) !== "skipper") await ensureChannelComputerRunning(channelId, `scheduled follow-up #${id}`);
     // Dynamic import avoids a static cycle with bots.ts (which imports scheduleAgentFollowup).
     const { runBot } = await import("./bots.ts");
-    await runBot(bot, channelId, triggerId, rootMessageId, false, undefined, false);
+    await runBot(bot, channelId, triggerId, rootMessageId, false, undefined, hostAuthorized, undefined, hostAuthorizedComputerIds);
     finishFollowup(id, "done");
     satisfyObligation(channelId, "followup", String(id));
     broadcastToChannel(channelId, {
@@ -472,8 +562,9 @@ async function fireFollowup(row: Row): Promise<void> {
     const msg = (error as Error).message || "wake failed";
     if (attempts < maxAttempts) {
       const retryAt = now() + 60_000;
-      finishFollowup(id, "pending", msg, retryAt);
-      upsertObligation(channelId, "followup", String(id), "wakeable", reason, retryAt);
+      if (finishFollowup(id, "pending", msg, retryAt)) {
+        upsertObligation(channelId, "followup", String(id), "wakeable", reason, retryAt);
+      }
     } else {
       finishFollowup(id, "failed", msg);
       satisfyObligation(channelId, "followup", String(id));
@@ -498,11 +589,30 @@ export async function runFollowupPass(): Promise<{ due: number; fired: number }>
   return { due: claimed.length, fired };
 }
 
+/** A process may stop after claiming a wake but before recording its outcome.
+ * Re-queue that same durable row without changing its authorization provenance
+ * or refunding the already-consumed attempt. */
+export function recoverInterruptedFollowups(): number {
+  const recoveredAt = now();
+  const rows = q("SELECT id,channel_id,reason FROM agent_followups WHERE status='running'");
+  for (const row of rows) {
+    if (q1("SELECT 1 FROM agent_followups WHERE source_followup_id=?", row.id)) {
+      run("UPDATE agent_followups SET status='done',last_error='successor persisted before server restart',updated=? WHERE id=? AND status='running'", recoveredAt, row.id);
+      satisfyObligation(Number(row.channel_id), "followup", String(row.id));
+    } else {
+      run("UPDATE agent_followups SET status='pending',due_at=?,last_error='server restart interrupted scheduled wake',updated=? WHERE id=? AND status='running'", recoveredAt, recoveredAt, row.id);
+      upsertObligation(Number(row.channel_id), "followup", String(row.id), "wakeable", String(row.reason || ""), recoveredAt);
+    }
+  }
+  return rows.length;
+}
+
 let timer: NodeJS.Timeout | null = null;
 let running = false;
 
 export function startFollowupLoop(): void {
   if (timer) return;
+  recoverInterruptedFollowups();
   const tick = () => {
     if (running) return;
     running = true;

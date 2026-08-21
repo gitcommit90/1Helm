@@ -3,8 +3,7 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypt
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BUILTIN_SKILLS } from "./builtin-skills.ts";
-import { cleanupLegacyWorkspaceArtifacts } from "./database-migrations.ts";
-
+import { cleanupLegacyWorkspaceArtifacts, migrateFollowupAuthorization } from "./database-migrations.ts";
 export const UNIVERSAL_RESIDENT_SKILL_SLUGS = [
   "outcome-ownership", "blocker-resolution", "skipper-escalation", "capability-discovery",
   "durable-memory", "workspace-artifacts", "quality-verification",
@@ -791,6 +790,7 @@ export function migrate(): void {
     PRIMARY KEY (channel_id, relative_path)
   );
   `);
+  migrateFollowupAuthorization(addColumn, (sql, ...params) => run(sql, ...params));
   // Append-only cryptographic continuity for the operational surfaces that
   // matter when reconstructing delegated work. SQLite triggers ensure events
   // are chained even when a future code path writes the source table directly.

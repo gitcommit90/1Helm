@@ -310,6 +310,41 @@ export function resolvedModelPolicy(botId: number, channelId: number | null, thr
   };
 }
 
+/** Resolve an admitted turn, giving recurring workflow runs their channel-wide
+ * workflow model while preserving an explicit override on that run's thread. */
+export function resolvedTurnModelPolicy(botId: number, channelId: number | null, threadRootId: number | null, userId = 0): Record<string, unknown> {
+  const inherited = resolvedModelPolicy(botId, channelId, threadRootId, userId);
+  if (channelId == null || threadRootId == null || inherited.source === "thread") return inherited;
+  const workflowRun = q1("SELECT workflow_id FROM messages WHERE id=? AND channel_id=? AND workflow_id IS NOT NULL", threadRootId, channelId);
+  if (!workflowRun) return inherited;
+  const workflow = q1("SELECT model,provider_id FROM model_prefs WHERE bot_id=? AND scope='workflow' AND scope_id=?", botId, String(channelId));
+  if (!workflow?.model) return inherited;
+  const providerId = workflow.provider_id ? Number(workflow.provider_id) : resolveProviderId(botId, channelId, null);
+  const provider = providerId ? q1("SELECT id,name,kind FROM providers WHERE id=?", providerId) : undefined;
+  return {
+    ...inherited,
+    provider_id: provider?.id ? Number(provider.id) : null,
+    provider_name: provider?.name ? String(provider.name) : null,
+    provider_kind: provider?.kind ? String(provider.kind) : null,
+    model: String(workflow.model),
+    requested_model: String(workflow.model),
+    source: "workflow",
+    source_label: "Workflow policy",
+    overridden: true,
+  };
+}
+
+/** Human provider scope for a turn; workflow roots inherit their channel owner. */
+export function requestUserForTurn(triggerId: number, threadRootId: number): number {
+  const requester = Number(q1(
+    "SELECT user_id FROM messages WHERE id IN (?,?) AND user_id IS NOT NULL ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END LIMIT 1",
+    triggerId, threadRootId, triggerId,
+  )?.user_id || 0);
+  if (requester) return requester;
+  return Number(q1(`SELECT c.created_by FROM messages m JOIN channels c ON c.id=m.channel_id
+    WHERE m.id IN (?,?) AND m.workflow_id IS NOT NULL AND c.created_by IS NOT NULL LIMIT 1`, triggerId, threadRootId)?.created_by || 0);
+}
+
 /** All prefs for a bot, so the client can render the three-level model picker. */
 export function botPrefs(botId: number): Record<string, string> {
   const out: Record<string, string> = {};

@@ -25,6 +25,25 @@ export type WorkflowRefreshOptions = {
 
 type AgentWorkflow = { id: number; channel_id: number; agent_id: number; name: string; prompt: string; interval_seconds: number; next_run: number; last_run: number | null; run_count: number; max_runs: number; status: "active" | "paused" | "complete" | "failed"; last_error: string };
 type WorkflowRun = Message & { thread: { id: number; status: string; title: string; summary: string; updated_at: number } | null };
+type WorkflowModelChannel = { id: number; agent?: { kind?: string; workflow_model?: string } | null };
+type WorkflowRoutingModel = { id: string; name?: string };
+
+export function workflowModelSettings(channel: WorkflowModelChannel, isAdmin: boolean, onChanged: () => void): { card: HTMLElement | null; fill: (groups: Array<{ label: string; models: WorkflowRoutingModel[] }>) => void } {
+  if (channel.agent?.kind !== "channel") return { card: null, fill: () => undefined };
+  const select = h("select", { class: "field", "aria-label": "Workflow model", dataset: { continuityKey: `channel-settings-workflow-model-${channel.id}` } }, h("option", { value: "" }, "Follow channel model")) as HTMLSelectElement;
+  const status = h("p", { class: "min-h-5 text-sm text-muted" });
+  const save = async (): Promise<void> => {
+    select.disabled = true;
+    try { await api(`/api/channels/${channel.id}/agent-policy`, { method: "PATCH", body: { workflow_model: select.value } }); status.textContent = select.value ? "Future workflow runs will use this model." : "Workflows will follow the channel model."; onChanged(); }
+    catch (error) { status.textContent = (error as Error).message; }
+    finally { select.disabled = false; }
+  };
+  const card = h("div", { class: "card space-y-3 p-4" },
+    h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Workflow model"), h("p", { class: "mt-1 text-sm text-muted" }, "Use a different model for every current and future recurring workflow run in this channel. Follow channel model keeps the current behavior.")),
+    h("label", { class: "block space-y-1 text-xs font-semibold text-fg" }, "Model", select),
+    h("div", { class: "flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, isAdmin ? h("button", { class: "btn-primary text-sm", onclick: () => { void save(); } }, "Save workflow model") : null));
+  return { card, fill: (groups) => { clear(select); select.append(h("option", { value: "", selected: !channel.agent?.workflow_model }, "Follow channel model")); for (const group of groups) select.append(h("optgroup", { label: group.label }, ...group.models.map((model) => h("option", { value: model.id, selected: model.id === channel.agent?.workflow_model }, model.name || model.id)))); } };
+}
 
 export function skipperCallApprovalQuestions(message: any, onUpdated: () => void): HTMLElement | null {
   const interview = message.questions;

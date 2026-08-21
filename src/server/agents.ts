@@ -324,6 +324,7 @@ export function agentViewForChannel(channelId: number): Record<string, unknown> 
     status: agent.status,
     purpose: agent.purpose,
     model: bot ? resolveModel(Number(bot.id), channelId, null) : "",
+    workflow_model: bot ? String(q1("SELECT model FROM model_prefs WHERE bot_id=? AND scope='workflow' AND scope_id=?", bot.id, String(channelId))?.model || "") : "",
     provider_id: provider?.id || null,
     provider_name: provider?.name || null,
     provider_kind: provider?.kind || null,

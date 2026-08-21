@@ -9,7 +9,7 @@ import sharp from "sharp";
 import { WebSocketServer, type WebSocket } from "ws";
 import { applyMobileCors, body, clearRateLimit, jbody, json, MIME, rateLimited, requestAddress, SECURITY_HEADERS, UPLOAD_BODY_LIMIT } from "./http.ts";
 import { db, isMainChannel, normalizeWorkspaceName, q, q1, run, now, hashPassword, verifyPassword, newToken, seed, DATA_DIR, UPLOAD_DIR, type Row } from "./db.ts";
-import { createMessage, deleteMessage, serializeMessage, serializeMessages, setModelPref, setModelPolicy, resolvedModelPolicy, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots, queueLastRead, shutdownReadStateWorker } from "./store.ts";
+import { createMessage, deleteMessage, serializeMessage, serializeMessages, setModelPref, setModelPolicy, resolvedModelPolicy, resolvedTurnModelPolicy, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots, queueLastRead, shutdownReadStateWorker } from "./store.ts";
 import { computerRowView, fetchModels } from "./computer.ts";
 import { cancelChannelTurns, resumeQueuedAgentTurns, runBot, stopThreadTurn } from "./bots.ts";
 import { register, unregister, broadcastToChannel, broadcastAll, broadcastAdmins, sendToUsers } from "./events.ts";
@@ -54,7 +54,7 @@ import {
   updateChannelPurpose,
 } from "./agents.ts";
 import { CHATGPT_KIND, bindChatGPTProviderFromCookie, chatgptSessionStatus, chatgptWebResponse, disconnectChatGPTProvider, listChatGPTModels, writeChatGPTWebResponse } from "./chatgpt.ts";
-import { bootstrapView, completeSetup, setupStatus, workspaceView } from "./setup.ts";
+import { bootstrapView, completeSetup, setupStatus, updateAgentModelPolicy, workspaceView } from "./setup.ts";
 import { connectCloudflareDomain, domainsView, startCustomDomainConnectors } from "./cloudflare.ts";
 import {
   accessRequestByToken,
@@ -369,7 +369,7 @@ function postMessage(
   if (submittedPolicy?.model && resident?.bot_id) {
     const effective = modelPolicy?.model && !parentId && resident.kind !== "skipper"
       ? { provider_id: modelPolicy.provider_id ? Number(modelPolicy.provider_id) : null, model: String(modelPolicy.model), source: "thread" }
-      : resolvedModelPolicy(Number(resident.bot_id), channelId, parentId, Number(user.id));
+      : resolvedTurnModelPolicy(Number(resident.bot_id), channelId, parentId, Number(user.id));
     const submittedProviderId = submittedPolicy.provider_id ? Number(submittedPolicy.provider_id) : null;
     const effectiveProviderId = effective.provider_id ? Number(effective.provider_id) : null;
     if (submittedProviderId !== effectiveProviderId || String(submittedPolicy.model) !== String(effective.model || "") || String(submittedPolicy.source || "") !== String(effective.source || "")) {
@@ -1342,24 +1342,8 @@ const server = createServer(async (req, res) => {
       if (action === "agent-policy" && m === "PATCH") {
         if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
         const b = await jbody(req);
-        const agent = agentForChannel(channelId);
-        if (!agent?.bot_id) return json(res, 404, { error: "Resident agent not found." });
-        if (b.provider_id && !q1("SELECT 1 FROM providers WHERE id=?", Number(b.provider_id))) return json(res, 400, { error: "Provider not found." });
-        if (b.model && !(await routingModels()).some((candidate) => candidate.id === String(b.model))) return json(res, 400, { error: "That model is disabled or no longer exists." });
-        if ("provider_id" in b) {
-          const providerId = b.provider_id ? Number(b.provider_id) : null;
-          run("UPDATE bots SET provider_id=? WHERE id=?", providerId, agent.bot_id);
-          if (agent.kind === "skipper") {
-            run("UPDATE workspace SET default_provider_id=? WHERE id=1", providerId);
-            run("UPDATE bots SET provider_id=? WHERE id IN (SELECT bot_id FROM agents WHERE kind='channel' AND provider_inherited=1 AND status<>'deleted')", providerId);
-          } else run("UPDATE agents SET provider_inherited=0 WHERE id=?", agent.id);
-        }
-        if ("model" in b) {
-          if (agent.kind === "skipper") {
-            run("UPDATE bots SET model=? WHERE id=?", String(b.model || ""), agent.bot_id);
-            run("UPDATE workspace SET default_model=? WHERE id=1", String(b.model || ""));
-          } else setModelPref(Number(agent.bot_id), "channel", String(channelId), b.model ? String(b.model) : null);
-        }
+        const result = await updateAgentModelPolicy(channelId, Number(user.id), b);
+        if (result.error) return json(res, result.status || 400, { error: result.error });
         const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
         broadcastChannelMeta(channelId);
         return json(res, 200, { channel });
@@ -1674,7 +1658,7 @@ const server = createServer(async (req, res) => {
       if (!root || !canSee(user, Number(root.channel_id))) return json(res, 404, { error: "Not found" });
       const agent = agentForChannel(Number(root.channel_id));
       if (!agent?.bot_id) return json(res, 404, { error: "Resident agent not found" });
-      if (m === "GET") return json(res, 200, { policy: resolvedModelPolicy(Number(agent.bot_id), Number(root.channel_id), Number(root.id), Number(user.id)) });
+      if (m === "GET") return json(res, 200, { policy: resolvedTurnModelPolicy(Number(agent.bot_id), Number(root.channel_id), Number(root.id), Number(user.id)) });
       if (m === "POST") {
         if (!user.is_admin) return json(res, 403, { error: "Only the Captain can change a thread model." });
         if (agent.kind === "skipper") return json(res, 409, { error: "Skipper always uses the workspace-wide model policy." });
@@ -1683,7 +1667,7 @@ const server = createServer(async (req, res) => {
         if (providerId && !q1("SELECT 1 FROM providers WHERE id=?", providerId)) return json(res, 400, { error: "Provider not found" });
         if (b.model && !(await routingModels()).some((candidate) => candidate.id === String(b.model))) return json(res, 400, { error: "That model is disabled or no longer exists." });
         setModelPolicy(Number(agent.bot_id), "thread", String(root.id), providerId, b.model ? String(b.model) : null);
-        return json(res, 200, { policy: resolvedModelPolicy(Number(agent.bot_id), Number(root.channel_id), Number(root.id), Number(user.id)) });
+        return json(res, 200, { policy: resolvedTurnModelPolicy(Number(agent.bot_id), Number(root.channel_id), Number(root.id), Number(user.id)) });
       }
     }
     if ((mm = p.match(/^\/api\/messages\/(\d+)\/stop$/)) && m === "POST") {

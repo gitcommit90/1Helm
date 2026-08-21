@@ -4,7 +4,7 @@ import { S } from "./state.ts";
 import { avatar } from "./avatar-ui.ts";
 import { appAlert, appConfirm, appPrompt } from "./dialogs.ts";
 import { NOTIFICATION_SOUNDS, channelNotificationPreference, previewNotification, setChannelNotificationPreference } from "./notifications.ts";
-import { channelTextingSettings, skipperCallSettings } from "./workflows.ts";
+import { channelTextingSettings, skipperCallSettings, workflowModelSettings } from "./workflows.ts";
 import { authenticatedAssetSrc } from "./avatar-assets.ts";
 import { bindResidentFileUploads } from "./file-uploads.ts";
 export type ChannelView = "chat" | "texts" | "board" | "workflows" | "threads" | "cowork" | "notes" | "files" | "terminal" | "memory" | "activity" | "settings";
@@ -1012,7 +1012,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
   const purpose = h("textarea", { class: "field min-h-24", "aria-label": "Channel purpose", dataset: { continuityKey: `channel-settings-purpose-${channel.id}` } }, channel.purpose || "") as HTMLTextAreaElement;
   const provider = h("select", { class: "field", "aria-label": "Serving provider", dataset: { continuityKey: `channel-settings-provider-${channel.id}` } }, h("option", { value: "" }, "Loading providers…")) as HTMLSelectElement;
   const model = h("select", { class: "field", "aria-label": "Serving model", dataset: { continuityKey: `channel-settings-model-${channel.id}` } }, h("option", { value: channel.agent?.model || "" }, channel.agent?.model || "Choose a model")) as HTMLSelectElement;
-  const status = h("p", { class: "min-h-5 text-sm text-muted" });
+  const status = h("p", { class: "min-h-5 text-sm text-muted" }), workflowModel = workflowModelSettings(channel, S.me.is_admin, onChanged);
   const notificationPreference = channelNotificationPreference(channel.id);
   const channelMuted = h("input", { type: "checkbox", checked: notificationPreference.muted, class: "accent-accent" }) as HTMLInputElement;
   const channelSound = h("select", { class: "field" }, ...NOTIFICATION_SOUNDS.map((item) => h("option", { value: item.value, selected: item.value === notificationPreference.sound }, item.label))) as HTMLSelectElement;
@@ -1029,8 +1029,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
   channelSound.onchange = () => { previewNotification(channelSound.value as typeof notificationPreference.sound); void saveChannelNotifications(); };
   channelSound.disabled = channelMuted.checked;
   let loadSequence = 0;
-  let modelLoading = false;
-  let changeModelButton: HTMLButtonElement | null = null;
+  let modelLoading = false, changeModelButton: HTMLButtonElement | null = null;
   let routedModels: RoutingModel[] = [];
   const loadModels = async (): Promise<void> => {
     const family = provider.value;
@@ -1053,6 +1052,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
   provider.onchange = () => { void loadModels(); };
   void api<{ models: RoutingModel[] }>("/api/workspace/model-policy").then(async ({ models }) => {
     routedModels = models;
+    workflowModel.fill(groupRoutingModels(models));
     const current = models.find((item) => item.id === channel.agent?.model);
     clear(provider); provider.append(h("option", { value: "" }, "Choose a provider"), ...groupRoutingModels(models).map((group) => h("option", { value: group.key, selected: current ? routingModelGroupKey(current) === group.key : false }, group.label)));
     await loadModels();
@@ -1077,7 +1077,6 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
     catch (error) { status.textContent = (error as Error).message; }
   };
   changeModelButton = h("button", { class: "btn-primary text-sm", onclick: () => { void saveModel(); } }, "Change model") as HTMLButtonElement;
-
   // Agent avatar presets + upload
   const agentAvatar = h("div", { class: "flex items-center gap-3" });
   const avatarPreview = h("div", { class: "h-12 w-12 shrink-0" });
@@ -1186,6 +1185,7 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
       h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Serving model"), h("p", { class: "mt-1 text-sm text-muted" }, "The model provides replaceable intelligence. Changing it never creates a new agent or discards channel-owned state.")),
       h("div", { class: "grid grid-cols-1 gap-3 sm:grid-cols-2" }, provider, model),
       h("div", { class: "flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" }, status, S.me.is_admin ? changeModelButton : null)),
+    workflowModel.card,
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Assigned skills"), h("p", { class: "mt-1 text-sm text-muted" }, "This resident starts with a small shared core plus skills for its channel template. It can search the complete workspace catalog and ask Skipper for another skill when needed."), assignedSkills),
     h("div", { class: "card p-4" }, h("h3", { class: "font-semibold text-fg" }, "Capabilities"), h("div", { class: "mt-3 flex flex-wrap gap-2" }, ...(channel.agent?.capabilities || []).map((capability) => h("span", { class: "chip" }, capability))), h("p", { class: "mt-3 text-xs text-muted" }, "The resident agent is channel-scoped. It calls @skipper for host-level, cross-channel, credential, guest-expert, or missing-capability work.")),
     channel.agent?.kind === "channel" ? skipperCallSettings(channel, onChanged) : null,

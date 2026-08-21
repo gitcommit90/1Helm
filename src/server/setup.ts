@@ -1,9 +1,9 @@
 import { q, q1, run, now, type Row } from "./db.ts";
-import { addBotToChannel, createMessage, serializeMessage } from "./store.ts";
+import { addBotToChannel, createMessage, serializeMessage, setModelPolicy, setModelPref } from "./store.ts";
 import { broadcastToChannel } from "./events.ts";
 import { fetchModels } from "./computer.ts";
 import { CHATGPT_KIND, listChatGPTModels } from "./chatgpt.ts";
-import { ensureChannelWorkspace, ensureSkipperAgent } from "./agents.ts";
+import { agentForChannel, ensureChannelWorkspace, ensureSkipperAgent } from "./agents.ts";
 import { internalRoutingProviderId, routingModels } from "./routing.ts";
 import type { URL } from "node:url";
 export { channelMetaView, channelView, publicUser } from "./bootstrap-view.ts";
@@ -15,6 +15,33 @@ export type Workspace = {
   photo_url: string | null;
   theme: string;
 };
+
+export async function updateAgentModelPolicy(channelId: number, userId: number, body: Record<string, unknown>): Promise<{ status?: number; error?: string }> {
+  const agent = agentForChannel(channelId);
+  if (!agent?.bot_id) return { status: 404, error: "Resident agent not found." };
+  if ("workflow_model" in body && agent.kind !== "channel") return { status: 409, error: "Recurring workflows belong to resident channels." };
+  if (body.provider_id && !q1("SELECT 1 FROM providers WHERE id=?", Number(body.provider_id))) return { status: 400, error: "Provider not found." };
+  const available = (body.model || body.workflow_model) ? await routingModels(userId) : [];
+  if (body.model && !available.some((candidate) => candidate.id === String(body.model))) return { status: 400, error: "That model is disabled or no longer exists." };
+  if (body.workflow_model && !available.some((candidate) => candidate.id === String(body.workflow_model))) return { status: 400, error: "That workflow model is disabled or no longer exists." };
+  if ("provider_id" in body) {
+    const providerId = body.provider_id ? Number(body.provider_id) : null;
+    run("UPDATE bots SET provider_id=? WHERE id=?", providerId, agent.bot_id);
+    if (agent.kind === "skipper") {
+      run("UPDATE workspace SET default_provider_id=? WHERE id=1", providerId);
+      run("UPDATE bots SET provider_id=? WHERE id IN (SELECT bot_id FROM agents WHERE kind='channel' AND provider_inherited=1 AND status<>'deleted')", providerId);
+    } else run("UPDATE agents SET provider_inherited=0 WHERE id=?", agent.id);
+  }
+  if ("model" in body) {
+    if (agent.kind === "skipper") { run("UPDATE bots SET model=? WHERE id=?", String(body.model || ""), agent.bot_id); run("UPDATE workspace SET default_model=? WHERE id=1", String(body.model || "")); }
+    else setModelPref(Number(agent.bot_id), "channel", String(channelId), body.model ? String(body.model) : null);
+  }
+  if ("workflow_model" in body) {
+    const providerId = Number(q1("SELECT provider_id FROM bots WHERE id=?", agent.bot_id)?.provider_id || 0) || null;
+    setModelPolicy(Number(agent.bot_id), "workflow", String(channelId), providerId, body.workflow_model ? String(body.workflow_model) : null);
+  }
+  return {};
+}
 
 const SKIPPER_PROMPT =
   "You are Skipper, the workspace-wide agent for 1Helm. The Captain is the human owner. " +

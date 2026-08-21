@@ -755,6 +755,9 @@ try {
 
   const modelChange = await api(`/api/channels/${launch.id}/agent-policy`, { method: "PATCH", body: { provider_id: providerId, model: primarySmallModel } }, captain);
   ok(modelChange.status === 200 && modelChange.body.channel.agent.id === launch.agent.id, "model policy changes without replacing the resident identity");
+  const workflowModelChange = await api(`/api/channels/${launch.id}/agent-policy`, { method: "PATCH", body: { workflow_model: primaryLargeModel } }, captain);
+  ok(workflowModelChange.status === 200 && workflowModelChange.body.channel.agent.workflow_model === primaryLargeModel,
+    "one channel-level workflow model persists independently of the serving model");
 
   // Live updates: renames/settings must land on open sockets without a page refresh.
   const liveEvents = [];

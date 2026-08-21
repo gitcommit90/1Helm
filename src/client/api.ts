@@ -17,14 +17,14 @@ export type AgentQuestions = {
 export type Message = { id: number; channel_id: number; parent_id: number | null; body: string; created: number; reply_count: number; last_reply: number | null; author: Author; attachments: Attachment[]; progress?: AgentProgress[]; progress_count?: number; questions?: AgentQuestions | null; photon_conversation_id?: number | null; workflow_id?: number | null; transport?: "inbound" | "outbound" | "app" };
 export type ModelPolicy = {
   provider_id: number | null; provider_name: string | null; provider_kind: string | null;
-  model: string; requested_model?: string; source?: "thread" | "channel" | "personal" | "workspace" | "agent";
+  model: string; requested_model?: string; source?: "thread" | "workflow" | "channel" | "personal" | "workspace" | "agent";
   source_label?: string; personal_model?: string | null; workspace_model?: string;
   overridden: boolean; editable: boolean;
 };
 export type ResidentAgent = {
   id: number; bot_id: number; kind: "channel" | "skipper"; name: string; display_name: string;
   status: "ready" | "working" | "waiting" | "paused" | "archived";
-  purpose: string; model: string; provider_id: number | null; provider_name: string | null; provider_kind: string | null;
+  purpose: string; model: string; workflow_model?: string; provider_id: number | null; provider_name: string | null; provider_kind: string | null;
   capabilities: string[]; skills: Skill[]; runtime?: Bot;
 };
 export type ChannelComputer = {

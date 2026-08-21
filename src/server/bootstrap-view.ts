@@ -46,6 +46,7 @@ function agentSummary(channelId: number, rules: ViewerRules): Record<string, unk
     id: agent.id, bot_id: agent.bot_id, kind: agent.kind, name: agent.name, display_name: agent.display_name,
     status: agent.status, purpose: agent.purpose,
     model: bot ? String(rules.resolvedModel(Number(bot.id), channelId) || bot.model || "") : "",
+    workflow_model: bot ? String(rules.q1("SELECT model FROM model_prefs WHERE bot_id=? AND scope='workflow' AND scope_id=?", bot.id, String(channelId))?.model || "") : "",
     provider_id: provider?.id || null, provider_name: provider?.name || null, provider_kind: provider?.kind || null,
     capabilities: [], skills: [], runtime: bot ? { id: bot.id, name: bot.name, model: bot.model, avatar: botAvatarUrl(bot) } : null,
   };

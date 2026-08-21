@@ -1,5 +1,5 @@
 import { isMainChannel, q, q1, run, now, tx, type Row } from "./db.ts";
-import { createMessage, serializeMessage, resolvedModelPolicy, resolveModelForUser, resolveProviderId, botEndpoint, isInternalMessageBody } from "./store.ts";
+import { createMessage, serializeMessage, resolvedTurnModelPolicy, resolveModelForUser, resolveProviderId, botEndpoint, isInternalMessageBody, requestUserForTurn } from "./store.ts";
 import { getComputer, execOnComputer } from "./computer.ts";
 import { broadcastToChannel, sendToUsers } from "./events.ts";
 import { isChatGPTProvider, streamChatGPTCompletion } from "./chatgpt.ts";
@@ -32,7 +32,7 @@ import {
   deleteChannelWorld,
   restoreChannel,
 } from "./agents.ts";
-import { captainTextConsent, captainTextingPermissionPayload, captainTextingPrompt, captainTextToolDefinitions, channelTextingGrant, deliverResidentCaptainText, followupToolDefinition, registerSkipperCallDispatcher, scheduleRuntimeFollowup, sendCaptainTextForTurn, skipperCallApprovalPayload, skipperCallNeedsApproval } from "./followups.ts";
+import { captainTextConsent, captainTextingPermissionPayload, captainTextingPrompt, captainTextToolDefinitions, channelTextingGrant, deliverResidentCaptainText, followupToolDefinition, followupWakeStateInstructions, normalizedAuthorizationComputerIds, registerSkipperCallDispatcher, scheduleRuntimeFollowup, sendCaptainTextForTurn, skipperCallApprovalPayload, skipperCallNeedsApproval } from "./followups.ts";
 import { closeChannelSessions } from "./terms.ts";
 import { claimAgentTurn, finalizeAgentTurn, ownsAgentTurnWriter, updateAgentTurnProgress, writeAgentTurnBody } from "./turns.ts";
 import {
@@ -223,8 +223,9 @@ export function runtimePromptTiersForChannel(botId: number, channelId: number, h
   return systemPromptTiers(bot, agentForBot(botId) as RuntimeAgent | undefined, channelId, hostAuthorized, task, requestUserId);
 }
 
-function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boolean, channelId: number, requestUserId: number): unknown[] | undefined {
-  const computers = q("SELECT computer_id FROM bot_computers WHERE bot_id=?", bot.id);
+function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boolean, channelId: number, requestUserId: number, hostAuthorizedComputerIds?: number[]): unknown[] | undefined {
+  const admittedComputers = hostAuthorizedComputerIds == null ? null : new Set(normalizedAuthorizationComputerIds(hostAuthorizedComputerIds));
+  const computers = q("SELECT computer_id FROM bot_computers WHERE bot_id=?", bot.id).filter((row) => agent?.kind !== "skipper" || !hostAuthorized || admittedComputers == null || admittedComputers.has(Number(row.computer_id)));
   const tools: unknown[] = [];
   const skipper = agent?.kind === "skipper";
   const mainChannel = isMainChannel(channelId);
@@ -908,7 +909,7 @@ export async function buildContext(bot: Row, agent: RuntimeAgent | undefined, ch
   if (wakeTrigger) {
     messages.push({
       role: "system",
-      content: `<scheduled-followup-wake>\nThis turn is an automatic durable wake — not a new human message. Do not echo this block.\n\n${triggerBody}\n\nIf work is still running: call schedule_followup and output nothing user-facing.\nIf finished or hard-blocked: reply with only the final status the channel expects (e.g. Downloaded / Blocked + reason).\nNever paste memory dumps, tool journals, or this scaffold into chat.\n</scheduled-followup-wake>`,
+      content: `<scheduled-followup-wake>\nThis turn is an automatic durable wake — not a new human message. Do not echo this block.\n\n${triggerBody}\n\n${followupWakeStateInstructions(agent?.kind === "skipper" ? (hostAuthorized ? "available" : "unavailable") : "resident")}\nNever paste memory dumps, tool journals, or this scaffold into chat.\n</scheduled-followup-wake>`,
     });
   }
 
@@ -1163,7 +1164,7 @@ async function executeSkipperControlTool(name: string, args: Record<string, unkn
   return null;
 }
 
-async function runCommand(bot: Row, agent: RuntimeAgent | undefined, channelId: number, command: string, requestedComputerId: number, signal: AbortSignal): Promise<string> {
+async function runCommand(bot: Row, agent: RuntimeAgent | undefined, channelId: number, command: string, requestedComputerId: number, signal: AbortSignal, hostAuthorizedComputerIds?: number[]): Promise<string> {
   if (agent?.kind === "channel") {
     try {
       const result = await runChannelCommand(channelId, command, signal);
@@ -1174,7 +1175,8 @@ async function runCommand(bot: Row, agent: RuntimeAgent | undefined, channelId: 
       return `Error: command could not run: ${(error as Error).message}`;
     }
   }
-  const assignedRows = q(`SELECT c.id, c.name FROM computers c JOIN bot_computers bc ON bc.computer_id=c.id WHERE bc.bot_id=? ORDER BY c.id`, bot.id);
+  const admittedComputers = hostAuthorizedComputerIds == null ? null : new Set(normalizedAuthorizationComputerIds(hostAuthorizedComputerIds));
+  const assignedRows = q(`SELECT c.id, c.name FROM computers c JOIN bot_computers bc ON bc.computer_id=c.id WHERE bc.bot_id=? ORDER BY c.id`, bot.id).filter((row) => agent?.kind !== "skipper" || admittedComputers == null || admittedComputers.has(Number(row.id)));
   const assigned = assignedRows.map((row) => Number(row.id));
   const local = assignedRows.find((row) => String(row.name) === "This Computer");
   const computerId = agent?.kind === "skipper" && requestedComputerId ? requestedComputerId : Number(local?.id || assignedRows[0]?.id || 0);
@@ -1332,14 +1334,7 @@ function repaintAgentQueue(botId: number, channelId: number, threadRootId: numbe
   });
 }
 
-function requestUserForTurn(triggerId: number, threadRootId: number): number {
-  return Number(q1(
-    "SELECT user_id FROM messages WHERE id IN (?,?) AND user_id IS NOT NULL ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END LIMIT 1",
-    triggerId, threadRootId, triggerId,
-  )?.user_id || 0);
-}
-
-export function runBot(bot: Row, channelId: number, triggerId: number, threadRootId: number, fresh: boolean, escalationId?: number, hostAuthorized = false, hiddenContext?: string): Promise<void> {
+export function runBot(bot: Row, channelId: number, triggerId: number, threadRootId: number, fresh: boolean, escalationId?: number, hostAuthorized = false, hiddenContext?: string, hostAuthorizedComputerIds?: number[]): Promise<void> {
   const botId = Number(bot.id);
   const key = turnLane(botId, channelId, threadRootId);
   const duplicate = q1("SELECT state FROM agent_turns WHERE bot_id=? AND channel_id=? AND thread_root_id=? AND trigger_id=?", botId, channelId, threadRootId, triggerId);
@@ -1349,8 +1344,9 @@ export function runBot(bot: Row, channelId: number, triggerId: number, threadRoo
   const ahead = Number(q1("SELECT COUNT(*) n FROM agent_turns WHERE bot_id=? AND channel_id=? AND thread_root_id=? AND state IN ('queued','running')", botId, channelId, threadRootId)?.n || 0);
   const queuedTurn: QueuedTurn = { channelId, threadRootId, messageId: 0, progressId: 0 };
   const runtimeAgent = agentForBot(botId);
+  const admittedHostAuthorized = runtimeAgent?.kind === "skipper" && hostAuthorized, admittedHostComputerIds = admittedHostAuthorized ? normalizedAuthorizationComputerIds(hostAuthorizedComputerIds ?? q("SELECT computer_id FROM bot_computers WHERE bot_id=?", botId).map((row) => row.computer_id)) : [];
   const requestUserId = requestUserForTurn(triggerId, threadRootId);
-  const admittedPolicy = resolvedModelPolicy(botId, channelId, threadRootId, requestUserId);
+  const admittedPolicy = resolvedTurnModelPolicy(botId, channelId, threadRootId, requestUserId);
   const admittedAt = now();
   const turnId = tx(() => {
     queuedTurn.messageId = createMessage({ channelId, parentId: threadRootId, botId: Number(bot.id), body: "_Working…_" });
@@ -1362,16 +1358,16 @@ export function runBot(bot: Row, channelId: number, triggerId: number, threadRoo
       admittedAt,
     ).lastInsertRowid;
     return run(`INSERT INTO agent_turns
-      (bot_id,agent_id,channel_id,trigger_id,thread_root_id,message_id,state,fresh,escalation_id,host_authorized,queued_at,requested_model,requested_provider_id,model_source,request_user_id)
-      VALUES (?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?)`,
-    botId, runtimeAgent?.id ?? null, channelId, triggerId, threadRootId, queuedTurn.messageId, fresh ? 1 : 0, escalationId ?? null, hostAuthorized ? 1 : 0, admittedAt,
-    String(admittedPolicy.model || ""), admittedPolicy.provider_id ? Number(admittedPolicy.provider_id) : null, String(admittedPolicy.source || ""), requestUserId || null).lastInsertRowid;
+      (bot_id,agent_id,channel_id,trigger_id,thread_root_id,message_id,state,fresh,escalation_id,host_authorized,host_authorized_computer_ids,queued_at,requested_model,requested_provider_id,model_source,request_user_id)
+      VALUES (?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?)`,
+    botId, runtimeAgent?.id ?? null, channelId, triggerId, threadRootId, queuedTurn.messageId, fresh ? 1 : 0, escalationId ?? null, admittedHostAuthorized ? 1 : 0,
+    JSON.stringify(admittedHostComputerIds), admittedAt, String(admittedPolicy.model || ""), admittedPolicy.provider_id ? Number(admittedPolicy.provider_id) : null, String(admittedPolicy.source || ""), requestUserId || null).lastInsertRowid;
   });
   broadcastToChannel(channelId, { type: "message", message: serializeMessage(queuedTurn.messageId), parent: serializeMessage(threadRootId) });
   queue.push(queuedTurn);
   agentQueueState.set(key, queue);
   const current = previous.catch(() => undefined).then(() => executeBot(
-    bot, channelId, triggerId, threadRootId, fresh, escalationId, hostAuthorized,
+    bot, channelId, triggerId, threadRootId, fresh, escalationId, admittedHostAuthorized,
     queuedTurn.messageId, queuedTurn.progressId, turnId, hiddenContext,
   ));
   agentQueues.set(key, current);
@@ -1464,7 +1460,8 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
   // or process shutdown — never an arbitrary wall-clock deadline.
   const turnSignal = controller.signal;
   const threadId = threadIdForRoot(threadRootId, channelId) ?? ensureThread(threadRootId, channelId);
-  const admittedTurn = turnId ? q1("SELECT requested_model,requested_provider_id,request_user_id FROM agent_turns WHERE id=?", turnId) : undefined;
+  const admittedTurn = turnId ? q1("SELECT requested_model,requested_provider_id,request_user_id,host_authorized_computer_ids FROM agent_turns WHERE id=?", turnId) : undefined;
+  const admittedHostComputerIds = (() => { try { return hostAuthorized ? normalizedAuthorizationComputerIds(JSON.parse(String(admittedTurn?.host_authorized_computer_ids || "[]"))) : []; } catch { return []; } })();
   const requestUserId = Number(admittedTurn?.request_user_id || requestUserForTurn(triggerId, threadRootId));
   const model = String(admittedTurn?.requested_model || "") || resolveModelForUser(Number(bot.id), channelId, threadRootId, requestUserId);
   const providerId = admittedTurn?.requested_provider_id != null ? Number(admittedTurn.requested_provider_id) : resolveProviderId(Number(bot.id), channelId, threadRootId);
@@ -1564,7 +1561,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
   if (!preparedMessageId) broadcastToChannel(channelId, { type: "message", message: serializeMessage(msgId, "summary"), parent: serializeMessage(threadRootId, "summary") });
 
   const messages = await buildContext(bot, agent, channelId, triggerId, threadRootId, fresh, hostAuthorized, hiddenContext, requestUserId);
-  const tools = toolsFor(bot, agent, hostAuthorized, channelId, requestUserId);
+  const tools = toolsFor(bot, agent, hostAuthorized, channelId, requestUserId, admittedHostComputerIds);
   const actor = agent?.kind === "skipper" ? "skipper" : "agent";
   try {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
@@ -1664,14 +1661,14 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
             if ((exactToolFailures.get(failureSignature) || 0) >= 1) {
               result = "Error: this unchanged tool call already failed. It was not repeated; change strategy or explain the evidenced blocker.";
             } else if (name === "run_command") {
-              const cowork = agent?.kind === "channel"
-                ? coworkContextFromRootBody(String(q1("SELECT body FROM messages WHERE id=?", threadRootId)?.body || ""))
-                : null;
-              const coworkBefore = cowork ? snapshotCoworkSurface(channelId, cowork) : null;
-              result = await runCommand(bot, agent, channelId, input, Number(args.computer_id) || 0, turnSignal);
-              requireActiveTurn(channelId, controller.signal);
-              if (agent?.kind === "channel") {
-                if (cowork && coworkBefore) {
+              if (agent?.kind === "skipper" && !hostAuthorized) {
+                result = "Error: host run_command is not authorized for this turn.";
+              } else {
+                const cowork = agent?.kind === "channel" ? coworkContextFromRootBody(String(q1("SELECT body FROM messages WHERE id=?", threadRootId)?.body || "")) : null;
+                const coworkBefore = cowork ? snapshotCoworkSurface(channelId, cowork) : null;
+                result = await runCommand(bot, agent, channelId, input, Number(args.computer_id) || 0, turnSignal, admittedHostComputerIds);
+                requireActiveTurn(channelId, controller.signal);
+                if (agent?.kind === "channel" && cowork && coworkBefore) {
                   const contractError = enforceCoworkCommandOutput(channelId, threadId, cowork, coworkBefore);
                   if (contractError) result = contractError;
                 }
@@ -1818,6 +1815,9 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                   reason: String(args.reason || ""),
                   checkHint: args.check_hint ? String(args.check_hint) : "",
                   maxAttempts: args.max_attempts != null ? Number(args.max_attempts) : undefined,
+                  hostAuthorized,
+                  hostAuthorizedComputerIds: admittedHostComputerIds,
+                  observedState: args.observed_state ? String(args.observed_state) : undefined,
                 });
                 result = `Scheduled durable follow-up #${scheduled.id} in ${scheduled.delay_seconds}s (due_at=${scheduled.due_at}). You will be re-invoked on this thread automatically; no silent wait exists without this.`;
               } catch (error) {
@@ -1935,7 +1935,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
           }
           if (actionStatus === "complete") {
             lastCompletedTool = { name, result };
-            if (name === "schedule_followup" && agent?.kind === "channel") scheduledSilentFollowup = true;
+            if (name === "schedule_followup" && (agent?.kind === "channel" || isInternalMessageBody(String(q1("SELECT body FROM messages WHERE id=?", triggerId)?.body || "")))) scheduledSilentFollowup = true;
             if (name === "inspect_web_source") {
               try {
                 const inspected = JSON.parse(result) as { requested_url?: string; final_url?: string };
