@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-25
+
+### Added
+
+- Stopping an agent turn no longer throws its work away. The stopped turn's recent
+  tool actions are preserved and delivered automatically as one-shot continuation
+  context with your next ordinary message in the same thread, and the client shows
+  a one-shot "Work kept" banner until the continuation is sent.
+
+
 ## [1.1.3] - 2026-08-21
 
 ### Added
