@@ -328,6 +328,7 @@ const ICONS: Record<string, string> = {
   x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
   check: '<polyline points="20 6 9 17 4 12"/>',
   /* Helm wheel: outer rim, hub, six spokes. */
+  pause: '<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>',
   helm: '<circle cx="12" cy="12" r="8.2"/><circle cx="12" cy="12" r="2.2"/><path d="M12 3.8v3.2M12 17v3.2M3.8 12h3.2M17 12h3.2M6.1 6.1l2.3 2.3M15.6 15.6l2.3 2.3M6.1 17.9l2.3-2.3M15.6 8.4l2.3-2.3"/>',
   openrouter: '<path d="M5 16l7-10 7 10"/><path d="M8.5 16h7"/><circle cx="12" cy="7" r="1.2"/>',
   chatgpt: '<path d="M8.2 8.4a3.4 3.4 0 015.7-2.4 3.5 3.5 0 014.8 3.7 3.4 3.4 0 01-1.4 5.9 3.4 3.4 0 01-5.7 2.4 3.5 3.5 0 01-4.8-3.7A3.4 3.4 0 018.2 8.4z"/><path d="M9.4 10.8h5.2M9.4 13.2h3.6"/>',

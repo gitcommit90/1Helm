@@ -684,6 +684,7 @@ export function migrate(): void {
   addColumn("threads", "input_tokens", "input_tokens INTEGER NOT NULL DEFAULT 0");
   addColumn("threads", "output_tokens", "output_tokens INTEGER NOT NULL DEFAULT 0");
   addColumn("threads", "stopped_followup_pending", "stopped_followup_pending INTEGER NOT NULL DEFAULT 0"); addColumn("threads", "skipper_call_approved", "skipper_call_approved INTEGER NOT NULL DEFAULT 0 CHECK (skipper_call_approved IN (0,1))");
+  addColumn("threads", "stop_requested", "stop_requested INTEGER NOT NULL DEFAULT 0");
   addColumn("messages", "stopped_followup", "stopped_followup INTEGER NOT NULL DEFAULT 0");
   addColumn("channel_activity", "action_id", "action_id INTEGER REFERENCES tool_actions(id) ON DELETE SET NULL");
   addColumn("channel_activity", "updated", "updated INTEGER NOT NULL DEFAULT 0");

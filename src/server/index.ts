@@ -1638,6 +1638,7 @@ const server = createServer(async (req, res) => {
         replies: serializeMessages(replies.map((r) => Number(r.id)), url.searchParams.get("progress") === "summary" ? "summary" : "full"),
         thread,
         followup: threadFollowupView(Number(threadId)),
+        stop_requested: Boolean(thread?.stop_requested),
         usage: {
           input_tokens: Math.max(0, Number(thread?.input_tokens || 0)),
           output_tokens: Math.max(0, Number(thread?.output_tokens || 0)),

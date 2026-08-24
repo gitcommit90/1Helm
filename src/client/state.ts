@@ -12,7 +12,7 @@ type State = {
   me: User; users: User[]; channels: Channel[]; bots: Bot[]; computers: Computer[]; providers: Provider[];
   workspace: Workspace; channelId: number; channelBots: Bot[]; messages: Message[];
   threadRoot: Message | null; threadReplies: Message[]; view: AppChannelView;
-  threadUsage: ThreadUsage; threadFollowup: ThreadFollowup | null;
+  threadUsage: ThreadUsage; threadFollowup: ThreadFollowup | null; threadStopContinuation: boolean;
   mobileMenuOpen: boolean; preferredTerminalComputerId: number | null;
   terminalOpen: boolean; notesOpen: boolean; serversListOpen: boolean;
   channelViews: Record<number, ChannelUiView>;
@@ -36,6 +36,7 @@ export const S = {
   selectedTextConversationId: null,
   threadUsage: { input_tokens: 0, output_tokens: 0 },
   threadFollowup: null,
+  threadStopContinuation: false,
 } as State;
 
 export const defaultChannelView = (): ChannelUiView => ({

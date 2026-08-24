@@ -473,7 +473,7 @@ async function openChannel(id: number, view: ChannelView = "chat", threadRootId:
   if (S.channelId && S.channelId !== id) persistCurrentChannelView();
   const requestedChannel = S.channels.find((channel) => channel.id === id);
   if (view === "texts" && !textsAvailable(requestedChannel)) view = "chat";
-  S.channelId = id; S.threadRoot = null; S.threadFollowup = null; S.threadUsage = { input_tokens: 0, output_tokens: 0 }; S.view = view; S.globalThreadsOpen = false;
+  S.channelId = id; S.threadRoot = null; S.threadFollowup = null; S.threadStopContinuation = false; S.threadUsage = { input_tokens: 0, output_tokens: 0 }; S.view = view; S.globalThreadsOpen = false;
   applyChannelViewToState(id);
   // Full Terminal tab is separate from the docked header terminal.
   if (view === "terminal") S.terminalOpen = false;
@@ -2788,6 +2788,7 @@ async function openThread(root: Message, replaceRoute = false): Promise<void> {
   S.threadRoot = data.root;
   S.threadReplies = data.replies;
   S.threadFollowup = data.followup || null;
+  S.threadStopContinuation = Boolean((data as { stop_requested?: boolean }).stop_requested);
   S.threadUsage = {
     input_tokens: Math.max(0, Number(data.usage?.input_tokens || 0)),
     output_tokens: Math.max(0, Number(data.usage?.output_tokens || 0)),
@@ -2885,6 +2886,28 @@ function paintThreadFollowup(): void {
   if (next) { tickThreadFollowup(); threadFollowupTimer = window.setInterval(tickThreadFollowup, 1000); }
 }
 
+/** One-shot hint that the stopped turn's work context is preserved and the
+ * next message continues from it instead of starting cold. */
+function stopContinuationBanner(): HTMLElement | null {
+  if (!S.threadStopContinuation) return null;
+  return h("div", {
+    id: "stop-continuation-banner",
+    class: "mx-3 mb-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 sm:mx-4",
+    role: "status",
+  },
+    h("div", { class: "flex min-w-0 items-center gap-2 text-xs" },
+      h("span", { class: "shrink-0 text-amber-600 dark:text-amber-300" }, icon("pause", 15)),
+      h("span", { class: "min-w-0 flex-1 text-fg" }, h("strong", {}, "Work kept:"), " this turn was stopped, but its progress is saved. Send your next message to continue right from there — no need to re-explain."),
+      h("span", { class: "hidden shrink-0 font-mono text-[9px] uppercase tracking-[0.12em] text-faint sm:inline" }, "resumable")));
+}
+function paintStopContinuation(): void {
+  const existing = document.getElementById("stop-continuation-banner");
+  const next = stopContinuationBanner();
+  if (existing && next) { existing.replaceWith(next); return; }
+  if (existing) { existing.remove(); return; }
+  if (next) document.querySelector<HTMLElement>("#thread-panel .composer-wrap")?.before(next);
+}
+
 /** Fill the thread half (or full RHS) inside an already-built #thread shell. */
 function paintThreadPanel(
   box: HTMLElement,
@@ -2927,6 +2950,7 @@ function paintThreadPanel(
         }, icon("x", 18)))),
     h("div", { id: "threadmsgs", class: "thread-messages min-w-0 flex-1 overflow-y-auto overflow-x-hidden py-2" }),
     ...(followupBanner ? [followupBanner] : []),
+    ...(stopContinuationBanner() ? [stopContinuationBanner()!] : []),
     composer(S.threadRoot.id));
   const tm = document.getElementById("threadmsgs");
   if (tm) fillThreadMessages(tm);
@@ -3201,6 +3225,12 @@ function composer(parentId: number | null): HTMLElement {
     pending.splice(0, uploads.length); drawAttach();
     try {
       await api(`/api/channels/${S.channelId}/messages`, { body: { body, parentId, uploads, modelPolicy: selectedPolicy && !parentId && selectedPolicy.source === "thread" ? { provider_id: selectedPolicy.provider_id, model: selectedPolicy.model } : undefined, effectiveModelPolicy: selectedPolicy ? { provider_id: selectedPolicy.provider_id, model: selectedPolicy.model, source: selectedPolicy.source } : undefined } });
+      if (S.threadStopContinuation && (parentId === S.threadRoot?.id || (!parentId && !S.threadRoot))) {
+        // The continuation context was just consumed by this send.
+        S.threadStopContinuation = false;
+        const banner = document.getElementById("stop-continuation-banner");
+        banner?.remove();
+      }
     } catch (error) {
       if (!input.value) { input.value = originalValue; resizeComposer(input); input.dispatchEvent(new Event("input")); }
       pending.unshift(...uploads); drawAttach();

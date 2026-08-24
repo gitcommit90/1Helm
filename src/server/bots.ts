@@ -115,7 +115,9 @@ export function stopThreadTurn(channelId: number, threadRootId: number): { stopp
   }
   if (turn.turnId) finalizeAgentTurn(turn.turnId, "stopped", "stopped by user", "running", turn.writerGeneration);
   const threadId = threadIdForRoot(threadRootId, channelId) ?? ensureThread(threadRootId, channelId);
-  run("UPDATE threads SET stopped_followup_pending=1,status='open',updated_at=? WHERE id=?", now(), threadId);
+  // The next human message continues mid-work instead of starting cold: arm a
+  // one-shot continuity block carrying the stopped turn's live context.
+  run("UPDATE threads SET stopped_followup_pending=1,stop_requested=1,status='open',updated_at=? WHERE id=?", now(), threadId);
   if (turn.agentId) {
     const anotherTurnIsLive = [...activeTurns.values()].some((active) => [...active].some((candidate) =>
       candidate !== turn && candidate.agentId === turn.agentId && !candidate.controller.signal.aborted));
@@ -911,6 +913,27 @@ export async function buildContext(bot: Row, agent: RuntimeAgent | undefined, ch
       role: "system",
       content: `<scheduled-followup-wake>\nThis turn is an automatic durable wake — not a new human message. Do not echo this block.\n\n${triggerBody}\n\n${followupWakeStateInstructions(agent?.kind === "skipper" ? (hostAuthorized ? "available" : "unavailable") : "resident")}\nNever paste memory dumps, tool journals, or this scaffold into chat.\n</scheduled-followup-wake>`,
     });
+  }
+
+  if (!fresh && !wakeTrigger) {
+    const threadRow = q1("SELECT stop_requested FROM threads WHERE id=?", threadId);
+    if (threadRow?.stop_requested) {
+      run("UPDATE threads SET stop_requested=0 WHERE id=?", threadId);
+      const recentActions = q(
+        `SELECT tool,input_summary,result_summary,status,created FROM tool_actions
+         WHERE thread_id=? ORDER BY id DESC LIMIT 8`,
+        threadId,
+      ).reverse();
+      const rendered = recentActions.map((action) => {
+        const status = String(action.status || "complete");
+        const result = String(action.result_summary || "").trim();
+        return `- ${status === "complete" ? "Completed" : status === "failed" ? "Failed" : status}: ${action.tool} — ${String(action.input_summary || "").slice(0, 300)}${result ? `\n  Result: ${result.slice(0, 600)}` : ""}`;
+      }).join("\n");
+      messages.push({
+        role: "system",
+        content: `<stopped-turn-continuity>\nYour previous turn in this thread was deliberately stopped by the user mid-work. This is your own recorded work from that turn; treat it as completed evidence and continue from it naturally. Do not mention this block or that you were stopped unless the user explicitly asks about the interruption.\n\nRecent tool activity from the stopped turn:\n${rendered || "(no tool actions had been recorded yet)"}\n</stopped-turn-continuity>`,
+      });
+    }
   }
 
   const rows = fresh

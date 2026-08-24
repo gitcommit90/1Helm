@@ -198,6 +198,9 @@ export function scheduleAgentFollowup(opts: ScheduleOpts): { id: number; due_at:
     now(),
     now(),
   ).lastInsertRowid;
+  // A scheduled wake supersedes the stopped-turn continuation: the wake itself
+  // carries this context, so the one-shot block must not also fire.
+  run("UPDATE threads SET stop_requested=0 WHERE id=?", opts.threadId);
   upsertObligation(opts.channelId, "followup", String(id), "wakeable", reason, dueAt);
 
   if (opts.markWaiting !== false) {

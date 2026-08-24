@@ -6,15 +6,15 @@
   },
   "legacy": {
     "lines": {
-      "src/client/app.ts": 3630,
+      "src/client/app.ts": 3651,
       "src/client/channel.ts": 1205,
       "src/client/cowork.ts": 879,
       "src/client/routing.ts": 864,
       "src/client/settings.ts": 812,
       "src/server/agents.ts": 1353,
-      "src/server/bots.ts": 2164,
+      "src/server/bots.ts": 2180,
       "src/server/channel-computers.ts": 2130,
-      "src/server/db.ts": 1155,
+      "src/server/db.ts": 1156,
       "src/server/index.ts": 2284,
       "src/server/routing.ts": 1303
     },
@@ -30,9 +30,21 @@
       "src/server/index.ts": 33
     },
     "cycles": [
-      ["src/client/app.ts", "src/client/channel.ts", "src/client/cowork.ts", "src/client/settings.ts", "src/client/term.ts"],
-      ["src/server/bots.ts", "src/server/followups.ts"],
-      ["src/server/routing.ts", "src/server/skills.ts"]
+      [
+        "src/client/app.ts",
+        "src/client/channel.ts",
+        "src/client/cowork.ts",
+        "src/client/settings.ts",
+        "src/client/term.ts"
+      ],
+      [
+        "src/server/bots.ts",
+        "src/server/followups.ts"
+      ],
+      [
+        "src/server/routing.ts",
+        "src/server/skills.ts"
+      ]
     ]
   }
 }
