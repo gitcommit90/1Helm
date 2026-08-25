@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS members (channel_id INTEGER NOT NULL, user_id INTEGER
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL, parent_id INTEGER,
   user_id INTEGER, bot_id INTEGER, body TEXT NOT NULL DEFAULT '',
-  reply_count INTEGER NOT NULL DEFAULT 0, last_reply INTEGER, created INTEGER NOT NULL);
+  reply_count INTEGER NOT NULL DEFAULT 0, last_reply INTEGER, created INTEGER NOT NULL,
+  completed_at INTEGER);
 CREATE TABLE IF NOT EXISTS attachments (
   id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL, name TEXT NOT NULL,
   mime TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL);
@@ -114,6 +115,7 @@ const hostLabel = (url: string): string => { try { return new URL(url).host; } c
 const providerKind = (url: string): string => /openrouter\.ai/i.test(url) ? "openrouter" : "openai";
 /** Additive migrations keep the legacy bot runtime usable while agents become canonical. */
 export function migrate(): void {
+  addColumn("messages", "completed_at", "completed_at INTEGER");
   addColumn("bots", "provider_id", "provider_id INTEGER");
   addColumn("channels", "purpose", "purpose TEXT NOT NULL DEFAULT ''");
   addColumn("channels", "status", "status TEXT NOT NULL DEFAULT 'active'");

@@ -9,7 +9,7 @@ import { spawn as spawnPty, type IPty } from "node-pty";
 import { WebSocket } from "ws";
 import { APPLE_RUNTIME_VERSION, ensureAppleRuntimeRunning, exactAppleRuntimeVersion } from "./apple-container-runtime.ts";
 import { DATA_DIR, now, q, q1, run, type Row } from "./db.ts";
-import { channelFilesPath, channelFilesystemRoot, channelUsesRuntimeStorage, channelWorkspacePath, installationScopedRuntimeName, ociHostStateRoot } from "./channel-storage.ts";
+import { channelFilesPath, channelFilesystemRoot, channelUsesRuntimeStorage, channelWorkspacePath, hostChannelRoot, installationScopedRuntimeName, ociHostStateRoot } from "./channel-storage.ts";
 
 export type ChannelComputerBackend = "apple" | "oci" | "native" | "mock";
 export type ChannelComputer = {
@@ -68,7 +68,7 @@ type MachineInspection = {
 export const APPLE_RUNTIME_PACKAGE = `container-${APPLE_RUNTIME_VERSION}-installer-signed.pkg`;
 export const APPLE_RUNTIME_URL = `https://github.com/apple/container/releases/download/${APPLE_RUNTIME_VERSION}/${APPLE_RUNTIME_PACKAGE}`;
 export const APPLE_RUNTIME_SHA256 = "0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714";
-export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.41";
+export const DEFAULT_CHANNEL_IMAGE = process.env.HELM_CHANNEL_MACHINE_IMAGE || "local/1helm-channel-machine:0.0.42";
 const CONTAINER_CANDIDATES = [process.env.HELM_CONTAINER_CLI, "/usr/local/bin/container", "/opt/homebrew/bin/container", "container"].filter(Boolean) as string[];
 const OCI_RUNTIME_VERSION = "1helm-oci-runtime-v1";
 const OCI_HELPER_CANDIDATES = [
@@ -121,6 +121,14 @@ const explicitComputerId = (channelId: number): string => `1helm-${installationI
 const hostWorldRoot = (channelId: number): string => join(DATA_DIR, "channels", String(channelId));
 const hostWorkspace = channelWorkspacePath;
 const hostFiles = channelFilesPath;
+/**
+ * Durable host-side mirror of the Apple guest's /home/agent. The guest home is
+ * inside the ephemeral VM disk, so without this mirror any tool state an agent
+ * keeps under $HOME (credentials, profiles, caches) evaporates on recreation.
+ * Only the OCI runtime pins its storage; Apple channels replay this directory
+ * into a fresh machine at provision time.
+ */
+const hostGuestHome = (channelId: number): string => join(hostChannelRoot(channelId), "guest-home");
 const workspaceMirrorRefreshes = new Map<number, Promise<void>>();
 let appleNetworkRepair: Promise<void> | null = null;
 let appleNetworkRepairAt = 0;
@@ -643,9 +651,17 @@ function isolatedInvocation(args: string[], computer: ChannelComputer, user: "ag
     return { command: resolveContainerCli(), args: [...words, ...guestWords(...args)] };
   }
   if (computer.backend === "oci") {
+    // A bare `podman exec` injects no environment: bash login shells never
+    // assign HOME themselves, so every command otherwise ran with HOME="" and
+    // a stock PATH, hiding durable per-agent state under /home/agent from all
+    // later sessions. Inject the executing identity explicitly; the helper
+    // forwards each pair to `podman exec --env`.
+    const agentIdentity = user === "root"
+      ? ["--env", "HOME=/root", "--env", "USER=root", "--env", "LOGNAME=root"]
+      : ["--env", "HOME=/home/agent", "--env", "USER=agent", "--env", "LOGNAME=agent"];
     const helperArgs = terminal
       ? ["terminal", computer.machine_id, ownerMarker(computer)]
-      : ["exec", computer.machine_id, ownerMarker(computer), user, workdir, "--", ...args];
+      : ["exec", computer.machine_id, ownerMarker(computer), user, workdir, ...agentIdentity, "--", ...args];
     const invocation = ociInvocation(helperArgs);
     return invocation;
   }
@@ -817,6 +833,11 @@ async function ensureAppleProvisioned(computer: ChannelComputer): Promise<void> 
   }
   const setup = await setupNewAppleMachine(computer.machine_id, `${installationId()}:${computer.channel_id}`);
   if (setup.code !== 0) throw new Error(setup.stderr.toString("utf8").trim() || "machine workspace setup failed");
+  // Replay durable per-agent state from the previous machine's life so
+  // recreation no longer means amnesia for everything under /home/agent.
+  try { await restoreAppleGuestHome(computer); } catch (error) {
+    recordComputerActivity(computer.channel_id, `Guest-home replay skipped: ${(error as Error).message.slice(0, 300)}`, "failed", true);
+  }
   inspection = await inspectApple(computer.machine_id);
   if (!inspection || inspection.homeMount !== "none") throw new Error("Provisioned machine failed the no-home-mount verification.");
   recordObserved(computer, inspection);
@@ -991,6 +1012,74 @@ async function syncHostChangesToGuest(computer: ChannelComputer, attempt = 0): P
   }
   if (attempt >= 2) throw new Error("channel files kept changing during guest import; a later fleet-care pass will retry");
   await syncHostChangesToGuest(channelComputer(computer.channel_id) || computer, attempt + 1);
+}
+
+/**
+ * Copy the Apple guest's durable /home/agent into the narrow host mirror
+ * (hostChannelRoot/<id>/guest-home) using the same tar-over-exec transport as
+ * workspace sync: regular files and directories only, capped by the same byte
+ * budget as workspace sync. Best-effort durability — never fails a caller.
+ */
+async function snapshotAppleGuestHome(computer: ChannelComputer): Promise<void> {
+  if (computer.backend !== "apple") return;
+  const staging = `${hostGuestHome(computer.channel_id)}.snapshot-${randomBytes(6).toString("hex")}`;
+  mkdirSync(staging, { recursive: true });
+  try {
+    const invocation = isolatedInvocation([
+      "/bin/bash", "-lc",
+      "set -o pipefail; cd /; find -P home/agent -xdev \( -type d -o -type f \) -print0 | tar --null --no-recursion -T - -cf -",
+    ], computer, "agent", "/workspace");
+    const child = spawn(invocation.command, invocation.args, { stdio: ["ignore", "pipe", "pipe"] });
+    const extract = spawn("tar", ["-C", staging, "-xf", "-", "--no-same-owner", "--no-same-permissions"], { stdio: ["pipe", "ignore", "pipe"] });
+    let archiveBytes = 0, oversized = false;
+    child.stdout!.on("data", (chunk: Buffer) => {
+      archiveBytes += chunk.length;
+      if (oversized) return;
+      if (archiveBytes > MAX_WORKSPACE_SYNC_BYTES + 64 * 1024 ** 2) {
+        oversized = true;
+        child.kill("SIGTERM");
+        extract.kill("SIGTERM");
+      }
+    });
+    const childError: Buffer[] = [], extractError: Buffer[] = [];
+    const childErrorBytes = { value: 0 }, extractErrorBytes = { value: 0 };
+    child.stderr!.on("data", (chunk: Buffer) => appendLimited(childError, chunk, childErrorBytes, 64 * 1024));
+    extract.stderr!.on("data", (chunk: Buffer) => appendLimited(extractError, chunk, extractErrorBytes, 64 * 1024));
+    child.stdout!.pipe(extract.stdin!);
+    const [code, extractCode] = await Promise.all([
+      new Promise<number>((resolvePromise) => child.once("close", (c) => resolvePromise(c ?? 1))),
+      new Promise<number>((resolvePromise) => extract.once("close", (c) => resolvePromise(c ?? 1))),
+    ]);
+    if (oversized) throw new Error(`guest home exceeds the ${Math.round(MAX_WORKSPACE_SYNC_BYTES / 1024 ** 2)} MB mirror limit`);
+    if (code || extractCode) {
+      throw new Error(Buffer.concat([...childError, ...extractError]).toString("utf8").trim() || "guest home export failed");
+    }
+    const stagedHome = join(staging, "home");
+    if (!existsSync(stagedHome)) return;
+    const destination = hostGuestHome(computer.channel_id);
+    rmSync(destination, { recursive: true, force: true });
+    renameSync(stagedHome, destination);
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+/** Restore a previously snapshotted guest home into a freshly created Apple
+ * machine. Runs as root so ownership is corrected to the guest agent identity. */
+async function restoreAppleGuestHome(computer: ChannelComputer): Promise<void> {
+  if (computer.backend !== "apple") return;
+  const source = hostGuestHome(computer.channel_id);
+  if (!existsSync(source)) return;
+  if (!existsSync(join(source, "agent"))) throw new Error("no prior agent home snapshot exists");
+  const ids = guestAgentIds(computer);
+  const tar = spawn("tar", ["-C", source, "-cf", "-", "agent"], { stdio: ["ignore", "pipe", "ignore"] });
+  const tarClosed = new Promise<number>((resolvePromise) => tar.once("close", (code) => resolvePromise(code ?? 1)));
+  const applied = await isolated(["/bin/sh", "-lc",
+    "set -eu; mkdir -p /home/agent; find /home/agent -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; tar -xf - -C /home --no-same-owner; chown -R \"$1:$2\" /home/agent",
+    "1helm-home-restore", ids.uid, ids.gid], computer, "root", "/", { input: tar.stdout!, timeoutMs: 5 * 60_000 });
+  const tarCode = await tarClosed;
+  if (tarCode !== 0 || applied.code !== 0) throw new Error(applied.stderr.toString("utf8").trim() || "guest home replay failed");
+  recordComputerActivity(computer.channel_id, "Replayed the previous machine's /home/agent into the recreated computer.", "complete");
 }
 
 export async function syncGuestToHost(channelId: number): Promise<void> {
@@ -1291,6 +1380,7 @@ export async function deleteChannelComputer(channelId: number): Promise<void> {
         }
         const stopped = await apple(["machine", "stop", computer.machine_id], { timeoutMs: 90_000 });
         if (stopped.code !== 0 && !/not running|stopped/i.test(stopped.stderr.toString("utf8"))) throw new Error(stopped.stderr.toString("utf8").trim() || "machine stop before deletion failed");
+        try { await snapshotAppleGuestHome(computer); } catch { /* best-effort; deletion proceeds */ }
         const deleted = await apple(["machine", "delete", computer.machine_id], { timeoutMs: 90_000 });
         if (deleted.code !== 0) throw new Error(deleted.stderr.toString("utf8").trim() || "machine deletion failed");
       }

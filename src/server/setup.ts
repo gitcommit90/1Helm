@@ -101,6 +101,7 @@ export function bootstrapView(user: Row, url: URL, helpers: {
   queueLastRead: (userId: number, channelId: number, messageId: number) => void;
   serializeMessages: (ids: number[], mode: "summary") => Row[];
   bots: (channelId: number) => Record<string, unknown>[];
+  visibleBots: (user: Row) => Record<string, unknown>[];
   computers: () => Record<string, unknown>[];
 }): Record<string, unknown> {
   const channels = helpers.visibleChannels(user);
@@ -129,6 +130,9 @@ export function bootstrapView(user: Row, url: URL, helpers: {
     computers: user.is_admin ? helpers.computers() : [],
     workspace: workspaceView(), state, photon_configured: Boolean(user.is_admin && helpers.photonConfigured()),
     active_channel_id: active ? Number(active.id) : null, messages, bots: channelBots,
+    // The client keeps this workspace-wide roster in S.bots for @-mention and
+    // bot pickers; the per-channel list above only covers the landing channel.
+    visibleBots: helpers.visibleBots(user),
   };
 }
 

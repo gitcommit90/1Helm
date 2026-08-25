@@ -1562,6 +1562,9 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
     run("UPDATE escalations SET status='failed' WHERE id=?", escalationId);
     broadcastToChannel(channelId, { type: "escalation", channelId, escalation: { id: escalationId, status: "failed" } });
   };
+  const stampTurnEnd = (): void => {
+    run("UPDATE messages SET completed_at=? WHERE id=?", now(), msgId);
+  };
 
   setStatus(agent, channelId, "working");
   if (!endpoint && !isChatGPT) {
@@ -1569,14 +1572,14 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
     turnFailed = true;
     run("UPDATE agent_progress SET status='failed',updated=? WHERE message_id=? AND status='running'", now(), msgId);
     if (turnId) finalizeAgentTurn(turnId, "failed", "no provider connected", "running", writerGeneration);
-    failEscalation(); setStatus(agent, channelId, "waiting"); turns.delete(activeTurn); if (!turns.size) activeTurns.delete(channelId); emitNow(); return;
+    stampTurnEnd(); failEscalation(); setStatus(agent, channelId, "waiting"); turns.delete(activeTurn); if (!turns.size) activeTurns.delete(channelId); emitNow(); return;
   }
   if (!model) {
     setBody(`_No model configured for **${bot.name}**. Ask @skipper or the Captain to choose one._`);
     turnFailed = true;
     run("UPDATE agent_progress SET status='failed',updated=? WHERE message_id=? AND status='running'", now(), msgId);
     if (turnId) finalizeAgentTurn(turnId, "failed", "no model configured", "running", writerGeneration);
-    failEscalation(); setStatus(agent, channelId, "waiting"); turns.delete(activeTurn); if (!turns.size) activeTurns.delete(channelId); emitNow(); return;
+    stampTurnEnd(); failEscalation(); setStatus(agent, channelId, "waiting"); turns.delete(activeTurn); if (!turns.size) activeTurns.delete(channelId); emitNow(); return;
   }
   let startProgressId = preparedProgressId || addProgress("status", "Starting agent turn…", "running");
   if (preparedProgressId) updateProgress(preparedProgressId, "Starting agent turn…", "running");
@@ -2020,6 +2023,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
       // with a neutral body instead of deleting the whole turn.
       if (silentReschedule) {
         if (!responseBody.trim()) setBody(liveThought.trim() || "_Waiting for the scheduled follow-up._");
+        stampTurnEnd();
         run("UPDATE agent_progress SET status='complete',updated=? WHERE message_id=? AND status='running'", now(), msgId);
         refreshThreadSummary(threadRootId);
         setStatus(agent, channelId, "waiting");
@@ -2092,6 +2096,11 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
       failEscalation(); setStatus(agent, channelId, "waiting");
     }
   } finally {
+    // The reply row is born at turn start as the Working placeholder; record
+    // when the final answer actually landed so the UI can show answer time
+    // instead of ask time. Stamped once per message at the turn lifecycle's
+    // single choke point (success, failure, and user-stop all pass here).
+    run("UPDATE messages SET completed_at=? WHERE id=? AND completed_at IS NULL", now(), msgId);
     if (turnId) {
       const retained = q1("SELECT state FROM agent_turns WHERE id=?", turnId);
       if (retained?.state === "running") {

@@ -617,6 +617,17 @@ const server = createServer(async (req, res) => {
         photonConfigured: () => photonStatus().configured, publicUser,
         queueLastRead, serializeMessages,
         bots: (channelId) => botsInChannel(channelId).map(botView),
+        visibleBots: (u) => (u.is_admin
+          ? q("SELECT * FROM bots ORDER BY name").map(botView)
+          : q(`SELECT DISTINCT b.* FROM bots b
+              JOIN bot_channels bc ON bc.bot_id=b.id
+              JOIN members m ON m.channel_id=bc.channel_id
+              WHERE m.user_id=?
+              UNION SELECT b.* FROM bots b JOIN agents a ON a.bot_id=b.id
+              WHERE a.kind='skipper' AND a.status<>'deleted' AND EXISTS (
+                SELECT 1 FROM members m JOIN channels c ON c.id=m.channel_id
+                WHERE m.user_id=? AND c.kind='channel' AND c.status<>'deleted')
+              ORDER BY name`, u.id, u.id).map(botView)),
         computers: () => q("SELECT * FROM computers ORDER BY id").map(computerRowView),
       }));
     }

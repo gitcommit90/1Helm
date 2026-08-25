@@ -14,7 +14,7 @@ export type AgentQuestions = {
   answers?: Array<{ question_id: string; question: string; values: string[]; custom: string }> | null;
   answered?: number | null;
 };
-export type Message = { id: number; channel_id: number; parent_id: number | null; body: string; created: number; reply_count: number; last_reply: number | null; author: Author; attachments: Attachment[]; progress?: AgentProgress[]; progress_count?: number; questions?: AgentQuestions | null; photon_conversation_id?: number | null; workflow_id?: number | null; transport?: "inbound" | "outbound" | "app" };
+export type Message = { id: number; channel_id: number; parent_id: number | null; body: string; created: number; reply_count: number; last_reply: number | null; author: Author; attachments: Attachment[]; completed_at?: number | null; progress?: AgentProgress[]; progress_count?: number; questions?: AgentQuestions | null; photon_conversation_id?: number | null; workflow_id?: number | null; transport?: "inbound" | "outbound" | "app" };
 export type ModelPolicy = {
   provider_id: number | null; provider_name: string | null; provider_kind: string | null;
   model: string; requested_model?: string; source?: "thread" | "workflow" | "channel" | "personal" | "workspace" | "agent";

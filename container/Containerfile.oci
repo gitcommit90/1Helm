@@ -17,6 +17,10 @@ RUN test "${AGENT_UID}" -ge 1 && test "${AGENT_GID}" -ge 1 \
   && if test -z "${existing_group}"; then groupadd --gid "${AGENT_GID}" agent; elif test "${existing_group}" != agent; then groupmod --new-name agent "${existing_group}"; fi \
   && if test -z "${existing_user}"; then useradd --uid "${AGENT_UID}" --gid "${AGENT_GID}" --create-home --shell /bin/bash agent; elif test "${existing_user}" != agent; then usermod --login agent --home /home/agent --move-home --gid "${AGENT_GID}" --shell /bin/bash "${existing_user}"; else usermod --home /home/agent --move-home --gid "${AGENT_GID}" --shell /bin/bash agent; fi \
   && mkdir -p /workspace/files /var/lib/1helm /etc/sudoers.d \
+  && mkdir -p /home/agent/.local/bin /home/agent/bin \
+  && printf '\n%s\n%s\n' '# 1Helm agent login profile: durable per-agent tool bins stay on PATH.' \
+      'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$HOME/bin:$PATH" ;; esac' \
+      >> /home/agent/.profile \
   && chown -R "${AGENT_UID}:${AGENT_GID}" /workspace /home/agent \
   && printf 'agent ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/agent \
   && chmod 0440 /etc/sudoers.d/agent \

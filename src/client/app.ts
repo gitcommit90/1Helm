@@ -335,11 +335,14 @@ async function enterWorkspace(preferredChannelId?: number): Promise<void> {
   const bootstrap = await api<{
     channels: Channel[]; users: User[]; computers: Computer[]; workspace: Workspace;
     state: Record<string, unknown>; photon_configured: boolean; active_channel_id: number | null;
-    messages: Message[]; bots: Bot[];
+    messages: Message[]; bots: Bot[]; visible_bots?: Bot[];
   }>(`/api/bootstrap?include_messages=1${route.slug ? `&channel=${encodeURIComponent(route.slug)}` : ""}`);
   S.channels = bootstrap.channels; S.users = bootstrap.users; S.computers = bootstrap.computers;
   S.workspace = bootstrap.workspace; S.photonConfigured = bootstrap.photon_configured;
-  S.bots = bootstrap.bots; S.channelBots = bootstrap.bots; S.messages = bootstrap.messages;
+  // visible_bots is the workspace-wide roster (server falls back to the active
+  // channel's list on older servers). channelBots stays per-channel by design.
+  S.bots = bootstrap.visible_bots || bootstrap.bots;
+  S.channelBots = bootstrap.bots; S.messages = bootstrap.messages;
   S.providers = [];
   applyUiState(bootstrap.state);
   let eventSocketReady = false;
@@ -2434,14 +2437,14 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
     opts.grouped ? null : h("div", { class: "flex items-baseline gap-2" },
       h("span", { class: "text-[13.5px] font-semibold text-fg hover:underline sm:text-[14.5px]" }, m.author.name),
       isBot ? h("span", { class: "font-mono text-[9px] uppercase tracking-[0.16em] text-accent" }, "Agent") : null,
-      h("span", { class: "font-mono text-[10.5px] text-faint" }, timeLabel(m.created)),
+      h("span", { class: "font-mono text-[10.5px] text-faint" }, messageTime(m)),
       workingChip),
     bodyHtml, structuredQuestions(m), progressDisclosure(m), attachments(m), threadFooter(m, opts.inThread));
 
   const authorAvatar = messageAuthorAvatar(m);
   const row = opts.grouped
     ? h("div", { class: "group relative flex min-w-0 max-w-full items-start gap-2.5 px-3 py-0.5 hover:bg-hover sm:px-4" },
-      h("span", { class: "w-9 shrink-0 pt-0.5 text-right font-mono text-[9.5px] leading-5 text-transparent group-hover:text-faint" }, new Date(m.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }).replace(/\s?[AP]M/i, "")),
+      h("span", { title: m.completed_at ? "Answer completed at this time" : undefined, class: "w-9 shrink-0 pt-0.5 text-right font-mono text-[9.5px] leading-5 text-transparent group-hover:text-faint" }, new Date(m.completed_at ?? m.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }).replace(/\s?[AP]M/i, "")),
       content, actions)
     : h("div", { class: "group relative flex min-w-0 max-w-full items-start gap-2.5 px-3 py-0.5 hover:bg-hover sm:px-4" },
       avatar(m.author.name, m.author.kind, 9, authorAvatar),
@@ -2749,6 +2752,12 @@ async function deleteMessageUi(m: Message): Promise<void> {
   } catch (error) {
     void appAlert((error as Error).message || "Could not delete message");
   }
+}
+
+/** Answer time for agent replies: the turn-start placeholder row is created
+ * before the work happens, so prefer the completion stamp when present. */
+function messageTime(m: Message): string {
+  return timeLabel(m.completed_at ?? m.created);
 }
 
 function threadFooter(m: Message, inThread: boolean): HTMLElement | null {
@@ -3378,16 +3387,28 @@ const currentHashMention = (input: HTMLTextAreaElement): string | null => {
   return m ? m[2].toLowerCase() : null;
 };
 
+/** @-mention candidates for the resident agent and Skipper that never depend
+ * on how fresh the global S.bots roster snapshot is. A fresh page load ships
+ * only the active channel's bots in S.bots and hopping channels never heals it,
+ * while channel.agent and the per-channel message payload are always loaded. */
+function composerAgentCandidates(): Bot[] {
+  const channel = S.channels.find((item) => item.id === S.channelId);
+  if (channel?.kind !== "channel") return [];
+  const agentBotId = channel.agent?.bot_id || 0;
+  // In #main the resident IS Skipper — dedupe by bot id or the list shows Skipper twice.
+  return [
+    agentBotId ? S.channelBots.find((bot) => bot.id === agentBotId) : undefined,
+    S.channelBots.find((bot) => bot.agent_kind === "skipper"),
+    agentBotId ? S.bots.find((bot) => bot.id === agentBotId) : undefined,
+    S.bots.find((bot) => bot.agent_kind === "skipper"),
+  ].filter((bot, index, list): bot is Bot => !!bot && list.findIndex((other) => other?.id === bot.id) === index);
+}
+
 function composerAutocomplete(input: HTMLTextAreaElement, box: HTMLElement): void {
   const at = currentAtMention(input);
   if (at != null) {
     const channel = S.channels.find((item) => item.id === S.channelId);
-    const resident = channel?.agent?.bot_id ? S.bots.find((bot) => bot.id === channel.agent!.bot_id) : undefined;
-    const skipper = S.bots.find((bot) => bot.agent_kind === "skipper");
-    // In #main the resident IS Skipper — dedupe by bot id or the list shows Skipper twice.
-    const agentCandidates = channel?.kind === "channel"
-      ? [resident, skipper].filter((bot, index, list) => !!bot && list.findIndex((other) => other?.id === bot.id) === index)
-      : [];
+    const agentCandidates = composerAgentCandidates();
     const agentMatches: ComposerSuggest[] = agentCandidates
       .filter((bot): bot is Bot => !!bot && bot.name.toLowerCase().startsWith(at))
       .map((bot) => ({ kind: "agent", token: bot.name, label: bot.name, detail: bot.agent_kind === "skipper" ? "Workspace Skipper" : bot.model || "Resident agent" }));
@@ -3419,7 +3440,7 @@ function drawComposerSuggest(box: HTMLElement, input: HTMLTextAreaElement, match
     onclick: () => applyComposerSuggest(input, item.kind, item.token, box),
   },
     item.kind === "agent"
-      ? avatar(item.label, "bot", 6, S.bots.find((bot) => bot.name === item.token)?.avatar)
+      ? avatar(item.label, "bot", 6, (S.bots.find((bot) => bot.name === item.token) || S.channelBots.find((bot) => bot.name === item.token))?.avatar)
       : item.kind === "human"
         ? avatar(item.label, "user", 6, S.users.find((user) => user.username === item.token)?.avatar || (item.token === S.me.username ? S.me.avatar : undefined))
         : h("span", { class: "grid h-6 w-6 place-items-center rounded bg-raised text-muted" }, icon("hash", 14)),

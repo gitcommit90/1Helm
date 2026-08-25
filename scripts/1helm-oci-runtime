@@ -1013,20 +1013,30 @@ case "$operation" in
     "${PODMAN[@]}" update --cpus "$3" --memory "${4}m" "$1" >/dev/null
     ;;
   exec)
-    (($# >= 6)) || die "exec requires name, owner, user, workdir, --, and command"
+    (($# >= 6)) || die "exec requires name, owner, user, workdir, [--env NAME=VALUE]..., --, and command"
     name="$1"; owner="$2"; user="$3"; workdir="$4"; shift 4
     [[ "$user" == agent || "$user" == root ]] || die "invalid exec user"
     [[ "$workdir" == / || "$workdir" == /workspace || "$workdir" == /home/agent ]] || die "invalid exec workdir"
+    # Forwarded identity/environment pairs from the server (HOME/USER/LOGNAME).
+    exec_env=()
+    while [[ "${1:-}" == --env ]]; do
+      [[ "$#" -ge 2 && "$2" == *=* && "$2" != *= ]] || die "--env requires NAME=VALUE"
+      exec_env+=("$1" "$2")
+      shift 2
+    done
     [[ "${1:-}" == -- ]] || die "missing exec separator"; shift
     (($# > 0)) || die "missing exec command"
     start_container "$name" "$owner"
     if [[ "$user" == root ]]; then numeric_user="0:0"; else numeric_user="$AGENT_UID:$AGENT_GID"; fi
-    exec "${PODMAN[@]}" exec --interactive --user "$numeric_user" --workdir "$workdir" "$name" "$@"
+    exec "${PODMAN[@]}" exec --interactive --user "$numeric_user" --workdir "$workdir" ${exec_env[@]+"${exec_env[@]}"} "$name" "$@"
     ;;
   terminal)
     (($# == 2)) || die "terminal requires name and owner"
     start_container "$1" "$2"
-    exec "${PODMAN[@]}" exec --interactive --tty --user "$AGENT_UID:$AGENT_GID" --workdir /workspace --env TERM=xterm-256color "$1" /bin/bash -l
+    # Terminals always run as the agent user; give them the same explicit
+    # identity environment as exec so login/profile wiring behaves identically.
+    exec "${PODMAN[@]}" exec --interactive --tty --user "$AGENT_UID:$AGENT_GID" --workdir /workspace \
+      --env TERM=xterm-256color --env HOME=/home/agent --env USER=agent --env LOGNAME=agent "$1" /bin/bash -l
     ;;
   backup)
     (($# == 2)) || die "backup requires name and owner"

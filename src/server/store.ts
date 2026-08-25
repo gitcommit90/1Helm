@@ -126,6 +126,7 @@ export function serializeMessage(id: number, progressMode: MessageProgressMode =
     lastReply = replies.length ? Number(replies[replies.length - 1].created) : null;
   }
   const progress = progressRows(id, progressMode);
+  const completedAt = m.completed_at == null ? null : Number(m.completed_at);
   const progressCount = progressMode === "full"
     ? progress.length
     : Number(q1("SELECT COUNT(*) n FROM agent_progress WHERE message_id=?", id)?.n || 0);
@@ -143,7 +144,8 @@ export function serializeMessage(id: number, progressMode: MessageProgressMode =
   }
   // stopped_followup is backend-only prompt context and must never be exposed.
   const { stopped_followup: _stoppedFollowup, ...publicMessage } = m;
-  return { ...publicMessage, reply_count: replyCount, last_reply: lastReply, author, attachments, progress, progress_count: progressCount, questions };
+  return { ...publicMessage, reply_count: replyCount, last_reply: lastReply,
+    completed_at: completedAt, author, attachments, progress, progress_count: progressCount, questions };
 }
 
 export function serializeMessages(ids: number[], progressMode: MessageProgressMode = "full"): Row[] {

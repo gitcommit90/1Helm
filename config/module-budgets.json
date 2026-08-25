@@ -6,15 +6,15 @@
   },
   "legacy": {
     "lines": {
-      "src/client/app.ts": 3651,
+      "src/client/app.ts": 3672,
       "src/client/channel.ts": 1205,
       "src/client/cowork.ts": 879,
       "src/client/routing.ts": 864,
       "src/client/settings.ts": 812,
       "src/server/agents.ts": 1353,
-      "src/server/bots.ts": 2180,
-      "src/server/channel-computers.ts": 2130,
-      "src/server/db.ts": 1156,
+      "src/server/bots.ts": 2189,
+      "src/server/channel-computers.ts": 2217,
+      "src/server/db.ts": 1158,
       "src/server/index.ts": 2284,
       "src/server/routing.ts": 1303
     },
