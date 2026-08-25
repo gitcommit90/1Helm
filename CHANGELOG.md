@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-25
+
+### Fixed
+
+- @-mention suggestions in resident channels now reliably include the
+  channel's own resident agent: the composer resolves residents from the
+  channel's agent roster and page loads ship the workspace-wide visible-bot
+  list, so suggestions no longer hinge on a recent resync or Settings visit.
+- Agent replies keep their answer time. Completed replies carry a persisted
+  completion stamp (added by a database migration) and every timestamp that
+  renders them prefers it, including thread-list last-reply chips; in-flight
+  replies still show their working state.
+- Linux/OCI channel computers execute agent commands with a proper user
+  environment again: HOME, USER, LOGNAME, and a usable PATH are injected for
+  every exec, so durable profile setup such as PATH exports and tool
+  credentials behaves consistently across sessions.
+
 ## [1.2.0] - 2026-08-25
 
 ### Added
