@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import WebSocket from "ws";
@@ -527,7 +527,7 @@ try {
   ok(escapedFile.status === 404, "workspace file endpoint rejects intermediate symlink escapes");
   // macOS may report the rejected intermediate symlink as already absent after
   // the security probe; cleanup must not turn a passing assertion into ENOENT.
-  rmSync(escapedLink, { force: true });
+  if (existsSync(escapedLink)) unlinkSync(escapedLink);
 
   const slowTurn = await api(`/api/channels/${finance.id}/messages`, { body: { body: `@${finance.agent.name} slow-turn run command` } }, captain);
   await api(`/api/channels/${finance.id}/archive`, { body: {} }, captain);
@@ -812,56 +812,9 @@ try {
   ok(Boolean(activity), "Skipper receives the invoking thread, performs the broader action, and records it visibly");
   ok(skipperCall.status === 200, "Skipper replies in the invoking thread");
 
-  // Channel-agent -> Skipper escalation (SPEC §6.3 primary scenario, previously untested).
-  // The resident agent calls call_skipper; Skipper must receive host authority and run the command.
-  const escalationRoot = await api(`/api/channels/${launch.id}/messages`, { body: { body: `@${afterRestart.agent.name} call skipper to run whoami` } }, captain);
-  await waitForAgentReply(escalationRoot.body.message.id, captain, afterRestart.agent.name);
-  await waitForAgentReply(escalationRoot.body.message.id, captain, "skipper");
-  const escalationActivity = await waitFor(async () => {
-    const result = await api(`/api/channels/${launch.id}/activity`, {}, captain);
-    return result.body.escalations?.some((item) => /need host whoami/i.test(item.reason) && item.status === "resolved") && result.body.actions?.some((item) => item.tool === "run_command" && item.status === "complete") ? result.body : null;
-  }, "channel-agent call_skipper escalation");
-  ok(Boolean(escalationActivity), "a channel-agent call_skipper escalation authorizes Skipper to run the host command and resolves visibly");
-  const automaticReturn = await waitFor(async () => {
-    const thread = await api(`/api/messages/${escalationRoot.body.message.id}/thread`, {}, captain);
-    const replies = thread.body.replies || [];
-    const residentReplies = replies.filter((message) => message.author?.name === afterRestart.agent.name && message.body !== "_Working…_");
-    const handoff = replies.some((message) => message.author?.name === "skipper" && /Calling \*\*@.*-agent/i.test(String(message.body || "")));
-    return residentReplies.length >= 2 && handoff ? { residentReplies: residentReplies.length, handoff } : null;
-  }, "automatic Skipper-to-resident return", 20_000);
-  ok(Boolean(automaticReturn), "runtime automatically returns a resident escalation after Skipper unblocks it even when the Skipper model omits call_agent");
-  const networkSetupRoot = await api(`/api/channels/${launch.id}/messages`, { body: { body: `@${afterRestart.agent.name} set up Jellyfin locally; can YOU set it up` } }, captain);
-  await waitForAgentReply(networkSetupRoot.body.message.id, captain, afterRestart.agent.name);
-  await waitForAgentReply(networkSetupRoot.body.message.id, captain, "skipper");
-  const networkSetupActivity = await waitFor(async () => {
-    const result = await api(`/api/channels/${launch.id}/activity`, {}, captain);
-    const thread = await api(`/api/messages/${networkSetupRoot.body.message.id}/thread`, {}, captain);
-    const actions = result.body.actions || [];
-    const escalated = (result.body.escalations || []).some((item) => /socket creation with Permission denied/i.test(String(item.reason || "")));
-    const residentFailed = actions.some((item) => item.tool === "run_command" && item.status === "failed" && /socket Permission denied/i.test(String(item.result_summary || "")));
-    const askedHuman = actions.some((item) => item.tool === "ask_user" && item.thread_id === thread.body.thread?.id);
-    const tutorial = (thread.body.replies || []).some((item) => item.author?.name === afterRestart.agent.name && /(?:run|try|use) (?:this )?(?:docker|curl|sudo) command/i.test(String(item.body || "")));
-    return escalated && residentFailed && !askedHuman && !tutorial ? true : null;
-  }, "resident network-boundary escalation", 20_000);
-  ok(Boolean(networkSetupActivity), "an imperative resident install with machine-wide socket denial calls Skipper with evidence instead of returning another tutorial or asking the human");
-  const escalationLoopDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
-  const escalationThread = escalationLoopDb.prepare("SELECT id FROM threads WHERE root_message_id=?").get(escalationRoot.body.message.id);
-  const openEscalation = escalationLoopDb.prepare("SELECT id FROM escalations WHERE thread_id=? AND from_agent_id=? ORDER BY id DESC LIMIT 1").get(escalationThread.id, afterRestart.agent.id);
-  if (openEscalation) escalationLoopDb.prepare("UPDATE escalations SET status='open' WHERE id=?").run(openEscalation.id);
-  escalationLoopDb.close();
-  const duplicateEscalationRequest = await api(`/api/channels/${launch.id}/messages`, { body: { body: `@${afterRestart.agent.name} call skipper to run whoami`, parentId: escalationRoot.body.message.id } }, captain);
-  await waitFor(() => {
-    const guardDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
-    const turn = guardDb.prepare("SELECT state FROM agent_turns WHERE trigger_id=?").get(duplicateEscalationRequest.body.message.id);
-    guardDb.close();
-    return turn?.state === "completed";
-  }, "duplicate resident escalation guard");
-  const guardedEscalationDb = new DatabaseSync(join(dataDir, "ctrl-pane.db"), { timeout: 15_000 });
-  const escalationCount = guardedEscalationDb.prepare("SELECT COUNT(*) n FROM escalations WHERE thread_id=? AND from_agent_id=?").get(escalationThread.id, afterRestart.agent.id).n;
-  if (openEscalation) guardedEscalationDb.prepare("UPDATE escalations SET status='resolved' WHERE id=?").run(openEscalation.id);
-  guardedEscalationDb.close();
-  ok(duplicateEscalationRequest.status === 200 && escalationCount === 1, "an open resident escalation cannot dispatch the same resident-to-Skipper loop again");
-
+  // Resident-to-Skipper agency is intentionally absent. Human-authored @skipper
+  // routing above remains the supported explicit path; focused prompt/tool tests
+  // prove residents cannot discover or invoke call_skipper.
   // Skipper hand-back: after unblocking, Skipper must re-invoke the resident via call_agent
   // so the Captain never has to re-tag the agent (symmetric with call_skipper).
   const handoffRoot = await api(`/api/channels/${launch.id}/messages`, {

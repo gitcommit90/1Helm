@@ -7,7 +7,7 @@ export type Msg = { channelId: number; parentId: number | null; userId?: number 
 /** Internal wake scaffolds are stored for model context but never shown in chat. */
 export function isInternalMessageBody(body: string): boolean {
   const text = String(body || "").trim();
-  return /^\[scheduled-followup\b/i.test(text) || text.startsWith("⟦followup⟧");
+  return /^\[scheduled-followup\b/i.test(text) || text.startsWith("⟦followup⟧") || text === "[silent-success]";
 }
 
 export function createMessage(m: Msg): number {
@@ -24,6 +24,7 @@ export function createMessage(m: Msg): number {
   if (m.parentId && !isInternalMessageBody(m.body)) {
     run("UPDATE messages SET reply_count = reply_count + 1, last_reply=? WHERE id=?", now(), m.parentId);
   }
+  if (!isInternalMessageBody(m.body) && m.body.trim() !== "_Working…_") appendMessageHistory(id);
   return id;
 }
 
@@ -120,7 +121,7 @@ export function serializeMessage(id: number, progressMode: MessageProgressMode =
   if (m.parent_id == null) {
     const replies = q(`SELECT created FROM messages r WHERE parent_id=? AND trim(body)<>'' AND body<>'_Working…_'
       AND body NOT LIKE '[scheduled-followup%'
-      AND body NOT LIKE '⟦followup⟧%'
+      AND body NOT LIKE '⟦followup⟧%' AND body<>'[silent-success]'
       AND NOT EXISTS (SELECT 1 FROM agent_progress ap WHERE ap.message_id=r.id AND ap.status='running') ORDER BY id`, id);
     replyCount = replies.length;
     lastReply = replies.length ? Number(replies[replies.length - 1].created) : null;
@@ -413,4 +414,94 @@ export function findMentionedBots(body: string): Row[] {
   const names = new Set((body.match(/@([a-zA-Z0-9_-]+)/g) || []).map((m) => m.slice(1).toLowerCase()));
   if (!names.size) return [];
   return q("SELECT * FROM bots").filter((b) => names.has(String(b.name).toLowerCase()));
+}
+
+export type OperationalMessage = { role: "system" | "user" | "assistant" | "tool"; content: string; source_message_id?: number; tool_calls?: unknown[]; tool_call_id?: string; name?: string };
+const MAX_ARG = 4_000, MAX_RESULT = 12_000, EXACT_EVENTS = 220;
+const secretKey = /(^|_)(authorization|cookie|token|secret|password|api_?key|private_?key|credential)s?$/i;
+
+function clean(value: unknown, limit: number): unknown {
+  if (typeof value === "string") {
+    const redacted = value
+      .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/-]+=*/gi, "$1 [REDACTED]")
+      .replace(/\b(sk-[A-Za-z0-9_-]{12,}|gh[opusr]_[A-Za-z0-9]{12,})\b/g, "[REDACTED]");
+    return redacted.length > limit ? `${redacted.slice(0, limit)}\n[truncated; sha256=${createHash("sha256").update(redacted).digest("hex")}; bytes=${Buffer.byteLength(redacted)}]` : redacted;
+  }
+  if (Array.isArray(value)) return value.slice(0, 50).map((item) => clean(item, limit));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 80).map(([key, item]) => [key, secretKey.test(key) ? "[REDACTED]" : clean(item, limit)]));
+  return value;
+}
+const encoded = (payload: unknown, limit: number): string => JSON.stringify(clean(payload, limit));
+const decoded = (payload: unknown): Record<string, unknown> => { try { return JSON.parse(String(payload || "{}")); } catch { return {}; } };
+
+export function appendThreadHistory(threadId: number, kind: string, payload: unknown, sourceType = "", sourceId?: number | null, spanId = "", created = now()): number {
+  const seq = Number(q1("SELECT COALESCE(MAX(seq),0)+1 seq FROM thread_history WHERE thread_id=?", threadId)?.seq || 1);
+  return run(`INSERT OR IGNORE INTO thread_history (thread_id,seq,kind,payload,source_type,source_id,span_id,created)
+    VALUES (?,?,?,?,?,?,?,?)`, threadId, seq, kind, encoded(payload, kind === "tool_result" ? MAX_RESULT : MAX_ARG), sourceType, sourceId ?? null, spanId, created).lastInsertRowid;
+}
+
+export function appendMessageHistory(messageId: number): void {
+  const row = q1(`SELECT m.*,t.id thread_id FROM messages m JOIN threads t ON t.channel_id=m.channel_id
+    AND t.root_message_id=COALESCE(m.parent_id,m.id) WHERE m.id=?`, messageId);
+  if (!row || Number(row.system_message || 0)) return;
+  const body = String(row.body || "").trim();
+  const hasAttachments = Boolean(q1("SELECT 1 FROM attachments WHERE message_id=? LIMIT 1", messageId));
+  if ((!body && !hasAttachments) || body === "_Working…_" || /^\[scheduled-followup\b/i.test(body) || body.startsWith("⟦followup⟧") || body === "[silent-success]") {
+    run("DELETE FROM thread_history WHERE thread_id=? AND source_type='message' AND source_id=?", row.thread_id, messageId);
+    return;
+  }
+  const kind = row.user_id != null ? "human_message" : "assistant_message";
+  const existing = q1("SELECT id FROM thread_history WHERE thread_id=? AND source_type='message' AND source_id=?", row.thread_id, messageId);
+  if (existing) run("UPDATE thread_history SET kind=?,payload=?,created=? WHERE id=?", kind, encoded({ message_id: messageId, body }, MAX_ARG), row.created, existing.id);
+  else appendThreadHistory(Number(row.thread_id), kind, { message_id: messageId, body }, "message", messageId, `message:${messageId}`, Number(row.created));
+}
+
+/** Idempotent migration/backfill. New writes use appendThreadHistory directly. */
+export function ensureThreadHistory(threadId: number): void {
+  if (q1("SELECT 1 FROM thread_history WHERE thread_id=? LIMIT 1", threadId)) return;
+  const thread = q1("SELECT channel_id,root_message_id FROM threads WHERE id=?", threadId); if (!thread) return;
+  const events: Array<{ at: number; order: number; kind: string; payload: unknown; source: string; id: number; span: string }> = [];
+  for (const m of q("SELECT * FROM messages WHERE channel_id=? AND (id=? OR parent_id=?) ORDER BY id", thread.channel_id, thread.root_message_id, thread.root_message_id)) {
+    const body = String(m.body || ""); const hasAttachments = Boolean(q1("SELECT 1 FROM attachments WHERE message_id=? LIMIT 1", m.id)); if ((!body.trim() && !hasAttachments) || /^\[scheduled-followup\b/i.test(body) || body.startsWith("⟦followup⟧") || body === "[silent-success]") continue;
+    events.push({ at: Number(m.bot_id != null && m.completed_at != null ? m.completed_at : m.created), order: Number(m.id) * 10, kind: m.user_id != null ? "human_message" : "assistant_message", payload: { message_id: m.id, body }, source: "message", id: Number(m.id), span: `message:${m.id}` });
+  }
+  for (const a of q("SELECT * FROM tool_actions WHERE thread_id=? ORDER BY id", threadId)) {
+    const callId = `history-${threadId}-${a.id}`;
+    events.push({ at: Number(a.created), order: Number(a.id) * 10 + 1, kind: "tool_call", payload: { call_id: callId, name: a.tool, arguments: a.input_summary || "" }, source: "tool_action", id: Number(a.id), span: callId });
+    events.push({ at: Number(a.created) + 1, order: Number(a.id) * 10 + 2, kind: "tool_result", payload: { call_id: callId, name: a.tool, result: a.result_summary || "", status: a.status }, source: "tool_action_result", id: Number(a.id), span: callId });
+  }
+  for (const f of q("SELECT * FROM agent_followups WHERE thread_id=? ORDER BY id", threadId)) events.push({ at: Number(f.created), order: Number(f.id), kind: "followup", payload: { id: f.id, due_at: f.due_at, reason: f.reason, check_hint: f.check_hint, status: f.status, attempts: f.attempts, max_attempts: f.max_attempts }, source: "followup", id: Number(f.id), span: `followup:${f.id}` });
+  events.sort((a,b) => a.at-b.at || a.order-b.order);
+  for (const e of events) appendThreadHistory(threadId, e.kind, e.payload, e.source, e.id, e.span, e.at);
+}
+
+function compactedSummary(rows: Row[]): string {
+  return rows.map((row) => { const p=decoded(row.payload); return `- ${row.kind}: ${String(p.body || p.name || p.reason || p.result || "event").replace(/\s+/g," ").slice(0,240)}`; }).join("\n").slice(0,24_000);
+}
+
+export function operationalThreadMessages(threadId: number, throughMessageId?: number): OperationalMessage[] {
+  ensureThreadHistory(threadId);
+  let rows = q("SELECT * FROM thread_history WHERE thread_id=? ORDER BY seq", threadId);
+  if (throughMessageId) rows = rows.filter((row) => row.source_type !== "message" || Number(row.source_id) <= throughMessageId);
+  const out: OperationalMessage[] = [];
+  if (rows.length > EXACT_EVENTS) {
+    const cut = rows.length - EXACT_EVENTS, covered = Number(rows[cut - 1].seq);
+    const digest = createHash("sha256").update(rows.slice(0, cut).map((row) => `${row.seq}:${row.kind}:${row.payload}`).join("\n")).digest("hex");
+    let compacted = q1("SELECT summary FROM thread_history_compactions WHERE thread_id=? AND covered_through_seq=? AND digest=?", threadId, covered, digest);
+    if (!compacted) { const summary = compactedSummary(rows.slice(0,cut)); run("INSERT INTO thread_history_compactions (thread_id,covered_through_seq,digest,summary,created) VALUES (?,?,?,?,?)", threadId, covered, digest, summary, now()); compacted = { summary }; }
+    out.push({ role: "system", content: `<operational-history-summary covered-through-seq="${covered}" digest="${digest}">\n${compacted.summary}\n</operational-history-summary>` });
+    rows = rows.slice(cut);
+    // Do not begin with an orphaned result.
+    while (rows[0]?.kind === "tool_result") rows.shift();
+  }
+  for (const row of rows) {
+    const p = decoded(row.payload);
+    if (row.kind === "human_message") out.push({ role: "user", content: String(p.body || ""), source_message_id: Number(p.message_id || row.source_id || 0) });
+    else if (row.kind === "assistant_message") out.push({ role: "assistant", content: String(p.body || "") });
+    else if (row.kind === "tool_call") out.push({ role: "assistant", content: "", tool_calls: [{ id: String(p.call_id), type: "function", function: { name: String(p.name), arguments: typeof p.arguments === "string" ? p.arguments : JSON.stringify(p.arguments || {}) } }] });
+    else if (row.kind === "tool_result") out.push({ role: "tool", tool_call_id: String(p.call_id), name: String(p.name), content: String(p.result || "") });
+    else if (row.kind === "followup") out.push({ role: "system", content: `<followup-event>${JSON.stringify(p)}</followup-event>` });
+    else if (row.kind === "checkpoint") out.push({ role: "system", content: `<work-checkpoint>${JSON.stringify(p)}</work-checkpoint>` });
+  }
+  return out;
 }

@@ -40,13 +40,15 @@ createServer(async (req, res) => {
     }
     const routeMarker = ["fallback-backup", "round-a", "round-b"].find((marker) => url.pathname.includes(`/${marker}/`));
     const serialized = JSON.stringify(reqBody.messages);
-    const latestUser = [...reqBody.messages].reverse().find((message) => message.role === "user")?.content || "";
+    const latestUserIndex = reqBody.messages.findLastIndex((message) => message.role === "user");
+    const latestUser = reqBody.messages[latestUserIndex]?.content || "";
+    const currentTurnMessages = reqBody.messages.slice(latestUserIndex + 1);
     if (/slow-turn/i.test(latestUser)) await new Promise((resolve) => setTimeout(resolve, 1200));
     if (/live-ui-stream/i.test(latestUser)) await new Promise((resolve) => setTimeout(resolve, 250));
-    const hasToolResult = reqBody.messages.some((m) => m.role === "tool");
-    const webSearchResult = [...reqBody.messages].reverse().find((message) => message.role === "tool" && message.name === "search_web");
-    const webInspectResult = [...reqBody.messages].reverse().find((message) => message.role === "tool" && message.name === "inspect_web_source");
-    const webImageResult = [...reqBody.messages].reverse().find((message) => message.role === "tool" && message.name === "attach_web_image");
+    const hasToolResult = currentTurnMessages.some((m) => m.role === "tool");
+    const webSearchResult = [...currentTurnMessages].reverse().find((message) => message.role === "tool" && message.name === "search_web");
+    const webInspectResult = [...currentTurnMessages].reverse().find((message) => message.role === "tool" && message.name === "inspect_web_source");
+    const webImageResult = [...currentTurnMessages].reverse().find((message) => message.role === "tool" && message.name === "attach_web_image");
     const wantsCurrentEventResearch = reqBody.tools?.some((tool) => tool.function?.name === "search_web")
       && /(?:sinkhole|water[ -]?main|sunset (?:boulevard|blvd)|recent event|two days ago|2 days ago)/i.test(latestUser);
     const wantsRealEventImage = reqBody.tools?.some((tool) => tool.function?.name === "attach_web_image")
@@ -198,7 +200,7 @@ createServer(async (req, res) => {
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_agent_1", type: "function", function: { name: "call_agent", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else if (wantsScheduleFollowup) {
-      const args = { delay_seconds: /browser follow-up countdown/i.test(latestUser) ? 300 : 30, reason: "Check whether the async download finished and report Downloaded or Blocked." };
+      const args = { delay_seconds: /browser follow-up countdown/i.test(latestUser) ? 300 : 30, reason: "Check whether the async download finished and report Downloaded or Blocked.", user_update: { completed: "The download was started successfully.", observed_state: "The transfer process is directly confirmed running.", wait_reason: "The transfer must finish before its output can be verified.", next_check: "Inspect the process and downloaded file." } };
       sse(res, { choices: [{ delta: { tool_calls: [{ index: 0, id: "schedule_followup_1", type: "function", function: { name: "schedule_followup", arguments: JSON.stringify(args) } }] } }] });
       sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else if (wantsResidentNetworkSetup) {

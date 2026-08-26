@@ -85,7 +85,7 @@ import { attachCoworkClient, coworkPresence, coworkViewerUsernames, flushCoworkD
 import { coworkFormatContract } from "./cowork-contract.ts";
 import { runImprovementPass, scheduleAgentReview, startImprovementLoop } from "./improvements.ts";
 import { runThreadAuditPass, startThreadAuditLoop } from "./thread-audit.ts";
-import { CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_PERMISSION_KIND, SKIPPER_CALL_APPROVAL_KIND, bumpThreadFollowup, channelTextingGrant, grantChannelTexting, resolveSkipperCallApproval, revokeChannelTexting, startFollowupLoop, threadFollowupView } from "./followups.ts";
+import { CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_PERMISSION_KIND, SKIPPER_CALL_APPROVAL_KIND, bumpThreadFollowup, cancelPendingFollowup, channelTextingGrant, grantChannelTexting, resolveSkipperCallApproval, revokeChannelTexting, startFollowupLoop, threadFollowupView } from "./followups.ts";
 import { createWorkflow, listWorkflows, registerWorkflowDispatcher, setWorkflowStatus, startWorkflowLoop, stopWorkflowLoop } from "./workflows.ts";
 import { hostUpdateState, installedAppVersion, runHostUpdateAction } from "./updates.ts";
 import { channelMetaView as baseChannelMetaView, channelView as baseChannelView, publicUser } from "./setup.ts";
@@ -408,7 +408,6 @@ function postMessage(
   triggerBots(channelId, msg, Number(user.id), hiddenContext);
   return msg;
 }
-
 // ---- HTTP routing ----
 const server = createServer(async (req, res) => {
   try {
@@ -421,7 +420,6 @@ const server = createServer(async (req, res) => {
       res.writeHead(204, { ...SECURITY_HEADERS, "cache-control": "no-store" });
       return res.end();
     }
-
     // The unified provider gateway is public by URL and authenticates with its
     // own generated gateway keys. It intentionally does not use a 1Helm web
     // session so editors, CLIs, and other machines can use the same endpoint.
@@ -1574,6 +1572,12 @@ const server = createServer(async (req, res) => {
         thread: { ...thread, followup: threadFollowupView(Number(thread.id)) },
       });
     }
+    if ((mm = p.match(/^\/api\/threads\/(\d+)\/followups\/(\d+)\/cancel$/)) && m === "POST") {
+      const thread = q1("SELECT * FROM threads WHERE id=?", Number(mm[1]));
+      if (!thread || !canSee(user, Number(thread.channel_id))) return json(res, 404, { error: "Not found" });
+      const result = cancelPendingFollowup(Number(thread.id), Number(mm[2])); if (!result.ok) return json(res, result.code, { error: result.error });
+      return json(res, 200, { ok: true, followup: result.followup });
+    }
     // Lightweight mark-read so live viewing + Threads/sidebar stay aligned without a full message fetch.
     if ((mm = p.match(/^\/api\/channels\/(\d+)\/captain-texting$/))) {
       const cid = Number(mm[1]);
@@ -1652,7 +1656,7 @@ const server = createServer(async (req, res) => {
         stop_requested: Boolean(thread?.stop_requested),
         usage: {
           input_tokens: Math.max(0, Number(thread?.input_tokens || 0)),
-          output_tokens: Math.max(0, Number(thread?.output_tokens || 0)),
+          output_tokens: Math.max(0, Number(thread?.output_tokens || 0)), cached_input_tokens: Math.max(0, Number(thread?.cached_input_tokens || 0)), model_calls: Math.max(0, Number(thread?.model_calls || 0)),
         },
       });
     }

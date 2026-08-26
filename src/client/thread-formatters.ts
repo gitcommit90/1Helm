@@ -1,6 +1,6 @@
 type AgentProgress = { kind: "thinking" | "tool" | "status"; body: string; status: "running" | "complete" | "failed" };
 type Message = { body: string; progress?: AgentProgress[] };
-type ThreadUsage = { input_tokens: number; output_tokens: number };
+type ThreadUsage = { input_tokens: number; output_tokens: number; cached_input_tokens: number; model_calls: number };
 
 /** Pure presentation rules shared by the thread transcript and work log. */
 export function progressStatusTone(status: string): string {
@@ -105,7 +105,8 @@ export function formatRoughTokens(value: number): string {
 }
 
 export function threadUsageLabel(usage: ThreadUsage): string {
-  return `Used ${formatRoughTokens(usage.input_tokens)} in · ${formatRoughTokens(usage.output_tokens)} out`;
+  const cached = usage.cached_input_tokens ? ` (${formatRoughTokens(usage.cached_input_tokens)} cached)` : "";
+  return `Spent ${formatRoughTokens(usage.input_tokens)} input${cached} · ${formatRoughTokens(usage.output_tokens)} output · ${usage.model_calls} ${usage.model_calls === 1 ? "call" : "calls"}`;
 }
 
 export function formatThreadFollowupCountdown(dueAt: number, nowMs = Date.now()): string {

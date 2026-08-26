@@ -55,7 +55,6 @@ export function openCreateChannel(onCreated: (channel: Channel) => void): void {
   });
   name.focus();
 }
-
 function statusPath(status: string, updatedAt: number): HTMLElement {
   const steps = ["open", "waiting", "resolved"];
   const idx = steps.indexOf(status);
@@ -78,7 +77,6 @@ function statusPath(status: string, updatedAt: number): HTMLElement {
   if (isArchived) parts.push(h("span", { class: "chip border-line text-muted text-xs" }, "archived"));
   return h("div", { class: "flex flex-wrap items-center gap-1.5" }, ...parts);
 }
-
 /** Real countdown from durable followup.due_at (ms epoch). Updates in place once/sec. */
 function formatCountdown(dueAt: number, nowMs = Date.now()): string {
   const remaining = Math.max(0, Math.floor((dueAt - nowMs) / 1000));
@@ -90,7 +88,6 @@ function formatCountdown(dueAt: number, nowMs = Date.now()): string {
   if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`;
   return `${s}s`;
 }
-
 function followupCountdownEl(dueAt: number): HTMLElement {
   const el = h("span", {
     class: "board-countdown font-mono text-[11px] tabular-nums tracking-wide text-accent",
@@ -99,8 +96,7 @@ function followupCountdownEl(dueAt: number): HTMLElement {
   }, formatCountdown(dueAt)) as HTMLElement;
   return el;
 }
-
-function followupMeta(thread: ThreadState, opts?: { onBumped?: () => void }): HTMLElement | null {
+function followupMeta(thread: ThreadState, opts?: { onBumped?: () => void; onCancelled?: () => void }): HTMLElement | null {
   const f = thread.followup;
   if (!f?.due_at) return null;
   const bump = h("button", {
@@ -132,6 +128,13 @@ function followupMeta(thread: ThreadState, opts?: { onBumped?: () => void }): HT
         void appAlert((error as Error).message || "Could not wake the agent.");
       });
   };
+  const cancel = h("button", { class: "board-cancel-followup btn-ghost min-h-8 shrink-0 px-2 py-1 text-[11px] font-semibold text-danger", type: "button", title: "Cancel only this scheduled wake" }, "Cancel Follow Up") as HTMLButtonElement;
+  cancel.onclick = (event: MouseEvent) => {
+    event.preventDefault(); event.stopPropagation(); if (cancel.disabled) return; cancel.disabled = true; cancel.textContent = "Cancelling…";
+    void api<{ ok: boolean; followup: ThreadState["followup"] }>(`/api/threads/${thread.id}/followups/${f.id}/cancel`, { method: "POST", body: {} })
+      .then((result) => { thread.followup = result.followup || null; opts?.onCancelled?.(); })
+      .catch((error) => { cancel.disabled = false; cancel.textContent = "Cancel Follow Up"; void appAlert((error as Error).message || "Could not cancel the follow-up."); });
+  };
   return h("div", {
     class: "board-followup mt-2.5 rounded-md border border-accent/25 bg-accent-soft/40 px-2 py-1.5",
     onclick: (event: MouseEvent) => event.stopPropagation(),
@@ -144,10 +147,9 @@ function followupMeta(thread: ThreadState, opts?: { onBumped?: () => void }): HT
       : null,
     h("div", { class: "mt-1.5 flex items-center justify-between gap-2" },
       h("div", { class: "font-mono text-[9px] text-faint" }, `attempt ${Number(f.attempts || 0) + 1}/${f.max_attempts || "?"} · #${f.id}`),
-      bump),
+      h("div", { class: "flex items-center gap-1" }, cancel, bump)),
   );
 }
-
 /** Tick all .board-countdown nodes under root once per second while Board is open. */
 let boardCountdownTimer: number | null = null;
 function startBoardCountdownTicker(root: HTMLElement): void {
@@ -172,7 +174,6 @@ function startBoardCountdownTicker(root: HTMLElement): void {
   tick();
   boardCountdownTimer = window.setInterval(tick, 1000);
 }
-
 export function renderThreads(container: HTMLElement, channelId: number, onOpen: (thread: ThreadState) => void, refresh: RenderRefreshOptions = {}): void {
   if (!refresh.preserveExisting) panelLoading(container, "Threads", "Focused sessions with durable status and rolling summaries.");
   void api<{ threads: ThreadState[] }>(`/api/channels/${channelId}/threads`).then(({ threads }) => {
@@ -193,7 +194,6 @@ export function renderThreads(container: HTMLElement, channelId: number, onOpen:
     refresh.onPaint?.();
   }).catch((error) => { if (refreshIsCurrent(refresh)) panelError(container, error); });
 }
-
 /**
  * A read-only re-presentation of channel threads. Thread status is owned by
  * the existing agent/system flow; the board deliberately contains no move or
@@ -250,7 +250,7 @@ export function renderBoard(container: HTMLElement, channelId: number, onOpen: (
     },
     h("div", { class: "truncate text-[13px] font-semibold leading-snug text-fg" }, thread.title || "Untitled session"),
     h("div", { class: "md mt-1 line-clamp-2 text-[13px] leading-snug text-muted", html: md(thread.summary || "No summary yet.") }),
-    followupMeta(thread),
+    followupMeta(thread, { onCancelled: () => renderBoard(container, channelId, onOpen, refresh) }),
     h("div", { class: "mt-2 flex flex-wrap items-center gap-2 text-[11px] text-faint" },
       statusPath(thread.status, thread.updated_at),
       h("span", {}, `· Updated ${timeLabel(thread.updated_at)}`)));

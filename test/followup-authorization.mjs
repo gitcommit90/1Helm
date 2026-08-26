@@ -38,28 +38,29 @@ const providerServer = createServer(async (req, res) => {
 
   if (!/scheduled-followup-wake/i.test(serialized)) {
     if (lastTool?.name === "schedule_followup") return answer(res, "Follow-up scheduled.");
-    if (/create-authorized/i.test(serialized)) return toolCall(res, "schedule_followup", { delay_seconds: 30, reason: "authorized-complete", check_hint: "NEVER_EXECUTE_RAW_HINT", max_attempts: 4 });
-    if (/create-unauthorized/i.test(serialized)) return toolCall(res, "schedule_followup", { delay_seconds: 30, reason: "unknown-no-capability", check_hint: "inspect host status", max_attempts: 4 });
-    if (/create-running/i.test(serialized)) return toolCall(res, "schedule_followup", { delay_seconds: 30, reason: "running-first", check_hint: "inspect background status", max_attempts: 3 });
-    if (/create-resident/i.test(serialized)) return toolCall(res, "schedule_followup", { delay_seconds: 30, reason: "resident-check", max_attempts: 2 });
+    if (/create-authorized/i.test(serialized)) return toolCall(res, "schedule_followup", { user_update: { completed: "Initial setup is complete.", observed_state: "The process state was directly inspected.", wait_reason: "The running process needs more time.", next_check: "Inspect the process and resulting output." }, delay_seconds: 30, reason: "authorized-complete", check_hint: "NEVER_EXECUTE_RAW_HINT", max_attempts: 4 });
+    if (/create-unauthorized/i.test(serialized)) return toolCall(res, "schedule_followup", { user_update: { completed: "Initial setup is complete.", observed_state: "The process state was directly inspected.", wait_reason: "The running process needs more time.", next_check: "Inspect the process and resulting output." }, delay_seconds: 30, reason: "unknown-no-capability", check_hint: "inspect host status", max_attempts: 4 });
+    if (/create-running/i.test(serialized)) return toolCall(res, "schedule_followup", { user_update: { completed: "Initial setup is complete.", observed_state: "The process state was directly inspected.", wait_reason: "The running process needs more time.", next_check: "Inspect the process and resulting output." }, delay_seconds: 30, reason: "running-first", check_hint: "inspect background status", max_attempts: 3 });
+    if (/create-resident/i.test(serialized)) return toolCall(res, "schedule_followup", { user_update: { completed: "Initial setup is complete.", observed_state: "The process state was directly inspected.", wait_reason: "The running process needs more time.", next_check: "Inspect the process and resulting output." }, delay_seconds: 30, reason: "resident-check", max_attempts: 2 });
     return answer(res, "No action.");
   }
 
   if (/authorized-complete/i.test(serialized)) {
-    if (!lastTool) return toolCall(res, "run_command", { command: "inspect-authorized-status" });
+    if (lastTool?.name !== "run_command") return toolCall(res, "run_command", { command: "inspect-authorized-status" });
     return answer(res, "Completed — the background task is confirmed complete.");
   }
-  if (/running-first/i.test(serialized)) {
-    if (!lastTool) return toolCall(res, "run_command", { command: "inspect-running-status" });
-    return toolCall(res, "schedule_followup", { delay_seconds: 30, reason: "running-complete", check_hint: "inspect background status", observed_state: "confirmed_running" });
-  }
   if (/running-complete/i.test(serialized)) {
-    if (!lastTool) return toolCall(res, "run_command", { command: "inspect-completed-status" });
+    if (lastTool?.name !== "run_command") return toolCall(res, "run_command", { command: "inspect-completed-status" });
     return answer(res, "Completed — the retried task is confirmed complete.");
   }
+  if (/running-first/i.test(serialized)) {
+    if (lastTool?.name !== "run_command") return toolCall(res, "run_command", { command: "inspect-running-status" });
+    return toolCall(res, "schedule_followup", { user_update: { completed: "Initial setup is complete.", observed_state: "The process state was directly inspected.", wait_reason: "The running process needs more time.", next_check: "Inspect the process and resulting output." }, delay_seconds: 30, reason: "running-complete", check_hint: "inspect background status", observed_state: "confirmed_running" });
+  }
   if (/unknown-no-capability/i.test(serialized)) {
-    if (!lastTool) return toolCall(res, "run_command", { command: "must-not-run-unauthorized" });
-    if (lastTool.name === "run_command" && toolNames.includes("schedule_followup")) return toolCall(res, "schedule_followup", { delay_seconds: 30, reason: "unknown-no-capability", observed_state: "confirmed_running" });
+    if (!toolNames.includes("run_command")) return answer(res, "Blocked — task state is unknown because host run_command is unavailable for this wake.");
+    if (lastTool?.name !== "run_command") return toolCall(res, "run_command", { command: "must-not-run-unauthorized" });
+    if (lastTool.name === "run_command" && toolNames.includes("schedule_followup")) return toolCall(res, "schedule_followup", { user_update: { completed: "Initial setup is complete.", observed_state: "The process state was directly inspected.", wait_reason: "The running process needs more time.", next_check: "Inspect the process and resulting output." }, delay_seconds: 30, reason: "unknown-no-capability", observed_state: "confirmed_running" });
     return answer(res, "Blocked — task state is unknown because host run_command is unavailable for this wake.");
   }
   return answer(res, "Completed.");
@@ -246,4 +247,27 @@ test.after(async () => {
   computerServer.close();
   db.close();
   rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("specific pending follow-up cancellation preserves siblings and rejects races", () => {
+  const f = {
+    ownerId: Number(q1("SELECT id FROM users WHERE username='followup-owner'").id),
+    residentChannel: Number(q1("SELECT id FROM channels WHERE slug='followup-resident'").id),
+    residentBot: Number(q1("SELECT id FROM bots WHERE name='followup-resident'").id),
+    residentAgent: Number(q1("SELECT id FROM agents WHERE name='followup-resident'").id),
+  };
+  const { root, thread } = rootThread(f.residentChannel, f.ownerId, "cancel one");
+  const base = { agentId: f.residentAgent, botId: f.residentBot, channelId: f.residentChannel, threadId: thread, rootMessageId: root, reason: "inspect task", delaySeconds: 300 };
+  const first = followups.scheduleAgentFollowup(base);
+  const second = followups.scheduleAgentFollowup({ ...base, reason: "inspect other task", delaySeconds: 600 });
+  const before = q1("SELECT status,title,summary FROM threads WHERE id=?", thread);
+  const result = followups.cancelPendingFollowup(thread, first.id);
+  assert.equal(result.ok, true);
+  assert.equal(q1("SELECT status FROM agent_followups WHERE id=?", first.id).status, "cancelled");
+  assert.equal(q1("SELECT status FROM agent_followups WHERE id=?", second.id).status, "pending");
+  assert.equal(result.followup.id, second.id);
+  assert.deepEqual(q1("SELECT status,title,summary FROM threads WHERE id=?", thread), before);
+  run("UPDATE agent_followups SET status='running' WHERE id=?", second.id);
+  assert.deepEqual(followups.cancelPendingFollowup(thread, second.id), { ok: false, code: 409, error: "Follow-up has already started." });
+  assert.equal(followups.cancelPendingFollowup(thread + 1, second.id).code, 404);
 });

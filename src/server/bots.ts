@@ -1,5 +1,5 @@
 import { isMainChannel, q, q1, run, now, tx, type Row } from "./db.ts";
-import { createMessage, serializeMessage, resolvedTurnModelPolicy, resolveModelForUser, resolveProviderId, botEndpoint, isInternalMessageBody, requestUserForTurn } from "./store.ts";
+import { appendMessageHistory, appendThreadHistory, operationalThreadMessages, createMessage, serializeMessage, resolvedTurnModelPolicy, resolveModelForUser, resolveProviderId, botEndpoint, isInternalMessageBody, requestUserForTurn } from "./store.ts";
 import { getComputer, execOnComputer } from "./computer.ts";
 import { broadcastToChannel, sendToUsers } from "./events.ts";
 import { isChatGPTProvider, streamChatGPTCompletion } from "./chatgpt.ts";
@@ -49,15 +49,12 @@ import { fetchPublicWebImage } from "./web-source.ts";
 import { searchWeb } from "./web-search.ts";
 import { readChannelThread, searchChannelHistory } from "./history.ts";
 import { coworkContextFromRootBody, coworkFormatContract, enforceCoworkCommandOutput, snapshotCoworkSurface } from "./cowork-contract.ts";
-import { actionSummary, completedToolAnswer, toolActionStatus } from "./bot-output.ts";
-
+import { normalizeModelUsage, actionSummary, completedToolAnswer, toolActionStatus } from "./bot-output.ts";
 export { toolActionStatus } from "./bot-output.ts";
 export { captainTextConsent } from "./followups.ts";
-
 type ChatMsg = { role: string; content: string; tool_calls?: ToolCall[]; tool_call_id?: string; name?: string };
 type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
 type RuntimeAgent = Row & { kind?: string; channel_id?: number; purpose?: string; instructions?: string };
-
 /** Production residents can complete substantial work in one turn. Tests may
  * lower the ceiling explicitly so deterministic repeat-tool coverage is fast. */
 export const MAX_TOOL_ROUNDS = Math.max(1, Number(process.env.CTRL_MAX_TOOL_ROUNDS || 150));
@@ -72,8 +69,6 @@ type ActiveTurn = {
 const activeTurns = new Map<number, Set<ActiveTurn>>();
 const turnLane = (botId: number, channelId: number, threadRootId: number): string => `${botId}:${channelId}:${threadRootId}`;
 const meaningfulAnswer = (value: string): boolean => value.replace(/[\s*_~`#>\-[\](){}|.!?,:;]+/g, "").length > 0;
-
-
 export function cancelChannelTurns(channelId: number): void {
   for (const turn of activeTurns.get(channelId) || []) {
     turn.controller.abort("channel-lifecycle");
@@ -89,7 +84,6 @@ export function cancelChannelTurns(channelId: number): void {
     repaintAgentQueue(Number(turn.bot_id), channelId, Number(turn.thread_root_id));
   }
 }
-
 /** Stop only the active turn in one thread, preserving everything streamed so
  * far and arming a one-shot, backend-only continuation hint. */
 export function stopThreadTurn(channelId: number, threadRootId: number): { stopped: boolean; messageId?: number } {
@@ -134,22 +128,17 @@ export function stopThreadTurn(channelId: number, threadRootId: number): { stopp
   broadcastToChannel(channelId, { type: "agent_turn_stopped", channelId, rootMessageId: threadRootId, messageId: turn.messageId });
   return { stopped: true, messageId: turn.messageId };
 }
-
 const turnIsActive = (channelId: number, signal: AbortSignal): boolean =>
   !signal.aborted && q1("SELECT status FROM channels WHERE id=?", channelId)?.status === "active";
-
 function requireActiveTurn(channelId: number, signal: AbortSignal): void {
   if (!turnIsActive(channelId, signal)) throw new DOMException("Channel turn cancelled.", "AbortError");
 }
-
 export type RuntimePromptTiers = { identity: string; operating: string; context: string };
-
 /** Keep stable identity and factual capabilities separate from volatile turn
  * context. This also gives provider prefix caches a stable compact prefix. */
 function skipperControlAuthorized(channelId: number, requestUserId: number, hostAuthorized: boolean): boolean {
   return hostAuthorized || Boolean(requestUserId && q1("SELECT 1 FROM channels WHERE id=? AND personal_main_owner_id=?", channelId, requestUserId));
 }
-
 function systemPromptTiers(bot: Row, agent: RuntimeAgent | undefined, channelId: number, hostAuthorized: boolean, task = "", requestUserId = 0): RuntimePromptTiers {
   const channel = q1("SELECT name, purpose FROM channels WHERE id=?", channelId);
   if (agent?.kind === "skipper") {
@@ -199,13 +188,11 @@ function systemPromptTiers(bot: Row, agent: RuntimeAgent | undefined, channelId:
   const operating = [
     visiting
       ? "Contribute only the expertise requested in this thread. No shell, workspace, or durable-memory capability is attached to this invitation."
-      : "You own an isolated persistent Linux computer for this channel. Its durable workspace is /workspace. You have direct shell, internet, SSH, package-install, file, memory, and listed-tool autonomy inside it. Routine commands, downloads, browsing, installations, and network access do not require Skipper or user approval.",
+      : "You own an isolated persistent Linux computer for this channel. Its durable workspace is /workspace. You have direct shell, internet, SSH, package-install, file, memory, and listed-tool autonomy inside it. Routine commands, downloads, browsing, installations, and network access do not require user approval.",
     visiting ? "" : "Own the requested outcome. Inspect and act instead of returning tutorials, interviews, rationalizations, or plans for work you can perform. If you make the wrong artifact or implementation choice, acknowledge it briefly and fix it; do not defend the mistake.",
     visiting ? "" : "An imperative such as install, set up, make, fix, or can YOU do it authorizes you to perform the work with your tools. Never replace that request with commands for the user to run. Never say you are checking, fetching, creating, or continuing unless you actually invoke the relevant tool in this turn.",
     visiting ? "" : "Workspace file contracts: Markdown for notes and documents; plain text source files for code. /workspace/whiteboards holds `.whiteboard.json` Excalidraw scenes and /workspace/presentations holds `.slides.json` decks — these two folders are rendered by exact schemas, so never place .html decks or invented JSON formats there. When a request supplies a format contract for a folder, follow it exactly.",
     "Treat tool results as evidence. Retry transient failures with a bounded changed strategy, stop repeating unchanged failures, and verify before claiming success.",
-    "If work truly crosses the resident boundary—host/native state, credentials, another channel, fleet lifecycle, or a missing capability—call Skipper once with the exact operation and evidence. Do not escalate routine shell, SSH, internet, download, or resident-computer work.",
-    visiting ? "" : "If resident commands cannot create network sockets or consistently fail with Permission denied, No route to host, DNS resolution failures, or equivalent machine-wide egress evidence, treat that as a broken resident-computer boundary: call Skipper directly with the failed probe and original outcome, then resume after hand-back. Do not answer with a Docker, curl, SSH, or package-install tutorial.",
     visiting ? "" : "Use ask_user only for consequential human judgment, missing credentials the human must supply, external authority, or an irreversible commitment. Difficulty and harmless implementation choices are not blockers.",
     visiting ? "" : captainTextingPrompt(true, "resident").operating,
     "Use Markdown. Keep answers focused and attach user-facing artifacts rather than only naming a path.",
@@ -218,13 +205,11 @@ function systemPromptTiers(bot: Row, agent: RuntimeAgent | undefined, channelId:
   ].filter(Boolean).join("\n\n");
   return { identity, operating, context };
 }
-
 export function runtimePromptTiersForChannel(botId: number, channelId: number, hostAuthorized = false, task = "", requestUserId = 0): RuntimePromptTiers {
   const bot = q1("SELECT * FROM bots WHERE id=?", botId);
   if (!bot) throw new Error("Bot not found.");
   return systemPromptTiers(bot, agentForBot(botId) as RuntimeAgent | undefined, channelId, hostAuthorized, task, requestUserId);
 }
-
 function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boolean, channelId: number, requestUserId: number, hostAuthorizedComputerIds?: number[]): unknown[] | undefined {
   const admittedComputers = hostAuthorizedComputerIds == null ? null : new Set(normalizedAuthorizationComputerIds(hostAuthorizedComputerIds));
   const computers = q("SELECT computer_id FROM bot_computers WHERE bot_id=?", bot.id).filter((row) => agent?.kind !== "skipper" || !hostAuthorized || admittedComputers == null || admittedComputers.has(Number(row.computer_id)));
@@ -527,9 +512,9 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
             blocker_kind: {
               type: "string",
               enum: ["human_judgment", "missing_credentials", "external_authority", "irreversible_commitment"],
-              description: "The narrow human-only boundary. If none applies, do not call ask_user; act, inspect, or call Skipper instead.",
+              description: "The narrow human-only boundary. If none applies, do not call ask_user; act or inspect instead.",
             },
-            evidence: { type: "string", description: "What you inspected or attempted and why neither your private computer nor Skipper can resolve this without a human answer." },
+            evidence: { type: "string", description: "What you inspected or attempted and why your private computer cannot resolve this without a human answer." },
             intro: { type: "string", description: "Short reason these answers are needed." },
             questions: {
               type: "array", minItems: 1, maxItems: 3,
@@ -573,7 +558,7 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       type: "function",
       function: {
         name: "request_skill",
-        description: `Ask Skipper to permanently provision one skill from the known workspace catalog. Available slugs: ${listSkills().map((skill) => skill.slug).join(", ")}.`,
+        description: `Request permanent provisioning of one skill from the known workspace catalog. Available slugs: ${listSkills().filter((skill) => String(skill.slug) !== "skipper-escalation").map((skill) => skill.slug).join(", ")}.`,
         parameters: { type: "object", properties: { skill: { type: "string" }, reason: { type: "string" } }, required: ["skill", "reason"] },
       },
     });
@@ -586,16 +571,12 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
       },
     });
   }
-  if (agent?.kind === "channel") tools.push({
+  if (agent?.kind === "channel" && !visiting) tools.push({
     type: "function",
     function: {
-      name: "call_skipper",
-      description: "Invoke the workspace-wide Skipper in this thread for host scope, cross-channel scope, credentials, connectors, or missing capabilities.",
-      parameters: {
-        type: "object",
-        properties: { reason: { type: "string", description: "What is needed and why it is outside this channel world." } },
-        required: ["reason"],
-      },
+      name: "silent_success",
+      description: "Explicitly complete this turn successfully without publishing a conversation reply. Use only after requested side effects are complete and a user-facing response is intentionally unnecessary; audit and tool evidence remain durable.",
+      parameters: { type: "object", properties: { reason: { type: "string", description: "Short audit reason why no reply should be published." } }, required: ["reason"] },
     },
   });
   // Durable re-entry for async resident work and one-shot Skipper reminders.
@@ -687,13 +668,11 @@ function toolsFor(bot: Row, agent: RuntimeAgent | undefined, hostAuthorized: boo
   }
   return tools.length ? tools : undefined;
 }
-
 /** Narrow diagnostic surface used by integration coverage to prove the exact
  * production tool set without duplicating its capability rules. */
 export function runtimeToolNamesForChannel(botId: number, channelId: number, hostAuthorized = false, requestUserId = 0): string[] {
   return runtimeToolDefinitionsForChannel(botId, channelId, hostAuthorized, requestUserId).map((tool) => tool.name);
 }
-
 /** Narrow diagnostic surface for verifying capability descriptions that carry
  * operationally important safety/automation semantics. */
 export function runtimeToolDefinitionsForChannel(botId: number, channelId: number, hostAuthorized = false, requestUserId = 0): { name: string; description: string }[] {
@@ -706,7 +685,6 @@ export function runtimeToolDefinitionsForChannel(botId: number, channelId: numbe
       description: String((tool as { function?: { description?: string } }).function?.description || ""),
     })).filter((tool) => Boolean(tool.name));
 }
-
 export function validateAskUserInput(args: Record<string, unknown>): { valid: boolean; error: string } {
   const blockerKind = String(args.blocker_kind || "");
   const evidence = String(args.evidence || "").trim();
@@ -721,7 +699,6 @@ export function validateAskUserInput(args: Record<string, unknown>): { valid: bo
   if (!validQuestions.length) return { valid: false, error: "ask_user requires at least one question with two valid options." };
   return { valid: true, error: "" };
 }
-
 export async function generateAndAttachImage(
   channelId: number,
   messageId: number,
@@ -741,7 +718,6 @@ export async function generateAndAttachImage(
   writeFileSync(join(channelFiles(channelId), fileName), await generator(prompt, signal));
   return attachWorkspaceFileToMessage(channelId, messageId, threadId, relativePath, actor, fileName);
 }
-
 /**
  * Map a stored attachments.workspace_path (world-relative: files/… or workspace/…)
  * to the agent-facing absolute path under /workspace.
@@ -915,6 +891,15 @@ export async function buildContext(bot: Row, agent: RuntimeAgent | undefined, ch
     });
   }
 
+  if (!wakeTrigger) {
+    const pending = q1("SELECT id,due_at,reason,check_hint,attempts,max_attempts FROM agent_followups WHERE thread_id=? AND status='pending' ORDER BY due_at,id LIMIT 1", threadId);
+    if (pending) {
+      const recent = q("SELECT tool,input_summary,result_summary,status,created FROM tool_actions WHERE thread_id=? ORDER BY id DESC LIMIT 8", threadId).reverse();
+      const activity = recent.map((a) => `- ${a.tool} [${a.status}]: ${String(a.input_summary || "").slice(0, 300)}${a.result_summary ? `\n  Result: ${String(a.result_summary).slice(0, 600)}` : ""}`).join("\n");
+      messages.push({ role: "system", content: `<pending-followup-continuity>\nA durable follow-up is pending in this thread. Use this runtime state and your recent work to answer intervening human messages naturally; do not claim you lack status and do not echo this block.\nFollow-up #${pending.id}; due ${new Date(Number(pending.due_at)).toISOString()}; reason: ${pending.reason}; check: ${pending.check_hint || "reason-defined check"}; attempt ${Number(pending.attempts || 0) + 1}/${pending.max_attempts}.\nRecent tool activity:\n${activity || "(none recorded)"}\n</pending-followup-continuity>` });
+    }
+  }
+
   if (!fresh && !wakeTrigger) {
     const threadRow = q1("SELECT stop_requested FROM threads WHERE id=?", threadId);
     if (threadRow?.stop_requested) {
@@ -936,26 +921,14 @@ export async function buildContext(bot: Row, agent: RuntimeAgent | undefined, ch
     }
   }
 
-  const rows = fresh
-    ? q("SELECT * FROM messages WHERE id=?", triggerId)
-    : q("SELECT * FROM messages WHERE (id=? OR parent_id=?) AND id<=? ORDER BY id", threadRootId, threadRootId, triggerId);
-  // Attachments are joined only for messages already in this channel/thread window.
-  const attachmentByMessage = attachmentsForMessages(
-    channelId,
-    rows.map((message) => Number(message.id)),
-  );
-  for (const message of rows) {
-    const body = String(message.body || "");
-    // Internal wakes are system context only — never assistant/user transcript lines.
-    if (isInternalMessageBody(body)) continue;
-    if (Number(message.bot_id) === Number(bot.id)) { messages.push({ role: "assistant", content: body }); continue; }
-    const messageId = Number(message.id);
-    const attached = attachmentByMessage.get(messageId) || [];
-    messages.push({
-      role: "user",
-      content: userMessageContentWithAttachments(body, String(bot.name), messageId, attached),
-    });
-  }
+  // Canonical operational history is the authoritative model transcript. It
+  // includes tool calls/results and follow-up events, not only visible chat.
+  const operational = operationalThreadMessages(threadId, triggerId);
+  const operationalIds = operational.map((entry) => Number(entry.source_message_id || 0)).filter(Boolean);
+  const operationalAttachments = attachmentsForMessages(channelId, operationalIds);
+  messages.push(...operational.map((entry) => entry.role === "user" && entry.source_message_id
+    ? { role: "user", content: userMessageContentWithAttachments(entry.content, String(bot.name), entry.source_message_id, operationalAttachments.get(entry.source_message_id) || []) }
+    : entry as ChatMsg));
   return messages;
 }
 
@@ -1533,6 +1506,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
   const exactToolFailures = new Map<string, number>();
   const outcomeRequest = String(q1("SELECT body FROM messages WHERE id=?", triggerId)?.body || "");
   let awaitingQuestions = false;
+  let intentionalSilentSuccess = false;
   let handedBack = false;
   let turnFailed = false;
   const paintBody = (text: string): void => {
@@ -1547,6 +1521,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
     if (turnId && writerGeneration && !ownsAgentTurnWriter(turnId, writerGeneration)) return;
     responseBody = text;
     paintBody(responseBody);
+    appendMessageHistory(msgId);
   };
   /** Body while tools/thinking are mid-flight: keep last real thought, never flash back to Working… */
   const paintStickyWorkingBody = (): void => {
@@ -1619,8 +1594,8 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
       const content = result.content;
       const toolCalls = result.toolCalls;
       // Rough live totals: sum provider-reported prompt/completion tokens per round.
-      if (result.usage && (result.usage.input_tokens || result.usage.output_tokens)) {
-        const totals = addThreadUsage(threadId, result.usage.input_tokens, result.usage.output_tokens);
+      if (result.usage) {
+        const totals = addThreadUsage(threadId, result.usage.input_tokens, result.usage.output_tokens, result.usage.cached_input_tokens);
         broadcastToChannel(channelId, {
           type: "thread_usage",
           channelId,
@@ -1628,6 +1603,8 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
           threadId,
           input_tokens: totals.input_tokens,
           output_tokens: totals.output_tokens,
+          cached_input_tokens: totals.cached_input_tokens,
+          model_calls: totals.model_calls,
         });
       }
       requireActiveTurn(channelId, controller.signal);
@@ -1680,6 +1657,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                     ? `${Array.isArray(args.questions) ? args.questions.length : 0} structured question(s)`
                 : String(args.content || "");
           const actionId = recordAction(Number(agent?.id || 0), threadId, channelId, name, input, actor);
+          appendThreadHistory(threadId, "tool_call", { call_id: toolCall.id, name, arguments: args }, "tool_action", actionId, toolCall.id);
           const progressId = addProgress("tool", `${name.replaceAll("_", " ")}: ${input || "running"}`);
           let result = "";
           const failureSignature = `${name}:${JSON.stringify(args, Object.keys(args).sort())}`;
@@ -1745,9 +1723,9 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               emit();
               result = `Generated and attached ${attached.name}.`;
             } else if (name === "list_skills" && agent?.id && !visiting) {
-              result = JSON.stringify({ skills: skillsForAgent(Number(agent.id)).filter((skill) => !skill.arsenal_locked).map((skill) => ({ slug: skill.slug, name: skill.name, description: skill.description, category: skill.category, source: skill.source })) });
+              result = JSON.stringify({ skills: skillsForAgent(Number(agent.id)).filter((skill) => !skill.arsenal_locked && (agent.kind !== "channel" || String(skill.slug) !== "skipper-escalation")).map((skill) => ({ slug: skill.slug, name: skill.name, description: skill.description, category: skill.category, source: skill.source })) });
             } else if (name === "read_skill" && agent?.id && !visiting) {
-              result = JSON.stringify(readAgentSkill(Number(agent.id), String(args.slug || "")));
+              result = agent.kind === "channel" && String(args.slug || "") === "skipper-escalation" ? "Error: Skill not available." : JSON.stringify(readAgentSkill(Number(agent.id), String(args.slug || "")));
             } else if (name === "search_channel_history" && agent?.id && !visiting) {
               const historyChannelId = agent.kind === "skipper" && args.channel && skipperControlAuthorized(channelId, requestUserId, hostAuthorized)
                 ? Number(scopedChannel(args.channel, requestUserId, hostAuthorized).id) : channelId;
@@ -1826,9 +1804,18 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
             } else if (name === "text_captain" && agent?.kind === "skipper" && isMainChannel(channelId)
               && skipperControlAuthorized(channelId, requestUserId, hostAuthorized)) {
               result = await sendCaptainTextForTurn({ triggerId, threadRootId, botId: Number(bot.id), ownerUserId: requestUserId, message: String(args.message || "") });
+            } else if (name === "silent_success" && agent?.kind === "channel" && !visiting) {
+              const reason = String(args.reason || "").trim();
+              if (!reason) result = "Error: silent_success requires an audit reason.";
+              else { intentionalSilentSuccess = true; result = `Silent success accepted: ${reason.slice(0, 500)}`; }
             } else if (name === "schedule_followup" && ((agent?.kind === "channel" && !visiting)
               || (agent?.kind === "skipper" && isMainChannel(channelId) && skipperControlAuthorized(channelId, requestUserId, hostAuthorized)))) {
               try {
+                const update = args.user_update && typeof args.user_update === "object" ? args.user_update as Record<string, unknown> : {};
+                const updateParts = ["completed", "observed_state", "wait_reason", "next_check"].map((key) => String(update[key] || "").trim());
+                if (updateParts.some((part) => part.length < 8) || /^(still working|waiting|check later|i.ll check later)[.!]?$/i.test(updateParts.join(" "))) {
+                  throw new Error("schedule_followup requires a substantive user_update with completed work, directly observed state, wait reason, and next check.");
+                }
                 const scheduled = scheduleRuntimeFollowup({
                   agentKind: String(agent.kind),
                   agentId: Number(agent.id),
@@ -1845,7 +1832,9 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                   hostAuthorizedComputerIds: admittedHostComputerIds,
                   observedState: args.observed_state ? String(args.observed_state) : undefined,
                 });
-                result = `Scheduled durable follow-up #${scheduled.id} in ${scheduled.delay_seconds}s (due_at=${scheduled.due_at}). You will be re-invoked on this thread automatically; no silent wait exists without this.`;
+                const dueLabel = new Date(scheduled.due_at).toLocaleString();
+                setBody(`${updateParts[0]} ${updateParts[1]} ${updateParts[2]} ${updateParts[3]} Next check: ${dueLabel}.`);
+                result = `Scheduled durable follow-up #${scheduled.id} in ${scheduled.delay_seconds}s (due_at=${scheduled.due_at}); the required user update was published.`;
               } catch (error) {
                 result = `Error: ${(error as Error).message}`;
               }
@@ -1913,8 +1902,8 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
               result = `Installed catalog skill ${skill.name} at an immutable revision after a clean security scan${target?.name ? `; permanently assigned it to @${target.name}` : ""}.`;
               run("INSERT INTO channel_activity (channel_id,thread_id,kind,summary,actor_type,created) VALUES (?,?,'skill',?,'skipper',?)", channelId, threadId, result, now());
             } else if (name === "request_skill" && agent?.kind === "channel") {
-              const skill = requestSkill(Number(agent.id), channelId, threadId, String(args.skill || ""), String(args.reason || ""));
-              result = `Skipper permanently provisioned ${skill.name}. It is now part of my arsenal.`;
+              if (String(args.skill || "") === "skipper-escalation") result = "Error: Skill not available.";
+              else { const skill = requestSkill(Number(agent.id), channelId, threadId, String(args.skill || ""), String(args.reason || "")); result = `${skill.name} was permanently provisioned into my arsenal.`; }
             } else if (name === "propose_skill" && agent?.kind === "channel") {
               const proposal = proposeSkill({ agentId: Number(agent.id), channelId, threadId, name: String(args.name || ""), description: String(args.description || ""), instructions: String(args.instructions || ""), evidence: String(args.evidence || ""), rationale: String(args.rationale || "") });
               result = `Skipper approved the proposed ${proposal.name} skill, added it to the shared arsenal, and permanently assigned it to me.`;
@@ -1955,6 +1944,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
           }
           const actionStatus = toolActionStatus(result);
           finishAction(actionId, threadId, channelId, result, actionStatus, actor);
+          appendThreadHistory(threadId, "tool_result", { call_id: toolCall.id, name, result, status: actionStatus }, "tool_action_result", actionId, toolCall.id);
           updateProgress(progressId, `${name.replaceAll("_", " ")}: ${input || "action"}\n${result}`.trim(), actionStatus === "failed" ? "failed" : actionStatus === "running" ? "running" : "complete");
           if (actionStatus === "failed") {
             exactToolFailures.set(failureSignature, (exactToolFailures.get(failureSignature) || 0) + 1);
@@ -1972,11 +1962,21 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
           }
           messages.push({ role: "tool", tool_call_id: toolCall.id, name, content: result });
         }
+        if (intentionalSilentSuccess) {
+          setBody("[silent-success]");
+          run("UPDATE agent_progress SET status='complete',updated=? WHERE message_id=? AND status='running'", now(), msgId);
+          stampTurnEnd();
+          refreshThreadSummary(threadRootId);
+          setStatus(agent, channelId, "ready");
+          broadcastToChannel(channelId, { type: "message_deleted", channelId, id: msgId, deleted_ids: [msgId], parent_id: threadRootId, parent: serializeMessage(threadRootId) });
+          if (turnId) { run("UPDATE agent_turns SET completion_mode='silent_success' WHERE id=?", turnId); finalizeAgentTurn(turnId, "completed", "", "running", writerGeneration); }
+          return;
+        }
         // A successful durable wake is the continuation. End this turn at the
         // tool boundary, but retain its message and work log as ordinary thread
         // context for the scheduled wake.
         if (scheduledSilentFollowup) {
-          if (!responseBody.trim()) setBody(liveThought.trim() || "_Waiting for the scheduled follow-up._");
+          if (!responseBody.trim()) throw new Error("A successful schedule_followup did not publish its required user update.");
           run("UPDATE agent_progress SET status='complete',updated=? WHERE message_id=? AND status='running'", now(), msgId);
           refreshThreadSummary(threadRootId);
           setStatus(agent, channelId, "waiting");
@@ -2022,7 +2022,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
       // turn. If a wake only echoed its internal scaffold, retain the work log
       // with a neutral body instead of deleting the whole turn.
       if (silentReschedule) {
-        if (!responseBody.trim()) setBody(liveThought.trim() || "_Waiting for the scheduled follow-up._");
+        if (!responseBody.trim()) throw new Error("A successful schedule_followup did not publish its required user update.");
         stampTurnEnd();
         run("UPDATE agent_progress SET status='complete',updated=? WHERE message_id=? AND status='running'", now(), msgId);
         refreshThreadSummary(threadRootId);
@@ -2120,7 +2120,7 @@ const safeParse = (value: string): Record<string, unknown> => { try { return JSO
 /** Stream an OpenAI-compatible chat completion, invoking onDelta for content tokens. */
 async function streamCompletion(
   endpoint: { base_url: string; api_key: string }, model: string, messages: ChatMsg[], tools: unknown[] | undefined, onDelta: (delta: string) => void, signal?: AbortSignal,
-): Promise<{ content: string; toolCalls: ToolCall[]; usage: { input_tokens: number; output_tokens: number } }> {
+): Promise<{ content: string; toolCalls: ToolCall[]; usage: { input_tokens: number; output_tokens: number; cached_input_tokens: number } }> {
   const base = endpoint.base_url.replace(/\/$/, "");
   const headers = { "content-type": "application/json", ...(endpoint.api_key ? { authorization: `Bearer ${endpoint.api_key}` } : {}) };
   const bodyBase = { model, messages, stream: true as const, ...(tools ? { tools, tool_choice: "auto" as const } : {}) };
@@ -2148,7 +2148,7 @@ async function streamCompletion(
 
   let content = "";
   const toolMap = new Map<number, ToolCall>();
-  let usage = { input_tokens: 0, output_tokens: 0 };
+  let usage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 };
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -2165,13 +2165,12 @@ async function streamCompletion(
       if (payload === "[DONE]") continue;
       let chunk: {
         choices?: { delta?: { content?: string; tool_calls?: { index: number; id?: string; function?: { name?: string; arguments?: string } }[] } }[];
-        usage?: { prompt_tokens?: number; completion_tokens?: number; input_tokens?: number; output_tokens?: number };
+        usage?: { prompt_tokens?: number; completion_tokens?: number; input_tokens?: number; output_tokens?: number; cached_tokens?: number; prompt_tokens_details?: { cached_tokens?: number }; input_tokens_details?: { cached_tokens?: number } };
       };
       try { chunk = JSON.parse(payload); } catch { continue; }
       if (chunk.usage) {
-        const input = Number(chunk.usage.prompt_tokens ?? chunk.usage.input_tokens ?? 0) || 0;
-        const output = Number(chunk.usage.completion_tokens ?? chunk.usage.output_tokens ?? 0) || 0;
-        if (input || output) usage = { input_tokens: input, output_tokens: output };
+        const normalized = normalizeModelUsage(chunk.usage);
+        if (normalized.input_tokens || normalized.output_tokens) usage = normalized;
       }
       const delta = chunk.choices?.[0]?.delta;
       if (!delta) continue;

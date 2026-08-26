@@ -476,7 +476,7 @@ async function openChannel(id: number, view: ChannelView = "chat", threadRootId:
   if (S.channelId && S.channelId !== id) persistCurrentChannelView();
   const requestedChannel = S.channels.find((channel) => channel.id === id);
   if (view === "texts" && !textsAvailable(requestedChannel)) view = "chat";
-  S.channelId = id; S.threadRoot = null; S.threadFollowup = null; S.threadStopContinuation = false; S.threadUsage = { input_tokens: 0, output_tokens: 0 }; S.view = view; S.globalThreadsOpen = false;
+  S.channelId = id; S.threadRoot = null; S.threadFollowup = null; S.threadStopContinuation = false; S.threadUsage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, model_calls: 0 }; S.view = view; S.globalThreadsOpen = false;
   applyChannelViewToState(id);
   // Full Terminal tab is separate from the docked header terminal.
   if (view === "terminal") S.terminalOpen = false;
@@ -669,7 +669,7 @@ function onEvent(e: any): void {
     if (!S.threadRoot || Number(e.rootMessageId) !== Number(S.threadRoot.id)) return;
     S.threadUsage = {
       input_tokens: Math.max(0, Number(e.input_tokens || 0)),
-      output_tokens: Math.max(0, Number(e.output_tokens || 0)),
+      output_tokens: Math.max(0, Number(e.output_tokens || 0)), cached_input_tokens: Math.max(0, Number(e.cached_input_tokens || 0)), model_calls: Math.max(0, Number(e.model_calls || 0)),
     };
     // Surgical DOM update — no full thread rebuild (keeps scroll / work-log open state).
     paintThreadCtx();
@@ -2800,7 +2800,7 @@ async function openThread(root: Message, replaceRoute = false): Promise<void> {
   S.threadStopContinuation = Boolean((data as { stop_requested?: boolean }).stop_requested);
   S.threadUsage = {
     input_tokens: Math.max(0, Number(data.usage?.input_tokens || 0)),
-    output_tokens: Math.max(0, Number(data.usage?.output_tokens || 0)),
+    output_tokens: Math.max(0, Number(data.usage?.output_tokens || 0)), cached_input_tokens: Math.max(0, Number(data.usage?.cached_input_tokens || 0)), model_calls: Math.max(0, Number(data.usage?.model_calls || 0)),
   };
   // Ensure a shell that hosts the RHS thread pane. Workflows opens run threads
   // in place; every other surface bounces to chat (thread may split with docked terminal).
@@ -2819,7 +2819,7 @@ async function openThread(root: Message, replaceRoute = false): Promise<void> {
 function closeThread(): void {
   S.threadRoot = null;
   S.threadFollowup = null;
-  S.threadUsage = { input_tokens: 0, output_tokens: 0 };
+  S.threadUsage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, model_calls: 0 };
   persistCurrentChannelView();
   if (S.view === "chat" && (S.terminalOpen || S.notesOpen)) renderRhs();
   else document.getElementById("thread")?.remove();
@@ -2847,8 +2847,8 @@ function paintThreadCtx(): void {
   if (!el) return;
   const label = threadUsageLabel();
   el.textContent = label;
-  el.setAttribute("title", `Cumulative provider-reported usage for this thread · ${S.threadUsage.input_tokens} input tokens · ${S.threadUsage.output_tokens} output tokens. This is usage, not remaining context-window capacity.`);
-  el.classList.toggle("hidden", !(S.threadUsage.input_tokens || S.threadUsage.output_tokens));
+  el.setAttribute("title", `Cumulative provider-reported usage across repeated model calls · ${S.threadUsage.input_tokens} input tokens (${S.threadUsage.cached_input_tokens} cached) · ${S.threadUsage.output_tokens} output tokens · ${S.threadUsage.model_calls} calls. This is usage, not visible transcript size or context-window occupancy.`);
+  el.classList.toggle("hidden", !(S.threadUsage.model_calls || S.threadUsage.input_tokens || S.threadUsage.output_tokens));
 }
 
 let threadFollowupTimer: number | null = null;
@@ -2930,11 +2930,11 @@ function paintThreadPanel(
   const composerSnap = preCapturedComposer || captureComposerContinuity(S.threadRoot.id);
   clear(box);
   const channelName = S.channels.find((c) => c.id === S.channelId)?.name || "";
-  const hasUsage = !!(S.threadUsage.input_tokens || S.threadUsage.output_tokens);
+  const hasUsage = !!(S.threadUsage.model_calls || S.threadUsage.input_tokens || S.threadUsage.output_tokens);
   const ctxChip = h("span", {
     id: "thread-ctx",
     class: `thread-ctx select-none font-mono text-[10px] font-normal tracking-tight text-faint tabular-nums ${hasUsage ? "" : "hidden"}`,
-    title: `Cumulative provider-reported usage for this thread · ${S.threadUsage.input_tokens} input tokens · ${S.threadUsage.output_tokens} output tokens. This is usage, not remaining context-window capacity.`,
+    title: `Cumulative provider-reported usage across repeated model calls · ${S.threadUsage.input_tokens} input tokens (${S.threadUsage.cached_input_tokens} cached) · ${S.threadUsage.output_tokens} output tokens · ${S.threadUsage.model_calls} calls. This is usage, not visible transcript size or context-window occupancy.`,
   }, threadUsageLabel());
   const followupBanner = threadFollowupBanner();
   box.append(

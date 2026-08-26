@@ -55,7 +55,7 @@ try {
   });
 
   const toolNames = runtimeToolNamesForChannel(botId, channelId);
-  const requiredTools = ["run_command", "call_skipper", "schedule_followup", "schedule_workflow", "request_skill", "propose_skill"];
+  const requiredTools = ["run_command", "schedule_followup", "schedule_workflow", "request_skill", "propose_skill", "silent_success"];
   record("resident_autonomy_surface", requiredTools.every((name) => toolNames.includes(name)), {
     required: requiredTools,
     available: toolNames.filter((name) => requiredTools.includes(name)),

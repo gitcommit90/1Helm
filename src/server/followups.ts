@@ -1,5 +1,5 @@
 import { q, q1, run, now, type Row } from "./db.ts";
-import { createMessage, isInternalMessageBody } from "./store.ts";
+import { appendThreadHistory, createMessage, isInternalMessageBody } from "./store.ts";
 import { broadcastToChannel } from "./events.ts";
 import { agentForBot, ensureThread, refreshThreadSummary, setAgentStatus, threadIdForRoot } from "./agents.ts";
 import { ensureChannelComputerRunning, satisfyObligation, upsertObligation } from "./channel-computers.ts";
@@ -73,8 +73,19 @@ export function followupToolDefinition(skipper: boolean): unknown {
           check_hint: { type: "string", description: "Optional concrete command or API check to run on wake." },
           max_attempts: { type: "integer", minimum: 1, maximum: 200, description: "Optional cap on wake cycles (default 48)." },
           observed_state: { type: "string", enum: ["confirmed_running"], description: "On an automatic follow-up wake only: set this only after an available tool directly confirms the task is still running. Omit it when first scheduling, when complete, or when state is unknown." },
+          user_update: {
+            type: "object",
+            description: "Substantive status published before this turn waits.",
+            properties: {
+              completed: { type: "string", description: "What was completed so far." },
+              observed_state: { type: "string", description: "The current state directly observed with a tool or API." },
+              wait_reason: { type: "string", description: "Why another check must wait." },
+              next_check: { type: "string", description: "What the next wake will inspect or finish." },
+            },
+            required: ["completed", "observed_state", "wait_reason", "next_check"],
+          },
         },
-        required: ["delay_seconds", "reason"],
+        required: ["delay_seconds", "reason", "user_update"],
       },
     },
   };
@@ -219,6 +230,7 @@ export function scheduleAgentFollowup(opts: ScheduleOpts): { id: number; due_at:
     now(),
   );
   refreshThreadSummary(opts.rootMessageId);
+  appendThreadHistory(opts.threadId, "followup", { id, due_at: dueAt, reason, check_hint: String(opts.checkHint || ""), status: "pending", attempts: 0, max_attempts: maxAttempts }, "followup", id, `followup:${id}`);
   const followup = {
     id,
     due_at: dueAt,
@@ -389,6 +401,19 @@ export function bumpThreadFollowup(threadId: number): {
   return { ok: true, followup_id: id, due_at: due };
 }
 
+export function cancelPendingFollowup(threadId: number, followupId: number): { ok: true; followup: Record<string, unknown> | null } | { ok: false; code: 404 | 409; error: string } {
+  const row = q1("SELECT id,thread_id,channel_id,root_message_id,status FROM agent_followups WHERE id=?", followupId);
+  if (!row || Number(row.thread_id) !== threadId) return { ok: false, code: 404, error: "Follow-up not found." };
+  if (String(row.status) !== "pending") return { ok: false, code: 409, error: String(row.status) === "running" ? "Follow-up has already started." : "Follow-up is no longer pending." };
+  const changed = run("UPDATE agent_followups SET status='cancelled',updated=?,last_error='cancelled by Captain' WHERE id=? AND thread_id=? AND status='pending'", now(), followupId, threadId).changes;
+  if (!changed) return { ok: false, code: 409, error: "Follow-up has already started." };
+  satisfyObligation(Number(row.channel_id), "followup", String(followupId));
+  appendThreadHistory(threadId, "followup", { id: followupId, status: "cancelled", reason: "cancelled by Captain" }, "followup_cancel", followupId, `followup:${followupId}`);
+  const followup = threadFollowupView(threadId);
+  broadcastToChannel(Number(row.channel_id), { type: "followup", channelId: Number(row.channel_id), threadId, rootMessageId: Number(row.root_message_id), followup });
+  return { ok: true, followup };
+}
+
 export function cancelThreadFollowups(threadId: number, reason = "cancelled"): number {
   for (const row of q("SELECT id,channel_id FROM agent_followups WHERE thread_id=? AND status IN ('pending','running')", threadId)) satisfyObligation(Number(row.channel_id), "followup", String(row.id));
   return run(
@@ -436,22 +461,12 @@ function finishFollowup(
   error = "",
   nextDueAt?: number,
 ): boolean {
-  if (status === "pending" && nextDueAt) {
-    return run(
-      "UPDATE agent_followups SET status='pending', due_at=?, last_error=?, updated=? WHERE id=? AND status='running'",
-      nextDueAt,
-      error.slice(0, 500),
-      now(),
-      id,
-    ).changes > 0;
-  }
-  return run(
-    "UPDATE agent_followups SET status=?, last_error=?, updated=? WHERE id=? AND status='running'",
-    status,
-    error.slice(0, 500),
-    now(),
-    id,
-  ).changes > 0;
+  const row = q1("SELECT thread_id FROM agent_followups WHERE id=?", id);
+  const changed = status === "pending" && nextDueAt
+    ? run("UPDATE agent_followups SET status='pending',due_at=?,last_error=?,updated=? WHERE id=? AND status='running'", nextDueAt, error.slice(0, 500), now(), id).changes > 0
+    : run("UPDATE agent_followups SET status=?,last_error=?,updated=? WHERE id=? AND status='running'", status, error.slice(0, 500), now(), id).changes > 0;
+  if (changed && row) appendThreadHistory(Number(row.thread_id), "followup", { id, status, error, next_due_at: nextDueAt || null }, "followup_finish", id, `followup:${id}`);
+  return changed;
 }
 
 /** Fire one due follow-up: create a wake trigger and run the agent turn. */
@@ -467,6 +482,7 @@ async function fireFollowup(row: Row): Promise<void> {
   const checkHint = String(row.check_hint || "");
   const hostAuthorized = String(agentForBot(botId)?.kind || "") === "skipper" && Number(row.host_authorized || 0) === 1;
   const hostAuthorizedComputerIds = hostAuthorized ? storedComputerIds(row.host_authorized_computer_ids) : [];
+  appendThreadHistory(threadId, "followup", { id, status: "wake_started", attempts, max_attempts: maxAttempts, reason, check_hint: checkHint }, "followup_wake", id, `followup:${id}`);
 
   const channel = q1("SELECT status FROM channels WHERE id=?", channelId);
   if (!channel || channel.status !== "active") {

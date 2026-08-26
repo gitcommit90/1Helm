@@ -3,7 +3,9 @@ import { isInternalMessageBody } from "./store.ts";
 import { recallTranscriptForAgent, syncTranscriptForAgent } from "./memory.ts";
 
 const MAX_SYNC_BATCH = 250;
-const MAX_SYNC_MESSAGES = 5_000;
+const MAX_SYNC_MESSAGES = MAX_SYNC_BATCH;
+const indexing = new Map<string, Promise<number>>();
+const retryAfter = new Map<string, number>();
 
 const eligibleBody = (value: unknown): boolean => {
   const body = String(value || "").trim();
@@ -104,6 +106,17 @@ function dateBound(value: unknown, end = false): number | null {
   return parsed;
 }
 
+
+/** Start one bounded indexing batch without putting it on the retrieval path. */
+function scheduleTranscriptSync(agent: Row, channelId: number): void {
+  const key = `${Number(agent.id)}:${channelId}`;
+  if (indexing.has(key) || Number(retryAfter.get(key) || 0) > Date.now()) return;
+  const job = syncChannelTranscript(agent, channelId, MAX_SYNC_BATCH)
+    .catch(() => { retryAfter.set(key, Date.now() + 60_000); return 0; })
+    .finally(() => indexing.delete(key));
+  indexing.set(key, job);
+}
+
 export async function searchChannelHistory(agent: Row, channelId: number, options: {
   query?: unknown; mode?: unknown; limit?: unknown; from?: unknown; to?: unknown;
 }): Promise<ChannelHistorySearch> {
@@ -113,10 +126,11 @@ export async function searchChannelHistory(agent: Row, channelId: number, option
   const limit = Math.max(1, Math.min(30, Number(options.limit) || 10));
   const from = dateBound(options.from);
   const to = dateBound(options.to, true);
-  const indexed = await syncChannelTranscript(agent, channelId);
+  let indexed = 0;
   let rows: Row[] = [];
   let retrieval: ChannelHistorySearch["retrieval"] = query ? mode : "recent";
   if (query && mode === "semantic") {
+    scheduleTranscriptSync(agent, channelId);
     const hits = await recallTranscriptForAgent(agent, query, Math.min(100, Math.max(24, limit * 5)));
     const ids = hits.map((hit) => Number(hit.metadata?.message_id || 0)).filter(Boolean);
     const rank = new Map(ids.map((id, index) => [id, index]));

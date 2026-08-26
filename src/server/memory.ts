@@ -117,7 +117,7 @@ async function invoke(agent: Row, request: Record<string, unknown>): Promise<Rec
     const output = await new Promise<string>((resolvePromise, rejectPromise) => {
       const child = execFile(python, [BRIDGE], {
         encoding: "utf8",
-        timeout: request.operation === "sync_transcript" ? 120_000 : 20_000,
+        timeout: 20_000,
         maxBuffer: 2 * 1024 * 1024,
         windowsHide: true,
         env: {

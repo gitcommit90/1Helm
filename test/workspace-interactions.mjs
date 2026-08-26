@@ -64,7 +64,7 @@ test("profile, naming, routing, and usage language match the visible product con
   assert.doesNotMatch(settings, /More connections/, "the ambiguous connections heading is gone");
   assert.match(app, /openRoutingPopoverLazy\(event\)/, "the router-symbol header action lazily opens live routing activity");
   assert.match(routing, /popover\.append\(content\)/, "the live routing popover mounts its rendered content");
-  assert.match(app, /Cumulative provider-reported usage for this thread/, "thread token totals are labeled as actual cumulative usage");
+  assert.match(app, /Cumulative provider-reported usage across repeated model calls/, "thread token totals are labeled as actual cumulative usage");
   assert.doesNotMatch(app, /`Ctx /, "usage is not presented as context-window capacity");
 });
 

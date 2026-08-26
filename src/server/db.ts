@@ -8,14 +8,11 @@ export const UNIVERSAL_RESIDENT_SKILL_SLUGS = [
   "outcome-ownership", "blocker-resolution", "skipper-escalation", "capability-discovery",
   "durable-memory", "workspace-artifacts", "quality-verification",
 ] as const;
-
 export const DATA_DIR = process.env.CTRL_DATA_DIR || join(process.cwd(), "data");
 export const UPLOAD_DIR = join(DATA_DIR, "uploads"); mkdirSync(UPLOAD_DIR, { recursive: true });
-
 export const db = new DatabaseSync(join(DATA_DIR, "ctrl-pane.db"));
 db.function("sha256", { deterministic: true }, (value: unknown) => createHash("sha256").update(String(value ?? "")).digest("hex"));
 db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA wal_autocheckpoint = 0; PRAGMA foreign_keys = ON;");
-
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, pass TEXT NOT NULL,
@@ -53,9 +50,7 @@ CREATE TABLE IF NOT EXISTS workspace (
 );
 CREATE INDEX IF NOT EXISTS idx_msg_channel ON messages(channel_id, parent_id, id); CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_id, id); CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id, id);
 `);
-
 export type Row = Record<string, unknown>;
-
 export function q(sql: string, ...params: unknown[]): Row[] {
   return db.prepare(sql).all(...(params as never[])) as Row[];
 }
@@ -66,19 +61,16 @@ export function run(sql: string, ...params: unknown[]): { lastInsertRowid: numbe
   const r = db.prepare(sql).run(...(params as never[]));
   return { lastInsertRowid: Number(r.lastInsertRowid), changes: Number(r.changes) };
 }
-
 /** Workspace names are capped by Unicode code points, never UTF-16 code units. */
 export function normalizeWorkspaceName(value: unknown): string {
   return Array.from(String(value ?? "").trim()).slice(0, 100).join("").trim();
 }
-
 /** Personal #main is Skipper's protected authority channel. It deliberately
  * has no resident agent and can never host a resident as a thread guest. */
 export function isMainChannel(channelId: number): boolean {
   return Boolean(q1(`SELECT 1 FROM channels WHERE id=? AND kind='channel' AND name='main'
     AND personal_main_owner_id IS NOT NULL AND status<>'deleted'`, channelId));
 }
-
 /** Synchronous transaction helper. Never await inside fn. */
 export function tx<T>(fn: () => T): T {
   db.exec("BEGIN IMMEDIATE");
@@ -91,7 +83,6 @@ export function tx<T>(fn: () => T): T {
     throw error;
   }
 }
-
 export function hashPassword(pw: string): string {
   const salt = randomBytes(16);
   const hash = scryptSync(pw, salt, 32);
@@ -105,7 +96,6 @@ export function verifyPassword(pw: string, stored: string): boolean {
 }
 export const newToken = (): string => randomBytes(24).toString("hex");
 export const now = (): number => Date.now();
-
 const addColumn = (table: string, name: string, ddl: string): void => {
   const columns = q(`PRAGMA table_info(${table})`).map((column) => String(column.name));
   if (!columns.includes(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
@@ -149,6 +139,14 @@ export function migrate(): void {
   );
   CREATE INDEX IF NOT EXISTS idx_agent_turns_lane ON agent_turns(bot_id,channel_id,thread_root_id,state,queued_at,id);
   CREATE INDEX IF NOT EXISTS idx_agent_turns_agent_state ON agent_turns(agent_id,state);
+  CREATE TABLE IF NOT EXISTS thread_history (
+    id INTEGER PRIMARY KEY, thread_id INTEGER NOT NULL REFERENCES threads(id) ON DELETE CASCADE, seq INTEGER NOT NULL, kind TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}', source_type TEXT NOT NULL DEFAULT '', source_id INTEGER, span_id TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL,
+    UNIQUE(thread_id,seq), UNIQUE(thread_id,source_type,source_id,kind));
+  CREATE INDEX IF NOT EXISTS idx_thread_history_order ON thread_history(thread_id,seq);
+  CREATE TABLE IF NOT EXISTS thread_history_compactions (
+    id INTEGER PRIMARY KEY, thread_id INTEGER NOT NULL REFERENCES threads(id) ON DELETE CASCADE, covered_through_seq INTEGER NOT NULL,
+    digest TEXT NOT NULL, summary TEXT NOT NULL, created INTEGER NOT NULL, UNIQUE(thread_id,covered_through_seq,digest));
   CREATE TABLE IF NOT EXISTS transcript_memory_index (
     agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -193,7 +191,7 @@ export function migrate(): void {
   );
   CREATE INDEX IF NOT EXISTS idx_routing_usage_user_created ON routing_usage_events(user_id,created DESC);
   `);
-  addColumn("agent_turns", "final_body_hash", "final_body_hash TEXT NOT NULL DEFAULT ''");
+  addColumn("agent_turns", "final_body_hash", "final_body_hash TEXT NOT NULL DEFAULT ''"); addColumn("agent_turns", "completion_mode", "completion_mode TEXT NOT NULL DEFAULT 'normal' CHECK (completion_mode IN ('normal','silent_success'))");
   addColumn("agent_turns", "requested_model", "requested_model TEXT NOT NULL DEFAULT ''");
   addColumn("agent_turns", "requested_provider_id", "requested_provider_id INTEGER");
   addColumn("agent_turns", "model_source", "model_source TEXT NOT NULL DEFAULT ''");
@@ -685,6 +683,8 @@ export function migrate(): void {
   // Per-thread rough model usage (sum of provider-reported prompt/completion tokens).
   addColumn("threads", "input_tokens", "input_tokens INTEGER NOT NULL DEFAULT 0");
   addColumn("threads", "output_tokens", "output_tokens INTEGER NOT NULL DEFAULT 0");
+  addColumn("threads", "cached_input_tokens", "cached_input_tokens INTEGER NOT NULL DEFAULT 0");
+  addColumn("threads", "model_calls", "model_calls INTEGER NOT NULL DEFAULT 0");
   addColumn("threads", "stopped_followup_pending", "stopped_followup_pending INTEGER NOT NULL DEFAULT 0"); addColumn("threads", "skipper_call_approved", "skipper_call_approved INTEGER NOT NULL DEFAULT 0 CHECK (skipper_call_approved IN (0,1))");
   addColumn("threads", "stop_requested", "stop_requested INTEGER NOT NULL DEFAULT 0");
   addColumn("messages", "stopped_followup", "stopped_followup INTEGER NOT NULL DEFAULT 0");

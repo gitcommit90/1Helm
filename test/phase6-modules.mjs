@@ -89,7 +89,7 @@ test("thread formatter extraction preserves progress, usage, and countdown edge 
   assert.equal(formatRoughTokens(1_240), "1.2k");
   assert.equal(formatRoughTokens(10_200), "10k");
   assert.equal(formatRoughTokens(1_500_000), "1.5M");
-  assert.equal(threadUsageLabel({ input_tokens: 1_240, output_tokens: 340 }), "Used 1.2k in · 340 out");
+  assert.equal(threadUsageLabel({ input_tokens: 1_240, output_tokens: 340, cached_input_tokens: 900, model_calls: 3 }), "Spent 1.2k input (900 cached) · 340 output · 3 calls");
   const now = 1_000_000;
   assert.equal(formatThreadFollowupCountdown(now - 1, now), "now");
   assert.equal(formatThreadFollowupCountdown(now + 9_000, now), "9s");

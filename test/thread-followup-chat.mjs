@@ -15,3 +15,12 @@ test("open chat threads present the persisted Board follow-up as a live countdow
   assert.match(client, /Number\(e\.rootMessageId\) === Number\(S\.threadRoot\.id\)/, "follow-up events update only the matching open thread");
   assert.match(client, /S\.threadFollowup = e\.followup \|\| null;[\s\S]*paintThreadFollowup\(\)/, "live events update or remove the banner without reopening the thread");
 });
+
+test("Scheduled Board cards cancel one wake without confirmation or agent invocation", () => {
+  const board = readFileSync(new URL("src/client/channel.ts", root), "utf8");
+  assert(server.includes("followups") && server.includes("cancelPendingFollowup"));
+  assert.match(board, /Cancel Follow Up/);
+  assert.match(board, /\/api\/threads\/\$\{thread\.id\}\/followups\/\$\{f\.id\}\/cancel/);
+  assert.doesNotMatch(board.match(/cancel\.onclick[\s\S]*?return h\("div"/)?.[0] || "", /appConfirm/);
+  assert.match(board, /thread\.followup = result\.followup \|\| null; opts\?\.onCancelled\?\.\(\)/);
+});

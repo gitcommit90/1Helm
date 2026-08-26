@@ -173,7 +173,7 @@ export function readAgentSkill(agentId: number, slugInput: string): Row {
  * Names and descriptions are essential capability awareness: a count of
  * categories made Skipper deny calendar/personal work it already owned. */
 export function agentSkillContext(agentId: number, _task = ""): string {
-  const available = skillsForAgent(agentId).filter((skill) => !skill.arsenal_locked);
+  const available = skillsForAgent(agentId).filter((skill) => !skill.arsenal_locked && String(skill.slug) !== "skipper-escalation");
   return [
     `<skill-arsenal count="${available.length}">`,
     ...available.map((skill) => `- ${skill.slug}: ${skill.name} — ${String(skill.description || "").replace(/\s+/g, " ").trim().slice(0, 240)}`),
@@ -187,7 +187,7 @@ export function agentSkillContext(agentId: number, _task = ""): string {
  * then returning tutorials or failing to escalate a broken resident computer.
  * Inject the full, compact contracts on every home-resident turn. */
 export function essentialResidentSkillContext(agentId: number): string {
-  const essential = new Set(["outcome-ownership", "blocker-resolution", "skipper-escalation"]);
+  const essential = new Set(["outcome-ownership", "blocker-resolution"]);
   const available = skillsForAgent(agentId).filter((entry) => essential.has(String(entry.slug)) && !entry.arsenal_locked);
   return [
     '<essential-resident-operations priority="always">',

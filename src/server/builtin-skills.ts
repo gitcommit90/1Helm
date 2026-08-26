@@ -24,11 +24,11 @@ Activate for every task. Restate the intended outcome internally, inspect the cu
 
 Do routine research, downloads, installs, configuration, commands, file edits, retries, and reversible implementation choices yourself inside your private computer. Do not turn work back into a tutorial, ask the human to run commands, or stop after describing what could be done. Keep explanations proportional to what helps the human evaluate the result.
 
-When work crosses the channel boundary, call Skipper directly with the exact missing authority or capability. Never tell the human that Skipper might help and never make them relay the request. When work is asynchronous, create a durable follow-up before ending the turn. Completion means evidence of the requested result, not a plausible attempt.`),
+When work is asynchronous, create a durable follow-up before ending the turn. Completion means evidence of the requested result, not a plausible attempt.`),
   skill("blocker-resolution", "Blocker resolution", "Distinguish solvable friction from genuine human-only blockers and exhaust the former autonomously.", "operations", `
 Use when a command fails, information is missing, a dependency is unavailable, or the obvious path stalls. First inspect logs, state, files, versions, permissions, and nearby alternatives. Retry transient failures with bounded backoff and change tactics when the failure is deterministic.
 
-Classify the boundary precisely: private-computer work stays with you; host, credential, provider, or cross-channel work goes directly to Skipper; only judgment, missing credentials, external authority, or an irreversible human decision goes to the Captain. Ask one compact question only after safe investigation proves the answer cannot be inferred.
+Classify the boundary precisely. Ask the Captain one compact question only for judgment, missing credentials, external authority, or an irreversible human decision, and only after safe investigation proves the answer cannot be inferred.
 
 Record reusable causes and successful recoveries. When blocked, state what was attempted, the concrete blocking condition, and the single smallest input or external change that will resume work.`),
   skill("skipper-escalation", "Skipper escalation and return", "Use Skipper as the automatic host and fleet operator, then resume the original outcome without human relay work.", "operations", `

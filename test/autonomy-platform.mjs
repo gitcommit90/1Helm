@@ -17,6 +17,7 @@ const {
   formatMessageAttachmentsBlock,
   runtimePromptTiersForChannel,
   runtimeToolNamesForChannel,
+  runtimeToolDefinitionsForChannel,
   toolActionStatus,
   userMessageContentWithAttachments,
   validateAskUserInput,
@@ -193,7 +194,8 @@ test("runtime injects the essential resident operating playbooks and keeps the r
   assert.match(first.context, /skill-arsenal count=/i);
   assert.match(first.context, /outcome-ownership: Outcome ownership/i);
   assert.match(first.context, /essential-resident-operations[\s\S]*outcome-ownership[\s\S]*Carry an outcome from request to verified completion/i);
-  assert.match(first.operating, /cannot create network sockets[\s\S]*call Skipper directly[\s\S]*Do not answer with a Docker/i);
+  assert.doesNotMatch(first.operating, /call Skipper|call_skipper/i);
+  assert.doesNotMatch(first.context, /skipper-escalation|call Skipper|call_skipper/i);
   assert.match(first.operating, /Never say you are checking[\s\S]*unless you actually invoke/i);
   assert.doesNotMatch(first.context, /workspace-skill-catalog|### /i);
   assert(first.identity.length + first.operating.length + first.context.length < 15_000, "capability map remains metadata-bounded rather than injecting full procedures");
@@ -202,6 +204,9 @@ test("runtime injects the essential resident operating playbooks and keeps the r
   const tools = runtimeToolNamesForChannel(botId, channelId, false);
   assert(tools.includes("list_skills") && tools.includes("read_skill"));
   assert(tools.includes("search_channel_history") && tools.includes("read_channel_session"));
+  assert(!tools.includes("call_skipper"), "resident tools exclude call_skipper");
+  assert(tools.includes("silent_success"), "resident tools expose explicit silent completion");
+  assert.doesNotMatch(JSON.stringify(runtimeToolDefinitionsForChannel(botId, channelId, false)), /Skipper|call_skipper/i);
 });
 
 test("Cowork contracts survive follow-ups and reject only newly-created incompatible files", async () => {
@@ -270,6 +275,7 @@ test("resident raw transcript search is semantic, exact, readable, and channel-i
   const agent = { id: agentId, bot_id: botId, kind: "channel", channel_id: channelId, name: "history-agent" };
   const exact = await history.searchChannelHistory(agent, channelId, { query: "lighthouse", mode: "exact" });
   assert.equal(exact.results.length, 2);
+  assert.equal(exact.indexed, 0, "exact SQLite search never waits for transcript indexing");
   assert(exact.results.every((entry) => entry.thread_root_id === rootId));
   const semantic = await history.searchChannelHistory(agent, channelId, { query: "copper lighthouse", mode: "semantic" });
   assert(semantic.results.some((entry) => entry.message_id === rootId));
@@ -478,4 +484,74 @@ test.after(() => {
   catalog.setSkillCatalogFetchForTests(null);
   db.close();
   rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("thread usage accumulates cached input and counts every successful provider call", () => {
+  seed();
+  const userId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('usage-owner','x','Owner',1,?)", now()).lastInsertRowid;
+  const channelId = run("INSERT INTO channels (name,slug,kind,status,created_by,created) VALUES ('usage','usage','channel','active',?,?)", userId, now()).lastInsertRowid;
+  const rootId = run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", channelId, userId, "usage", now()).lastInsertRowid;
+  const threadId = agents.ensureThread(rootId, channelId);
+  agents.addThreadUsage(threadId, 100, 20, 80);
+  const usage = agents.addThreadUsage(threadId, 0, 0, 0);
+  assert.deepEqual(usage, { input_tokens: 100, output_tokens: 20, cached_input_tokens: 80, model_calls: 2 });
+});
+
+test("canonical operational history redacts secrets and reconstructs valid tool pairs", async () => {
+  seed();
+  const store = await import("../src/server/store.ts");
+  const userId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('history-op','x','Owner',1,?)", now()).lastInsertRowid;
+  const channelId = run("INSERT INTO channels (name,slug,kind,status,created_by,created) VALUES ('history-op','history-op','channel','active',?,?)", userId, now()).lastInsertRowid;
+  const botId = run("INSERT INTO bots (name,model,prompt,created) VALUES ('history-op-agent','mock','Resident.',?)", now()).lastInsertRowid;
+  const agentId = run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'channel','history-op-agent','ready',?)", botId, now()).lastInsertRowid;
+  run("INSERT INTO agent_channels (agent_id,channel_id,bound_at) VALUES (?,?,?)", agentId, channelId, now());
+  const rootId = run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", channelId, userId, "do work", now()).lastInsertRowid;
+  const threadId = agents.ensureThread(rootId, channelId);
+  store.appendThreadHistory(threadId, "tool_call", { call_id: "call-1", name: "run_command", arguments: { command: "echo ok", api_key: "sk-supersecret123456" } }, "proof", 1, "call-1");
+  store.appendThreadHistory(threadId, "tool_result", { call_id: "call-1", name: "run_command", result: "Bearer abcdefghijklmnopqrstuvwxyz" }, "proof-result", 1, "call-1");
+  const history = store.operationalThreadMessages(threadId);
+  const call = history.find((entry) => entry.tool_calls), result = history.find((entry) => entry.role === "tool");
+  assert(call && result && result.tool_call_id === "call-1");
+  assert.doesNotMatch(JSON.stringify(history), /sk-supersecret|abcdefghijklmnopqrstuvwxyz/);
+  assert.match(JSON.stringify(history), /REDACTED/);
+});
+
+test("provider usage normalization reports cached prompt details", async () => {
+  const { normalizeModelUsage } = await import("../src/server/bot-output.ts");
+  assert.deepEqual(normalizeModelUsage({ prompt_tokens: 120, completion_tokens: 9, prompt_tokens_details: { cached_tokens: 90 } }), { input_tokens: 120, output_tokens: 9, cached_input_tokens: 90 });
+  assert.deepEqual(normalizeModelUsage({ input_tokens: 50, output_tokens: 3, input_tokens_details: { cached_tokens: 40 } }), { input_tokens: 50, output_tokens: 3, cached_input_tokens: 40 });
+  assert.deepEqual(normalizeModelUsage(undefined), { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 });
+});
+
+test("silent-success audit rows remain durable but never serialize into chat", async () => {
+  const store = await import("../src/server/store.ts");
+  seed();
+  const userId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('silent-owner','x','Owner',1,?)", now()).lastInsertRowid;
+  const channelId = run("INSERT INTO channels (name,slug,kind,status,created_by,created) VALUES ('silent','silent','channel','active',?,?)", userId, now()).lastInsertRowid;
+  const botId = run("INSERT INTO bots (name,model,prompt,created) VALUES ('silent-agent','mock','Resident.',?)", now()).lastInsertRowid;
+  const rootId = run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", channelId, userId, "perform quiet side effect", now()).lastInsertRowid;
+  agents.ensureThread(rootId, channelId);
+  const messageId = run("INSERT INTO messages (channel_id,parent_id,bot_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, botId, "[silent-success]", now()).lastInsertRowid;
+  run("INSERT INTO agent_turns (bot_id,channel_id,trigger_id,thread_root_id,message_id,state,completion_mode,queued_at,finished_at) VALUES (?,?,?,?,?,'completed','silent_success',?,?)", botId, channelId, rootId, rootId, messageId, now(), now());
+  assert.equal(store.serializeMessage(messageId), undefined);
+  assert.equal(q1("SELECT completion_mode FROM agent_turns WHERE message_id=?", messageId).completion_mode, "silent_success", "audit turn durably records intentional silence");
+});
+
+test("operational history compaction is durable and never begins with an orphaned tool result", async () => {
+  const store = await import("../src/server/store.ts");
+  seed();
+  const userId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('compact-owner','x','Owner',1,?)", now()).lastInsertRowid;
+  const channelId = run("INSERT INTO channels (name,slug,kind,status,created_by,created) VALUES ('compact','compact','channel','active',?,?)", userId, now()).lastInsertRowid;
+  const rootId = run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", channelId, userId, "compact history", now()).lastInsertRowid;
+  const threadId = agents.ensureThread(rootId, channelId);
+  for (let index = 0; index < 225; index++) store.appendThreadHistory(threadId, "checkpoint", { action: `proof-${index}`, result: "complete" }, "checkpoint", index + 1, `checkpoint:${index}`);
+  store.appendThreadHistory(threadId, "tool_call", { call_id: "tail-call", name: "run_command", arguments: "{}" }, "tail-call", 1, "tail-call");
+  store.appendThreadHistory(threadId, "tool_result", { call_id: "tail-call", name: "run_command", result: "ok" }, "tail-result", 1, "tail-call");
+  const first = store.operationalThreadMessages(threadId), second = store.operationalThreadMessages(threadId);
+  assert.match(first[0].content, /operational-history-summary/);
+  assert.equal(q1("SELECT COUNT(*) n FROM thread_history_compactions WHERE thread_id=?", threadId).n, 1);
+  assert.equal(first[0].content, second[0].content, "restart-equivalent reconstruction reuses the durable summary");
+  const exact = first.slice(1); assert.notEqual(exact[0]?.role, "tool");
+  const tailResult = exact.find((entry) => entry.role === "tool" && entry.tool_call_id === "tail-call");
+  assert(tailResult && exact.some((entry) => JSON.stringify(entry.tool_calls || []).includes("tail-call")));
 });

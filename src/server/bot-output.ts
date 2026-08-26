@@ -105,3 +105,14 @@ export function toolActionStatus(result: string): "failed" | "running" | "comple
   if (/^status=running(?:\n|$)/i.test(result)) return "running";
   return "complete";
 }
+export type ModelUsage = { input_tokens: number; output_tokens: number; cached_input_tokens: number };
+export function normalizeModelUsage(value: unknown): ModelUsage {
+  const usage = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const inputDetails = usage.input_tokens_details && typeof usage.input_tokens_details === "object" ? usage.input_tokens_details as Record<string, unknown> : {};
+  const promptDetails = usage.prompt_tokens_details && typeof usage.prompt_tokens_details === "object" ? usage.prompt_tokens_details as Record<string, unknown> : {};
+  return {
+    input_tokens: Math.max(0, Number(usage.input_tokens ?? usage.prompt_tokens ?? 0) || 0),
+    output_tokens: Math.max(0, Number(usage.output_tokens ?? usage.completion_tokens ?? 0) || 0),
+    cached_input_tokens: Math.max(0, Number(usage.cached_tokens ?? inputDetails.cached_tokens ?? promptDetails.cached_tokens ?? 0) || 0),
+  };
+}

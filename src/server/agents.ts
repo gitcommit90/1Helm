@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { DATA_DIR, UPLOAD_DIR, now, q, q1, run, tx, type Row } from "./db.ts";
-import { botView, resolveModel } from "./store.ts";
+import { appendMessageHistory, botView, isInternalMessageBody, resolveModel } from "./store.ts";
 import { ensureAgentMemory, rememberForAgent } from "./memory.ts";
 import { listSkills, provisionInitialSkills, provisionSkill, skillsForAgent, templateForSlug } from "./skills.ts";
 import {
@@ -340,10 +340,12 @@ export function ensureThread(rootMessageId: number, channelId: number): number {
   const root = q1("SELECT body, created FROM messages WHERE id=? AND channel_id=? AND parent_id IS NULL", rootMessageId, channelId);
   if (!root) throw new Error("Thread root does not belong to this channel.");
   const title = String(root.body || "New session").split("\n")[0].slice(0, 100) || "New session";
-  return run(
+  const id = run(
     "INSERT INTO threads (root_message_id, channel_id, status, title, summary, opened_at, updated_at) VALUES (?,?,'open',?,?,?,?)",
     rootMessageId, channelId, title, String(root.body || "").slice(0, 2000), root.created, now(),
   ).lastInsertRowid;
+  appendMessageHistory(rootMessageId);
+  return id;
 }
 
 export function threadIdForRoot(rootMessageId: number, channelId?: number): number | null {
@@ -351,31 +353,28 @@ export function threadIdForRoot(rootMessageId: number, channelId?: number): numb
   return row ? Number(row.id) : null;
 }
 
-/** Rough cumulative model usage for a thread (provider-reported when available). */
-export function threadUsage(threadId: number): { input_tokens: number; output_tokens: number } {
-  const row = q1("SELECT input_tokens, output_tokens FROM threads WHERE id=?", threadId);
+/** Cumulative provider-reported model usage for a thread. */
+export type ThreadUsage = { input_tokens: number; output_tokens: number; cached_input_tokens: number; model_calls: number };
+export function threadUsage(threadId: number): ThreadUsage {
+  const row = q1("SELECT input_tokens,output_tokens,cached_input_tokens,model_calls FROM threads WHERE id=?", threadId);
   return {
     input_tokens: Math.max(0, Number(row?.input_tokens || 0)),
     output_tokens: Math.max(0, Number(row?.output_tokens || 0)),
+    cached_input_tokens: Math.max(0, Number(row?.cached_input_tokens || 0)),
+    model_calls: Math.max(0, Number(row?.model_calls || 0)),
   };
 }
-
-export function threadUsageForRoot(rootMessageId: number, channelId?: number): { input_tokens: number; output_tokens: number } {
+export function threadUsageForRoot(rootMessageId: number, channelId?: number): ThreadUsage {
   const threadId = threadIdForRoot(rootMessageId, channelId);
-  if (threadId == null) return { input_tokens: 0, output_tokens: 0 };
-  return threadUsage(threadId);
+  return threadId == null ? { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, model_calls: 0 } : threadUsage(threadId);
 }
-
-/** Add one completion's usage onto the thread totals. Returns the new totals. */
-export function addThreadUsage(threadId: number, inputTokens: number, outputTokens: number): { input_tokens: number; output_tokens: number } {
+/** Record exactly one successful provider call, even when usage is unavailable. */
+export function addThreadUsage(threadId: number, inputTokens: number, outputTokens: number, cachedInputTokens = 0): ThreadUsage {
   const input = Math.max(0, Math.round(Number(inputTokens) || 0));
   const output = Math.max(0, Math.round(Number(outputTokens) || 0));
-  if (input || output) {
-    run(
-      "UPDATE threads SET input_tokens=input_tokens+?, output_tokens=output_tokens+?, updated_at=? WHERE id=?",
-      input, output, now(), threadId,
-    );
-  }
+  const cached = Math.max(0, Math.round(Number(cachedInputTokens) || 0));
+  run("UPDATE threads SET input_tokens=input_tokens+?,output_tokens=output_tokens+?,cached_input_tokens=cached_input_tokens+?,model_calls=model_calls+1,updated_at=? WHERE id=?",
+    input, output, cached, now(), threadId);
   return threadUsage(threadId);
 }
 
@@ -385,7 +384,7 @@ export function refreshThreadSummary(rootMessageId: number): void {
   const channelId = Number(root.channel_id);
   const threadId = ensureThread(rootMessageId, channelId);
   const messages = q("SELECT id, body, user_id, bot_id FROM messages WHERE id=? OR parent_id=? ORDER BY id", rootMessageId, rootMessageId)
-    .filter((message) => String(message.body || "").trim());
+    .filter((message) => String(message.body || "").trim() && !isInternalMessageBody(String(message.body || "")));
   const humans = messages.filter((message) => message.user_id != null);
   const agents = messages.filter((message) => message.bot_id != null);
   const compact = (value: unknown, limit: number): string => String(value || "").replace(/\s+/g, " ").trim().slice(0, limit);

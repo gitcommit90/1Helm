@@ -34,7 +34,7 @@ export const S = {
   desktopSidebarCollapsed: false,
   photonConfigured: false,
   selectedTextConversationId: null,
-  threadUsage: { input_tokens: 0, output_tokens: 0 },
+  threadUsage: { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, model_calls: 0 },
   threadFollowup: null,
   threadStopContinuation: false,
 } as State;
