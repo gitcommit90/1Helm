@@ -17,6 +17,7 @@ test("release pipeline has durable retry boundaries instead of one monolithic ru
   assert.match(read("release-mac-build.yml"), /ci_run_id/);
   assert.match(read("release-acceptance.yml"), /run-id:.*build_run_id/);
   assert.doesNotMatch(read("release-acceptance.yml"), /package:dmg:release|package:linux/, "acceptance must not rebuild artifacts");
+  assert.doesNotMatch(read("release-acceptance.yml"), /tar -tzf.*\| grep -q/, "archive checks must not trigger tar SIGPIPE under pipefail");
   assert.doesNotMatch(read("release-publish.yml"), /npm ci|package:|notarytool/, "publication must consume, not rebuild");
   assert.doesNotMatch(read("release-public-verify.yml"), /npm ci|package:|notarytool/, "public verification must consume, not rebuild");
 });

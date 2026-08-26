@@ -83,8 +83,8 @@ jobs:
           tar -xOf "dist/accept/1Helm-$version-linux-node.tgz" "$root/resources/source-build.json" > dist/accept/source-build.json
           test "$(jq -r .version dist/accept/source-build.json)" = "$version"
           test "$(jq -r .commit dist/accept/source-build.json)" = "$commit"
-          tar -tzf "dist/accept/1Helm-$version-linux-node.tgz" | grep -qx "$root/src/server/index.ts"
-          tar -tzf "dist/accept/1Helm-$version-linux-node.tgz" | grep -qx "$root/node_modules/node-pty/build/Release/pty.node"
+          grep -Fqx "$root/src/server/index.ts" dist/accept/archive-files.txt
+          grep -Fqx "$root/node_modules/node-pty/build/Release/pty.node" dist/accept/archive-files.txt
           printf 'Accepted exact Linux package for %s %s\n' "$version" "$commit" > dist/accept/linux-acceptance.txt
           node scripts/release-stage-evidence.mjs create linux-acceptance "$version" "$commit" \
             dist/accept/linux-acceptance-evidence.json dist/accept/linux-acceptance.txt "dist/accept/1Helm-$version-linux-node.tgz"
