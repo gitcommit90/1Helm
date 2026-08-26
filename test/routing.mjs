@@ -318,9 +318,11 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     await page.goto(`http://127.0.0.1:${appPort}`, { waitUntil: "domcontentloaded" });
     await page.evaluate((sessionToken) => localStorage.setItem("ctrl.token", sessionToken), token);
     await page.reload({ waitUntil: "networkidle0" });
+    page.setDefaultTimeout(60_000);
     await page.waitForSelector('button[title="Settings"]');
     await page.click('button[title="Settings"]');
-    await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Providers")?.click());
+    await page.waitForFunction(() => [...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Providers"));
+    await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Providers").click());
     await page.waitForSelector('[data-provider-group-body="custom"]');
     await page.evaluate(() => [...document.querySelectorAll(".routing-nav button")].find((button) => button.textContent?.trim() === "Endpoint")?.click());
     await page.waitForSelector(".routing-endpoint-hero");

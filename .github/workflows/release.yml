@@ -100,7 +100,7 @@ jobs:
         run: |
           npm run package:channel-image
           npm run package:linux
-          sha256sum -c "dist/1Helm-${{ needs.preflight.outputs.version }}-linux-node.tgz.sha256"
+          (cd dist && sha256sum -c "1Helm-${{ needs.preflight.outputs.version }}-linux-node.tgz.sha256")
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux-${{ needs.preflight.outputs.commit }}
