@@ -827,7 +827,16 @@ export function routingPanel(isAdmin: boolean, confirm: Dialog): HTMLElement {
   const content = h("div", { class: "routing-content" });
   let state: RoutingState | null = null;
   let current: RoutingView = "sources";
-  let shellActivityListener: ((activity: unknown) => void) | null = null;
+  const shellActivityListener = (activity: unknown): void => {
+    if (!state || current !== "sources") return;
+    applyRoutingActivity(state, activity);
+    const old = content.querySelector(".routing-fabric");
+    if (old) old.replaceWith(routingFabric(state));
+    if (!shell.isConnected) setTimeout(() => {
+      if (!shell.isConnected) routingActivityListeners.delete(shellActivityListener);
+    }, 1_000);
+  };
+  routingActivityListeners.add(shellActivityListener);
   const expandedAccounts = new Set<string>();
   const expandedGroups = new Set<string>();
   const views: Array<[RoutingView, string]> = isAdmin
@@ -846,15 +855,6 @@ export function routingPanel(isAdmin: boolean, confirm: Dialog): HTMLElement {
       else if (current === "quota") content.append(await quotaView());
       else if (current === "logs") content.append(await logsView());
       else content.append(await endpointView(state, refresh, confirm));
-      if (shellActivityListener) routingActivityListeners.delete(shellActivityListener);
-      shellActivityListener = (activity) => {
-        if (!shell.isConnected) { routingActivityListeners.delete(shellActivityListener!); return; }
-        if (!state || current !== "sources") return;
-        applyRoutingActivity(state, activity);
-        const old = content.querySelector(".routing-fabric");
-        if (old) old.replaceWith(routingFabric(state));
-      };
-      routingActivityListeners.add(shellActivityListener);
     } catch (error) {
       clear(content); content.append(empty("The model fabric is unavailable", (error as Error).message));
     }
