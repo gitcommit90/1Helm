@@ -35,10 +35,10 @@ test("provider controls expose the live dotted router flow and credential-free h
   assert.doesNotMatch(server, /pendingSystemRequests|candidate\.model === String\(event\.request\?\.model/,
     "system classification never guesses from an imminent same-model user request");
   assert.doesNotMatch(client, /routing-pyramid-tier/);
-  assert.match(client, /let shellWasConnected = false;[\s\S]*if \(shell\.isConnected\) \{ shellWasConnected = true; return; \}[\s\S]*routingActivityListeners\.delete\(shellActivityListener\)/,
-    "the Settings routing listener survives its initial detached construction and is removed only after a real mount/unmount lifecycle");
-  assert.doesNotMatch(client, /if \(!shell\.isConnected\) setTimeout/,
-    "slow Settings mounts never lose live routing events to a timer-based detached-state guess");
+  assert.match(client, /let shellWasConnected = false;[\s\S]*if \(shell\.isConnected\) shellWasConnected = true;[\s\S]*else if \(shellWasConnected\) \{ routingActivityListeners\.delete\(shellActivityListener\); return; \}/,
+    "the Settings routing listener survives initial detached construction and prunes only a previously mounted panel");
+  assert.doesNotMatch(client, /MutationObserver|if \(!shell\.isConnected\) setTimeout/,
+    "routing activity delivery does not depend on mount timing or timer-based detached-state guesses");
   assert.doesNotMatch(client.slice(client.indexOf("export async function openRoutingPopover"), client.indexOf("function sourceCatalog")), /routing\/credentials|apiKey/);
 });
 

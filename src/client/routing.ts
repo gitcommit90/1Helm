@@ -827,24 +827,16 @@ export function routingPanel(isAdmin: boolean, confirm: Dialog): HTMLElement {
   const content = h("div", { class: "routing-content" });
   let state: RoutingState | null = null;
   let current: RoutingView = "sources";
+  let shellWasConnected = false;
   const shellActivityListener = (activity: unknown): void => {
+    if (shell.isConnected) shellWasConnected = true;
+    else if (shellWasConnected) { routingActivityListeners.delete(shellActivityListener); return; }
     if (!state || current !== "sources") return;
     applyRoutingActivity(state, activity);
-    const old = content.querySelector(".routing-fabric");
-    if (old) old.replaceWith(routingFabric(state));
+    content.querySelector(".routing-fabric")?.replaceWith(routingFabric(state));
   };
+  // Register before first draw; detached means mounting until connected once.
   routingActivityListeners.add(shellActivityListener);
-  // routingPanel() is built before Settings attaches it to the document. Never
-  // interpret that initial detached state as disposal: slower browsers can take
-  // more than a second to mount the panel and would silently lose live events.
-  let shellWasConnected = false;
-  const shellLifecycle = new MutationObserver(() => {
-    if (shell.isConnected) { shellWasConnected = true; return; }
-    if (!shellWasConnected) return;
-    routingActivityListeners.delete(shellActivityListener);
-    shellLifecycle.disconnect();
-  });
-  shellLifecycle.observe(document.documentElement, { childList: true, subtree: true });
   const expandedAccounts = new Set<string>();
   const expandedGroups = new Set<string>();
   const views: Array<[RoutingView, string]> = isAdmin
