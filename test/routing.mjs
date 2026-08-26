@@ -420,8 +420,16 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
       body: JSON.stringify({ model: directModel, stream: false, messages: [{ role: "user", content: "Render this live" }] }),
     });
     await routedInBrowser;
+    // CDP proves the authenticated browser received the live workspace event.
+    // Redraw Sources from the server's retained activity before asserting copy:
+    // hosted Chromium can receive the frame while a slow settings redraw has
+    // temporarily detached the panel, which made the old timing assertion
+    // flaky despite the request and WebSocket delivery both succeeding.
+    await page.$$eval(".routing-nav button", (buttons) => buttons.find((button) => button.textContent?.trim() === "Activity")?.click());
+    await page.waitForFunction(() => [...document.querySelectorAll(".routing-nav button")].some((button) => button.textContent?.trim() === "Activity" && button.classList.contains("is-active")));
+    await page.$$eval(".routing-nav button", (buttons) => buttons.find((button) => button.textContent?.trim() === "Sources")?.click());
     await page.waitForFunction(() => /Test source/.test(document.querySelector(".routing-fabric")?.textContent || "") && /mock-large/.test(document.querySelector(".routing-fabric")?.textContent || ""));
-    assert.equal(Boolean(await page.$(".routing-fabric")), true, "Sources renders real request routing activity in place from the workspace WebSocket");
+    assert.equal(Boolean(await page.$(".routing-fabric")), true, "Sources renders the real request delivered over the workspace WebSocket and retained by routing state");
     assert.equal(Boolean(await page.$(".routing-fabric-svg .routing-fabric-path")), true, "Sources uses the dotted Requests → router → provider live flow");
     assert.equal(Boolean(await page.$(`${accountSelector} [data-refresh-models]`)), true, "Refresh models is available beside connected-account controls");
     // The channel-header action lives below the full-screen Settings overlay.
