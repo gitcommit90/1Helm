@@ -832,11 +832,19 @@ export function routingPanel(isAdmin: boolean, confirm: Dialog): HTMLElement {
     applyRoutingActivity(state, activity);
     const old = content.querySelector(".routing-fabric");
     if (old) old.replaceWith(routingFabric(state));
-    if (!shell.isConnected) setTimeout(() => {
-      if (!shell.isConnected) routingActivityListeners.delete(shellActivityListener);
-    }, 1_000);
   };
   routingActivityListeners.add(shellActivityListener);
+  // routingPanel() is built before Settings attaches it to the document. Never
+  // interpret that initial detached state as disposal: slower browsers can take
+  // more than a second to mount the panel and would silently lose live events.
+  let shellWasConnected = false;
+  const shellLifecycle = new MutationObserver(() => {
+    if (shell.isConnected) { shellWasConnected = true; return; }
+    if (!shellWasConnected) return;
+    routingActivityListeners.delete(shellActivityListener);
+    shellLifecycle.disconnect();
+  });
+  shellLifecycle.observe(document.documentElement, { childList: true, subtree: true });
   const expandedAccounts = new Set<string>();
   const expandedGroups = new Set<string>();
   const views: Array<[RoutingView, string]> = isAdmin
