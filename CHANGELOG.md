@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-08-26
+
+### Fixed
+
+- The routing panel's live activity indicators now stay attached through
+  slow or repeated panel mounts, so live model-fabric activity renders
+  reliably instead of intermittently going dark.
+
+### Changed
+
+- Releases are now produced entirely on GitHub-hosted runners through
+  seven independent, evidence-keyed pipeline stages (source CI, Linux
+  build, Mac build/notarize, artifact acceptance, candidate assembly,
+  publish, and public verification). No local hardware participates in
+  building, signing, or publishing.
+
 ## [1.3.0] - 2026-08-25
 
 ### Fixed
