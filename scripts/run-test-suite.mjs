@@ -16,7 +16,7 @@ delete env.CTRL_DATA_DIR;
 delete env.HELM_APP_ROOT;
 const suites = [
   ["test/native-world.mjs"],
-  ["--test",
+  ["--test", "--test-concurrency=2",
     "test/phase6-modules.mjs",
     "test/routing.mjs", "test/routing-disabled-account.mjs", "test/routing-antigravity.mjs", "test/desktop.mjs", "test/update-service.mjs",
     "test/channel-computers.mjs", "test/channel-computers-isolated-backends.mjs", "test/event-loop-unblocking.mjs", "test/read-state.mjs",
