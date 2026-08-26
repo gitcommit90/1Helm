@@ -315,9 +315,24 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     browser = executablePath ? await puppeteer.launch({ executablePath, headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] }) : null;
     const page = browser ? await browser.newPage() : null;
     if (page) {
+    const cdp = await page.createCDPSession();
+    await cdp.send("Network.enable");
+    const waitForSocketEvent = (predicate, label, timeout = 15_000) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { cdp.off("Network.webSocketFrameReceived", receive); reject(new Error(`Timed out waiting for ${label}`)); }, timeout);
+      const receive = ({ response }) => {
+        try {
+          const event = JSON.parse(response.payloadData || "{}");
+          if (!predicate(event)) return;
+          clearTimeout(timer); cdp.off("Network.webSocketFrameReceived", receive); resolve(event);
+        } catch { /* ignore non-JSON frames */ }
+      };
+      cdp.on("Network.webSocketFrameReceived", receive);
+    });
     await page.goto(`http://127.0.0.1:${appPort}`, { waitUntil: "domcontentloaded" });
     await page.evaluate((sessionToken) => localStorage.setItem("ctrl.token", sessionToken), token);
+    const socketReady = waitForSocketEvent((event) => event.type === "hello", "authenticated workspace WebSocket");
     await page.reload({ waitUntil: "networkidle0" });
+    await socketReady;
     page.setDefaultTimeout(60_000);
     await page.waitForSelector('button[title="Settings"]');
     await page.click('button[title="Settings"]');
@@ -397,10 +412,14 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     assert.match(await page.$eval(`${keyedForm} [data-keyed-status]`, (element) => element.textContent || ""), /1 model ready/);
     assert.equal(await page.$eval(`${keyedForm} [data-keyed-action="add"]`, (button) => button.disabled), false, "an empty custom API key remains a valid tested configuration");
     const liveCredentials = await json(`http://127.0.0.1:${appPort}/api/routing/credentials`, token);
+    const routedInBrowser = waitForSocketEvent((event) => event.type === "routing_activity"
+      && /Test source/.test(JSON.stringify(event.activity || {}))
+      && /mock-large/.test(JSON.stringify(event.activity || {})), "routed-request workspace event");
     await json(`http://127.0.0.1:${appPort}/v1/chat/completions`, liveCredentials.apiKey, {
       method: "POST",
       body: JSON.stringify({ model: directModel, stream: false, messages: [{ role: "user", content: "Render this live" }] }),
     });
+    await routedInBrowser;
     await page.waitForFunction(() => /Test source/.test(document.querySelector(".routing-fabric")?.textContent || "") && /mock-large/.test(document.querySelector(".routing-fabric")?.textContent || ""));
     assert.equal(Boolean(await page.$(".routing-fabric")), true, "Sources renders real request routing activity in place from the workspace WebSocket");
     assert.equal(Boolean(await page.$(".routing-fabric-svg .routing-fabric-path")), true, "Sources uses the dotted Requests → router → provider live flow");
