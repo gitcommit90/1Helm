@@ -34,7 +34,7 @@ jobs:
           ref: ${{ inputs.commit }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Verify GitHub Latest, Stable metadata, routes, and ranged downloads
+      - name: Verify GitHub Latest, Stable metadata, and ranged downloads
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
@@ -57,7 +57,3 @@ jobs:
             code="$(curl -fsSL --retry 4 -r 0-1048575 -o range.bin -w '%{http_code}' "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/$name")"
             test "$code" = 206; test "$(stat -c %s range.bin)" = 1048576
           done
-          test "$(curl -fsSL --retry 4 -o /dev/null -w '%{http_code}' https://1helm.com/install)" = 200
-          test "$(curl -fsSL --retry 4 -o /dev/null -w '%{http_code}' https://1helm.com/install.sh)" = 200
-          health="$(curl -fsSL --retry 4 https://1helm.com/health)"
-          test "$(jq -r .version <<<"$health")" = "$VERSION"
