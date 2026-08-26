@@ -23,6 +23,7 @@ const REQUIRE_NOTARIZATION = process.env.HELM_REQUIRE_NOTARIZATION === "1";
 const TEAM_ID = String(process.env.APPLE_TEAM_ID || "").trim().toUpperCase();
 const NOTARY_PROFILE = String(process.env.APPLE_NOTARY_PROFILE || "").trim();
 const CONFIGURED_IDENTITY = String(process.env.APPLE_SIGN_IDENTITY || "").trim();
+const notarySubmissions = [];
 // Electron Packager evaluates directories before their children. Keep the
 // scripts directory itself traversable so the required Mnemosyne bridge can
 // survive the otherwise root-level release filter.
@@ -76,7 +77,19 @@ function resolveIdentity() {
 }
 
 function notarize(file) {
-  run("xcrun", ["notarytool", "submit", file, "--keychain-profile", NOTARY_PROFILE, "--wait"]);
+  const args = ["notarytool", "submit", file, "--keychain-profile", NOTARY_PROFILE, "--wait", "--output-format", "json"];
+  console.log(`$ xcrun notarytool submit ${file} --keychain-profile <notary-profile> --wait --output-format json`);
+  const result = spawnSync("xcrun", args, { encoding: "utf8" });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.status !== 0) throw new Error(`Notary upload failed (${result.status}); no submission is admitted as evidence`);
+  let submission;
+  try { submission = JSON.parse(String(result.stdout || "")); }
+  catch { throw new Error("Notary submission succeeded without parseable JSON evidence"); }
+  if (!/^[0-9a-f-]{36}$/i.test(String(submission.id || "")) || submission.status !== "Accepted") {
+    throw new Error(`Notary submission was not Accepted: ${String(submission.status || "missing status")}`);
+  }
+  notarySubmissions.push({ artifact: path.basename(file), id: submission.id, status: submission.status });
 }
 
 async function signWithTimestampRetry(options) {
@@ -339,6 +352,14 @@ async function main() {
       run("spctl", ["--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=4", dmg]);
     }
     const digest = capture("shasum", ["-a", "256", dmg]).split(/\s+/)[0];
+    if (REQUIRE_NOTARIZATION) {
+      if (notarySubmissions.length !== 2 || notarySubmissions.some((entry) => entry.status !== "Accepted")) {
+        throw new Error("Both app and DMG notarization submissions must be Accepted");
+      }
+      fs.writeFileSync(path.join(DIST, "apple-notarization-evidence.json"), `${JSON.stringify({
+        schema: 1, version: VERSION, team_id: TEAM_ID, submissions: notarySubmissions,
+      }, null, 2)}\n`);
+    }
     console.log(`DMG ready: ${dmg}`);
     console.log(`SHA-256: ${digest}`);
     if (fs.existsSync(updaterZip)) {

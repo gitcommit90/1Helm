@@ -1,0 +1,116 @@
+name: Release 3 - Mac build and notarize
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact main commit to package
+        required: true
+        type: string
+      ci_run_id:
+        description: Successful Source CI run ID for this commit
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: release-mac-${{ inputs.source_ref }}
+  cancel-in-progress: false
+
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "1"
+
+jobs:
+  build:
+    name: Build, sign, notarize, and retain Apple artifacts
+    runs-on: macos-15
+    timeout-minutes: 90
+    environment: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"; version="$(node -p 'require("./package.json").version')"
+          git fetch origin main --no-tags
+          test "$commit" = "$(git rev-parse origin/main)"
+          test "$(uname -s)-$(uname -m)" = Darwin-arm64
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"; echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Download successful CI proof
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: source-ci-${{ steps.identity.outputs.commit }}
+          path: dist/source-ci
+          run-id: ${{ inputs.ci_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify CI proof
+        run: node scripts/release-stage-evidence.mjs verify dist/source-ci/source-ci-evidence.json source-ci "${{ steps.identity.outputs.version }}" "${{ steps.identity.outputs.commit }}" dist/source-ci
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Create temporary signing keychain
+        id: signing
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/1helm-signing.keychain-db"; password="$(openssl rand -hex 24)"
+          certificate="$RUNNER_TEMP/developer-id.p12"; api_key="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$api_key"; chmod 600 "$certificate" "$api_key"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 7200 "$keychain"; security unlock-keychain -p "$password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          profile="1helm-actions-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          xcrun notarytool store-credentials "$profile" --key "$api_key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" --keychain "$keychain"
+          rm -f "$certificate" "$api_key"
+          security find-identity -v -p codesigning "$keychain" | grep -F "Developer ID Application"
+          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"; echo "profile=$profile" >> "$GITHUB_OUTPUT"
+      - name: Build, sign, notarize, staple, and verify
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_PROFILE: ${{ steps.signing.outputs.profile }}
+        run: npm run package:dmg:release
+      - name: Record immutable build evidence
+        run: |
+          cd dist
+          shasum -a 256 "1Helm-${{ steps.identity.outputs.version }}-arm64.dmg" "1Helm-${{ steps.identity.outputs.version }}-mac-arm64.zip" > mac-sha256.txt
+          cd ..
+          node scripts/release-stage-evidence.mjs create mac-build "${{ steps.identity.outputs.version }}" "${{ steps.identity.outputs.commit }}" \
+            dist/mac-build-evidence.json \
+            "dist/1Helm-${{ steps.identity.outputs.version }}-arm64.dmg" \
+            "dist/1Helm-${{ steps.identity.outputs.version }}-mac-arm64.zip" dist/mac-sha256.txt dist/apple-notarization-evidence.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mac-build-${{ steps.identity.outputs.commit }}
+          path: |
+            dist/1Helm-${{ steps.identity.outputs.version }}-arm64.dmg
+            dist/1Helm-${{ steps.identity.outputs.version }}-mac-arm64.zip
+            dist/mac-sha256.txt
+            dist/mac-build-evidence.json
+            dist/apple-notarization-evidence.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Destroy temporary signing material
+        if: always()
+        shell: bash
+        run: |
+          security delete-keychain "${{ steps.signing.outputs.keychain }}" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"

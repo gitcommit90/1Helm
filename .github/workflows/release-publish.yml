@@ -1,0 +1,69 @@
+name: Release 6 - Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact main commit to publish
+        required: true
+        type: string
+      assembly_run_id:
+        description: Successful candidate assembly run ID
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish already-proven draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"; version="$(node -p 'require("./package.json").version')"
+          git fetch origin main --no-tags; test "$commit" = "$(git rev-parse origin/main)"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"; echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-candidate-${{ steps.identity.outputs.commit }}
+          path: dist/candidate
+          run-id: ${{ inputs.assembly_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify candidate bytes and draft assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.identity.outputs.version }}"; commit="${{ steps.identity.outputs.commit }}"; tag="v$version"
+          node scripts/release-stage-evidence.mjs verify dist/candidate/release-candidate-evidence.json release-candidate "$version" "$commit" dist/candidate
+          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          test "$(git rev-list -n1 "$tag")" = "$commit"
+          rm -rf dist/uploaded; mkdir -p dist/uploaded
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir dist/uploaded
+          for file in "1Helm-$version-linux-node.tgz" "1Helm-$version-arm64.dmg" "1Helm-$version-mac-arm64.zip" "1Helm-$version-stable.json"; do
+            cmp "dist/candidate/$file" "dist/uploaded/$file"
+          done
+      - name: Publish as GitHub Latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${{ steps.identity.outputs.version }}"
+          gh release edit "v$version" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "v$version"

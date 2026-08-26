@@ -1,35 +1,61 @@
-name: CI
+name: Source CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: source-ci-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "1"
 
 jobs:
   verify:
-    name: verify
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    name: Cheap source gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
-      - name: Install
-        run: PUPPETEER_SKIP_DOWNLOAD=1 npm ci
+      - name: Install exact dependencies
+        run: npm ci
       - name: Diff check
         run: git diff --check
       - name: Typecheck
         run: npm run typecheck
       - name: Build
         run: npm run build
-      - name: Test pipeline
+      - name: Full test suite
         run: npm test
+      - name: Record successful source identity
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          commit="$(git rev-parse HEAD)"
+          mkdir -p dist/source-ci
+          printf 'CI passed for 1Helm %s at %s\n' "$version" "$commit" > dist/source-ci/source-ci.txt
+          node scripts/release-stage-evidence.mjs create source-ci "$version" "$commit" \
+            dist/source-ci/source-ci-evidence.json dist/source-ci/source-ci.txt
+      - name: Retain CI proof
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: source-ci-${{ github.sha }}
+          path: dist/source-ci
+          if-no-files-found: error
+          retention-days: 90

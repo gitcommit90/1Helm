@@ -1,0 +1,82 @@
+name: Release 2 - Linux build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact main commit to package
+        required: true
+        type: string
+      ci_run_id:
+        description: Successful Source CI run ID for this commit
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: release-linux-${{ inputs.source_ref }}
+  cancel-in-progress: false
+
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "1"
+
+jobs:
+  build:
+    name: Build and retain exact Linux package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"; version="$(node -p 'require("./package.json").version')"
+          git fetch origin main --no-tags
+          test "$commit" = "$(git rev-parse origin/main)"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"; echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Download successful CI proof
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: source-ci-${{ steps.identity.outputs.commit }}
+          path: dist/source-ci
+          run-id: ${{ inputs.ci_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify CI proof
+        run: node scripts/release-stage-evidence.mjs verify dist/source-ci/source-ci-evidence.json source-ci "${{ steps.identity.outputs.version }}" "${{ steps.identity.outputs.commit }}" dist/source-ci
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+          npm ci
+      - name: Build sealed channel image and Linux archive
+        run: |
+          npm run package:channel-image
+          npm run package:linux
+          (cd dist && sha256sum -c "1Helm-${{ steps.identity.outputs.version }}-linux-node.tgz.sha256")
+      - name: Record immutable build evidence
+        run: |
+          node scripts/release-stage-evidence.mjs create linux-build "${{ steps.identity.outputs.version }}" "${{ steps.identity.outputs.commit }}" \
+            dist/linux-build-evidence.json \
+            "dist/1Helm-${{ steps.identity.outputs.version }}-linux-node.tgz" \
+            "dist/1Helm-${{ steps.identity.outputs.version }}-linux-node.tgz.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-build-${{ steps.identity.outputs.commit }}
+          path: |
+            dist/1Helm-${{ steps.identity.outputs.version }}-linux-node.tgz
+            dist/1Helm-${{ steps.identity.outputs.version }}-linux-node.tgz.sha256
+            dist/linux-build-evidence.json
+          if-no-files-found: error
+          retention-days: 90

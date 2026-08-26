@@ -1,0 +1,149 @@
+name: Release 4 - Artifact acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact main commit represented by the artifacts
+        required: true
+        type: string
+      platform:
+        description: Run only the acceptance stage that needs proving or retrying
+        required: true
+        type: choice
+        options: [linux, mac, both]
+      linux_build_run_id:
+        description: Linux build run ID (required for linux/both)
+        required: false
+        default: "0"
+        type: string
+      mac_build_run_id:
+        description: Mac build run ID (required for mac/both)
+        required: false
+        default: "0"
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: release-acceptance-${{ inputs.source_ref }}-${{ inputs.platform }}
+  cancel-in-progress: false
+
+jobs:
+  identity:
+    name: Pin source identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"; version="$(node -p 'require("./package.json").version')"
+          git fetch origin main --no-tags; test "$commit" = "$(git rev-parse origin/main)"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"; echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Accept exact Linux package
+    if: inputs.platform == 'linux' || inputs.platform == 'both'
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.identity.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: linux-build-${{ needs.identity.outputs.commit }}
+          path: dist/accept
+          run-id: ${{ inputs.linux_build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify producer evidence and package identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.identity.outputs.version }}"; commit="${{ needs.identity.outputs.commit }}"
+          node scripts/release-stage-evidence.mjs verify dist/accept/linux-build-evidence.json linux-build "$version" "$commit" dist/accept
+          (cd dist/accept && sha256sum -c "1Helm-$version-linux-node.tgz.sha256")
+          tar -tzf "dist/accept/1Helm-$version-linux-node.tgz" > dist/accept/archive-files.txt
+          root="$(head -1 dist/accept/archive-files.txt | cut -d/ -f1)"
+          test "$root" = "1Helm-$version"
+          tar -xOf "dist/accept/1Helm-$version-linux-node.tgz" "$root/resources/source-build.json" > dist/accept/source-build.json
+          test "$(jq -r .version dist/accept/source-build.json)" = "$version"
+          test "$(jq -r .commit dist/accept/source-build.json)" = "$commit"
+          tar -tzf "dist/accept/1Helm-$version-linux-node.tgz" | grep -qx "$root/src/server/index.ts"
+          tar -tzf "dist/accept/1Helm-$version-linux-node.tgz" | grep -qx "$root/node_modules/node-pty/build/Release/pty.node"
+          printf 'Accepted exact Linux package for %s %s\n' "$version" "$commit" > dist/accept/linux-acceptance.txt
+          node scripts/release-stage-evidence.mjs create linux-acceptance "$version" "$commit" \
+            dist/accept/linux-acceptance-evidence.json dist/accept/linux-acceptance.txt "dist/accept/1Helm-$version-linux-node.tgz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-acceptance-${{ needs.identity.outputs.commit }}
+          path: |
+            dist/accept/linux-acceptance.txt
+            dist/accept/linux-acceptance-evidence.json
+            dist/accept/1Helm-${{ needs.identity.outputs.version }}-linux-node.tgz
+          if-no-files-found: error
+          retention-days: 90
+
+  mac:
+    name: Accept exact signed Mac artifacts
+    if: inputs.platform == 'mac' || inputs.platform == 'both'
+    needs: identity
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.identity.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: mac-build-${{ needs.identity.outputs.commit }}
+          path: dist/accept
+          run-id: ${{ inputs.mac_build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify producer evidence, Apple approval, DMG, and updater ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.identity.outputs.version }}"; commit="${{ needs.identity.outputs.commit }}"
+          node scripts/release-stage-evidence.mjs verify dist/accept/mac-build-evidence.json mac-build "$version" "$commit" dist/accept
+          (cd dist/accept && shasum -a 256 -c mac-sha256.txt)
+          mount="$RUNNER_TEMP/1helm-dmg"; unzip_root="$RUNNER_TEMP/1helm-zip"; mkdir -p "$mount" "$unzip_root"
+          hdiutil attach "dist/accept/1Helm-$version-arm64.dmg" -nobrowse -readonly -mountpoint "$mount"
+          trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
+          app="$mount/1Helm.app"; test -d "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+          test "$(defaults read "$app/Contents/Info" CFBundleShortVersionString)" = "$version"
+          ditto -x -k "dist/accept/1Helm-$version-mac-arm64.zip" "$unzip_root"
+          zip_app="$(find "$unzip_root" -maxdepth 2 -type d -name '1Helm.app' -print -quit)"; test -n "$zip_app"
+          codesign --verify --deep --strict --verbose=2 "$zip_app"; xcrun stapler validate "$zip_app"
+          printf 'Accepted exact Mac DMG and ZIP for %s %s\n' "$version" "$commit" > dist/accept/mac-acceptance.txt
+          node scripts/release-stage-evidence.mjs create mac-acceptance "$version" "$commit" \
+            dist/accept/mac-acceptance-evidence.json dist/accept/mac-acceptance.txt \
+            "dist/accept/1Helm-$version-arm64.dmg" "dist/accept/1Helm-$version-mac-arm64.zip"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mac-acceptance-${{ needs.identity.outputs.commit }}
+          path: |
+            dist/accept/mac-acceptance.txt
+            dist/accept/mac-acceptance-evidence.json
+            dist/accept/1Helm-${{ needs.identity.outputs.version }}-arm64.dmg
+            dist/accept/1Helm-${{ needs.identity.outputs.version }}-mac-arm64.zip
+          if-no-files-found: error
+          retention-days: 90

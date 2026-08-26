@@ -1,0 +1,107 @@
+name: Release 5 - Assemble candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact main commit to assemble
+        required: true
+        type: string
+      linux_acceptance_run_id:
+        description: Successful Linux acceptance run ID
+        required: true
+        type: string
+      mac_acceptance_run_id:
+        description: Successful Mac acceptance run ID
+        required: true
+        type: string
+      windows_waiver:
+        description: Required recorded waiver, or the Windows acceptance reference
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: release-assemble-${{ inputs.source_ref }}
+  cancel-in-progress: false
+
+jobs:
+  assemble:
+    name: Create or refresh draft from proven bytes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"; version="$(node -p 'require("./package.json").version')"
+          git fetch origin main --no-tags; test "$commit" = "$(git rev-parse origin/main)"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"; echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Download accepted Linux bytes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: linux-acceptance-${{ steps.identity.outputs.commit }}
+          path: dist/candidate
+          run-id: ${{ inputs.linux_acceptance_run_id }}
+          github-token: ${{ github.token }}
+      - name: Download accepted Mac bytes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: mac-acceptance-${{ steps.identity.outputs.commit }}
+          path: dist/candidate
+          run-id: ${{ inputs.mac_acceptance_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify acceptance evidence and create metadata
+        env:
+          WINDOWS_EVIDENCE: ${{ inputs.windows_waiver }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.identity.outputs.version }}"; commit="${{ steps.identity.outputs.commit }}"
+          node scripts/release-stage-evidence.mjs verify dist/candidate/linux-acceptance-evidence.json linux-acceptance "$version" "$commit" dist/candidate
+          node scripts/release-stage-evidence.mjs verify dist/candidate/mac-acceptance-evidence.json mac-acceptance "$version" "$commit" dist/candidate
+          test -n "$WINDOWS_EVIDENCE"
+          sha256sum "dist/candidate/1Helm-$version-linux-node.tgz" "dist/candidate/1Helm-$version-arm64.dmg" "dist/candidate/1Helm-$version-mac-arm64.zip" > dist/candidate/final-digests.txt
+          node scripts/create-stable-manifest.mjs "$version" "$commit" "$GITHUB_RUN_ID" dist/candidate
+          {
+            printf '# 1Helm %s\n\n' "$version"
+            printf 'Source commit: `%s`\n\n' "$commit"
+            printf 'Windows/WSL acceptance or waiver: %s\n' "$WINDOWS_EVIDENCE"
+          } > dist/candidate/release-notes.md
+          node scripts/release-stage-evidence.mjs create release-candidate "$version" "$commit" \
+            dist/candidate/release-candidate-evidence.json \
+            "dist/candidate/1Helm-$version-linux-node.tgz" "dist/candidate/1Helm-$version-arm64.dmg" \
+            "dist/candidate/1Helm-$version-mac-arm64.zip" "dist/candidate/1Helm-$version-stable.json" \
+            dist/candidate/final-digests.txt dist/candidate/release-notes.md
+      - name: Create or refresh draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.identity.outputs.version }}"; commit="${{ steps.identity.outputs.commit }}"; tag="v$version"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+            test "$(git rev-list -n1 "$tag")" = "$commit"
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$commit" --title "1Helm $version" --notes-file dist/candidate/release-notes.md --draft
+          fi
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
+            "dist/candidate/1Helm-$version-linux-node.tgz" "dist/candidate/1Helm-$version-arm64.dmg" \
+            "dist/candidate/1Helm-$version-mac-arm64.zip" "dist/candidate/1Helm-$version-stable.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-candidate-${{ steps.identity.outputs.commit }}
+          path: dist/candidate
+          if-no-files-found: error
+          retention-days: 90
