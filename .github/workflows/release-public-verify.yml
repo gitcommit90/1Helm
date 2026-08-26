@@ -11,6 +11,10 @@ on:
         description: Exact published 40-character commit SHA
         required: true
         type: string
+      publish_run_id:
+        description: Exact successful Release 6 publish run ID
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -35,14 +39,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
           COMMIT: ${{ inputs.commit }}
+          PUBLISH_RUN_ID: ${{ inputs.publish_run_id }}
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; [[ "$COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; [[ "$COMMIT" =~ ^[a-f0-9]{40}$ ]]; [[ "$PUBLISH_RUN_ID" =~ ^[0-9]+$ ]]
+          publish_run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PUBLISH_RUN_ID")"
+          test "$(jq -r .name <<<"$publish_run")" = "Release 6 - Publish"
+          test "$(jq -r .status <<<"$publish_run")" = completed; test "$(jq -r .conclusion <<<"$publish_run")" = success
           release="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest")"
           test "$(jq -r .tag_name <<<"$release")" = "v$VERSION"
           test "$(jq -r .draft <<<"$release")" = false; test "$(jq -r .prerelease <<<"$release")" = false
-          test "$(git rev-list -n1 "v$VERSION")" = "$COMMIT"
+          test "$(jq -r .target_commitish <<<"$release")" = "$COMMIT"
           curl -fsSL --retry 4 "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/1Helm-$VERSION-stable.json" -o stable.json
           node -e 'import("./scripts/stable-manifest-lib.mjs").then(({readStableManifest}) => { const m=readStableManifest("stable.json"); if(m.version!==process.env.VERSION||m.commit!==process.env.COMMIT) process.exit(1); })'
           for name in "1Helm-$VERSION-linux-node.tgz" "1Helm-$VERSION-arm64.dmg" "1Helm-$VERSION-mac-arm64.zip"; do
