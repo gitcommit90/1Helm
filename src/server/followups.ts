@@ -59,6 +59,16 @@ export function revokeChannelTexting(channelId: number): boolean {
   return changed;
 }
 
+export function followupScheduleUpdate(triggerBody: string, args: Record<string, unknown>): { automaticFollowupWake: boolean; updateParts: string[] } {
+  const automaticFollowupWake = /^\[scheduled-followup\b/i.test(triggerBody);
+  const update = args.user_update && typeof args.user_update === "object" ? args.user_update as Record<string, unknown> : {};
+  const updateParts = ["completed", "observed_state", "wait_reason", "next_check"].map((key) => String(update[key] || "").trim());
+  if (!automaticFollowupWake && (updateParts.some((part) => part.length < 8) || /^(still working|waiting|check later|i.ll check later)[.!]?$/i.test(updateParts.join(" ")))) {
+    throw new Error("schedule_followup requires a substantive user_update with completed work, directly observed state, wait reason, and next check when first scheduled from a human turn.");
+  }
+  return { automaticFollowupWake, updateParts };
+}
+
 export function followupToolDefinition(skipper: boolean): unknown {
   return {
     type: "function",
@@ -75,7 +85,7 @@ export function followupToolDefinition(skipper: boolean): unknown {
           observed_state: { type: "string", enum: ["confirmed_running"], description: "On an automatic follow-up wake only: set this only after an available tool directly confirms the task is still running. Omit it when first scheduling, when complete, or when state is unknown." },
           user_update: {
             type: "object",
-            description: "Substantive status published before this turn waits.",
+            description: "Substantive status published when initially scheduling from a human turn. Omit on an automatic follow-up wake that confirms work is still running; the re-check is silently re-armed.",
             properties: {
               completed: { type: "string", description: "What was completed so far." },
               observed_state: { type: "string", description: "The current state directly observed with a tool or API." },
@@ -85,7 +95,7 @@ export function followupToolDefinition(skipper: boolean): unknown {
             required: ["completed", "observed_state", "wait_reason", "next_check"],
           },
         },
-        required: ["delay_seconds", "reason", "user_update"],
+        required: ["delay_seconds", "reason"],
       },
     },
   };
@@ -317,7 +327,7 @@ export function followupWakeStateInstructions(hostCommand: "available" | "unavai
     : hostCommand === "resident"
       ? "Host run_command capability: unavailable. Any run_command you receive is confined to this channel's resident computer."
       : "Host run_command capability: unavailable for this wake. If the requested check depends on host files or processes, its state is unknown.";
-  return `${capability}\nClassify the task from direct evidence as exactly one of: confirmed still running; confirmed complete; or state unknown because inspection capability is unavailable or the check failed. Only a directly confirmed-running task may call schedule_followup, exactly once, with observed_state=confirmed_running. A complete task must report completion and not reschedule. An unknown task must report one useful blocker and not reschedule. Never interpret inability to inspect as evidence that work is still running.`;
+  return `${capability}\nClassify the task from direct evidence as exactly one of: confirmed still running; confirmed complete; or state unknown because inspection capability is unavailable or the check failed. Only a directly confirmed-running task may call schedule_followup, exactly once, with observed_state=confirmed_running. When re-scheduling from this automatic wake, omit user_update: the next check must be armed silently without posting another promise or progress reply. A complete task must report completion and not reschedule. An unknown task must report one useful blocker and not reschedule. Never interpret inability to inspect as evidence that work is still running.`;
 }
 
 /** Next pending wake for a thread (soonest due_at), or null. */

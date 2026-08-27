@@ -55,7 +55,7 @@ const providerServer = createServer(async (req, res) => {
   }
   if (/running-first/i.test(serialized)) {
     if (lastTool?.name !== "run_command") return toolCall(res, "run_command", { command: "inspect-running-status" });
-    return toolCall(res, "schedule_followup", { user_update: { completed: "Initial setup is complete.", observed_state: "The process state was directly inspected.", wait_reason: "The running process needs more time.", next_check: "Inspect the process and resulting output." }, delay_seconds: 30, reason: "running-complete", check_hint: "inspect background status", observed_state: "confirmed_running" });
+    return toolCall(res, "schedule_followup", { delay_seconds: 30, reason: "running-complete", check_hint: "inspect background status", observed_state: "confirmed_running" });
   }
   if (/unknown-no-capability/i.test(serialized)) {
     if (!toolNames.includes("run_command")) return answer(res, "Blocked — task state is unknown because host run_command is unavailable for this wake.");
@@ -157,6 +157,7 @@ test("durable follow-ups preserve least-privilege authorization and bound wake o
   const runningComputerScope = JSON.parse(running.followup.host_authorized_computer_ids);
   const retryAddedLater = run("INSERT INTO computers (name,base_url,api_key,created) VALUES ('Retry Added Later',?,'',?)", `http://127.0.0.1:${computerPort}`, now()).lastInsertRowid;
   run("INSERT INTO bot_computers (bot_id,computer_id) VALUES (?,?)", f.skipperBot, retryAddedLater);
+  const publicRepliesBeforeRunningWake = Number(q1("SELECT COUNT(*) n FROM messages WHERE parent_id=? AND bot_id=? AND body NOT LIKE '[%'", running.root, f.skipperBot).n);
   run("UPDATE agent_followups SET due_at=? WHERE id=?", now() - 1, running.followup.id);
   await followups.runFollowupPass();
   const successor = q1("SELECT * FROM agent_followups WHERE source_followup_id=?", running.followup.id);
@@ -166,6 +167,9 @@ test("durable follow-ups preserve least-privilege authorization and bound wake o
   assert.equal(Number(successor.max_attempts), 3, "the creating follow-up's attempt cap cannot be widened by a retry");
   assert.deepEqual(JSON.parse(successor.host_authorized_computer_ids), runningComputerScope, "retry authority does not expand to newly assigned computers");
   assert.equal(q1("SELECT COUNT(*) n FROM agent_followups WHERE source_followup_id=?", running.followup.id).n, 1, "one wake creates exactly one successor");
+  assert.equal(Number(q1("SELECT COUNT(*) n FROM messages WHERE parent_id=? AND bot_id=? AND body NOT LIKE '[%'", running.root, f.skipperBot).n), publicRepliesBeforeRunningWake, "a still-running automatic wake silently re-arms without another chat reply");
+  const silentWakeTurn = q1("SELECT completion_mode FROM agent_turns WHERE trigger_id IN (SELECT id FROM messages WHERE parent_id=? AND body LIKE '[scheduled-followup id=%') ORDER BY id DESC LIMIT 1", running.root);
+  assert.equal(silentWakeTurn.completion_mode, "silent_success", "silent re-arm is explicit in turn audit history");
   run("UPDATE agent_followups SET due_at=? WHERE id=?", now() - 1, successor.id);
   await followups.runFollowupPass();
   assert.equal(q1("SELECT status,attempts FROM agent_followups WHERE id=?", successor.id).status, "done");

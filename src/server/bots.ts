@@ -32,7 +32,7 @@ import {
   deleteChannelWorld,
   restoreChannel,
 } from "./agents.ts";
-import { captainTextConsent, captainTextingPermissionPayload, captainTextingPrompt, captainTextToolDefinitions, channelTextingGrant, deliverResidentCaptainText, followupToolDefinition, followupWakeStateInstructions, normalizedAuthorizationComputerIds, registerSkipperCallDispatcher, scheduleRuntimeFollowup, sendCaptainTextForTurn, skipperCallApprovalPayload, skipperCallNeedsApproval } from "./followups.ts";
+import { captainTextConsent, captainTextingPermissionPayload, captainTextingPrompt, captainTextToolDefinitions, channelTextingGrant, deliverResidentCaptainText, followupScheduleUpdate, followupToolDefinition, followupWakeStateInstructions, normalizedAuthorizationComputerIds, registerSkipperCallDispatcher, scheduleRuntimeFollowup, sendCaptainTextForTurn, skipperCallApprovalPayload, skipperCallNeedsApproval } from "./followups.ts";
 import { closeChannelSessions } from "./terms.ts";
 import { claimAgentTurn, finalizeAgentTurn, ownsAgentTurnWriter, updateAgentTurnProgress, writeAgentTurnBody } from "./turns.ts";
 import {
@@ -1615,7 +1615,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
         if (streamedBody.trim()) liveThought = streamedBody;
         paintStickyWorkingBody();
         messages.push({ role: "assistant", content: content || "", tool_calls: toolCalls });
-        let scheduledSilentFollowup = false;
+        let scheduledFollowup = false, scheduledFollowupReplyPublished = false;
         for (const toolCall of toolCalls) {
           requireActiveTurn(channelId, controller.signal);
           const args = safeParse(toolCall.function.arguments);
@@ -1811,11 +1811,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
             } else if (name === "schedule_followup" && ((agent?.kind === "channel" && !visiting)
               || (agent?.kind === "skipper" && isMainChannel(channelId) && skipperControlAuthorized(channelId, requestUserId, hostAuthorized)))) {
               try {
-                const update = args.user_update && typeof args.user_update === "object" ? args.user_update as Record<string, unknown> : {};
-                const updateParts = ["completed", "observed_state", "wait_reason", "next_check"].map((key) => String(update[key] || "").trim());
-                if (updateParts.some((part) => part.length < 8) || /^(still working|waiting|check later|i.ll check later)[.!]?$/i.test(updateParts.join(" "))) {
-                  throw new Error("schedule_followup requires a substantive user_update with completed work, directly observed state, wait reason, and next check.");
-                }
+                const { automaticFollowupWake, updateParts } = followupScheduleUpdate(String(q1("SELECT body FROM messages WHERE id=?", triggerId)?.body || ""), args);
                 const scheduled = scheduleRuntimeFollowup({
                   agentKind: String(agent.kind),
                   agentId: Number(agent.id),
@@ -1832,9 +1828,12 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
                   hostAuthorizedComputerIds: admittedHostComputerIds,
                   observedState: args.observed_state ? String(args.observed_state) : undefined,
                 });
-                const dueLabel = new Date(scheduled.due_at).toLocaleString();
-                setBody(`${updateParts[0]} ${updateParts[1]} ${updateParts[2]} ${updateParts[3]} Next check: ${dueLabel}.`);
-                result = `Scheduled durable follow-up #${scheduled.id} in ${scheduled.delay_seconds}s (due_at=${scheduled.due_at}); the required user update was published.`;
+                if (automaticFollowupWake) result = `Scheduled durable follow-up #${scheduled.id} in ${scheduled.delay_seconds}s (due_at=${scheduled.due_at}); automatic wake re-armed silently.`;
+                else {
+                  setBody(`${updateParts[0]} ${updateParts[1]} ${updateParts[2]} ${updateParts[3]} Next check: ${new Date(scheduled.due_at).toLocaleString()}.`);
+                  scheduledFollowupReplyPublished = true;
+                  result = `Scheduled durable follow-up #${scheduled.id} in ${scheduled.delay_seconds}s (due_at=${scheduled.due_at}); the required user update was published.`;
+                }
               } catch (error) {
                 result = `Error: ${(error as Error).message}`;
               }
@@ -1951,7 +1950,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
           }
           if (actionStatus === "complete") {
             lastCompletedTool = { name, result };
-            if (name === "schedule_followup" && (agent?.kind === "channel" || isInternalMessageBody(String(q1("SELECT body FROM messages WHERE id=?", triggerId)?.body || "")))) scheduledSilentFollowup = true;
+            if (name === "schedule_followup" && (agent?.kind === "channel" || isInternalMessageBody(String(q1("SELECT body FROM messages WHERE id=?", triggerId)?.body || "")))) scheduledFollowup = true;
             if (name === "inspect_web_source") {
               try {
                 const inspected = JSON.parse(result) as { requested_url?: string; final_url?: string };
@@ -1972,15 +1971,17 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
           if (turnId) { run("UPDATE agent_turns SET completion_mode='silent_success' WHERE id=?", turnId); finalizeAgentTurn(turnId, "completed", "", "running", writerGeneration); }
           return;
         }
-        // A successful durable wake is the continuation. End this turn at the
-        // tool boundary, but retain its message and work log as ordinary thread
-        // context for the scheduled wake.
-        if (scheduledSilentFollowup) {
-          if (!responseBody.trim()) throw new Error("A successful schedule_followup did not publish its required user update.");
+        // Initial schedules publish status; automatic wakes that merely re-arm
+        // are retained only as internal audit context.
+        if (scheduledFollowup) {
+          if (!scheduledFollowupReplyPublished) setBody("[silent-success]");
+          else if (!responseBody.trim()) throw new Error("A successful initial schedule_followup did not publish its required user update.");
           run("UPDATE agent_progress SET status='complete',updated=? WHERE message_id=? AND status='running'", now(), msgId);
           refreshThreadSummary(threadRootId);
           setStatus(agent, channelId, "waiting");
-          emitNow();
+          if (scheduledFollowupReplyPublished) emitNow();
+          else broadcastToChannel(channelId, { type: "message_deleted", channelId, id: msgId, deleted_ids: [msgId], parent_id: threadRootId, parent: serializeMessage(threadRootId) });
+          if (turnId && !scheduledFollowupReplyPublished) run("UPDATE agent_turns SET completion_mode='silent_success' WHERE id=?", turnId);
           if (turnId) finalizeAgentTurn(turnId, "waiting", "", "running", writerGeneration);
           return;
         }
