@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-08-27
+
+### Added
+
+- Threads now retain bounded operational history for resident agents, including
+  recent tool activity and completion context, so later turns can explain and
+  continue work without relying only on visible chat messages.
+- Follow-up work can be cancelled or checked immediately from thread and Board
+  interfaces, with compact actions that remain visible while pending.
+- Agent turns now record model-call and cached-input usage plus explicit silent
+  completion state for clearer operational accounting.
+
+### Changed
+
+- Durable follow-up scheduling now publishes a substantive initial status with
+  completed work, observed state, wait reason, and the next check.
+- Resident continuity, thread formatting, memory retrieval, and built-in tool
+  contracts now use the richer thread-history model.
+
+### Fixed
+
+- Intervening status questions retain pending follow-up details instead of
+  falling back to an uninformative generic waiting response.
+- Automatic follow-up wakes that confirm work is still running now re-arm their
+  next check silently instead of posting duplicate status messages.
+- Board follow-up controls remain available in compact thread layouts.
+- Small-screen thread headers keep Back and Close navigation clear by shrinking
+  or hiding usage metadata before it can crowd the navigation controls.
+
 ## [1.3.1] - 2026-08-26
 
 ### Fixed
