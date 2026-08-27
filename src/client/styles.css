@@ -866,6 +866,10 @@ html.light .channel-unread-badge {
 .thread-ctx {
   opacity: 0.72;
   line-height: 1;
+  max-width: min(22rem, 42vw);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   transition: opacity .15s ease;
 }
@@ -1195,6 +1199,8 @@ html, body { height: 100%; width: 100%; overflow: hidden; overscroll-behavior: n
 }
 
 @media (max-width: 767px) {
+  /* Usage is secondary metadata; never let it crowd out thread navigation. */
+  .thread-topbar .thread-ctx { display: none; }
   .app-topbar, .thread-topbar, .mobile-surface-topbar {
     padding-top: max(.375rem, env(safe-area-inset-top));
     padding-left: max(.5rem, env(safe-area-inset-left));

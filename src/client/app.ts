@@ -2933,7 +2933,7 @@ function paintThreadPanel(
   const hasUsage = !!(S.threadUsage.model_calls || S.threadUsage.input_tokens || S.threadUsage.output_tokens);
   const ctxChip = h("span", {
     id: "thread-ctx",
-    class: `thread-ctx select-none font-mono text-[10px] font-normal tracking-tight text-faint tabular-nums ${hasUsage ? "" : "hidden"}`,
+    class: `thread-ctx min-w-0 select-none overflow-hidden text-ellipsis font-mono text-[10px] font-normal tracking-tight text-faint tabular-nums ${hasUsage ? "" : "hidden"}`,
     title: `Cumulative provider-reported usage across repeated model calls · ${S.threadUsage.input_tokens} input tokens (${S.threadUsage.cached_input_tokens} cached) · ${S.threadUsage.output_tokens} output tokens · ${S.threadUsage.model_calls} calls. This is usage, not visible transcript size or context-window occupancy.`,
   }, threadUsageLabel());
   const followupBanner = threadFollowupBanner();
@@ -2949,7 +2949,7 @@ function paintThreadPanel(
         h("div", { class: "min-w-0" },
           h("div", { class: "truncate text-[15px] font-semibold text-fg" }, "Thread"),
           h("div", { class: "truncate font-mono text-[10.5px] text-faint" }, channelName ? `#${channelName}` : "Channel chat"))),
-      h("div", { class: "flex shrink-0 items-center gap-1.5 sm:gap-2" },
+      h("div", { class: "flex min-w-0 items-center gap-1.5 sm:gap-2" },
         ctxChip,
         h("button", {
           class: "grid h-11 w-11 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg sm:h-9 sm:w-9",
