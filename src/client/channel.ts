@@ -128,12 +128,17 @@ function followupMeta(thread: ThreadState, opts?: { onBumped?: () => void; onCan
         void appAlert((error as Error).message || "Could not wake the agent.");
       });
   };
-  const cancel = h("button", { class: "board-cancel-followup btn-ghost min-h-8 shrink-0 px-2 py-1 text-[11px] font-semibold text-danger", type: "button", title: "Cancel only this scheduled wake" }, "Cancel Follow Up") as HTMLButtonElement;
+  const cancel = h("button", {
+    class: "board-cancel-followup btn-ghost min-h-8 shrink-0 px-1.5 py-1 text-[11px] font-semibold text-danger",
+    type: "button",
+    title: "Cancel only this scheduled wake",
+    "aria-label": "Cancel follow-up",
+  }, "Cancel") as HTMLButtonElement;
   cancel.onclick = (event: MouseEvent) => {
-    event.preventDefault(); event.stopPropagation(); if (cancel.disabled) return; cancel.disabled = true; cancel.textContent = "Cancelling…";
+    event.preventDefault(); event.stopPropagation(); if (cancel.disabled) return; cancel.disabled = true;
     void api<{ ok: boolean; followup: ThreadState["followup"] }>(`/api/threads/${thread.id}/followups/${f.id}/cancel`, { method: "POST", body: {} })
       .then((result) => { thread.followup = result.followup || null; opts?.onCancelled?.(); })
-      .catch((error) => { cancel.disabled = false; cancel.textContent = "Cancel Follow Up"; void appAlert((error as Error).message || "Could not cancel the follow-up."); });
+      .catch((error) => { cancel.disabled = false; void appAlert((error as Error).message || "Could not cancel the follow-up."); });
   };
   return h("div", {
     class: "board-followup mt-2.5 rounded-md border border-accent/25 bg-accent-soft/40 px-2 py-1.5",
@@ -145,8 +150,8 @@ function followupMeta(thread: ThreadState, opts?: { onBumped?: () => void; onCan
     f.reason
       ? h("div", { class: "mt-1 line-clamp-2 text-[11px] leading-4 text-muted" }, f.reason)
       : null,
-    h("div", { class: "mt-1.5 flex items-center justify-between gap-2" },
-      h("div", { class: "font-mono text-[9px] text-faint" }, `attempt ${Number(f.attempts || 0) + 1}/${f.max_attempts || "?"} · #${f.id}`),
+    h("div", { class: "mt-1.5 flex flex-wrap items-center justify-between gap-2" },
+      h("div", { class: "min-w-0 font-mono text-[9px] text-faint" }, `attempt ${Number(f.attempts || 0) + 1}/${f.max_attempts || "?"} · #${f.id}`),
       h("div", { class: "flex items-center gap-1" }, cancel, bump)),
   );
 }

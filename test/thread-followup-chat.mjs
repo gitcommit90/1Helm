@@ -19,7 +19,10 @@ test("open chat threads present the persisted Board follow-up as a live countdow
 test("Scheduled Board cards cancel one wake without confirmation or agent invocation", () => {
   const board = readFileSync(new URL("src/client/channel.ts", root), "utf8");
   assert(server.includes("followups") && server.includes("cancelPendingFollowup"));
-  assert.match(board, /Cancel Follow Up/);
+  assert.match(board, /"aria-label": "Cancel follow-up"/);
+  assert.match(board, /}, "Cancel"\) as HTMLButtonElement/, "cancel action uses a compact visible label");
+  assert.match(board, /mt-1\.5 flex flex-wrap items-center justify-between gap-2/, "narrow cards wrap actions instead of clipping Check now");
+  assert.doesNotMatch(board, /Cancel Follow Up/, "oversized label cannot crowd Check now out of the card");
   assert.match(board, /\/api\/threads\/\$\{thread\.id\}\/followups\/\$\{f\.id\}\/cancel/);
   assert.doesNotMatch(board.match(/cancel\.onclick[\s\S]*?return h\("div"/)?.[0] || "", /appConfirm/);
   assert.match(board, /thread\.followup = result\.followup \|\| null; opts\?\.onCancelled\?\.\(\)/);
