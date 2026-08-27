@@ -5,6 +5,7 @@ import test from "node:test";
 const root = new URL("..", import.meta.url);
 const client = readFileSync(new URL("src/client/app.ts", root), "utf8");
 const server = readFileSync(new URL("src/server/index.ts", root), "utf8");
+const followups = readFileSync(new URL("src/server/followups.ts", root), "utf8");
 const styles = readFileSync(new URL("src/client/styles.css", root), "utf8");
 
 test("open chat threads present the persisted Board follow-up as a live countdown", () => {
@@ -15,6 +16,8 @@ test("open chat threads present the persisted Board follow-up as a live countdow
   assert.match(client, /window\.setInterval\(tickThreadFollowup, 1000\)/, "countdown ticks once per second from due_at");
   assert.match(client, /Number\(e\.rootMessageId\) === Number\(S\.threadRoot\.id\)/, "follow-up events update only the matching open thread");
   assert.match(client, /S\.threadFollowup = e\.followup \|\| null;[\s\S]*paintThreadFollowup\(\)/, "live events update or remove the banner without reopening the thread");
+  assert.match(client, /\["pending", "running"\]\.includes\(followup\.status\)/, "a claimed wake stays present instead of disappearing while the agent checks");
+  assert.match(client, /is checking now/, "running wakes explicitly tell the Captain work is happening now");
 });
 
 test("Scheduled Board cards cancel one wake without confirmation or agent invocation", () => {
@@ -35,4 +38,11 @@ test("narrow thread headers preserve Back and Close navigation ahead of usage me
   assert.match(client, /class: "flex min-w-0 items-center gap-1\.5 sm:gap-2"[\s\S]*?ctxChip/, "usage-side header group can shrink around the fixed close button");
   assert.match(styles, /@media \(max-width: 767px\)[\s\S]*?\.thread-topbar \.thread-ctx \{ display: none; \}/, "small screens hide secondary usage metadata before it can cover Back");
   assert.match(client, /aria-label": "Close thread and return to channel"/, "Back remains an explicit navigation control");
+});
+
+
+test("scheduled wakes continue the requested outcome after intermediate jobs finish or fail", () => {
+  assert.match(followups, /not necessarily completion of the Captain's requested outcome/, "runtime distinguishes a finished check from the requested outcome");
+  assert.match(followups, /If it failed, inspect the failure, fix or retry it autonomously, and continue/, "failed CI or subprocesses trigger recovery rather than abandonment");
+  assert.match(followups, /Never stop merely because one intermediate operation ended/, "wake cannot convert an intermediate result into a terminal hand-back");
 });

@@ -2870,7 +2870,8 @@ function residentFollowupName(): string {
 }
 function threadFollowupBanner(): HTMLElement | null {
   const followup = S.threadFollowup;
-  if (!followup?.due_at || followup.status !== "pending") return null;
+  if (!followup?.due_at || !["pending", "running"].includes(followup.status)) return null;
+  const running = followup.status === "running";
   const intent = String(followup.check_hint || followup.reason || "").trim();
   return h("div", {
     class: "mx-3 mb-2 rounded-lg border border-accent/30 bg-accent-soft px-3 py-2 sm:mx-4",
@@ -2880,9 +2881,9 @@ function threadFollowupBanner(): HTMLElement | null {
   },
     h("div", { class: "flex min-w-0 items-center gap-2 text-xs" },
       h("span", { class: "shrink-0 text-accent" }, icon("helm", 15)),
-      h("span", { class: "min-w-0 flex-1 text-fg" }, h("strong", {}, `@${residentFollowupName()}`), " will check back in ",
-        h("span", { class: "font-mono tabular-nums text-accent", dataset: { threadFollowupCountdown: "" } }, formatThreadFollowupCountdown(Number(followup.due_at)))),
-      h("span", { class: "hidden shrink-0 font-mono text-[9px] uppercase tracking-[0.12em] text-faint sm:inline" }, "scheduled")),
+      h("span", { class: "min-w-0 flex-1 text-fg" }, h("strong", {}, `@${residentFollowupName()}`), running ? " is checking now" : " will check back in ",
+        running ? null : h("span", { class: "font-mono tabular-nums text-accent", dataset: { threadFollowupCountdown: "" } }, formatThreadFollowupCountdown(Number(followup.due_at)))),
+      h("span", { class: "hidden shrink-0 font-mono text-[9px] uppercase tracking-[0.12em] text-faint sm:inline" }, running ? "working" : "scheduled")),
     intent ? h("p", { class: "mt-1 line-clamp-2 pl-[23px] text-[11px] leading-4 text-muted" }, intent) : null);
 }
 function paintThreadFollowup(): void {
@@ -2892,7 +2893,7 @@ function paintThreadFollowup(): void {
   else if (existing) existing.remove();
   else if (next) document.querySelector<HTMLElement>("#thread-panel .composer-wrap")?.before(next);
   stopThreadFollowupTicker();
-  if (next) { tickThreadFollowup(); threadFollowupTimer = window.setInterval(tickThreadFollowup, 1000); }
+  if (next && S.threadFollowup?.status === "pending") { tickThreadFollowup(); threadFollowupTimer = window.setInterval(tickThreadFollowup, 1000); }
 }
 
 /** One-shot hint that the stopped turn's work context is preserved and the

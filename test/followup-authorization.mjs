@@ -271,7 +271,9 @@ test("specific pending follow-up cancellation preserves siblings and rejects rac
   assert.equal(q1("SELECT status FROM agent_followups WHERE id=?", second.id).status, "pending");
   assert.equal(result.followup.id, second.id);
   assert.deepEqual(q1("SELECT status,title,summary FROM threads WHERE id=?", thread), before);
-  run("UPDATE agent_followups SET status='running' WHERE id=?", second.id);
+  run("UPDATE agent_followups SET status='running',attempts=1 WHERE id=?", second.id);
+  assert.equal(followups.threadFollowupView(thread).id, second.id, "a claimed wake remains visible while its agent turn runs");
+  assert.equal(followups.threadFollowupView(thread).status, "running");
   assert.deepEqual(followups.cancelPendingFollowup(thread, second.id), { ok: false, code: 409, error: "Follow-up has already started." });
   assert.equal(followups.cancelPendingFollowup(thread + 1, second.id).code, 404);
 });
