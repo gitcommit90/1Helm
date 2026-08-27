@@ -327,7 +327,7 @@ export function followupWakeStateInstructions(hostCommand: "available" | "unavai
     : hostCommand === "resident"
       ? "Host run_command capability: unavailable. Any run_command you receive is confined to this channel's resident computer."
       : "Host run_command capability: unavailable for this wake. If the requested check depends on host files or processes, its state is unknown.";
-  return `${capability}\nClassify the task from direct evidence as exactly one of: confirmed still running; confirmed complete; or state unknown because inspection capability is unavailable or the check failed. Only a directly confirmed-running task may call schedule_followup, exactly once, with observed_state=confirmed_running. When re-scheduling from this automatic wake, omit user_update: the next check must be armed silently without posting another promise or progress reply. A complete task must report completion and not reschedule. An unknown task must report one useful blocker and not reschedule. Never interpret inability to inspect as evidence that work is still running.`;
+  return `${capability}\nInspect the monitored operation from direct evidence and classify its state as exactly one of: still running; finished successfully; finished with failure; or unknown because inspection capability is unavailable or the check failed. This is the state of the operation you were waiting on, not necessarily completion of the Captain's requested outcome. If it finished successfully, immediately continue every remaining authorized step of the original request. If it failed, inspect the failure, fix or retry it autonomously, and continue; a failed CI job or subprocess is not a human-only blocker and does not cancel the original request. Only a directly confirmed-running operation may call schedule_followup without first doing more work, exactly once, with observed_state=confirmed_running. After your own repair or continuation starts another asynchronous operation, inspect it and schedule the next durable check when it is directly confirmed running. When re-scheduling from this automatic wake, omit user_update: the next check must be armed silently without posting another promise or progress reply. Publish a final reply only when the requested end outcome is verified complete or a genuine human-only boundary remains. Never stop merely because one intermediate operation ended, and never interpret inability to inspect as evidence that work is still running.`;
 }
 
 /** Next pending wake for a thread (soonest due_at), or null. */
@@ -343,8 +343,8 @@ export function nextFollowupForThread(threadId: number): {
   const row = q1(
     `SELECT id, due_at, reason, attempts, max_attempts, status, check_hint
      FROM agent_followups
-     WHERE thread_id=? AND status='pending'
-     ORDER BY due_at ASC LIMIT 1`,
+     WHERE thread_id=? AND status IN ('running','pending')
+     ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, due_at ASC LIMIT 1`,
     threadId,
   );
   if (!row) return null;
@@ -493,6 +493,10 @@ async function fireFollowup(row: Row): Promise<void> {
   const hostAuthorized = String(agentForBot(botId)?.kind || "") === "skipper" && Number(row.host_authorized || 0) === 1;
   const hostAuthorizedComputerIds = hostAuthorized ? storedComputerIds(row.host_authorized_computer_ids) : [];
   appendThreadHistory(threadId, "followup", { id, status: "wake_started", attempts, max_attempts: maxAttempts, reason, check_hint: checkHint }, "followup_wake", id, `followup:${id}`);
+  // A claimed wake remains visible while its agent turn is running. Without this
+  // broadcast the pending countdown vanished at due time, making real work look
+  // like a broken promise until the turn eventually replied.
+  broadcastToChannel(channelId, { type: "followup", channelId, threadId, rootMessageId, followup: nextFollowupForThread(threadId) });
 
   const channel = q1("SELECT status FROM channels WHERE id=?", channelId);
   if (!channel || channel.status !== "active") {

@@ -59,7 +59,7 @@ export type ThreadState = {
   opened_at: number;
   updated_at: number;
   root: Message;
-  /** Next pending durable agent wake, if any (Board Scheduled lane + countdown). */
+  /** Active durable agent wake, pending or currently running (Board Scheduled lane). */
   followup?: ThreadFollowup | null;
 };
 export type GlobalThread = ThreadState & { channel_name: string; channel_slug: string; unread: boolean };

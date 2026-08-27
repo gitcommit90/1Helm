@@ -99,6 +99,7 @@ function followupCountdownEl(dueAt: number): HTMLElement {
 function followupMeta(thread: ThreadState, opts?: { onBumped?: () => void; onCancelled?: () => void }): HTMLElement | null {
   const f = thread.followup;
   if (!f?.due_at) return null;
+  const running = f.status === "running";
   const bump = h("button", {
     class: "board-check-now btn-ghost min-h-8 shrink-0 px-2 py-1 text-[11px] font-semibold",
     type: "button",
@@ -145,14 +146,14 @@ function followupMeta(thread: ThreadState, opts?: { onBumped?: () => void; onCan
     onclick: (event: MouseEvent) => event.stopPropagation(),
   },
     h("div", { class: "flex items-center justify-between gap-2" },
-      h("span", { class: "font-mono text-[9px] uppercase tracking-[0.14em] text-muted" }, "Next check"),
-      followupCountdownEl(Number(f.due_at))),
+      h("span", { class: "font-mono text-[9px] uppercase tracking-[0.14em] text-muted" }, running ? "Checking now" : "Next check"),
+      running ? h("span", { class: "font-mono text-[11px] text-accent" }, "working") : followupCountdownEl(Number(f.due_at))),
     f.reason
       ? h("div", { class: "mt-1 line-clamp-2 text-[11px] leading-4 text-muted" }, f.reason)
       : null,
     h("div", { class: "mt-1.5 flex flex-wrap items-center justify-between gap-2" },
-      h("div", { class: "min-w-0 font-mono text-[9px] text-faint" }, `attempt ${Number(f.attempts || 0) + 1}/${f.max_attempts || "?"} · #${f.id}`),
-      h("div", { class: "flex items-center gap-1" }, cancel, bump)),
+      h("div", { class: "min-w-0 font-mono text-[9px] text-faint" }, `attempt ${Number(f.attempts || 0) + (running ? 0 : 1)}/${f.max_attempts || "?"} · #${f.id}`),
+      running ? null : h("div", { class: "flex items-center gap-1" }, cancel, bump)),
   );
 }
 /** Tick all .board-countdown nodes under root once per second while Board is open. */
@@ -231,24 +232,24 @@ export function renderBoard(container: HTMLElement, channelId: number, onOpen: (
       { status: "failed", label: "Failed" },
       { status: "archived", label: "Archived" },
     ];
-    const hasPendingFollowup = (thread: ThreadState): boolean =>
-      Boolean(thread.followup && thread.followup.status === "pending" && Number(thread.followup.due_at) > 0);
+    const hasActiveFollowup = (thread: ThreadState): boolean =>
+      Boolean(thread.followup && ["pending", "running"].includes(thread.followup.status) && Number(thread.followup.due_at) > 0);
 
     const scheduled = threads
-      .filter(hasPendingFollowup)
+      .filter(hasActiveFollowup)
       .slice()
       .sort((a, b) => Number(a.followup!.due_at) - Number(b.followup!.due_at));
 
     const grouped = new Map<ThreadState["status"], ThreadState[]>();
     for (const { status } of statuses) grouped.set(status, []);
     for (const thread of threads.slice().sort((a, b) => b.updated_at - a.updated_at)) {
-      // Exclusive: pending wakes live only in Scheduled (not also Open/Waiting).
-      if (hasPendingFollowup(thread)) continue;
+      // Exclusive: active wakes live only in Scheduled (not also Open/Waiting).
+      if (hasActiveFollowup(thread)) continue;
       grouped.get(thread.status)?.push(thread);
     }
 
     const threadCard = (thread: ThreadState): HTMLElement => h("button", {
-      class: `board-card${hasPendingFollowup(thread) ? " board-card-scheduled" : ""}`,
+      class: `board-card${hasActiveFollowup(thread) ? " board-card-scheduled" : ""}`,
       type: "button",
       dataset: { threadOpen: String(thread.id), continuityKey: `board-thread-${thread.id}` },
       onclick: () => onOpen(thread.root),
