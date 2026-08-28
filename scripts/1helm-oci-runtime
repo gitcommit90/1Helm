@@ -71,6 +71,40 @@ owner_channel() { printf '%s' "${1#*:}"; }
 channel_root() { printf '%s/%s' "$CHANNELS_ROOT" "$1"; }
 network_name() { printf '1helm-%s' "$(owner_installation "$1")"; }
 
+ensure_netavark_backend() (
+  local backend_file="$1" backend_dir candidate backend_lock_fd
+  backend_dir="$(dirname "$backend_file")"
+  { command -v netavark >/dev/null 2>&1 || [[ -x /usr/lib/podman/netavark || -x /usr/libexec/podman/netavark ]]; } || return 0
+
+  # Serialize the inspection and replacement so concurrent starts do not replace
+  # an exact selector a second time. The candidate stays beside its destination,
+  # and only a complete root-owned 0600 file is atomically promoted.
+  exec {backend_lock_fd}<"$backend_dir"
+  flock "$backend_lock_fd"
+  if [[ -L "$backend_file" ]]; then
+    return 0
+  elif [[ -f "$backend_file" ]]; then
+    cmp -s -- "$backend_file" <(printf '%s' netavark) && return 0
+    if [[ -s "$backend_file" ]] && ! cmp -s -- "$backend_file" <(printf 'netavark\n'); then
+      return 0
+    fi
+  elif [[ -e "$backend_file" ]]; then
+    return 0
+  fi
+
+  candidate="$(mktemp "$backend_dir/.defaultNetworkBackend.XXXXXX")"
+  if ! printf '%s' netavark >"$candidate" \
+      || ! chown root:root "$candidate" \
+      || ! chmod 0600 "$candidate"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+  if ! mv -f -- "$candidate" "$backend_file"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+)
+
 ensure_roots() {
   install -d -m 0711 "$STATE_ROOT" "$CHANNELS_ROOT"
   install -d -m 0700 "$STORAGE_ROOT" "$BACKUPS_ROOT" "$NETWORKS_ROOT"
@@ -79,19 +113,9 @@ ensure_roots() {
   install -d -o root -g root -m 1777 "$RUNTIME_TMP"
   # Prefer netavark on a fresh dedicated store. CNI writes IPAM state beneath
   # /var/lib/cni, which is intentionally read-only to the hardened service;
-  # netavark keeps its runtime state under the explicit Podman runroot.
-  if [[ -f "$STORAGE_ROOT/defaultNetworkBackend" ]] \
-      && [[ "$(cat "$STORAGE_ROOT/defaultNetworkBackend")" == netavark ]]; then
-    # Repair selectors written by v0.0.30 as well as creating new ones below.
-    printf '%s' netavark >"$STORAGE_ROOT/defaultNetworkBackend"
-    chmod 0600 "$STORAGE_ROOT/defaultNetworkBackend"
-  elif [[ ! -e "$STORAGE_ROOT/defaultNetworkBackend" ]] \
-      && { command -v netavark >/dev/null 2>&1 || [[ -x /usr/lib/podman/netavark || -x /usr/libexec/podman/netavark ]]; }; then
-    # Podman reads this as an exact token. Ubuntu 24.04's Podman rejects the
-    # newline that ordinary text-file conventions would otherwise add.
-    printf '%s' netavark >"$STORAGE_ROOT/defaultNetworkBackend"
-    chmod 0600 "$STORAGE_ROOT/defaultNetworkBackend"
-  fi
+  # netavark keeps its runtime state under the explicit Podman runroot. Repair
+  # only the empty and historical newline forms; every other selection is kept.
+  ensure_netavark_backend "$STORAGE_ROOT/defaultNetworkBackend"
 }
 
 container_exists() { "${PODMAN[@]}" container exists "$1" >/dev/null 2>&1; }

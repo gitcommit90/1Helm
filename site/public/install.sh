@@ -319,16 +319,47 @@ PREVIOUS_RELEASE="$(readlink -f "$APP_ROOT" 2>/dev/null || true)"
 [[ "$PREVIOUS_RELEASE" == "$RELEASES_ROOT/"* && -d "$PREVIOUS_RELEASE" ]] || PREVIOUS_RELEASE=""
 snapshot_host_contract
 TRANSACTION_ACTIVE=1
+ensure_netavark_backend() (
+  local backend_file="$1" backend_dir candidate backend_lock_fd
+  backend_dir="$(dirname "$backend_file")"
+  { command -v netavark >/dev/null 2>&1 || [[ -x /usr/lib/podman/netavark || -x /usr/libexec/podman/netavark ]]; } || return 0
+
+  # Serialize the inspection and replacement so concurrent installs do not
+  # replace an exact selector a second time. A complete root-owned 0600 candidate
+  # is atomically promoted from beside the destination.
+  exec {backend_lock_fd}<"$backend_dir"
+  flock "$backend_lock_fd"
+  if [[ -L "$backend_file" ]]; then
+    return 0
+  elif [[ -f "$backend_file" ]]; then
+    cmp -s -- "$backend_file" <(printf '%s' netavark) && return 0
+    if [[ -s "$backend_file" ]] && ! cmp -s -- "$backend_file" <(printf 'netavark\n'); then
+      return 0
+    fi
+  elif [[ -e "$backend_file" ]]; then
+    return 0
+  fi
+
+  candidate="$(mktemp "$backend_dir/.defaultNetworkBackend.XXXXXX")"
+  if ! printf '%s' netavark >"$candidate" \
+      || ! chown root:root "$candidate" \
+      || ! chmod 0600 "$candidate"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+  if ! mv -f -- "$candidate" "$backend_file"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+)
+
 # v0.0.30's otherwise accepted Linux artifact wrote this Podman selector with
 # a trailing newline. Fresh Ubuntu 24.04 rejects that byte sequence, so the
-# bootstrap repairs it before invoking either that helper or a newer one. An
-# existing non-netavark selection remains untouched.
+# bootstrap repairs only missing, empty, and historical newline forms before
+# invoking release code. Exact and custom selections keep their inode and time.
 NETWORK_BACKEND_FILE="$STATE_ROOT/runtime/oci/storage/defaultNetworkBackend"
-if [[ ! -e "$NETWORK_BACKEND_FILE" || (-f "$NETWORK_BACKEND_FILE" && "$(cat "$NETWORK_BACKEND_FILE")" == netavark) ]]; then
-  install -d -o root -g root -m 0700 "$(dirname "$NETWORK_BACKEND_FILE")"
-  printf '%s' netavark >"$NETWORK_BACKEND_FILE"
-  chmod 0600 "$NETWORK_BACKEND_FILE"
-fi
+install -d -o root -g root -m 0700 "$(dirname "$NETWORK_BACKEND_FILE")"
+ensure_netavark_backend "$NETWORK_BACKEND_FILE"
 "$RELEASE_ROOT/site/public/install-oci-runtime.sh" "$RELEASE_ROOT"
 
 ln -s "$RELEASE_ROOT" "$TEMP_ROOT/current"

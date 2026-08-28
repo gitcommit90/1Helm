@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { accessSync, constants, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { accessSync, chmodSync, constants, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -9,6 +9,36 @@ import test from "node:test";
 
 const root = new URL("..", import.meta.url).pathname;
 const context7Widget = /<script src="https:\/\/context7\.com\/widget\.js" data-library="\/gitcommit90\/1helm"><\/script>/;
+
+const extractShellFunction = (source, name) => {
+  const start = source.indexOf(`${name}() (`);
+  const end = source.indexOf("\n)\n", start);
+  assert.notEqual(start, -1, `${name} is defined`);
+  assert.notEqual(end, -1, `${name} has a subshell boundary`);
+  return source.slice(start, end + 2);
+};
+
+const backendRepairShell = (definition, failCandidate = false) => `
+set -euo pipefail
+netavark() { :; }
+${failCandidate ? "chown() { return 1; }" : "chown() { :; }"}
+${definition}
+ensure_netavark_backend "$1"
+`;
+
+const runBackendRepair = (definition, backend, failCandidate = false) => execFileSync(
+  "bash", ["-c", backendRepairShell(definition, failCandidate), "bash", backend],
+  { cwd: root, stdio: "pipe" },
+);
+
+const spawnBackendRepair = (definition, backend) => new Promise((resolve, reject) => {
+  const child = spawn("bash", ["-c", backendRepairShell(definition), "bash", backend], { cwd: root, stdio: "pipe" });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  child.once("error", reject);
+  child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`backend repair exited ${code}: ${stderr}`)));
+});
+
 const releaseFixture = {
   tag_name: "v0.0.31",
   draft: false,
@@ -245,6 +275,85 @@ test("public feedback intake validates, deduplicates, and persists to the websit
   }
 });
 
+test("Podman backend repair is atomic, selective, and concurrency-safe", async () => {
+  mkdirSync(join(root, ".test-state"), { recursive: true });
+  const implementations = [
+    ["runtime", readFileSync(join(root, "scripts", "1helm-oci-runtime"), "utf8")],
+    ["bootstrap", readFileSync(join(root, "site", "public", "install.sh"), "utf8")],
+  ].map(([name, source]) => [name, extractShellFunction(source, "ensure_netavark_backend")]);
+
+  for (const [name, definition] of implementations) {
+    const workspace = mkdtempSync(join(root, ".test-state", `backend-${name}-`));
+    const storage = join(workspace, "storage");
+    const backend = join(storage, "defaultNetworkBackend");
+    mkdirSync(storage);
+    try {
+      runBackendRepair(definition, backend);
+      assert.equal(readFileSync(backend, "utf8"), "netavark", `${name}: missing selector is created`);
+      assert.equal(statSync(backend).mode & 0o777, 0o600, `${name}: repaired selector is mode 0600`);
+
+      chmodSync(backend, 0o640);
+      utimesSync(backend, 10, 10);
+      const exactBefore = statSync(backend, { bigint: true });
+      runBackendRepair(definition, backend);
+      const exactAfter = statSync(backend, { bigint: true });
+      assert.equal(exactAfter.ino, exactBefore.ino, `${name}: exact selector retains its inode`);
+      assert.equal(exactAfter.mtimeNs, exactBefore.mtimeNs, `${name}: exact selector retains its mtime`);
+      assert.equal(exactAfter.mode & 0o777n, 0o640n, `${name}: exact selector is a complete no-op`);
+
+      for (const [contents, label] of [["", "empty"], ["netavark\n", "newline-terminated"]]) {
+        writeFileSync(backend, contents);
+        chmodSync(backend, 0o644);
+        runBackendRepair(definition, backend);
+        assert.equal(readFileSync(backend, "utf8"), "netavark", `${name}: ${label} selector is repaired`);
+        assert.equal(statSync(backend).mode & 0o777, 0o600, `${name}: ${label} repair is mode 0600`);
+      }
+
+      for (const contents of ["cni", "future-backend"]) {
+        writeFileSync(backend, contents);
+        utimesSync(backend, 20, 20);
+        const before = statSync(backend, { bigint: true });
+        runBackendRepair(definition, backend);
+        const after = statSync(backend, { bigint: true });
+        assert.equal(readFileSync(backend, "utf8"), contents, `${name}: ${contents} is preserved`);
+        assert.equal(after.ino, before.ino, `${name}: ${contents} inode is preserved`);
+        assert.equal(after.mtimeNs, before.mtimeNs, `${name}: ${contents} mtime is preserved`);
+      }
+
+      rmSync(backend);
+      const symlinkTarget = join(workspace, "selector-target");
+      writeFileSync(symlinkTarget, "netavark\n");
+      symlinkSync(symlinkTarget, backend);
+      runBackendRepair(definition, backend);
+      assert.equal(lstatSync(backend).isSymbolicLink(), true, `${name}: symlink is preserved`);
+      assert.equal(readFileSync(symlinkTarget, "utf8"), "netavark\n", `${name}: symlink target is untouched`);
+
+      rmSync(backend);
+      mkdirSync(backend);
+      runBackendRepair(definition, backend);
+      assert.equal(lstatSync(backend).isDirectory(), true, `${name}: non-regular path is preserved`);
+
+      rmSync(backend, { recursive: true });
+      writeFileSync(backend, "netavark\n");
+      assert.throws(() => runBackendRepair(definition, backend, true), `${name}: failed candidate preparation is reported`);
+      assert.equal(readFileSync(backend, "utf8"), "netavark\n", `${name}: failed candidate does not truncate the original`);
+      assert.deepEqual(readdirSync(storage).filter((entry) => entry.startsWith(".defaultNetworkBackend.")), [], `${name}: failed candidate is removed`);
+
+      rmSync(backend);
+      await Promise.all(Array.from({ length: 12 }, () => spawnBackendRepair(definition, backend)));
+      assert.equal(readFileSync(backend, "utf8"), "netavark", `${name}: parallel repairs publish one complete selector`);
+      assert.deepEqual(readdirSync(storage).filter((entry) => entry.startsWith(".defaultNetworkBackend.")), [], `${name}: parallel repairs leave no candidates`);
+      const parallelBefore = statSync(backend, { bigint: true });
+      runBackendRepair(definition, backend);
+      const parallelAfter = statSync(backend, { bigint: true });
+      assert.equal(parallelAfter.ino, parallelBefore.ino, `${name}: completed parallel repair is not rewritten`);
+      assert.equal(parallelAfter.mtimeNs, parallelBefore.mtimeNs, `${name}: completed parallel repair keeps its mtime`);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }
+});
+
 test("installer assets are explicit and syntax-valid", () => {
   accessSync(`${root}/site/public/install.sh`, constants.R_OK);
   const installer = readFileSync(`${root}/site/public/install.sh`, "utf8");
@@ -258,7 +367,8 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(installer, /RELEASE_SHA256[\s\S]*sha256sum -c -[\s\S]*tar -xzf/, "fresh installs verify the Linux release digest before extraction");
   assert.match(installer, /install-oci-runtime\.sh[\s\S]*channel-machine\.oci\.tar[\s\S]*verify_ready_to_run "\$RELEASE_STAGE"/, "fresh installs reject an artifact without the complete OCI runtime before executing anything the archive shipped");
   assert.match(installer, /resources\/cloudflared-linux-\$NODE_ARCH/, "fresh Linux installs reject archives without the connector for the current architecture");
-  assert.match(installer, /NETWORK_BACKEND_FILE[\s\S]*cat "\$NETWORK_BACKEND_FILE"[\s\S]*printf '%s' netavark[\s\S]*install-oci-runtime\.sh/, "the web bootstrap repairs v0.0.30's newline-terminated Podman backend before invoking release code");
+  assert.match(installer, /NETWORK_BACKEND_FILE[\s\S]*ensure_netavark_backend "\$NETWORK_BACKEND_FILE"[\s\S]*install-oci-runtime\.sh/, "the web bootstrap repairs v0.0.30's newline-terminated Podman backend before invoking release code");
+  assert.match(installer, /mktemp "\$backend_dir\/\.defaultNetworkBackend\.XXXXXX"[\s\S]*chown root:root[\s\S]*chmod 0600[\s\S]*mv -f/, "the web bootstrap promotes only a complete root-owned selector from the same directory");
   assert.doesNotMatch(installer, /git clone|git checkout/, "fresh installs never combine the current installer with an older source-only tag");
   assert.doesNotMatch(installer, /api\.github\.com/, "fresh installs do not depend on unauthenticated GitHub API quota");
   assert.match(installer, /need=\([^\n]*flock[^\n]*python3[^\n]*\)/, "the host updater and Python prerequisites are probed even when download prerequisites already exist");
@@ -346,8 +456,9 @@ test("installer assets are explicit and syntax-valid", () => {
   assert.match(ociRecipe, /docker\.io\/library\/ubuntu:24\.04@sha256:[a-f0-9]{64}/, "the OCI guest base is fully qualified and digest-pinned without mutable short-name state");
   assert.match(ociHelper, /--network-config-dir "\$NETWORKS_ROOT" --tmpdir "\$LIBPOD_TMP"/, "Podman persistent network configuration and libpod scratch stay inside 1Helm-owned roots");
   assert.match(ociHelper, /podman_image\(\)[^\n]*localhost/, "the helper maps 1Helm's portable local image identity to Podman's explicit localhost transport");
-  assert.match(ociHelper, /defaultNetworkBackend[\s\S]*cat "\$STORAGE_ROOT\/defaultNetworkBackend"[\s\S]*printf '%s' netavark/, "Podman's backend selector is repaired to the exact netavark token without a trailing newline");
-  assert.doesNotMatch(ociHelper, /printf 'netavark\\n'/, "fresh Ubuntu Podman must never receive a newline-terminated backend selector");
+  assert.match(ociHelper, /ensure_netavark_backend "\$STORAGE_ROOT\/defaultNetworkBackend"/, "Podman's backend selector is repaired to the exact netavark token without a trailing newline");
+  assert.match(ociHelper, /flock "\$backend_lock_fd"[\s\S]*cmp -s[\s\S]*mktemp "\$backend_dir\/\.defaultNetworkBackend\.XXXXXX"[\s\S]*chown root:root[\s\S]*chmod 0600[\s\S]*mv -f/, "runtime selector repair is serialized and atomically promotes a root-owned candidate");
+  assert.doesNotMatch(ociHelper, /printf 'netavark\\n'\s*>/, "fresh Ubuntu Podman must never write a newline-terminated backend selector");
   assert.doesNotMatch([installer, updater, releaseApply, ociInstaller, ociHelper, ociManifest, ociRecipe].join("\n"), /\blxc\b|per-channel WSL|migration-backups/i, "the clean-slate Linux contract has no legacy runtime bridge");
   assert.match(linuxUnits, /ReadWritePaths=[^\n]*\/usr\/libexec(?:\s|$)[^\n]*\/etc\/default(?:\s|$)[^\n]*\/etc\/systemd\/system(?:\s|$)[^\n]*\/etc\/sudoers\.d(?:\s|$)/, "future updater transactions can atomically replace and roll back only the required host-contract parent trees");
   assert.match(updater, /systemd-run[\s\S]*apply-linux-release\.sh[\s\S]*exit 0/, "all post-verification Linux release mutations run in one transient root transaction outside the updater namespace");
