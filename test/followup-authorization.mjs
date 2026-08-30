@@ -31,6 +31,8 @@ const providerServer = createServer(async (req, res) => {
   const body = JSON.parse(raw || "{}");
   providerRequests.push(body);
   const serialized = JSON.stringify(body.messages || []);
+  const wakeMessage = [...(body.messages || [])].reverse().find((message) => /scheduled-followup-wake/i.test(String(message.content || "")));
+  const wake = String(wakeMessage?.content || "");
   const toolNames = (body.tools || []).map((tool) => tool.function?.name);
   const toolResults = (body.messages || []).filter((message) => message.role === "tool");
   const lastTool = toolResults.at(-1);
@@ -45,19 +47,19 @@ const providerServer = createServer(async (req, res) => {
     return answer(res, "No action.");
   }
 
-  if (/authorized-complete/i.test(serialized)) {
+  if (/authorized-complete/i.test(wake)) {
     if (lastTool?.name !== "run_command") return toolCall(res, "run_command", { command: "inspect-authorized-status" });
     return answer(res, "Completed — the background task is confirmed complete.");
   }
-  if (/running-complete/i.test(serialized)) {
+  if (/running-complete/i.test(wake)) {
     if (lastTool?.name !== "run_command") return toolCall(res, "run_command", { command: "inspect-completed-status" });
     return answer(res, "Completed — the retried task is confirmed complete.");
   }
-  if (/running-first/i.test(serialized)) {
+  if (/running-first/i.test(wake)) {
     if (lastTool?.name !== "run_command") return toolCall(res, "run_command", { command: "inspect-running-status" });
     return toolCall(res, "schedule_followup", { delay_seconds: 30, reason: "running-complete", check_hint: "inspect background status", observed_state: "confirmed_running" });
   }
-  if (/unknown-no-capability/i.test(serialized)) {
+  if (/unknown-no-capability/i.test(wake)) {
     if (!toolNames.includes("run_command")) return answer(res, "Blocked — task state is unknown because host run_command is unavailable for this wake.");
     if (lastTool?.name !== "run_command") return toolCall(res, "run_command", { command: "must-not-run-unauthorized" });
     if (lastTool.name === "run_command" && toolNames.includes("schedule_followup")) return toolCall(res, "schedule_followup", { user_update: { completed: "Initial setup is complete.", observed_state: "The process state was directly inspected.", wait_reason: "The running process needs more time.", next_check: "Inspect the process and resulting output." }, delay_seconds: 30, reason: "unknown-no-capability", observed_state: "confirmed_running" });

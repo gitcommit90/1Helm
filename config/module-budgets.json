@@ -7,7 +7,7 @@
   "legacy": {
     "lines": {
       "src/client/app.ts": 3672,
-      "src/client/channel.ts": 1205,
+      "src/client/channel.ts": 1202,
       "src/client/cowork.ts": 879,
       "src/client/routing.ts": 864,
       "src/client/settings.ts": 812,

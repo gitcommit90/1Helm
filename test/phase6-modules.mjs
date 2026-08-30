@@ -6,6 +6,7 @@ import test from "node:test";
 import { actionSummary, completedToolAnswer, toolActionStatus } from "../src/server/bot-output.ts";
 import { body, clearRateLimit, jbody, json, rateLimited, SECURITY_HEADERS } from "../src/server/http.ts";
 import {
+  formatBoardFollowupCountdown,
   formatRoughTokens,
   formatThreadFollowupCountdown,
   parseToolBody,
@@ -92,6 +93,7 @@ test("thread formatter extraction preserves progress, usage, and countdown edge 
   assert.equal(threadUsageLabel({ input_tokens: 1_240, output_tokens: 340, cached_input_tokens: 900, model_calls: 3 }), "Spent 1.2k input (900 cached) · 340 output · 3 calls");
   const now = 1_000_000;
   assert.equal(formatThreadFollowupCountdown(now - 1, now), "now");
+  assert.equal(formatBoardFollowupCountdown(now - 1, now), "due now");
   assert.equal(formatThreadFollowupCountdown(now + 9_000, now), "9s");
   assert.equal(formatThreadFollowupCountdown(now + 65_000, now), "1m 05s");
   assert.equal(formatThreadFollowupCountdown(now + 3_665_000, now), "1h 01m 05s");

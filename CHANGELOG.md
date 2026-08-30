@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Board follow-up controls remain available in compact thread layouts.
 - Small-screen thread headers keep Back and Close navigation clear by shrinking
   or hiding usage metadata before it can crowd the navigation controls.
+- Scheduled work stays visible while its wake is running, shows that the agent is
+  checking now, and continues toward the requested outcome after intermediate
+  jobs succeed or fail.
+- Linux installation and OCI startup repair missing, empty, or historical
+  newline-terminated Podman netavark selectors atomically while preserving
+  intentional custom backend selections.
 
 ## [1.3.1] - 2026-08-26
 

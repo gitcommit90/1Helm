@@ -7,6 +7,7 @@ import { NOTIFICATION_SOUNDS, channelNotificationPreference, previewNotification
 import { channelTextingSettings, skipperCallSettings, workflowModelSettings } from "./workflows.ts";
 import { authenticatedAssetSrc } from "./avatar-assets.ts";
 import { bindResidentFileUploads } from "./file-uploads.ts";
+import { formatBoardFollowupCountdown } from "./thread-formatters.ts";
 export type ChannelView = "chat" | "texts" | "board" | "workflows" | "threads" | "cowork" | "notes" | "files" | "terminal" | "memory" | "activity" | "settings";
 type RenderRefreshOptions = { preserveExisting?: boolean; isCurrent?: () => boolean; onPaint?: () => void };
 function refreshIsCurrent(options: RenderRefreshOptions): boolean {
@@ -78,22 +79,12 @@ function statusPath(status: string, updatedAt: number): HTMLElement {
   return h("div", { class: "flex flex-wrap items-center gap-1.5" }, ...parts);
 }
 /** Real countdown from durable followup.due_at (ms epoch). Updates in place once/sec. */
-function formatCountdown(dueAt: number, nowMs = Date.now()): string {
-  const remaining = Math.max(0, Math.floor((dueAt - nowMs) / 1000));
-  if (remaining <= 0) return "due now";
-  const h = Math.floor(remaining / 3600);
-  const m = Math.floor((remaining % 3600) / 60);
-  const s = remaining % 60;
-  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m ${String(s).padStart(2, "0")}s`;
-  if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`;
-  return `${s}s`;
-}
 function followupCountdownEl(dueAt: number): HTMLElement {
   const el = h("span", {
     class: "board-countdown font-mono text-[11px] tabular-nums tracking-wide text-accent",
     dataset: { dueAt: String(dueAt) },
     title: `Wakes at ${new Date(dueAt).toLocaleString()}`,
-  }, formatCountdown(dueAt)) as HTMLElement;
+  }, formatBoardFollowupCountdown(dueAt)) as HTMLElement;
   return el;
 }
 function followupMeta(thread: ThreadState, opts?: { onBumped?: () => void; onCancelled?: () => void }): HTMLElement | null {
@@ -173,7 +164,7 @@ function startBoardCountdownTicker(root: HTMLElement): void {
     for (const node of root.querySelectorAll<HTMLElement>(".board-countdown[data-due-at]")) {
       const due = Number(node.dataset.dueAt || 0);
       if (!due) continue;
-      node.textContent = formatCountdown(due, nowMs);
+      node.textContent = formatBoardFollowupCountdown(due, nowMs);
       node.classList.toggle("board-countdown-due", due <= nowMs);
     }
   };
