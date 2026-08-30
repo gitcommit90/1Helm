@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: Exact main commit to package
+        description: Exact product commit previously admitted to main
         required: true
         type: string
       ci_run_id:
@@ -39,8 +39,10 @@ jobs:
         run: |
           set -euo pipefail
           commit="$(git rev-parse HEAD)"; version="$(node -p 'require("./package.json").version')"
+          [[ "${{ inputs.source_ref }}" =~ ^[a-f0-9]{40}$ ]]
+          test "$commit" = "${{ inputs.source_ref }}"
           git fetch origin main --no-tags
-          test "$commit" = "$(git rev-parse origin/main)"
+          git merge-base --is-ancestor "$commit" origin/main
           echo "commit=$commit" >> "$GITHUB_OUTPUT"; echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Download successful CI proof
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

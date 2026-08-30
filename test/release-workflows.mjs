@@ -21,6 +21,10 @@ test("release pipeline has durable retry boundaries instead of one monolithic ru
   assert.doesNotMatch(read("release-publish.yml"), /npm ci|package:|notarytool/, "publication must consume, not rebuild");
   assert.doesNotMatch(read("release-publish.yml"), /rev-parse origin\/main|rev-list -n1/, "publication must reuse an immutable candidate after pipeline-only changes");
   assert.match(read("release-publish.yml"), /targetCommitish/, "draft identity must come from GitHub release metadata");
+  for (const file of ["release-linux-build.yml", "release-mac-build.yml", "release-acceptance.yml", "release-assemble.yml"]) {
+    assert.match(read(file), /merge-base --is-ancestor/, `${file} must accept a retained product candidate after pipeline-only changes`);
+    assert.doesNotMatch(read(file), /test "\$commit" = "\$\(git rev-parse origin\/main\)"/, `${file} must not conflate product identity with the pipeline tip`);
+  }
   assert.match(read("release-public-verify.yml"), /publish_run_id/);
   assert.doesNotMatch(read("release-public-verify.yml"), /1helm\.com/, "GitHub-only release verification must not depend on Captain infrastructure");
   assert.doesNotMatch(read("release-public-verify.yml"), /npm ci|package:|notarytool/, "public verification must consume, not rebuild");
