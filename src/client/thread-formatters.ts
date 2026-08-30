@@ -119,3 +119,8 @@ export function formatThreadFollowupCountdown(dueAt: number, nowMs = Date.now())
   if (minutes) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
   return `${seconds}s`;
 }
+
+export function formatBoardFollowupCountdown(dueAt: number, nowMs = Date.now()): string {
+  const value = formatThreadFollowupCountdown(dueAt, nowMs);
+  return value === "now" ? "due now" : value;
+}
