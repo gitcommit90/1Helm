@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Release readiness and publication now explicitly use only the independently
+  retryable GitHub-hosted pipeline; Captain-owned hardware and deployments are
+  separate opt-in boundaries, and retained product candidates survive later
+  pipeline-only repairs.
+
 ## [1.3.2] - 2026-08-27
 
 ### Added
