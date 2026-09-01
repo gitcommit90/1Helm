@@ -26,6 +26,7 @@ import { appAlert, appConfirm, appModal, appPrompt } from "./dialogs.ts";
 import { setSettingsUi } from "./settings-ui.ts";
 import { setSpeechUi } from "./speech-ui.ts";
 import { authenticatedAssetSrc } from "./avatar-assets.ts";
+import { openChannelSearch } from "./channel-search.ts";
 import { setAvatarUi } from "./avatar-ui.ts";
 export { S } from "./state.ts";
 configureWorkflowUi({ api, h, clear, icon, md, timeLabel });
@@ -1887,6 +1888,11 @@ function renderHeader(): void {
       channel?.purpose ? h("span", { class: "hidden min-w-0 max-w-[min(38vw,32rem)] truncate border-l border-line pl-2.5 text-[12px] leading-4 text-muted 2xl:block", title: channel.purpose }, channel.purpose) : null,
       channel?.status === "archived" ? h("span", { class: "chip shrink-0" }, "Paused") : null),
     h("div", { class: "flex min-w-0 shrink-0 items-center justify-end gap-1 sm:max-w-none sm:gap-2", dataset: { mobileHeaderActions: "" } },
+      channel?.kind === "channel" ? h("button", {
+        class: "grid h-11 w-11 place-items-center rounded-md border border-transparent text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:h-9 sm:w-9",
+        title: "Search this channel", "aria-label": "Search this channel", dataset: { channelSearch: String(channel.id) },
+        onclick: (event: MouseEvent) => openChannelSearch(event.currentTarget as HTMLElement, channel.id, (rootId) => { void openThread({ id: rootId }); }),
+      }, icon("search", 18)) : null,
       channel ? h("button", {
         class: `grid h-11 w-11 place-items-center rounded-md border border-transparent transition hover:border-line hover:bg-hover sm:h-9 sm:w-9 ${channel.favorite ? "text-accent" : "text-muted hover:text-fg"}`,
         title: channel.favorite ? "Remove from Favorites" : "Add to Favorites", "aria-label": channel.favorite ? "Remove current channel from Favorites" : "Favorite current channel",
@@ -2792,7 +2798,7 @@ function coworkAttachmentPath(path: string): string | null {
 }
 
 // ---------------- thread panel ----------------
-async function openThread(root: Message, replaceRoute = false): Promise<void> {
+async function openThread(root: Pick<Message, "id">, replaceRoute = false): Promise<void> {
   const data = await api<{ root: Message; replies: Message[]; followup?: ThreadFollowup | null; usage?: ThreadUsage }>(`/api/messages/${root.id}/thread?progress=summary`);
   S.threadRoot = data.root;
   S.threadReplies = data.replies;

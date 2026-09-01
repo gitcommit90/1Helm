@@ -73,6 +73,7 @@ import {
   startCollaborationConnector,
 } from "./collaboration.ts";
 import { stopAllConnectors } from "./connectors.ts";
+import { searchChannelHistory } from "./history.ts";
 import { ensureImageGenerationSkill, listSkills, listTemplates, provisionSkill, skillsForAgent, setImageGenerationEnabled, imageGenerationAvailable, imageGenerationEnabledIds } from "./skills.ts";
 import { inspectCatalogSkill, installCatalogSkill, refreshSkillCatalog, searchSkillCatalog, skillCatalogStatus } from "./skill-catalog.ts";
 import { auditEvents, verifyAuditChain } from "./audit.ts";
@@ -1250,7 +1251,7 @@ const server = createServer(async (req, res) => {
         return json(res, /already exists/i.test(message) ? 409 : 400, { error: message });
       }
     }
-    const nativeChannel = p.match(/^\/api\/channels\/(\d+)(?:\/(archive|restore|threads|files|memory|activity|agent-policy|agent-avatar))?$/);
+    const nativeChannel = p.match(/^\/api\/channels\/(\d+)(?:\/(archive|restore|threads|search|files|memory|activity|agent-policy|agent-avatar))?$/);
     if (nativeChannel) {
       const channelId = Number(nativeChannel[1]);
       const action = nativeChannel[2] || "channel";
@@ -1309,6 +1310,16 @@ const server = createServer(async (req, res) => {
           cancelChannelTurns(channelId); closeChannelSessions(channelId); await deleteChannelWorld(channelId, confirmation);
           broadcastToChannel(channelId, { type: "channel_deleted", channelId });
           return json(res, 200, { ok: true });
+        } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+      }
+      if (action === "search" && m === "GET") {
+        const query = String(url.searchParams.get("q") || "").trim();
+        if (!query) return json(res, 400, { error: "Enter something to search for." });
+        const agent = agentForChannel(channelId);
+        if (!agent) return json(res, 404, { error: "This channel does not have a searchable resident history." });
+        try {
+          const result = await searchChannelHistory(agent, channelId, { query, mode: "semantic", limit: 12 });
+          return json(res, 200, { query: result.query, retrieval: result.retrieval, results: result.results });
         } catch (error) { return json(res, 400, { error: (error as Error).message }); }
       }
       if (action === "threads" && m === "GET") {
