@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-02
+
+### Added
+
+- Channels now have search with exact, keyword, and semantic result ranking,
+  concise matching excerpts, and direct links back to the source thread.
+
 ### Changed
 
+- Image attachments and workflow views are bounded so large channels remain
+  responsive without loading their complete history into the browser.
+- Claude subscription routing now supports Fable 5.1 through an exactly pinned
+  ReRouted revision.
 - Release readiness and publication now explicitly use only the independently
   retryable GitHub-hosted pipeline; Captain-owned hardware and deployments are
   separate opt-in boundaries, and retained product candidates survive later
