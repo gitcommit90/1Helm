@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import sharp from "sharp";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 export const JSON_BODY_LIMIT = 1024 * 1024;
@@ -99,4 +101,20 @@ export function rateLimited(key: string, limit: number, windowMs: number): boole
 
 export function clearRateLimit(key: string): void {
   requestLimits.delete(key);
+}
+
+/** Read one authenticated attachment response. Image previews are bounded and
+ * compressed; Open/Download paths still return the authoritative original. */
+export async function attachmentFileResponse(source: string, mime: string, name: string, thumbnail: boolean, download: boolean): Promise<{ bytes: Buffer; headers: Record<string, string | number> }> {
+  const original = await readFile(source);
+  if (thumbnail && mime.startsWith("image/")) {
+    try {
+      const bytes = await sharp(original, { animated: false }).rotate()
+        .resize({ width: 720, height: 480, fit: "inside", withoutEnlargement: true })
+        .webp({ quality: 70, effort: 4 }).toBuffer();
+      return { bytes, headers: { "content-type": "image/webp", "content-length": bytes.length, "cache-control": "private, max-age=31536000, immutable" } };
+    } catch { /* unusual image formats retain the original response */ }
+  }
+  const disposition = download ? "attachment" : /^(image\/|application\/pdf)/.test(mime) ? "inline" : "attachment";
+  return { bytes: original, headers: { "content-type": mime, "content-disposition": `${disposition}; filename*=UTF-8''${encodeURIComponent(name)}` } };
 }

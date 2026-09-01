@@ -1,5 +1,17 @@
-import { api } from "./api.ts";
-import { clear, h, icon, md } from "./dom.ts";
+type SearchUiDeps = {
+  api: <T>(path: string) => Promise<T>;
+  clear: (element: Element) => void;
+  h: any;
+  icon: (name: string, size?: number) => SVGElement;
+  md: (source: string) => string;
+};
+let ui: SearchUiDeps;
+export function configureChannelSearchUi(value: SearchUiDeps): void { ui = value; }
+const api = <T>(path: string): Promise<T> => ui.api<T>(path);
+const clear = (element: Element): void => ui.clear(element);
+const h = (tag: string, attrs?: Record<string, unknown>, ...children: any[]): HTMLElement => ui.h(tag, attrs, ...children);
+const icon = (name: string, size?: number): SVGElement => ui.icon(name, size);
+const md = (source: string): string => ui.md(source);
 
 export type ChannelSearchResult = {
   message_id: number;

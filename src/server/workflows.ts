@@ -32,6 +32,23 @@ export function createWorkflow(input: { channelId: number; name: string; prompt:
   return q1("SELECT * FROM agent_workflows WHERE id=?", id)!;
 }
 
+
+export function workflowRunPage(workflowId: number, limitValue: unknown, beforeValue: unknown): { runs: Row[]; total: number; has_more: boolean } {
+  const limit = Math.max(1, Math.min(100, Number(limitValue) || 50));
+  const before = Math.max(0, Number(beforeValue) || 0);
+  const total = Number(q1("SELECT COUNT(*) n FROM messages WHERE workflow_id=? AND parent_id IS NULL", workflowId)?.n || 0);
+  const rows = q(`SELECT id FROM messages WHERE workflow_id=? AND parent_id IS NULL ${before ? "AND id<?" : ""} ORDER BY id DESC LIMIT ?`,
+    workflowId, ...(before ? [before, limit] : [limit])).reverse();
+  const runs = rows.map((row) => {
+    const message = serializeMessage(Number(row.id));
+    const thread = q1("SELECT id,status,title,summary,updated_at FROM threads WHERE root_message_id=?", row.id);
+    return message ? { ...message, thread: thread || null } : null;
+  }).filter(Boolean) as Row[];
+  const oldest = rows.length ? Number(rows[0].id) : 0;
+  const hasMore = oldest > 0 && Boolean(q1("SELECT 1 FROM messages WHERE workflow_id=? AND parent_id IS NULL AND id<? LIMIT 1", workflowId, oldest));
+  return { runs, total, has_more: hasMore };
+}
+
 export function listWorkflows(channelId?: number): Row[] {
   return channelId ? q("SELECT * FROM agent_workflows WHERE channel_id=? ORDER BY created DESC", channelId) : q("SELECT * FROM agent_workflows ORDER BY created DESC");
 }

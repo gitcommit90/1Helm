@@ -1338,3 +1338,5 @@ export async function deleteChannelWorld(channelId: number, confirmation: string
 export function readProfileFile(channelId: number): unknown {
   return JSON.parse(readFileSync(join(ensureChannelWorkspace(channelId), "profile", "agent.json"), "utf8"));
 }
+
+export { searchChannelHistory } from "./history.ts";
