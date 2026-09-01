@@ -157,21 +157,48 @@ export function renderWorkflows(container: HTMLElement, channelId: number, isAdm
 }
 
 function renderHistory(container: HTMLElement, channelId: number, workflowId: number, isAdmin: boolean, onOpenRun: (root: any) => void, refresh: WorkflowRefreshOptions): void {
-  if (!refresh.preserveExisting) loading(container, "Workflows", "Loading run history…");
-  void api<{ workflow: AgentWorkflow; runs: WorkflowRun[] }>(`/api/workflows/${workflowId}/runs`).then(({ workflow, runs }) => {
-    if (!isCurrent(refresh)) return;
+  if (!refresh.preserveExisting) loading(container, "Workflows", "Loading recent runs…");
+  let loaded: WorkflowRun[] = [];
+  let workflow: AgentWorkflow | null = null;
+  let total = 0;
+  let hasMore = false;
+  const paint = (loadingOlder = false, previousHeight = 0): void => {
+    if (!workflow || !isCurrent(refresh)) return;
     const back = h("button", { class: "btn-subtle min-h-9 shrink-0 text-xs", type: "button", onclick: () => { openWorkflowByChannel.delete(channelId); renderWorkflows(container, channelId, isAdmin, onOpenRun, { ...refresh, preserveExisting: false }); } }, "← All workflows");
     const list = h("div", { class: "space-y-2" });
-    if (!runs.length) list.append(empty("No runs yet", workflow.status === "active" ? `First run ${new Date(workflow.next_run).toLocaleString()}.` : "This workflow has not produced a run."));
-    for (let i = 0; i < runs.length; i++) {
-      const run = runs[i], previous = i > 0 ? runs[i - 1] : null;
+    if (!loaded.length) list.append(empty("No runs yet", workflow.status === "active" ? `First run ${new Date(workflow.next_run).toLocaleString()}.` : "This workflow has not produced a run."));
+    if (hasMore) {
+      const older = h("button", { class: "btn-subtle mx-auto flex min-h-9 text-xs", type: "button", disabled: loadingOlder }, loadingOlder ? "Loading older runs…" : "Load 50 older runs") as HTMLButtonElement;
+      older.onclick = async () => {
+        const before = loaded[0]?.id;
+        if (!before) return;
+        older.disabled = true; older.textContent = "Loading older runs…";
+        const oldHeight = container.scrollHeight;
+        try {
+          const page = await api<{ workflow: AgentWorkflow; runs: WorkflowRun[]; total: number; has_more: boolean }>(`/api/workflows/${workflowId}/runs?limit=50&before=${before}`);
+          if (!isCurrent(refresh)) return;
+          loaded = [...page.runs, ...loaded]; total = page.total; hasMore = page.has_more;
+          paint(false, oldHeight);
+        } catch (value) { error(container, value); }
+      };
+      list.append(older);
+    }
+    const firstRunNumber = Math.max(1, total - loaded.length + 1);
+    for (let i = 0; i < loaded.length; i++) {
+      const run = loaded[i], previous = i > 0 ? loaded[i - 1] : null;
       if (!previous || new Date(previous.created).toDateString() !== new Date(run.created).toDateString()) list.append(h("div", { class: "flex items-center gap-3 pt-2" }, h("div", { class: "h-px flex-1 bg-line" }), h("span", { class: "shrink-0 font-mono text-[10px] uppercase tracking-[0.12em] text-faint" }, new Date(run.created).toLocaleDateString()), h("div", { class: "h-px flex-1 bg-line" })));
       list.append(h("button", { class: "card block w-full min-w-0 p-3 text-left transition hover:border-accent/40", type: "button", dataset: { threadOpen: String(run.id), continuityKey: `workflow-run-${run.id}` }, onclick: () => onOpenRun(run) },
-        h("div", { class: "flex flex-wrap items-center gap-2 text-xs text-faint" }, h("span", { class: "font-semibold text-fg" }, `Run ${i + 1}`), h("span", {}, timeLabel(run.created)), run.thread ? statusChip(run.thread.status) : null, h("span", {}, `· ${run.reply_count} repl${run.reply_count === 1 ? "y" : "ies"}`)),
+        h("div", { class: "flex flex-wrap items-center gap-2 text-xs text-faint" }, h("span", { class: "font-semibold text-fg" }, `Run ${firstRunNumber + i}`), h("span", {}, timeLabel(run.created)), run.thread ? statusChip(run.thread.status) : null, h("span", {}, `· ${run.reply_count} repl${run.reply_count === 1 ? "y" : "ies"}`)),
         h("div", { class: "md mt-1.5 line-clamp-3 text-[13px] leading-snug text-muted", html: md(run.thread?.summary || run.body || "No summary yet.") })));
     }
-    panel(container, workflow.name, `${cadence(workflow.interval_seconds)} · ${runs.length} run${runs.length === 1 ? "" : "s"}`, h("div", { class: "space-y-3" }, back, list));
-    if (!refresh.preserveExisting) requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
+    const showing = total > loaded.length ? `showing latest ${loaded.length} of ${total} runs` : `${total} run${total === 1 ? "" : "s"}`;
+    panel(container, workflow.name, `${cadence(workflow.interval_seconds)} · ${showing}`, h("div", { class: "space-y-3" }, back, list));
+    if (previousHeight) requestAnimationFrame(() => { container.scrollTop += container.scrollHeight - previousHeight; });
+    else if (!refresh.preserveExisting) requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
     refresh.onPaint?.();
+  };
+  void api<{ workflow: AgentWorkflow; runs: WorkflowRun[]; total: number; has_more: boolean }>(`/api/workflows/${workflowId}/runs?limit=50`).then((page) => {
+    if (!isCurrent(refresh)) return;
+    workflow = page.workflow; loaded = page.runs; total = page.total; hasMore = page.has_more; paint();
   }).catch((value) => { if (isCurrent(refresh)) error(container, value); });
 }

@@ -26,6 +26,7 @@ import { appAlert, appConfirm, appModal, appPrompt } from "./dialogs.ts";
 import { setSettingsUi } from "./settings-ui.ts";
 import { setSpeechUi } from "./speech-ui.ts";
 import { authenticatedAssetSrc } from "./avatar-assets.ts";
+import { openChannelSearch } from "./channel-search.ts";
 import { setAvatarUi } from "./avatar-ui.ts";
 export { S } from "./state.ts";
 configureWorkflowUi({ api, h, clear, icon, md, timeLabel });
@@ -1887,6 +1888,11 @@ function renderHeader(): void {
       channel?.purpose ? h("span", { class: "hidden min-w-0 max-w-[min(38vw,32rem)] truncate border-l border-line pl-2.5 text-[12px] leading-4 text-muted 2xl:block", title: channel.purpose }, channel.purpose) : null,
       channel?.status === "archived" ? h("span", { class: "chip shrink-0" }, "Paused") : null),
     h("div", { class: "flex min-w-0 shrink-0 items-center justify-end gap-1 sm:max-w-none sm:gap-2", dataset: { mobileHeaderActions: "" } },
+      channel?.kind === "channel" ? h("button", {
+        class: "grid h-11 w-11 place-items-center rounded-md border border-transparent text-muted transition hover:border-line hover:bg-hover hover:text-fg sm:h-9 sm:w-9",
+        title: "Search this channel", "aria-label": "Search this channel", dataset: { channelSearch: String(channel.id) },
+        onclick: (event: MouseEvent) => openChannelSearch(event.currentTarget as HTMLElement, channel.id, (rootId) => { void openThread({ id: rootId }); }),
+      }, icon("search", 18)) : null,
       channel ? h("button", {
         class: `grid h-11 w-11 place-items-center rounded-md border border-transparent transition hover:border-line hover:bg-hover sm:h-9 sm:w-9 ${channel.favorite ? "text-accent" : "text-muted hover:text-fg"}`,
         title: channel.favorite ? "Remove from Favorites" : "Add to Favorites", "aria-label": channel.favorite ? "Remove current channel from Favorites" : "Favorite current channel",
@@ -2439,7 +2445,7 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
       isBot ? h("span", { class: "font-mono text-[9px] uppercase tracking-[0.16em] text-accent" }, "Agent") : null,
       h("span", { class: "font-mono text-[10.5px] text-faint" }, messageTime(m)),
       workingChip),
-    bodyHtml, structuredQuestions(m), progressDisclosure(m), attachments(m), threadFooter(m, opts.inThread));
+    bodyHtml, structuredQuestions(m), progressDisclosure(m), attachments(m, opts.inThread), threadFooter(m, opts.inThread));
 
   const authorAvatar = messageAuthorAvatar(m);
   const row = opts.grouped
@@ -2767,18 +2773,23 @@ function threadFooter(m: Message, inThread: boolean): HTMLElement | null {
     icon("thread"), `${m.reply_count} ${m.reply_count === 1 ? "reply" : "replies"}`, last ? h("span", { class: "font-normal text-muted" }, "· last " + last) : null);
 }
 
-function attachments(m: Message): HTMLElement | null {
+function attachments(m: Message, inThread: boolean): HTMLElement | null {
   if (!m.attachments?.length) return null;
-  return h("div", { class: "mt-1.5 flex flex-wrap gap-2" }, ...m.attachments.map((a) => {
+  // Root-message images belong inside the conversation they start. Omitting
+  // them from the channel timeline prevents several full-resolution requests
+  // for content that is only useful after opening the thread.
+  const visible = inThread ? m.attachments : m.attachments.filter((attachment) => !attachment.mime.startsWith("image/"));
+  if (!visible.length) return null;
+  return h("div", { class: "attachments mt-1.5 flex flex-wrap gap-2" }, ...visible.map((a) => {
     const viewUrl = `/api/files/${a.id}`;
-    const mediaUrl = `${serverAssetUrl(viewUrl)}?token=${encodeURIComponent(getToken())}`;
+    const mediaUrl = `${serverAssetUrl(viewUrl)}?thumbnail=1&token=${encodeURIComponent(getToken())}`;
     const cowork = a.workspace_path ? coworkAttachmentPath(a.workspace_path) : null;
     const open = (event: MouseEvent): void => { event.stopPropagation(); if (cowork) { stageCoworkPathLazy(m.channel_id, cowork); navigateChannelView("cowork"); } else void openAuthenticatedFile(viewUrl).catch((error) => appAlert((error as Error).message)); };
     const actions = h("div", { class: "flex items-center gap-1 border-t border-line/70 px-2 py-1.5" },
       h("button", { class: "btn-subtle text-xs", type: "button", onclick: open }, cowork ? "Open in Cowork" : "Open"),
       h("button", { class: "btn-subtle text-xs", type: "button", onclick: (event: MouseEvent) => { event.stopPropagation(); void downloadAuthenticatedFile(`${viewUrl}?download=1`, a.name).catch((error) => appAlert((error as Error).message)); } }, "Download"));
     if (a.mime.startsWith("image/")) return h("article", { class: "overflow-hidden rounded-lg border border-line bg-raised" },
-      h("button", { type: "button", class: "block", onclick: open }, h("img", { src: mediaUrl, class: "max-h-64 object-contain", alt: a.name })), actions);
+      h("button", { type: "button", class: "block", onclick: open }, h("img", { src: mediaUrl, class: "max-h-64 max-w-full object-contain", alt: a.name, loading: "lazy", decoding: "async" })), actions);
     return h("article", { class: "overflow-hidden rounded-lg border border-line bg-raised text-sm" },
       h("button", { type: "button", class: "flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-hover", onclick: open },
         h("span", { class: "grid h-9 w-9 place-items-center rounded-lg bg-accent-soft text-accent" }, icon("file")),
@@ -2792,7 +2803,7 @@ function coworkAttachmentPath(path: string): string | null {
 }
 
 // ---------------- thread panel ----------------
-async function openThread(root: Message, replaceRoute = false): Promise<void> {
+async function openThread(root: Pick<Message, "id">, replaceRoute = false): Promise<void> {
   const data = await api<{ root: Message; replies: Message[]; followup?: ThreadFollowup | null; usage?: ThreadUsage }>(`/api/messages/${root.id}/thread?progress=summary`);
   S.threadRoot = data.root;
   S.threadReplies = data.replies;
