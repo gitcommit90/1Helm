@@ -1065,15 +1065,20 @@ const server = createServer(async (req, res) => {
     if (workflowRuns && m === "GET") {
       const workflow = q1("SELECT * FROM agent_workflows WHERE id=?", Number(workflowRuns[1]));
       if (!workflow || !canSee(user, Number(workflow.channel_id))) return json(res, 404, { error: "Workflow not found" });
-      const runs = q("SELECT id FROM messages WHERE workflow_id=? AND parent_id IS NULL ORDER BY id", workflow.id)
-        .map((row) => {
-          const message = serializeMessage(Number(row.id));
-          if (!message) return null;
-          const thread = q1("SELECT id,status,title,summary,updated_at FROM threads WHERE root_message_id=?", row.id);
-          return { ...message, thread: thread || null };
-        })
-        .filter(Boolean);
-      return json(res, 200, { workflow, runs });
+      const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit")) || 50));
+      const before = Math.max(0, Number(url.searchParams.get("before")) || 0);
+      const total = Number(q1("SELECT COUNT(*) n FROM messages WHERE workflow_id=? AND parent_id IS NULL", workflow.id)?.n || 0);
+      const rows = q(`SELECT id FROM messages WHERE workflow_id=? AND parent_id IS NULL ${before ? "AND id<?" : ""} ORDER BY id DESC LIMIT ?`,
+        workflow.id, ...(before ? [before, limit] : [limit])).reverse();
+      const runs = rows.map((row) => {
+        const message = serializeMessage(Number(row.id));
+        if (!message) return null;
+        const thread = q1("SELECT id,status,title,summary,updated_at FROM threads WHERE root_message_id=?", row.id);
+        return { ...message, thread: thread || null };
+      }).filter(Boolean);
+      const oldest = rows.length ? Number(rows[0].id) : 0;
+      const hasMore = oldest > 0 && Boolean(q1("SELECT 1 FROM messages WHERE workflow_id=? AND parent_id IS NULL AND id<? LIMIT 1", workflow.id, oldest));
+      return json(res, 200, { workflow, runs, total, has_more: hasMore });
     }
     const workflowRoute = p.match(/^\/api\/workflows\/(\d+)$/);
     if (workflowRoute && m === "PATCH") {
@@ -1806,9 +1811,19 @@ const server = createServer(async (req, res) => {
       const a = q1("SELECT at.*, m.channel_id FROM attachments at JOIN messages m ON m.id=at.message_id WHERE at.id=?", Number(mm[1]));
       if (!a || !canSee(user, Number(a.channel_id))) return json(res, 404, { error: "Not found" });
       const mime = /^(image\/(png|jpeg|gif|webp)|application\/(pdf|json|xml|yaml)|text\/(plain|markdown|csv)|audio\/(mpeg|wav|ogg|mp4)|video\/(mp4|webm|ogg))$/i.test(String(a.mime)) ? String(a.mime) : "application/octet-stream";
+      const source = join(UPLOAD_DIR, String(a.path));
+      if (url.searchParams.get("thumbnail") === "1" && mime.startsWith("image/")) {
+        try {
+          const thumbnail = await sharp(await readFile(source), { animated: false }).rotate()
+            .resize({ width: 720, height: 480, fit: "inside", withoutEnlargement: true })
+            .webp({ quality: 70, effort: 4 }).toBuffer();
+          res.writeHead(200, { "content-type": "image/webp", "content-length": thumbnail.length, "cache-control": "private, max-age=31536000, immutable", ...SECURITY_HEADERS });
+          return res.end(thumbnail);
+        } catch { /* fall through to the original so unusual image formats stay accessible */ }
+      }
       const disposition = url.searchParams.get("download") === "1" ? "attachment" : /^(image\/|application\/pdf)/.test(mime) ? "inline" : "attachment";
       res.writeHead(200, { "content-type": mime, "content-disposition": `${disposition}; filename*=UTF-8''${encodeURIComponent(String(a.name))}`, ...SECURITY_HEADERS });
-      return res.end(await readFile(join(UPLOAD_DIR, String(a.path))));
+      return res.end(await readFile(source));
     }
 
     // providers (reusable, bot-agnostic connections)
