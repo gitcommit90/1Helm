@@ -87,7 +87,7 @@
     "@codemirror/lang-sql": "6.10.0",
     "@codemirror/lang-yaml": "6.1.3",
     "@excalidraw/excalidraw": "0.18.1",
-    "@gitcommit90/rerouted": "https://github.com/gitcommit90/rerouted/releases/download/v0.5.12/ReRouted-0.5.12-linux-node.tgz",
+    "@gitcommit90/rerouted": "github:gitcommit90/rerouted#46dd339f687f1f02e309f52db5bbd9c699b8b4fc",
     "@opencoredev/loginwithchatgpt-server": "^0.2.0",
     "codemirror": "6.0.2",
     "docx": "9.7.1",
