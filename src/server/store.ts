@@ -417,7 +417,7 @@ export function findMentionedBots(body: string): Row[] {
 }
 
 export type OperationalMessage = { role: "system" | "user" | "assistant" | "tool"; content: string; source_message_id?: number; tool_calls?: unknown[]; tool_call_id?: string; name?: string };
-const MAX_ARG = 4_000, MAX_RESULT = 12_000, EXACT_EVENTS = 220;
+const MAX_ARG = 12_000, MAX_RESULT = 12_000, EXACT_EVENTS = 220;
 const secretKey = /(^|_)(authorization|cookie|token|secret|password|api_?key|private_?key|credential)s?$/i;
 
 function clean(value: unknown, limit: number): unknown {
