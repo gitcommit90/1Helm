@@ -279,11 +279,17 @@ test("resident raw transcript search is semantic, exact, readable, and channel-i
   assert(exact.results.every((entry) => entry.thread_root_id === rootId));
   const semantic = await history.searchChannelHistory(agent, channelId, { query: "copper lighthouse", mode: "semantic" });
   assert(semantic.results.some((entry) => entry.message_id === rootId));
+  assert.equal(semantic.results[0].match_type, "exact", "literal phrase hits always lead semantic-only neighbors");
   assert([0, 2].includes(Number(q1("SELECT COUNT(*) n FROM transcript_memory_index WHERE agent_id=?", agentId).n)), "the optional semantic runtime indexes both messages when available and the exact/keyword fallback remains usable when absent");
   const session = history.readChannelThread(agent, channelId, rootId);
   assert.equal(session.thread_id, threadId);
   assert.equal(session.messages.length, 2);
   assert.equal(session.messages[1].text, fullRawReply, "full-session hydration never truncates the authoritative raw message body");
+  const distantId = run("INSERT INTO messages (channel_id,parent_id,user_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, ownerId, `${"preface ".repeat(900)}ultraviolet-walrus${" ending".repeat(100)}`, now()).lastInsertRowid;
+  const distant = await history.searchChannelHistory(agent, channelId, { query: "ultraviolet-walrus", mode: "semantic" });
+  assert.equal(distant.results[0].message_id, distantId, "a known literal word cannot be displaced by semantic ranking");
+  assert.equal(distant.results[0].match_type, "exact");
+  assert.match(distant.results[0].text, /ultraviolet-walrus/, "the returned excerpt includes the literal match even when it is deep in a long message");
   await assert.rejects(history.searchChannelHistory(agent, otherChannelId, { query: "secret" }), /belongs only to its resident/i);
 });
 

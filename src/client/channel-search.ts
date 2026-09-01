@@ -1,5 +1,5 @@
 import { api } from "./api.ts";
-import { clear, h, icon } from "./dom.ts";
+import { clear, h, icon, md } from "./dom.ts";
 
 export type ChannelSearchResult = {
   message_id: number;
@@ -8,9 +8,44 @@ export type ChannelSearchResult = {
   author: string;
   created_at: string;
   text: string;
+  match_type: "exact" | "keyword" | "semantic";
 };
 
-const plainSnippet = (text: string): string => text.replace(/\s+/g, " ").trim().slice(0, 240);
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Highlight the literal phrase when present; for a semantic-only hit, bold
+ * query words that are actually visible in the rendered result. Never inject
+ * markup into Markdown source—render safely first, then wrap text nodes. */
+function highlightRenderedMatch(container: HTMLElement, query: string): void {
+  const visible = (container.textContent || "").toLocaleLowerCase();
+  const phrase = query.trim();
+  const terms = visible.includes(phrase.toLocaleLowerCase())
+    ? [phrase]
+    : [...new Set(phrase.match(/[\p{L}\p{N}_-]+/gu) || [])]
+      .filter((term) => term.length > 1 && visible.includes(term.toLocaleLowerCase()))
+      .sort((left, right) => right.length - left.length);
+  if (!terms.length) return;
+  const matcher = new RegExp(`(${terms.map(escapeRegExp).join("|")})`, "giu");
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode as Text);
+  for (const node of nodes) {
+    const text = node.data;
+    matcher.lastIndex = 0;
+    if (!matcher.test(text)) continue;
+    matcher.lastIndex = 0;
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    for (const match of text.matchAll(matcher)) {
+      const at = match.index || 0;
+      if (at > cursor) fragment.append(text.slice(cursor, at));
+      fragment.append(h("mark", { class: "rounded-sm bg-accent-soft px-0.5 font-bold text-fg" }, match[0]));
+      cursor = at + match[0].length;
+    }
+    if (cursor < text.length) fragment.append(text.slice(cursor));
+    node.replaceWith(fragment);
+  }
+}
 const resultDate = (value: string): string => {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: date.getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
@@ -45,8 +80,13 @@ export function openChannelSearch(anchor: HTMLElement, channelId: number, onOpen
         },
         h("div", { class: "flex items-center gap-2" },
           h("span", { class: "min-w-0 flex-1 truncate text-xs font-semibold text-fg" }, item.thread_title || `Conversation ${item.thread_root_id}`),
+          h("span", { class: `shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${item.match_type === "exact" ? "bg-accent-soft text-accent" : "bg-panel text-faint"}` }, item.match_type === "exact" ? "Exact" : item.match_type === "keyword" ? "Keyword" : "Semantic"),
           h("span", { class: "shrink-0 text-[10px] text-faint" }, resultDate(item.created_at))),
-        h("p", { class: "mt-1 line-clamp-2 text-xs leading-5 text-muted" }, plainSnippet(item.text)),
+        (() => {
+          const snippet = h("div", { class: "md channel-search-snippet mt-1 max-h-24 overflow-hidden text-xs leading-5 text-muted", html: md(item.text) });
+          highlightRenderedMatch(snippet, query);
+          return snippet;
+        })(),
         h("p", { class: "mt-1 truncate text-[10px] text-faint" }, item.author)));
       }
     } catch (error) {
