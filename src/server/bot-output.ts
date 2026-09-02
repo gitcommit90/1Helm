@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /** Pure user-facing fallbacks used when a model finishes after a tool call. */
 export const SKIPPER_CALL_APPROVAL_KIND = "skipper_call_approval";
 export const SKIPPER_CALL_APPROVE_ONCE = "Approve (once)";
@@ -115,4 +117,60 @@ export function normalizeModelUsage(value: unknown): ModelUsage {
     output_tokens: Math.max(0, Number(usage.output_tokens ?? usage.completion_tokens ?? 0) || 0),
     cached_input_tokens: Math.max(0, Number(usage.cached_tokens ?? inputDetails.cached_tokens ?? promptDetails.cached_tokens ?? 0) || 0),
   };
+}
+
+type CacheControl = { type: "ephemeral" };
+type CacheTextBlock = { type: "text"; text: string; cache_control?: CacheControl };
+export type ProviderCacheMessage = {
+  role: string;
+  content: string | CacheTextBlock[];
+  tool_call_id?: string;
+  name?: string;
+  tool_calls?: unknown[];
+  extra_content?: { anthropic?: { tool_result?: { type: "tool_result"; tool_use_id: string; content: string; cache_control?: CacheControl } } };
+};
+export type ProviderCacheRequest = { messages: ProviderCacheMessage[]; prompt_cache_key?: string };
+
+const ephemeralCache = (): CacheControl => ({ type: "ephemeral" });
+
+/** Add only provider-native cache activation metadata. Claude keeps one stable
+ * conversation breakpoint plus a rolling three-result frontier, so every tool
+ * round retains the preceding full-prefix cache while extending it. */
+export function providerCacheRequest(model: string, messages: ProviderCacheMessage[], scope: string): ProviderCacheRequest {
+  if (/^xai\//i.test(model)) {
+    return {
+      messages,
+      prompt_cache_key: createHash("sha256").update(`1helm\0${scope}\0${model}`).digest("hex"),
+    };
+  }
+  if (!/^claude\//i.test(model)) return { messages };
+
+  const shaped = messages.map((message) => ({
+    ...message,
+    content: Array.isArray(message.content) ? message.content.map((block) => ({ ...block })) : message.content,
+    ...(message.extra_content ? { extra_content: structuredClone(message.extra_content) } : {}),
+  }));
+  const baseIndex = shaped.findLastIndex((message) => message.role === "user" && Boolean(message.content));
+  if (baseIndex >= 0) {
+    const message = shaped[baseIndex];
+    if (typeof message.content === "string") message.content = [{ type: "text", text: message.content, cache_control: ephemeralCache() }];
+    else {
+      const textIndex = message.content.findLastIndex((block) => block.type === "text" && Boolean(block.text));
+      if (textIndex >= 0) message.content[textIndex] = { ...message.content[textIndex], cache_control: ephemeralCache() };
+    }
+  }
+  const frontier = shaped.map((message, index) => ({ message, index }))
+    .filter(({ message }) => message.role === "tool" && Boolean(message.tool_call_id))
+    .slice(-3);
+  for (const { message } of frontier) {
+    const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
+    message.extra_content = {
+      ...message.extra_content,
+      anthropic: {
+        ...message.extra_content?.anthropic,
+        tool_result: { type: "tool_result", tool_use_id: String(message.tool_call_id), content, cache_control: ephemeralCache() },
+      },
+    };
+  }
+  return { messages: shaped };
 }

@@ -49,7 +49,7 @@ import { fetchPublicWebImage } from "./web-source.ts";
 import { searchWeb } from "./web-search.ts";
 import { readChannelThread, searchChannelHistory } from "./history.ts";
 import { coworkContextFromRootBody, coworkFormatContract, enforceCoworkCommandOutput, snapshotCoworkSurface } from "./cowork-contract.ts";
-import { normalizeModelUsage, actionSummary, completedToolAnswer, toolActionStatus } from "./bot-output.ts";
+import { normalizeModelUsage, providerCacheRequest, actionSummary, completedToolAnswer, toolActionStatus } from "./bot-output.ts";
 export { toolActionStatus } from "./bot-output.ts";
 export { captainTextConsent } from "./followups.ts";
 type ChatMsg = { role: string; content: string; tool_calls?: ToolCall[]; tool_call_id?: string; name?: string };
@@ -1590,7 +1590,7 @@ async function executeBot(bot: Row, channelId: number, triggerId: number, thread
       };
       const result = isChatGPT
         ? await streamChatGPTCompletion(model, messages, finalRound ? undefined : tools, onDelta, turnSignal)
-        : await streamCompletion(endpoint!, model, messages, finalRound ? undefined : tools, onDelta, turnSignal);
+        : await streamCompletion(endpoint!, model, messages, finalRound ? undefined : tools, onDelta, turnSignal, `${requestUserId}:${channelId}:${threadRootId}`);
       const content = result.content;
       const toolCalls = result.toolCalls;
       // Rough live totals: sum provider-reported prompt/completion tokens per round.
@@ -2120,11 +2120,11 @@ const safeParse = (value: string): Record<string, unknown> => { try { return JSO
 
 /** Stream an OpenAI-compatible chat completion, invoking onDelta for content tokens. */
 async function streamCompletion(
-  endpoint: { base_url: string; api_key: string }, model: string, messages: ChatMsg[], tools: unknown[] | undefined, onDelta: (delta: string) => void, signal?: AbortSignal,
+  endpoint: { base_url: string; api_key: string }, model: string, messages: ChatMsg[], tools: unknown[] | undefined, onDelta: (delta: string) => void, signal?: AbortSignal, cacheScope = "",
 ): Promise<{ content: string; toolCalls: ToolCall[]; usage: { input_tokens: number; output_tokens: number; cached_input_tokens: number } }> {
   const base = endpoint.base_url.replace(/\/$/, "");
   const headers = { "content-type": "application/json", ...(endpoint.api_key ? { authorization: `Bearer ${endpoint.api_key}` } : {}) };
-  const bodyBase = { model, messages, stream: true as const, ...(tools ? { tools, tool_choice: "auto" as const } : {}) };
+  const bodyBase = { model, ...providerCacheRequest(model, messages, cacheScope), stream: true as const, ...(tools ? { tools, tool_choice: "auto" as const } : {}) };
   // Prefer stream_options.include_usage (OpenAI/OpenRouter). Fall back if a peer rejects the field.
   let response = await fetch(`${base}/chat/completions`, {
     method: "POST",

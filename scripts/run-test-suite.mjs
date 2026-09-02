@@ -17,7 +17,7 @@ delete env.HELM_APP_ROOT;
 const suites = [
   ["test/native-world.mjs"],
   ["--test", "--test-concurrency=1",
-    "test/phase6-modules.mjs",
+    "test/phase6-modules.mjs", "test/provider-prompt-cache.mjs",
     "test/routing.mjs", "test/routing-disabled-account.mjs", "test/routing-antigravity.mjs", "test/desktop.mjs", "test/update-service.mjs",
     "test/channel-computers.mjs", "test/channel-computers-isolated-backends.mjs", "test/event-loop-unblocking.mjs", "test/read-state.mjs",
     "test/cloudflare-worker.mjs", "test/connectors.mjs", "test/chatgpt-image.mjs", "test/autonomy-platform.mjs",
