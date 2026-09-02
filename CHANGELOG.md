@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-09-02
+
+### Fixed
+
+- Direct Claude agents now activate stable and rolling prompt-cache breakpoints, while direct xAI agents use a stable thread-scoped cache key, reducing repeated uncached input across long tool loops without changing custom or other provider routes.
+
 ## [1.4.1] - 2026-09-02
 
 ### Fixed
