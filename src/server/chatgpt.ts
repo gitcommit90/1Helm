@@ -1,4 +1,3 @@
-import { normalizeModelUsage } from "./bot-output.ts";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -306,7 +305,7 @@ export async function streamChatGPTCompletion(
   tools: unknown[] | undefined,
   onDelta: (d: string) => void,
   signal?: AbortSignal,
-): Promise<{ content: string; toolCalls: { id: string; type: "function"; function: { name: string; arguments: string } }[]; usage: { input_tokens: number; output_tokens: number; cached_input_tokens: number } }> {
+): Promise<{ content: string; toolCalls: { id: string; type: "function"; function: { name: string; arguments: string } }[] }> {
   const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
   const input = messages
     .filter((m) => m.role !== "system")
@@ -368,12 +367,11 @@ export async function streamChatGPTCompletion(
 export async function readChatGPTCompletionStream(
   response: Response,
   onDelta: (d: string) => void,
-): Promise<{ content: string; toolCalls: { id: string; type: "function"; function: { name: string; arguments: string } }[]; usage: { input_tokens: number; output_tokens: number; cached_input_tokens: number } }> {
+): Promise<{ content: string; toolCalls: { id: string; type: "function"; function: { name: string; arguments: string } }[] }> {
   if (!response.body) throw new Error("ChatGPT response stream is unavailable.");
 
   let content = "";
   const toolMap = new Map<string, { id: string; type: "function"; function: { name: string; arguments: string } }>();
-  let usage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 };
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -444,15 +442,9 @@ export async function readChatGPTCompletionStream(
           }
         }
       }
-      // Responses API usage: response.completed / response.done carry totals.
-      const u = data.response?.usage || data.usage;
-      if (u && typeof u === "object") {
-        const normalized = normalizeModelUsage(u);
-        if (normalized.input_tokens || normalized.output_tokens) usage = normalized;
-      }
     }
   }
-  return { content, toolCalls: [...toolMap.values()].filter((t) => t.function.name), usage };
+  return { content, toolCalls: [...toolMap.values()].filter((t) => t.function.name) };
 }
 
 export function isChatGPTProvider(row: { kind?: unknown; base_url?: unknown } | null | undefined): boolean {

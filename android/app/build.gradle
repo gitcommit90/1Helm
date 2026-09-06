@@ -74,11 +74,11 @@ dependencies {
 
 apply from: 'capacitor.build.gradle'
 
-try {
-    def servicesJSON = file('google-services.json')
-    if (servicesJSON.text) {
-        apply plugin: 'com.google.gms.google-services'
-    }
-} catch(Exception e) {
-    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+def servicesJSON = file('google-services.json')
+if (servicesJSON.isFile() && servicesJSON.text) {
+    apply plugin: 'com.google.gms.google-services'
+} else if (signingPropertiesPath) {
+    throw new GradleException('Release builds require android/app/google-services.json so Android notifications cannot silently ship disabled.')
+} else {
+    logger.info("google-services.json not found; debug Push Notifications are unavailable")
 }

@@ -26,7 +26,7 @@ const { inspectWebSource, isPublicWebAddress, validateWebSourceUrl } = await imp
 const { resolveNativeShell, terminalPromptEnvironment } = await import("../src/server/agent.ts");
 const { windowsSystemAccount } = await import("../src/server/channel-computers.ts");
 const turns = await import("../src/server/turns.ts");
-const { CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_DECLINE, CAPTAIN_TEXTING_PERMISSION_KIND, captainTextingPermissionPayload, channelTextingGrant, grantChannelTexting, revokeChannelTexting } = await import("../src/server/followups.ts");
+const { CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_DECLINE, CAPTAIN_TEXTING_PERMISSION_KIND, captainTextingPermissionPayload, channelTextingGrant, completeRuntimeFollowup, grantChannelTexting, recordWakeDisposition, revokeChannelTexting, settleWakeAfterTurn, verifiedWakeDisposition } = await import("../src/server/followups.ts");
 const catalog = await import("../src/server/skill-catalog.ts");
 const history = await import("../src/server/history.ts");
 const agents = await import("../src/server/agents.ts");
@@ -36,6 +36,62 @@ test("ask_user rejects routine ambiguity and accepts only evidenced human blocke
   assert.equal(validateAskUserInput({ questions: [{ question: "Which?", options: [{ label: "A" }, { label: "B" }] }] }).valid, false);
   assert.equal(validateAskUserInput({ blocker_kind: "human_judgment", evidence: "I am not sure", questions: [{ question: "Which?", options: [{ label: "A" }, { label: "B" }] }] }).valid, false);
   assert.equal(validateAskUserInput({ blocker_kind: "external_authority", evidence: "The vendor requires the account owner to accept its binding contract.", questions: [{ question: "Authorize it?", options: [{ label: "Authorize" }, { label: "Stop" }] }] }).valid, true);
+});
+
+test("scheduled wakes fail closed without a verified runtime disposition", () => {
+  seed();
+  const stamp = now();
+  const ownerId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES (?,?,?,?,?)", `continuation-${stamp}`, "x", "Owner", 1, stamp).lastInsertRowid;
+  const channelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created_by,created) VALUES (?,?,?,?,?,'active',?,?)", `continuation-${stamp}`, `continuation-${stamp}`, "channel", "", "", ownerId, stamp).lastInsertRowid;
+  const botId = run("INSERT INTO bots (name,model,created) VALUES (?,?,?)", `continuation-agent-${stamp}`, "mock", stamp).lastInsertRowid;
+  const agentId = run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'channel',?,'ready',?)", botId, `continuation-agent-${stamp}`, stamp).lastInsertRowid;
+  run("INSERT INTO agent_channels (agent_id,channel_id,bound_at) VALUES (?,?,?)", agentId, channelId, stamp);
+  const rootId = run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", channelId, ownerId, "Finish and verify the durable task", stamp).lastInsertRowid;
+  const threadId = run("INSERT INTO threads (root_message_id,channel_id,status,title,summary,opened_at,updated_at) VALUES (?,?,'open','','',?,?)", rootId, channelId, stamp, stamp).lastInsertRowid;
+
+  const makeWake = (suffix, attempts = 1, maxAttempts = 4) => {
+    const followupId = run(`INSERT INTO agent_followups
+      (agent_id,bot_id,channel_id,thread_id,root_message_id,due_at,reason,status,attempts,max_attempts,created,updated)
+      VALUES (?,?,?,?,?,?,?,'running',?,?,?,?)`, agentId, botId, channelId, threadId, rootId, stamp, `finish ${suffix}`, attempts, maxAttempts, stamp, stamp).lastInsertRowid;
+    const triggerId = run("INSERT INTO messages (channel_id,parent_id,bot_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, botId, `[scheduled-followup id=${followupId} attempt=${attempts}/${maxAttempts}]\nCheck / finish: finish ${suffix}`, stamp).lastInsertRowid;
+    const replyId = run("INSERT INTO messages (channel_id,parent_id,bot_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, botId, "_Working…_", stamp).lastInsertRowid;
+    const turnId = run(`INSERT INTO agent_turns
+      (bot_id,agent_id,channel_id,trigger_id,thread_root_id,message_id,state,queued_at)
+      VALUES (?,?,?,?,?,?,'running',?)`, botId, agentId, channelId, triggerId, rootId, replyId, stamp).lastInsertRowid;
+    return { followupId, triggerId, replyId, turnId };
+  };
+
+  const proseOnly = makeWake("prose-only");
+  assert.match(verifiedWakeDisposition(proseOnly.followupId, proseOnly.turnId).error, /without completing, continuing, or blocking/);
+  const requeued = settleWakeAfterTurn(proseOnly.followupId, proseOnly.turnId, stamp + 60_000);
+  assert.equal(requeued.status, "pending");
+  assert.equal(q1("SELECT status FROM agent_followups WHERE id=?", proseOnly.followupId).status, "pending", "prose alone cannot consume the wake");
+
+  const completed = makeWake("completed");
+  run("INSERT INTO tool_actions (agent_id,thread_id,tool,input_summary,result_summary,status,created,invocation_id) VALUES (?,?,?,?,?,'complete',?,NULL)", agentId, threadId, "run_command", "old check", "old success", stamp);
+  assert.throws(() => completeRuntimeFollowup({ turnId: completed.turnId, triggerId: completed.triggerId, botId, evidence: "The requested end outcome is fully verified complete." }), /this invocation/);
+  run("INSERT INTO tool_actions (agent_id,thread_id,tool,input_summary,result_summary,status,created,invocation_id) VALUES (?,?,?,?,?,'complete',?,?)", agentId, threadId, "run_command", "current check", "service healthy and acceptance passed", stamp, completed.turnId);
+  assert.match(completeRuntimeFollowup({ turnId: completed.turnId, triggerId: completed.triggerId, botId, evidence: "Current inspection proves the service healthy and acceptance passed." }), /Verified completion/);
+  assert.equal(settleWakeAfterTurn(completed.followupId, completed.turnId).status, "done");
+  const completedRow = q1("SELECT status,completion_disposition,disposition_turn_id FROM agent_followups WHERE id=?", completed.followupId);
+  assert.equal(completedRow.status, "done");
+  assert.equal(completedRow.completion_disposition, "completed");
+  assert.equal(completedRow.disposition_turn_id, completed.turnId);
+
+  const continued = makeWake("continued");
+  const successorId = run(`INSERT INTO agent_followups
+    (agent_id,bot_id,channel_id,thread_id,root_message_id,due_at,reason,source_followup_id,status,attempts,max_attempts,created,updated)
+    VALUES (?,?,?,?,?,?,?,?, 'pending',?,?,?,?)`, agentId, botId, channelId, threadId, rootId, stamp + 30_000, "check running task", continued.followupId, 1, 4, stamp, stamp).lastInsertRowid;
+  recordWakeDisposition({ turnId: continued.turnId, triggerId: continued.triggerId, botId, kind: "continued", successorFollowupId: successorId, evidence: "A linked successor is persisted for the directly confirmed running task." });
+  assert.equal(settleWakeAfterTurn(continued.followupId, continued.turnId).status, "done");
+  assert.equal(q1("SELECT status FROM agent_followups WHERE id=?", successorId).status, "pending");
+
+  const blocked = makeWake("blocked");
+  const blockerEvidence = "The vendor requires the Captain to accept a binding external agreement before work can continue.";
+  run("INSERT INTO agent_questions (message_id,payload,status,created) VALUES (?,?, 'pending',?)", blocked.replyId, JSON.stringify({ blocker_kind: "external_authority", evidence: blockerEvidence, questions: [{ question: "Authorize?", options: [{ label: "Authorize" }, { label: "Stop" }] }] }), stamp);
+  recordWakeDisposition({ turnId: blocked.turnId, triggerId: blocked.triggerId, botId, kind: "blocked", evidence: `Persisted external authority boundary: ${blockerEvidence}` });
+  assert.equal(settleWakeAfterTurn(blocked.followupId, blocked.turnId).status, "done");
+  assert.equal(q1("SELECT completion_disposition FROM agent_followups WHERE id=?", blocked.followupId).completion_disposition, "blocked");
 });
 
 test("outbound Captain texting follows clear conversational permission", () => {
@@ -492,15 +548,20 @@ test.after(() => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
-test("thread usage accumulates cached input and counts every successful provider call", () => {
+test("thread usage shows the latest context instead of summing replayed prompts", () => {
   seed();
   const userId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('usage-owner','x','Owner',1,?)", now()).lastInsertRowid;
   const channelId = run("INSERT INTO channels (name,slug,kind,status,created_by,created) VALUES ('usage','usage','channel','active',?,?)", userId, now()).lastInsertRowid;
   const rootId = run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", channelId, userId, "usage", now()).lastInsertRowid;
   const threadId = agents.ensureThread(rootId, channelId);
-  agents.addThreadUsage(threadId, 100, 20, 80);
-  const usage = agents.addThreadUsage(threadId, 0, 0, 0);
-  assert.deepEqual(usage, { input_tokens: 100, output_tokens: 20, cached_input_tokens: 80, model_calls: 2 });
+  const first = [{ hash: "model", tokens: 0 }, { hash: "stable", tokens: 80_000 }];
+  const second = [...first, { hash: "new", tokens: 2_000 }];
+  agents.addThreadUsage(threadId, 80_000, 20, first);
+  const usage = agents.addThreadUsage(threadId, 82_000, 3, second);
+  assert.deepEqual(usage, { input_tokens: 82_000, output_tokens: 23, cached_input_tokens: 80_000, model_calls: 2 });
+  const stored = q1("SELECT input_tokens,cached_input_tokens FROM threads WHERE id=?", threadId);
+  assert.equal(stored.input_tokens, 162_000, "internal accounting remains available without misleading the thread chip");
+  assert.equal(stored.cached_input_tokens, 80_000);
 });
 
 test("canonical operational history redacts secrets and reconstructs valid tool pairs", async () => {
@@ -522,11 +583,19 @@ test("canonical operational history redacts secrets and reconstructs valid tool 
   assert.match(JSON.stringify(history), /REDACTED/);
 });
 
-test("provider usage normalization reports cached prompt details", async () => {
-  const { normalizeModelUsage } = await import("../src/server/bot-output.ts");
-  assert.deepEqual(normalizeModelUsage({ prompt_tokens: 120, completion_tokens: 9, prompt_tokens_details: { cached_tokens: 90 } }), { input_tokens: 120, output_tokens: 9, cached_input_tokens: 90 });
-  assert.deepEqual(normalizeModelUsage({ input_tokens: 50, output_tokens: 3, input_tokens_details: { cached_tokens: 40 } }), { input_tokens: 50, output_tokens: 3, cached_input_tokens: 40 });
-  assert.deepEqual(normalizeModelUsage(undefined), { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 });
+test("native model metrics are deterministic and provider-independent", async () => {
+  const { calculateModelContext, calculateModelOutput, nativeTokenCount, sharedContextTokens } = await import("../src/server/model-metrics.ts");
+  const messages = [{ role: "system", content: "Stable instructions" }, { role: "user", content: "Do the work" }];
+  const tools = [{ type: "function", function: { name: "run_command", parameters: { type: "object" } } }];
+  const first = calculateModelContext("any/model", messages, tools);
+  const repeat = calculateModelContext("any/model", messages, tools);
+  const grown = calculateModelContext("any/model", [...messages, { role: "assistant", content: "Working" }], tools);
+  assert(first.tokens > nativeTokenCount("Stable instructions"));
+  assert.deepEqual(repeat, first);
+  assert.equal(sharedContextTokens(first.segments, repeat.segments), first.tokens);
+  assert.equal(sharedContextTokens(first.segments, grown.segments), first.tokens - first.segments.at(-1).tokens, "a changed message boundary stops prefix reuse before later tool schemas");
+  assert.equal(sharedContextTokens(first.segments, calculateModelContext("other/model", messages, tools).segments), 0);
+  assert(calculateModelOutput("Done", [{ function: { name: "run_command", arguments: "{\"command\":\"true\"}" } }]) > nativeTokenCount("Done"));
 });
 
 test("silent-success audit rows remain durable but never serialize into chat", async () => {
@@ -543,21 +612,131 @@ test("silent-success audit rows remain durable but never serialize into chat", a
   assert.equal(q1("SELECT completion_mode FROM agent_turns WHERE message_id=?", messageId).completion_mode, "silent_success", "audit turn durably records intentional silence");
 });
 
-test("operational history compaction is durable and never begins with an orphaned tool result", async () => {
+test("canonical history has no arbitrary event boundary and labels prior invocations", async () => {
   const store = await import("../src/server/store.ts");
   seed();
-  const userId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('compact-owner','x','Owner',1,?)", now()).lastInsertRowid;
-  const channelId = run("INSERT INTO channels (name,slug,kind,status,created_by,created) VALUES ('compact','compact','channel','active',?,?)", userId, now()).lastInsertRowid;
-  const rootId = run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", channelId, userId, "compact history", now()).lastInsertRowid;
+  const userId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('history-boundary-owner','x','Owner',1,?)", now()).lastInsertRowid;
+  const channelId = run("INSERT INTO channels (name,slug,kind,status,created_by,created) VALUES ('history','history','channel','active',?,?)", userId, now()).lastInsertRowid;
+  const botId = run("INSERT INTO bots (name,model,prompt,created) VALUES ('history-agent','mock','Resident.',?)", now()).lastInsertRowid;
+  const agentId = run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'channel','history-agent','ready',?)", botId, now()).lastInsertRowid;
+  const rootId = run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", channelId, userId, "initial request", now()).lastInsertRowid;
   const threadId = agents.ensureThread(rootId, channelId);
-  for (let index = 0; index < 225; index++) store.appendThreadHistory(threadId, "checkpoint", { action: `proof-${index}`, result: "complete" }, "checkpoint", index + 1, `checkpoint:${index}`);
-  store.appendThreadHistory(threadId, "tool_call", { call_id: "tail-call", name: "run_command", arguments: "{}" }, "tail-call", 1, "tail-call");
-  store.appendThreadHistory(threadId, "tool_result", { call_id: "tail-call", name: "run_command", result: "ok" }, "tail-result", 1, "tail-call");
-  const first = store.operationalThreadMessages(threadId), second = store.operationalThreadMessages(threadId);
-  assert.match(first[0].content, /operational-history-summary/);
-  assert.equal(q1("SELECT COUNT(*) n FROM thread_history_compactions WHERE thread_id=?", threadId).n, 1);
-  assert.equal(first[0].content, second[0].content, "restart-equivalent reconstruction reuses the durable summary");
-  const exact = first.slice(1); assert.notEqual(exact[0]?.role, "tool");
-  const tailResult = exact.find((entry) => entry.role === "tool" && entry.tool_call_id === "tail-call");
-  assert(tailResult && exact.some((entry) => JSON.stringify(entry.tool_calls || []).includes("tail-call")));
+  const answerId = run("INSERT INTO messages (channel_id,parent_id,bot_id,body,created,completed_at) VALUES (?,?,?,?,?,?)", channelId, rootId, botId, "prior answer", now(), now()).lastInsertRowid;
+  const priorInvocation = run("INSERT INTO agent_turns (bot_id,agent_id,channel_id,trigger_id,thread_root_id,message_id,state,queued_at,started_at,finished_at) VALUES (?,?,?,?,?,?,'completed',?,?,?)", botId, agentId, channelId, rootId, rootId, answerId, now(), now(), now()).lastInsertRowid;
+  store.appendMessageHistory(answerId);
+  for (let index = 0; index < 225; index++) store.appendThreadHistory(threadId, "checkpoint", { action: `proof-${index}`, result: "complete" }, "checkpoint", index + 1, `checkpoint:${index}`, now(), priorInvocation);
+  store.appendThreadHistory(threadId, "tool_call", { call_id: "prior-call", name: "run_command", arguments: "{}" }, "tool_action", 9991, "prior-call", now(), priorInvocation);
+  store.appendThreadHistory(threadId, "tool_result", { call_id: "prior-call", name: "run_command", result: "ok" }, "tool_action_result", 9991, "prior-call", now(), priorInvocation);
+  const projected = store.operationalThreadMessages(threadId);
+  assert.equal(projected.filter((entry) => entry.content.includes("<work-checkpoint>")).length, 225, "all canonical events survive beyond the old 220 boundary");
+  assert.doesNotMatch(JSON.stringify(projected), /operational-history-summary/, "history is not preemptively compacted");
+  assert.match(projected.find((entry) => entry.content.includes("prior-agent-invocation"))?.content || "", new RegExp(`id="${priorInvocation}"`));
+  const call = projected.findIndex((entry) => JSON.stringify(entry.tool_calls || []).includes("prior-call"));
+  const result = projected.findIndex((entry) => entry.tool_call_id === "prior-call");
+  assert(call >= 0 && result === call + 1, "invocation markers never split a tool call/result pair");
+
+  for (let index = 0; index < 3; index++) {
+    store.appendThreadHistory(threadId, "tool_call", { call_id: `poll-${index}`, name: "run_command", arguments: { command: "job status" } }, "repeat-call", index + 1, `poll-${index}`, now(), priorInvocation);
+    store.appendThreadHistory(threadId, "tool_result", { call_id: `poll-${index}`, name: "run_command", result: "still loading", status: "complete" }, "repeat-result", index + 1, `poll-${index}`, now(), priorInvocation);
+  }
+  const normalized = store.operationalThreadMessages(threadId);
+  assert.equal(normalized.filter((entry) => JSON.stringify(entry.tool_calls || []).includes("job status")).length, 1, "exact duplicate closed calls are projected once");
+  assert.match(normalized.find((entry) => entry.content.includes("normalized-repetition"))?.content || "", /exact_duplicates_omitted[^0-9]*2/);
+  assert.equal(q1("SELECT COUNT(*) n FROM thread_history WHERE thread_id=? AND source_type='repeat-call'", threadId).n, 3, "normalization never deletes canonical events");
+
+  store.appendThreadHistory(threadId, "tool_call", { call_id: "interrupted-call", name: "run_command", arguments: { command: "slow operation" } }, "tool_action", 10001, "interrupted-call", now(), priorInvocation);
+  const recovered = store.operationalThreadMessages(threadId);
+  const interruptedCall = recovered.findIndex((entry) => JSON.stringify(entry.tool_calls || []).includes("interrupted-call"));
+  assert(interruptedCall >= 0 && recovered[interruptedCall + 1]?.tool_call_id === "interrupted-call", "an interrupted historical tool call receives an adjacent synthetic result");
+  assert.match(recovered[interruptedCall + 1].content, /completion state is unknown/i);
+  assert.equal(q1("SELECT COUNT(*) n FROM thread_history WHERE thread_id=? AND span_id='interrupted-call'", threadId).n, 1, "projection repair does not mutate canonical history");
+
+  // Exact live crash shape: startup deleted a running action, SQLite reused its
+  // id, and the replacement result carried a different provider call id.
+  store.appendThreadHistory(threadId, "tool_call", { call_id: "pre-restart-call", name: "run_command", arguments: { command: "restart service" } }, "tool_action", 11001, "pre-restart-call", now(), priorInvocation);
+  store.appendThreadHistory(threadId, "human_message", { message_id: 99101, body: "status" }, "message", 99101, "message:99101", now());
+  store.appendThreadHistory(threadId, "tool_result", { call_id: "post-restart-call", name: "run_command", result: "service active", status: "complete" }, "tool_action_result", 11001, "post-restart-call", now());
+  const crashSafe = store.operationalThreadMessages(threadId);
+  const staleCall = crashSafe.findIndex((entry) => JSON.stringify(entry.tool_calls || []).includes("pre-restart-call"));
+  assert(staleCall >= 0 && crashSafe[staleCall + 1]?.tool_call_id === "pre-restart-call", "a reused action id cannot pair different provider call ids");
+  assert.match(crashSafe[staleCall + 1].content, /completion state is unknown/i);
+  assert.equal(crashSafe.some((entry) => entry.tool_call_id === "post-restart-call"), false, "orphan tool results are never sent to a provider");
+
+  store.appendThreadHistory(threadId, "tool_call", { call_id: "queued-during-tool", name: "run_command", arguments: { command: "long task" } }, "tool_action", 11002, "queued-during-tool", now(), priorInvocation);
+  store.appendThreadHistory(threadId, "human_message", { message_id: 99102, body: "another queued message" }, "message", 99102, "message:99102", now());
+  store.appendThreadHistory(threadId, "tool_result", { call_id: "queued-during-tool", name: "run_command", result: "done", status: "complete" }, "tool_action_result", 11002, "queued-during-tool", now());
+  const reordered = store.operationalThreadMessages(threadId);
+  const queuedCall = reordered.findIndex((entry) => JSON.stringify(entry.tool_calls || []).includes("queued-during-tool"));
+  assert(queuedCall >= 0 && reordered[queuedCall + 1]?.tool_call_id === "queued-during-tool", "queued messages cannot split an exact tool call/result pair");
+  assert.equal(reordered[queuedCall + 1].content, "done");
+
+  store.appendThreadHistory(threadId, "tool_call", { call_id: "duplicate-provider-id", name: "run_command", arguments: { command: "first" } }, "duplicate-call", 1, "duplicate-provider-id", now(), priorInvocation);
+  store.appendThreadHistory(threadId, "tool_result", { call_id: "duplicate-provider-id", name: "run_command", result: "first done", status: "complete" }, "duplicate-result", 1, "duplicate-provider-id", now(), priorInvocation);
+  store.appendThreadHistory(threadId, "tool_call", { call_id: "duplicate-provider-id", name: "run_command", arguments: { command: "second" } }, "duplicate-call", 2, "duplicate-provider-id", now(), priorInvocation);
+  store.appendThreadHistory(threadId, "tool_result", { call_id: "duplicate-provider-id", name: "run_command", result: "second done", status: "complete" }, "duplicate-result", 2, "duplicate-provider-id", now(), priorInvocation);
+  const providerSafe = store.operationalThreadMessages(threadId);
+  const deduplicatedIds = providerSafe.flatMap((entry) => Array.isArray(entry.tool_calls) ? entry.tool_calls.map((call) => call.id) : []);
+  assert.equal(new Set(deduplicatedIds).size, deduplicatedIds.length, "duplicate historical provider call ids are rewritten uniquely with their matching result");
+  for (let index = 0; index < providerSafe.length; index += 1) {
+    const entry = providerSafe[index];
+    if (entry.role === "tool") assert.equal(providerSafe[index - 1]?.tool_calls?.[0]?.id, entry.tool_call_id, "every projected tool result has its exact call immediately before it");
+    if (entry.tool_calls?.length) assert.equal(providerSafe[index + 1]?.tool_call_id, entry.tool_calls[0].id, "every projected tool call has its exact result immediately after it");
+  }
+});
+
+test("crash recovery settles running actions without reusing their canonical identity", async () => {
+  const store = await import("../src/server/store.ts");
+  seed();
+  const stamp = now();
+  const userId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES (?,?,?,?,?)", `crash-owner-${stamp}`, "x", "Owner", 1, stamp).lastInsertRowid;
+  const channelId = run("INSERT INTO channels (name,slug,kind,status,created_by,created) VALUES (?,?,'channel','active',?,?)", `crash-${stamp}`, `crash-${stamp}`, userId, stamp).lastInsertRowid;
+  const botId = run("INSERT INTO bots (name,model,prompt,created) VALUES (?,?,?,?)", `crash-agent-${stamp}`, "mock", "Resident.", stamp).lastInsertRowid;
+  const agentId = run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'channel',?,'working',?)", botId, `crash-agent-${stamp}`, stamp).lastInsertRowid;
+  const rootId = run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", channelId, userId, "crash task", stamp).lastInsertRowid;
+  const threadId = agents.ensureThread(rootId, channelId);
+  const answerId = run("INSERT INTO messages (channel_id,parent_id,bot_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, botId, "_Working…_", stamp).lastInsertRowid;
+  const invocationId = run("INSERT INTO agent_turns (bot_id,agent_id,channel_id,trigger_id,thread_root_id,message_id,state,queued_at,started_at) VALUES (?,?,?,?,?,?,'running',?,?)", botId, agentId, channelId, rootId, rootId, answerId, stamp, stamp).lastInsertRowid;
+  const actionId = run("INSERT INTO tool_actions (agent_id,thread_id,tool,input_summary,status,created,invocation_id) VALUES (?,?,'run_command','slow command','running',?,?)", agentId, threadId, stamp, invocationId).lastInsertRowid;
+  store.appendThreadHistory(threadId, "tool_call", { call_id: "crash-call", name: "run_command", arguments: { command: "slow command" } }, "tool_action", actionId, "crash-call", stamp, invocationId);
+  dbModule.recoverInterruptedRuns();
+  assert.equal(q1("SELECT status FROM tool_actions WHERE id=?", actionId).status, "failed", "restart preserves and fails the stranded action row instead of deleting it");
+  assert.match(q1("SELECT result_summary FROM tool_actions WHERE id=?", actionId).result_summary, /completion is unknown/i);
+  const durableResult = q1("SELECT payload FROM thread_history WHERE thread_id=? AND source_type='tool_action_result' AND source_id=?", threadId, actionId);
+  assert.equal(JSON.parse(durableResult.payload).call_id, "crash-call", "restart durably closes the exact canonical call id");
+  const nextActionId = run("INSERT INTO tool_actions (agent_id,thread_id,tool,input_summary,status,created) VALUES (?,?,'run_command','next','complete',?)", agentId, threadId, now()).lastInsertRowid;
+  assert(nextActionId > actionId, "a later action cannot reuse the interrupted action identity");
+});
+
+test("buildContext places the current invocation boundary and trigger last", async () => {
+  const store = await import("../src/server/store.ts");
+  seed();
+  const userId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES ('ordering-owner','x','Owner',1,?)", now()).lastInsertRowid;
+  const channelId = run("INSERT INTO channels (name,slug,kind,status,created_by,created) VALUES ('ordering','ordering','channel','active',?,?)", userId, now()).lastInsertRowid;
+  const botId = run("INSERT INTO bots (name,model,prompt,created) VALUES ('ordering-agent','mock','Resident.',?)", now()).lastInsertRowid;
+  const bot = q1("SELECT * FROM bots WHERE id=?", botId);
+  const rootId = run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", channelId, userId, "first request", now()).lastInsertRowid;
+  const threadId = agents.ensureThread(rootId, channelId);
+  const priorAnswerId = run("INSERT INTO messages (channel_id,parent_id,bot_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, botId, "first answer", now()).lastInsertRowid;
+  const priorInvocation = run("INSERT INTO agent_turns (bot_id,channel_id,trigger_id,thread_root_id,message_id,state,queued_at,finished_at) VALUES (?,?,?,?,?,'completed',?,?)", botId, channelId, rootId, rootId, priorAnswerId, now(), now()).lastInsertRowid;
+  store.appendMessageHistory(priorAnswerId);
+  store.appendThreadHistory(threadId, "tool_call", { call_id: "old-call", name: "run_command", arguments: "{}" }, "tool_action", 71, "old-call", now(), priorInvocation);
+  store.appendThreadHistory(threadId, "tool_result", { call_id: "old-call", name: "run_command", result: "old evidence" }, "tool_action_result", 71, "old-call", now(), priorInvocation);
+  const triggerId = run("INSERT INTO messages (channel_id,parent_id,user_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, userId, "current request", now()).lastInsertRowid;
+  store.appendMessageHistory(triggerId);
+  const outputId = run("INSERT INTO messages (channel_id,parent_id,bot_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, botId, "_Working…_", now()).lastInsertRowid;
+  const currentInvocation = run("INSERT INTO agent_turns (bot_id,channel_id,trigger_id,thread_root_id,message_id,state,queued_at) VALUES (?,?,?,?,?,'running',?)", botId, channelId, triggerId, rootId, outputId, now()).lastInsertRowid;
+  const context = await buildContext(bot, undefined, channelId, triggerId, rootId, false, false, undefined, userId, currentInvocation);
+  assert.match(context.at(-2).content, new RegExp(`<current-invocation id="${currentInvocation}"`));
+  assert.match(context.at(-1).content, /current request/);
+  assert.equal(context.at(-1).role, "user");
+  assert(context.findIndex((entry) => entry.role === "tool" && entry.tool_call_id === "old-call") < context.length - 2, "historical operations precede the current boundary");
+  assert.equal(context.filter((entry) => entry.content === "current request").length, 1, "current trigger is not duplicated in historical replay");
+
+  const wakeId = run("INSERT INTO messages (channel_id,parent_id,bot_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, botId, "[scheduled-followup id=73 attempt=1/4]\nCheck / finish: inspect the running job", now()).lastInsertRowid;
+  const wakeOutputId = run("INSERT INTO messages (channel_id,parent_id,bot_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, botId, "_Working…_", now()).lastInsertRowid;
+  const wakeInvocation = run("INSERT INTO agent_turns (bot_id,channel_id,trigger_id,thread_root_id,message_id,state,queued_at) VALUES (?,?,?,?,?,'running',?)", botId, channelId, wakeId, rootId, wakeOutputId, now()).lastInsertRowid;
+  const wakeContext = await buildContext(bot, undefined, channelId, wakeId, rootId, false, false, undefined, userId, wakeInvocation);
+  assert.match(wakeContext.at(-2).content, new RegExp(`<current-invocation id="${wakeInvocation}" trigger="scheduled-followup"`));
+  assert.match(wakeContext.at(-1).content, /<scheduled-followup-wake>[\s\S]*inspect the running job/);
+  assert.equal(wakeContext.at(-1).role, "user", "the wake is the final canonical current event rather than an early system instruction");
 });

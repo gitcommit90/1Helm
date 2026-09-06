@@ -66,6 +66,7 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(source, /contextIsolation: true/);
   assert.match(source, /nodeIntegration: false/);
   assert.match(source, /sandbox: true/);
+  assert.match(source, /permission === "notifications"/, "allowed 1Helm origins may request native desktop notification permission");
   assert.match(source, /frame-src 'self' blob:/, "the Electron renderer permits only same-origin and blob frames for safe PDF preview");
   assert.match(source, /media-src 'self' blob:/, "the Electron renderer permits only same-origin and blob media for safe audio/video preview");
   assert.match(source, /HELM_RESOURCES_PATH = process\.resourcesPath/, "the local runtime resolves the connector bundled in the signed app");
@@ -80,6 +81,8 @@ test("desktop entrypoint keeps the renderer sandboxed and data on the Mac", asyn
   assert.match(source, /getLoginItemSettings\(\{ type: "mainAppService" \}\)/);
   assert.match(source, /login\.wasOpenedAtLogin/);
   assert.match(source, /window-all-closed/);
+  assert.match(source, /process\.platform === "darwin" && !quitting[\s\S]*event\.preventDefault\(\)[\s\S]*window\.hide\(\)/, "closing the Mac window retains its background renderer for native notifications until explicit Quit");
+  assert.match(source, /app\.on\("activate"[\s\S]*mainWindow\.show\(\)[\s\S]*mainWindow\.focus\(\)/, "reactivating a hidden notification-capable Mac window restores it");
   assert.match(source, /com\.gitcommit90\.1helm\.wake\.plist/);
   assert.match(source, /removeLegacyWakeLaunchAgent\(\)/);
   assert.doesNotMatch(source, /StartInterval|launchctl", \["bootstrap"|ProgramArguments/, "1Helm migrates away from the legacy LaunchAgent that macOS attributes to the certificate publisher");

@@ -106,7 +106,8 @@ export function formatRoughTokens(value: number): string {
 
 export function threadUsageLabel(usage: ThreadUsage): string {
   const cached = usage.cached_input_tokens ? ` (${formatRoughTokens(usage.cached_input_tokens)} cached)` : "";
-  return `Spent ${formatRoughTokens(usage.input_tokens)} input${cached} · ${formatRoughTokens(usage.output_tokens)} output · ${usage.model_calls} ${usage.model_calls === 1 ? "call" : "calls"}`;
+  const input = usage.input_tokens ? formatRoughTokens(usage.input_tokens) : "—";
+  return `Context ${input} input${cached} · ${formatRoughTokens(usage.output_tokens)} output · ${usage.model_calls} ${usage.model_calls === 1 ? "call" : "calls"}`;
 }
 
 export function formatThreadFollowupCountdown(dueAt: number, nowMs = Date.now()): string {

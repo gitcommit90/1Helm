@@ -9,6 +9,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import puppeteer from "puppeteer";
 import sharp from "sharp";
+import WebSocket from "ws";
 
 const root = resolve(import.meta.dirname, "..");
 const read = (path) => readFile(join(root, path), "utf8");
@@ -79,6 +80,24 @@ test("mobile compatibility is explicit and CORS is confined to packaged Capacito
     assert.match(preflight.headers.get("access-control-allow-headers") || "", /Authorization/);
     const blockedPreflight = await fetch(`${base}/api/auth/login`, { method: "OPTIONS", headers: { origin: "https://evil.example" } });
     assert.equal(blockedPreflight.status, 403);
+
+    const registrationResponse = await fetch(`${base}/api/auth/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "captain", password: "secret-pass", display: "Captain" }),
+    });
+    assert.equal(registrationResponse.ok, true);
+    const { token } = await registrationResponse.json();
+    await new Promise((resolvePong, rejectPong) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`);
+      const timeout = setTimeout(() => { socket.close(); rejectPong(new Error("main event socket did not answer heartbeat")); }, 3_000);
+      socket.on("message", (raw) => {
+        const message = JSON.parse(String(raw));
+        if (message.type === "hello") socket.send(JSON.stringify({ type: "ping", at: Date.now() }));
+        if (message.type === "pong") { clearTimeout(timeout); socket.close(); resolvePong(); }
+      });
+      socket.on("error", rejectPong);
+    });
   } finally {
     child.kill("SIGTERM");
     await new Promise((resolveWait) => child.once("exit", resolveWait));
@@ -96,6 +115,8 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
     read("ios/App/App/PrivacyInfo.xcprivacy"), read("package.json"), read("scripts/package-ios-ipa.mjs"),
     read("mobile-gateway/index.html"), read("mobile-gateway/error.html"), read("android/app/src/main/java/com/gitcommit90/onehelm/mobile/InstanceGatewayPlugin.java"), read("android/app/src/main/java/com/gitcommit90/onehelm/mobile/MainActivity.java"), read("ios/App/App/GatewayViewController.swift"),
   ]);
+  const server = await read("src/server/index.ts");
+  const state = await read("src/client/state.ts");
   const parsed = JSON.parse(config);
   assert.equal(parsed.appId, "com.gitcommit90.onehelm.mobile");
   assert.equal(parsed.server.androidScheme, "https");
@@ -140,6 +161,16 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.doesNotMatch(api, /let token = localStorage\.getItem/, "the session is not eagerly copied out of native secure storage");
   assert.match(app, /if \(isNativeMobile\(\) && !getToken\(\)\) return renderAuth\(\)/, "the gateway never opens host onboarding");
   assert.match(app, /src: serverAssetUrl\(avatarValue\)/, "server-hosted custom avatars resolve against the selected host");
+  assert.match(mobile, /visibilitychange/);
+  assert.match(mobile, /addEventListener\("pageshow"/);
+  assert.match(mobile, /addEventListener\("focus"/);
+  assert.match(mobile, /addEventListener\("online"/);
+  assert.match(mobile, /App\.addListener\("appStateChange"/, "the native shell explicitly reports Android/iOS foregrounding");
+  assert.match(api, /EVENT_STALE_MS[\s\S]*reconnectStaleSocket/);
+  assert.match(api, /type: "ping"/);
+  assert.match(server, /type === "ping"[\s\S]*type: "pong"/, "the main app event socket has a round-trip liveness proof");
+  assert.match(state, /previousThreadId[\s\S]*\/thread\?progress=summary[\s\S]*applyThreadSnapshot/, "foreground recovery reloads the exact open thread, not only its channel roots");
+  assert.match(app, /captureUiContinuity\(root\)[\s\S]*renderApp\(\)[\s\S]*restoreUiContinuity/, "authoritative recovery preserves scroll, focus, expansion, and composer state");
 
   assert.match(androidManifest, /android:allowBackup="false"/);
   assert.match(androidManifest, /android:usesCleartextTraffic="false"/);
@@ -153,6 +184,8 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.match(androidBuild, /HELM_ANDROID_SIGNING_PROPERTIES/);
   assert.match(androidBuild, /signingConfig signingConfigs\.release/);
   assert.match(androidBuild, /minifyEnabled true/);
+  assert.match(androidBuild, /Release builds require android\/app\/google-services\.json/, "signed Android builds fail closed without Firebase notification configuration");
+  assert.match(androidActivity, /NotificationChannel\("1helm_activity"/, "Android creates the high-importance channel used by FCM delivery");
   assert.match(androidRules, /exclude domain="sharedpref"/);
   assert.match(androidPackage, /7b2d96ab21a242f9b17ddc7c65d133033bb9f0322158b6aab57bf8d46a7d27bf/);
   assert.match(androidPackage, /expected the permanent 1Helm release certificate/);
@@ -177,7 +210,8 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   assert.match(iosGateway, /shouldOverrideLoad[\s\S]*sameOrigin[\s\S]*scheme\?\.lowercased\(\)[\s\S]*host\?\.lowercased\(\)/, "iOS rejects in-WebView HTTP(S) navigation outside an exact scheme, host, and port match");
   assert.match(iosProject, /PrivacyInfo\.xcprivacy in Resources/);
   assert.match(iosProject, /CODE_SIGN_ENTITLEMENTS = App\/App\.entitlements/);
-  assert.match(notifications, /mobilePlatform\(\) !== "ios"/, "the current release offers push only on the platform with a complete APNs delivery path");
+  assert.doesNotMatch(notifications, /mobilePlatform\(\) !== "ios"/, "Android is no longer disabled by an iOS-only client gate");
+  assert.match(notifications, /\["ios", "android"\]\.includes\(mobilePlatform\(\)\)/, "both native clients expose registration and restore behavior");
   assert.match(iosLaunch, /contentMode="scaleAspectFit"/);
   assert.match(iosLaunch, /firstAttribute="width" constant="88"/);
   assert.match(iosLaunch, /firstAttribute="height" constant="88"/);
@@ -208,6 +242,46 @@ test("Capacitor shells keep sessions native, connections HTTPS-only, and release
   const android12LaunchMark = await sharp(join(root, "android/app/src/main/res/drawable-nodpi/splash_android12.png")).metadata();
   assert.equal(android12LaunchMark.width, 256); assert.equal(android12LaunchMark.height, 256); assert.equal(android12LaunchMark.hasAlpha, true);
   assert.ok((await stat(join(root, "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png"))).size > 10_000);
+});
+
+test("foreground lifecycle signals recover once visible and are removable", async () => {
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+  const fakeDocument = new EventTarget();
+  Object.defineProperty(fakeDocument, "visibilityState", { value: "visible", writable: true });
+  const fakeWindow = new EventTarget();
+  globalThis.document = fakeDocument;
+  globalThis.window = fakeWindow;
+  try {
+    const { disposeAppResumeRecovery, installAppResumeBehavior, replaceAppResumeRecovery } = await import("../src/client/mobile.ts");
+    let resumes = 0;
+    const dispose = installAppResumeBehavior(() => { resumes += 1; });
+    fakeDocument.dispatchEvent(new Event("visibilitychange"));
+    fakeWindow.dispatchEvent(new Event("pageshow"));
+    fakeWindow.dispatchEvent(new Event("focus"));
+    fakeWindow.dispatchEvent(new Event("online"));
+    assert.equal(resumes, 4);
+    fakeDocument.visibilityState = "hidden";
+    fakeDocument.dispatchEvent(new Event("visibilitychange"));
+    fakeWindow.dispatchEvent(new Event("focus"));
+    assert.equal(resumes, 4, "hidden pages do not start foreground traffic");
+    dispose();
+    fakeDocument.visibilityState = "visible";
+    fakeWindow.dispatchEvent(new Event("focus"));
+    assert.equal(resumes, 4, "disposed workspace listeners cannot leak into the next session");
+
+    let validations = 0;
+    let recoveries = 0;
+    replaceAppResumeRecovery({ resume: () => { validations += 1; }, dispose: () => undefined }, () => { recoveries += 1; });
+    for (const signal of ["pageshow", "focus", "online"]) fakeWindow.dispatchEvent(new Event(signal));
+    fakeDocument.dispatchEvent(new Event("visibilitychange"));
+    await new Promise((resolveWait) => setTimeout(resolveWait, 160));
+    assert.deepEqual({ validations, recoveries }, { validations: 1, recoveries: 1 }, "one foreground transition performs one recovery despite overlapping platform signals");
+    disposeAppResumeRecovery();
+  } finally {
+    globalThis.document = originalDocument;
+    globalThis.window = originalWindow;
+  }
 });
 
 test("mobile server addresses normalize to an HTTPS origin and reject ambiguous input", async () => {

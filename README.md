@@ -268,10 +268,12 @@ in the iOS Keychain or encrypted with a key held by Android Keystore.
   session token. Native bridge access is restricted to that exact scheme,
   host, and port. Use **Disconnect** in the profile menu to erase both from the
   device.
-- iPhone notifications are opt-in under **Settings → Notifications**. Device
-  registration belongs to the signed-in account, per-channel mute still wins,
-  and tapping an update opens its channel or thread. iOS camera and photo
-  access is requested only after an explicit attachment action.
+- System notifications are opt-in under **Settings → Notifications**. The web
+  GUI and installed PWA use durable Web Push, Android and iPhone use native
+  push, and the macOS/Windows app uses native desktop notifications while it is
+  running. Registrations belong to the signed-in account, per-channel mute
+  still wins, and tapping an update opens its channel or thread. iOS camera and
+  photo access is requested only after an explicit attachment action.
 
 ## Ready on day one. Specialized by day one hundred.
 

@@ -212,6 +212,13 @@ async function startServerMode(window) {
   }
 }
 
+function appPermissionAllowed(webContents, permission, details = {}) {
+  const pageUrl = webContents?.getURL?.() || "";
+  if (!allowedAppUrl(pageUrl)) return false;
+  if (permission === "notifications") return true;
+  return microphonePermissionAllowed(webContents, permission, details);
+}
+
 function microphonePermissionAllowed(webContents, permission, details = {}) {
   const pageUrl = webContents?.getURL?.() || "";
   if (permission !== "media" || !allowedAppUrl(pageUrl)) return false;
@@ -285,6 +292,7 @@ function createWindow(showWhenReady = true) {
     if (/^https?:/i.test(url)) openAuthWindow(url);
   });
   if (showWhenReady) window.once("ready-to-show", () => window.show());
+  window.on("close", (event) => { if (process.platform === "darwin" && !quitting) { event.preventDefault(); window.hide(); } });
   window.on("closed", () => { if (mainWindow === window) mainWindow = null; });
   void loadInitialWorkspace(window);
   mainWindow = window;
@@ -302,10 +310,10 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
-    session.defaultSession.setPermissionCheckHandler((webContents, permission, _origin, details) => microphonePermissionAllowed(webContents, permission, details));
+    session.defaultSession.setPermissionCheckHandler((webContents, permission, _origin, details) => appPermissionAllowed(webContents, permission, details));
     session.defaultSession.setPermissionRequestHandler(async (webContents, permission, callback, details) => {
-      if (!microphonePermissionAllowed(webContents, permission, details)) { callback(false); return; }
-      if (process.platform !== "darwin") { callback(true); return; }
+      if (!appPermissionAllowed(webContents, permission, details)) { callback(false); return; }
+      if (permission === "notifications" || process.platform !== "darwin") { callback(true); return; }
       try { callback(await systemPreferences.askForMediaAccess("microphone")); }
       catch { callback(false); }
     });
@@ -355,7 +363,7 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
-  app.on("activate", () => { if (!mainWindow) createWindow(); });
+  app.on("activate", () => { if (!mainWindow) createWindow(); else { mainWindow.show(); mainWindow.focus(); } });
   app.on("window-all-closed", () => {
     // On macOS 1Helm remains the native scheduler/fleet manager until Cmd-Q.
     if (process.platform !== "darwin") app.quit();

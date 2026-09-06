@@ -10,6 +10,7 @@ const settings = await readFile(resolve(root, "src/client/settings.ts"), "utf8")
 const routing = await readFile(resolve(root, "src/client/routing.ts"), "utf8");
 const desktop = await readFile(resolve(root, "desktop/main.cjs"), "utf8");
 const server = await readFile(resolve(root, "src/server/index.ts"), "utf8");
+const bots = await readFile(resolve(root, "src/server/bots.ts"), "utf8");
 const http = await readFile(resolve(root, "src/server/http.ts"), "utf8");
 const serviceWorker = await readFile(resolve(root, "public/sw.js"), "utf8");
 
@@ -64,8 +65,11 @@ test("profile, naming, routing, and usage language match the visible product con
   assert.doesNotMatch(settings, /More connections/, "the ambiguous connections heading is gone");
   assert.match(app, /openRoutingPopoverLazy\(event\)/, "the router-symbol header action lazily opens live routing activity");
   assert.match(routing, /popover\.append\(content\)/, "the live routing popover mounts its rendered content");
-  assert.match(app, /Cumulative provider-reported usage across repeated model calls/, "thread token totals are labeled as actual cumulative usage");
-  assert.doesNotMatch(app, /`Ctx /, "usage is not presented as context-window capacity");
+  assert.match(app, /1Helm-calculated model context/, "the thread chip identifies 1Helm as the metric authority");
+  assert.match(app, /not a sum of repeated context or an upstream usage report/, "the tooltip makes the non-cumulative contract explicit");
+  assert.match(bots, /calculateModelContext\(model, messages, requestTools\)/, "context is counted from 1Helm's outbound request");
+  assert.match(bots, /calculateModelOutput\(content, result\.toolCalls\)/, "output is counted from the response 1Helm receives");
+  assert.doesNotMatch(bots, /result\.usage/, "thread metrics never consume provider usage reports");
 });
 
 test("service-worker updates never reload an active editor or conversation", () => {

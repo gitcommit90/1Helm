@@ -7,7 +7,7 @@ export type Msg = { channelId: number; parentId: number | null; userId?: number 
 /** Internal wake scaffolds are stored for model context but never shown in chat. */
 export function isInternalMessageBody(body: string): boolean {
   const text = String(body || "").trim();
-  return /^\[scheduled-followup\b/i.test(text) || text.startsWith("⟦followup⟧") || text === "[silent-success]";
+  return /^\[scheduled-followup\b/i.test(text) || text.startsWith("⟦followup⟧") || text === "[silent-success]" || /^\[retry-trigger\b/i.test(text);
 }
 
 export function createMessage(m: Msg): number {
@@ -121,7 +121,7 @@ export function serializeMessage(id: number, progressMode: MessageProgressMode =
   if (m.parent_id == null) {
     const replies = q(`SELECT created FROM messages r WHERE parent_id=? AND trim(body)<>'' AND body<>'_Working…_'
       AND body NOT LIKE '[scheduled-followup%'
-      AND body NOT LIKE '⟦followup⟧%' AND body<>'[silent-success]'
+      AND body NOT LIKE '⟦followup⟧%' AND body NOT LIKE '[retry-trigger%' AND body<>'[silent-success]'
       AND NOT EXISTS (SELECT 1 FROM agent_progress ap WHERE ap.message_id=r.id AND ap.status='running') ORDER BY id`, id);
     replyCount = replies.length;
     lastReply = replies.length ? Number(replies[replies.length - 1].created) : null;
@@ -143,10 +143,14 @@ export function serializeMessage(id: number, progressMode: MessageProgressMode =
       };
     } catch { questions = null; }
   }
+  const turn = m.bot_id ? q1("SELECT id,retry_of_turn_id FROM agent_turns WHERE message_id=? ORDER BY id DESC LIMIT 1", id) : undefined;
+  const retried = turn ? q1("SELECT retry_turn_id FROM message_retries WHERE original_turn_id=? AND retry_turn_id IS NOT NULL ORDER BY created DESC LIMIT 1", turn.id) : undefined;
   // stopped_followup is backend-only prompt context and must never be exposed.
   const { stopped_followup: _stoppedFollowup, ...publicMessage } = m;
   return { ...publicMessage, reply_count: replyCount, last_reply: lastReply,
-    completed_at: completedAt, author, attachments, progress, progress_count: progressCount, questions };
+    completed_at: completedAt, author, attachments, progress, progress_count: progressCount, questions,
+    retry_of_message_id: turn?.retry_of_turn_id ? Number(q1("SELECT message_id FROM agent_turns WHERE id=?", turn.retry_of_turn_id)?.message_id || 0) || null : null,
+    retried_by_message_id: retried?.retry_turn_id ? Number(q1("SELECT message_id FROM agent_turns WHERE id=?", retried.retry_turn_id)?.message_id || 0) || null : null };
 }
 
 export function serializeMessages(ids: number[], progressMode: MessageProgressMode = "full"): Row[] {
@@ -195,13 +199,20 @@ export function serializeMessages(ids: number[], progressMode: MessageProgressMo
     const rootMarks = rootIds.map(() => "?").join(",");
     for (const row of q(`SELECT r.parent_id,COUNT(*) n,MAX(r.created) last FROM messages r
       WHERE r.parent_id IN (${rootMarks}) AND trim(r.body)<>'' AND r.body<>'_Working…_'
-        AND r.body NOT LIKE '[scheduled-followup%' AND r.body NOT LIKE '⟦followup⟧%'
+        AND r.body NOT LIKE '[scheduled-followup%' AND r.body NOT LIKE '⟦followup⟧%' AND r.body NOT LIKE '[retry-trigger%'
         AND NOT EXISTS (SELECT 1 FROM agent_progress ap WHERE ap.message_id=r.id AND ap.status='running')
       GROUP BY r.parent_id`, ...rootIds)) {
       replies.set(Number(row.parent_id), { count: Number(row.n), last: row.last == null ? null : Number(row.last) });
     }
   }
   const byId = new Map(messages.map((message) => [Number(message.id), message]));
+  const turnRows = botIds.length ? q(`SELECT id,message_id,retry_of_turn_id FROM agent_turns WHERE message_id IN (${messageMarks}) ORDER BY id`, ...messageIds) : [];
+  const turnsByMessage = new Map(turnRows.map((turn) => [Number(turn.message_id), turn]));
+  const referencedTurnIds = [...new Set(turnRows.map((turn) => Number(turn.retry_of_turn_id || 0)).filter(Boolean))];
+  const allTurnIds = [...new Set([...turnRows.map((turn) => Number(turn.id)), ...referencedTurnIds])];
+  const messagesByTurn = new Map(allTurnIds.length ? q(`SELECT id,message_id FROM agent_turns WHERE id IN (${allTurnIds.map(() => "?").join(",")})`, ...allTurnIds).map((turn) => [Number(turn.id), Number(turn.message_id)]) : []);
+  const retriesByTurn = new Map<number, number>();
+  if (turnRows.length) for (const retry of q(`SELECT original_turn_id,retry_turn_id FROM message_retries WHERE original_turn_id IN (${turnRows.map(() => "?").join(",")}) AND retry_turn_id IS NOT NULL ORDER BY created`, ...turnRows.map((turn) => turn.id))) retriesByTurn.set(Number(retry.original_turn_id), Number(retry.retry_turn_id));
   return orderedIds.flatMap((id) => {
     const message = byId.get(id);
     if (!message) return [];
@@ -224,6 +235,8 @@ export function serializeMessages(ids: number[], progressMode: MessageProgressMo
       } catch { publicQuestions = null; }
     }
     const settled = message.parent_id == null ? replies.get(id) : undefined;
+    const turn = botId ? turnsByMessage.get(id) : undefined;
+    const retriedTurnId = turn ? retriesByTurn.get(Number(turn.id)) : undefined;
     const { stopped_followup: _stoppedFollowup, ...publicMessage } = message;
     return [{
       ...publicMessage,
@@ -234,6 +247,8 @@ export function serializeMessages(ids: number[], progressMode: MessageProgressMo
       progress: progress.get(id) || [],
       progress_count: progressCounts.get(id) || 0,
       questions: publicQuestions,
+      retry_of_message_id: turn?.retry_of_turn_id ? messagesByTurn.get(Number(turn.retry_of_turn_id)) || null : null,
+      retried_by_message_id: retriedTurnId ? messagesByTurn.get(retriedTurnId) || null : null,
     }];
   });
 }
@@ -416,8 +431,17 @@ export function findMentionedBots(body: string): Row[] {
   return q("SELECT * FROM bots").filter((b) => names.has(String(b.name).toLowerCase()));
 }
 
-export type OperationalMessage = { role: "system" | "user" | "assistant" | "tool"; content: string; source_message_id?: number; tool_calls?: unknown[]; tool_call_id?: string; name?: string };
-const MAX_ARG = 12_000, MAX_RESULT = 12_000, EXACT_EVENTS = 220;
+export type OperationalMessage = { role: "system" | "user" | "assistant" | "tool"; content: string; source_message_id?: number; invocation_id?: number; tool_calls?: unknown[]; tool_call_id?: string; name?: string };
+const MAX_ARG = 12_000, MAX_RESULT = 12_000;
+export function currentInvocationMessages(invocationId: number, triggerKind: "human-message" | "scheduled-followup", triggerContent: string): OperationalMessage[] {
+  return [
+    { role: "system", content: `<current-invocation id="${invocationId || "untracked"}" trigger="${triggerKind}">
+No tool calls have been performed during this invocation yet. Historical tool calls above are prior evidence and do not count as a current inspection.
+</current-invocation>` },
+    { role: "user", content: triggerContent },
+  ];
+}
+
 const secretKey = /(^|_)(authorization|cookie|token|secret|password|api_?key|private_?key|credential)s?$/i;
 
 function clean(value: unknown, limit: number): unknown {
@@ -434,10 +458,10 @@ function clean(value: unknown, limit: number): unknown {
 const encoded = (payload: unknown, limit: number): string => JSON.stringify(clean(payload, limit));
 const decoded = (payload: unknown): Record<string, unknown> => { try { return JSON.parse(String(payload || "{}")); } catch { return {}; } };
 
-export function appendThreadHistory(threadId: number, kind: string, payload: unknown, sourceType = "", sourceId?: number | null, spanId = "", created = now()): number {
+export function appendThreadHistory(threadId: number, kind: string, payload: unknown, sourceType = "", sourceId?: number | null, spanId = "", created = now(), invocationId?: number | null): number {
   const seq = Number(q1("SELECT COALESCE(MAX(seq),0)+1 seq FROM thread_history WHERE thread_id=?", threadId)?.seq || 1);
-  return run(`INSERT OR IGNORE INTO thread_history (thread_id,seq,kind,payload,source_type,source_id,span_id,created)
-    VALUES (?,?,?,?,?,?,?,?)`, threadId, seq, kind, encoded(payload, kind === "tool_result" ? MAX_RESULT : MAX_ARG), sourceType, sourceId ?? null, spanId, created).lastInsertRowid;
+  return run(`INSERT OR IGNORE INTO thread_history (thread_id,seq,kind,payload,source_type,source_id,span_id,invocation_id,created)
+    VALUES (?,?,?,?,?,?,?,?,?)`, threadId, seq, kind, encoded(payload, kind === "tool_result" ? MAX_RESULT : MAX_ARG), sourceType, sourceId ?? null, spanId, invocationId ?? null, created).lastInsertRowid;
 }
 
 export function appendMessageHistory(messageId: number): void {
@@ -451,9 +475,10 @@ export function appendMessageHistory(messageId: number): void {
     return;
   }
   const kind = row.user_id != null ? "human_message" : "assistant_message";
+  const invocationId = kind === "assistant_message" ? Number(q1("SELECT id FROM agent_turns WHERE message_id=? ORDER BY id DESC LIMIT 1", messageId)?.id || 0) || null : null;
   const existing = q1("SELECT id FROM thread_history WHERE thread_id=? AND source_type='message' AND source_id=?", row.thread_id, messageId);
-  if (existing) run("UPDATE thread_history SET kind=?,payload=?,created=? WHERE id=?", kind, encoded({ message_id: messageId, body }, MAX_ARG), row.created, existing.id);
-  else appendThreadHistory(Number(row.thread_id), kind, { message_id: messageId, body }, "message", messageId, `message:${messageId}`, Number(row.created));
+  if (existing) run("UPDATE thread_history SET kind=?,payload=?,invocation_id=COALESCE(?,invocation_id),created=? WHERE id=?", kind, encoded({ message_id: messageId, body }, MAX_ARG), invocationId, row.created, existing.id);
+  else appendThreadHistory(Number(row.thread_id), kind, { message_id: messageId, body }, "message", messageId, `message:${messageId}`, Number(row.created), invocationId);
 }
 
 /** Idempotent migration/backfill. New writes use appendThreadHistory directly. */
@@ -475,33 +500,207 @@ export function ensureThreadHistory(threadId: number): void {
   for (const e of events) appendThreadHistory(threadId, e.kind, e.payload, e.source, e.id, e.span, e.at);
 }
 
-function compactedSummary(rows: Row[]): string {
-  return rows.map((row) => { const p=decoded(row.payload); return `- ${row.kind}: ${String(p.body || p.name || p.reason || p.result || "event").replace(/\s+/g," ").slice(0,240)}`; }).join("\n").slice(0,24_000);
+function backfillThreadHistoryInvocations(threadId: number): void {
+  // Older rows predate explicit invocation identity. Recover only ownership we
+  // can prove from durable turn/message/action relationships.
+  run(`UPDATE thread_history SET invocation_id=(
+      SELECT at.id FROM agent_turns at WHERE at.message_id=thread_history.source_id LIMIT 1)
+    WHERE thread_id=? AND invocation_id IS NULL AND source_type='message' AND kind='assistant_message'
+      AND EXISTS (SELECT 1 FROM agent_turns at WHERE at.message_id=thread_history.source_id)`, threadId);
+  run(`UPDATE thread_history SET invocation_id=(
+      SELECT at.id FROM tool_actions ta JOIN agent_turns at ON at.thread_root_id=(SELECT root_message_id FROM threads WHERE id=thread_history.thread_id)
+        AND at.agent_id=ta.agent_id AND at.queued_at<=ta.created AND (at.finished_at IS NULL OR at.finished_at>=ta.created)
+      WHERE ta.id=thread_history.source_id ORDER BY at.queued_at DESC,at.id DESC LIMIT 1)
+    WHERE thread_id=? AND invocation_id IS NULL AND source_type IN ('tool_action','tool_action_result')`, threadId);
 }
 
-export function operationalThreadMessages(threadId: number, throughMessageId?: number): OperationalMessage[] {
-  ensureThreadHistory(threadId);
-  let rows = q("SELECT * FROM thread_history WHERE thread_id=? ORDER BY seq", threadId);
-  if (throughMessageId) rows = rows.filter((row) => row.source_type !== "message" || Number(row.source_id) <= throughMessageId);
-  const out: OperationalMessage[] = [];
-  if (rows.length > EXACT_EVENTS) {
-    const cut = rows.length - EXACT_EVENTS, covered = Number(rows[cut - 1].seq);
-    const digest = createHash("sha256").update(rows.slice(0, cut).map((row) => `${row.seq}:${row.kind}:${row.payload}`).join("\n")).digest("hex");
-    let compacted = q1("SELECT summary FROM thread_history_compactions WHERE thread_id=? AND covered_through_seq=? AND digest=?", threadId, covered, digest);
-    if (!compacted) { const summary = compactedSummary(rows.slice(0,cut)); run("INSERT INTO thread_history_compactions (thread_id,covered_through_seq,digest,summary,created) VALUES (?,?,?,?,?)", threadId, covered, digest, summary, now()); compacted = { summary }; }
-    out.push({ role: "system", content: `<operational-history-summary covered-through-seq="${covered}" digest="${digest}">\n${compacted.summary}\n</operational-history-summary>` });
-    rows = rows.slice(cut);
-    // Do not begin with an orphaned result.
-    while (rows[0]?.kind === "tool_result") rows.shift();
-  }
+function providerSafeToolHistory(rows: Row[]): Row[] {
+  // Provider APIs accept tool history only as closed assistant-call/tool-result
+  // pairs. Canonical events may have a queued human message between a long tool
+  // call and its result, and legacy crash recovery could leave either half
+  // orphaned. Reorder an exact-ID result beside its call, synthesize an honest
+  // unknown-state result for an unmatched call, and omit unmatched results.
+  const projected: Row[] = [];
+  const consumedResults = new Set<number>();
+  const seenCallIds = new Set<string>();
   for (const row of rows) {
+    if (row.kind === "tool_result") continue;
+    if (row.kind !== "tool_call") { projected.push(row); continue; }
+    const callPayload = decoded(row.payload);
+    const originalCallId = String(callPayload.call_id || row.span_id || "");
+    let projectedCallId = originalCallId;
+    if (!projectedCallId || seenCallIds.has(projectedCallId)) {
+      const base = `history-${Number(row.thread_id || 0)}-${Number(row.id || row.seq || 0)}`;
+      projectedCallId = base;
+      for (let suffix = 2; seenCallIds.has(projectedCallId); suffix += 1) projectedCallId = `${base}-${suffix}`;
+    }
+    seenCallIds.add(projectedCallId);
+    const call = {
+      ...row,
+      span_id: projectedCallId,
+      payload: encoded({ ...callPayload, call_id: projectedCallId }, MAX_ARG),
+    };
+    const result = rows.find((candidate) => candidate.kind === "tool_result"
+      && Number(candidate.seq || 0) > Number(row.seq || 0)
+      && !consumedResults.has(Number(candidate.id || 0))
+      && String(decoded(candidate.payload).call_id || candidate.span_id || "") === originalCallId);
+    projected.push(call);
+    if (result) {
+      consumedResults.add(Number(result.id || 0));
+      const resultPayload = decoded(result.payload);
+      projected.push({
+        ...result,
+        invocation_id: row.invocation_id,
+        span_id: projectedCallId,
+        payload: encoded({ ...resultPayload, call_id: projectedCallId }, MAX_RESULT),
+      });
+      continue;
+    }
+    projected.push({
+      ...row,
+      kind: "tool_result",
+      source_type: "interrupted_tool_result",
+      source_id: null,
+      span_id: projectedCallId,
+      payload: encoded({
+        call_id: projectedCallId,
+        name: String(callPayload.name || "tool"),
+        result: "Error: this historical tool call was interrupted before 1Helm recorded its output. Its completion state is unknown; inspect current state before retrying or relying on side effects.",
+        status: "failed",
+      }, MAX_RESULT),
+    });
+  }
+  return projected;
+}
+
+function normalizeExactClosedRepetitions(rows: Row[]): Row[] {
+  const projected: Row[] = [];
+  for (let index = 0; index < rows.length;) {
+    const call = rows[index], result = rows[index + 1];
+    if (call?.kind !== "tool_call" || result?.kind !== "tool_result" || call.span_id !== result.span_id || Number(call.invocation_id || 0) !== Number(result.invocation_id || 0)) {
+      projected.push(call); index += 1; continue;
+    }
+    const callPayload = decoded(call.payload), resultPayload = decoded(result.payload);
+    const signature = JSON.stringify([callPayload.name, callPayload.arguments, resultPayload.name, resultPayload.result, resultPayload.status]);
+    let end = index + 2, duplicates = 0;
+    while (rows[end]?.kind === "tool_call" && rows[end + 1]?.kind === "tool_result"
+      && rows[end].span_id === rows[end + 1].span_id && Number(rows[end].invocation_id || 0) === Number(call.invocation_id || 0)) {
+      const nextCall = decoded(rows[end].payload), nextResult = decoded(rows[end + 1].payload);
+      if (JSON.stringify([nextCall.name, nextCall.arguments, nextResult.name, nextResult.result, nextResult.status]) !== signature) break;
+      duplicates += 1; end += 2;
+    }
+    projected.push(call, result);
+    if (duplicates) projected.push({ ...result, kind: "normalized_repetition", payload: encoded({ exact_duplicates_omitted: duplicates, covered_seq: [Number(rows[index + 2].seq), Number(rows[end - 1].seq)] }, MAX_ARG) });
+    index = end;
+  }
+  return projected;
+}
+
+export function operationalThreadMessages(threadId: number, throughMessageId?: number, currentInvocationId?: number, excludedInvocationId?: number, excludedSourceMessageId?: number): OperationalMessage[] {
+  ensureThreadHistory(threadId);
+  backfillThreadHistoryInvocations(threadId);
+  let rows = q("SELECT * FROM thread_history WHERE thread_id=? ORDER BY seq", threadId);
+  if (throughMessageId) rows = rows.filter((row) => row.source_type !== "message" || Number(row.source_id) < throughMessageId);
+  if (currentInvocationId) rows = rows.filter((row) => Number(row.invocation_id || 0) !== currentInvocationId);
+  if (excludedInvocationId) rows = rows.filter((row) => Number(row.invocation_id || 0) !== excludedInvocationId);
+  if (excludedSourceMessageId) rows = rows.filter((row) => !(row.source_type === "message" && Number(row.source_id) === excludedSourceMessageId));
+  rows = normalizeExactClosedRepetitions(providerSafeToolHistory(rows));
+  const invocationTriggers = new Map<number, number>(q("SELECT id,trigger_id FROM agent_turns WHERE thread_root_id=(SELECT root_message_id FROM threads WHERE id=?)", threadId)
+    .map((row) => [Number(row.id), Number(row.trigger_id)]));
+  const out: OperationalMessage[] = [];
+  let openInvocation = 0;
+  const closeInvocation = (): void => {
+    if (!openInvocation) return;
+    out.push({ role: "system", content: `</prior-agent-invocation>`, invocation_id: openInvocation });
+    openInvocation = 0;
+  };
+  for (const row of rows) {
+    if (row.kind === "invocation_trigger") continue;
+    const invocationId = Number(row.invocation_id || 0);
+    if (invocationId !== openInvocation) {
+      closeInvocation();
+      if (invocationId) {
+        openInvocation = invocationId;
+        out.push({ role: "system", content: `<prior-agent-invocation id="${invocationId}" trigger-message-id="${invocationTriggers.get(invocationId) || 0}">
+The following events belong to an earlier invocation. They are retained evidence, not actions performed during the current invocation.`, invocation_id: invocationId });
+      }
+    }
     const p = decoded(row.payload);
     if (row.kind === "human_message") out.push({ role: "user", content: String(p.body || ""), source_message_id: Number(p.message_id || row.source_id || 0) });
-    else if (row.kind === "assistant_message") out.push({ role: "assistant", content: String(p.body || "") });
-    else if (row.kind === "tool_call") out.push({ role: "assistant", content: "", tool_calls: [{ id: String(p.call_id), type: "function", function: { name: String(p.name), arguments: typeof p.arguments === "string" ? p.arguments : JSON.stringify(p.arguments || {}) } }] });
-    else if (row.kind === "tool_result") out.push({ role: "tool", tool_call_id: String(p.call_id), name: String(p.name), content: String(p.result || "") });
-    else if (row.kind === "followup") out.push({ role: "system", content: `<followup-event>${JSON.stringify(p)}</followup-event>` });
-    else if (row.kind === "checkpoint") out.push({ role: "system", content: `<work-checkpoint>${JSON.stringify(p)}</work-checkpoint>` });
+    else if (row.kind === "assistant_message") out.push({ role: "assistant", content: String(p.body || ""), invocation_id: invocationId || undefined });
+    else if (row.kind === "tool_call") out.push({ role: "assistant", content: "", invocation_id: invocationId || undefined, tool_calls: [{ id: String(p.call_id), type: "function", function: { name: String(p.name), arguments: typeof p.arguments === "string" ? p.arguments : JSON.stringify(p.arguments || {}) } }] });
+    else if (row.kind === "tool_result") out.push({ role: "tool", tool_call_id: String(p.call_id), name: String(p.name), content: String(p.result || ""), invocation_id: invocationId || undefined });
+    else if (row.kind === "followup") out.push({ role: "system", content: `<followup-event>${JSON.stringify(p)}</followup-event>`, invocation_id: invocationId || undefined });
+    else if (row.kind === "checkpoint") out.push({ role: "system", content: `<work-checkpoint>${JSON.stringify(p)}</work-checkpoint>`, invocation_id: invocationId || undefined });
+    else if (row.kind === "normalized_repetition") out.push({ role: "system", content: `<normalized-repetition>${JSON.stringify(p)}</normalized-repetition>`, invocation_id: invocationId || undefined });
   }
+  closeInvocation();
   return out;
+}
+
+/**
+ * Read-only UI projection for scheduled invocations whose ordinary chat reply
+ * was intentionally suppressed. The scheduler and its records stay canonical;
+ * this function only selects existing turns and their existing work-log rows.
+ */
+export function silentFollowupActivityForThread(threadId: number): Row[] {
+  const rows = q(`WITH RECURSIVE followup_lineage(id,lineage_id) AS (
+      SELECT id,id FROM agent_followups WHERE thread_id=? AND source_followup_id IS NULL
+      UNION ALL
+      SELECT child.id,parent.lineage_id FROM agent_followups child
+      JOIN followup_lineage parent ON child.source_followup_id=parent.id
+      WHERE child.thread_id=?
+    )
+    SELECT at.id AS turn_id,at.message_id,af.id AS followup_id,af.source_followup_id,
+      COALESCE(fl.lineage_id,af.id) AS lineage_id,
+      COALESCE(at.started_at,reply.created) AS started_at,
+      COALESCE(at.finished_at,reply.completed_at,reply.created) AS finished_at,
+      at.state,at.continuation_disposition,at.continuation_evidence,at.continuation_followup_id,
+      COALESCE(at.error,'') AS error
+    FROM agent_turns at
+    JOIN messages trigger ON trigger.id=at.trigger_id
+    JOIN messages reply ON reply.id=at.message_id
+    JOIN agent_followups af ON af.thread_id=?
+      AND trigger.body LIKE '[scheduled-followup id=' || af.id || ' attempt=%'
+    LEFT JOIN followup_lineage fl ON fl.id=af.id
+    WHERE at.completion_mode='silent_success'
+    ORDER BY at.message_id`, threadId, threadId, threadId);
+  if (!rows.length) return [];
+
+  const messageIds = rows.map((row) => Number(row.message_id));
+  const marks = messageIds.map(() => "?").join(",");
+  const counts = new Map(q(`SELECT message_id,COUNT(*) AS n FROM agent_progress
+    WHERE message_id IN (${marks}) GROUP BY message_id`, ...messageIds)
+    .map((row) => [Number(row.message_id), Number(row.n)]));
+  const progress = new Map<number, Row[]>();
+  for (const row of q(`SELECT ap.id,ap.message_id,ap.kind,ap.body,ap.status,ap.created,ap.updated
+    FROM agent_progress ap WHERE ap.message_id IN (${marks})
+      AND (ap.status='running' OR ap.id=(SELECT MAX(latest.id) FROM agent_progress latest WHERE latest.message_id=ap.message_id))
+    ORDER BY ap.message_id,ap.id`, ...messageIds)) {
+    const messageId = Number(row.message_id);
+    const list = progress.get(messageId) || [];
+    const { message_id: _messageId, ...item } = row;
+    list.push(item);
+    progress.set(messageId, list);
+  }
+
+  return rows.map((row) => {
+    const messageId = Number(row.message_id);
+    return {
+      turn_id: Number(row.turn_id),
+      message_id: messageId,
+      followup_id: Number(row.followup_id),
+      source_followup_id: row.source_followup_id == null ? null : Number(row.source_followup_id),
+      lineage_id: Number(row.lineage_id),
+      started_at: Number(row.started_at),
+      finished_at: Number(row.finished_at),
+      state: String(row.state || ""),
+      continuation_disposition: String(row.continuation_disposition || "none"),
+      continuation_evidence: String(row.continuation_evidence || ""),
+      continuation_followup_id: row.continuation_followup_id == null ? null : Number(row.continuation_followup_id),
+      error: String(row.error || ""),
+      progress: progress.get(messageId) || [],
+      progress_count: counts.get(messageId) || 0,
+    };
+  });
 }

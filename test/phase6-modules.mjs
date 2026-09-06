@@ -61,8 +61,8 @@ test("bot output extraction preserves exact completion and audit wording", () =>
   assert.equal(toolActionStatus("status=failed\nexit_code=100\napt failed"), "failed");
   assert.equal(toolActionStatus("Error: runtime unavailable"), "failed");
   assert.equal(toolActionStatus("status=running\nexit_code=null"), "running");
-  assert.equal(completedToolAnswer("run_command", "status=completed\nexit_code=0\nok"),
-    "The command completed.\n\n```text\nstatus=completed\nexit_code=0\nok\n```");
+  assert.equal(completedToolAnswer("run_command", "status=completed\nexit_code=0\nok"), "",
+    "a raw run_command result is never published as the agent's final answer");
   assert.equal(completedToolAnswer("gmail_create_draft", '{"account":"captain@example.test","draft_id":"d1"}'),
     "Created a Gmail draft in **captain@example.test** (draft d1). It was not sent.");
   assert.equal(completedToolAnswer("gmail_search", "not json"),
@@ -90,7 +90,8 @@ test("thread formatter extraction preserves progress, usage, and countdown edge 
   assert.equal(formatRoughTokens(1_240), "1.2k");
   assert.equal(formatRoughTokens(10_200), "10k");
   assert.equal(formatRoughTokens(1_500_000), "1.5M");
-  assert.equal(threadUsageLabel({ input_tokens: 1_240, output_tokens: 340, cached_input_tokens: 900, model_calls: 3 }), "Spent 1.2k input (900 cached) · 340 output · 3 calls");
+  assert.equal(threadUsageLabel({ input_tokens: 0, output_tokens: 340, cached_input_tokens: 0, model_calls: 3 }), "Context — input · 340 output · 3 calls");
+  assert.equal(threadUsageLabel({ input_tokens: 1_240, output_tokens: 340, cached_input_tokens: 900, model_calls: 3 }), "Context 1.2k input (900 cached) · 340 output · 3 calls");
   const now = 1_000_000;
   assert.equal(formatThreadFollowupCountdown(now - 1, now), "now");
   assert.equal(formatBoardFollowupCountdown(now - 1, now), "due now");

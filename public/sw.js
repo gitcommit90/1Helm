@@ -1,5 +1,5 @@
 /* 1Helm shell service worker — offline shell only; never pin API/WS or stale JS. */
-const CACHE = "1helm-shell-v4";
+const CACHE = "1helm-shell-v5";
 const PRECACHE = [
   "/",
   "/index.html",
@@ -76,4 +76,44 @@ self.addEventListener("fetch", (event) => {
       return cached || network;
     }),
   );
+});
+
+self.addEventListener("push", (event) => {
+  event.waitUntil((async () => {
+    const payload = event.data?.json?.() || {};
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    if (windows.some((client) => client.visibilityState === "visible")) return;
+    const channelSlug = String(payload.channelSlug || "");
+    const rootMessageId = Number(payload.rootMessageId || 0);
+    const url = channelSlug
+      ? `/c/${encodeURIComponent(channelSlug)}/${rootMessageId ? `thread/${rootMessageId}` : "chat"}`
+      : "/";
+    await self.registration.showNotification(String(payload.title || "1Helm"), {
+      body: String(payload.body || "New activity"),
+      icon: "/icons/icon-sailboat-192.png",
+      badge: "/icons/icon-sailboat-192.png",
+      tag: `1helm-message-${Number(payload.messageId || 0) || Date.now()}`,
+      renotify: false,
+      silent: payload.sound === false,
+      data: { url, channelId: Number(payload.channelId || 0), rootMessageId: rootMessageId || null },
+    });
+  })());
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = new URL(String(event.notification.data?.url || "/"), self.location.origin).href;
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    const existing = windows.find((client) => new URL(client.url).origin === self.location.origin);
+    if (existing) {
+      try {
+        const navigated = await existing.navigate(target);
+        if (navigated) return navigated.focus();
+      } catch { /* fall through to a new target window */ }
+      const opened = await self.clients.openWindow(target);
+      return opened || existing.focus();
+    }
+    return self.clients.openWindow(target);
+  })());
 });

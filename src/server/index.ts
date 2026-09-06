@@ -9,11 +9,11 @@ import sharp from "sharp";
 import { WebSocketServer, type WebSocket } from "ws";
 import { applyMobileCors, attachmentFileResponse, body, clearRateLimit, jbody, json, MIME, rateLimited, requestAddress, SECURITY_HEADERS, UPLOAD_BODY_LIMIT } from "./http.ts";
 import { db, isMainChannel, normalizeWorkspaceName, q, q1, run, now, hashPassword, verifyPassword, newToken, seed, DATA_DIR, UPLOAD_DIR, type Row } from "./db.ts";
-import { createMessage, deleteMessage, serializeMessage, serializeMessages, setModelPref, setModelPolicy, resolvedModelPolicy, resolvedTurnModelPolicy, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots, queueLastRead, shutdownReadStateWorker } from "./store.ts";
+import { createMessage, deleteMessage, serializeMessage, serializeMessages, setModelPref, setModelPolicy, resolvedModelPolicy, resolvedTurnModelPolicy, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots, queueLastRead, shutdownReadStateWorker, silentFollowupActivityForThread } from "./store.ts";
 import { computerRowView, fetchModels } from "./computer.ts";
-import { cancelChannelTurns, resumeQueuedAgentTurns, runBot, stopThreadTurn } from "./bots.ts";
+import { cancelChannelTurns, handleThreadUxRequest, resumeQueuedAgentTurns, runBot, stopThreadTurn } from "./bots.ts";
 import { register, unregister, broadcastToChannel, broadcastAll, broadcastAdmins, sendToUsers } from "./events.ts";
-import { mobilePushStatus, registerMobilePush, startMobilePushLoop, unregisterMobilePush } from "./mobile-push.ts";
+import { handleWebPushRoute, mobilePushStatus, registerMobilePush, startNotificationLoops, unregisterMobilePush } from "./mobile-push.ts";
 import { openChannelSession, openSession, attachClient, listSessions, closeChannelSessions, closeSession } from "./terms.ts";
 import { startAgent } from "./agent.ts";
 import {
@@ -564,7 +564,7 @@ const server = createServer(async (req, res) => {
         "app:set-provider-enabled", "app:usage", "app:quota-get", "app:quota-refresh",
         "app:save-combo", "app:delete-combo", "app:create-api-key", "app:revoke-api-key",
         "app:set-api-key-enabled", "app:set-model-enabled", "app:set-all-models-enabled",
-        "app:preview-provider-models", "app:apply-provider-models",
+        "app:preview-provider-models", "app:apply-provider-models", "app:set-provider-model-auto-refresh",
         "app:add-model", "app:remove-model", "app:logs-get", "app:logs-clear", "app:set-bind-host",
         "app:set-provider-visibility",
       ]);
@@ -761,6 +761,7 @@ const server = createServer(async (req, res) => {
       }
       return json(res, 200, { state });
     }
+    const webPushResponse = await handleWebPushRoute(p, m, Number(user.id), () => jbody(req)); if (webPushResponse) return json(res, webPushResponse.status, webPushResponse.body);
     if (p === "/api/mobile/push" && m === "GET") return json(res, 200, mobilePushStatus(Number(user.id)));
     if (p === "/api/mobile/push/status" && m === "POST") {
       const b = await jbody(req);
@@ -1653,14 +1654,14 @@ const server = createServer(async (req, res) => {
         replies: serializeMessages(replies.map((r) => Number(r.id)), url.searchParams.get("progress") === "summary" ? "summary" : "full"),
         thread,
         followup: threadFollowupView(Number(threadId)),
+        followup_activity: silentFollowupActivityForThread(Number(threadId)),
         stop_requested: Boolean(thread?.stop_requested),
         usage: {
-          input_tokens: Math.max(0, Number(thread?.input_tokens || 0)),
-          output_tokens: Math.max(0, Number(thread?.output_tokens || 0)), cached_input_tokens: Math.max(0, Number(thread?.cached_input_tokens || 0)), model_calls: Math.max(0, Number(thread?.model_calls || 0)),
+          input_tokens: Math.max(0, Number(thread?.current_input_tokens || 0)),
+          output_tokens: Math.max(0, Number(thread?.output_tokens || 0)), cached_input_tokens: Math.max(0, Number(thread?.current_cached_input_tokens || 0)), model_calls: Math.max(0, Number(thread?.model_calls || 0)),
         },
       });
-    }
-    if ((mm = p.match(/^\/api\/messages\/(\d+)\/progress$/)) && m === "GET") {
+    } if ((mm = p.match(/^\/api\/messages\/(\d+)\/progress$/)) && m === "GET") {
       const message = q1("SELECT id,channel_id FROM messages WHERE id=?", Number(mm[1]));
       if (!message || !canSee(user, Number(message.channel_id))) return json(res, 404, { error: "Not found" });
       const before = Math.max(0, Number(url.searchParams.get("before") || 0));
@@ -1686,6 +1687,7 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { policy: resolvedTurnModelPolicy(Number(agent.bot_id), Number(root.channel_id), Number(root.id), Number(user.id)) });
       }
     }
+    const threadUx = await handleThreadUxRequest(p, m, user, canSee, async () => await jbody(req)); if (threadUx) return json(res, threadUx.status, threadUx.body);
     if ((mm = p.match(/^\/api\/messages\/(\d+)\/stop$/)) && m === "POST") {
       const root = q1("SELECT id,channel_id FROM messages WHERE id=? AND parent_id IS NULL", Number(mm[1]));
       if (!root || !canSee(user, Number(root.channel_id))) return json(res, 404, { error: "Thread not found" });
@@ -2107,7 +2109,6 @@ const server = createServer(async (req, res) => {
       if (!listSessions(Number(user.id)).some((session) => session.id === termClose[1])) return json(res, 404, { error: "Session not found" });
       closeSession(termClose[1]); return json(res, 200, { ok: true });
     }
-
     // admin
     if (p === "/api/admin/users" && m === "POST") {
       if (!user.is_admin) return json(res, 403, { error: "Captain/admin only" });
@@ -2201,14 +2202,13 @@ server.on("upgrade", (req, socket: Socket, head) => {
     }
     const client = register(ws, Number(user.id));
     ws.on("close", () => unregister(client));
-    ws.on("message", () => { /* clients act via REST; WS is push-only */ });
+    ws.on("message", (raw) => { try { if (JSON.parse(String(raw))?.type === "ping" && ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "pong", at: Date.now() })); } catch { /* ignore */ } });
     ws.send(JSON.stringify({ type: "hello" }));
   });
 });
-
 // ---- embedded local computer (open-terminal compatible) ----
 async function bootstrap(): Promise<void> {
-  startMobilePushLoop();
+  startNotificationLoops();
   registerPhotonDispatcher((bot, channelId, triggerId, threadRootId) => runBot(bot, channelId, triggerId, threadRootId, true));
   registerWorkflowDispatcher((bot, channelId, triggerId, threadRootId) => runBot(bot, channelId, triggerId, threadRootId, true));
   reactivateComputersAfterPreparedRemoval();

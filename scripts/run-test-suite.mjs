@@ -17,13 +17,13 @@ delete env.HELM_APP_ROOT;
 const suites = [
   ["test/native-world.mjs"],
   ["--test", "--test-concurrency=1",
-    "test/phase6-modules.mjs", "test/provider-prompt-cache.mjs",
-    "test/routing.mjs", "test/routing-disabled-account.mjs", "test/routing-antigravity.mjs", "test/desktop.mjs", "test/update-service.mjs",
+    "test/phase6-modules.mjs", "test/provider-prompt-cache.mjs", "test/output-truncation.mjs",
+    "test/provider-model-refresh.mjs", "test/routing.mjs", "test/routing-disabled-account.mjs", "test/routing-antigravity.mjs", "test/desktop.mjs", "test/update-service.mjs",
     "test/channel-computers.mjs", "test/channel-computers-isolated-backends.mjs", "test/event-loop-unblocking.mjs", "test/read-state.mjs",
     "test/cloudflare-worker.mjs", "test/connectors.mjs", "test/chatgpt-image.mjs", "test/autonomy-platform.mjs",
     "test/feedback.mjs", "test/feedback-browser.mjs", "test/file-upload-background-browser.mjs", "test/cowork-browser.mjs", "test/files-latency.mjs", "test/gmail.mjs", "test/photon.mjs", "test/site.mjs", "test/release-license.mjs",
-    "test/channel-surfaces.mjs", "test/workspace-interactions.mjs", "test/sweep-fleet-telemetry.mjs", "test/sweep-server-integration.mjs", "test/thread-followup-chat.mjs",
-    "test/notifications.mjs", "test/mobile-push.mjs", "test/terminal-reconnect-contract.mjs", "test/terminal-reconnect-browser.mjs", "test/mobile.mjs", "test/web-research.mjs", "test/workflows.mjs", "test/release-workflows.mjs", "test/release-stage-evidence.mjs"],
+    "test/channel-surfaces.mjs", "test/workspace-interactions.mjs", "test/sweep-fleet-telemetry.mjs", "test/sweep-server-integration.mjs", "test/thread-followup-chat.mjs", "test/silent-followup-activity.mjs",
+    "test/notifications.mjs", "test/system-notifications.mjs", "test/mobile-push.mjs", "test/web-push.mjs", "test/app-event-recovery.mjs", "test/terminal-reconnect-contract.mjs", "test/terminal-reconnect-browser.mjs", "test/mobile.mjs", "test/web-research.mjs", "test/workflows.mjs", "test/release-workflows.mjs", "test/release-stage-evidence.mjs"],
 ];
 
 let status = 0;

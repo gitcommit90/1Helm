@@ -1,12 +1,13 @@
-import { api, downloadAuthenticatedFile, initializeApiTransport, openAuthenticatedFile, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, groupRoutingModels, routingModelGroupKey, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type AgentQuestions, type ThreadFollowup, type ThreadUsage, type RoutingModel, type ResidentAgent } from "./api.ts";
+import { api, downloadAuthenticatedFile, initializeApiTransport, openAuthenticatedFile, uploadFile, connectEvents, getToken, setToken, clearToken, workspacePhotoSrc, groupRoutingModels, routingModelGroupKey, type User, type Channel, type Message, type Bot, type Computer, type Provider, type Workspace, type ModelPolicy, type AgentProgress, type AgentQuestions, type SilentFollowupActivity, type ThreadFollowup, type ThreadUsage, type RoutingModel, type ResidentAgent } from "./api.ts";
 import { h, clear, add, md, color, initials, timeLabel, dayLabel, sameDay, icon, helmMark, type ChannelLink } from "./dom.ts";
-import { disableNativeNotifications, hydrateNotificationPreferences, playNotification, restoreNativeNotifications, setNativeNotificationNavigation } from "./notifications.ts";
+import { browserNotificationState, disableBrowserNotifications, disableNativeNotifications, hydrateNotificationPreferences, playNotification, restoreNativeNotifications, setNativeNotificationNavigation, showLiveSystemNotification } from "./notifications.ts";
 import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderNotes, renderTexts, renderThreads, type ChannelView } from "./channel.ts";
 import { configureWorkflowUi, renderWorkflows, skipperCallApprovalQuestions } from "./workflows.ts";
 import { patchLiveMessageRow } from "./live-message-patch.ts";
+import { configureThreadUx, copyThreadNumber, fetchSilentFollowupActivity, handoffCurrentThread, handoffIcon, renderThreadTimelineRows, retryAgentReply } from "./thread-ux.ts";
 import { clearProgressState, progressOpenByMessage, progressStepOpen, progressTimelineItems, progressTimelineScroll, retainLoadedProgress, snapshotProgressOpenState } from "./progress-state.ts";
 import { finishOpenRouterOAuthLazy, lazySurfacePlaceholder, openOnboardingLazy, openRoutingPopoverLazy, openSettingsLazy, pushRoutingActivityLazy, refreshOpenSkillsSettingsLazy, renderCoworkLazy, setActiveCoworkChannelLazy, stageCoworkPathLazy, terminal } from "./lazy-features.ts";
-import { apiUrl, finishNativeLaunch, forgetMobileServer, getServerOrigin, isNativeMobile, serverAssetUrl } from "./mobile.ts";
+import { apiUrl, disposeAppResumeRecovery, finishNativeLaunch, forgetMobileServer, getServerOrigin, isNativeMobile, replaceAppResumeRecovery, serverAssetUrl } from "./mobile.ts";
 import { refreshResidentFileUploadIndicator } from "./file-uploads.ts";
 import {
   formatThreadFollowupCountdown,
@@ -21,7 +22,7 @@ import {
   workingChipLabel,
   workingDisplayBody,
 } from "./thread-formatters.ts";
-import { S, defaultChannelView, type ChannelUiView } from "./state.ts";
+import { S, applyThreadSnapshot, defaultChannelView, resyncVisibleState, type ChannelUiView, type ThreadSnapshot } from "./state.ts";
 import { appAlert, appConfirm, appModal, appPrompt } from "./dialogs.ts";
 import { setSettingsUi } from "./settings-ui.ts";
 import { setSpeechUi } from "./speech-ui.ts";
@@ -275,6 +276,8 @@ function showToast(message: string): void {
   document.body.append(toast); window.setTimeout(() => toast.remove(), 3200);
 }
 
+configureThreadUx({ request: api, toast: showToast, alert: appAlert, confirm: appConfirm, currentRoot: () => S.threadRoot?.id ?? null, accept: async (root) => { const message = root as Message; if (!S.messages.some((item) => item.id === message.id)) S.messages.push(message); S.messages.sort((a, b) => a.id - b.id); await openThread(message); } });
+
 // ---------------- theme ----------------
 export function currentTheme(): "light" | "dark" { return document.documentElement.classList.contains("light") ? "light" : "dark"; }
 export function toggleTheme(): void {
@@ -350,8 +353,8 @@ async function enterWorkspace(preferredChannelId?: number): Promise<void> {
   S.providers = [];
   applyUiState(bootstrap.state);
   let eventSocketReady = false;
-  connectEvents(onEvent, {
-    // After reconnect (not the first open), silently pull authoritative lists so no hard refresh is needed.
+  const eventConnection = connectEvents(onEvent, {
+    // After reconnect (not the first open), silently pull authoritative state so no hard refresh is needed.
     onOpen: () => {
       if (!eventSocketReady) { eventSocketReady = true; return; }
       void resyncAfterReconnect();
@@ -364,8 +367,11 @@ async function enterWorkspace(preferredChannelId?: number): Promise<void> {
   if (!S.channelId && main) S.channelId = main.id;
   if (S.channelId) await openChannel(S.channelId, route.view, route.threadRootId, true, S.channelId === bootstrap.active_channel_id);
   else renderApp();
+  // Browser and native resume signals often arrive together; the owner
+  // coalesces them into one transport validation and authoritative pull.
+  replaceAppResumeRecovery(eventConnection, () => { void resyncAfterReconnect(); });
   setNativeNotificationNavigation((channelId, rootMessageId) => { void openChannel(channelId, "chat", rootMessageId, true); });
-  void restoreNativeNotifications();
+  void restoreNativeNotifications(); void browserNotificationState();
   scheduleHostUpdatePromptChecks();
   if (!S.me.tour_complete && sessionStorage.getItem("1helm.justOnboarded") === "1") {
     sessionStorage.removeItem("1helm.justOnboarded");
@@ -434,25 +440,11 @@ let resyncInFlight: Promise<void> | null = null;
 async function resyncAfterReconnect(): Promise<void> {
   if (!getToken() || !S.me) return;
   if (resyncInFlight) return resyncInFlight;
-  resyncInFlight = (async () => {
-    try {
-      const previousId = S.channelId;
-      await loadWorkspace();
-      // Keep the open channel's message list fresh if we were mid-view.
-      if (previousId && S.channels.some((c) => c.id === previousId) && S.view === "chat") {
-        const data = await api<{ messages: Message[]; bots: Bot[] }>(`/api/channels/${previousId}/messages?progress=summary`);
-        if (S.channelId === previousId) {
-          S.messages = data.messages;
-          S.channelBots = data.bots;
-        }
-      }
-      renderApp();
-    } catch {
-      // Offline / auth blip — next reconnect retries.
-    } finally {
-      resyncInFlight = null;
-    }
-  })();
+  resyncInFlight = resyncVisibleState(api, loadWorkspace, () => {
+    const continuity = captureUiContinuity(root);
+    renderApp(); restoreUiContinuity(continuity);
+  }).catch(() => { /* Offline/auth blip — socket recovery or the next foreground event retries. */ })
+    .finally(() => { resyncInFlight = null; });
   return resyncInFlight;
 }
 
@@ -480,7 +472,7 @@ async function openChannel(id: number, view: ChannelView = "chat", threadRootId:
   if (S.channelId && S.channelId !== id) persistCurrentChannelView();
   const requestedChannel = S.channels.find((channel) => channel.id === id);
   if (view === "texts" && !textsAvailable(requestedChannel)) view = "chat";
-  S.channelId = id; S.threadRoot = null; S.threadFollowup = null; S.threadStopContinuation = false; S.threadUsage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, model_calls: 0 }; S.view = view; S.globalThreadsOpen = false;
+  S.channelId = id; S.threadRoot = null; S.threadFollowup = null; S.threadFollowupActivity = []; S.threadStopContinuation = false; S.threadUsage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, model_calls: 0 }; S.view = view; S.globalThreadsOpen = false;
   applyChannelViewToState(id);
   // Full Terminal tab is separate from the docked header terminal.
   if (view === "terminal") S.terminalOpen = false;
@@ -549,7 +541,6 @@ function bumpChannelUnread(channelId: number): void {
 
 /** Message ids already counted for a live unread badge (agent reuses one id across stream ticks). */
 const unreadBadgeCounted = new Set<number>();
-
 function onEvent(e: any): void {
   if (e.type === "message" || e.type === "message_update") {
     const msg = e.message as Message;
@@ -574,6 +565,7 @@ function onEvent(e: any): void {
       return;
     }
     const mine = msg.author?.kind === "user" && msg.author.id === S.me.id;
+    if (!mine && messageIsSettled(msg)) showLiveSystemNotification(msg, S.channels.find((channel) => channel.id === msg.channel_id)?.name || "");
     const mentionsMe = new RegExp(`@${S.me.username}\\b`, "i").test(msg.body || "");
     // Only "viewing" a channel when its chat surface is open — not while sitting in global Threads.
     const viewingThisChannel = !S.globalThreadsOpen && msg.channel_id === S.channelId;
@@ -665,7 +657,7 @@ function onEvent(e: any): void {
     }
     if (Number(e.channelId) === Number(S.channelId) && S.threadRoot && Number(e.rootMessageId) === Number(S.threadRoot.id)) {
       S.threadFollowup = e.followup || null;
-      paintThreadFollowup();
+      paintThreadFollowup(); void fetchSilentFollowupActivity(Number(S.threadRoot.id), api).then((activity) => { if (S.threadRoot && Number(e.rootMessageId) === Number(S.threadRoot.id)) { S.threadFollowupActivity = activity; renderThread(); } }).catch(() => {});
     }
   } else if (e.type === "channel_bots") { if (S.channelBots) { S.channelBots = e.bots; renderHeader(); } }
   else if (e.type === "thread_usage") {
@@ -837,6 +829,7 @@ function applyMessageDeleted(e: {
 
 // ---------------- auth ----------------
 function renderAuth(): void {
+  disposeAppResumeRecovery();
   clear(root);
   const err = h("p", { class: "min-h-5 text-sm text-danger" });
   const u = h("input", { class: "field", placeholder: "username", autocomplete: "username" });
@@ -1355,7 +1348,7 @@ function openProfile(anchor: HTMLElement): void {
   pop.append(h("section", { class: "flex items-center justify-between gap-3 border-t border-line pt-3" },
     h("div", {}, h("p", { class: "text-xs font-semibold text-fg" }, "Session"), h("p", { class: "text-[11px] text-muted" }, "Sign out of this 1Helm account.")),
     h("button", { class: "btn-subtle min-h-9 shrink-0 px-3 text-xs", dataset: { profileLogout: "" }, onclick: async () => {
-      await disableNativeNotifications().catch(() => undefined);
+      await Promise.allSettled([disableNativeNotifications(), disableBrowserNotifications()]);
       await api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
       await clearToken();
       close();
@@ -1364,7 +1357,7 @@ function openProfile(anchor: HTMLElement): void {
   if (isNativeMobile()) pop.append(h("section", { class: "flex items-center justify-between gap-3 border-t border-line pt-3" },
     h("div", { class: "min-w-0" }, h("p", { class: "text-xs font-semibold text-fg" }, "Connected server"), h("p", { class: "truncate text-[11px] text-muted" }, getServerOrigin())),
     h("button", { class: "btn-subtle min-h-9 shrink-0 px-3 text-xs", onclick: async () => {
-      await disableNativeNotifications().catch(() => undefined);
+      await Promise.allSettled([disableNativeNotifications(), disableBrowserNotifications()]);
       await api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
       await forgetMobileServer();
       await clearToken();
@@ -2229,7 +2222,7 @@ function fillThreadMessages(box: HTMLElement): void {
     h("div", { class: "eyebrow mx-4 my-2 flex items-center gap-3 text-faint", dataset: { threadReplyCount: "1" } },
       h("span", {}, `${S.threadReplies.length} ${S.threadReplies.length === 1 ? "reply" : "replies"}`),
       h("div", { class: "h-px flex-1 bg-line" })),
-    ...S.threadReplies.map((reply) => messageRow(reply, { grouped: false, inThread: true })),
+    ...renderThreadTimelineRows(S.threadReplies, S.threadFollowupActivity, { h, icon, timeLabel, sameDay, renderMessage: (message) => messageRow(message as Message, { grouped: false, inThread: true }), renderProgress: (check) => progressDisclosure({ id: check.message_id, progress: check.progress, progress_count: check.progress_count } as Message) }),
   );
 }
 
@@ -2408,6 +2401,12 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
       },
     }, icon("trash", 14))
     : null;
+  const retryBtn = isBot ? h("button", {
+    class: "message-action grid h-11 min-w-11 place-items-center rounded px-2 text-muted hover:bg-hover hover:text-fg sm:h-7 sm:min-w-7",
+    title: "Retry this reply",
+    "aria-label": "Retry this agent reply",
+    onclick: () => { closeOpenMessageActions(); void retryAgentReply(m); },
+  }, icon("history", 14), h("span", { class: "sr-only" }, "Retry")) : null;
   const stopBtn = running ? h("button", {
     class: "message-action grid h-11 w-11 place-items-center rounded text-danger hover:bg-danger/10 sm:h-7 sm:w-7",
     title: "Stop this agent turn now",
@@ -2430,7 +2429,7 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
     class: "message-actions",
     role: "toolbar",
     "aria-label": "Message actions",
-  }, moreBtn, stopBtn, replyBtn, deleteBtn);
+  }, moreBtn, retryBtn, stopBtn, replyBtn, deleteBtn);
 
   const chipText = running ? workingChipLabel(m) : "";
   const workingChip = running && !opts.inThread
@@ -2446,6 +2445,8 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
     opts.grouped ? null : h("div", { class: "flex items-baseline gap-2" },
       h("span", { class: "text-[13.5px] font-semibold text-fg hover:underline sm:text-[14.5px]" }, m.author.name),
       isBot ? h("span", { class: "font-mono text-[9px] uppercase tracking-[0.16em] text-accent" }, "Agent") : null,
+      m.retry_of_message_id ? h("span", { class: "font-mono text-[9px] uppercase tracking-[0.12em] text-faint", title: `Retry of agent reply ${m.retry_of_message_id}` }, "Retry") : null,
+      m.retried_by_message_id ? h("span", { class: "font-mono text-[9px] uppercase tracking-[0.12em] text-faint", title: `Retried as agent reply ${m.retried_by_message_id}` }, "Retried") : null,
       h("span", { class: "font-mono text-[10.5px] text-faint" }, messageTime(m)),
       workingChip),
     bodyHtml, structuredQuestions(m), progressDisclosure(m), renderMessageAttachments(m, opts.inThread), threadFooter(m, opts.inThread));
@@ -2778,15 +2779,8 @@ function threadFooter(m: Message, inThread: boolean): HTMLElement | null {
 
 // ---------------- thread panel ----------------
 async function openThread(root: Pick<Message, "id">, replaceRoute = false): Promise<void> {
-  const data = await api<{ root: Message; replies: Message[]; followup?: ThreadFollowup | null; usage?: ThreadUsage }>(`/api/messages/${root.id}/thread?progress=summary`);
-  S.threadRoot = data.root;
-  S.threadReplies = data.replies;
-  S.threadFollowup = data.followup || null;
-  S.threadStopContinuation = Boolean((data as { stop_requested?: boolean }).stop_requested);
-  S.threadUsage = {
-    input_tokens: Math.max(0, Number(data.usage?.input_tokens || 0)),
-    output_tokens: Math.max(0, Number(data.usage?.output_tokens || 0)), cached_input_tokens: Math.max(0, Number(data.usage?.cached_input_tokens || 0)), model_calls: Math.max(0, Number(data.usage?.model_calls || 0)),
-  };
+  const data = await api<{ root: Message; replies: Message[]; followup?: ThreadFollowup | null; followup_activity?: SilentFollowupActivity[]; usage?: ThreadUsage }>(`/api/messages/${root.id}/thread?progress=summary`);
+  applyThreadSnapshot(data);
   // Ensure a shell that hosts the RHS thread pane. Workflows opens run threads
   // in place; every other surface bounces to chat (thread may split with docked terminal).
   if (S.view !== "chat" && S.view !== "workflows") S.view = "chat";
@@ -2803,7 +2797,7 @@ async function openThread(root: Pick<Message, "id">, replaceRoute = false): Prom
 }
 function closeThread(): void {
   S.threadRoot = null;
-  S.threadFollowup = null;
+  S.threadFollowup = null; S.threadFollowupActivity = [];
   S.threadUsage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, model_calls: 0 };
   persistCurrentChannelView();
   if (S.view === "chat" && (S.terminalOpen || S.notesOpen)) renderRhs();
@@ -2832,7 +2826,7 @@ function paintThreadCtx(): void {
   if (!el) return;
   const label = threadUsageLabel();
   el.textContent = label;
-  el.setAttribute("title", `Cumulative provider-reported usage across repeated model calls · ${S.threadUsage.input_tokens} input tokens (${S.threadUsage.cached_input_tokens} cached) · ${S.threadUsage.output_tokens} output tokens · ${S.threadUsage.model_calls} calls. This is usage, not visible transcript size or context-window occupancy.`);
+  el.setAttribute("title", `1Helm-calculated model context · ${S.threadUsage.input_tokens} input tokens (${S.threadUsage.cached_input_tokens} unchanged from the preceding call) · ${S.threadUsage.output_tokens} cumulative output tokens · ${S.threadUsage.model_calls} calls. Input is the latest call, not a sum of repeated context or an upstream usage report.`);
   el.classList.toggle("hidden", !(S.threadUsage.model_calls || S.threadUsage.input_tokens || S.threadUsage.output_tokens));
 }
 
@@ -2919,7 +2913,7 @@ function paintThreadPanel(
   const ctxChip = h("span", {
     id: "thread-ctx",
     class: `thread-ctx min-w-0 select-none overflow-hidden text-ellipsis font-mono text-[10px] font-normal tracking-tight text-faint tabular-nums ${hasUsage ? "" : "hidden"}`,
-    title: `Cumulative provider-reported usage across repeated model calls · ${S.threadUsage.input_tokens} input tokens (${S.threadUsage.cached_input_tokens} cached) · ${S.threadUsage.output_tokens} output tokens · ${S.threadUsage.model_calls} calls. This is usage, not visible transcript size or context-window occupancy.`,
+    title: `1Helm-calculated model context · ${S.threadUsage.input_tokens} input tokens (${S.threadUsage.cached_input_tokens} unchanged from the preceding call) · ${S.threadUsage.output_tokens} cumulative output tokens · ${S.threadUsage.model_calls} calls. Input is the latest call, not a sum of repeated context or an upstream usage report.`,
   }, threadUsageLabel());
   const followupBanner = threadFollowupBanner();
   box.append(
@@ -2932,10 +2926,14 @@ function paintThreadPanel(
           onclick: closeThread,
         }, icon("chevronLeft", 18), h("span", { class: "font-semibold" }, "Back")),
         h("div", { class: "min-w-0" },
-          h("div", { class: "truncate text-[15px] font-semibold text-fg" }, "Thread"),
+          h("div", { class: "flex min-w-0 items-center gap-1.5 text-[15px] font-semibold text-fg" },
+            h("span", { class: "shrink-0" }, "Thread"),
+            h("span", { class: "truncate font-mono text-[13px] font-semibold tabular-nums" }, String(S.threadRoot.id)),
+            h("button", { class: "grid h-7 w-7 shrink-0 place-items-center rounded text-faint hover:bg-hover hover:text-fg", title: "Copy thread number", "aria-label": "Copy thread number", onclick: (event: MouseEvent) => { event.stopPropagation(); void copyThreadNumber(event.currentTarget as HTMLButtonElement, S.threadRoot!.id, icon, appAlert); } }, icon("copy", 13))),
           h("div", { class: "truncate font-mono text-[10.5px] text-faint" }, channelName ? `#${channelName}` : "Channel chat"))),
-      h("div", { class: "flex min-w-0 items-center gap-1.5 sm:gap-2" },
+      h("div", { class: "flex min-w-0 items-center gap-1 sm:gap-2" },
         ctxChip,
+        h("button", { class: "grid h-11 w-11 shrink-0 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg disabled:opacity-50 sm:h-9 sm:w-9", title: "Hand off this thread", "aria-label": "Hand off this thread in a new thread", onclick: (event: MouseEvent) => { void handoffCurrentThread(event.currentTarget as HTMLButtonElement); } }, handoffIcon()),
         h("button", {
           class: "grid h-11 w-11 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg sm:h-9 sm:w-9",
           title: "Close thread",

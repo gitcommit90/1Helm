@@ -1,5 +1,5 @@
 import { api } from "./api.ts";
-import { beep, type NotificationSound } from "./dom.ts";
+import { beep, h, type NotificationSound } from "./dom.ts";
 import { getServerOrigin, isNativeMobile, mobilePlatform } from "./mobile.ts";
 import type { PermissionStatus } from "@capacitor/push-notifications";
 
@@ -163,7 +163,7 @@ export type NativeNotificationState = {
 };
 
 export async function nativeNotificationState(): Promise<NativeNotificationState> {
-  if (!isNativeMobile() || mobilePlatform() !== "ios") return { available: false, permission: "unavailable", registered: false, platforms: [], error: "" };
+  if (!isNativeMobile() || !["ios", "android"].includes(mobilePlatform())) return { available: false, permission: "unavailable", registered: false, platforms: [], error: "" };
   await installNativeListeners();
   const PushNotifications = await pushNotifications();
   nativePermission = (await PushNotifications.checkPermissions()).receive;
@@ -181,7 +181,7 @@ export async function nativeNotificationState(): Promise<NativeNotificationState
 
 /** Request OS permission only from an explicit user action, then bind this device to the signed-in 1Helm profile. */
 export async function enableNativeNotifications(): Promise<NativeNotificationState> {
-  if (!isNativeMobile() || mobilePlatform() !== "ios") return nativeNotificationState();
+  if (!isNativeMobile() || !["ios", "android"].includes(mobilePlatform())) return nativeNotificationState();
   await installNativeListeners();
   const PushNotifications = await pushNotifications();
   let permission = await PushNotifications.checkPermissions();
@@ -196,7 +196,7 @@ export async function enableNativeNotifications(): Promise<NativeNotificationSta
 }
 
 export async function disableNativeNotifications(): Promise<NativeNotificationState> {
-  if (!isNativeMobile() || mobilePlatform() !== "ios") return nativeNotificationState();
+  if (!isNativeMobile() || !["ios", "android"].includes(mobilePlatform())) return nativeNotificationState();
   const PushNotifications = await pushNotifications();
   if (!nativeDeviceToken && nativeNotificationsEnabled() && nativePermission === "granted") await registerNativeDevice().catch(() => undefined);
   if (nativeDeviceToken) await api("/api/mobile/push", { method: "DELETE", body: { platform: mobilePlatform(), token: nativeDeviceToken } }).catch(() => undefined);
@@ -208,7 +208,7 @@ export async function disableNativeNotifications(): Promise<NativeNotificationSt
 
 /** Re-register an already-authorized app after sign-in without prompting. */
 export async function restoreNativeNotifications(): Promise<void> {
-  if (!isNativeMobile() || mobilePlatform() !== "ios" || !nativeNotificationsEnabled()) return;
+  if (!isNativeMobile() || !["ios", "android"].includes(mobilePlatform()) || !nativeNotificationsEnabled()) return;
   await installNativeListeners();
   const PushNotifications = await pushNotifications();
   const permission = await PushNotifications.checkPermissions();
@@ -217,4 +217,138 @@ export async function restoreNativeNotifications(): Promise<void> {
     try { await registerNativeDevice(); }
     catch (error) { nativeRegistrationError = error instanceof Error ? error.message : String(error); }
   }
+}
+
+export type BrowserNotificationState = {
+  available: boolean;
+  permission: NotificationPermission | "unavailable";
+  registered: boolean;
+  backgroundCapable: boolean;
+  error: string;
+};
+
+let browserNotificationError = "";
+let browserPushRegistered = false;
+const browserPreferenceKey = (): string => `1helm.browser.notifications.enabled:${getServerOrigin()}`;
+const browserNotificationsEnabled = (): boolean => localStorage.getItem(browserPreferenceKey()) === "1";
+const isElectronClient = (): boolean => /\bElectron\//.test(navigator.userAgent);
+const browserNotificationAvailable = (): boolean => !isNativeMobile() && typeof Notification !== "undefined";
+const backgroundWebPushAvailable = (): boolean => browserNotificationAvailable() && location.protocol === "https:" && "serviceWorker" in navigator && "PushManager" in window;
+
+function applicationServerKey(value: string): Uint8Array<ArrayBuffer> {
+  const padded = value + "=".repeat((4 - value.length % 4) % 4);
+  const bytes = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
+  const result = new Uint8Array(new ArrayBuffer(bytes.length));
+  for (let index = 0; index < bytes.length; index++) result[index] = bytes.charCodeAt(index);
+  return result;
+}
+
+async function currentBrowserSubscription(): Promise<PushSubscription | null> {
+  if (!backgroundWebPushAvailable()) return null;
+  const registration = await navigator.serviceWorker.ready;
+  return registration.pushManager.getSubscription();
+}
+
+export async function browserNotificationState(): Promise<BrowserNotificationState> {
+  if (!browserNotificationAvailable()) return { available: false, permission: "unavailable", registered: false, backgroundCapable: false, error: "" };
+  const permission = Notification.permission;
+  if (!backgroundWebPushAvailable()) return { available: true, permission, registered: permission === "granted" && browserNotificationsEnabled(), backgroundCapable: false, error: browserNotificationError };
+  try {
+    const subscription = await currentBrowserSubscription();
+    if (!subscription) { browserPushRegistered = false; return { available: true, permission, registered: false, backgroundCapable: true, error: browserNotificationError }; }
+    const status = await api<{ registered: boolean }>("/api/web-push/status", { body: { endpoint: subscription.endpoint } });
+    browserPushRegistered = status.registered;
+    return { available: true, permission, registered: status.registered, backgroundCapable: true, error: browserNotificationError };
+  } catch (error) {
+    browserNotificationError = error instanceof Error ? error.message : String(error);
+    return { available: true, permission, registered: false, backgroundCapable: true, error: browserNotificationError };
+  }
+}
+
+/** Request browser/desktop permission from an explicit click and retain a server-side Web Push subscription when supported. */
+export async function enableBrowserNotifications(): Promise<BrowserNotificationState> {
+  if (!browserNotificationAvailable()) return browserNotificationState();
+  browserNotificationError = "";
+  const permission = Notification.permission === "default" ? await Notification.requestPermission() : Notification.permission;
+  if (permission !== "granted") return browserNotificationState();
+  localStorage.setItem(browserPreferenceKey(), "1");
+  if (!backgroundWebPushAvailable()) return browserNotificationState();
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const key = await api<{ publicKey: string }>("/api/web-push/key");
+    const subscription = await registration.pushManager.getSubscription() || await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: applicationServerKey(key.publicKey) });
+    await api("/api/web-push", { body: { subscription: subscription.toJSON() } });
+    browserPushRegistered = true;
+  } catch (error) { browserNotificationError = error instanceof Error ? error.message : String(error); }
+  return browserNotificationState();
+}
+
+export async function disableBrowserNotifications(): Promise<BrowserNotificationState> {
+  if (!browserNotificationAvailable()) return browserNotificationState();
+  browserNotificationError = "";
+  if (backgroundWebPushAvailable()) {
+    try {
+      const subscription = await currentBrowserSubscription();
+      if (subscription) {
+        await api("/api/web-push", { method: "DELETE", body: { endpoint: subscription.endpoint } });
+        await subscription.unsubscribe();
+      }
+    } catch (error) { browserNotificationError = error instanceof Error ? error.message : String(error); }
+  }
+  browserPushRegistered = false;
+  localStorage.removeItem(browserPreferenceKey());
+  return browserNotificationState();
+}
+
+const liveSystemNotificationsShown = new Set<number>();
+export function showLiveSystemNotification(message: { id: number; channel_id: number; parent_id: number | null; body: string; author?: { name?: string } }, channelName = ""): void {
+  if (!browserNotificationAvailable() || Notification.permission !== "granted" || !browserNotificationsEnabled() || document.visibilityState === "visible" || document.hasFocus()) return;
+  // Browsers with a retained Push API subscription receive the durable server push;
+  // Electron and legacy browsers use this renderer-backed native notification.
+  if (browserPushRegistered && !isElectronClient()) return;
+  if (liveSystemNotificationsShown.has(message.id)) return;
+  liveSystemNotificationsShown.add(message.id);
+  if (liveSystemNotificationsShown.size > 500) liveSystemNotificationsShown.delete(liveSystemNotificationsShown.values().next().value!);
+  const title = channelName ? `#${channelName} · ${message.author?.name || "1Helm"}` : message.author?.name || "1Helm";
+  const body = String(message.body || "New activity").replace(/\s+/g, " ").trim().slice(0, 220) || "New activity";
+  const notification = new Notification(title, { body, icon: "/icons/icon-sailboat-192.png", tag: `1helm-message-${message.id}` });
+  notification.onclick = () => {
+    window.focus();
+    nativeNavigationHandler?.(message.channel_id, message.parent_id);
+    notification.close();
+  };
+}
+
+export function notificationDeviceCards(): HTMLElement[] {
+  const nativeCard = h("section", { class: "card space-y-3 p-4", dataset: { nativeNotifications: "" } },
+    h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Phone notifications"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Receive channel and resident-agent updates when 1Helm is closed or in the background.")),
+    h("p", { class: "text-sm text-muted" }, "Checking this device…"));
+  const drawNative = async (): Promise<void> => {
+    const state = await nativeNotificationState();
+    if (!state.available) { nativeCard.remove(); return; }
+    const enabled = state.permission === "granted" && state.registered;
+    const action = h("button", { class: enabled ? "btn-subtle text-sm" : "btn-primary text-sm", type: "button" }, enabled ? "Turn off on this phone" : state.permission === "denied" ? "Check again" : "Turn on notifications") as HTMLButtonElement;
+    const blocked = mobilePlatform() === "android" ? "Notifications are blocked in Android Settings. Open Apps → 1Helm → Notifications to allow them." : "Notifications are blocked in iOS Settings. Open Settings → Notifications → 1Helm to allow them.";
+    const detail = h("p", { class: `text-sm ${state.error ? "text-danger" : "text-muted"}` }, state.error || (enabled ? "This phone is registered for 1Helm notifications." : state.permission === "denied" ? blocked : "1Helm will ask for permission once, after you choose Turn on."));
+    action.onclick = async () => { action.disabled = true; if (enabled) await disableNativeNotifications(); else if (state.permission !== "denied") await enableNativeNotifications(); await drawNative(); };
+    nativeCard.replaceChildren(h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Phone notifications"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Receive channel and resident-agent updates when 1Helm is closed or in the background.")), h("div", { class: "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between" }, detail, action));
+  };
+  void drawNative();
+
+  const browserCard = h("section", { class: "card space-y-3 p-4", dataset: { browserNotifications: "" } },
+    h("div", {}, h("h3", { class: "font-semibold text-fg" }, "System notifications"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Receive native desktop or browser notifications when 1Helm is not in front.")),
+    h("p", { class: "text-sm text-muted" }, "Checking this browser…"));
+  const drawBrowser = async (): Promise<void> => {
+    if (isNativeMobile()) { browserCard.remove(); return; }
+    const state = await browserNotificationState();
+    if (!state.available) { browserCard.remove(); return; }
+    const enabled = state.permission === "granted" && state.registered;
+    const action = h("button", { class: enabled ? "btn-subtle text-sm" : "btn-primary text-sm", type: "button" }, enabled ? "Turn off on this device" : state.permission === "denied" ? "Blocked by browser" : "Turn on notifications") as HTMLButtonElement;
+    const detailText = state.error || (enabled ? state.backgroundCapable ? "This browser is registered for notifications, including while the page is closed." : "This desktop app will notify while 1Helm is running." : state.permission === "denied" ? "Notifications are blocked in this browser or operating-system settings." : "1Helm will ask once after you choose Turn on.");
+    const detail = h("p", { class: `text-sm ${state.error ? "text-danger" : "text-muted"}` }, detailText);
+    action.onclick = async () => { action.disabled = true; if (enabled) await disableBrowserNotifications(); else if (state.permission !== "denied") await enableBrowserNotifications(); await drawBrowser(); };
+    browserCard.replaceChildren(h("div", {}, h("h3", { class: "font-semibold text-fg" }, "System notifications"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Receive native desktop or browser notifications when 1Helm is not in front.")), h("div", { class: "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between" }, detail, action));
+  };
+  void drawBrowser();
+  return [nativeCard, browserCard];
 }

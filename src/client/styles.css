@@ -446,6 +446,8 @@ select.field {
 .routing-segment button { flex: 0 0 auto; padding: .38rem .6rem; border-radius: 5px; color: var(--c-muted); font-size: 11px; }
 .routing-segment button.is-active { background: var(--c-surface); color: var(--c-fg); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
 .routing-telemetry-list { overflow: hidden; border: 1px solid var(--c-line); border-radius: 9px; }
+.routing-model-refresh-body { overscroll-behavior-y: contain; scrollbar-gutter: stable; }
+.routing-model-catalog { max-height: 42vh; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: auto; }
 .routing-telemetry-row, .routing-event { padding: .7rem .85rem; border-bottom: 1px solid var(--c-line); }
 .routing-telemetry-row:last-child, .routing-event:last-child { border-bottom: 0; }
 .routing-event-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 999px; background: var(--c-ok); }
@@ -854,6 +856,17 @@ html.light .channel-unread-badge {
 .md th, .md td { @apply border border-line px-2.5 py-1.5 text-left align-top; }
 .md th { @apply bg-raised font-semibold; }
 .md tbody tr:nth-child(even) { @apply bg-raised/50; }
+.md .math-inline { display: inline-block; max-width: 100%; vertical-align: -0.14em; }
+.md .math-display {
+  @apply my-2 max-w-full py-1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  text-align: center;
+}
+.md .math-display > .katex { display: inline-block; min-width: max-content; }
+.md .math-display math { font-size: 1.05em; }
+.md .math-source { text-align: left; }
 
 .thread-pane { position: relative; width: min(520px, 100%); min-width: min(400px, 100%); max-width: min(840px, calc(100vw - 420px)); overflow: hidden; }
 .thread-pane.rhs-split { display: flex; flex-direction: column; }

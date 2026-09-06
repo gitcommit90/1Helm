@@ -4,13 +4,15 @@ import test from "node:test";
 
 const root = new URL("..", import.meta.url);
 const client = readFileSync(new URL("src/client/app.ts", root), "utf8");
+const state = readFileSync(new URL("src/client/state.ts", root), "utf8");
 const server = readFileSync(new URL("src/server/index.ts", root), "utf8");
 const followups = readFileSync(new URL("src/server/followups.ts", root), "utf8");
 const styles = readFileSync(new URL("src/client/styles.css", root), "utf8");
 
 test("open chat threads present the persisted Board follow-up as a live countdown", () => {
   assert.match(server, /followup: threadFollowupView\(Number\(threadId\)\)/, "thread API uses the persisted follow-up view");
-  assert.match(client, /S\.threadFollowup = data\.followup \|\| null/, "thread open hydrates the persisted wake");
+  assert.match(state, /S\.threadFollowup = data\.followup \|\| null/, "thread snapshot hydrates the persisted wake");
+  assert.match(client, /applyThreadSnapshot\(data\)/, "thread open applies the complete persisted snapshot");
   assert.match(client, /will check back in/, "banner tells the Captain when the resident will return");
   assert.match(client, /data(?:set)?: \{ threadFollowupCountdown: "" \}/, "countdown has a surgical live-update target");
   assert.match(client, /window\.setInterval\(tickThreadFollowup, 1000\)/, "countdown ticks once per second from due_at");

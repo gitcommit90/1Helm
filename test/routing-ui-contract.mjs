@@ -5,6 +5,8 @@ import test from "node:test";
 const ROOT = new URL("..", import.meta.url);
 const client = readFileSync(new URL("src/client/routing.ts", ROOT), "utf8");
 const server = readFileSync(new URL("src/server/routing.ts", ROOT), "utf8");
+const modelRefreshClient = readFileSync(new URL("src/client/provider-model-refresh.ts", ROOT), "utf8");
+const modelRefreshServer = readFileSync(new URL("src/server/provider-model-refresh.ts", ROOT), "utf8");
 const styles = readFileSync(new URL("src/client/styles.css", ROOT), "utf8");
 
 test("provider controls expose the live dotted router flow and credential-free header popover", () => {
@@ -43,15 +45,17 @@ test("provider controls expose the live dotted router flow and credential-free h
 });
 
 test("model refresh is a preview-confirm contract with OpenRouter free metadata", () => {
-  assert.match(client, /Nothing changes until you confirm\./);
-  assert.match(client, /Select all/);
-  assert.match(client, /Select none/);
-  assert.match(client, /Free only/);
-  assert.match(client, /Add an exact model ID manually/);
-  assert.match(server, /modelRefreshPreviews/);
-  assert.match(server, /openRouterFreeFlag/);
-  assert.match(server, /previewToken/);
-  assert.match(server, /The selection contains a model that was not in this preview/);
+  assert.match(modelRefreshClient, /Nothing changes until you confirm\./);
+  assert.match(modelRefreshClient, /Select all/);
+  assert.match(modelRefreshClient, /Select none/);
+  assert.match(modelRefreshClient, /Free only/);
+  assert.match(modelRefreshClient, /Add an exact model ID manually/);
+  assert.match(modelRefreshClient, /Override\?/);
+  assert.match(modelRefreshClient, /Replace this account with exactly the checked models\. Every other model becomes inactive\./);
+  assert.match(modelRefreshServer, /modelRefreshPreviews/);
+  assert.match(modelRefreshServer, /openRouterFreeFlag/);
+  assert.match(modelRefreshServer, /previewToken/);
+  assert.match(modelRefreshServer, /The selection contains a model that was not in this preview/);
 });
 
 test("every model selector groups direct models by stable provider identity", () => {
@@ -74,4 +78,34 @@ test("user-scoped usage honors every Activity period and hydrates provider ident
   assert.match(server, /Disconnected account/);
   assert.match(client, /usage\.prompt_tokens\), "Input"[\s\S]*usage\.completion_tokens\), "Output"[\s\S]*usage\.cached_tokens\), "Cached"[\s\S]*usage\.total_tokens\), "Total"/,
     "Activity shows the input, output, cached, and total token breakdown");
+});
+
+
+test("refreshed provider model catalogs are searchable and explicitly scrollable", () => {
+  assert.match(modelRefreshClient, /type: "search"[\s\S]*dataset: \{ modelSearch: "" \}/);
+  assert.match(modelRefreshClient, /toLocaleLowerCase\(\)\.includes\(search\.value\.trim\(\)\.toLocaleLowerCase\(\)\)/,
+    "search matches model names and IDs case-insensitively");
+  assert.match(modelRefreshClient, /visibleModels\(\)[\s\S]*dataset: \{ discoveredModel:/,
+    "search and provider filters share the same visible catalog projection");
+  assert.match(styles, /\.routing-model-refresh-body \{[^}]*overscroll-behavior-y: contain;[^}]*scrollbar-gutter: stable;/,
+    "the complete preview content has an independently scrollable body inside its bounded sheet");
+  assert.match(styles, /\.routing-model-catalog \{[^}]*max-height: 42vh;[^}]*overflow-y: auto;[^}]*overscroll-behavior-y: auto;/,
+    "the model catalog overrides the generic telemetry list's hidden overflow");
+  assert.match(modelRefreshClient, /routing-model-refresh-body min-h-0 flex-1[^"]*overflow-y-auto/,
+    "the complete refresh window scrolls so controls below a long catalog remain reachable");
+  assert.match(modelRefreshClient, /max-h-\[85vh\][^"]*overflow-hidden[\s\S]*dataset: \{ modelRefresh:/,
+    "the bounded refresh panel delegates overflow to its scrolling body");
+  assert.match(modelRefreshClient, /modelRefreshFooter[\s\S]*status, actions/,
+    "confirm and cancel remain in a fixed footer outside both scroll containers");
+  assert.match(modelRefreshClient, /add\(actions,[\s\S]*confirm\)/,
+    "the confirmation action is always mounted in the fixed footer");
+});
+
+
+test("provider controls expose opt-in exclusive daily model refresh modes", () => {
+  assert.match(modelRefreshClient, /Auto-refresh model list every 24 hours/);
+  assert.match(modelRefreshClient, /Auto-refresh free models every 24 hours/);
+  assert.match(modelRefreshClient, /all\.disabled = free\.checked; free\.disabled = all\.checked/);
+  assert.match(modelRefreshServer, /const DAY_MS = 24 \* 60 \* 60_000/);
+  assert.match(modelRefreshServer, /modelAutoRefreshMode !== mode/);
 });

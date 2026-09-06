@@ -41,6 +41,10 @@ sole visual home for recurring work and its chronological run history; workflow
 runs do not spill into Chat, Board, or Threads, while each run remains a normal
 interactive thread when opened.
 
+## Honest model usage
+
+A thread's primary token indicator answers how much input context the latest model call processed, not how many repeated prompt-token encounters accumulated across an agent loop. 1Helm calculates this itself from the structured messages and tool schemas it sends, using one stable provider-neutral approximation. Cached is the unchanged leading context shared with the preceding call; output counts response text and tool-call payloads received by 1Helm; calls count successful invocations. These product metrics never depend on provider usage reports. Lifetime output and model-call count remain cumulative because they represent newly generated work and actual invocations; cumulative prompt traffic is never presented as the size of a conversation.
+
 ## Durable growth
 
 Residents start with a substantive operational arsenal, not a handful of
@@ -116,3 +120,15 @@ merely for parity. Its core bet is the compounding resident world: one identity,
 one private computer, one workspace, and years of accumulated memory, skills,
 corrections, artifacts, and obligations—with Skipper automatically handling
 every boundary.
+
+## Notifications are a platform-complete delivery contract
+
+“Notifications” means operating-system-visible delivery, not only an unread
+badge or an audible chirp. Browser/PWA subscriptions use installation-owned
+VAPID keys and a durable local outbox; native iOS and Android registrations use
+the encrypted central relay with APNs and FCM respectively; Electron uses the
+OS notification surface while its background process is running. Every route
+shares account ownership, author exclusion, settled-message deduplication,
+channel mute, sound preference, and channel/thread navigation semantics. A
+release build must fail rather than silently package Android without its
+Firebase application configuration.

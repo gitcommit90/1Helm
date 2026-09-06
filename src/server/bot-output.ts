@@ -1,3 +1,4 @@
+export { calculateModelContext, calculateModelOutput } from "./model-metrics.ts";
 import { createHash } from "node:crypto";
 
 /** Pure user-facing fallbacks used when a model finishes after a tool call. */
@@ -13,6 +14,31 @@ export const skipperCallApprovalPayload = (reason: string, actionId: number, pro
     { label: SKIPPER_CALL_DENY, description: "Does not call Skipper." },
   ] }],
 });
+
+/** Explicit output budget sent on every direct provider call. Without it the
+ * router applies its own tiny default (4096 for Claude), which silently
+ * truncates reasoning and tool arguments mid-stream. Reasoning models need
+ * room to think; 100k is the floor, never the ceiling. */
+export const MAX_OUTPUT_TOKENS = Math.max(100000, Number(process.env.CTRL_MAX_OUTPUT_TOKENS || 100000));
+export const OUTPUT_TRUNCATED_ERROR = "The model's response was cut off by the output token limit before it finished. Nothing was executed from the truncated response.";
+/** Tools whose required arguments must be present before 1Helm executes them.
+ * A truncated or unparseable tool call must never run as an empty command. */
+export function toolCallArgumentError(name: string, rawArguments: string, args: Record<string, unknown>): string {
+  const raw = String(rawArguments || "").trim();
+  if (raw && raw !== "{}") {
+    try { JSON.parse(raw); } catch { return `Error: ${name} arguments were not valid JSON (likely truncated). The call was not executed.`; }
+  }
+  const required: Record<string, string[]> = {
+    run_command: ["command"], text_captain: ["message"], remember: ["kind", "content"], schedule_followup: ["delay_seconds", "reason"],
+    schedule_workflow: ["name", "prompt", "interval_seconds"], inspect_web_source: ["url"], search_web: ["query"], attach_file: ["path"],
+    read_skill: ["slug"], request_skill: ["skill", "reason"], read_channel_session: ["thread_root_id"], set_workflow_status: ["workflow_id", "status"],
+    ask_user: ["blocker_kind", "evidence", "questions"], attach_web_image: ["image_url", "source_url", "caption"], propose_skill: ["name", "description", "instructions", "evidence", "rationale"],
+    generate_image: ["prompt"], complete_followup: ["evidence"], silent_success: ["reason"],
+  };
+  const missing = (required[name] || []).filter((key) => args[key] === undefined || args[key] === null || (typeof args[key] === "string" && !String(args[key]).trim()));
+  if (missing.length) return `Error: ${name} was called without required argument${missing.length > 1 ? "s" : ""} ${missing.join(", ")} (the call was likely truncated). It was not executed.`;
+  return "";
+}
 
 export function completedToolAnswer(tool: string, result: string): string {
   if (tool === "gmail_search") {
@@ -57,7 +83,10 @@ export function completedToolAnswer(tool: string, result: string): string {
       return `Gmail access is available for: ${(parsed.accounts || []).join(", ") || "no accounts"}.`;
     } catch { return result; }
   }
-  if (tool === "run_command") return `The command completed.\n\n\`\`\`text\n${result}\n\`\`\``;
+  // A raw command result is not an answer. Publishing it as one hid every
+  // silently truncated Claude turn behind a "completed" reply; return nothing so
+  // the runtime fails the turn loudly instead.
+  if (tool === "run_command") return "";
   return `The ${tool.replaceAll("_", " ")} action completed.\n\n${result}`;
 }
 
@@ -107,18 +136,6 @@ export function toolActionStatus(result: string): "failed" | "running" | "comple
   if (/^status=running(?:\n|$)/i.test(result)) return "running";
   return "complete";
 }
-export type ModelUsage = { input_tokens: number; output_tokens: number; cached_input_tokens: number };
-export function normalizeModelUsage(value: unknown): ModelUsage {
-  const usage = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  const inputDetails = usage.input_tokens_details && typeof usage.input_tokens_details === "object" ? usage.input_tokens_details as Record<string, unknown> : {};
-  const promptDetails = usage.prompt_tokens_details && typeof usage.prompt_tokens_details === "object" ? usage.prompt_tokens_details as Record<string, unknown> : {};
-  return {
-    input_tokens: Math.max(0, Number(usage.input_tokens ?? usage.prompt_tokens ?? 0) || 0),
-    output_tokens: Math.max(0, Number(usage.output_tokens ?? usage.completion_tokens ?? 0) || 0),
-    cached_input_tokens: Math.max(0, Number(usage.cached_tokens ?? inputDetails.cached_tokens ?? promptDetails.cached_tokens ?? 0) || 0),
-  };
-}
-
 type CacheControl = { type: "ephemeral" };
 type CacheTextBlock = { type: "text"; text: string; cache_control?: CacheControl };
 export type ProviderCacheMessage = {
