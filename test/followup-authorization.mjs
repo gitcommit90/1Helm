@@ -48,11 +48,13 @@ const providerServer = createServer(async (req, res) => {
   }
 
   if (/authorized-complete/i.test(wake)) {
-    if (lastTool?.name !== "run_command") return toolCall(res, "run_command", { command: "inspect-authorized-status" });
+    if (lastTool?.name !== "run_command" && lastTool?.name !== "complete_followup") return toolCall(res, "run_command", { command: "inspect-authorized-status" });
+    if (lastTool.name === "run_command") return toolCall(res, "complete_followup", { evidence: "Current host inspection confirms the requested background task is complete." });
     return answer(res, "Completed — the background task is confirmed complete.");
   }
   if (/running-complete/i.test(wake)) {
-    if (lastTool?.name !== "run_command") return toolCall(res, "run_command", { command: "inspect-completed-status" });
+    if (lastTool?.name !== "run_command" && lastTool?.name !== "complete_followup") return toolCall(res, "run_command", { command: "inspect-completed-status" });
+    if (lastTool.name === "run_command") return toolCall(res, "complete_followup", { evidence: "Current host inspection confirms the retried task is complete." });
     return answer(res, "Completed — the retried task is confirmed complete.");
   }
   if (/running-first/i.test(wake)) {
@@ -60,7 +62,7 @@ const providerServer = createServer(async (req, res) => {
     return toolCall(res, "schedule_followup", { delay_seconds: 30, reason: "running-complete", check_hint: "inspect background status", observed_state: "confirmed_running" });
   }
   if (/unknown-no-capability/i.test(wake)) {
-    if (!toolNames.includes("run_command")) return answer(res, "Blocked — task state is unknown because host run_command is unavailable for this wake.");
+    if (!toolNames.includes("run_command")) return toolCall(res, "ask_user", { blocker_kind: "external_authority", evidence: "The required host inspection capability was not authorized for this wake, so only the Captain can grant the missing external authority.", intro: "Host authority is required to verify the task.", questions: [{ question: "How should this host-only check proceed?", options: [{ label: "Authorize host check" }, { label: "Stop" }] }] });
     if (lastTool?.name !== "run_command") return toolCall(res, "run_command", { command: "must-not-run-unauthorized" });
     if (lastTool.name === "run_command" && toolNames.includes("schedule_followup")) return toolCall(res, "schedule_followup", { user_update: { completed: "Initial setup is complete.", observed_state: "The process state was directly inspected.", wait_reason: "The running process needs more time.", next_check: "Inspect the process and resulting output." }, delay_seconds: 30, reason: "unknown-no-capability", observed_state: "confirmed_running" });
     return answer(res, "Blocked — task state is unknown because host run_command is unavailable for this wake.");
@@ -153,7 +155,8 @@ test("durable follow-ups preserve least-privilege authorization and bound wake o
   assert(unauthorizedRequests.every((request) => !(request.tools || []).some((tool) => tool.function?.name === "run_command")), "run_command is unavailable");
   assert(!hostCommands.includes("must-not-run-unauthorized"), "an unadvertised provider tool call is also rejected at execution time");
   assert.equal(q1("SELECT COUNT(*) n FROM agent_followups WHERE source_followup_id=?", unauthorized.followup.id).n, 0, "unknown task state cannot create a successor");
-  assert.match(q1("SELECT body FROM messages WHERE parent_id=? AND bot_id=? ORDER BY id DESC LIMIT 1", unauthorized.root, f.skipperBot).body, /Blocked.*state is unknown.*run_command is unavailable/i);
+  assert.equal(q1("SELECT completion_disposition FROM agent_followups WHERE id=?", unauthorized.followup.id).completion_disposition, "blocked", "a persisted human boundary, not blocker prose, closes the wake");
+  assert.equal(q1("SELECT COUNT(*) n FROM agent_questions aq JOIN messages m ON m.id=aq.message_id WHERE m.parent_id=? AND aq.status='pending'", unauthorized.root).n, 1);
 
   const running = await createViaTurn(f, "create-running", true);
   const runningComputerScope = JSON.parse(running.followup.host_authorized_computer_ids);
@@ -190,7 +193,9 @@ test("durable follow-ups preserve least-privilege authorization and bound wake o
 
   run("UPDATE agent_followups SET status='running' WHERE id=?", running.followup.id);
   assert.equal(followups.recoverInterruptedFollowups(), 1);
-  assert.equal(q1("SELECT status FROM agent_followups WHERE id=?", running.followup.id).status, "done", "restart does not replay a parent wake after its successor was persisted");
+  const recoveredParent = q1("SELECT status,completion_disposition FROM agent_followups WHERE id=?", running.followup.id);
+  assert.equal(recoveredParent.status, "done", "restart does not replay a parent wake after its successor was persisted");
+  assert.equal(recoveredParent.completion_disposition, "continued", "restart recovery retains the machine-verifiable successor disposition");
 
   const residentRoot = rootThread(f.residentChannel, f.ownerId, "create-resident");
   await bots.runBot(q1("SELECT * FROM bots WHERE id=?", f.residentBot), f.residentChannel, residentRoot.root, residentRoot.root, false, undefined, true);
@@ -255,7 +260,7 @@ test.after(async () => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
-test("specific pending follow-up cancellation preserves siblings and rejects races", () => {
+test("a thread permits only one pending follow-up", () => {
   const f = {
     ownerId: Number(q1("SELECT id FROM users WHERE username='followup-owner'").id),
     residentChannel: Number(q1("SELECT id FROM channels WHERE slug='followup-resident'").id),
@@ -265,14 +270,18 @@ test("specific pending follow-up cancellation preserves siblings and rejects rac
   const { root, thread } = rootThread(f.residentChannel, f.ownerId, "cancel one");
   const base = { agentId: f.residentAgent, botId: f.residentBot, channelId: f.residentChannel, threadId: thread, rootMessageId: root, reason: "inspect task", delaySeconds: 300 };
   const first = followups.scheduleAgentFollowup(base);
-  const second = followups.scheduleAgentFollowup({ ...base, reason: "inspect other task", delaySeconds: 600 });
+  assert.throws(
+    () => followups.scheduleAgentFollowup({ ...base, reason: "inspect other task", delaySeconds: 600 }),
+    /already has 1 pending follow-ups \(max 1\)/,
+  );
+  assert.equal(q1("SELECT COUNT(*) n FROM agent_followups WHERE thread_id=? AND status='pending'", thread).n, 1);
   const before = q1("SELECT status,title,summary FROM threads WHERE id=?", thread);
   const result = followups.cancelPendingFollowup(thread, first.id);
   assert.equal(result.ok, true);
   assert.equal(q1("SELECT status FROM agent_followups WHERE id=?", first.id).status, "cancelled");
-  assert.equal(q1("SELECT status FROM agent_followups WHERE id=?", second.id).status, "pending");
-  assert.equal(result.followup.id, second.id);
+  assert.equal(result.followup, null);
   assert.deepEqual(q1("SELECT status,title,summary FROM threads WHERE id=?", thread), before);
+  const second = followups.scheduleAgentFollowup({ ...base, reason: "inspect replacement task", delaySeconds: 600 });
   run("UPDATE agent_followups SET status='running',attempts=1 WHERE id=?", second.id);
   assert.equal(followups.threadFollowupView(thread).id, second.id, "a claimed wake remains visible while its agent turn runs");
   assert.equal(followups.threadFollowupView(thread).status, "running");

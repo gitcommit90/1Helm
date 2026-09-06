@@ -6,6 +6,7 @@ export type Author = { kind: "user" | "bot" | "system"; id: number; name: string
 export type Attachment = { id: number; name: string; mime: string; size: number; workspace_path?: string };
 export type AgentProgress = { id: number; kind: "thinking" | "tool" | "status"; body: string; status: "running" | "complete" | "failed"; created: number; updated: number };
 export type ThreadUsage = { input_tokens: number; output_tokens: number; cached_input_tokens: number; model_calls: number };
+export type { SilentFollowupActivity } from "./thread-ux.ts";
 export type AgentQuestionOption = { label: string; description?: string };
 export type AgentQuestion = { id: string; header?: string; question: string; multi_select?: boolean; options: AgentQuestionOption[] };
 export type AgentQuestions = {
@@ -14,7 +15,7 @@ export type AgentQuestions = {
   answers?: Array<{ question_id: string; question: string; values: string[]; custom: string }> | null;
   answered?: number | null;
 };
-export type Message = { id: number; channel_id: number; parent_id: number | null; body: string; created: number; reply_count: number; last_reply: number | null; author: Author; attachments: Attachment[]; completed_at?: number | null; progress?: AgentProgress[]; progress_count?: number; questions?: AgentQuestions | null; photon_conversation_id?: number | null; workflow_id?: number | null; transport?: "inbound" | "outbound" | "app" };
+export type Message = { id: number; channel_id: number; parent_id: number | null; body: string; created: number; reply_count: number; last_reply: number | null; author: Author; attachments: Attachment[]; completed_at?: number | null; progress?: AgentProgress[]; progress_count?: number; questions?: AgentQuestions | null; photon_conversation_id?: number | null; workflow_id?: number | null; transport?: "inbound" | "outbound" | "app"; retry_of_message_id?: number | null; retried_by_message_id?: number | null };
 export type ModelPolicy = {
   provider_id: number | null; provider_name: string | null; provider_kind: string | null;
   model: string; requested_model?: string; source?: "thread" | "workflow" | "channel" | "personal" | "workspace" | "agent";
@@ -138,6 +139,8 @@ export type RoutingProvider = {
   profileName?: string | null; enabled: boolean; hasToken: boolean; baseUrl?: string;
   models: RoutingProviderModel[];
   visibility?: "personal" | "workspace"; mine?: boolean;
+  modelAutoRefresh?: boolean; modelAutoRefreshFree?: boolean; modelAutoRefreshAttemptedAt?: number | null;
+  modelAutoRefreshSucceededAt?: number | null; modelAutoRefreshError?: string;
  imageGenerationEnabled?: boolean; };
 export type RoutingComboMember = { providerType?: string; providerId?: string; model: string };
 export type RoutingCombo = { id: string; storageId?: string | null; name: string; strategy: "fallback" | "round-robin"; members: RoutingComboMember[]; visibility?: "personal" | "workspace"; mine?: boolean };
@@ -313,19 +316,108 @@ export type EventSocketHooks = {
   onOpen?: () => void;
   onClose?: () => void;
 };
+export type EventSocketConnection = {
+  /** Revalidate the transport after foregrounding. A suspended WebView can retain a ghost OPEN socket. */
+  resume: () => void;
+  dispose: () => void;
+};
 
-/** Single app-event socket with auto-reconnect. onOpen fires on every successful (re)connect so the UI can resync. */
-export function connectEvents(onMessage: Handler, hooks: EventSocketHooks = {}): WebSocket {
+const EVENT_HEARTBEAT_MS = 20_000;
+const EVENT_STALE_MS = 55_000;
+const EVENT_RECONNECT_MS = 1_500;
+
+/**
+ * Single app-event socket with heartbeat, stale-connection recovery, and an
+ * explicit foreground hook. Mobile WebViews do not reliably emit `close` when
+ * the OS suspends them, so readyState alone is not proof that this socket is
+ * alive.
+ */
+export function connectEvents(onMessage: Handler, hooks: EventSocketHooks = {}): EventSocketConnection {
   const socketToken = token;
-  const ws = new WebSocket(serverWebSocketUrl(`/ws?token=${encodeURIComponent(token)}`));
-  ws.onmessage = (e) => { try { onMessage(JSON.parse(e.data)); } catch { /* ignore */ } };
-  ws.onopen = () => { hooks.onOpen?.(); };
-  ws.onclose = () => {
-    hooks.onClose?.();
-    if (socketToken && token === socketToken) setTimeout(() => {
-      if (token === socketToken) connectEvents(onMessage, hooks);
-    }, 1500);
+  let ws: WebSocket | null = null;
+  let disposed = false;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let lastServerActivity = Date.now();
+  let connectionStarted = 0;
+
+  const authenticated = (): boolean => Boolean(socketToken && token === socketToken);
+  const clearReconnect = (): void => {
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
   };
-  return ws;
+  const scheduleReconnect = (immediate = false): void => {
+    if (disposed || !authenticated() || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      if (!disposed && authenticated()) open();
+    }, immediate ? 0 : EVENT_RECONNECT_MS);
+  };
+  const open = (): void => {
+    if (disposed || !authenticated()) return;
+    clearReconnect();
+    const current = new WebSocket(serverWebSocketUrl(`/ws?token=${encodeURIComponent(socketToken)}`));
+    ws = current;
+    connectionStarted = Date.now();
+    current.onmessage = (event) => {
+      if (ws !== current) return;
+      lastServerActivity = Date.now();
+      try {
+        const message = JSON.parse(event.data);
+        if (message?.type !== "pong" && message?.type !== "hello") onMessage(message);
+      } catch { /* Ignore malformed or non-JSON push frames. */ }
+    };
+    current.onopen = () => {
+      if (ws !== current) return;
+      lastServerActivity = Date.now();
+      hooks.onOpen?.();
+    };
+    current.onclose = () => {
+      if (ws !== current) return;
+      ws = null;
+      hooks.onClose?.();
+      scheduleReconnect();
+    };
+  };
+  const stale = (): boolean => Date.now() - Math.max(lastServerActivity, connectionStarted) > EVENT_STALE_MS;
+  const reconnectStaleSocket = (force = false): boolean => {
+    if (!ws || (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING) || (!force && !stale())) return false;
+    const staleSocket = ws;
+    ws = null;
+    // Detach first: some mobile WebViews never deliver close for a dead socket.
+    staleSocket.onclose = null;
+    try { staleSocket.close(4000, "stale app event connection"); } catch { /* already gone */ }
+    hooks.onClose?.();
+    scheduleReconnect(true);
+    return true;
+  };
+
+  open();
+  heartbeatTimer = setInterval(() => {
+    if (disposed || document.visibilityState === "hidden") return;
+    if (reconnectStaleSocket()) return;
+    if (!ws || ws.readyState === WebSocket.CLOSED) { scheduleReconnect(true); return; }
+    if (ws.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify({ type: "ping", at: Date.now() })); }
+      catch { reconnectStaleSocket(true); }
+    }
+  }, EVENT_HEARTBEAT_MS);
+
+  return {
+    resume: () => {
+      if (disposed || !authenticated()) return;
+      if (reconnectStaleSocket()) return;
+      if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) scheduleReconnect(true);
+    },
+    dispose: () => {
+      disposed = true;
+      clearReconnect();
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+      const current = ws;
+      ws = null;
+      if (current) { current.onclose = null; try { current.close(1000, "event connection replaced"); } catch { /* already gone */ } }
+    },
+  };
 }
 import { apiUrl, initializeMobileRuntime, persistSecureSession, removeSecureSession, serverAssetUrl, serverWebSocketUrl, setAuthenticatedAssetToken } from "./mobile.ts";

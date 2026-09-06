@@ -5,6 +5,7 @@ import { DATA_DIR, UPLOAD_DIR, now, q, q1, run, tx, type Row } from "./db.ts";
 import { appendMessageHistory, botView, isInternalMessageBody, resolveModel } from "./store.ts";
 import { ensureAgentMemory, rememberForAgent } from "./memory.ts";
 import { listSkills, provisionInitialSkills, provisionSkill, skillsForAgent, templateForSlug } from "./skills.ts";
+import { parseContextMetricSegments, sharedContextTokens, type ContextMetricSegment } from "./model-metrics.ts";
 import {
   archiveChannelComputer,
   deleteChannelComputer,
@@ -353,14 +354,14 @@ export function threadIdForRoot(rootMessageId: number, channelId?: number): numb
   return row ? Number(row.id) : null;
 }
 
-/** Cumulative provider-reported model usage for a thread. */
+/** 1Helm-calculated latest context plus cumulative output/call activity for a thread. */
 export type ThreadUsage = { input_tokens: number; output_tokens: number; cached_input_tokens: number; model_calls: number };
 export function threadUsage(threadId: number): ThreadUsage {
-  const row = q1("SELECT input_tokens,output_tokens,cached_input_tokens,model_calls FROM threads WHERE id=?", threadId);
+  const row = q1("SELECT current_input_tokens,current_cached_input_tokens,output_tokens,model_calls FROM threads WHERE id=?", threadId);
   return {
-    input_tokens: Math.max(0, Number(row?.input_tokens || 0)),
+    input_tokens: Math.max(0, Number(row?.current_input_tokens || 0)),
     output_tokens: Math.max(0, Number(row?.output_tokens || 0)),
-    cached_input_tokens: Math.max(0, Number(row?.cached_input_tokens || 0)),
+    cached_input_tokens: Math.max(0, Number(row?.current_cached_input_tokens || 0)),
     model_calls: Math.max(0, Number(row?.model_calls || 0)),
   };
 }
@@ -368,13 +369,17 @@ export function threadUsageForRoot(rootMessageId: number, channelId?: number): T
   const threadId = threadIdForRoot(rootMessageId, channelId);
   return threadId == null ? { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, model_calls: 0 } : threadUsage(threadId);
 }
-/** Record exactly one successful provider call, even when usage is unavailable. */
-export function addThreadUsage(threadId: number, inputTokens: number, outputTokens: number, cachedInputTokens = 0): ThreadUsage {
+/** Record one successful model call from 1Helm's own request/response counts. */
+export function addThreadUsage(threadId: number, inputTokens: number, outputTokens: number, contextSegments: ContextMetricSegment[] = []): ThreadUsage {
   const input = Math.max(0, Math.round(Number(inputTokens) || 0));
   const output = Math.max(0, Math.round(Number(outputTokens) || 0));
-  const cached = Math.max(0, Math.round(Number(cachedInputTokens) || 0));
-  run("UPDATE threads SET input_tokens=input_tokens+?,output_tokens=output_tokens+?,cached_input_tokens=cached_input_tokens+?,model_calls=model_calls+1,updated_at=? WHERE id=?",
-    input, output, cached, now(), threadId);
+  const prior = q1("SELECT context_metric_segments FROM threads WHERE id=?", threadId);
+  const cached = sharedContextTokens(parseContextMetricSegments(prior?.context_metric_segments), contextSegments);
+  run(`UPDATE threads SET
+      input_tokens=input_tokens+?, output_tokens=output_tokens+?, cached_input_tokens=cached_input_tokens+?,
+      current_input_tokens=?, current_cached_input_tokens=?, context_metric_segments=?,
+      model_calls=model_calls+1, updated_at=? WHERE id=?`,
+    input, output, cached, input, cached, JSON.stringify(contextSegments), now(), threadId);
   return threadUsage(threadId);
 }
 

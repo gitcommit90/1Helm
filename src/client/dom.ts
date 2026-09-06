@@ -1,3 +1,5 @@
+import katex from "katex";
+
 export type Child = Node | string | null | undefined | false;
 
 /** Tiny hyperscript helper. Attributes: on* = listeners, class/style/dataset/value/checked handled. */
@@ -33,6 +35,7 @@ function inline(s: string, channels?: ChannelLink[]): string {
     .replace(/(^|[^\w])_([^_\n]+?)_(?!\w)/g, "$1<em>$2</em>")
     .replace(/~~([^~]+?)~~/g, "<del>$1</del>")
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\[([^\]]+)\]\((\/c\/[^)\s]+)\)/g, '<a href="$2">$1</a>')
     .replace(/(^|\s)(@[a-zA-Z0-9_.-]+)/g, '$1<span class="font-medium text-accent">$2</span>');
   if (channels?.length) out = linkifyChannelMentions(out, channels);
   return out;
@@ -64,11 +67,49 @@ export function linkifyChannelMentions(html: string, channels: ChannelLink[]): s
 const splitRow = (line: string): string[] => line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
 
 /** Lightweight, safe Markdown → HTML: headings, lists (ul/ol), tables, quotes, code, hr, inline. */
+function renderMath(source: string, displayMode: boolean): string {
+  const tex = source.trim();
+  try {
+    const mathml = katex.renderToString(tex, {
+      displayMode,
+      output: "mathml",
+      strict: "error",
+      throwOnError: true,
+      trust: false,
+    });
+    return displayMode
+      ? `<div class="math-display" role="math">${mathml}</div>`
+      : `<span class="math-inline" role="math">${mathml}</span>`;
+  } catch {
+    const sourceHtml = esc(tex);
+    return displayMode
+      ? `<pre class="math-source"><code>${sourceHtml}</code></pre>`
+      : `<code class="math-source">${sourceHtml}</code>`;
+  }
+}
+
 export function md(src: string, opts?: { channels?: ChannelLink[] }): string {
   const channels = opts?.channels;
-  const fmt = (text: string): string => inline(text, channels);
-  const blocks: string[] = [];
-  let s = src.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, _lang, code) => { blocks.push(`<pre><code>${esc(String(code).replace(/\n$/, ""))}</code></pre>`); return `\u0000${blocks.length - 1}\u0000`; });
+  const codeBlocks: string[] = [];
+  const mathBlocks: string[] = [];
+  const restoreMath = (html: string): string => html.replace(/\u0000M(\d+)\u0000/g, (_m, i) => mathBlocks[Number(i)]);
+  const fmt = (text: string): string => restoreMath(inline(text, channels));
+  const fmtWithoutChannels = (text: string): string => restoreMath(inline(text));
+  let s = src.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, _lang, code) => {
+    codeBlocks.push(`<pre><code>${esc(String(code).replace(/\n$/, ""))}</code></pre>`);
+    return `\u0000C${codeBlocks.length - 1}\u0000`;
+  });
+  // Protect TeX before escaping and ordinary inline Markdown transforms. This
+  // prevents multiline equations from gaining <br> tags and keeps TeX
+  // underscores/braces out of emphasis parsing.
+  s = s.replace(/\\\[([\s\S]*?)\\\]/g, (_m, tex) => {
+    mathBlocks.push(renderMath(String(tex), true));
+    return `\u0000M${mathBlocks.length - 1}\u0000`;
+  });
+  s = s.replace(/\\\(([\s\S]*?)\\\)/g, (_m, tex) => {
+    mathBlocks.push(renderMath(String(tex), false));
+    return `\u0000M${mathBlocks.length - 1}\u0000`;
+  });
   s = esc(s);
   const lines = s.split("\n");
   const out: string[] = [];
@@ -79,10 +120,11 @@ export function md(src: string, opts?: { channels?: ChannelLink[] }): string {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (/^\u0000\d+\u0000$/.test(line)) { flushPara(); closeList(); out.push(line); continue; }
+    if (/^\u0000C\d+\u0000$/.test(line)) { flushPara(); closeList(); out.push(line); continue; }
+    if (/^\u0000M\d+\u0000$/.test(line)) { flushPara(); closeList(); out.push(restoreMath(line)); continue; }
     const head = line.match(/^(#{1,6})\s+(.*)$/);
     // Headings intentionally skip channel linkify so "# Deploy Runbook" stays a title.
-    if (head) { flushPara(); closeList(); const l = head[1].length; out.push(`<h${l}>${inline(head[2])}</h${l}>`); continue; }
+    if (head) { flushPara(); closeList(); const l = head[1].length; out.push(`<h${l}>${fmtWithoutChannels(head[2])}</h${l}>`); continue; }
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); closeList(); out.push("<hr>"); continue; }
     // GFM table: header row followed by a |---|---| separator
     if (line.includes("|") && i + 1 < lines.length && /^\s*\|?[\s:|-]*-{1,}[\s:|-]*\|?\s*$/.test(lines[i + 1]) && lines[i + 1].includes("|")) {
@@ -103,7 +145,8 @@ export function md(src: string, opts?: { channels?: ChannelLink[] }): string {
     closeList(); para.push(line);
   }
   flushPara(); closeList();
-  return out.join("\n").replace(/\u0000(\d+)\u0000/g, (_m, i) => blocks[Number(i)]);
+  return restoreMath(out.join("\n"))
+    .replace(/\u0000C(\d+)\u0000/g, (_m, i) => codeBlocks[Number(i)]);
 }
 
 /**

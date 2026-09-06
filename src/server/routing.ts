@@ -8,6 +8,7 @@ import { createServer as createNetServer } from "node:net";
 import { DATA_DIR, q, q1, run, now } from "./db.ts";
 import { imageBytesFromChatGPTResponse } from "./chatgpt.ts";
 import "./routing-network.ts";
+import { applyStoredProviderModels, fetchModelCatalog, normalizeBaseUrl, previewStoredProviderModels, routableBaseUrl, setProviderModelAutoRefresh, startProviderModelAutoRefresh, stopProviderModelAutoRefresh } from "./provider-model-refresh.ts";
 
 const require = createRequire(import.meta.url);
 const { createHeadlessRuntime } = require("@gitcommit90/rerouted/src/lib/headless-runtime.js") as { createHeadlessRuntime: (options: Record<string, unknown>) => RoutingRuntime };
@@ -162,9 +163,6 @@ let onActivity: ((activity?: unknown, userId?: number) => void) | null = null;
 const recentActivity: unknown[] = [];
 const recentUserActivity = new Map<number, unknown[]>();
 const activeSystemRequests = new Map<number, Map<string, Record<string, unknown>>>();
-type ModelDiscovery = { id: string; name: string; free?: boolean };
-type ModelRefreshPreview = { userId: number; providerId: string; models: ModelDiscovery[]; expiresAt: number };
-const modelRefreshPreviews = new Map<string, ModelRefreshPreview>();
 type OauthCompletion = { connected: boolean; account?: Record<string, unknown>; error?: string };
 const oauthWatchers = new Map<string, NodeJS.Timeout>();
 const oauthCompletions = new Map<string, OauthCompletion>();
@@ -471,82 +469,6 @@ function modelIdsForLegacyProvider(providerId: number): string[] {
   return [...ids];
 }
 
-function normalizeBaseUrl(value: unknown): string {
-  return String(value || "").trim().replace(/\/+$/, "");
-}
-
-function routableBaseUrl(value: string): boolean {
-  try { return ["http:", "https:"].includes(new URL(value).protocol); }
-  catch { return false; }
-}
-
-function openRouterFreeFlag(model: Record<string, unknown>): boolean | undefined {
-  if (String(model.id || model.name || "").toLowerCase().endsWith(":free")) return true;
-  const pricing = model.pricing && typeof model.pricing === "object" ? model.pricing as Record<string, unknown> : null;
-  if (!pricing) return undefined;
-  const values = [pricing.prompt, pricing.completion].map((value) => Number(value));
-  if (values.some((value) => !Number.isFinite(value))) return undefined;
-  return values.every((value) => value === 0);
-}
-
-async function fetchModelCatalog(provider: Pick<RoutingProvider, "type" | "baseUrl" | "apiKey" | "accessToken">): Promise<ModelDiscovery[]> {
-  const baseUrl = normalizeBaseUrl(provider.baseUrl);
-  if (!baseUrl || !routableBaseUrl(baseUrl)) throw new Error("Automatic model discovery is unavailable for this account.");
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15_000);
-  try {
-    const headers = new Headers({ Accept: "application/json" });
-    const credential = String(provider.apiKey || provider.accessToken || "").trim();
-    if (credential) headers.set("Authorization", `Bearer ${credential}`);
-    const response = await fetch(`${baseUrl}/models`, { headers, signal: controller.signal, redirect: "error" });
-    if (!response.ok) throw new Error(`The provider's model catalog is unavailable (HTTP ${response.status}).`);
-    const announcedBytes = Number(response.headers.get("content-length") || 0);
-    if (announcedBytes > 8 * 1024 * 1024) throw new Error("The provider's model catalog is too large to preview safely.");
-    const rawPayload = await response.text();
-    if (rawPayload.length > 8 * 1024 * 1024) throw new Error("The provider's model catalog is too large to preview safely.");
-    let payload: unknown;
-    try { payload = JSON.parse(rawPayload); }
-    catch { throw new Error("The provider's model catalog did not return valid JSON."); }
-    const raw = Array.isArray(payload)
-      ? payload
-      : payload && typeof payload === "object" && Array.isArray((payload as { data?: unknown }).data)
-        ? (payload as { data: unknown[] }).data
-        : [];
-    const models = raw.flatMap((entry): ModelDiscovery[] => {
-      if (typeof entry === "string") return entry.trim() ? [{ id: entry.trim(), name: entry.trim() }] : [];
-      if (!entry || typeof entry !== "object") return [];
-      const item = entry as Record<string, unknown>;
-      const id = String(item.id || item.name || "").trim().slice(0, 512);
-      if (!id) return [];
-      const free = String(provider.type || "") === "openrouter" ? openRouterFreeFlag(item) : undefined;
-      return [{ id, name: String(item.name || id).trim().slice(0, 512) || id, ...(free === undefined ? {} : { free }) }];
-    });
-    return [...new Map(models.map((model) => [model.id, model])).values()].slice(0, 5_000);
-  } catch (error) {
-    if ((error as Error).name === "AbortError") throw new Error("The provider's model catalog did not respond in time.");
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function previewStoredProviderModels(provider: RoutingProvider, userId: number): Promise<Record<string, unknown>> {
-  try {
-    const models = await fetchModelCatalog(provider);
-    if (!models.length) return { ok: false, error: "The provider returned no models. Add an exact model ID manually instead." };
-    for (const [token, preview] of modelRefreshPreviews) {
-      if (preview.expiresAt < now() || (preview.userId === userId && preview.providerId === provider.id)) modelRefreshPreviews.delete(token);
-    }
-    if (modelRefreshPreviews.size >= 512) modelRefreshPreviews.delete(modelRefreshPreviews.keys().next().value as string);
-    const previewToken = `models_${randomBytes(18).toString("hex")}`;
-    const expiresAt = now() + 10 * 60_000;
-    modelRefreshPreviews.set(previewToken, { userId, providerId: provider.id, models, expiresAt });
-    return { ok: true, previewToken, models, expiresAt };
-  } catch (error) {
-    return { ok: false, error: `${(error as Error).message} Add an exact model ID manually instead.` };
-  }
-}
-
 async function previewOpenRouterConnection(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   const modelId = String(payload.modelId || "").trim();
   if (modelId) return { ok: true, models: [{ id: modelId, name: modelId }], validation: "manual-model" };
@@ -559,31 +481,6 @@ async function previewOpenRouterConnection(payload: Record<string, unknown>): Pr
   } catch (error) {
     return { ok: false, error: (error as Error).message };
   }
-}
-
-function applyStoredProviderModels(target: RoutingRuntime, provider: RoutingProvider, userId: number, value: Record<string, unknown>): Record<string, unknown> {
-  const previewToken = String(value.previewToken || "");
-  const preview = modelRefreshPreviews.get(previewToken);
-  if (!preview || preview.userId !== userId || preview.providerId !== provider.id || preview.expiresAt < now()) {
-    modelRefreshPreviews.delete(previewToken);
-    return { ok: false, error: "That model preview expired. Refresh the catalog again before confirming." };
-  }
-  const available = new Set(preview.models.map((model) => model.id));
-  const selected = new Set((Array.isArray(value.modelIds) ? value.modelIds : []).map((id) => String(id)).filter((id) => available.has(id)));
-  const requested = Array.isArray(value.modelIds) ? value.modelIds.map((id) => String(id)) : [];
-  if (requested.some((id) => !available.has(id))) return { ok: false, error: "The selection contains a model that was not in this preview." };
-  target.store.update((config) => {
-    const current = config.providers.find((entry) => entry.id === provider.id);
-    if (!current) return;
-    const discovered = new Set(preview.models.map((model) => model.id));
-    const manual = (current.models || []).filter((model) => !discovered.has(typeof model === "string" ? model : model.id));
-    current.models = [
-      ...manual,
-      ...preview.models.map((model) => ({ id: model.id, name: model.name, enabled: selected.has(model.id) })),
-    ];
-  });
-  modelRefreshPreviews.delete(previewToken);
-  return { ok: true, providerId: provider.id, discovered: preview.models.length, enabled: selected.size };
 }
 
 function routeNameAvailable(config: RoutingConfig, name: string): boolean {
@@ -868,6 +765,7 @@ export async function startRoutingEngine(activityCallback?: (activity?: unknown,
     ensureInternalProvider(target);
     activityUnsubscribe = target.requestActivity.subscribe((activity) => publishRoutingActivity(activity));
     runtime = target;
+    startProviderModelAutoRefresh(target.store);
     return target;
   })().finally(() => { starting = null; });
   return starting;
@@ -890,7 +788,7 @@ export async function stopRoutingEngine(): Promise<void> {
   recentActivity.length = 0;
   recentUserActivity.clear();
   activeSystemRequests.clear();
-  modelRefreshPreviews.clear();
+  stopProviderModelAutoRefresh();
   if (target) await target.close({ drainMs: 10_000 });
 }
 
@@ -911,7 +809,7 @@ export async function routingInvoke(action: string, payload?: unknown, userId = 
   const comboId = String(value.id || (typeof payload === "string" ? payload : ""));
   const combo = comboId ? configBefore.combos.find((entry) => comboMatches(entry, comboId)) : undefined;
   const gatewayKey = keyId ? q1("SELECT id,user_id FROM user_routing_keys WHERE id=?", keyId) : undefined;
-  const providerMutation = ["app:remove-provider", "app:set-provider-enabled", "app:set-provider-visibility", "app:set-model-enabled", "app:set-all-models-enabled", "app:add-model", "app:remove-model", "app:preview-provider-models", "app:apply-provider-models"].includes(action);
+  const providerMutation = ["app:remove-provider", "app:set-provider-enabled", "app:set-provider-visibility", "app:set-model-enabled", "app:set-all-models-enabled", "app:add-model", "app:remove-model", "app:preview-provider-models", "app:apply-provider-models", "app:set-provider-model-auto-refresh"].includes(action);
   if (providerMutation && (!provider || !actorId || !ownedByUser(provider, actorId))) return { ok: false, error: "You can change only your own provider accounts." };
   if (gatewayKey && Number(gatewayKey.user_id || 0) !== actorId) return { ok: false, error: "You can change only your own endpoint keys." };
   if (["app:delete-combo"].includes(action) && (!combo || !actorId || !ownedByUser(combo, actorId))) return { ok: false, error: "You can change only your own routes." };
@@ -968,9 +866,13 @@ export async function routingInvoke(action: string, payload?: unknown, userId = 
     return previewStoredProviderModels(provider!, actorId);
   }
   if (action === "app:apply-provider-models") {
-    const applied = applyStoredProviderModels(target, provider!, actorId, value);
+    const applied = applyStoredProviderModels(target.store, provider!, actorId, value);
     if (applied.ok !== false) reconcileModelPolicies(target);
     return applied;
+  }
+  if (action === "app:set-provider-model-auto-refresh") {
+    const applied = await setProviderModelAutoRefresh(target.store, provider!, value.mode);
+    reconcileModelPolicies(target); return applied;
   }
   if (action === "app:usage" && actorId) {
     const requestedPeriod = typeof payload === "string" ? payload : String(value.period || "24h");
@@ -1126,6 +1028,11 @@ export async function routingState(userId = 0, isAdmin = true): Promise<Record<s
       ...provider,
       visibility: visibilityOf(providerMeta.get(String(provider.id)) || provider as RoutingProvider),
       mine: Number(providerMeta.get(String(provider.id))?.ownerUserId || 0) === userId,
+      modelAutoRefresh: providerMeta.get(String(provider.id))?.modelAutoRefreshMode === "all",
+      modelAutoRefreshFree: providerMeta.get(String(provider.id))?.modelAutoRefreshMode === "free",
+      modelAutoRefreshAttemptedAt: providerMeta.get(String(provider.id))?.modelAutoRefreshAttemptedAt || null,
+      modelAutoRefreshSucceededAt: providerMeta.get(String(provider.id))?.modelAutoRefreshSucceededAt || null,
+      modelAutoRefreshError: providerMeta.get(String(provider.id))?.modelAutoRefreshError || "",
       imageGenerationEnabled: enabled && ["chatgpt", "codex"].includes(String(provider.type || "")),
     }))
     : (state as { providers?: unknown }).providers;

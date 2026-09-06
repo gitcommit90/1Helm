@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-06
+
+### Added
+
+- Threads now expose their complete copyable number, can hand off current state and evidence into a fresh thread, and can retry an agent reply using the model selected at click time.
+- Silent scheduled checks appear chronologically as compact, expandable Follow-up activity groups with their disposition, evidence, and work log.
+- Web/PWA and desktop clients can deliver system notifications that navigate back to the relevant channel or thread; existing iOS/APNs delivery remains supported. Android notification scaffolding is fail-closed and does not require Firebase provisioning.
+- Provider model catalogs can refresh automatically every 24 hours on an opt-in basis. OpenRouter can instead track only its current free catalog.
+- Messages render trusted-delimiter inline and display TeX as safe KaTeX MathML, with inert fallback for malformed or untrusted expressions and local scrolling for wide equations.
+
+### Changed
+
+- Operational history is canonical across turns and restarts: tool calls and results stay paired, interrupted actions settle durably, provider IDs remain unique, and malformed legacy history is repaired only in model projection.
+- Automatic wakes must complete with verified evidence, persist a successor follow-up, or stop at a real human boundary. Each thread permits only one pending follow-up chain.
+- Thread usage is calculated natively from the exact outbound context and received model output. Context and cached values describe the latest call, while output and successful call count remain cumulative.
+- Provider refresh dialogs are scrollable and searchable by model name or ID. Manual Override is opt-in and, when enabled, makes the checked set the exact active model selection, including a valid zero-model selection.
+- Embedded ReRouted advances to 0.5.14 so Claude OAuth receives complete forwarded system context instead of a 400-character truncation.
+
+### Fixed
+
+- Agent turns no longer publish raw command output as a final answer or execute incomplete tool calls. Every provider request receives at least a 100,000-token output budget, and output-limit truncation fails closed.
+- Web, PWA, and native mobile clients recover authoritatively after suspension or foregrounding, replacing stale WebSockets and refreshing the exact open thread without losing route, scroll, focus, expanded details, or composer text.
+- Provider refresh and save actions remain reachable on short screens and large catalogs, including when search and Free-only filters are active.
+
 ## [1.4.2] - 2026-09-02
 
 ### Fixed

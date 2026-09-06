@@ -52,6 +52,60 @@ export const isNativeMobile = (): boolean => native;
 export const mobilePlatform = (): string => native ? Capacitor.getPlatform() : "web";
 export const getServerOrigin = (): string => serverOrigin;
 
+/**
+ * Run one foreground recovery callback across browser/PWA and native lifecycle
+ * signals. Browsers commonly emit several of these for one resume, so the
+ * caller owns coalescing the actual network work.
+ */
+export function installAppResumeBehavior(onResume: () => void): () => void {
+  let disposed = false;
+  let nativeHandle: { remove: () => Promise<void> } | null = null;
+  const resumeIfVisible = (): void => {
+    if (!disposed && document.visibilityState !== "hidden") onResume();
+  };
+  const onVisibility = (): void => { if (document.visibilityState === "visible") onResume(); };
+  document.addEventListener("visibilitychange", onVisibility);
+  window.addEventListener("pageshow", resumeIfVisible);
+  window.addEventListener("focus", resumeIfVisible);
+  window.addEventListener("online", resumeIfVisible);
+  if (native) {
+    void nativeModules!.then(async ({ App }) => {
+      const handle = await App.addListener("appStateChange", ({ isActive }) => { if (isActive) resumeIfVisible(); });
+      if (disposed) await handle.remove();
+      else nativeHandle = handle;
+    }).catch(() => undefined);
+  }
+  return () => {
+    disposed = true;
+    document.removeEventListener("visibilitychange", onVisibility);
+    window.removeEventListener("pageshow", resumeIfVisible);
+    window.removeEventListener("focus", resumeIfVisible);
+    window.removeEventListener("online", resumeIfVisible);
+    if (nativeHandle) void nativeHandle.remove().catch(() => undefined);
+    nativeHandle = null;
+  };
+}
+
+type ResumeConnection = { resume: () => void; dispose: () => void };
+let resumeConnection: ResumeConnection | null = null;
+let disposeResumeLifecycle: (() => void) | null = null;
+let resumeRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Own exactly one event transport and one coalesced foreground recovery loop. */
+export function replaceAppResumeRecovery(next: ResumeConnection, recover: () => void): void {
+  disposeAppResumeRecovery();
+  resumeConnection = next;
+  disposeResumeLifecycle = installAppResumeBehavior(() => {
+    if (resumeRecoveryTimer) clearTimeout(resumeRecoveryTimer);
+    resumeRecoveryTimer = setTimeout(() => { resumeRecoveryTimer = null; resumeConnection?.resume(); recover(); }, 120);
+  });
+}
+export function disposeAppResumeRecovery(): void {
+  if (resumeRecoveryTimer) clearTimeout(resumeRecoveryTimer);
+  resumeRecoveryTimer = null; resumeConnection?.dispose(); resumeConnection = null;
+  disposeResumeLifecycle?.(); disposeResumeLifecycle = null;
+}
+
 /** Track the truly visible viewport (browser chrome + keyboard), and let an
  * upward conversation scroll dismiss composition like a native messenger. */
 export function installMobileViewportBehavior(): void {

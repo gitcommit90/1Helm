@@ -11,6 +11,9 @@ interface Env {
   APNS_TEAM_ID?: string;
   APNS_KEY_ID?: string;
   APNS_PRIVATE_KEY?: string;
+  FCM_PROJECT_ID?: string;
+  FCM_CLIENT_EMAIL?: string;
+  FCM_PRIVATE_KEY?: string;
 }
 
 type WorkspaceRow = {
@@ -177,6 +180,58 @@ async function sendApns(env: Env, device: PushDeviceRow, notification: Record<st
   return { delivered: response.ok, permanent: response.status === 410 || ["BadDeviceToken", "DeviceTokenNotForTopic", "Unregistered"].includes(reason), reason };
 }
 
+let fcmAuthorization: { value: string; expires: number } | null = null;
+async function fcmAccessToken(env: Env): Promise<string> {
+  if (!env.FCM_PROJECT_ID || !env.FCM_CLIENT_EMAIL || !env.FCM_PRIVATE_KEY) throw new Error("FCM delivery is not configured.");
+  const timestamp = Math.floor(Date.now() / 1000);
+  if (fcmAuthorization && fcmAuthorization.expires - timestamp > 300) return fcmAuthorization.value;
+  const header = base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const claims = base64url(JSON.stringify({
+    iss: env.FCM_CLIENT_EMAIL,
+    scope: "https://www.googleapis.com/auth/firebase.messaging",
+    aud: "https://oauth2.googleapis.com/token",
+    iat: timestamp,
+    exp: timestamp + 3600,
+  }));
+  const key = await crypto.subtle.importKey("pkcs8", pemBytes(env.FCM_PRIVATE_KEY), { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
+  const signature = new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(`${header}.${claims}`)));
+  const assertion = `${header}.${claims}.${base64url(signature)}`;
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion }),
+  });
+  const body = await response.json().catch(() => ({})) as { access_token?: string; expires_in?: number; error_description?: string };
+  if (!response.ok || !body.access_token) throw new Error(body.error_description || `FCM authorization returned HTTP ${response.status}.`);
+  fcmAuthorization = { value: body.access_token, expires: timestamp + Number(body.expires_in || 3600) };
+  return body.access_token;
+}
+
+async function sendFcm(env: Env, device: PushDeviceRow, notification: Record<string, unknown>): Promise<{ delivered: boolean; permanent: boolean; reason: string }> {
+  if (!env.PUSH_DEVICE_ENCRYPTION_KEY || !env.FCM_PROJECT_ID) throw new Error("FCM delivery is not configured.");
+  const token = await unseal(env.PUSH_DEVICE_ENCRYPTION_KEY, device.token_cipher);
+  const authorization = await fcmAccessToken(env);
+  const sound = notification.sound === false ? undefined : "default";
+  const response = await fetch(`https://fcm.googleapis.com/v1/projects/${encodeURIComponent(env.FCM_PROJECT_ID)}/messages:send`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${authorization}`, "content-type": "application/json" },
+    body: JSON.stringify({ message: {
+      token,
+      notification: { title: String(notification.title || "1Helm").slice(0, 178), body: String(notification.body || "New activity").slice(0, 512) },
+      data: {
+        channelId: String(Number(notification.channelId || 0)),
+        messageId: String(Number(notification.messageId || 0)),
+        rootMessageId: String(Number(notification.rootMessageId || 0)),
+      },
+      android: { priority: "high", notification: { ...(sound ? { sound } : {}), channel_id: "1helm_activity", tag: String(notification.idempotency_key || `message-${notification.messageId || "new"}`).slice(0, 64) } },
+    } }),
+  });
+  const body = await response.json().catch(() => ({})) as { error?: { message?: string; details?: Array<{ errorCode?: string }> } };
+  const code = body.error?.details?.find((detail) => detail.errorCode)?.errorCode || "";
+  const reason = code || body.error?.message || (response.ok ? "" : `HTTP ${response.status}`);
+  return { delivered: response.ok, permanent: response.status === 404 || ["UNREGISTERED", "SENDER_ID_MISMATCH"].includes(code), reason };
+}
+
 async function pushDelivery(request: Request, env: Env): Promise<Response> {
   const body = await request.json().catch(() => ({})) as Record<string, unknown>;
   const installationId = String(body.installation_id || "");
@@ -196,15 +251,20 @@ async function pushDelivery(request: Request, env: Env): Promise<Response> {
   let delivered = 0;
   const errors: string[] = [];
   for (const device of devices) {
-    if (device.platform !== "ios") { errors.push("Android delivery is not configured."); continue; }
+    const alreadyDelivered = await env.REGISTRY.prepare("SELECT 1 FROM push_device_deliveries WHERE installation_id=? AND idempotency_key=? AND device_id=?").bind(installationId, idempotencyKey, device.id).first();
+    if (alreadyDelivered) { delivered += 1; continue; }
     try {
-      const outcome = await sendApns(env, device, { ...body, idempotency_key: idempotencyKey });
-      if (outcome.delivered) delivered += 1;
-      else if (outcome.reason) errors.push(outcome.reason);
+      const outcome = device.platform === "ios"
+        ? await sendApns(env, device, { ...body, idempotency_key: idempotencyKey })
+        : await sendFcm(env, device, { ...body, idempotency_key: idempotencyKey });
+      if (outcome.delivered) {
+        delivered += 1;
+        await env.REGISTRY.prepare("INSERT OR IGNORE INTO push_device_deliveries (installation_id,idempotency_key,device_id,delivered_at) VALUES (?,?,?,?)").bind(installationId, idempotencyKey, device.id, Date.now()).run();
+      } else if (outcome.reason) errors.push(outcome.reason);
       if (outcome.permanent) await env.REGISTRY.prepare("DELETE FROM push_devices WHERE id=?").bind(device.id).run();
     } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
   }
-  if (devices.length && delivered === 0 && errors.length) {
+  if (devices.length && errors.length) {
     await env.REGISTRY.prepare("DELETE FROM push_deliveries WHERE installation_id=? AND idempotency_key=? AND delivered_count=-1").bind(installationId, idempotencyKey).run();
     return json({ error: errors.join("; ").slice(0, 500) }, 502);
   }

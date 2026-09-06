@@ -4,10 +4,12 @@ import { broadcastToChannel } from "./events.ts";
 import { agentForBot, ensureThread, refreshThreadSummary, setAgentStatus, threadIdForRoot } from "./agents.ts";
 import { ensureChannelComputerRunning, satisfyObligation, upsertObligation } from "./channel-computers.ts";
 import { captainTextConsent, deliverCaptainText, mentionsCaptainTexting } from "./captain-texting.ts";
+import { settleWakeAfterTurn } from "./turns.ts";
 import { SKIPPER_CALL_APPROVAL_KIND, SKIPPER_CALL_APPROVE_ONCE, SKIPPER_CALL_APPROVE_THREAD, SKIPPER_CALL_DENY } from "./bot-output.ts";
 
 export { CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_DECLINE, CAPTAIN_TEXTING_PERMISSION_KIND, captainTextConsent, captainTextingPermissionPayload, captainTextingPrompt, captainTextToolDefinitions, deliverCaptainText, deliverResidentCaptainText, mentionsCaptainTexting } from "./captain-texting.ts";
 export { SKIPPER_CALL_APPROVAL_KIND, skipperCallApprovalPayload } from "./bot-output.ts";
+export { assertWakeDispositionAvailable, completeRuntimeFollowup, recordWakeDisposition, settleWakeAfterTurn, verifiedWakeDisposition, type WakeDisposition } from "./turns.ts";
 
 type SkipperDispatcher = (agent: Row, channelId: number, rootMessageId: number, reason: string) => string;
 let skipperDispatcher: SkipperDispatcher | null = null;
@@ -106,7 +108,7 @@ const CHECK_EVERY_MS = Number(process.env.FOLLOWUP_INTERVAL_MS || 15_000);
 const MIN_DELAY_SEC = 30;
 const MAX_DELAY_SEC = 365 * 24 * 60 * 60;
 const DEFAULT_MAX_ATTEMPTS = 48;
-const MAX_PENDING_PER_THREAD = 3;
+const MAX_PENDING_PER_THREAD = 1;
 
 type ScheduleOpts = {
   agentId: number;
@@ -124,6 +126,8 @@ type ScheduleOpts = {
   hostAuthorizedComputerIds?: number[];
   /** Runtime-owned lineage for a confirmed-running wake reschedule. */
   sourceFollowupId?: number;
+  /** Agent turn that created this follow-up, when created from a tool call. */
+  invocationId?: number;
   /** When true, mark the durable thread waiting (async work, not human input). */
   markWaiting?: boolean;
 };
@@ -240,7 +244,7 @@ export function scheduleAgentFollowup(opts: ScheduleOpts): { id: number; due_at:
     now(),
   );
   refreshThreadSummary(opts.rootMessageId);
-  appendThreadHistory(opts.threadId, "followup", { id, due_at: dueAt, reason, check_hint: String(opts.checkHint || ""), status: "pending", attempts: 0, max_attempts: maxAttempts }, "followup", id, `followup:${id}`);
+  appendThreadHistory(opts.threadId, "followup", { id, due_at: dueAt, reason, check_hint: String(opts.checkHint || ""), status: "pending", attempts: 0, max_attempts: maxAttempts }, "followup", id, `followup:${id}`, now(), opts.invocationId);
   const followup = {
     id,
     due_at: dueAt,
@@ -327,7 +331,7 @@ export function followupWakeStateInstructions(hostCommand: "available" | "unavai
     : hostCommand === "resident"
       ? "Host run_command capability: unavailable. Any run_command you receive is confined to this channel's resident computer."
       : "Host run_command capability: unavailable for this wake. If the requested check depends on host files or processes, its state is unknown.";
-  return `${capability}\nInspect the monitored operation from direct evidence and classify its state as exactly one of: still running; finished successfully; finished with failure; or unknown because inspection capability is unavailable or the check failed. This is the state of the operation you were waiting on, not necessarily completion of the Captain's requested outcome. If it finished successfully, immediately continue every remaining authorized step of the original request. If it failed, inspect the failure, fix or retry it autonomously, and continue; a failed CI job or subprocess is not a human-only blocker and does not cancel the original request. Only a directly confirmed-running operation may call schedule_followup without first doing more work, exactly once, with observed_state=confirmed_running. After your own repair or continuation starts another asynchronous operation, inspect it and schedule the next durable check when it is directly confirmed running. When re-scheduling from this automatic wake, omit user_update: the next check must be armed silently without posting another promise or progress reply. Publish a final reply only when the requested end outcome is verified complete or a genuine human-only boundary remains. Never stop merely because one intermediate operation ended, and never interpret inability to inspect as evidence that work is still running.`;
+  return `${capability}\nInspect the monitored operation from direct evidence and classify its state as exactly one of: still running; finished successfully; finished with failure; or unknown because inspection capability is unavailable or the check failed. This is the state of the operation you were waiting on, not necessarily completion of the Captain's requested outcome. If it finished successfully, immediately continue every remaining authorized step of the original request. If it failed, inspect the failure, fix or retry it autonomously, and continue; a failed CI job or subprocess is not a human-only blocker and does not cancel the original request. Only a directly confirmed-running operation may call schedule_followup without first doing more work, exactly once, with observed_state=confirmed_running. After your own repair or continuation starts another asynchronous operation, inspect it and schedule the next durable check when it is directly confirmed running. When re-scheduling from this automatic wake, omit user_update: the next check must be armed silently without posting another promise or progress reply. A scheduled wake is owned by the runtime until one machine-verifiable disposition is persisted: call complete_followup with substantive current-invocation evidence when the Captain's requested end outcome is complete; call schedule_followup to durably continue only after directly confirming a running operation; or call ask_user only for a genuine evidenced human-only boundary. Prose such as “I’ll continue” or “done” has no disposition effect and will be suppressed and safely requeued. Publish a final reply only after complete_followup succeeds or a genuine human-only boundary remains. Never stop merely because one intermediate operation ended, and never interpret inability to inspect as evidence that work is still running.`;
 }
 
 /** Next pending wake for a thread (soonest due_at), or null. */
@@ -465,6 +469,18 @@ function claimDueFollowups(limit = 10): Row[] {
   return claimed;
 }
 
+function suppressUnverifiedWakeReply(channelId: number, threadId: number, rootMessageId: number, turnId: number, error: string): void {
+  const turn = q1("SELECT message_id FROM agent_turns WHERE id=?", turnId);
+  if (!turn) return;
+  const messageId = Number(turn.message_id);
+  run("UPDATE messages SET body='[silent-success]',completed_at=COALESCE(completed_at,?) WHERE id=?", now(), messageId);
+  run("UPDATE agent_turns SET completion_mode='silent_success',final_body_hash=sha256('[silent-success]'),error=? WHERE id=?", error.slice(0, 500), turnId);
+  run("UPDATE agent_progress SET status='complete',updated=? WHERE message_id=? AND status='running'", now(), messageId);
+  appendThreadHistory(threadId, "wake_disposition_invalid", { turn_id: turnId, error }, "agent_turn_disposition_invalid", turnId, `invocation:${turnId}`, now(), turnId);
+  refreshThreadSummary(rootMessageId);
+  broadcastToChannel(channelId, { type: "message_deleted", channelId, id: messageId, deleted_ids: [messageId], parent_id: rootMessageId });
+}
+
 function finishFollowup(
   id: number,
   status: "done" | "failed" | "pending" | "cancelled",
@@ -582,8 +598,25 @@ async function fireFollowup(row: Row): Promise<void> {
     // Dynamic import avoids a static cycle with bots.ts (which imports scheduleAgentFollowup).
     const { runBot } = await import("./bots.ts");
     await runBot(bot, channelId, triggerId, rootMessageId, false, undefined, hostAuthorized, undefined, hostAuthorizedComputerIds);
-    finishFollowup(id, "done");
-    satisfyObligation(channelId, "followup", String(id));
+    const turn = q1("SELECT id FROM agent_turns WHERE trigger_id=? AND bot_id=? AND channel_id=? AND thread_root_id=?", triggerId, botId, channelId, rootMessageId);
+    const retryAt = now() + 60_000;
+    const settled = settleWakeAfterTurn(id, Number(turn?.id || 0), retryAt);
+    appendThreadHistory(threadId, "followup", { id, status: settled.status, error: "error" in settled ? settled.error : "", next_due_at: settled.status === "pending" ? retryAt : null }, "followup_finish", id, `followup:${id}`);
+    if (settled.status === "done") {
+      satisfyObligation(channelId, "followup", String(id));
+    } else {
+      if (turn) suppressUnverifiedWakeReply(channelId, threadId, rootMessageId, Number(turn.id), settled.error);
+      if (settled.status === "pending") {
+        upsertObligation(channelId, "followup", String(id), "wakeable", reason, retryAt);
+        run("UPDATE threads SET status='waiting',updated_at=? WHERE id=? AND status IN ('open','failed')", now(), threadId);
+      } else {
+        satisfyObligation(channelId, "followup", String(id));
+        createMessage({ channelId, parentId: rootMessageId, botId, body: `Runtime continuation guard stopped after ${maxAttempts} attempts because the wake never recorded verified completion, a linked successor, or a genuine human boundary.\n\n${settled.error}` });
+        run("UPDATE threads SET status='failed',updated_at=? WHERE id=?", now(), threadId);
+      }
+    }
+    const updated = q1("SELECT * FROM threads WHERE id=?", threadId);
+    if (updated) broadcastToChannel(channelId, { type: "thread_update", channelId, thread: updated });
     broadcastToChannel(channelId, {
       type: "followup",
       channelId,
@@ -629,8 +662,11 @@ export function recoverInterruptedFollowups(): number {
   const recoveredAt = now();
   const rows = q("SELECT id,channel_id,reason FROM agent_followups WHERE status='running'");
   for (const row of rows) {
-    if (q1("SELECT 1 FROM agent_followups WHERE source_followup_id=?", row.id)) {
-      run("UPDATE agent_followups SET status='done',last_error='successor persisted before server restart',updated=? WHERE id=? AND status='running'", recoveredAt, row.id);
+    const successor = q1(`SELECT af.id,th.invocation_id FROM agent_followups af LEFT JOIN thread_history th
+      ON th.source_type='followup' AND th.source_id=af.id AND th.kind='followup' WHERE af.source_followup_id=?`, row.id);
+    if (successor) {
+      run("UPDATE agent_followups SET status='done',completion_disposition='continued',completion_evidence=?,disposition_turn_id=?,last_error='successor persisted before server restart',updated=? WHERE id=? AND status='running'",
+        `Persisted linked successor follow-up #${successor.id} survived the interrupted wake.`, successor.invocation_id || null, recoveredAt, row.id);
       satisfyObligation(Number(row.channel_id), "followup", String(row.id));
     } else {
       run("UPDATE agent_followups SET status='pending',due_at=?,last_error='server restart interrupted scheduled wake',updated=? WHERE id=? AND status='running'", recoveredAt, recoveredAt, row.id);

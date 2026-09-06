@@ -3,7 +3,7 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypt
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BUILTIN_SKILLS } from "./builtin-skills.ts";
-import { cleanupLegacyWorkspaceArtifacts, migrateFollowupAuthorization } from "./database-migrations.ts";
+import { cleanupLegacyWorkspaceArtifacts, migrateFollowupAuthorization, migrateRuntimeContinuation, migrateThreadUx, migrateWebPush } from "./database-migrations.ts"; import { settleRestartInterruptedTools } from "./tool-history-recovery.ts";
 export const UNIVERSAL_RESIDENT_SKILL_SLUGS = [
   "outcome-ownership", "blocker-resolution", "skipper-escalation", "capability-discovery",
   "durable-memory", "workspace-artifacts", "quality-verification",
@@ -100,7 +100,6 @@ const addColumn = (table: string, name: string, ddl: string): void => {
   const columns = q(`PRAGMA table_info(${table})`).map((column) => String(column.name));
   if (!columns.includes(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
 };
-
 const hostLabel = (url: string): string => { try { return new URL(url).host; } catch { return url || "provider"; } };
 const providerKind = (url: string): string => /openrouter\.ai/i.test(url) ? "openrouter" : "openai";
 /** Additive migrations keep the legacy bot runtime usable while agents become canonical. */
@@ -141,7 +140,7 @@ export function migrate(): void {
   CREATE INDEX IF NOT EXISTS idx_agent_turns_agent_state ON agent_turns(agent_id,state);
   CREATE TABLE IF NOT EXISTS thread_history (
     id INTEGER PRIMARY KEY, thread_id INTEGER NOT NULL REFERENCES threads(id) ON DELETE CASCADE, seq INTEGER NOT NULL, kind TEXT NOT NULL,
-    payload TEXT NOT NULL DEFAULT '{}', source_type TEXT NOT NULL DEFAULT '', source_id INTEGER, span_id TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}', source_type TEXT NOT NULL DEFAULT '', source_id INTEGER, span_id TEXT NOT NULL DEFAULT '', invocation_id INTEGER REFERENCES agent_turns(id) ON DELETE SET NULL, created INTEGER NOT NULL,
     UNIQUE(thread_id,seq), UNIQUE(thread_id,source_type,source_id,kind));
   CREATE INDEX IF NOT EXISTS idx_thread_history_order ON thread_history(thread_id,seq);
   CREATE TABLE IF NOT EXISTS thread_history_compactions (
@@ -195,7 +194,7 @@ export function migrate(): void {
   addColumn("agent_turns", "requested_model", "requested_model TEXT NOT NULL DEFAULT ''");
   addColumn("agent_turns", "requested_provider_id", "requested_provider_id INTEGER");
   addColumn("agent_turns", "model_source", "model_source TEXT NOT NULL DEFAULT ''");
-  addColumn("agent_turns", "request_user_id", "request_user_id INTEGER");
+  addColumn("agent_turns", "request_user_id", "request_user_id INTEGER"); addColumn("thread_history", "invocation_id", "invocation_id INTEGER REFERENCES agent_turns(id) ON DELETE SET NULL"); db.exec("CREATE INDEX IF NOT EXISTS idx_thread_history_invocation ON thread_history(thread_id,invocation_id,seq)");
   addColumn("workspace", "installation_id", "installation_id TEXT NOT NULL DEFAULT ''");
   addColumn("workspace", "collaboration_enabled", "collaboration_enabled INTEGER NOT NULL DEFAULT 0");
   addColumn("workspace", "collaboration_slug", "collaboration_slug TEXT NOT NULL DEFAULT ''");
@@ -301,8 +300,7 @@ export function migrate(): void {
     tool TEXT NOT NULL,
     input_summary TEXT NOT NULL DEFAULT '',
     result_summary TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL,
-    created INTEGER NOT NULL
+    status TEXT NOT NULL, created INTEGER NOT NULL, invocation_id INTEGER REFERENCES agent_turns(id) ON DELETE SET NULL
   );
   CREATE INDEX IF NOT EXISTS idx_actions_thread ON tool_actions(thread_id, created DESC);
   CREATE TABLE IF NOT EXISTS escalations (
@@ -584,6 +582,7 @@ export function migrate(): void {
     SELECT bot_id, NEW.channel_id FROM agents WHERE id=NEW.agent_id AND bot_id IS NOT NULL;
   END;
   `);
+  addColumn("tool_actions", "invocation_id", "invocation_id INTEGER REFERENCES agent_turns(id) ON DELETE SET NULL"); db.exec("CREATE INDEX IF NOT EXISTS idx_tool_actions_invocation ON tool_actions(invocation_id,id)");
   cleanupLegacyWorkspaceArtifacts(run);
   // Photon is a private Captain ↔ Skipper inbox. Legacy channel mappings are
   // retained only long enough to migrate conversation history; they are no
@@ -680,11 +679,10 @@ export function migrate(): void {
   );
   CREATE INDEX IF NOT EXISTS idx_mobile_push_outbox_due ON mobile_push_outbox(state,next_attempt,id);
   `);
-  // Per-thread rough model usage (sum of provider-reported prompt/completion tokens).
-  addColumn("threads", "input_tokens", "input_tokens INTEGER NOT NULL DEFAULT 0");
+  migrateWebPush((sql) => db.exec(sql)); /* Native thread metrics: latest input/cache; cumulative output/calls. */ const hadNativeThreadMetrics = q("PRAGMA table_info(threads)").some((column) => String(column.name) === "native_metrics_version"); addColumn("threads", "input_tokens", "input_tokens INTEGER NOT NULL DEFAULT 0");
   addColumn("threads", "output_tokens", "output_tokens INTEGER NOT NULL DEFAULT 0");
-  addColumn("threads", "cached_input_tokens", "cached_input_tokens INTEGER NOT NULL DEFAULT 0");
-  addColumn("threads", "model_calls", "model_calls INTEGER NOT NULL DEFAULT 0");
+  addColumn("threads", "cached_input_tokens", "cached_input_tokens INTEGER NOT NULL DEFAULT 0"); addColumn("threads", "current_input_tokens", "current_input_tokens INTEGER NOT NULL DEFAULT 0"); addColumn("threads", "current_cached_input_tokens", "current_cached_input_tokens INTEGER NOT NULL DEFAULT 0"); addColumn("threads", "context_metric_segments", "context_metric_segments TEXT NOT NULL DEFAULT '[]'"); addColumn("threads", "native_metrics_version", "native_metrics_version INTEGER NOT NULL DEFAULT 1");
+  addColumn("threads", "model_calls", "model_calls INTEGER NOT NULL DEFAULT 0"); if (!hadNativeThreadMetrics) run("UPDATE threads SET input_tokens=0,output_tokens=0,cached_input_tokens=0,current_input_tokens=0,current_cached_input_tokens=0,context_metric_segments='[]'");
   addColumn("threads", "stopped_followup_pending", "stopped_followup_pending INTEGER NOT NULL DEFAULT 0"); addColumn("threads", "skipper_call_approved", "skipper_call_approved INTEGER NOT NULL DEFAULT 0 CHECK (skipper_call_approved IN (0,1))");
   addColumn("threads", "stop_requested", "stop_requested INTEGER NOT NULL DEFAULT 0");
   addColumn("messages", "stopped_followup", "stopped_followup INTEGER NOT NULL DEFAULT 0");
@@ -793,7 +791,7 @@ export function migrate(): void {
     PRIMARY KEY (channel_id, relative_path)
   );
   `);
-  migrateFollowupAuthorization(addColumn, (sql, ...params) => run(sql, ...params));
+  migrateFollowupAuthorization(addColumn, (sql, ...params) => run(sql, ...params)); migrateRuntimeContinuation(addColumn);
   // Append-only cryptographic continuity for the operational surfaces that
   // matter when reconstructing delegated work. SQLite triggers ensure events
   // are chained even when a future code path writes the source table directly.
@@ -1065,6 +1063,7 @@ export function migrate(): void {
       }
     }
   });
+  migrateThreadUx(addColumn, (sql, ...params) => params.length ? run(sql, ...params) : db.exec(sql));
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_slug ON channels(slug) WHERE status<>'deleted';");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_personal_main_owner ON channels(personal_main_owner_id) WHERE personal_main_owner_id IS NOT NULL AND status<>'deleted';");
   const currentWorkspaceName = normalizeWorkspaceName(q1("SELECT name FROM workspace WHERE id=1")?.name) || "My Workspace";
@@ -1138,10 +1137,10 @@ export function recoverInterruptedRuns(): void {
   // even though agents are ready and the reply body is real. Always clear those.
   run(`UPDATE agent_progress SET status='complete', updated=? WHERE status='running'
     AND NOT EXISTS (SELECT 1 FROM agent_turns at WHERE at.message_id=agent_progress.message_id AND at.state='queued')`, interruptedAt);
+  settleRestartInterruptedTools(q, q1, run, interruptedAt); // Retain IDs: SQLite reuse collides with canonical history.
   // Early native builds copied raw transcript snippets into Memory under the
   // summary kind. Session recaps belong to threads; they are not knowledge.
   run("DELETE FROM memory_items WHERE kind='summary' AND author_type='system'");
-  run("DELETE FROM tool_actions WHERE status='running'");
 }
 
 /** Ensure a new workspace has its configuration row and #main home channel. */

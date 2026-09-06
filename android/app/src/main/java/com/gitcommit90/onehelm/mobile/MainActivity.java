@@ -1,6 +1,9 @@
 package com.gitcommit90.onehelm.mobile;
 
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.Context;
+import android.os.Build;
 import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.CapConfig;
@@ -24,5 +27,10 @@ public class MainActivity extends BridgeActivity {
                 .create();
         }
         super.onCreate(savedInstanceState);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel("1helm_activity", "1Helm activity", NotificationManager.IMPORTANCE_HIGH);
+            channel.setDescription("Channel and resident-agent updates");
+            getSystemService(NotificationManager.class).createNotificationChannel(channel);
+        }
     }
 }

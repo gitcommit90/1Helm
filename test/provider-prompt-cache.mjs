@@ -55,3 +55,23 @@ test("custom and other providers receive no cache activation metadata", () => {
     assert.deepEqual(providerCacheRequest(model, messages, "scope"), { messages });
   }
 });
+
+test("Claude OAuth request shaping preserves complete late system context", () => {
+  const handoff = `THREAD_HANDOFF_START_${"handoff-state-".repeat(300)}THREAD_HANDOFF_END`;
+  const request = providerCacheRequest("claude/claude-fable-5-1", [
+    { role: "system", content: `identity-${"i".repeat(800)}` },
+    { role: "system", content: handoff },
+    { role: "user", content: "Confirm the handoff." },
+  ], "user:channel:thread");
+  const anthropic = claude.applyCloaking(
+    claude.toAnthropicBody({ messages: request.messages }, "claude-fable-5-1", false),
+    "sk-ant-oat-test", "00000000-0000-4000-8000-000000000000",
+  );
+  const firstUser = anthropic.messages.find((message) => message.role === "user");
+  const forwarded = Array.isArray(firstUser.content)
+    ? firstUser.content.map((block) => block.text || "").join("\n")
+    : String(firstUser.content || "");
+  assert.match(forwarded, /<system-reminder>/);
+  assert.ok(forwarded.includes(handoff), "the full late handoff system block must reach Claude OAuth");
+  assert.ok(forwarded.indexOf("THREAD_HANDOFF_END") < forwarded.indexOf("IMPORTANT:"), "the handoff must not be truncated before the reminder footer");
+});

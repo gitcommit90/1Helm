@@ -432,6 +432,19 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     assert.equal(Boolean(await page.$(".routing-fabric")), true, "Sources renders the real request delivered over the workspace WebSocket and retained by routing state");
     assert.equal(Boolean(await page.$(".routing-fabric-svg .routing-fabric-path")), true, "Sources uses the dotted Requests → router → provider live flow");
     assert.equal(Boolean(await page.$(`${accountSelector} [data-refresh-models]`)), true, "Refresh models is available beside connected-account controls");
+    assert.equal(await page.$$eval(`${accountSelector} [data-model-auto-refresh-controls] [data-model-auto-refresh]`, (inputs) => inputs.length), 1, "every provider exposes one all-model daily refresh control");
+    assert.equal(Boolean(await page.$(`${accountSelector} [data-model-auto-refresh="free"]`)), false, "free-only daily refresh is not shown for non-OpenRouter providers");
+    await page.click(`${accountSelector} [data-refresh-models]`);
+    await page.waitForSelector('[data-model-search]');
+    assert.equal(await page.$eval('[data-override-models]', (input) => input.checked), false, "catalog override is explicit and defaults off");
+    assert.equal(await page.$eval('[data-discovered-models]', (element) => getComputedStyle(element).overflowY), "auto", "the discovered model catalog is vertically scrollable");
+    assert.equal(await page.$$eval('[data-discovered-model]', (inputs) => inputs.length), 2, "the complete discovered catalog renders before search");
+    await page.$eval('[data-model-search]', (input) => { input.value = "SMALL"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+    assert.deepEqual(await page.$$eval('[data-discovered-model]', (inputs) => inputs.map((input) => input.dataset.discoveredModel)), ["mock-small"], "model search filters case-insensitively by model ID");
+    await page.$eval('[data-model-search]', (input) => { input.value = "no-such-model"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+    assert.match(await page.$eval('[data-discovered-models]', (element) => element.textContent || ""), /No models match this search/);
+    await page.evaluate(() => [...document.querySelectorAll('[data-model-refresh] button')].find((button) => button.textContent?.trim() === "Cancel")?.click());
+    await page.waitForFunction(() => !document.querySelector('[data-model-refresh]'));
     // The channel-header action lives below the full-screen Settings overlay.
     // Close Settings before exercising the same real click a user can make.
     await page.click('button[aria-label="Close settings"]');
@@ -518,6 +531,17 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     assert.equal(JSON.stringify(preview).includes("mock-key"), false, "model previews never return provider credentials");
     const replay = await fetch(`http://127.0.0.1:${appPort}/api/routing/action`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ action: "app:apply-provider-models", payload: { providerId: backupProvider, previewToken: preview.previewToken, modelIds: ["mock-large"] } }) });
     assert.equal(replay.status, 400, "a model preview token can be applied only once");
+    await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, { method: "POST", body: JSON.stringify({ action: "app:add-model", payload: { providerId: backupProvider, modelId: "obsolete-model" } }) });
+    const overridePreview = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, { method: "POST", body: JSON.stringify({ action: "app:preview-provider-models", payload: { providerId: backupProvider } }) });
+    await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, { method: "POST", body: JSON.stringify({ action: "app:apply-provider-models", payload: { providerId: backupProvider, previewToken: overridePreview.previewToken, modelIds: ["mock-large", "mock-small"], override: true } }) });
+    let refreshedProvider = (await json(`http://127.0.0.1:${appPort}/api/routing/state`, token)).providers.find((entry) => entry.id === backupProvider);
+    assert.equal(refreshedProvider.models.some((model) => model.id === "obsolete-model"), false, "Override removes saved models absent from the refreshed provider catalog");
+    const autoEnabled = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, { method: "POST", body: JSON.stringify({ action: "app:set-provider-model-auto-refresh", payload: { providerId: backupProvider, mode: "all" } }) });
+    assert.equal(autoEnabled.refresh.ok, true, "enabling daily refresh immediately establishes a current exact catalog");
+    refreshedProvider = (await json(`http://127.0.0.1:${appPort}/api/routing/state`, token)).providers.find((entry) => entry.id === backupProvider);
+    assert.equal(refreshedProvider.modelAutoRefresh, true); assert.equal(refreshedProvider.modelAutoRefreshFree, false, "all/free modes are exclusive in public provider state");
+    assert.equal((await fetch(`http://127.0.0.1:${appPort}/api/routing/action`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ action: "app:set-provider-model-auto-refresh", payload: { providerId: backupProvider, mode: "free" } }) })).status, 400, "free-only automatic refresh is rejected for non-OpenRouter providers");
+    await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, { method: "POST", body: JSON.stringify({ action: "app:set-provider-model-auto-refresh", payload: { providerId: backupProvider, mode: "off" } }) });
     await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, { method: "POST", body: JSON.stringify({ action: "app:set-all-models-enabled", payload: { providerId: backupProvider, enabled: true } }) });
 
     await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {

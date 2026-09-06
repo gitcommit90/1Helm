@@ -277,14 +277,16 @@ test("push relay authenticates installations, encrypts device tokens, signs APNs
     installations = new Map();
     devices = [];
     deliveries = new Map();
+    deviceDeliveries = new Set();
     prepare(sql) {
-      if (/push_(?:installations|devices|deliveries)/i.test(sql)) {
+      if (/push_(?:installations|devices|deliveries|device_deliveries)/i.test(sql)) {
         const registry = this;
         return {
           values: [],
           bind(...values) { this.values = values; return this; },
           async first() {
             if (/FROM push_installations/i.test(sql)) return registry.installations.get(this.values[0]) || null;
+            if (/FROM push_device_deliveries/i.test(sql)) return registry.deviceDeliveries.has(`${this.values[0]}:${this.values[1]}:${this.values[2]}`) ? { 1: 1 } : null;
             if (/FROM push_deliveries/i.test(sql)) return registry.deliveries.get(`${this.values[0]}:${this.values[1]}`) || null;
             return null;
           },
@@ -300,6 +302,8 @@ test("push relay authenticates installations, encrypts device tokens, signs APNs
               const existing = registry.devices.find((item) => item.installation_id === installationId && item.platform === platform && item.token_hash === tokenHash);
               if (existing) Object.assign(existing, { recipient_id: recipientId, token_cipher: tokenCipher, updated_at: updated });
               else registry.devices.push({ id: registry.devices.length + 1, installation_id: installationId, recipient_id: recipientId, platform, token_hash: tokenHash, token_cipher: tokenCipher, created_at: created, updated_at: updated });
+            } else if (/INSERT OR IGNORE INTO push_device_deliveries/i.test(sql)) {
+              registry.deviceDeliveries.add(`${this.values[0]}:${this.values[1]}:${this.values[2]}`);
             } else if (/INSERT OR IGNORE INTO push_deliveries/i.test(sql)) {
               const [installationId, idempotencyKey, recipientId, created] = this.values;
               const key = `${installationId}:${idempotencyKey}`;
@@ -360,6 +364,47 @@ test("push relay authenticates installations, encrypts device tokens, signs APNs
   assert.equal(jwt.split(".").length, 3);
   assert.equal(Buffer.from(jwt.split(".")[2].replace(/-/g, "+").replace(/_/g, "/"), "base64url").length, 64, "ES256 uses the raw 64-byte JWT signature APNs requires");
   assert.equal(apnsCalls[0].init.headers["apns-topic"], "com.gitcommit90.onehelm.mobile");
+
+  const androidRegistration = await body(await worker.fetch(request("/v1/push/devices", { method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" }, body: JSON.stringify({ installation_id: installationId, recipient_id: recipientId, platform: "android", token: "fcm:" + "c".repeat(64) }) }), pushEnv));
+  assert.equal(androidRegistration.status, 200);
+  const rsaPair = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+  const fcmPkcs8 = Buffer.from(await crypto.subtle.exportKey("pkcs8", rsaPair.privateKey)).toString("base64").match(/.{1,64}/g).join("\n");
+  Object.assign(pushEnv, { FCM_PROJECT_ID: "onehelm-test", FCM_CLIENT_EMAIL: "firebase-admin@test.invalid", FCM_PRIVATE_KEY: `-----BEGIN PRIVATE KEY-----\n${fcmPkcs8}\n-----END PRIVATE KEY-----` });
+  globalThis.fetch = async (url, init = {}) => {
+    apnsCalls.push({ url: String(url), init });
+    if (String(url) === "https://oauth2.googleapis.com/token") return Response.json({ access_token: "fcm-access", expires_in: 3600 });
+    if (String(url).includes("fcm.googleapis.com/v1/projects/onehelm-test/messages:send")) return Response.json({ name: "projects/onehelm-test/messages/1" });
+    return new Response(null, { status: 200 });
+  };
+  const crossPlatform = await body(await worker.fetch(request("/v1/push/deliveries", {
+    method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
+    body: JSON.stringify({ installation_id: installationId, recipient_id: recipientId, idempotency_key: "cross-platform", title: "Ready", body: "Done", channelId: 2, messageId: 4 }),
+  }), pushEnv));
+  assert.equal(crossPlatform.status, 200);
+  assert.equal(crossPlatform.json.delivered, 2, "APNs and FCM devices both receive the same recipient delivery");
+  const fcmCall = apnsCalls.find((call) => call.url.includes("fcm.googleapis.com"));
+  assert.equal(fcmCall.init.headers.authorization, "Bearer fcm-access");
+  assert.equal(JSON.parse(fcmCall.init.body).message.android.notification.channel_id, "1helm_activity");
+  assert.equal(JSON.parse(fcmCall.init.body).message.data.channelId, "2");
+
+  let failFcmOnce = true;
+  let partialApnsCalls = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("api.push.apple.com")) { partialApnsCalls += 1; return new Response(null, { status: 200 }); }
+    if (String(url).includes("fcm.googleapis.com")) {
+      if (failFcmOnce) { failFcmOnce = false; return Response.json({ error: { message: "temporary" } }, { status: 503 }); }
+      return Response.json({ name: "projects/onehelm-test/messages/2" });
+    }
+    if (String(url) === "https://oauth2.googleapis.com/token") return Response.json({ access_token: "fcm-access", expires_in: 3600 });
+    throw new Error(`Unexpected push call ${url}`);
+  };
+  const partialInit = { method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" }, body: JSON.stringify({ installation_id: installationId, recipient_id: recipientId, idempotency_key: "partial-retry", title: "Ready", body: "Done", channelId: 2, messageId: 5 }) };
+  const partialFailure = await body(await worker.fetch(request("/v1/push/deliveries", partialInit), pushEnv));
+  assert.equal(partialFailure.status, 502);
+  const partialSuccess = await body(await worker.fetch(request("/v1/push/deliveries", partialInit), pushEnv));
+  assert.equal(partialSuccess.status, 200);
+  assert.equal(partialSuccess.json.delivered, 2);
+  assert.equal(partialApnsCalls, 1, "retry resumes only the failed FCM device instead of duplicating the successful APNs delivery");
   registry.devices = [];
   const deliveryInit = { method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" }, body: JSON.stringify({ installation_id: installationId, recipient_id: recipientId, idempotency_key: "one-message", title: "Ready", body: "Done", channelId: 2, messageId: 3 }) };
   const delivered = await body(await worker.fetch(request("/v1/push/deliveries", deliveryInit), pushEnv));
