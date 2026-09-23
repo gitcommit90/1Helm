@@ -316,3 +316,152 @@ function nativeCallbackCode(value: string): string {
   }
   catch { return ""; }
 }
+
+type ConversationScrollIntent = { detached: boolean; lastTop: number; touchY: number | null };
+const intentByScroller = new WeakMap<HTMLElement, ConversationScrollIntent>();
+
+/** A deliberate move toward history owns the viewport immediately. Stream ticks
+ * must not repeatedly drag the reader back to the end before the gesture has
+ * travelled beyond the normal near-bottom tolerance. */
+function track(box: HTMLElement): ConversationScrollIntent {
+  const existing = intentByScroller.get(box);
+  if (existing) return existing;
+  const state: ConversationScrollIntent = { detached: false, lastTop: box.scrollTop, touchY: null };
+  intentByScroller.set(box, state);
+  box.addEventListener("wheel", (event) => {
+    if (event.deltaY < 0) state.detached = true;
+  }, { passive: true });
+  box.addEventListener("touchstart", (event) => {
+    state.touchY = event.touches[0]?.clientY ?? null;
+  }, { passive: true });
+  box.addEventListener("touchmove", (event) => {
+    const y = event.touches[0]?.clientY;
+    if (y != null && state.touchY != null && y > state.touchY + 2) state.detached = true;
+    if (y != null) state.touchY = y;
+  }, { passive: true });
+  box.addEventListener("touchend", () => { state.touchY = null; }, { passive: true });
+  box.addEventListener("scroll", () => {
+    const top = box.scrollTop;
+    if (top < state.lastTop - 1) state.detached = true;
+    if (box.scrollHeight - top - box.clientHeight <= 2) state.detached = false;
+    state.lastTop = top;
+  }, { passive: true });
+  return state;
+}
+
+export function userOwnsConversationScroll(box: HTMLElement): boolean {
+  return track(box).detached;
+}
+
+export function resetConversationScrollIntent(box: HTMLElement): void {
+  const state = track(box);
+  state.detached = false;
+  state.lastTop = box.scrollTop;
+}
+
+export function retainConversationScrollPosition(box: HTMLElement): void {
+  const state = track(box);
+  state.detached = true;
+  state.lastTop = box.scrollTop;
+}
+
+/** Which message row sits at the top of the viewport, and where. Rebuilt lists
+ * restore this instead of a pixel offset, because collapsed long messages are
+ * measured only after mount and pixel positions taken before a rebuild point
+ * somewhere else afterwards. */
+export type ConversationAnchor = { messageId: string; offset: number; top: number; detached: boolean };
+export function captureConversationAnchor(box: HTMLElement | null): ConversationAnchor | null {
+  if (!box) return null;
+  const detached = userOwnsConversationScroll(box);
+  const boxTop = box.getBoundingClientRect().top;
+  const rows = box.querySelectorAll<HTMLElement>("[data-message-id]");
+  for (const row of rows) {
+    const rect = row.getBoundingClientRect();
+    if (rect.bottom > boxTop + 1) return { messageId: row.dataset.messageId || "", offset: rect.top - boxTop, top: box.scrollTop, detached };
+  }
+  return { messageId: "", offset: 0, top: box.scrollTop, detached };
+}
+/** Put the anchored message back at the same viewport offset after a rebuild. */
+export function restoreConversationAnchor(box: HTMLElement | null, anchor: ConversationAnchor | null): void {
+  if (!box || !anchor) return;
+  const max = Math.max(0, box.scrollHeight - box.clientHeight);
+  const row = anchor.messageId ? box.querySelector<HTMLElement>(`[data-message-id="${anchor.messageId}"]`) : null;
+  let next = Math.min(Math.max(0, anchor.top), max);
+  if (row) {
+    const boxTop = box.getBoundingClientRect().top;
+    next = Math.min(Math.max(0, box.scrollTop + (row.getBoundingClientRect().top - boxTop) - anchor.offset), max);
+  }
+  if (box.scrollTop !== next) box.scrollTop = next;
+  if (anchor.detached) retainConversationScrollPosition(box);
+  else { const state = track(box); state.lastTop = box.scrollTop; }
+}
+
+/** Pin after flex layout settles, unless the reader takes control between the
+ * paint and the queued animation frame. */
+export function pinConversationScrollBottom(id: string, frames = 2): void {
+  const run = (left: number): void => {
+    const box = document.getElementById(id);
+    if (!box || userOwnsConversationScroll(box)) return;
+    box.scrollTop = box.scrollHeight;
+    if (left > 0) requestAnimationFrame(() => run(left - 1));
+  };
+  requestAnimationFrame(() => run(Math.max(0, frames - 1)));
+}
+
+type SidebarStatusChannel = { id: number; name: string; unread?: number; agent?: { status?: string } | null };
+
+/** Paint only the resident status decoration on matching desktop/mobile rows.
+ * High-frequency agent heartbeats must never rebuild a whole sidebar. */
+export function paintSidebarAgentStatus(channel: SidebarStatusChannel): void {
+  const working = channel.agent?.status === "working";
+  const unread = Number(channel.unread) > 0;
+  const emphasized = unread || working;
+  const labels = [channel.name, working ? "working" : "", unread ? "unread" : ""].filter(Boolean);
+  for (const surface of ["desktop", "mobile"] as const) {
+    const row = document.querySelector<HTMLElement>(`[data-continuity-key="sidebar-${surface}-channel-${channel.id}"]`);
+    if (!row) continue;
+    row.classList.toggle("font-semibold", emphasized);
+    row.classList.toggle("text-white", emphasized);
+    row.title = labels.join(" · ");
+    row.setAttribute("aria-label", labels.join(", "));
+    const name = row.querySelector<HTMLElement>(".channel-nav-label");
+    const badge = name?.querySelector<HTMLElement>(".channel-unread-badge");
+    if (unread && name && !badge) { const next = document.createElement("span"); next.className = "channel-unread-badge"; next.setAttribute("aria-hidden", "true"); name.append(next); }
+    else if (!unread) badge?.remove();
+    const collapsed = row.closest<HTMLElement>("[data-sidebar]")?.dataset.sidebarCollapsed === "true";
+    const existingDots = row.querySelector<HTMLElement>(".channel-working-dots");
+    const existingCompact = row.querySelector<HTMLElement>(".sidebar-compact-status");
+    if (collapsed) {
+      existingDots?.remove();
+      const compact = existingCompact || (emphasized ? document.createElement("span") : null);
+      if (compact && !existingCompact) { compact.className = "sidebar-compact-status"; compact.setAttribute("aria-hidden", "true"); row.firstElementChild?.append(compact); }
+      compact?.classList.toggle("is-working", working);
+      if (!emphasized) compact?.remove();
+    } else {
+      existingCompact?.remove();
+      if (working && !existingDots) {
+        const dots = document.createElement("span"); dots.className = "channel-working-dots shrink-0"; dots.title = "Agent working"; dots.setAttribute("aria-hidden", "true");
+        dots.append(document.createElement("span"), document.createElement("span"), document.createElement("span")); row.append(dots);
+      } else if (!working) existingDots?.remove();
+    }
+  }
+}
+
+/** Keep the clicked message at the same visual position while expanding or
+ * collapsing it. This neutralizes delayed focus/anchoring corrections in
+ * mobile WebKit without retaining control after the short layout window. */
+export function preserveConversationAnchor(anchor: HTMLElement, mutate: () => void): void {
+  const scroller = anchor.closest<HTMLElement>("#msgs,#threadmsgs");
+  if (!scroller) { mutate(); return; }
+  const anchorTop = anchor.getBoundingClientRect().top;
+  mutate();
+  const settle = (frames: number): void => {
+    const nextTop = scroller.scrollTop + anchor.getBoundingClientRect().top - anchorTop;
+    if (Math.abs(nextTop - scroller.scrollTop) > 0.5) scroller.scrollTop = nextTop;
+    retainConversationScrollPosition(scroller);
+    // Two immediate paint frames cover WebKit's delayed focus correction; the
+    // expansion owns no scroll behavior after that short layout window.
+    if (frames > 0) requestAnimationFrame(() => settle(frames - 1));
+  };
+  settle(2);
+}

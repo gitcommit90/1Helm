@@ -271,12 +271,22 @@ async function ensureUserGateway(userId: number): Promise<UserGatewayRuntime> {
   const recordUserUsage = (result: Record<string, unknown>, body: Record<string, unknown>, status: number, usage?: Record<string, unknown> | null): void => {
     const prompt = Number(usage?.prompt_tokens ?? usage?.input_tokens ?? 0) || 0;
     const completion = Number(usage?.completion_tokens ?? usage?.output_tokens ?? 0) || 0;
-    const cached = Number(usage?.cached_tokens ?? (usage?.prompt_tokens_details as Record<string, unknown> | undefined)?.cached_tokens ?? 0) || 0;
+    const promptDetails = usage?.prompt_tokens_details as Record<string, unknown> | undefined;
+    const inputDetails = usage?.input_tokens_details as Record<string, unknown> | undefined;
+    const cacheRead = Number(usage?.cache_read_tokens ?? usage?.cached_tokens ?? promptDetails?.cached_tokens ?? inputDetails?.cached_tokens ?? usage?.cache_read_input_tokens ?? 0) || 0;
+    const cacheWrite = Number(usage?.cache_write_tokens ?? usage?.cache_creation_input_tokens ?? promptDetails?.cache_creation_tokens ?? inputDetails?.cache_creation_tokens ?? 0) || 0;
+    const providerType = String(result.providerType || "").replace(/^codex$/, "chatgpt");
+    const excludesCache = providerType === "claude";
+    const tokenSemantics = excludesCache ? "input_excludes_cache_read_write" : "input_includes_cache_read";
+    const logicalInput = excludesCache ? prompt + cacheRead + cacheWrite : prompt;
+    const uncachedInput = excludesCache ? prompt + cacheWrite : Math.max(0, prompt - cacheRead);
     run(`INSERT INTO routing_usage_events
       (user_id,provider_id,model,status,prompt_tokens,completion_tokens,cached_tokens,detail,created)
       VALUES (?,?,?,?,?,?,?,?,?)`,
-    userId, String(result.providerId || ""), String(body.model || ""), status, prompt, completion, cached,
-    JSON.stringify({ providerType: result.providerType || "", providerName: result.providerName || "", accountAlias: result.accountAlias || null }).slice(0, 4000), now());
+    userId, String(result.providerId || ""), String(body.model || ""), status, prompt, completion, cacheRead,
+    JSON.stringify({ providerType, providerName: result.providerName || "", accountAlias: result.accountAlias || null,
+      cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite, uncached_input_tokens: uncachedInput,
+      logical_input_tokens: logicalInput, token_semantics: tokenSemantics }).slice(0, 4000), now());
   };
   const router = {
     ...baseRouter,
@@ -898,32 +908,60 @@ export async function routingInvoke(action: string, payload?: unknown, userId = 
       const providerName = String(current?.email || current?.profileName || accountAlias || humanCurrentName || humanStoredName || providerType || "Disconnected account").trim();
       return { provider: accountAlias && providerName !== accountAlias ? `${providerName} · ${accountAlias}` : providerName, providerName, providerType, accountAlias };
     };
-    const recent = rows.map((entry) => {
+    const enriched: Record<string, unknown>[] = rows.map((entry): Record<string, unknown> => {
       const detail = rowDetail(entry);
-      return { ...detail, ...providerIdentity(entry), providerId: String(entry.provider_id), model: String(entry.model), status: Number(entry.status), prompt_tokens: Number(entry.prompt_tokens), completion_tokens: Number(entry.completion_tokens), cached_tokens: Number(entry.cached_tokens), at: Number(entry.created) };
-    }).slice(0, 30);
-    const prompt = rows.reduce((sum, entry) => sum + Number(entry.prompt_tokens || 0), 0);
-    const completion = rows.reduce((sum, entry) => sum + Number(entry.completion_tokens || 0), 0);
-    const cached = rows.reduce((sum, entry) => sum + Number(entry.cached_tokens || 0), 0);
+      const identity = providerIdentity(entry);
+      const promptTokens = Number(entry.prompt_tokens || 0);
+      const cacheReadTokens = Number(detail.cache_read_tokens ?? entry.cached_tokens ?? 0);
+      const cacheWriteTokens = Number(detail.cache_write_tokens ?? 0);
+      const excludesCache = identity.providerType === "claude";
+      const tokenSemantics = String(detail.token_semantics || (excludesCache ? "input_excludes_cache_read_write" : "input_includes_cache_read"));
+      const logicalInputTokens = Number(detail.logical_input_tokens ?? (excludesCache ? promptTokens + cacheReadTokens + cacheWriteTokens : promptTokens));
+      const uncachedInputTokens = Number(detail.uncached_input_tokens ?? (excludesCache ? promptTokens + cacheWriteTokens : Math.max(0, promptTokens - cacheReadTokens)));
+      return { ...entry, ...detail, ...identity, cache_read_tokens: cacheReadTokens, cache_write_tokens: cacheWriteTokens,
+        uncached_input_tokens: uncachedInputTokens, logical_input_tokens: logicalInputTokens, token_semantics: tokenSemantics };
+    });
+    const recent = enriched.map((entry) => ({
+      ...entry, providerId: String(entry.provider_id), model: String(entry.model), status: Number(entry.status),
+      prompt_tokens: Number(entry.prompt_tokens), completion_tokens: Number(entry.completion_tokens),
+      cached_tokens: Number(entry.cache_read_tokens), at: Number(entry.created),
+    })).slice(0, 30);
+    const sum = (field: string): number => enriched.reduce((total, entry) => total + Number(entry[field] || 0), 0);
+    const prompt = sum("prompt_tokens");
+    const completion = sum("completion_tokens");
+    const cacheRead = sum("cache_read_tokens");
+    const cacheWrite = sum("cache_write_tokens");
+    const uncachedInput = sum("uncached_input_tokens");
+    const logicalInput = sum("logical_input_tokens");
     const aggregate = (key: "model" | "provider_id") => {
-      const grouped = new Map<string, { requests: number; prompt_tokens: number; completion_tokens: number; cached_tokens: number; total_tokens: number }>();
-      for (const row of rows) {
+      const grouped = new Map<string, { requests: number; prompt_tokens: number; completion_tokens: number; cached_tokens: number; cache_read_tokens: number; cache_write_tokens: number; uncached_input_tokens: number; logical_input_tokens: number; total_tokens: number; semantics: Set<string> }>();
+      for (const row of enriched) {
         const id = String(row[key] || "unknown");
-        const current = grouped.get(id) || { requests: 0, prompt_tokens: 0, completion_tokens: 0, cached_tokens: 0, total_tokens: 0 };
+        const current = grouped.get(id) || { requests: 0, prompt_tokens: 0, completion_tokens: 0, cached_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, uncached_input_tokens: 0, logical_input_tokens: 0, total_tokens: 0, semantics: new Set<string>() };
         current.requests += 1;
         current.prompt_tokens += Number(row.prompt_tokens || 0);
         current.completion_tokens += Number(row.completion_tokens || 0);
-        current.cached_tokens += Number(row.cached_tokens || 0);
-        current.total_tokens = current.prompt_tokens + current.completion_tokens;
+        current.cache_read_tokens += Number(row.cache_read_tokens || 0);
+        current.cached_tokens = current.cache_read_tokens;
+        current.cache_write_tokens += Number(row.cache_write_tokens || 0);
+        current.uncached_input_tokens += Number(row.uncached_input_tokens || 0);
+        current.logical_input_tokens += Number(row.logical_input_tokens || 0);
+        current.total_tokens = current.logical_input_tokens + current.completion_tokens;
+        current.semantics.add(String(row.token_semantics || "unknown"));
         grouped.set(id, current);
       }
-      return [...grouped].map(([id, totals]) => {
-        if (key === "model") return { model: id, ...totals };
-        const newest = rows.find((row) => String(row.provider_id || "unknown") === id) || {};
-        return { providerId: id, ...providerIdentity(newest), ...totals };
+      return [...grouped].map(([id, values]) => {
+        const { semantics, ...totals } = values;
+        const token_semantics = semantics.size === 1 ? [...semantics][0] : "mixed";
+        if (key === "model") return { model: id, token_semantics, ...totals };
+        const newest = enriched.find((row) => String(row.provider_id || "unknown") === id) || {};
+        return { providerId: id, ...providerIdentity(newest), token_semantics, ...totals };
       });
     };
-    return { ok: true, usage: { period, requests: rows.length, ok: rows.filter((entry) => Number(entry.status) >= 200 && Number(entry.status) < 400).length, errors: rows.filter((entry) => Number(entry.status) >= 400).length, prompt_tokens: prompt, completion_tokens: completion, cached_tokens: cached, total_tokens: prompt + completion, byModel: aggregate("model"), byProvider: aggregate("provider_id"), recent } };
+    return { ok: true, usage: { period, requests: rows.length, ok: rows.filter((entry) => Number(entry.status) >= 200 && Number(entry.status) < 400).length, errors: rows.filter((entry) => Number(entry.status) >= 400).length,
+      prompt_tokens: prompt, logical_input_tokens: logicalInput, uncached_input_tokens: uncachedInput,
+      completion_tokens: completion, cached_tokens: cacheRead, cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite,
+      total_tokens: logicalInput + completion, token_semantics: "provider_normalized", byModel: aggregate("model"), byProvider: aggregate("provider_id"), recent } };
   }
   if (action === "app:revoke-api-key" || action === "app:set-api-key-enabled") {
     if (!gatewayKey) return { ok: false, error: "Endpoint key not found." };

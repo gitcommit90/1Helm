@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-23
+
+### Added
+
+- Channels can opt into Session presentation, per-channel Default/Comfy/Compact density, and Default/By active ordering without changing the underlying conversation model.
+- Board now uses authoritative operational lanes—Working, Needs you, Scheduled, Failed, and Complete—with idle and archived sessions kept in collapsed history.
+- Messages expose a direct Copy action, and ordinary Work Log steps show user-local timestamps.
+- Native vision sends supported human image uploads to compatible models as image content and lets resident agents inspect workspace images through the bounded `view_image` tool.
+- Clients record the user's IANA time zone so agent invocations receive both user-local time and the exact UTC instant.
+
+### Changed
+
+- Thread navigation is latest-intent-wins, deduplicates duplicate destinations, paints bounded cached snapshots immediately, loads channel and thread data concurrently, and server-paginates long threads while preserving the visible anchor when older replies load.
+- Board and thread listings use lightweight bounded payloads so large channels avoid unnecessary database, transfer, and browser work.
+- Provider cache policy is applied after the actual route is selected. Claude receives reusable stable and rolling breakpoints; ChatGPT and xAI receive stable thread-scoped cache keys; provider usage is normalized into cache reads, cache writes, uncached input, and logical input.
+- Embedded ReRouted advances to 0.5.15 with bounded model validation, Claude Code 2.1.280 OAuth compatibility, cross-turn Claude cache reuse, and valid atomic serialization of parallel Claude tool results.
+
+### Fixed
+
+- Reader-controlled conversation and Work Log scrolling remains stable through live updates, sidebar changes, message expansion, reconnects, foreground recovery, and growing streamed replies.
+- Stopping or cancelling a running scheduled wake authoritatively cancels its durable follow-up, prevents finalization from re-arming it, and keeps cancellation controls visible while it runs.
+- Manual provider model tests time out cleanly instead of remaining indefinitely in a testing state.
+- Photon outages no longer restart the entire 1Helm service.
+- Saved channel density is authoritative on rendered session cards.
+
 ## [1.5.0] - 2026-09-06
 
 ### Added

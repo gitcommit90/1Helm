@@ -4,10 +4,10 @@ import { browserNotificationState, disableBrowserNotifications, disableNativeNot
 import { openCreateChannel, renderActivity, renderBoard, renderChannelSettings, renderFiles, renderGlobalThreads, renderMemory, renderNotes, renderTexts, renderThreads, type ChannelView } from "./channel.ts";
 import { configureWorkflowUi, renderWorkflows, skipperCallApprovalQuestions } from "./workflows.ts";
 import { patchLiveMessageRow } from "./live-message-patch.ts";
-import { configureThreadUx, copyThreadNumber, fetchSilentFollowupActivity, handoffCurrentThread, handoffIcon, renderThreadTimelineRows, retryAgentReply } from "./thread-ux.ts";
+import { configureThreadUx, copyTextToClipboard, copyThreadNumber, fetchSilentFollowupActivity, handoffCurrentThread, handoffIcon, renderThreadTimelineRows, retryAgentReply } from "./thread-ux.ts";
 import { clearProgressState, progressOpenByMessage, progressStepOpen, progressTimelineItems, progressTimelineScroll, retainLoadedProgress, snapshotProgressOpenState } from "./progress-state.ts";
 import { finishOpenRouterOAuthLazy, lazySurfacePlaceholder, openOnboardingLazy, openRoutingPopoverLazy, openSettingsLazy, pushRoutingActivityLazy, refreshOpenSkillsSettingsLazy, renderCoworkLazy, setActiveCoworkChannelLazy, stageCoworkPathLazy, terminal } from "./lazy-features.ts";
-import { apiUrl, disposeAppResumeRecovery, finishNativeLaunch, forgetMobileServer, getServerOrigin, isNativeMobile, replaceAppResumeRecovery, serverAssetUrl } from "./mobile.ts";
+import { apiUrl, captureConversationAnchor, disposeAppResumeRecovery, finishNativeLaunch, forgetMobileServer, getServerOrigin, isNativeMobile, paintSidebarAgentStatus, pinConversationScrollBottom, preserveConversationAnchor, replaceAppResumeRecovery, resetConversationScrollIntent, restoreConversationAnchor, retainConversationScrollPosition, serverAssetUrl, userOwnsConversationScroll, type ConversationAnchor } from "./mobile.ts";
 import { refreshResidentFileUploadIndicator } from "./file-uploads.ts";
 import {
   formatThreadFollowupCountdown,
@@ -22,7 +22,7 @@ import {
   workingChipLabel,
   workingDisplayBody,
 } from "./thread-formatters.ts";
-import { S, applyThreadSnapshot, defaultChannelView, resyncVisibleState, type ChannelUiView, type ThreadSnapshot } from "./state.ts";
+import { S, applyThreadSnapshot, defaultChannelView, resyncVisibleState, NavigationCoordinator, type NavigationTicket, type ChannelUiView, type ThreadSnapshot } from "./state.ts";
 import { appAlert, appConfirm, appModal, appPrompt } from "./dialogs.ts";
 import { setSettingsUi } from "./settings-ui.ts";
 import { setSpeechUi } from "./speech-ui.ts";
@@ -38,19 +38,72 @@ configureAttachmentUi({ h, icon, serverAssetUrl, getToken, stageCoworkPathLazy, 
 let forceMsgsScrollBottom = false;
 let forceThreadScrollBottom = false;
 /** Carry channel scroll across shell rebuilds (open/close thread destroys #msgs). */
-let pendingMsgsScroll: { top: number; stick: boolean } | null = null;
+let pendingMsgsScroll: { top: number; stick: boolean; anchor: ConversationAnchor | null } | null = null;
+/** Thread scroll captured before a shell rebuild destroys #threadmsgs. */
+let pendingThreadScroll: { rootId: number; top: number; stick: boolean; anchor: ConversationAnchor | null } | null = null;
 /** Last successful channel stick state — survives same-turn re-render before rAF pin lands. */
 let lastMsgsStick = true;
 /** Keep ordinary chat mounts small. Older fetched roots are revealed locally. */
 let visibleRootCount = 40;
-/** After layout settles, pin a scroller to the end (fresh #msgs often has clientHeight before flex height). */
-function pinScrollBottom(id: string, frames = 2): void {
-  const run = (left: number): void => {
-    const box = document.getElementById(id);
-    if (box) box.scrollTop = box.scrollHeight;
-    if (left > 0) requestAnimationFrame(() => run(left - 1));
-  };
-  requestAnimationFrame(() => run(Math.max(0, frames - 1)));
+const navigation = new NavigationCoordinator();
+let pendingNavigationKey = "";
+type CachedChannelSnapshot = { at: number; messages: Message[]; bots: Bot[] };
+type CachedThreadSnapshot = { at: number; data: ThreadSnapshot };
+const channelSnapshotCache = new Map<number, CachedChannelSnapshot>();
+const threadSnapshotCache = new Map<number, CachedThreadSnapshot>();
+
+function boundedCacheSet<K, V>(cache: Map<K, V>, key: K, value: V, max: number): void {
+  cache.delete(key); cache.set(key, value);
+  while (cache.size > max) cache.delete(cache.keys().next().value!);
+}
+function messageSnapshotMarker(messages: Message[]): string {
+  const first = messages[0], last = messages.at(-1);
+  const marker = (message?: Message): string => message ? `${message.id}:${message.body?.length || 0}:${message.completed_at || 0}:${message.progress?.at(-1)?.updated || 0}` : "";
+  return `${messages.length}:${marker(first)}:${marker(last)}`;
+}
+function sameThreadSnapshot(left: ThreadSnapshot, right: ThreadSnapshot): boolean {
+  return left.root.id === right.root.id
+    && messageSnapshotMarker(left.replies) === messageSnapshotMarker(right.replies)
+    && Number(left.reply_count || 0) === Number(right.reply_count || 0)
+    && Boolean(left.has_more) === Boolean(right.has_more)
+    && Number(left.followup?.id || 0) === Number(right.followup?.id || 0)
+    && (left.followup_activity?.length || 0) === (right.followup_activity?.length || 0)
+    && Number(left.usage?.model_calls || 0) === Number(right.usage?.model_calls || 0);
+}
+function rememberVisibleSnapshots(): void {
+  if (S.channelId && S.messages) boundedCacheSet(channelSnapshotCache, S.channelId, { at: Date.now(), messages: S.messages, bots: S.channelBots }, 8);
+  if (S.threadRoot) boundedCacheSet(threadSnapshotCache, S.threadRoot.id, { at: Date.now(), data: {
+    root: S.threadRoot, replies: S.threadReplies, reply_count: S.threadReplyCount, has_more: S.threadHasMore, before: S.threadBefore,
+    followup: S.threadFollowup, followup_activity: S.threadFollowupActivity, stop_requested: S.threadStopContinuation, usage: S.threadUsage,
+  } }, 16);
+}
+function beginNavigation(key: string): NavigationTicket | null {
+  if (pendingNavigationKey === key) return null;
+  pendingNavigationKey = key;
+  const ticket = navigation.begin(key);
+  const shell = document.getElementById("app-shell"); if (shell) { shell.dataset.navigationPending = key; shell.setAttribute("aria-busy", "true"); }
+  return ticket;
+}
+function finishNavigation(ticket: NavigationTicket): void {
+  navigation.finish(ticket);
+  if (pendingNavigationKey !== ticket.key) return;
+  pendingNavigationKey = "";
+  const shell = document.getElementById("app-shell"); if (shell) { delete shell.dataset.navigationPending; shell.removeAttribute("aria-busy"); }
+}
+function cancelNavigation(): void {
+  navigation.supersede(); pendingNavigationKey = "";
+  const shell = document.getElementById("app-shell"); if (shell) { delete shell.dataset.navigationPending; shell.removeAttribute("aria-busy"); }
+}
+function paintSidebarSelection(previousId: number, nextId: number): void {
+  for (const surface of ["desktop", "mobile"] as const) {
+    for (const id of new Set([previousId, nextId])) {
+      const row = document.querySelector<HTMLElement>(`[data-continuity-key="sidebar-${surface}-channel-${id}"]`); if (!row) continue;
+      const active = id === nextId;
+      row.classList.toggle("nav-item-active", active); row.classList.toggle("nav-item-idle", !active);
+    }
+  }
+  const previous = S.channels.find((channel) => channel.id === previousId); if (previous) paintSidebarAgentStatus(previous);
+  const next = S.channels.find((channel) => channel.id === nextId); if (next) paintSidebarAgentStatus(next);
 }
 function channelViewKey(channelId: number): string { return `channel_view:${channelId}`; }
 function getChannelView(channelId: number): ChannelUiView {
@@ -155,7 +208,7 @@ function scheduleHostUpdatePromptChecks(): void {
 
 type UiContinuity = {
   active: { key: string; start: number | null; end: number | null; value: string | null; checked: boolean | null; node: HTMLElement | null } | null;
-  scroll: Array<{ key: string; top: number; left: number }>;
+  scroll: Array<{ key: string; top: number; left: number; node: HTMLElement }>;
   details: Array<{ key: string; open: boolean }>;
 };
 function continuityKey(element: Element): string | null {
@@ -183,9 +236,11 @@ export function captureUiContinuity(scope: ParentNode): UiContinuity {
     ? { start: activeElement.selectionStart, end: activeElement.selectionEnd, value: activeElement.value, checked: activeElement instanceof HTMLInputElement && ["checkbox", "radio"].includes(activeElement.type) ? activeElement.checked : null }
     : activeElement instanceof HTMLSelectElement ? { start: null, end: null, value: activeElement.value, checked: null }
     : { start: null, end: null, value: null, checked: null };
-  const scroll = Array.from(scope.querySelectorAll<HTMLElement>("[data-continuity-key],#msgs,#threadmsgs,#channelview"))
+  // Conversation scrollers (#msgs/#threadmsgs) restore by anchored message inside
+  // their own renderers; a pixel replay here would fight that after collapse measurement.
+  const scroll = Array.from(scope.querySelectorAll<HTMLElement>("[data-continuity-key],#channelview"))
     .filter((element) => element.scrollTop !== 0 || element.scrollLeft !== 0)
-    .flatMap((element) => { const key = continuityKey(element); return key ? [{ key, top: element.scrollTop, left: element.scrollLeft }] : []; });
+    .flatMap((element) => { const key = continuityKey(element); return key ? [{ key, top: element.scrollTop, left: element.scrollLeft, node: element }] : []; });
   const details = Array.from(scope.querySelectorAll<HTMLDetailsElement>("details[data-continuity-key]"))
     .flatMap((element) => { const key = continuityKey(element); return key ? [{ key, open: element.open }] : []; });
   return { active: activeKey ? { key: activeKey, node: activeElement, ...selection } : null, scroll, details };
@@ -205,12 +260,25 @@ export function restoreUiContinuity(snapshot: UiContinuity): void {
       if ((element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) && snapshot.active.start != null && snapshot.active.end != null) element.setSelectionRange(snapshot.active.start, snapshot.active.end);
     }
   }
+  // Record the actual post-write position. A browser may clamp while rebuilt
+  // content is still laying out; retry that case after paint. But never replay a
+  // stale snapshot over a reader who moved the same scroller in the meantime.
+  const restoredScroll = new Map<string, { top: number; left: number }>();
   for (const saved of snapshot.scroll) {
-    const element = document.querySelector<HTMLElement>(saved.key);
-    if (element) { element.scrollTop = saved.top; element.scrollLeft = saved.left; }
+    const element = saved.node.isConnected ? saved.node : document.querySelector<HTMLElement>(saved.key);
+    if (element && (element !== saved.node || element.scrollTop !== saved.top || element.scrollLeft !== saved.left)) {
+      element.scrollTop = saved.top; element.scrollLeft = saved.left;
+    }
+    if (element) restoredScroll.set(saved.key, { top: element.scrollTop, left: element.scrollLeft });
   }
   requestAnimationFrame(() => {
-    for (const saved of snapshot.scroll) { const element = document.querySelector<HTMLElement>(saved.key); if (element) { element.scrollTop = saved.top; element.scrollLeft = saved.left; } }
+    for (const saved of snapshot.scroll) {
+      const element = saved.node.isConnected ? saved.node : document.querySelector<HTMLElement>(saved.key);
+      const expected = restoredScroll.get(saved.key);
+      if (element && expected && element.scrollTop === expected.top && element.scrollLeft === expected.left) {
+        element.scrollTop = saved.top; element.scrollLeft = saved.left;
+      }
+    }
     // Re-measure multi-line composers after layout so restored drafts stay tall.
     document.querySelectorAll<HTMLTextAreaElement>("textarea[data-composer-parent]").forEach((input) => {
       if (input.value) resizeComposer(input);
@@ -468,38 +536,60 @@ async function loadWorkspace(): Promise<void> {
 }
 
 async function openChannel(id: number, view: ChannelView = "chat", threadRootId: number | null = null, replaceRoute = false, useLoadedMessages = false): Promise<void> {
-  // Persist the channel we're leaving so terminal/thread docks survive hops.
-  if (S.channelId && S.channelId !== id) persistCurrentChannelView();
   const requestedChannel = S.channels.find((channel) => channel.id === id);
+  if (!requestedChannel) return;
   if (view === "texts" && !textsAvailable(requestedChannel)) view = "chat";
-  S.channelId = id; S.threadRoot = null; S.threadFollowup = null; S.threadFollowupActivity = []; S.threadStopContinuation = false; S.threadUsage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, model_calls: 0 }; S.view = view; S.globalThreadsOpen = false;
-  applyChannelViewToState(id);
-  // Full Terminal tab is separate from the docked header terminal.
-  if (view === "terminal") S.terminalOpen = false;
-  if (!useLoadedMessages) {
-    const data = await api<{ messages: Message[]; bots: Bot[] }>(`/api/channels/${id}/messages?progress=summary`);
-    S.messages = data.messages; S.channelBots = data.bots;
-  }
-  // GET /messages already advances last_read server-side; keep client badge in sync.
-  const c = S.channels.find((x) => x.id === id); if (c) c.unread = 0;
-  // Channel hop: always land on latest. Clear leftover work-log open flags from the previous channel.
-  forceMsgsScrollBottom = view === "chat";
-  forceThreadScrollBottom = false;
-  lastMsgsStick = true;
-  clearProgressState();
-  visibleRootCount = 40;
-  // Ordinary channel hops keep the application shell mounted. Only the two
-  // navigation surfaces whose active/read state changed are repainted.
-  if (document.getElementById("app-shell")) { renderSidebar(); renderMain(); }
-  else renderApp();
-  writeRoute(c, view, threadRootId, replaceRoute);
-  // Explicit URL/threadRootId wins; otherwise restore profile-saved thread on channel hop.
   const savedThreadId = getChannelView(id).threadRootId;
   const openId = threadRootId != null ? threadRootId : (view === "chat" ? savedThreadId : null);
-  if (openId) {
-    const root = S.messages.find((message) => message.id === openId && message.parent_id == null);
-    if (root) await openThread(root, replaceRoute || threadRootId == null);
-  }
+  const key = `channel:${id}:${view}:${openId || 0}`;
+  const ticket = beginNavigation(key); if (!ticket) return;
+  rememberVisibleSnapshots();
+  const previousId = S.channelId;
+  if (previousId && previousId !== id) persistCurrentChannelView();
+
+  const commit = (channelData: { messages: Message[]; bots: Bot[] }, threadData: ThreadSnapshot | null): void => {
+    if (!navigation.current(ticket)) return;
+    S.channelId = id; S.view = view; S.globalThreadsOpen = false;
+    S.messages = channelData.messages; S.channelBots = channelData.bots;
+    S.threadRoot = null; S.threadReplies = []; S.threadReplyCount = 0; S.threadHasMore = false; S.threadBefore = null;
+    S.threadFollowup = null; S.threadFollowupActivity = []; S.threadStopContinuation = false;
+    S.threadUsage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, model_calls: 0 };
+    applyChannelViewToState(id);
+    if (view === "terminal") S.terminalOpen = false;
+    if (threadData) applyThreadSnapshot(threadData);
+    requestedChannel.unread = 0;
+    forceMsgsScrollBottom = view === "chat"; forceThreadScrollBottom = Boolean(threadData); lastMsgsStick = true;
+    clearProgressState(); visibleRootCount = 40;
+    if (document.getElementById("app-shell")) { paintSidebarSelection(previousId, id); renderMain(); }
+    else renderApp();
+    writeRoute(requestedChannel, view, threadData && view === "chat" ? threadData.root.id : null, replaceRoute);
+    persistCurrentChannelView();
+  };
+
+  const cachedChannel = useLoadedMessages && id === S.channelId
+    ? { at: Date.now(), messages: S.messages, bots: S.channelBots }
+    : channelSnapshotCache.get(id);
+  const cachedThread = openId ? threadSnapshotCache.get(openId) : undefined;
+  const canCommitCache = Boolean(cachedChannel && (!openId || cachedThread));
+  if (canCommitCache) commit(cachedChannel!, cachedThread?.data || null);
+  try {
+    const channelRequest = useLoadedMessages && id === S.channelId
+      ? Promise.resolve({ messages: S.messages, bots: S.channelBots })
+      : api<{ messages: Message[]; bots: Bot[] }>(`/api/channels/${id}/messages?progress=summary`, { signal: ticket.signal });
+    const threadRequest = openId
+      ? api<ThreadSnapshot>(`/api/messages/${openId}/thread?progress=summary&limit=24`, { signal: ticket.signal })
+          .catch((error) => { if (threadRootId != null) throw error; return null; })
+      : Promise.resolve(null);
+    const [channelData, threadData] = await Promise.all([channelRequest, threadRequest]);
+    if (!navigation.current(ticket)) return;
+    boundedCacheSet(channelSnapshotCache, id, { at: Date.now(), messages: channelData.messages, bots: channelData.bots }, 8);
+    if (threadData) boundedCacheSet(threadSnapshotCache, threadData.root.id, { at: Date.now(), data: threadData }, 16);
+    const channelChanged = !cachedChannel || messageSnapshotMarker(cachedChannel.messages) !== messageSnapshotMarker(channelData.messages);
+    const threadChanged = Boolean(threadData) !== Boolean(cachedThread) || Boolean(threadData && cachedThread && !sameThreadSnapshot(cachedThread.data, threadData));
+    if (!canCommitCache || channelChanged || threadChanged) commit(channelData, threadData);
+  } catch (error) {
+    if (!ticket.signal.aborted && navigation.current(ticket) && !canCommitCache) void appAlert((error as Error).message || "Could not open that destination");
+  } finally { finishNavigation(ticket); }
 }
 export async function reloadBots(): Promise<void> {
   S.bots = (await api<{ bots: Bot[] }>("/api/bots")).bots;
@@ -536,7 +626,9 @@ function bumpChannelUnread(channelId: number): void {
   const c = S.channels.find((x) => x.id === channelId);
   if (!c) return;
   c.unread = Math.max(0, Number(c.unread) || 0) + 1;
-  renderSidebar();
+  // Only opt-in unread grouping needs structural reordering.
+  if (S.groupUnreadChannelsFirst) renderSidebar();
+  else paintSidebarAgentStatus(c);
 }
 
 /** Message ids already counted for a live unread badge (agent reuses one id across stream ticks). */
@@ -577,10 +669,13 @@ function onEvent(e: any): void {
         unreadBadgeCounted.add(msg.id);
       }
       if (e.type === "message" && !mine) playNotification(msg.channel_id, mentionsMe ? "mention" : "msg");
-      // Stream ticks mutate one or two message rows. Rebuilding the whole thread
-      // panel here used to destroy the focused composer every 75 ms while an
-      // agent was working, which also reset selection and made scrolling jump.
-      paintLiveMessage(msg);
+      // A settled reply changes a session's activity rank. Rebuild only for
+      // active sorting; ordinary stream ticks keep the surgical row patch.
+      const activeSort = S.channels.find((channel) => channel.id === S.channelId)?.session_sort === "active";
+      if (activeSort && msg.parent_id != null && messageIsSettled(msg)) {
+        renderMessages();
+        if (S.threadRoot && Number(msg.parent_id) === Number(S.threadRoot.id)) paintLiveThreadMessage(msg);
+      } else paintLiveMessage(msg);
     } else if (!mine && messageIsSettled(msg)) {
       // Finished agent reply (or human message) while you're elsewhere → white name badge.
       // Count each message id once — stream ticks reuse the same Working… row.
@@ -638,10 +733,9 @@ function onEvent(e: any): void {
       S.view = "chat"; if (S.channelId) void openChannel(S.channelId); else renderApp();
     } else renderSidebar();
   } else if (e.type === "agent_status") {
-    applyAgentStatusEvent(e);
-    // Sidebar shows bouncing working dots on every channel row — always refresh.
-    renderSidebar();
-    if (e.channelId === S.channelId) renderHeader();
+    // Workspace-wide heartbeats patch one resident row, never either sidebar.
+    if (applyAgentStatusEvent(e)) { const channel = S.channels.find((item) => Number(item.id) === Number(e.channelId)); if (channel) paintSidebarAgentStatus(channel); }
+    if (e.channelId === S.channelId) { renderHeader(); if (S.view === "board") refreshChannelViewWithContinuity(); }
   } else if (e.type === "activity" || e.type === "escalation") {
     if (e.channelId === S.channelId && (S.view === "activity" || S.view === "memory")) refreshChannelViewWithContinuity();
   } else if (e.type === "thread_update") {
@@ -657,7 +751,12 @@ function onEvent(e: any): void {
     }
     if (Number(e.channelId) === Number(S.channelId) && S.threadRoot && Number(e.rootMessageId) === Number(S.threadRoot.id)) {
       S.threadFollowup = e.followup || null;
-      paintThreadFollowup(); void fetchSilentFollowupActivity(Number(S.threadRoot.id), api).then((activity) => { if (S.threadRoot && Number(e.rootMessageId) === Number(S.threadRoot.id)) { S.threadFollowupActivity = activity; renderThread(); } }).catch(() => {});
+      paintThreadFollowup(); void fetchSilentFollowupActivity(Number(S.threadRoot.id), api).then((activity) => {
+        if (S.threadRoot && Number(e.rootMessageId) === Number(S.threadRoot.id)) {
+          const merged = new Map([...S.threadFollowupActivity, ...activity].map((item) => [item.turn_id, item]));
+          S.threadFollowupActivity = [...merged.values()].sort((a, b) => a.message_id - b.message_id); renderThread();
+        }
+      }).catch(() => {});
     }
   } else if (e.type === "channel_bots") { if (S.channelBots) { S.channelBots = e.bots; renderHeader(); } }
   else if (e.type === "thread_usage") {
@@ -784,6 +883,9 @@ function applyMessage(msg: Message, isUpdate: boolean, authoritativeParent?: Mes
     return;
   }
   if (i >= 0) list[i] = msg; else list.push(msg);
+  if (msg.parent_id != null && S.threadRoot?.id === msg.parent_id) {
+    S.threadReplyCount = authoritativeParent ? Number(authoritativeParent.reply_count) : Math.max(S.threadReplyCount + (i < 0 ? 1 : 0), S.threadReplies.length);
+  }
   if (msg.parent_id == null && S.threadRoot?.id === msg.id) S.threadRoot = msg;
 }
 
@@ -929,6 +1031,8 @@ export function renderApp(): void {
     `[data-file-browser="${S.channelId}"], [data-cowork-surface="${S.channelId}"]`,
   ));
   document.documentElement.dataset.workspaceTheme = S.workspace?.theme || localStorage.getItem("ctrl.workspaceTheme") || "graphite";
+  captureMsgsScrollBeforeRebuild();
+  captureThreadScrollBeforeRebuild();
   clear(root);
   const shell = h("div", { id: "app-shell", class: "workspace-shell app-shell relative flex h-full min-h-0 min-w-0 overflow-hidden" },
     sidebar(),
@@ -1428,10 +1532,15 @@ function newDM(): void {
 
 // ---------------- main chat ----------------
 function openGlobalThreads(): void {
-  S.globalThreadsOpen = true;
-  S.threadRoot = null;
+  const ticket = beginNavigation("global-threads"); if (!ticket) return;
+  rememberVisibleSnapshots();
   // Resync unread badges from server — Threads inbox and channel list must agree.
-  void loadWorkspace().then(() => renderApp()).catch(() => renderApp());
+  void loadWorkspace().catch(() => undefined).then(() => {
+    if (!navigation.current(ticket)) return;
+    S.globalThreadsOpen = true; S.threadRoot = null; S.threadReplies = [];
+    S.threadReplyCount = 0; S.threadHasMore = false; S.threadBefore = null;
+    renderApp();
+  }).finally(() => finishNavigation(ticket));
 }
 
 function refreshMainWithContinuity(): void {
@@ -1443,10 +1552,7 @@ function refreshMainWithContinuity(): void {
     renderGlobalThreads(container, {
       unreadOnly: S.globalThreadsUnreadOnly,
       onToggleUnread: (next) => { S.globalThreadsUnreadOnly = next; refreshMainWithContinuity(); },
-      onOpen: (thread) => {
-        S.globalThreadsOpen = false;
-        void openChannel(thread.channel_id, "chat", thread.root_message_id);
-      },
+      onOpen: (thread) => { void openChannel(thread.channel_id, "chat", thread.root_message_id); },
     }, {
       preserveExisting: true,
       onPaint: continuity ? () => restoreUiContinuity(continuity) : undefined,
@@ -1456,6 +1562,23 @@ function refreshMainWithContinuity(): void {
   renderMain(true, continuity || undefined);
 }
 
+/** #threadmsgs is destroyed by shell rebuilds before renderRhs can read it, so
+ * capture the reader's anchored message while the old scroller still exists.
+ * A missing scroller must never be mistaken for stick-to-bottom. */
+function captureThreadScrollBeforeRebuild(): void {
+  const prior = document.getElementById("threadmsgs");
+  if (!prior || !S.threadRoot || forceThreadScrollBottom) return;
+  const stick = shouldStickScroll(prior);
+  pendingThreadScroll = { rootId: Number(S.threadRoot.id), top: prior.scrollTop, stick, anchor: stick ? null : captureConversationAnchor(prior) };
+}
+/** Same for #msgs when the whole app root is about to be cleared. */
+function captureMsgsScrollBeforeRebuild(): void {
+  const prior = document.getElementById("msgs");
+  if (!prior || forceMsgsScrollBottom) return;
+  let stick = shouldStickScroll(prior);
+  if (!stick && lastMsgsStick && prior.scrollTop === 0 && prior.scrollHeight > prior.clientHeight + 80) stick = true;
+  pendingMsgsScroll = { top: prior.scrollTop, stick, anchor: stick ? null : captureConversationAnchor(prior) };
+}
 function renderMain(preserveChannelSurface = false, continuity?: UiContinuity): void {
   setActiveCoworkChannelLazy(!S.globalThreadsOpen && (S.view === "cowork" || S.view === "notes") ? S.channelId : null);
   const main = document.getElementById("main")!;
@@ -1464,8 +1587,9 @@ function renderMain(preserveChannelSurface = false, continuity?: UiContinuity): 
   const priorMsgs = document.getElementById("msgs");
   const rootComposerSnap = S.view === "chat" ? captureComposerContinuity(null) : null;
   const threadComposerSnap = S.threadRoot ? captureComposerContinuity(S.threadRoot.id) : null;
+  captureThreadScrollBeforeRebuild();
   if (forceMsgsScrollBottom) {
-    pendingMsgsScroll = { top: 0, stick: true };
+    pendingMsgsScroll = { top: 0, stick: true, anchor: null };
   } else if (priorMsgs) {
     let stick = shouldStickScroll(priorMsgs);
     // Same-turn re-render (openThread right after openChannel) can still see scrollTop 0
@@ -1473,11 +1597,14 @@ function renderMain(preserveChannelSurface = false, continuity?: UiContinuity): 
     if (!stick && lastMsgsStick && priorMsgs.scrollTop === 0 && priorMsgs.scrollHeight > priorMsgs.clientHeight + 80) {
       stick = true;
     }
-    pendingMsgsScroll = { top: priorMsgs.scrollTop, stick };
-  } else {
-    // First chat paint (boot / non-chat → chat): land on latest.
-    pendingMsgsScroll = { top: 0, stick: true };
+    pendingMsgsScroll = { top: priorMsgs.scrollTop, stick, anchor: stick ? null : captureConversationAnchor(priorMsgs) };
+  } else if (!pendingMsgsScroll) {
+    // First chat paint (boot / non-chat → chat): land on latest. (renderApp may
+    // already have captured the channel scroller before clearing the root.)
+    pendingMsgsScroll = { top: 0, stick: true, anchor: null };
   }
+  // Only a chat paint consumes this; never carry it into a later chat open.
+  if (S.globalThreadsOpen || S.view !== "chat") pendingMsgsScroll = null;
   clear(main);
   refreshResidentFileUploadIndicator();
   if (S.globalThreadsOpen) {
@@ -1488,10 +1615,7 @@ function renderMain(preserveChannelSurface = false, continuity?: UiContinuity): 
     renderGlobalThreads(document.getElementById("channelview")!, {
       unreadOnly: S.globalThreadsUnreadOnly,
       onToggleUnread: (next) => { S.globalThreadsUnreadOnly = next; refreshMainWithContinuity(); },
-      onOpen: (thread) => {
-        S.globalThreadsOpen = false;
-        void openChannel(thread.channel_id, "chat", thread.root_message_id);
-      },
+      onOpen: (thread) => { void openChannel(thread.channel_id, "chat", thread.root_message_id); },
     }, {
       preserveExisting: preserveChannelSurface,
       onPaint: continuity ? () => restoreUiContinuity(continuity) : undefined,
@@ -1543,9 +1667,11 @@ function renderRhs(): void {
   const rhsCount = Number(Boolean(S.threadRoot)) + Number(inChat && S.terminalOpen) + Number(inChat && S.notesOpen);
   const split = rhsCount > 1;
   const priorThread = document.getElementById("threadmsgs");
-  const priorTop = priorThread?.scrollTop ?? 0;
+  const pendingThread = pendingThreadScroll && S.threadRoot && pendingThreadScroll.rootId === Number(S.threadRoot.id) ? pendingThreadScroll : null; pendingThreadScroll = null;
+  const priorTop = priorThread?.scrollTop ?? pendingThread?.top ?? 0;
   const forceBottom = forceThreadScrollBottom;
-  const stickThread = forceBottom || (priorThread ? shouldStickScroll(priorThread) : true);
+  const stickThread = forceBottom || (priorThread ? shouldStickScroll(priorThread) : (pendingThread ? pendingThread.stick : true));
+  const threadAnchor = forceBottom || stickThread ? null : (priorThread ? captureConversationAnchor(priorThread) : pendingThread?.anchor ?? null);
   if (forceBottom) forceThreadScrollBottom = false;
   // Capture before clear(el) destroys the thread composer DOM.
   const threadComposerSnap = S.threadRoot ? captureComposerContinuity(S.threadRoot.id) : null;
@@ -1587,7 +1713,7 @@ function renderRhs(): void {
       class: paneClass(),
     });
     el.append(threadBox);
-    paintThreadPanel(threadBox, priorTop, stickThread, forceBottom, threadComposerSnap);
+    paintThreadPanel(threadBox, priorTop, stickThread, forceBottom, threadComposerSnap, threadAnchor);
   }
   if (inChat && S.terminalOpen) {
     const termBox = h("div", {
@@ -1667,6 +1793,7 @@ function channelTabs(): HTMLElement {
 }
 
 export function navigateChannelView(view: ChannelView): void {
+  cancelNavigation();
   if (view === "texts" && !textsAvailable(S.channels.find((channel) => channel.id === S.channelId))) view = "chat";
   S.view = view; S.threadRoot = null; S.globalThreadsOpen = false;
   if (view === "terminal") {
@@ -1771,6 +1898,7 @@ export function openQuickNoteFromHeader(): void {
 }
 
 function openTerminalOnComputer(computerId: number): void {
+  cancelNavigation();
   // Full-tab path (channel Terminal tab / legacy).
   S.preferredTerminalComputerId = computerId;
   S.view = "terminal";
@@ -1802,19 +1930,13 @@ export function renderChannelView(preserveSurface = false, onPaint?: () => void)
   };
   let paintsAsynchronously = false;
   if (S.view === "texts") renderTexts(container, S.selectedTextConversationId || undefined, (id) => { S.selectedTextConversationId = id; renderChannelView(); }, options);
-  else if (S.view === "board") renderBoard(container, channel.id, (root) => {
-    if (!S.messages.some((message) => message.id === root.id)) S.messages.push(root);
-    S.messages.sort((a, b) => a.id - b.id);
-    S.view = "chat";
-    renderApp();
-    void openThread(root);
-  }, options);
+  else if (S.view === "board") renderBoard(container, channel.id, (root) => { void openThread(root); }, options);
   else if (S.view === "workflows") renderWorkflows(container, channel.id, Boolean(S.me.is_admin), (root) => { void openThread(root); }, options);
-  else if (S.view === "threads") renderThreads(container, channel.id, (thread) => { S.view = "chat"; renderApp(); void openThread(thread.root); }, options);
+  else if (S.view === "threads") renderThreads(container, channel.id, (thread) => { void openThread(thread.root); }, options);
   else if (S.view === "cowork" || S.view === "notes") {
     if (!preserveSurface) container.replaceChildren(lazySurfacePlaceholder("Cowork", "cowork"));
     paintsAsynchronously = true;
-    void renderCoworkLazy(container, channel.id, channel, S.me, (root) => { S.view = "chat"; renderApp(); void openThread(root); }, preserveSurface)
+    void renderCoworkLazy(container, channel.id, channel, S.me, (root) => { void openThread(root); }, preserveSurface)
       .then(options.onPaint).catch((error) => { container.textContent = (error as Error).message; options.onPaint(); });
   }
   else if (S.view === "files") renderFiles(container, channel.id, "", (path) => { stageCoworkPathLazy(channel.id, path); navigateChannelView("cowork"); }, preserveSurface);
@@ -1949,7 +2071,8 @@ function shouldStickScroll(box: HTMLElement | null, forceBottom = false): boolea
   if (!box) return false;
   // Fresh channel/thread open always lands on latest — ignore prior scrollTop (0 on new #msgs)
   // and leftover work-log open state from another channel.
-  if (forceBottom) return true;
+  if (forceBottom) { resetConversationScrollIntent(box); return true; }
+  if (userOwnsConversationScroll(box)) return false;
   // Never pin-to-bottom while a work log is open (channel or thread). Also block when
   // the Map says a disclosure is open even if the live node was just cleared.
   if (progressOpenSticky()) return false;
@@ -1960,9 +2083,14 @@ function shouldStickScroll(box: HTMLElement | null, forceBottom = false): boolea
 function restoreScroll(box: HTMLElement | null, priorTop: number, stick: boolean): void {
   if (!box) return;
   if (stick) {
+    resetConversationScrollIntent(box);
     box.scrollTop = box.scrollHeight;
     return;
   }
+  // Carry non-stick ownership onto newly rebuilt scrollers too. Otherwise a
+  // shell refresh near the end loses the reader's gesture and the next stream
+  // tick starts dragging the viewport again.
+  retainConversationScrollPosition(box);
   // Clamping avoids jump-to-top when content shrinks, and keeps the same message
   // under the user's eyes when Working expands/collapses mid-stream.
   const max = Math.max(0, box.scrollHeight - box.clientHeight);
@@ -2014,7 +2142,7 @@ function messageBodyDomId(messageId: number, surface: "channel" | "thread"): str
   return `message-${messageId}-${surface}`;
 }
 
-function syncMessageBodyShell(shell: HTMLElement): void {
+function syncMessageBodyShell(shell: HTMLElement, measuredNatural?: number): void {
   const messageId = Number(shell.dataset.messageBodyShell);
   const surface = (shell.dataset.messageSurface === "thread" ? "thread" : "channel") as "channel" | "thread";
   const body = shell.querySelector<HTMLElement>('[data-live-slot="body"]');
@@ -2026,7 +2154,7 @@ function syncMessageBodyShell(shell: HTMLElement): void {
   toggle.setAttribute("aria-controls", contentId);
 
   // Measure the body itself so a parent max-height clamp does not hide true height.
-  const natural = body.scrollHeight;
+  const natural = measuredNatural ?? body.scrollHeight;
   const over = natural > MESSAGE_BODY_COLLAPSE_PX + 1;
   const expanded = messageExpandedById.get(messageId) === true;
 
@@ -2062,23 +2190,23 @@ function bindMessageBodyCollapse(shell: HTMLElement): void {
       event.stopPropagation();
       const wasExpanded = messageExpandedById.get(messageId) === true;
       messageExpandedById.set(messageId, !wasExpanded);
-      // Collapsing: if keyboard focus lived inside the body, return it to the control.
-      if (wasExpanded) {
-        const active = document.activeElement as HTMLElement | null;
-        if (active) {
-          for (const node of document.querySelectorAll(`[data-message-body-shell="${messageId}"] [data-live-slot="body"]`)) {
-            if (node.contains(active)) {
-              toggle.focus();
-              break;
-            }
+      // Pointer focus must not follow the moved toggle; keyboard focus remains.
+      if (event.detail > 0 && document.activeElement === toggle) toggle.blur();
+      preserveConversationAnchor(shell, () => {
+        // Collapsing: if keyboard focus lived inside the body, return it to the control.
+        if (wasExpanded) {
+          const active = document.activeElement as HTMLElement | null; if (active) {
+            for (const node of document.querySelectorAll(`[data-message-body-shell="${messageId}"] [data-live-slot="body"]`)) if (node.contains(active)) { toggle.focus(); break; }
           }
         }
-      }
-      document.querySelectorAll<HTMLElement>(`[data-message-body-shell="${messageId}"]`).forEach(syncMessageBodyShell);
+        document.querySelectorAll<HTMLElement>(`[data-message-body-shell="${messageId}"]`).forEach(syncMessageBodyShell);
+      });
     });
   }
 
-  requestAnimationFrame(apply);
+  // Initial rows need a mounted layout measurement; retained live shells are
+  // already mounted and must restore their state before the next paint.
+  if (shell.isConnected) apply(); else requestAnimationFrame(apply);
 }
 
 /** Wrap a rendered body so tall content can clamp after layout measurement. */
@@ -2102,8 +2230,25 @@ function wrapMessageBody(bodyEl: HTMLElement, messageId: number, surface: "chann
   return shell;
 }
 
+function sessionActivity(message: Message): number {
+  return Math.max(Number(message.created) || 0, Number(message.last_reply) || 0);
+}
+
+function currentSessionDensity(): "default" | "comfy" | "compact" {
+  const value = S.channels.find((item) => item.id === S.channelId)?.session_density;
+  return value === "comfy" || value === "compact" ? value : "default";
+}
+
 function renderMessages(): void {
   const box = document.getElementById("msgs"); if (!box) return;
+  const channel = S.channels.find((item) => item.id === S.channelId);
+  const sessionMode = Boolean(channel?.session_mode);
+  const sessionDensity = currentSessionDensity();
+  const cardPresentation = sessionMode || sessionDensity !== "default";
+  const activeSort = channel?.session_sort === "active";
+  box.classList.toggle("chat-session-mode", cardPresentation);
+  box.classList.toggle("chat-session-density-comfy", sessionDensity === "comfy");
+  box.classList.toggle("chat-session-density-compact", sessionDensity === "compact");
   snapshotProgressOpenState(box);
   snapshotProgressOpenState(document.getElementById("thread"));
   // Prefer handoff from renderMain (shell rebuild) over live #msgs (often brand-new, scrollTop 0).
@@ -2114,10 +2259,14 @@ function renderMessages(): void {
   forceMsgsScrollBottom = false;
   const priorTop = pending ? pending.top : box.scrollTop;
   const stick = useForce ? true : (pending ? pending.stick : shouldStickScroll(box));
+  const anchor = stick ? null : (pending ? pending.anchor : captureConversationAnchor(box));
   clear(box);
   if (!S.messages.length) { box.append(emptyState(S.channels.find((c) => c.id === S.channelId))); return; }
-  const hidden = Math.max(0, S.messages.length - visibleRootCount);
-  const messages = hidden ? S.messages.slice(hidden) : S.messages;
+  const orderedMessages = activeSort
+    ? [...S.messages].sort((a, b) => sessionActivity(a) - sessionActivity(b) || a.id - b.id)
+    : S.messages;
+  const hidden = Math.max(0, orderedMessages.length - visibleRootCount);
+  const messages = hidden ? orderedMessages.slice(hidden) : orderedMessages;
   if (hidden) box.append(h("div", { class: "flex justify-center px-4 pb-2" }, h("button", {
     class: "btn-subtle text-xs", type: "button",
     onclick: () => {
@@ -2132,23 +2281,28 @@ function renderMessages(): void {
   // day's messages are in view — sibling stickies under #msgs all fight for top-0.
   let daySection: HTMLElement | null = null;
   for (const m of messages) {
-    if (!prev || !sameDay(prev.created, m.created)) {
-      daySection = h("div", { class: "msg-day-section", dataset: { messageDay: new Date(m.created).toDateString() } });
-      daySection.append(dateDivider(m.created));
+    const orderTime = activeSort ? sessionActivity(m) : m.created;
+    const previousOrderTime = prev ? (activeSort ? sessionActivity(prev) : prev.created) : 0;
+    if (!prev || !sameDay(previousOrderTime, orderTime)) {
+      daySection = h("div", { class: "msg-day-section", dataset: { messageDay: new Date(orderTime).toDateString() } });
+      daySection.append(dateDivider(orderTime));
       box.append(daySection);
     }
-    const grouped = !!prev && sameDay(prev.created, m.created) && prev.author.kind === m.author.kind && prev.author.id === m.author.id && m.created - prev.created < 5 * 60 * 1000 && !m.attachments?.length;
+    const grouped = !cardPresentation && !activeSort && !!prev && sameDay(prev.created, m.created) && prev.author.kind === m.author.kind && prev.author.id === m.author.id && m.created - prev.created < 5 * 60 * 1000 && !m.attachments?.length;
     daySection!.append(messageRow(m, { grouped, inThread: false }));
     prev = m;
   }
-  restoreScroll(box, priorTop, stick);
+  measureMountedBodyShells(box);
+  if (!stick && anchor) restoreConversationAnchor(box, anchor);
+  else restoreScroll(box, priorTop, stick);
   lastMsgsStick = stick;
   // Re-pin after flex layout settles. Channel hop needs an extra frame; live stick is 1.
-  if (useForce) pinScrollBottom("msgs", 2);
-  else if (stick) pinScrollBottom("msgs", 1);
+  if (useForce) pinConversationScrollBottom("msgs", 2);
+  else if (stick) pinConversationScrollBottom("msgs", 1);
 }
 
 function messageGroupedAt(messages: Message[], index: number): boolean {
+  if (S.channels.find((channel) => channel.id === S.channelId)?.session_sort === "active") return false;
   const current = messages[index];
   const previous = index > 0 ? messages[index - 1] : null;
   return !!previous && sameDay(previous.created, current.created)
@@ -2209,21 +2363,66 @@ function paintLiveChannelMessage(messageId: number): void {
   }
   // Grouping of the immediately following row depends on the updated row.
   replaceAt(index + 1);
-  restoreScroll(box, priorTop, stick);
+  if (stick) { restoreScroll(box, priorTop, true); pinConversationScrollBottom("msgs", 1); }
+  else retainConversationScrollPosition(box);
   lastMsgsStick = stick;
-  if (stick) pinScrollBottom("msgs", 1);
+}
+
+let earlierThreadPage: { rootId: number; before: number } | null = null;
+async function loadEarlierThreadReplies(box: HTMLElement): Promise<void> {
+  if (!S.threadRoot || !S.threadHasMore || !S.threadBefore) return;
+  const rootId = S.threadRoot.id, before = S.threadBefore;
+  if (earlierThreadPage?.rootId === rootId && earlierThreadPage.before === before) return;
+  earlierThreadPage = { rootId, before };
+  const button = box.querySelector<HTMLButtonElement>("[data-load-earlier-thread]");
+  if (button) { button.disabled = true; button.setAttribute("aria-busy", "true"); button.textContent = "Loading earlier replies…"; }
+  const anchor = captureConversationAnchor(box); const oldHeight = box.scrollHeight; const oldTop = box.scrollTop;
+  try {
+    const page = await api<ThreadSnapshot>(`/api/messages/${rootId}/thread?progress=summary&limit=24&before=${before}`);
+    if (!S.threadRoot || S.threadRoot.id !== rootId || S.threadBefore !== before) return;
+    const byId = new Map([...page.replies, ...S.threadReplies].map((message) => [message.id, message]));
+    S.threadReplies = [...byId.values()].sort((a, b) => a.id - b.id);
+    const activityByTurn = new Map([...page.followup_activity || [], ...S.threadFollowupActivity].map((item) => [item.turn_id, item]));
+    S.threadFollowupActivity = [...activityByTurn.values()].sort((a, b) => a.message_id - b.message_id);
+    S.threadReplyCount = Math.max(S.threadReplyCount, Number(page.reply_count || 0), S.threadReplies.length);
+    S.threadHasMore = Boolean(page.has_more); S.threadBefore = page.before == null ? null : Number(page.before);
+    fillThreadMessages(box);
+    if (anchor) restoreConversationAnchor(box, anchor);
+    else box.scrollTop = oldTop + Math.max(0, box.scrollHeight - oldHeight);
+    boundedCacheSet(threadSnapshotCache, rootId, { at: Date.now(), data: {
+      root: S.threadRoot, replies: S.threadReplies, reply_count: S.threadReplyCount, has_more: S.threadHasMore, before: S.threadBefore,
+      followup: S.threadFollowup, followup_activity: S.threadFollowupActivity, stop_requested: S.threadStopContinuation, usage: S.threadUsage,
+    } }, 16);
+  } catch (error) { void appAlert((error as Error).message || "Could not load earlier replies"); }
+  finally { if (earlierThreadPage?.rootId === rootId && earlierThreadPage.before === before) earlierThreadPage = null; }
 }
 
 function fillThreadMessages(box: HTMLElement): void {
   if (!S.threadRoot) return;
   clear(box);
+  const count = S.threadReplyCount || S.threadReplies.length;
+  if (S.threadHasMore) box.append(h("div", { class: "flex justify-center px-4 pb-2" }, h("button", {
+    class: "btn-subtle text-xs", type: "button", dataset: { loadEarlierThread: "" },
+    onclick: () => { void loadEarlierThreadReplies(box); },
+  }, "Load earlier replies")));
   box.append(
     messageRow(S.threadRoot, { grouped: false, inThread: true }),
     h("div", { class: "eyebrow mx-4 my-2 flex items-center gap-3 text-faint", dataset: { threadReplyCount: "1" } },
-      h("span", {}, `${S.threadReplies.length} ${S.threadReplies.length === 1 ? "reply" : "replies"}`),
+      h("span", {}, `${count} ${count === 1 ? "reply" : "replies"}`),
       h("div", { class: "h-px flex-1 bg-line" })),
     ...renderThreadTimelineRows(S.threadReplies, S.threadFollowupActivity, { h, icon, timeLabel, sameDay, renderMessage: (message) => messageRow(message as Message, { grouped: false, inThread: true }), renderProgress: (check) => progressDisclosure({ id: check.message_id, progress: check.progress, progress_count: check.progress_count } as Message) }),
   );
+  measureMountedBodyShells(box);
+}
+/** Rebuilt rows are created detached, so their collapse state is only known
+ * after mount. Measure before any scroll restore; otherwise the position is
+ * computed against a fully expanded list that shrinks one frame later. */
+function measureMountedBodyShells(box: HTMLElement): void {
+  if (!box.isConnected) return;
+  const shells = Array.from(box.querySelectorAll<HTMLElement>("[data-message-body-shell]"));
+  // Read every height first, then write classes: one layout pass instead of one per row.
+  const heights = shells.map((shell) => shell.querySelector<HTMLElement>('[data-live-slot="body"]')?.scrollHeight ?? 0);
+  shells.forEach((shell, index) => syncMessageBodyShell(shell, heights[index]));
 }
 
 function paintLiveThreadMessage(message: Message): void {
@@ -2231,9 +2430,8 @@ function paintLiveThreadMessage(message: Message): void {
   if (!box || !S.threadRoot) return;
   const priorTop = box.scrollTop;
   const stick = shouldStickScroll(box);
-  const target = Number(message.id) === Number(S.threadRoot.id)
-    ? S.threadRoot
-    : S.threadReplies.find((reply) => Number(reply.id) === Number(message.id));
+  let rebuilt = false;
+  const target = Number(message.id) === Number(S.threadRoot.id) ? S.threadRoot : S.threadReplies.find((reply) => Number(reply.id) === Number(message.id));
   if (target) {
     const prior = box.querySelector<HTMLElement>(messageRowSelector("thread", target.id));
     if (prior) {
@@ -2244,13 +2442,15 @@ function paintLiveThreadMessage(message: Message): void {
       box.append(messageRow(target, { grouped: false, inThread: true }));
     } else {
       snapshotProgressOpenState(box);
+      const anchor = stick ? null : captureConversationAnchor(box);
       fillThreadMessages(box);
+      if (anchor) restoreConversationAnchor(box, anchor);
+      rebuilt = true;
     }
   }
-  const count = box.querySelector<HTMLElement>("[data-thread-reply-count] span");
-  if (count) count.textContent = `${S.threadReplies.length} ${S.threadReplies.length === 1 ? "reply" : "replies"}`;
-  restoreScroll(box, priorTop, stick);
-  if (stick) pinScrollBottom("threadmsgs", 1);
+  const count = box.querySelector<HTMLElement>("[data-thread-reply-count] span"); if (count) { const total = Math.max(S.threadReplyCount, S.threadReplies.length); count.textContent = `${total} ${total === 1 ? "reply" : "replies"}`; }
+  if (stick) { restoreScroll(box, priorTop, true); pinConversationScrollBottom("threadmsgs", 1); }
+  else if (!rebuilt) retainConversationScrollPosition(box);
 }
 
 function emptyState(c: Channel | undefined): HTMLElement {
@@ -2379,6 +2579,9 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
   const body = isBot && running ? workingDisplayBody(m) : (m.body || (isBot ? "_Working…_" : ""));
   const surface: "channel" | "thread" = opts.inThread ? "thread" : "channel";
   const bodyHtml = wrapMessageBody(renderMessageBody(body), m.id, surface);
+  const channel = S.channels.find((item) => item.id === S.channelId);
+  const sessionDensity = currentSessionDensity();
+  const sessionCard = !opts.inThread && (Boolean(channel?.session_mode) || sessionDensity !== "default");
   const canDelete = S.me.is_admin || (!isBot && m.author.kind === "user" && m.author.id === S.me.id);
   const replyBtn = h("button", {
     class: "message-action grid h-11 w-11 place-items-center rounded text-muted hover:bg-hover hover:text-fg sm:h-7 sm:w-7",
@@ -2390,6 +2593,16 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
       else void openThread(m.parent_id != null ? (S.messages.find((x) => x.id === m.parent_id) || m) : m);
     },
   }, icon("thread"));
+  const copyBtn = h("button", {
+    class: "message-action grid h-11 w-11 place-items-center rounded text-muted hover:bg-hover hover:text-fg sm:h-7 sm:w-7",
+    title: "Copy message",
+    "aria-label": "Copy message",
+    onclick: async () => {
+      closeOpenMessageActions();
+      if (await copyTextToClipboard(body)) showToast("Message copied");
+      else await appAlert("Could not copy this message to the clipboard.");
+    },
+  }, icon("copy", 14));
   const deleteBtn = canDelete
     ? h("button", {
       class: "message-action grid h-11 w-11 place-items-center rounded text-muted hover:bg-hover hover:text-danger sm:h-7 sm:w-7",
@@ -2429,7 +2642,7 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
     class: "message-actions",
     role: "toolbar",
     "aria-label": "Message actions",
-  }, moreBtn, retryBtn, stopBtn, replyBtn, deleteBtn);
+  }, moreBtn, copyBtn, retryBtn, stopBtn, replyBtn, deleteBtn);
 
   const chipText = running ? workingChipLabel(m) : "";
   const workingChip = running && !opts.inThread
@@ -2441,7 +2654,7 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
         h("span", { class: "min-w-0 truncate" }, chipText))
     : null;
 
-  const content = h("div", { class: "min-w-0 flex-1 pr-12" },
+  const content = h("div", { class: "message-content min-w-0 flex-1 pr-12" },
     opts.grouped ? null : h("div", { class: "flex items-baseline gap-2" },
       h("span", { class: "text-[13.5px] font-semibold text-fg hover:underline sm:text-[14.5px]" }, m.author.name),
       isBot ? h("span", { class: "font-mono text-[9px] uppercase tracking-[0.16em] text-accent" }, "Agent") : null,
@@ -2449,7 +2662,7 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
       m.retried_by_message_id ? h("span", { class: "font-mono text-[9px] uppercase tracking-[0.12em] text-faint", title: `Retried as agent reply ${m.retried_by_message_id}` }, "Retried") : null,
       h("span", { class: "font-mono text-[10.5px] text-faint" }, messageTime(m)),
       workingChip),
-    bodyHtml, structuredQuestions(m), progressDisclosure(m), renderMessageAttachments(m, opts.inThread), threadFooter(m, opts.inThread));
+    bodyHtml, structuredQuestions(m), progressDisclosure(m), renderMessageAttachments(m, opts.inThread, sessionCard), threadFooter(m, opts.inThread));
 
   const authorAvatar = messageAuthorAvatar(m);
   const row = opts.grouped
@@ -2462,12 +2675,13 @@ function messageRow(m: Message, opts: { grouped: boolean; inThread: boolean }): 
 
   row.dataset.messageId = String(m.id);
   row.dataset.messageSurface = opts.inThread ? "thread" : "channel";
+  if (sessionCard) row.classList.add("chat-session-card", `chat-session-card-density-${sessionDensity}`);
 
   if (!opts.inThread) {
     row.classList.add("cursor-pointer");
     row.addEventListener("click", (e) => {
       const target = e.target as HTMLElement | null;
-      if (target?.closest("button, a, input, textarea, summary, details, .message-actions, .attachments, .message-body-expand")) return;
+      if (target?.closest("button, a, input, textarea, summary, details, .message-actions, .message-body-expand")) return;
       void openThread(m.parent_id != null ? (S.messages.find((x) => x.id === m.parent_id) || m) : m);
     });
   }
@@ -2555,11 +2769,17 @@ function progressStepCard(messageId: number, item: AgentProgress): HTMLElement {
         : item.status === "failed" ? "border-danger/30 text-danger" : "text-muted"
     }`,
   }, progressStatusLabel(item.status));
+  const stepTime = () => h("span", {
+    class: "shrink-0 font-mono text-[10px] text-faint",
+    dataset: { progressStepTime: String(item.created) },
+    title: new Date(item.created).toLocaleString(),
+  }, timeLabel(item.created));
 
   if (item.kind === "status") {
     return h("div", { class: "progress-step progress-step-status flex items-start gap-2.5 rounded-lg border border-line/80 bg-surface/80 px-3 py-2", dataset: { progressStep: key } },
       h("span", { class: `mt-1.5 h-2 w-2 shrink-0 rounded-full ${tone}` }),
       h("div", { class: "min-w-0 flex-1 text-xs leading-5 text-muted" }, item.body || "…"),
+      stepTime(),
       statusChip);
   }
 
@@ -2573,6 +2793,7 @@ function progressStepCard(messageId: number, item: AgentProgress): HTMLElement {
           h("span", { class: `h-2 w-2 shrink-0 rounded-full ${tone}` }),
           h("span", { class: "font-mono text-[9.5px] uppercase tracking-[0.16em] text-faint" }, "Thinking"),
           h("span", { class: "flex-1" }),
+          stepTime(),
           statusChip),
         h("div", { class: "whitespace-pre-wrap break-words text-xs leading-5 text-muted italic" }, text));
     }
@@ -2587,6 +2808,7 @@ function progressStepCard(messageId: number, item: AgentProgress): HTMLElement {
         h("span", { class: `h-2 w-2 shrink-0 rounded-full ${tone}` }),
         h("span", { class: "font-mono text-[9.5px] uppercase tracking-[0.16em] text-faint" }, "Thinking"),
         h("span", { class: "min-w-0 flex-1 truncate text-xs text-muted" }, text.slice(0, 96) + (text.length > 96 ? "…" : "")),
+        stepTime(),
         statusChip),
       h("div", { class: "max-h-56 overflow-y-auto border-t border-line/70 px-3 py-2" },
         h("div", { class: "whitespace-pre-wrap break-words text-xs leading-5 text-muted italic" }, text))) as HTMLDetailsElement;
@@ -2604,6 +2826,7 @@ function progressStepCard(messageId: number, item: AgentProgress): HTMLElement {
     h("span", { class: "font-mono text-[9.5px] uppercase tracking-[0.16em] text-accent" }, "Tool"),
     h("span", { class: "font-semibold text-fg text-xs" }, title),
     h("span", { class: "flex-1" }),
+    stepTime(),
     statusChip);
   const inputEl = input ? h("div", { class: "mt-1.5 font-mono text-[11px] leading-4 text-muted break-all" }, input) : null;
   const resultBlock = (maxH: string) => h("div", { class: "border-t border-line/70 bg-raised/30 px-3 py-2" },
@@ -2773,30 +2996,44 @@ function messageTime(m: Message): string {
 function threadFooter(m: Message, inThread: boolean): HTMLElement | null {
   if (inThread || m.reply_count <= 0) return null;
   const last = m.last_reply ? timeLabel(m.last_reply) : "";
-  return h("button", { class: "mt-1 flex w-fit items-center gap-2 rounded-lg border border-transparent px-1.5 py-1 text-xs font-semibold text-accent hover:border-line hover:bg-surface", onclick: () => openThread(m) },
+  return h("button", { class: "session-thread-footer mt-1 flex w-fit items-center gap-2 rounded-lg border border-transparent px-1.5 py-1 text-xs font-semibold text-accent hover:border-line hover:bg-surface", onclick: () => openThread(m) },
     icon("thread"), `${m.reply_count} ${m.reply_count === 1 ? "reply" : "replies"}`, last ? h("span", { class: "font-normal text-muted" }, "· last " + last) : null);
 }
 
 // ---------------- thread panel ----------------
 async function openThread(root: Pick<Message, "id">, replaceRoute = false): Promise<void> {
-  const data = await api<{ root: Message; replies: Message[]; followup?: ThreadFollowup | null; followup_activity?: SilentFollowupActivity[]; usage?: ThreadUsage }>(`/api/messages/${root.id}/thread?progress=summary`);
-  applyThreadSnapshot(data);
-  // Ensure a shell that hosts the RHS thread pane. Workflows opens run threads
-  // in place; every other surface bounces to chat (thread may split with docked terminal).
-  if (S.view !== "chat" && S.view !== "workflows") S.view = "chat";
-  // Fresh thread open always lands on latest replies (same class of bug as channel hop).
-  forceThreadScrollBottom = true;
-  const main = document.getElementById("main");
-  if (S.view === "chat" && main) {
-    if (!document.getElementById("thread")) main.append(h("aside", { id: "thread", class: "thread-pane flex shrink-0 flex-col border-l border-line bg-surface" }));
-    renderRhs();
-  } else renderMain();
-  persistCurrentChannelView();
-  // Workflow threads have no chat deep link — the /thread/:id route reloads into chat.
-  writeRoute(S.channels.find((channel) => channel.id === S.channelId), S.view, S.view === "chat" ? root.id : null, replaceRoute);
+  const key = `thread:${S.channelId}:${root.id}`;
+  const ticket = beginNavigation(key); if (!ticket) return;
+  rememberVisibleSnapshots();
+  const commit = (data: ThreadSnapshot): void => {
+    if (!navigation.current(ticket)) return;
+    applyThreadSnapshot(data);
+    const changedToChat = S.view !== "chat" && S.view !== "workflows";
+    if (changedToChat) S.view = "chat";
+    forceThreadScrollBottom = true;
+    const main = document.getElementById("main");
+    if (changedToChat) renderMain();
+    else if (S.view === "chat" && main) {
+      if (!document.getElementById("thread")) main.append(h("aside", { id: "thread", class: "thread-pane flex shrink-0 flex-col border-l border-line bg-surface" }));
+      renderRhs();
+    } else renderMain();
+    persistCurrentChannelView();
+    writeRoute(S.channels.find((channel) => channel.id === S.channelId), S.view, S.view === "chat" ? root.id : null, replaceRoute);
+  };
+  const cached = threadSnapshotCache.get(root.id);
+  if (cached) commit(cached.data);
+  try {
+    const data = await api<ThreadSnapshot>(`/api/messages/${root.id}/thread?progress=summary&limit=24`, { signal: ticket.signal });
+    if (!navigation.current(ticket)) return;
+    boundedCacheSet(threadSnapshotCache, root.id, { at: Date.now(), data }, 16);
+    if (!cached || !sameThreadSnapshot(cached.data, data)) commit(data);
+  } catch (error) {
+    if (!ticket.signal.aborted && navigation.current(ticket) && !cached) void appAlert((error as Error).message || "Could not open that thread");
+  } finally { finishNavigation(ticket); }
 }
 function closeThread(): void {
-  S.threadRoot = null;
+  cancelNavigation();
+  S.threadRoot = null; S.threadReplies = []; S.threadReplyCount = 0; S.threadHasMore = false; S.threadBefore = null;
   S.threadFollowup = null; S.threadFollowupActivity = [];
   S.threadUsage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, model_calls: 0 };
   persistCurrentChannelView();
@@ -2903,6 +3140,7 @@ function paintThreadPanel(
   stickThread = true,
   forceBottom = false,
   preCapturedComposer: ComposerContinuity | null = null,
+  anchor: ConversationAnchor | null = null,
 ): void {
   if (!S.threadRoot) return;
   // Prefer a snapshot taken before an ancestor clear destroyed the old DOM.
@@ -2945,11 +3183,20 @@ function paintThreadPanel(
     ...(stopContinuationBanner() ? [stopContinuationBanner()!] : []),
     composer(S.threadRoot.id));
   const tm = document.getElementById("threadmsgs");
-  if (tm) fillThreadMessages(tm);
+  if (tm) {
+    fillThreadMessages(tm);
+    let automaticEarlierEnabled = !forceBottom;
+    if (forceBottom) window.setTimeout(() => { automaticEarlierEnabled = true; }, 250);
+    tm.addEventListener("scroll", () => {
+      if (automaticEarlierEnabled && tm.scrollTop < 160 && S.threadHasMore) void loadEarlierThreadReplies(tm);
+    }, { passive: true });
+  }
   stopThreadFollowupTicker();
   if (S.threadFollowup) { tickThreadFollowup(); threadFollowupTimer = window.setInterval(tickThreadFollowup, 1000); }
-  restoreScroll(tm, priorTop, stickThread);
-  if (forceBottom) pinScrollBottom("threadmsgs");
+  if (stickThread) restoreScroll(tm, priorTop, true);
+  else if (anchor && tm) restoreConversationAnchor(tm, anchor);
+  else restoreScroll(tm, priorTop, false);
+  if (forceBottom) pinConversationScrollBottom("threadmsgs");
   restoreComposerContinuity(composerSnap);
 }
 
@@ -2969,8 +3216,9 @@ function renderThread(): void {
     snapshotProgressOpenState(panel);
     const forceBottom = forceThreadScrollBottom;
     const stickThread = forceBottom || (prior ? shouldStickScroll(prior) : true);
+    const anchor = stickThread ? null : captureConversationAnchor(prior);
     if (forceBottom) forceThreadScrollBottom = false;
-    paintThreadPanel(panel, priorTop, stickThread, forceBottom, composerSnap);
+    paintThreadPanel(panel, priorTop, stickThread, forceBottom, composerSnap, anchor);
     return;
   }
   // RHS missing thread half (e.g. only terminal was open) — rebuild shell.
@@ -3569,9 +3817,13 @@ export function pickList(title: string, items: { id: number; label: string }[], 
 }
 export const renderSidebar = (): void => {
   if (!S.channels) return;
-  const continuity = captureUiContinuity(document);
-  document.querySelectorAll<HTMLElement>("[data-sidebar]").forEach((s) => s.replaceWith(sidebar(s.dataset.sidebar === "mobile")));
-  restoreUiContinuity(continuity);
+  // Sidebar status ticks happen for every working agent. Scope continuity to
+  // the nodes being replaced; capturing the whole document also queued stale
+  // conversation scrollTop writes that fought the reader on long threads.
+  const sidebars = [...document.querySelectorAll<HTMLElement>("[data-sidebar]")];
+  const continuity = sidebars.map((element) => captureUiContinuity(element));
+  sidebars.forEach((element) => element.replaceWith(sidebar(element.dataset.sidebar === "mobile")));
+  continuity.forEach(restoreUiContinuity);
 };
 const fmtSize = (n: number): string => n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + " KB" : (n / 1048576).toFixed(1) + " MB";
 

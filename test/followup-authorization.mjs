@@ -285,6 +285,9 @@ test("a thread permits only one pending follow-up", () => {
   run("UPDATE agent_followups SET status='running',attempts=1 WHERE id=?", second.id);
   assert.equal(followups.threadFollowupView(thread).id, second.id, "a claimed wake remains visible while its agent turn runs");
   assert.equal(followups.threadFollowupView(thread).status, "running");
-  assert.deepEqual(followups.cancelPendingFollowup(thread, second.id), { ok: false, code: 409, error: "Follow-up has already started." });
+  const runningCancel = followups.cancelPendingFollowup(thread, second.id);
+  assert.equal(runningCancel.ok, true, "Captain cancellation remains authoritative after a wake starts");
+  assert.equal(runningCancel.was_running, true);
+  assert.equal(q1("SELECT status FROM agent_followups WHERE id=?", second.id).status, "cancelled");
   assert.equal(followups.cancelPendingFollowup(thread + 1, second.id).code, 404);
 });

@@ -327,13 +327,17 @@ try {
     const input = document.querySelector(`textarea[data-composer-parent="${parentId}"]`);
     const scroller = document.getElementById("threadmsgs");
     if (!input || !scroller) return null;
-    scroller.scrollTop = Math.max(1, Math.floor((scroller.scrollHeight - scroller.clientHeight) / 2));
+    // Stay inside the ordinary 80px near-bottom tolerance, but signal clear
+    // reader intent toward history. Rapid stream ticks must not fight the gesture
+    // and snap back to the end before it can travel farther.
+    scroller.scrollTop = Math.max(1, scroller.scrollHeight - scroller.clientHeight - 30);
+    scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -12, bubbles: true }));
     window.__briefThreadComposer = input;
     window.__briefChannelRootRow = document.querySelector(`[data-message-surface="channel"][data-message-id="${parentId}"]`);
     window.__briefChannelRootBody = window.__briefChannelRootRow?.querySelector('[data-live-slot="body"]');
     return { scrollTop: scroller.scrollTop, maxScroll: scroller.scrollHeight - scroller.clientHeight };
   }, rootMessage.id);
-  ok(streamState?.maxScroll > 100 && streamState.scrollTop > 0, "thread fixture provides a real mid-history scroll position");
+  ok(streamState?.maxScroll > 100 && streamState.scrollTop > 0, "thread fixture provides a real near-bottom history position with explicit reader intent");
   const threadComposer = await page.$(`textarea[data-composer-parent="${rootMessage.id}"]`);
   await threadComposer.type(`@${channel.agent.name} live-ui-stream`);
   await threadComposer.press("Enter");
@@ -386,6 +390,39 @@ try {
     return { sameRow: row === window.__briefLiveMessageRow, sameBody: row?.querySelector('[data-live-slot="body"]') === window.__briefLiveMessageBody };
   }, stableStream.liveMessageId);
   ok(stableLiveNodes.sameRow && stableLiveNodes.sameBody, "streaming preserves the exact message row and rendered body nodes across live updates");
+  const expandStart = await page.evaluate(() => {
+    const buttons = [...document.querySelectorAll("#threadmsgs .message-body-expand:not([hidden])")].filter((button) => button.textContent === "Expand message");
+    const button = buttons[Math.floor(buttons.length / 2)];
+    const shell = button?.closest(".message-body-shell"); const scroller = document.getElementById("threadmsgs");
+    if (!button || !shell || !scroller) return null;
+    button.dataset.expandProof = "1"; button.scrollIntoView({ block: "center" });
+    window.__briefExpand = { button, shell, scroller, top: shell.getBoundingClientRect().top };
+    // Emulate mobile WebKit's delayed attempt to follow a focused toggle after
+    // it moves from the clamp edge to the end of the expanded body.
+    button.addEventListener("click", () => requestAnimationFrame(() => { scroller.scrollTop += 500; }), { capture: true, once: true });
+    return { top: window.__briefExpand.top };
+  });
+  ok(Boolean(expandStart), "long thread fixture exposes an expandable message");
+  await page.click('[data-expand-proof="1"]'); await sleep(120);
+  const expandedAnchor = await page.evaluate(() => ({
+    top: window.__briefExpand.shell.getBoundingClientRect().top,
+    focused: document.activeElement === window.__briefExpand.button,
+    label: window.__briefExpand.button.textContent,
+    sameScroller: window.__briefExpand.scroller === document.getElementById("threadmsgs"),
+  }));
+  ok(Math.abs(expandedAnchor.top - expandStart.top) < 1 && !expandedAnchor.focused
+    && expandedAnchor.label === "Collapse message" && expandedAnchor.sameScroller,
+  "expanding a long message during a live turn preserves its exact visual anchor and conversation scroller");
+  await page.evaluate(() => {
+    window.__briefExpand.states = [];
+    new MutationObserver(() => window.__briefExpand.states.push({
+      shell: window.__briefExpand.shell.className, label: window.__briefExpand.button.textContent,
+    })).observe(window.__briefExpand.shell, { subtree: true, childList: true, attributes: true });
+  });
+  await sleep(300);
+  const liveExpandedStates = await page.evaluate(() => window.__briefExpand.states);
+  ok(liveExpandedStates.every((state) => state.shell.includes("is-expanded") && state.label === "Collapse message"),
+    "live stream ticks never flicker an expanded message back through its collapsed or unmeasured state");
   await waitFor(async () => {
     const thread = await api(`/api/messages/${rootMessage.id}/thread`, {}, token);
     return thread.replies?.find((reply) => /Live stream update[\s\S]*Answer complete/.test(reply.body || ""));

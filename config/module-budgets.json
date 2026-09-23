@@ -6,37 +6,30 @@
   },
   "legacy": {
     "lines": {
-      "src/client/app.ts": 3672,
-      "src/client/channel.ts": 1202,
-      "src/client/cowork.ts": 879,
-      "src/client/routing.ts": 864,
-      "src/client/settings.ts": 812,
-      "src/server/agents.ts": 1353,
-      "src/server/bots.ts": 2189,
+      "src/client/app.ts": 3907,
+      "src/client/channel.ts": 1056,
+      "src/client/cowork.ts": 878,
+      "src/client/routing.ts": 821,
+      "src/server/agents.ts": 1347,
+      "src/server/bots.ts": 2176,
       "src/server/channel-computers.ts": 2217,
       "src/server/db.ts": 1158,
-      "src/server/index.ts": 2284,
-      "src/server/routing.ts": 1303
+      "src/server/index.ts": 2334,
+      "src/server/routing.ts": 1247,
+      "src/server/store.ts": 808
     },
     "fanIn": {
-      "src/client/api.ts": 11,
-      "src/client/dom.ts": 9,
+      "src/client/api.ts": 12,
+      "src/client/dom.ts": 10,
       "src/server/agents.ts": 10,
-      "src/server/db.ts": 30,
+      "src/server/db.ts": 32,
       "src/server/store.ts": 9
     },
     "fanOut": {
-      "src/server/bots.ts": 23,
-      "src/server/index.ts": 33
+      "src/server/bots.ts": 24,
+      "src/server/index.ts": 35
     },
     "cycles": [
-      [
-        "src/client/app.ts",
-        "src/client/channel.ts",
-        "src/client/cowork.ts",
-        "src/client/settings.ts",
-        "src/client/term.ts"
-      ],
       [
         "src/server/bots.ts",
         "src/server/followups.ts"

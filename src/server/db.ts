@@ -109,7 +109,7 @@ export function migrate(): void {
   addColumn("channels", "purpose", "purpose TEXT NOT NULL DEFAULT ''");
   addColumn("channels", "status", "status TEXT NOT NULL DEFAULT 'active'");
   addColumn("channels", "slug", "slug TEXT NOT NULL DEFAULT ''");
-  addColumn("channels", "personal_main_owner_id", "personal_main_owner_id INTEGER"); addColumn("channels", "call_skipper_without_confirmation", "call_skipper_without_confirmation INTEGER NOT NULL DEFAULT 1 CHECK (call_skipper_without_confirmation IN (0,1))");
+  addColumn("channels", "personal_main_owner_id", "personal_main_owner_id INTEGER"); addColumn("channels", "call_skipper_without_confirmation", "call_skipper_without_confirmation INTEGER NOT NULL DEFAULT 1 CHECK (call_skipper_without_confirmation IN (0,1))"); addColumn("channels", "session_mode", "session_mode INTEGER NOT NULL DEFAULT 0 CHECK (session_mode IN (0,1))"); addColumn("channels", "session_sort", "session_sort TEXT NOT NULL DEFAULT 'default' CHECK (session_sort IN ('default','active'))"); addColumn("channels", "session_density", "session_density TEXT NOT NULL DEFAULT 'default' CHECK (session_density IN ('default','comfy','compact'))");
   addColumn("workspace", "default_provider_id", "default_provider_id INTEGER");
   addColumn("workspace", "default_model", "default_model TEXT NOT NULL DEFAULT ''");
   addColumn("workspace", "photo_mime", "photo_mime TEXT NOT NULL DEFAULT ''"); addColumn("workspace", "photo_version", "photo_version INTEGER NOT NULL DEFAULT 0");
@@ -700,6 +700,7 @@ export function migrate(): void {
   addColumn("users", "job_title", "job_title TEXT NOT NULL DEFAULT ''");
   addColumn("users", "avatar", "avatar TEXT NOT NULL DEFAULT ''");
   addColumn("users", "tour_complete", "tour_complete INTEGER NOT NULL DEFAULT 0");
+  addColumn("users", "time_zone", "time_zone TEXT NOT NULL DEFAULT ''");
   // Existing workspaces are already onboarded; only the newly registered
   // Captain in a not-yet-complete workspace should receive the landing tour.
   if (q1("SELECT setup_complete FROM workspace WHERE id=1")?.setup_complete) run("UPDATE users SET tour_complete=1");

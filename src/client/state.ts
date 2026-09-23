@@ -11,7 +11,7 @@ export type ChannelUiView = {
 type State = {
   me: User; users: User[]; channels: Channel[]; bots: Bot[]; computers: Computer[]; providers: Provider[];
   workspace: Workspace; channelId: number; channelBots: Bot[]; messages: Message[];
-  threadRoot: Message | null; threadReplies: Message[]; view: AppChannelView;
+  threadRoot: Message | null; threadReplies: Message[]; threadReplyCount: number; threadHasMore: boolean; threadBefore: number | null; view: AppChannelView;
   threadUsage: ThreadUsage; threadFollowup: ThreadFollowup | null; threadFollowupActivity: SilentFollowupActivity[]; threadStopContinuation: boolean;
   mobileMenuOpen: boolean; preferredTerminalComputerId: number | null;
   terminalOpen: boolean; notesOpen: boolean; serversListOpen: boolean;
@@ -38,15 +38,21 @@ export const S = {
   threadFollowup: null,
   threadFollowupActivity: [] as SilentFollowupActivity[],
   threadStopContinuation: false,
+  threadReplyCount: 0,
+  threadHasMore: false,
+  threadBefore: null,
 } as State;
 
 export type ThreadSnapshot = {
   root: Message; replies: Message[]; followup?: ThreadFollowup | null;
   followup_activity?: SilentFollowupActivity[]; usage?: ThreadUsage; stop_requested?: boolean;
+  reply_count?: number; has_more?: boolean; before?: number | null;
 };
 
 export function applyThreadSnapshot(data: ThreadSnapshot): void {
   S.threadRoot = data.root; S.threadReplies = data.replies;
+  S.threadReplyCount = Math.max(data.replies.length, Number(data.reply_count ?? data.replies.length));
+  S.threadHasMore = Boolean(data.has_more); S.threadBefore = data.before == null ? null : Number(data.before);
   S.threadFollowup = data.followup || null; S.threadFollowupActivity = data.followup_activity || [];
   S.threadStopContinuation = Boolean(data.stop_requested);
   S.threadUsage = {
@@ -65,7 +71,7 @@ export async function resyncVisibleState(request: StateRequest, loadWorkspace: (
   if (!previousId || !S.channels.some((channel) => channel.id === previousId)) { paint(); return; }
   const [channelData, threadData] = await Promise.all([
     previousView === "chat" ? request<{ messages: Message[]; bots: Bot[] }>(`/api/channels/${previousId}/messages?progress=summary`) : null,
-    previousThreadId ? request<ThreadSnapshot>(`/api/messages/${previousThreadId}/thread?progress=summary`) : null,
+    previousThreadId ? request<ThreadSnapshot>(`/api/messages/${previousThreadId}/thread?progress=summary&limit=24`) : null,
   ]);
   if (S.channelId !== previousId || S.view !== previousView || (S.threadRoot?.id ?? null) !== previousThreadId) return;
   if (channelData) { S.messages = channelData.messages; S.channelBots = channelData.bots; }
@@ -80,3 +86,36 @@ export const defaultChannelView = (): ChannelUiView => ({
   preferredComputerId: null,
   threadRootId: null,
 });
+
+export type NavigationTicket = { id: number; key: string; signal: AbortSignal };
+
+/** One ordering domain for every route-changing interaction. A newer intent
+ * aborts the old transport and, more importantly, prevents its result from
+ * committing even when the transport cannot be cancelled in time. */
+export class NavigationCoordinator {
+  private generation = 0;
+  private active: { ticket: NavigationTicket; controller: AbortController } | null = null;
+
+  begin(key: string): NavigationTicket {
+    if (this.active?.ticket.key === key) return this.active.ticket;
+    this.active?.controller.abort();
+    const controller = new AbortController();
+    const ticket = { id: ++this.generation, key, signal: controller.signal };
+    this.active = { ticket, controller };
+    return ticket;
+  }
+
+  supersede(): void {
+    this.active?.controller.abort();
+    this.active = null;
+    this.generation++;
+  }
+
+  current(ticket: NavigationTicket): boolean {
+    return this.active?.ticket.id === ticket.id && !ticket.signal.aborted;
+  }
+
+  finish(ticket: NavigationTicket): void {
+    if (this.active?.ticket.id === ticket.id) this.active = null;
+  }
+}

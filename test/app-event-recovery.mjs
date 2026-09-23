@@ -96,7 +96,7 @@ test("foreground resync refreshes the exact open thread and all status state", a
     };
   };
   await resyncVisibleState(request, async () => { S.channels = [{ id: 7 }]; }, () => { paints += 1; });
-  assert.deepEqual(paths, ["/api/channels/7/messages?progress=summary", "/api/messages/41/thread?progress=summary"]);
+  assert.deepEqual(paths, ["/api/channels/7/messages?progress=summary", "/api/messages/41/thread?progress=summary&limit=24"]);
   assert.equal(S.threadRoot, root);
   assert.deepEqual(S.threadReplies, [reply]);
   assert.deepEqual(S.threadFollowup, { id: 3 });

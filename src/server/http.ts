@@ -37,7 +37,7 @@ export function applyMobileCors(req: IncomingMessage, res: ServerResponse): bool
   if (!MOBILE_APP_ORIGINS.has(origin)) return false;
   res.setHeader("access-control-allow-origin", origin);
   res.setHeader("access-control-allow-methods", "GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS");
-  res.setHeader("access-control-allow-headers", "Authorization, Content-Type, X-Filename");
+  res.setHeader("access-control-allow-headers", "Authorization, Content-Type, X-Filename, X-1Helm-Time-Zone");
   res.setHeader("access-control-expose-headers", "Content-Disposition, Content-Type");
   res.setHeader("vary", "Origin");
   return true;

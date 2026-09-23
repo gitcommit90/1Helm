@@ -9,7 +9,7 @@ import sharp from "sharp";
 import { WebSocketServer, type WebSocket } from "ws";
 import { applyMobileCors, attachmentFileResponse, body, clearRateLimit, jbody, json, MIME, rateLimited, requestAddress, SECURITY_HEADERS, UPLOAD_BODY_LIMIT } from "./http.ts";
 import { db, isMainChannel, normalizeWorkspaceName, q, q1, run, now, hashPassword, verifyPassword, newToken, seed, DATA_DIR, UPLOAD_DIR, type Row } from "./db.ts";
-import { createMessage, deleteMessage, serializeMessage, serializeMessages, setModelPref, setModelPolicy, resolvedModelPolicy, resolvedTurnModelPolicy, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots, queueLastRead, shutdownReadStateWorker, silentFollowupActivityForThread } from "./store.ts";
+import { channelRootMessageIds, createMessage, deleteMessage, serializeMessage, serializeMessages, setModelPref, setModelPolicy, resolvedModelPolicy, resolvedTurnModelPolicy, botView, providerView, botEndpoint, botsInChannel, botIsInChannel, addBotToChannel, findMentionedBots, queueLastRead, shutdownReadStateWorker, silentFollowupActivityForThread } from "./store.ts";
 import { computerRowView, fetchModels } from "./computer.ts";
 import { cancelChannelTurns, handleThreadUxRequest, resumeQueuedAgentTurns, runBot, stopThreadTurn } from "./bots.ts";
 import { register, unregister, broadcastToChannel, broadcastAll, broadcastAdmins, sendToUsers } from "./events.ts";
@@ -56,6 +56,7 @@ import {
 } from "./agents.ts";
 import { CHATGPT_KIND, bindChatGPTProviderFromCookie, chatgptSessionStatus, chatgptWebResponse, disconnectChatGPTProvider, listChatGPTModels, writeChatGPTWebResponse } from "./chatgpt.ts";
 import { bootstrapView, completeSetup, setupStatus, updateAgentModelPolicy, workspaceView } from "./setup.ts";
+import { captureUserTimeZone } from "./user-local-time.ts";
 import { connectCloudflareDomain, domainsView, startCustomDomainConnectors } from "./cloudflare.ts";
 import {
   accessRequestByToken,
@@ -90,6 +91,7 @@ import { CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_PERMISSION_KIND, SKIPPER_CALL_A
 import { createWorkflow, listWorkflows, registerWorkflowDispatcher, setWorkflowStatus, startWorkflowLoop, stopWorkflowLoop, workflowRunPage } from "./workflows.ts";
 import { hostUpdateState, installedAppVersion, runHostUpdateAction } from "./updates.ts";
 import { channelMetaView as baseChannelMetaView, channelView as baseChannelView, publicUser } from "./setup.ts";
+import { operationalSessionView } from "./operational-sessions.ts";
 import { centralFeedbackReports, createFeedback, drainFeedback, feedbackAttachment, localFeedbackReports, startFeedbackLoop } from "./feedback.ts";
 import {
   internalRoutingProviderId,
@@ -136,13 +138,16 @@ const userFromToken = (token: string | null): Row | undefined => {
 };
 const authUser = (req: IncomingMessage): Row | undefined => {
   const h = req.headers["authorization"];
-  if (h && h.startsWith("Bearer ")) return userFromToken(h.slice(7));
-  try {
-    const u = new URL(req.url || "/", "http://localhost");
-    const qToken = u.searchParams.get("token");
-    if (qToken) return userFromToken(qToken);
-  } catch { /* ignore */ }
-  return undefined;
+  let user = h && h.startsWith("Bearer ") ? userFromToken(h.slice(7)) : undefined;
+  if (!user) {
+    try {
+      const url = new URL(req.url || "/", "http://localhost");
+      const qToken = url.searchParams.get("token");
+      if (qToken) user = userFromToken(qToken);
+    } catch { /* ignore */ }
+  }
+  if (user) captureUserTimeZone(Number(user.id), req.headers["x-1helm-time-zone"], user.time_zone);
+  return user;
 };
 const canSee = (user: Row, channelId: number): boolean => {
   return !!q1("SELECT 1 FROM members WHERE channel_id=? AND user_id=?", channelId, user.id);
@@ -410,6 +415,20 @@ function postMessage(
   return msg;
 }
 // ---- HTTP routing ----
+function threadListView(thread: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: Number(thread.id),
+    root_message_id: Number(thread.root_message_id),
+    channel_id: Number(thread.channel_id),
+    status: String(thread.status || "open"),
+    title: String(thread.title || ""),
+    summary: String(thread.summary || ""),
+    opened_at: Number(thread.opened_at || 0),
+    updated_at: Number(thread.updated_at || 0),
+    ...operationalSessionView(thread),
+  };
+}
+
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://localhost`);
@@ -1210,12 +1229,15 @@ const server = createServer(async (req, res) => {
           )?.n || 0) > 0;
           if (unreadOnly && !unread) continue;
           threads.push({
-            ...thread,
+            ...threadListView(thread),
             channel_name: channel.name,
             channel_slug: channel.slug || String(channel.id),
             unread,
             followup: threadFollowupView(Number(thread.id)),
-            root: serializeMessage(rootId),
+            // Thread lists only navigate by root id. Shipping the full serialized
+            // root (including large bodies, attachments, progress, and questions)
+            // made large channel boards multi-megabyte and expensive to render.
+            root: { id: rootId },
           });
         }
       }
@@ -1255,8 +1277,8 @@ const server = createServer(async (req, res) => {
       if (action === "channel" && m === "PATCH") {
         if (!canManageChannel(user, channelId)) return json(res, 403, { error: "Only this channel's creator can manage it." });
         const b = await jbody(req);
-        const purposeIn = "purpose" in b || "topic" in b, nameIn = "name" in b, skipperConfirmationIn = "call_skipper_without_confirmation" in b;
-        if (!purposeIn && !nameIn && !skipperConfirmationIn) return json(res, 400, { error: "Nothing to update." });
+        const purposeIn = "purpose" in b || "topic" in b, nameIn = "name" in b, skipperConfirmationIn = "call_skipper_without_confirmation" in b, sessionModeIn = "session_mode" in b, sessionSortIn = "session_sort" in b, sessionDensityIn = "session_density" in b;
+        if (!purposeIn && !nameIn && !skipperConfirmationIn && !sessionModeIn && !sessionSortIn && !sessionDensityIn) return json(res, 400, { error: "Nothing to update." });
         try { if (nameIn) renameChannel(channelId, String(b.name || ""));
           if (purposeIn) {
             const purpose = String(b.purpose ?? b.topic ?? "").trim();
@@ -1264,8 +1286,14 @@ const server = createServer(async (req, res) => {
             updateChannelPurpose(channelId, purpose);
           }
           if (skipperConfirmationIn && typeof b.call_skipper_without_confirmation !== "boolean") return json(res, 400, { error: "Call Skipper without confirmation must be true or false." });
+          if (sessionModeIn && typeof b.session_mode !== "boolean") return json(res, 400, { error: "Session mode must be true or false." });
+          if (sessionSortIn && !["default", "active"].includes(String(b.session_sort))) return json(res, 400, { error: "Session sort must be default or active." });
+          if (sessionDensityIn && !["default", "comfy", "compact"].includes(String(b.session_density))) return json(res, 400, { error: "Session size must be default, comfy, or compact." });
           if (skipperConfirmationIn && agentForChannel(channelId)?.kind !== "channel") return json(res, 400, { error: "This channel has no resident agent." });
           if (skipperConfirmationIn) run("UPDATE channels SET call_skipper_without_confirmation=? WHERE id=?", b.call_skipper_without_confirmation ? 1 : 0, channelId);
+          if (sessionModeIn) run("UPDATE channels SET session_mode=? WHERE id=?", b.session_mode ? 1 : 0, channelId);
+          if (sessionSortIn) run("UPDATE channels SET session_sort=? WHERE id=?", String(b.session_sort), channelId);
+          if (sessionDensityIn) run("UPDATE channels SET session_density=? WHERE id=?", String(b.session_density), channelId);
         } catch (error) { return json(res, 400, { error: (error as Error).message }); }
         const channel = channelView(user, q1("SELECT * FROM channels WHERE id=?", channelId)!);
         broadcastChannelMeta(channelId);
@@ -1315,9 +1343,9 @@ const server = createServer(async (req, res) => {
       if (action === "threads" && m === "GET") {
         for (const root of q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL AND photon_conversation_id IS NULL ORDER BY id", channelId)) ensureThread(Number(root.id), channelId);
         const threads = q("SELECT t.* FROM threads t JOIN messages m ON m.id=t.root_message_id WHERE t.channel_id=? AND m.photon_conversation_id IS NULL AND m.workflow_id IS NULL ORDER BY t.updated_at DESC", channelId).map((thread) => ({
-          ...thread,
+          ...threadListView(thread),
           followup: threadFollowupView(Number(thread.id)),
-          root: serializeMessage(Number(thread.root_message_id)),
+          root: { id: Number(thread.root_message_id) },
         }));
         return json(res, 200, { threads });
       }
@@ -1577,6 +1605,7 @@ const server = createServer(async (req, res) => {
       const thread = q1("SELECT * FROM threads WHERE id=?", Number(mm[1]));
       if (!thread || !canSee(user, Number(thread.channel_id))) return json(res, 404, { error: "Not found" });
       const result = cancelPendingFollowup(Number(thread.id), Number(mm[2])); if (!result.ok) return json(res, result.code, { error: result.error });
+      if (result.was_running) stopThreadTurn(result.channel_id, result.root_message_id);
       return json(res, 200, { ok: true, followup: result.followup });
     }
     // Lightweight mark-read so live viewing + Threads/sidebar stay aligned without a full message fetch.
@@ -1607,9 +1636,9 @@ const server = createServer(async (req, res) => {
       if (!canSee(user, cid)) return json(res, 403, { error: "No access" });
       if (m === "GET") {
         queueLastRead(Number(user.id), cid, maxSettledMessageId(cid));
-        const rows = q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL AND photon_conversation_id IS NULL AND workflow_id IS NULL ORDER BY id DESC LIMIT 100", cid).reverse();
+        const rootIds = channelRootMessageIds(cid);
         const progressMode = url.searchParams.get("progress") === "summary" ? "summary" : "full";
-        return json(res, 200, { messages: serializeMessages(rows.map((r) => Number(r.id)), progressMode), bots: botsInChannel(cid).map(botView), agent: agentViewForChannel(cid) });
+        return json(res, 200, { messages: serializeMessages(rootIds, progressMode), bots: botsInChannel(cid).map(botView), agent: agentViewForChannel(cid) });
       }
       if (m === "POST") {
         const b = await jbody(req);
@@ -1646,15 +1675,36 @@ const server = createServer(async (req, res) => {
     if ((mm = p.match(/^\/api\/messages\/(\d+)\/thread$/)) && m === "GET") {
       const root = q1("SELECT * FROM messages WHERE id=?", Number(mm[1]));
       if (!root || !canSee(user, Number(root.channel_id))) return json(res, 404, { error: "Not found" });
-      const replies = q("SELECT id FROM messages WHERE parent_id=? ORDER BY id", root.id);
+      const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 24)));
+      const before = Math.max(0, Number(url.searchParams.get("before") || 0));
+      // Internal scheduler/retry scaffolds have parent links for model context,
+      // but are not visible timeline replies and must not consume a page slot.
+      const visibleReplyWhere = `parent_id=?
+        AND lower(trim(body)) NOT LIKE '[scheduled-followup%'
+        AND trim(body) NOT LIKE '⟦followup⟧%'
+        AND trim(body)<>'[silent-success]'
+        AND lower(trim(body)) NOT LIKE '[retry-trigger%'`;
+      const replyRows = q(`SELECT id FROM messages WHERE ${visibleReplyWhere} ${before ? "AND id<?" : ""}
+        ORDER BY id DESC LIMIT ?`, Number(root.id), ...(before ? [before] : []), limit + 1);
+      const hasMore = replyRows.length > limit;
+      const pageRows = replyRows.slice(0, limit).reverse();
+      const oldest = pageRows.length ? Number(pageRows[0].id) : null;
+      const serializedRoot = serializeMessages([Number(root.id)], url.searchParams.get("progress") === "summary" ? "summary" : "full")[0];
+      const replyCount = Math.max(0, Number(serializedRoot?.reply_count || 0));
       const threadId = threadIdForRoot(Number(root.id), Number(root.channel_id)) ?? ensureThread(Number(root.id), Number(root.channel_id));
       const thread = q1("SELECT * FROM threads WHERE id=?", threadId);
+      const allActivity = silentFollowupActivityForThread(Number(threadId));
+      const lowerActivityId = hasMore ? Number(oldest || before || 0) : 0;
+      const pageActivity = allActivity.filter((item) => Number(item.message_id) >= lowerActivityId && (!before || Number(item.message_id) < before));
       return json(res, 200, {
-        root: serializeMessages([Number(root.id)], url.searchParams.get("progress") === "summary" ? "summary" : "full")[0],
-        replies: serializeMessages(replies.map((r) => Number(r.id)), url.searchParams.get("progress") === "summary" ? "summary" : "full"),
+        root: serializedRoot,
+        replies: serializeMessages(pageRows.map((r) => Number(r.id)), url.searchParams.get("progress") === "summary" ? "summary" : "full"),
+        reply_count: replyCount,
+        has_more: hasMore,
+        before: oldest,
         thread,
         followup: threadFollowupView(Number(threadId)),
-        followup_activity: silentFollowupActivityForThread(Number(threadId)),
+        followup_activity: pageActivity,
         stop_requested: Boolean(thread?.stop_requested),
         usage: {
           input_tokens: Math.max(0, Number(thread?.current_input_tokens || 0)),

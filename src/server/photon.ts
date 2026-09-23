@@ -398,7 +398,13 @@ export async function startPhotonConnector(): Promise<void> {
   sidecarProcess.stderr?.on("data", (chunk: Buffer) => { const line = String(chunk).trim(); if (line) console.warn(line.slice(-1000)); });
   sidecarProcess.once("exit", () => {
     if (child === sidecarProcess) { child = null; base = ""; token = ""; }
-    if (desired && !restartTimer) { restartTimer = setTimeout(() => { restartTimer = null; void startPhotonConnector(); }, 5000); restartTimer.unref(); }
+    if (desired && !restartTimer) {
+      restartTimer = setTimeout(() => {
+        restartTimer = null;
+        void startPhotonConnector().catch((error) => console.warn(`1Helm Photon connector retry is not ready: ${(error as Error).message}`));
+      }, 5000);
+      restartTimer.unref();
+    }
   });
   const deadline = now() + 20_000;
   while (now() < deadline) {

@@ -415,17 +415,45 @@ export function bumpThreadFollowup(threadId: number): {
   return { ok: true, followup_id: id, due_at: due };
 }
 
-export function cancelPendingFollowup(threadId: number, followupId: number): { ok: true; followup: Record<string, unknown> | null } | { ok: false; code: 404 | 409; error: string } {
+type CancelledFollowup = {
+  ok: true;
+  followup: Record<string, unknown> | null;
+  was_running: boolean;
+  channel_id: number;
+  root_message_id: number;
+};
+
+/** Captain cancellation is authoritative even after the wake has started. The
+ * caller stops the matching turn when was_running is true; marking the durable
+ * row cancelled first prevents the wake finalizer from re-arming it. */
+export function cancelPendingFollowup(threadId: number, followupId: number): CancelledFollowup | { ok: false; code: 404 | 409; error: string } {
   const row = q1("SELECT id,thread_id,channel_id,root_message_id,status FROM agent_followups WHERE id=?", followupId);
   if (!row || Number(row.thread_id) !== threadId) return { ok: false, code: 404, error: "Follow-up not found." };
-  if (String(row.status) !== "pending") return { ok: false, code: 409, error: String(row.status) === "running" ? "Follow-up has already started." : "Follow-up is no longer pending." };
-  const changed = run("UPDATE agent_followups SET status='cancelled',updated=?,last_error='cancelled by Captain' WHERE id=? AND thread_id=? AND status='pending'", now(), followupId, threadId).changes;
-  if (!changed) return { ok: false, code: 409, error: "Follow-up has already started." };
+  const priorStatus = String(row.status);
+  if (!["pending", "running"].includes(priorStatus)) return { ok: false, code: 409, error: "Follow-up is no longer active." };
+  const changed = run("UPDATE agent_followups SET status='cancelled',updated=?,last_error='cancelled by Captain' WHERE id=? AND thread_id=? AND status IN ('pending','running')", now(), followupId, threadId).changes;
+  if (!changed) return { ok: false, code: 409, error: "Follow-up is no longer active." };
   satisfyObligation(Number(row.channel_id), "followup", String(followupId));
   appendThreadHistory(threadId, "followup", { id: followupId, status: "cancelled", reason: "cancelled by Captain" }, "followup_cancel", followupId, `followup:${followupId}`);
   const followup = threadFollowupView(threadId);
   broadcastToChannel(Number(row.channel_id), { type: "followup", channelId: Number(row.channel_id), threadId, rootMessageId: Number(row.root_message_id), followup });
-  return { ok: true, followup };
+  return { ok: true, followup, was_running: priorStatus === "running", channel_id: Number(row.channel_id), root_message_id: Number(row.root_message_id) };
+}
+
+/** A Captain Stop on a scheduled wake means cancel, never retry in 60 seconds. */
+export function cancelScheduledWakeForCaptainStop(triggerId: number, botId: number, rootMessageId: number): number {
+  const trigger = q1("SELECT body,parent_id,bot_id FROM messages WHERE id=?", triggerId);
+  if (!trigger || Number(trigger.parent_id || 0) !== rootMessageId || Number(trigger.bot_id || 0) !== botId) return 0;
+  const followupId = Number(String(trigger.body || "").match(/^\[scheduled-followup\s+id=(\d+)\b/i)?.[1] || 0);
+  if (!followupId) return 0;
+  const row = q1("SELECT id,thread_id,channel_id,status FROM agent_followups WHERE id=? AND bot_id=? AND root_message_id=?", followupId, botId, rootMessageId);
+  if (!row || !["pending", "running"].includes(String(row.status))) return 0;
+  const changed = run("UPDATE agent_followups SET status='cancelled',updated=?,last_error='cancelled by Captain via Stop' WHERE id=? AND status IN ('pending','running')", now(), followupId).changes;
+  if (!changed) return 0;
+  satisfyObligation(Number(row.channel_id), "followup", String(followupId));
+  appendThreadHistory(Number(row.thread_id), "followup", { id: followupId, status: "cancelled", reason: "cancelled by Captain via Stop" }, "followup_cancel", followupId, `followup:${followupId}`);
+  broadcastToChannel(Number(row.channel_id), { type: "followup", channelId: Number(row.channel_id), threadId: Number(row.thread_id), rootMessageId, followup: threadFollowupView(Number(row.thread_id)) });
+  return followupId;
 }
 
 export function cancelThreadFollowups(threadId: number, reason = "cancelled"): number {

@@ -1,3 +1,5 @@
+export { MAX_VISION_ENCODED_BYTES_PER_REQUEST, MAX_VISION_IMAGES_PER_REQUEST, prepareImageFile } from "./vision.ts";
+export type { ChatContent, ChatContentPart, ImageDetail } from "./vision.ts";
 export { calculateModelContext, calculateModelOutput } from "./model-metrics.ts";
 import { createHash } from "node:crypto";
 
@@ -30,7 +32,7 @@ export function toolCallArgumentError(name: string, rawArguments: string, args: 
   }
   const required: Record<string, string[]> = {
     run_command: ["command"], text_captain: ["message"], remember: ["kind", "content"], schedule_followup: ["delay_seconds", "reason"],
-    schedule_workflow: ["name", "prompt", "interval_seconds"], inspect_web_source: ["url"], search_web: ["query"], attach_file: ["path"],
+    schedule_workflow: ["name", "prompt", "interval_seconds"], inspect_web_source: ["url"], search_web: ["query"], attach_file: ["path"], view_image: ["path"],
     read_skill: ["slug"], request_skill: ["skill", "reason"], read_channel_session: ["thread_root_id"], set_workflow_status: ["workflow_id", "status"],
     ask_user: ["blocker_kind", "evidence", "questions"], attach_web_image: ["image_url", "source_url", "caption"], propose_skill: ["name", "description", "instructions", "evidence", "rationale"],
     generate_image: ["prompt"], complete_followup: ["evidence"], silent_success: ["reason"],
@@ -76,7 +78,7 @@ export function completedToolAnswer(tool: string, result: string): string {
   }
   if (tool === "inspect_web_source") return "The source was inspected successfully, but the model did not produce a final answer. The retrieved result remains available in this session.";
   if (tool === "search_web") return "The web search completed successfully, but the model did not produce a final answer. The retrieved results remain available in this session.";
-  if (["grant_gmail_access", "connect_gmail", "create_channel", "list_channels", "inspect_channel", "archive_channel", "restore_channel", "delete_channel", "inspect_fleet", "care_for_channel_computer", "list_obligations", "run_thread_audit", "run_agent_review", "remember", "search_channel_history", "read_channel_session", "call_skipper", "call_agent", "request_skill", "propose_skill", "create_skill", "search_skill_catalog", "inspect_skill", "install_skill", "invite_agent", "search_web", "inspect_web_source", "attach_web_image", "attach_file", "generate_image", "text_captain", "schedule_followup", "schedule_workflow", "list_workflows", "set_workflow_status"].includes(tool)) return result;
+  if (["grant_gmail_access", "connect_gmail", "create_channel", "list_channels", "inspect_channel", "archive_channel", "restore_channel", "delete_channel", "inspect_fleet", "care_for_channel_computer", "list_obligations", "run_thread_audit", "run_agent_review", "remember", "search_channel_history", "read_channel_session", "call_skipper", "call_agent", "request_skill", "propose_skill", "create_skill", "search_skill_catalog", "inspect_skill", "install_skill", "invite_agent", "search_web", "inspect_web_source", "attach_web_image", "attach_file", "view_image", "generate_image", "text_captain", "schedule_followup", "schedule_workflow", "list_workflows", "set_workflow_status"].includes(tool)) return result;
   if (tool === "gmail_list_accounts") {
     try {
       const parsed = JSON.parse(result) as { accounts?: string[] };
@@ -93,7 +95,7 @@ export function completedToolAnswer(tool: string, result: string): string {
 function actionObject(tool: string, input: string, actor: string): string {
   const clean = input.replace(/\s+/g, " ").trim();
   if (tool === "create_channel") return clean.split(" — ")[0] || "a channel";
-  if (tool === "attach_file") return clean.split(/[\\/]/).at(-1) || "a file";
+  if (tool === "attach_file" || tool === "view_image") return clean.split(/[\\/]/).at(-1) || "a file";
   if (tool === "call_skipper") return "the host boundary";
   if (tool === "call_agent") return clean.split(":")[0] || "the resident";
   if (tool === "gmail_search") return "granted Gmail";
@@ -112,7 +114,7 @@ function actionObject(tool: string, input: string, actor: string): string {
 
 function actionVerb(tool: string): string {
   const verbs: Record<string, string> = {
-    run_command: "Ran work in", create_channel: "Created", remember: "Recorded", attach_file: "Attached",
+    run_command: "Ran work in", create_channel: "Created", remember: "Recorded", attach_file: "Attached", view_image: "Viewed",
     call_skipper: "Called Skipper across", call_agent: "Handed work back to", invite_agent: "Invited",
     request_skill: "Requested", propose_skill: "Crystallized", create_skill: "Created",
     search_skill_catalog: "Searched", inspect_skill: "Inspected", search_web: "Searched",
@@ -138,56 +140,27 @@ export function toolActionStatus(result: string): "failed" | "running" | "comple
 }
 type CacheControl = { type: "ephemeral" };
 type CacheTextBlock = { type: "text"; text: string; cache_control?: CacheControl };
+type CacheImageBlock = { type: "image_url"; image_url: { url: string; detail?: "low" | "high" }; cache_control?: CacheControl };
 export type ProviderCacheMessage = {
   role: string;
-  content: string | CacheTextBlock[];
+  content: string | Array<CacheTextBlock | CacheImageBlock>;
   tool_call_id?: string;
   name?: string;
   tool_calls?: unknown[];
-  extra_content?: { anthropic?: { tool_result?: { type: "tool_result"; tool_use_id: string; content: string; cache_control?: CacheControl } } };
+  extra_content?: {
+    anthropic?: { tool_result?: { type: "tool_result"; tool_use_id: string; content: string; cache_control?: CacheControl } };
+    openai?: { cache_scope?: "stable_instruction" | "dynamic_context" | "inline_context" };
+  };
 };
 export type ProviderCacheRequest = { messages: ProviderCacheMessage[]; prompt_cache_key?: string };
 
-const ephemeralCache = (): CacheControl => ({ type: "ephemeral" });
 
-/** Add only provider-native cache activation metadata. Claude keeps one stable
- * conversation breakpoint plus a rolling three-result frontier, so every tool
- * round retains the preceding full-prefix cache while extending it. */
+/** Supply a stable route-affinity key. Provider-specific cache shaping belongs
+ * in ReRouted after destination selection, so aliases and fallbacks behave the
+ * same as directly addressed providers. */
 export function providerCacheRequest(model: string, messages: ProviderCacheMessage[], scope: string): ProviderCacheRequest {
-  if (/^xai\//i.test(model)) {
-    return {
-      messages,
-      prompt_cache_key: createHash("sha256").update(`1helm\0${scope}\0${model}`).digest("hex"),
-    };
-  }
-  if (!/^claude\//i.test(model)) return { messages };
-
-  const shaped = messages.map((message) => ({
-    ...message,
-    content: Array.isArray(message.content) ? message.content.map((block) => ({ ...block })) : message.content,
-    ...(message.extra_content ? { extra_content: structuredClone(message.extra_content) } : {}),
-  }));
-  const baseIndex = shaped.findLastIndex((message) => message.role === "user" && Boolean(message.content));
-  if (baseIndex >= 0) {
-    const message = shaped[baseIndex];
-    if (typeof message.content === "string") message.content = [{ type: "text", text: message.content, cache_control: ephemeralCache() }];
-    else {
-      const textIndex = message.content.findLastIndex((block) => block.type === "text" && Boolean(block.text));
-      if (textIndex >= 0) message.content[textIndex] = { ...message.content[textIndex], cache_control: ephemeralCache() };
-    }
-  }
-  const frontier = shaped.map((message, index) => ({ message, index }))
-    .filter(({ message }) => message.role === "tool" && Boolean(message.tool_call_id))
-    .slice(-3);
-  for (const { message } of frontier) {
-    const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
-    message.extra_content = {
-      ...message.extra_content,
-      anthropic: {
-        ...message.extra_content?.anthropic,
-        tool_result: { type: "tool_result", tool_use_id: String(message.tool_call_id), content, cache_control: ephemeralCache() },
-      },
-    };
-  }
-  return { messages: shaped };
+  return {
+    messages,
+    prompt_cache_key: createHash("sha256").update(`1helm\0${scope}\0${model}`).digest("hex"),
+  };
 }

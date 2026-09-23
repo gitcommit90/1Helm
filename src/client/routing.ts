@@ -160,11 +160,18 @@ function accountCard(account: RoutingProvider, refresh: () => Promise<void>, con
   const addStatus = statusLine();
   const addModel = h("button", { class: "btn-subtle min-h-10 text-xs", onclick: async () => {
     const modelId = exact.value.trim(); if (!modelId) return;
-    addStatus.textContent = "Testing the real model…";
-    const result = await routingAction<{ ok: boolean; error?: string }>("app:add-model", { providerId: account.id, modelId }).catch((error: Error) => ({ ok: false, error: error.message }));
-    addStatus.textContent = result.ok ? `${modelId} is ready.` : result.error || "The model test failed.";
-    if (result.ok) await refresh();
-  } }, "Test & add model");
+    exact.disabled = true;
+    addModel.disabled = true;
+    addStatus.textContent = "Testing the real model… This can take up to 60 seconds.";
+    try {
+      const result = await routingAction<{ ok: boolean; error?: string }>("app:add-model", { providerId: account.id, modelId }, { signal: AbortSignal.timeout(70_000) }).catch((error: Error) => ({ ok: false, error: error.name === "TimeoutError" ? "The model test did not finish within 70 seconds." : error.message }));
+      addStatus.textContent = result.ok ? `${modelId} is ready.` : result.error || "The model test failed.";
+      if (result.ok) await refresh();
+    } finally {
+      exact.disabled = false;
+      addModel.disabled = false;
+    }
+  } }, "Test & add model") as HTMLButtonElement;
   add(details,
     h("div", { class: "mb-3 flex flex-wrap items-center justify-between gap-2" },
       count,
@@ -673,14 +680,16 @@ async function activityView(state: RoutingState): Promise<HTMLElement> {
     const success = usage.requests ? Math.round((usage.ok / usage.requests) * 100) : 100;
     body.append(h("div", { class: "routing-metrics" },
       ...[
-        [fmt(usage.requests), "Requests"], [success + "%", "Successful"], [fmt(usage.prompt_tokens), "Input"], [fmt(usage.completion_tokens), "Output"], [fmt(usage.cached_tokens), "Cached"], [fmt(usage.total_tokens), "Total"],
+        [fmt(usage.requests), "Requests"], [success + "%", "Successful"], [fmt(usage.logical_input_tokens), "Logical input"],
+        [fmt(usage.uncached_input_tokens), "Uncached"], [fmt(usage.cache_read_tokens), "Cache read"],
+        [fmt(usage.cache_write_tokens), "Cache write"], [fmt(usage.completion_tokens), "Output"], [fmt(usage.total_tokens), "Total"],
       ].map(([value, label]) => h("div", { class: "routing-metric" }, h("strong", {}, value), h("span", {}, label)))));
-    const providerRows = h("div", { class: "routing-telemetry-list" }, ...(usage.byProvider || []).slice(0, 10).map((entry) => h("div", { class: "routing-telemetry-row" }, h("span", { class: "min-w-0 flex-1 truncate font-semibold text-fg" }, entry.provider || entry.providerName || "Account"), h("span", { class: "font-mono text-xs text-muted" }, `${fmt(entry.requests)} req · ${fmt((entry.prompt_tokens || 0) + (entry.completion_tokens || 0))}t`))));
-    const recent = h("div", { class: "routing-telemetry-list" }, ...(usage.recent || []).slice(0, 30).map((entry) => h("div", { class: "routing-event" }, h("span", { class: `routing-event-dot ${Number(entry.status || 0) >= 400 ? "is-error" : ""}` }), h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block truncate text-sm font-semibold text-fg" }, entry.model || "Request"), h("span", { class: "block truncate text-xs text-muted" }, `${entry.providerName || entry.providerType || "Local route"} · ${fmt((entry.prompt_tokens || 0) + (entry.completion_tokens || 0))} tokens`)), h("time", { class: "font-mono text-[10px] text-faint" }, entry.at ? timeLabel(entry.at) : "now"))));
+    const providerRows = h("div", { class: "routing-telemetry-list" }, ...(usage.byProvider || []).slice(0, 10).map((entry) => h("div", { class: "routing-telemetry-row" }, h("span", { class: "min-w-0 flex-1 truncate font-semibold text-fg" }, entry.provider || entry.providerName || "Account"), h("span", { class: "font-mono text-xs text-muted" }, `${fmt(entry.requests)} req · ${fmt(entry.uncached_input_tokens)} uncached · ${fmt(entry.cache_read_tokens)} read · ${fmt(entry.cache_write_tokens)} write`))));
+    const recent = h("div", { class: "routing-telemetry-list" }, ...(usage.recent || []).slice(0, 30).map((entry) => h("div", { class: "routing-event" }, h("span", { class: `routing-event-dot ${Number(entry.status || 0) >= 400 ? "is-error" : ""}` }), h("span", { class: "min-w-0 flex-1" }, h("span", { class: "block truncate text-sm font-semibold text-fg" }, entry.model || "Request"), h("span", { class: "block truncate text-xs text-muted" }, `${entry.providerName || entry.providerType || "Local route"} · ${fmt(entry.uncached_input_tokens)} uncached · ${fmt(entry.cache_read_tokens)} cache read · ${entry.token_semantics || "unknown semantics"}`)), h("time", { class: "font-mono text-[10px] text-faint" }, entry.at ? timeLabel(entry.at) : "now"))));
     body.append(h("div", { class: "routing-section-title" }, "Traffic by account"), providerRows.childElementCount ? providerRows : empty("No traffic yet", "Requests from 1Helm agents and external clients will appear here."), h("div", { class: "routing-section-title" }, "Recent requests"), recent.childElementCount ? recent : empty("Waiting for a request", "Once an agent or external client calls the endpoint, its route and token usage will be recorded here."));
   };
   const periods = h("div", { class: "routing-segment" }, ...[["1h", "1 hour"], ["24h", "24 hours"], ["7d", "7 days"], ["30d", "30 days"], ["all", "All time"]].map(([value, label]) => h("button", { class: value === period ? "is-active" : "", onclick: async (event: Event) => { period = value; [...periods.children].forEach((child) => child.classList.remove("is-active")); (event.currentTarget as HTMLElement).classList.add("is-active"); await draw(); } }, label)));
-  add(wrap, heading("Local telemetry", "Activity", "See route volume, token mix, failures, and which connected accounts are carrying the workspace."), periods, body);
+  add(wrap, heading("Local telemetry", "Activity", "Provider-normalized input separates uncached processing, cache reads, and cache writes; each request retains its provider token semantics."), periods, body);
   await draw(); return wrap;
 }
 

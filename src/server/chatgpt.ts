@@ -299,14 +299,29 @@ export async function imageBytesFromChatGPTResponse(response: Response): Promise
     return bytes;
 }
 
+type ChatGPTInputPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail?: "low" | "high" } };
+type ChatGPTMessageContent = string | ChatGPTInputPart[];
+const textFromMessageContent = (content: ChatGPTMessageContent): string => typeof content === "string"
+  ? content
+  : content.filter((part): part is Extract<ChatGPTInputPart, { type: "text" }> => part.type === "text").map((part) => part.text).join("\n");
+export const chatGPTResponsesMessageContent = (content: ChatGPTMessageContent, assistant: boolean): Record<string, unknown>[] => {
+  if (typeof content === "string") return [{ type: assistant ? "output_text" : "input_text", text: content }];
+  const parts: Record<string, unknown>[] = [];
+  for (const part of content) {
+    if (part.type === "text") parts.push({ type: assistant ? "output_text" : "input_text", text: part.text });
+    else if (!assistant) parts.push({ type: "input_image", image_url: part.image_url.url, ...(part.image_url.detail ? { detail: part.image_url.detail } : {}) });
+  }
+  return parts;
+};
+
 export async function streamChatGPTCompletion(
   model: string,
-  messages: { role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string }[],
+  messages: { role: string; content: ChatGPTMessageContent; tool_calls?: unknown[]; tool_call_id?: string; name?: string }[],
   tools: unknown[] | undefined,
   onDelta: (d: string) => void,
   signal?: AbortSignal,
 ): Promise<{ content: string; toolCalls: { id: string; type: "function"; function: { name: string; arguments: string } }[] }> {
-  const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
+  const system = messages.filter((m) => m.role === "system").map((m) => textFromMessageContent(m.content)).join("\n\n");
   const input = messages
     .filter((m) => m.role !== "system")
     .map((m) => {
@@ -314,13 +329,13 @@ export async function streamChatGPTCompletion(
         return {
           type: "function_call_output",
           call_id: m.tool_call_id || "",
-          output: m.content || "",
+          output: textFromMessageContent(m.content),
         };
       }
       if (m.role === "assistant" && m.tool_calls?.length) {
         // Responses API expects function_call items separately; keep text if present.
         const items: unknown[] = [];
-        if (m.content) items.push({ type: "message", role: "assistant", content: [{ type: "output_text", text: m.content }] });
+        if (textFromMessageContent(m.content)) items.push({ type: "message", role: "assistant", content: chatGPTResponsesMessageContent(m.content, true) });
         for (const tc of m.tool_calls as { id: string; function: { name: string; arguments: string } }[]) {
           items.push({ type: "function_call", call_id: tc.id, name: tc.function.name, arguments: tc.function.arguments });
         }
@@ -329,7 +344,7 @@ export async function streamChatGPTCompletion(
       return {
         type: "message",
         role: m.role === "assistant" ? "assistant" : "user",
-        content: [{ type: m.role === "assistant" ? "output_text" : "input_text", text: m.content || "" }],
+        content: chatGPTResponsesMessageContent(m.content, m.role === "assistant"),
       };
     })
     .flat();

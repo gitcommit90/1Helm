@@ -87,8 +87,12 @@ test("thread UI exposes copy, handoff confirmation, and retry on every agent rep
   const clientUx = readFileSync(new URL("../src/client/thread-ux.ts", import.meta.url), "utf8");
   const server = readFileSync(new URL("../src/server/turns.ts", import.meta.url), "utf8");
   assert.match(client + clientUx, /Copy thread number/);
+  assert.match(client, /title: "Copy message"/);
+  assert.match(client, /copyTextToClipboard\(body\)/, "message action copies the exact displayed message source");
+  assert.match(client, /showToast\("Message copied"\)/, "successful message copies are confirmed");
   assert.match(clientUx, /Electron can expose Clipboard API while rejecting its write permission/, "desktop clipboard rejection falls back instead of immediately showing a Notice");
   assert.match(clientUx, /if \(!copied\) copied = legacyCopyText\(value\)/, "copy fallback runs when the modern Clipboard API rejects");
+  assert.match(clientUx, /export async function copyTextToClipboard/, "thread numbers and message bodies share the resilient clipboard path");
   assert.match(clientUx, /Hand off this thread in a new thread\?/);
   assert.match(client, /isBot \? h\("button", \{/);
   assert.match(client, /Retry this agent reply/);
