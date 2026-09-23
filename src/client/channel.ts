@@ -6,8 +6,8 @@ import { appAlert, appConfirm, appPrompt } from "./dialogs.ts";
 import { NOTIFICATION_SOUNDS, channelNotificationPreference, previewNotification, setChannelNotificationPreference } from "./notifications.ts";
 import { channelTextingSettings, skipperCallSettings, workflowModelSettings } from "./workflows.ts";
 import { authenticatedAssetSrc } from "./avatar-assets.ts";
+import { boardSessionCard, followupMeta, openSessionComposer, sessionState, startBoardCountdownTicker } from "./board-operations.ts";
 import { bindResidentFileUploads } from "./file-uploads.ts";
-import { formatBoardFollowupCountdown } from "./thread-formatters.ts";
 export type ChannelView = "chat" | "texts" | "board" | "workflows" | "threads" | "cowork" | "notes" | "files" | "terminal" | "memory" | "activity" | "settings";
 type RenderRefreshOptions = { preserveExisting?: boolean; isCurrent?: () => boolean; onPaint?: () => void };
 function refreshIsCurrent(options: RenderRefreshOptions): boolean {
@@ -78,99 +78,6 @@ function statusPath(status: string, updatedAt: number): HTMLElement {
   if (isArchived) parts.push(h("span", { class: "chip border-line text-muted text-xs" }, "archived"));
   return h("div", { class: "flex flex-wrap items-center gap-1.5" }, ...parts);
 }
-/** Real countdown from durable followup.due_at (ms epoch). Updates in place once/sec. */
-function followupCountdownEl(dueAt: number): HTMLElement {
-  const el = h("span", {
-    class: "board-countdown font-mono text-[11px] tabular-nums tracking-wide text-accent",
-    dataset: { dueAt: String(dueAt) },
-    title: `Wakes at ${new Date(dueAt).toLocaleString()}`,
-  }, formatBoardFollowupCountdown(dueAt)) as HTMLElement;
-  return el;
-}
-function followupMeta(thread: ThreadState, opts?: { onBumped?: () => void; onCancelled?: () => void }): HTMLElement | null {
-  const f = thread.followup;
-  if (!f?.due_at) return null;
-  const running = f.status === "running";
-  const bump = h("button", {
-    class: "board-check-now btn-ghost min-h-8 shrink-0 px-2 py-1 text-[11px] font-semibold",
-    type: "button",
-    title: "Drop countdown to zero and wake the agent now (same path as the timer)",
-  }, "Check now") as HTMLButtonElement;
-  bump.onclick = (event: MouseEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (bump.disabled) return;
-    bump.disabled = true;
-    bump.textContent = "Waking…";
-    void api<{ ok: boolean; due_at?: number; error?: string }>(`/api/threads/${thread.id}/check-now`, { method: "POST", body: {} })
-      .then(() => {
-        // Countdown → due now immediately in the open Board DOM.
-        const card = bump.closest(".board-card, article");
-        for (const node of (card || document).querySelectorAll<HTMLElement>(".board-countdown[data-due-at]")) {
-          node.dataset.dueAt = String(Date.now());
-          node.textContent = "due now";
-          node.classList.add("board-countdown-due");
-        }
-        bump.textContent = "Woke";
-        opts?.onBumped?.();
-      })
-      .catch((error) => {
-        bump.disabled = false;
-        bump.textContent = "Check now";
-        void appAlert((error as Error).message || "Could not wake the agent.");
-      });
-  };
-  const cancel = h("button", {
-    class: "board-cancel-followup btn-ghost min-h-8 shrink-0 px-1.5 py-1 text-[11px] font-semibold text-danger",
-    type: "button",
-    title: "Cancel only this scheduled wake",
-    "aria-label": "Cancel follow-up",
-  }, "Cancel") as HTMLButtonElement;
-  cancel.onclick = (event: MouseEvent) => {
-    event.preventDefault(); event.stopPropagation(); if (cancel.disabled) return; cancel.disabled = true;
-    void api<{ ok: boolean; followup: ThreadState["followup"] }>(`/api/threads/${thread.id}/followups/${f.id}/cancel`, { method: "POST", body: {} })
-      .then((result) => { thread.followup = result.followup || null; opts?.onCancelled?.(); })
-      .catch((error) => { cancel.disabled = false; void appAlert((error as Error).message || "Could not cancel the follow-up."); });
-  };
-  return h("div", {
-    class: "board-followup mt-2.5 rounded-md border border-accent/25 bg-accent-soft/40 px-2 py-1.5",
-    onclick: (event: MouseEvent) => event.stopPropagation(),
-  },
-    h("div", { class: "flex items-center justify-between gap-2" },
-      h("span", { class: "font-mono text-[9px] uppercase tracking-[0.14em] text-muted" }, running ? "Checking now" : "Next check"),
-      running ? h("span", { class: "font-mono text-[11px] text-accent" }, "working") : followupCountdownEl(Number(f.due_at))),
-    f.reason
-      ? h("div", { class: "mt-1 line-clamp-2 text-[11px] leading-4 text-muted" }, f.reason)
-      : null,
-    h("div", { class: "mt-1.5 flex flex-wrap items-center justify-between gap-2" },
-      h("div", { class: "min-w-0 font-mono text-[9px] text-faint" }, `attempt ${Number(f.attempts || 0) + (running ? 0 : 1)}/${f.max_attempts || "?"} · #${f.id}`),
-      running ? null : h("div", { class: "flex items-center gap-1" }, cancel, bump)),
-  );
-}
-/** Tick all .board-countdown nodes under root once per second while Board is open. */
-let boardCountdownTimer: number | null = null;
-function startBoardCountdownTicker(root: HTMLElement): void {
-  if (boardCountdownTimer != null) {
-    window.clearInterval(boardCountdownTimer);
-    boardCountdownTimer = null;
-  }
-  const tick = (): void => {
-    if (!root.isConnected) {
-      if (boardCountdownTimer != null) window.clearInterval(boardCountdownTimer);
-      boardCountdownTimer = null;
-      return;
-    }
-    const nowMs = Date.now();
-    for (const node of root.querySelectorAll<HTMLElement>(".board-countdown[data-due-at]")) {
-      const due = Number(node.dataset.dueAt || 0);
-      if (!due) continue;
-      node.textContent = formatBoardFollowupCountdown(due, nowMs);
-      node.classList.toggle("board-countdown-due", due <= nowMs);
-    }
-  };
-  tick();
-  boardCountdownTimer = window.setInterval(tick, 1000);
-}
 export function renderThreads(container: HTMLElement, channelId: number, onOpen: (thread: ThreadState) => void, refresh: RenderRefreshOptions = {}): void {
   if (!refresh.preserveExisting) panelLoading(container, "Threads", "Focused sessions with durable status and rolling summaries.");
   void api<{ threads: ThreadState[] }>(`/api/channels/${channelId}/threads`).then(({ threads }) => {
@@ -192,9 +99,9 @@ export function renderThreads(container: HTMLElement, channelId: number, onOpen:
   }).catch((error) => { if (refreshIsCurrent(refresh)) panelError(container, error); });
 }
 /**
- * A read-only re-presentation of channel threads. Thread status is owned by
- * the existing agent/system flow; the board deliberately contains no move or
- * status controls.
+ * A read-only operational view of channel sessions. Runtime records own Working,
+ * Needs you, Scheduled, and Failed; the board contains no misleading drag or
+ * manual-status controls.
  *
  * Full-bleed inside #channelview (not the max-w-5xl document panels) so lanes
  * use the whole Board tab height/width.
@@ -203,137 +110,38 @@ export function renderThreads(container: HTMLElement, channelId: number, onOpen:
  * `agent_followups` rows (next pending due_at). Cards with a pending wake sit
  * only in Scheduled so the Captain can see the real countdown.
  */
-export function renderBoard(container: HTMLElement, channelId: number, onOpen: (root: Message) => void, refresh: RenderRefreshOptions = {}): void {
-  if (!refresh.preserveExisting) {
-    clear(container);
-    container.append(h("div", { class: "board-shell" },
-      h("div", { class: "board-header" },
-        h("div", { class: "min-w-0" },
-          h("h2", { class: "font-display text-xl leading-tight text-fg sm:text-[1.45rem]" }, "Board"),
-          h("p", { class: "mt-0.5 text-xs text-muted sm:text-sm" }, "Sessions by status. Scheduled = durable agent wake with live countdown.")),
-        h("span", { class: "board-header-hint" }, "Loading…"))));
-  }
-
+export function renderBoard(container: HTMLElement, channelId: number, onOpen: (root: Pick<Message, "id">) => void, refresh: RenderRefreshOptions = {}): void {
+  if (!refresh.preserveExisting) panelLoading(container, "Board", "Authoritative work state: live turns, human boundaries, scheduled wakes, failures, and outcomes.");
   void api<{ threads: ThreadState[] }>(`/api/channels/${channelId}/threads`).then(({ threads }) => {
     if (!refreshIsCurrent(refresh)) return;
-    const statuses: { status: ThreadState["status"]; label: string }[] = [
-      { status: "open", label: "Open" },
-      { status: "waiting", label: "Waiting" },
-      { status: "resolved", label: "Resolved" },
-      { status: "failed", label: "Failed" },
-      { status: "archived", label: "Archived" },
+    const definitions: Array<{ state: string; label: string; copy: string }> = [
+      { state: "working", label: "Working", copy: "Turn running now" },
+      { state: "needs_you", label: "Needs you", copy: "Decision or input required" },
+      { state: "scheduled", label: "Scheduled", copy: "Durable wake pending" },
+      { state: "failed", label: "Failed", copy: "Recovery needs attention" },
+      { state: "complete", label: "Complete", copy: "Delivered outcomes" },
     ];
-    const hasActiveFollowup = (thread: ThreadState): boolean =>
-      Boolean(thread.followup && ["pending", "running"].includes(thread.followup.status) && Number(thread.followup.due_at) > 0);
-
-    const scheduled = threads
-      .filter(hasActiveFollowup)
-      .slice()
-      .sort((a, b) => Number(a.followup!.due_at) - Number(b.followup!.due_at));
-
-    const grouped = new Map<ThreadState["status"], ThreadState[]>();
-    for (const { status } of statuses) grouped.set(status, []);
-    for (const thread of threads.slice().sort((a, b) => b.updated_at - a.updated_at)) {
-      // Exclusive: active wakes live only in Scheduled (not also Open/Waiting).
-      if (hasActiveFollowup(thread)) continue;
-      grouped.get(thread.status)?.push(thread);
-    }
-
-    const threadCard = (thread: ThreadState): HTMLElement => h("button", {
-      class: `board-card${hasActiveFollowup(thread) ? " board-card-scheduled" : ""}`,
-      type: "button",
-      dataset: { threadOpen: String(thread.id), continuityKey: `board-thread-${thread.id}` },
-      onclick: () => onOpen(thread.root),
-    },
-    h("div", { class: "truncate text-[13px] font-semibold leading-snug text-fg" }, thread.title || "Untitled session"),
-    h("div", { class: "md mt-1 line-clamp-2 text-[13px] leading-snug text-muted", html: md(thread.summary || "No summary yet.") }),
-    followupMeta(thread, { onCancelled: () => renderBoard(container, channelId, onOpen, refresh) }),
-    h("div", { class: "mt-2 flex flex-wrap items-center gap-2 text-[11px] text-faint" },
-      statusPath(thread.status, thread.updated_at),
-      h("span", {}, `· Updated ${timeLabel(thread.updated_at)}`)));
-
-    const incoming = h("section", { class: "board-lane board-lane-incoming" },
-      h("div", { class: "board-lane-heading" },
-        h("div", { class: "min-w-0" }, h("h3", { class: "font-semibold text-fg" }, "Incoming"), h("p", { class: "mt-0.5 text-[11px] text-muted" }, "Compose only")),
-        h("span", { class: "font-mono text-[10px] text-faint" }, "—")),
-      h("div", { class: "board-lane-incoming-body" },
-        h("p", { class: "text-sm leading-5 text-muted" }, "Start work here. Sending creates an Open session."),
-        h("button", { class: "btn-primary min-h-11 w-full px-4 text-sm", type: "button", onclick: () => openBoardComposer(channelId, onOpen) }, icon("plus", 16), "New")));
-
-    const scheduledLane = h("section", { class: "board-lane board-lane-scheduled", dataset: { boardStatus: "scheduled" } },
-      h("div", { class: "board-lane-heading" },
-        h("div", { class: "min-w-0" },
-          h("h3", { class: "font-semibold text-fg" }, "Scheduled"),
-          h("p", { class: "mt-0.5 text-[11px] text-muted" }, "Agent wake · live countdown")),
-        h("span", { class: "font-mono text-[10px] text-faint" }, String(scheduled.length))),
-      h("div", { class: "board-lane-cards", dataset: { continuityKey: "board-lane-scheduled" } }, ...scheduled.map(threadCard),
-        scheduled.length ? null : h("p", { class: "px-1 py-6 text-center text-xs leading-5 text-faint" }, "No scheduled wakes")));
-
-    const lanes = statuses.map(({ status, label }) => {
-      const laneThreads = grouped.get(status) || [];
-      return h("section", { class: `board-lane board-lane-${status}`, dataset: { boardStatus: status } },
-        h("div", { class: "board-lane-heading" },
-          h("h3", { class: "font-semibold text-fg" }, label),
-          h("span", { class: "font-mono text-[10px] text-faint" }, String(laneThreads.length))),
-        h("div", { class: "board-lane-cards", dataset: { continuityKey: `board-lane-${status}` } }, ...laneThreads.map(threadCard),
-          laneThreads.length ? null : h("p", { class: "px-1 py-6 text-center text-xs leading-5 text-faint" }, "No sessions")));
+    const byState = new Map<string, ThreadState[]>();
+    for (const definition of definitions) byState.set(definition.state, []);
+    for (const thread of threads) byState.get(sessionState(thread))?.push(thread);
+    for (const values of byState.values()) values.sort((a, b) => b.updated_at - a.updated_at);
+    const card = (thread: ThreadState) => boardSessionCard(thread, (selected) => onOpen(selected.root));
+    const lanes = definitions.map(({ state, label, copy }) => {
+      const values = byState.get(state) || [];
+      return h("section", { class: `board-lane board-lane-${state}`, dataset: { boardStatus: state } },
+        h("div", { class: "board-lane-heading" }, h("div", { class: "min-w-0" }, h("h3", { class: "font-semibold text-fg" }, label), h("p", { class: "mt-0.5 text-[11px] text-muted" }, copy)), h("span", { class: "font-mono text-[10px] text-faint" }, String(values.length))),
+        h("div", { class: "board-lane-cards", dataset: { continuityKey: `board-lane-${state}` } }, ...values.map(card), values.length ? null : h("p", { class: "px-1 py-6 text-center text-xs leading-5 text-faint" }, "No sessions")));
     });
-
+    const idle = threads.filter((thread) => ["idle", "archived"].includes(sessionState(thread))).sort((a,b) => b.updated_at-a.updated_at);
     clear(container);
     const shell = h("div", { class: "board-shell" },
       h("div", { class: "board-header" },
-        h("div", { class: "min-w-0" },
-          h("h2", { class: "font-display text-xl leading-tight text-fg sm:text-[1.45rem]" }, "Board"),
-          h("p", { class: "mt-0.5 text-xs text-muted sm:text-sm" }, "Sessions by status. Scheduled = durable agent wake with live countdown.")),
-        h("span", { class: "board-header-hint" }, `${threads.length} session${threads.length === 1 ? "" : "s"}${scheduled.length ? ` · ${scheduled.length} scheduled` : ""}`)),
-      h("div", { class: "board-scroll" }, h("div", { class: "board-lanes" }, incoming, scheduledLane, ...lanes)));
-    container.append(shell);
-    startBoardCountdownTicker(shell);
-    refresh.onPaint?.();
+        h("div", { class: "min-w-0" }, h("h2", { class: "font-display text-xl leading-tight text-fg sm:text-[1.45rem]" }, "Board"), h("p", { class: "mt-0.5 text-xs text-muted sm:text-sm" }, "Operational state from runtime evidence—not the old Open lifecycle bucket.")),
+        h("div", { class: "flex items-center gap-2" }, h("span", { class: "board-header-hint" }, `${threads.length} sessions · ${idle.length} idle/history`), h("button", { class: "btn-primary text-xs", type: "button", onclick: () => openSessionComposer(channelId, onOpen) }, icon("plus", 14), "New"))),
+      h("div", { class: "board-scroll" }, h("div", { class: "board-lanes" }, ...lanes)),
+      idle.length ? h("details", { class: "board-history" }, h("summary", {}, `Idle and archived history · ${idle.length}`), h("div", { class: "mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-3" }, ...idle.map(card))) : null);
+    container.append(shell); startBoardCountdownTicker(shell); refresh.onPaint?.();
   }).catch((error) => { if (refreshIsCurrent(refresh)) panelError(container, error); });
-}
-
-function openBoardComposer(channelId: number, onOpen: (root: Message) => void): void {
-  const input = h("textarea", {
-    class: "field min-h-32 resize-y", rows: 5,
-    placeholder: "Describe the work you want to start…",
-    "aria-label": "New session message",
-  }) as HTMLTextAreaElement;
-  const status = h("p", { class: "min-h-5 text-sm text-danger", role: "status" });
-  const close = (): void => overlay.remove();
-  const send = h("button", { class: "btn-primary min-h-11 px-4 text-sm", type: "button" }, icon("send", 15), "Send") as HTMLButtonElement;
-  const submit = async (): Promise<void> => {
-    const body = input.value.trim();
-    if (!body) { status.textContent = "Write a message before starting a session."; input.focus(); return; }
-    status.textContent = "";
-    send.disabled = true; send.textContent = "Starting…";
-    try {
-      const result = await api<{ message: Message }>(`/api/channels/${channelId}/messages`, { body: { body } });
-      close();
-      onOpen(result.message);
-    } catch (error) {
-      status.textContent = (error as Error).message || "Could not start a session.";
-      send.disabled = false; send.replaceChildren(icon("send", 15), "Send");
-    }
-  };
-  send.onclick = () => { void submit(); };
-  input.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") { close(); return; }
-    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); void submit(); }
-  });
-  const overlay = h("div", {
-    class: "modal-overlay fixed inset-0 z-50 grid place-items-end bg-black/55 p-0 sm:place-items-center sm:p-6",
-    onclick: (event: MouseEvent) => { if (event.target === overlay) close(); },
-  },
-  h("section", { class: "card mobile-sheet w-full max-w-lg overflow-hidden rounded-b-none shadow-2xl sm:rounded-xl" },
-    h("div", { class: "flex items-start justify-between gap-3 border-b border-line px-4 py-4 sm:px-6" },
-      h("div", {}, h("h2", { class: "font-display text-[1.4rem] leading-tight text-fg" }, "Start a session"), h("p", { class: "mt-1.5 text-sm text-muted" }, "Your first message opens a new thread in the Open lane.")),
-      h("button", { class: "grid h-11 w-11 place-items-center rounded text-muted hover:bg-hover sm:h-8 sm:w-8", type: "button", "aria-label": "Close", onclick: close }, icon("x"))),
-    h("div", { class: "space-y-3 p-4 sm:p-6" }, input, status),
-    h("div", { class: "flex items-center justify-end gap-2 border-t border-line px-4 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-6" },
-      h("button", { class: "btn-ghost min-h-11 px-4 text-sm sm:min-h-0", type: "button", onclick: close }, "Cancel"), send)));
-  document.body.append(overlay);
-  input.focus();
 }
 
 /** Workspace-wide threads inbox (sidebar Threads control). */
@@ -1140,6 +948,49 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
 
   const assignedSkills = h("div", { class: "mt-3 flex flex-wrap gap-2", dataset: { assignedSkills: "" } }, ...((channel.agent?.skills || []).map((skill) => h("span", { class: "chip border-accent/25", dataset: { assignedSkill: skill.slug } }, skill.name))));
 
+  const sessionModeToggle = h("input", { type: "checkbox", checked: Boolean(channel.session_mode), class: "accent-accent", disabled: !channel.can_manage ? true : undefined }) as HTMLInputElement;
+  const sessionModeStatus = h("p", { class: "mt-2 min-h-5 text-xs text-muted", role: "status" });
+  sessionModeToggle.onchange = async () => {
+    const next = sessionModeToggle.checked; sessionModeToggle.disabled = true; sessionModeStatus.textContent = "Saving…";
+    try { await api(`/api/channels/${channel.id}`, { method: "PATCH", body: { session_mode: next } }); sessionModeStatus.textContent = next ? "Card presentation enabled in Chat." : "Standard Chat presentation restored."; onChanged(); }
+    catch (error) { sessionModeToggle.checked = !next; sessionModeStatus.textContent = (error as Error).message; }
+    finally { sessionModeToggle.disabled = !channel.can_manage; }
+  };
+  const sessionModeCard = h("div", { class: "card p-4", dataset: { sessionModeSettings: "" } },
+    h("label", { class: "flex cursor-pointer items-start justify-between gap-4" }, h("span", { class: "min-w-0" }, h("span", { class: "block font-semibold text-fg" }, "Session mode"), h("span", { class: "mt-1 block text-sm leading-6 text-muted" }, "Keep the same Chat tab, session order, content, labels, colors, and thread behavior, but present each top-level session as a compact bordered card.")), sessionModeToggle), sessionModeStatus);
+  const sessionSort = h("select", { class: "field mt-3", "aria-label": "Session sort", disabled: !channel.can_manage ? true : undefined },
+    h("option", { value: "default", selected: channel.session_sort !== "active" }, "Default sort"),
+    h("option", { value: "active", selected: channel.session_sort === "active" }, "By active")) as HTMLSelectElement;
+  const sessionSortStatus = h("p", { class: "mt-2 min-h-5 text-xs text-muted", role: "status" });
+  sessionSort.onchange = async () => {
+    const previous = channel.session_sort === "active" ? "active" : "default";
+    const next = sessionSort.value as "default" | "active";
+    sessionSort.disabled = true; sessionSortStatus.textContent = "Saving…";
+    try { await api(`/api/channels/${channel.id}`, { method: "PATCH", body: { session_sort: next } }); sessionSortStatus.textContent = next === "active" ? "Most recently active sessions now sit closest to the message box." : "Original session order restored."; onChanged(); }
+    catch (error) { sessionSort.value = previous; sessionSortStatus.textContent = (error as Error).message; }
+    finally { sessionSort.disabled = !channel.can_manage; }
+  };
+  const sessionSortCard = h("div", { class: "card p-4", dataset: { sessionSortSettings: "" } },
+    h("h3", { class: "font-semibold text-fg" }, "Session sort"),
+    h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Default keeps the current order. By active places the session with the newest user message or agent response closest to the message box."),
+    sessionSort, sessionSortStatus);
+  const sessionDensity = h("select", { class: "field mt-3", "aria-label": "Session size", disabled: !channel.can_manage ? true : undefined },
+    h("option", { value: "default", selected: !["comfy", "compact"].includes(String(channel.session_density)) }, "Default"),
+    h("option", { value: "comfy", selected: channel.session_density === "comfy" }, "Comfy"),
+    h("option", { value: "compact", selected: channel.session_density === "compact" }, "Compact")) as HTMLSelectElement;
+  const sessionDensityStatus = h("p", { class: "mt-2 min-h-5 text-xs text-muted", role: "status" });
+  sessionDensity.onchange = async () => {
+    const previous = (["comfy", "compact"].includes(String(channel.session_density)) ? channel.session_density : "default") as "default" | "comfy" | "compact";
+    const next = sessionDensity.value as "default" | "comfy" | "compact";
+    sessionDensity.disabled = true; sessionDensityStatus.textContent = "Saving…";
+    try { await api(`/api/channels/${channel.id}`, { method: "PATCH", body: { session_density: next } }); sessionDensityStatus.textContent = next === "default" ? "Original variable session sizes restored." : next === "comfy" ? "Sessions now use uniform roomy cards." : "Sessions now use uniform skinny cards."; onChanged(); }
+    catch (error) { sessionDensity.value = previous; sessionDensityStatus.textContent = (error as Error).message; }
+    finally { sessionDensity.disabled = !channel.can_manage; }
+  };
+  const sessionDensityCard = h("div", { class: "card p-4", dataset: { sessionDensitySettings: "" } },
+    h("h3", { class: "font-semibold text-fg" }, "Session size"),
+    h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Default keeps today’s variable-height sessions. Comfy makes every session a uniform roomy card. Compact makes every session a uniform skinny card."),
+    sessionDensity, sessionDensityStatus);
   const textingCard = channelTextingSettings(channel.id, channel.name, Boolean(S.me.is_admin));
   const computer = channel.computer;
   const computerKind = computer?.backend === "apple" ? "Isolated Linux VM"
@@ -1168,6 +1019,9 @@ export function renderChannelSettings(container: HTMLElement, channel: Channel, 
           ? null
           : h("button", { class: "btn-primary text-sm", onclick: () => { void saveName(); } }, "Rename"))),
     h("div", { class: "card space-y-3 p-4" }, h("h3", { class: "font-semibold text-fg" }, "Purpose"), purpose, h("div", { class: "flex justify-end" }, h("button", { class: "btn-primary text-sm", onclick: () => { void savePurpose(); } }, "Save purpose"))),
+    sessionModeCard,
+    sessionSortCard,
+    sessionDensityCard,
     h("div", { class: "card space-y-3 p-4", dataset: { channelNotifications: "" } },
       h("div", {}, h("h3", { class: "font-semibold text-fg" }, "Notification sound"), h("p", { class: "mt-1 text-sm leading-6 text-muted" }, "Private to your account. Global mute in Settings → Notifications always takes priority.")),
       h("label", { class: "flex items-center gap-3 rounded-lg border border-line bg-panel p-3 text-sm font-semibold text-fg" }, channelMuted, `Mute #${channel.name}`),

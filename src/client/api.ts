@@ -39,7 +39,7 @@ export type ChannelComputer = {
   obligations: Array<{ kind: string; ref: string; mode: "resident" | "wakeable"; details: string; due_at?: number | null }>;
 };
 export type ChannelMember = { id: number; username: string; display: string; avatar: string };
-export type Channel = { id: number; name: string; slug: string; kind: string; topic: string; purpose: string; status: "active" | "archived"; unread: number; favorite?: boolean; members?: ChannelMember[]; agent: ResidentAgent | null; computer?: ChannelComputer | null; personal_main?: boolean; can_manage?: boolean; detailed?: boolean; call_skipper_without_confirmation?: boolean };
+export type Channel = { id: number; name: string; slug: string; kind: string; topic: string; purpose: string; status: "active" | "archived"; unread: number; favorite?: boolean; members?: ChannelMember[]; agent: ResidentAgent | null; computer?: ChannelComputer | null; personal_main?: boolean; can_manage?: boolean; detailed?: boolean; call_skipper_without_confirmation?: boolean; session_mode?: boolean; session_sort?: "default" | "active"; session_density?: "default" | "comfy" | "compact" };
 export type Bot = { id: number; name: string; model: string; avatar: string; provider_id: number | null; provider_name: string | null; provider_kind: string | null; computers: number[]; prefs: Record<string, string>; agent_id?: number | null; agent_kind?: string | null; agent_status?: string | null; resident_channel_id?: number | null };
 export type ThreadFollowup = {
   id: number;
@@ -57,9 +57,10 @@ export type ThreadState = {
   status: "open" | "waiting" | "resolved" | "failed" | "archived";
   title: string;
   summary: string;
+  operational_state?: "working" | "needs_you" | "scheduled" | "failed" | "complete" | "idle" | "archived";
   opened_at: number;
   updated_at: number;
-  root: Message;
+  root: Pick<Message, "id">;
   /** Active durable agent wake, pending or currently running (Board Scheduled lane). */
   followup?: ThreadFollowup | null;
 };
@@ -147,11 +148,13 @@ export type RoutingCombo = { id: string; storageId?: string | null; name: string
 export type RoutingUsageEntry = {
   at?: number; model?: string; provider?: string; providerName?: string; providerType?: string;
   accountAlias?: string | null; status?: number; requests?: number; prompt_tokens?: number;
-  completion_tokens?: number; cached_tokens?: number; total_tokens?: number; error?: unknown;
+  completion_tokens?: number; cached_tokens?: number; cache_read_tokens?: number; cache_write_tokens?: number;
+  uncached_input_tokens?: number; logical_input_tokens?: number; token_semantics?: string; total_tokens?: number; error?: unknown;
 };
 export type RoutingUsage = {
   requests: number; ok: number; errors: number; prompt_tokens: number; completion_tokens: number;
-  cached_tokens: number; total_tokens: number; byModel: RoutingUsageEntry[];
+  cached_tokens: number; cache_read_tokens: number; cache_write_tokens: number; uncached_input_tokens: number;
+  logical_input_tokens: number; token_semantics?: string; total_tokens: number; byModel: RoutingUsageEntry[];
   byProvider: RoutingUsageEntry[]; recent: RoutingUsageEntry[];
 };
 export type RoutingQuotaWindow = { id: string; label: string; usedPercent: number; remainingPercent: number; resetsAt?: number | null };
@@ -168,8 +171,8 @@ export type RoutingState = {
   keyedPresets: Array<{ id: string; name: string; baseUrl: string; needsAccountId?: boolean }>;
 };
 
-export async function routingAction<T = Record<string, unknown>>(action: string, payload?: unknown): Promise<T> {
-  return api<T>("/api/routing/action", { body: { action, payload } });
+export async function routingAction<T = Record<string, unknown>>(action: string, payload?: unknown, options: { signal?: AbortSignal } = {}): Promise<T> {
+  return api<T>("/api/routing/action", { body: { action, payload }, signal: options.signal });
 }
 export type Skill = {
   id?: number; slug: string; name: string; description: string; category: string; instructions?: string; assigned?: boolean;
@@ -213,11 +216,17 @@ export function workspacePhotoSrc(photoUrl: string | null | undefined, cacheBust
 export const setToken = async (t: string): Promise<void> => { token = t; setAuthenticatedAssetToken(t); await persistSecureSession(t); };
 export const clearToken = async (): Promise<void> => { token = ""; setAuthenticatedAssetToken(""); await removeSecureSession(); };
 
-export async function api<T = any>(path: string, opts: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
+const browserTimeZone = (() => {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; }
+  catch { return ""; }
+})();
+
+export async function api<T = any>(path: string, opts: { method?: string; body?: unknown; headers?: Record<string, string>; signal?: AbortSignal } = {}): Promise<T> {
   const res = await fetch(apiUrl(path), {
     method: opts.method || (opts.body !== undefined ? "POST" : "GET"),
-    headers: { ...(opts.body !== undefined ? { "content-type": "application/json" } : {}), ...(token ? { authorization: `Bearer ${token}` } : {}), ...(opts.headers || {}) },
+    headers: { ...(opts.body !== undefined ? { "content-type": "application/json" } : {}), ...(token ? { authorization: `Bearer ${token}` } : {}), ...(browserTimeZone ? { "x-1helm-time-zone": browserTimeZone } : {}), ...(opts.headers || {}) },
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    signal: opts.signal,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);

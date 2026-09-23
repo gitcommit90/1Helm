@@ -44,6 +44,16 @@ test("provider controls expose the live dotted router flow and credential-free h
   assert.doesNotMatch(client.slice(client.indexOf("export async function openRoutingPopover"), client.indexOf("function sourceCatalog")), /routing\/credentials|apiKey/);
 });
 
+test("manual model probes are visibly bounded and cannot be started concurrently", () => {
+  const apiClient = readFileSync(new URL("src/client/api.ts", ROOT), "utf8");
+  assert.match(client, /This can take up to 60 seconds\./);
+  assert.match(client, /addModel\.disabled = true/);
+  assert.match(client, /exact\.disabled = true/);
+  assert.match(client, /AbortSignal\.timeout\(70_000\)/);
+  assert.match(client, /finally \{[\s\S]*exact\.disabled = false;[\s\S]*addModel\.disabled = false;/);
+  assert.match(apiClient, /routingAction<[\s\S]*options: \{ signal\?: AbortSignal \}/);
+});
+
 test("model refresh is a preview-confirm contract with OpenRouter free metadata", () => {
   assert.match(modelRefreshClient, /Nothing changes until you confirm\./);
   assert.match(modelRefreshClient, /Select all/);
@@ -76,8 +86,10 @@ test("user-scoped usage honors every Activity period and hydrates provider ident
   assert.match(server, /created>=\?/);
   assert.match(server, /current\?\.email \|\| current\?\.profileName \|\| accountAlias \|\| humanCurrentName/);
   assert.match(server, /Disconnected account/);
-  assert.match(client, /usage\.prompt_tokens\), "Input"[\s\S]*usage\.completion_tokens\), "Output"[\s\S]*usage\.cached_tokens\), "Cached"[\s\S]*usage\.total_tokens\), "Total"/,
-    "Activity shows the input, output, cached, and total token breakdown");
+  assert.match(client, /usage\.logical_input_tokens\), "Logical input"[\s\S]*usage\.uncached_input_tokens\), "Uncached"[\s\S]*usage\.cache_read_tokens\), "Cache read"[\s\S]*usage\.cache_write_tokens\), "Cache write"[\s\S]*usage\.completion_tokens\), "Output"[\s\S]*usage\.total_tokens\), "Total"/,
+    "Activity distinguishes logical input, uncached processing, cache reads, cache writes, output, and total");
+  assert.match(server, /tokenSemantics = excludesCache \? "input_excludes_cache_read_write" : "input_includes_cache_read"/,
+    "usage records retain provider-specific token semantics");
 });
 
 

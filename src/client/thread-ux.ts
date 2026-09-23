@@ -20,14 +20,19 @@ function legacyCopyText(value: string): boolean {
   finally { input.remove(); }
 }
 
-export async function copyThreadNumber(button: HTMLButtonElement, threadNumber: number, makeIcon: (name: string, size: number) => Node, alert: Alert): Promise<void> {
-  const value = String(threadNumber);
+export async function copyTextToClipboard(value: string): Promise<boolean> {
   let copied = false;
   if (navigator.clipboard?.writeText) {
     try { await navigator.clipboard.writeText(value); copied = true; }
     catch { /* Electron can expose Clipboard API while rejecting its write permission; use the synchronous renderer fallback. */ }
   }
   if (!copied) copied = legacyCopyText(value);
+  return copied;
+}
+
+export async function copyThreadNumber(button: HTMLButtonElement, threadNumber: number, makeIcon: (name: string, size: number) => Node, alert: Alert): Promise<void> {
+  const value = String(threadNumber);
+  const copied = await copyTextToClipboard(value);
   if (!copied) { await alert(`Thread number: ${value}`); return; }
   button.title = "Copied"; button.setAttribute("aria-label", "Copied"); button.replaceChildren(makeIcon("check", 13));
   window.setTimeout(() => { if (!button.isConnected) return; button.title = "Copy thread number"; button.setAttribute("aria-label", "Copy thread number"); button.replaceChildren(makeIcon("copy", 13)); }, 1200);

@@ -13,7 +13,7 @@ const enginePackage = require("@gitcommit90/rerouted/package.json");
 const ROOT = new URL("..", import.meta.url).pathname;
 
 test("embedded ReRouted keeps Antigravity CRLF streams visible", async () => {
-  assert.equal(enginePackage.version, "0.5.14", "the embedded router contains the Antigravity stream fix plus the Claude Fable 5.1 update");
+  assert.equal(enginePackage.version, "0.5.15", "the embedded router contains the Antigravity stream fix plus the Claude Fable 5.1 update");
   const upstream = {
     response: {
       candidates: [{ content: { role: "model", parts: [{ text: "OK" }] }, finishReason: "STOP" }],

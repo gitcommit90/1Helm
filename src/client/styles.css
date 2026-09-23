@@ -1389,3 +1389,103 @@ html, body { height: 100%; width: 100%; overflow: hidden; overscroll-behavior: n
 
 /* transitions for theme flip */
 .themed { transition: background-color .15s ease, color .15s ease, border-color .15s ease; }
+
+/* Navigation acknowledges the gesture before transport/render work begins. */
+#app-shell[data-navigation-pending]::after {
+  content: "";
+  position: absolute;
+  z-index: 80;
+  top: 0;
+  left: 0;
+  height: 2px;
+  width: 34%;
+  pointer-events: none;
+  background: var(--color-accent, #5ea1ff);
+  box-shadow: 0 0 8px currentColor;
+  animation: navigation-pending-slide 0.8s ease-in-out infinite alternate;
+}
+@keyframes navigation-pending-slide { from { transform: translateX(-35%); } to { transform: translateX(230%); } }
+@media (prefers-reduced-motion: reduce) { #app-shell[data-navigation-pending]::after { width: 100%; animation: none; } }
+
+/* Session mode — presentation-only cards inside the existing Chat tab. */
+.chat-session-mode .msg-day-section { padding-inline: 0.65rem; }
+.chat-session-mode .chat-session-card {
+  margin-block: 0.45rem;
+  padding-block: 0.55rem;
+  border: 1px solid var(--c-line);
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, var(--c-surface) 94%, var(--c-raised));
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--c-line) 65%, transparent);
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+.chat-session-mode .chat-session-card:hover { border-color: color-mix(in srgb, var(--c-accent) 42%, var(--c-line)); background: var(--c-hover); }
+.chat-session-mode .chat-session-card:active { transform: translateY(1px); }
+
+/* Per-channel session sizing. Default leaves every card's natural height alone. */
+.chat-session-density-comfy .chat-session-card,
+.chat-session-density-compact .chat-session-card,
+.chat-session-card-density-comfy,
+.chat-session-card-density-compact {
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.chat-session-density-comfy .chat-session-card,
+.chat-session-card-density-comfy {
+  block-size: 8.5rem;
+  height: 8.5rem;
+  min-height: 8.5rem;
+  max-height: 8.5rem;
+}
+.chat-session-density-compact .chat-session-card,
+.chat-session-card-density-compact {
+  block-size: 4.5rem;
+  height: 4.5rem;
+  min-height: 4.5rem;
+  max-height: 4.5rem;
+  margin-block: 0.3rem;
+  padding-block: 0.35rem;
+}
+.chat-session-density-comfy .chat-session-card .message-content,
+.chat-session-density-compact .chat-session-card .message-content { block-size: 100%; overflow: hidden; }
+.chat-session-density-comfy .chat-session-card .message-body-clamp { max-block-size: 3.9rem; overflow: hidden; }
+.chat-session-density-compact .chat-session-card .message-body-clamp { max-block-size: 1.45rem; overflow: hidden; }
+.chat-session-density-comfy .chat-session-card .message-body-expand,
+.chat-session-density-compact .chat-session-card .message-body-expand,
+.chat-session-density-comfy .chat-session-card .agent-progress,
+.chat-session-density-compact .chat-session-card .agent-progress,
+.chat-session-density-comfy .chat-session-card .attachments,
+.chat-session-density-compact .chat-session-card .attachments { display: none !important; }
+.chat-session-density-compact .chat-session-card .session-thread-footer { display: none; }
+
+@media (max-width: 640px) { .chat-session-mode .msg-day-section { padding-inline: 0.4rem; } }
+
+.session-card { position: relative; overflow: hidden; border: 1px solid var(--c-line); border-left-width: 4px; border-radius: 0.65rem; background: color-mix(in srgb, var(--c-surface) 94%, var(--c-raised)); box-shadow: 0 1px 0 color-mix(in srgb, var(--c-line) 65%, transparent); transition: border-color 140ms ease, background 140ms ease, transform 140ms ease; }
+.session-card:hover { border-color: color-mix(in srgb, var(--c-accent) 42%, var(--c-line)); background: var(--c-hover); }
+.session-card:active { transform: translateY(1px); }
+.session-card-working { border-left-color: #f59e0b; }
+.session-card-needs_you { border-left-color: #f59e0b; background: color-mix(in srgb, #f59e0b 5%, var(--c-surface)); }
+.session-card-scheduled { border-left-color: var(--c-accent); }
+.session-card-failed { border-left-color: var(--c-danger, #e11d48); }
+.session-card-complete { border-left-color: #22c55e; }
+.session-card-idle, .session-card-archived { border-left-color: var(--c-line); opacity: 0.84; }
+.session-card-open { display: block; width: 100%; padding: 0.72rem 0.8rem; text-align: left; }
+.session-card-heading { display: flex; min-width: 0; align-items: center; gap: 0.55rem; }
+.session-state-mark { width: 0.48rem; height: 0.48rem; flex: 0 0 auto; border-radius: 999px; background: var(--c-line); }
+.session-state-mark-working { background: #f59e0b; animation: board-due-pulse 1.3s ease-in-out infinite; }
+.session-state-mark-needs_you { background: #f59e0b; }
+.session-state-mark-scheduled { background: var(--c-accent); }
+.session-state-mark-failed { background: var(--c-danger, #e11d48); }
+.session-state-mark-complete { background: #22c55e; }
+.session-state-label { flex: 0 0 auto; border: 1px solid var(--c-line); border-radius: 999px; padding: 0.12rem 0.4rem; color: var(--c-faint); font-family: var(--font-mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; }
+.session-state-label-working, .session-state-label-needs_you { border-color: color-mix(in srgb, #f59e0b 38%, var(--c-line)); color: #d97706; }
+.session-state-label-scheduled { border-color: color-mix(in srgb, var(--c-accent) 40%, var(--c-line)); color: var(--c-accent); }
+.session-state-label-failed { border-color: color-mix(in srgb, var(--c-danger, #e11d48) 40%, var(--c-line)); color: var(--c-danger, #e11d48); }
+.session-card-compact .session-card-open { padding-block: 0.55rem; }
+.session-card > .board-followup { margin: 0 0.75rem 0.75rem; }
+.board-history { flex: 0 0 auto; margin: 0 0.85rem 0.85rem; border: 1px solid var(--c-line); border-radius: 0.65rem; padding: 0.6rem 0.75rem; color: var(--c-muted); font-size: 0.8rem; }
+.board-history > summary { cursor: pointer; font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; }
+@media (max-width: 640px) {
+  .session-state-label { display: none; }
+  .board-history { margin-inline: 0.6rem; }
+}
+@media (prefers-reduced-motion: reduce) { .session-state-mark-working { animation: none; } }

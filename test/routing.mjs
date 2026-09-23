@@ -496,6 +496,9 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     usageDb.prepare(`INSERT INTO routing_usage_events
       (user_id,provider_id,model,status,prompt_tokens,completion_tokens,cached_tokens,detail,created)
       VALUES (?,?,?,?,?,?,?,?,?)`).run(captainId, providerId, "old-period-model", 200, 9, 3, 0, JSON.stringify({ providerName: "account" }), Date.now() - 2 * 60 * 60_000);
+    usageDb.prepare(`INSERT INTO routing_usage_events
+      (user_id,provider_id,model,status,prompt_tokens,completion_tokens,cached_tokens,detail,created)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(captainId, providerId, "claude-cache-telemetry", 200, 20, 5, 70, JSON.stringify({ providerType: "claude", providerName: "Claude", cache_read_tokens: 70, cache_write_tokens: 10, uncached_input_tokens: 30, logical_input_tokens: 100, token_semantics: "input_excludes_cache_read_write" }), Date.now());
     usageDb.close();
     const usage1h = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, { method: "POST", body: JSON.stringify({ action: "app:usage", payload: "1h" }) });
     const usage24h = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, { method: "POST", body: JSON.stringify({ action: "app:usage", payload: "24h" }) });
@@ -503,6 +506,9 @@ test("embedded provider fabric powers 1Helm agents and its public endpoint", { t
     assert.equal(usage1h.usage.recent.some((entry) => entry.model === "old-period-model"), false, "1h excludes older user-scoped events");
     assert.equal(usage24h.usage.recent.some((entry) => entry.model === "old-period-model"), true, "24h includes events outside the 1h window");
     assert.equal(usage24h.usage.byProvider.find((entry) => entry.providerId === providerId)?.provider, "Test source", "generic stored activity names hydrate from the owned provider");
+    const claudeTelemetry = usage24h.usage.byModel.find((entry) => entry.model === "claude-cache-telemetry");
+    assert.deepEqual({ logical: claudeTelemetry.logical_input_tokens, uncached: claudeTelemetry.uncached_input_tokens, read: claudeTelemetry.cache_read_tokens, write: claudeTelemetry.cache_write_tokens, semantics: claudeTelemetry.token_semantics },
+      { logical: 100, uncached: 30, read: 70, write: 10, semantics: "input_excludes_cache_read_write" }, "usage distinguishes Claude reads, writes, uncached input, and excluded-cache semantics");
 
     const addSource = async (name, baseUrl, models = [{ id: "mock-large", name: "mock-large", enabled: true }]) => {
       const result = await json(`http://127.0.0.1:${appPort}/api/routing/action`, token, {

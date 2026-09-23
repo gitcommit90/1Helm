@@ -23,7 +23,7 @@ function coworkAttachmentPath(path: string): string | null {
 /** Channel timelines never request root-message images. Inside a thread,
  * bounded lazy thumbnails preserve the useful preview while Open/Download
  * still resolves the original attachment. */
-export function renderMessageAttachments(message: AttachmentMessage, inThread: boolean): HTMLElement | null {
+export function renderMessageAttachments(message: AttachmentMessage, inThread: boolean, cardNavigates = false): HTMLElement | null {
   if (!message.attachments?.length) return null;
   const visible = inThread ? message.attachments : message.attachments.filter((attachment) => !attachment.mime.startsWith("image/"));
   if (!visible.length) return null;
@@ -37,9 +37,13 @@ export function renderMessageAttachments(message: AttachmentMessage, inThread: b
       h("button", { class: "btn-subtle text-xs", type: "button", onclick: (event: MouseEvent) => { event.stopPropagation(); void ui.downloadAuthenticatedFile(`${viewUrl}?download=1`, attachment.name).catch((error) => ui.appAlert((error as Error).message)); } }, "Download"));
     if (attachment.mime.startsWith("image/")) return h("article", { class: "overflow-hidden rounded-lg border border-line bg-raised" },
       h("button", { type: "button", class: "block", onclick: open }, h("img", { src: mediaUrl, class: "max-h-64 max-w-full object-contain", alt: attachment.name, loading: "lazy", decoding: "async" })), actions);
-    return h("article", { class: "overflow-hidden rounded-lg border border-line bg-raised text-sm" },
-      h("button", { type: "button", class: "flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-hover", onclick: open },
+    const summary = cardNavigates
+      ? h("div", { class: "flex w-full items-center gap-2.5 px-3 py-2 text-left", title: "Open session" },
         h("span", { class: "grid h-9 w-9 place-items-center rounded-lg bg-accent-soft text-accent" }, ui.icon("file")),
-        h("div", { class: "min-w-0" }, h("div", { class: "truncate font-medium text-fg" }, attachment.name), h("div", { class: "text-xs text-muted" }, fmtSize(attachment.size)))), actions);
+        h("div", { class: "min-w-0" }, h("div", { class: "truncate font-medium text-fg" }, attachment.name), h("div", { class: "text-xs text-muted" }, fmtSize(attachment.size))))
+      : h("button", { type: "button", class: "flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-hover", onclick: open },
+        h("span", { class: "grid h-9 w-9 place-items-center rounded-lg bg-accent-soft text-accent" }, ui.icon("file")),
+        h("div", { class: "min-w-0" }, h("div", { class: "truncate font-medium text-fg" }, attachment.name), h("div", { class: "text-xs text-muted" }, fmtSize(attachment.size))));
+    return h("article", { class: "overflow-hidden rounded-lg border border-line bg-raised text-sm" }, summary, actions);
   }));
 }

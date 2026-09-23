@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import sharp from "sharp";
 
 const dataDir = mkdtempSync(join(tmpdir(), "1helm-autonomy-"));
 process.env.CTRL_DATA_DIR = dataDir;
 const dbModule = await import("../src/server/db.ts");
-const { db, q1, run, now, seed } = dbModule;
+const { db, q1, run, now, seed, UPLOAD_DIR } = dbModule;
 const { verifyAuditChain } = await import("../src/server/audit.ts");
 const {
   agentReadableAttachmentPath,
@@ -26,7 +27,7 @@ const { inspectWebSource, isPublicWebAddress, validateWebSourceUrl } = await imp
 const { resolveNativeShell, terminalPromptEnvironment } = await import("../src/server/agent.ts");
 const { windowsSystemAccount } = await import("../src/server/channel-computers.ts");
 const turns = await import("../src/server/turns.ts");
-const { CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_DECLINE, CAPTAIN_TEXTING_PERMISSION_KIND, captainTextingPermissionPayload, channelTextingGrant, completeRuntimeFollowup, grantChannelTexting, recordWakeDisposition, revokeChannelTexting, settleWakeAfterTurn, verifiedWakeDisposition } = await import("../src/server/followups.ts");
+const { CAPTAIN_TEXTING_ACCEPT, CAPTAIN_TEXTING_DECLINE, CAPTAIN_TEXTING_PERMISSION_KIND, captainTextingPermissionPayload, cancelPendingFollowup, cancelScheduledWakeForCaptainStop, channelTextingGrant, completeRuntimeFollowup, grantChannelTexting, recordWakeDisposition, revokeChannelTexting, settleWakeAfterTurn, verifiedWakeDisposition } = await import("../src/server/followups.ts");
 const catalog = await import("../src/server/skill-catalog.ts");
 const history = await import("../src/server/history.ts");
 const agents = await import("../src/server/agents.ts");
@@ -85,6 +86,18 @@ test("scheduled wakes fail closed without a verified runtime disposition", () =>
   recordWakeDisposition({ turnId: continued.turnId, triggerId: continued.triggerId, botId, kind: "continued", successorFollowupId: successorId, evidence: "A linked successor is persisted for the directly confirmed running task." });
   assert.equal(settleWakeAfterTurn(continued.followupId, continued.turnId).status, "done");
   assert.equal(q1("SELECT status FROM agent_followups WHERE id=?", successorId).status, "pending");
+
+  const stopped = makeWake("captain-stop");
+  assert.equal(cancelScheduledWakeForCaptainStop(stopped.triggerId, botId, rootId), stopped.followupId);
+  assert.equal(q1("SELECT status FROM agent_followups WHERE id=?", stopped.followupId).status, "cancelled", "Stop tombstones the durable wake before turn abort");
+  assert.equal(settleWakeAfterTurn(stopped.followupId, stopped.turnId).status, "failed");
+  assert.equal(q1("SELECT status FROM agent_followups WHERE id=?", stopped.followupId).status, "cancelled", "wake finalization cannot re-arm a Captain-cancelled wake");
+
+  const cancelledWhileRunning = makeWake("cancel-running");
+  const cancelled = cancelPendingFollowup(threadId, cancelledWhileRunning.followupId);
+  assert.equal(cancelled.ok, true);
+  assert.equal(cancelled.was_running, true);
+  assert.equal(q1("SELECT status FROM agent_followups WHERE id=?", cancelledWhileRunning.followupId).status, "cancelled", "Cancel accepts an already-running wake");
 
   const blocked = makeWake("blocked");
   const blockerEvidence = "The vendor requires the Captain to accept a binding external agreement before work can continue.";
@@ -262,6 +275,7 @@ test("runtime injects the essential resident operating playbooks and keeps the r
   assert(tools.includes("search_channel_history") && tools.includes("read_channel_session"));
   assert(!tools.includes("call_skipper"), "resident tools exclude call_skipper");
   assert(tools.includes("silent_success"), "resident tools expose explicit silent completion");
+  assert(tools.includes("view_image"), "resident tools expose native workspace vision");
   assert.doesNotMatch(JSON.stringify(runtimeToolDefinitionsForChannel(botId, channelId, false)), /Skipper|call_skipper/i);
 });
 
@@ -465,6 +479,42 @@ test("buildContext attaches structured per-message file paths and isolates chann
   }]);
   assert.match(missingBlock, /status="unavailable"/);
   assert.match(missingBlock, /workspace_path=""/);
+});
+
+test("buildContext sends actual bounded image pixels and retains them for visual follow-ups", async () => {
+  seed();
+  const stamp = now();
+  const userId = run("INSERT INTO users (username,pass,display,is_admin,created) VALUES (?,?,?,?,?)", `vision-owner-${stamp}`, "x", "Vision Owner", 1, stamp).lastInsertRowid;
+  const channelId = run("INSERT INTO channels (name,slug,kind,topic,purpose,status,created_by,created) VALUES (?,?,?,?,?,'active',?,?)", `vision-${stamp}`, `vision-${stamp}`, "channel", "", "Vision", userId, stamp).lastInsertRowid;
+  const botId = run("INSERT INTO bots (name,model,prompt,created) VALUES (?,?,?,?)", `vision-agent-${stamp}`, "mock", "Resident.", stamp).lastInsertRowid;
+  const agentId = run("INSERT INTO agents (bot_id,kind,name,status,created) VALUES (?,'channel',?,'ready',?)", botId, `vision-agent-${stamp}`, stamp).lastInsertRowid;
+  run("INSERT INTO agent_channels (agent_id,channel_id,bound_at) VALUES (?,?,?)", agentId, channelId, stamp);
+  const rootId = run("INSERT INTO messages (channel_id,user_id,body,created) VALUES (?,?,?,?)", channelId, userId, "Describe the exact color in this image", stamp).lastInsertRowid;
+  run("INSERT INTO threads (root_message_id,channel_id,status,title,summary,opened_at,updated_at) VALUES (?,?,'open','','',?,?)", rootId, channelId, stamp, stamp);
+
+  const token = "a".repeat(40);
+  const original = await sharp({ create: { width: 32, height: 24, channels: 3, background: { r: 240, g: 20, b: 30 } } }).png().toBuffer();
+  writeFileSync(join(UPLOAD_DIR, token), original);
+  const attachmentId = run("INSERT INTO attachments (message_id,name,mime,size,path,workspace_path) VALUES (?,?,?,?,?,?)", rootId, "red-proof.png", "image/png", original.length, token, "files/red-proof.png").lastInsertRowid;
+  const bot = q1("SELECT * FROM bots WHERE id=?", botId);
+  const runtimeAgent = q1("SELECT a.*,ac.channel_id FROM agents a JOIN agent_channels ac ON ac.agent_id=a.id WHERE a.id=?", agentId);
+  const context = await buildContext(bot, runtimeAgent, channelId, rootId, rootId, false, false);
+  const current = context.at(-1);
+  assert(Array.isArray(current.content), "image-bearing user messages use multimodal content arrays");
+  assert.equal(current.content[1].type, "image_url");
+  assert.match(current.content[1].image_url.url, /^data:image\/webp;base64,/);
+  assert.equal(current.content[1].image_url.detail, "high");
+  assert.match(current.content[0].text, new RegExp(`vision-input attachment_id="${attachmentId}"[\\s\\S]*pixels="included"`));
+  const normalized = Buffer.from(current.content[1].image_url.url.split(",", 2)[1], "base64");
+  const metadata = await sharp(normalized).metadata();
+  assert.deepEqual([metadata.width, metadata.height, metadata.format], [32, 24, "webp"]);
+
+  const followupId = run("INSERT INTO messages (channel_id,parent_id,user_id,body,created) VALUES (?,?,?,?,?)", channelId, rootId, userId, "What about its upper-left corner?", stamp + 1).lastInsertRowid;
+  const { appendMessageHistory } = await import("../src/server/store.ts");
+  appendMessageHistory(followupId);
+  const followupContext = await buildContext(bot, runtimeAgent, channelId, followupId, rootId, false, false);
+  const priorImageTurn = followupContext.find((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url"));
+  assert(priorImageTurn, "recent image pixels survive into stateless follow-up requests");
 });
 
 test("procedure crystallization rejects generic snippets and retains complete verified procedures", async () => {

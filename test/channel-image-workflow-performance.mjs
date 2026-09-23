@@ -11,7 +11,7 @@ const workflowServer = readFileSync(new URL("src/server/workflows.ts", ROOT), "u
 const server = readFileSync(new URL("src/server/index.ts", ROOT), "utf8");
 
 test("channel timeline omits root images while thread images use lazy thumbnails", () => {
-  assert.match(app, /renderMessageAttachments\(m, opts\.inThread\)/);
+  assert.match(app, /renderMessageAttachments\(m, opts\.inThread, sessionCard\)/);
   assert.match(attachments, /inThread \? message\.attachments : message\.attachments\.filter\(\(attachment\) => !attachment\.mime\.startsWith\("image\/"\)\)/);
   assert.match(attachments, /\?thumbnail=1&token=/);
   assert.match(attachments, /loading: "lazy", decoding: "async"/);

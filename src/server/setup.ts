@@ -1,5 +1,5 @@
 import { q, q1, run, now, type Row } from "./db.ts";
-import { addBotToChannel, createMessage, serializeMessage, setModelPolicy, setModelPref } from "./store.ts";
+import { addBotToChannel, channelRootMessageIds, createMessage, serializeMessage, setModelPolicy, setModelPref } from "./store.ts";
 import { broadcastToChannel } from "./events.ts";
 import { fetchModels } from "./computer.ts";
 import { CHATGPT_KIND, listChatGPTModels } from "./chatgpt.ts";
@@ -120,8 +120,8 @@ export function bootstrapView(user: Row, url: URL, helpers: {
   if (active) {
     const channelId = Number(active.id);
     helpers.queueLastRead(Number(user.id), channelId, helpers.maxSettledMessageId(channelId));
-    const roots = q("SELECT id FROM messages WHERE channel_id=? AND parent_id IS NULL AND photon_conversation_id IS NULL AND workflow_id IS NULL ORDER BY id DESC LIMIT 100", channelId).reverse();
-    messages = helpers.serializeMessages(roots.map((row) => Number(row.id)), "summary");
+    const rootIds = channelRootMessageIds(channelId);
+    messages = helpers.serializeMessages(rootIds, "summary");
     channelBots = helpers.bots(channelId);
   }
   return {

@@ -41,6 +41,17 @@ sole visual home for recurring work and its chronological run history; workflow
 runs do not spill into Chat, Board, or Threads, while each run remains a normal
 interactive thread when opened.
 
+## Session presentation and operational truth
+
+Channels may opt into Session mode without changing navigation or information
+architecture. The same Chat tab, sessions, order, content, labels, colors, and
+thread behavior remain; only top-level Chat rows receive a compact bordered-card
+presentation. Turning the mode off restores the standard Chat presentation.
+
+Board uses operational states for every channel, regardless of Session mode.
+Runtime records—not generated prose or the ambiguous database `open` value—own
+Working, Needs you, Scheduled, Failed, Complete, Idle, and Archived.
+
 ## Honest model usage
 
 A thread's primary token indicator answers how much input context the latest model call processed, not how many repeated prompt-token encounters accumulated across an agent loop. 1Helm calculates this itself from the structured messages and tool schemas it sends, using one stable provider-neutral approximation. Cached is the unchanged leading context shared with the preceding call; output counts response text and tool-call payloads received by 1Helm; calls count successful invocations. These product metrics never depend on provider usage reports. Lifetime output and model-call count remain cumulative because they represent newly generated work and actual invocations; cumulative prompt traffic is never presented as the size of a conversation.
