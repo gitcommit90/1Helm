@@ -1,0 +1,35 @@
+/* ---------- Voice dictation (dictate.ts): the mic in both composers becomes a red stop pill with a timer and a level ring ---------- */
+:root{--rec:#dc2626;--recsoft:rgba(220,38,38,.16)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--rec:#ef4444;--recsoft:rgba(239,68,68,.22)}}
+:root[data-theme=dark]{--rec:#ef4444;--recsoft:rgba(239,68,68,.22)}
+/* The mic stays next to Send once there's text, so more can be added by voice. */
+.composer.has .cbtn.dict{display:grid}
+.cbtn.dict{position:relative;transition:box-shadow .12s}
+.cbtn.dict.on,.composer.has .cbtn.dict.on{width:auto;min-width:40px;padding:0 13px 0 12px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;gap:7px}
+.cbtn.dict.rec{background:var(--rec);color:#fff;box-shadow:0 0 0 calc(2px + var(--lvl,0) * 4px) var(--recsoft)}
+.cbtn.dict.rec:hover{background:var(--rec);color:#fff;filter:brightness(1.06)}
+.cbtn.dict.rec:focus-visible{outline:2px solid var(--rec);outline-offset:3px}
+.cbtn.dict.busy{background:var(--abub);color:var(--ink2);padding:0;width:40px;cursor:default}
+.cbtn.dict:disabled{opacity:1}
+.dtime{font:600 13.5px/1 -apple-system,BlinkMacSystemFont,"SF Pro Text","Inter",system-ui,sans-serif;font-variant-numeric:tabular-nums;letter-spacing:.01em}
+.dspin{width:16px;height:16px;border-radius:50%;border:2px solid var(--line2);border-top-color:var(--ink2);animation:dspin .8s linear infinite}
+@keyframes dspin{to{transform:rotate(1turn)}}
+/* The box gives way to a status line while listening / transcribing (what was typed is kept, just hidden). */
+form.dicting>textarea{display:none!important}
+form.dicting #go,form.dicting #ngo{opacity:.35;pointer-events:none}
+.dictst{flex:1;min-width:0;display:flex;align-items:center;gap:10px;align-self:center;min-height:36px;padding:0 6px;color:var(--ink2);font-size:15px;line-height:1.4;user-select:none}
+.nmodal .dictst{min-height:52px;padding:6px 8px 0}
+.dwords{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dhint{margin-left:auto;color:var(--faint);font-size:12.5px;white-space:nowrap}
+.dwave{display:inline-flex;align-items:center;gap:3px;height:18px;flex:none}
+.dwave i{width:3px;border-radius:2px;background:var(--rec);height:calc(4px + var(--lvl,0) * 14px);transition:height .08s linear;opacity:.9}
+.dwave i:nth-child(1),.dwave i:nth-child(5){height:calc(4px + var(--lvl,0) * 6px)}
+.dwave i:nth-child(2),.dwave i:nth-child(4){height:calc(4px + var(--lvl,0) * 10px)}
+.dwave:not(.busy) i{animation:dbreath 1.6s ease-in-out infinite}.dwave i:nth-child(2){animation-delay:.12s}.dwave i:nth-child(3){animation-delay:.24s}.dwave i:nth-child(4){animation-delay:.36s}.dwave i:nth-child(5){animation-delay:.48s}
+@keyframes dbreath{50%{opacity:.55}}
+.dwave.busy i{background:var(--faint);height:4px;animation:dbusy 1s ease-in-out infinite}
+@keyframes dbusy{50%{height:12px;opacity:.6}}
+.dbusy .dwords{background:linear-gradient(90deg,var(--mute) 0,var(--ink) 50%,var(--mute) 100%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:dshine 1.6s linear infinite}
+@keyframes dshine{from{background-position:100% 0}to{background-position:-100% 0}}
+@media (max-width:760px){.dhint{display:none}.dictst{font-size:17px}}
+@media (prefers-reduced-motion:reduce){.dwave i,.dbusy .dwords,.dspin{animation:none}.cbtn.dict{transition:none}.dbusy .dwords{color:var(--ink2);background:none}}

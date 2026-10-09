@@ -1,0 +1,23 @@
+/* Self-hosted storage meter and notice. Purchase controls are in ee/storage-billing.css. */
+:root{--stk-files:var(--accent);--stk-computer:#7c3aed;--stk-pages:var(--live);--stk-other:var(--faint);--stred:#dc2626}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--stk-computer:#a78bfa;--stred:#f87171}}
+:root[data-theme=dark]{--stk-computer:#a78bfa;--stred:#f87171}
+.stk-files{background:var(--stk-files)}.stk-computer{background:var(--stk-computer)}.stk-pages{background:var(--stk-pages)}.stk-other{background:var(--stk-other)}
+.stc .susage p.stline{margin:2px 0 12px}
+.stu.warn,.stline.warn{color:var(--warn)}.stu.full,.stline.full{color:var(--stred)}
+.stu{font-variant-numeric:tabular-nums}
+.stbar{display:flex;gap:2px;height:8px;border-radius:4px;background:var(--line);overflow:hidden}
+.stbar i{display:block;height:100%;min-width:3px}
+.stbar.full{box-shadow:0 0 0 1px var(--stred)}
+.stleg{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12.5px;color:var(--mute)}
+.stleg li{display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap}
+.stleg li>i{flex:none;width:8px;height:8px;border-radius:2px}
+.stleg li b{font-weight:600;color:var(--ink2);font-variant-numeric:tabular-nums}
+#stnotice{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:60;display:flex;align-items:center;gap:12px;width:min(600px,calc(100vw - 32px));box-sizing:border-box;padding:12px 12px 12px 14px;border-radius:16px;background:var(--sheet);color:var(--ink);box-shadow:0 0 0 1px var(--line2),0 10px 30px rgba(0,0,0,.12);font-size:14px;line-height:1.4}
+#stnotice p{margin:0;flex:1;min-width:0;overflow-wrap:anywhere;color:var(--ink2)}#stnotice p b{color:var(--ink);font-weight:600}
+#stnotice .stn-i{flex:none;color:var(--warn);display:flex}
+#stnotice .stn-b{flex:none;display:flex;gap:6px}
+#stnotice button{height:32px;padding:0 14px;border-radius:999px;font-weight:600;font-size:13px}
+#stnotice .stn-open{background:var(--ink);color:var(--sheet)}
+#stnotice .stn-x{color:var(--mute)}#stnotice .stn-x:hover{background:var(--hover);color:var(--ink)}
+@media (max-width:640px){.stleg{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 14px}.stleg li b{margin-left:auto}#stnotice{flex-wrap:wrap;top:10px}#stnotice .stn-b{width:100%;justify-content:flex-end}#stnotice button{height:36px;font-size:14px}}

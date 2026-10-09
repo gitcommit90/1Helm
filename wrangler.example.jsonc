@@ -1,0 +1,45 @@
+{
+  // Copy to wrangler.jsonc and fill the REPLACE values before deploying.
+  // The setup command will do that when used from a fresh public clone.
+  "name": "onehelm",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "rules": [{ "type": "Text", "globs": ["**/*.md", "**/skills/*/scripts/*"], "fallthrough": true }],
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "onehelm",
+    "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+    "migrations_dir": "db/migrations"
+  }],
+  "r2_buckets": [{ "binding": "WS", "bucket_name": "REPLACE_WITH_YOUR_R2_BUCKET_NAME" }],
+  "durable_objects": { "bindings": [
+    { "name": "RESIDENT", "class_name": "Resident" },
+    { "name": "CHANNEL_COMPUTER", "class_name": "ChannelComputer" },
+    { "name": "LEDGER", "class_name": "UsageLedger" },
+    { "name": "ARCHIVE", "class_name": "Archive" },
+    { "name": "COMPUTER", "class_name": "Computer" },
+    { "name": "FILE_PREP", "class_name": "FilePrep" }
+  ] },
+  "migrations": [{ "tag": "selfhost-v1", "new_sqlite_classes": ["Resident", "ChannelComputer", "UsageLedger", "Archive", "Computer", "FilePrep"] }],
+  "containers": [
+    { "class_name": "ChannelComputer", "image": "./image/Dockerfile", "instance_type": "standard-3", "max_instances": 5 },
+    { "class_name": "Computer", "image": "docker.io/library/node:22-bookworm", "instance_type": "basic", "max_instances": 2 }
+  ],
+  "ai": { "binding": "AI" },
+  "browser": { "binding": "BROWSER" },
+  "images": { "binding": "IMAGES" },
+  "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["REPLACE_WITH_YOUR_VERIFIED_SENDER_EMAIL"] }],
+  "assets": { "directory": "./app-assets", "binding": "ASSETS", "run_worker_first": true },
+  "vars": {
+    "ENV_NAME": "selfhost",
+    "TEST_MODE": "0",
+    "APP_HOST": "REPLACE_WITH_YOUR_WORKERS_DEV_HOST",
+    "GATEWAY_HOST": "REPLACE_WITH_YOUR_WORKERS_DEV_HOST",
+    "EMAIL_FROM": "REPLACE_WITH_YOUR_VERIFIED_SENDER_EMAIL",
+    "SELFHOST_STORAGE_GB": "100",
+    "SENTINEL_DEFAULT": "on"
+  },
+  "triggers": { "crons": ["*/5 * * * *", "17 * * * *"] }
+}

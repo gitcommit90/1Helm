@@ -1,0 +1,38 @@
+{
+ "flights": {
+  "i": 0,
+  "ms": 30051,
+  "out": 1769,
+  "code": "root = Stack([greet, picks, note, actions])\ngreet = Say(\"Found round trips for you + Sarah, out Wed Nov 25, back Sun Nov 29 \u2014 prices are **for both of you**. I skipped United's $398 fare since it leaves at 5:55a. All three below are nonstop.\")\npicks = Options(\"flight\", [swa, amer, alaska])\nswa = Option(\"Southwest\", \"Out Wed 9:40a\u219212:30p \u00b7 Back Sun 4:10p\u21925:00p \u00b7 free checked bags for both\", \"$486 total\", \"Best fit\")\namer = Option(\"American\", \"Out Wed 11:15a\u21922:05p \u00b7 Back Sun 6:05p\u21926:55p \u00b7 bags $35 each\", \"$538 total\")\nalaska = Option(\"Alaska\", \"Out Wed 7:00a\u21929:50a \u00b7 Back Sun 1:30p\u21922:20p \u00b7 bags $35 each\", \"$412 total\", \"Cheapest nonstop\")\nnote = Tip(\"Alaska's 7:00a start is the cheapest nonstop if you two can swing it \u2014 otherwise Southwest is the sweet spot, and its free bags save $140 vs American.\")\nactions = Buttons([Button(\"Book Southwest\", \"book_southwest\", \"primary\"), Button(\"Show me the early ones too\", \"show_early\", \"ghost\")])"
+ },
+ "rsvp": {
+  "i": 0,
+  "ms": 43228,
+  "out": 2205,
+  "code": "root = Stack([greet, rsvp, tip])\ngreet = Say(\"Found it \u2014 **Lincoln Elementary Fall Festival**, Sat Oct 17, 11a\u20133p. I've mostly filled in the RSVP, just tap anything to tweak:\")\nrsvp = Form(\"rsvp\", [adults, kids, mayaLunch, grownupLunch, volunteer, notes], \"Looks good \u2014 send it\")\nadults = Stepper(\"adults\", \"Adults (you + Sarah)\", 2, 0, 6)\nkids = Stepper(\"kids\", \"Kids\", 1, 0, 6)\nmayaLunch = Choice(\"maya_lunch\", \"Maya's pizza lunch\", [\"Cheese\", \"Pepperoni\", \"No lunch\"], false, \"Cheese\")\ngrownupLunch = Choice(\"adult_lunch\", \"Lunch for you & Sarah\", [\"Both cheese\", \"Both pepperoni\", \"One of each\", \"No lunch for us\"], false)\nvolunteer = Choice(\"volunteer\", \"Volunteer slot (optional)\", [\"Bake sale\", \"Face painting\", \"Setup at 10a\", \"No volunteering\"], false)\nnotes = Field(\"notes\", \"Notes for the PTA\", \"Allergies, questions, anything else?\")\ntip = Tip(\"Pizza's $6 each. Maya's cheese is pre-set \u2014 as always.\")"
+ },
+ "bill": {
+  "i": 0,
+  "ms": 36877,
+  "out": 1857,
+  "code": "root = Stack([msg1, total, history, msg2, why, note, next])\nmsg1 = Say(\"Ouch \u2014 I dug into it. The **heat wave** is the main culprit: your AC ran through **9 days over 95\u00b0F**, and that alone added **$58**.\")\ntotal = Big(\"$214.37\", \"October bill\", \"+$72 vs. your usual ~$142\")\nhistory = Bars(months, amounts, \"$\", 5)\nmsg2 = Say(\"The other $14 is smaller stuff: PG&E's new rate that kicked in Sep 1 (+$9), and this bill covered **33 days instead of 30** (+$5). So your usual ~$142 plus $72 of extras = $214.37. Annoying, but explained.\")\nwhy = Rows(rows)\nnote = Tip(\"Budget Billing would smooth all this out to about $156/month \u2014 no more spike months.\")\nnext = Buttons([Button(\"Set up Budget Billing (~$156/mo)\", \"budget_billing\", \"primary\"), Button(\"Tips to lower next month's bill\", \"lower_bill\", \"secondary\"), Button(\"Got it, thanks\", \"done\", \"ghost\")])\nmonths = [\"May\", \"Jun\", \"Jul\", \"Aug\", \"Sep\", \"Oct\"]\namounts = [131, 138, 152, 147, 142, 214.37]\nrows = [[\"AC during the 9-day heat wave\", \"+$58\"], [\"New rate effective Sep 1\", \"+$9\"], [\"33-day billing period (vs. 30)\", \"+$5\"], [\"Your normal monthly usage\", \"$142.37\"]]"
+ },
+ "email": {
+  "i": 0,
+  "ms": 17802,
+  "out": 927,
+  "code": "root = Stack([msg, draft, note, actions])\nmsg = Say(\"Dave needs to pick between **Tuesday** and **Thursday** morning. Tuesday clashes with your dentist at 9, so I'd go **Thursday** \u2014 you're home anyway. Reply's ready below:\")\ndraft = Email(\"Dave Kline\", \"Re: Dishwasher still leaking\", \"Hi Dave,\\n\\nThursday morning works great \u2014 I'll be home working, so anytime between 8 and noon is fine. The side gate will be unlocked so the repair guy can get straight back to the dishwasher.\\n\\nThanks,\\nJoseph\")\nnote = Tip(\"I added a line about the side gate being unlocked so the repair guy can get in. Say the word if you'd rather leave that out.\")\nactions = Buttons([Button(\"Send it\", \"send_thursday\", \"primary\"), Button(\"Try Tuesday instead\", \"try_tuesday\", \"ghost\")])"
+ },
+ "flyer": {
+  "i": 0,
+  "ms": 10927,
+  "out": 558,
+  "code": "root = Stack([note, flyer, extra, next])\nnote = Say(\"Done! Your **Garage Sale flyer** is ready \u2014 bright yellow, big headline, Saturday 8\u20131, 412 Alder St, and furniture, kids stuff & tools all listed.\")\nflyer = File(\"Garage-sale-flyer.pdf\", \"1 page \u00b7 Letter \u00b7 240 KB\", \"pdf\")\nextra = Tip(\"Want a stack printed for lampposts or the community board? Just say the word.\")\nnext = Buttons([Button(\"Text it to me\", \"text_flyer\", \"primary\"), Button(\"Post to Nextdoor\", \"post_nextdoor\", \"secondary\")])"
+ },
+ "topup": {
+  "i": 2,
+  "ms": 50302,
+  "out": 919,
+  "code": "root = Stack([msg, meter, fix, wait, note])\nmsg = Say(\"Quick heads up \u2014 you're at **84%** of your Personal plan this month. At this pace it runs out around **Oct 27**, and it doesn't reset until **Nov 1**.\")\nmeter = Meter(\"This month's usage\", 0.84, \"12 days left until it resets\")\nfix = Options(\"fix\", [topup, plus])\ntopup = Option(\"Top up $10\", \"Keeps everything running until the Nov 1 reset. Charged to your Visa ending 4242.\", \"$10\", \"Cheapest\")\nplus = Option(\"Move to Plus\", \"Double the usage, so you stop getting close to the limit every month.\", \"$50/mo\", \"Best fit\")\nwait = Buttons([Button(\"Do nothing for now\", \"wait\", \"ghost\")])\nnote = Tip(\"If you do nothing, big jobs pause when the plan runs out.\")"
+ }
+}

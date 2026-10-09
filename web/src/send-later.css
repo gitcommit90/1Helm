@@ -1,0 +1,130 @@
+/* ---------- Send later (send-later.ts): the clock in the composers, the picker, pending bubbles, the Scheduled list ---------- */
+:root{--sl:#2563eb;--slink:#fff;--slsoft:rgba(37,99,235,.10);--slline:rgba(37,99,235,.38);--slred:#dc2626}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--sl:#60a5fa;--slink:#0b1a30;--slsoft:rgba(96,165,250,.14);--slline:rgba(96,165,250,.42);--slred:#f87171}}
+:root[data-theme=dark]{--sl:#60a5fa;--slink:#0b1a30;--slsoft:rgba(96,165,250,.14);--slline:rgba(96,165,250,.42);--slred:#f87171}
+
+/* The clock: an icon button like the mic; it stays next to Send once there's text. Set: blue. */
+.composer.has .cbtn.slbtn{display:grid}
+.cbtn.slbtn.on{color:var(--sl);background:var(--slsoft)}
+.cbtn.slbtn.on:hover{color:var(--sl);background:color-mix(in srgb,var(--sl) 18%,transparent)}
+/* A time is set: the composer gets a chip row on top (tap = change, × = send normally) and Send says when. */
+form.sl-on{flex-wrap:wrap}
+form.sl-on .slchip{flex:1 0 100%;order:-1}
+.slchip{display:flex;align-items:center;gap:2px;margin:0 0 2px 2px}
+.slchip-t{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 10px 0 9px;border-radius:999px;background:var(--slsoft);color:var(--sl);font-size:13.5px;font-weight:600;letter-spacing:-.005em}
+.slchip-t:hover{background:color-mix(in srgb,var(--sl) 16%,transparent)}
+.slchip-x{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;color:var(--mute)}.slchip-x:hover{background:var(--abub);color:var(--ink)}
+.composer.sl-on #go.slgo{width:auto;padding:0 15px 0 12px;border-radius:999px;gap:7px;display:none;align-items:center;background:var(--sl);color:var(--slink);font-size:14px;font-weight:600;white-space:nowrap}
+.composer.sl-on.has #go.slgo{display:inline-flex}
+.composer.sl-on .mic{display:grid}
+.nmodal.sl-on .slchip{margin:0 0 8px 6px}
+.nmodal.sl-on .nrow{flex:1 0 100%}
+.nmodal.sl-on textarea{flex:1 0 100%}
+.ngo.slgo{background:var(--sl);color:var(--slink)}
+form.dicting .slchip{display:none}
+
+/* The picker: a popover over the composer (desktop), a bottom sheet (phone). */
+#slw{position:fixed;inset:0;z-index:72;pointer-events:none}
+#slw:empty{display:none}#slw.on{pointer-events:auto}
+.slback{position:absolute;inset:0}
+.slpop{position:fixed;display:flex;flex-direction:column;min-height:0;background:var(--sheet);border:1px solid var(--line);border-radius:22px;box-shadow:0 18px 50px rgba(28,27,25,.16),var(--lift);padding:6px 6px 8px;opacity:0;transform:translateY(6px) scale(.98);transform-origin:bottom right;transition:opacity .16s,transform .18s cubic-bezier(.2,.8,.2,1);color:var(--ink)}
+.slpop.down{transform-origin:top right;transform:translateY(-6px) scale(.98)}
+.slpop.center{left:50%;top:50%;width:min(400px,calc(100vw - 32px));max-height:min(640px,calc(100dvh - 48px));transform:translate(-50%,-48%) scale(.98)}
+#slw.on .slpop{opacity:1;transform:none}
+#slw.on .slpop.center{transform:translate(-50%,-50%)}
+:root[data-theme=dark] .slpop{box-shadow:0 30px 80px rgba(0,0,0,.55)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .slpop{box-shadow:0 30px 80px rgba(0,0,0,.55)}}
+.slin{display:flex;flex-direction:column;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.slhead{display:flex;align-items:center;gap:10px;padding:8px 6px 6px 10px;flex:none}
+.slhead h2{flex:1;min-width:0;margin:0;font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.slhico{width:28px;height:28px;border-radius:9px;display:grid;place-items:center;background:var(--slsoft);color:var(--sl);flex:none}
+.slicon{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;color:var(--mute);flex:none}.slicon:hover:not(:disabled){background:var(--abub);color:var(--ink)}
+.slicon:disabled{opacity:.3;cursor:default}
+.slicon.sm{width:30px;height:30px}
+.slsub{margin:0 10px 6px;color:var(--mute);font-size:13px;line-height:1.4}
+.slnow{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 6px;margin:0 6px 6px;padding:9px 12px;border-radius:14px;background:var(--slsoft);color:var(--ink2);font-size:13px;line-height:1.4}
+.slnow b{color:var(--ink);font-weight:600}
+.sllink{margin-left:auto;color:var(--sl);font-size:13px;font-weight:600}.sllink:hover{text-decoration:underline;text-underline-offset:3px}
+.slqs{display:flex;flex-direction:column;padding:0 2px}
+.slq{width:100%;display:flex;align-items:center;gap:12px;padding:8px 10px 8px 8px;border-radius:14px;text-align:left;color:var(--ink);min-height:48px}
+.slq:hover{background:var(--abub)}.slq:focus-visible{outline:0;background:var(--abub);box-shadow:inset 0 0 0 2px var(--accent)}
+.slq.on{background:var(--slsoft)}
+.slqi{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;background:var(--abub);color:var(--ink2);flex:none}
+.slq:hover .slqi{background:var(--sheet)}.slq.on .slqi{background:var(--sl);color:var(--slink)}
+.slql{flex:1;min-width:0;font-size:14.5px;font-weight:500}
+.slqs2{color:var(--mute);font-size:13px;white-space:nowrap;font-variant-numeric:tabular-nums;display:inline-flex;align-items:center}
+.slqc{margin-top:2px;border-top:1px solid var(--line);border-radius:0 0 14px 14px;padding-top:10px}
+.slqc:hover{border-radius:14px}
+.sltz{margin:6px 12px 0;color:var(--faint);font-size:11.5px;flex:none}
+
+/* Custom: calendar + times. */
+.slcustom{display:flex;gap:6px;padding:0 4px;min-height:0}
+.slcal{flex:none;width:284px}
+.slmon{display:flex;align-items:center;justify-content:space-between;padding:0 0 4px}
+.slmon b{font-size:14px;font-weight:600}
+.slwk,.slgrid{display:grid;grid-template-columns:repeat(7,1fr);text-align:center}
+.slwk span{font-size:11.5px;font-weight:600;color:var(--faint);padding:4px 0}
+.slgrid{row-gap:2px}
+.slday{height:38px;width:38px;margin:0 auto;border-radius:50%;font-size:14px;font-variant-numeric:tabular-nums;color:var(--ink);position:relative}
+.slday:hover:not(:disabled){background:var(--abub)}
+.slday:disabled{color:var(--faint);opacity:.5;cursor:default}
+.slday.today{color:var(--sl);font-weight:700}
+.slday.today::after{content:"";position:absolute;left:50%;bottom:5px;width:4px;height:4px;margin-left:-2px;border-radius:50%;background:currentColor}
+.slday.on,.slday.on:hover:not(:disabled){background:var(--sl);color:var(--slink);font-weight:600}.slday.on::after{background:var(--slink)}
+.slday:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.sltimes{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;max-height:300px;overflow-y:auto;overscroll-behavior:contain;padding:2px 2px 2px 6px;border-left:1px solid var(--line);scroll-padding:8px;-webkit-mask-image:linear-gradient(#000 calc(100% - 18px),transparent);mask-image:linear-gradient(#000 calc(100% - 18px),transparent)}
+.sltime{flex:none;height:34px;border-radius:10px;font-size:13.5px;font-variant-numeric:tabular-nums;color:var(--ink);text-align:center}
+.sltime:hover:not(:disabled){background:var(--abub)}
+.sltime:disabled{color:var(--faint);opacity:.45;cursor:default;display:none}
+.sltime.on,.sltime.on:hover:not(:disabled){background:var(--sl);color:var(--slink);font-weight:600}
+.slfoot{display:flex;align-items:center;gap:10px;padding:10px 6px 2px;margin:8px 4px 0;border-top:1px solid var(--line);flex:none}
+.slsum{flex:1;min-width:0;font-size:13.5px;color:var(--ink2)}.slsum b{color:var(--ink);font-weight:600}
+.slset{height:38px;padding:0 18px;border-radius:999px;background:var(--sl);color:var(--slink);font-size:14px;font-weight:600;flex:none}
+.slset:disabled{background:var(--abub);color:var(--faint);cursor:default}
+
+/* A scheduled message in its task: the person's bubble, outlined (not sent yet), with its time and what you can do. */
+.m.sl-m{margin-top:14px}
+.slb{max-width:86%;padding:10px 16px 12px;border-radius:22px;border:1.5px dashed var(--slline);background:var(--slsoft);color:var(--ink)}
+.slb-h{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:var(--sl);margin-bottom:3px}
+.slb-t{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.4}
+.slfiles{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 6px}
+.slfile{display:inline-flex;align-items:center;gap:5px;max-width:220px;height:26px;padding:0 9px;border-radius:999px;background:var(--sheet);color:var(--ink2);font-size:12.5px}
+.slfile span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.slb-a{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px;margin:5px 2px 0}
+.slb-a button{height:30px;padding:0 12px;border-radius:999px;font-size:13px;font-weight:600;color:var(--ink2);background:var(--abub)}
+.slb-a button:hover:not(:disabled){background:var(--hover);color:var(--ink)}
+.slb-a button:disabled{opacity:.55;cursor:default}
+.slb-a button[data-slnow]{color:var(--sl)}
+.slb-w{font-size:12.5px;color:var(--mute);padding:6px 4px}
+.sl-tmp .slb{opacity:.7}
+.sl-fail .slb{border-color:color-mix(in srgb,var(--slred) 55%,transparent);background:color-mix(in srgb,var(--slred) 7%,transparent)}
+.sl-fail .slb-h{color:var(--slred)}
+.slb-e{font-size:12.5px;color:var(--slred);margin:5px 4px 0;text-align:right}
+.slsent{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:var(--faint);margin:3px 6px 0}
+
+@media (max-width:767px){
+  .slback{background:rgba(0,0,0,.4);opacity:0;transition:opacity .3s}
+  #slw.on .slback{opacity:1}
+  .slpop,.slpop.center{left:0;right:0;bottom:0;top:auto;width:auto;max-height:88dvh;border:0;border-radius:32px 32px 0 0;padding:10px 12px calc(14px + env(safe-area-inset-bottom));opacity:1;transform:translateY(100%);transition:transform .34s cubic-bezier(.2,.8,.2,1)}
+  #slw.on .slpop,#slw.on .slpop.center{transform:none}
+  .slpop .grab{flex:none}
+  .slhead{padding:2px 4px 10px 8px}.slhead h2{font-size:19px}
+  .slsub,.slnow{font-size:14.5px}
+  .slq{min-height:56px;gap:14px}.slqi{width:40px;height:40px;border-radius:13px}.slql{font-size:16.5px}.slqs2{font-size:14.5px}
+  .sltz{font-size:12.5px;text-align:center}
+  .slcustom{flex-direction:column;gap:10px}
+  .slcal{width:100%}
+  .slday{width:42px;height:42px;font-size:16px}
+  .slmon b{font-size:16px}
+  .sltimes{flex-direction:row;max-height:none;overflow-x:auto;overflow-y:hidden;border-left:0;border-top:1px solid var(--line);padding:10px 2px 4px;gap:6px;-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 24px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 24px),transparent)}
+  .sltime{height:40px;padding:0 14px;border-radius:999px;background:var(--abub);font-size:15px;white-space:nowrap}
+  .slfoot{padding:12px 4px 0}
+  .slsum{font-size:15px}.slset{height:48px;padding:0 22px;font-size:16px}
+  .slchip-t{height:32px;font-size:14.5px}
+  /* Phone: the chip already says when; Send is a round blue clock, and the clock button steps aside for the box. */
+  .composer.sl-on #go.slgo{width:40px;padding:0;justify-content:center}.composer.sl-on #go.slgo .slgo-l{display:none}
+  .composer.sl-on .cbtn.slbtn{display:none}
+  .slb{max-width:90%}
+  .slb-a button{height:34px;font-size:14px;padding:0 14px}
+}
+@media (prefers-reduced-motion:reduce){.slpop{transition:none}}

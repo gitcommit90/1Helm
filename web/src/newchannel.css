@@ -1,0 +1,27 @@
+/* New channel (newchannel.ts): the dialog.css card (centered on desktop, bottom sheet on phone) with two fields. */
+.ncw .dlg.nc{width:min(440px,100%);padding:24px 24px 18px}
+.nchead{display:flex;gap:14px;align-items:flex-start;margin-bottom:6px}
+.ncav{width:44px;height:44px;flex:none;border-radius:14px;background:var(--abub);object-fit:contain;padding:3px}
+.nc .nchead p{margin:4px 0 0;font-size:14px;color:var(--mute)}
+.ncf{display:block;margin-top:16px;position:relative}
+.ncf>span{display:block;margin:0 2px 6px;font-size:13px;font-weight:600;color:var(--ink2)}
+.ncf input,.ncf textarea{display:block;width:100%;border:1px solid var(--line2);outline:0;border-radius:12px;background:var(--sheet);color:var(--ink);font:inherit;font-size:15px;transition:border-color .12s,box-shadow .12s}
+.ncf input{height:44px;padding:0 14px}
+.ncf textarea{min-height:68px;max-height:160px;padding:11px 14px;line-height:1.4;resize:vertical}
+.ncf input::placeholder,.ncf textarea::placeholder{color:var(--faint)}
+.ncf input:focus,.ncf textarea:focus{border-color:var(--ink2);box-shadow:0 0 0 3px color-mix(in srgb,var(--ink) 8%,transparent)}
+.ncf .bad,.ncf .bad:focus{border-color:var(--ncred);box-shadow:0 0 0 3px color-mix(in srgb,var(--ncred) 14%,transparent)}
+.ncc{position:absolute;right:4px;top:0;font-style:normal;font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+.nc .ncerr{margin:12px 2px 0;color:var(--ncred);font-size:14px;line-height:1.45;text-align:left}
+.ncw{--ncred:#c4321c}
+.ncw.busy .dlgb.ok{opacity:.7;cursor:progress}
+.ncw .dlgb[disabled]{pointer-events:none}
+:root[data-theme=dark] .ncw{--ncred:#ff7b6b}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .ncw{--ncred:#ff7b6b}}
+@media (max-width:767px){
+  .ncw .dlg.nc{width:100%;padding:10px 20px calc(16px + env(safe-area-inset-bottom))}
+  .nchead{flex-direction:column;align-items:center;text-align:center;gap:10px}
+  .nc .nchead p{font-size:15px;text-align:center}
+  .ncf input{height:48px;font-size:16px}
+  .ncf textarea{font-size:16px}
+}

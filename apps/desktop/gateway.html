@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>Connect to 1Helm</title>
+  <style>
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #17191d; background: #f5f3ec; }
+    * { box-sizing: border-box; }
+    body { min-height: 100vh; margin: 0; padding: 2rem; display: grid; place-items: center; }
+    main { width: min(100%, 27rem); padding: 1.75rem; border: 1px solid #d9d5ca; border-radius: 1rem; background: #fff; box-shadow: 0 24px 60px -42px #000; }
+    .mark { display: block; width: 4rem; height: 4rem; margin: 0 auto 1rem; border-radius: 1rem; object-fit: cover; }
+    h1 { margin: 0; font-size: 1.65rem; text-align: center; }
+    p { margin: .6rem 0 1.25rem; color: #68655e; font-size: .9rem; line-height: 1.55; text-align: center; }
+    label { display: block; margin-bottom: .4rem; font-size: .75rem; font-weight: 700; }
+    input, button { width: 100%; min-height: 3rem; border-radius: .65rem; font: inherit; }
+    input { border: 1px solid #c9c5ba; padding: .75rem; background: #fff; color: #17191d; }
+    button { margin-top: .75rem; border: 0; padding: .7rem 1rem; background: #ef5b2a; color: #fff; font-weight: 750; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: default; }
+    .workspace-field { display: flex; min-height: 3rem; overflow: hidden; border: 1px solid #c9c5ba; border-radius: .65rem; background: #fff; }
+    .workspace-field input { min-width: 0; border: 0; border-radius: 0; text-align: right; outline: none; }
+    .workspace-field:focus-within { border-color: #ef5b2a; box-shadow: 0 0 0 3px color-mix(in srgb, #ef5b2a 18%, transparent); }
+    .suffix { display: flex; align-items: center; padding: 0 .8rem 0 0; color: #77736b; font-weight: 650; white-space: nowrap; }
+    .quiet { min-height: auto; margin-top: .65rem; padding: .35rem; background: transparent; color: #68655e; font-size: .78rem; font-weight: 650; }
+    .new-user { margin-top: 1rem; padding-top: .25rem; border-top: 1px solid #e4e0d6; }
+    .server { border: 1px solid #c9c5ba; background: transparent; color: #17191d; font-size: .86rem; line-height: 1.25; }
+    #status { min-height: 1.25rem; margin: .65rem 0 0; color: #a23024; font-size: .78rem; }
+    small { display: block; margin-top: .9rem; color: #77736b; font-size: .7rem; line-height: 1.5; text-align: center; }
+    [hidden] { display: none !important; }
+    @media (prefers-color-scheme: dark) {
+      :root { color: #f4f2eb; background: #111318; }
+      main { border-color: #34373e; background: #191c22; }
+      p, small, .quiet { color: #a8a59d; }
+      input, .workspace-field { border-color: #3d4149; background: #121419; color: #f4f2eb; }
+      .suffix { color: #a8a59d; }
+      .new-user { border-color: #34373e; }
+      .server { border-color: #3d4149; color: #f4f2eb; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <img class="mark" src="icons/1helm-macos-app-logo.jpg" alt="1Helm">
+    <h1>1Helm</h1>
+    <p>Sign in to 1HC, or connect to your own 1Helm deployment.</p>
+    <button id="cloud" type="button">Continue to 1HC</button>
+    <form id="connect" hidden>
+      <label for="server">Self-hosted address</label>
+      <input id="server" type="url" inputmode="url" autocomplete="url" autocapitalize="none" spellcheck="false" placeholder="https://your-1helm-server.com" required>
+      <button id="submit" type="submit">Connect</button>
+    </form>
+    <button id="alternate" class="quiet" type="button">Connect to your own server</button>
+    <div id="status" role="alert"></div>
+    <small>Your saved workspace opens here next time. Other links stay outside the app.</small>
+  </main>
+  <script>
+    const query = new URLSearchParams(location.search);
+    const actionOrigin = "https://desktop-action.1helm.invalid";
+    const form = document.getElementById("connect");
+    const input = document.getElementById("server");
+    const submit = document.getElementById("submit");
+    const alternate = document.getElementById("alternate");
+    const cloud = document.getElementById("cloud");
+    const status = document.getElementById("status");
+    const cloudOrigin = "https://app.1helm.com";
+
+    const normalize = (value) => {
+      const raw = value.trim();
+      const parsed = new URL(raw.includes("://") ? raw : `https://${raw}`);
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash || (parsed.pathname !== "/" && parsed.pathname !== "")) throw new Error("Enter an HTTPS root address without a path, credentials, query, or fragment.");
+      return parsed.origin;
+    };
+    const showCustomUrl = (custom, value = "") => {
+      form.hidden = !custom;
+      cloud.hidden = custom;
+      input.value = value;
+      alternate.textContent = custom ? "Back to 1HC" : "Connect to your own server";
+      status.textContent = "";
+      if (custom) input.focus();
+    };
+    alternate.addEventListener("click", () => showCustomUrl(form.hidden, input.value));
+    const connect = (origin, button) => {
+      status.textContent = "";
+      button.disabled = true;
+      button.textContent = "Checking…";
+      location.href = `${actionOrigin}/connect?origin=${encodeURIComponent(origin)}`;
+    };
+    cloud.addEventListener("click", () => connect(cloudOrigin, cloud));
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      try { connect(normalize(input.value), submit); }
+      catch (error) { status.textContent = error.message; }
+    });
+
+    const prior = query.get("origin") || "";
+    showCustomUrl(Boolean(prior && prior !== cloudOrigin), prior === cloudOrigin ? "" : prior);
+    status.textContent = query.get("error") || "";
+  </script>
+</body>
+</html>

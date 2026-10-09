@@ -1,0 +1,57 @@
+/* Our confirm / notice dialog (dialog.ts): a centered card on desktop, a bottom sheet on phone. Above everything, file viewer included. */
+.dlgw{position:fixed;inset:0;z-index:300;display:grid;place-items:center;padding:24px;--dlgred:#dc2626}
+.dlgback{position:absolute;inset:0;background:rgba(28,27,25,.28);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);opacity:0;transition:opacity .18s}
+.dlg{position:relative;width:min(400px,100%);max-height:calc(100dvh - 48px);overflow:auto;background:var(--sheet);color:var(--ink);border:1px solid var(--line);border-radius:24px;box-shadow:0 30px 80px rgba(28,27,25,.18),var(--lift);padding:24px 24px 18px;outline:0;opacity:0;transform:translateY(8px) scale(.985);transition:opacity .18s,transform .22s cubic-bezier(.2,.8,.2,1)}
+.dlgw.on .dlgback{opacity:1}.dlgw.on .dlg{opacity:1;transform:none}
+.dlgw.off{pointer-events:none}.dlgw.off .dlgback{opacity:0}.dlgw.off .dlg{opacity:0;transform:translateY(4px) scale(.99)}
+.dlggrab{display:none}
+.dlg h2{margin:0;font-size:18px;font-weight:600;letter-spacing:-.015em;line-height:1.3;overflow-wrap:anywhere}
+.dlg p{margin:8px 0 0;color:var(--ink2);font-size:14.5px;line-height:1.5;overflow-wrap:anywhere}
+.dlglink{display:inline-block;margin:10px 0 0;padding:4px 0;font-size:13.5px;line-height:1.4;color:var(--ink2);text-decoration:underline;text-underline-offset:3px;text-align:left;white-space:normal;overflow-wrap:anywhere;border-radius:6px}
+.dlglink:hover{color:var(--ink)}.dlglink:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.dlgbtns{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:22px}
+.dlgb{min-height:40px;padding:0 18px;border-radius:999px;font-weight:600;font-size:14px;white-space:nowrap;transition:transform .12s,opacity .12s,background .12s,box-shadow .12s}
+.dlgb:active{transform:scale(.97)}
+.dlgb.ok{background:var(--ink);color:var(--sheet)}.dlgb.ok:hover{opacity:.9}
+.dlgb.bad{background:var(--dlgred);color:#fff}.dlgb.bad:hover{background:color-mix(in srgb,var(--dlgred) 88%,#000)}
+.dlgb.no{color:var(--ink);box-shadow:inset 0 0 0 1px var(--line2)}.dlgb.no:hover{background:var(--hover);box-shadow:inset 0 0 0 1px var(--ink2)}
+.dlgb:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.dlgb:disabled{opacity:.38;cursor:not-allowed}.dlgb.bad:disabled:hover{background:var(--dlgred)}
+.dlgtype{display:grid;gap:7px;margin-top:16px;font-size:13.5px;color:var(--ink2)}
+.dlgin{width:100%;min-height:42px;padding:0 13px;border-radius:12px;border:1px solid var(--line2);background:var(--bg,transparent);color:var(--ink);font:inherit;font-size:15px;outline:0}
+.dlgin:focus{border-color:var(--ink2);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent)}
+:root[data-theme=dark] .dlgback{background:rgba(0,0,0,.5)}:root[data-theme=dark] .dlg{box-shadow:0 30px 80px rgba(0,0,0,.55)}:root[data-theme=dark] .dlgw{--dlgred:#e5484d}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .dlgback{background:rgba(0,0,0,.5)}:root:not([data-theme=light]) .dlg{box-shadow:0 30px 80px rgba(0,0,0,.55)}:root:not([data-theme=light]) .dlgw{--dlgred:#e5484d}}
+@media (max-width:767px){
+  .dlgw{place-items:end stretch;padding:0}
+  .dlgback{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(0,0,0,.4)}
+  .dlg{width:100%;max-height:90dvh;border:0;border-radius:28px 28px 0 0;padding:10px 20px calc(16px + env(safe-area-inset-bottom));opacity:1;transform:translateY(100%);transition:transform .3s cubic-bezier(.2,.8,.2,1)}
+  .dlgw.off .dlg{opacity:1;transform:translateY(100%)}
+  .dlggrab{display:block;width:40px;height:5px;border-radius:3px;background:var(--line2);margin:0 auto 18px}
+  .dlg h2{font-size:19px;text-align:center}
+  .dlg p{font-size:15.5px;text-align:center;margin-top:6px}
+  .dlglink{display:block;margin:12px auto 0;text-align:center;font-size:15px;min-height:32px}
+  .dlgbtns{flex-direction:column-reverse;margin-top:22px}
+  .dlgb{width:100%;min-height:50px;font-size:16px}
+  .dlgtype{text-align:left}.dlgin{min-height:48px;font-size:16px}
+}
+@media (prefers-reduced-motion:reduce){.dlg,.dlgback{transition:none}}
+/* choose(): the third button (Discard) is red text; on desktop it sits alone on the left, on phone between Save and Keep editing. */
+.dlgb.alt{color:var(--dlgred)}
+@media (min-width:768px){.dlgb.alt{order:-1;margin-right:auto}}
+/* sheet(): radio choices (one row each: label + a line under it), a switch under the picked one, and a one-line fix (check()). */
+.dlgopts{display:grid;gap:8px;margin-top:16px;text-align:left}
+.dlgopt,.dlgtog{display:flex;align-items:flex-start;gap:12px;padding:12px 14px;border-radius:14px;box-shadow:inset 0 0 0 1px var(--line2);cursor:pointer;transition:box-shadow .12s,background .12s}
+.dlgopt:hover{background:var(--hover)}
+.dlgopt:has(input:checked){box-shadow:inset 0 0 0 2px var(--ink)}
+.dlgopt.off{cursor:default;opacity:.62}.dlgopt.off:hover{background:none}
+.dlgopt input,.dlgtog input{flex:none;margin:3px 0 0;width:17px;height:17px;accent-color:var(--ink)}
+.dlgopt span,.dlgtog span{display:flex;flex-direction:column;gap:2px;min-width:0}
+.dlgopt b,.dlgtog b{font-size:14.5px;font-weight:600;line-height:1.35;overflow-wrap:anywhere}
+.dlgopt small,.dlgtog small{font-size:13px;color:var(--ink2);line-height:1.4;overflow-wrap:anywhere}
+.dlgtog{margin:-2px 0 0 28px;padding:10px 12px;box-shadow:none;background:var(--abub)}
+.dlgtog[hidden]{display:none}
+.dlgerr{margin:12px 0 0!important;padding:10px 12px;border-radius:12px;background:color-mix(in srgb,var(--warn,#d97706) 16%,var(--sheet));color:var(--ink)!important;font-size:14px!important;text-align:left!important}
+.dlgerr[hidden]{display:none}
+.dlg.busy .dlgopts{opacity:.6;pointer-events:none}
+@media (max-width:767px){.dlgopt b,.dlgtog b{font-size:15.5px}.dlgopt small,.dlgtog small{font-size:14px}}

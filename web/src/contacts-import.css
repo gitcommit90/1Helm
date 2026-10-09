@@ -1,0 +1,90 @@
+/* Contacts → Import (contacts-import.ts): a centered card on desktop, a bottom sheet on phone. Ink only; marigold = "same name?". */
+.ciw{position:fixed;inset:0;z-index:290;display:grid;grid-template-columns:minmax(0,1fr);place-items:center;padding:24px}
+.ciback{position:absolute;inset:0;background:rgba(28,27,25,.28);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);opacity:0;transition:opacity .18s}
+.cibox{position:relative;display:flex;flex-direction:column;width:min(600px,100%);min-width:0;max-height:calc(100dvh - 48px);background:var(--sheet);color:var(--ink);border:1px solid var(--line);border-radius:24px;box-shadow:0 30px 80px rgba(28,27,25,.18),var(--lift);outline:0;opacity:0;transform:translateY(8px) scale(.985);transition:opacity .18s,transform .22s cubic-bezier(.2,.8,.2,1)}
+.ciw.on .ciback{opacity:1}.ciw.on .cibox{opacity:1;transform:none}
+.cibox:focus,.cibox:focus-visible{outline:0}
+.ciw.off{pointer-events:none}.ciw.off .ciback{opacity:0}.ciw.off .cibox{opacity:0}
+.cigrab{display:none}
+.cibody{display:flex;flex-direction:column;min-height:0;min-width:0;overflow:auto;padding:22px 22px 18px}
+.cihead{display:flex;align-items:flex-start;gap:12px;margin-bottom:14px}.cihead>div{flex:1;min-width:0}
+.cihead h2{margin:0;font:400 28px/1.1 var(--serif);letter-spacing:-.01em}
+.cihead p{margin:4px 0 0;color:var(--mute);font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cicb{flex:none;width:38px;height:38px;border-radius:12px;display:grid;place-items:center;background:var(--abub);color:var(--mute)}.cicb:hover{color:var(--ink)}.cicb:disabled{opacity:.4;cursor:default}
+/* pick */
+.cidrop{display:flex;flex-direction:column;align-items:center;gap:4px;width:100%;padding:26px 16px;border-radius:18px;border:1.5px dashed var(--line2);background:var(--abub);text-align:center;transition:background .12s,border-color .12s}
+.cidrop:hover,.ciw.drag .cidrop{background:var(--hover);border-color:var(--ink2)}
+.cidrop svg{color:var(--ink2);margin-bottom:4px}.cidrop b{font-size:15.5px}.cidrop small{font-size:13px;color:var(--mute)}
+.ciw.drag .cibox{box-shadow:0 0 0 3px color-mix(in srgb,var(--ink) 18%,transparent),0 30px 80px rgba(28,27,25,.18)}
+.cihow{margin:16px 0 4px}.cihow h3{margin:0 0 6px;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--mute)}
+.cihow p{display:flex;gap:12px;margin:0;padding:7px 0;font-size:13.5px;line-height:1.45;color:var(--ink2)}.cihow p+p{box-shadow:0 -1px 0 var(--line)}
+.cihow p>b{flex:none;width:62px;font-weight:600;color:var(--ink)}.cihow p span b{font-weight:600;color:var(--ink)}
+.cifoot{display:flex;gap:8px;align-items:flex-start;margin:12px -22px -18px;padding:12px 22px 14px;border-top:1px solid var(--line);background:var(--abub);border-radius:0 0 24px 24px;font-size:12.5px;line-height:1.45;color:var(--mute)}.cifoot svg{flex:none;margin-top:2px}
+.cierr{display:flex;gap:8px;align-items:flex-start;margin:0 0 12px;padding:10px 12px;border-radius:12px;background:var(--mari-soft,var(--abub));color:var(--ink);font-size:13.5px;line-height:1.45}.cierr svg{flex:none;margin-top:1px;color:var(--mari-ink,var(--ink2))}
+.cibtns+.cierr{margin:12px 0 0}
+/* reading */
+.ciwait{display:flex;align-items:center;gap:10px;padding:26px 4px 20px;color:var(--ink2);font-size:14.5px}
+.cispin{width:16px;height:16px;flex:none;border-radius:50%;border:2px solid var(--line2);border-top-color:var(--ink2);animation:cisp .8s linear infinite}@keyframes cisp{to{transform:rotate(360deg)}}
+/* preview */
+.cistats{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 6px}
+.cistats>span,.cisk{display:inline-flex;align-items:center;gap:5px;height:30px;padding:0 12px;border-radius:999px;background:var(--sheet);box-shadow:0 0 0 1px var(--line);font-size:13px;color:var(--mute)}
+.cistats b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.cisk:hover{box-shadow:0 0 0 1px var(--line2)}.cisk svg{transition:transform .15s}.cisk.on svg{transform:rotate(90deg)}
+.ciwhy{list-style:none;margin:6px 0 2px;padding:4px 0;max-height:150px;overflow:auto;border-radius:14px;box-shadow:0 0 0 1px var(--line);font-size:13px;flex:none}
+.ciwhy li{display:flex;gap:10px;justify-content:space-between;padding:6px 14px}.ciwhy li+li{box-shadow:0 -1px 0 var(--line)}
+.ciwhy b{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ciwhy span{color:var(--mute);flex:none;text-align:right}
+.cinote{margin:6px 0 0;font-size:13px;color:var(--mute);line-height:1.45}
+.citools{display:flex;align-items:center;gap:10px;margin:10px 0 6px}
+.ciall{display:flex;align-items:center;gap:10px;padding:0 4px 0 15px;font-size:13px;color:var(--mute);cursor:pointer;flex:none}
+.ciq{flex:1;min-width:0;display:flex;align-items:center;gap:6px;height:34px;padding:0 12px;border-radius:999px;background:var(--abub);color:var(--mute);margin-left:auto;max-width:240px}
+.ciq input{flex:1;min-width:0;border:0;background:none;outline:0;font:inherit;font-size:13.5px;color:var(--ink)}.ciq input::-webkit-search-cancel-button{display:none}
+.ciq:focus-within{box-shadow:0 0 0 2px color-mix(in srgb,var(--ink) 14%,transparent)}
+.cilist{flex:1 1 auto;min-height:120px;max-height:340px;overflow:auto;border-radius:14px;box-shadow:0 0 0 1px var(--line);overscroll-behavior:contain}
+.cir{display:flex;align-items:center;gap:8px;padding-right:10px;min-width:0}.cir+.cir{box-shadow:0 -1px 0 var(--line)}
+.cir label{flex:1;min-width:0;display:flex;align-items:center;gap:12px;padding:8px 6px 8px 14px;cursor:pointer}
+.cir input,.ciall input,.cinotes input{width:17px;height:17px;flex:none;margin:0;accent-color:var(--ink);cursor:pointer}
+.cir.off .ciav,.cir.off .cirt{opacity:.45}
+.ciav{flex:none;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;overflow:hidden;background:var(--abub);font-size:12px;font-weight:600;color:var(--ink2)}.ciav img{width:100%;height:100%;object-fit:cover;display:block}
+.cirt{min-width:0;flex:1}.cirt b,.cirt span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cirt b{font-size:14px;font-weight:600}.cirt span{font-size:12.5px;color:var(--mute)}
+.citag{flex:none;display:inline-flex;align-items:center;gap:4px;max-width:46%;height:26px;padding:0 10px;border-radius:999px;font-size:12px;font-style:normal;font-weight:500;color:var(--ink2);background:var(--abub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.citag svg{flex:none}
+.citag.ask{background:var(--mari-soft,var(--abub));color:var(--mari-ink,var(--ink2))}.citag.ask:hover{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--mari,#f0ae2c) 50%,transparent)}
+.citag.ask.on{background:var(--abub);color:var(--ink2)}
+.cinone{margin:0;padding:18px 14px;color:var(--mute);font-size:13.5px}
+.cinotes{display:flex;gap:12px;align-items:flex-start;margin:12px 0 0;padding:10px 14px;border-radius:14px;background:var(--abub);cursor:pointer}.cinotes input{margin-top:2px}
+.cinotes b{display:block;font-size:14px;font-weight:600}.cinotes small{display:block;font-size:12.5px;color:var(--mute);line-height:1.4;margin-top:1px}
+.cifine{margin:10px 0 0;font-size:12.5px;color:var(--mute)}
+.cibtns{display:flex;gap:8px;align-items:center;margin-top:14px}
+.cigo{height:42px;padding:0 22px;border-radius:999px;background:var(--ink);color:var(--sheet);font-weight:600;font-size:14.5px;font-variant-numeric:tabular-nums}.cigo:hover{opacity:.9}.cigo:disabled{opacity:.55;cursor:default}
+.cino{height:42px;padding:0 14px;border-radius:999px;color:var(--mute);font-weight:600;font-size:14px}.cino:hover{color:var(--ink);background:var(--hover)}.cino:disabled{opacity:.4;cursor:default}
+.cidone{display:flex;gap:12px;align-items:flex-start;padding:14px 16px;border-radius:16px;background:var(--abub)}.cidone svg{flex:none;margin-top:1px}.cidone p{margin:0;font-size:14.5px;line-height:1.5;color:var(--ink2)}
+/* phone: the header's Import button is hidden there, so Contacts gets one under the list */
+.cxlimp{display:none}
+@media (max-width:767px){.cxlimp{display:flex;align-items:center;gap:10px;width:100%;margin:10px 0 4px;padding:14px 12px;border-radius:16px;background:var(--abub);color:var(--ink2);font-size:14.5px;font-weight:600;text-align:left}.cxlimp svg{flex:none}}
+/* a contact's photo, anywhere an avatar shows */
+.cxav.ph{overflow:hidden;padding:0}.cxav.ph img{width:100%;height:100%;object-fit:cover;display:block;border-radius:inherit}
+body.cidrag .cxwrap{outline:2px dashed var(--ink2);outline-offset:-6px;border-radius:20px}
+:root[data-theme=dark] .ciback{background:rgba(0,0,0,.5)}:root[data-theme=dark] .cibox{box-shadow:0 30px 80px rgba(0,0,0,.55)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .ciback{background:rgba(0,0,0,.5)}:root:not([data-theme=light]) .cibox{box-shadow:0 30px 80px rgba(0,0,0,.55)}}
+@media (max-width:767px){
+  .ciw{place-items:end stretch;padding:0}
+  .ciback{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(0,0,0,.4)}
+  .cibox{width:100%;max-height:92dvh;border:0;border-radius:26px 26px 0 0;opacity:1;transform:translateY(100%);transition:transform .3s cubic-bezier(.2,.8,.2,1)}
+  .ciw.off .cibox{opacity:1;transform:translateY(100%)}
+  .cigrab{display:block;flex:none;width:40px;height:5px;border-radius:3px;background:var(--line2);margin:10px auto 0}
+  .cibody{padding:12px 16px calc(14px + env(safe-area-inset-bottom))}
+  .cihead h2{font-size:26px}
+  .cifoot{margin:12px -16px calc(-14px - env(safe-area-inset-bottom));padding:12px 16px calc(14px + env(safe-area-inset-bottom));border-radius:0}
+  .cihow p{flex-direction:column;gap:1px}.cihow p>b{width:auto}
+  .citools{flex-wrap:wrap}.ciq{max-width:none;order:-1;flex-basis:100%;margin:0 0 4px}
+  .cilist{max-height:46dvh;min-height:160px}
+  .cir label{padding:10px 4px 10px 12px}.ciav{width:38px;height:38px}
+  .cir{flex-wrap:wrap;padding-right:12px}.cir label{flex:1 0 100%}.citag{max-width:calc(100% - 103px);margin:-8px 0 10px 91px}
+  .cibtns{flex-direction:column-reverse;align-items:stretch}.cigo,.cino{height:50px;font-size:16px}
+}
+@media (prefers-reduced-motion:reduce){.cibox,.ciback{transition:none}}
+/* the preview with hundreds of rows: a 20-row sample + "Show all", then a windowed list (contacts-list.ts VList) */
+.cilw{display:flex;flex-direction:column;min-height:0}
+.cilist.vl{outline:0}.civb{position:relative}
+.cilist.vl .cir{left:0;right:0;overflow:hidden;align-content:flex-start}.cilist.vl .cir+.cir{box-shadow:none}.cilist.vl .cir:not([data-vi="0"]){box-shadow:inset 0 1px 0 var(--line)}
+.cimore{display:flex;align-items:center;justify-content:center;gap:4px;width:100%;height:40px;margin-top:8px;border-radius:12px;background:var(--abub);color:var(--ink2);font-weight:600;font-size:13.5px}.cimore:hover{background:var(--hover);color:var(--ink)}

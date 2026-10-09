@@ -1,0 +1,58 @@
+/* Contacts list (contacts-list.ts): its own scroller with letter sections, a sticky header, an A–Z rail and a windowed box.
+   Selectors start with [data-cxpage] where they override v3.css (which loads after this file). */
+[data-cxpage]{display:flex;flex-direction:column;overflow:hidden}
+[data-cxpage]>.cxwrap{flex:1;min-height:0;width:100%;display:flex;flex-direction:column;padding-bottom:18px}
+[data-cxpage] .cxsplit{flex:1;min-height:0;grid-template-rows:minmax(0,1fr);align-items:stretch}
+[data-cxpage] .cxleft{position:static;display:flex;flex-direction:column;min-height:0}
+[data-cxpage] .cxleft>:not(.cxlw){flex:none}
+[data-cxpage] .cxright{overflow:auto;overscroll-behavior:contain}
+.cxlw{position:relative;flex:1;min-height:0}
+.cxscroll{position:absolute;inset:0;overflow:auto;overscroll-behavior:contain}
+.cxscroll::after{content:"";display:block;height:calc(12px + env(safe-area-inset-bottom))}
+.cxvb{position:relative}
+.cxvb>.cxrow,.cxvb>.cxhd{left:0;right:0}
+.cxlw.rail .cxvb>.cxrow,.cxlw.rail .cxvb>.cxhd{right:24px}
+.cxlw.rail .cxstick,.cxlw.rail .cxshelf,.cxlw.rail .cxmeta,.cxlw.rail .cxsugg,.cxlw.rail .cxlimp{margin-right:24px}
+.cxhd,.cxstick{display:flex;align-items:center;height:32px;padding:0 12px;font-size:12.5px;font-weight:700;letter-spacing:.08em;color:var(--mute);background:var(--sheet)}
+.cxhd{position:absolute}
+.cxstick{position:sticky;top:0;z-index:2;margin-bottom:-32px;box-shadow:0 1px 0 var(--line)}
+.cxvb.srch .cxstick{display:none}
+.cxvb .cxrow{padding-top:0;padding-bottom:0}
+.cxvb .cxrow:focus-visible{outline:2px solid var(--ink2);outline-offset:-2px}
+/* the count line + Sort: First / Last */
+.cxmeta{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:30px;padding:0 4px 0 12px;font-size:12.5px;color:var(--mute);font-variant-numeric:tabular-nums}
+.cxsort{display:inline-flex;align-items:center;gap:2px}
+.cxsort button{height:24px;padding:0 9px;margin-left:2px;border-radius:999px;font-size:12px;font-weight:600;color:var(--mute);background:none}
+.cxsort button:hover{color:var(--ink)}.cxsort button[aria-pressed=true]{background:var(--abub);color:var(--ink)}
+/* "People Skipper knows best" */
+.cxshelf{margin:0 0 8px;padding:12px 8px 6px;border-radius:18px;background:var(--abub)}
+.cxshelf h3{margin:0 6px 6px;font-size:12.5px;font-weight:600;color:var(--mute)}
+.cxshr{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:2px}
+.cxtile{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0;padding:8px 2px;border-radius:14px;text-decoration:none;color:inherit}
+.cxtile:hover{background:var(--hover)}.cxtile .cxav{margin-bottom:2px}
+.cxtile b,.cxtile small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cxtile b{font-size:13px;font-weight:600}.cxtile small{font-size:11.5px;color:var(--mute);min-height:14px}
+/* the A–Z rail */
+.cxaz{position:absolute;top:0;right:0;bottom:0;width:24px;display:none;align-items:center;justify-content:center;touch-action:none;user-select:none;-webkit-user-select:none;z-index:3}
+.cxlw.rail .cxaz{display:flex}
+.cxazl{display:flex;flex-direction:column;align-items:center;height:calc(27 * 17px);max-height:calc(100% - 8px)}
+.cxazl button{flex:1 1 0;min-height:0;width:24px;padding:0;display:grid;place-items:center;background:none;font-size:10.5px;font-weight:700;line-height:1;color:var(--ink2);cursor:pointer}
+.cxazl button.off{color:var(--faint);opacity:.6}
+.cxazl button.on{color:var(--ink);font-weight:800;transform:scale(1.15)}
+.cxazl button:hover{color:var(--ink)}
+.cxazb{position:absolute;right:36px;top:0;width:54px;height:54px;margin-top:-27px;border-radius:50%;background:var(--ink);color:var(--sheet);font:400 28px/54px var(--serif,Georgia,serif);text-align:center;opacity:0;pointer-events:none;transition:opacity .15s}
+.cxaz.down .cxazb{opacity:1}
+/* Group / label pills (radio groups) */
+.cxpills{display:flex;flex-wrap:wrap;gap:6px}
+.cxpill{height:36px;padding:0 16px;border-radius:999px;font-size:14px;font-weight:600;color:var(--ink2);background:var(--abub);cursor:pointer}
+.cxpill:hover{background:var(--hover);color:var(--ink)}
+.cxpill[aria-checked=true],.cxpill[aria-checked=true]:hover{background:var(--ink);color:var(--sheet)}
+.cxpill:focus-visible{outline:2px solid var(--ink2);outline-offset:2px}
+@media (max-width:767px){
+  [data-cxpage=list]>.cxwrap{padding-bottom:0}
+  [data-cxpage=det]{display:block;overflow:auto}[data-cxpage=det] .cxsplit{display:block}[data-cxpage=det] .cxright{overflow:visible}
+  .cxlw{margin-right:-12px}
+  .cxshr{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .cxpill{height:40px;font-size:15px}
+  .cxazl button{font-size:11px}
+}

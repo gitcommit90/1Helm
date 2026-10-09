@@ -1,0 +1,17 @@
+/* Meeting reminders for notes (meetings.ts): "Your 2:00 “Weekly sync” is starting. Take notes?" at the top of the app. */
+.mt-ban{position:fixed;z-index:250;top:16px;left:50%;transform:translateX(-50%);width:min(560px,calc(100vw - 32px));display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:12px 14px;border-radius:16px;background:var(--sheet);color:var(--ink);border:1px solid var(--line);box-shadow:0 18px 50px rgba(28,27,25,.16),var(--lift,none);animation:mtin .22s cubic-bezier(.2,.8,.2,1)}
+.mt-ic{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;flex:none;background:color-mix(in srgb,var(--accent) 12%,var(--sheet));color:var(--accent)}
+.mt-tx{flex:1;min-width:180px;display:flex;flex-direction:column;gap:2px}
+.mt-tx b{font-size:14.5px;font-weight:600;line-height:1.35;overflow-wrap:anywhere}
+.mt-tx span{font-size:13.5px;color:var(--ink2)}
+.mt-acts{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto}
+.mt-go,.mt-no{min-height:34px;padding:0 14px;border-radius:999px;font-size:13.5px;font-weight:600;white-space:nowrap;flex:none}
+.mt-go{background:var(--ink);color:var(--sheet)}.mt-go:hover{opacity:.9}
+.mt-no{color:var(--ink);box-shadow:inset 0 0 0 1px var(--line2)}.mt-no:hover{background:var(--hover)}
+.mt-go:disabled,.mt-no:disabled{opacity:.55}
+.mt-go:focus-visible,.mt-no:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@keyframes mtin{from{opacity:0;transform:translate(-50%,-8px)}to{opacity:1;transform:translate(-50%,0)}}
+@media (prefers-reduced-motion:reduce){.mt-ban{animation:none}}
+@media (max-width:767px){.mt-ban{top:calc(8px + env(safe-area-inset-top));padding:12px}.mt-acts{width:100%;margin-left:0}.mt-go,.mt-no{flex:1;min-height:42px;font-size:15px}}
+body:has(#devstrip) .mt-ban{top:calc(28px + env(safe-area-inset-top))}   /* dev: below the DEV strip */

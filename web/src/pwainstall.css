@@ -1,0 +1,20 @@
+/* Install 1Helm as an app (pwainstall.ts): the steps sheet for Safari / iPhone / the browser menu. Buttons grow to fit. */
+.piw .dlg{width:min(460px,100%)}
+.pisteps{list-style:none;margin:18px 0 0;padding:0;display:grid;gap:10px}
+.pistep{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:16px;background:var(--abub);text-align:left}
+.pinum{flex:none;display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--ink);color:var(--sheet);font-size:13px;font-weight:600}
+.pitx{flex:1;min-width:0;font-size:14.5px;line-height:1.45;color:var(--ink2);overflow-wrap:anywhere}
+.pitx b{color:var(--ink);font-weight:600}
+.piic{flex:none;display:grid;place-items:center;width:36px;height:36px;border-radius:11px;background:var(--sheet);color:var(--accent);box-shadow:0 0 0 1px var(--line)}
+.dlg p.pifine{font-size:13px;color:var(--mute);margin-top:14px}
+.piw .dlgb{white-space:normal;height:auto;min-height:40px;padding:9px 22px;line-height:1.25}
+/* Settings → General → App: the row's button never cuts its label (the row wraps instead). */
+.sr[data-pirow]{flex-wrap:wrap;row-gap:8px}
+.sr[data-pirow] .srt{min-width:170px}
+.sr[data-pirow]>.sa{margin-left:auto;height:auto;min-height:32px;white-space:nowrap}
+@media (max-width:767px){
+  .pistep{padding:12px}
+  .pitx{font-size:15px}
+  .dlg p.pifine{font-size:13.5px}
+  .piw .dlgb{min-height:50px}
+}

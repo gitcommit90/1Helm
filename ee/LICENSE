@@ -1,0 +1,12 @@
+DRAFT — LEGAL REVIEW REQUIRED BEFORE PUBLICATION
+
+1Helm Cloud Features Source License
+Copyright (c) 2026 Joseph Yaksich. All rights reserved.
+
+This license applies to source files in src/ee/, src/skills/ee/, and web/src/ee/, and to copies or compiled forms of those files. Other files are licensed as stated in the repository's root LICENSE and NOTICE unless a file says otherwise.
+
+You may read and download this source. You may copy and modify it solely to prepare a contribution to the official 1Helm repository. You may submit that contribution to the repository operator under the contribution terms the operator publishes. This limited permission does not grant permission to run the cloud features.
+
+Only the operator of the 1HC service may execute, host, deploy, offer as a service, or distribute this cloud features code or a derivative of it. Everyone else needs a separate written license from the copyright holder for any of those acts. Access to the source, possession of a copy, and a configuration switch do not grant such a license.
+
+All rights not expressly granted are reserved. This source is provided as is, without warranty, to the extent allowed by law.

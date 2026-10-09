@@ -1,0 +1,32 @@
+{
+  "name": "1helm-clients",
+  "productName": "1Helm",
+  "version": "1.6.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "main": "desktop/cloud-main.cjs",
+  "scripts": {
+    "mobile:sync": "node scripts/sync-mobile-version.mjs && node scripts/generate-mobile-assets.mjs && cap sync",
+    "package:cloud:desktop": "node scripts/package-cloud-desktop.mjs",
+    "test:target": "node --test test/cloud-client-target.mjs test/cloud-client-main.test.mjs"
+  },
+  "dependencies": {
+    "@aparajita/capacitor-secure-storage": "^8.0.0",
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/app": "^8.0.1",
+    "@capacitor/browser": "^8.0.1",
+    "@capacitor/core": "^8.4.2",
+    "@capacitor/ios": "^8.4.2",
+    "@capacitor/keyboard": "^8.0.1",
+    "@capacitor/push-notifications": "^8.0.1",
+    "@capacitor/splash-screen": "^8.0.1",
+    "@capacitor/status-bar": "^8.0.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.4.3",
+    "@electron/packager": "20.0.3",
+    "electron": "43.7.9",
+    "sharp": "^0.35.3"
+  }
+}

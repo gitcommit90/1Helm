@@ -1,0 +1,29 @@
+/* "Connect YouTube?" cards in chat (connect-card.ts): the system-card look (.gu-sys in genui-cards.css) plus the app's logo,
+   a fine-print line, the "See what it can do" link and the quiet text links. cxo-* only (never ad-*: ad blockers hide those). */
+.cxo-card .gu-sh{gap:12px}
+.cxo-logo{flex:none;width:40px;height:40px;border-radius:12px;display:grid;place-items:center;box-shadow:0 0 0 1px var(--line2)}   /* tile + fade-in: .cxlogo in v3.css */
+.cxo-logo b{font-weight:700;font-size:17px}
+.cxo-fine{margin:0;font-size:13.5px;color:var(--mute);overflow-wrap:anywhere}
+.cxo-more{align-self:flex-start;display:inline-flex;align-items:center;gap:3px;margin-top:4px;padding:4px 0;font-weight:600;font-size:14px;color:var(--accent,var(--ink2));background:none}
+.cxo-more:hover{text-decoration:underline}.cxo-more svg{flex:none}
+.cxo-link{display:inline;padding:2px 0;background:none;font:inherit;font-size:14px;color:var(--mute);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.cxo-link:hover{color:var(--ink)}.cxo-link[disabled]{opacity:.5;pointer-events:none}
+.cxo-card.locked .gu-sl{color:var(--mute)}
+.cxo-card .gu-pdone .cxo-link{margin-left:2px}
+.cxo-card>.cxo-fine{margin-top:2px}.cxo-card>p.cxo-fine[role=status]{margin-top:8px}
+/* The draft under Connect (10-07): what the helper would send or create, in full. Long text wraps; nothing is cut or clamped. */
+.cxo-draft{margin-top:12px;padding:12px 14px 12px;border-radius:14px;background:var(--hover);display:flex;flex-direction:column;gap:8px;min-width:0}
+.cxo-dh{margin:0;display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;letter-spacing:.01em;color:var(--mute)}
+.cxo-dh svg{flex:none}.cxo-dh span{min-width:0;overflow-wrap:anywhere}
+.cxo-dt{margin:0;font-weight:650;color:var(--ink);line-height:1.35;overflow-wrap:anywhere}
+.cxo-dm{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 12px;font-size:14.5px;line-height:1.4}
+.cxo-dm>div{display:contents}
+.cxo-dm dt{color:var(--mute);white-space:nowrap}
+.cxo-dm dd{margin:0;min-width:0;color:var(--ink);overflow-wrap:anywhere;word-break:break-word}
+.cxo-dm dd i{color:var(--mute);font-style:normal}
+.cxo-dbody{padding-top:8px;border-top:1px solid var(--line2);font-size:14.5px;line-height:1.5;color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;min-width:0}
+.cxo-dfine{margin:0;font-size:13px;color:var(--mute);overflow-wrap:anywhere}
+.cxo-card.locked .cxo-draft{opacity:.85}
+.cxo-card[data-cxost=dismissed] .cxo-draft{opacity:.6}
+/* On the app's page (app-detail.ts), opened from the card or a texted offer's link. */
+.cxo-onpage{margin-top:4px}.cxo-onpage h3{overflow-wrap:anywhere}.cxo-onpage .cxo-draft{margin-top:8px;max-width:640px}

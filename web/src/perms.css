@@ -1,0 +1,11 @@
+/* Settings → Permissions (perms.ts). Class names: pm* (never "ad…": ad blockers hide those). */
+.pmlv .srt b{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pmlv[disabled]{cursor:default}
+.pmlv .rck .apspin{width:16px;height:16px}
+.pmlv:not(.on) .rck:has(.apspin){opacity:1}
+#setw .sfine.pmasks{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:12px}
+.pmk{display:inline-block;font-size:12.5px;line-height:1.5;padding:1px 9px;border-radius:999px;border:1px solid var(--line2);color:var(--ink2)}
+.pmk.off{color:var(--mute);border-style:dashed}
+.pmico{color:var(--accent)}
+.pmwait{display:inline-grid;place-items:center;width:64px;height:30px}
+.pmwait .apspin{width:16px;height:16px}

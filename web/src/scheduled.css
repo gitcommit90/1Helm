@@ -1,0 +1,52 @@
+/* Scheduled (scheduled.ts): one view, three sections (Repeats · Coming up · Send later), the same on desktop and phone. */
+.schwrap{max-width:860px}
+.schsec{margin-top:30px;scroll-margin-top:16px}
+.schh{display:flex;align-items:center;gap:10px}
+.schi{width:30px;height:30px;border-radius:10px;display:grid;place-items:center;background:var(--abub);color:var(--ink2);flex:none}
+.schh h2{margin:0;font-family:var(--serif);font-weight:400;font-size:24px;letter-spacing:-.005em}
+.schh b{font-weight:400;font-size:12.5px;color:var(--mute);background:var(--abub);border-radius:999px;padding:1px 9px;font-variant-numeric:tabular-nums}
+.schp{margin:4px 0 12px 40px;color:var(--mute);font-size:14px}
+.schlist{background:var(--sheet);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);overflow:hidden}
+.schrow{display:flex;align-items:center;gap:12px;padding:6px 12px 6px 6px}
+.schrow+.schrow{border-top:1px solid var(--line)}
+.schm{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:10px 12px;border-radius:14px;text-align:left;color:var(--ink);font:inherit}
+button.schm:hover{background:var(--abub)}button.schm:disabled{cursor:default;opacity:.7;background:none}
+.schw{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;font-weight:600;color:var(--sl);font-variant-numeric:tabular-nums}
+.schw.off{color:var(--mute)}.schw.bad{color:var(--slred)}
+.schw{max-width:100%;overflow-wrap:anywhere}   /* a long "When …" event label wraps instead of pushing the buttons off */
+.schx{max-width:100%;font-size:15px;font-weight:600;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.schrow.paused .schx{color:var(--ink2)}
+.schk{max-width:100%;font-size:13px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.schch{margin-left:6px;padding:1px 8px;border-radius:999px;background:var(--abub);color:var(--ink2);font-size:12px}
+.scha{display:flex;align-items:center;gap:6px;flex:none}
+.schb{height:32px;padding:0 13px;border-radius:999px;background:var(--abub);font:inherit;font-size:13px;font-weight:600;color:var(--ink2);white-space:nowrap}
+.schb:hover{background:var(--hover);color:var(--ink)}.schb:disabled{opacity:.55;cursor:default}
+.schb:focus-visible,.schm:focus-visible{outline:2px solid color-mix(in srgb,var(--sl) 60%,transparent);outline-offset:1px}
+.schwait{font-size:13px;color:var(--mute);padding:0 6px}
+.schsec.flash .schlist{animation:schflash 1.4s ease-out}
+@keyframes schflash{0%,30%{box-shadow:0 0 0 3px color-mix(in srgb,var(--sl) 45%,transparent),var(--shadow)}100%{box-shadow:var(--shadow)}}
+.schempty{margin:56px auto 0;max-width:440px;text-align:center;color:var(--mute)}
+.schei{width:56px;height:56px;margin:0 auto 14px;border-radius:18px;display:grid;place-items:center;background:var(--abub);color:var(--ink2)}
+.schempty h2{margin:0 0 6px;font-family:var(--serif);font-weight:400;font-size:26px;color:var(--ink)}
+.schempty p{margin:0;font-size:14.5px;line-height:1.5}
+/* The drawer link's count, on phone. */
+.dn b[data-schn]{margin-left:auto;font-weight:400;font-size:14px;color:var(--mute);font-variant-numeric:tabular-nums}
+@media (max-width:767px){
+  .schsec{margin-top:24px}
+  .schh h2{font-size:22px}.schp{margin-left:0;font-size:14.5px}
+  .schlist{border-radius:22px}
+  .schrow{flex-direction:column;align-items:stretch;gap:0;padding:4px 4px 12px}
+  .schm{padding:10px 12px 8px}
+  .schx{font-size:16.5px;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .schw{font-size:13.5px}.schk{font-size:14px;white-space:normal}
+  .scha{padding:0 12px;flex-wrap:wrap;gap:8px}
+  .schb{height:38px;padding:0 16px;font-size:14.5px}
+  .schempty{margin-top:40px}.schempty p{font-size:15.5px}
+}
+/* Tablet portrait (pane under 600px beside the side panel): the buttons go under the title, so titles aren't cut to a few words. */
+@media (min-width:768px){@container pane (max-width:599px){
+  .schrow{flex-direction:column;align-items:stretch;gap:0;padding:4px 4px 12px}
+  .schm{padding:10px 12px 8px}.schx{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .schk{white-space:normal}.scha{padding:0 12px;flex-wrap:wrap}.schp{margin-left:0}
+}}
+@media (prefers-reduced-motion:reduce){.schsec.flash .schlist{animation:none}}

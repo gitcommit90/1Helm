@@ -1,0 +1,15 @@
+{
+  "name": "onehelm-web",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "node build.mjs", "test:core": "node test/byok-core.test.mjs && node test/storage-boundary.test.mjs && node test/byok-options.test.mjs && node test/imports.test.mjs && node test/file-url.test.mjs" },
+  "dependencies": {
+    "@openuidev/lang-core": "0.3.0",
+    "dompurify": "3.4.16",
+    "esbuild": "0.28.2",
+    "marked": "18.0.14",
+    "pdfjs-dist": "6.3.289",
+    "uqr": "0.1.3",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  }
+}

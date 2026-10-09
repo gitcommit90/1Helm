@@ -1,0 +1,99 @@
+/* Live notes (livenotes.ts): header button, split view (chat | notes), live chip, banners, phone Chat|Notes switch. */
+:root{--rec:#dc2626}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--rec:#f87171}}
+:root[data-theme="dark"]{--rec:#f87171}
+.lnw{display:contents}
+.lnbtn{position:relative;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px 0 10px;border-radius:999px;background:var(--abub);color:var(--ink2);font-size:13px;flex:none;white-space:nowrap;transition:background .15s,color .15s}
+.lnbtn:hover{background:var(--hover);color:var(--ink)}
+.lnbtn.on{color:var(--rec);background:color-mix(in srgb,var(--rec) 10%,var(--abub))}
+.lnbtn.m{padding:0;gap:0}
+.lnbtn .ln-rec{position:absolute;top:3px;right:3px}
+.lnbtn:not(.m) .ln-rec{position:static}
+.ln-rec{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--rec);flex:none;animation:lnpulse 1.6s ease-in-out infinite}
+.ln-rec.sm{width:6px;height:6px;margin-left:6px;vertical-align:middle}
+@keyframes lnpulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.ln-rec{animation:none}}
+.ln-dot{width:7px;height:7px;border-radius:50%;background:var(--rec);flex:none;margin:0 4px}
+/* the split */
+.ln-split{flex:1;min-height:0;display:flex;position:relative;--lnw:min(42%,520px)}
+.ln-chat{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column}
+.ln-pane,.ln-div{display:none}
+.ln-open .ln-div{display:block;width:9px;flex:none;cursor:col-resize;position:relative;touch-action:none}
+.ln-open .ln-div::after{content:"";position:absolute;top:0;bottom:0;left:4px;width:1px;background:var(--line)}
+.ln-open .ln-div:hover::after,.ln-open .ln-div:focus-visible::after,.ln-drag .ln-div::after{background:var(--accent);width:2px;left:3.5px}
+.ln-drag{user-select:none;cursor:col-resize}
+.ln-open .ln-pane{display:flex;flex-direction:column;width:var(--lnw);flex:none;min-height:0;background:var(--sheet)}
+.ln-head{display:flex;align-items:center;gap:8px;padding:10px 12px 8px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap;row-gap:6px}
+.ln-head .grow{flex:1}
+.ln-x{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;color:var(--mute);flex:none}
+.ln-x:hover{background:var(--hover);color:var(--ink)}
+.ln-lib{font-size:12.5px;color:var(--mute);text-decoration:none;padding:4px 8px;border-radius:8px;white-space:nowrap}
+.ln-lib:hover{background:var(--hover);color:var(--ink)}
+.ln-chip{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--ink2);flex-wrap:wrap;row-gap:6px;min-width:0}
+.ln-chip b{font-weight:600;color:var(--ink);white-space:nowrap}
+.ln-chip:not(.idle):not(.saving) b{color:var(--rec)}
+.ln-clock{font-variant-numeric:tabular-nums;white-space:nowrap}
+.ln-cost{color:var(--mute);font-variant-numeric:tabular-nums;white-space:nowrap}
+.ln-stop,.ln-start,.ln-go,.ln-no{height:28px;padding:0 12px;border-radius:999px;font-size:13px;font-weight:600;white-space:nowrap;flex:none}
+.ln-stop{background:var(--rec);color:#fff}
+.ln-stop:hover{filter:brightness(1.08)}
+.ln-start,.ln-no{background:var(--abub);color:var(--ink)}
+.ln-start:hover,.ln-no:hover{background:var(--hover)}
+.ln-go{background:var(--ink);color:var(--sheet)}
+.ln-stop[disabled],.ln-start[disabled]{opacity:.6}
+.ln-spin{width:12px;height:12px;border-radius:50%;border:2px solid var(--line2);border-top-color:var(--ink2);animation:lnspin .8s linear infinite}
+@keyframes lnspin{to{transform:rotate(360deg)}}
+.ln-bans:empty{display:none}
+.ln-bans{padding:10px 12px 0}
+.ln-ban{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;background:var(--abub);margin-bottom:8px;flex-wrap:wrap}
+.ln-ban>div{flex:1;min-width:180px;display:flex;flex-direction:column;gap:2px;font-size:13px;color:var(--ink2)}
+.ln-ban b{color:var(--ink);font-size:13.5px}
+.ln-ban.ask{background:color-mix(in srgb,var(--warn) 14%,var(--sheet))}
+.ln-ban.soft{background:transparent;border:1px dashed var(--line2)}
+.ln-ban.warn{background:color-mix(in srgb,var(--warn) 16%,var(--sheet))}
+.ln-chip.paused b{color:var(--warn)}
+.ln-pz{display:inline-flex;gap:2px;width:8px;height:9px;flex:none}
+.ln-pz::before,.ln-pz::after{content:"";width:3px;height:100%;border-radius:1px;background:var(--warn)}
+.ln-acts{display:flex;gap:8px;flex-wrap:wrap}
+.ln-body{flex:1;min-height:0;overflow:auto;padding:6px 18px 28px}
+.ln-empty{color:var(--mute);font-size:14px;padding:24px 4px}
+.ln-doc{font-size:14.5px;line-height:1.55;color:var(--ink);overflow-wrap:anywhere}
+.ln-doc h1{font-size:18px;margin:14px 0 4px;letter-spacing:-.01em}
+.ln-doc h1+p{color:var(--mute);font-size:13px;margin-top:0}
+.ln-doc h2{font-size:15.5px;margin:20px 0 6px;padding-top:12px;border-top:1px solid var(--line)}
+.ln-doc h1+p+h2,.ln-doc h1+h2{border-top:0;padding-top:0}
+.ln-doc h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:14px 0 4px}
+.ln-doc ul{margin:4px 0;padding-left:20px}
+.ln-doc li{margin:2px 0}
+.ln-doc hr{display:none}
+.ln-doc p{margin:4px 0}
+.ln-doc em{color:var(--mute)}
+.ln-doc a{color:inherit}
+/* phone: Chat | Notes */
+.ln-ph{flex-direction:column}
+.ln-bar{display:flex;align-items:center;gap:8px;padding:6px 16px 8px;border-bottom:1px solid var(--line);flex-wrap:wrap;row-gap:6px}
+.ln-bar .ln-chip{flex:1}
+.ln-seg{display:inline-flex;background:var(--abub);border-radius:999px;padding:3px;flex:none;margin-left:auto}
+.ln-seg button{height:28px;padding:0 14px;border-radius:999px;font-size:13px;color:var(--ink2);white-space:nowrap;display:inline-flex;align-items:center}
+.ln-seg button.on{background:var(--sheet);color:var(--ink);font-weight:600;box-shadow:var(--shadow)}
+.ln-ph.ln-tab-notes .ln-chat{display:none}
+.ln-ph.ln-tab-notes .ln-pane{display:flex;flex-direction:column;flex:1;min-height:0;width:auto}
+.ln-ph .ln-body{padding:4px 16px 24px}
+.ln-ph .ln-bans{padding:10px 16px 0}
+/* tablet / desktop, but the split is under 640px (a tablet in portrait with the side panel): chat or notes, switched like on the phone */
+.ln-nbar{display:none}
+.ln-narrow.ln-open{flex-direction:column}
+.ln-narrow.ln-open>.ln-nbar{display:flex}
+.ln-narrow.ln-open>.ln-div{display:none}
+.ln-narrow.ln-open.ln-tab-chat>.ln-pane{display:none}
+.ln-narrow.ln-open.ln-tab-notes>.ln-chat{display:none}
+.ln-narrow.ln-open.ln-tab-notes>.ln-pane{flex:1;width:auto;min-height:0}
+.ln-narrow.ln-open .ln-head .ln-chip{display:none}
+.ln-narrow.ln-open .ln-head{justify-content:flex-end}
+/* The "Update your meeting notes?" card in the chat (lnRefineCard): the system-card look (.gu-sys) with the changes as a list. */
+.ln-rcard .gu-sh{gap:12px}
+.ln-rlist{margin:2px 0 0;padding-left:20px;display:flex;flex-direction:column;gap:4px;overflow-wrap:anywhere}
+.ln-rlist li{line-height:1.4}
+.ln-rfoot{margin:2px 0 0;color:var(--mute);font-size:14px;overflow-wrap:anywhere}
+.ln-rcard.locked .gu-sl,.ln-rcard.locked .ln-rlist{color:var(--mute)}
+.ln-fix{color:var(--ink);font-weight:600;margin-top:4px}

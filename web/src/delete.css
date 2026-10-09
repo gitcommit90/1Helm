@@ -1,0 +1,22 @@
+/* Deleting a chat / channel / the account (delete.ts). The ⋯ on task rows behaves like the pin (shows on hover, always on touch). */
+.rmore{flex:none;width:26px;height:26px;margin:0 -4px 0 0;border-radius:8px;display:grid;place-items:center;color:var(--faint);opacity:0;transition:opacity .12s,background .12s,color .12s;cursor:pointer}
+.rmore:hover{background:var(--line);color:var(--ink)}
+.sess:hover .rmore,.ds:hover .rmore,.rmore:focus-visible{opacity:1}
+.sess .rmore+.when,.sess .rmore+.dot{margin-left:2px}
+.hdel{display:inline-grid;place-items:center;width:30px;height:28px;border-radius:999px;color:var(--mute)}
+.hdel:hover{background:color-mix(in srgb,#dc2626 10%,transparent);color:#dc2626}
+.chhead{position:relative}
+.chhead .chmore{margin-left:auto;width:30px;height:30px;border-radius:9px;display:grid;place-items:center;color:var(--faint);opacity:.0;transition:opacity .12s,background .12s}
+#side:hover .chmore,.chmore:focus-visible{opacity:1}.chmore:hover{background:var(--line);color:var(--ink)}
+.delmenu{position:fixed;z-index:250;min-width:180px;padding:5px;border-radius:14px;background:var(--sheet);border:1px solid var(--line);box-shadow:0 18px 50px rgba(28,27,25,.16),var(--lift);animation:delmIn .14s ease-out}
+.delmi{width:100%;display:flex;align-items:center;gap:10px;min-height:38px;padding:0 12px;border-radius:10px;font-size:14px;color:var(--ink);text-align:left}
+.delmi.bad{color:#dc2626}.delmi:hover,.delmi:focus-visible{background:var(--hover);outline:0}
+.srow.delrow{color:#dc2626;font-weight:500}.srow.delrow svg{flex:none}
+.sdanger .sa.red{color:#dc2626}
+body.deleting-acct{cursor:progress}body.deleting-acct *{pointer-events:none}
+@keyframes delmIn{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+:root[data-theme=dark] .delmi.bad,:root[data-theme=dark] .srow.delrow,:root[data-theme=dark] .hdel:hover{color:#ff6b6b}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .delmi.bad,:root:not([data-theme=light]) .srow.delrow,:root:not([data-theme=light]) .hdel:hover{color:#ff6b6b}}
+@media (hover:none){.rmore{opacity:.55}.chmore{opacity:1}}
+@media (max-width:767px){.ds .rmore{width:34px;height:34px;margin-right:-8px;opacity:.6}.delmi{min-height:46px;font-size:16px}}
+@media (prefers-reduced-motion:reduce){.delmenu{animation:none}}

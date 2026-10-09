@@ -1,0 +1,15 @@
+# Configuration and secrets
+
+`npm run setup` writes `wrangler.jsonc` from `wrangler.example.jsonc`. The local file contains your account ID, D1 ID, R2 bucket name, app host, and sender address; it is ignored by Git. Keep the same values on upgrades. Set `APP_HOST` and `GATEWAY_HOST` to the exact hostname that serves the Worker. `EMAIL_FROM` must be a Cloudflare Email Service verified sender. `SUPPORT_EMAIL` is the address displayed in Help and account notices. The `send_email` binding's allowed sender must match `EMAIL_FROM`.
+
+`SELFHOST_STORAGE_GB` sets the owner's storage safety limit in decimal gigabytes (default 100). Increase it in your private `wrangler.jsonc` and redeploy if you want to retain more files in R2. This changes the app's limit; your Cloudflare account pays for the actual R2 usage.
+
+`SENTINEL_DEFAULT` is `on` for a new install. The computer sends HTTP and HTTPS through the Worker checkpoint so saved keys can be swapped only for their configured sites and outgoing requests can follow the owner's approval rules. Keep it on for saved keys and approvals to work. The computer needs the checkpoint's CA trust setup and Cloudflare Containers outbound interception; verify both in your own account before relying on it.
+
+The `.env.example` file lists optional defaults for setup prompts. If you use a local `.env`, export it in your shell before running setup. Do not put secrets in `.env` for deployment. `ONEHELM_EE` is absent from the example config and must remain absent for public installs.
+
+The setup command generates `VAULT_KEY`, `VAPID_PUBLIC`, and `VAPID_PRIVATE` and uploads them with the first Worker deployment. Its recovery JSON is written outside the repo at `~/.config/onehelm/<worker>-recovery.json`. Copy it to encrypted offline storage. `VAULT_KEY` encrypts saved logins and provider keys and signs share links; preserve it when moving or restoring an installation. The Web Push pair should also be preserved so existing subscriptions keep working. Never print these values in logs or commit them.
+
+The AI provider endpoint and key are entered in the app by the owner and stored encrypted with `VAULT_KEY`. Optional services such as Brave search can be configured later with `npx wrangler secret put BRAVE_SEARCH_KEY`; a secret update creates a new Worker deployment. The core requires no 1HC account or 1HC key.
+
+To finish a partially completed setup, inspect `wrangler.jsonc`, D1, and R2 first. If the config is present, run `npm ci --prefix web`, `npm run check:migrations`, `npx wrangler d1 migrations apply DB --remote`, and `npm run build`. Then deploy with `npx wrangler deploy --secrets-file ~/.config/onehelm/<worker>-recovery.json` if the recovery file exists. Do not regenerate `VAULT_KEY` for an existing database.

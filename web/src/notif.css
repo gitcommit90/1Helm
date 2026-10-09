@@ -1,0 +1,37 @@
+/* Settings → Notifications (notif.ts) and Help & support → Report an issue / Contact us (report.ts). */
+.tg:disabled{opacity:.45;cursor:default}
+.nffoot{align-items:center;gap:10px;padding:10px 14px 12px}.nfhint{font-size:12.5px;color:var(--mute)}
+/* This device: what the browser and the service worker say (permission, signed up, last push received). */
+.nfdiag{display:flex;flex-wrap:wrap;gap:4px 14px;padding:10px 14px 12px;border-top:1px solid var(--line);font-size:12.5px;color:var(--mute)}
+.nfdiag b{font-weight:600;color:var(--ink2)}.nfdiag p{flex-basis:100%;margin:4px 0 0;line-height:1.45;color:var(--ink2)}
+/* After a test: where to look in the system's settings, in full and wrapped (it stays until the next test). */
+.nfdiag p.nfhelp{margin-top:6px;padding:9px 12px;border-radius:12px;background:color-mix(in srgb,var(--ink) 6%,transparent);font-size:13px;white-space:normal;overflow-wrap:anywhere}
+a.sr{text-decoration:none;color:var(--ink)}a.sr:hover{background:var(--hover)}a.sr:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.sr[data-rpopen]{cursor:pointer}.sr[data-rpopen]:hover{background:var(--hover)}
+
+/* The report sheet: dialog.css's card (.dlgw/.dlg), a little wider. */
+.rpw .dlg{width:min(480px,100%)}
+.rplab{display:block;margin:16px 2px 7px;font-size:13.5px;font-weight:600;color:var(--ink2)}.rplab span{font-weight:400;color:var(--mute)}
+.rptx{display:block;width:100%;min-height:104px;resize:vertical;padding:11px 13px;border-radius:14px;border:1px solid var(--line2);background:transparent;color:var(--ink);font:inherit;font-size:15px;line-height:1.45;outline:0}
+.rptx:focus{border-color:var(--ink2);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent)}
+.rppick{display:flex;flex-wrap:wrap;gap:8px}
+.rpbtn{position:relative;display:inline-flex;align-items:center;gap:7px;cursor:pointer;height:36px}
+.rpbtn input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%}.rpbtn.off{opacity:.6;pointer-events:none}
+.rpbtn:focus-within{box-shadow:0 0 0 2px var(--accent)}
+.rpshot{display:flex;align-items:center;gap:12px;padding:8px;border-radius:14px;background:var(--abub)}
+.rpshot img{width:88px;height:60px;object-fit:cover;object-position:top;border-radius:9px;border:1px solid var(--line);background:var(--sheet)}
+.rpsn{flex:1;min-width:0;font-size:13.5px;color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rpfine{margin:14px 2px 0;font-size:12.5px;line-height:1.45;color:var(--mute)}.rpfine code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+.rperr{margin:10px 2px 0;font-size:13.5px;color:#dc2626}
+.rpbtns{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+.rpdone{text-align:center;padding:8px 0 0}.rpdone h2{margin-top:14px}.rpdone .rpbtns{justify-content:center}
+.rpok{display:inline-grid;place-items:center;width:52px;height:52px;border-radius:50%;color:var(--live);background:color-mix(in srgb,var(--live) 13%,transparent)}
+/* While capturing the screen: our sheet, Settings and any toast step aside so the picture shows the page itself. */
+.rpcapturing .rpw,.rpcapturing #setw,.rpcapturing #toast,.rpcapturing #sheet{opacity:0!important;transition:none!important}
+@media (max-width:767px){
+  .rpw .dlg{width:100%}
+  .rptx{font-size:16px;min-height:120px}
+  .rpbtns{flex-direction:column-reverse}.rpbtns .dlgb{width:100%;min-height:50px;font-size:16px}
+  .rpbtn{height:40px;font-size:15px}
+  .rpdone p{text-align:center}
+}

@@ -1,0 +1,46 @@
+/* Get to know you (interview.ts): one question at a time inside the task view, in the cards-in-chat look (genui-cards.css). */
+.ivscroll{flex:1;overflow:auto;min-height:0}
+.iv{max-width:600px;margin:0 auto;padding:22px 28px 40px;display:flex;flex-direction:column;gap:14px}
+.iv-top{display:flex;flex-direction:column;gap:9px;padding:2px 2px 0}
+.iv-bar{height:6px;border-radius:999px;background:var(--hover);overflow:hidden}
+.iv-bar i{display:block;height:100%;border-radius:inherit;background:var(--ink);transition:width .35s cubic-bezier(.2,.8,.2,1)}
+.iv-meta{display:flex;align-items:center;gap:10px;font-size:13.5px;color:var(--mute)}.iv-meta b{color:var(--ink2);font-weight:600;font-variant-numeric:tabular-nums}
+.iv-sec{padding:3px 10px;border-radius:999px;background:var(--hover);font-size:12.5px;font-weight:550;color:var(--ink2)}
+.iv-card{background:var(--sheet);border-radius:24px;box-shadow:0 0 0 1px var(--line);padding:24px 24px 20px;display:flex;flex-direction:column;gap:14px;outline:none}
+.iv-card h2{margin:0;font-family:var(--serif,Georgia,serif);font-weight:400;font-size:30px;line-height:1.12;letter-spacing:-.01em;color:var(--ink);text-wrap:balance}
+.iv-sub,.iv-lead{margin:-6px 0 0;color:var(--mute);font-size:15px;line-height:1.5}.iv-lead{margin:0}
+.iv-who{display:flex;align-items:center;gap:10px;font-weight:600;font-size:14.5px;color:var(--ink2)}.iv-who .av{width:36px;height:36px}
+.iv-points{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:9px}
+.iv-points li{display:flex;gap:10px;align-items:flex-start;font-size:15px;line-height:1.45;color:var(--ink2)}.iv-points svg{flex:none;margin-top:3px;color:var(--live)}
+.iv-opts .gu-opt{padding:13px 16px;min-height:52px;width:100%}.iv-opts .gu-ot b{font-weight:550;font-size:15.5px}
+.iv-k{margin-left:auto;opacity:.75}
+.iv-chips{gap:8px}.iv-chips .gu-chip{display:inline-flex;align-items:center;gap:6px;height:42px;padding:0 16px;font-size:15px}
+.iv-field{padding:2px 0 0;border-bottom:0}.iv-field>span{font-size:14px;color:var(--ink2)}
+/* The longer answers: a box that starts one line tall and grows as they type (interview.ts grow()), styled like gu-field input. */
+.iv-field textarea{display:block;width:100%;min-height:46px;max-height:40vh;border-radius:14px;border:1px solid var(--line2);padding:11px 14px;background:var(--sheet);color:var(--ink);outline:0;font:inherit;font-size:16px;line-height:1.45;resize:none;overflow-y:auto;box-sizing:border-box}
+.iv-field textarea:focus{border-color:var(--ink2)}
+.iv-left{align-self:flex-end;min-height:16px;margin-top:-4px;font-size:12.5px;color:var(--faint);font-variant-numeric:tabular-nums}.iv-left:empty{visibility:hidden}
+.iv-act{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px}.iv-grow{flex:1}
+.iv-act .gu-b{min-height:46px}.iv-act .gu-b.primary{padding:0 24px}
+a.gu-b{display:inline-flex;align-items:center;gap:8px;text-decoration:none}
+.iv-back-b{width:46px;height:46px;border-radius:50%;display:grid;place-items:center;color:var(--ink2);box-shadow:inset 0 0 0 1px var(--line2)}.iv-back-b:hover{background:var(--hover)}
+.iv-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 6px;color:var(--faint);font-size:13.5px}
+.iv-link{color:var(--mute);font-size:14px;text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:3px;align-self:flex-start}.iv-link:hover{color:var(--ink);text-decoration-color:currentColor}
+.iv-card>.iv-link{margin-top:2px}
+.iv-err{margin:0;padding:10px 14px;border-radius:14px;background:color-mix(in srgb,var(--warn) 14%,transparent);color:var(--ink);font-size:14px}
+.iv-sums{display:flex;flex-direction:column;gap:14px;padding:4px 0}
+.iv-ss h3{margin:0 0 6px;font-size:13px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;color:var(--mute)}
+.iv-ss p{display:flex;gap:9px;align-items:flex-start;margin:0;padding:7px 0;border-bottom:1px solid var(--line);font-size:15px;line-height:1.45}.iv-ss p span{min-width:0;overflow-wrap:anywhere}.iv-ss p:last-child{border-bottom:0}
+.iv-ss svg{flex:none;margin-top:4px;color:var(--live)}
+.iv-tick{padding:12px 14px;border-radius:16px;background:var(--hover);color:var(--ink2);font-size:14px}
+.iv-load{gap:10px}.iv-load i{display:block;height:16px;border-radius:8px;background:var(--hover);animation:ivpulse 1.2s ease-in-out infinite}.iv-load i:first-child{height:28px;width:70%}.iv-load i:last-child{width:45%}
+@keyframes ivpulse{50%{opacity:.5}}
+.iv-in{animation:ivin .28s cubic-bezier(.2,.8,.2,1)}.iv-back{animation:ivback .28s cubic-bezier(.2,.8,.2,1)}
+@keyframes ivin{from{opacity:0;transform:translateX(18px)}}@keyframes ivback{from{opacity:0;transform:translateX(-18px)}}
+@media (prefers-reduced-motion:reduce){.iv-in,.iv-back{animation:none}.iv-bar i{transition:none}}
+@media (max-width:767px){
+  .iv{padding:12px 14px calc(28px + env(safe-area-inset-bottom));gap:12px}
+  .iv-card{padding:20px 18px 18px;border-radius:22px}
+  .iv-card h2{font-size:27px}
+  .iv-foot{flex-direction:column;align-items:flex-start;gap:6px}
+}

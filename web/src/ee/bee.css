@@ -1,0 +1,125 @@
+/* Settings → Ambient → Bee (bee.ts): the card and the Connect sheet. Buttons never shrink or cut their labels: they wrap below. */
+.beemark{flex:none;display:grid;place-items:center;border-radius:11px;background:#f7d64a;color:#1c1b19}
+.beemark svg{fill:currentColor}
+.beerow{flex-wrap:wrap;row-gap:10px}
+.beerow .srt{min-width:180px}
+.beebtns{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.beebtns .sa,.bsbtns .dlgb,.bscopy{white-space:nowrap;flex:none}
+.beesub{display:flex;flex-direction:column;gap:2px}
+.beeok,.beewarn,.beeload{display:inline-flex;align-items:center;gap:6px}
+.beeok{color:var(--live);font-weight:600}.beeok svg{width:14px;height:14px}
+.beewarn{color:var(--warn);font-weight:600}.beewarn svg{width:14px;height:14px}
+.beewhy{color:var(--mute)}
+.beemeta{display:inline-flex;align-items:center;gap:6px;color:var(--mute);font-variant-numeric:tabular-nums}
+.beenote{display:inline-flex;align-items:flex-start;gap:6px;color:var(--warn)}.beenote svg{flex:none;width:14px;height:14px;margin-top:2px}
+.beeload .apspin,.bsstat .apspin,.bstimer .apspin{flex:none}
+.beewr{display:inline-flex;flex-wrap:wrap;align-items:baseline;gap:4px 6px}.beelink{padding:0;border:0;background:none;font:inherit;color:var(--ink2);text-decoration:underline;text-underline-offset:2px;cursor:pointer;white-space:nowrap}.beelink:hover{color:var(--ink)}
+.beeerr{margin:10px 6px 0;color:#dc2626;font-size:13.5px}
+.beeprivrow{align-items:flex-start}
+.beesub2{padding-left:70px;min-height:46px}.beesub2 .srt b{font-weight:500;color:var(--ink2)}
+.beecard+.beeerr+.sc,.beecard+.sc{margin-top:12px}
+
+/* the privacy block (sheet + connected card) */
+.beepriv{border-radius:16px;background:var(--abub);padding:14px 16px;margin-top:18px;font-size:13.5px;color:var(--ink2);line-height:1.5}
+.beepriv.compact{background:none;padding:0;margin:0;font-size:13px;color:var(--mute)}
+.beeph{display:flex;align-items:center;gap:8px;color:var(--ink);margin-bottom:6px}.beeph svg{width:16px;height:16px}
+.beepriv ul{margin:0;padding-left:18px;display:grid;gap:4px}
+.beepriv.fold{padding:12px 16px}.beepriv.fold summary{cursor:pointer;list-style:none;margin:0}.beepriv.fold summary::-webkit-details-marker{display:none}
+.beepriv.fold[open] summary{margin-bottom:6px}.beefold{margin-left:auto;font-size:12.5px;color:var(--accent);font-weight:600;white-space:nowrap}.beepriv.fold[open] .beefold{display:none}
+.beelinks{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:10px}
+.beelinks a{display:inline-flex;align-items:center;gap:3px;color:var(--accent);font-weight:600;font-size:13px;white-space:nowrap}
+.beelinks a svg{width:13px;height:13px}.beelinks a:hover{text-decoration:underline}
+
+/* the sheet */
+.bsw .dlg{width:min(560px,100%);padding:24px 26px 20px}
+.bshd{display:flex;align-items:center;gap:14px;margin-bottom:18px}
+.bshd h2{margin:0}
+.bsn{margin:2px 0 0!important;font-size:13px!important;color:var(--mute)!important}
+.bsh3{margin:0 0 10px;font-size:15.5px;font-weight:600;letter-spacing:-.01em}
+.bsol{margin:0;padding-left:22px;display:grid;gap:6px;font-size:14.5px;color:var(--ink2);line-height:1.5}
+.bsol svg{display:inline-block;vertical-align:-3px;color:var(--ink)}
+.bscode{display:flex;gap:22px;align-items:center;padding:16px;border-radius:18px;background:var(--abub);margin-bottom:10px}
+.bscode.ph{flex-direction:column;align-items:stretch;gap:16px}
+.bsqr{flex:none;display:flex;flex-direction:column;align-items:center;gap:8px}
+.beeqr{display:block;border-radius:10px;background:#fff;box-shadow:0 0 0 1px var(--line)}
+.bsqr span{font-size:12.5px;color:var(--mute);text-align:center}
+.bsside{flex:1;min-width:0}
+.bsor{margin:0 0 8px!important;font-size:13px!important;color:var(--mute)!important}
+.bsid{display:grid;gap:8px}
+.bsidl{font-size:12px;font-weight:600;color:var(--mute);text-transform:uppercase;letter-spacing:.05em}
+.bsidv{display:block;font:600 22px/1.3 ui-monospace,"SF Mono",Menlo,Consolas,monospace;letter-spacing:.04em;color:var(--ink);overflow-wrap:anywhere;word-break:break-all;user-select:all;-webkit-user-select:all;background:var(--sheet);border-radius:12px;padding:10px 12px;box-shadow:0 0 0 1px var(--line)}
+.bscopy{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-width:110px;justify-self:start}
+.bscode.ph .bscopy{justify-self:stretch}
+.bscopy svg{width:16px;height:16px}
+.bstimer{display:flex;align-items:center;gap:8px;margin:0 2px 14px!important;font-size:13.5px!important;color:var(--mute)!important}
+.bstimer b{color:var(--ink);font-variant-numeric:tabular-nums}
+.bsstat{display:flex;align-items:center;gap:8px;margin:0 2px 14px!important;font-size:14px!important;color:var(--ink2)!important}
+.bscli{margin:12px 2px 0!important;font-size:13.5px!important;color:var(--mute)!important}
+.bswait{display:grid;place-items:center;gap:10px;min-height:120px;padding:16px;border-radius:18px;background:var(--abub);margin-bottom:12px}
+.bsbtns{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:20px}
+.bsbtns [data-bscancel]{margin-right:auto}
+.bsdone{text-align:center;padding:6px 0 0}
+.bsok{display:inline-grid;place-items:center;width:52px;height:52px;border-radius:50%;background:color-mix(in srgb,var(--live) 14%,transparent);color:var(--live)}
+.bsdone h3{margin:12px 0 4px;font-size:18px}
+.bsdone p{margin:0!important}
+.bsdone+.bsbtns{justify-content:center}
+@media (max-width:767px){
+  .bsw .dlg{width:100%;padding:10px 18px calc(16px + env(safe-area-inset-bottom))}
+  .bshd{margin-bottom:14px}.bshd h2,.bshd .bsn{text-align:left!important}
+  .bsidv{font-size:21px;text-align:center}
+  .bsbtns{flex-direction:column-reverse}.bsbtns .dlgb{width:100%;min-height:50px;font-size:16px}
+  .bsbtns [data-bscancel]{margin-right:0}
+  .bscopy{min-height:50px;font-size:16px}
+  .beesub2{padding-left:16px}
+  .bsdone p{text-align:center}
+}
+/* Notebook (General): "From Bee" label on a note, and the "New from Bee" review block above Overview (v3.ts nbBee). */
+.nbee{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;vertical-align:-2px}.nbee .beemark{border-radius:4px}
+.nbeenew{margin-bottom:30px;padding:14px 16px 6px;border:1px solid color-mix(in srgb,#f7d64a 55%,var(--line));border-radius:16px;background:color-mix(in srgb,#f7d64a 9%,transparent)}
+
+.nbeenew .nsh{flex-wrap:wrap;row-gap:2px}.nbeenew .nsh h2{white-space:nowrap}
+.bfwait{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--mute);white-space:nowrap}
+@media (max-width:640px){.nbeenew{padding:12px 12px 14px}}
+/* Import past conversations (§6): the chooser in the sheet, the progress row and history on the card. */
+.bfpick{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}.bsdone+.bfpick{text-align:left}
+.bfnote{margin:4px 0 12px;color:var(--mute);font-size:14px;line-height:1.5}
+.bfest{margin:6px 0 8px;font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
+.bfopts{display:flex;flex-wrap:wrap;gap:8px}
+.bfopt{flex:none;white-space:nowrap;min-height:38px;padding:0 15px;border-radius:999px;font-size:14px;font-weight:600;color:var(--ink2);background:var(--sheet);box-shadow:0 0 0 1px var(--line)}
+.bfopt:hover{box-shadow:0 0 0 1px var(--line2)}.bfopt.on{color:var(--accent);box-shadow:0 0 0 2px var(--accent);background:color-mix(in srgb,var(--accent) 7%,var(--sheet))}
+.bsdone+.bfpick .bsbtns{justify-content:flex-end}
+.beebf .srt{flex:1 1 240px}.beebf .beemeta{white-space:normal}
+.bfbar{display:block;height:5px;margin:6px 0 2px;border-radius:9px;background:var(--line);overflow:hidden;max-width:360px}.bfbar i{display:block;height:100%;background:var(--accent);border-radius:9px;transition:width .4s}
+.beehist .srt{display:flex;flex-direction:column;gap:3px}.beehist .srt b{font-size:13px;color:var(--mute);font-weight:600}.bfh{color:var(--ink2);font-size:13.5px;font-variant-numeric:tabular-nums}
+@media (max-width:640px){.bfopts .bfopt{flex:1 1 calc(50% - 8px);min-height:46px;font-size:15px}.beebf .beebtns{margin-left:0}}
+/* "New from Bee" as a stack of cards (v3.ts nbBee): one fact on top, up to two blank cards peeking below it. */
+.nbeenew{padding-bottom:16px;overflow-x:clip}
+.bfstack{position:relative;outline:0;margin-top:4px}.bfstack.d1{padding-bottom:10px}.bfstack.d2{padding-bottom:20px}
+.bfcard{position:relative;z-index:3;display:flex;flex-direction:column;gap:12px;padding:16px 18px 14px;border-radius:14px;background:var(--sheet);box-shadow:0 0 0 1px var(--line),var(--shadow)}
+.bfpeek{position:absolute;inset:0;z-index:1;overflow:hidden;transform-origin:50% 100%;pointer-events:none}
+.bfpeek.p1{z-index:2;transform:translateY(10px) scale(.965)}.bfpeek.p2{transform:translateY(20px) scale(.93);opacity:.7}.bfpeek.p1 .bfhd,.bfpeek.p1 .bfp{opacity:.55}
+.bfstack.d1 .bfpeek{bottom:10px}.bfstack.d2 .bfpeek{bottom:20px}
+.bfhd{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--faint);min-width:0}.bfhd .nbee{color:var(--mute)}
+.bfat::before{content:"·";margin-right:8px}.bfn{margin-left:auto;white-space:nowrap;font-variant-numeric:tabular-nums;padding:2px 9px;border-radius:999px;background:color-mix(in srgb,#f7d64a 22%,var(--sheet));color:var(--ink2);font-weight:600}
+.bfp{margin:0;font-size:17px;line-height:1.45;color:var(--ink);overflow-wrap:anywhere}
+.bftxt{width:100%;font-size:16px}
+.bfacts{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.bfacts .sa{display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;height:36px;min-width:max-content}
+.bfacts .bfok{margin-left:auto;background:var(--ink);color:var(--sheet);box-shadow:none;padding:0 16px}.bfacts .bfok:hover{box-shadow:var(--shadow);background:color-mix(in srgb,var(--ink) 88%,var(--sheet))}
+.bfacts .bfno{padding:0 14px}
+.bfacts .sa:focus-visible{outline:2px solid var(--ink2);outline-offset:2px}
+.bferr{margin:-4px 0 0;display:flex;align-items:flex-start;gap:6px;font-size:13px;line-height:1.4;color:var(--mute)}.bferr svg{flex:none;margin-top:1px}
+/* the swipe: follow the finger, tint toward the side it'll go */
+.bftop{touch-action:pan-y;transition:transform .2s ease,box-shadow .2s}.bftop.drag{transition:none;animation:none;cursor:grabbing}
+.bftop[data-sw="r"]{box-shadow:0 0 0 2px color-mix(in srgb,var(--live) 70%,transparent),var(--lift)}.bftop[data-sw="l"]{box-shadow:0 0 0 2px color-mix(in srgb,#dc2626 60%,transparent),var(--lift)}
+/* leaving card flies off (approve right, deny left); the next one steps forward from the first peek position */
+.bfgone{position:absolute;left:0;right:0;top:0;z-index:4;pointer-events:none;animation:bfout .34s cubic-bezier(.4,0,.7,.4) forwards}
+.bfgone.r{--x1:115%;--r1:7deg}.bfgone.l{--x1:-115%;--r1:-7deg}
+/* Skip: the card sinks down and slips under the stack (behind the peeking cards), where it waits its turn again */
+.bfgone.s{animation:bfunder .4s cubic-bezier(.4,0,.3,1) forwards}
+@keyframes bfunder{0%{transform:none;opacity:1;z-index:4}45%{transform:translateY(34px) scale(.95);opacity:1;z-index:4}46%{z-index:0}100%{transform:translateY(20px) scale(.93);opacity:0;z-index:0}}
+.bfempty .bfgone{position:relative}
+@keyframes bfout{from{transform:translateX(var(--x0,0)) rotate(0);opacity:1}to{transform:translateX(var(--x1)) rotate(var(--r1));opacity:0}}
+.bftop.bfin{animation:bfin .3s cubic-bezier(.2,.7,.3,1)}
+@keyframes bfin{from{transform:translateY(10px) scale(.965)}to{transform:none}}
+@media (prefers-reduced-motion:reduce){.bfgone,.bfgone.s{animation:bffade .15s linear forwards}.bftop.bfin{animation:none}.bftop{transition:none}@keyframes bffade{to{opacity:0}}}
+@media (max-width:640px){.bfcard{padding:14px 14px 12px}.bfp{font-size:16.5px}.bfacts{gap:6px}.bfacts .sa{flex:1 1 auto;height:40px}.bfacts .bfok{margin-left:0}}

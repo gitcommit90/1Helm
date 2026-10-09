@@ -1,0 +1,69 @@
+/* Several numbers per contact + merge + possible duplicates (contacts-merge.ts) */
+.cxpills.sm{gap:4px}.cxpills.sm .cxpill{height:30px;padding:0 11px;font-size:12.5px}
+/* the Edit form's phone / email rows */
+.cxnums>span{display:block;margin:0 2px 6px;font-size:13px;font-weight:600;color:var(--mute)}
+.cxnl{display:flex;flex-direction:column;gap:8px}
+.cxnum{display:flex;align-items:center;gap:8px;min-width:0}
+.cxnum .cxnv{flex:1;min-width:0;height:44px;border:1px solid var(--line);outline:0;border-radius:12px;background:var(--sheet);padding:0 14px;font:inherit;font-size:15px;color:var(--ink)}
+.cxnum .cxnv:focus{border-color:var(--ink2);box-shadow:0 0 0 3px color-mix(in srgb,var(--ink) 8%,transparent)}
+.cxnum .cxpills{flex:none;flex-wrap:nowrap}
+.cxpri{flex:none;display:inline-flex;align-items:center;gap:4px;height:30px;min-width:30px;padding:0 8px;border-radius:999px;color:var(--faint);font-size:12.5px;font-weight:600;justify-content:center}
+.cxpri:hover{color:var(--ink);background:var(--hover)}.cxpri[aria-pressed=true]{color:var(--ink);background:var(--mari-soft,var(--abub))}.cxpri[aria-pressed=true] svg{fill:var(--mari,#f0ae2c);stroke:var(--mari-ink,#9a5b06)}
+.cxpri span:empty{display:none}
+.cxnx{flex:none;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;color:var(--faint)}.cxnx:hover{color:#dc2626;background:color-mix(in srgb,#dc2626 10%,transparent)}
+.cxnadd{display:inline-flex;align-items:center;gap:6px;margin-top:8px;height:32px;padding:0 12px 0 8px;border-radius:999px;color:var(--ink2);font-size:13.5px;font-weight:600}.cxnadd:hover{background:var(--hover);color:var(--ink)}
+.cxpri:focus-visible,.cxnx:focus-visible,.cxnadd:focus-visible{outline:2px solid var(--ink2);outline-offset:2px}
+.cxdact{flex-wrap:wrap;justify-content:flex-end}
+/* possible duplicates, above the list */
+.cxdup{margin:0 0 10px;padding:10px 10px 6px;border-radius:16px;border:1px solid var(--line);background:var(--sheet)}
+.cxdup h3{margin:0 4px 4px;font-size:12.5px;font-weight:600;color:var(--mute)}
+.cxdrow{display:flex;align-items:center;gap:10px;padding:6px 2px}
+.cxdav{flex:none;display:flex}.cxdav .cxav{width:30px;height:30px;font-size:11px;box-shadow:0 0 0 2px var(--sheet)}.cxdav .cxav+.cxav{margin-left:-10px}
+.cxdrow .cxmain b{font-size:13.5px}.cxdrow .cxmain b i{font-style:normal;color:var(--faint);font-weight:400}.cxdrow .cxmain small{font-size:12px}
+.cxdrow .sa{height:28px;padding:0 12px;font-size:12.5px}
+.cxdmore{margin:2px 4px 2px;font-size:12.5px;font-weight:600;color:var(--ink2)}.cxdmore:hover{text-decoration:underline}
+/* the merge sheet (shares the import dialog's frame: .ciw / .cibox) */
+.cmw .cibox{width:min(560px,100%)}
+/* the picker: search, then a windowed list (VList: absolutely placed rows of a fixed height). Every row and header paints its own
+   opaque background and clips to its height, so nothing behind it can show through. */
+.cmq{flex:none;max-width:none;margin:0 0 10px;height:42px}.cmq input{font-size:14.5px}
+.cmw[data-step=pick] .cibody{overflow:hidden}
+.cmw .cmlist{flex:none;height:min(440px,calc(100dvh - 260px));min-height:200px;max-height:none;outline:0;background:var(--sheet)}
+.cmvb{position:relative}
+.cmhd,.cmrow{left:0;right:0;box-sizing:border-box;overflow:hidden;background:var(--sheet)}
+.cmhd{display:flex;align-items:flex-end;padding:0 14px 6px;font-size:12px;font-weight:600;color:var(--mute);font-variant-numeric:tabular-nums}
+.cmrow{display:flex;align-items:center;gap:12px;padding:0 14px;cursor:pointer;-webkit-tap-highlight-color:transparent;box-shadow:inset 0 1px 0 var(--line)}
+.cmhd+.cmrow{box-shadow:none}
+.cmrow.on,.cmrow:active{background:var(--hover)}
+.cmrow .cxav{width:36px;height:36px;font-size:12.5px}
+.cmrt{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.cmrt b,.cmrt small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.3}
+.cmrt b{font-size:14.5px;font-weight:600;color:var(--ink)}.cmrt small{font-size:12.5px;color:var(--mute);font-variant-numeric:tabular-nums}
+.cmwhy{flex:none;padding:3px 9px;border-radius:999px;background:var(--abub);color:var(--ink2);font-size:11.5px;font-weight:600;white-space:nowrap}
+.cmrow.on .cmwhy{background:var(--sheet)}
+.cmsr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;margin:0}
+.cmpair{display:flex;align-items:center;justify-content:center;gap:10px;margin:2px 0 14px;color:var(--faint)}
+.cmgrid{display:flex;flex-direction:column;gap:2px;border-radius:16px;background:var(--abub);padding:6px 14px}
+.cmf{display:grid;grid-template-columns:130px minmax(0,1fr);align-items:center;gap:10px;padding:8px 0;min-height:44px}.cmf+.cmf{box-shadow:0 -1px 0 var(--line)}
+.cml{font-size:12.5px;font-weight:600;color:var(--mute)}.cmv{font-size:14.5px;overflow-wrap:anywhere}.cmv small{color:var(--mute);font-size:12px;margin-left:4px}
+.cmf .cxpill{background:var(--sheet)}.cmf .cxpill[aria-checked=true]{background:var(--ink)}
+.cmnums{flex-direction:column;align-items:stretch}.cmnums .cxpill{display:flex;align-items:center;justify-content:space-between;gap:10px;height:auto;min-height:34px;padding:6px 12px;text-align:left}
+.cmnums .cxpill b{font-weight:600}.cmnums .cxpill small{font-size:11.5px;opacity:.75}
+.cmhint{grid-column:2;font-style:normal;font-size:11.5px;color:var(--faint);margin-top:-4px}
+.cmph .cxpill{height:auto;padding:4px;border-radius:50%;background:none!important;box-shadow:inset 0 0 0 2px transparent}.cmph .cxpill[aria-checked=true]{box-shadow:inset 0 0 0 2px var(--ink)}
+@media (max-width:767px){
+  .cxnum{flex-wrap:wrap;gap:6px 8px;padding-bottom:4px}.cxnum .cxnv{flex:1 0 100%;height:48px;font-size:16px}
+  .cxnum .cxpills{flex:1}.cxpills.sm .cxpill{height:34px;font-size:13.5px;padding:0 12px}
+  .cmf{grid-template-columns:1fr;gap:6px}.cmhint{grid-column:1}
+  .cmw[data-step=pick] .cibox{height:92dvh}
+  .cmw[data-step=pick] .cibody{flex:1;padding-bottom:0}
+  .cmw .cmlist{flex:1 1 0;height:auto;min-height:0;margin:0 -16px;border-radius:0;box-shadow:0 -1px 0 var(--line)}.cmw .cmlist::after{content:"";display:block;height:calc(12px + env(safe-area-inset-bottom))}
+  .cmq{order:0;flex-basis:auto;height:44px;margin:4px 0 10px}.cmq input{font-size:16px}
+  .cmhd{padding:0 16px 7px;font-size:12.5px}.cmrow{padding:0 16px;gap:14px}
+  .cmrow .cxav{width:42px;height:42px;font-size:14px}.cmrt b{font-size:16px}.cmrt small{font-size:13.5px}
+}
+.cxpri{width:88px}
+.cmw .cibtns{position:sticky;bottom:-18px;margin-bottom:-18px;padding:12px 0 18px;background:var(--sheet);z-index:2;box-shadow:0 -1px 0 var(--line)}
+@media (max-width:767px){.cxpri{width:auto;min-width:34px}.cmw .cibtns{bottom:calc(-14px - env(safe-area-inset-bottom));margin-bottom:calc(-14px - env(safe-area-inset-bottom));padding-bottom:calc(14px + env(safe-area-inset-bottom))}}
+.cxdrow .cxmain b,.cxdrow .cxmain small{white-space:normal;overflow-wrap:anywhere}
+@media (max-width:767px){.cxnum .cxnv{flex:1 0 calc(100% - 42px);order:0}.cxnum .cxnx{order:1}.cxnum .cxpills{order:2}.cxnum .cxpri{order:3}}

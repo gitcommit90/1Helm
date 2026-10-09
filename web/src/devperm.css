@@ -1,0 +1,27 @@
+/* Location + microphone (devperm.ts): the once-per-device sheet and Settings → Location & mic. Buttons grow to fit their label
+   (they wrap onto a new line rather than ever cutting it). */
+.dpw .dlg{width:min(470px,100%)}
+/* A tap on the backdrop doesn't close it (only Allow or Not now do); the card gives a small nudge instead. */
+.dpw .dlgback{cursor:default}
+.dpw.on .dpbox.dpnudge{animation:dpnudge .32s cubic-bezier(.3,.7,.4,1)}
+@keyframes dpnudge{0%{scale:1}40%{scale:1.02}100%{scale:1}}
+@media (prefers-reduced-motion:reduce){.dpw.on .dpbox.dpnudge{animation:none}}
+.dprows{display:grid;gap:12px;margin-top:18px}
+.dprow{display:flex;align-items:flex-start;gap:12px;text-align:left;padding:12px 14px;border-radius:16px;background:var(--abub)}
+.dpic{flex:none;display:grid;place-items:center;width:38px;height:38px;border-radius:12px;background:var(--sheet);color:var(--ink);box-shadow:0 0 0 1px var(--line)}
+.dptx{display:grid;gap:2px;min-width:0;font-size:14px;line-height:1.45;color:var(--ink2)}
+.dptx b{color:var(--ink);font-size:14.5px;font-weight:600}
+.dlg p.dpfine{font-size:13px;color:var(--mute);margin-top:14px}
+.dpw .dlgb{white-space:normal;height:auto;min-height:40px;padding:9px 18px;line-height:1.25}
+@media (max-width:767px){
+  .dprow{padding:12px}
+  .dlg p.dpfine{font-size:13.5px}
+  .dpw .dlgb{min-height:50px}
+}
+/* Settings */
+.dpboth{margin:4px 4px 14px}
+.dpboth .sa.blue{height:auto;min-height:38px;padding:8px 16px;white-space:normal;text-align:left;line-height:1.25;background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.sr[data-dprow]{flex-wrap:wrap;row-gap:8px}
+.sr[data-dprow] .srt{min-width:160px}
+.sr[data-dprow] .sa{height:auto;min-height:32px;white-space:nowrap}
+.sr[data-dprow]>.sa,.sr[data-dprow]>.tg,.sr[data-dprow]>.sok{margin-left:auto}

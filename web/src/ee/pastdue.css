@@ -1,0 +1,30 @@
+/* ---------- Payment failed (pastdue.ts): the read-only banner and the disabled composer ---------- */
+:root{--pdbg:#fde8e4;--pdink:#6b1d10;--pdline:#f4c6bc;--pdbtn:#1c1b19;--pdbtnink:#fff}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--pdbg:#43201a;--pdink:#fdd9d0;--pdline:#64302a;--pdbtn:#fdd9d0;--pdbtnink:#2c120d}}
+:root[data-theme=dark]{--pdbg:#43201a;--pdink:#fdd9d0;--pdline:#64302a;--pdbtn:#fdd9d0;--pdbtnink:#2c120d}
+
+/* A strip across the top; the app moves down by its height (--pdh, measured) instead of being covered. It wins over the cancel strip. */
+#pdbar{position:fixed;top:0;left:0;right:0;z-index:41;display:flex;align-items:center;justify-content:center;gap:10px;
+  padding:8px 16px;padding-top:calc(8px + env(safe-area-inset-top));background:var(--pdbg);color:var(--pdink);box-shadow:0 1px 0 var(--pdline);font-size:14px;line-height:1.35}
+body:has(#devstrip) #pdbar{padding-top:24px}
+body.pd-on #bcxbar{display:none}
+.pdi{display:grid;place-items:center;flex:none}
+.pdt{min-width:0}.pdt b{font-weight:600}.pdwhen{margin-left:4px}
+.pdfix{flex:none;height:30px;padding:0 14px;border:0;border-radius:999px;background:var(--pdbtn);color:var(--pdbtnink);font:inherit;font-size:13.5px;font-weight:600;cursor:pointer;white-space:nowrap}
+.pdfix:hover{filter:brightness(1.12)}.pdfix[disabled]{opacity:.7;cursor:default}
+body.pd-on{padding-top:var(--pdh,44px)}
+body.pd-on.bcx-on{padding-top:var(--pdh,44px)}
+@media (max-width:767px){
+  #pdbar{justify-content:flex-start;padding-left:16px;padding-right:12px;font-size:13.5px}
+  .pdwhen{display:none}
+  body.pd-on,body.pd-on.bcx-on{padding-top:0}
+  body.pd-on .home{padding-top:calc(env(safe-area-inset-top) + var(--pdh,64px))}
+  body.pd-on .cv{top:var(--pdh,64px)}
+}
+
+/* The composer while read-only: visibly off, nothing to type or tap (Stop still works). */
+.composer.pd-off{opacity:.62;box-shadow:none;background:color-mix(in srgb,var(--sheet) 70%,transparent)}
+.composer.pd-off textarea{cursor:not-allowed}
+.composer.pd-off textarea::placeholder{color:var(--ink2)}
+.composer.pd-off button:disabled{cursor:not-allowed}
+.pd-on .hhint{visibility:hidden}   /* "Press Enter to start" says nothing useful while nothing can start */

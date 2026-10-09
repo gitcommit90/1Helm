@@ -1,0 +1,24 @@
+/* "Apps I use" picker (apps-pick.ts): app chips with logos, search, More apps, None of these. Chips size to their label: never cut. */
+.apk{display:flex;flex-direction:column;gap:12px;min-width:0}
+.apk-search{display:flex;align-items:center;gap:9px;height:44px;padding:0 14px;border-radius:14px;border:1px solid var(--line2);background:var(--sheet);color:var(--mute)}
+.apk-search:focus-within{border-color:var(--ink2)}
+.apk-search input{flex:1;min-width:0;border:0;outline:0;background:none;font:inherit;font-size:16px;color:var(--ink)}.apk-search input::placeholder{color:var(--faint)}
+.apk-search input::-webkit-search-cancel-button{cursor:pointer}
+.apk-chips{gap:8px;align-items:center}
+.gu-chip.apk-chip,.gu-chip.apk-more,.gu-chip.apk-none{display:inline-flex;align-items:center;gap:8px;height:auto;min-height:42px;max-width:100%;padding:5px 14px 5px 6px;font-size:15px;line-height:1.25;white-space:normal;text-align:left;overflow:visible}
+.gu-chip.apk-more,.gu-chip.apk-none{padding:5px 16px}
+.apk-chip>span,.apk-none>span{min-width:0;overflow-wrap:anywhere}
+.apk-logo{flex:none;width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:13px;box-shadow:0 0 0 1px var(--line)}
+.apk-logo.cxlogo img{padding:4px}
+.apk-chip.on .apk-logo{box-shadow:none}
+.apk-ck{flex:none;margin-left:-2px}
+.apk-more{color:var(--ink2)}.apk-more b{display:inline-grid;place-items:center;min-width:24px;height:22px;padding:0 6px;border-radius:999px;background:var(--hover);font-size:12.5px;font-weight:600;font-variant-numeric:tabular-nums}
+.apk-none:not(.on){color:var(--ink2)}
+.apk-empty{flex-basis:100%;margin:2px 2px 0;color:var(--mute);font-size:14px;line-height:1.45}
+.apk-note{margin:-2px 2px 0;color:var(--faint);font-size:13px;line-height:1.45}.apk-note b{font-weight:600;color:var(--mute)}
+@media (max-width:767px){.apk-chips{gap:7px}.gu-chip.apk-chip{font-size:14.5px}}
+/* Settings → Connected accounts → Apps I use (v3.ts au*) */
+.au-logos{flex:none;display:flex;align-items:center}.au-logos .au-l{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:13px;box-shadow:0 0 0 2px var(--abub)}
+.au-logos .au-l+.au-l{margin-left:-9px}.au-logos .au-l.cxlogo img{padding:4px}
+.au-ed{padding:16px 18px 18px}.au-ed .sbtns{margin-top:16px}
+.au-lead{margin:0 0 12px;color:var(--mute);font-size:14px;line-height:1.45}

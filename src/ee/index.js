@@ -1,0 +1,84 @@
+// The only deployment switch for code reserved for the 1HC service.
+// Keep route and tool admission here so a public deployment cannot enable a
+// feature merely by supplying one of its provider keys.
+import { deliverText } from "./texting.js";
+import { BeeSync } from "./bee-sync.js";
+import { LiveNotes } from "./live-notes.js";
+import { Ledger } from "./ledger.js";
+export const enabled = (env) => env?.ONEHELM_EE === "1hc";
+
+const FEATURES = Object.freeze(["connected_apps", "ambient", "texting", "smart_routing", "billing"]);
+export async function textConnected(env, tenantId) {
+  if (!enabled(env)) return false;
+  const row = await env.DB.prepare("SELECT status FROM texting WHERE tenant_id=?").bind(tenantId).first().catch(() => null);
+  return row?.status === "connected";
+}
+export const textSend = (env, tenantId, message) => enabled(env) ? deliverText(env, tenantId, message) : Promise.resolve({ ok: false, reason: "disabled" });
+
+const EE_TOOL_NAMES = new Set([
+  "app_actions", "app_run", "app_proxy", "app_events", "apps_i_use", "find_app", "offer_connect",
+  "gmail_search", "gmail_read", "gmail_draft", "gmail_send", "calendar_events", "calendar_add",
+  "search_web_vertical", "note_account", "text_person", "buy_with_link", "check_purchase", "browser_fill_card", "browser_task",
+]);
+export const toolEnabled = (env, name) => enabled(env) || !EE_TOOL_NAMES.has(name);
+
+const GLOBAL = [/^\/applogo\//, /^\/c\//, /^\/composio\//, /^\/hooks\/photon\//, /^\/stripe\/webhook$/];
+const WORKSPACE = [
+  /^\/texting$/, /^\/api\/texting(?:\/|$)/, /^\/api\/google(?:\/|$)/,
+  /^\/api\/apps(?:\/|$)/, /^\/api\/apps-used$/, /^\/apps\/done$/, /^\/google\/done$/,
+  /^\/composio\/connect$/, /^\/api\/connect-offer$/, /^\/api\/meetings\//,
+  /^\/api\/bee(?:\/|$)/, /^\/api\/link(?:\/|$)/, /^\/api\/plan(?:\/|$)/, /^\/api\/portal$/,
+  /^\/api\/fix-payment$/, /^\/api\/topup$/, /^\/api\/storage\/blocks$/, /^\/api\/test\/(?:cancel|pastdue)/,
+  /^\/api\/res\/[^/]+\/sessions\/[^/]+\/livenotes(?:\/|$)/,
+  /^\/api\/res\/[^/]+\/(?:event-log|event-workflow)$/,
+];
+const EE_SKILLS = Object.freeze(["gmail", "google-calendar", "google-drive"]);
+const EE_CRONS = Object.freeze(["meetings", "bee", "cancel", "pastdue", "router_pool", "decision_shadow"]);
+const EMPTY = Object.freeze({ routes: Object.freeze({ global: [], workspace: [] }), tools: [], crons: [], durableObjects: {}, skills: [], features: [] });
+// This is the service registration surface. Public deployments get no EE entries.
+export const registry = (env) => enabled(env) ? {
+  routes: { global: [...GLOBAL], workspace: [...WORKSPACE] },
+  tools: [...EE_TOOL_NAMES], crons: [...EE_CRONS],
+  durableObjects: { BeeSync, LiveNotes, Ledger }, skills: [...EE_SKILLS], features: [...FEATURES],
+} : EMPTY;
+export const features = (env) => registry(env).features;
+export const routeEnabled = (env, path, scope = "global") =>
+  enabled(env) || !(scope === "workspace" ? WORKSPACE : GLOBAL).some((re) => re.test(path));
+
+// Core-facing EE exports. Runtime admission remains gated by enabled().
+export { appDetail } from "./app-detail.js";
+export { appEventView, evOf, eventsInit, eventsMix, eventsNext } from "./app-events.js";
+export { PAUSE_FACTS, appFirstBlock, callKey, repeatBlock, repeatNote } from "./appfirst.js";
+export { appLogoRoute } from "./applogo.js";
+export { APPS_USED_LINE, APPS_USED_TOOL, APP_OPTIONS, NONE, appsUsedApi, appsUsedLine, appsUsedTool, getAppsUsed, optionsView, setAppsUsed, usedSlugs } from "./apps-used.js";
+export { BeeSync };
+export { beeCron, beeJobAlarm, beeJobOn, beeLiveOn, beeLiveStopOn, beeNoteDeleted, beeNoteEdited, beeNoteRestored, beeOps, beePendingFacts, beeRoute } from "./bee.js";
+export { runBrowserTask } from "./browser-agent.js";
+export { BUILTIN_APPS, BUILTIN_TEXT, builtinApps } from "./builtin-apps.js";
+export { cancelApi, cancelCron, cancelSync, cancelWebhook } from "./cancel.js";
+export { APP_FILE_MAX } from "./composio-files.js";
+export { ENDED_PREFIX, appsMode, appsModeRoute, composioDonePage, endedToolText, isEnded, saveOnboardingChoice, selfAvailable, selfSignOut, selfStatus, signInFinish, signInStart } from "./composio-self.js";
+export { ReadBatch, transportFor } from "./composio-transport.js";
+export { APP_EVENTS_TOOL, appEventsTool, composioWebhook, eventsReady } from "./composio-triggers.js";
+export { APP_TOOLS, GOOGLE_TOOLS, GOOGLE_TOOL_NAMES, RETIRED_APPS, RETIRED_NOTE, SUPER_COVERS, appName, disconnectAllManaged, googleDisconnect, googleStatus, listConnections, managedCount, pickAccount, runAppTool, runGoogleTool, setAccountNote, setDefaultAccount, tidyAfterConnect } from "./composio.js";
+export { CONNECT_LINES, CONNECT_TOOLS, appCatalog, catalogFile, composioSigninOffer, connectOfferApi, connectOfferDone, connectOfferInit, connectTool, connectWriteBlock, offerAct, offerCallbackQuery, offerConnected, offerGet, offersView } from "./connect-offer.js";
+export { deciderModel } from "./decider.js";
+export { askSystemone, pruneShadow, shadowData } from "./decision-shadow.js";
+export { hintNudge, integrationHint } from "./integration-hint.js";
+export { clip, leanJSON, readMail } from "./lean.js";
+export { Ledger };
+export { linkApi, linkCreatePurchase, linkDisconnect, linkGetPurchase, linkListPurchases, linkStartConnect, linkStatus } from "./link.js";
+export { lnAudio } from "./live-mic.js";
+export { LiveNotes };
+export { lnName, lnResidentMethods } from "./live-notes.js";
+export { meetingsApi, meetingsCron } from "./meetings.js";
+export { holdFromFailure, holdOf, holdView, notePaid, pastdueApi, pastdueCron, pastdueSeen, pastdueSync } from "./pastdue.js";
+export { US_ONLY } from "./photon.js";
+export { changePlan, nextPlan } from "./plan-change.js";
+export { MAX_ATTEMPTS, fixedEffort, isMuse } from "./pool.js";
+export { INACTIVE_MSG, PAUSED_TEXT, PAY_MSG } from "./readonly.js";
+export { CHORE_MODELS, ESCALATE_STALL, HANDOFF_PREFIX, LUNA, choreAttempts, choreModelOf, choreRoute, choreRouteFor, dispatchOrder, escalationAfter, escalationBefore, markServed, policyRoute, route2On, routeTwoTurn } from "./route2.js";
+export { clefVia, currentPool, decide, saveNightlyPool } from "./router.js";
+export { ledgerGuard } from "./spendguard-ledger.js";
+export { appLink, deliverCard, deliverReaction, deliverText, fetchTextedFile, textTyping, textingDebug, textingLine, textingNewCode, textingOff, textingPoll, textingStart, textingStatus, textingUseProject, textingWebhook } from "./texting.js";
+export { VERTICAL_SEARCH_TOOL, VS_NANO, VS_TOOL_NAME, loopWords, searchNote, verticalSearch } from "./vertical-search.js";

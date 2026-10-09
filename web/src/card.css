@@ -1,0 +1,70 @@
+/* The card page inside Messages (/c/<token>): one helper reply as cards, nothing else. Small viewports (iMessage
+   extension, ~320–430 wide, short when collapsed), so everything is a notch more compact than in the app. */
+@import "./genui-cards.css";
+@import "./interview.css";
+@import "./interview-card.css";
+:root{
+  --page:#fff;--sheet:#fff;--chip:#fff;--hover:#efeee9;--line:#e7e5e0;--line2:#d9d6cf;
+  --ink:#1c1b19;--ink2:#44423d;--mute:#77746c;--faint:#a8a49b;
+  --abub:#f1f0ec;--accent:#2563eb;--warn:#d97706;--live:#16a34a;
+  --shadow:0 1px 2px rgba(28,27,25,.04),0 4px 16px rgba(28,27,25,.06);--lift:0 2px 6px rgba(28,27,25,.06),0 10px 28px rgba(28,27,25,.12);
+  font:15px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased;
+  -webkit-text-size-adjust:100%;color-scheme:light dark
+}
+@media (prefers-color-scheme:dark){:root{
+  --page:#000;--sheet:#1c1c1e;--chip:#262628;--hover:#2a2a2d;--line:#2c2c2e;--line2:#3a3a3d;
+  --ink:#f1f0ee;--ink2:#cfcdc8;--mute:#98958e;--faint:#67655f;
+  --abub:#262628;--accent:#60a5fa;--warn:#f59e0b;--live:#22c55e;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 16px rgba(0,0,0,.25);--lift:0 2px 6px rgba(0,0,0,.4),0 10px 28px rgba(0,0,0,.5)}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--page)}
+body{min-height:100vh;min-height:100dvh;overflow-x:hidden}
+button,input{font:inherit;color:inherit}button{background:none;border:0;padding:0;cursor:pointer;-webkit-tap-highlight-color:transparent}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.cpage{max-width:560px;margin:0 auto;padding:10px 12px calc(14px + env(safe-area-inset-bottom))}
+body.noted .cpage{padding-bottom:calc(64px + env(safe-area-inset-bottom))}
+.chead{display:flex;align-items:center;gap:8px;min-height:28px;margin:0 2px 8px;font-size:13.5px}
+.chead:empty{display:none}.chead b{font-weight:600}.chead span{color:var(--faint);font-size:12px}
+.cav{width:24px;height:24px;object-fit:contain;flex:none}
+.creply .gu-reply{max-width:none}
+.creply .gu-stack{gap:8px;animation:cin .2s ease both}@keyframes cin{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+/* compact card sizes */
+.creply .gu-say{max-width:100%;padding:10px 14px;border-radius:18px;font-size:15px}
+.creply .gu-tip{font-size:13px;padding:0 4px}
+.creply .gu-opts{gap:6px}
+.creply .gu-opt{gap:11px;padding:10px 12px;border-radius:15px}
+.creply .gu-rad{width:18px;height:18px}.creply .gu-opt.on .gu-rad{box-shadow:inset 0 0 0 5.5px var(--ink)}
+.creply .gu-ot{gap:2px 6px}.creply .gu-ot b{font-size:14.5px}.creply .gu-ot>span{font-size:12.5px;line-height:1.35}
+.creply .gu-pr{font-size:16px}
+.creply .gu-btns{gap:6px}
+.creply .gu-b{min-height:40px;padding:0 16px;font-size:14.5px}
+.creply .gu-form{border-radius:16px;padding:2px 14px 12px}
+.creply .gu-row{min-height:48px;font-size:14.5px}
+.creply .gu-step button{width:32px;height:32px;font-size:17px}.creply .gu-step b{min-width:24px;font-size:16px}
+.creply .gu-field{gap:6px;padding:10px 0;font-size:14.5px}
+.creply .gu-field input{height:40px;border-radius:12px;padding:0 12px}
+.creply .gu-chips{gap:6px}.creply .gu-chip{height:34px;padding:0 12px;font-size:13.5px}
+.creply .gu-big{border-radius:16px;padding:12px 14px}.creply .gu-big b{font-size:28px}.creply .gu-big em{font-size:13px}
+.creply .gu-bars{height:118px;gap:6px;padding:10px 10px 8px;border-radius:16px}.creply .gu-bar em{font-size:10.5px}.creply .gu-bar span{font-size:11px}
+.creply .gu-rows{border-radius:16px;padding:2px 14px}.creply .gu-rows div{padding:9px 0;font-size:14px}
+.creply .gu-mail{border-radius:16px}.creply .gu-mh{padding:8px 14px;font-size:13.5px}.creply .gu-mh span{width:52px}.creply .gu-mb{padding:10px 14px 12px;font-size:14.5px}
+.creply .gu-file{gap:12px;padding:10px;border-radius:16px}.creply .gu-thumb{width:64px;border-radius:8px}.creply .gu-thumb .aico{width:36px;height:36px;border-radius:10px}
+.creply .gu-meter{border-radius:16px;padding:12px 14px}.creply .gu-track{height:10px}
+.creply .gu-sys{border-radius:16px;padding:12px 14px;gap:5px}.creply .gu-si{width:28px;height:28px}.creply .gu-si svg{width:15px;height:15px}
+.creply .gu-sh b{font-size:15px}.creply .gu-sl{font-size:14.5px}.creply .gu-sys .gu-btns{gap:6px}
+.creply .gu-sys>.gu-btns,.creply .gu-sys>.gu-pdone,.creply .gu-sys>.gu-pconf,.creply .gu-sys>.gu-pgone{margin-top:6px}
+.creply .gu-pconf{padding:10px 12px;border-radius:14px;font-size:14.5px}.creply .gu-pconf p{margin-bottom:8px}
+.creply .pl-list{gap:5px}.creply .pl-item{padding:9px 12px;gap:10px;border-radius:14px;min-height:46px}.creply .pl-box{width:20px;height:20px;border-radius:6px}
+.creply .pl-t b{font-size:14.5px}.creply .pl-l{font-size:12.5px}.creply .pl-h{font-size:11.5px}.creply .gu-plan .gu-b{padding-left:10px;padding-right:10px}
+@media (max-width:340px){.cpage{padding-left:10px;padding-right:10px}.creply .gu-opt{padding:9px 10px;gap:9px}.creply .gu-pr{font-size:15px}.creply .gu-b{padding:0 14px}}
+/* loading / gone / sent */
+.cload{display:inline-flex;gap:4px;padding:13px 16px;border-radius:18px;background:var(--abub)}
+.cload i{width:7px;height:7px;border-radius:50%;background:var(--faint);animation:cb 1s infinite}.cload i:nth-child(2){animation-delay:.15s}.cload i:nth-child(3){animation-delay:.3s}
+@keyframes cb{0%,60%,100%{opacity:.3}30%{opacity:1}}
+.cgone{display:flex;flex-direction:column;gap:4px;padding:14px 16px;border-radius:18px;background:var(--abub)}.cgone span{color:var(--mute);font-size:14px}
+.cnote{position:fixed;left:12px;right:12px;bottom:calc(10px + env(safe-area-inset-bottom));max-width:536px;margin:0 auto;display:flex;align-items:center;justify-content:center;gap:8px;
+  min-height:44px;padding:10px 16px;border-radius:999px;background:var(--sheet);box-shadow:0 0 0 1px var(--line2),var(--lift);font-size:14px;text-align:center;
+  opacity:0;transform:translateY(8px);pointer-events:none;transition:opacity .2s,transform .2s}
+.cnote.on{opacity:1;transform:none}.cnote b{color:var(--live);font-weight:650}.cnote.error{color:var(--warn)}
+.cspin{width:14px;height:14px;border-radius:50%;border:2px solid var(--line2);border-top-color:var(--ink2);animation:cs .8s linear infinite}@keyframes cs{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.creply .gu-stack,.cspin{animation:none}}

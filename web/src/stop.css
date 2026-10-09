@@ -1,0 +1,55 @@
+/* Stop (stop.ts): header button, composer stop, list-row stop, Activity card stop, "N tasks working · Stop all" pill, "Stopped by you". */
+.hstop{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 12px 0 10px;border-radius:999px;background:var(--sheet);color:var(--ink);font-size:13px;font-weight:600;box-shadow:inset 0 0 0 1px var(--line2);white-space:nowrap;transition:background .15s}
+.hstop:hover{background:var(--hover)}
+.hstop:disabled{color:var(--mute);cursor:default}
+.hstop:focus-visible,.gostop:focus-visible,.tk-rowstop:focus-visible,.rstop:focus-visible,#stopall button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* Composer: while the open task works and the box is empty, send becomes ■ (like ChatGPT / Claude). */
+.gostop{display:none;width:40px;height:40px;border-radius:50%;place-items:center;background:var(--ink);color:var(--sheet);flex:none;transition:opacity .15s}
+.composer.working:not(.has) .gostop{display:grid}
+.gostop.busy{opacity:.45}
+.gostop svg{width:14px;height:14px}
+
+/* List rows (side list, Home, phone drawer): a small ■ on hover; faint but always there on touch. */
+.rstop{flex:none;width:24px;height:24px;margin:0 2px 0 0;border-radius:7px;display:grid;place-items:center;color:var(--ink2);background:var(--abub);opacity:0;cursor:pointer;transition:opacity .12s,background .12s}
+.rstop svg{width:10px;height:10px}
+.rstop:hover{background:var(--line2);color:var(--ink)}
+.sess:hover .rstop,.task:hover .rstop,.ds:hover .rstop,.rstop:focus-visible{opacity:1}
+@media (hover:none){.rstop{opacity:.8}}
+@media (max-width:767px){.ds .rstop,.task .rstop{width:32px;height:32px}}
+
+/* Phone header */
+.mh .mstop svg{width:13px;height:13px}
+
+/* Activity feed: the working card's Stop sits beside its row. */
+.tk-rw{position:relative}
+.tk-rw .tk-row{padding-right:104px}.tk-rw .tk-row time{display:none}
+.tk-rowstop{position:absolute;right:8px;top:50%;transform:translateY(-50%);display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 11px 0 9px;border-radius:999px;background:var(--sheet);color:var(--ink);font-size:12.5px;font-weight:600;box-shadow:inset 0 0 0 1px var(--line2)}
+.tk-rowstop:hover{background:var(--hover)}
+.tk-rowstop:disabled{color:var(--mute)}
+.tk-rowstop svg{width:10px;height:10px}
+
+/* 2+ tasks working anywhere */
+#stopall{position:fixed;z-index:60;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 104px);display:flex;align-items:center;gap:8px;height:36px;padding:0 6px 0 14px;border-radius:999px;background:var(--ink);color:var(--sheet);font-size:13.5px;box-shadow:var(--lift);white-space:nowrap;animation:sa-in .2s ease-out}
+#stopall .sa-dot{width:7px;height:7px;border-radius:50%;background:var(--live);box-shadow:0 0 0 3px color-mix(in srgb,var(--live) 30%,transparent)}
+#stopall .sa-sep{opacity:.5}
+#stopall button{height:26px;padding:0 12px;border-radius:999px;background:color-mix(in srgb,var(--sheet) 16%,transparent);color:var(--sheet);font-weight:600;font-size:13px}
+#stopall button:hover{background:color-mix(in srgb,var(--sheet) 26%,transparent)}
+#stopall button:disabled{opacity:.6}
+@keyframes sa-in{from{opacity:0;transform:translate(-50%,6px)}}
+@media (prefers-reduced-motion:reduce){#stopall{animation:none}}
+@media (max-width:767px){#stopall{bottom:calc(env(safe-area-inset-bottom,0px) + 92px);font-size:14px;height:38px}}
+
+/* The chat: a task the person stopped */
+.stopped-note{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;border-radius:999px;background:var(--abub);color:var(--mute);font-size:13px;font-weight:500}
+.stopped-note svg{width:10px;height:10px}
+
+/* Plan card: "Stop these tasks" beside the outcome */
+.gu-pdone .gu-b.pl-stop{cursor:pointer}.gu-pdone .gu-b.pl-stop:disabled{cursor:default}
+
+/* A card that hit its budget: "Paused: it hit its budget. Continue?" */
+.paused-note{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;margin-top:6px;padding:8px 8px 8px 14px;border-radius:16px;background:var(--abub);color:var(--ink2);font-size:13.5px;max-width:max-content}
+.paused-note button{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 13px 0 11px;border-radius:999px;background:var(--ink);color:var(--sheet);font-size:13px;font-weight:600}
+.paused-note button:hover{opacity:.9}
+.paused-note button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.paused-note svg{width:11px;height:11px}

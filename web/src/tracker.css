@@ -1,0 +1,245 @@
+/* ---------- Tracker cards: the Activity feed inside a task (panel ≥1200 px, drawer 768–1199 px, sheet on a phone) and the card modal ---------- */
+:root{--tk-blue:#2f6fde;--tk-green:#1f8a4f;--tk-red:#c4443b;--tk-amber:#a8650a;--tk-grey:var(--mute);
+  --tk-blue-s:color-mix(in srgb,#2f6fde 11%,var(--sheet));--tk-green-s:color-mix(in srgb,#1f8a4f 12%,var(--sheet));--tk-red-s:color-mix(in srgb,#c4443b 11%,var(--sheet));--tk-amber-s:color-mix(in srgb,#e3a008 16%,var(--sheet))}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--tk-blue:#7aa7ff;--tk-green:#4cc483;--tk-red:#f2786e;--tk-amber:#f5bd3c;
+  --tk-blue-s:color-mix(in srgb,#7aa7ff 15%,var(--sheet));--tk-green-s:color-mix(in srgb,#4cc483 14%,var(--sheet));--tk-red-s:color-mix(in srgb,#f2786e 14%,var(--sheet));--tk-amber-s:color-mix(in srgb,#f5bd3c 14%,var(--sheet))}}
+:root[data-theme=dark]{--tk-blue:#7aa7ff;--tk-green:#4cc483;--tk-red:#f2786e;--tk-amber:#f5bd3c;
+  --tk-blue-s:color-mix(in srgb,#7aa7ff 15%,var(--sheet));--tk-green-s:color-mix(in srgb,#4cc483 14%,var(--sheet));--tk-red-s:color-mix(in srgb,#f2786e 14%,var(--sheet));--tk-amber-s:color-mix(in srgb,#f5bd3c 14%,var(--sheet))}
+.tk-spin{animation:tkspin .9s linear infinite;flex:none}
+@keyframes tkspin{to{transform:rotate(360deg)}}
+@keyframes tkpulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--tk-blue) 50%,transparent)}50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--tk-blue) 0%,transparent)}}
+
+/* header button: a quiet pill like the to-do button, a blue dot while a card is working */
+.tk-slot{display:contents}
+.tk-btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px 0 10px;border-radius:999px;background:var(--abub);color:var(--ink2);font-size:13px;flex:none;position:relative;transition:background .15s,color .15s,box-shadow .2s}
+.tk-btn.fresh{animation:tkin .3s cubic-bezier(.2,.8,.2,1)}
+.tk-btn:hover,.tk-btn.on{background:var(--hover);color:var(--ink)}
+.tk-btn.on{box-shadow:0 0 0 1.5px var(--line2)}
+.tk-btn span{font-weight:600}
+.tk-dot{width:7px;height:7px;border-radius:50%;background:var(--tk-blue);flex:none;animation:tkpulse 1.8s ease-in-out infinite}
+@keyframes tkin{from{opacity:0;transform:scale(.9)}}
+.tk-btn.m{padding:0;gap:0;width:48px;height:48px;border-radius:50%;display:grid;place-items:center;color:var(--ink)}
+.tk-btn.m .tk-dot{position:absolute;top:9px;right:9px;box-shadow:0 0 0 2px var(--abub)}
+.tk-btn.m.on{box-shadow:none;background:var(--hover)}
+@media (max-width:767px){.mh:has(.tk-btn){gap:5px}.mh:has(.tk-btn) .mpill{padding-right:14px}}
+/* On a phone-width header the title keeps its room: actions that don't fit (New task first) move into the ⋯ sheet (v3.ts mhFit). */
+@media (max-width:1279px) and (min-width:768px){#stage>header:has(.tk-btn):has(.tdbtn) .tk-btn span{display:none}#stage>header:has(.tk-btn):has(.tdbtn) .tk-btn{padding:0 9px}}
+
+/* the session view: chat column + the feed beside it (or over it) */
+.tk-w{flex:1;min-height:0;display:flex;position:relative}
+.tk-col{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column}
+.tk-feed,.tk-scrim{display:none}
+.tk-on .tk-feed{display:flex;flex-direction:column;min-height:0;position:absolute;top:0;right:0;bottom:0;z-index:6;width:min(340px,calc(100% - 48px));background:var(--sheet);border-left:1px solid var(--line);
+  box-shadow:-18px 0 44px rgba(28,27,25,.10);transform:translateX(104%);visibility:hidden;transition:transform .28s cubic-bezier(.2,.8,.2,1),visibility 0s .28s}
+.tk-on.tk-open .tk-feed{transform:none;visibility:visible;transition:transform .28s cubic-bezier(.2,.8,.2,1)}
+.tk-on .tk-scrim{display:block;position:absolute;inset:0;z-index:5;background:rgba(20,19,17,.10);opacity:0;pointer-events:none;transition:opacity .2s}
+.tk-on.tk-open .tk-scrim{opacity:1;pointer-events:auto}
+:root[data-theme=dark] .tk-on .tk-feed{box-shadow:-18px 0 44px rgba(0,0,0,.45)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .tk-on .tk-feed{box-shadow:-18px 0 44px rgba(0,0,0,.45)}}
+@media (min-width:1200px){
+  body:not(.pc-on) .tk-on .tk-feed{position:static;display:none;flex:none;width:320px;transform:none;visibility:visible;box-shadow:none;transition:none;margin-bottom:12px}
+  body:not(.pc-on) .tk-on.tk-open .tk-feed{display:flex}
+  body:not(.pc-on) .tk-on .tk-scrim{display:none}
+}
+.tk-fhead{display:flex;align-items:center;gap:8px;padding:12px 10px 6px 18px;flex:none}
+.tk-fhead h2{flex:1;margin:0;font:400 22px/1.15 var(--serif);letter-spacing:-.005em;color:var(--ink)}
+.tk-x{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;color:var(--mute);flex:none}.tk-x:hover{background:var(--abub);color:var(--ink)}
+@media (min-width:1200px){body:not(.pc-on) .tk-feed .tk-fhead .tk-x{opacity:.7}}
+.tk-flist{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 8px 16px}
+.tk-day{font-size:12px;font-weight:600;color:var(--mute);padding:12px 10px 4px}
+.tk-day:first-child{padding-top:4px}
+.tk-row{display:flex;align-items:flex-start;gap:10px;width:100%;padding:9px 10px;border-radius:14px;text-align:left;transition:background .15s}
+.tk-row:hover{background:var(--abub)}
+.tk-row:focus-visible{outline:0;box-shadow:inset 0 0 0 2px var(--ink2)}
+.tk-si{flex:none;width:18px;height:20px;display:grid;place-items:center;color:var(--mute)}
+.s-working>.tk-si,.s-working>svg{color:var(--tk-blue)}.s-complete>.tk-si{color:var(--tk-green)}.s-failed>.tk-si{color:var(--tk-red)}.s-interrupted>.tk-si{color:var(--tk-amber)}
+.tk-rt{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.tk-rt b{font-size:14px;font-weight:600;color:var(--ink);line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.tk-rt span{font-size:13px;color:var(--mute);line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.tk-row time{flex:none;font-size:12px;color:var(--faint);padding-top:2px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tk-row.legacy .tk-rt b{font-weight:400}
+.tk-empty{margin:8px 10px;font-size:13.5px;line-height:1.5;color:var(--mute)}
+.tk-more{display:block;margin:10px auto 0;height:32px;padding:0 14px;border-radius:999px;font-size:13px;color:var(--ink2);background:var(--abub)}.tk-more:hover{background:var(--hover)}
+
+/* helper strip: what's still running in the background, with Stop */
+.tk-hstrip{flex:none;margin:2px 10px 8px;padding:4px;border-radius:16px;background:var(--tk-blue-s);display:flex;flex-direction:column;gap:2px}
+.tk-hrow{display:flex;align-items:center;gap:9px;padding:5px 5px 5px 9px}
+.tk-hico{flex:none;width:18px;display:grid;place-items:center;color:var(--tk-blue)}
+.tk-hname{flex:1;min-width:0;display:flex;flex-direction:column;text-align:left;line-height:1.3}
+.tk-hname b{font-size:13.5px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tk-hname span{font-size:12px;color:var(--mute)}
+.tk-hname:hover b{text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:3px}
+.tk-stop{flex:none;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px 0 10px;border-radius:999px;background:var(--sheet);color:var(--ink);font-size:13px;font-weight:600;box-shadow:inset 0 0 0 1px var(--line2);transition:background .15s}
+.tk-stop:hover{background:var(--hover)}.tk-stop[disabled]{opacity:.6;cursor:default}
+
+/* in the chat: the finished turn's chip, the live steps' card link, steer bubbles */
+.tk-chip{display:inline-flex;align-items:center;gap:7px;max-width:86%;min-height:30px;padding:4px 12px 4px 10px;margin:0 0 8px;border-radius:999px;border:1px solid var(--line);font-size:13px;color:var(--mute);text-align:left;transition:background .15s}
+.tk-chip b{font-weight:600;color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.tk-chip span{flex:none}
+.tk-chip>svg{flex:none;color:var(--tk-green)}.tk-chip.s-failed>svg{color:var(--tk-red)}.tk-chip.s-interrupted>svg{color:var(--tk-amber)}.tk-chip.s-stopped>svg{color:var(--mute)}
+.tk-chip:hover{background:var(--abub)}
+.tk-live{display:flex;flex-wrap:wrap;align-items:center;gap:0 10px;max-width:86%;margin:0 0 8px}
+.tk-live .steps{margin:0}.tk-live .steps[open]{order:0}
+.tk-link{height:34px;padding:0 4px;font-size:13px;font-weight:600;color:var(--ink2);text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:3px}.tk-link:hover{color:var(--ink)}
+.tk-sl{display:flex;align-items:center;gap:9px;margin-top:6px;padding:0 4px;font-size:13px;line-height:1.4;color:var(--ink2)}
+.tk-sl:first-of-type{margin-top:10px}
+.tk-sl i{flex:none;width:6px;height:6px;border-radius:50%;background:var(--tk-green)}
+.tk-sl.s-running i{background:var(--tk-blue);animation:tkpulse 1.8s ease-in-out infinite}.tk-sl.s-error i{background:var(--tk-red)}.tk-sl.s-skipped i{background:var(--faint)}.tk-sl.s-skipped{color:var(--mute)}
+.m.user.tk-sending .bubble{opacity:.62}
+.tk-note{font-size:12px;color:var(--mute);margin:4px 4px 0;display:inline-flex;align-items:center;gap:5px}
+.tk-note.joined{animation:tkjoin 2.2s ease forwards}
+@keyframes tkjoin{0%{opacity:0;transform:translateY(-2px)}12%{opacity:1;transform:none}75%{opacity:1}100%{opacity:0}}
+.tk-retry{font-size:12.5px;font-weight:600;color:var(--tk-red);margin:5px 4px 0;padding:2px 0;text-align:right}
+.tk-retry u{text-decoration-color:color-mix(in srgb,var(--tk-red) 40%,transparent);text-underline-offset:3px}
+.m.agent.tk-flash>.bubble,.m.agent.tk-flash>.acard{animation:tkflash 1.6s ease}
+@keyframes tkflash{0%,40%{box-shadow:0 0 0 3px color-mix(in srgb,var(--ink) 18%,transparent)}100%{box-shadow:0 0 0 3px transparent}}
+
+/* the card modal */
+#tkm{position:fixed;inset:0;z-index:75;pointer-events:none}
+#tkm:empty{display:none}#tkm.on{pointer-events:auto}
+.tk-mback{position:absolute;inset:0;background:rgba(20,19,17,.34);opacity:0;transition:opacity .2s}
+#tkm.on .tk-mback{opacity:1}
+.tk-modal{position:absolute;left:50%;top:50%;width:min(920px,calc(100vw - 48px));height:min(720px,90vh);display:flex;flex-direction:column;background:var(--sheet);border-radius:24px;overflow:hidden;
+  box-shadow:0 24px 70px rgba(28,27,25,.22),var(--lift);opacity:0;transform:translate(-50%,-48%) scale(.985);transition:opacity .18s,transform .22s cubic-bezier(.2,.8,.2,1)}
+#tkm.on .tk-modal{opacity:1;transform:translate(-50%,-50%)}
+:root[data-theme=dark] .tk-modal{box-shadow:0 30px 90px rgba(0,0,0,.6);border:1px solid var(--line)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .tk-modal{box-shadow:0 30px 90px rgba(0,0,0,.6);border:1px solid var(--line)}}
+.tk-mhead{flex:none;display:flex;align-items:center;gap:10px;padding:16px 14px 14px 20px;border-bottom:1px solid var(--line)}
+.tk-mhead h2{flex:1;min-width:0;margin:0;font:400 25px/1.15 var(--serif);letter-spacing:-.01em;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tk-bk{margin-right:-4px}
+.tk-badge{flex:none;display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px 0 9px;border-radius:999px;font-size:12px;font-weight:600;background:var(--abub);color:var(--mute)}
+.tk-badge i{width:7px;height:7px;border-radius:50%;background:currentColor}
+.b-working{background:var(--tk-blue-s);color:var(--tk-blue)}.b-working i{animation:tkpulse 1.8s ease-in-out infinite}
+.b-complete{background:var(--tk-green-s);color:var(--tk-green)}
+.b-failed{background:var(--tk-red-s);color:var(--tk-red)}
+.b-interrupted{background:var(--tk-amber-s);color:var(--tk-amber)}
+.tk-tag{flex:none;height:22px;line-height:20px;padding:0 8px;border-radius:7px;border:1px solid var(--line2);font-size:11.5px;font-weight:600;color:var(--ink2)}
+.tk-mbody{flex:1;min-height:0;display:grid;grid-template-columns:300px minmax(0,1fr)}
+.tk-mbody.one{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+.tk-mbody.one>.tk-rail,.tk-mbody.one>.tk-pane:only-child{grid-row:1/-1}
+.tk-rail{min-height:0;overflow-y:auto;overscroll-behavior:contain;border-right:1px solid var(--line);padding:10px 8px 16px;background:color-mix(in srgb,var(--abub) 50%,var(--sheet))}
+.tk-pane{min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:22px 28px 30px}
+.tk-rr{display:flex;align-items:flex-start;gap:10px;width:100%;padding:8px 10px;border-radius:12px;text-align:left;position:relative;color:var(--ink)}
+button.tk-rr:hover{background:var(--hover)}
+.tk-rr.on{background:var(--sheet);box-shadow:var(--shadow)}
+button.tk-rr:focus-visible{outline:0;box-shadow:inset 0 0 0 2px var(--ink2)}
+.tk-ri{flex:none;width:24px;height:24px;border-radius:50%;display:grid;place-items:center;background:var(--sheet);border:1px solid var(--line2);color:var(--ink2);position:relative;z-index:1}
+.t-msg .tk-ri{background:var(--ubub);color:var(--uink);border-color:transparent}
+.t-hand .tk-ri{background:var(--tk-blue-s);color:var(--tk-blue);border-color:transparent}
+.t-sum .tk-ri{border-color:transparent;background:var(--abub)}
+.tk-rtx{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;padding-top:2px}
+.tk-rtx b{font-size:13.5px;font-weight:600;line-height:1.35;overflow-wrap:anywhere}
+.t-msg .tk-rtx b{font-weight:400}
+.tk-2l{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.tk-rtx small{font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums}
+.tk-rch{flex:none;color:var(--faint);padding-top:4px}
+.tk-sd{flex:none;width:7px;height:7px;border-radius:50%;margin-top:9px;background:var(--tk-green)}
+.s-running .tk-sd{background:var(--tk-blue);animation:tkpulse 1.8s ease-in-out infinite}.s-error .tk-sd{background:var(--tk-red)}.s-skipped .tk-sd{background:var(--line2)}
+.s-skipped .tk-rtx b{color:var(--mute);font-weight:400}
+.tk-tl{position:relative;margin-top:4px}
+.tk-tl::before{content:"";position:absolute;left:21.5px;top:16px;bottom:16px;width:1px;background:var(--line2)}
+.tk-edge{align-items:center;font-size:12.5px;color:var(--mute);padding:7px 10px}
+.tk-edge>svg{flex:none;width:24px;height:15px;position:relative;z-index:1;background:color-mix(in srgb,var(--abub) 50%,var(--sheet))}
+.tk-edge.s-complete>svg{color:var(--tk-green)}.tk-edge.s-failed>svg{color:var(--tk-red)}.tk-edge.s-interrupted>svg{color:var(--tk-amber)}.tk-edge.live{color:var(--tk-blue)}
+.tk-hchip{display:inline-flex;align-items:center;gap:5px;align-self:flex-start;margin-top:5px;height:22px;padding:0 9px 0 7px;border-radius:999px;font-size:11.5px;font-weight:600;background:var(--tk-blue-s);color:var(--tk-blue);cursor:pointer}
+.tk-hchip.h-done{background:var(--tk-green-s);color:var(--tk-green)}.tk-hchip.h-failed,.tk-hchip.h-interrupted{background:var(--tk-red-s);color:var(--tk-red)}.tk-hchip.h-stopped{background:var(--abub);color:var(--mute)}
+.tk-hchip:hover{filter:brightness(.97)}
+.tk-hchip.big{height:30px;font-size:13px;padding:0 12px 0 10px;margin:0 0 6px}
+
+/* the right pane */
+.tk-res{font:400 27px/1.2 var(--serif);letter-spacing:-.01em;margin:0 0 6px;color:var(--ink)}
+.tk-meta{font-size:13px;color:var(--mute);margin:0 0 16px;font-variant-numeric:tabular-nums}
+.tk-stext p{margin:0 0 10px;font-size:15px;line-height:1.6;color:var(--ink2)}
+.tk-mute{color:var(--mute)}
+.tk-stext p.tk-mute{color:var(--mute);display:flex;align-items:center;gap:8px}
+.tk-pane>p.tk-mute{display:flex;align-items:center;gap:8px}
+.tk-reply{margin-top:20px;padding:14px 16px 10px;border-radius:16px;background:var(--abub)}
+.tk-reply h3{margin:0 0 4px;font-size:12.5px;font-weight:600;color:var(--mute)}
+.tk-reply p{margin:0 0 4px;font-size:14px;line-height:1.5;color:var(--ink2);overflow-wrap:anywhere}
+.tk-lnk{font-size:13.5px;font-weight:600;color:var(--ink);text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:3px;padding:6px 0;flex:none}
+.tk-hcard{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:14px;border:1px solid var(--line);margin-top:12px}
+.tk-hcard>div{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.35}
+.tk-hcard b{font-size:14px;font-weight:600;color:var(--ink);overflow-wrap:anywhere}.tk-hcard span{font-size:12.5px;color:var(--mute)}
+.tk-hcard .tk-hico{color:var(--tk-blue)}
+.tk-pt{font-size:18px;font-weight:600;margin:0 0 14px;color:var(--ink);line-height:1.3;overflow-wrap:anywhere}
+.tk-why{padding:12px 14px;border-radius:14px;background:var(--abub)}
+.tk-why b{display:block;font-size:12.5px;font-weight:600;color:var(--mute);margin-bottom:2px}
+.tk-why p{margin:0;font-size:14.5px;line-height:1.5;color:var(--ink)}
+.tk-why p.tk-mute{color:var(--mute)}
+.tk-sec{margin-top:20px}
+.tk-sh{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;min-height:28px}
+.tk-sh b{font-size:13px;font-weight:600;color:var(--ink2);margin-right:2px}
+.tk-sh .tk-cp{margin-left:auto}
+.tk-code,.tk-out{margin:0;font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--page);border:1px solid var(--line);border-radius:12px;padding:12px 14px;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink)}
+.tk-code{max-height:30vh;overflow:auto}
+.tk-out{max-height:50vh;overflow:auto}
+.tk-obar{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.tk-obar>span{margin-right:auto;font-size:12.5px;color:var(--mute)}
+.tk-cp{flex:none;display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 11px 0 9px;border-radius:999px;font-size:12.5px;font-weight:600;color:var(--ink2);background:var(--abub);text-decoration:none;transition:background .15s}
+.tk-cp:hover{background:var(--hover);color:var(--ink)}.tk-cp.done{color:var(--tk-green)}
+.tk-exit{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:7px;font:600 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace}
+.tk-exit.ok{background:var(--tk-green-s);color:var(--tk-green)}.tk-exit.bad{background:var(--tk-red-s);color:var(--tk-red)}.tk-exit.run{background:var(--tk-blue-s);color:var(--tk-blue);font-family:var(--sans)}.tk-exit.skip{background:var(--abub);color:var(--mute);font-family:var(--sans)}
+.tk-exit .tk-spin{width:12px;height:12px}
+.tk-ms,.tk-at{font-size:12.5px;color:var(--mute);font-variant-numeric:tabular-nums}
+.tk-trunc{font-size:12px;color:var(--mute);margin:6px 2px 0}
+.tk-msgp .tk-pt{margin-bottom:2px}
+.tk-full{white-space:pre-wrap;overflow-wrap:anywhere;font-size:15px;line-height:1.5;padding:12px 18px;border-radius:20px;background:var(--ubub);color:var(--uink);display:inline-block;max-width:100%;margin-bottom:10px}
+.tk-files{list-style:none;margin:4px 0 0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:13.5px;color:var(--ink2)}.tk-files li{display:flex;align-items:center;gap:6px}
+.tk-pback{display:none}
+
+/* phone: the feed is a bottom sheet; the card is a full-screen sheet with a list that pushes a detail view */
+#tkfs{position:fixed;inset:0;z-index:70;pointer-events:none}
+#tkfs:empty{display:none}#tkfs.on{pointer-events:auto}
+.tk-sback{position:absolute;inset:0;background:rgba(0,0,0,.4);opacity:0;transition:opacity .3s}
+#tkfs.on .tk-sback{opacity:1}
+.tk-sheet{position:absolute;left:0;right:0;bottom:0;height:85vh;height:85dvh;overflow-y:auto;overscroll-behavior:contain;background:var(--sheet);border-radius:32px 32px 0 0;padding:10px 6px calc(16px + env(safe-area-inset-bottom));transform:translateY(100%);transition:transform .34s cubic-bezier(.2,.8,.2,1)}
+#tkfs.on .tk-sheet{transform:none}
+.tk-sheet .tk-fhead{position:sticky;top:-10px;z-index:1;background:var(--sheet);padding:2px 8px 8px 16px}
+.tk-sheet .tk-fhead h2{font-size:26px}
+.tk-sheet .tk-flist{overflow:visible;padding:0 4px 8px}
+.tk-sheet .tk-row{padding:11px 10px}.tk-sheet .tk-rt b{font-size:15.5px}.tk-sheet .tk-rt span{font-size:14px}
+.tk-sheet .tk-hstrip{margin:2px 8px 8px}
+@media (max-width:767px){
+  .tk-modal{left:0;top:0;width:100%;height:100%;border-radius:0;border:0!important;opacity:1;transform:translateY(100%);transition:transform .32s cubic-bezier(.2,.8,.2,1)}
+  #tkm.on .tk-modal{transform:none}
+  .tk-mhead{flex-wrap:wrap;row-gap:8px;padding:calc(10px + env(safe-area-inset-top)) 10px 14px 16px}
+  .tk-mhead .tk-x:last-child{margin-left:auto;width:40px;height:40px;background:var(--abub);color:var(--ink)}
+  .tk-mhead .tk-bk{width:40px;height:40px}
+  .tk-mhead h2{order:3;flex-basis:100%;white-space:normal;font-size:28px;line-height:1.1}
+  .tk-rail{border:0;background:none;padding:8px 8px calc(20px + env(safe-area-inset-bottom))}
+  .tk-rr{padding:11px 10px}.tk-rtx b{font-size:15px}.tk-rtx small{font-size:13px}
+  .tk-rr.on{background:none;box-shadow:none}
+  .tk-edge>svg{background:var(--sheet)}
+  .tk-pback{display:flex;align-items:center;gap:6px;width:100%;padding:10px 12px;font-size:14.5px;color:var(--ink2);border-bottom:1px solid var(--line);text-align:left}
+  .tk-pback span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tk-pane{padding:18px 18px calc(28px + env(safe-area-inset-bottom))}
+  .tk-res{font-size:26px}
+  .tk-out{max-height:none}
+}
+@media (prefers-reduced-motion:reduce){.tk-btn.fresh,.tk-spin,.tk-dot,.b-working i,.s-running .tk-sd,.tk-sl.s-running i{animation:none}.tk-on .tk-feed,.tk-modal,.tk-sheet{transition:none}.tk-note.joined{animation-duration:.01s;animation-delay:2s}}
+/* Step results (proto step-present.js): a readable line, links, items, files; the last lines of a command and Details fold away */
+.tk-res{display:flex;flex-direction:column;gap:10px}
+.tk-rtext{margin:0;font-size:15px;line-height:1.5;color:var(--ink);overflow-wrap:anywhere}
+.tk-rerr{margin:0;display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border-radius:12px;background:var(--tk-red-s);color:var(--tk-red);font-size:14.5px;line-height:1.45;overflow-wrap:anywhere}
+.tk-rerr svg{flex:none;margin-top:2px}
+.tk-links,.tk-items{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.tk-links li+li,.tk-items li+li{border-top:1px solid var(--line)}
+.tk-links a{display:flex;flex-direction:column;gap:1px;padding:9px 12px;text-decoration:none;color:var(--ink);min-width:0}
+.tk-links a:hover{background:var(--hover)}
+.tk-lt{font-size:14px;font-weight:600;line-height:1.35;overflow-wrap:anywhere}
+.tk-lh{font-size:12.5px;color:var(--mute);overflow-wrap:anywhere}
+.tk-items li{padding:8px 12px;font-size:14px;line-height:1.4;color:var(--ink);overflow-wrap:anywhere}
+.tk-files2{display:flex;flex-wrap:wrap;gap:8px}
+.tk-files2 .fcard{max-width:100%}
+.tk-fchip{display:inline-flex;align-items:center;gap:9px;max-width:100%;padding:8px 12px 8px 10px;border:1px solid var(--line);border-radius:12px;background:var(--sheet);color:var(--ink2)}
+.tk-fchip>span{display:flex;flex-direction:column;min-width:0}
+.tk-fchip b{font-size:13.5px;font-weight:600;color:var(--ink);overflow-wrap:anywhere}
+.tk-fchip small{font-size:12px;color:var(--mute)}
+.tk-fold>summary{display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:0 11px 0 8px;border-radius:999px;background:var(--abub);font-size:12.5px;font-weight:600;color:var(--ink2);cursor:pointer;list-style:none;user-select:none;white-space:nowrap}
+.tk-fold>summary::-webkit-details-marker{display:none}
+.tk-fold>summary:hover{background:var(--hover);color:var(--ink)}
+.tk-fold>summary svg{transition:transform .15s}
+.tk-fold[open]>summary svg{transform:rotate(90deg)}
+.tk-fold[open]>summary{margin-bottom:8px}
+.tk-fold .tk-mute{display:flex;align-items:center;gap:8px;margin:0;font-size:13.5px}
+.tk-tail{max-height:30vh}

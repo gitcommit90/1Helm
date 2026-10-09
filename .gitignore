@@ -1,51 +1,11 @@
 node_modules/
-data/
-data-*/
-public/bundle.js
-public/bundle.css
-public/app.css
-desktop/photon-sidecar.bundle.mjs
-public/excalidraw/
-public/assets/
-public/*.br
-public/*.gz
-public/brand/**/*.br
-public/brand/**/*.gz
-public/xterm.css
-*.log
-.DS_Store
+apps/node_modules/
+web/node_modules/
+.wrangler/
+.dev.vars*
 .env
 .env.*
 !.env.example
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
+wrangler.jsonc
+backups/
 dist/
-
-# Sealed OCI channel image (Linux/Windows). Built by scripts/build-oci-channel-image.sh;
-# never commit the multi‑hundred‑MB archive into git.
-container/channel-machine.oci.tar
-container/channel-machine.oci.sha256
-container/channel-machine.oci.json
-
-# local runtime state & session artifacts
-data-refactored/
-.deploy-backups/
-.claude/
-.design/
-
-# generated local delivery/test state
-# Host tooling may ignore agent instruction files globally; these are tracked.
-!/AGENTS.md
-!/CLAUDE.md
-/.release-tmp/
-/.native-test-data/
-/.preview-data/
-/.test-state/
-/.delivery-status.local
-__pycache__/
-*.py[cod]
-
-# Local graphify analysis output
-graphify-out/
-/src/server/agent.ts.bak-normal-terminal-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]

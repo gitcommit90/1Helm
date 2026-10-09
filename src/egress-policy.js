@@ -1,0 +1,98 @@
+// Sentinel's automatic rules (Captain 10-09: "Sentinel ON"): which requests from a channel computer go out without the person's tap.
+// Everything else that sends data asks (Resident.egressDecision: Always Approve → grants → the approval card, in the app or by text).
+//
+// Measured on dev 10-09 (Sentinel on, one channel, no model): pip, apt, curl GET and the image skill only read; `npm install` POSTs its
+// audit to registry.npmjs.org, `git clone` POSTs git-upload-pack to github.com, and four ordinary page loads in the browser
+// (bbc.com, google.com/travel/flights, kayak.com) made ~70 POSTs to 17 hosts (the sites' own search/XHR calls, ad and analytics
+// beacons). Without these rules every one of them would have been a card or a 2-minute hold.
+//
+//   allow  · reads: GET / HEAD / OPTIONS (as before)
+//          · 1Helm's own storage endpoint (R2): presigned URLs only work for what 1Helm signed
+//          · git fetch/clone over https (POST …/git-upload-pack) and Git LFS downloads (POST …/info/lfs/objects/batch, operation "download")
+//          · npm / yarn audit (POST /-/npm/v1/security/… on the npm registry): the package list, read-only
+//          · a web page's own background traffic in the browser (fetch/XHR, beacons, pings): Chrome's fetch metadata says it isn't a
+//            navigation the page's user started
+//   ask    · a form the browser submits after a click or Enter (a navigation POST with user activation)
+//          · every other POST / PUT / PATCH / DELETE (curl, scripts, git push, APIs)
+//          · ANY request carrying a saved key (a stand-in was swapped in): a real key never goes out on an automatic rule
+//   deny   · 1Helm itself (the computer may never click its own approvals)
+//          · dev-tool telemetry (Next.js, Astro, Gatsby), Chrome's own background services (GCM, updates, Safe Browsing) and the
+//            browser's own reports (Reporting API / NEL, CSP, Expect-CT): quietly, with no card
+//
+// Security note (for review): the browser rule reads headers the computer could forge (Sec-Fetch-*). That is a usability rule, not a
+// boundary: anything in the computer can already drive its own Chrome (CDP on 127.0.0.1) to send a real background request. What stays
+// a hard boundary: Sentinel substitutes keys only for their bound hosts, and a request carrying a substituted key never goes out on
+// an automatic rule; requests to 1Helm itself are refused; and the person's Allow/Deny is never decided inside the computer.
+// An upstream that receives a key can echo or transform it. Sentinel scrubs literal echoes from its response, but host binding
+// still requires trusting that upstream and is not a general guarantee that the computer can never learn the key.
+
+export const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+// Dedicated telemetry endpoints of dev tools that run on the computer (next build, astro, gatsby). Never worth a card.
+export const TELEMETRY_HOSTS = new Set(["telemetry.nextjs.org", "telemetry.astro.build", "telemetry.gatsbyjs.com"]);
+// Chrome's own background services (no web page behind them: GCM/push registration, component updates, Safe Browsing, autofill
+// hints). Seen on dev 10-09: a POST to android.clients.google.com while Google Flights loaded. Not the person's data; never a card.
+export const CHROME_SERVICE_HOSTS = new Set(["android.clients.google.com", "clients2.google.com", "clients4.google.com", "clientservices.googleapis.com",
+  "update.googleapis.com", "safebrowsing.googleapis.com", "optimizationguide-pa.googleapis.com", "content-autofill.googleapis.com", "chromewebstore.googleapis.com"]);
+// Reports the browser itself sends about a page (Reporting API / Network Error Logging, CSP violations, Expect-CT): not the person's
+// data and not something a page user did. Seen on dev 10-09 (APP_V 159): POST w3-reporting-nel.reddit.com/reports
+// (application/reports+json, no fetch metadata) became a card while kayak.com loaded. Dropped quietly, never a card.
+export const REPORT_TYPES = new Set(["application/reports+json", "application/csp-report", "application/expect-ct-report+json"]);
+// Known report collectors, for a report sent without its content type: reddit's w3-reporting*, Cloudflare's a.nel.cloudflare.com,
+// Google's csp.withgoogle.com, any host whose first label is nel / *-nel.
+export const REPORT_HOST = /^(w3-reporting[a-z0-9-]*|[a-z0-9-]*-nel|nel|[a-z0-9]\.nel)\.|^csp\.withgoogle\.com$|^(?:[a-z0-9-]+\.)*report-uri\.com$/;
+const NPM_REGISTRIES = new Set(["registry.npmjs.org", "registry.yarnpkg.com"]);
+export const LFS_BATCH = /\/info\/lfs\/objects\/batch$/;
+
+const hdr = (headers, k) => { const v = headers?.get ? headers.get(k) : headers?.[k]; return v == null ? "" : String(v).toLowerCase(); };
+const hostOf = (u) => { try { return new URL(String(u)).host.toLowerCase(); } catch { return ""; } };
+
+// Who sent it, in plain words for the card: "form" (a browser form submit), "page" (a page's background request), "command".
+export function egressVia(headers) {
+  const mode = hdr(headers, "sec-fetch-mode");
+  if (!mode) return "command";
+  return mode === "navigate" || mode === "nested-navigate" ? "form" : "page";
+}
+
+// → { verdict: "allow" | "deny", why, rule, quiet? } when a rule decides, or { verdict: "ask", why, via } for the person's decision.
+// lfsOp: the "operation" of a Git LFS batch request (the Sentinel reads that small JSON body only for that one path).
+export function egressRule({ host, method, path = "/", headers, keys = [], env = {}, lfsOp = null }) {
+  host = String(host || "").toLowerCase(); method = String(method || "").toUpperCase(); path = String(path || "/");
+  if ([env.GATEWAY_HOST, env.APP_HOST].some((h) => h && host === String(h).toLowerCase()))
+    return { verdict: "deny", why: "requests to 1Helm itself are not allowed from the computer", rule: "self" };
+  const via = egressVia(headers);
+  // A real key is about to go out: only the person's policy (Always Approve, a grant, or their tap) can let it through.
+  if (keys.length) return { verdict: "ask", why: `uses a saved key (${keys.join(", ")})`, via };
+  if (TELEMETRY_HOSTS.has(host)) return { verdict: "deny", why: "dev-tool telemetry (not sent)", rule: "telemetry", quiet: true };
+  // Chrome's own services: measured on dev, they DO carry fetch metadata (they showed as "web page background request"), so by host.
+  if (CHROME_SERVICE_HOSTS.has(host)) return { verdict: "deny", why: "the browser's own background service (not sent)", rule: "chrome-service", quiet: true };
+  if (SAFE_METHODS.has(method)) return { verdict: "allow", why: "read-only request", rule: "read" };
+  if (env.R2_ENDPOINT && host === hostOf(env.R2_ENDPOINT)) return { verdict: "allow", why: "1Helm storage (presigned)", rule: "own-storage" };
+  const ctype = hdr(headers, "content-type").split(";")[0].trim();
+  if (method === "POST" && via !== "form" && (REPORT_TYPES.has(ctype) || REPORT_HOST.test(host)))
+    return { verdict: "deny", why: "the browser's own error/security report (not sent)", rule: "browser-report", quiet: true };
+  if (method === "POST" && /\/git-upload-pack$/.test(path) && hdr(headers, "content-type") === "application/x-git-upload-pack-request")
+    return { verdict: "allow", why: "git fetch / clone (read-only)", rule: "git-read" };
+  if (method === "POST" && LFS_BATCH.test(path) && lfsOp === "download") return { verdict: "allow", why: "Git LFS download (read-only)", rule: "git-read" };
+  if (method === "POST" && NPM_REGISTRIES.has(host) && path.startsWith("/-/npm/v1/security/")) return { verdict: "allow", why: "npm audit (package list only)", rule: "npm-audit" };
+  // The browser: a page's own background requests go out; a form submitted by a click or Enter asks.
+  if (via === "page") return { verdict: "allow", why: "web page background request", rule: "browser-page" };
+  if (via === "form") {
+    if (hdr(headers, "sec-fetch-user") === "?1") return { verdict: "ask", why: "a form submitted in the browser", via };
+    return { verdict: "allow", why: "page redirect (no click)", rule: "browser-redirect" };
+  }
+  return { verdict: "ask", why: "sends data", via };
+}
+
+// A Git LFS batch body → its operation ("download" | "upload" | null). Only small JSON bodies are read.
+export function lfsOperation(text) {
+  try { const j = JSON.parse(String(text || "")); return typeof j?.operation === "string" ? j.operation : null; } catch { return null; }
+}
+
+// The text a blocked command (or page) gets back, in plain words, by why it was stopped.
+export function blockedText({ method, host, path, why, verdict, quiet }) {
+  const what = `${method} ${host}${String(path || "").slice(0, 120)}`;
+  if (quiet) return `1Helm Sentinel did not send ${what}: ${why}.\n`;
+  if (/^requests to 1Helm itself/.test(why)) return `1Helm Sentinel blocked ${what}: ${why}.\n`;
+  if (/the person denied it/.test(why)) return `1Helm Sentinel blocked ${what}: the person said no to sending this. Nothing was sent. Do not retry it or send it another way; tell them it wasn't sent.\n`;
+  return `1Helm Sentinel held ${what}: it sends data and needs the person's OK (${why}). Nothing was sent. Do not retry it in a loop. Tell the person what you were trying to send and why; they can allow it in the app.\n`;
+}

@@ -3,8 +3,18 @@
 Copyright (c) 2026 Joseph Yaksich.
 
 1Helm releases up to and including v0.0.8 were released under the MIT License.
-1Helm releases v0.0.9 and later are released under AGPL-3.0-only.
-
+1Helm releases v0.0.9 and later are released under AGPL-3.0-only for
+core files. The cloud-only directories named in ee/LICENSE have separate terms.
 The license applicable to a particular release is the license included with
-that release. This notice records the version boundary and does not change the
-license already granted for releases through v0.0.8.
+that release. This notice does not change grants for earlier releases.
+
+Bundled fonts:
+- Instrument Sans: Copyright 2022 The Instrument Sans Project Authors.
+  SIL Open Font License 1.1; see licenses/Instrument-Sans-OFL.txt.
+- Instrument Serif: Copyright 2022 The Instrument Serif Project Authors.
+  SIL Open Font License 1.1; see licenses/Instrument-Serif-OFL.txt.
+- Caveat: Copyright 2014 The Caveat Project Authors.
+  SIL Open Font License 1.1; see licenses/Caveat-OFL.txt.
+
+The PDF viewer bundles font and codec assets with their own notices under
+app-assets/app-static/pdfjs/standard_fonts/ and app-assets/app-static/pdfjs/wasm/.

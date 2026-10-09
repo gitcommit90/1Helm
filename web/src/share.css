@@ -1,0 +1,71 @@
+/* Share links + published pages (share.ts). The sheet reuses the dialog look (dialog.css .dlg / .dlgb); cards reuse .gu-sys. */
+.shw{position:fixed;inset:0;z-index:250;display:grid;place-items:center;padding:24px}
+.shw .dlgback{opacity:0}.shw.on .dlgback{opacity:1}.shw.on .dlg{opacity:1;transform:none}
+.shdlg{width:min(460px,100%)}
+.shfield{display:flex;gap:8px;margin-top:18px}
+.shfield input{flex:1;min-width:0;height:42px;padding:0 14px;border-radius:12px;border:1px solid var(--line2);background:var(--hover);color:var(--ink);font:inherit;font-size:14px}
+.shfield .dlgb{display:inline-flex;align-items:center;gap:6px;flex:none}
+.shmeta{font-size:13.5px!important;color:var(--mute)!important;margin-top:10px!important}
+.sherr{color:var(--warn)!important;font-weight:550;font-size:14px!important}
+.shsplit{justify-content:space-between}
+.dlgb.shrev{color:var(--dlgred,#dc2626);box-shadow:inset 0 0 0 1px var(--line2)}.dlgb.shrev:hover{background:var(--hover)}
+.dlgb.shopen{display:inline-flex;align-items:center;text-decoration:none}
+.shexp{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:16px}
+.shexp>span{font-size:13.5px;color:var(--mute);margin-right:4px}
+.shexp button{min-height:34px;padding:0 14px;border-radius:999px;font-size:14px;font-weight:550;color:var(--ink2);box-shadow:inset 0 0 0 1px var(--line2)}
+.shexp button.on{background:var(--ink);color:var(--sheet);box-shadow:none}.shexp button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.shname{display:flex;align-items:center;gap:2px;margin-top:6px;padding:0 4px 0 12px;min-height:42px;border-radius:12px;background:var(--hover);border:1px solid var(--line2);min-width:0}
+.shname.big{margin-top:18px}
+.shname:focus-within{border-color:var(--ink2)}
+.shpre{color:var(--mute);font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0}
+.shname input{flex:1 0 90px;min-width:90px;border:0;background:none;color:var(--ink);font:inherit;font-size:14.5px;font-weight:600;padding:8px 2px;outline:0}
+.shcard .gu-btns .gu-b{display:inline-flex;align-items:center;gap:6px}
+.shcard .shurl a,.shcard .gu-sl a{color:var(--ink);font-weight:600;text-decoration:none;overflow-wrap:anywhere}.shcard .shurl a:hover{text-decoration:underline}
+.shcard.shno .gu-sh b{color:var(--ink2)}
+a.gu-b.shopen{text-decoration:none;color:var(--ink2)}
+/* chat file card + Library */
+.fsh{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;color:var(--mute);flex:none;cursor:pointer}.fsh:hover{background:var(--hover);color:var(--ink)}.fsh.on{color:var(--live,#2563eb)}
+.fvb.shon{color:var(--live,#2563eb)}
+.shbadge{display:inline-flex;align-items:center;gap:3px;margin-left:6px;padding:1px 7px 1px 6px;border-radius:999px;background:color-mix(in srgb,var(--live,#2563eb) 12%,transparent);color:var(--live,#2563eb);font-size:11.5px;font-weight:600;vertical-align:2px;cursor:pointer}
+.shbadge:hover{background:color-mix(in srgb,var(--live,#2563eb) 20%,transparent)}
+.shlib{margin:4px 0 22px}
+.shlib h3{margin:16px 0 6px;font-size:13px;font-weight:600;color:var(--mute);text-transform:uppercase;letter-spacing:.04em}.shlib h3 span{font-weight:500;margin-left:4px}
+.shrow{display:flex;align-items:center;gap:12px;padding:9px 12px;margin:0 -12px;border-radius:14px}.shrow:hover{background:var(--abub)}.shrow+.shrow{box-shadow:0 -1px 0 var(--line)}.shrow:hover,.shrow:hover+.shrow{box-shadow:none}
+.shico{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;background:var(--hover);color:var(--ink2);flex:none}
+.shmain{flex:1;min-width:0;display:flex;flex-direction:column}.shmain b{font-size:14.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.shmain a{font-size:12.5px;color:var(--ink2);text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.shmain a:hover{text-decoration:underline}
+.shmain>span{font-size:12px;color:var(--mute)}
+.shacts{display:flex;gap:2px;flex:none}
+.shbtn{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;color:var(--mute)}.shbtn:hover{background:var(--sheet);color:var(--ink)}.shbtn.bad:hover{color:var(--dlgred,#dc2626)}
+/* a web page (.html): Share file + Publish side by side on the chat card, and as tiles in the sheet */
+.fcard:has(.fcweb){flex-wrap:wrap;row-gap:0}
+.fcweb{order:9;flex:1 0 100%;min-width:0;max-width:100%;display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px;padding-top:10px;border-top:1px solid var(--line);cursor:default}
+.fcwb{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:0 12px;border-radius:999px;font-size:13px;font-weight:600;color:var(--ink);background:var(--sheet);box-shadow:inset 0 0 0 1px var(--line2);cursor:pointer;white-space:nowrap}
+.fcwb:hover{background:var(--hover)}.fcwb.on{color:var(--accent)}.fcwb.bad:hover{color:var(--dlgred,#dc2626)}
+.fcwb.ico{width:32px;padding:0;justify-content:center}.fcpl .fcwb.ico{margin-left:auto;flex:none;min-height:30px;width:30px}.fcwb.dis{opacity:.55;cursor:default}
+.fcweb.pubd{flex-direction:column;align-items:stretch;gap:8px}
+.fcpl{display:flex;align-items:center;gap:6px;min-width:0;max-width:100%;font-size:13px}.fcdot{display:grid;color:var(--live)}.fcpl b{color:var(--live);font-weight:650;flex:none}
+.fcurl{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink2);cursor:pointer}.fcurl:hover{color:var(--ink);text-decoration:underline}
+.fcacts{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.fcwb:focus-visible,.fcurl:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.fvb.pubon{color:var(--live)}
+.lsub .shbadge{margin:0 6px 0 0;vertical-align:1px}
+.shbadge.pub{background:color-mix(in srgb,var(--live) 13%,transparent);color:var(--live)}.shbadge.pub:hover{background:color-mix(in srgb,var(--live) 22%,transparent)}
+.shpick{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
+.shopt{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0;padding:12px 14px 13px;border-radius:16px;text-align:left;color:var(--ink);box-shadow:inset 0 0 0 1px var(--line2);transition:background .12s,box-shadow .12s}
+.shopt:hover{background:var(--hover)}.shopt.sel{background:var(--hover);box-shadow:inset 0 0 0 2px var(--ink)}
+.shopt:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.shoi{width:34px;height:34px;margin-bottom:6px;border-radius:10px;display:grid;place-items:center;background:var(--hover);color:var(--ink2)}.shopt.sel .shoi{background:var(--ink);color:var(--sheet)}
+.shopt b{font-size:14.5px;font-weight:600}.shopt>span:last-child{font-size:12.5px;line-height:1.35;color:var(--mute)}.shopt>span.shst{color:var(--live);font-weight:600}
+.shgrp{display:flex;gap:8px}
+.shfield a.dlgb{display:inline-flex;align-items:center;gap:6px;flex:none;text-decoration:none}
+.gu-b.shunp:hover{color:var(--dlgred,#dc2626)}
+@media (max-width:767px){
+  .shw{place-items:end stretch;padding:0}
+  .shw .dlg{opacity:1;transform:translateY(100%)}.shw.on .dlg{transform:none}
+  .shfield{flex-direction:column}.shfield .dlgb{justify-content:center}
+  .shsplit{flex-direction:column-reverse}.shgrp>.dlgb{flex:1}
+  .shopt{padding:11px 12px 12px}
+  .shexp{justify-content:center}
+  .shrow{margin:0 -8px;padding:10px 8px}.shacts .shbtn{width:38px;height:38px}
+}
