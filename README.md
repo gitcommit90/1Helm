@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="app-assets/1helm-sailboat.png" alt="1Helm sailboat" width="88" height="88">
+  <img src="app-assets/1helm-icon.png" alt="1Helm sailboat" width="88" height="88">
 </p>
 
 <h1 align="center">1Helm</h1>
