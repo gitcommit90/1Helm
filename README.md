@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://deepwiki.com/gitcommit90/1Helm"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
+  <a href="https://deepwiki.com/gitcommit90/1Helm"><img src="https://devin.ai/assets/askdeepwiki.png" alt="Ask DeepWiki" height="20"></a>
 </p>
 
 <p align="center">
