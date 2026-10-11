@@ -175,7 +175,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "215";
+const APP_V = "223";
 const archive = (env, tenantId) => env.ARCHIVE.get(env.ARCHIVE.idFromName(`archive:${tenantId}`));
 const IMPORT_PART = 50 * 1024 * 1024;
 export async function handleImport(req, env, tenantId, importId, rest) {
@@ -1313,7 +1313,7 @@ export default {
         // Where the person is (location.js): the app's coarse fix (about 1 km) + its place name, one row per account. GET / POST / POST …/forget.
         if (sub === "/api/location" || sub === "/api/location/forget") return locationRoute(req, env, t, { look: !!viewAsToken(req) });
         if (sub === "/api/interview") return interviewApi(req, env, t, url, { json, cf: req.cf || {}, look: !!viewAsToken(req) });
-        if (sub === "/api/apps-used") return appsUsedApi(req, env, t, { json, look: !!viewAsToken(req) });   // "Apps I use" (apps-used.js): Settings → Connected accounts
+        if (sub === "/api/apps-used") return appsUsedApi(req, env, t, { json, look: !!viewAsToken(req) });   // App preferences collected in Get to know you and updated by the helper.
         if (sub === "/api/state") return json({ ...(await L.state()), access });
         if (sub === "/api/history") return json(await L.history(200));
         // Settings → Use my own AI key (src/byok.js): GET /api/byok, POST /api/byok/test|save|delete|mode. The key is sealed and never returned.

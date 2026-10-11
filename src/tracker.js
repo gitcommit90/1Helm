@@ -4,11 +4,14 @@
 // Mutating calls take the per-turn context `tc` and emit the stream events themselves (card_event, card_update, card_close).
 import { isCustomSlug, CUSTOM_WORDS } from "./ee/index.js";
 import { titleFrom } from "./resident.js";
+import { CHAT_TITLE_PROMPT, cleanChatTitle, fallbackChatTitle } from "./chat-titles.js";
 import { cardsToText } from "./genui.js";
 import { useOpenRouter, openRouterChat, aiOpts } from "./model.js";
 import { route2On, choreModelOf, choreAttempts } from "./ee/index.js";
 import { presentStep, isInternalStep, safeInput, leakGuard } from "./step-present.js";
 import { replyOut, replyIn, withReply } from "./reply-to.js";
+import { savedTo } from "./saved-to.js";
+import { progressKeep, mustShow } from "./progress-dedupe.js";
 
 // ---- DDL ----
 export const CARD_DDL = [
@@ -368,14 +371,33 @@ export function listCards(sql, session, { n = 50, before = null } = {}) {
   return { cards: all.slice(0, n), more: all.length > n };
 }
 // A card with its timeline. null when it doesn't exist or belongs to another session (the route returns 404).
+// Read-only details belong to the task card, not permanent chat chrome. Rebuild
+// from durable turn/event data so Activity works without loading the chat first.
+function turnDetails(sql, t, events = []) {
+  const array = x => { const a = jparse(x, []); return Array.isArray(a) ? a : []; };
+  const parts = array(t?.parts).map(x => String(x ?? "")), flags = jparse(t?.progress, null), keep = progressKeep(parts);
+  const last = parts.map((x, i) => keep[i] && x.trim() ? i : -1).filter(i => i >= 0).at(-1);
+  const progress = parts.filter((x, i) => keep[i] && x.trim() && i !== last && (Array.isArray(flags) ? flags.includes(i) : !mustShow(x)))
+    .map(x => leakGuard(x, { spans: true }).text);
+  const trace = array(t?.trace), sources = events.length ? events.filter(e => e.type === "step" && e.status !== "skipped") : trace;
+  const saved = sources.flatMap(e => {
+    if (e.tool !== "remember") return [];
+    const full = e.call_id ? row(sql, "SELECT content FROM msgs WHERE turn=? AND role='tool' AND tool_call_id=? ORDER BY seq DESC LIMIT 1", t?.id, e.call_id)?.content : null;
+    return savedTo(e.tool, e.input ?? e.args, full ?? e.out_preview ?? e.out);
+  });
+  // Apply the same secret scrubber as the step pane to all newly exposed strings.
+  const safe = x => typeof x === "string" ? leakGuard(x, { spans: true }).text : Array.isArray(x) ? x.map(safe) : x && typeof x === "object" ? Object.fromEntries(Object.entries(x).map(([k,v]) => [k,safe(v)])) : x;
+  return { progress, progress_omitted: Math.max(0, Number(trace.find(e => e?.tool === "progress_history")?.omitted) || 0),
+    saved: [...new Map(saved.map(x => [JSON.stringify(x), safe(x)])).values()] };
+}
 export function cardDetail(sql, session, cardId, { reply = null } = {}) {
   const c = cardRow(sql, cardId);
   if (!c) return legacyCardDetail(sql, session, cardId);
   if (c.session !== String(session)) return null;
-  const t = row(sql, "SELECT reply, total_ms, charge_nano FROM turns WHERE id=?", c.id);
-  const events = rows(sql, "SELECT * FROM card_events WHERE card=? ORDER BY seq", c.id).map((e) => eventView(sql, e));
+  const t = row(sql, "SELECT * FROM turns WHERE id=?", c.id);
+  const rawEvents = rows(sql, "SELECT * FROM card_events WHERE card=? ORDER BY seq", c.id), events = rawEvents.map((e) => eventView(sql, e));
   const end = c.closed || Date.now(), r = t?.reply ?? reply;
-  return { ...cardView(sql, c), summary: c.summary ?? null, events, reply: r != null ? String(r).slice(0, 4000) : null,
+  return { ...cardView(sql, c), ...turnDetails(sql, t || { id: c.id }, rawEvents), summary: c.summary ?? null, events, reply: r != null ? String(r).slice(0, 4000) : null,
     charge_nano: Math.max(c.charge_nano || 0, t?.charge_nano || 0), total_ms: t?.total_ms ?? Math.max(0, end - (c.started || c.opened)) };
 }
 // One step with its full input, command and the output the helper saw (msgs by call_id, 20k cap).
@@ -425,7 +447,7 @@ export function legacyCardDetail(sql, session, id) {
   const t = legacyTurn(sql, session, id); if (!t) return null;
   const rx = row(sql, "SELECT reaction FROM reactions WHERE turn=?", t.id);
   const msg = t.kind === "chat" ? [{ seq: 1, type: "msg", at: t.at, id: t.id, cid: null, text: t.user_text ?? "", files: fileViews(sql, t.files), via: "app", consumed: 0, reaction: rx?.reaction ?? null }] : [];
-  return { ...legacyView(t), summary: null, events: [...msg, ...legacySteps(t).map(({ _args, _raw, _out, ...s }) => ({ ...s, result: withLibrary(sql, s.result) }))], reply: t.reply != null ? String(t.reply).slice(0, 4000) : null,
+  return { ...legacyView(t), ...turnDetails(sql, t), summary: null, events: [...msg, ...legacySteps(t).map(({ _args, _raw, _out, ...s }) => ({ ...s, result: withLibrary(sql, s.result) }))], reply: t.reply != null ? String(t.reply).slice(0, 4000) : null,
     charge_nano: t.charge_nano || 0, total_ms: t.total_ms || 0 };
 }
 // Best effort: the Nth role='tool' msg of that turn (trace index N = seq - 2).
@@ -479,6 +501,7 @@ export function labelPrompt(input) {
 export function skipLabeller(input) {
   if (!input) return true;
   if (input.kind === "helper" || input.kind === "workflow") return true;
+  if (input.chatTitle) return false;
   return (input.steps || []).length === 0 && (input.msgs || []).length === 1 && !(input.handoffs || []).length && String(input.reply || "").length < 400;
 }
 export function autoLabels(input = {}) {
@@ -509,7 +532,7 @@ export function parseLabels(text, steps = null) {
   if (!title || !result) return null;
   const why = {};
   if (j.why && typeof j.why === "object") for (const [k, v] of Object.entries(j.why)) { const n = parseInt(String(k).match(/\d+/)?.[0], 10); if (Number.isInteger(n) && typeof v === "string" && v.trim()) why[n] = ell(one(v), 120); }
-  return { title, result, summary: typeof j.summary === "string" && j.summary.trim() ? String(j.summary).trim().slice(0, 1200) : null, why: steps ? whySeqs(why, steps) : why };
+  return { title, result, summary: typeof j.summary === "string" && j.summary.trim() ? String(j.summary).trim().slice(0, 1200) : null, why: steps ? whySeqs(why, steps) : why, ...(j.chat_title != null ? { chat_title: cleanChatTitle(j.chat_title) } : {}) };
 }
 const withTimeout = (p, ms) => { let t; return Promise.race([p, new Promise((_, no) => { t = setTimeout(() => no(new Error("labeller timeout")), ms); })]).finally(() => clearTimeout(t)); };
 // Labels one finished card. {env, ledger (the tenant Ledger stub), meta (AI Gateway tags), input (labelInput())}. Never throws:
@@ -517,7 +540,8 @@ const withTimeout = (p, ms) => { let t; return Promise.race([p, new Promise((_, 
 // charge_nano to stats.charge only when billed, and passes the result to labelCard (which adds it to cards.charge_nano).
 export async function summarizeCard({ env, ledger = null, meta = {}, input, bill = BILL_LABELLER, timeoutMs = LABEL_TIMEOUT_MS } = {}) {
   if (skipLabeller(input)) return autoLabels(input);
-  const messages = [{ role: "system", content: LABEL_SYSTEM }, { role: "user", content: labelPrompt(input) }];
+  const system = input.chatTitle ? `${LABEL_SYSTEM.replace('{"title","result","summary","why"}', '{"title","chat_title","result","summary","why"}')}\nchat_title: a string property inside that same JSON object, naming the conversation. Do not add any text outside the JSON object. Follow this instruction for chat_title:\n${CHAT_TITLE_PROMPT}` : LABEL_SYSTEM;
+  const messages = [{ role: "system", content: system }, { role: "user", content: labelPrompt(input) }];
   const rid = `sum:${crypto.randomUUID()}`, billed = !!(bill && ledger && !env?.BYOK);   // own AI key: their fast model, $0 to us, nothing to bill
   if (billed) { try { const r = await ledger.reserve(rid, LABEL_RESERVE); if (!r?.ok) return autoLabels(input); } catch { return autoLabels(input); } }
   let text = "", charge = 0;
@@ -538,5 +562,7 @@ export async function summarizeCard({ env, ledger = null, meta = {}, input, bill
   } catch (e) { console.log("labeller failed", String(e.message || e).slice(0, 160)); }
   if (billed) { try { await ledger.settle(rid, charge); } catch (e) { console.log("labeller settle", e.message); } }
   const p = parseLabels(text, input.steps || []);
-  return p ? { ...p, title_src: "model", charge_nano: charge, billed } : { ...autoLabels(input), charge_nano: charge, billed };
+  const labels = p ? { ...p, title_src: "model", charge_nano: charge, billed } : { ...autoLabels(input), charge_nano: charge, billed };
+  if (input.chatTitle) labels.chat_title = p?.chat_title || fallbackChatTitle(input.msgs?.[0]?.text || input.title);
+  return labels;
 }

@@ -57,20 +57,22 @@ const svg = (d: string, s = 16) => `<svg width="${s}" height="${s}" viewBox="0 0
 const IC = {
   copy: svg('<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h11"/>', 15),
   reply: svg('<path d="m9 14-5-5 5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11"/>', 15),
+  task: svg('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>', 15),
   tick: svg('<path d="M20 6 9 17l-5-5"/>', 15),
   x: svg('<path d="M18 6 6 18M6 6l12 12"/>', 15),
 };
 const M = { open: null as string | null, copied: null as string | null, copiedT: 0 as any, top: 0 };
+const HOVER_SPACE = new Set<string>();
 const actionKey = (mr: number, part = "") => `${mr}:${part}`;
 const PINS = new Map<string, Pin>();   // task → its pinned reply
 
-// The two buttons in a bubble's reserved action strip. mr identifies the turn; part identifies its visible text bubble.
-export function maActs(mr: number, part = "") {
+// The two buttons in a bubble's revealed action strip. mr identifies the turn; part identifies its visible text bubble.
+export function maActs(mr: number, part = "", card = "") {
   const key = actionKey(mr, part), c = M.copied === key;
-  return `<span class="mact" data-mact="${key}" data-mapart="${part}"><button type="button" class="ma-copy${c ? " done" : ""}" data-macopy="${mr}" aria-label="${c ? "Copied" : "Copy message"}" title="${c ? "Copied" : "Copy"}">${c ? IC.tick : IC.copy}<span class="mal">${c ? "Copied" : "Copy"}</span></button><button type="button" class="ma-reply" data-mareply="${mr}" aria-label="Reply to this message" title="Reply">${IC.reply}<span class="mal">Reply</span></button></span>`;
+  return `<span class="mact" data-mact="${key}" data-mapart="${part}"><button type="button" class="ma-copy${c ? " done" : ""}" data-macopy="${mr}" aria-label="${c ? "Copied" : "Copy message"}" title="${c ? "Copied" : "Copy"}">${c ? IC.tick : IC.copy}<span class="mal">${c ? "Copied" : "Copy"}</span></button><button type="button" class="ma-reply" data-mareply="${mr}" aria-label="Reply to this message" title="Reply">${IC.reply}<span class="mal">Reply</span></button>${card ? `<button type="button" class="ma-task" data-tkcard="${esc(card)}" aria-label="Open task card for this response" title="Task card">${IC.task}</button>` : ""}</span>`;
 }
-// Class for the bubble whose touch controls are open (kept across repaints).
-export const maOpenCls = (mr: number, part = "") => (M.open === actionKey(mr, part) ? " macts" : "");
+// Touch controls and temporary hover spacing are kept across repaints.
+export const maOpenCls = (mr: number, part = "") => (M.open === actionKey(mr, part) ? " macts" : "") + (HOVER_SPACE.has(actionKey(mr, part)) ? " ma-space" : "");
 // The quote above a sent reply. mr: the original's local id when this page knows it.
 export function maQuote(r: { role: Role; id?: string | null; text: string; mr?: number } | undefined) {
   if (!r?.text || !D) return "";
@@ -132,6 +134,20 @@ const INTERACTIVE = "a,button,input,select,textarea,label,summary,details,video,
 
 export function maInit(deps: Deps) {
   if (D) { D = deps; return; } D = deps;
+  const clearHoverSpace = () => { HOVER_SPACE.clear(); document.querySelectorAll(".bubble.ma-space").forEach(el => el.classList.remove("ma-space")); };
+  // Reserve only rails the pointer has revealed during this visit to the chat.
+  // Releasing an earlier rail while crossing to another bubble shifts the new
+  // target under the pointer. Leaving the chat releases all temporary space.
+  document.addEventListener("pointerover", e => {
+    if (e.pointerType !== "mouse" || !matchMedia("(hover:hover)").matches) return;
+    const bubble = (e.target as HTMLElement).closest<HTMLElement>(".msgs .bubble"), key = bubble?.querySelector<HTMLElement>("[data-mact]")?.dataset.mact;
+    if (key) { HOVER_SPACE.add(key); bubble!.classList.add("ma-space"); }
+  });
+  document.addEventListener("pointerout", e => {
+    if ((e.target as HTMLElement).closest?.(".msgs") && !(e.relatedTarget as HTMLElement | null)?.closest?.(".msgs")) clearHoverSpace();
+  });
+  window.addEventListener("hashchange", clearHoverSpace);
+  window.addEventListener("blur", clearHoverSpace);
   document.addEventListener("click", e => {
     const t = e.target as HTMLElement;
     const cp = t.closest<HTMLElement>("[data-macopy]");

@@ -12,6 +12,7 @@
 // laterFireDue() in alarm(). index.js: the /api/res/<ch>/later routes, and boot lists each channel's pending ones.
 import { validTz } from "./schedule.js";
 import { replyOut, replyIn } from "./reply-to.js";
+import { newAutoChat } from "./chat-titles.js";
 
 export const LATER_MAX_PENDING = 100, LATER_MAX_AHEAD = 366 * 86400e3, LATER_STALE_MS = 120e3, LATER_TIMER_MS = 20 * 60e3;
 export const LATER_PAST = "That time has already passed. Pick a later time.";
@@ -142,7 +143,7 @@ export const laterMethods = {
     const files = jp(r.files, []);
     // Its task, else (deleted) a new one. A new task's id is saved before the send, so a crash retry reuses it.
     let sid = [r.sent_session, r.session].find((x) => x && this.session(x)) || null;
-    if (!sid) { sid = this.newSession(r.title || titleFrom(r.text || this.fileTitle(files))); this.sql.exec("UPDATE later SET sent_session=? WHERE id=?", sid, r.id); }
+    if (!sid) { sid = newAutoChat(this, r.text || this.fileTitle(files)); this.sql.exec("UPDATE later SET sent_session=? WHERE id=?", sid, r.id); }
     const reply = sid === r.session ? replyIn(r.reply) : null;   // its own task only: a quote means nothing in a new one
     const input = { type: "msg", text: r.text, files, cid: `later:${r.id}`, via: "app", reply };
     const so = this.steerOrOpen(sid, input, { overflow: "open" });

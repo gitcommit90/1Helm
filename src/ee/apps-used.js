@@ -1,6 +1,6 @@
 import { boundedJson } from "../bounded-body.js";
 // "Apps I use" (Captain 10-08): which apps the person says they use, picked in Get to know you ("Do you use any of these apps?",
-// interview.js), in Settings → Connected accounts → Apps I use, or told to the helper (the apps_i_use tool). A heads-up, never a
+// interview.js), or told to the helper (the apps_i_use tool). A heads-up, never a
 // to-do: the helper knows they use these, so when one comes up it checks whether it's connected and, if not, offering the Connect
 // card (offer_connect) counts as relevant rather than pushy. Nothing is connected or offered because of the list alone.
 // Stored per account in D1 tenant_flags k='apps_used' (no migration: the table is the account's small key/value store, and account
@@ -56,7 +56,7 @@ const BY_KEY = new Map(APP_OPTIONS.map((o) => [o.k, o]));
 const compact = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 const SLUG = /^[a-z0-9][a-z0-9_]{0,63}$/;
 export const optionOf = (k) => BY_KEY.get(String(k)) || null;
-// What the app shows for the options (interview card and Settings): plain JSON.
+// What the app shows for the interview options: plain JSON.
 export const optionsView = () => APP_OPTIONS.map((o, i) => ({ v: o.k, label: o.n, logo: o.logo || o.apps[0], ...(i < TOP ? { top: true } : {}), ...(o.short ? { covers: Object.values(o.short).join(", ") } : {}) }));
 
 // ---- storage ----
@@ -110,7 +110,7 @@ export function appsUsedLine(used, conns = []) {
 
 // ---- the helper's tool: they say they use (or stopped using) an app ----
 export const APPS_USED_TOOL = { type: "function", function: { name: "apps_i_use", description:
-  "Update the list of apps the person says they use (the \"Apps they use\" line in your context; they also edit it in Settings → Connected accounts → Apps I use). " +
+  "Update the list of apps the person says they use (the \"Apps they use\" line in your context, initially collected in Get to know you). " +
   "Only when they tell you they use an app, stopped using one, or ask you to change the list (\"I use Trello too\", \"I don't use Slack anymore\"). It never connects " +
   "or offers anything: if they want one connected, use offer_connect. Names as they said them (\"Google\", \"Teams\", \"monday\").",
   parameters: { type: "object", properties: {
@@ -137,7 +137,7 @@ export async function appsUsedTool(env, tid, a = {}) {
   for (const n of add) { const r = resolveApp(n, list); if (!r) { unknown.push(n); continue; } if (r.soon) { soon.push(r.soon); continue; } if (!apps.includes(r.key)) apps.push(r.key); if (r.name) extras[r.key] = r.name; }
   const saved = await setAppsUsed(env, tid, { apps, extras, none: a.none === true || (!apps.length && cur.none) }, "helper");
   const names = saved.apps.map((k) => usedName(saved, k));
-  return `Saved. Apps they use: ${names.length ? names.join(", ") : saved.none ? "none" : "(empty)"}.${unknown.length ? ` Not found as a connectable app, so not added: ${unknown.join(", ")}.` : ""}${soon.length ? ` Can't be connected yet, so not added: ${soon.join(", ")}.` : ""} Nothing was connected. Tell them in one short line; they can also change it in Settings → Connected accounts → Apps I use.`;
+  return `Saved. Apps they use: ${names.length ? names.join(", ") : saved.none ? "none" : "(empty)"}.${unknown.length ? ` Not found as a connectable app, so not added: ${unknown.join(", ")}.` : ""}${soon.length ? ` Can't be connected yet, so not added: ${soon.join(", ")}.` : ""} Nothing was connected. Tell them in one short line.`;
 }
 
 // ---- the app's API: GET/POST /w/<slug>/api/apps-used ----

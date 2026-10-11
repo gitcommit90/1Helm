@@ -1,6 +1,8 @@
 /* Editable task names keep the composer and fitted header actions mounted. */
-.task-title{display:block;min-width:0;max-width:100%;color:inherit;font:inherit;font-weight:inherit;text-align:left;border-radius:6px;cursor:pointer}
-.task-title [data-task-title]{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.task-title{display:flex;align-items:center;gap:7px;min-width:0;max-width:100%;color:inherit;font:inherit;font-weight:inherit;text-align:left;border-radius:6px;cursor:pointer}
+.task-title [data-task-title]{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.task-title .task-title-edit{display:grid;place-items:center;flex:none;color:var(--mute)}
+.task-title-edit svg{width:16px;height:16px}
 .task-title:hover{background:var(--hover)}.task-title:focus-visible,.task-about:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 .task-rename.dlg{position:fixed;inset:0;margin:auto;opacity:1;transform:none;width:min(440px,calc(100% - 32px));max-height:calc(100dvh - 32px)}
 .task-rename::backdrop{background:rgba(28,27,25,.35);backdrop-filter:blur(3px)}

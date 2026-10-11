@@ -15,6 +15,7 @@ import { contextV2, CONTEXT_TOOLS, RUNTIME_CONTRACT, toolCatalog, loadedTools, s
 import { channelLayers } from "./prompt/context-layers.js";
 import { savedTo } from "./saved-to.js";   // where a remember really saved (the chat's "Added to …" chip)
 import { SUMMARY_ROUTE, recoverCards, openCard, addInput, findByCid, markConsumed, stepBegin, stepEnd, stepSkipped, setStatus, commitCard, labelCard, labelInput, summarizeCard, cardView, eventView, withStepTitles, splitStepTitle, fallbackStepTitle, MAX_INPUTS } from "./tracker.js";
+import { newAutoChat, claimChatTitle, applyChatTitle } from "./chat-titles.js";
 import { steerText, SKIP_TEXT, TOO_MANY, LIMIT_REPORT_ASK } from "./steer.js";
 import { replyRef, replyIn, withReply } from "./reply-to.js";   // Reply on a chat bubble: the quoted message travels with the person's
 import { workingSet, bringBack, sameAsShown, BRING_BACK_TOOL } from "./workmem.js";
@@ -2637,8 +2638,10 @@ export class Resident extends DurableObject {
     commitCard(this.sql, tc, turn, { status: tc.stoppedTurn ? "stopped" : error ? "failed" : paused ? "paused" : "complete" });
     // Final title / one-line result / summary: a cheap labeller call, in parallel with the hand-off notes (§5).
     let ledger = null; try { ledger = this.ledger(); } catch {}
+    const chatTitle = kind === "chat" && !error && !tc.stoppedTurn && !tc.modelFailure ? claimChatTitle(this, tc.session) : null;
     const sumP = tc.modelFailure ? Promise.resolve(null) : summarizeCard({ env: this.env, ledger, meta: { tenant: this.get("tenant"), channel: this.get("channel") },
-      input: labelInput(this.sql, turn, { reply, error, name: kind === "chat" ? null : (opts.helper?.name || (opts.workflow_id != null ? this.wf(opts.workflow_id)?.name : null) || null) }) })
+      input: { ...labelInput(this.sql, turn, { reply, error, name: kind === "chat" ? null : (opts.helper?.name || (opts.workflow_id != null ? this.wf(opts.workflow_id)?.name : null) || null) }), chatTitle: !!chatTitle } })
+      .then((labels) => { applyChatTitle(this, chatTitle, labels?.chat_title); return labels; })
       .catch((e) => { console.log("labeller", e.message); return null; });
     let notes = null;
     if (compact && kind === "chat" && !error && tc.abort !== "hard" && stats.tool_calls >= HANDOFF_MIN_TOOLS) {
@@ -2721,7 +2724,7 @@ export class Resident extends DurableObject {
   newSession(title) { const id = crypto.randomUUID(), now = Date.now(); this.sql.exec("INSERT INTO sessions (id,title,created,updated,seen_at) VALUES (?,?,?,?,?)", id, String(title || "New task").slice(0, 120), now, now, now); return id; }
   defaultSession() { let id = this.get("default_session"); if (!id || !this.session(id)) { id = this.newSession("Main chat"); this.put("default_session", id); } return id; }
   resolveSession(s, text) {
-    if (s === "new") return { id: this.newSession(titleFrom(text)) };
+    if (s === "new") return { id: newAutoChat(this, text) };
     if (!s) return { id: this.defaultSession() };
     return this.session(s) ? { id: String(s) } : { error: "No such task in this channel." };
   }
@@ -2841,7 +2844,8 @@ export class Resident extends DurableObject {
     return this.sql.exec("SELECT * FROM sessions ORDER BY updated DESC LIMIT 300").toArray().map((x) => this.sessionView(x, jobs, pend, texts));
   }
   async createSession(title, text = "", preview = "") {
-    const id = this.newSession(String(title || "").trim() || (text ? titleFrom(text) : "New task"));
+    const explicit = String(title || "").trim();
+    const id = explicit ? this.newSession(explicit) : newAutoChat(this, text);
     if (preview) this.sql.exec("UPDATE sessions SET preview=? WHERE id=?", String(preview).slice(0, 300), id);   // a line for the list before any reply (interview.js)
     return this.sessionView(this.session(id));
   }
@@ -2853,7 +2857,8 @@ export class Resident extends DurableObject {
   // The person removes a task (offered for the Get to know you task, interview.js). Never the main chat or a texting thread.
   async removeSession(id) {
     if (!this.session(id) || id === this.getRaw("default_session") || this.textsSessions().includes(id)) return { error: "That task can't be removed." };
-    this.sql.exec("DELETE FROM sessions WHERE id=?", String(id)); return { ok: true };
+    this.sql.exec("DELETE FROM sessions WHERE id=?", String(id));
+    this.sql.exec("DELETE FROM kv WHERE k=?", `chat_title_pending:${id}`); return { ok: true };
   }
   async updateSession(id, b = {}) {
     const s = this.session(id); if (!s) return { error: "No such task in this channel." };

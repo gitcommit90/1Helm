@@ -8,6 +8,7 @@
 import { cardStop, cardContinue } from "./stop";
 import { pauseOf } from "./spendguard";   // the working card's Stop
 import { nativeHandoffText } from "./native-approval-progress";
+import { focusHeaderAction } from "./headfit";
 export type HelperView = { id: number; name: string; task?: string; status: string; started: number; ended?: number | null; steps?: number; charge_nano?: number;
   parent_card?: string | null; card?: string | null; result_card?: string | null; stopped_by?: string | null };
 export type CardView = { id: string; session?: string; kind: string; status: string; title: string; title_src?: string; result?: string | null; opened: number;
@@ -19,7 +20,7 @@ export type EventView = { seq: number; type: "msg" | "step" | "handoff"; at: num
 export type StepResult = { v: number; text?: string; error?: string; links?: { title: string; url: string; host: string }[]; items?: string[];
   files?: { name: string; path?: string; bytes?: number; size?: string; id?: string; mime?: string; image?: boolean }[]; code?: string;
   internal?: boolean; more?: boolean; hidden?: boolean; details?: string; cut?: boolean };
-export type CardDetail = CardView & { summary?: string | null; events: EventView[]; reply?: string; charge_nano?: number; total_ms?: number };
+export type CardDetail = CardView & { summary?: string | null; events: EventView[]; reply?: string; charge_nano?: number; total_ms?: number; progress?: string[]; progress_omitted?: number; saved?: any[] };
 export type StepDetail = EventView & { input?: any; cmd?: string | null; output?: string; truncated?: boolean; call_id?: string };
 type Deps = {
   api: (path: string, body?: any) => Promise<any>;
@@ -34,6 +35,7 @@ type Deps = {
   note: (title: string, sub: string) => void;
   current: () => string;                               // "<slug>|<sid>" of the task on screen, or ""
   fileChip?: (slug: string, f: any) => string;         // a Library file's card (opens the file viewer)
+  savedChip?: (slug: string, saved: any) => string;   // exact destination from the successful remember result
 };
 let D: Deps | null = null;
 type Sess = { on: boolean; cards: CardView[]; more: boolean; helpers: HelperView[]; hcount: number; hoff: boolean; hbusy: boolean };
@@ -303,9 +305,11 @@ function openSheet(k: string) {
   w.innerHTML = `<div class="tk-sback" data-tkfeedx></div><div class="tk-sheet" role="dialog" aria-modal="true" aria-label="Activity">${feedHtml(k, true)}</div>`;
   D.dragToClose(w.querySelector<HTMLElement>(".tk-sheet")!, () => closeSheet());
   paintBtns(k); requestAnimationFrame(() => requestAnimationFrame(() => w!.classList.add("on")));
+  w.querySelector<HTMLElement>(".tk-row, .tk-x")?.focus({ preventScroll: true });
 }
-function closeSheet() {
+function closeSheet(focus = true) {
   const w = document.getElementById("tkfs"), k = F.sheet; if (!k) return; F.sheet = ""; paintBtns(k);
+  if (focus) focusHeaderAction(document.querySelector<HTMLElement>(`[data-tkbtn="${CSS.escape(k)}"]`), D?.phone());
   if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!F.sheet) w.innerHTML = ""; }, 320);
 }
 
@@ -360,8 +364,9 @@ export function tkClose(focus = true) {
   const w = document.getElementById("tkm"); if (!M.id) return; M.id = ""; M.back = [];
   if (w) { w.classList.remove("on"); setTimeout(() => { if (!M.id) w.innerHTML = ""; }, 240); }
   // Focus goes back where it came from; if that's gone or hidden (the drawer closed when the card opened), to the Activity button.
-  if (focus && !D?.phone()) { const f = M.from, k = M.k, shown = !!f?.isConnected && !!f.offsetParent && !f.closest(".tk-w:not(.tk-open) .tk-feed");
-    (shown ? f : document.querySelector<HTMLElement>(`[data-tkbtn="${CSS.escape(k)}"]`))?.focus({ preventScroll: true }); }
+  if (focus) { const f = M.from, k = M.k, shown = !!f?.isConnected && !!f.offsetParent && !f.closest(".tk-w:not(.tk-open) .tk-feed");
+    if (shown) f!.focus({ preventScroll: true });
+    else focusHeaderAction(document.querySelector<HTMLElement>(`[data-tkbtn="${CSS.escape(k)}"]`), D?.phone()); }
   M.from = null;
 }
 function railRow(d: CardDetail, e: EventView, k: string) {
@@ -393,6 +398,8 @@ function summaryHtml(d: CardDetail, k: string) {
   const reply = d.reply ? (D?.plain(d.reply) || d.reply) : "";
   return `<div class="tk-sum">${d.result ? `<p class="tk-res">${esc(d.result)}</p>` : ""}<p class="tk-meta">${esc(meta)}</p>
     <div class="tk-stext">${text}</div>
+    ${d.progress?.length || d.progress_omitted ? `<section class="tk-progress"><h3>Progress notes</h3>${d.progress_omitted ? `<p class="tk-mute">${esc(d.progress_omitted)} earlier notes are no longer retained. The available steps remain in this card.</p>` : ""}${(d.progress || []).map(p => `<p>${esc(p)}</p>`).join("")}</section>` : ""}
+    ${d.saved?.length ? `<section class="tk-saved"><h3>Saved memory</h3>${d.saved.map(x => D?.savedChip?.(slug, x) || "").join("")}</section>` : ""}
     ${hs.map(h => `<div class="tk-hcard"><span class="tk-hico">${h.status === "running" ? spin() : svg(P.helper, 15)}</span><div><b>Background job #${h.id}: ${esc(h.name)}</b><span>${esc(h.status === "running" ? `Working · ${ago(h.started)}` : h.status === "stopped" ? `Stopped${h.stopped_by ? ` by ${h.stopped_by === "person" ? "you" : h.stopped_by === "limit" ? "its limit" : who}` : ""}` : h.status === "done" ? "Finished" : h.status)}</span></div>
       ${h.status === "running" ? `<button type="button" class="tk-stop" data-tkstop="${h.id}"${BUSY[`stop${h.id}`] ? " disabled" : ""}>${svg(P.stop, 13, 2)}<span>${BUSY[`stop${h.id}`] ? "Stopping…" : "Stop"}</span></button>` : ""}
       ${h.card && h.card !== d.id ? `<button type="button" class="tk-lnk" data-tkopen="${esc(h.card)}">Open</button>` : ""}</div>`).join("")}
@@ -559,7 +566,7 @@ export function tkInit(d: Deps) {
   let lastMode = mode();
   window.addEventListener("resize", () => { const m = mode(); if (m === lastMode) return; lastMode = m; document.querySelectorAll<HTMLElement>(".tk-w").forEach(w => { paintFeed(w.dataset.tkw!); paintBtns(w.dataset.tkw!); }); if (M.id) paintModal(); if (m !== "sheet") closeSheet(); });
   new MutationObserver(() => { const m = mode(); if (m !== lastMode) { lastMode = m; document.querySelectorAll<HTMLElement>(".tk-w").forEach(w => paintFeed(w.dataset.tkw!)); } }).observe(document.body, { attributes: true, attributeFilter: ["class"] });
-  window.addEventListener("hashchange", () => { tkClose(false); closeSheet(); });
+  window.addEventListener("hashchange", () => { tkClose(false); closeSheet(false); });
   // Live clocks on the helper strip; a running helper's card refreshes every 3 s while it's open.
   setInterval(() => document.querySelectorAll<HTMLElement>("[data-tkel]").forEach(x => { x.textContent = `In the background · ${ago(+x.dataset.tkel!)}`; }), 20e3);
   setInterval(() => { const d = M.id ? DET[M.id] : null; if (d && d.kind === "helper" && isOpen(d) && !document.hidden) fetchCard(); }, 3000);

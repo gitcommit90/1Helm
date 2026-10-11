@@ -9,7 +9,7 @@
 // "Everything (global)" once; it shows app-wide (rail foot on desktop, header on phone) and in the overlay wherever you are.
 // Shortcuts (pomoShortcut, called from v3's one keydown handler): start now at the scope last chosen, pause/resume, stop.
 // v3.ts only hooks in: the header slots, pomoSet from the server, pomoSync after repaints, and pomoInit.
-import { anchorRect } from "./headfit";
+import { anchorRect, focusHeaderAction } from "./headfit";
 export type PomoTimer = { phase: "work" | "break" | "long" | "ready" | "done"; round: number; rounds: number; ends: number | null; left: number | null; paused: boolean;
   since: number; started: number; work_min: number; break_min: number; long_min: number; focused: number; done_rounds: number; by?: string; now?: number };
 export type PomoOffer = { id: number; at: number; work_min: number; break_min: number; long_min: number; rounds: number };
@@ -230,7 +230,7 @@ function panelOpen(k: string, btn: HTMLElement) {
 export function pomoClose(focus = true) {
   const w = document.getElementById("pmpw"); if (!P.open) return; const k = P.open; P.open = ""; P.ask = "";
   paintSlots(k);
-  if (focus && !D?.phone()) document.querySelector<HTMLElement>(`[data-pomo="${CSS.escape(k)}"]`)?.focus({ preventScroll: true });
+  if (focus) focusHeaderAction(document.querySelector<HTMLElement>(`[data-pomo="${CSS.escape(k)}"]`), D?.phone());
   if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!P.open) w.innerHTML = ""; }, 280);
 }
 const panelClose = pomoClose;

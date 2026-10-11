@@ -3,7 +3,7 @@
 // where the person can follow along and tick or untick items. Live from the stream ({t:"todos", items}); the session detail
 // API brings it back after a reload. v3.ts only hooks in: the header buttons, liveLoad, the stream handler and repaints.
 // ready: the helper finished it, but only the person ticks things done ("Ready to tick" until they do).
-import { anchorRect } from "./headfit";
+import { anchorRect, focusHeaderAction } from "./headfit";
 export type TodoItem = { id: string; text: string; status: "todo" | "doing" | "done"; ready?: boolean };
 type Deps = {
   api: (path: string, body?: any) => Promise<any>;
@@ -127,7 +127,7 @@ function todoOpen(k: string, btn: HTMLElement, automatic = false) {
 export function todoClose(focus = true) {
   const w = document.getElementById("tdpw"); if (!TD.open) return; const k = TD.open; focus = focus && !TD.automatic; TD.open = ""; TD.automatic = false;
   paintBtns(k);
-  if (focus && !D?.phone()) document.querySelector<HTMLElement>(`[data-todo="${CSS.escape(k)}"]`)?.focus({ preventScroll: true });
+  if (focus) focusHeaderAction(document.querySelector<HTMLElement>(`[data-todo="${CSS.escape(k)}"]`), D?.phone());
   if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!TD.open) w.innerHTML = ""; }, 280);
 }
 // The person ticks or unticks: shown at once, then the server's list (which the helper will see) replaces it.

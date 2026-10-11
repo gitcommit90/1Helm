@@ -136,7 +136,7 @@ export const QUESTIONS = [
     kind: "many", opts: () => [["iPhone", "iPhone"], ["an Android phone", "Android phone"], ["an iPad", "iPad"], ["a Mac", "Mac"], ["a Windows PC", "Windows PC"], ["a Chromebook", "Chromebook"]],
     rows: (a) => (a.picks || []).length ? [`Uses ${andJoin(a.picks.map((x) => x === "iPhone" ? "an iPhone" : x))}.`] : [] },
   // "Do you use any of these apps?" (Captain 10-08): 0–N apps, or "None of these". Not Notebook rows: the answer is the account's
-  // apps list (apps-used.js, also Settings → Connected accounts → Apps I use), which the helper sees with each app's connection status.
+  // apps list (apps-used.js), which the helper sees with each app's connection status.
   { id: "apps", sec: "places", look: "apps",
     ask: () => "Do you use any of these apps?", sub: () => "Pick any. Your helper won't connect anything now; it just knows to offer when one comes up.",
     kind: "many", none: NONE, opts: () => [...APP_OPTIONS.map((o) => [o.k, o.n]), [NONE, "None of these"]],
@@ -218,7 +218,7 @@ async function stateOf(env, t, row) {
   let live = null;
   try { const ch = await mainChannel(env, t.id); if (ch) live = new Set(((await archiveOf(env, t.id).channel(ch.id, 1)).memory || []).filter((m) => m.status !== "superseded").map((m) => String(m.id))); } catch {}
   for (const a of Object.values(answers)) if (live && Array.isArray(a.rows)) a.rows = a.rows.filter((r) => live.has(String(r.id)));
-  // The apps question starts on the account's list (Settings or the helper may have set it before they got here).
+  // The apps question starts on the account's list (the helper may have set it before they got here).
   const questions = ACTIVE_QUESTIONS.map((q) => questionView(q, known)), aq = questions.find((q) => q.look === "apps");
   if (aq && !answers.apps?.picks) { const u = await getAppsUsed(env, t.id).catch(() => null); if (u?.answered) aq.defPicks = u.apps.length ? u.apps.filter((k) => APP_OPTIONS.some((o) => o.k === k)) : u.none ? [NONE] : []; }
   return { status: "open", session: row.session_id, step: visibleStep(row.step), total: TOTAL, finished: !!row.finished_at, known: { first: known.first || "", place: placeOf(known), tz: known.tz || "", tzName: tzName(known.tz) },

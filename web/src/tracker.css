@@ -243,3 +243,8 @@ button.tk-rr:focus-visible{outline:0;box-shadow:inset 0 0 0 2px var(--ink2)}
 .tk-fold[open]>summary{margin-bottom:8px}
 .tk-fold .tk-mute{display:flex;align-items:center;gap:8px;margin:0;font-size:13.5px}
 .tk-tail{max-height:30vh}
+/* Deferred response details: readable within the task card at every width. */
+.tk-progress,.tk-saved{margin-top:20px;min-width:0}
+.tk-progress h3,.tk-saved h3{font-size:13px;margin:0 0 8px;color:var(--ink2)}
+.tk-progress p{font-size:14px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}
+.tk-saved .nbsaved{max-width:100%;box-sizing:border-box}

@@ -3,7 +3,7 @@
 // first: the helper's name chip (just hidden: the side panel shows it), Pin, Mark done, Delete, Activity, the to-do list, the focus timer,
 // and last Live notes. The title, the status pill, Stop and ⋯ always stay. The title shrinks with an ellipsis, but while something can
 // still fold it keeps at least ~170px. Action labels never truncate: an action is either shown whole or in the menu.
-// The phone header (.mh) has its own fold (mhFit in v3.ts).
+// The phone header (.mh) groups its tools in a disclosure (v3.ts).
 const TITLE_MIN = 170;
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" } as Record<string, string>)[c]);
 
@@ -15,8 +15,7 @@ export function hFit() {
   const h = head(); if (!h) return;
   const more = h.querySelector<HTMLElement>("[data-hmore]"), t = h.querySelector<HTMLElement>("h1"); if (!more || !t) return;
   const items = [...h.querySelectorAll<HTMLElement>(".ho[data-ho]")].sort((a, b) => +a.dataset.ho! - +b.dataset.ho!);
-  const rename = h.querySelector("[data-rename]");
-  items.forEach(x => x.classList.remove("hhid")); more.hidden = !rename;
+  items.forEach(x => x.classList.remove("hhid")); more.hidden = true;
   const cs = getComputedStyle(h), limit = h.getBoundingClientRect().right - parseFloat(cs.paddingRight) + 0.5;
   const kids = () => [...h.querySelectorAll<HTMLElement>("button, .meta, .who-chip")];
   const over = () => kids().some(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.right > limit; });
@@ -27,10 +26,10 @@ export function hFit() {
     for (const x of items) { if (!tight()) break; if (x.dataset.ho === "0" || x.querySelector("button")) x.classList.add("hhid"); }
   }
   const folded = items.filter(x => x.classList.contains("hhid") && x.querySelector("button"));
-  more.hidden = !folded.length && !rename;
+  more.hidden = !folded.length;
   // something folded is live (recording, working, a timer running): a dot on ⋯ says so
   more.classList.toggle("lit", folded.some(x => !!x.querySelector(".ln-rec, .tk-dot, .pmbtn:not(.idle)")));
-  if (!folded.length && !rename && document.getElementById("hmenu")) closeMenu();
+  if (!folded.length && document.getElementById("hmenu")) closeMenu();
 }
 // Called after every render of the desktop stage.
 export function hWatch() {
@@ -46,9 +45,17 @@ export function anchorRect(b: HTMLElement): DOMRect {
   const m = document.querySelector<HTMLElement>("#stage>header [data-hmore]:not([hidden])"); return m ? m.getBoundingClientRect() : r;
 }
 
+// A mobile tool's button lives in a closed disclosure while its panel is open.
+// Return to the visible summary after dismissing the panel, never a hidden control.
+export function focusHeaderAction(button: HTMLElement | null, phone = false) {
+  const tools = button?.closest<HTMLDetailsElement>("[data-mtools]");
+  const target = tools && !tools.open ? tools.querySelector<HTMLElement>("summary") : phone ? null : button;
+  target?.focus({ preventScroll: true });
+}
+
 // ---- the ⋯ menu: the folded actions, in the header's order ----
-const folded = () => [...document.querySelectorAll<HTMLElement>("#stage>header [data-rename]"), ...[...document.querySelectorAll<HTMLElement>("#stage>header .ho.hhid")]
-  .map(x => x.querySelector<HTMLElement>("button")).filter((b): b is HTMLElement => !!b)];
+const folded = () => [...document.querySelectorAll<HTMLElement>("#stage>header .ho.hhid")]
+  .map(x => x.querySelector<HTMLElement>("button")).filter((b): b is HTMLElement => !!b);
 const labelOf = (b: HTMLElement) => {
   if (b.matches(".hpin")) return b.textContent!.trim() === "Pinned" ? "Unpin" : "Pin";
   if (b.matches(".hdone")) return b.classList.contains("on") ? "Reopen" : "Mark done";
