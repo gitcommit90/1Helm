@@ -44,6 +44,9 @@ export const MARK_DONE_TOOL = { type: "function", function: { name: "mark_task_d
   parameters: { type: "object", properties: {
     task: { type: "string", description: "The task's title (or part of it) or id; \"this task\" for the current one. If several tasks match, the result lists them: ask the person which one." },
     person_asked: { type: "string", description: "A short exact quote of the person's own words asking you to mark it done, e.g. 'mark the flights one as done'" } }, required: ["task", "person_asked"] } } };
+MARK_DONE_TOOL.function.description = MARK_DONE_TOOL.function.description.replace("one of this channel's tasks", "a task in this channel or another existing channel using channel");
+MARK_DONE_TOOL.function.parameters.properties.channel = { type: "string", description: "Existing channel slug or exact name from list_channels; omit for General." };
+MARK_DONE_TOOL.function.parameters.properties.task.description = "The task id or exact title from list_tasks; use an id if a title is ambiguous. 'this task' selects the current task only in General.";
 
 // Which task the person meant: id, "this task", exact title, then title fragments. rows: [{ id, title, done }].
 // texts: ids of texting tasks (preferred against when another open task also matches). → { row } or { error }.

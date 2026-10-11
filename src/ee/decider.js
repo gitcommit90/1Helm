@@ -10,7 +10,7 @@ import { aigOn, aigMeta, aigPayload, OR_MAX_PRICE } from "../model.js";
 export const DECIDER_DEFAULT = "perplexity/pplx-decider-v1.1-27b";
 export const DECIDER_IN_NANO = 20;       // $0.02 per million input tokens; estimate only when usage.cost is missing
 export const DECIDER_URL = "https://openrouter.ai/api/v1/systemone";
-export const deciderModel = (env) => String(env?.DECIDER_MODEL || "").trim() || DECIDER_DEFAULT;
+export const deciderModel = (env) => (env?.MODEL_SETTINGS?.decider && env.MODEL_SETTINGS.decider !== "default" ? env.MODEL_SETTINGS.decider : null) || String(env?.DECIDER_MODEL || "").trim() || DECIDER_DEFAULT;
 // Provider rules like every other route: the model's own host only (perplexity/… → "perplexity", ~typesafe/jev-latest → "typesafe"),
 // no fallbacks, ZDR only, the price ceiling. If that host ever drops ZDR, OpenRouter refuses and the caller sees the error (no retry without it).
 export const deciderHost = (model) => String(model || DECIDER_DEFAULT).replace(/^~/, "").split("/")[0];

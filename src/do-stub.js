@@ -18,7 +18,7 @@ export const RESET_RE = /reset because its code was updated|Durable Object reset
 export const isResetErr = (e) => !!e && (e.objectReset === true || RESET_RE.test(String(e?.message ?? e)));
 export const doTransient = (e) => !!(e?.retryable || e?.overloaded || DO_TRANSIENT_RE.test(String(e?.message || e || "")));
 // The namespaces we wrap (wrangler durable_objects bindings).
-export const DO_BINDINGS = ["RESIDENT", "CHANNEL_COMPUTER", "LEDGER", "ARCHIVE", "COMPUTER", "BEE_SYNC", "LIVE_NOTES", "FILE_PREP"];
+export const DO_BINDINGS = ["RESIDENT", "CHANNEL_COMPUTER", "LEDGER", "ARCHIVE", "COMPUTER", "BEE_SYNC", "LIVE_NOTES", "FILE_PREP", "NATIVE_TRANSPORT"];
 // Methods that are safe to run twice: reads, plus writes that set a value or are keyed by an id (bind/init/ensure, Ledger settle,
 // Live notes' mic chunks: micPush is keyed by the chunk's seq, micState sets a state).
 // A method not listed here is retried only on skew (it never ran), never on a reset (it may have).

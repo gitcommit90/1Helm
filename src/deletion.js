@@ -176,7 +176,8 @@ async function wipeChannelEverywhere(env, job, tid, slug, cid, prefix = "") {
   const A = archive(env, tid), DB = env.DB, k = (n) => `${prefix}${n}`;
   if (cid != null) await step(env, job, k("hide"), () => A.markChannelDeleting(cid));
   await step(env, job, k("schedules"), async () => Number((await DB.prepare("DELETE FROM resident_schedules WHERE tenant_id=? AND channel=?").bind(tid, slug).run()).meta?.changes || 0));
-  await step(env, job, k("resident"), () => resident(env, tid, slug).wipeChannel());
+  await step(env, job, k("resident"), async () => { const R = resident(env, tid, slug); await R.bind(tid, slug, String(cid ?? '')); return R.wipeChannel(); });
+  if (env.NATIVE_TRANSPORT) await step(env, job, k('native_transport'), () => env.NATIVE_TRANSPORT.get(env.NATIVE_TRANSPORT.idFromName(`${tid}:${slug}`)).wipe({ tenant: tid, channel: slug }));
   await step(env, job, k("computer"), () => ccOf(env, tid, slug).wipe());
   await step(env, job, k("r2"), async () => { let n = 0; for (const p of [`t/${tid}/c/${slug}/`, `t/${tid}/files/${slug}/`, `t/${tid}/shots/${slug}/`]) n += await r2DeletePrefix(env, p); return n; });
   await step(env, job, k("hindsight"), async () => {
@@ -240,6 +241,10 @@ export async function deleteAccount(env, tenantId, { reason = "person" } = {}) {
       if (t) await DB.prepare("UPDATE tenants SET status='deleting', updated_at=? WHERE id=?").bind(now(), tenantId).run();
       return m.user ? Number((await DB.prepare("DELETE FROM sessions WHERE user_id=?").bind(m.user).run()).meta?.changes || 0) : 0;
     });
+    // Stop the ambient producer before deleting any of its downstream stores. A failed
+    // RPC leaves this resumable step pending; never report account deletion complete
+    // while the BeeSync object could still recreate transcripts, facts or extraction rows.
+    if (env.BEE_SYNC) await step(env, job, "bee_sync", () => env.BEE_SYNC.get(env.BEE_SYNC.idFromName(tenantId)).wipeAccount(tenantId));
     // Outside services first, while their credentials are still here.
     await step(env, job, "stripe", () => stripeCancel(env, m.stripe_customer, m.stripe_subscription));
     await step(env, job, "composio", () => composioDisconnectAll(env, tenantId));

@@ -15,6 +15,7 @@
   }],
   "r2_buckets": [{ "binding": "WS", "bucket_name": "REPLACE_WITH_YOUR_R2_BUCKET_NAME" }],
   "durable_objects": { "bindings": [
+    { "name": "NATIVE_TRANSPORT", "class_name": "NativeTransport" },
     { "name": "RESIDENT", "class_name": "Resident" },
     { "name": "CHANNEL_COMPUTER", "class_name": "ChannelComputer" },
     { "name": "LEDGER", "class_name": "UsageLedger" },
@@ -22,8 +23,10 @@
     { "name": "COMPUTER", "class_name": "Computer" },
     { "name": "FILE_PREP", "class_name": "FilePrep" }
   ] },
-  "migrations": [{ "tag": "selfhost-v1", "new_sqlite_classes": ["Resident", "ChannelComputer", "UsageLedger", "Archive", "Computer", "FilePrep"] }],
+  "migrations": [{ "tag": "selfhost-v1", "new_sqlite_classes": ["Resident", "ChannelComputer", "UsageLedger", "Archive", "Computer", "FilePrep"] },
+    { "tag": "selfhost-native-transport-v1", "new_sqlite_classes": ["NativeTransport"] }],
   "containers": [
+    { "class_name": "NativeTransport", "image": "./native-transport/Dockerfile", "instance_type": "basic", "max_instances": 5 },
     { "class_name": "ChannelComputer", "image": "./image/Dockerfile", "instance_type": "standard-3", "max_instances": 5 },
     { "class_name": "Computer", "image": "docker.io/library/node:22-bookworm", "instance_type": "basic", "max_instances": 2 }
   ],
@@ -35,6 +38,8 @@
   "vars": {
     "ENV_NAME": "selfhost",
     "TEST_MODE": "0",
+    "NATIVE_NETWORK": "on",
+    "CONTEXT_LAYOUT": "v2",
     "APP_HOST": "REPLACE_WITH_YOUR_WORKERS_DEV_HOST",
     "GATEWAY_HOST": "REPLACE_WITH_YOUR_WORKERS_DEV_HOST",
     "EMAIL_FROM": "REPLACE_WITH_YOUR_VERIFIED_SENDER_EMAIL",

@@ -6,6 +6,8 @@
 @import "./ee/livenotes.css"; @import "./ee/meetings.css";
 @import "./tracker.css";
 @import "./dialog.css";
+@import "./task-rename.css";
+@import "./ee/custom-mcp.css";
 @import "./delete.css";
 @import "./newchannel.css";
 @import "./dictate.css";
@@ -35,6 +37,13 @@
 @import "./devperm.css";
 @import "./pwainstall.css";
 @import "./msgreply.css";
+@import "./progress-slot.css";
+@import "./settings-links.css";
+@import "./channel-sidebar.css";
+@import "./chat-attachments.css";
+.nbbeedot{display:inline-block;width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:#d5af45;opacity:.8}
+.nbbeedot[hidden]{display:none}
+.dti:has(.nbbeedot){position:relative}.dti>.nbbeedot{position:absolute;right:0;top:0}
 :root{
   --page:#f3f2ef;--sheet:#fff;--chip:#fff;--hover:#e9e8e4;--line:#e7e5e0;--line2:#d9d6cf;
   --ink:#1c1b19;--ink2:#44423d;--mute:#77746c;--faint:#a8a49b;
@@ -53,7 +62,7 @@
   --abub:#262628;--ubub:#1d3a66;--uink:#e6efff;--accent:#60a5fa;--warn:#f59e0b;--live:#22c55e;
   --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 16px rgba(0,0,0,.25);--lift:0 2px 6px rgba(0,0,0,.35),0 12px 32px rgba(0,0,0,.4)}
 *{box-sizing:border-box;scrollbar-width:none}*::-webkit-scrollbar{display:none;width:0;height:0}
-body{margin:0;height:100vh;height:100dvh;display:grid;grid-template-columns:80px 272px 1fr;grid-template-rows:minmax(0,1fr);background:var(--page);overflow:hidden}
+body{margin:0;height:100vh;height:100dvh;display:grid;grid-template-columns:80px var(--channel-sidebar-width,272px) minmax(0,1fr);grid-template-rows:minmax(0,1fr);background:var(--page);overflow:hidden}
 button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;padding:0}
 kbd{font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--faint);background:var(--hover);border-radius:5px;padding:3px 5px}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -134,6 +143,18 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 .body th{font-weight:600;color:var(--mute);text-align:left;font-size:12px}
 .body td,.body th{border-bottom:1px solid var(--line);padding:8px 14px}.body tr:last-child td{border-bottom:0}
 .body code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--sheet);padding:1px 5px;border-radius:6px}
+/* Markdown fences (keys, URLs, commands): wrap visually without changing copied text or indentation. */
+.bubble .body pre{white-space:pre-wrap;overflow-wrap:anywhere}
+/* Copy is always visible (including touch), and never part of the copied code. */
+.bubble .body .chat-code-inline{display:inline-block;max-width:100%;vertical-align:baseline;background:var(--sheet);border-radius:6px;padding:2px 4px}
+.bubble .body .chat-code code{background:none;padding:0;border-radius:0}
+.bubble .body .chat-code-copy{display:inline-flex;align-items:center;justify-content:center;line-height:1;color:var(--ink2);background:var(--abub);border:1px solid var(--line);border-radius:5px;padding:5px;min-width:28px;min-height:28px;cursor:pointer;vertical-align:middle;user-select:none}.bubble .body .chat-code-copy svg{display:block;flex:none}
+.bubble .body .chat-code-inline>.chat-code-copy{margin-left:5px}
+.bubble .body .chat-code-copy:hover{color:var(--ink);border-color:var(--mute)}
+.bubble .body .chat-code-copy:focus-visible{outline:2px solid var(--ink2);outline-offset:2px}
+.bubble .body .chat-code-block{position:relative;background:var(--sheet);border-radius:10px;margin:.7em 0;padding:42px 12px 12px;min-width:0}
+.bubble .body .chat-code-block>pre{margin:0}
+.bubble .body .chat-code-block>.chat-code-copy{position:absolute;right:7px;top:7px}
 /* tool work: a small card above the bubble */
 .steps{margin:0 0 8px;font-size:13px;color:var(--mute);max-width:86%}
 .steps summary{list-style:none;display:inline-flex;align-items:center;gap:8px;cursor:pointer;height:34px;padding:0 12px 0 5px;border-radius:999px;border:1px solid var(--line)}.steps summary::-webkit-details-marker{display:none}
@@ -201,6 +222,10 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
   .dbar{position:absolute;left:0;right:0;bottom:0;display:flex;gap:10px;padding:12px 14px calc(12px + env(safe-area-inset-bottom));background:linear-gradient(transparent,var(--page) 30%)}
   .chat{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--sheet);transition:transform .34s cubic-bezier(.2,.8,.2,1),border-radius .34s;will-change:transform}
   .cv.open .chat{transform:translateX(86%);border-radius:36px;box-shadow:var(--lift);overflow:hidden}
+  .cv.dragging .chat,.cv.dragging .dm{transition:none}
+  .cv.dragging .chat{transform:translateX(calc(var(--drawer-progress) * 86%));border-radius:calc(var(--drawer-progress) * 36px);overflow:hidden}
+  .cv.dragging .dm{transform:translateX(calc((1 - var(--drawer-progress)) * -16%));opacity:var(--drawer-progress)}
+  .cv.dragging{user-select:none;-webkit-user-select:none}
   .shade{display:none;position:absolute;inset:0;z-index:5}.cv.open .shade{display:block}
   .mh{flex:none;display:flex;align-items:center;gap:10px;padding:calc(10px + env(safe-area-inset-top)) 14px 8px;height:auto}
   .mh .cb{background:var(--abub);box-shadow:none}
@@ -253,6 +278,10 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 .hdate{font-size:13.5px;color:var(--mute);font-weight:400}
 .hwrap h1{margin:6px 0 2px;font-size:30px;font-weight:600;letter-spacing:-.025em}
 .hsub{margin:0 0 22px;color:var(--mute);font-size:16px}
+.home-notes{display:inline-flex;align-items:center;gap:7px;min-height:44px;padding:0 13px;margin:-6px 0 16px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--ink2);font-size:13px;font-weight:500;cursor:pointer}
+.home-notes:hover{background:var(--abub)}
+.home-notes:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.home-notes:disabled{opacity:.6;cursor:wait}
 .hhint{margin:10px 6px 0;min-height:20px;font-size:13px;color:var(--faint);transition:color .2s}
 .hhint.ok{color:var(--live)}
 .hsec{margin:30px 6px 6px;font-size:12.5px;font-weight:600;color:var(--faint)}
@@ -514,6 +543,9 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 .sbody h2+.sc{margin-top:18px}
 .sc{background:var(--abub);border-radius:20px;overflow:hidden}
 .sc+.sc{margin-top:12px}
+.lkapp{padding:18px}.lkapp p{margin:0 0 14px;color:var(--mute);font-size:14px;line-height:1.5}
+.lkdownloads{display:flex;flex-wrap:wrap;gap:10px}.lkdownloads .sa{display:inline-flex;align-items:center;justify-content:center;min-height:44px;text-decoration:none;padding:10px 16px}
+.lkdownloads .sa:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 .sr{display:flex;align-items:center;gap:14px;min-height:58px;padding:12px 18px;width:100%;text-align:left;font-size:14.5px;color:var(--ink)}
 .sr+.sr{box-shadow:0 -1px 0 var(--line)}
 .sr[role=button]{cursor:pointer}.sr[role=button]:hover,.sr.sradio:hover{background:color-mix(in srgb,var(--hover) 70%,transparent)}
@@ -539,6 +571,7 @@ header h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:0;white-space
 .seg{display:flex;gap:2px;padding:3px;border-radius:999px;background:var(--sheet);box-shadow:0 0 0 1px var(--line)}
 .seg button{width:38px;height:30px;border-radius:999px;display:grid;place-items:center;color:var(--mute)}.seg button:hover{color:var(--ink)}.seg button.on{background:var(--abub);color:var(--ink);box-shadow:var(--shadow)}
 .sradio .rck{width:22px;height:22px;display:grid;place-items:center;color:var(--accent);opacity:0}.sradio.on .rck{opacity:1}.rck svg{width:18px;height:18px;stroke-width:2.4}
+.netbox{padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}.netbox p{margin:0;line-height:1.5}.netchannel,.netlabel{display:flex;flex-direction:column;gap:8px;min-width:0}.netchannel select{font:inherit;max-width:100%;padding:9px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}.netlabel textarea{width:100%;box-sizing:border-box;resize:vertical;font:12px/1.5 monospace;overflow-wrap:anywhere;word-break:break-all;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--hover);color:var(--ink)}.netactions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.netfingerprint{display:flex;flex-direction:column;gap:6px}.netfingerprint code,.netwrap,.neterror,.network-settings .sfine,.gu-ssh .gu-sh b,.gu-ssh .gu-cfnote span{overflow-wrap:anywhere;min-width:0}.neterror{color:var(--warn);font-size:14px;line-height:1.5}.netsession{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.netsession>div{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1 1 180px;overflow-wrap:anywhere}.netsession span{font-size:13px;color:var(--mute)}.netlogin{align-self:flex-start;white-space:normal}.network-settings{min-width:0}
 .tg{position:relative;flex:none;width:44px;height:26px;border-radius:999px;background:var(--line2);transition:background .18s}
 .tg i{position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:transform .2s cubic-bezier(.2,.8,.2,1)}
 .tg.on{background:var(--live)}.tg.on i{transform:translateX(18px)}
@@ -861,6 +894,34 @@ code,.steps code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 /* your messages: ink, like the buttons you pressed to get here */
 .user .bubble{background:var(--ubub);color:var(--uink)}
 .user .bubble a{color:inherit}
+/* Chat reading surface: neutral system type, quiet code tools, unchanged bubble widths. */
+.msgs{--chat-paper:#f1f1f1;--chat-ink:#1c1c1e;--chat-code:rgba(0,0,0,.045)}
+:root[data-theme=dark] .msgs{--chat-paper:#29292b;--chat-ink:#ededee;--chat-code:rgba(255,255,255,.055)}
+@media(prefers-color-scheme:dark){:root:not([data-theme=light]) .msgs{--chat-paper:#29292b;--chat-ink:#ededee;--chat-code:rgba(255,255,255,.055)}}
+.msgs .bubble{font:400 16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;text-align:left;letter-spacing:normal}
+.msgs .agent .bubble{background:var(--chat-paper);color:var(--chat-ink)}
+.msgs .user .bubble{background:#000;color:#fff}
+.msgs .bubble .body p,.msgs .bubble .body ul,.msgs .bubble .body ol{margin:.65em 0}
+.msgs .bubble .body ul,.msgs .bubble .body ol{padding-left:1.35em}
+.msgs .bubble .body li{margin:.2em 0}
+.msgs .bubble .body>:first-child{margin-top:0}.msgs .bubble .body>:last-child{margin-bottom:0}
+.msgs .bubble .body strong,.msgs .bubble .body b{font-weight:600}
+.msgs .bubble .body h1,.msgs .bubble .body h2,.msgs .bubble .body h3,.msgs .bubble .body h4,.msgs .bubble .body h5,.msgs .bubble .body h6{font-family:inherit;font-weight:600;font-size:1em;line-height:1.4;margin:.8em 0 .4em}
+.msgs .bubble .body code{font:400 .84em/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.msgs .bubble .body .chat-code-inline{display:inline;max-width:none;padding:0;background:none;border-radius:0;vertical-align:baseline;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+.msgs .bubble .body .chat-code-inline code{background:var(--chat-code);padding:1px 3px;border-radius:3px;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+.msgs .bubble .body .chat-code-copy,.msgs .bubble .body .chat-code-download{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:28px;height:28px;min-width:28px;min-height:28px;padding:6px;border:0;border-radius:4px;background:none;color:var(--mute);cursor:pointer;line-height:1;user-select:none}
+/* Negative block margins keep the 28px hit target without stretching a 22.4px text line. */
+.msgs .bubble .body .chat-code-inline>.chat-code-copy{width:24px;min-width:24px;height:24px;min-height:24px;padding:4px;margin:-5px 0 -5px 2px;vertical-align:-5px}
+.msgs .bubble .body .chat-code-copy:hover,.msgs .bubble .body .chat-code-download:hover{background:var(--chat-code);color:var(--chat-ink)}
+.msgs .bubble .body .chat-code-download:focus-visible{outline:2px solid var(--ink2);outline-offset:2px}
+.msgs .bubble .body .chat-code-block{background:var(--chat-code);border-radius:8px;padding:38px 12px 12px;margin:.75em 0}
+.msgs .bubble .body .chat-code-block>.chat-code-copy{right:36px;top:4px}
+.msgs .bubble .body .chat-code-block>.chat-code-download{position:absolute;right:4px;top:4px}
+.msgs .mact button{border:0;background:none;color:var(--mute);padding:0;min-width:30px;height:30px;border-radius:4px}
+.msgs .mact button:hover{background:var(--chat-code);color:var(--ink)}
+.msgs .mact .mal,.msgs .mact button.done .mal{display:none}
+@media(hover:none){.msgs .mact button{height:44px;min-width:44px}}
 /* send button: ink pill (it already was), mic/attach stay quiet */
 #go{background:var(--ink);color:var(--sheet)}
 /* the toast check uses ink, not green */
@@ -916,7 +977,7 @@ body.pc-on .pcfab{display:none}
    clipboard, the one main action and keyboard at the bottom. Desktop: the same pieces in a side pane.
    Every label sits on its own line, so nothing can overlap (the old header drew "You're in control" over the name). */
 #pc:empty{display:none}
-body.pc-on{grid-template-columns:80px 272px minmax(0,1fr) minmax(420px,46vw)}
+body.pc-on{grid-template-columns:80px var(--channel-sidebar-width,272px) minmax(0,1fr) minmax(420px,46vw)}
 #pc{--pcbg:#141413;--pcbtn:#2a2a28;--pcbtnh:#363633;--pcfg:#f1f0ee;--pcmute:#a19e96;
   position:relative;grid-column:4;grid-row:1;display:flex;flex-direction:column;min-width:0;min-height:0;margin:10px 10px 10px 0;
   background:var(--pcbg);color:var(--pcfg);border-radius:24px;box-shadow:var(--shadow);overflow:hidden}
@@ -1352,7 +1413,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
   .sacct{width:100%;display:flex;align-items:center;gap:12px;padding:6px 8px 14px;text-align:left;color:var(--ink)}
   .sacct .srt b{font-size:17px}.sacct .srt>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sacct>svg{color:var(--faint)}
   .suse .mbar{display:block;height:4px;margin-top:6px;border-radius:2px;background:var(--line);overflow:hidden}.suse .mbar i{display:block;height:100%;background:var(--ink2);border-radius:2px}
-  .mseg{flex:none}.mseg button{width:40px;height:32px}
+  .srow .mseg{flex:none}.mseg button{width:40px;height:32px}
   .lnew{flex:none}.ltop .lsearch{min-width:0}
   .sfoot{flex-wrap:wrap}
   .srow span small{font-weight:400}.srow .soonp{flex:none}
@@ -1360,6 +1421,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 }
 @media (max-width:359px){
   .dm{width:88%}.cv.open .chat{transform:translateX(90%)}
+  .cv.dragging .chat{transform:translateX(calc(var(--drawer-progress) * 90%))}
   .dnav{gap:0;padding:2px 4px 6px}
   .dtl{font-size:10.5px;letter-spacing:-.015em}
   .dchsw b{font-size:22px}
@@ -1453,6 +1515,8 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .sc>.sform+.sr,.sc>.sr+.sform{box-shadow:0 -1px 0 var(--line)}
 .sr .stag.acthis{flex:none;color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .srt .aclink{color:var(--accent);font-weight:600;white-space:nowrap}
+/* Keep unbroken login domains inside their text column, clear of Edit and Remove. */
+.sr[data-kyrow] .srt>b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sr[data-kyrow] .sa+.sa{margin-left:-6px}
 @media (max-width: 767px){
   .sf textarea{font-size:17px}
@@ -1590,6 +1654,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .apdok span,.pl-q-c .gu-chip,.tk-chip b,.sr .stag,.piw .sfh .stag,.citag,.tk-pback span{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
 .shead .txtbtn{height:auto;min-height:36px;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.2}
 .gu-plan .gu-btns{flex-wrap:wrap}.gu-plan .gu-btns .gu-b{white-space:normal}
+[data-computer-offer][hidden]{display:none}
 @media (max-width:767px){.sa{min-height:36px}.mpill{min-height:44px}.cxpbtn{min-height:36px}}
 /* The task header's title pill is the one exception: it's a title, not an action label. Wrapping it let the flex row squeeze it to one
    letter per line on phones. It stays on one line, shrinks into the room the buttons leave (ellipsis for a long title; tap it for the full
@@ -1599,3 +1664,22 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .mpill>.av,.mpill>.pico{flex:none}
 .mh .cb,.mh .tk-btn,.mh .pmbtn,.mh .tdbtn{flex:none}
 .srow.atask span{min-width:0;overflow-wrap:anywhere;line-height:1.35}.srow.atask small{margin-bottom:2px}
+/* Connection checks can cold-start a trusted client: show activity before they finish. */
+.netloading{padding:20px 0 24px;min-width:0}.netloading b{display:block;font-size:15px;font-weight:600}.netloading p{margin:8px 0 0;font-size:14px;line-height:1.5;color:var(--mute);overflow-wrap:anywhere}.netprogress{height:4px;overflow:hidden;border-radius:8px;background:var(--line);margin-bottom:18px}.netprogress i{display:block;width:38%;height:100%;border-radius:inherit;background:var(--accent);animation:net-loading 1.5s ease-in-out infinite}@keyframes net-loading{0%,100%{transform:translateX(0)}50%{transform:translateX(163%)}}@media(prefers-reduced-motion:reduce){.netprogress i{animation:none;transform:translateX(80%)}}
+
+/* Settings → Keyboard shortcuts (shortcuts.ts): the edit panel under a row, the key-capture box, messages */
+.scedit{padding:6px 18px 16px 18px;border-top:1px solid var(--line2)}
+.scedit .sbtns{flex-wrap:wrap;margin-top:12px}
+.sccap{display:flex;align-items:center;min-height:48px;padding:0 14px;border-radius:12px;background:var(--sheet);box-shadow:0 0 0 1px var(--line);font-size:14.5px;color:var(--ink)}
+.sccap.empty{color:var(--mute)}
+.sccap:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.scmsg{margin:10px 2px 0;min-height:20px;font-size:13px;line-height:1.4;color:var(--mute)}
+.scmsg.block,.scmsg.conflict{color:#dc2626}.scmsg.warn{color:var(--warn)}.scmsg.ok{color:var(--mute)}
+.scwarn{color:var(--warn)}
+.scnote{margin:12px 6px 0;font-size:13px;line-height:1.45;color:var(--mute);max-width:560px}
+.sr[data-scrow][aria-expanded=true]{background:color-mix(in srgb,var(--hover) 70%,transparent)}
+@media (max-width:767px){.scedit{padding:6px 14px 14px}.scedit .sprim{flex:1 1 100%}.scedit .sa{flex:1 1 auto}}
+.sc kbd.kbig,.sccap kbd.kbig{display:inline-block}   /* the phone rule that hides key hints must not hide the ones Settings is about */
+.steps.prog{margin-bottom:6px}.steps.prog .pnote{margin:6px 0 0 6px;padding-left:10px;border-left:2px solid var(--line);color:var(--mute);font-size:13px;line-height:1.45;max-width:100%}
+.acue-enable{display:flex;align-items:center;gap:10px;min-height:44px;font-size:14px;margin:10px 0}.acue-enable input{width:18px;height:18px;accent-color:var(--accent);flex:none}.acue textarea{resize:vertical;min-height:88px}.acue .sfine{margin:10px 0;line-height:1.5}.acue-message{font-size:13px;color:var(--warn);overflow-wrap:anywhere}.acue-message:empty{display:none}.acue .sbtns{flex-wrap:wrap}
+@media(max-width:400px){.acue .sbtns>button{flex:1 1 100%;white-space:nowrap}}

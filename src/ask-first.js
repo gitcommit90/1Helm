@@ -33,6 +33,7 @@ export function appOfAction(action, conns = []) {
 export function kindOf(name, a = {}, conns = []) {
   if (name === "gmail_search" || name === "gmail_read") return { kind: "email", app: "gmail" };
   if (name === "calendar_events") return { kind: "calendar", app: "googlecalendar" };
+  if ((name === "app_run" && /^custom_/i.test(String(a.action || ""))) || (name === "app_proxy" && /^custom_/i.test(String(a.app || "")))) return null;   // custom MCP: one account per server, its tool names say nothing (perms.js asks)
   if (name === "app_proxy") {   // the app's own API (stage 3): a GET is a read like app_run's; the app is named
     if (String(a.method || "GET").toUpperCase() !== "GET") return null;
     const app = String(a.app || "").toLowerCase().replace(/[^a-z0-9_]/g, ""); if (!app) return null;
@@ -48,11 +49,24 @@ export function kindOf(name, a = {}, conns = []) {
   return { kind: app, app };
 }
 const inKind = (kind, app) => kind === "email" ? EMAIL_APPS.has(app) : kind === "calendar" ? CALENDAR_APPS.has(app) : app === kind;
-// Every connected account of that kind, oldest first, one per identity (a retired googlesuper with the same email counts once).
+// Every connected account of that kind, oldest first. Names/labels are not identity: two people can share them.
+// Identity is app-scoped, except the retired Google Super connection covering the same Gmail/Calendar account.
 export function accountsOf(conns = [], kind) {
   const seen = new Set(), out = [];
   for (const c of conns.filter((x) => x.status === "connected" && inKind(kind, x.app)).sort((x, y) => String(x.since).localeCompare(String(y.since)))) {
-    const k = String(c.email || c.label || c.id).toLowerCase(); if (seen.has(k)) continue; seen.add(k); out.push(c);
+    const email = String(c.email || "").trim().toLowerCase();
+    const hasEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    const google = kind === "email" && ["gmail", "googlesuper"].includes(c.app)
+      || kind === "calendar" && ["googlecalendar", "googlesuper"].includes(c.app);
+    // A sign-in email can name the same person in different Slack/Notion workspaces.
+    // Only the resolver's explicitly verified provider identity may merge those rows.
+    const identity = c.identityKey || "";
+    const keys = [c.id && `connection:${c.app}:${c.id}`,
+      identity && `identity:${c.app}:${identity}`,
+      google && hasEmail && `google:${kind}:${email}`].filter(Boolean);
+    if (keys.some((k) => seen.has(k))) continue;
+    for (const k of keys) seen.add(k);
+    out.push(c);
   }
   return out;
 }

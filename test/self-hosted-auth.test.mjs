@@ -2,13 +2,12 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { ageCookie } from "../src/age-gate.js";
+import { readFileSync, readdirSync } from "node:fs";
 const worker = (await import("../src/index.js")).default;
 const sql = new DatabaseSync(":memory:");
-sql.exec(readFileSync(new URL("../db/migrations/0001_012_full_schema_dev.sql", import.meta.url), "utf8"));
-sql.exec(readFileSync(new URL("../db/migrations/0036_044_signin_code.sql", import.meta.url), "utf8"));
-sql.exec(readFileSync(new URL("../db/migrations/0040_048_single_owner.sql", import.meta.url), "utf8"));
-sql.exec("ALTER TABLE sessions ADD COLUMN created_at INTEGER; ALTER TABLE sessions ADD COLUMN ua TEXT; ALTER TABLE sessions ADD COLUMN place TEXT");
+const migrations = new URL("../db/migrations/", import.meta.url);
+for (const name of readdirSync(migrations).filter(name => name.endsWith('.sql')).sort()) sql.exec(readFileSync(new URL(name, migrations), 'utf8'));
 const prepare = (query) => {
   const stmt = sql.prepare(query); let args = [];
   const bound = { bind(...next) { args = next; return bound; }, first: async () => stmt.get(...args) || null,
@@ -151,9 +150,10 @@ response = await call("/auth/verify?token=return");
 assert.equal(response.status, 302);
 assert.equal(provisions, 1);
 sql.prepare("UPDATE tenants SET host_ready=1 WHERE id=?").run(tenant.id);
-const hostedEnv = { ...env, ONEHELM_EE: "1hc", APP_HOST: "app.example.com", PUBLIC_BASE_DOMAIN: "example.com" };
+const hostedEnv = { ...env, ONEHELM_EE: "1hc", VAULT_KEY: "synthetic-test-age-key", APP_HOST: "app.example.com", PUBLIC_BASE_DOMAIN: "example.com" };
+const ageAck = (await ageCookie(hostedEnv)).split(';')[0];
 for (const path of ["/auth/start", "/auth/code"]) {
-  response = await worker.fetch(new Request(`https://owner.example.com${path}`, { method: "POST", body: new URLSearchParams({ email: "a".repeat(9000) }) }), hostedEnv, { waitUntil() {} });
+  response = await worker.fetch(new Request(`https://owner.example.com${path}`, { method: "POST", headers: { cookie: ageAck }, body: new URLSearchParams({ email: "a".repeat(9000) }) }), hostedEnv, { waitUntil() {} });
   assert.equal(response.status, 413, `hosted ${path} must reject an oversized form`);
 }
 const handoffStart = await worker.fetch(new Request("https://app.example.com/auth/to", { headers: { cookie } }), hostedEnv, { waitUntil() {} });

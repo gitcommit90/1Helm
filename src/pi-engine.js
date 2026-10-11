@@ -13,6 +13,10 @@ import { isByokError, BYOK_CREDITS_REPLY } from "./byok.js";
 import { liveNudge, noteRan } from "./live-check.js";
 import { personWords } from "./person-asked.js";
 import { isResetErr } from "./do-stub.js";
+import { claimOutputRecovery } from "./model-limits.js";
+import { answerText, splitProgress } from "./progress-dedupe.js";
+import {spendPausesOn,stepAllowance} from './spend-preferences.js';
+import {trimTurnState} from './spend-retention.js';
 
 const MODEL = { id: "glm-5.3-flash", name: "glm-5.3-flash", api: "openai-completions", provider: "cloudflare-workers-ai", baseUrl: "binding:AI",
   reasoning: false, input: ["text"], cost: { input: 0.15, output: 0.5, cacheRead: 0.03, cacheWrite: 0 }, contextWindow: 131072, maxTokens: 4096 };
@@ -63,21 +67,33 @@ export function formatExec(r, limit) {
 
 export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, turn, opts, send, stats, trace, stepIn, TOOLS, COMPUTER_TOOLS, consts, resume = null }) {
   const { CHECKPOINT_TOKENS, MAX_OUT } = consts;
-  let lastAssistant = null, finalMsgs = null;
+  let lastAssistant = null, finalMsgs = null, outputRecovery = null;
   // resume.js: a turn a reset cut off carries on from its saved steps (step count, what it said and its checkpoints carried over).
   let stepCapped = false, warm = null, checkpoints = resume?.checkpoints || 0, steps = resume ? resume.step + (resume.phase === "tools" ? 1 : 0) : 0, nudged = !!resume, toolCalls = resume ? stats.tool_calls : 0, error = null, limitAsked = false;
-  const said = [...(resume?.said || [])], steerPis = [];
-  const journal = (phase) => res.journalStep?.(tc, { step: steps, phase, stats, said, checkpoints });
+  const said = [...(resume?.said || [])], saidMeta = resume?.saidMeta || said.map(() => null), steerPis = [];
+  const limit = () => stepAllowance(tc, maxSteps);
+  const journal = (phase) => res.journalStep?.(tc, { step: steps, phase, stats, said, saidMeta, checkpoints });
   const sql = res.sql;
   const histPi = fromOpenAI(hist), userPi = piUser(userText);
   const outLimit = opts.workflow_id ? 8000 : 20000;
+  const limitPrompts = new Set(); let reportInFlight = false;
+  const limitPrompt = text => { const p = piUser(text); limitPrompts.add(p); return p; };
+  const liftLimit = ctx => {
+    if (!limitAsked || spendPausesOn(tc) || tc.abort === 'hard') return false;
+    limitAsked = false; stepCapped = false; delete stats.hit_limit;
+    ctx.tools = tools; ctx.messages = ctx.messages.filter(m => !limitPrompts.has(m));
+    finalMsgs = ctx.messages; return true;
+  };
 
   // Stream function: one billed Workers AI call through Resident.callModel (reserve/settle, retries, JSON repair,
   // early computer warm-up when a computer tool name streams), returned to pi as an AssistantMessage event stream.
   const streamFn = (model, context) => {
     const s = createAssistantMessageEventStream();
     (async () => {
+      await res.spendRefresh?.(tc, opts);
+      liftLimit(context);
       const noTools = !context.tools || context.tools.length === 0;
+      reportInFlight = limitAsked && noTools;
       const msg = { role: "assistant", content: [], api: MODEL.api, provider: MODEL.provider, model: MODEL.id, usage: zeroUsage(), stopReason: "stop", timestamp: Date.now() };
       s.push({ type: "start", partial: msg });
       // a reset under the last step (resume.js): no further model call here; runTurnPi ends and runTurn parks the turn
@@ -88,10 +104,15 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
           if (!warm) { const w0 = Date.now(); warm = res.computer().warm().then((x) => ({ ...x, ms: Date.now() - w0 })); }
         }, send ? (t) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s: t }); } : null, kind === "chat" ? MAX_OUT : 4096, noTools, tc);
         stepIn.push(r.inTok); queueMicrotask(() => journal("tools")); stats.in += r.inTok; stats.cached += r.cached; stats.cache_write += r.cacheWrite || 0; stats.out += r.outTok; stats.charge += r.charge; if (r.model) stats.models.push(r.routing ? `${r.model} [${r.routing.reason}/${r.routing.floor}]` : r.model);
-        if (opts.max_charge && stats.charge >= opts.max_charge && !tc.abort) { tc.limitWhy = "cost"; tc.abort = "soft"; }   // cost cap (helpers, plan tasks): report next turn
-        if (opts.soft_steps && steps + 1 >= opts.soft_steps && !tc.abort) { tc.limitWhy = "steps"; tc.abort = "soft"; }     // step budget (plan tasks): report next turn
-        guardModel(tc, stats, r.content, r.calls.length > 0, r.calls.map((c) => c.function?.name));   // spendguard.js: turn budget / today's line → pause
-        if (r.content) { msg.content.push({ type: "text", text: r.content }); said.push(r.content); }
+        if (spendPausesOn(tc) && opts.max_charge && stats.charge >= opts.max_charge && !tc.abort) { tc.limitWhy = "cost"; tc.abort = "soft"; }
+        if (spendPausesOn(tc) && opts.soft_steps && steps + 1 >= opts.soft_steps && !tc.abort) { tc.limitWhy = "steps"; tc.abort = "soft"; }
+        guardModel(tc, stats, r.content, r.calls.length > 0 || r.finish === "length", r.calls.map((c) => c.function?.name));
+        // pi can consume steering before getFollowUpMessages; count the capped
+        // result here so a new message cannot bypass the persisted allowance.
+        outputRecovery = !r.calls.length && r.finish === "length" ? claimOutputRecovery(res, tc) : null;
+        const names = r.calls.map((c) => c.function?.name).filter(Boolean);
+        if (r.content) { msg.content.push({ type: "text", text: r.content }); said.push(r.content); saidMeta.push({ text: r.content, calls: names, later: [] }); }
+        else if (said.length && saidMeta[said.length - 1]) saidMeta[said.length - 1].later.push(...names);
         for (const c of r.calls) {
           let args = {}; try { args = JSON.parse(c.function.arguments || "{}"); } catch {}
           if (c.bad_args != null) args = { __invalid_json: c.bad_args.slice(0, 300) };
@@ -166,20 +187,23 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
     },
     getSteeringMessages: async () => steerPi(lastWasFinal()),
     prepareNextTurn: async ({ message, context: ctx }) => {
+      await res.spendRefresh?.(tc, opts);
+      liftLimit(ctx);
+      trimTurnState(tc, {said, saidMeta, stats, trace, stepIn});
       steps++; finalMsgs = ctx.messages; journal("model");
       // A limit (cost cap or deadline) stopped this run: tools off, final report.
       if (tc.abort === "soft" && !limitAsked) {
         limitAsked = true; stats.hit_limit = 1;
-        return { context: { ...ctx, tools: [], messages: finalMsgs = [...ctx.messages, piUser(reportAsk(tc, LIMIT_REPORT_ASK))] } };
+        return { context: { ...ctx, tools: [], messages: finalMsgs = [...ctx.messages, limitPrompt(reportAsk(tc, LIMIT_REPORT_ASK))] } };
       }
       // Unattended run nearly out of steps: take the tools away and ask for the final report.
-      if (steps >= maxSteps - 1 && !limitAsked) {
+      if (steps >= limit() - 1 && !limitAsked) {
         limitAsked = true; stats.hit_limit = 1;
         if (kind === "chat") stepCapped = true;
-        return { context: { ...ctx, tools: [], messages: finalMsgs = [...ctx.messages, piUser(kind === "chat" ? STEP_LIMIT_CHAT_ASK : "(Step limit reached. No more tools. Write your final report now: what you checked, what you found, whether you texted, and what the next run should reuse or do differently.)")] } };
+        return { context: { ...ctx, tools: [], messages: finalMsgs = [...ctx.messages, limitPrompt(kind === "chat" ? STEP_LIMIT_CHAT_ASK : "(Step limit reached. No more tools. Write your final report now: what you checked, what you found, whether you texted, and what the next run should reuse or do differently.)")] } };
       }
       // Mid-turn checkpoint (1Helm bounded context): fold the work so far into working notes, restart from them.
-      if (message.usage?.input > Math.max(CHECKPOINT_TOKENS, (stepIn[0] || 0) + 20000) && steps < maxSteps - 2) {
+      if (message.usage?.input > Math.max(CHECKPOINT_TOKENS, (stepIn[0] || 0) + 20000) && steps < limit() - 2) {
         const ask = { role: "user", content: "(Context checkpoint. Don't call tools. Write your working notes so you can continue without the raw steps above: the goal, what you've done, key findings with exact values/paths/commands, what's left and your next step. Be complete but compact.)" };
         const fin = await res.callModel([...toOpenAI(ctx.systemPrompt, ctx.messages), ask], () => {}, null, 1500, true, tc);
         stats.in += fin.inTok; stats.cached += fin.cached; stats.cache_write += fin.cacheWrite || 0; stats.out += fin.outTok; stats.charge += fin.charge; if (fin.model) stats.models.push(fin.routing ? `${fin.model} [${fin.routing.reason}/${fin.routing.floor}]` : fin.model); checkpoints++;
@@ -189,17 +213,19 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
       }
       return undefined;
     },
-    shouldStopAfterTurn: async () => steps >= maxSteps || tc.abort === "hard",
+    shouldStopAfterTurn: async () => { await res.spendRefresh?.(tc, opts); return steps >= limit() || tc.abort === "hard"; },
     getFollowUpMessages: async () => {
-      const late = await steerPi(true); if (late.length) return late;   // landed while the answer was being written
+      await res.spendRefresh?.(tc, opts);
+      if ((limitAsked || reportInFlight) && !spendPausesOn(tc) && tc.abort !== 'hard') { reportInFlight=false; return [piUser('(The person turned off spending check-ins. Continue their task; the discretionary pause no longer applies.)')]; }
       const last = lastAssistant;
-      if (last?.role === "assistant" && last.stopReason === "length" && steps < maxSteps - 1)
-        return [piUser("(Your last message was cut off at the output limit. Stop planning in prose; continue by calling the tools you need, keeping each call short.)")];
-      if (kind !== "chat" && toolCalls === 0 && !nudged && !limitAsked) { nudged = true; said.length = 0;
+      const late = await steerPi(true); if (late.length) return late;   // landed while the answer was being written
+      if (last?.role === "assistant" && last.stopReason === "length" && steps < limit() - 1)
+        return [piUser(outputRecovery)];
+      if (kind !== "chat" && toolCalls === 0 && !nudged && !limitAsked) { nudged = true; said.length = 0; saidMeta.length = 0;
         return [piUser("(Unattended run: nobody will reply. Don't describe a plan; do the work now by calling tools, then end with a short final report of what you found and did.)")]; }
       // live-check.js: the answer states live status with no lookup in this turn → look first, once (the draft stays a progress note).
-      const ln = !limitAsked && steps < maxSteps - 1 && last?.role === "assistant" ? liveNudge(tc, personWords(tc), last.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")) : null;
-      if (ln) { said.pop(); send?.({ t: "work" }); stats.live_nudge = 1; return [piUser(ln)]; }
+      const ln = !limitAsked && steps < limit() - 1 && last?.role === "assistant" ? liveNudge(tc, personWords(tc), last.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")) : null;
+      if (ln) { said.pop(); saidMeta.pop(); send?.({ t: "work" }); stats.live_nudge = 1; return [piUser(ln)]; }
       // The reply closes the card (sync: no await between the check and the commit; a steer after this opens a new card).
       if (res.hasSteers(tc)) return steerPi(true);
       res.commitTurn(tc);
@@ -221,8 +247,8 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
   // a reset under a step (this object's or a callee's): not the turn's error; runTurn parks it for the resume (resume.js)
   if (tc.objectReset || (error && isResetErr(error))) { tc.objectReset = true; throw Object.assign(new Error("Durable Object reset because its code was updated."), { objectReset: true }); }
   if (stepCapped && !steerPis.length) tc.limitWhy ||= "steps";   // out of steps (not just answering what they added): a paused card
-  let reply = said.join("\n\n");
+  let reply = error ? said.join("\n\n") : answerText(splitProgress(said, saidMeta));
   if (!reply && error) reply = isByokError(error) ? error : /out_of_credits/.test(error) ? (res.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : /daily safety limit/.test(error) ? DAY_LIMIT_REPLY : `Something went wrong: ${error}`;
-  if (kind === "chat" && steps >= maxSteps && !error) reply = reply || "I stopped after several steps; tell me if you want me to keep going.";
-  return { reply, error, checkpoints, messagesForNotes: toOpenAI(sys, finalMsgs || [...histPi, userPi]) };
+  if (kind === "chat" && steps >= limit() && !error) reply = reply || "I stopped after several steps; tell me if you want me to keep going.";
+  return { reply, error, said, saidMeta, checkpoints, messagesForNotes: toOpenAI(sys, finalMsgs || [...histPi, userPi]) };
 }

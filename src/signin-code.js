@@ -61,10 +61,10 @@ export function sameHash(a, b) {
 }
 
 // One pending sign-in: the link token, the code, and the browser's pending id. Only hashes are stored.
-export async function createSignIn(env, email, { ttl = CODE_TTL, at = Date.now() } = {}) {
+export async function createSignIn(env, email, { ttl = CODE_TTL, at = Date.now(), age = null } = {}) {
   const token = rand(), code = newCode(), pending = rand(), th = await sha256(token);
-  await env.DB.prepare("INSERT INTO magic_links (token_hash,email,expires_at,code_hash,pending_hash) VALUES (?,?,?,?,?)")
-    .bind(th, email, at + ttl, await codeHash(env, th, email, code), await sha256(`pending:${pending}`)).run();
+  await env.DB.prepare("INSERT INTO magic_links (token_hash,email,expires_at,code_hash,pending_hash,age_version,age_confirmed_at) VALUES (?,?,?,?,?,?,?)")
+    .bind(th, email, at + ttl, await codeHash(env, th, email, code), await sha256(`pending:${pending}`), age?.version || null, age?.at || null).run();
   return { token, code, pending, expires: at + ttl };
 }
 // A pending id that matches nothing (sign-in at someone's own address with an email that doesn't own it): same cookie, same page.
@@ -105,9 +105,9 @@ export async function verifyCode(env, req, typed, { at = Date.now() } = {}) {
     await fail(row.email);
     return no(Number(n.code_tries) >= CODE_TRIES ? "too_many" : "wrong");
   }
-  const ml = await DB.prepare("UPDATE magic_links SET used=1 WHERE token_hash=? AND used=0 AND expires_at>? RETURNING email").bind(row.token_hash, at).first();
+  const ml = await DB.prepare("UPDATE magic_links SET used=1 WHERE token_hash=? AND used=0 AND expires_at>? RETURNING email,age_version,age_confirmed_at").bind(row.token_hash, at).first();
   if (!ml) return no("used");
-  return { email: ml.email };
+  return { email: ml.email, age: ml.age_version ? { version: ml.age_version, at: ml.age_confirmed_at } : null };
 }
 
 export async function sweepCodeFails(env, at = Date.now()) {

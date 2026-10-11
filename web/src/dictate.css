@@ -14,10 +14,13 @@
 .dtime{font:600 13.5px/1 -apple-system,BlinkMacSystemFont,"SF Pro Text","Inter",system-ui,sans-serif;font-variant-numeric:tabular-nums;letter-spacing:.01em}
 .dspin{width:16px;height:16px;border-radius:50%;border:2px solid var(--line2);border-top-color:var(--ink2);animation:dspin .8s linear infinite}
 @keyframes dspin{to{transform:rotate(1turn)}}
-/* The box gives way to a status line while listening / transcribing (what was typed is kept, just hidden). */
-form.dicting>textarea{display:none!important}
+/* Keep the actual draft editable throughout recording and final flush. */
+form.dicting{flex-wrap:wrap}
+.composer.dicting>textarea{order:-1;flex-basis:100%;width:100%}
+.composer.dicting>.cbtn:first-child{margin-right:auto}
+.dicting .dictst{order:2}
 form.dicting #go,form.dicting #ngo{opacity:.35;pointer-events:none}
-.dictst{flex:1;min-width:0;display:flex;align-items:center;gap:10px;align-self:center;min-height:36px;padding:0 6px;color:var(--ink2);font-size:15px;line-height:1.4;user-select:none}
+.dictst{flex:0 0 100%;min-width:0;display:flex;align-items:center;gap:10px;align-self:center;min-height:24px;padding:0 6px;color:var(--ink2);font-size:12px;line-height:1.4;user-select:none}
 .nmodal .dictst{min-height:52px;padding:6px 8px 0}
 .dwords{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dhint{margin-left:auto;color:var(--faint);font-size:12.5px;white-space:nowrap}

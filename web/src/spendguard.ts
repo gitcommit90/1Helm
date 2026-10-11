@@ -5,7 +5,7 @@
 //   · "This task: about $0.03" under a task's messages (sessionDetail.usage, plus each finished turn's charge).
 //     Dollars, not light/medium/heavy: the person can compare a task's cost with their provider bill.
 export type Pause = { card: string; session: string; reason: string; status: string; title: string; line: string; spent: string };
-type Deps = { api: (path: string, body?: any) => Promise<any>; repaint: () => void; unpause: (slug: string, sid: string, card: string) => void; note: (t: string, s: string) => void };
+type Deps = { api: (path: string, body?: any) => Promise<any>; repaint: () => void; unpause: (slug: string, sid: string, card: string, session?: any) => void; note: (t: string, s: string) => void; configureCheckins: () => void };
 let D: Deps | null = null;
 const P = new Map<string, Pause>();
 const U = new Map<string, number>();
@@ -30,6 +30,7 @@ export function sgInit(d: Deps) {
   D = d;
   document.addEventListener("click", async e => {
     const t = e.target as HTMLElement;
+    if (t.closest('[data-sgconfigure]')) { e.preventDefault(); e.stopPropagation(); D?.configureCheckins(); return; }
     const b = t.closest<HTMLElement>("[data-sgstop]"); if (!b || !D) return;
     e.preventDefault(); e.stopPropagation();
     const [slug, sid, card] = b.dataset.sgstop!.split("|"); if (BUSY.has(card)) return;
@@ -37,7 +38,7 @@ export function sgInit(d: Deps) {
     try {
       const r = await D.api(`/res/${slug}/paused/${card}/stop`, {});
       if (r?.error) D.note("Couldn't do that", String(r.error));
-      else { if (r?.pause) P.set(card, r.pause); D.unpause(slug, sid, card); }
+      else { if (r?.pause) P.set(card, r.pause); D.unpause(slug, sid, card, r?.session); }
     } catch (err: any) { D.note("Couldn't do that", err?.message || "Try again."); }
     finally { BUSY.delete(card); D.repaint(); }
   }, true);

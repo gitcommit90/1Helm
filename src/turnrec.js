@@ -1,8 +1,6 @@
 // Turn records (turnmem, 10-08). In compact context an earlier turn used to come back as what was said + the reply + hand-off notes,
 // and a turn with fewer than HANDOFF_MIN_TOOLS tool calls left no notes at all, only "your previous reply used 2 tool call(s)".
-// josephdev task 6be22da1: turn 2 ran TaskRabbit's CHECK_SERVICE_AVAILABILITY (averageHourlyRate 61, avgInvoiceAmount 179 for 90401)
-// and quoted it; in turn 3 the model saw neither the call nor its result, saw no TaskRabbit under "Connected apps" (it's a built-in,
-// no-sign-in app), and told the person the $61 "didn't come from a lookup I can point to" and that it had no TaskRabbit connection.
+// Earlier compact turns could omit the call and result behind a quoted fact.
 // Now each earlier turn in compact context carries a short, faithful record of its tool calls, built from the saved msgs (no model
 // call): tool, key inputs, and the key values returned, clipped; and the task's history ends with the integrations used in it.
 // Pure functions over the Resident's SQL (msgs, turns); both engines save msgs in the same OpenAI shape, so both get the same record.

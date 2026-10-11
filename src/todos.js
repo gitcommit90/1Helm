@@ -17,6 +17,13 @@ export const TODO_TOOL = { type: "function", function: { name: "update_todos",
     id: { type: "string", description: "The item's id from the current list; leave out for a new item" },
     text: { type: "string", description: "A short, plain step, e.g. 'Compare prices on 3 sites'" },
     status: { type: "string", enum: ["todo", "doing", "done"] } }, required: ["text", "status"] } } }, required: ["items"] } } };
+TODO_TOOL.function.description += " To edit another task at the person's request, pass task (exact title or id) and, from General, channel (existing slug/name). Read it with read_task/list_tasks first, then send todo_revision as expected_revision and quote the requested change in person_asked. Preserve all unrelated items; an empty list deletes them. These targeted edits change the saved list only; they do not start work there or switch this conversation.";
+Object.assign(TODO_TOOL.function.parameters.properties, {
+  channel: { type: "string", description: "General only: target channel slug or exact name from list_channels. Omit for this channel." },
+  task: { type: "string", description: "Task id or exact title; required for another channel, otherwise defaults to this task." },
+  expected_revision: { type: "integer", minimum: 0, description: "Required for another task: its current todo_revision from read_task/list_tasks. If it changed, read again and preserve the newer list." },
+});
+TODO_TOOL.function.parameters.properties.person_asked.description = "Exact quote of the person's request. Required to edit another task's list or to tick requested items done. Never tick done without their explicit request.";
 
 const clean = (t) => String(t ?? "").replace(/\s+/g, " ").trim();
 export const publicItems = (items) => (items || []).map(({ id, text, status, ready }) => ({ id, text, status, ...(ready && status !== "done" ? { ready: true } : {}) }));

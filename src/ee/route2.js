@@ -21,6 +21,7 @@
 
 import { testModelFor, testRoute } from "../internal-test-model.js";   // dev test workspaces: no decider call, one model (TEST_MODEL)
 import { deciderFetch, deciderModel, deciderProvider } from "./decider.js";
+import { modelSettingsEnv, slotModel, replacementModel, configuredHosts } from "./model-settings.js";
 import { startShadow, shadowOn, residentWaitUntil } from "./decision-shadow.js";   // dev only: another decider next to the live one, never decides
 import { privacyOf, normalizePrivacy, eligibleHosts, ineligibleWhy } from "../privacy.js";
 import { SOL, LUNA, HAIKU, POOL_MODELS, CATEGORIES, CATEGORY_LABEL, DEFAULT_CATEGORY, RECOVERY, IN_TURN_TARGET, MAX_MODELS, normalizeCategory, chainModels, fixedEffort, aliasOf, guessCategory, autoToolsOnly } from "./pool.js";
@@ -132,6 +133,7 @@ export function categoryOf(a) {
 export async function jevAsk(env, state, { fetchImpl = globalThis.fetch, timeoutMs = JEV_TIMEOUT_MS, meta = {} } = {}) {
   const t0 = Date.now(), ac = new AbortController(), timer = setTimeout(() => ac.abort(Object.assign(new Error("timeout"), { name: "TimeoutError" })), timeoutMs);
   try {
+    env = await modelSettingsEnv(env);
     const r = await deciderFetch(env, JSON.stringify(jevBody(state, env)), { signal: ac.signal, title: "1Helm router", meta, fetchImpl });
     const j = await r.json().catch(() => null);
     if (!r.ok || !j) return { p: null, cost: 0, ms: Date.now() - t0, error: `decider ${r.status}: ${JSON.stringify(j?.error || j || "").slice(0, 160)}` };
@@ -319,15 +321,20 @@ export function choreRouteFor(route, body, env = null) {
 // The models one main-chat dispatch may try, in order (model.js twoChat): a recovery/legacy model first, then the category's chain at the
 // CURRENT level; each kept only if some endpoint of it is eligible at that level for this payload (privacy.js), and not a Meta model
 // when the request forces a tool choice (Meta accepts only "auto"). Deduplicated, at most MAX_MODELS. skipped: why each was left out.
-export function dispatchOrder(route, level, { prov = null, body = null } = {}) {
-  const lead = [route?.recovery, route?.policy ? null : route?.primary].filter((m) => POOL_MODELS.includes(m));
-  const list = [...lead, ...chainModels(normalizeCategory(route?.category), normalizePrivacy(level))];
+export function dispatchOrder(route, level, { prov = null, body = null, settings = null } = {}) {
+  const lead = [route?.recovery, route?.policy ? null : route?.primary].map((m) => replacementModel(settings, m)).filter(Boolean);
+  const configured = settings?.chains?.[normalizeCategory(route?.category)]?.[normalizePrivacy(level)];
+  const list = [...lead, ...(configured ? configured.map((k) => slotModel(settings, k)).filter(Boolean) : chainModels(normalizeCategory(route?.category), normalizePrivacy(level)).map((m) => replacementModel(settings, m)))];
   const forced = body?.tool_choice != null && body.tool_choice !== "auto";
   const models = [], skipped = [];
   for (const m of list) {
     if (models.includes(m) || skipped.some((s) => s.model === m)) continue;
     if (forced && autoToolsOnly(m)) { skipped.push({ model: m, why: "forced tool choice (Meta accepts only auto)" }); continue; }
-    if (!eligibleHosts(m, level, { prov }).length) { skipped.push({ model: m, why: ineligibleWhy(m, level, { prov }) }); continue; }
+    const meta = settings?.catalog?.[m], choice = typeof body?.tool_choice === "object" ? "function" : body?.tool_choice;
+    if (meta && choice && !meta.tool_choice.includes(choice)) { skipped.push({ model: m, why: "unsupported tool choice" }); continue; }
+    const images = body?.messages?.some((msg) => Array.isArray(msg.content) && msg.content.some((part) => part.type === "image_url"));
+    if (meta && images && !meta.input_modalities.includes("image")) { skipped.push({ model: m, why: "no image input" }); continue; }
+    if (!configuredHosts(settings, m, normalizePrivacy(level)).length) { skipped.push({ model: m, why: ineligibleWhy(m, level, { prov }) || "no eligible configured endpoint" }); continue; }
     models.push(m);
   }
   return { models: models.slice(0, MAX_MODELS), skipped };

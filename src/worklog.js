@@ -68,6 +68,8 @@ export function lookupSpec(name, a = {}, conns = []) {
   }
   if (name === "fetch_url") return { tool: name, kind: "web", family: "web.fetch", app: "", account: "", query: normUrl(a.url), exact: true, ...(a.raw === true ? { key: JSON.stringify([normUrl(a.url), "raw"]) } : {}) };
   if (name === "browser_task") return { tool: name, kind: "browser", family: "web.browser", app: "", account: "", query: clip(`${a.url ? `${a.url} ` : ""}${a.task || ""}`, 400), logOnly: true };
+  // Custom MCP servers (custom-mcp.js): never logged or replayed. A saved copy of one's result must not outlive a switch-off or a disconnect.
+  if (/^custom_/i.test(String(a.app ?? a.action ?? "").replace(/[^A-Za-z0-9_]/g, ""))) return null;
   if (name === "app_proxy") {   // composio.js runProxy: a GET on the app's own API is a lookup (family per app); a write isn't logged, like app_run's
     if (String(a.method || "GET").toUpperCase() !== "GET") return null;
     const app = str(a.app).toLowerCase().replace(/[^a-z0-9_]/g, ""); if (!app) return null;

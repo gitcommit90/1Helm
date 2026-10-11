@@ -1,0 +1,12 @@
+/* Stable message regions: tools/history never replace the visible text node. */
+.reply-slot{display:flex;flex-direction:column;align-items:flex-start;min-width:0;width:100%}
+.reply-steps{width:100%;min-width:0}
+.reply-steps:empty{display:none}
+.reply-history{width:100%;min-width:0}
+.reply-history:has(>.prog[hidden]){display:none}
+.reply-history .prog{margin:0 0 8px}
+.reply-history .prog[hidden]{display:none}
+.reply-history summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.progress-dust{position:fixed;inset:0;z-index:20;overflow:hidden;pointer-events:none;contain:strict}
+.progress-dust i{position:absolute;width:3px;height:2px;border-radius:50%;background:var(--mute);pointer-events:none}
+@media(prefers-reduced-motion:reduce){.progress-dust{display:none}}

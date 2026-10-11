@@ -9,7 +9,7 @@ import { boundedJson } from "./bounded-body.js";
 //   - The key is sealed with VAULT_KEY (sentinel.js sealSecret, like Passwords & keys), never returned (•••• + last 4) or logged.
 //     The loaded config keeps it in a non-enumerable property, so logging or JSON-encoding the config can't print it.
 //   - No OpenRouter or Workers AI fallback: a failing endpoint fails the turn with a plain message that links to Settings.
-//   - The address: any http(s) URL whose path ends in /v1 (Captain 2026-10-06: "just allow any url… try it, THEN show a standard error").
+//   - The address: any HTTPS URL whose path ends in /v1. HTTPS is mandatory for keys and conversation data.
 //     No host/port/IP rules: Test connection simply tries it, and any failure shows one plain message plus a short detail.
 //     Kept: redirects refused (redirect: "manual", so the key never goes to another host), timeouts and response-size caps on every call,
 //     the key never in logs/responses, the key typed again when the address's origin changes, the Test rate limit.
@@ -73,7 +73,7 @@ export function checkBase(raw) {
   if (!s) return { error: "Enter your AI service's address, like https://api.openai.com/v1." };
   if (s.length > 300) return { error: "That address is too long." };
   let u; try { u = new URL(s); } catch { return { error: "That isn't a web address. It should look like https://api.openai.com/v1." }; }
-  if (u.protocol !== "https:" && u.protocol !== "http:") return { error: "The address should start with https:// (or http://)." };
+  if (u.protocol !== "https:") return { error: "Use an HTTPS address to protect your AI key, messages and files." };
   if (u.username || u.password) return { error: "Put the key in the Key field, not in the address." };
   const path = u.pathname.replace(/\/+$/, "").replace(/\/chat\/completions$/i, "").replace(/\/+$/, "");
   if (!/\/v1$/i.test(path)) return { error: V1_MSG };

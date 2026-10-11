@@ -32,12 +32,17 @@ const K = { asked: "1hc.dp.asked", fix: "1hc.loc", off: "1hc.loc.off" };
 // The installed app (home screen, Dock, Chrome/Edge app window) is its own context: on iPhone and in Mac Safari it has its own
 // permissions and storage, and even where storage is shared the grants may not be. So "asked" is kept per display mode, and next
 // to it what was allowed when the person chose (K.asked + ".on"): if one of those is back to "not asked yet" here, the grant didn't
-// carry over and the sheet asks again. Onboarding sets K.asked = "1" (no list), which counts as asked.
+// carry over and the sheet asks again. Onboarding writes the same mode-scoped flag and successful-grant list.
 const isApp = () => { try { return (navigator as any).standalone === true || ["standalone", "window-controls-overlay", "fullscreen"].some((m) => matchMedia(`(display-mode: ${m})`).matches); } catch { return false; } };
 const askedKey = () => (isApp() ? `${K.asked}.app` : K.asked);
 type Item = "loc" | "mic" | "nf";
 const nfSt = (): PS | "unsupported" => { const p = D?.nf?.perm() ?? "unsupported"; return p; };
-const grantedNow = (): Item[] => [...(P.loc === "granted" ? ["loc" as Item] : []), ...(P.mic === "granted" ? ["mic" as Item] : []), ...(nfSt() === "granted" ? ["nf" as Item] : [])];
+// An unsupported permission query is not a revocation. Remember successful access
+// for display, but never use that historical grant to silently activate hardware.
+const rememberedGrants = (): Item[] => { try { const raw = ls.get(`${askedKey()}.grants`); const v = raw === null ? askedOn() : JSON.parse(raw); return Array.isArray(v) ? v : []; } catch { return []; } };
+const allowed = (k: "loc" | "mic") => P[k] === "granted" || (P[k] === "unknown" && rememberedGrants().includes(k));
+const grantedNow = (): Item[] => [...(allowed("loc") ? ["loc" as Item] : []), ...(allowed("mic") ? ["mic" as Item] : []), ...(nfSt() === "granted" ? ["nf" as Item] : [])];
+const rememberGrants = () => ls.set(`${askedKey()}.grants`, JSON.stringify(grantedNow()));
 const markAsked = () => { ls.set(askedKey(), "1"); ls.set(`${askedKey()}.on`, JSON.stringify(grantedNow())); };
 const askedOn = (): Item[] => { try { const v = JSON.parse(ls.get(`${askedKey()}.on`) || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } };
 const ls = {
@@ -62,13 +67,12 @@ const hasMic = () => typeof navigator !== "undefined" && !!navigator.mediaDevice
 
 // ---------- permission states (Permissions API; "unknown" where a browser can't say, e.g. Firefox's microphone) ----------
 async function query(name: string): Promise<PS> {
-  try { const s = await navigator.permissions.query({ name } as any); s.onchange = () => { (name === "geolocation" ? (P.loc = s.state as PS) : (P.mic = s.state as PS)); changed(); }; return s.state as PS; }
+  try { const s = await navigator.permissions.query({ name } as any); s.onchange = () => { (name === "geolocation" ? (P.loc = s.state as PS) : (P.mic = s.state as PS)); rememberGrants(); changed(); }; return s.state as PS; }
   catch { return "unknown"; }
 }
 export async function dpStates() {
-  if (!navigator.permissions?.query) return { loc: P.loc, mic: P.mic };
   const [l, m] = await Promise.all([hasGeo() ? query("geolocation") : Promise.resolve("denied" as PS), hasMic() ? query("microphone") : Promise.resolve("denied" as PS)]);
-  P.loc = l; P.mic = m; return { loc: l, mic: m };
+  P.loc = l; P.mic = m; rememberGrants(); return { loc: l, mic: m };
 }
 function changed() { if (P.loc === "granted" && !off()) void refresh(); if (D?.shown()) D.repaint(); }
 
@@ -79,8 +83,8 @@ function getFix(): Promise<Fix | null> {
   if (P.inflight) return P.inflight;
   P.inflight = new Promise<Fix | null>((done) => {
     navigator.geolocation.getCurrentPosition(
-      (p) => { P.loc = "granted"; done({ lat: coarse(p.coords.latitude), lng: coarse(p.coords.longitude), at: Date.now() }); },
-      (e) => { if (e?.code === 1) P.loc = "denied"; done(null); },
+      (p) => { P.loc = "granted"; rememberGrants(); done({ lat: coarse(p.coords.latitude), lng: coarse(p.coords.longitude), at: Date.now() }); },
+      (e) => { if (e?.code === 1) { P.loc = "denied"; rememberGrants(); } done(null); },
       { enableHighAccuracy: false, timeout: 20000, maximumAge: 10 * 60e3 });
   }).then(async (f) => { P.inflight = null; if (f) await keep(f); return f; });
   return P.inflight;
@@ -200,8 +204,8 @@ function allowBoth(from: "sheet" | "settings") {
 function askMic(): Promise<boolean> {
   if (!hasMic()) return Promise.resolve(false);
   return navigator.mediaDevices.getUserMedia({ audio: true })
-    .then((s) => { s.getTracks().forEach((t) => t.stop()); P.mic = "granted"; return true; })   // the mic light goes off at once
-    .catch((e) => { if (e?.name === "NotAllowedError" || e?.name === "SecurityError") P.mic = "denied"; return false; });
+    .then((s) => { s.getTracks().forEach((t) => t.stop()); P.mic = "granted"; rememberGrants(); return true; })   // the mic light goes off at once
+    .catch((e) => { if (e?.name === "NotAllowedError" || e?.name === "SecurityError") { P.mic = "denied"; rememberGrants(); } return false; });
 }
 // When it may appear: a calm moment, never mid-gesture (Captain 10-08: it popped up a second after a refresh while he was
 // tapping something else, and that tap dismissed it on three devices). Calm = no pointer, touch, wheel or key input for CALM_MS,
@@ -243,8 +247,8 @@ export async function dpSheetMaybe(blocked: () => boolean = () => false) {
 async function toAsk(): Promise<Item[] | null> {
   const st = await dpStates(), nf = nfSt(), app = isApp();
   if (app) loadSaved();   // a location saved from another device: the sheet can say the app needs its own OK
-  const can = (k: Item) => k === "loc" ? hasGeo() && (st.loc === "prompt" || st.loc === "unknown")
-    : k === "mic" ? hasMic() && (st.mic === "prompt" || st.mic === "unknown") : app && nf === "prompt";
+  const can = (k: Item) => k === "loc" ? hasGeo() && !allowed("loc") && (st.loc === "prompt" || st.loc === "unknown")
+    : k === "mic" ? hasMic() && !allowed("mic") && (st.mic === "prompt" || st.mic === "unknown") : app && nf === "prompt";
   const open: Item[] = (["loc", "mic", "nf"] as Item[]).filter(can);
   const asked = ls.get(askedKey()) === "1";
   if (!open.length) { if (!asked) markAsked(); return null; }   // nothing left to ask here: remember what's allowed
@@ -276,17 +280,17 @@ export function dpSec(): string {
   // Re-read the browser's answers when the section opens (at most every 5 s; one repaint only if something changed).
   if (!P.busy && !dpSec.asking && Date.now() - dpSec.at > 5000) { dpSec.asking = true; dpSec.at = Date.now(); const was = `${P.loc}${P.mic}`;
     void dpStates().then(() => { dpSec.asking = false; if (`${P.loc}${P.mic}` !== was && D?.shown()) D.repaint(); }); }
-  const h = esc(D.helper()), { srow, sa } = D, sharing = P.loc === "granted" && !off(), f = cached();
+  const h = esc(D.helper()), { srow, sa } = D, sharing = allowed("loc") && !off(), f = cached();
   const where = P.saved?.place || f?.place || "", when = P.saved?.at || f?.at || 0;
   const locSub = P.busy === "both" || P.busy === "loc" ? "Waiting for your browser…"
-    : P.loc === "granted" ? (off() ? `Allowed in this browser, but not shared with ${h}` : `On. ${h} knows roughly where you are`)
+    : allowed("loc") ? (off() ? `Allowed on this device, but not shared with ${h}` : P.loc === "unknown" ? "Allowed on this device" : `On. ${h} knows roughly where you are`)
     : P.loc === "denied" ? "Blocked in this browser" : !hasGeo() ? "Not available in this browser" : "Off. Turn it on so you're never asked mid-task";
-  const locRight = P.loc === "granted" ? sw(sharing, `Share my location with ${D.helper()}`, "data-dp=\"locsw\"")
+  const locRight = allowed("loc") ? sw(sharing, `Share my location with ${D.helper()}`, "data-dp=\"locsw\"")
     : P.loc === "denied" ? sa("How to allow", 'data-dp="lochow"') : hasGeo() ? sa("Turn on", 'data-dp="loc"', "blue") : "";
   const micSub = P.busy === "both" || P.busy === "mic" ? "Waiting for your browser…"
-    : P.mic === "granted" ? "On. Talk instead of typing works right away" : P.mic === "denied" ? "Blocked in this browser" : !hasMic() ? "Not available in this browser" : "Off. Your browser asks the first time you tap the mic";
-  const micRight = P.mic === "granted" ? okPill("On") : P.mic === "denied" ? sa("How to allow", 'data-dp="michow"') : hasMic() ? sa("Turn on", 'data-dp="mic"', "blue") : "";
-  const both = (P.loc === "prompt" || P.loc === "unknown") && (P.mic === "prompt" || P.mic === "unknown") && hasGeo() && hasMic() && !P.busy;
+    : allowed("mic") ? (P.mic === "unknown" ? "Allowed on this device" : "On. Talk instead of typing works right away") : P.mic === "denied" ? "Blocked in this browser" : !hasMic() ? "Not available in this browser" : "Off. Your browser asks the first time you tap the mic";
+  const micRight = allowed("mic") ? okPill("On") : P.mic === "denied" ? sa("How to allow", 'data-dp="michow"') : hasMic() ? sa("Turn on", 'data-dp="mic"', "blue") : "";
+  const both = !allowed("loc") && !allowed("mic") && (P.loc === "prompt" || P.loc === "unknown") && (P.mic === "prompt" || P.mic === "unknown") && hasGeo() && hasMic() && !P.busy;
   return `<h2>Location & mic</h2><p class="slead">So ${h} knows what's near you and hears you when you talk, without stopping to ask in the middle of a task. Each browser and device keeps its own permission.</p>
     ${both ? `<div class="sadd dpboth">${sa("Allow location and microphone", 'data-dp="both"', "blue")}</div>` : ""}
     <h3>Location</h3>
@@ -323,13 +327,13 @@ export function dpInit(deps: Deps) {
     if (k === "mic") { P.busy = "mic"; D?.repaint(); void askMic().then((ok) => { P.busy = ""; void dpStates().then(() => D?.repaint()); if (ok) D?.note("The microphone is on", "Tap the mic in the message box to talk instead of typing."); else D?.note(P.mic === "denied" ? "The microphone is blocked for 1Helm" : "Couldn't turn on the microphone", P.mic === "denied" ? HOW.mic : "Another app may be using it. Try again.", true); }); return; }
     if (k === "lochow") { D?.note("Location is blocked for 1Helm", HOW.loc, true); return; }
     if (k === "michow") { D?.note("The microphone is blocked for 1Helm", HOW.mic, true); return; }
-    if (k === "locsw") { if (off()) { ls.del(K.off); D?.repaint(); void refresh(true); } else { ls.set(K.off, "1"); void forget(); } return; }
-    if (k === "locnow") { void refresh(true).then((f) => { if (!f) D?.note("Couldn't update your location", "Try again in a moment.", true); }); return; }
+    if (k === "locsw") { if (off()) { ls.del(K.off); D?.repaint(); void getFix(); } else { ls.set(K.off, "1"); void forget(); } return; }
+    if (k === "locnow") { void getFix().then((f) => { if (!f) D?.note("Couldn't update your location", "Try again in a moment.", true); }); return; }
     if (k === "forget") { void forget(); return; }
   });
   if (D.look) return;
   // A fresh fix while the app is in use: on open, and when it comes back into focus with a stale one. Only while granted.
-  void dpStates().then(() => refresh());
-  const back = () => { if (document.visibilityState === "visible") void refresh(); };
+  void dpStates().then(() => { const f = cached(); if (!off() && allowed("loc") && f && Date.now() - f.at < FRESH_MS) void keep(f); return refresh(); });
+  const back = () => { if (document.visibilityState === "visible") void dpStates().then(() => refresh()); };
   document.addEventListener("visibilitychange", back); addEventListener("focus", back);
 }

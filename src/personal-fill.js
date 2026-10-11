@@ -117,13 +117,14 @@ export const siteOf = (u) => {
 async function needPersonal(res, tc, what, url) {
   if (!tc || !tc.turn) return null;
   const st = await turnPerms(res, tc);
-  if (st.allow.has("personal")) return null;
+  // Standard: ordinary requested form completion is not a second consent event.
+  // Keep the person's deliberately stricter Careful/Locked-down choice.
+  if (st.level === "standard" || st.allow.has("personal")) return null;
   const host = siteOf(url), key = `personal@${host}`;
   if (tc.permOk?.has(key)) return null;
   if (tc.permNo?.has(key)) return notAllowed("personal");
-  // After a tap on Allow here, the form they then submit on this site isn't asked about again by the Sentinel (Resident.coverSite).
   const cover = () => { try { res.coverSite?.(tc.session, host, "your OK to fill in your details"); } catch {} };
-  if (takeGrant(res, tc, "personal")) { (tc.permOk ||= new Set()).add(key); cover(); return null; }   // a late "Allow once" (the task resumed)
+  if (takeGrant(res, tc, "personal")) { (tc.permOk ||= new Set()).add(key); cover(); return null; }
   const r = await askPerson(res, tc, "personal", `fill in your ${listOf(what)} on ${host || "this website"}`, key);
   if (r === null) cover();
   return r;

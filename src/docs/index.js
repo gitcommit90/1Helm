@@ -19,9 +19,11 @@ import memory from "./memory.md";
 import texting from "./texting.md";
 import surfaces from "./client-surfaces.md";
 import data from "./data-handling.md";
+import security from "./security.md";
 import { render } from "../prompt/index.js";
 
 export const DOCS = [
+  { name: "security", summary: "verified security answers: encryption in transit and at rest, HTTPS and TLS, encrypted backups and tested recovery, saved credentials", md: security },
   { name: "1helm", summary: "what 1Helm is: one helper, channels and tasks, plans, billing, storage and canceling, which AI models answer, the app's main parts", md: product },
   { name: "client-surfaces", summary: "the web app on a computer and a phone, every Settings section, notifications, Report an issue, Stop and automatic pauses, plans, Activity, to-dos, focus timer, send later, dictation", md: surfaces },
   { name: "memory", summary: "what you remember and where, the Notebook, Contacts (import, merge), the work log, General vs other channels, how to correct, forget or delete something", md: memory },
@@ -47,7 +49,7 @@ export const docKey = (s) => String(s ?? "").trim().toLowerCase().replace(/\.md$
 export function findDoc(name) { const k = docKey(name); return DOCS.find((d) => d.name === k) || null; }
 
 export const READ_DOC_TOOL = { type: "function", function: { name: "read_doc",
-  description: "Read one of 1Helm's docs: how 1Helm and your own abilities work (apps, browser, payments, passwords and keys, scheduling, files, memory, texting, the app's screens and Settings, data handling). Read the matching doc before you answer a question about any of these, and answer from it. Fast, read-only, no computer needed. An unknown name returns the list of docs.",
+  description: "Read one of 1Helm's docs: security, encryption, data handling, apps, browser, payments, passwords and keys, scheduling, files, memory, texting and Settings. For security questions read security first; for other questions read the matching doc. Answer directly from its verified facts. Fast, read-only, no computer needed. An unknown name returns the list of docs.",
   parameters: { type: "object", properties: { name: { type: "string", description: `The doc's name, one of: ${DOC_NAMES.join(", ")}` } }, required: ["name"] } } };
 
 const listText = () => `Docs you can read (pass the name to read_doc):\n${DOCS_INDEX}`;

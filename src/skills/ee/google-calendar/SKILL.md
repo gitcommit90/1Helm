@@ -15,8 +15,8 @@ skill adds 1Helm's defaults and rules on top. Where they disagree, this wins.
   If they only said "my calendar", ask which calendar they use{{#cards}} with a small card (Google Calendar, Outlook, iCloud, Other){{/cards}}{{^cards}} (Google Calendar, Outlook, iCloud or another){{/cards}} and end your turn.
 - They asked you to add, move or change an event: pass it as the card's `draft` {title, start, end, timezone, calendar, guests}
   (the Defaults below: 30 minutes, their main calendar, their time zone; start and end with their offset), so they see it under
-  Connect. Connecting isn't a yes: once connected, check that time, show the event again and create it only after they say yes
-  (with guests, calendar_add's confirm card is that yes).
+  Connect. Connecting supplies access, not new authorization. If they already requested this exact event, check that time
+  and create it without a second yes; ask only if a consequential detail is missing or changed.
 - Which account: as for every app (their words, memory, the account notes; ASK FIRST means ask and end your turn).
 
 ## Which tool
@@ -35,11 +35,9 @@ skill adds 1Helm's defaults and rules on top. Where they disagree, this wins.
 - Look first. Check that time with `calendar_events` and mention a clash ("you already have Dentist 3:00–3:30") when you ask.
 - Moving, changing or deleting: find the exact event first and act on that one, on the calendar it's on (not the main one by
   default). Several matches: show them and ask which. A repeating event: ask whether they mean this one or the whole series.
-- A private event (no guests): get a yes on the exact title, day, start and end (with the zone). A request that already
-  names all of it ("put a focus block tomorrow 2 to 3") is not that yes: show the event (and any clash), ask, and end your turn.
-- Invites, changes and deletes: the yes is the confirm card. Once they've asked (and you've found the exact event), call
-  `calendar_add` with invite, or the `app_run` change: 1Helm shows them the exact event, time (with the zone) and guests, and it runs
-  only when they tap Confirm. Don't also ask in prose. Guests get emails from Google: inviting someone, changing an event that has
+- Their explicit request authorizes creating the intended event, with or without guests, and requested changes or deletions.
+  Do not require another yes or confirm card. Use the defaults above for ordinary omitted details; ask about a real clash or ambiguity.
+- Guests get emails from Google: inviting someone, changing an event that has
   guests, or deleting it notifies them. Say so in your line. Don't switch notifications off unless they ask, and then say guests
   won't see the change.
 - Adding or removing one guest: read the event and send back the whole guest list with that change. Sending only the new guest

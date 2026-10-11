@@ -80,9 +80,9 @@ const fattr = (name: string, mime = "") => ` data-shn="${esc(name)}" data-shm="$
 const CB = new Map<string, string>();   // a chat file card's Update / Unpublish in flight (by file id)
 /** The share button on a chat file card (next to Download). A web page (.html) gets a row instead: Share file and Publish side by
  *  side, or, once published, the live link with Copy · Open · Update · Unpublish (and Share file as an icon). */
-export function shFileBtn(slug: string, fid: string, name: string, mime = "") {
+export function shFileBtn(slug: string, fid: string, name: string, mime = "", compact = false) {
   const sk = `${esc(slug)}|${esc(fid)}`, fa = fattr(name, mime), link = shLinkOf(fid);
-  if (!isHtml(name, mime)) return `<span class="fsh${link ? " on" : ""}" role="button" tabindex="0" data-sh="share|${sk}"${fa} aria-label="Share link for ${esc(name)}" title="Share link">${I(IC.link, 16)}</span>`;
+  if (compact || !isHtml(name, mime)) return `<span class="fsh${link ? " on" : ""}" role="button" tabindex="0" data-sh="share|${sk}"${fa} aria-label="Share link for ${esc(name)}" title="Share link">${I(IC.link, 16)}</span>`;
   const p = shPageOf(slug, fid, name), busy = CB.get(fid) || "", bt = (act: string, label: string, icon: string, cls = "", lab = label) =>
     `<span class="fcwb${cls}${busy ? " dis" : ""}" role="button" tabindex="0" data-sh="${act}"${fa} aria-label="${esc(lab)}"${busy ? ' aria-disabled="true"' : ""}>${I(icon, 14)}<span>${label}</span></span>`;
   if (!p) return `<span class="fcweb">${bt(`share|${sk}`, "Share file", IC.link, link ? " on" : "", `Share file: ${name}`)}${bt(`pub|${sk}`, "Publish", IC.globe, "", `Publish ${name} as a web page`)}</span>`;

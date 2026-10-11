@@ -20,3 +20,10 @@ body.deleting-acct{cursor:progress}body.deleting-acct *{pointer-events:none}
 @media (hover:none){.rmore{opacity:.55}.chmore{opacity:1}}
 @media (max-width:767px){.ds .rmore{width:34px;height:34px;margin-right:-8px;opacity:.6}.delmi{min-height:46px;font-size:16px}}
 @media (prefers-reduced-motion:reduce){.delmenu{animation:none}}
+.delspin{display:inline-block;flex:none;width:15px;height:15px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:delrotate .8s linear infinite}
+@keyframes delrotate{to{transform:rotate(360deg)}}
+.rmore.delbusy{opacity:1;cursor:wait}.hdel.delbusy,.delrow:disabled{cursor:wait;color:var(--mute)}
+#chat-deletion-status{position:fixed;z-index:250;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);width:min(460px,calc(100vw - 32px));display:grid;gap:8px;pointer-events:none}
+.delstatus{display:flex;gap:12px;align-items:center;padding:14px 16px;border:1px solid var(--line);border-radius:16px;background:var(--sheet);color:var(--ink);box-shadow:0 6px 30px #0002;pointer-events:auto}
+.delstatus>span{min-width:0;flex:1}.delstatus b,.delstatus small{display:block}.delstatus b{font-size:14px}.delstatus small{font-size:12px;color:var(--mute);overflow-wrap:anywhere}.delstatus button{padding:8px;border-radius:8px;color:var(--ink);font-size:13px}.delstatus button:hover{background:var(--line)}
+@media(prefers-reduced-motion:reduce){.delspin{animation:none}}

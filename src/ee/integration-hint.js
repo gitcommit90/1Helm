@@ -26,6 +26,7 @@ import { appCatalog, statusFor, connectKind, oneLine } from "./connect-offer.js"
 import { BUILTIN_APPS_LATEST, isHiddenApp, builtinApps } from "./builtin-apps.js";
 import { askedForWebsite, connectedServiceFor, callKey } from "./appfirst.js";
 import { personWords } from "../person-asked.js";
+import { customMentions, customKeys, displayOf } from "./custom-mcp.js";
 
 // Never hinted: Composio's own general tools (they're the web search / code runner the helper already has) and test toolkits.
 const SKIP = new Set(["composio", "composio_search", "codeinterpreter", "browser_tool", "test_app", "jev", "googlesuper"]);
@@ -315,6 +316,7 @@ export function hintLine(items = []) {
   const g = (k) => items.filter((x) => x.state === k), parts = [];
   for (const x of g("builtin")) { const r = x.route || BY_NAME[x.a.s];
     parts.push(`${displayName(x.a)} [${x.a.s}] (no sign-in needed): ${shortWhat(x.a)}.${r ? ` Start with ${r.start} (${r.note}).` : ""}`); }
+  for (const x of g("custom")) parts.unshift(`Their own custom MCP server ${x.a.n} [${x.a.s}], connected: it is the server they added in Settings → Advanced, separate from any built-in app with a similar name, so don't call it expired or not connected. Use app_actions with app "${x.a.s}".`);
   const on = g("connected"); if (on.length) parts.push(`Connected: ${on.map((x) => `${displayName(x.a)} (${tag(x.a)}${x.accounts > 1 ? `; ${x.accounts} accounts` : ""})`).join(", ")}.`);
   const need = g("connect"); if (need.length) parts.push(`Needs connecting (offer_connect shows the Connect card): ${need.map((x) => `${displayName(x.a)} [${x.a.s}]${x.used ? " (on their Apps they use list)" : ""}: ${shortWhat(x.a)}`).join("; ")}.`);
   const exp = g("expired"); if (exp.length) parts.push(`Connection expired (offer_connect to reconnect): ${exp.map((x) => `${displayName(x.a)} [${x.a.s}]`).join(", ")}.`);
@@ -330,8 +332,10 @@ export function priorLine(items = []) {
 // Live search verticals ride in the same message as their own short sentence (verticalLine), and in the same items (state "vertical").
 export async function integrationHint(res, text, list = null) {
   if (!res?.env?.COMPOSIO_KEY || !String(text || "").trim()) return { line: "", items: [] };
+  // The person's own custom MCP servers that their words name (display name or host): listed first, beside any built-in app of that name.
+  let custom = []; try { custom = (await customMentions(res.env, res.get("tenant"), text)).map((r) => ({ a: { s: r.slug.toLowerCase(), n: displayOf(r) }, state: "custom", how: "custom", keys: [...customKeys(r)] })); } catch (e) { console.log("custom hint", String(e?.message || e).slice(0, 80)); }
   let vs = []; try { vs = matchVerticals(text); } catch (e) { console.log("vertical hint", String(e?.message || e).slice(0, 120)); }
-  const both = (items) => { const v = items.filter((x) => x.state === "vertical"), apps = items.filter((x) => x.state !== "vertical" && x.how !== "prior");
+  const both = (items0) => { const items = [...custom, ...items0]; const v = items.filter((x) => x.state === "vertical"), apps = items.filter((x) => x.state !== "vertical" && x.how !== "prior");
     return { line: [hintLine(apps), verticalLine(v), priorLine(items.filter((x) => x.how === "prior"))].filter(Boolean).join(" "), items }; };
   try {
     list ||= await appCatalog(res.env); if (!list?.length) return both(vs.map(verticalItem));
@@ -340,7 +344,7 @@ export async function integrationHint(res, text, list = null) {
     const vkinds = new Set(vs.map((x) => x.kind)), covered = new Set(vs.flatMap((x) => VERTICAL_COVERS[x.kind] || []));
     ms = ms.filter((m) => !covered.has(m.slug));   // e.g. "on Tripadvisor": the vertical, no "needs connecting" for the Tripadvisor app
     vs = vs.filter((x) => !ms.some((m) => BRAND_COVERS[m.slug] === x.kind));   // they named Yelp / trivago / Seat Geek: that app's hint
-    if (!ms.length && !vs.length) return { line: "", items: [] };
+    if (!ms.length && !vs.length) return both([]);
     let conns = []; try { if (ms.length) conns = await res.conns(); } catch {}
     const ix = indexFor(list), items = [];
     for (const m of ms) { const a = ix.bySlug.get(m.slug), st = a && hintState(a, conns); if (!st) continue;
@@ -386,7 +390,7 @@ export function hintNudge(res, tc, name, a = {}) {
   const words0 = personWords(tc);
   if (words0.some((w) => WEB_ASK.test(String(w))) || (name !== "web_search" && askedForWebsite(words0, a.url || ""))) return null;
   const done = nudgedIn(res, tc);
-  const x = tc.hint.find((h) => h.how !== "prior" && !done.has(h.a.s) && mentions(h, name, a)); if (!x) return null;
+  const x = tc.hint.find((h) => h.how !== "prior" && h.state !== "custom" && !done.has(h.a.s) && mentions(h, name, a)); if (!x) return null;
   markNudged(res, tc, x.a.s); tc.hintPass = key;
   (tc.hintNudges ||= []).push({ tool: name, app: x.a.s });
   (tc.unrun ||= []).push(key);   // spendguard.js guardTools: a call that didn't run isn't counted by the runaway watch

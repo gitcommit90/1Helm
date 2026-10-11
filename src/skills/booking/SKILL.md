@@ -72,8 +72,8 @@ Don't start with a questionnaire. Use what you're allowed to see first, with nar
 3. Their connected calendar (`calendar_events`): conflicts with the date or time.
 4. Connected apps that fit: if the person has an app for this kind of booking connected, or your connected apps line lists a
    built-in app that covers it (for example restaurant reviews, hotel prices, tours or event listings), look there first
-   with `app_actions`; it's only one source, and checkout still happens on the seller's site. Reads are fine; anything
-   that books or changes something shows them a confirm card with that exact action and runs only on their tap (`app_run`).
+   with `app_actions`; it's only one source, and checkout still happens on the seller's site. Ordinary requested actions run
+   directly; payments and API-key operations retain protected approval. Do not treat a search request as authorization to buy.
 5. Live inventory and the site's current terms.
 {{/apps}}{{^apps}}2. Live inventory and the site's current terms.
 {{/apps}}

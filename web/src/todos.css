@@ -21,6 +21,8 @@
 
 #tdpw{position:fixed;inset:0;z-index:70;pointer-events:none}
 #tdpw:empty{display:none}#tdpw.on{pointer-events:auto}
+/* Agent updates reveal the checklist without blocking typing/dictation behind it. Manual opening stays modal. */
+#tdpw.automatic{pointer-events:none}#tdpw.automatic .tdpop{pointer-events:auto}#tdpw.automatic .tdback{display:none}
 .tdback{position:absolute;inset:0}
 .tdpop{position:fixed;display:flex;flex-direction:column;min-height:0;background:var(--sheet);border:1px solid var(--line);border-radius:20px;box-shadow:0 18px 50px rgba(28,27,25,.16),var(--lift);padding:8px 8px 6px;opacity:0;transform:translateY(-6px) scale(.98);transform-origin:top right;transition:opacity .16s,transform .18s cubic-bezier(.2,.8,.2,1)}
 #tdpw.on .tdpop{opacity:1;transform:none}

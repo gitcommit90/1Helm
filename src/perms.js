@@ -7,7 +7,7 @@
 //   careful:  also asks before READING private data: email, calendar, contacts, files and messages in connected apps, other apps.
 //   locked:   careful + asks before running things on the computer (anything beyond reading files), visiting websites (browser and
 //             fetch_url), web searches that carry personal details, starting background helpers, and scheduling things.
-// What was always asked stays asked at every level (sends/posts/buys: person_confirmed, Link, the Sentinel checkpoint).
+// Legacy stored "trusted" normalizes to Standard. The withdrawn preset never supplies financial consent.
 //
 // Enforced in the tool layer, never by the prompt: Resident.localTool and Resident.execComputerTool (both engines land there) call
 // permGate first. A gated call makes a permission request (the Sentinel `approvals` table, perm = the kind) and shows the same
@@ -21,12 +21,15 @@
 import { EMAIL_APPS, CALENDAR_APPS, READ_ACTION, appOfAction } from "./ask-first.js";
 import { BUILTIN_APPS } from "./ee/index.js";
 import { boundedJson, BodyTooLargeError } from "./bounded-body.js";
+import { isCustomSlug, customUsable, ownerOf, CUSTOM_DENIED } from "./ee/index.js";
+import { loadCheckins, saveCheckins, checkinPatchOk } from './agent-checkins.js';
+import { sshPermission, setSshPermission, nativeAvailable, nativeSameOrigin } from './native-network.js';
 
 export const PERM_DDL = ["ALTER TABLE approvals ADD COLUMN perm TEXT", "ALTER TABLE approvals ADD COLUMN what TEXT"];
 export function permsInit(sql) { for (const q of PERM_DDL) { try { sql.exec(q); } catch {} } }
 
 export const LEVELS = [
-  { id: "standard", name: "Standard", sub: "Asks before it sends, posts, buys or deletes anything. Reads and looks things up on its own." },
+  { id: "standard", name: "Standard", sub: "Carries out requested work without extra confirmations. Payments and API keys stay protected." },
   { id: "careful", name: "Careful", sub: "Also asks before reading your email, calendar, contacts, files or messages." },
   { id: "locked", name: "Locked down", sub: "Also asks before it runs things on its computer, visits websites, searches the web with your personal details, starts background helpers or schedules anything." },
 ];
@@ -48,6 +51,7 @@ export const KINDS = [
   { id: "schedule", name: "Schedule things", level: "locked", ask: "OK to schedule this?", always: "Always allow scheduling" },
   // Asks at every level, Standard included (personal-fill.js gates the browser typing tools). The card's question names the details
   // and the site ("OK to fill in your name, phone and email on opentable.com?"): see permQuestion.
+  { id: "custom_mcp", name: "Use tools from your custom MCP servers", level: "standard", ask: "OK to use this tool from your custom MCP server?", always: "Always allow custom MCP tools" },
   { id: "personal", name: "Fill in your personal details", level: "standard", ask: "OK to fill in your personal details on this website?", always: "Always allow filling in your details" },
 ];
 export const KIND = Object.fromEntries(KINDS.map((k) => [k.id, k]));
@@ -77,6 +81,10 @@ export const GATED_TOOLS = new Set(["gmail_search", "gmail_read", "calendar_even
 export function kindFor(name, a = {}, conns = []) {
   if (name === "gmail_search" || name === "gmail_read") return "email";
   if (name === "calendar_events") return "calendar";
+  // Custom MCP servers (custom-mcp.js): the remote server picks the tool names, so a name says nothing about what a tool does. Never classified
+  // by READ/WRITE words: every call is its own kind, which asks at every level (like personal details) until the person chooses Always allow.
+  if (name === "app_run" && isCustomSlug(a.action)) return "custom_mcp";
+  if (name === "app_proxy" && isCustomSlug(a.app)) return "custom_mcp";
   if (name === "app_run") {
     const act = String(a.action || "").toUpperCase().replace(/[^A-Z0-9_]/g, ""); if (!act) return null;
     const app = appOfAction(act, conns);
@@ -139,7 +147,7 @@ export async function allowKind(env, tenant, kind, via = "card") {
   await env.DB.prepare("INSERT INTO perm_allow (tenant_id,kind,at,via) VALUES (?,?,?,?) ON CONFLICT(tenant_id,kind) DO UPDATE SET at=excluded.at, via=excluded.via").bind(tenant, kind, Date.now(), via).run();
   return { ok: true };
 }
-export const asks = (level, kind) => (RANK[level] ?? 0) >= (RANK[KIND[kind]?.level] ?? 99);
+export const asks = (level, kind) => kind === 'personal' || kind === 'custom_mcp' || (RANK[level] ?? 0) >= (RANK[KIND[kind]?.level] ?? 99);
 
 // ---- the texts the helper sees ----
 const doingOf = (name, a = {}) => {
@@ -171,11 +179,17 @@ const needs = (kind, where) => `NEEDS PERMISSION: ${kind === "personal" ? "1Helm
 
 // ---- the gate ----
 // → null (go ahead) or the text the tool returns instead. tc = the turn's context.
-export const turnPerms = async (res, tc) => (tc.perm ||= await loadPerms(res.env, res.get("tenant")));
+export const turnPerms = async (res, tc) => (tc.perm = await loadPerms(res.env, res.get("tenant")));
 export async function permGate(res, tc, name, a = {}) {
   if (!tc || !tc.turn || !GATED_TOOLS.has(name)) return null;
+  // A custom server this workspace may not use right now (switched off, removed, someone else's, made up) is refused here, final and with no card:
+  // the person is never asked to allow something that can't run.
+  if ((name === "app_run" && isCustomSlug(a.action)) || (name === "app_proxy" && isCustomSlug(a.app))) {
+    if (!ownerOf(await customUsable(res.env, res.get("tenant")), name === "app_run" ? a.action : a.app)) return CUSTOM_DENIED;
+  }
   const st = await turnPerms(res, tc);
-  if (st.level === "standard") return null;
+  const custom = (name === "app_run" && isCustomSlug(a.action)) || (name === "app_proxy" && isCustomSlug(a.app));
+  if (st.level === "standard" && !custom) return null;   // custom MCP tools ask at Standard too
   const kind = kindFor(name, a, name === "app_run" ? await res.conns().catch(() => []) : []);
   if (!kind || !asks(st.level, kind) || st.allow.has(kind) || tc.permOk?.has(kind)) return null;
   if (kind === "web" && !personalIn(name === "search_web_vertical" ? [a.query, a.near, a.from, a.to].filter(Boolean).join(" ") : a.query, tc.permInfo ||= await personalInfo(res))) return null;
@@ -259,7 +273,17 @@ export async function permsApi(req, env, t, { channels }) {
     let b;
     try { b = await boundedJson(req, 8192); }
     catch (e) { return json({ error: e instanceof BodyTooLargeError ? "too_large" : "bad_request" }, e instanceof BodyTooLargeError ? 413 : 400); }
-    if (b.level != null) {
+    if (b.agent_checkins != null) {
+      if (!nativeSameOrigin(req)) return json({ error: 'Check-in changes require a same-origin request.' }, 403);
+      if (!checkinPatchOk(b.agent_checkins)) return json({ error: 'Agent check-ins accept silent and fast whole-number thresholds from 1 to 1000.' }, 400);
+      await saveCheckins(env, t.id, b.agent_checkins);
+    } else if (b.direct_protocols != null) {
+      if (!nativeSameOrigin(req)) return json({ error: 'Native permission changes require a same-origin request.' }, 403);
+      if (!b.direct_protocols || Object.keys(b.direct_protocols).some(k => k !== 'ssh') || !['deny','ask','trusted'].includes(b.direct_protocols.ssh)) return json({ error: 'Outbound SSH accepts deny, ask or trusted.' }, 400);
+      const r = await setSshPermission(env, t.id, b.direct_protocols.ssh, channels);
+      if (!r.ok) return json(r, 503);
+    } else if (b.level != null) {
+      if (b.level === 'trusted') return json({ error: 'Trusted is unavailable. Standard approval checks apply; no spending permission was granted.' },400);
       if (!levelOk(b.level)) return json({ error: "level must be standard, careful or locked" }, 400);
       await DB.prepare("INSERT INTO perm_prefs (tenant_id,level,updated_at) VALUES (?,?,?) ON CONFLICT(tenant_id) DO UPDATE SET level=excluded.level, updated_at=excluded.updated_at").bind(t.id, b.level, Date.now()).run();
     } else if (b.revoke != null) {
@@ -289,5 +313,7 @@ export async function permsView(env, t, channels) {
       for (const g of gs || []) if (g.scope === "this channel" && !String(g.host).startsWith("perm:")) sites.push({ channel: slug, channel_name: c.name || slug, id: g.id, host: g.host, scope: g.scope, at: g.at });
     }
   } catch {}
-  return { level: levelOk(lv?.level) ? lv.level : "standard", levels: LEVELS, kinds: KINDS.map(({ id, name, level }) => ({ id, name, level })), allowed, sites };
+  return { level: levelOk(lv?.level) ? lv.level : "standard", levels: LEVELS, kinds: KINDS.map(({ id, name, level }) => ({ id, name, level })), allowed, sites,
+    agent_checkins: await loadCheckins(env, t.id),
+    direct_protocols: { ssh: (await sshPermission(env, t.id)).mode }, native_network_available: nativeAvailable(env) };
 }

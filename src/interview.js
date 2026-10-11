@@ -150,7 +150,17 @@ export const QUESTIONS = [
       const out = list.length ? [`Wants help with ${andJoin(list)}.`] : []; const t = bare(a.text, TEXT_MAX.help); if (t) out.push(dot(`${list.length ? "Also wants" : "Wants"} help with: ${t}`)); return out;
     } },
 ];
-export const TOTAL = QUESTIONS.length;
+// Keep stored question positions stable for interviews already in progress and
+// old open clients. Reply style is chosen in onboarding and stays in helper_tone;
+// don't ask length/tone again. Existing answers/Notebook rows are left intact.
+export const ACTIVE_QUESTIONS = QUESTIONS.filter((q) => !["length", "tone"].includes(q.id));
+export const TOTAL = ACTIVE_QUESTIONS.length;
+const STORED_TOTAL = QUESTIONS.length;
+const visibleStep = (step) => ACTIVE_QUESTIONS.filter((q) => QUESTIONS.indexOf(q) < Math.min(Number(step) || 0, STORED_TOTAL)).length;
+const previousStep = (step) => {
+  const before = ACTIVE_QUESTIONS.map((q) => QUESTIONS.indexOf(q)).filter((i) => i < step);
+  return before.at(-1) ?? 0;
+};
 const byId = Object.fromEntries(QUESTIONS.map((q) => [q.id, q]));
 
 // What the app shows for one question (plain JSON: no functions).
@@ -198,7 +208,7 @@ export async function interviewEnsure(env, t, tz = "") {
   return rowOf(env, t.id);
 }
 // For boot: just enough for the app to know which task is the interview.
-export const bootView = (row) => row && row.status === "open" && row.session_id ? { session: row.session_id, step: Number(row.step) || 0, total: TOTAL } : null;
+export const bootView = (row) => row && row.status === "open" && row.session_id ? { session: row.session_id, step: visibleStep(row.step), total: TOTAL } : null;
 
 // The whole state the app renders: every question (so Back/Next need no round trip), answers so far, rows still in the Notebook.
 async function stateOf(env, t, row) {
@@ -209,14 +219,14 @@ async function stateOf(env, t, row) {
   try { const ch = await mainChannel(env, t.id); if (ch) live = new Set(((await archiveOf(env, t.id).channel(ch.id, 1)).memory || []).filter((m) => m.status !== "superseded").map((m) => String(m.id))); } catch {}
   for (const a of Object.values(answers)) if (live && Array.isArray(a.rows)) a.rows = a.rows.filter((r) => live.has(String(r.id)));
   // The apps question starts on the account's list (Settings or the helper may have set it before they got here).
-  const questions = QUESTIONS.map((q) => questionView(q, known)), aq = questions.find((q) => q.look === "apps");
+  const questions = ACTIVE_QUESTIONS.map((q) => questionView(q, known)), aq = questions.find((q) => q.look === "apps");
   if (aq && !answers.apps?.picks) { const u = await getAppsUsed(env, t.id).catch(() => null); if (u?.answered) aq.defPicks = u.apps.length ? u.apps.filter((k) => APP_OPTIONS.some((o) => o.k === k)) : u.none ? [NONE] : []; }
-  return { status: "open", session: row.session_id, step: Math.min(Number(row.step) || 0, TOTAL), total: TOTAL, finished: !!row.finished_at, known: { first: known.first || "", place: placeOf(known), tz: known.tz || "", tzName: tzName(known.tz) },
+  return { status: "open", session: row.session_id, step: visibleStep(row.step), total: TOTAL, finished: !!row.finished_at, known: { first: known.first || "", place: placeOf(known), tz: known.tz || "", tzName: tzName(known.tz) },
     questions, answers, secNames: SEC_NAMES };
 }
 async function save(env, tid, o) {
   await env.DB.prepare("UPDATE interviews SET step=?, answers=?, finished_at=COALESCE(finished_at, ?), updated_at=? WHERE tenant_id=?")
-    .bind(o.step, JSON.stringify(o.answers), o.step >= TOTAL ? Date.now() : null, Date.now(), tid).run();
+    .bind(o.step, JSON.stringify(o.answers), o.step >= STORED_TOTAL ? Date.now() : null, Date.now(), tid).run();
 }
 
 // /w/<slug>/api/interview  GET ?tz=  → state.  POST {op}: answer {q, pick|picks, text} · skip {q} · back · rest (skip the rest)
@@ -238,7 +248,7 @@ export async function interviewApi(req, env, t, url, { json, cf = {}, look = fal
   if (req.method !== "POST") return json({ error: "method" }, 405);
   if (!row || row.status !== "open") return json({ error: "There's no Get to know you task right now.", status: row ? row.status : "none" }, 404);
   const b = await boundedJson(req), known = parse(row.known, {}), answers = parse(row.answers, {});
-  let step = Math.min(Number(row.step) || 0, TOTAL);
+  let step = Math.min(Number(row.step) || 0, STORED_TOTAL);
   const ch = await mainChannel(env, t.id); if (!ch) return json({ error: "no General channel" }, 404);
   const A = archiveOf(env, t.id);
   if (b.op === "answer" || b.op === "skip") {
@@ -256,8 +266,8 @@ export async function interviewApi(req, env, t, url, { json, cf = {}, look = fal
         await setAppsUsed(env, t.id, { apps: [...(a.picks || []).filter((k) => k !== NONE), ...extra], extras: cur.names, none: (a.picks || []).includes(NONE) }, "interview"); }
     } else answers[q.id] = { ...prev, skipped: !prev.rows?.length, at: Date.now() };   // a skip keeps anything said before
     step = i + 1;
-  } else if (b.op === "back") step = Math.max(0, step - 1);
-  else if (b.op === "rest") step = TOTAL;
+  } else if (b.op === "back") step = previousStep(step);
+  else if (b.op === "rest") step = STORED_TOTAL;
   else if (b.op === "again") step = 0;
   else if (b.op === "remove") {
     await residentOf(env, t.id).removeSession(row.session_id).catch((e) => console.log("interview remove", e?.message));

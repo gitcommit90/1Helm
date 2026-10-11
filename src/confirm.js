@@ -1,4 +1,4 @@
-// Server-checked confirm for irreversible or outward actions (Captain 10-07). Before this, `person_confirmed` was a flag the model set
+// Server-checked confirm for payment and API-key actions (Captain 10-10). Before this, `person_confirmed` was a flag the model set
 // itself and nothing checked it (an eval helper permanently deleted a Drive file without a real yes). Now the tool itself shows the person
 // a CONFIRM CARD with the exact action and content ([Confirm] [Cancel]), and the action runs only after their tap:
 //   - held: someone is watching the task in the app, or the card went to their phone by text (/c/<token>): the call waits (up to 2 min)
@@ -10,23 +10,21 @@
 //   The model can't confirm anything itself: `person_confirmed` from the model is stripped before every gated tool (resident.js
 //   localTool) and ignored; a token is only ever made by a tap.
 // Cancel → "NOT DONE". A card left undecided expires after 30 minutes.
+// A catalog read-only hint never overrides an explicit payment/key classification.
+// Generic execution is not a soundly classifiable payment boundary; prompt/task authorization still applies.
 //
-// Which actions need the tap (needsConfirm / appRunNeedsConfirm, decided after the action is resolved, so "read-only" comes from the
-// app's own action metadata, not the name):
-//   gmail_send              always: an email leaves their account.
-//   calendar_add            only with guests (invite): the invite emails other people. A private event without guests doesn't.
-//   app_run (any app)       every action that isn't read-only: sends, posts, replies, forwards, deletes/trashes, shares, permission
-//                           changes, edits, uploads, payments… EXCEPT two reversible, private writes: creating/updating a DRAFT (nothing
-//                           leaves) and creating a calendar event with no attendees/guests.
-//   app_proxy               every POST / PUT / PATCH / DELETE (the app's raw API; GET runs freely).
+// app_run/app_proxy consult approval-scope.js on the resolved operation. Ordinary requested
+// email, document, calendar and app writes are not re-confirmed. Explicit user-selected
+// Careful/Locked permissions remain independent (perms.js).
 // Not here (already behind their own cards, so never asked twice): purchases (buy_with_link → Link's approval, browser_fill_card),
-// "Fill in your personal details" (personal-fill.js), publish_page / share_file_link (their own Publish / Create link cards).
+// publish_page / share_file_link (their own delivery cards).
 // Not gated: gmail_draft, remember (Notebook), text_person (only reaches the person), reading anything.
 //
 // Rows live in the Resident's `approvals` table (perm = "confirm"), so the app's permission-card plumbing carries them unchanged:
 // the live `approval` / `approval_done` events, the task's waiting state, the texted card page and POST /approve {id, decision}.
 // Decisions: once | confirm = Confirm, deny | cancel = Cancel (the app and the card page send once / deny).
 
+import { protectedAppAction, needsActionConfirm } from "./approval-scope.js";
 export const CONFIRM = "confirm";
 export const CONFIRM_TTL = 30 * 60e3;          // an undecided card, and a token after the tap, last 30 minutes
 const HOLD_MS = 120e3, TICK = 500;
@@ -40,12 +38,9 @@ export const CONFIRM_TOOLS = new Set(["gmail_send", "calendar_add", "app_run", "
 const GUEST_KEY = /^(attendees?|attendee_emails?|invitees?|guests?|required_attendees|optional_attendees|participants|invite)$/i;
 const filled = (v) => Array.isArray(v) ? v.some(filled) : v && typeof v === "object" ? Object.values(v).some(filled) : String(v ?? "").trim() !== "";
 export const hasGuests = (args = {}) => Object.entries(args || {}).some(([k, v]) => GUEST_KEY.test(k) && filled(v));
-// app_run on an action that isn't read-only: true unless it's one of the two reversible, private writes.
+// Explicit payment/API-key operations, independently of catalog readOnlyHint.
 export function appRunNeedsConfirm(slug, args = {}) {
-  const s = String(slug || "").toUpperCase();
-  if (/DRAFT/.test(s) && /(^|_)(CREATE|UPDATE|SAVE|ADD)(_|$)/.test(s) && !/(^|_)(SEND|DELETE|REMOVE|TRASH|SHARE)(_|$)/.test(s)) return false;
-  if (/CALENDAR|EVENT/.test(s) && /(^|_)(CREATE|INSERT|QUICK_ADD)(_|$)/.test(s) && /EVENT|QUICK_ADD/.test(s) && !/(^|_)(CALENDAR_CREATE|ACL|SHARE)(_|$)/.test(s) && !hasGuests(args)) return false;
-  return true;
+  return protectedAppAction(slug, args);
 }
 
 // ---- the payload's fingerprint ----
@@ -69,6 +64,7 @@ const confirmedHere = (row, hash) => !!row && row.perm === CONFIRM && row.status
 // spec = { tool, payload (exactly what will run, resolved), args (the model's call, for the resume note), view, token }
 // → null (go ahead: run exactly this payload) or the text the tool returns instead.
 export async function confirmGate(res, tc, spec) {
+  if (!needsActionConfirm(spec)) return null;
   const sql = res.sql, now = Date.now(), session = tc?.session || null, tenant = res.get("tenant");
   const hash = await payloadHash(tenant, session, spec.tool, spec.payload), title = spec.view?.title || "Confirm this?";
   let why = "";

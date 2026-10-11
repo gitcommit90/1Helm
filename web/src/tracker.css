@@ -80,7 +80,7 @@
 .tk-chip:hover{background:var(--abub)}
 .tk-live{display:flex;flex-wrap:wrap;align-items:center;gap:0 10px;max-width:86%;margin:0 0 8px}
 .tk-live .steps{margin:0}.tk-live .steps[open]{order:0}
-.tk-link{height:34px;padding:0 4px;font-size:13px;font-weight:600;color:var(--ink2);text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:3px}.tk-link:hover{color:var(--ink)}
+.tk-link{flex:none;white-space:nowrap;height:34px;padding:0 4px;font-size:13px;font-weight:600;color:var(--ink2);text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:3px}.tk-link:hover{color:var(--ink)}
 .tk-sl{display:flex;align-items:center;gap:9px;margin-top:6px;padding:0 4px;font-size:13px;line-height:1.4;color:var(--ink2)}
 .tk-sl:first-of-type{margin-top:10px}
 .tk-sl i{flex:none;width:6px;height:6px;border-radius:50%;background:var(--tk-green)}
@@ -91,7 +91,7 @@
 @keyframes tkjoin{0%{opacity:0;transform:translateY(-2px)}12%{opacity:1;transform:none}75%{opacity:1}100%{opacity:0}}
 .tk-retry{font-size:12.5px;font-weight:600;color:var(--tk-red);margin:5px 4px 0;padding:2px 0;text-align:right}
 .tk-retry u{text-decoration-color:color-mix(in srgb,var(--tk-red) 40%,transparent);text-underline-offset:3px}
-.m.agent.tk-flash>.bubble,.m.agent.tk-flash>.acard{animation:tkflash 1.6s ease}
+.m.agent.tk-flash>.bubble,.m.agent.tk-flash>.reply-slot>.bubble,.m.agent.tk-flash>.acard{animation:tkflash 1.6s ease}
 @keyframes tkflash{0%,40%{box-shadow:0 0 0 3px color-mix(in srgb,var(--ink) 18%,transparent)}100%{box-shadow:0 0 0 3px transparent}}
 
 /* the card modal */

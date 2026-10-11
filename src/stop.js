@@ -38,6 +38,7 @@ export function stopMix(Resident) { return Object.assign(Resident.prototype, {
   hardStop(tc, by = "person") {
     if (!tc || tc.finished || tc.committed) return false;   // committed: its reply already closed the card
     tc.abort = "hard"; tc.stoppedBy ||= by;
+    if (this.nativeCancel) this.ctx.waitUntil?.(this.nativeCancel(tc.session, 'Task stopped').catch(() => {}));
     const p = tc.pend; if (p && p.next < p.items.length) p.next = p.items.length;   // unread steers: dropped, never answered
     try { tc.ac?.abort(stopError()); } catch {}
     if (tc.inTool > 0) { try { Promise.resolve(this.computer().cancel?.(tc.key)).catch(() => {}); } catch {} }
@@ -58,6 +59,7 @@ export function stopMix(Resident) { return Object.assign(Resident.prototype, {
     const done = rows.map((h) => this.helperStop(h.session, h.id, by).then((r) => { if (r?.ok) helpers++; }, (e) => console.log("stop helper", h.id, e.message)));
     const turns = this.liveTurnsOf(session);
     for (const tc of turns) this.hardStop(tc, by);
+    await this.nativeCancel?.(session, 'Task stopped');
     const parked = this.stopJournaled ? this.stopJournaled(session) : [];   // resume.js: a turn waiting to carry on after an update ends stopped too
     await Promise.all(done);
     // The response carries the closed cards: give the turns a moment to reach their step boundary (bounded).

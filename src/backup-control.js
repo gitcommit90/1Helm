@@ -39,6 +39,7 @@ async function readIndex(env, backupId, tenantId) {
       (kind === "Computer" && (name === `computer:${tenantId}` || name === `prepjob:${tenantId}`)) ||
       (kind === "Resident" && typeof name === "string" && name.startsWith(`res:${tenantId}:`) && name.length > `res:${tenantId}:`.length) ||
       (kind === "ChannelComputer" && typeof name === "string" && name.startsWith(`cc:${tenantId}:`) && name.length > `cc:${tenantId}:`.length) ||
+      (kind === "NativeTransport" && typeof name === "string" && name.startsWith(`${tenantId}:`) && name.length > `${tenantId}:`.length) ||
       (kind === "FilePrep" && typeof name === "string" && name.startsWith(`prep:t/${tenantId}/files/`) && name.length > `prep:t/${tenantId}/files/`.length);
     if (!belongs || seen.has(targetId(target)) || target.key !== await keyFor(backupId, target)) throw new Error("invalid backup target");
     seen.add(targetId(target));

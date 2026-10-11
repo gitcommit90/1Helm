@@ -1,7 +1,7 @@
 // Named SQLite Durable Objects belonging to the single-owner workspace.
 // The plan is rebuilt from authoritative Archive and Resident state while
 // writes are stopped. R2 itself is copied separately with metadata intact.
-const bindingOf = Object.freeze({ Archive: "ARCHIVE", Resident: "RESIDENT", ChannelComputer: "CHANNEL_COMPUTER", UsageLedger: "LEDGER", Computer: "COMPUTER", FilePrep: "FILE_PREP" });
+const bindingOf = Object.freeze({ Archive: "ARCHIVE", Resident: "RESIDENT", ChannelComputer: "CHANNEL_COMPUTER", NativeTransport: "NATIVE_TRANSPORT", UsageLedger: "LEDGER", Computer: "COMPUTER", FilePrep: "FILE_PREP" });
 
 export async function snapshotTargets(env, tenantId) {
   if (env.ENV_NAME !== "selfhost" || !tenantId) throw new Error("snapshot unavailable");
@@ -15,6 +15,7 @@ export async function snapshotTargets(env, tenantId) {
     if (typeof slug !== "string" || !slug || slug.length > 128) throw new Error("invalid channel in snapshot plan");
     const residentName = `res:${tenantId}:${slug}`;
     list.push(target("Resident", residentName), target("ChannelComputer", `cc:${tenantId}:${slug}`));
+    if (env.NATIVE_TRANSPORT) list.push(target("NativeTransport", `${tenantId}:${slug}`));
     const resident = env.RESIDENT.get(env.RESIDENT.idFromName(residentName));
     for (const key of await resident.snapshotFileKeys()) list.push(target("FilePrep", `prep:${key}`));
   }

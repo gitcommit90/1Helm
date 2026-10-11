@@ -1,5 +1,6 @@
 // Sentinel's automatic rules (Captain 10-09: "Sentinel ON"): which requests from a channel computer go out without the person's tap.
-// Everything else that sends data asks (Resident.egressDecision: Always Approve → grants → the approval card, in the app or by text).
+// Ordinary requested sends run directly. Payment/API-key operations and vault-key use
+// retain Resident.egressDecision (Always Approve → scoped grants → approval card).
 //
 // Measured on dev 10-09 (Sentinel on, one channel, no model): pip, apt, curl GET and the image skill only read; `npm install` POSTs its
 // audit to registry.npmjs.org, `git clone` POSTs git-upload-pack to github.com, and four ordinary page loads in the browser
@@ -12,8 +13,7 @@
 //          · npm / yarn audit (POST /-/npm/v1/security/… on the npm registry): the package list, read-only
 //          · a web page's own background traffic in the browser (fetch/XHR, beacons, pings): Chrome's fetch metadata says it isn't a
 //            navigation the page's user started
-//   ask    · a form the browser submits after a click or Enter (a navigation POST with user activation)
-//          · every other POST / PUT / PATCH / DELETE (curl, scripts, git push, APIs)
+//   ask    · explicit payment/API-key operation paths
 //          · ANY request carrying a saved key (a stand-in was swapped in): a real key never goes out on an automatic rule
 //   deny   · 1Helm itself (the computer may never click its own approvals)
 //          · dev-tool telemetry (Next.js, Astro, Gatsby), Chrome's own background services (GCM, updates, Safe Browsing) and the
@@ -26,6 +26,7 @@
 // An upstream that receives a key can echo or transform it. Sentinel scrubs literal echoes from its response, but host binding
 // still requires trusting that upstream and is not a general guarantee that the computer can never learn the key.
 
+import { protectedRequest } from "./approval-scope.js";
 export const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 // Dedicated telemetry endpoints of dev tools that run on the computer (next build, astro, gatsby). Never worth a card.
 export const TELEMETRY_HOSTS = new Set(["telemetry.nextjs.org", "telemetry.astro.build", "telemetry.gatsbyjs.com"]);
@@ -57,11 +58,18 @@ export function egressVia(headers) {
 // lfsOp: the "operation" of a Git LFS batch request (the Sentinel reads that small JSON body only for that one path).
 export function egressRule({ host, method, path = "/", headers, keys = [], env = {}, lfsOp = null }) {
   host = String(host || "").toLowerCase(); method = String(method || "").toUpperCase(); path = String(path || "/");
+  // Native transport never uses an agent-controlled HTTP CONNECT proxy. Keep
+  // existing browser WebSocket/Upgrade behavior: application relays inside
+  // permitted HTTP(S) are outside the explicitly accepted direct-SSH boundary.
+  if (env.NATIVE_NETWORK === 'on' && method === 'CONNECT')
+    return { verdict: 'deny', why: 'opaque network tunnels require the native connection gate', rule: 'direct-tunnel' };
   if ([env.GATEWAY_HOST, env.APP_HOST].some((h) => h && host === String(h).toLowerCase()))
     return { verdict: "deny", why: "requests to 1Helm itself are not allowed from the computer", rule: "self" };
   const via = egressVia(headers);
-  // A real key is about to go out: only the person's policy (Always Approve, a grant, or their tap) can let it through.
+  // Vault key use retains the existing once/task/always approval scope, including GET.
+  // Connector-managed authentication is not routed here and does not create a fresh key approval.
   if (keys.length) return { verdict: "ask", why: `uses a saved key (${keys.join(", ")})`, via };
+  if (protectedRequest(method, path, host)) return { verdict: "ask", why: "payment or API-key operation", via };
   if (TELEMETRY_HOSTS.has(host)) return { verdict: "deny", why: "dev-tool telemetry (not sent)", rule: "telemetry", quiet: true };
   // Chrome's own services: measured on dev, they DO carry fetch metadata (they showed as "web page background request"), so by host.
   if (CHROME_SERVICE_HOSTS.has(host)) return { verdict: "deny", why: "the browser's own background service (not sent)", rule: "chrome-service", quiet: true };
@@ -74,13 +82,13 @@ export function egressRule({ host, method, path = "/", headers, keys = [], env =
     return { verdict: "allow", why: "git fetch / clone (read-only)", rule: "git-read" };
   if (method === "POST" && LFS_BATCH.test(path) && lfsOp === "download") return { verdict: "allow", why: "Git LFS download (read-only)", rule: "git-read" };
   if (method === "POST" && NPM_REGISTRIES.has(host) && path.startsWith("/-/npm/v1/security/")) return { verdict: "allow", why: "npm audit (package list only)", rule: "npm-audit" };
-  // The browser: a page's own background requests go out; a form submitted by a click or Enter asks.
+  // Ordinary browser forms and page background requests do not need a second approval.
   if (via === "page") return { verdict: "allow", why: "web page background request", rule: "browser-page" };
   if (via === "form") {
-    if (hdr(headers, "sec-fetch-user") === "?1") return { verdict: "ask", why: "a form submitted in the browser", via };
+    if (hdr(headers, "sec-fetch-user") === "?1") return { verdict: "allow", why: "ordinary browser form", rule: "task-action", via };
     return { verdict: "allow", why: "page redirect (no click)", rule: "browser-redirect" };
   }
-  return { verdict: "ask", why: "sends data", via };
+  return { verdict: "allow", why: "ordinary task request", rule: "task-action", via };
 }
 
 // A Git LFS batch body → its operation ("download" | "upload" | null). Only small JSON bodies are read.

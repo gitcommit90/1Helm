@@ -1,11 +1,11 @@
 /* ---------- Copy + Reply on chat bubbles, the reply pinned above the composer (msgreply.ts) ---------- */
 .msgs .m .bubble{position:relative}
 .msgs{overflow-x:clip}   /* the buttons never make the chat scroll sideways (a focused button would scroll it into view) */
-/* Desktop: two round buttons in the side margin at the bubble's outer edge (bottom-aligned), shown on hover / keyboard focus.
-   Absolutely placed, so nothing moves and no text is covered (bubbles are at most 86-88% wide). */
-.mact{position:absolute;bottom:2px;display:flex;gap:4px;opacity:0;pointer-events:none;transition:opacity .12s;white-space:nowrap;z-index:2;font-size:13px;line-height:1}
-.m.agent .mact{left:calc(100% + 6px)}
-.m.user .mact{right:calc(100% + 6px);flex-direction:row-reverse}
+/* A reserved strip below each actionable bubble keeps controls clear of text, adjacent bubbles and task cards at any width. */
+.msgs .m .bubble:has(>.mact){margin-bottom:34px;min-width:68px}
+.mact{position:absolute;top:100%;padding-top:2px;display:flex;gap:4px;opacity:0;pointer-events:none;transition:opacity .12s;white-space:nowrap;z-index:2;font-size:13px;line-height:1}
+.m.agent .mact{left:0}
+.m.user .mact{right:0;flex-direction:row-reverse}
 .mact button{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:30px;height:30px;padding:0 7px;border-radius:999px;border:1px solid var(--line);background:var(--sheet);color:var(--mute);cursor:pointer;font:inherit;flex:none}
 .mact button:hover{color:var(--ink);background:var(--hover)}
 .mact button:focus-visible{outline:2px solid var(--accent);outline-offset:1px;color:var(--ink)}
@@ -13,25 +13,15 @@
 .mact button.done{color:var(--live);border-color:color-mix(in srgb,var(--live) 45%,var(--line))}
 /* the "Copied" tick says so in words for a moment, in a small label above it (the buttons keep their width) */
 .mact button.done .mal{display:block;position:absolute;bottom:calc(100% + 5px);left:50%;transform:translateX(-50%);padding:3px 8px;border-radius:8px;background:var(--ink);color:var(--sheet);font-size:12px;font-weight:500;pointer-events:none;white-space:nowrap}
-@media (hover:hover){.m:hover .mact{opacity:1;pointer-events:auto}}
-.m:focus-within .mact,.mact:has(.done){opacity:1;pointer-events:auto}
-/* Touch (no hover): a tap or long-press on a bubble opens the same two as a small labelled menu just above it (below it near the top). */
+@media (hover:hover){.bubble:hover>.mact{opacity:1;pointer-events:auto}}
+.bubble:has(>.mact :focus-visible)>.mact,.bubble.macts>.mact{opacity:1;pointer-events:auto}
+/* Touch: a held bubble reveals only its controls. A normal tap leaves them hidden. */
 @media (hover:none){
-  .m.macts .mact{opacity:1;pointer-events:auto;left:auto;right:auto;bottom:calc(100% + 6px);flex-direction:row;padding:4px;gap:2px;background:var(--sheet);border:1px solid var(--line);border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.16);z-index:6;animation:mapop .14s ease-out}
-  .m.agent.macts .mact{left:0}.m.user.macts .mact{right:0}
-  .m.macts .mact.below{bottom:auto;top:calc(100% + 6px)}
-  .m.macts .mact button{height:38px;min-width:44px;padding:0 14px;border:0;background:none;color:var(--ink);font-size:15px;border-radius:12px}
-  .m.macts .mact button:active{background:var(--hover)}
-  .m.macts .mact .mal,.m .mact button.done .mal{display:inline;position:static;transform:none;padding:0;background:none;color:inherit;font-size:inherit}
-  .m:not(.macts) .mact:not(:has(.done)){opacity:0;pointer-events:none}
-  /* after Copy from the menu: just the "Copied" tick, where the menu was, for a moment */
-  .m:not(.macts) .mact:has(.done){opacity:1;bottom:calc(100% + 6px)}
-  .m.user:not(.macts) .mact:has(.done){right:0;left:auto}.m.agent:not(.macts) .mact:has(.done){left:0;right:auto}
-  .m:not(.macts) .mact:has(.done) .ma-reply{display:none}
-  .m.macts .bubble{filter:brightness(.97)}
+  .msgs .m .bubble:has(>.mact){margin-bottom:48px;min-width:92px}
+  .msgs .mact button{height:44px;min-width:44px}
 }
 @keyframes mapop{from{opacity:0;transform:translateY(4px) scale(.97)}to{opacity:1;transform:none}}
-@media (prefers-reduced-motion:reduce){.m.macts .mact{animation:none}}
+@media (prefers-reduced-motion:reduce){.mact{transition:none}}
 
 /* The quote above a sent reply: who + one line; tap → the original scrolls into view and flashes. */
 .mq{display:inline-flex;align-items:center;gap:6px;max-width:min(86%,520px);margin:0 4px 4px;padding:3px 10px 3px 8px;border:0;border-left:3px solid color-mix(in srgb,var(--accent) 55%,transparent);border-radius:4px 10px 10px 4px;background:color-mix(in srgb,var(--ink) 5%,transparent);color:var(--mute);font:inherit;font-size:13px;line-height:1.35;cursor:pointer;text-align:left;min-width:0}
@@ -40,7 +30,7 @@
 .mq svg{flex:none;opacity:.8}
 .mq .mqw{font-weight:600;flex:none;color:var(--ink2)}
 .mq .mqt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.m.mr-flash>.bubble,.m.mr-flash>.acard,.m.mr-flash .gu-reply{animation:mrflash 1.6s ease}
+.m.mr-flash>.bubble,.m.mr-flash>.reply-slot>.bubble,.m.mr-flash>.acard,.m.mr-flash .gu-reply{animation:mrflash 1.6s ease}
 @keyframes mrflash{0%,35%{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 45%,transparent)}100%{box-shadow:0 0 0 3px transparent}}
 
 /* The pinned reply above the composer: who + the first lines + ✕. */

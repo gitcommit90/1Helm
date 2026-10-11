@@ -6,6 +6,11 @@
 // routes before sending anything (test/composio-key.test.mjs also greps src/ for them).
 export const COMPOSIO_BASE = "https://backend.composio.dev/api/v3.1";
 const FORBIDDEN = /^\/(?:logs(?:\/|\?|$)|project\/usage|org\/[^?]*usage)/i;
+// Custom MCP toolkits (CUSTOM_*) are project-wide in Composio but private to one 1Helm workspace. Every existing caller is refused anything
+// that names one (a path or query that points at the custom/ endpoints, a CUSTOM_ toolkit or tool); only src/custom-mcp.js, which checks
+// ownership first, passes { custom: true }. Deny by default so a new route can't leak or run another person's custom server.
+const CUSTOM_PATH = /(^\/custom\/|[?&=,\/](?:toolkit_slugs?|tool_slugs?|toolkits?)(?:=|\/)[^&]*custom_|\/(?:tools|toolkits)(?:\/execute)?\/custom_)/i;
+export const CUSTOM_REFUSED = "Custom MCP servers are managed in Settings → Advanced and can't be used this way.";
 
 // ---- Which Composio toolkit version (10-06) ----
 // Unset COMPOSIO_TOOLKIT_VERSION (prod today): Composio's pinned version "00000000_00" for every toolkit. On v3 that was the default when
@@ -98,7 +103,8 @@ export async function composioRequest(env, path, init = {}) {
   path = String(path || "");
   if (!path.startsWith("/") || path.startsWith("/api/")) throw new Error(`bad Composio path ${path.slice(0, 80)}`);
   if (FORBIDDEN.test(path)) throw new Error("1Helm never reads Composio logs or usage.");
-  const { retry, ...rest } = init, method = String(rest.method || "GET").toUpperCase();
+  const { retry, custom, ...rest } = init, method = String(rest.method || "GET").toUpperCase();
+  if (!custom && CUSTOM_PATH.test(path)) throw new Error(CUSTOM_REFUSED);
   const read = retry ? retry === "read" : method === "GET" || method === "HEAD";
   let waited = 0, timeouts = 0;
   for (let attempt = 0; ; attempt++) {
@@ -126,7 +132,7 @@ export async function composioRequest(env, path, init = {}) {
       const ms = nextWait(attempt, waited, retryAfterMs(r.headers));
       if (ms >= 0) { waited += ms; await RETRY.sleep(ms); continue; }
     }
-    throw new Error(errorText(env, r.status, d));
+    throw Object.assign(new Error(errorText(env, r.status, d)), { httpStatus: r.status });
   }
 }
 // What a Composio error says, safe to hand to the helper or a log: Composio echoes a masked key on a bad one ("Invalid API key: ak_**_xyz"),

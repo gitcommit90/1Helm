@@ -69,8 +69,7 @@ function cur(q: Q): Ans {
 }
 const hasAnswer = (q: Q, a: Ans) => q.kind === "one" ? !!a.pick || !!(a.text || "").trim() && showText(q, a) : (a.picks || []).length > 0 || !!(a.text || "").trim();
 const showText = (q: Q, a: Ans) => !!q.text && (q.text.show === "always" || q.text.show === a.pick);
-// A tap on a pick-one with no field to fill moves straight on (the quickest possible question).
-const tapGoes = (q: Q, v: string) => q.kind === "one" && !(q.text && (q.text.show === "always" || q.text.show === v));
+// Selecting or typing only edits the draft. Next/Finish is always an explicit action.
 
 function go(step: number, dir = 1) { if (!IV.st) return; IV.dir = dir; IV.st.step = Math.max(0, Math.min(step, IV.st.total)); paint(); }
 function answer(q: Q) {
@@ -100,7 +99,7 @@ function intro(st: St) {
     <button type="button" class="iv-link" data-ivgo="remove">Remove this task</button></div>`;
 }
 function question(st: St, q: Q) {
-  const a = cur(q), i = st.questions.indexOf(q), txt = showText(q, a), ok = hasAnswer(q, a), auto = q.kind === "one" && !q.text;
+  const a = cur(q), i = st.questions.indexOf(q), txt = showText(q, a), ok = hasAnswer(q, a);
   const opts = q.look === "apps" ? appsPicker(q) : q.kind === "one"
     ? (q.opts.length ? `<div class="gu-opts iv-opts" role="radiogroup" aria-label="${esc(q.ask)}">${q.opts.map((o, k) => { const on = a.pick === o.v;
         return `<button type="button" class="gu-opt${on ? " on" : ""}" role="radio" aria-checked="${on}" data-ivpick="${esc(o.v)}"><i class="gu-rad"></i><span class="gu-ot"><b>${esc(o.label)}</b></span>${!D!.phone() && k < 9 ? `<kbd class="iv-k">${k + 1}</kbd>` : ""}</button>`; }).join("")}</div>` : "")
@@ -112,7 +111,7 @@ function question(st: St, q: Q) {
     ${opts}${field}
     <div class="iv-act">${i > 0 ? `<button type="button" class="iv-back-b" data-ivgo="back" aria-label="Back">${svg(BACK, 18)}</button>` : "<span></span>"}
       <span class="iv-grow"></span><button type="button" class="gu-b ghost" data-ivgo="skip">Skip</button>
-      ${auto && !a.pick ? "" : `<button type="button" class="gu-b primary" data-ivgo="next"${ok ? "" : " disabled"}>${i === st.total - 1 ? "Finish" : "Next"}</button>`}</div>
+      <button type="button" class="gu-b primary" data-ivgo="next"${ok ? "" : " disabled"}>${i === st.total - 1 ? "Finish" : "Next"}</button></div>
     </div>
     <div class="iv-foot"><span>Saved as you go. Come back anytime.</span><button type="button" class="iv-link" data-ivgo="rest">Skip the rest</button></div>`;
 }
@@ -128,7 +127,7 @@ function appsPicker(q: Q) {
 const maxOf = (q: Q) => Math.max(20, Number(q.text?.max) || 120);
 const GROW_AT = 250;   // limits this long get the growing box
 function textField(q: Q, v: string) {
-  const max = maxOf(q), common = `id="ivtext" data-ivtext="${esc(q.id)}" maxlength="${max}" autocomplete="off" enterkeyhint="next" placeholder="${esc(q.text!.placeholder)}" aria-describedby="ivleft"`;
+  const max = maxOf(q), common = `id="ivtext" data-ivtext="${esc(q.id)}" maxlength="${max}" autocomplete="off" placeholder="${esc(q.text!.placeholder)}" aria-describedby="ivleft"`;
   const box = max >= GROW_AT ? `<textarea ${common} rows="1" class="iv-ta">${esc(v)}</textarea>` : `<input ${common} value="${esc(v)}">`;
   return `<label class="gu-field iv-field"><span>${esc(q.text!.label)}</span>${box}<small class="iv-left" id="ivleft">${leftText(v.length, max)}</small></label>`;
 }
@@ -208,7 +207,6 @@ document.addEventListener("click", async e => {
   const q = qOf(t);
   if (t.dataset.ivpick != null && q) {
     const v = t.dataset.ivpick; IV.draft[q.id] = { ...IV.draft[q.id], pick: v };
-    if (tapGoes(q, v)) { repaintQ(q); setTimeout(() => { if (IV.st?.questions[IV.st.step] === q) answer(q); }, 170); return; }
     repaintQ(q); if (showText(q, cur(q))) (document.getElementById("ivtext") as HTMLInputElement | null)?.focus(); return;
   }
   if (t.dataset.ivchip != null && q) {
@@ -239,8 +237,8 @@ document.addEventListener("input", e => {
 document.addEventListener("keydown", e => {
   const iv = document.getElementById("iv"); if (!iv || !IV.st || !IV.started || IV.st.step >= IV.st.total || e.metaKey || e.ctrlKey || e.altKey) return;
   const t = e.target as HTMLElement, q = IV.st.questions[IV.st.step];
-  // Enter moves on from the field (the growing box too: answers are one line in the Notebook, so a newline would be dropped anyway).
-  if (t.id === "ivtext" && e.key === "Enter" && !e.isComposing) { e.preventDefault(); answer(q); return; }
+  // Enter in an answer field must not submit it. Keyboard users can still Tab to
+  // Next and activate that button normally; number shortcuts only select a choice.
   if (t.closest?.("input,textarea,[contenteditable]") || !iv.isConnected) return;
   if (/^[1-9]$/.test(e.key) && q) { const b = iv.querySelectorAll<HTMLElement>("[data-ivpick],[data-ivchip]")[+e.key - 1]; if (b) { e.preventDefault(); b.click(); } }
 });

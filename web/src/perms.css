@@ -9,3 +9,9 @@
 .pmico{color:var(--accent)}
 .pmwait{display:inline-grid;place-items:center;width:64px;height:30px}
 .pmwait .apspin{width:16px;height:16px}
+#pm-checkins{scroll-margin-top:16px}
+.pmcheckrow{align-items:flex-start;gap:16px}
+.pmcheckcontrol{display:flex;align-items:center;gap:8px;flex:none}
+.pmcheckcontrol input{width:70px;min-height:40px;box-sizing:border-box;border:1px solid var(--line2);border-radius:8px;background:var(--sheet);color:var(--ink);padding:6px 8px;font:inherit}
+.pmcheckcontrol button{min-height:40px}
+@media(max-width:540px){.pmcheckrow{flex-wrap:wrap}.pmcheckcontrol{width:100%}}

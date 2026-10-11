@@ -1,5 +1,5 @@
 import { boundedJson } from "../bounded-body.js";
-// Managed vs Self-managed apps (10-06, composio-upgrade part 2: /workspace/1helm-cloud/composio-upgrade/MANAGED-AND-SELF-MANAGED.md).
+// Managed vs Self-managed apps: account connection and sign-in choices.
 // The person picks, at the end of onboarding and later in Settings → Connected accounts, how their apps reach Composio:
 //   managed (default; every workspace made before this): 1Helm's Composio project, user_id "1hc:<tenant>" (composio-transport.js).
 //   self: the person's OWN Composio account ("Composio for You"). 1Helm signs in to it with OAuth 2.1 + PKCE as its own public client

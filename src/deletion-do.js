@@ -93,6 +93,8 @@ export const residentDeletion = {
     const existed = !!this.session(sid);
     // 1. Stop it: the running turn(s) stop at their next step, its helpers stop (no handoff), unread inputs are dropped.
     for (const tc of this.active?.values() || []) if (tc.session === sid && !tc.finished) tc.abort = "hard";
+    await this.nativeCancel?.(sid, 'Task deleted');
+    delWhere(sql, 'native_sessions', 'task=?', sid);
     if (has(sql, "helpers")) for (const h of sql.exec("SELECT id FROM helpers WHERE session=? AND status='running'", sid).toArray()) { try { await this.helperStop(sid, h.id, "person"); } catch {} }
     this.inputs?.delete(sid);
     // 2. The chat row first: from here no new message, handoff or follow-up can land in it ("No such task" / "gone").
@@ -190,6 +192,7 @@ export const residentDeletion = {
   async wipeChannel() {
     const sql = this.sql;
     for (const tc of this.active?.values() || []) tc.abort = "hard";
+    await this.nativeCancel?.(null, 'Channel deleted');
     this.inputs?.clear?.();
     const counts = {};
     for (const t of ["sessions", "turns", "msgs", "cards", "card_events", "files", "shots", "todos", "reactions", "later", "helpers", "approvals", "grants", "workflows", "outbox", "mem_rows", "mem_segments", "plans", "plan_origin", "connect_offers", "chat_interviews", "pomodoro", "pomodoro_offers"]) counts[t] = count(sql, t);

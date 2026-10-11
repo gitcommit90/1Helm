@@ -25,9 +25,10 @@
 //   - Disconnect: keep (memories and transcripts stay; the cursor goes) or remove (every bee:conv:<id> document in General's bank
 //     and every transcript under t/<tenant>/bee/ are deleted, then this DO's storage).
 // The token is never stored here (token_ref names the sealed D1 row), never logged, never in an event, never returned.
-// The agent's prompt and tools are unchanged (§0): Bee only ever reaches it as ordinary memory.
+// Dedicated Ambient extraction additionally indexes full transcripts (including recordings in progress) in this tenant's
+// provider-neutral store. General retrieves typed items and raw evidence through ambientQuery; spoken words never execute tools.
 import { DurableObject } from "cloudflare:workers";
-import { tolerantEnv } from "../do-stub.js";
+import { tolerantEnv, codeV } from "../do-stub.js";
 import { openSecret } from "../sentinel.js";
 import { hsOn, bankId, retain as hsRetain } from "../hindsight.js";
 import { hsForgetDocs, ensureDeletionTables, deleteNote } from "../deletion.js";
@@ -35,6 +36,7 @@ import { stPut, stDelete, stDeleteListed, StorageFull } from "../storage.js";
 import { METER as BYOK_METER } from "../byok-meter.js";
 import { scrubSecrets } from "../secrets-scrub.js";
 import { beeSyncJob, beeFactsJob, beeEvent, JOB_IDLE_MS, SYNC_KILL_MS } from "./bee.js";
+import { AmbientStore } from "./ambient.js";
 
 export const EVERY_MS = 5 * 60e3, MANUAL_GAP_MS = 15e3, MAX_PER_RUN = 25, OVERLAP_MS = 10 * 60e3, STALE_CURSOR_MS = 6 * 86400e3, MAX_BACKOFF_MS = 60 * 60e3;
 // The Computer class's "basic" container at cost + 15%, per second (the same formula as index.js COMPUTER_NANO_PER_SEC).
@@ -153,7 +155,7 @@ const NOTE = {
 };
 
 export class BeeSync extends DurableObject {
-  constructor(ctx, env) { super(ctx, env); this.env = tolerantEnv(env); this.sql = ctx.storage.sql; this.gen = 0; this._run = null; this.init(); }
+  constructor(ctx, env) { super(ctx, env); this.env = tolerantEnv(env); this.sql = ctx.storage.sql; this.gen = 0; this._run = null; this._ambientRun = null; this.init(); this.ambient = new AmbientStore(this); const recovery = this.armAmbientRecovery().catch(() => {}); if (ctx.waitUntil) ctx.waitUntil(recovery); }
   init() {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS convs (id INTEGER PRIMARY KEY, start_time INTEGER, end_time INTEGER, updated_at INTEGER, retained_at INTEGER, r2_key TEXT, bytes INTEGER NOT NULL DEFAULT 0, chars INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL);
@@ -221,6 +223,7 @@ export class BeeSync extends DurableObject {
 
   // Connected (bee.js verify → 200). Idempotent: an active sync keeps its alarm. A different Bee account starts over (cursor, retries).
   async start(tenant, { beeUser = null } = {}) {
+    if (this.get("account_deleted")) return { status: "deleted" };
     this.put("tenant", tenant); this.put("token_ref", `d1:bee_accounts/${tenant}`);
     if (beeUser != null && this.get("bee_user") && this.get("bee_user") !== String(beeUser)) {
       this.put("cursor", null); this.sql.exec("DELETE FROM pending"); await this.ev(`sync: a different Bee account (${beeUser}); starting over from the last 24 hours`);
@@ -243,6 +246,7 @@ export class BeeSync extends DurableObject {
     return { ...this.status(), ran: true };
   }
   async alarm() {
+    if (this.get("account_deleted")) return;
     if (this.get("remove_r2") === "1") { await this.removeTranscripts().catch(() => {}); if (this.get("remove_r2") === "1") { await this.ctx.storage.setAlarm(now() + 60e3); return; } }
     // Write-backs owed to Bee first (a person just tapped Approve / Deny / saved a note): one short job, before any sync or import batch.
     if (this.owedWrites().length) await this.flushWrites().catch((e) => console.log("bee fact writes", String(e?.message || e).slice(0, 120)));
@@ -252,8 +256,50 @@ export class BeeSync extends DurableObject {
       await this.runOnce(poked ? this.get("poke_why") || "poked" : "scheduled");
     }
     if (this.bf()?.status === "running") await this.bfStep().catch(async (e) => { await this.ev(`backfill step failed: ${String(e?.message || e).slice(0, 160)}`); });
+    if (this.ambient.running()) await this.ambientRun();
     const bfNext = this.bf()?.status === "running" ? now() + BF_GAP_MS : Infinity, liveNext = this.get("status") === "active" ? Math.max(now() + 1000, this.dueAt()) : Infinity;
-    const at = Math.min(bfNext, liveNext, this.writesDueAt()); if (at < Infinity) await this.ctx.storage.setAlarm(Math.max(at, now() + 500));
+    const at = Math.min(bfNext, liveNext, this.writesDueAt(), this.ambient.running() ? this.ambient.dueAt() : Infinity); if (at < Infinity) await this.ctx.storage.setAlarm(Math.max(at, now() + 500));
+  }
+  ambientQuery(args = {}) { return this.ambient.query(args); }
+  async armAmbientRecovery() { if (this.get("ambient_recovery_arm") === "1" && this.ambient.running()) { await this.arm(now() + 1000); this.put("ambient_recovery_arm", null); } }
+  async ambientStatus() { await this.armAmbientRecovery(); return { ...this.ambient.query({ limit: 1 }).coverage, worker_version: codeV(this.env), counters: this.counters(), diagnostic: (() => { try { return JSON.parse(this.get("ambient_error") || "null"); } catch { return null; } })() }; }
+  async ambientReindex(tenant) {
+    if (this.get("account_deleted") || this.tid() !== tenant) throw new Error("ambient history unavailable");
+    this.put("ambient_indexing", "1"); await this.arm(now() + 1000); return this.ambientQuery();
+  }
+  async ambientRetrySource(tenant, sourceId) {
+    if (this.env.ENV_NAME !== "dev" || this.env.TEST_MODE !== "1" || this.get("account_deleted") || this.tid() !== tenant || !/^[1-9]\d{0,19}$/.test(String(sourceId))) throw new Error("ambient source retry unavailable");
+    // Let an existing batch settle before replacing its projection; never race
+    // a model response or orphan the durable reservation owned by that batch.
+    if (this._ambientRun) await this._ambientRun;
+    if (this.get("account_deleted") || this.tid() !== tenant) throw new Error("ambient history unavailable");
+    const result = this.ambient.retrySource("bee", sourceId);
+    if (result.found) { this.put("ambient_indexing", "1"); await this.arm(now() + 1000); }
+    return result;
+  }
+  ambientRun(fixture = false) {
+    if (!this._ambientRun) this._ambientRun = this.ambient.run(fixture).finally(() => { this._ambientRun = null; });
+    return this._ambientRun;
+  }
+  // Internal RPC; the dev-only HTTP caller additionally checks ops key and example.com ownership.
+  async ambientFixture(tenant, conv) {
+    if (this.env.ENV_NAME !== "dev" || this.env.TEST_MODE !== "1" || this.get("account_deleted")) throw new Error("fixture unavailable");
+    if (this.tid() && this.tid() !== tenant) throw new Error("tenant mismatch");
+    const row = await this.env.DB.prepare("SELECT u.email FROM tenants t JOIN users u ON u.id=t.owner_user_id WHERE t.id=?").bind(tenant).first();
+    if (!/^[^@]+@example\.com$/i.test(row?.email || "")) throw new Error("test accounts only");
+    if (!this.tid()) this.put("tenant", tenant);
+    await this.ambient.ingest("fixture", conv.id, conv); await this.ambientRun(true); return this.ambientQuery({ limit: 50 });
+  }
+  async ambientFixtureClear() { const rows = this.ambient.rows("SELECT source_id FROM ambient_sources WHERE source='fixture'"); for (const row of rows) this.ambient.remove("fixture", row.source_id); return { removed: rows.length }; }
+  async wipeAccount(tenant) {
+    if (this.tid() && this.tid() !== tenant) throw new Error("tenant mismatch");
+    this.gen++; this.put("status", "stopped"); this.put("account_deleted", "1");
+    await this.ctx.storage.deleteAlarm();
+    if (this._run) await this._run.catch(() => {});
+    if (this._ambientRun) await this._ambientRun.catch(() => {});
+    await this.ambient.releaseAttempts();
+    await this.ctx.storage.deleteAll(); this.init(); this.ambient = new AmbientStore(this); this.put("account_deleted", "1");
+    return { deleted: true };
   }
   runOnce(why) {
     if (!this._run) this._run = this.run(why).catch(async (e) => {
@@ -285,7 +331,7 @@ export class BeeSync extends DurableObject {
     let cursor = this.get("cursor") || null, gap = this.num("gap_from") || null;
     const cAt = cursorAt(cursor) ?? (this.num("cursor_at") || null);
     if (cursor && cAt && t0 - cAt > STALE_CURSOR_MS) { gap = gap ?? cAt; this.put("gap_from", gap); await this.ev(`sync: the saved cursor is over 6 days old; catching up on every conversation since ${iso(gap)}`); cursor = null; }
-    const retry = this.sql.exec("SELECT id FROM pending ORDER BY at LIMIT 100").toArray().map((r) => Number(r.id));
+    const retry = [...new Set([...this.ambient.liveIds(), ...this.sql.exec("SELECT id FROM pending ORDER BY at LIMIT 100").toArray().map((r) => Number(r.id))])];
     let token = await openSecret(env, a.token_sealed), r;
     const factsMode = t0 - this.num("facts_at") > FACTS_EVERY_MS ? "all" : "changed";
     try { r = await beeSyncJob(env, tid, token, { cursor, ids: retry, max: MAX_PER_RUN, facts: factsMode, ...(gap != null ? { catchup: gap } : cursor ? { cursor_at: cAt || this.num("live_since") || 0 } : {}) }); }
@@ -359,20 +405,36 @@ export class BeeSync extends DurableObject {
     const env = this.env, tid = this.tid(), id = Number(c.id); if (!(id > 0)) return null;
     const row = this.sql.exec("SELECT * FROM convs WHERE id=?", id).toArray()[0];
     if (c.status === 404) {   // deleted in Bee
+      this.ambient.remove("bee", id);
       this.unpend(id);
-      if (row) { if (st.hsOk) await hsForgetDocs(env, st.bank, [docId(id)]); await stDelete(env, [row.r2_key || r2Key(tid, id)]); this.sql.exec("DELETE FROM convs WHERE id=?", id); return "gone"; }
+      await stDelete(env, [row?.r2_key || r2Key(tid, id)]); // ongoing captures also have raw objects, before a finished convs row exists
+      if (row) { if (st.hsOk) await hsForgetDocs(env, st.bank, [docId(id)]); this.sql.exec("DELETE FROM convs WHERE id=?", id); return "gone"; }
       return null;
     }
     if (c.status !== 200 || !c.conv) { this.pend(id, `Bee answered ${c.status || c.error || "nothing"}`); return "failed"; }
     const conv = c.conv;
-    if (conv.end_time == null) { this.unpend(id); return "live"; }   // still recording: the change feed brings it back when it ends
+    // Capture the actual speech before the older finished-summary path. Ongoing recordings remain useful all day.
+    // Persist and validate every transcript revision, even when Bee's updated_at has not changed.
+    let bytes = row?.bytes || 0, key = row?.r2_key || null, rawOk = true;
+    try {
+      await this.ambient.ingest("bee", id, conv, async () => {
+        const body = JSON.stringify(transcriptDoc(conv));
+        await stPut(env, r2Key(tid, id), body, { httpMetadata: { contentType: "application/json" } }, { check: true, replace: true });
+        bytes = new TextEncoder().encode(body).byteLength;
+      });
+      key = r2Key(tid, id);
+    } catch (e) {
+      rawOk = false; this.pend(id, "ambient transcript not saved");
+      if (e instanceof StorageFull || e?.name === "StorageFull") {
+        st.storageFull = true; this.put("ambient_note", "Storage is full; some recordings are waiting to be saved and processed");
+        this.ambient.remove("bee", id); await this.ambient.ingest("bee", id, { ...conv, primary_location: null, transcriptions: [] });
+      } else return "failed";
+    }
+    if (conv.end_time == null) { if (rawOk) this.unpend(id); return rawOk ? "live" : "failed"; }
     await this.lnNotify(conv).catch((e) => console.log("bee live notes notify", String(e?.message || e).slice(0, 120)));   // Live notes' auto refine (§9.5)
-    if (row && row.updated_at === (conv.updated_at ?? null) && (row.retained_at || !retainItem(conv).content)) { this.unpend(id); return "same"; }
+    if (row && row.updated_at === (conv.updated_at ?? null) && (row.retained_at || !retainItem(conv).content)) { if (rawOk) this.unpend(id); return rawOk ? "same" : "failed"; }
     if (st.creditsOut) { this.pend(id, "waiting for credits"); return "waiting"; }
-    // 1. the raw transcript → R2 (counted toward storage; full storage skips it, memory still goes in)
-    let bytes = row?.bytes || 0, key = row?.r2_key || null;
-    try { const body = JSON.stringify(transcriptDoc(conv)); await stPut(env, r2Key(tid, id), body, { httpMetadata: { contentType: "application/json" } }, { check: true, replace: true }); key = r2Key(tid, id); bytes = new TextEncoder().encode(body).byteLength; }
-    catch (e) { if (e instanceof StorageFull || e?.name === "StorageFull") st.storageFull = true; else { this.pend(id, "transcript not saved"); return "failed"; } }
+    // Raw storage admission above applies to finished and ongoing recordings alike.
     // 2. the summary → General's memory, reserved first
     const item = retainItem(conv); let retainedAt = row?.retained_at || null;
     if (item.content && st.hsOk) {
@@ -389,7 +451,7 @@ export class BeeSync extends DurableObject {
     this.sql.exec(`INSERT INTO convs (id,start_time,end_time,updated_at,retained_at,r2_key,bytes,chars,at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
       start_time=excluded.start_time,end_time=excluded.end_time,updated_at=excluded.updated_at,retained_at=excluded.retained_at,r2_key=excluded.r2_key,bytes=excluded.bytes,chars=excluded.chars,at=excluded.at`,
       id, msOf(conv.start_time), msOf(conv.end_time), conv.updated_at ?? null, retainedAt, key, bytes, item.content.length, now());
-    this.unpend(id);
+    if (rawOk) this.unpend(id);
     return row ? "updated" : "new";
   }
 
@@ -535,11 +597,14 @@ export class BeeSync extends DurableObject {
   // import them twice); "remove": every bee:conv:<id> in General's bank and every transcript go, then this DO's storage.
   async stop(memories = "keep") {
     this.gen++; const tid = this.tid();
+    this.put("ambient_indexing", null);
     if (["running", "paused"].includes(this.bf()?.status)) await this.bfEnd("cancelled").catch(() => {});
     else { this.setBf(null); this.sql.exec("DELETE FROM bf_queue"); }
     this.put("status", "stopped");
     await this.ctx.storage.deleteAlarm?.();
     if (this._run) await this._run.catch(() => {});
+    if (this._ambientRun) await this._ambientRun.catch(() => {});
+    await this.ambient.releaseAttempts();
     if (!tid) return { memories, removed: 0 };
     if (memories !== "remove") {
       for (const k of ["cursor", "cursor_at", "gap_from", "live_since", "note", "fails", "next_at", "bee_user", "bf_offer", "poke_at", "poke_why", "idle_runs", "every", "change_at"]) this.put(k, null);
@@ -547,6 +612,7 @@ export class BeeSync extends DurableObject {
       const kept = this.convCount(); await this.ev(`sync: off (disconnected; kept ${kept} conversation${kept === 1 ? "" : "s"} in memory)`);
       return { memories: "kept", kept };
     }
+    this.ambient.clear();
     let notes = 0; try { notes = await this.removeFactNotes(); } catch (e) { console.log("bee remove notes", String(e?.message || e).slice(0, 120)); }
     const ids = this.sql.exec("SELECT id FROM convs").toArray().map((r) => Number(r.id));
     if (ids.length && hsOn(this.env)) await hsForgetDocs(this.env, this.bank(), ids.map(docId));   // queued in D1 + re-checked: a retain still landing goes too
@@ -554,7 +620,7 @@ export class BeeSync extends DurableObject {
     const r2Left = this.get("remove_r2") === "1";
     await this.ev(`sync: off (disconnected; removed ${ids.length} conversation${ids.length === 1 ? "" : "s"} from memory${r2Left ? "; transcripts retried in 1 min" : " and their transcripts"}${notes ? `; ${notes} From-Bee note${notes === 1 ? "" : "s"} removed from the Notebook` : ""})`);
     if (r2Left) { this.sql.exec("DELETE FROM convs"); this.sql.exec("DELETE FROM pending"); this.sql.exec("DELETE FROM facts"); await this.ctx.storage.setAlarm(now() + 60e3); return { memories: "removed", removed: ids.length }; }
-    await this.ctx.storage.deleteAll(); this.init();
+    await this.ctx.storage.deleteAll(); this.init(); this.ambient = new AmbientStore(this);
     return { memories: "removed", removed: ids.length };
   }
   async removeTranscripts() {

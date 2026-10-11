@@ -1,0 +1,36 @@
+/* Chat only: Library rows, upload chips and the full viewer retain their sizing. */
+.msgs .mfiles{flex-direction:row;flex-wrap:wrap;justify-content:flex-end;align-items:flex-start;max-width:100%;gap:8px}
+.msgs .chat-tile{box-sizing:border-box;display:flex;flex-direction:column;align-items:stretch;flex:none;width:120px;height:120px;min-width:0;max-width:100%;padding:0;gap:0;border-radius:14px;overflow:hidden;margin-top:8px;background:var(--sheet)}
+.msgs .mfiles .chat-tile{margin:0}
+.chat-tile-open{display:flex;flex-direction:column;flex:1;min-height:0;color:inherit;text-decoration:none}
+.chat-tile-preview{display:grid;place-items:center;flex:1;min-height:0;background:var(--hover);overflow:hidden}
+.chat-tile-preview img{width:100%;height:100%;object-fit:cover}
+.chat-tile-preview .aico{width:36px;height:36px;margin:0}
+.chat-tile-name{display:block;flex:none;min-width:0;padding:5px 7px 2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:16px;font-weight:550}
+.chat-tile-actions{display:flex;align-items:center;gap:2px;flex:none;height:28px;padding:0 4px 2px 7px}
+.chat-tile-kind{font-size:10px;color:var(--mute);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-tile-actions .fsh,.chat-tile-download{display:grid;place-items:center;flex:none;width:26px;height:26px;min-width:0;padding:0;margin:0;border-radius:7px;color:var(--mute)}
+.chat-tile-actions .fsh:hover,.chat-tile-download:hover{color:var(--ink);background:var(--hover)}
+.chat-tile-open:focus-visible,.chat-tile-download:focus-visible{outline:2px solid var(--ink);outline-offset:-3px;border-radius:8px}
+/* GenUI File only; no generic card or interactive content sizing changes. */
+.msgs .gu-file{box-sizing:border-box;display:flex;flex-direction:column;gap:0;width:120px;max-width:100%;height:120px;padding:0;border-radius:14px;overflow:hidden;align-items:stretch}
+.msgs .gu-file .gu-thumb{width:100%;height:58px;aspect-ratio:auto;min-height:0;border-radius:0;flex:1}
+.msgs .gu-file .gu-thumb .aico{width:32px;height:32px}
+.msgs .gu-file .gu-fm{min-width:0;padding:4px 7px;flex:none}
+.msgs .gu-file .gu-fm>b{display:block;font-size:12px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msgs .gu-file .gu-fm>span:not(.gu-links){display:none}
+.msgs .gu-file .gu-links{display:flex;gap:10px;margin-top:2px;font-size:11px;line-height:24px}
+.msgs .gu-file .gu-links a{font-size:11px}
+.msgs .gu-file a:focus-visible{outline:2px solid var(--ink);outline-offset:-2px}
+/* Sanitized Markdown image links are previews, never large inline media. */
+.msgs .body .chat-image-tile{box-sizing:border-box;display:inline-flex;vertical-align:top;flex-direction:column;width:120px;height:120px;max-width:100%;border:1px solid var(--line);border-radius:14px;overflow:hidden;margin:4px 6px 4px 0;text-decoration:none;color:inherit;background:var(--sheet)}
+.msgs .body .chat-image-tile img{display:block;width:100%;height:90px;min-height:0;object-fit:cover;margin:0;border-radius:0}
+.msgs .body .chat-image-name{display:block;padding:4px 7px;font-size:12px;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msgs .body .chat-image-link{color:inherit;text-decoration:none}
+.msgs .body .chat-image-link:focus-visible .chat-image-tile{outline:2px solid var(--ink);outline-offset:2px}
+.msgs .body img{max-width:120px;max-height:120px;object-fit:cover}
+.msgs .chat-file-grid{display:flex;flex-wrap:wrap;gap:8px;max-width:100%;margin-top:8px}
+.msgs .chat-file-grid .chat-tile{margin:0}
+.msgs .shot{box-sizing:border-box;width:120px;height:120px;max-width:100%;border-radius:14px;overflow:hidden;display:flex;flex-direction:column;padding:0;margin:0}
+.msgs .shot img{width:100%;height:90px;flex:1;min-height:0;object-fit:contain}
+.msgs .shot span{width:100%;box-sizing:border-box;padding:4px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;line-height:20px;flex:none}

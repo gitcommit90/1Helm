@@ -173,9 +173,15 @@ export class ChannelComputer extends DurableObject {
       this._standins = Object.fromEntries(rows.map((r) => [r.name, r.standin])); } catch { this._standins = {}; }
   }
   // On unless this channel was switched off (TEST_MODE /api/res/<ch>/sentinel) or the Worker's SENTINEL_DEFAULT isn't "on".
-  sentinelOn() { return (this.get("sentinel") || this.env.SENTINEL_DEFAULT || "off") === "on"; }
+  sentinelOn() { return this.env.NATIVE_NETWORK === 'on' || (this.get("sentinel") || this.env.SENTINEL_DEFAULT || "off") === "on"; }
   // Takes effect at the next start (internet on/off is fixed when the container starts), so a running computer is stopped.
-  async setSentinel(mode) { this.put("sentinel", mode === "off" ? "off" : "on"); if (this.ctx.container.running) await this.stop("sentinel mode changed", { cancellable: false }); return { sentinel: this.get("sentinel") }; }
+  async setSentinel(mode) { if (mode === 'off' && this.env.NATIVE_NETWORK === 'on') return { error: 'Native network permissions require Sentinel. It cannot be disabled.' }; this.put("sentinel", mode === "off" ? "off" : "on"); if (this.ctx.container.running) await this.stop("sentinel mode changed", { cancellable: false }); return { sentinel: this.get("sentinel") }; }
+  // Worker-only activation barrier. An older running internet-enabled instance
+  // must finish/restart before the account can claim native network protection.
+  async nativeGuardStatus() {
+    const guarded = this.sentinelOn() && (!this.ctx.container.running || this.get('started_sentinel') === 'on');
+    return { guarded, running: !!this.ctx.container.running, busy: !!this.inflight, configured_sentinel: this.sentinelOn(), started_sentinel: this.get('started_sentinel') || 'off' };
+  }
   async init(tenant, channel) { this.put("tenant", tenant); this.put("channel", channel); return { ok: true }; }
   // Migration: register an already-uploaded base image (only on a channel with no layers).
   async importBase(tenant, channel, { key, sha256, bytes }) {
@@ -314,6 +320,7 @@ export class ChannelComputer extends DurableObject {
   }
   // One start at a time: concurrent callers (early warm-up from the resident + the first tool call) share the same start.
   async ensureRunning() {
+    if (this.env.NATIVE_NETWORK === 'on' && this.ctx.container.running && this.get('started_sentinel') !== 'on' && this.inflight) throw new Error('Native network protection is waiting for the previous computer command to finish. Retry after it finishes.');
     // A computer started before the Sentinel mode changed (e.g. the deploy that turned it on by default) still has the old network
     // (internet on/off is fixed at start): stop it once, so this start gets the current mode.
     if (this.ctx.container.running && this.get("ready") === "1" && (this.get("started_sentinel") || "off") !== (this.sentinelOn() ? "on" : "off") && !this.inflight) {

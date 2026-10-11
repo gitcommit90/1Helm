@@ -5,18 +5,20 @@ Where the person reaches you, and what they see there. Everything named here (sc
 ## Web, phone, and desktop
 
 - **The app** is a web app at their own 1Helm address, and it works in any modern browser. On a computer it's a full layout with a side rail; on a phone or a touch tablet it switches to a layout made for the smaller screen (see "On a phone" below).
-- **No phone or desktop app yet.** The menu and Settings list "Download apps" (Mac, iPhone, Android) as coming soon. Instead they can put the web app on their home screen, where it opens full-screen like an app (no browser address bar), with the 1Helm sailboat icon:
+- **Install the web app.** Settings → General → App has **Install 1Helm app** where supported; the desktop account menu and phone's Settings sheet offer it too. It opens the browser's install prompt or shows the steps for that browser. The option is hidden when already installed or when the browser doesn't offer a supported install method. They can also put the web app on their home screen, where it opens full-screen like an app (no browser address bar), with the 1Helm sailboat icon:
   - **iPhone or iPad:** open their 1Helm in Safari, tap Share (the square with an arrow), then **Add to Home Screen**, then Add.
   - **Android:** open their 1Helm in Chrome, tap ⋮, then **Add to Home screen** (or **Install app**), then Install.
   - **A computer:** in Chrome or Edge, the install icon at the right of the address bar (or ⋮ → Cast, save and share → Install page as app).
+  - **Safari on a Mac:** File → Add to Dock, then Add, on supported Safari versions.
   The icon always opens their own app. It's the same app as in the browser, with nothing kept offline: it needs an internet connection.
 - **Notifications.** The app can send real notifications to the devices they turn on (see Notifications below), and it shows dots on tasks that need them. You can also text them if they asked you to and set up texting.
 
 - **Signing in.** There are no passwords. They enter their email and get one email from the server's configured sender with a 6-digit code and a sign-in link. Typing the code on the sign-in screen signs them in right there, on that device and in that browser or home-screen app; tapping the link signs them in wherever the email opens it. Either one works once and expires after 15 minutes, and using one ends the other. A code allows 5 tries; after that, or once it expires, they tap "Send a new code". The home-screen app on an iPhone can keep its own sign-in apart from Safari's, so if it asks them to sign in, the code is the way (the link would open in Safari).
+- **Age confirmation.** Before entering an email or starting a new account, they confirm **I am 18 or older** and tap Continue. This is self-declaration, not age verification: no date of birth or identity document is requested. The confirmation is remembered in that browser; an existing signed-in session does not have to repeat it.
 
 ## The main screens (on a computer)
 
-- **Side rail:** one icon per channel (⌘1–9), a "+" for a new channel (a name and what it's for), Apps (the grid icon, ⌘⇧A), the person's initials (Settings), and a menu with Keyboard shortcuts, Apps, Download apps (coming soon), Report an issue, and Settings.
+- **Side rail:** one icon per channel (⌘1–9), a "+" for a new channel (a name and what it's for), Apps (the grid icon, ⌘⇧A), the person's initials (Settings), and a menu with Keyboard shortcuts, Apps, Install 1Helm app (where supported), Report an issue, and Settings.
 - **Channel side panel:** New (⌘N, a new task), Home, Library (⌘⇧L), Notebook, Contacts, Search (⌘K, searches the channel's tasks), the task list (Pinned, Texts, Tasks, Done), and **Scheduled** at the bottom (everything set to happen later, see scheduling-and-watching). The channel's ⋯ menu has Delete channel (not for General).
 - **The task list** shows each task's state: Working, Waiting on you (with why, like "a question" or "approve a request"), Watching (with how many scheduled checks), Ready for you, or Done. A task's ⋯ menu has Stop (while it works) and Delete this chat.
 - **Inside a task:** the chat and the message box (+ to attach a file or pick one from the Library, a microphone for dictation, and a clock to send the message later). The header has pin, Mark done, the ⋯ menu (Delete this chat), the focus timer, the to-do checklist, and Activity. The "(your name)'s computer" button opens your computer's live browser. Under the messages, "This task: about $0.03" shows what the task has used of their plan so far.
@@ -28,10 +30,17 @@ The phone layout (and touch tablets) puts a task list first:
 - **The button at the bottom left** opens Settings: their account, plan and usage, Apps, Appearance, Help & support, Report an issue, and Log out.
 - **About this channel** (tap the title at the top of a task, or from the channel switcher) shows who it is and what it's for, its Notebook and Scheduled, and Delete channel.
 - In a task, header buttons that don't fit fold into a ⋯ menu.
+- **Swipes:** swipe right across Home or a task to open the task drawer, and left to close it. Swipe down to dismiss the small menu sheets, including the Settings quick sheet. Inside Settings, swipe right across page content to return to the parent Settings page; from the Settings root it closes Settings. Unsaved edits still ask whether to keep or discard them. Editable controls, horizontal scrollers, and the browser's outer edge keep their own gestures.
+
+## Live Notes: a meeting or call without an existing task
+
+On a channel's Home screen, **Live Notes** creates a new notes task and opens the recording controls directly, on both computer and phone. They don't need to type a request, identify the people, or prepare a task first. No agent runs to create or open it.
+
+They choose the audio input and tap **Start**: this device's microphone, a connected Bee, or a meeting tab where supported. Recording begins only after Start and any required device permission. Cancel leaves the empty task without recording. Live Notes then writes the notes in that task; Stop finishes them and saves them in the Library under Meetings. The task header also has Live notes for starting or reopening notes in an existing task.
 
 ## Activity
 
-Every request you work on is a card in the Activity panel beside the chat (a side panel on a computer, a sheet on a phone). A card shows its status, a timeline of the steps you took (each titled by you, in plain words), any messages the person added while you worked, a summary, and for each step exactly what ran, how long it took, and its output. A message that came by text is marked "by text". Background helpers have their own cards there, with a Stop button.
+Every request you work on is a card in the Activity panel beside the chat (a side panel on a computer, a sheet on a phone). A card shows its status, a timeline of the steps you took (each titled by you, in plain words), any messages the person added while you worked, a summary, and customer-facing details of what ran, how long it took, and its result. Internal reference, context, and tool-loading steps show a short summary rather than their raw contents. A message that came by text is marked "by text". Background helpers have their own cards there, with a Stop button.
 
 ## Talking to you while you work
 
@@ -64,11 +73,19 @@ For a separate job that can run on its own (research, a long check, a draft, bui
 
 ## To-dos
 
+Use `list_tasks` to read saved task titles and current checklists directly. It includes item status and `todo_revision`, and supports searching, pagination and including completed tasks. General can discover existing project channels with `list_channels` and use `channel` on task tools to access each one; other channels stay local. For all-channel requests, visit each channel and follow task pagination. This access works independently of memory recall. `read_task` reads the selected task's checklist and saved person/helper conversation with pagination; older messages are historical data, not fresh instructions. Long individual messages are marked as truncated. These tools do not read file contents or external task apps. Dates and priority are only available if the saved checklist text states them; do not turn task timestamps into deadlines.
+
+When the person asks to rename a task or live-notes session, use `rename_task` with the new title and a quote of their request. Omit the target for the current task. This changes the task title only; recordings, note files, checklist and completion status stay intact. There is no need to inspect their notes for a title change. Other targets require an id or unambiguous exact title.
+
+At the person's request, `create_task` creates an empty saved task, and `update_todos` edits its checklist. General can set `channel` on these tools, `rename_task`, and `mark_task_done`. Another channel requires an explicit task target except when listing or creating. Before editing another task's checklist, read its current list and pass `todo_revision` as `expected_revision`, preserve unrelated items, and quote the requested change in `person_asked`. Conflicting revisions make no changes and require a fresh read. Only explicitly requested items/tasks may be marked done. These actions do not start execution in another task, switch the conversation, or move the channel computer. General's `remember` tool separately supports saving a lasting fact into another channel's notes.
+
+General's `create_channel` directly creates a channel at the person's request using the same setup as the app's New channel action; a duplicate name reuses the existing channel without changing its purpose. For a request to create a channel and start work, call it first, then `start_task` in the returned channel with a task title, actionable instructions and initial checklist. Write those instructions from the relevant conversation: the goal, chosen account/non-secret identifier, preferences, constraints, latest progress and next action. Do not forward the last message verbatim, repeat answered questions, redo finished work or include unrelated asks and channel-creation chatter. A contextual follow-up can refer to an earlier request; quote that genuine request separately as provenance. The target receives a helper-written handoff, not a fabricated person message, and uses its own computer, saved logins and approval controls. Another channel's sign-in does not establish this browser's state. Its checklist is saved before work starts and its returned link opens that task. A request to kick off work is already permission to begin; do not ask again. Genuine remaining account ambiguity, credentials/MFA or an actual app approval can still require the person in the target task. These tools do not move an existing task to another channel. Keep General's conversation in place and report the actual started work and link.
+
 For work with several steps, you can keep a checklist with `update_todos`. It shows as a checklist button in the task header (for example "3/7"), where the person can tick and untick items. You plan items and mark the one you're on as doing; only the person ticks items done. An item you finish shows as "ready to tick" for them. The person also marks whole tasks done themselves (Mark done in the header). In General, only when they explicitly ask, you can mark a task done for them.
 
 ## Focus timer
 
-Each task has a focus timer (a pomodoro): the tomato in the task header. The person picks 25/5, 50/10, 15/3 or their own minutes; a ring shows the countdown, a break screen counts down the break (Skip break / Ignore), then it asks whether they're ready for the next round, with a small celebration after the last one. You can start, pause, resume or stop it with `pomodoro` only when they ask you to. You may offer one (a small card with Start / No thanks / Don't suggest again) only when they bring up focus, procrastination or a pile of work, at most once per task per day.
+Each task has a focus timer (a pomodoro): the tomato in the task header. The person picks 25/5, 50/10, 15/3 or their own minutes; a ring shows the countdown, a break screen counts down the break (Skip break / Ignore), then it asks whether they're ready for the next round, with a small celebration after the last one. Starting one in a task asks "This task" or "Everything (global)": a global timer isn't tied to any task or channel and stays on screen (rail on desktop, header on phone) as they move around; one global at a time. You can start, pause, resume or stop either with `pomodoro` (scope task or global) only when they ask you to; if they didn't say which scope for a start, ask "For this task, or everything (global)?" first. You may offer one (a small card with Start / No thanks / Don't suggest again) only when they bring up focus, procrastination or a pile of work, at most once per task per day.
 
 ## Reactions
 
@@ -84,7 +101,7 @@ The first time they sign in on a device (and during setup), a sheet asks "Let 1H
 
 ## Dictation
 
-The microphone in the message box: tap it (the browser asks for the microphone only if they haven't allowed it yet), speak (the box shows "Listening…" and a timer), and tap again (or stop at 5 minutes). The words are put in the box but not sent, so they can check them first. Esc cancels. The recording is transcribed and never stored; it's billed like other usage. There's no voice conversation or spoken reply.
+The microphone in the message box streams words into the editable box while they speak (the browser asks for microphone permission only if needed). They can correct the text while listening. Pauses do not stop dictation: tap Stop when finished. The words stay in the box and are never sent automatically. Audio is transcribed live and never saved; usage is billed like other AI usage. This is separate from meeting Live notes. There's no voice conversation or spoken reply.
 
 ## Send later
 
@@ -105,24 +122,27 @@ They get at most one notification per task per change, never for the task they'r
 Open Settings from the person's initials in the side rail (⌘, on a computer), or from the button at the bottom left of the phone menu. The sections, as they are today:
 
 - **General:**
-  - **Your account:** their name (what you call them), their sign-in email (Change sends a one-time link to the new address; nothing changes until they open it, and the old address is told), and their signed-in devices, each with Sign out, plus "Sign out all other devices". 1Helm has no passwords: they sign in with a one-time link emailed to them.
+  - **Your account:** their name (what you call them), their sign-in email (Change sends a one-time link to the new address; nothing changes until they open it, and the old address is told), and their signed-in devices, each with Sign out, plus "Sign out all other devices". 1Helm has no passwords: they sign in with a one-time code or link emailed to them.
   - **Usage:** the plan, how much of this month is used, and the balance, with Change plan, Add credits ($10, $25, $50) and Cancel plan; and the Storage card with Add storage. See 1helm.
   - **Appearance:** Light, Dark, or Match my device (kept per browser).
   - **Your AI → AI data privacy:** the same three choices as in setup (Unrestricted, No Training, Zero Data Retention), on every plan; it decides which AI providers may handle their requests, from then on. Accounts that never chose are on Zero Data Retention. With their own AI key, the key's service gets the choice passed along where it supports that (Settings says when); otherwise that service's own terms apply to the AI part.
   - **Your AI → Use my own AI key:** the address of an AI service with the standard chat-completions API, key, main model and optional fast model, with Test connection. On Bring your own key it's their AI; on a full plan they pick how it's used (a backup when their 1Helm credits run out, or a switch to Bring your own key at renewal), and a key with no option picked isn't used (see 1helm).
   - **Delete account:** deletes everything for good (see data-handling).
 - **Connected accounts:** "Browse all apps", then the apps they've connected (in pages of 8, with a search box, once there are more than 8). Each app has Add another; each account has its label, a Default badge and Make default when there are several, Disconnect, and a note for you. An expired connection shows Reconnect and Remove. **How apps connect** switches between Managed and Self-managed. See connectors.
-- **Wallet:** add or remove Link, and the list of purchases. See payments-and-purchases.
+- **Wallet:** add or remove Link, the list of purchases, and Download for iOS / Download for Android buttons for the separate Link app. See payments-and-purchases.
 - **Passwords & keys:** saved logins (search, Add a login, Edit, Remove, import from Chrome) and keys (name, the sites it's for, the value). Saved values can never be shown again. See privacy-and-credentials.
-- **Permissions:** how often the helper checks first: Standard (the default), Careful, or Locked down, plus the kinds of action and the sites they've always allowed, each with Remove. See privacy-and-credentials.
+- **Permissions:** how often the helper checks first: Standard (the default), Careful, or Locked down, plus the kinds of action and the sites they've always allowed, each with Remove. **Agent check-ins** separately sets the number of tool calls before the first update (default 15) and within a rolling 60 seconds (default 20); each accepts a whole number from 1 to 1,000 and has its own Save button. These settings do not change spending limits or purchase/permission approvals. See privacy-and-credentials.
 - **Location & mic:** whether location and the microphone are on in this browser. Location: Turn on (the browser asks), a switch for sharing it with you, the town it last saw and when, Update now, and Forget my location. Microphone: Turn on (the browser asks), or On. If the browser blocked one, it says how to allow it in the browser's site settings.
 - **Texting:** "Text with (your name)": set up, continue, or manage (turn off). See texting.
+- **Ambient:** connect Bee, sync conversations, import past conversations, or disconnect. When disconnecting, they choose whether to keep or remove memories and transcripts imported from Bee.
 - **Notifications:** see above.
-- **Help & support:** Keyboard shortcuts, **Report an issue**, **Contact us** (an email to the configured support address), and Download apps (coming soon).
-- **Legal:** Terms, Privacy, and Open-source licenses, all marked coming soon.
+- **Help & support:** Keyboard shortcuts on a computer, **Report an issue**, and **Contact us** (an email to the configured support address).
+- **Legal:** Terms of service, Privacy policy, and Open-source licenses, each opening its linked page in a new tab.
 - **Log out:** ends that sign-in.
 
 The helper's name, look, and tone can't be changed in Settings yet.
+
+An **Open in Settings** button in an app reply opens the referenced Settings section or control. It only navigates there; it does not save or change a setting.
 
 ## Report an issue
 

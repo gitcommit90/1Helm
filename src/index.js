@@ -7,6 +7,7 @@ import { backupControl, isBackupPath } from "./backup-control.js";
 import { enabled as eeEnabled, features as eeFeatures, routeEnabled as eeRouteEnabled } from "./ee/index.js";
 import { tolerantEnv, DO_TRANSIENT_RE, RPC_SKEW_RE, rpcSkew, codeV, isResetErr } from "./do-stub.js";
 import { opsRoute, viewAsGate, viewAsToken } from "./internal-shim.js";
+import { ambientSettingsRoute } from "./ee/index.js";
 import { SW_RE, swResponse } from "./pwa.js";   // Web Push service worker (notify.js)
 import { notifApi } from "./notify.js";
 import { meetingsApi, meetingsCron } from "./ee/index.js";   // Meeting reminders for notes (Google Calendar / Outlook → "Take notes?")
@@ -26,13 +27,17 @@ import { appDetail } from "./ee/index.js";
 import { transportFor } from "./ee/index.js";   // the Composio transport: connections, connect links, disconnect
 import { composioWebhook } from "./ee/index.js";   // stage 5: signed app events → the workflow that owns the trigger
 import { appsMode, selfStatus, selfAvailable, signInStart, signInFinish, isEnded, appsModeRoute, saveOnboardingChoice, composioDonePage } from "./ee/index.js";   // Managed vs Self-managed apps (part 2)
+import { paypalSetupRoute } from "./ee/index.js";
 import { createChannel, insertChannel, ChannelError } from "./channels.js";
 import { transcribe } from "./transcribe.js";
 import { lnAudio } from "./ee/index.js";   // Live notes from the device's microphone: one chunk → speech to text (transcribe.js) → the LiveNotes DO
+import { transcribeLive, ledgerDictation } from "./transcribe-live.js";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { deletionRoute, deletionCron, deleteNote } from "./deletion.js";
 import { archiveDeletionMix, wipeMix } from "./deletion-do.js";
+import { pomoGlobalMethods } from "./pomodoro.js";
 export { ChannelComputer, ComputerLink } from "./channel-computer.js";
+export { NativeTransport, NativeTransportState } from "./native-transport.js";
 export { Resident } from "./resident.js";
 export { UsageLedger };
 export { Sentinel } from "./sentinel.js";
@@ -45,12 +50,14 @@ export { FilePrep } from "./sidecar.js";   // file sidecars: one object per file
 import { prepJobOn, prepJobAlarm } from "./sidecar.js";
 import { lnName } from "./ee/index.js";   // Bee Live notes: one DO per task (SPEC §9): the polling job, the note-taker, the final pass, caps   // Bee live sync: one DO per person, a 5-min alarm, conversations → General's memory + R2 transcripts
 import { listLogins, saveLogin, deleteLogin, importLogins, loginNote } from "./logins.js";
-import { accountRoute, emailChangeRoute, newSession, endSession } from "./account.js";
+import { accountRoute, shortcutsView, emailChangeRoute, newSession, endSession } from "./account.js";
 import { ownerAccount, ownerAllowsEmail } from "./single-owner.js";
 import { landingPage, selfHostedSignInPage, checkEmailPage, expiredPage, onboardPage, textingPage, hostSignInPage } from "./onboarding.js";
 import { createSignIn, decoyPending, verifyCode, pendingEmail, pendingCookie, clearPendingCookie, signInEmail, sweepCodeFails, RESEND_WAIT } from "./signin-code.js";
 import { releasesPage, pushRelease, undoRelease, isReleaseAdmin } from "./internal-shim.js";
 import { kanbanProxy } from "./internal-shim.js";
+import { AGE_VERSION, AGE_ERROR, ageOf, ageCookie, agePage, ageNext, recordAge } from "./age-gate.js";
+import { modelsRoute } from "./ee/index.js";
 import { hindsightSelfTest, hsOn, sweepBanks, recall as hsRecall, bankId as hsBankId } from "./hindsight.js";
 import { saveNightlyPool } from "./ee/index.js";
 import { route2On } from "./ee/index.js";
@@ -74,6 +81,7 @@ import { changePlan } from "./ee/index.js";
 import { isTestAccount, usd as guardUsd } from "./spendguard.js";
 import { ledgerGuard } from "./ee/index.js";   // paid-plan Ledger accounting and notices
 import { textingStatus, textingStart, textingPoll, textingNewCode, textingOff, textingWebhook, textingUseProject, textingDebug } from "./ee/index.js";
+import { customMcpRoute } from "./ee/index.js";
 
 const NANO = 1e9;                         // balances in nano-dollars (integers)
 const PRICE = { in: 150, cached: 30, out: 500 }; // glm-5.3-flash nano$/token (CF list); Workers AI fallback only
@@ -83,6 +91,8 @@ import { orStart, orFinish, orCookie, orCookieOf } from "./byok-openrouter.js"; 
 import { People } from "./people.js";
 import { memjobsCron, REFLECT_ID, REFLECT_MAX } from "./memjobs.js";
 import { permsApi } from "./perms.js";   // Settings → Permissions: level + "Always allow" kinds and sites
+import { nativeSameOrigin, SSH_PERMS } from './native-network.js';
+import { transportGate, transportHeaders, httpsOrigin } from './transport-security.js';
 import { importContacts, photoOf, IMPORT_BATCH_MAX } from "./contacts-import.js";
 import { scrubSecrets, hasSecret, SECRET_NOTE } from "./secrets-scrub.js";   // nosecrets: no password, key, card number or code in the Notebook
 import { locationRoute, saveLocation, cleanFix, pickHome } from "./location.js";   // where the person is: the app's coarse fix, the helper's place line
@@ -146,7 +156,7 @@ const onboarded = (t) => Number(t?.onboarding_completed || 0) === 1;
 // v1 onboarding keeps going after payment (Ways to reach → Watch it work → First task). '' = accounts made before v1.
 // v1 accounts (onboard_step set) must also have picked their own address; pre-v1 accounts ("") are left alone.
 const onboardDone = (t) => !t?.onboard_step || (t.onboard_step === "done" && Number(t.slug_chosen) === 1);
-const ONBOARD_V = "14";   // 14: Composio setup copy (clearer timing); 13: the AI data privacy step; 12: the sign-in code on "Check your email";  11: app logos via /applogo with a letter tile; 10: the Location and microphone step
+const ONBOARD_V = "16";   // 16: adult acknowledgement before any new onboarding details/email
 // Onboarding "Ways to reach": the Google apps offered one by one (Google Super is retired). { slug: { status, email } }.
 const ONBOARD_APPS = ["gmail", "googlecalendar", "googledrive"];
 async function onboardApps(env, tenantId) {
@@ -165,7 +175,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "159";
+const APP_V = "215";
 const archive = (env, tenantId) => env.ARCHIVE.get(env.ARCHIVE.idFromName(`archive:${tenantId}`));
 const IMPORT_PART = 50 * 1024 * 1024;
 export async function handleImport(req, env, tenantId, importId, rest) {
@@ -402,22 +412,35 @@ async function ensureSelfHostedTenant(env, user) {
     .bind(BYOK_PLAN, first, DEFAULT_HELPER, now(), now(), t.id).run();
   return tenantOf(env, user.id);
 }
+// Check before reading a new email body. A pending pre-deploy sign-in can finish/resend its own email, never another address.
+async function ageAccess(req, env, { allowPending = true } = {}) {
+  const age = await ageOf(req, env);
+  if (age) return { age, allowed: true };
+  if (await currentUser(req, env)) return { allowed: true };
+  if (!allowPending) return { allowed: false };
+  const pending = await pendingEmail(env, req);
+  return { allowed: !!pending, pending };
+}
 async function onboardApi(req, env, url, op) {
-  const origin = url.origin;
+  const origin = httpsOrigin(url);
   let body = {};
-  if (req.method === "POST") {
-    const raw = await boundedText(req, 32_768);
-    try { body = JSON.parse(raw); } catch {}
-  }
   try {
+    let access;
+    if (req.method === "POST" && op !== "code") {
+      const o = req.headers.get("origin"); if (o && o !== origin) return json({ error: "Not allowed." }, 403);
+      access = eeEnabled(env) ? await ageAccess(req, env) : { allowed: true };
+      if (!access.allowed) return json(AGE_ERROR, 403);
+    }
+    if (req.method === "POST") body = await boundedJson(req, 32_768);
     if (op === "email" && req.method === "POST") {
       const email = String(body.email || "").trim().toLowerCase();
+      if (access.pending && access.pending !== email) return json(AGE_ERROR, 403);
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json({ error: "Enter a valid email address." });
       if (!eeEnabled(env) && !(await ownerAllowsEmail(env, email))) return json({ error: "This server already has an owner." }, 403);
       const recent = await env.DB.prepare("SELECT COUNT(*) n FROM magic_links WHERE email=? AND expires_at>?").bind(email, now()).first();
       if (Number(recent?.n || 0) > 5) return json({ error: "We just sent you a few links. Check your inbox (and spam) for the newest one." });
       // One email, two ways in: the link and a 6-digit code (src/signin-code.js). The code works only in this browser (hc_signin cookie).
-      const plan = PLANS[body.plan] ? body.plan : "", si = await createSignIn(env, email);
+      const plan = PLANS[body.plan] ? body.plan : "", si = await createSignIn(env, email, { age: access.age });
       const link = `${origin}/auth/verify?token=${si.token}${plan ? `&plan=${plan}` : ""}`, ck = { "set-cookie": pendingCookie(si.pending) };
       if (eeEnabled(env) && env.TEST_MODE === "1" && /@example\.(com|org|net)$/.test(email)) return json({ ok: true, test_link: link, test_code: si.code, resend_wait: RESEND_WAIT }, 200, ck);
       try { await sendMagicLink(env, email, link, si.code); } catch (e) { console.error("magic link send failed", e?.code, e?.message); return json({ error: "We couldn't send your sign-in email just now. Try again in a minute." }); }
@@ -428,12 +451,13 @@ async function onboardApi(req, env, url, op) {
       const o = req.headers.get("origin"); if (o && o !== origin) return json({ error: "Not allowed." }, 403);
       const r = await verifyCode(env, req, body.code);
       if (!r.email) return json({ error: r.error, kind: r.kind });
-      return signedIn(env, req, r.email, { json: { ok: true } });
+      return signedIn(env, req, r.email, { json: { ok: true }, age: r.age });
     }
     const user = await currentUser(req, env);
     if (!user) {
       // Waiting on a code in this browser (a reload, or the installed app coming back from Mail): back to the code screen.
       const pe = op === "state" ? await pendingEmail(env, req) : "";
+      if (eeEnabled(env) && op === "state" && !pe && !await ageOf(req, env)) return json(AGE_ERROR, 403);
       return json(pe ? { signed_in: false, step: "email", email: pe, pending: true, resend_wait: RESEND_WAIT } : { signed_in: false, step: "account" });
     }
     if (!eeEnabled(env)) {
@@ -543,7 +567,7 @@ async function onboardApi(req, env, url, op) {
       return json({ url: homeUrl(t, `/w/${t.slug}/app?welcome=1${ivStart || (sid ? `#/main/s/${sid}` : "")}`, req) });
     }
     return json({ error: "unknown" }, 404);
-  } catch (e) { console.error("onboard api", op, e?.message); return json({ error: "Something went wrong on our side. Try again in a minute." }); }
+  } catch (e) { if (e instanceof BodyTooLargeError || e instanceof UnsupportedFormTypeError) throw e; console.error("onboard api", op, e?.message); return json({ error: "Something went wrong on our side. Try again in a minute." }); }
 }
 export default {
   async scheduled(ev, env, ctx) {
@@ -577,7 +601,7 @@ export default {
   },
   async fetch(req, env, ctx) {
     env = tolerantEnv(env);   // do-stub.js: every Durable Object call survives a deploy's skew/reset window
-    const res = await this.route(req, env, ctx);
+    const res = transportHeaders(req, await this.route(req, env, ctx));
     if (isPublicShare(env, new URL(req.url))) return res;   // share links and published pages are the person's content: never touched
     // Dev environment: a yellow DEV strip on every page, so dev can never be mistaken for Live.
     if (env.ENV_NAME === "dev" && (res.headers.get("content-type") || "").includes("text/html"))
@@ -585,7 +609,8 @@ export default {
     return res;
   },
   async route(req, env, ctx) {
-    const url = new URL(req.url), p = url.pathname, origin = url.origin;
+    const transport = transportGate(req); if (transport) return transport;
+    const url = new URL(req.url), p = url.pathname, origin = httpsOrigin(url);
     try {
       if (isBackupPath(p)) return backupControl(req, env, p);
       if (env.ENV_NAME === "selfhost" && env.BACKUP_MAINTENANCE === "1")
@@ -609,6 +634,17 @@ export default {
         // The packaged mobile gateway runs at capacitor://localhost or https://localhost and checks
         // a selected remote server before navigating there. This public, cookie-free GET needs CORS.
         return json({ product: "1Helm", mobile_api: 1, version: APP_V, has_users: !!users, setup_complete: !!ready, requires_https: true }, 200, { "access-control-allow-origin": "*" });
+      }
+      // Explicit re-confirmation is reachable even while an older email/code is pending ("Use a different email").
+      if (p === "/onboard/age" && req.method === "GET") return agePage({ next: `/onboard${url.search}` });
+      if (p === "/auth/start" && req.method === "POST" && req.headers.get("origin") && req.headers.get("origin") !== origin) return new Response("Not allowed.", { status: 403 });
+      // Only this explicit, same-origin acknowledgement sets the remembered browser proof. It receives no email or profile data.
+      if (p === "/onboard/age" && req.method === "POST") {
+        const o = req.headers.get("origin"), site = req.headers.get("sec-fetch-site");
+        if ((o && o !== origin) || site === "cross-site") return new Response("Not allowed.", { status: 403 });
+        const f = await boundedForm(req), next = ageNext(String(f.get("next") || "/onboard"));
+        if (f.get("adult") !== "yes" || f.get("version") !== AGE_VERSION) return agePage({ next, error: AGE_ERROR.error, status: 400 });
+        return new Response(null, { status: 303, headers: { location: next, "set-cookie": await ageCookie(env), "cache-control": "no-store" } });
       }
       // Company/site logos (logo.dev behind it): public on every host, so <img src="/logo/stripe.com"> works anywhere. src/logo.js
       if (p.startsWith("/logo/")) return await logoRoute(req, env, ctx, url);
@@ -642,7 +678,11 @@ export default {
           const hu = await currentUser(req, env), owner = hu && hu.id === ht.owner_user_id;
           const hostInfo = { host: url.hostname, appHost: env.APP_HOST || url.hostname, helper: helperName(ht), avatar: Number(ht.helper_avatar || 8) };
           if (p === "/auth/start" && req.method === "POST") {
+            // Real and decoy pending cookies must never change this page's appearance or reveal the owner's email.
+            const access = await ageAccess(req, env, { allowPending: false });
+            if (!access.allowed) return agePage({ next: "/", error: AGE_ERROR.error, status: 403 });
             const email = String((await boundedForm(req)).get("email") || "").trim().toLowerCase();
+            if (access.pending && access.pending !== email) return agePage({ next: "/", error: AGE_ERROR.error, status: 403 });
             if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return hostSignInPage({ ...hostInfo, email, error: "Enter a valid email address." });
             const ou = await env.DB.prepare("SELECT email FROM users WHERE id=?").bind(ht.owner_user_id).first();
             let testLink = "", testCode = "", pending = decoyPending();
@@ -651,7 +691,7 @@ export default {
             if (ou && ou.email === email) {
               const recent = await env.DB.prepare("SELECT COUNT(*) n FROM magic_links WHERE email=? AND expires_at>?").bind(email, now()).first();
               if (Number(recent?.n || 0) <= 5) {
-                const si = await createSignIn(env, email); pending = si.pending;
+                const si = await createSignIn(env, email, { age: access.age }); pending = si.pending;
                 const link = `${origin}/auth/verify?token=${si.token}`;
                 if (eeEnabled(env) && env.TEST_MODE === "1" && /@example\.(com|org|net)$/.test(email)) { testLink = link; testCode = si.code; }
                 else { try { await sendMagicLink(env, email, link, si.code); } catch (e) { console.error("host magic link", e?.message); return hostSignInPage({ ...hostInfo, email, error: "We couldn't send the email just now. Try again in a minute." }); } }
@@ -666,13 +706,15 @@ export default {
             if (!r.email) return hostSignInPage({ ...hostInfo, email, sent: true, codeError: r.error, codeKind: r.kind, wait: 0 });
             const cu = await env.DB.prepare("SELECT id FROM users WHERE email=?").bind(r.email).first();
             if (!cu || cu.id !== ht.owner_user_id) return hostSignInPage({ ...hostInfo, email, sent: true, codeError: "That code isn't right. Check the newest email from 1Helm and try again.", codeKind: "wrong", wait: 0 });
-            return signedIn(env, req, r.email, { location: `/w/${ht.slug}/app` });
+            return signedIn(env, req, r.email, { location: `/w/${ht.slug}/app`, age: r.age });
           }
+          if (!owner && (p === "/" || p === "/onboard") && !(await ageAccess(req, env, { allowPending: false })).allowed) return agePage({ next: "/" });
           if (p === "/" || p === "/onboard") return owner ? Response.redirect(`${origin}/w/${ht.slug}/app${url.search}`, 302) : hostSignInPage(hostInfo);
           const open = p === "/auth/verify" || p === "/auth/code" || p === "/auth/handoff" || p === "/auth/logout" || p === "/auth/email-change" || p === "/health" || p.startsWith("/hooks/") || p === "/stripe/webhook" ||
             p.startsWith("/app-static/") || p.startsWith("/onboard/") || p.startsWith("/fonts/") || p.startsWith("/av/") || p.startsWith("/c/") || /^\/1helm-(icon|sailboat)/.test(p);
           if (!owner && !open) {
             if (p.includes("/api/")) return json({ error: "signed_out" }, 401);
+            if (!(await ageAccess(req, env, { allowPending: false })).allowed) return agePage({ next: "/" });
             return hostSignInPage(hostInfo);
           }
           if (p.startsWith("/w/") && !p.startsWith(`/w/${ht.slug}/`) && !p.startsWith(`/w/${ht.slug}`)) return Response.redirect(`https://${env.APP_HOST || url.hostname}${p}${url.search}`, 302);
@@ -684,12 +726,16 @@ export default {
       // The app catalog for the Composio version this server uses (connect-offer.js catalogFile): same URL, the latest list when
       // COMPOSIO_TOOLKIT_VERSION="latest".
       if (env.ASSETS && p === "/app-static/integrations.json" && catalogFile(env) !== "integrations.json") { const u = new URL(req.url); u.pathname = `/app-static/${catalogFile(env)}`; return env.ASSETS.fetch(new Request(u, req)); }
+      if ((p === "/onboard/v1/" || p === "/onboard/v1/index.html") && !(await ageAccess(req, env, { allowPending: false })).allowed) return agePage();
       if (env.ASSETS && (p.startsWith("/app-static/") || p.startsWith("/onboard-static/") || p.startsWith("/onboard/v1/") || p === "/onboard/kit.js" || p === "/onboard/kit.css" || p.startsWith("/fonts/") || p.startsWith("/av/") || p === "/1helm-sailboat.png" || PWA_ICON_RE.test(p))) return env.ASSETS.fetch(req);
       if (p === "/admin/reconcile") {
         if (req.method !== "POST" || env.ENV_NAME !== "dev" || env.TEST_MODE !== "1" || req.headers.get("origin") !== origin || !isReleaseAdmin(env, await currentUser(req, env)))
           return json({ error: "not found" }, 404);
         return json(await reconcile(env));
       }
+
+      // Models have their own admin gate on both environments. Writes only touch this environment's D1.
+      if (p === "/models" || p.startsWith("/models/")) return modelsRoute(req, env, await currentUser(req, env));
 
       // Router lab settings (src/router-lab.js): dev only, release admins, same-origin JSON only (CSRF: the Origin must be this site and the
       // x-router-lab header set, which a cross-site form can't send). GETs are no-store; /_ops stays read-only.
@@ -761,7 +807,10 @@ export default {
       }
 
       if (p === "/auth/start" && req.method === "POST") {
+        const access = eeEnabled(env) ? await ageAccess(req, env) : { allowed: true };
+        if (!access.allowed) return agePage({ error: AGE_ERROR.error, status: 403 });
         const email = String((await boundedForm(req)).get("email") || "").trim().toLowerCase();
+        if (access.pending && access.pending !== email) return agePage({ error: AGE_ERROR.error, status: 403 });
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return eeEnabled(env) ? landingPage({ error: "Enter a valid email address.", email }) : await selfHostedPage(env, { error: "Enter a valid email address.", email });
         if (!eeEnabled(env) && !(await ownerAllowsEmail(env, email))) return page("Sign-in closed", "<p>This server already has an owner.</p>");
         // Real delivery via the configured Cloudflare Email Service. Reserved test addresses (@example.com) in TEST_MODE get an on-screen shortcut.
@@ -770,7 +819,7 @@ export default {
           const recent = await env.DB.prepare("SELECT COUNT(*) n FROM magic_links WHERE email=? AND expires_at>?").bind(email, now()).first();
           if (Number(recent?.n || 0) > 5) return checkEmailPage(email, "", false, { error: "We just sent you a few links. Check your inbox (and spam) for the newest one.", wait: 0, emailFrom: env.EMAIL_FROM });
         }
-        const si = await createSignIn(env, email), link = `${origin}/auth/verify?token=${si.token}`;
+        const si = await createSignIn(env, email, { age: access.age }), link = `${origin}/auth/verify?token=${si.token}`;
         if (testAddr) return withCookie(checkEmailPage(email, link, true, { testCode: si.code, wait: RESEND_WAIT, emailFrom: env.EMAIL_FROM }), pendingCookie(si.pending));
         try { await sendMagicLink(env, email, link, si.code); }
         catch (e) { console.error("magic link send failed", e?.code, e?.message); return eeEnabled(env) ? landingPage({ error: "We couldn't send your sign-in email just now. Try again in a minute.", email }) : await selfHostedPage(env, { error: "We couldn't send your sign-in email just now. Try again in a minute.", email }); }
@@ -781,7 +830,7 @@ export default {
         const f = await boundedForm(req), email = String(f.get("email") || "").trim().toLowerCase().slice(0, 200);
         const r = await verifyCode(env, req, f.get("code"));
         if (!r.email) return checkEmailPage(email, "", false, { codeError: r.error, codeKind: r.kind, wait: 0, emailFrom: env.EMAIL_FROM });
-        return signedIn(env, req, r.email, { location: `${origin}/` });
+        return signedIn(env, req, r.email, { location: `${origin}/`, age: r.age });
       }
 
       if (p === "/auth/to" && req.method === "GET") {
@@ -804,10 +853,10 @@ export default {
       if (p === "/auth/verify") {
         if (req.method !== "GET") return new Response("Method not allowed", { status: 405, headers: { allow: "GET" } });
         const h = await sha256(url.searchParams.get("token") || "");
-        const ml = await env.DB.prepare("UPDATE magic_links SET used=1 WHERE token_hash=? AND used=0 AND expires_at>? RETURNING email").bind(h, now()).first();
+        const ml = await env.DB.prepare("UPDATE magic_links SET used=1 WHERE token_hash=? AND used=0 AND expires_at>? RETURNING email,age_version,age_confirmed_at").bind(h, now()).first();
         if (!ml) return expiredPage();
         const pl = url.searchParams.get("plan");
-        return signedIn(env, req, ml.email, { location: eeEnabled(env) && PLANS[pl] ? `${origin}/onboard?plan=${pl}` : `${origin}/`, status: 302 });
+        return signedIn(env, req, ml.email, { location: eeEnabled(env) && PLANS[pl] ? `${origin}/onboard?plan=${pl}` : `${origin}/`, status: 302, age: ml.age_version ? { version: ml.age_version, at: ml.age_confirmed_at } : null });
       }
 
       // The approved onboarding is the sign-up page for everyone ("Sign up" / "Choose plan").
@@ -815,6 +864,7 @@ export default {
         const u = await currentUser(req, env), t = u && await tenantOf(env, u.id);
         if (!eeEnabled(env)) return u && t ? Response.redirect(`${origin}${homeUrl(t, "", req)}`, 302) : await selfHostedPage(env);
         if (t && t.status === "active" && onboarded(t) && onboardDone(t)) return Response.redirect(`${origin}${homeUrl(t, "", req)}`, 302);
+        if (!u && !(await ageAccess(req, env)).allowed) return agePage({ next: `/onboard${url.search}` });
         const r = await env.ASSETS.fetch(new Request(`${origin}/onboard/v1/index.html`));
         return new Response((await r.text()).replaceAll("__V__", ONBOARD_V), { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex" } });
       }
@@ -1045,6 +1095,12 @@ export default {
         // Settings → General → Your account: name, sign-in email, signed-in devices (account.js). Also before the access check.
         { const ar = await accountRoute(req, env, t, user, url, sub, { stripe }); if (ar) return ar; }
         // Everything the app needs on load: channels (from the imported archive) + each channel's tasks, jobs and memory.
+        // Global focus timer (pomodoro.js): /api/pomodoro/global (GET the timer · POST {action: start|pause|resume|skip|stop, replace?, work_min…}); not tied to any task or channel.
+        if (sub === "/api/pomodoro/global") {
+          if (req.method !== "GET" && req.method !== "POST") return json({ error: "method" }, 405);
+          const b = req.method === "GET" ? { action: "get" } : await boundedJson(req); const d = await archive(env, t.id).pomoGlobalAction(b, "person");
+          return json(d, d.error ? (d.code === "running" ? 409 : 400) : 200);
+        }
         if (sub === "/api/app/boot") {
           const A = archive(env, t.id), light = url.searchParams.get("light") === "1";
           // The person's time zone, for calendar schedules: the app sends its own (Intl), else Cloudflare's guess from their network.
@@ -1077,9 +1133,9 @@ export default {
             used_text: storage.used_text, limit_text: storage.limit_text, counted_at: storage.counted_at, notice: storage.notice };
           if (access.reason === "payment_failed" && !look) await pastdueSeen(env, t.id, tzIn);   // its reminder emails use their time zone
           const account = eeEnabled(env)
-            ? { plan: PLANS[planKey(t.plan)].name, plan_key: planKey(t.plan), price: PLANS[planKey(t.plan)].price, ...(t.plan === BYOK_PLAN ? { byok: true } : {}), ...(storage ? { storage } : {}), balance: usd(ls.balance_nano), usagePercent: month ? month.pct : Math.min(100, Math.round(used / granted * 100)), ...(month ? { month } : {}), ...(notice ? { notice } : {}), show_costs: Number(t.show_costs) === 1, ai_privacy: await privacyBoot(env, t) }
-            : { plan: "Self-hosted", plan_key: "byok", price: 0, byok: true, ...(publicStorage ? { storage: publicStorage } : {}), today: ls.today, show_costs: Number(t.show_costs) === 1, ai_privacy: await privacyBoot(env, t) };
-          return json({ tenant: t.slug, features: eeFeatures(env), access, contacts, contactDups, person: { name: t.first_name || "", email: user.email }, helper: { name: helperName(t), avatar: Number(t.helper_avatar || 8) }, account, ...(light ? {} : { interview: interviewBoot(iv) }), ...(look ? { look: true } : {}), channels: out });   // look: a dev "view as" (the app never asks it for location or the mic)
+            ? { plan: PLANS[planKey(t.plan)].name, plan_key: planKey(t.plan), price: PLANS[planKey(t.plan)].price, ...(t.plan === BYOK_PLAN ? { byok: true } : {}), ...(storage ? { storage } : {}), balance: usd(ls.balance_nano), usagePercent: month ? month.pct : Math.min(100, Math.round(used / granted * 100)), ...(month ? { month } : {}), ...(notice ? { notice } : {}), spend_pauses: gi?.spend_pauses !== false, shortcuts: shortcutsView(t), show_costs: Number(t.show_costs) === 1, ai_privacy: await privacyBoot(env, t) }
+            : { plan: "Self-hosted", plan_key: "byok", price: 0, byok: true, ...(publicStorage ? { storage: publicStorage } : {}), today: ls.today, spend_pauses: gi?.spend_pauses !== false, shortcuts: shortcutsView(t), show_costs: Number(t.show_costs) === 1, ai_privacy: await privacyBoot(env, t) };
+          return json({ tenant: t.slug, features: eeFeatures(env), access, contacts, contactDups, person: { name: t.first_name || "", email: user.email }, helper: { name: helperName(t), avatar: Number(t.helper_avatar || 8) }, account, ...(light ? {} : { interview: interviewBoot(iv) }), ...(look ? { look: true } : {}), channels: out, pomodoro_global: await A.pomoGlobalView().catch(() => null) });   // look: a dev "view as" (the app never asks it for location or the mic)
         }
         // Share links and published pages (src/share.js): the owner's list, create / revoke, publish / unpublish, offer taps.
         if (sub === "/api/share" || sub.startsWith("/api/share/")) return await shareApi(req, env, t, sub, access);
@@ -1117,6 +1173,11 @@ export default {
             return new Response(null, { status: 302, headers: { location: r.url, "set-cookie": `hc_cmp=${r.state}; Path=/composio; HttpOnly; Secure; SameSite=Lax; Max-Age=900`, "cache-control": "no-store" } });
           } catch (e) { return page("Composio", `<p>${esc(e.message)}</p>`); }
         }
+        if (sub === "/apps/paypal/setup") {
+          if (viewAsToken(req)) return json({ error: "Read-only view." }, 403);
+          if (access.mode === "read_only") return payRequired(access);
+          return paypalSetupRoute(req, env, t);
+        }
         if (sub === "/api/apps/connect" && req.method === "POST") {
           const b = await boundedJson(req), app = String(b.app || "").toLowerCase().replace(/[^a-z0-9_]/g, ""), from = b.from === "apps" ? "apps" : b.from === "onboard" ? "onboard" : b.from === "offer" ? "offer" : "settings";
           if (!app) return json({ error: "Which app?" }, 400);
@@ -1143,6 +1204,8 @@ export default {
         // One app's page (App Store style): full description, how it connects, what the helper can do, and this workspace's connection.
         { const ad = req.method === "GET" && sub.match(/^\/api\/apps\/([a-z0-9_]{1,64})$/);
           if (ad) { try { return json(await appDetail(env, t.id, ad[1])); } catch (e) { if (!e.status) console.log("app detail", ad[1], e.message); return json({ error: e.status ? e.message : "Couldn't load this app right now. Try again in a minute." }, e.status || 502); } } }
+        // Settings → Advanced → Custom MCP connections (custom-mcp.js): opt-in, per workspace; every route is scoped to this signed-in owner's workspace.
+        { const cm = await customMcpRoute(req, env, { tenantId: t.id, userId: user.id, slug: t.slug, origin }, sub, { denyWrite: () => (access.mode === "read_only" ? payRequired(access) : null), look: !!viewAsToken(req) }); if (cm) return cm; }
         if (sub === "/api/clientlog") return clientLog(req, env, t);   // dev-only diagnostics (src/clientlog.js)
         // Settings → Notifications (src/notify.js) and Help & support → Report an issue (src/reports.js).
         if (sub === "/api/notif" || sub.startsWith("/api/notif/")) { const nr = await notifApi(req, env, t, sub, url); if (nr) return nr; }
@@ -1174,6 +1237,7 @@ export default {
         }
         // Settings → Ambient → Bee (src/bee.js): pairing with the Bee app, the sealed token, "Connected as <name>". GET is read-only.
         if (sub === "/api/bee" || sub.startsWith("/api/bee/")) return await beeRoute(req, env, t, sub);
+        if (sub === "/api/ambient/settings") return ambientSettingsRoute(req, env, t, user, { look: !!viewAsToken(req) });
         if (sub === "/api/texting" && req.method === "GET") return json(await textingStatus(env, t.id));
         if (sub.startsWith("/api/texting/") && req.method === "POST") {
           const op = sub.slice("/api/texting/".length), b = await boundedJson(req);
@@ -1336,6 +1400,7 @@ export default {
         }
 
         // Voice dictation (the composer's mic): the recording in, { text } out, billed like a model call, never stored.
+        if (sub === "/api/transcribe/live") return access.mode === "read_only" ? payRequired(access) : transcribeLive(req, env, L, { tenant: t.id, look: !!viewAsToken(req) }, { waitUntil: p => ctx.waitUntil(p) });
         if (sub === "/api/transcribe") return access.mode === "read_only" ? payRequired(access) : transcribe(req, env, L, { tenant: t.id, kind: "transcribe" });
 
         if (sub === "/api/chat" && req.method === "POST") {
@@ -1565,7 +1630,10 @@ export default {
           }
           if (sp[3]) return new Response(await R.attach(sp[2]), { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store", "x-accel-buffering": "no" } });
           if (req.method === "GET") { const d = await attachOffers(env, t, await R.sessionDetail(sp[2], Number(url.searchParams.get("n")) || 80)); return json(d, d.error ? 404 : 200); }
-          const b = await boundedJson(req); const d = await R.updateSession(sp[2], b); return json(d, d.error ? 404 : 200);
+          if (req.method !== "POST") return json({ error: "method" }, 405);
+          let b; try { b = JSON.parse(await boundedText(req, 8_000_000)); } catch (e) { if (e instanceof BodyTooLargeError) throw e; return json({ error: "Invalid task update." }, 400); }
+          if (b && Object.prototype.hasOwnProperty.call(b, "title") && (!nativeSameOrigin(req) || !/^application\/json(?:\s*;|$)/i.test(req.headers.get("content-type") || ""))) return json({ error: "Task renames require a same-origin JSON request." }, 403);
+          const d = await R.updateSession(sp[2], b); return json(d, d.error ? (d.status === 400 ? 400 : 404) : 200);
         }
         // Live notes (live-notes.js, SPEC §9): /api/res/<ch>/sessions/<id>/livenotes (GET the view + the meeting doc's text; POST {action:
         //   start (source: bee | mic, mic: the device's mic id, via: mic | tab | system) | stop (flushed) | continue | presence (view: bool) | mic (mic, state: live | paused, via)
@@ -1674,7 +1742,7 @@ export default {
           const o = row && await env.WS.get(row.r2key); if (!o) return new Response("not found", { status: 404 });
           return new Response(o.body, { headers: { "content-type": "image/jpeg", "cache-control": "private, max-age=31536000, immutable" } });
         }
-        const rp = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/(chat|stream|transcript|reset|workflows|runs|outbox|import-workflows|run-workflow|workflow-status|ensure|reschedule|gates|anatomy|memory|engine|browser-agent|turnstats|approvals|egress|approve|approval-policy|revoke-grant|sentinel|clef-doors|genui|event-log|event-workflow)$/);
+        const rp = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/(chat|stream|transcript|reset|workflows|runs|outbox|import-workflows|run-workflow|workflow-status|ensure|reschedule|gates|anatomy|memory|engine|browser-agent|turnstats|approvals|egress|approve|approval-policy|revoke-grant|sentinel|clef-doors|genui|event-log|event-workflow|network)$/);
         if (cp || rp) {
           const chans = await archive(env, t.id).channels();
           const slugOf = (c) => c.slug || c.name;
@@ -1682,6 +1750,14 @@ export default {
           if (!ch) return cp ? page("Not found", "<p>No such channel.</p>") : json({ error: "no such channel" }, 404);
           if (cp) return classic ? page(`#${ch.name} · ${t.slug}`, channelHtml(t, chans, ch)) : Response.redirect(appUrl(origin, t, `#/${slugOf(ch)}`), 302);
           const R = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${t.id}:${slugOf(ch)}`));
+          if (rp[2] === 'network') {
+            await R.bind(t.id, slugOf(ch), String(ch.id));
+            if (req.method === 'GET') return json(await R.nativeStatus(true));
+            if (req.method !== 'POST') return json({ error: 'GET or POST only' }, 405);
+            if (!nativeSameOrigin(req)) return json({ error: 'Native connection changes require a same-origin request.' }, 403);
+            if (access.mode === 'read_only') return payRequired(access);
+            return json(await R.nativeAct(await boundedJson(req)));
+          }
           if (rp[2] === "transcript") return json(await R.transcript(60, url.searchParams.get("session")));
           if (rp[2] === "workflows") return json(await R.listWorkflows());
           if (rp[2] === "event-log") return json(await R.eventLog(url.searchParams.get("id") ? Number(url.searchParams.get("id")) : null, 50));   // app-events.js: verdicts only, never event bodies
@@ -1698,6 +1774,7 @@ export default {
           if (rp[2] === "approvals" && req.method === "GET") return json({ pending: await R.approvals(url.searchParams.get("all") === "1", url.searchParams.get("session")), policy: await R.approvalPolicy(url.searchParams.get("session")), grants: await R.listGrants() });
           if (rp[2] === "egress") return json(await R.egress(Number(url.searchParams.get("n")) || 50));
           if (rp[2] === "approve" && req.method === "POST") { const b = await boundedJson(req);
+            if (!nativeSameOrigin(req) && SSH_PERMS.has((await R.approvalCardData(Number(b.id)))?.approval?.perm)) return json({ error: 'Native approval decisions require a same-origin request.' }, 403);
             // Read-only: "Don't allow" still works; allowing would let a waiting turn (or a purchase) carry on.
             if (access.mode === "read_only" && String(b.decision) !== "deny") return payRequired(access);
             // "Always allow this site" is permanent: require the explicit confirm step (the app's "Are you sure?"), like /c/<token>/decide.
@@ -1971,7 +2048,8 @@ state();setInterval(state,15000);
 }
 
 export { Ledger };   // Cloud-only billing DO; private 1HC configs bind it.
-Object.assign(Ledger.prototype, ledgerGuard, ledgerByok);
+Object.assign(Ledger.prototype, ledgerGuard, ledgerByok, ledgerDictation);
+Object.assign(UsageLedger.prototype, ledgerDictation);
 
 // ---------------------------------------------------------------------------
 // Linux computer: one Cloudflare Container per workspace.
@@ -2514,7 +2592,7 @@ async function sendMagicLink(env, email, link, code) {
 }
 // A code typed on this device signs in exactly like the link: the user (made on first sign-in), newSession, the hc_session cookie.
 // The pending-sign-in cookie goes; the row was already marked used by verifyCode.
-async function signedIn(env, req, email, { json: body, location, status = 303 } = {}) {
+async function signedIn(env, req, email, { json: body, location, status = 303, age } = {}) {
   let u;
   if (eeEnabled(env)) {
     u = await env.DB.prepare("SELECT * FROM users WHERE email=?").bind(email).first();
@@ -2524,6 +2602,7 @@ async function signedIn(env, req, email, { json: body, location, status = 303 } 
     if (!u) return body ? json({ error: "This server already has an owner." }, 403) : page("Sign-in closed", "<p>This server already has an owner.</p>");
     await ensureSelfHostedTenant(env, u);
   }
+  await recordAge(env, u.id, age);
   const s = await newSession(env, req, u.id), h = new Headers({ "cache-control": "no-store" });
   h.append("set-cookie", `hc_session=${s}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000`); h.append("set-cookie", clearPendingCookie());
   if (body) { h.set("content-type", "application/json"); return new Response(JSON.stringify(body), { status: 200, headers: h }); }
@@ -2534,3 +2613,4 @@ const withCookie = (res, cookie) => { res.headers.append("set-cookie", cookie); 
 archiveDeletionMix(Archive); wipeMix(Ledger); wipeMix(UsageLedger); wipeMix(Computer);
 installSnapshotRpc(Archive, "Archive");
 installSnapshotRpc(Computer, "Computer", (self) => !!self.ctx.container?.running);
+for (const [k, v] of Object.entries(pomoGlobalMethods)) Archive.prototype[k] = v;

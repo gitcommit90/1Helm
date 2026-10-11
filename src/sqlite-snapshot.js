@@ -384,7 +384,7 @@ export async function restoreSnapshotStepFromR2(storage, bucket, manifestKey, ex
 export function installSnapshotRpc(Class, kind, busy = () => false) {
   Class.prototype.snapshotBackupStep = async function (prefix, name) {
     if (this.env?.ENV_NAME !== "selfhost" || this.env?.BACKUP_MAINTENANCE !== "1" || !this.env.WS) throw new Error("snapshot unavailable");
-    if ((kind === "Computer" || kind === "ChannelComputer") &&
+    if ((kind === "Computer" || kind === "ChannelComputer" || kind === "NativeTransport") &&
         !(await this.env.WS.get(`${prefix}/progress.json`)) && !(await this.env.WS.get(`${prefix}/manifest.json`))) await this.snapshotPrepare();
     if (busy(this)) throw new Error("object is busy; stop writes and retry backup");
     return writeSnapshotStepToR2(this.ctx.storage, this.env.WS, prefix, { kind, name });

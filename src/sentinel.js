@@ -77,11 +77,18 @@ export class Sentinel extends WorkerEntrypoint {
     const t0 = Date.now(), u = new URL(req.url), host = u.hostname.toLowerCase(), method = req.method.toUpperCase();
     // The computer's own controller link (layers, saves) is not internet traffic.
     if (host === "computer.internal") return linkFetch(this.env, this.ctx.props.id, req);
+    // Even reads can carry private data in paths, queries or custom headers.
+    // Reject every non-HTTPS internet request before lookup, approval or forwarding;
+    // never follow a plaintext redirect or rely on recognizing credential names.
+    // The controller RPC above is a runtime binding, not an internet destination.
+    if (u.protocol !== 'https:') return new Response('1Helm requires HTTPS for all external requests. Nothing was sent. Use the HTTPS address.', {
+      status: 403, headers: { 'x-1helm-sentinel': 'blocked', 'content-type': 'text/plain' },
+    });
     const C = this.env.CHANNEL_COMPUTER.get(this.env.CHANNEL_COMPUTER.idFromString(this.ctx.props.id));
     // tenant/channel ride in the props the computer set at start (one DO round trip less per request); older starts ask.
     const who = this.ctx.props.tenant && this.ctx.props.channel ? { tenant: this.ctx.props.tenant, channel: this.ctx.props.channel } : await C.who();
     // Our own storage endpoint (layer downloads at wake) passes straight through: presigned, read-only, this channel only.
-    if (this.env.R2_ENDPOINT && host === new URL(this.env.R2_ENDPOINT).host && SAFE.has(method)) return fetch(req);
+    if (this.env.R2_ENDPOINT && host === new URL(this.env.R2_ENDPOINT).host && SAFE.has(method)) return fetch(new Request(req, { redirect: "manual" }));
     const R = this.env.RESIDENT.get(this.env.RESIDENT.idFromName(`res:${who.tenant}:${who.channel}`));
 
     // 1. Stand-in → real key, only for the key's own hosts.

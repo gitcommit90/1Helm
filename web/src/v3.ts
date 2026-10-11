@@ -1,9 +1,16 @@
 // the design sandbox / v3 — "Soft": v2's structure with Muse-style surfaces: raised stage, soft bubbles, pill composer, character identity.
 import { ask } from "./dialog";   // first: its Esc handler must run before every other one
+import { createAmbientCue } from "./ee/ambient-cue";
+import { openTaskRename } from "./task-rename";   // modal keys stay out of app shortcuts
+import { registerShortcut, scInit, scPage, scLabel, scLabelN, scReset } from "./shortcuts";   // third: the one key handler + Settings → Keyboard shortcuts (registers its capture listener before every app one but the dialog's)
 import { unsavedKind, guarded } from "./unsaved";   // second: "Save changes?" before leaving an edit (its hashchange listener must be the first one)
+import { dedupeProgress, splitParts, finishReply } from "./progress-dedupe";
+import { progressSlot, progressWorked, progressReset, progressSnapshot, progressBefore, progressAfter } from "./progress-slot";
+import { bindTouchSwipe, bindSheetDismiss, gestureControl, gestureValueControl, scrollerOwns } from "./mobile-gestures";
 import { rpInit, rpMailto } from "./report";
 import { piKind, piOn, piInstall, piLabel, piSub, PI_ICON } from "./pwainstall";   // Install 1Helm as an app: catches beforeinstallprompt at import, before the UI renders   // Report an issue (its sheet's Esc, too; and it keeps the last log lines from the start)
 import { beeInit, beeSec, beeMark } from "./ee/bee";
+import { notebookBeeUnread } from "./ee/notebook-bee-unread";
 import { dpInit, dpSec, dpSheetMaybe, dpLoc, dpShareNow, DP_ICON } from "./devperm";   // location + mic, asked once up front (its sheet's Esc, too)   // Settings → Ambient → Bee: the card and the Connect sheet (its sheet's Esc, too)
 import { delInit, rowMore, headDelete, channelMore, sheetRows, MORE } from "./delete";   // deleting a chat / channel / the account
 import { openNewChannel, createViaApi, type NewChannel } from "./newchannel";   // second, for the same reason (New channel sheet)
@@ -12,6 +19,10 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { fileUrl as fileResUrl } from "./file-url.mjs";
 import { openShotLightbox } from "./shot-lightbox";
+import { chatCodeHtml, initChatCodeCopy } from "./chat-code";
+import { chatMarkdown } from "./chat-markdown";
+import { settingsDestination, settingsTarget } from "./settings-links";
+import { transcriptLink, transcriptLines, transcriptText } from "./transcript";
 import seedMock from "./seed.json";
 import { planImport, type PwPlan } from "./pwimport";
 import { ciInit, ciOpen } from "./contacts-import";
@@ -20,15 +31,21 @@ import { cmInit, numRows, readNums, numsOf, mergeOpen, mergeLocal, dupBanner, du
 import { SCENES } from "./genui-scenes";
 import { renderCard, replyParts, partOwner, scrubCode, cardText, plainPreview, wireCards } from "./genui-render";
 import { approvalHtml, type Decision } from "./approval-card";
-import { pmInit, pmHtml, pmClick } from "./perms";   // Settings → Permissions (live): level + "Always allowed"
+import { approvalCards, approvalResponse } from "./approval-live";
+import { nativeResumeInput, nativeReceiptStatus } from "./native-approval-progress";
+import { pmInit, pmHtml, pmClick, pmAfter, pmFocusCheckins } from "./perms";   // Settings → Permissions (live): level + "Always allowed"
+import { NETWORK_SEC, networkInit, networkHtml, networkClick, networkChange, networkVisible } from "./computer-network";
+import { watchingComputer, computerViewerChanged } from "./computer-offer";
 import { initAppDetail, openAppDetail, appDetailSync, appDetailRepaint } from "./ee/app-detail";
+import { appIsSoon, catalogAppVisible } from "./apps-availability";
 import { initAcctNote, onAcctNote, acctNoteHtml, acctNoteReset, acctNoteAfter } from "./ee/acct-note";   // a note per connected account, for the helper
 import { cmInit as amInit, cmHtml, cmClick, cmSet, cmNewTab, cmBack, cmMode } from "./ee/apps-mode";   // Settings → Connected accounts: Managed vs Self-managed (1HC composio-self.js)
 import { todoBtn, todoSet, todoSync, todoInit } from "./todos";
-import { pomoBtn, pomoSet, pomoSync, pomoInit } from "./pomodoro";
-import { lnBtn, lnSet, lnSync, lnInit, lnWrap, lnDot, lnRefineCard, lnStartFor } from "./ee/livenotes";
+import { pomoBtn, pomoGlobalBtn, pomoShortcut, pomoSet, pomoSync, pomoInit } from "./pomodoro";
+import { lnBtn, lnSet, lnSync, lnInit, lnWrap, lnDot, lnRefineCard, lnStartFor, lnCanStart } from "./ee/livenotes";
 import { mtInit } from "./ee/meetings";   // Meeting reminders for notes: "Your 2:00 “Weekly sync” is starting. Take notes?"   // Bee Live notes: header button, split view, chip, presence
 import { streamNote } from "./clientlog";   // stream lost / re-attached lines (dev only)
+import { streamState, streamLease, streamCurrent, streamRelease, streamInvalidate, streamProgress, streamCheckDue, streamFetch, streamErrorBody, readStream, type Lease } from "./stream-recovery";
 import { tkInit, tkLoad, tkEvent, tkOn, tkLiveCard, tkBtn, tkWrap, tkSync, tkChip, tkLiveSteps, tkCardLink, tkMsgOf, tkCardView, tkHelperCount, type EventView } from "./tracker";
 import { dictBtn, dictInit } from "./dictate";
 import { slBtn, slInit, slGate, slSchedule, slBubbles, slSentNote, slSet } from "./send-later";
@@ -45,8 +62,10 @@ import * as coreByok from "./byok";
 import * as billingByok from "./ee/byok-billing";
 import * as coreStorage from "./storage";
 import * as billingStorage from "./ee/storage-billing";
+import { cmcpInit, cmcpPage, cmcpBefore, cmcpAfter, CMCP_SEC } from "./ee/custom-mcp";   // Settings → Advanced → Custom MCP connections (Experimental)
 import { hInit, hWatch } from "./headfit";   // the tablet/desktop task header: folds actions into ⋯ instead of running under the computer button
-import { stInit, sync as stSync, headStop, rowStop, composerStop, stopTask, stopMany, pausedNote, SQ } from "./stop";   // Stop / Stop all
+import { sidebarInit, sidebarSync, sidebarReveal, sidebarCollapseButton, sidebarRestoreButton } from "./channel-sidebar";
+import { stInit, sync as stSync, headStop, rowStop, composerStop, stopTask, stopMany, stopBusy, pausedNote, SQ } from "./stop";   // Stop / Stop all
 import { nfInit, nfHtml, nfSeen, nfPerm, nfAsk, nfElsewhere } from "./notif";   // Settings → Notifications: switches, this device (Web Push), sounds
 import { maInit, maActs, maOpenCls, maQuote, rqHtml, rqTake, refOf, copyPlain, excerpt, type Pin, type Role } from "./msgreply";   // Copy + Reply on chat bubbles, the reply pinned above the composer
 import { sgInit, pauseSet, usageSet, usageAdd, usageNote } from "./spendguard";   // core runaway guard and per-task usage
@@ -84,6 +103,8 @@ const liveNotesWrap = (slug: string, sid: any, html: string) => hasFeature("ambi
 // "Show estimated costs" (Settings → General → Usage, see costRow): per account, off by default.
 const CO: { on: boolean | null; busy: boolean } = { on: null, busy: false };
 const showCosts = () => CO.on ?? !!BOOT?.account?.show_costs;
+const SPEND: { on: boolean | null; busy: boolean; error: string } = { on: null, busy: false, error: '' };
+const spendPauses = () => SPEND.on ?? BOOT?.account?.spend_pauses !== false;
 if (LIVE) ivSet(BOOT?.interview);   // Get to know you: which task in General is the interview (interview.ts)
 let PERSON = LIVE?.person?.trim() || "Joseph Yaksich";   // let: Settings → Your account can change the name and email
 let EMAIL = LIVE?.email?.trim() || "you@example.com";
@@ -92,7 +113,7 @@ let INITIALS = initialsOf(PERSON);
 const seed: any = BOOT ? { captured: Date.now(), channels: BOOT.channels.map((c: any) => ({ id: c.id, slug: c.slug, name: c.name, purpose: c.purpose, memory: c.memory || [], notes: c.notes || [], jobs: c.jobs || [],
   sessions: c.sessions.map((v: any) => ({ id: v.id, title: v.title, status: v.state === "waiting" ? "waiting" : v.state === "watching" ? "open" : "resolved", state: v.state === "working" ? "working" : "idle", updated: v.updated, messages: [], srv: v, pinned: v.pinned, done: v.done, unread: v.unread })) })) } : seedMock;
 
-type Msg = { id: number; role: "user" | "agent"; body: string; at: number; steps: string[]; pre?: string[]; cards?: any[]; note?: string; files?: FileV[]; saved?: Saved[] };
+type Msg = { id: number; role: "user" | "agent"; body: string; at: number; steps: string[]; pre?: string[]; prog?: string[]; progressOmitted?: number; cards?: any[]; note?: string; files?: FileV[]; saved?: Saved[] };
 // Where a remember really saved, from the server (proto src/saved-to.js): the "Added to …" chips under the reply.
 type Saved = { to: "notebook" | "contact" | "memory" | "account"; channel?: string; sec?: string; text?: string; name?: string; fields?: string[] };
 type FileV = { id: string; name: string; mime: string; bytes: number; at: number; source?: string; session?: string | null; image?: boolean; tags?: string[] };
@@ -202,8 +223,6 @@ const SOON: Record<string, [string, string]> = {
   delete: ["Delete account", "Asks you to confirm twice, then deletes everything."],
   "google-next": ["Connect Google", "Let your helper read and act in Gmail, Calendar and Drive."], "connections-next": ["More apps", "One-click connections to Notion, Slack, Dropbox and YouTube."],
   texting: ["Text with your helper", "Text your helper from your phone, and get a text when something needs you."], notif: ["Notifications", "Choose what pings this device."],
-  apps: ["Download apps", "The Mac, iPhone and Android apps."],
-  terms: ["Terms of service", "Opens in a new tab."], privacy: ["Privacy policy", "Opens in a new tab."], licenses: ["Open-source licenses", "Opens in a new tab."],
 };
 const SP = `<span class="soonp">Soon</span>`;
 const isSoon = (k: string) => !!LIVE && k in SOON;
@@ -256,20 +275,22 @@ function pcFab(ch: Channel) { const busy = ch.sessions.some(x => x.state === "wo
   return `<button class="pcfab${busy ? " busy" : ""}" data-watch="${esc(ch.slug)}" title="${esc(who(ch))}'s computer" aria-label="Open ${esc(who(ch))}'s computer">${ic.screen}${busy ? `<i class="pcdot"></i>` : ""}</button>`; }
 // The channel rail (desktop): every channel, then New channel. railWire keeps its scroll spot and bottom fade.
 function railHtml(ch: Channel) {
-  return `<div class="chs"><div class="brand" title="1Helm"><img src="/1helm-icon.png" alt="1Helm"></div>${channels.map((c, i) => {
+  return `<div class="chs"><div class="brand" title="1Helm"><img src="/1helm-icon.png" alt="1Helm"></div>${sidebarRestoreButton()}${channels.map((c, i) => {
     const n = c.sessions.filter(x => x.status === "waiting").length;
-    return `<button class="ch${c === ch ? " on" : ""}" data-ch="${c.slug}" title="${esc(c.name)}  ⌘${i + 1}">
+    return `<button class="ch${c === ch ? " on" : ""}" data-ch="${c.slug}" title="${esc(c.name)}${scLabel("jump") ? `  ${scLabelN("jump", i + 1)}` : ""}">
       <span class="tile">${c.slug === "main" ? av(c) : mono(c)}${n ? `<i class="pip" title="Needs you"></i>` : ""}</span><span class="lbl">${esc(c.name)}</span></button>`;
   }).join("")}<button class="ch add" title="New channel" aria-label="New channel" data-newch><span class="tile">${ic.plus}</span></button></div>
-    <div class="foot">${hasFeature("connected_apps") ? `<button class="iconbtn apico" data-apps title="Apps  ⌘⇧A" aria-label="Apps">${I('<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><path d="M17.5 14v7M14 17.5h7"/>', 20)}</button>` : ""}<button class="me" data-sgo="general" title="${esc(PERSON)} · Settings" aria-label="Settings">${esc(INITIALS)}</button><button class="iconbtn" data-smenu title="Menu" aria-label="Menu" aria-haspopup="menu">${ic.menu}</button></div>`;
+    <div class="foot">${LIVE ? pomoGlobalBtn(true) : ""}${hasFeature("connected_apps") ? `<button class="iconbtn apico" data-apps title="Apps${scLabel("apps") ? `  ${scLabel("apps")}` : ""}" aria-label="Apps">${I('<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><path d="M17.5 14v7M14 17.5h7"/>', 20)}</button>` : ""}<button class="me" data-sgo="general" title="${esc(PERSON)} · Settings" aria-label="Settings">${esc(INITIALS)}</button><button class="iconbtn" data-smenu title="Menu" aria-label="Menu" aria-haspopup="menu">${ic.menu}</button></div>`;
 }
 function railWire(railTop: number) {
   const cs = document.querySelector<HTMLElement>("#rail .chs")!; cs.scrollTop = railTop; const fade = () => cs.classList.toggle("end", cs.scrollHeight - cs.scrollTop - cs.clientHeight < 4); fade(); cs.onscroll = fade;
     const on = cs.querySelector<HTMLElement>(".ch.on"); if (on && (on.offsetTop < cs.scrollTop || on.offsetTop + on.offsetHeight > cs.scrollTop + cs.clientHeight)) on.scrollIntoView({ block: "nearest" });
 }
 function render() {
+  if (isNb()) nbBeeVisit(route().ch);
+  requestAnimationFrame(nbBeePaint);
   { const rd = schRedirect(location.hash, slug => channels.some(c => c.slug === slug), main.slug); if (rd) history.replaceState(null, "", rd); }   // old Schedules / Scheduled links → the one view
-  if (phone()) { for (const id of ["#rail", "#side", "#stage"]) $(id).innerHTML = ""; renderM(); return; }
+  if (phone()) { for (const id of ["#rail", "#side", "#stage"]) $(id).innerHTML = ""; renderM(); sidebarSync(); return; }
   $("#m").innerHTML = "";
   const { ch, s } = route();
   document.title = isSch() ? "Scheduled · 1Helm" : isCt() ? "Contacts · 1Helm" : isNb() ? `${who(ch)}'s notebook · 1Helm` : isLib() ? `${ch.name} Library · 1Helm` : s ? `${s.title} · ${ch.name} · 1Helm` : `${ch.name} Home · 1Helm`;
@@ -281,18 +302,19 @@ function render() {
   const qEl = $("#q") as HTMLInputElement | null, q = qEl && qEl.dataset.ch === ch.slug ? qEl.value : "", focused = document.activeElement === qEl;
 
   $("#side").innerHTML = `
-    <div class="chhead">${av(ch, "av lg")}<div><h2>${esc(ch.name)}</h2><span class="chip">${esc(AGENT[ch.slug] ?? ch.name)}</span></div>${LIVE ? channelMore(ch.slug, ch.name) : ""}</div>
+    <div class="chhead">${av(ch, "av lg")}<div><h2>${esc(ch.name)}</h2><span class="chip">${esc(AGENT[ch.slug] ?? ch.name)}</span></div>${LIVE ? channelMore(ch.slug, ch.name) : ""}${sidebarCollapseButton()}</div>
     <p class="purpose">${esc(ch.purpose)}</p>
-    <button class="new" data-ntask>${ic.newS}<span>New</span><kbd>⌘N</kbd></button>
+    <button class="new" data-ntask>${ic.newS}<span>New</span>${scLabel("new-task") ? `<kbd>${scLabel("new-task")}</kbd>` : ""}</button>
     <a class="navrow${s || isLib() || isNb() || isCt() || isSch() ? "" : " on"}" href="#/${ch.slug}" data-new>${ic.home}<span>Home</span></a>
     <a class="navrow${isLib() ? " on" : ""}" href="#/${ch.slug}/library">${ic.lib}<span>Library</span></a>
     <a class="navrow${isNb() ? " on" : ""}" href="#/${ch.slug}/notebook">${ic.nb}<span>Notebook</span></a>
     <a class="navrow${isCt() ? " on" : ""}" href="#/${ch.slug}/contacts">${ic.people}<span>Contacts</span></a>
-    <label class="search">${ic.search}<input id="q" data-ch="${ch.slug}" placeholder="Search" value="${esc(q)}" autocomplete="off"><kbd>⌘K</kbd></label>
+    <label class="search">${ic.search}<input id="q" data-ch="${ch.slug}" placeholder="Search" value="${esc(q)}" autocomplete="off">${scLabel("search") ? `<kbd>${scLabel("search")}</kbd>` : ""}</label>
     <div class="sessions">${sideList(ch, s, q)}</div>
     <div class="drawer">
       <a class="drow${isSch() ? " on" : ""}" href="#/${ch.slug}/scheduled" title="Repeats, follow-ups and messages set to send later">${ic.clock}<span>Scheduled</span></a>
     </div><button class="sidesrch" data-sidesrch aria-label="Search tasks">${ic.search}<span>Search</span></button>`;
+  sidebarSync();
   if (focused) { const i = $("#q") as HTMLInputElement; i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
 
   if (isSch()) { $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + schPage(ch.slug); schAfter(schSec()); return; }
@@ -300,13 +322,13 @@ function render() {
   if (isNb()) { $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + nbPage(ch); nbAfter(); nbSync(ch); return; }
   if (isCt()) { $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + ctPage(); ctAfter(); return; }
   $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + (s ? `
-    <header class="th"><span class="ho" data-ho="0"><span class="who-chip">${av(ch, "av sm")}${esc(AGENT[ch.slug] ?? ch.name)}</span></span><h1 title="${esc(s.title)}">${esc(s.title)}</h1><span class="ho" data-ho="1">${headPin(s)}</span>${headDone(s)}${LIVE && s.srv ? `<span class="ho" data-ho="3">${headDelete(ch.slug, s.id)}</span>` : ""}${LIVE ? `${hasFeature("ambient") ? `<span class="ho" data-ho="7">${lnBtn(ch.slug, s.id)}</span>` : ""}<span class="ho" data-ho="6">${pomoBtn(ch.slug, s.id)}</span><span class="ho" data-ho="5">${todoBtn(ch.slug, s.id)}</span><span class="ho" data-ho="4">${tkBtn(ch.slug, s.id)}</span>` : ""}<button class="hmore" data-hmore aria-label="More actions" title="More actions" aria-haspopup="menu" aria-expanded="false" hidden>${MORE}</button></header>
+    <header class="th"><span class="ho" data-ho="0"><span class="who-chip">${av(ch, "av sm")}${esc(AGENT[ch.slug] ?? ch.name)}</span></span><h1 title="${esc(s.title)}">${canRename(s) ? `<button class="task-title" data-rename="${esc(ch.slug)}|${esc(s.id)}" aria-label="Rename task" title="Rename task"><span data-task-title>${esc(s.title)}</span></button>` : esc(s.title)}</h1><span class="ho" data-ho="1">${headPin(s)}</span>${headDone(s)}${LIVE && s.srv ? `<span class="ho" data-ho="3">${headDelete(ch.slug, s.id)}</span>` : ""}${LIVE ? `${hasFeature("ambient") ? `<span class="ho" data-ho="7">${lnBtn(ch.slug, s.id)}</span>` : ""}<span class="ho" data-ho="6">${pomoBtn(ch.slug, s.id)}</span><span class="ho" data-ho="5">${todoBtn(ch.slug, s.id)}</span><span class="ho" data-ho="4">${tkBtn(ch.slug, s.id)}</span>` : ""}<button class="hmore" data-hmore aria-label="More actions" title="More actions" aria-haspopup="menu" aria-expanded="false" hidden>${MORE}</button></header>
     ${stageBody(ch, s)}` : `
     <div class="dhome" id="scroll"><div class="hwrap">${homeHead(ch)}${composer(`Give ${esc(who(ch))} a task`)}
       <p class="hhint" id="hhint">${HINT}</p><div id="htasks">${tasksHtml(ch)}</div></div></div>`);
   const sc = document.getElementById("scroll"); if (sc && s) sc.scrollTop = sc.scrollHeight;
   if (!s) ($("#box") as HTMLTextAreaElement).focus();
-  if (LIVE && s) { tkSync(ch.slug, s.id); pomoSync(ch.slug, s.id); lnSync(ch.slug, s.id); }
+  if (LIVE && s) { tkSync(ch.slug, s.id); pomoSync(ch.slug, s.id); if (hasFeature("ambient")) lnSync(ch.slug, s.id); }
   hWatch();
   clearFresh(ch);
   stNow();
@@ -341,8 +363,33 @@ function dateLine(ch: Channel) {
   const n = ch.sessions.filter(x => !x.done).length, wd = new Date().toLocaleDateString(undefined, { weekday: "long" });
   return `<div class="hdate"><b>${esc(ch.name)} Home</b><span>${wd}${n ? ` · ${n} open` : ""}</span></div>`;
 }
+let homeNotesBusy = false;
 function homeHead(ch: Channel) {
-  return `${dateLine(ch)}<h1>${greet()}.</h1><p class="hsub">What should ${esc(who(ch))} take off your plate?</p>`;
+  return `${dateLine(ch)}<h1>${greet()}.</h1><p class="hsub">What should ${esc(who(ch))} take off your plate?</p>${LIVE && hasFeature("ambient") && !BOOT?.look ? `<button type="button" class="home-notes" data-home-notes${homeNotesBusy ? ' disabled aria-busy="true"' : ""} title="Start a new task for meeting or call notes"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 12h2M7 8v8M11 5v14M15 8v8M19 10v4M21 12h0"/></svg>${homeNotesBusy ? "Opening…" : "Live Notes"}</button>` : ""}`;
+}
+// A direct UI action, never a chat message: creating the empty task runs no agent.
+async function homeNotes() {
+  if (!LIVE || !hasFeature("ambient") || BOOT?.look || homeNotesBusy) return;
+  if (!lnCanStart()) { note(ic.check, "Live Notes", "Use a browser with microphone access, or connect your Bee in Settings.", ""); return; }
+  const { ch } = route(), from = location.hash;
+  homeNotesBusy = true;
+  document.querySelectorAll<HTMLButtonElement>("[data-home-notes]").forEach(b => { b.disabled = true; b.setAttribute("aria-busy", "true"); b.lastChild!.textContent = "Opening…"; });
+  try {
+    const v = await api(`/res/${ch.slug}/sessions`, { title: "Live notes" });
+    if (v?.error || !v?.id) throw new Error(v?.message || "The notes task couldn't be created. Try again.");
+    const s = { id: v.id, title: v.title, status: "resolved", state: "idle", updated: Date.now(), messages: [], fresh: true } as unknown as Session;
+    applySrv(s, v); ch.sessions.unshift(s);
+    // A slow request must not pull them back after they've navigated elsewhere.
+    if (location.hash !== from) { repaint(ch); return; }
+    location.hash = `/${ch.slug}/s/${v.id}`;
+    render();
+    await lnStartFor(ch.slug, v.id);
+  } catch (e) { note(ic.check, "Couldn't open Live Notes", e instanceof Error ? e.message : "Check your connection and try again.", ""); }
+  finally {
+    homeNotesBusy = false;
+    document.querySelectorAll<HTMLButtonElement>("[data-home-notes]").forEach(b => { b.disabled = false; b.removeAttribute("aria-busy"); b.lastChild!.textContent = "Live Notes"; });
+    if (!route().s) repaint(route().ch);
+  }
 }
 function tasksHtml(ch: Channel) {
   const pri = (x: Session) => x.done ? 9 : x.status === "waiting" ? 0 : x.state === "working" ? 1 : x.unread ? 2 : 3;
@@ -686,11 +733,18 @@ document.addEventListener("input", e => { const t = e.target as HTMLInputElement
   window.addEventListener("resize", () => { if (PK.open) pkPlace(); });
   window.addEventListener("hashchange", () => pkClose(false));
 }
+function chatCards(cards: any[], ch: Channel) {
+  let html = "", group = false;
+  for (const c of cards) { const tile = c.t === "file" || c.t === "image";
+    if (tile && !group) html += '<div class="chat-file-grid">';
+    if (!tile && group) html += '</div>';
+    html += cardHtml(c, ch); group = tile;
+  }
+  return html + (group ? '</div>' : '');
+}
 function fileCard(ch: Channel, f: FileV, mine: boolean) {
   const k = fkind(f.name, f.mime), u = fileUrl(ch.slug, f.id);
-  if (f.image) return `<a class="fcard img${mine ? " mine" : ""}" href="${u}" data-fv="${esc(ch.slug)}|${esc(f.id)}" data-fvc><img src="${u}" alt="${esc(f.name)}" loading="lazy"><span>${esc(f.name)}</span></a>`;
-  return `<a class="fcard${mine ? " mine" : ""}" href="${u}" data-fv="${esc(ch.slug)}|${esc(f.id)}" data-fvc><span class="aico k-${k}">${I(KIND[k][1], 18)}</span><span class="fcm"><b>${esc(f.name)}</b><span>${KIND[k][0]} · ${KB(f.bytes)}</span></span>
-    ${LIVE ? shFileBtn(ch.slug, f.id, f.name, f.mime) : ""}<span class="fdl" data-fdl="${fileUrl(ch.slug, f.id, true)}" role="button" aria-label="Download ${esc(f.name)}">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 16)}</span></a>`;
+  return `<div class="fcard chat-tile${mine ? " mine" : ""}" title="${esc(f.name)} · ${KIND[k][0]} · ${KB(f.bytes)}"><a class="chat-tile-open" href="${u}" data-fv="${esc(ch.slug)}|${esc(f.id)}" data-fvc aria-label="Open ${esc(f.name)}"><span class="chat-tile-preview${f.image ? " photo" : ""}">${f.image ? `<img src="${u}" alt="" loading="lazy">` : `<span class="aico k-${k}">${I(KIND[k][1], 28)}</span>`}</span><span class="chat-tile-name">${esc(f.name)}</span></a><span class="chat-tile-actions"><span class="chat-tile-kind">${KIND[k][0]}</span>${LIVE ? shFileBtn(ch.slug, f.id, f.name, f.mime, true) : ""}<a class="chat-tile-download" href="${fileUrl(ch.slug, f.id, true)}" download aria-label="Download ${esc(f.name)}" title="Download">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 14)}</a></span></div>`;
 }
 if (LIVE) {
   document.addEventListener("click", async e => {
@@ -732,8 +786,8 @@ if (LIVE) {
 // audio/video play. Slide decks (.pptx…) and Word documents (.docx…) show the PDF the channel computer makes of them with
 // LibreOffice (GET …/files/<id>/preview, 1HC file-preview.js; the first open makes it, later opens are instant): a deck pages
 // slide by slide, a document scrolls like a PDF. Anything else gets a clean card with Download. ← → move through the list it was opened from.
-type FV = { slug: string; id: string; name: string; mime: string; bytes: number; at: number; sid?: any; you?: boolean };
-const FVS: { list: FV[]; i: number; zoom: number; gen: number; pdf?: any; slide?: (d: number, abs?: boolean) => boolean } = { list: [], i: 0, zoom: 1, gen: 0 };
+type FV = { slug: string; id: string; name: string; mime: string; bytes: number; at: number; sid?: any; you?: boolean; transcript?: string };
+const FVS: { list: FV[]; i: number; zoom: number; gen: number; pdf?: any; slide?: (d: number, abs?: boolean) => boolean; transcript?: string } = { list: [], i: 0, zoom: 1, gen: 0 };
 const fvExt = (n: string) => (n.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase();
 const fvKind = (f: FV) => { const e = (f.name.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase(), m = f.mime;
   if (/^image\/(png|jpe?g|gif|webp|avif|bmp)$/.test(m) || /^(png|jpe?g|gif|webp|avif|bmp)$/.test(e)) return "image";
@@ -802,13 +856,14 @@ function openFile(list: FV[], i: number) {
 }
 function closeFile() { const w = document.getElementById("fv"); FVS.gen++; FVS.pdf?.destroy?.(); FVS.pdf = null; FVS.slide = undefined; document.body.classList.remove("fvopen"); if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!w.classList.contains("on")) w.remove(); }, 200); }
 function fvPaint() {
-  const w = document.getElementById("fv")!, f = FVS.list[FVS.i], k = fvKind(f), u = fileUrl(f.slug, f.id), x = fvTask(f), n = FVS.list.length, gen = ++FVS.gen;
+  const w = document.getElementById("fv")!, f = FVS.list[FVS.i], k = fvKind(f), u = f.transcript || fileUrl(f.slug, f.id), x = fvTask(f), n = FVS.list.length, gen = ++FVS.gen;
+  FVS.transcript = undefined;
   FVS.zoom = 1; FVS.pdf?.destroy?.(); FVS.pdf = null; FVS.slide = undefined;
   const [kn0, kd] = KIND[fkind(f.name, f.mime)], kn = k === "deck" ? "Slide deck" : k === "word" ? "Document" : kn0;
   w.innerHTML = `<div class="fvback" data-fvclose></div><div class="fvbox fv-${k}">
     <header class="fvhd"><span class="aico k-${fkind(f.name, f.mime)}">${I(kd, 18)}</span><span class="fvt"><b title="${esc(f.name)}">${esc(f.name)}</b><span>${kn}${f.bytes ? ` · ${KB(f.bytes)}` : ""}${x ? ` · <a href="#/${esc(f.slug)}/s/${esc(x.id)}" data-fvgo>From “${esc(x.title)}”</a>` : f.you ? " · You added it" : ""}</span></span>
       ${k === "image" || k === "pdf" || k === "word" ? `<span class="fvzoom"><button data-fvz="-1" aria-label="Zoom out">${I('<path d="M5 12h14"/>', 16)}</button><button data-fvz="0" class="fvzl" aria-label="Fit">100%</button><button data-fvz="1" aria-label="Zoom in">${I('<path d="M5 12h14"/><path d="M12 5v14"/>', 16)}</button></span>` : ""}
-      ${shViewerBtns(f.slug, f.id, f.name, f.mime)}<a class="fvb" href="${fileUrl(f.slug, f.id, true)}" download aria-label="Download" title="Download">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 18)}</a>
+      ${f.transcript ? `<button class="fvb" data-transcript-download disabled aria-label="Download transcript" title="Download transcript as text">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 18)}</button>` : `${shViewerBtns(f.slug, f.id, f.name, f.mime)}<a class="fvb" href="${fileUrl(f.slug, f.id, true)}" download aria-label="Download" title="Download">${I('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', 18)}</a>`}
       <button class="fvb" data-fvclose aria-label="Close" title="Close (Esc)">${I('<path d="M18 6 6 18M6 6l12 12"/>', 18)}</button></header>
     <div class="fvbody" id="fvbody">${k === "image" ? `<img class="fvimg" src="${u}" alt="${esc(f.name)}" draggable="false">`
       : k === "video" ? `<video src="${u}" controls playsinline autoplay></video>` : k === "audio" ? `<div class="fvaud"><span class="aico k-doc">${I(kd, 28)}</span><audio src="${u}" controls autoplay></audio></div>`
@@ -817,7 +872,13 @@ function fvPaint() {
       : `<div class="fvload"><span class="typing"><i></i><i></i><i></i></span></div>`}</div>
     ${n > 1 ? `<button class="fvnav prev" data-fvn="-1" aria-label="Previous file"${FVS.i ? "" : " disabled"}>${I('<path d="m15 18-6-6 6-6"/>', 22)}</button><button class="fvnav next" data-fvn="1" aria-label="Next file"${FVS.i < n - 1 ? "" : " disabled"}>${I('<path d="m9 18 6-6-6-6"/>', 22)}</button><span class="fvcount">${FVS.i + 1} of ${n}</span>` : ""}</div>`;
   const body = document.getElementById("fvbody")!;
-  if (k === "pdf") fvPdf(u, body, gen);
+  if (f.transcript) fetch(u, { credentials: "same-origin", cache: "no-store" }).then(r => { if (!r.ok) throw new Error(r.status === 404 ? "This transcript is no longer available." : "Couldn't load the transcript. Please try again."); return r.json(); }).then(data => {
+    if (gen !== FVS.gen) return;
+    const lines = transcriptLines(data); FVS.transcript = transcriptText(lines);
+    body.innerHTML = `<article class="fvmd fvtranscript">${lines.length ? lines.map(l => `<p>${l.time || l.speaker ? `<small>${esc([l.time, l.speaker].filter(Boolean).join(' · '))}</small><br>` : ''}<span style="white-space:pre-wrap">${esc(l.text)}</span></p>`).join('') : '<p>No speech was recorded in this session.</p>'}</article>`;
+    w.querySelector<HTMLButtonElement>('[data-transcript-download]')!.disabled = false;
+  }).catch(e => { if (gen === FVS.gen) body.innerHTML = `<div class="fvnonebox"><b>Couldn't open the transcript</b><p>${esc(e.message)}</p><button class="fvdl ghost" data-transcript-retry>Try again</button></div>`; });
+  else if (k === "pdf") fvPdf(u, body, gen);
   else if (k === "deck" || k === "word") fvOffice(f, u, body, gen, k === "deck");
   else if (k === "xlsx") fvSheet(u, body, gen);
   else if (k === "md" || k === "csv" || k === "text") fetch(u, { credentials: "same-origin" }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); }).then(t => {
@@ -897,7 +958,18 @@ function fvZoom(dir: number) {
 if (LIVE) {
   document.addEventListener("click", e => {
     const t = e.target as HTMLElement;
+    const link = t.closest<HTMLAnchorElement>('a[href]'), transcript = link && LIVE ? transcriptLink(link.href, LIVE.api, location.href) : null;
+    if (transcript) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      openFile([{ slug: transcript.slug, id: `transcript-${transcript.task}-${transcript.n}`, sid: transcript.task, name: 'Raw transcript', mime: 'text/plain', bytes: 0, at: 0, transcript: transcript.url }], 0); return;
+    }
     if (document.getElementById("fv")?.contains(t)) {
+      if (t.closest('[data-transcript-retry]')) { e.preventDefault(); fvPaint(); return; }
+      if (t.closest('[data-transcript-download]')) {
+        e.preventDefault(); if (FVS.transcript == null) return;
+        const url = URL.createObjectURL(new Blob([FVS.transcript], { type: 'text/plain;charset=utf-8' })), a = document.createElement('a');
+        a.href = url; a.download = 'meeting-transcript.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); return;
+      }
       if (t.closest("[data-fvclose]")) { e.preventDefault(); closeFile(); return; }
       if (t.closest("[data-fvgo]")) { closeFile(); return; }
       const nv = t.closest<HTMLElement>("[data-fvn]"); if (nv) { e.preventDefault(); FVS.i = Math.max(0, Math.min(FVS.list.length - 1, FVS.i + +nv.dataset.fvn!)); fvPaint(); return; }
@@ -934,7 +1006,13 @@ if (LIVE) {
   }, true);
   // Phone: swipe left/right between files, swipe down on a picture to close.
   let sx = 0, sy = 0, st = 0;
-  document.addEventListener("touchstart", e => { if (!(e.target as HTMLElement).closest?.("#fv .fvbody")) return; sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now(); }, { passive: true });
+  document.addEventListener("touchstart", e => {
+    st = 0; const t = e.target as HTMLElement, body = t.closest<HTMLElement>("#fv .fvbody");
+    if (!phone() || e.touches.length !== 1 || !body || gestureControl(t) || FVS.zoom > 1 || scrollerOwns(t, body, "x") || scrollerOwns(t, body, "y") || window.getSelection()?.toString()) return;
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now();
+  }, { passive: true });
+  document.addEventListener("touchmove", e => { if (e.touches.length !== 1) st = 0; }, { passive: true });
+  document.addEventListener("touchcancel", () => { st = 0; }, { passive: true });
   document.addEventListener("touchend", e => {
     if (!st || !(e.target as HTMLElement).closest?.("#fv .fvbody") || e.changedTouches.length !== 1 || FVS.zoom > 1) { st = 0; return; }
     const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy, fast = Date.now() - st < 500; st = 0; if (!fast) return;
@@ -957,11 +1035,16 @@ function openNew() {
   NT.open = true; NT.to = route().ch.slug; NT.pick = false; hideToast();
   let w = document.getElementById("nt"); if (!w) { w = document.createElement("div"); w.id = "nt"; document.body.appendChild(w); }
   w.innerHTML = `<div class="nback" data-nclose></div><form class="nmodal" id="nsend" role="dialog" aria-label="New task">
-    <div class="ups" id="ups-nbox">${upsHtml("nbox")}</div><textarea id="nbox" rows="2" autocomplete="off"></textarea>
+    ${phone() ? '<button type="button" class="grab" data-nclose aria-label="Close new task"></button>' : ""}<div class="ups" id="ups-nbox">${upsHtml("nbox")}</div><textarea id="nbox" rows="2" autocomplete="off"></textarea>
     <div class="nrow">${cb("attach", "Attach", ic.plus)}
       <div class="npick"><button type="button" class="nwho" data-npick title="Who should do it"></button><div class="nlist"></div></div>
       <span class="grow"></span><span class="nkbd"><kbd>Esc</kbd> to close</span>${LIVE ? slBtn("nbox") + dictBtn("nbox", ic.mic) : cb("mic", "Talk", ic.mic, " mic")}
       <button id="ngo" class="ngo" disabled><span class="ngo-l">Start task</span></button></div></form>`;
+  if (phone()) dragToClose(w.querySelector<HTMLElement>(".nmodal")!, () => {
+    const draft = (document.getElementById("nbox") as HTMLTextAreaElement | null)?.value.trim();
+    if (!draft && !UP.nbox.length) { closeNew(); return; }
+    ask({ title: "Discard this task draft?", body: "Your message and attached files haven't been sent.", confirm: "Discard", cancel: "Keep editing", danger: true }).then(ok => { if (ok) closeNew(); });
+  });
   paintNew(); requestAnimationFrame(() => requestAnimationFrame(() => w!.classList.add("on")));
 }
 function closeNew() { const w = document.getElementById("nt"); NT.open = false; if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!NT.open) w.innerHTML = ""; }, 220); }
@@ -1012,6 +1095,53 @@ function repaint(ch: Channel) {
   const hp = document.getElementById("hpin"); if (hp && s) hp.outerHTML = headPin(s);
   const hd = document.getElementById("hdone"); if (hd && s) hd.outerHTML = headDone(s);
   const hh = document.querySelector(".hdate"); if (hh) hh.outerHTML = dateLine(ch);
+  if (s) {
+    document.querySelectorAll<HTMLElement>("[data-task-title]").forEach(el => { el.textContent = s.title; });
+    const heading = document.querySelector<HTMLElement>("#stage>header.th h1"); if (heading) heading.title = s.title;
+    document.title = `${s.title} · ${ch.name} · 1Helm`;
+  }
+  paintMobileStatus(ch, s);
+}
+function canRename(s: Session) { return !!LIVE && !!s.srv && !BOOT?.look; }
+function renameTask(slug: string, sid: string, opener?: HTMLElement) {
+  const ch = channels.find(c => c.slug === slug), task = ch?.sessions.find(s => String(s.id) === String(sid));
+  if (!ch || !task || !canRename(task)) return;
+  const rowScope = opener?.closest("#dlist") ? "#dlist" : opener?.closest("#side") ? "#side" : "";
+  if (mState.sheet) closeSheet();
+  openTaskRename(task.title, async title => {
+    const v = await api(`/res/${encodeURIComponent(slug)}/sessions/${encodeURIComponent(sid)}`, { title }, { signal: AbortSignal.timeout(20000) });
+    if (v?.error) throw new Error(v.error);
+    if (String(v?.id) !== sid || typeof v?.title !== "string" || !Number.isSafeInteger(v?.title_revision)) throw new Error("Couldn't confirm the saved name. Try again.");
+    // Update the title only: an in-flight save must not replace newer task status/messages.
+    const newest = Number(task.srv?.title_revision || 0);
+    if (v.title_revision >= newest) { task.title = v.title; task.srv = { ...task.srv, title: v.title, title_manual: true, title_revision: v.title_revision }; }
+    repaint(ch);
+  }, () => {
+    const target = opener?.isConnected ? opener : rowScope ? document.querySelector<HTMLElement>(`${rowScope} [data-rowmenu="${CSS.escape(`${slug}|${sid}`)}"]`) : document.querySelector<HTMLElement>(phone() ? ".mh [data-rename]" : "#stage [data-rename]");
+    target?.focus({ preventScroll: true });
+  });
+}
+document.addEventListener("click", e => {
+  const button = (e.target as HTMLElement).closest<HTMLElement>("[data-rename]"); if (!button) return;
+  e.preventDefault(); e.stopPropagation(); const [slug, sid] = button.dataset.rename!.split("|"); renameTask(slug, sid, button);
+});
+// Streaming/polling repaints deliberately keep the mobile header and composer mounted.
+// Its status controls must still follow the current task, just like desktop #hdone.
+function paintMobileStatus(ch: Channel, s: Session | null) {
+  if (!phone()) return;
+  const h = document.querySelector<HTMLElement>(".mh"); if (!h) return;
+  const done = h.querySelector<HTMLButtonElement>(".mdone");
+  if (done && s) {
+    done.classList.toggle("on", !!s.done); done.dataset.done = String(s.id);
+    done.setAttribute("aria-label", s.done ? "Reopen" : "Mark done");
+    morph(done, box(s).replace(/ data-done="[^"]+"/, "").replace('role="checkbox" tabindex="0"', 'aria-hidden="true"'));
+  }
+  let stop = h.querySelector<HTMLButtonElement>(".mstop");
+  if (s && stWorking(s)) {
+    if (!stop) { stop = document.createElement("button"); stop.className = "cb mstop"; stop.setAttribute("aria-label", "Stop this task"); stop.title = "Stop"; stop.innerHTML = SQ; h.insertBefore(stop, done?.parentElement || h.querySelector("[data-mmore]")); }
+    stop.dataset.stop = `${ch.slug}|${s.id}`; stop.disabled = stopBusy(ch.slug, s.id);
+  } else stop?.remove();
+  h.querySelector("[data-watch]")?.classList.toggle("busy", ch.sessions.some(x => x.state === "working"));
 }
 // Done lists sort by when the task was marked done (server done_at), newest first; older rows without it fall back to updated.
 function doneAt(x: Session) { return Number(x.srv ? x.srv.done_at : (x as any).doneAt) || x.updated; }
@@ -1116,6 +1246,7 @@ function refresh() {
   } else if (!typing) render();
   else morph($(".sessions"), sideList(ch, s, ($("#q") as HTMLInputElement)?.value ?? ""));
   clearFresh(ch);
+  paintMobileStatus(ch, s);
   stNow();
 }
 function startTask(ch: Channel, text: string, files: FileV[] = []) {
@@ -1145,18 +1276,21 @@ const composer = (ph: string) => `<div class="ups" id="ups-box">${upsHtml("box")
 // dots, so code never flashes on screen.
 const PRE_OWNERS = new WeakMap<Msg, object[]>(), PRE_OWNER = (m: Msg, j: number) => ((PRE_OWNERS.get(m) ?? (PRE_OWNERS.set(m, []), PRE_OWNERS.get(m)!))[j] ??= {});
 const TYPING = `<div class="bubble"><div class="body"><span class="typing"><i></i><i></i><i></i></span></div></div>`;
-function partHtml(text: string, ch: Channel, s: Session | undefined, owner: object, live: boolean, reply: string | undefined, pre = false) {
+const MA_PARTS = new WeakMap<Msg, Map<string, string>>();
+function partHtml(text: string, ch: Channel, s: Session | undefined, owner: object, live: boolean, reply: string | undefined, pre = false, message?: Msg, part = "body") {
   const t = text.trim(); if (!t) return pre ? "" : TYPING;
   if (LIVE && t === "Stopped.") return `<div class="stopped-note" role="status">${SQ}<span>Stopped by you</span></div>`;   // a task the person stopped (1HC stop.js)
-  const bubble = (x: string) => { const y = scrubCode(x).trim(); return y ? `<div class="bubble${pre ? " pre" : ""}"><div class="body">${md(y)}</div></div>` : ""; };
+  const bubble = (x: string, j: number) => { const y = scrubCode(x).trim(), key = `${part}-${j}`; if (!y) return "";
+    if (message) MA_PARTS.get(message)!.set(key, y);
+    return `<div class="bubble${pre ? " pre" : ""}${message ? maOpenCls(message.id, key) : ""}">${message ? maActs(message.id, key) : ""}<div class="body">${chatCodeHtml(chatMarkdown(y))}</div></div>`; };
   // Prose with code lines in it (or a code tail still streaming) paints part by part; a part that may still become code waits.
   const ps = replyParts(t, live);
   return ps.map((p, j) => {
-    if (p.k === "text") return bubble(p.s);
+    if (p.k === "text") return bubble(p.s, j);
     if (p.k === "pending") return j === ps.length - 1 ? TYPING : "";
     const c = renderCard(p.s, { owner: partOwner(owner, j), ref: { ch, s }, sid: String(s?.id ?? ""), streaming: live, reply, file: n => cardFile(ch, n), icon: cardIcon });
     if (c && "html" in c) return c.html || (live && j === ps.length - 1 ? TYPING : "");
-    return c ? bubble(c.text) : "";
+    return c ? bubble(c.text, j) : "";
   }).join("") || (live ? TYPING : "");
 }
 // File card: a file of that name in this channel's Library opens in the file viewer; otherwise it's a static card.
@@ -1185,23 +1319,22 @@ function rxPop(m: Msg) {
 // Tracker cards (tracker.ts): a person's message knows its client id and send state (a steer: sending → joined, or failed with
 // Retry); a reply knows its card (the finished-turn chip, the live steps' "Task card ›" link, "Show in chat").
 type TkMsg = RxMsg & { cid?: string; state?: "sending" | "joined" | "failed"; err?: string; card?: string; reply?: Pin | (Omit<Pin, "mr"> & { mr?: number }); rid?: string };
-// Copy + Reply (msgreply.ts): a helper message's two buttons sit in its last text bubble (none while it's still being written, none
-// on a reply that's only cards). The open task's key, a message's server id (a person's message: its id; a reply: its card / turn).
-function maIn(html: string, mr: number) {
-  if (!mr) return html; const i = html.lastIndexOf('<div class="bubble'); if (i < 0 || html.startsWith(TYPING, i)) return html;
-  const j = html.indexOf(">", i) + 1; return html.slice(0, j) + maActs(mr) + html.slice(j);
-}
+// Copy + Reply target the text actually rendered in each bubble, including completed preambles during streaming.
 const rqKey = () => { const { ch, s } = route(); return s && !isLib() && !isNb() && !isCt() && !isSch() ? `${ch.slug}|${s.id}` : ""; };
 const srvId = (m: Msg): string | null => { const t = m as TkMsg; return (m.role === "user" ? t.turn : t.card || t.rid) || null; };
-const msgPlain = (m: Msg) => m.role === "user" ? String(m.body || "") : [...(m.pre || []), m.body].map(x => copyPlain(x, { cardText, scrubCode })).filter(Boolean).join("\n\n");
-const msgRich = (m: Msg) => m.role === "user" ? esc(String(m.body || "")).replace(/\n/g, "<br>") : [...(m.pre || []), m.body].map(x => { const y = (cardText(x) || scrubCode(x)).replace(/<small>[\s\S]*?<\/small>/gi, "").trim(); return y ? md(y) : ""; }).join("");
+// Narration the helper wrote before its tool calls: kept with the steps, collapsed, never in the reply bubble.
+const progNotes = (m: Msg) => { const ps = dedupeProgress(m.prog || []).map(x => x.trim()).filter(Boolean);
+  return `<details class="steps prog"${ps.length || m.progressOmitted ? "" : " hidden"}><summary><span class="sico">${ic.term}</span><span>${m.progressOmitted ? 'Latest ' : ''}${ps.length === 1 ? "1 progress note" : `${ps.length} progress notes`}</span>${ic.chev}</summary>${m.progressOmitted ? `<p class="pnote meta">${m.progressOmitted} earlier progress notes are not shown here. Earlier activity is kept in the task card.</p>` : ''}${ps.map(x => `<p class="pnote">${esc(x)}</p>`).join("")}</details>`; };
+const msgPlain = (m: Msg) => m.role === "user" ? String(m.body || "") : dedupeProgress([...(m.pre || []), m.body].map(x => String(x ?? ""))).map(x => copyPlain(x, { cardText, scrubCode })).filter(Boolean).join("\n\n");
+const msgRich = (m: Msg) => m.role === "user" ? esc(String(m.body || "")).replace(/\n/g, "<br>") : dedupeProgress([...(m.pre || []), m.body].map(x => String(x ?? ""))).map(x => { const y = (cardText(x) || scrubCode(x)).replace(/<small>[\s\S]*?<\/small>/gi, "").trim(); return y ? chatMarkdown(y) : ""; }).join("");
 function msgHtml(m: Msg, ch: Channel, prev?: Msg, live = false, s?: Session, reply?: string) {
   const first = !prev || prev.role !== m.role, tm = m as TkMsg;
+  MA_PARTS.set(m, new Map());
   if (m.role === "user" && (m as any).brief) return briefMsgHtml(m, ch.slug);
   if (m.role === "user") { const rx = rxHtml(m), mf = (m.files || []).length;
     const tk = tm.state === "joined" ? `<span class="tk-note joined">${ic.check}Joined the task</span>`
       : tm.state === "failed" ? `<button type="button" class="tk-retry" data-tkretry="${m.id}"${tm.err ? ` title="${esc(tm.err)}"` : ""}>Not sent${/a lot at once/i.test(tm.err || "") ? ": that's a lot at once" : ""} · <u>Retry</u></button>` : "";
-    return `<div class="m user${first ? " first" : ""}${rx ? " rxd" : ""}${tm.state ? ` tk-${tm.state}` : ""}${maOpenCls(m.id)}" data-mr="${m.id}" title="${clock(m.at)}">${maQuote(tm.reply)}${mf ? `<div class="mfiles">${!m.body ? rx : ""}${m.files!.map(f => fileCard(ch, f, true)).join("")}</div>` : ""}${m.body ? `<div class="bubble">${maActs(m.id)}${rx}${esc(m.body)}</div>` : ""}${tk}${slSentNote(tm.cid)}</div>`; }
+    return `<div class="m user${first ? " first" : ""}${rx ? " rxd" : ""}${tm.state ? ` tk-${tm.state}` : ""}" data-mr="${m.id}" title="${clock(m.at)}">${maQuote(tm.reply)}${mf ? `<div class="mfiles">${!m.body ? rx : ""}${m.files!.map(f => fileCard(ch, f, true)).join("")}</div>` : ""}${m.body ? `<div class="bubble${maOpenCls(m.id)}">${maActs(m.id)}${rx}${esc(m.body)}</div>` : ""}${tk}${slSentNote(tm.cid)}</div>`; }
   let steps = live && m.steps.length ? `<details class="steps"><summary><span class="sico">${ic.term}</span><span>${LIVE ? (m.steps.length === 1 ? "1 step" : `${m.steps.length} steps`) : m.steps.length === 1 ? "Ran 1 command" : `Ran ${m.steps.length} commands`}</span>${ic.chev}</summary>
     ${m.steps.map(x => `<code>${esc(x)}</code>`).join("")}</details>` : "";
   const tkon = !!LIVE && !!s && !!tm.card && tkOn(ch.slug, s.id);
@@ -1211,12 +1344,14 @@ function msgHtml(m: Msg, ch: Channel, prev?: Msg, live = false, s?: Session, rep
     ${ls ? ls.map(x => `<div class="tk-sl s-${esc(x.status)}"><i></i><span>${esc(x.title)}</span></div>`).join("") : m.steps.map(x => `<code>${esc(x)}</code>`).join("")}</details>` : "";
     steps = det || tkCardLink(tm.card) ? `<div class="tk-live">${det}${tkCardLink(tm.card)}</div>` : "";
   } else if (tkon) steps = tkChip(ch.slug, s!.id, tm.card);
-  return `<div class="m agent${first ? " first" : ""}${maOpenCls(m.id)}" data-mr="${m.id}"${tkon ? ` data-card="${esc(tm.card!)}"` : ""} title="${clock(m.at)}">
-    ${m.note ? `<div class="mnote">${esc(m.note)}</div>` : ""}${maIn(`${(m.pre || []).map((t, j) => partHtml(t, ch, s, PRE_OWNER(m, j), false, reply, true)).join("")}${steps}${!live && !String(m.body || "").trim() && (m.cards || []).some(c => c.t === "lnrefine") ? "" : partHtml(m.body, ch, s, m, live, reply)}`, live ? 0 : m.id)}${tkon && !live && tkCardView(ch.slug, s!.id, tm.card)?.status === "paused" ? pausedNote(ch.slug, s!.id, tm.card!) : ""}${ctUsed(m)}${nbSaved(m, ch)}${(m.cards || []).map(c => cardHtml(c, ch)).join("")}</div>`;
+  const slot = progressSlot(m, live);
+  return `<div class="m agent${first ? " first" : ""}" data-mr="${m.id}"${tkon ? ` data-card="${esc(tm.card!)}"` : ""} title="${clock(m.at)}">
+    <div class="reply-steps">${m.note ? `<div class="mnote">${esc(m.note)}</div>` : ""}${steps}</div><div class="reply-slot" data-progress-mode="${slot.mode}">${!live && !String(m.body || "").trim() && (m.cards || []).some(c => c.t === "lnrefine") ? "" : partHtml(slot.text, ch, s, m, live, reply, false, m, slot.part)}${live && m.pre?.length && !slot.text.trim() ? TYPING : ""}</div><div class="reply-history">${progNotes(m)}</div>${tkon && !live && tkCardView(ch.slug, s!.id, tm.card)?.status === "paused" ? pausedNote(ch.slug, s!.id, tm.card!) : ""}${ctUsed(m)}${nbSaved(m, ch)}${chatCards(m.cards || [], ch)}</div>`;
 }
 
 document.addEventListener("click", e => {
   const t = e.target as HTMLElement;
+  if (t.closest("[data-home-notes]")) { e.preventDefault(); void homeNotes(); return; }
   const c = t.closest<HTMLElement>("[data-ch]"); if (c) go(c.dataset.ch!);
   if (t.closest("[data-new]")) { e.preventDefault(); go(route().ch.slug); ($("#box") as HTMLTextAreaElement | null)?.focus(); }
   if (t.closest("[data-ntask]")) { e.preventDefault(); openNew(); }
@@ -1241,16 +1376,12 @@ document.addEventListener("input", e => {
   if (t.id === "box") { const b = t as HTMLTextAreaElement; b.style.height = "auto"; b.style.height = Math.min(b.scrollHeight, 220) + "px"; const has = !!b.value.trim() || !!(LIVE && UP.box.some(u => u.f)); ($("#go") as HTMLButtonElement).disabled = !has; $("#send").classList.toggle("has", has); }
 });
 document.addEventListener("keydown", e => {
-  const t = e.target as HTMLElement, mod = e.metaKey || e.ctrlKey;
+  const t = e.target as HTMLElement;
   if (NT.open && e.key === "Escape") { e.preventDefault(); if (NT.pick) { NT.pick = false; paintNew(); } else closeNew(); return; }
   if (t.id === "nbox" && e.key === "Enter" && !e.shiftKey && !phone()) { e.preventDefault(); sendNew(); return; }
   if (t.id === "box" && e.key === "Enter" && !e.shiftKey && !phone()) { e.preventDefault(); $("#send").requestSubmit(); return; }
   if (t.id === "q" && e.key === "Escape") { (t as HTMLInputElement).value = ""; t.blur(); render(); return; }
-  if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); (document.getElementById(isLib() ? "lq" : "q") as HTMLInputElement | null)?.focus(); }
-  if (mod && e.key.toLowerCase() === "l" && e.shiftKey) { e.preventDefault(); openLib(route().ch); }
-  if (mod && e.key.toLowerCase() === "n" && !e.shiftKey) { e.preventDefault(); NT.open ? closeNew() : openNew(); return; }
-  if (mod && e.key.toLowerCase() === "h" && e.shiftKey) { e.preventDefault(); go(route().ch.slug); ($("#box") as HTMLTextAreaElement | null)?.focus(); }
-  if (mod && /^[1-9]$/.test(e.key)) { const x = channels[+e.key - 1]; if (x) { e.preventDefault(); go(x.slug); } }
+  // ⌘K, ⌘⇧L, ⌘N (now ⌘⇧O), ⌘⇧H, ⌘1-9, ⌘, ⌘/ and ⌘⇧A live in the shortcut registry (shortcuts.ts; registered below, near initSettings).
 });
 document.addEventListener("submit", e => {
   e.preventDefault();
@@ -1293,8 +1424,12 @@ wireCards({
   onChange: ({ s }: { s?: Session }) => { if (s && route().s === s) paintChat(s); },
 });
 // Copy + Reply on the open task's bubbles, the pinned reply above its composer (msgreply.ts).
+initChatCodeCopy((t, b) => note(ic.clock, t, b, ""));
 maInit({ key: rqKey,
-  msg: mr => { const m = route().s?.messages.find(x => x.id === mr); return m ? { mr, role: m.role as Role, id: srvId(m), plain: msgPlain(m), html: msgRich(m) } : null; },
+  msg: (mr, part) => { const m = route().s?.messages.find(x => x.id === mr); if (!m) return null;
+    const text = part ? MA_PARTS.get(m)?.get(part) : undefined;
+    if (part && text == null) return null;
+    return { mr, role: m.role as Role, id: srvId(m), plain: text == null ? msgPlain(m) : copyPlain(text), html: text == null ? msgRich(m) : chatMarkdown(text) }; },
   locate: r => { const ms = route().s?.messages || []; if (r.mr && ms.some(x => x.id === r.mr)) return r.mr;
     const byId = r.id ? ms.find(x => x.role === r.role && srvId(x) === r.id) : undefined; if (byId) return byId.id;
     const q = r.text.replace(/…$/, "").slice(0, 60); const byText = q ? ms.find(x => x.role === r.role && excerpt(msgPlain(x)).startsWith(q)) : undefined; return byText ? byText.id : null; },
@@ -1342,13 +1477,14 @@ function sessRows(ch: Channel, s: Session | null, q: string) {
   return list.length ? `${group("pinned", `${ic.pin}Pinned`, list.filter(x => x.pinned))}${group("texts", "Texts", rest.filter(x => !x.done && isTexts(x)))}${stateGroups(rest, group)}${group("done", "Done", rest.filter(x => x.done).sort(byDone))}` : `<div class="mempty">${ql ? "No tasks match." : "No tasks yet."}</div>`;
 }
 function renderM() {
+  requestAnimationFrame(nbBeePaint);
   const m = $("#m");
   // No channel-list page on phone: "#/" opens the last channel (its drawer header switches channels).
   if (isHome()) history.replaceState(null, "", `#/${channels.some(c => c.slug === mState.last) ? mState.last : main.slug}`);
   const { ch, s } = route(); mState.last = ch.slug;
   const other = ch.sessions.some(x => x !== s && x.status === "waiting"), elsewhere = channels.some(c => c !== ch && c.sessions.some(x => x.status === "waiting"));
-  const head = `<header class="mh"><button class="cb" data-mdrawer aria-label="Tasks and channels">${ic.menu}${other || elsewhere ? `<i class="udot"></i>` : ""}</button>
-    <button class="mpill" data-msheet="about">${isSch() ? `<span class="pico">${ic.clock}</span>` : isLib() ? `<span class="pico">${ic.lib}</span>` : isCt() ? `<span class="pico">${ic.people}</span>` : isNb() ? `<span class="pico">${ic.nb}</span>` : av(ch, "av sm")}<span>${esc(isSch() ? "Scheduled" : isCt() ? (ctSel() ? ctSel()!.name : "Contacts") : isNb() ? `${who(ch)}'s notebook` : isLib() ? `${ch.name} Library` : s ? s.title : `${ch.name} Home`)}</span></button><span class="grow"></span>${LIVE && s ? `<span class="mo" data-mo="3">${hasFeature("ambient") ? lnBtn(ch.slug, s.id, true) : ""}${pomoBtn(ch.slug, s.id, true)}</span><span class="mo" data-mo="5">${todoBtn(ch.slug, s.id, true)}</span><span class="mo" data-mo="6">${tkBtn(ch.slug, s.id, true)}</span>` : ""}${LIVE ? `<span class="mo" data-mo="2"><button class="cb${ch.sessions.some(x => x.state === "working") ? " busy" : ""}" data-watch="${esc(ch.slug)}" aria-label="Open ${esc(who(ch))}'s computer">${ic.screen}</button></span>` : ""}${s && stWorking(s) ? `<button class="cb mstop" data-stop="${esc(ch.slug)}|${esc(s.id)}" aria-label="Stop this task" title="Stop">${SQ}</button>` : ""}${s ? `<span class="mo" data-mo="4"><button class="cb mdone${s.done ? " on" : ""}" data-done="${s.id}" aria-label="${s.done ? "Reopen" : "Mark done"}">${box(s).replace(/ data-done="[^"]+"/, "").replace('role="checkbox" tabindex="0"', 'aria-hidden="true"')}</button></span>` : ""}<span class="mo" data-mo="1"><button class="cb" data-ntask aria-label="New task">${ic.newS}</button></span><button class="cb mmore" data-mmore aria-label="More actions" aria-haspopup="dialog" hidden>${MORE}</button></header>`;
+  const head = `<header class="mh"><button class="cb" data-mdrawer aria-label="Tasks and channels" aria-controls="mobile-tasks" aria-expanded="${mState.drawer}">${ic.menu}${other || elsewhere ? `<i class="udot"></i>` : ""}</button>
+    ${s && canRename(s) ? `<div class="mpill task-pill"><button class="task-about" data-msheet="about" aria-label="About ${esc(ch.name)}" title="About ${esc(ch.name)}">${av(ch, "av sm")}</button><button class="task-title" data-rename="${esc(ch.slug)}|${esc(s.id)}" aria-label="Rename task" title="Rename task"><span data-task-title>${esc(s.title)}</span></button></div>` : `<button class="mpill" data-msheet="about">${isSch() ? `<span class="pico">${ic.clock}</span>` : isLib() ? `<span class="pico">${ic.lib}</span>` : isCt() ? `<span class="pico">${ic.people}</span>` : isNb() ? `<span class="pico">${ic.nb}</span>` : av(ch, "av sm")}<span>${esc(isSch() ? "Scheduled" : isCt() ? (ctSel() ? ctSel()!.name : "Contacts") : isNb() ? `${who(ch)}'s notebook` : isLib() ? `${ch.name} Library` : s ? s.title : `${ch.name} Home`)}</span></button>`}<span class="grow"></span>${LIVE ? pomoGlobalBtn(true) : ""}${LIVE && s ? `<span class="mo" data-mo="3">${hasFeature("ambient") ? lnBtn(ch.slug, s.id, true) : ""}${pomoBtn(ch.slug, s.id, true)}</span><span class="mo" data-mo="5">${todoBtn(ch.slug, s.id, true)}</span><span class="mo" data-mo="6">${tkBtn(ch.slug, s.id, true)}</span>` : ""}${LIVE ? `<span class="mo" data-mo="2"><button class="cb${ch.sessions.some(x => x.state === "working") ? " busy" : ""}" data-watch="${esc(ch.slug)}" aria-label="Open ${esc(who(ch))}'s computer">${ic.screen}</button></span>` : ""}${s && stWorking(s) ? `<button class="cb mstop" data-stop="${esc(ch.slug)}|${esc(s.id)}" aria-label="Stop this task" title="Stop">${SQ}</button>` : ""}${s ? `<span class="mo" data-mo="4"><button class="cb mdone${s.done ? " on" : ""}" data-done="${s.id}" aria-label="${s.done ? "Reopen" : "Mark done"}">${box(s).replace(/ data-done="[^"]+"/, "").replace('role="checkbox" tabindex="0"', 'aria-hidden="true"')}</button></span>` : ""}<span class="mo" data-mo="1"><button class="cb" data-ntask aria-label="New task">${ic.newS}</button></span><button class="cb mmore" data-mmore aria-label="More actions" aria-haspopup="dialog" hidden>${MORE}</button></header>`;
   if (s) { if (LIVE && s.unread) livePatch(ch, s, { seen: true }); s.unread = false; if (LIVE && !s.loaded && !s.loading) liveLoad(ch, s); }
   if (isNb() && !s) nbSync(ch);
   const chat = isSch() ? `${head}${schPage(ch.slug).replace('class="dhome" id="scroll"', 'class="scroll" id="scroll"')}` : isCt() ? `${head}${ctPage().replace('class="dhome" id="scroll"', 'class="scroll" id="scroll"')}` : isNb() ? `${head}${nbPage(ch).replace('class="dhome" id="scroll"', 'class="scroll" id="scroll"')}` : isLib() ? `${head}${libPage(ch).replace('class="dhome" id="scroll"', 'class="scroll" id="scroll"')}` : s
@@ -1357,18 +1493,39 @@ function renderM() {
       <div class="dock"><p class="hhint" id="hhint"></p>${composer(`Give ${esc(who(ch))} a task`)}</div>`;
   document.title = isSch() ? "Scheduled · 1Helm" : isCt() ? "Contacts · 1Helm" : isNb() ? `${who(ch)}'s notebook · 1Helm` : isLib() ? `${ch.name} Library · 1Helm` : s ? `${s.title} · ${ch.name} · 1Helm` : `${ch.name} Home · 1Helm`;
   m.innerHTML = `<div class="cv${mState.drawer ? " open" : ""}">
-    <aside class="dm"><div class="dtop"><button class="dchsw" data-mchsw aria-haspopup="dialog" aria-label="${esc(ch.name)}. Switch channel">${chTile(ch)}<b>${esc(ch.name)}</b>${channels.length > 1 ? `<span class="dcaret">${ic.down}</span>` : ""}${elsewhere ? `<i class="udot"></i>` : ""}</button>${channels.length > 1 ? "" : `<button class="cb dadd" data-newch aria-label="New channel">${ic.plus}</button>`}</div>
+    <aside class="dm" id="mobile-tasks" aria-label="Tasks and channels" ${mState.drawer ? "" : "inert"}><div class="dtop"><button class="dchsw" data-mchsw aria-haspopup="dialog" aria-label="${esc(ch.name)}. Switch channel">${chTile(ch)}<b>${esc(ch.name)}</b>${channels.length > 1 ? `<span class="dcaret">${ic.down}</span>` : ""}${elsewhere ? `<i class="udot"></i>` : ""}</button>${channels.length > 1 ? "" : `<button class="cb dadd" data-newch aria-label="New channel">${ic.plus}</button>`}<button class="cb dadd" data-mclose aria-label="Close tasks and channels">${g("x", 20)}</button></div>
       <nav class="dnav" aria-label="${esc(ch.name)}">${dTile(`#/${ch.slug}`, !s && !isLib() && !isNb() && !isCt() && !isSch(), ic.home, "Home")}${dTile(`#/${ch.slug}/library`, isLib(), ic.lib, "Library")}${dTile(`#/${ch.slug}/notebook`, isNb(), ic.nb, "Notebook")}${dTile(`#/${ch.slug}/contacts`, isCt(), ic.people, "Contacts")}${dTile(`#/${ch.slug}/scheduled`, isSch(), ic.clock, "Scheduled")}</nav>
       <div id="dlist" class="dl">${sessRows(ch, s, "")}</div>
       <div class="dbar"><button class="cb" data-mset aria-label="Settings" aria-haspopup="dialog">${g("gear", 20)}</button><label class="spill">${ic.search}<input id="dq" placeholder="Search" autocomplete="off" enterkeyhint="search"></label><button class="cb" data-ntask aria-label="New task">${ic.newS}</button></div></aside>
     <section class="chat">${chat}<div class="shade" data-mclose></div></section></div>`;
   const sc = document.getElementById("scroll"); if (sc && s) sc.scrollTop = sc.scrollHeight;
   if (isCt()) clMount();
-  if (LIVE && s) { tkSync(ch.slug, s.id); pomoSync(ch.slug, s.id); lnSync(ch.slug, s.id); }
+  if (LIVE && s) { tkSync(ch.slug, s.id); pomoSync(ch.slug, s.id); if (hasFeature("ambient")) lnSync(ch.slug, s.id); }
   clearFresh(ch);
   stNow();
-  if (mState.pendingClose) { mState.pendingClose = false; mState.drawer = false; requestAnimationFrame(() => requestAnimationFrame(() => $(".cv").classList.remove("open"))); }
+  bindDrawerGesture(m.querySelector<HTMLElement>(".cv")!);
+  if (mState.pendingClose) { mState.pendingClose = false; requestAnimationFrame(() => requestAnimationFrame(() => setDrawer(false))); }
   mhWatch();
+}
+function setDrawer(open: boolean) {
+  mState.drawer = open;
+  const cv = document.querySelector<HTMLElement>("#m .cv"); if (!cv) return;
+  cv.classList.toggle("open", open);
+  const drawer = cv.querySelector<HTMLElement>(".dm"); if (drawer) drawer.inert = !open;
+  cv.querySelector("[data-mdrawer]")?.setAttribute("aria-expanded", String(open));
+}
+function bindDrawerGesture(cv: HTMLElement) {
+  bindTouchSwipe(cv, (target, touch) => {
+    const open = mState.drawer, chat = cv.querySelector<HTMLElement>(".chat")!;
+    // Main content can reveal the task drawer; preserve the browser's outer edge and composer.
+    if (touch.clientX < 24 || gestureValueControl(target) || scrollerOwns(target, cv, "x")) return null;
+    if (!open && target.closest(".dock")) return null;
+    const width = chat.clientWidth * (innerWidth < 360 ? 0.90 : 0.86);
+    return { axis: "x", direction: open ? -1 : 1, distance: Math.min(120, width * 0.3),
+      valid: () => mState.drawer === open,
+      move: dx => { cv.classList.add("dragging"); cv.style.setProperty("--drawer-progress", String(Math.max(0, Math.min(1, (open ? 1 : 0) + (open ? -dx : dx) / width)))); },
+      finish: commit => { cv.classList.remove("dragging"); cv.style.removeProperty("--drawer-progress"); if (commit) setDrawer(!open); } };
+  });
 }
 // One drawer tile: icon over a small label (no item counts: the Captain wants labels and icons only). Library/Notebook/Contacts/Scheduled were full-width rows before.
 function dTile(href: string, on: boolean, icon: string, label: string) {
@@ -1382,11 +1539,12 @@ function mhFit() {
   const h = document.querySelector<HTMLElement>(".mh"), more = h?.querySelector<HTMLElement>("[data-mmore]"); if (!h || !more) return;
   const items = [...h.querySelectorAll<HTMLElement>(".mo[data-mo]")].sort((a, b) => +a.dataset.mo! - +b.dataset.mo!);
   mhMo?.disconnect();
-  items.forEach(x => x.classList.remove("mhid")); more.hidden = true;
-  const pill = h.querySelector<HTMLElement>(".mpill"), txt = pill?.querySelector<HTMLElement>("span:last-child");
+  const rename = h.querySelector("[data-rename]");
+  items.forEach(x => x.classList.remove("mhid")); more.hidden = !rename;
+  const pill = h.querySelector<HTMLElement>(".mpill"), txt = pill?.querySelector<HTMLElement>("[data-task-title]") || pill?.querySelector<HTMLElement>("span:last-child");
   const tight = () => h.scrollWidth > h.clientWidth + 1 || (!!pill && !!txt && pill.offsetWidth < 132 && txt.scrollWidth > txt.clientWidth + 1);
   if (tight()) { more.hidden = false; for (const x of items) { if (!tight()) break; if (x.querySelector("button")) x.classList.add("mhid"); } }
-  if (!items.some(x => x.classList.contains("mhid"))) more.hidden = true;
+  if (!items.some(x => x.classList.contains("mhid")) && !rename) more.hidden = true;
   mhMo?.observe(h, { childList: true, subtree: true });
 }
 function mhWatch() {
@@ -1415,7 +1573,7 @@ function sheetHtml(kind: string) {
   // Settings (the drawer's bottom-left button): the same things as the desktop account menu, as a sheet.
   if (kind === "set") {
     const ml = hasFeature("billing") ? monthLine(LIVE ? BOOT?.account?.month : { pct: 12, used: "$2.40", allowance: "$20.00" }, Math.max(0, Math.min(100, Number(BOOT?.account?.usagePercent || 0)))) : { pct: 0, text: "" };
-    const plan = LIVE ? String(BOOT?.account?.plan || "Plus") : "Plus", soon = (k: string) => `data-${LIVE ? "soon" : "snote"}="${k}"`;
+    const plan = LIVE ? String(BOOT?.account?.plan || "Plus") : "Plus";
     return `<button class="sacct" data-sgo="account"><span class="sme">${esc(INITIALS)}</span><span class="srt"><b>${esc(PERSON)}</b><span>${esc(EMAIL)}</span></span>${ic.chev}</button>
       <div class="sgroup"><button class="srow nav" data-sgo="">${g("gear")}<span>Settings</span>${ic.chev}</button>
         ${hasFeature("billing") ? `<button class="srow nav suse" data-sgo="">${g("wallet")}<span>${esc(plan)} plan<small>${ml.pct}% of this month's AI used</small><i class="mbar"><i style="width:${ml.pct}%"></i></i></span>${ic.chev}</button>` : `<button class="srow nav suse" data-sgo="general">${g("key")}<span>Your own AI key</span>${ic.chev}</button>`}
@@ -1424,42 +1582,26 @@ function sheetHtml(kind: string) {
       <div class="sgroup"><button class="srow nav" data-sgo="help">${g("help")}<span>Help & support</span>${ic.chev}</button>
         <button class="srow nav" data-rpopen>${g("bug")}<span>Report an issue</span>${ic.chev}</button>
         ${piKind() ? `<button class="srow nav" data-pwainst>${I(PI_ICON, 20)}<span>Install 1Helm app<small>${esc(piSub(piKind(), true))}</small></span>${ic.chev}</button>` : ""}
-        <button class="srow nav" ${soon("apps")}>${g("dl")}<span>Download apps</span>${LIVE ? SP : ic.chev}</button>
         ${touchy() ? "" : `<button class="srow nav" data-sgo="shortcuts">${g("kbd")}<span>Keyboard shortcuts</span>${ic.chev}</button>`}</div>
       <div class="sgroup"><button class="srow" data-snote="logout">${g("out")}<span class="red">Log out</span></button></div>`;
   }
   // The task header's overflow: the actions that didn't fit, in the header's order.
   if (kind === "more") {
-    const hid = [...document.querySelectorAll<HTMLElement>(".mh .mo.mhid button")];
+    const hid = [...document.querySelectorAll<HTMLElement>(".mh [data-rename], .mh .mo.mhid button")];
     return `<div class="sgroup">${hid.map((b, i) => `<button class="srow" data-mmi="${i}">${b.querySelector("svg")?.outerHTML ?? ""}<span>${esc(b.getAttribute("aria-label") || b.title || "")}</span></button>`).join("")}</div>`;
   }
   return "";
 }
 function openSheet(kind: string) {
   mState.sheet = kind; const w = $("#sheet");
-  w.innerHTML = `<div class="backdrop" data-sclose></div><div class="sheet" role="dialog"><i class="grab"></i>${sheetHtml(kind)}</div>`;
+  w.innerHTML = `<div class="backdrop" data-sclose></div><div class="sheet" role="dialog"><button type="button" class="grab" data-sclose aria-label="Close panel"></button>${sheetHtml(kind)}</div>`;
   requestAnimationFrame(() => requestAnimationFrame(() => w.classList.add("on")));
   dragToClose(w.querySelector<HTMLElement>(".sheet")!);
+  nbBeePaint();
 }
-// Swipe the sheet down to close it: drag from anywhere while it's scrolled to the top (or from the grab bar).
+// Shared by the Library picker, Send later, To-dos, Focus timer and Activity sheets.
 function dragToClose(el: HTMLElement, close: () => void = closeSheet) {
-  let y0 = 0, t0 = 0, dy = 0, on = false;
-  el.addEventListener("touchstart", e => {
-    const fromGrab = (e.target as HTMLElement).closest(".grab");
-    if (!fromGrab && el.scrollTop > 0) return;
-    on = true; y0 = e.touches[0].clientY; t0 = Date.now(); dy = 0;
-  }, { passive: true });
-  el.addEventListener("touchmove", e => {
-    if (!on) return; dy = e.touches[0].clientY - y0;
-    if (dy <= 0) { el.style.transform = ""; return; }
-    e.preventDefault(); el.style.transition = "none"; el.style.transform = `translateY(${dy}px)`;
-  }, { passive: false });
-  const end = () => {
-    if (!on) return; on = false; el.style.transition = ""; 
-    const fast = dy > 40 && dy / Math.max(1, Date.now() - t0) > 0.5;
-    if (dy > Math.min(140, el.offsetHeight * 0.25) || fast) { el.style.transform = ""; close(); } else el.style.transform = "";
-  };
-  el.addEventListener("touchend", end); el.addEventListener("touchcancel", end);
+  bindSheetDismiss(el, () => guarded(close));
 }
 function closeSheet() { const w = $("#sheet"); w.classList.remove("on"); mState.sheet = ""; setTimeout(() => { if (!mState.sheet) w.innerHTML = ""; }, 320); }
 // New channel (newchannel.ts): name + what it's for, on the person's one helper. Live creates it through the API; the sandbox mocks it.
@@ -1490,11 +1632,11 @@ document.addEventListener("click", e => {
   if (t.closest("[data-mset]")) openSheet("set");
   if (t.closest("[data-mmore]")) openSheet("more");
   if (t.closest("#sheet [data-mch], #sheet [data-sgo], #sheet [data-apps], #sheet [data-snote]")) closeSheet();
-  const mi = t.closest<HTMLElement>("[data-mmi]"); if (mi) { const b = [...document.querySelectorAll<HTMLElement>(".mh .mo.mhid button")][+mi.dataset.mmi!]; closeSheet(); b?.click(); }
+  const mi = t.closest<HTMLElement>("[data-mmi]"); if (mi) { const b = [...document.querySelectorAll<HTMLElement>(".mh [data-rename], .mh .mo.mhid button")][+mi.dataset.mmi!]; closeSheet(); b?.click(); }
   const mt = t.closest<HTMLElement>("[data-mtheme]"); if (mt) { S.theme = mt.dataset.mtheme!; try { localStorage.setItem("v3theme", S.theme); } catch {} applyTheme(); mt.parentElement!.querySelectorAll<HTMLElement>("[data-mtheme]").forEach(x => { x.classList.toggle("on", x === mt); x.setAttribute("aria-checked", String(x === mt)); }); }
   if (t.closest("[data-sclose]")) closeSheet();
-  if (t.closest("[data-mdrawer]")) { mState.drawer = true; $(".cv").classList.add("open"); }
-  if (t.closest("[data-mclose]")) { mState.drawer = false; $(".cv").classList.remove("open"); }
+  if (t.closest("[data-mdrawer]")) setDrawer(true);
+  if (t.closest("[data-mclose]")) setDrawer(false);
   if (t.closest("[data-mnew]")) { mState.pendingClose = true; location.hash = `/${route().ch.slug}`; }
   if (t.closest("[data-mgo]")) { mState.pendingClose = true; if (t.closest<HTMLAnchorElement>("a")!.getAttribute("href") === location.hash) { e.preventDefault(); renderM(); } }
   if (t.closest("[data-newch]")) { e.preventDefault(); newChannel(); }
@@ -1504,6 +1646,7 @@ document.addEventListener("click", e => {
 // ---------- Settings: menu button → popover (Muse) → two-pane modal (Town/Muse); phone = full-screen list → detail ----------
 const BRAND: Record<string, [string, string]> = {"gmail": ["M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 0 1 0 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.91 1.528-1.145C21.69 2.28 24 3.434 24 5.457z", "#EA4335"], "googlecalendar": ["M18.316 5.684H24v12.632h-5.684V5.684zM5.684 24h12.632v-5.684H5.684V24zM18.316 5.684V0H1.895A1.894 1.894 0 0 0 0 1.895v16.421h5.684V5.684h12.632zm-7.207 6.25v-.065c.272-.144.5-.349.687-.617s.279-.595.279-.982c0-.379-.099-.72-.3-1.025a2.05 2.05 0 0 0-.832-.714 2.703 2.703 0 0 0-1.197-.257c-.6 0-1.094.156-1.481.467-.386.311-.65.671-.793 1.078l1.085.452c.086-.249.224-.461.413-.633.189-.172.445-.257.767-.257.33 0 .602.088.816.264a.86.86 0 0 1 .322.703c0 .33-.12.589-.36.778-.24.19-.535.284-.886.284h-.567v1.085h.633c.407 0 .748.109 1.02.327.272.218.407.499.407.843 0 .336-.129.614-.387.832s-.565.327-.924.327c-.351 0-.651-.103-.897-.311-.248-.208-.422-.502-.521-.881l-1.096.452c.178.616.505 1.082.977 1.401.472.319.984.478 1.538.477a2.84 2.84 0 0 0 1.293-.291c.382-.193.684-.458.902-.794.218-.336.327-.72.327-1.149 0-.429-.115-.797-.344-1.105a2.067 2.067 0 0 0-.881-.689zm2.093-1.931l.602.913L15 10.045v5.744h1.187V8.446h-.827l-2.158 1.557zM22.105 0h-3.289v5.184H24V1.895A1.894 1.894 0 0 0 22.105 0zm-3.289 23.5l4.684-4.684h-4.684V23.5zM0 22.105C0 23.152.848 24 1.895 24h3.289v-5.184H0v3.289z", "#4285F4"], "googledrive": ["M12.01 1.485c-2.082 0-3.754.02-3.743.047.01.02 1.708 3.001 3.774 6.62l3.76 6.574h3.76c2.081 0 3.753-.02 3.742-.047-.005-.02-1.708-3.001-3.775-6.62l-3.76-6.574zm-4.76 1.73a789.828 789.861 0 0 0-3.63 6.319L0 15.868l1.89 3.298 1.885 3.297 3.62-6.335 3.618-6.33-1.88-3.287C8.1 4.704 7.255 3.22 7.25 3.214zm2.259 12.653-.203.348c-.114.198-.96 1.672-1.88 3.287a423.93 423.948 0 0 1-1.698 2.97c-.01.026 3.24.042 7.222.042h7.244l1.796-3.157c.992-1.734 1.85-3.23 1.906-3.323l.104-.167h-7.249z", "#1FA463"], "google": ["M12.48 10.92v3.28h7.84c-.24 1.84-.853 3.187-1.787 4.133-1.147 1.147-2.933 2.4-6.053 2.4-4.827 0-8.6-3.893-8.6-8.72s3.773-8.72 8.6-8.72c2.6 0 4.507 1.027 5.907 2.347l2.307-2.307C18.747 1.44 16.133 0 12.48 0 5.867 0 .307 5.387.307 12s5.56 12 12.173 12c3.573 0 6.267-1.173 8.373-3.36 2.16-2.16 2.84-5.213 2.84-7.667 0-.76-.053-1.467-.173-2.053H12.48z", "#4285F4"], "notion": ["M4.459 4.208c.746.606 1.026.56 2.428.466l13.215-.793c.28 0 .047-.28-.046-.326L17.86 1.968c-.42-.326-.981-.7-2.055-.607L3.01 2.295c-.466.046-.56.28-.374.466zm.793 3.08v13.904c0 .747.373 1.027 1.214.98l14.523-.84c.841-.046.935-.56.935-1.167V6.354c0-.606-.233-.933-.748-.887l-15.177.887c-.56.047-.747.327-.747.933zm14.337.745c.093.42 0 .84-.42.888l-.7.14v10.264c-.608.327-1.168.514-1.635.514-.748 0-.935-.234-1.495-.933l-4.577-7.186v6.952L12.21 19s0 .84-1.168.84l-3.222.186c-.093-.186 0-.653.327-.746l.84-.233V9.854L7.822 9.76c-.094-.42.14-1.026.793-1.073l3.456-.233 4.764 7.279v-6.44l-1.215-.139c-.093-.514.28-.887.747-.933zM1.936 1.035l13.31-.98c1.634-.14 2.055-.047 3.082.7l4.249 2.986c.7.513.934.653.934 1.213v16.378c0 1.026-.373 1.634-1.68 1.726l-15.458.934c-.98.047-1.448-.093-1.962-.747l-3.129-4.06c-.56-.747-.793-1.306-.793-1.96V2.667c0-.839.374-1.54 1.447-1.632z", "currentColor"], "youtube": ["M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z", "#FF0000"], "dropbox": ["M6 1.807L0 5.629l6 3.822 6.001-3.822L6 1.807zM18 1.807l-6 3.822 6 3.822 6-3.822-6-3.822zM0 13.274l6 3.822 6.001-3.822L6 9.452l-6 3.822zM18 9.452l-6 3.822 6 3.822 6-3.822-6-3.822zM6 18.371l6.001 3.822 6-3.822-6-3.822L6 18.371z", "#0061FF"], "slack": ["M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z", "#4A154B"], "imessage": ["M5.285 0A5.273 5.273 0 0 0 0 5.285v13.43A5.273 5.273 0 0 0 5.285 24h13.43A5.273 5.273 0 0 0 24 18.715V5.285A5.273 5.273 0 0 0 18.715 0ZM12 4.154a8.809 7.337 0 0 1 8.809 7.338A8.809 7.337 0 0 1 12 18.828a8.809 7.337 0 0 1-2.492-.303A8.656 7.337 0 0 1 5.93 19.93a9.929 7.337 0 0 0 1.54-2.155 8.809 7.337 0 0 1-4.279-6.283A8.809 7.337 0 0 1 12 4.154", "#34C759"], "whatsapp": ["M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z", "#25D366"], "stripe": ["M13.976 9.15c-2.172-.806-3.356-1.426-3.356-2.409 0-.831.683-1.305 1.901-1.305 2.227 0 4.515.858 6.09 1.631l.89-5.494C18.252.975 15.697 0 12.165 0 9.667 0 7.589.654 6.104 1.872 4.56 3.147 3.757 4.992 3.757 7.218c0 4.039 2.467 5.76 6.476 7.219 2.585.92 3.445 1.574 3.445 2.583 0 .98-.84 1.545-2.354 1.545-1.875 0-4.965-.921-6.99-2.109l-.9 5.555C5.175 22.99 8.385 24 11.714 24c2.641 0 4.843-.624 6.328-1.813 1.664-1.305 2.525-3.236 2.525-5.732 0-4.128-2.524-5.851-6.594-7.305h.003z", "#635BFF"]};
 const G: Record<string, string> = {
+  sliders: '<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>',
   gear: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   grid: '<rect width="7" height="7" x="3" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="14" rx="1.5"/><rect width="7" height="7" x="3" y="14" rx="1.5"/>',
   wallet: '<path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>',
@@ -1560,6 +1703,10 @@ function walletHtml() {
     : srow(brand("stripe"), "Link by Stripe", st.error ? esc(st.error) : st.expired ? "That code expired. Start again." : !LK.st ? "Checking…" : "Pay with the cards you've saved in Link", sa(LK.busy ? "Opening…" : "Add", "data-lkon", "blue"));
   const ps = (st.purchases || []) as any[];
   return `${row}</div>${st.connected ? `<h3>Purchases</h3><div class="sc">${ps.length ? ps.map(p => srow(`<span class="favi">${esc(((p.merchant_name || "?")[0] || "?").toUpperCase())}${logoOver(p.merchant_url || "", 38)}</span>`, esc(p.merchant_name || "Purchase"), `${money(p.amount)} · ${esc(p.status)}${p.test ? " · test" : ""}`, "")).join("") : srow("", "Nothing bought yet", `Purchases ${esc(who(main))} makes will show up here.`, "")}</div>` : ""}<div>`;
+}
+// Official store destinations: https://link.com/download. Notifications and approvals belong to Link.
+function linkAppHtml() {
+  return `<h3>Link on your phone</h3><div class="sc lkapp"><p>Get push notifications for agent purchase requests, approve or decline them, and manage your saved payment methods in the Link app. Allow notifications when prompted to receive alerts.</p><div class="lkdownloads"><a class="sa" href="https://apps.apple.com/app/link-a-smarter-way-to-pay/id1623228342" target="_blank" rel="noopener noreferrer">Download for iOS</a><a class="sa" href="https://play.google.com/store/apps/details?id=com.stripe.link.android" target="_blank" rel="noopener noreferrer">Download for Android</a></div></div>`;
 }
 // Add credits (live): $10 / $25 / $50 on the card already on file; falls back to Stripe Checkout if that card can't be charged.
 const CR = { open: false, busy: 0 };
@@ -1776,6 +1923,7 @@ function kyRender() {
   const ids = ["lw", "lu", "lp", "ln", "kn", "kh", "kv"], vals = ids.map(i => (document.getElementById(i) as HTMLInputElement | null)?.value);
   sRender(); ids.forEach((i, n) => { const el = document.getElementById(i) as HTMLInputElement | null; if (el && vals[n] != null) el.value = vals[n]!; });
 }
+const acueSec = hasFeature("ambient") ? createAmbientCue({ LIVE, BOOT, shown: () => S.open && S.sec === "ambient", sRender, esc, helper: () => who(main), note, ic }) : () => "";
 function kyLoad(force = false) {
   if (!LIVE || (!force && Date.now() - KY.at < 15000)) return; KY.at = Date.now();
   Promise.all([kyApi("logins"), kyApi("vault")]).then(([l, k]) => { KY.logins = Array.isArray(l) ? l : []; KY.keys = Array.isArray(k) ? k : []; KY.err = ""; kyRender(); })
@@ -1888,17 +2036,17 @@ document.addEventListener("change", e => {
   window.addEventListener("dragover", e => { if (!ok(e)) return; e.stopPropagation(); e.preventDefault(); }, true);
   window.addEventListener("drop", e => { if (!ok(e)) return; e.stopPropagation(); e.preventDefault(); PI.drag = 0; mark(); piRead(e.dataTransfer?.files?.[0]); }, true); }
 const SECS: [string, string, string][] = [["general", "General", "gear"], ["accounts", "Connected accounts", "grid"], ["wallet", "Wallet", "wallet"], ["keys", "Passwords & keys", "key"],
-  ["perm", "Permissions", "hand"], ["device", "Location & mic", "loc"], ["texting", "Texting", "msg"], ["ambient", "Ambient", "wave"], ["notif", "Notifications", "bell"], ["", "", ""], ["help", "Help & support", "help"], ["legal", "Legal", "legal"]];
+  ["perm", "Permissions", "hand"], ["device", "Location & mic", "loc"], ["texting", "Texting", "msg"], ["ambient", "Ambient", "wave"], ["notif", "Notifications", "bell"], [CMCP_SEC, "Advanced", "sliders"], ["", "", ""], ["help", "Help & support", "help"], ["legal", "Legal", "legal"]];
 const LIVE_HIDE = new Set<string>([]);   // not real yet on Cloud: hidden, not faked (none today)
 const secShown = (k: string) => {
   if (!k || !LIVE) return true;
-  const gated: Record<string, string> = { accounts: "connected_apps", wallet: "billing", texting: "texting", ambient: "ambient" };
+  const gated: Record<string, string> = { accounts: "connected_apps", [CMCP_SEC]: "connected_apps", wallet: "billing", texting: "texting", ambient: "ambient" };
   return !LIVE_HIDE.has(k) && (!gated[k] || hasFeature(gated[k]));
 };
-const secName = (k: string) => k === "shortcuts" ? "Keyboard shortcuts" : k === "account" ? "Your account" : k === BYK_SEC ? BYK_TITLE : k === AP_SEC ? AP_TITLE : SECS.find(x => x[0] === k)?.[1] ?? "Settings";
+const secName = (k: string) => k === NETWORK_SEC ? "Computer connections" : k === "shortcuts" ? "Keyboard shortcuts" : k === "account" ? "Your account" : k === BYK_SEC ? BYK_TITLE : k === AP_SEC ? AP_TITLE : SECS.find(x => x[0] === k)?.[1] ?? "Settings";
 // Sub-pages: where their back button goes (and, on desktop, which section stays highlighted). Your account goes back to General on
 // desktop; on phone, to wherever it was opened from (AC.back).
-const secParent = (k: string, desk = !phone()) => k === "shortcuts" ? "help" : k === BYK_SEC || k === AP_SEC ? "general" : k === "account" ? (desk ? "general" : AC.back) : "";
+const secParent = (k: string, desk = !phone()) => k === NETWORK_SEC ? (hasFeature("connected_apps") ? "accounts" : "perm") : k === "shortcuts" ? "help" : k === BYK_SEC || k === AP_SEC ? "general" : k === "account" ? (desk ? "general" : AC.back) : "";
 const tg = (k: string, label: string) => `${LIVE ? SP : ""}<button class="tg${S.sw[k] ? " on" : ""}" role="switch" aria-checked="${S.sw[k]}" aria-label="${esc(label)}" ${LIVE ? `data-soon="${k === "text" || k === "quiet" ? "texting" : "notif"}"` : `data-sw="${k}"`}><i></i></button>`;
 // Settings → General → AI data privacy (proto src/privacy.js, POST /api/account/privacy { level }): which AI providers may handle the
 // person's requests. One server-validated choice per account; the same three options as onboarding. Unset accounts read as ZDR. A change
@@ -1958,6 +2106,25 @@ document.addEventListener("keydown", e => {   // arrow keys move the choice, lik
 // month meter, billing, and Live notes' own running "$x" chip.
 const costRow = () => srow("", "Show estimated costs", "What each task has used so far, under its messages",
   `<button type="button" class="tg${showCosts() ? " on" : ""}" role="switch" aria-checked="${showCosts()}" aria-label="Show estimated costs" data-costs><i></i></button>`, " data-costrow");
+const spendPauseRow = () => srow('', 'Pause to check spending',
+  'On: check in when work is costly, long, or repetitive. Off: keep working without these pauses, even if it uses all available credits. Purchases and other approvals still apply. Changes affect active work at its next safe step; already paused tasks need Keep going once.',
+  `<button type="button" class="tg${spendPauses() ? ' on' : ''}" role="switch" aria-checked="${spendPauses()}" aria-label="Pause to check spending" data-spend-pauses${SPEND.busy ? ' disabled aria-busy="true"' : ''}><i></i></button>`, ' data-spend-pause-row') +
+  (SPEND.error ? `<p role="alert" class="meta">${esc(SPEND.error)}</p>` : '');
+document.addEventListener('click', async e => {
+  const button = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-spend-pauses]');
+  if (!button || SPEND.busy) return;
+  e.preventDefault();
+  const enabled = !spendPauses(), focused = document.activeElement === button;
+  const paint = () => { sRender(); if (focused) document.querySelector<HTMLButtonElement>('[data-spend-pauses]')?.focus(); };
+  SPEND.busy = true; SPEND.error = ''; paint();
+  try {
+    const result = LIVE ? await kyApi('account/spend-pauses', { enabled }) : { enabled };
+    if (typeof result.enabled !== 'boolean') throw new Error('The setting was not confirmed. Try again.');
+    SPEND.on = result.enabled;
+    if (BOOT?.account) BOOT.account.spend_pauses = result.enabled;
+  } catch (err: any) { SPEND.error = err.message || 'Could not save that. Try again.'; }
+  finally { SPEND.busy = false; paint(); }
+});
 document.addEventListener("click", e => {
   if (!(e.target as HTMLElement).closest("[data-costs]")) return;
   e.preventDefault(); if (CO.busy) return;
@@ -2123,8 +2290,8 @@ function secHtml(sec: string): string {
   switch (sec) {
     case "general": return `<h2>General</h2>
       <div class="sc">${srow(`<span class="sme">${esc(INITIALS)}</span>`, esc(PERSON), phone() ? "Name, sign-in email, devices" : `${esc(EMAIL)} · Name, sign-in email, devices`, chev(), nav("account"))}</div>
-      <h3>Usage</h3>${phone() ? "" : `${usageCard()}${storCard()}`}<div class="sc">${costRow()}</div>
-      <h3>Appearance</h3>
+      <h3>Usage</h3>${phone() ? "" : `${usageCard()}${storCard()}`}<div class="sc">${costRow()}${spendPauseRow()}</div>
+      <h3 data-settings-appearance>Appearance</h3>
       <div class="sc">${srow("", "Mode", "", `<div class="seg" role="radiogroup">${[["light", "sun", "Light"], ["dark", "moon", "Dark"], ["system", "mon", "Match my device"]].map(([k, i, l]) =>
         `<button class="${S.theme === k ? "on" : ""}" role="radio" aria-checked="${S.theme === k}" data-mode="${k}" title="${l}" aria-label="${l}">${g(i, 16)}</button>`).join("")}</div>`)}
 </div>
@@ -2133,16 +2300,17 @@ function secHtml(sec: string): string {
       <div class="sc">${apRow()}${bykRow()}</div>
       <div class="sdanger">${sa("Delete account", LIVE ? "data-delacct" : 'data-snote="delete"', "red")}</div>`;
     case "accounts": return `<h2>Connected accounts</h2><p class="slead">Let ${esc(who(main))} read and act in your apps. You can disconnect anytime.</p>
+      ${LIVE ? `<div class="sc">${srow(g("mon"), "Computer connections", "Native SSH keys, sessions and Tailscale for each channel computer", chev(), nav(NETWORK_SEC))}</div>` : ""}
       ${LIVE ? cmHtml() : ""}<button class="sbrowse cxbrowse" data-apps>${ic.apps}<span>Browse all apps</span><em>1,500+</em>${ic.chev}</button>
       ${LIVE ? accountsHtml() + auHtml() : `<div class="sc">${srow(brand("google"), `${esc(EMAIL)}<em class="stag">Primary</em>`, "Connected Sep 26, 2026", `${ok("Connected")}${sa("Disconnect", 'data-snote="disc"', "mute")}`)}
         ${["gmail", "googlecalendar", "googledrive"].map(k => srow(brand(k), APP[k][0], APP[k][1], S.conn[k] ? `${ok("On")}${sa("Turn off", `data-conn="${k}"`, "mute")}` : sa("Enable", `data-conn="${k}"`, "blue"))).join("")}</div>`}
       <p class="sfine">You sign in on each app's own page. 1Helm never sees those passwords.</p>`;
     case "wallet": if (LIVE) return `<div class="shero"><span class="shico">${g("wallet", 26)}</span><h2>Wallet</h2><p>Let ${esc(who(main))} buy things for you. You approve every purchase on your phone before any money moves.</p></div>
-      <div class="sc">${walletHtml()}</div>`;
+      <div class="sc">${walletHtml()}</div>${linkAppHtml()}`;
     return `<div class="shero"><span class="shico">${g("wallet", 26)}</span><h2>Wallet</h2><p>Let ${esc(who(main))} buy things for you. You approve every purchase on your phone before any money moves.</p></div>
       <div class="sc">${srow(brand("stripe"), "Link by Stripe", S.link ? `${esc(EMAIL)} · You approve each purchase` : "Pay with the cards you've saved in Link", S.link ? `${ok("Added")}${sa("Remove", "data-link", "mute")}` : LIVE ? sa("Add", 'data-snote="wallet-chat"', "blue") : sa("Add", "data-link", "blue"))}
         ${S.link ? srow("", "Spending limit", `The most ${esc(who(main))} can ask for in one purchase`, `<span class="sval">$500</span>${chev()}`, snote("limit")) : ""}</div>
-      ${S.link ? `<h3>Purchases</h3><div class="sc">${srow("", "Nothing bought yet", `Purchases ${esc(who(main))} makes will show up here with a receipt.`, "")}</div>` : ""}`;
+      ${S.link ? `<h3>Purchases</h3><div class="sc">${srow("", "Nothing bought yet", `Purchases ${esc(who(main))} makes will show up here with a receipt.`, "")}</div>` : ""}${linkAppHtml()}`;
     case "keys": if (LIVE) return keysLive(); return `<h2>Passwords & keys</h2><p class="slead">Logins and keys ${esc(who(main))} can use, without ever seeing the real password. 1Helm fills it in only on the site it belongs to.</p>
       ${S.adding ? `<form class="sc sform" id="loginf" data-unsaved="login" data-unsaved-key="new"><div class="sfh">${g("lock")}<b>Add a login</b></div>
           <label class="sf"><span>Website</span><input id="lw" placeholder="costco.com" autocomplete="off"></label>
@@ -2155,7 +2323,7 @@ function secHtml(sec: string): string {
       <h3>Keys</h3>
       <div class="sc">${S.keys.map(k => srow(`<span class="favi">${g("key", 16)}${logoOver(k.host, 38)}</span>`, `<code>${esc(k.name)}</code>`, `Only ever sent to ${esc(k.host)}`, sa("Remove", 'data-snote="rmkey"', "mute"))).join("")}</div>
       <p class="sfine">Tip: the key button next to the message box saves a login without leaving the chat.</p>`;
-    case "perm": if (LIVE) return pmHtml(); return `<h2>Permissions</h2><p class="slead">When should your helper check with you first?</p>
+    case "perm": if (LIVE) return pmHtml() + (!hasFeature("connected_apps") ? `<div class="sc">${srow(g("mon"), "Computer connections", "SSH keys, sessions and Tailscale for each channel computer", chev(), nav(NETWORK_SEC))}</div>` : ""); return `<h2>Permissions</h2><p class="slead">When should your helper check with you first?</p>
       <h3>Your connected apps</h3><div class="sc" role="radiogroup">${radio("apps", "some", "Ask for important actions", "Before it sends, shares, buys or deletes something")}${radio("apps", "all", "Always ask", "Before anything it does in your apps")}</div>
       <h3>Websites</h3><div class="sc" role="radiogroup">${radio("web", "some", "Ask for important actions", "When it would send your info, or the site is new to it")}${radio("web", "all", "Always ask", "Before it visits any website")}</div>
       <h3>Always allowed</h3><div class="sc">${S.allowed.length ? S.allowed.map((a, i) => srow(`<span class="favi">${g("globe", 16)}${logoOver(a.site, 38)}</span>`, esc(a.site), `Allowed in ${esc(a.where)}`, sa("Remove", `data-rmallow="${i}"`, "mute"))).join("") : srow("", "Nothing yet", "When you tap “Always allow” on a request, it shows up here.", "")}</div>`;
@@ -2167,27 +2335,27 @@ function secHtml(sec: string): string {
       return `<h2>Texting</h2><p class="slead">Text ${esc(who(main))} from your phone like a friend, and get a text when something needs you.</p>
       <div class="sc">${srow(brand("imessage"), `Text with ${esc(who(main))}`, sub, btn)}${LIVE ? "" : srow("", "Quiet hours", "No texts from 10 PM to 7 AM unless it's urgent", tg("quiet", "Quiet hours"))}</div>`;
     }
-    case "ambient": return beeSec();   // bee.ts
+    case "ambient": return beeSec() + acueSec();
     case "device": return dpSec();   // devperm.ts
     case "notif": return nfHtml();   // notif.ts
     case "help": return `<h2>Help & support</h2><p class="slead">Stuck, or something looks wrong? We read every message.</p>
-      <div class="sc">${touchy() ? "" : srow(g("kbd"), "Keyboard shortcuts", "", `<kbd>⌘ /</kbd>${chev()}`, nav("shortcuts"))}${srow(g("bug"), "Report an issue", "Tell us what happened. A screenshot helps.", chev(), ' role="button" tabindex="0" data-rpopen')}
-        <a class="sr" href="${esc(rpMailto(LIVE?.slug || "", supportEmail))}">${g("msg")}<span class="srt"><b>Contact us</b><span>${esc(supportEmail)}</span></span>${chev()}</a>${srow(g("dl"), "Download apps", "Mac, iPhone and Android", chev(), snote("apps"))}</div>`;
+      <div class="sc">${touchy() ? "" : srow(g("kbd"), "Keyboard shortcuts", "", `${scLabel("shortcuts", false) ? `<kbd>${scLabel("shortcuts", false)}</kbd>` : ""}${chev()}`, nav("shortcuts"))}${srow(g("bug"), "Report an issue", "Tell us what happened. A screenshot helps.", chev(), ' role="button" tabindex="0" data-rpopen')}
+        <a class="sr" href="${esc(rpMailto(LIVE?.slug || "", supportEmail))}">${g("msg")}<span class="srt"><b>Contact us</b><span>${esc(supportEmail)}</span></span>${chev()}</a></div>`;
     case BYK_SEC: return bykPage();
+    case CMCP_SEC: return cmcpPage();
     case AP_SEC: return apPage();
+    case NETWORK_SEC: return LIVE ? networkHtml() : "";
     case "account": return accountSec();
-    case "shortcuts": return `<h2>Keyboard shortcuts</h2><p class="slead">Hold ⌘ on a Mac or Ctrl on Windows.</p>
-      <div class="sc">${[["⌘ N", "New task"], ["⌘ K", "Search"], ["⌘ ⇧ H", "Channel Home"], ["⌘ ⇧ L", "Library"], ["⌘ 1–9", "Jump to a channel"], ["⌘ ,", "Settings"], ["⌘ /", "Keyboard shortcuts"], ["Esc", "Close"]]
-        .map(([k, l]) => srow("", l, "", `<kbd class="kbig">${k}</kbd>`)).join("")}</div>`;
+    case "shortcuts": return scPage();   // shortcuts.ts: every registered action, rebindable
     case "legal": return `<h2>Legal</h2>
-      <div class="sc">${[["Terms of service", "terms"], ["Privacy policy", "privacy"], ["Open-source licenses", "licenses"]].map(([l, k]) => srow("", l, "", `<span class="schev">${g("ext", 15)}</span>`, snote(k))).join("")}</div>`;
+      <div class="sc">${[["Terms of service", "https://1helm.com/terms/"], ["Privacy policy", "https://1helm.com/privacy/"], ["Open-source licenses", "https://github.com/gitcommit90/1Helm/blob/main/LICENSE"]].map(([label, href]) => `<a class="sr" href="${href}" target="_blank" rel="noopener noreferrer" aria-label="${label} (opens in a new tab)"><span class="srt"><b>${label}</b></span><span class="schev" aria-hidden="true">${g("ext", 15)}</span></a>`).join("")}</div>`;
   }
   return "";
 }
 function sDesk() {
   const cur = secParent(S.sec) || S.sec;
   return `<div class="sback" data-sclose></div><div class="smodal" role="dialog" aria-modal="true" aria-label="Settings">
-    <nav class="snav"><div class="snh">Settings</div>${SECS.filter(([k]) => secShown(k)).map(([k, l, i]) => k ? `<button class="sn${k === cur ? " on" : ""}" data-sgo="${k}">${g(i, 16)}<span>${l}</span></button>` : `<i class="snsep"></i>`).join("")}
+    <nav class="snav"><div class="snh">Settings</div>${SECS.filter(([k]) => secShown(k)).map(([k, l, i]) => k ? `<button class="sn${k === cur ? " on" : ""}"${k === cur ? ' aria-current="page"' : ""} data-sgo="${k}">${g(i, 16)}<span>${l}</span></button>` : `<i class="snsep"></i>`).join("")}
       <span class="grow"></span><button class="sn" data-snote="logout">${g("out", 16)}<span>Log out</span></button></nav>
     <section class="sbody">${secParent(S.sec) ? `<button class="sbk" data-sgo="${secParent(S.sec)}">${ic.back}<span>${esc(secName(secParent(S.sec)))}</span></button>` : ""}${secHtml(S.sec)}</section>
     <button class="sx" data-sclose aria-label="Close settings">${g("x", 18)}</button></div>`;
@@ -2199,7 +2367,7 @@ function sPhone() {
     return `<div class="smodal sphone" role="dialog" aria-modal="true" aria-label="Settings"><div class="sph"><span class="sp"></span><h1>Settings</h1><button class="cb" data-sclose aria-label="Close settings">${g("x", 20)}</button></div>
       <section class="sbody"><div class="sc">${accountRow(true)}</div>${usageCard()}${storCard()}
         <div class="sc">${["accounts", "wallet", "keys", "perm", "device", "texting", "ambient"].filter(secShown).map(r).join("")}</div>
-        <div class="sc">${secShown("notif") ? r("notif") : ""}${srow(g("sun"), "Appearance & more", "", chev(), nav("general"))}</div>
+        <div class="sc">${secShown("notif") ? r("notif") : ""}${secShown(CMCP_SEC) ? r(CMCP_SEC) : ""}${srow(g("sun"), "Appearance & more", "", chev(), nav("general"))}</div>
         <div class="sc">${r("help")}${r("legal")}</div>
         <div class="sc">${srow("", `<span class="red">Log out</span>`, "", "", snote("logout"))}</div></section></div>`;
   }
@@ -2212,10 +2380,39 @@ function sPhone() {
 // page that's on screen in place, so it never restarts the slide.
 const SLIDE_MS = 240, SLIDE_EASE = "cubic-bezier(.2,.8,.2,1)";
 let slideEnd: (() => void) | null = null;
+const settingsGestureBound = new WeakSet<HTMLElement>();
+let settingsContact: { page: HTMLElement; repaint: boolean; keep: boolean } | null = null;
+function bindSettingsGesture(page: HTMLElement) {
+  if (settingsGestureBound.has(page)) return; settingsGestureBound.add(page);
+  bindTouchSwipe(page, (target, touch) => {
+    // The whole page participates, including action rows; taps still activate them.
+    // Leave the browser edge, editable/value controls and horizontal scrollers alone.
+    if (!S.open || page.inert || touch.clientX < 24 || gestureValueControl(target) || scrollerOwns(target, page, "x")) return null;
+    const sec = S.sec;
+    return { axis: "x", direction: 1, distance: 100, valid: () => S.open && S.sec === sec && !page.inert,
+      move: () => {}, // existing Settings stack animates the correct parent after committing
+      finish: commit => { if (commit) guarded(() => { if (sec) sGo(secParent(sec)); else closeSettings(); }); } };
+  });
+  // Async account/list updates must not remove the touch target: subsequent touch
+  // events follow that original node, even after it has been detached from the page.
+  page.addEventListener("touchstart", () => { if (!page.inert && !settingsContact) settingsContact = { page, repaint: false, keep: true }; }, { passive: true });
+  const release = (e: TouchEvent) => {
+    if (e.touches.length || settingsContact?.page !== page) return;
+    const contact = settingsContact; settingsContact = null;
+    // Let the touch's compatibility click activate its original button first.
+    setTimeout(() => { if (contact.repaint && S.open && page === document.querySelector("#setw .smodal.sphone:not(.sout)")) sRender(contact.keep); }, 0);
+  };
+  page.addEventListener("touchend", release);
+  page.addEventListener("touchcancel", release);
+}
 function sRender(keep = true, dir = 0) {
+  cmcpBefore();
+  if (LIVE) networkVisible(S.open && S.sec === NETWORK_SEC);
   const w = document.getElementById("setw"); if (!w || !S.open) return;
   if (dir || !phone()) slideEnd?.();   // another page while one is still sliding: that slide finishes at once
   const cur = w.querySelector<HTMLElement>(".smodal.sphone");
+  if (dir || !phone()) settingsContact = null;
+  else if (settingsContact?.page === cur) { settingsContact.repaint = true; settingsContact.keep &&= keep; return; }
   const b = w.querySelector(".sbody") as HTMLElement | null, top = keep && b ? b.scrollTop : 0;
   if (phone() && cur) {
     const t = document.createElement("template"); t.innerHTML = sPhone().trim();
@@ -2239,9 +2436,12 @@ function sRender(keep = true, dir = 0) {
       } else cur.remove();
     }
   } else w.innerHTML = phone() ? sPhone() : sDesk();
+  const gesturePage = w.querySelector<HTMLElement>(".smodal.sphone"); if (gesturePage) bindSettingsGesture(gesturePage);
   const nb = w.querySelector(".sbody") as HTMLElement | null; if (nb) nb.scrollTop = top;
+  cmcpAfter();   // Advanced: typed fields back in, polling
   bykAfter();   // the typed AI key goes back into its field (never into the HTML)
   acctNoteAfter();   // an open account-note box keeps its focus
+  pmAfter();
 }
 function openSettings(sec: string) {
   if (!secShown(sec)) sec = "general";
@@ -2252,17 +2452,31 @@ function openSettings(sec: string) {
   requestAnimationFrame(() => requestAnimationFrame(() => w!.classList.add("on")));
   if (!touchy()) (w.querySelector(".sn.on, .sph .cb") as HTMLElement | null)?.focus();   // on touch a focus ring on ✕ just looks stuck
 }
-function closeSettings() { const w = document.getElementById("setw"); S.open = false; slideEnd?.(); piDrop(); PI.done = null; if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!S.open) w.innerHTML = ""; }, 240); }
-function sGo(sec: string) {
-  if (!secShown(sec)) sec = "general"; if (!S.open) return openSettings(sec); acctNoteReset(); if (!phone() && !sec) sec = "general"; if (sec === "account" && S.sec !== "account") AC.back = S.sec === "general" ? "general" : "";
+function closeSettings() { scReset(); const w = document.getElementById("setw"); S.open = false; settingsContact = null; networkVisible(false); slideEnd?.(); piDrop(); PI.done = null; if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!S.open) w.innerHTML = ""; }, 240); }
+function sGo(sec: string) { if (!secShown(sec)) sec = "general"; if (!S.open) return openSettings(sec); acctNoteReset(); if (sec !== "shortcuts") scReset(); if (!phone() && !sec) sec = "general"; if (sec === "account" && S.sec !== "account") AC.back = S.sec === "general" ? "general" : "";
   const depth = (k: string) => !k ? 0 : secParent(k) ? 2 : 1, dir = sec === S.sec ? 0 : depth(sec) < depth(S.sec) ? -1 : 1;
   AC.edit = ""; KY.edit = null; S.sec = sec; S.adding = KY.addkey = false; KY.q = ""; KY.show = KY_FIRST; piDrop(); PI.done = null; sRender(false, phone() ? dir : 0); }
+// Reply actions retain the current task/hash and pass through the same unsaved
+// editor guard as Settings navigation. No setting is changed by opening it.
+document.addEventListener("click", e => {
+  const button = (e.target as Element).closest<HTMLElement>("button[data-settings-link]");
+  const id = settingsDestination(button?.dataset.settingsLink || ""); if (!id) return;
+  e.preventDefault();
+  guarded(() => {
+    const target = settingsTarget(id, phone());
+    sGo(target.section);
+    if (id === "checkins") { pmFocusCheckins(); return; }
+    const focus = "focus" in target ? target.focus : ".sbody h2, .sph h1";
+    const el = document.getElementById("setw")?.querySelector<HTMLElement>(focus);
+    if (el) { el.tabIndex = -1; el.scrollIntoView({ block: "start" }); el.focus({ preventScroll: true }); }
+  });
+});
 function openMenu() {
   let w = document.getElementById("smenuw"); if (!w) { w = document.createElement("div"); w.id = "smenuw"; document.body.appendChild(w); }
   S.menu = true;
-  w.innerHTML = `<div class="smenu" role="menu"><button role="menuitem" data-sgo="shortcuts">${g("kbd")}<span>Keyboard shortcuts</span><kbd>⌘/</kbd></button>
-    ${hasFeature("connected_apps") ? `<button role="menuitem" data-apps>${ic.apps}<span>Apps</span><kbd>⌘⇧A</kbd></button>` : ""}<button role="menuitem" data-${LIVE ? "soon" : "snote"}="apps">${g("dl")}<span>Download apps</span>${LIVE ? SP : ""}</button><button role="menuitem" data-rpopen>${g("bug")}<span>Report an issue</span></button>
-    ${piKind() ? `<button role="menuitem" data-pwainst>${I(PI_ICON, 16)}<span>Install 1Helm app</span></button>` : ""}<hr><button role="menuitem" data-sgo="general">${g("gear")}<span>Settings</span><kbd>⌘,</kbd></button></div>`;
+  w.innerHTML = `<div class="smenu" role="menu"><button role="menuitem" data-sgo="shortcuts">${g("kbd")}<span>Keyboard shortcuts</span>${scLabel("shortcuts") ? `<kbd>${scLabel("shortcuts")}</kbd>` : ""}</button>
+    ${hasFeature("connected_apps") ? `<button role="menuitem" data-apps>${ic.apps}<span>Apps</span>${scLabel("apps") ? `<kbd>${scLabel("apps")}</kbd>` : ""}</button>` : ""}<button role="menuitem" data-rpopen>${g("bug")}<span>Report an issue</span></button>
+    ${piKind() ? `<button role="menuitem" data-pwainst>${I(PI_ICON, 16)}<span>Install 1Helm app</span></button>` : ""}<hr><button role="menuitem" data-sgo="general">${g("gear")}<span>Settings</span>${scLabel("settings") ? `<kbd>${scLabel("settings")}</kbd>` : ""}</button></div>`;
   (w.querySelector("button") as HTMLElement).focus();
 }
 function closeMenu() { S.menu = false; const w = document.getElementById("smenuw"); if (w) w.innerHTML = ""; }
@@ -2338,6 +2552,7 @@ document.addEventListener("click", e => {
   const md = t.closest<HTMLElement>("[data-mode]"); if (md) { S.theme = md.dataset.mode!; localStorage.setItem("v3theme", S.theme); applyTheme(); sRender(); return; }
   const sw = t.closest<HTMLElement>("[data-sw]"); if (sw) { const k = sw.dataset.sw!; S.sw[k] = !S.sw[k]; sw.classList.toggle("on", S.sw[k]); sw.setAttribute("aria-checked", String(S.sw[k])); return; }
   if (LIVE && pmClick(t)) return;   // perms.ts: level, Remove
+  if (LIVE && networkClick(t)) return;
   const pm = t.closest<HTMLElement>("[data-perm]"); if (pm) { const [a, v] = pm.dataset.perm!.split(":"); S.perm[a] = v; sRender(); return; }
   const cn = t.closest<HTMLElement>("[data-conn]"); if (cn) { const k = cn.dataset.conn!; S.conn[k] = !S.conn[k]; sRender(); note(ic.check, `${APP[k][0]} ${S.conn[k] ? "connected" : "turned off"}`, S.conn[k] ? `${who(main)} can use it now.` : `${who(main)} can't use it anymore.`, ""); return; }
   if (t.closest("[data-link]")) { S.link = !S.link; sRender(); if (S.link) note(ic.check, "Link added", "You'll approve every purchase in the Link app.", ""); return; }
@@ -2427,9 +2642,6 @@ document.addEventListener("submit", e => {
   }
 }, true);
 window.addEventListener("keydown", e => {
-  const mod = e.metaKey || e.ctrlKey;
-  if (mod && e.key === ",") { e.preventDefault(); S.open ? guarded(closeSettings) : openSettings("general"); return; }
-  if (mod && e.key === "/") { e.preventDefault(); sGo("shortcuts"); return; }
   if (e.key === "Escape" && S.menu) { e.preventDefault(); e.stopImmediatePropagation(); closeMenu(); return; }
   if (e.key === "Escape" && S.open) { e.preventDefault(); e.stopImmediatePropagation(); const form = S.adding || KY.addkey || KY.edit || AC.edit || ((PI.plan || PI.err) && !PI.busy), sec = S.sec;
     guarded(() => { if (form) { S.adding = KY.addkey = false; KY.edit = null; AC.edit = ""; piDrop(); sRender(); } else if (phone() && sec) sGo(secParent(sec)); else closeSettings(); }); return; }
@@ -2440,6 +2652,7 @@ matchMedia("(max-width: 767px)").addEventListener("change", () => { if (S.open) 
 // ---------- Live mode (1Helm Cloud): tasks, replies, status, approvals come from the channel's resident ----------
 const HOST_OF = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
 function applySrv(x: Session, v: any) {
+  if (v && Number(v.title_revision || 0) < Number(x.srv?.title_revision || 0)) v = { ...v, title: x.title, title_manual: x.srv.title_manual, title_revision: x.srv.title_revision };
   if (!v) return; x.srv = v; x.id = v.id; x.title = v.title; x.pinned = v.pinned; x.done = v.done; x.updated = v.updated;
   if (route().s !== x) x.unread = v.unread;
   if (!x.streaming) { x.state = v.state === "working" ? "working" : "idle"; x.rawLine = v.line || ""; }
@@ -2449,8 +2662,9 @@ function liveLine(x: Session) {
   const w = who(chOf(x)), v = x.srv || {};
   if (x.done) return "Done";
   if (v.queued && !x.streaming) return "Waiting · starts when another task finishes";   // 3 tasks already working (spendguard.js)
+  if (x.streaming && streamState(x).waiting) return streamState(x).waiting;
   if (x.streaming || x.state === "working") return `${w} is ${x.rawLine || v.line || "thinking"}…`;
-  if (v.state === "waiting") return v.waiting === "browser" ? "Waiting on you in the browser" : v.waiting === "link" ? "Waiting on you · approve the purchase in Link" : v.waiting === "plan" ? "Waiting on you · a plan to approve" : v.waiting === "interview" ? "Waiting on your answers" : v.waiting === "question" ? "Waiting on you · a question" : "Waiting on you · approve a request";
+  if (v.state === "waiting") return v.waiting === "checkin" ? "Waiting on you · keep going or stop here" : v.waiting === "browser" ? "Waiting on you in the browser" : v.waiting === "link" ? "Waiting on you · approve the purchase in Link" : v.waiting === "plan" ? "Waiting on you · a plan to approve" : v.waiting === "interview" ? "Waiting on your answers" : v.waiting === "question" ? "Waiting on you · a question" : "Waiting on you · approve a request";
   if (v.state === "watching") return `Watching · ${v.jobs} scheduled ${v.jobs === 1 ? "check" : "checks"}`;
   // First real sentence of the latest reply ("1." or "Done!" alone isn't useful), capped for one line.
   const parts = plainPreview(String(v.preview || "")).replace(/^\s*(\d+[.)]|[-•])\s*/, "").split(/(?<=[.!?])\s+/);
@@ -2458,8 +2672,8 @@ function liveLine(x: Session) {
   p = p.replace(/\s*\d+[.)]$/, "").replace(/:$/, "");
   return p ? (p.length > 110 ? p.slice(0, 108).replace(/\s+\S*$/, "") + "…" : p) : "Ready for you";
 }
-async function api(path: string, body?: any) {
-  const r = await fetch(`${LIVE!.api}${path}`, { method: body === undefined ? "GET" : "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+async function api(path: string, body?: any, options?: { signal?: AbortSignal }) {
+  const r = await fetch(`${LIVE!.api}${path}`, { method: body === undefined ? "GET" : "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body), ...(options?.signal ? { signal: options.signal } : {}) });
   if (!r.ok && r.headers.get("content-type")?.includes("json") !== true) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -2481,6 +2695,7 @@ if (LIVE) ivInit({ api, phone, helper: () => who(main), avatar: () => av(main, "
 // Deleting (delete.ts): a chat, a channel, the account. The server deletes; here the app forgets what's gone.
 hInit();
 if (LIVE) delInit({ api, note: (t, sub) => note(ic.trash, t, sub, ""), closeSheet: () => { if (mState.sheet) closeSheet(); },
+  ...(!BOOT?.look ? { rename: renameTask } : {}),
   working: (slug, sid) => { const x = channels.find(c => c.slug === slug)?.sessions.find(y => String(y.id) === sid); return !!x && stWorking(x); }, stop: (slug, sid) => void stopTask(slug, sid),
   chat: (slug, sid) => { const x = channels.find(c => c.slug === slug)?.sessions.find(y => String(y.id) === sid); return x ? { title: x.title, jobs: Number(x.srv?.jobs || 0) } : null; },
   channelName: slug => channels.find(c => c.slug === slug)?.name ?? null,
@@ -2497,8 +2712,30 @@ storInit({ api: LIVE ? api : null, repaint: () => sRender(), note: (t, s, good) 
   reload: () => location.assign(`${location.pathname}?plan=changed${location.hash}`) });
 document.addEventListener("click", e => { if ((e.target as HTMLElement).closest("[data-stplans]")) { e.preventDefault(); storTogglePlans(); } }, true);
 if (hasFeature("ambient")) beeInit({ live: LIVE, repaint: () => { if (S.open && S.sec === "ambient") sRender(); }, shown: () => S.open && S.sec === "ambient", note: (t, s, bad) => note(bad ? g("help", 14) : ic.check, t, s, ""), srow, helper: () => who(main), phone });
+// Keyboard shortcuts (shortcuts.ts): the registry. Defaults, the old key that still works where the browser delivers it, what each does.
+// ⌘N / ⌘T / ⌘W are the browser's in a tab (Chromium reserves them; only an installed app gets them), so New task is ⌘⇧O and ⌘N stays as an app-only alias.
+registerShortcut({ id: "new-task", label: "New task", def: "Mod+Shift+O", alias: ["Mod+N"], run: () => { NT.open ? closeNew() : openNew(); } });
+registerShortcut({ id: "search", label: "Search", def: "Mod+K", run: () => { if (!isLib()) sidebarReveal(); (document.getElementById(isLib() ? "lq" : "q") as HTMLInputElement | null)?.focus(); } });
+registerShortcut({ id: "home", label: "Channel Home", def: "Mod+Shift+H", run: () => { go(route().ch.slug); ($("#box") as HTMLTextAreaElement | null)?.focus(); } });
+registerShortcut({ id: "library", label: "Library", def: "Mod+Shift+L", run: () => { openLib(route().ch); } });
+if (hasFeature("connected_apps")) registerShortcut({ id: "apps", label: "Apps", def: "Mod+Shift+A", run: () => { AS.open ? closeApps() : S.open ? guarded(() => openApps()) : openApps(); } });   // Apps closes Settings: ask about an unsaved form first
+registerShortcut({ id: "jump", label: "Jump to a channel", def: "Mod+1-9", digits: true, run: (_e, n) => { const x = channels[(n || 0) - 1]; if (!x) return false; go(x.slug); } });
+registerShortcut({ id: "settings", label: "Settings", def: "Mod+,", run: () => { S.open ? guarded(closeSettings) : openSettings("general"); } });
+// Pomodoro (pomodoro.ts, pomodoro-global): start / pause-resume / stop. Option+letter types a symbol on a Mac, so these match the physical key (shortcuts.ts does that).
+if (LIVE) {
+  registerShortcut({ id: "pomodoro-start", label: "Start Pomodoro", def: "Alt+Shift+P", run: () => { void pomoShortcut("start"); } });
+  registerShortcut({ id: "pomodoro-toggle", label: "Pause or resume Pomodoro", def: "Alt+Shift+O", run: () => { void pomoShortcut("toggle"); } });
+  registerShortcut({ id: "pomodoro-stop", label: "Stop Pomodoro", def: "Alt+Shift+X", run: () => { void pomoShortcut("stop"); } });
+}
+registerShortcut({ id: "shortcuts", label: "Keyboard shortcuts", def: "Mod+/", run: () => { sGo("shortcuts"); } });
+scInit({ live: LIVE, boot: BOOT?.account?.shortcuts, slug: LIVE?.slug || "sandbox", repaint: () => { if (S.open && S.sec === "shortcuts") sRender(); },
+  relabel: () => { render(); }, note: (t, sub, bad) => note(bad ? g("help", 14) : ic.check, t, sub, ""), srow, sa });
 nfInit({ live: LIVE, texting: hasFeature("texting"), ambient: hasFeature("ambient"), repaint: () => { if (S.open && S.sec === "notif") sRender(); }, note: (t, s, bad) => note(bad ? g("help", 14) : ic.check, t, s, ""), srow, helper: () => who(main) });
 rpInit({ live: LIVE, before: () => { closeMenu(); if (mState.sheet === "set") closeSheet(); } , note: (t, s) => note(ic.check, t, s, "") });
+if (hasFeature("connected_apps")) cmcpInit({ api: LIVE ? (path, init) => fetch(`${LIVE.api}/${path}`, { method: init?.method || "GET", credentials: "same-origin", ...(init?.body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) } : {}) })
+    .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) { const er = d?.error, e: any = new Error((typeof er === "string" ? er : er?.message) || `Something went wrong (${r.status}).`); e.status = r.status; e.code = er?.code; throw e; } return d; }) : null,
+  repaint: () => sRender(), shown: () => S.open && S.sec === CMCP_SEC, srow: (i, t, s, r, a = "") => srow(i, t, s, r, a), icon: (k, z = 17) => G[k] ? g(k, z) : (ic as any)[k] || "",
+  ask: o => ask(o), note: (good, t, s) => note(good ? ic.check : g("help", 14), t, s, ""), go: url => location.assign(url) });
 bykInit({ api: LIVE ? api : null, orStart: LIVE ? `${LIVE.api.replace(/\/api$/, "")}/byok/openrouter/start` : null, repaint: () => sRender(), open: () => openSettings(BYK_SEC), note: (good, t, s) => note(good ? ic.check : g("help", 14), t, s, ""), who: () => who(main),
   srow: (i, t, s, r, a = "") => srow(i, t, s, r, a), icon: (k, z = 17) => G[k] ? g(k, z) : (ic as any)[k] || "", shown: () => S.open && (S.sec === "general" || S.sec === BYK_SEC || (phone() && !S.sec)),
   // Add credits (a reply's "Add credits" link, the backup-in-use banner): Settings → Usage with the $10 / $25 / $50 picker open.
@@ -2518,8 +2755,11 @@ schInit({ live: !!LIVE, api, channels: () => channels, helper: slug => who(chann
   task: (slug, sid) => channels.find(c => c.slug === slug)?.sessions.find(x => String(x.id) === String(sid))?.title ?? null,
   open: (slug, sid) => { location.hash = `/${slug}/s/${sid}`; }, changed: () => schPaint() });
 // Settings → Permissions (perms.ts): the level and everything always allowed, from /api/permissions.
-if (LIVE) pmInit({ api, rerender: () => { if (S.open && S.sec === "perm") sRender(); }, note: (t, x) => note(ic.check, t, x, ""), helper: () => who(main), esc,
+if (LIVE) pmInit({ api, ask, rerender: () => { if (S.open && S.sec === "perm") sRender(); }, note: (t, x) => note(ic.check, t, x, ""), helper: () => who(main), esc,
   srow, sa, icon: (k, n = 17) => k === "check" ? ic.check : g(k, n), logoOver });
+if (LIVE) networkInit({ api, channels: () => channels.map(c => ({ slug: c.slug, name: c.name })), current: () => route().ch.slug,
+  render: () => { if (S.open && S.sec === NETWORK_SEC) sRender(); }, note: (t, x) => note(ic.check, t, x, ""), ask, esc });
+document.addEventListener("change", event => { if (LIVE) networkChange(event.target as HTMLElement); });
 // Send later (send-later.ts): which channel/task each composer sends to, and how a task repaints / reloads / opens.
 if (LIVE) {
   for (const c of BOOT?.channels || []) slSet(c.slug, c.later);   // before slInit: nothing to repaint yet
@@ -2536,7 +2776,8 @@ if (LIVE) {
 function stNow() { if (!LIVE) return; const { ch, s } = route(); stSync(s && !isLib() && !isNb() && !isCt() ? { slug: ch.slug, sid: String(s.id), working: stWorking(s) } : null); }
 // Spend guard (spendguard.ts): Stop here on a paused card, and the 50% / 80% notice once.
 if (LIVE) { sgInit({ api, note: (t, b) => note(ic.check, t, b, ""), repaint: () => { const { ch, s } = route(); if (s) paintChat(s); else repaint(ch); },
-  unpause: (slug, sid, card) => { const cv = tkCardView(slug, sid, card); if (cv) cv.status = "complete"; const { s } = route(); if (s && String(s.id) === sid) tkSync(slug, s.id); } });
+  configureCheckins: () => { openSettings('perm'); pmFocusCheckins(); },
+  unpause: (slug, sid, card, session) => { const cv = tkCardView(slug, sid, card); if (cv) cv.status = "complete"; const x = channels.find(c => c.slug === slug)?.sessions.find(s => String(s.id) === sid); if (x && session) applySrv(x, session); const { s } = route(); if (s && String(s.id) === sid) tkSync(slug, s.id); } });
   if (hasFeature("billing")) sgBillingInit(api);
   if (hasFeature("billing") && BOOT?.account?.notice) setTimeout(() => noticeShow(BOOT.account.notice), 600);
   else if (BOOT?.account?.storage?.notice) setTimeout(() => storNotice(BOOT.account.storage.notice), 900); }   // one banner at a time; the other shows next visit
@@ -2545,12 +2786,14 @@ if (LIVE) stInit({ api, note: (t, b) => note(ic.check, t, b, ""),
   apply: (slug, v) => { const c = channels.find(y => y.slug === slug), x = c?.sessions.find(y => String(y.id) === String(v?.id)); if (x) applySrv(x, v); },
   repaint: () => { const { ch, s } = route(); if (s && !isLib() && !isNb() && !isCt()) { const hd = document.getElementById("hdone"); if (hd) hd.outerHTML = headDone(s); tkSync(ch.slug, s.id); } refresh(); } });
 if (LIVE) todoInit({ api, phone, dragToClose, helper: slug => { const c = channels.find(x => x.slug === slug); return c ? who(c) : ""; },
+  current: () => { const { ch, s } = route(); return s && !isLib() && !isNb() && !isCt() ? `${ch.slug}|${s.id}` : ""; },
   working: (slug, sid) => !!channels.find(c => c.slug === slug)?.sessions.some(x => String(x.id) === sid && x.state === "working") });
 // Focus timer per task (pomodoro.ts): header button, break overlay, offer card. Every task's timer from boot, so a phase end elsewhere shows a toast.
 if (LIVE) { pomoInit({ api, phone, dragToClose, note: (i, t, b, a) => note(i, t, b, a),
   current: () => { const { ch, s } = route(); return s && !isLib() && !isNb() && !isCt() ? `${ch.slug}|${s.id}` : ""; },
   title: (slug, sid) => channels.find(c => c.slug === slug)?.sessions.find(x => String(x.id) === sid)?.title || "" });
   for (const c of BOOT.channels) for (const v of c.sessions) if (v.pomodoro) pomoSet(c.slug, v.id, v.pomodoro);
+  pomoSet("*", "global", BOOT.pomodoro_global);   // the person's one global timer
   if (hasFeature("ambient")) lnInit({ api, base: () => LIVE?.api || null, look: !!BOOT?.look, phone, md, note: (t, b) => note(ic.check, t, b, ""), repaint: () => { const { ch, s } = route(); if (s && !isLib() && !isNb() && !isCt()) render(); else repaint(ch); },
     current: () => { const { ch, s } = route(); return s && !isLib() && !isNb() && !isCt() ? `${ch.slug}|${s.id}` : ""; } });
   if (hasFeature("ambient")) for (const c of BOOT.channels) for (const v of c.sessions) if (v.livenotes) lnSet(c.slug, v.id, v.livenotes);
@@ -2575,21 +2818,36 @@ if (LIVE) tkInit({ api, base: () => LIVE.api, phone, dragToClose, plain: t => pl
 if (LIVE) { shFiles((slug, fid) => { const a = (LIB[slug] || []).find(x => x.fid === fid); return a ? { name: a.name, mime: a.mime || "" } : null; });
   shInit({ api, phone, note: (t, s) => note(ic.check, t, s, ""), helper: slug => { const c = channels.find(x => x.slug === slug); return c ? who(c) : ""; },
     repaint: () => { if (isLib()) libUpdate(); else { const { s } = route(); if (s) paintChat(s); } } }); }
+// Channel/task tools and approved plans share the same immediate discovery path. Keep the active conversation in place;
+// the returned task link must already be routable before the next six-second boot poll.
+function addStartedSessions(list: any[]) {
+  let added = false;
+  for (const it of list) {
+    if (it.id != null && it.slug && !channels.some(x => x.slug === it.slug)) { addChannel({ id: it.id, slug: it.slug, name: it.name, purpose: it.purpose }); added = true; }
+    const c = channels.find(x => x.slug === it.slug), v = it.session;
+    const had = c?.sessions.find(y => String(y.id) === String(v?.id));
+    if (had) { if (!had.streaming) applySrv(had, v); continue; }
+    if (!c || !v?.id) continue;
+    const x = { id: v.id, title: v.title, status: "resolved", state: "idle", updated: v.updated || Date.now(), messages: [], fresh: true } as Session;
+    applySrv(x, v); c.sessions.unshift(x);
+  }
+  if (added) {
+    if (!phone() && document.querySelector("#rail .chs")) { const top = document.querySelector("#rail .chs")?.scrollTop ?? 0; $("#rail").innerHTML = railHtml(route().ch); railWire(top); }
+    else { const cl = document.getElementById("chlist"); if (cl) cl.innerHTML = chRows((document.getElementById("chq") as HTMLInputElement | null)?.value ?? ""); }
+  }
+  repaint(route().ch);
+}
 if (LIVE) planInit({ api, helper: slug => { const c = channels.find(x => x.slug === slug); return c ? who(c) : ""; }, chName: slug => channels.find(x => x.slug === slug)?.name || (LNAME[slug] ?? titleCase(slug)),
   hasChannel: slug => channels.some(x => x.slug === slug), repaint: () => apRepaint(),
   working: (slug, sid) => { const x = channels.find(c => c.slug === slug)?.sessions.find(y => String(y.id) === sid); return !!x && stWorking(x); }, stopMany: list => stopMany(list),
   send: (slug, sid, text) => { const c = channels.find(x => x.slug === slug), x = c?.sessions.find(y => String(y.id) === sid); if (c && x) liveReply(c, x, text, [], true); },
-  addSessions: list => { let added = false; for (const it of list) { if (it.id != null && it.slug && !channels.some(x => x.slug === it.slug)) { addChannel({ id: it.id, slug: it.slug, name: it.name, purpose: it.purpose }); added = true; }   // a project the plan just created joins the rail
-    const c = channels.find(x => x.slug === it.slug), v = it.session; const had = c?.sessions.find(y => String(y.id) === String(v?.id)); if (had) { if (!had.streaming) applySrv(had, v); continue; } if (!c || !v?.id) continue;
-    const x = { id: v.id, title: v.title, status: "resolved", state: "idle", updated: v.updated || Date.now(), messages: [], fresh: true } as Session; applySrv(x, v); c.sessions.unshift(x); }
-    if (added && !phone() && document.querySelector("#rail .chs")) { const top = document.querySelector("#rail .chs")?.scrollTop ?? 0; $("#rail").innerHTML = railHtml(route().ch); railWire(top); }
-    const { ch } = route(); repaint(ch); } });
+  addSessions: addStartedSessions });
 // A turn that a restart cut off and that couldn't be picked up again (the server's turns row error "interrupted"): the honest version.
 const INTERRUPTED_MSG = "1Helm restarted while I was working on this, so I stopped before replying. Send it again and I'll pick it back up.";
-async function liveLoad(ch: Channel, s: Session) {
+async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
   s.loading = true;
   try {
-    const d = await api(`/res/${ch.slug}/sessions/${s.id}?n=80`); if (d.error) throw new Error(d.error);
+    const d = snapshot || await api(`/res/${ch.slug}/sessions/${s.id}?n=80`, undefined, { signal: AbortSignal.timeout(15000) }); if (d.error) throw new Error(d.error);
     todoSet(ch.slug, s.id, d.todos || []); pomoSet(ch.slug, s.id, d.session?.pomodoro); lnSet(ch.slug, s.id, d.session?.livenotes);
     tkLoad(ch.slug, s.id, d);
     pauseSet(d.pauses); usageSet(ch.slug, s.id, d.usage?.nano || 0);   // spendguard.ts
@@ -2600,26 +2858,26 @@ async function liveLoad(ch: Channel, s: Session) {
       if (Array.isArray(t.msgs)) t.msgs.forEach((x: any, i: number) => msgs.push(userOf(x, t, i)));
       else if (t.kind === "chat") msgs.push({ id: nextId++, role: "user", body: t.user_text || "", at: t.at, steps: [], files: t.attached || [], turn: t.id, reaction: t.reaction } as RxMsg);
       const cv = t.card ? tkCardView(ch.slug, s.id, t.card) : undefined, from = cv?.kind === "handoff" ? cv.from?.[0] : null;
-      const parts: string[] = Array.isArray(t.parts) && t.parts.length > 1 ? t.parts : [];
+      const sp = Array.isArray(t.parts) && (t.parts.length > 1 || t.progress?.length) ? splitParts(t.parts, t.progress) : null, parts: string[] = sp ? sp.answer : [];
       const lnr = t.kind === "livenote" && t.livenote?.refine ? t.livenote.refine : null;   // "Update your meeting notes?": a card, not text
-      msgs.push({ id: nextId++, role: "agent", pre: parts.slice(0, -1), body: lnr ? "" : parts.length ? parts[parts.length - 1] : t.reply || (t.error === "interrupted" ? INTERRUPTED_MSG : t.error ? `Something went wrong: ${t.error}` : ""), at: t.at + (t.total_ms || 0), steps: toSteps((t.steps || []).map((x: any) => x.line)), saved: (t.steps || []).flatMap((x: any) => x.saved || []),
+      msgs.push({ progressOmitted: Number(t.progress_omitted) || undefined, id: nextId++, role: "agent", pre: [], prog: sp?.prog || [], body: lnr ? "" : parts.length ? parts.join("\n\n") : t.reply || (t.error === "interrupted" ? INTERRUPTED_MSG : t.error ? `Something went wrong: ${t.error}` : ""), at: t.at + (t.total_ms || 0), steps: toSteps((t.steps || []).map((x: any) => x.line)), saved: (t.steps || []).flatMap((x: any) => x.saved || []),
         note: t.kind === "livenote" ? "Live notes" : from ? (from.type === "followup" ? "Follow-up it scheduled" : from.type === "connect" ? from.title || "App connected" : from.type === "permission" ? from.title || "You allowed it" : from.type === "confirm" ? from.title || "You confirmed it" : `Done in the background${from.title ? `: ${from.title}` : ""}`) : t.kind === "followup" ? "Follow-up it scheduled" : t.kind === "workflow" ? "From a scheduled check" : undefined,
         cards: [...(lnr ? [{ t: "lnrefine", r: lnr, slug: ch.slug, sid: s.id }] : []), ...(t.images || []).map((x: any) => ({ t: "image", id: x.id, url: x.url, caption: x.caption })), ...(t.shared || []).map((f: any) => ({ t: "file", f })), ...(t.interviews || []).map((v: any) => ({ t: "interview", v })), ...shCards(t.offers)], ...(t.card ? { card: t.card } : {}), rid: t.id } as TkMsg);
     }
     if (d.live && !s.streaming) {
       const lm = (d.live.card?.events || []).filter((e: any) => e.type === "msg");
       if (lm.length) lm.forEach((x: any, i: number) => msgs.push(userOf(x, { at: d.live.started }, i)));
-      else if (d.live.user_text) msgs.push({ id: nextId++, role: "user", body: d.live.user_text, at: d.live.started, steps: [], turn: d.live.turn, reaction: d.live.reaction || undefined } as RxMsg);
-      const r: Msg = { id: nextId++, role: "agent", body: d.live.text || "", at: Date.now(), steps: [], ...(d.live.card?.id ? { card: d.live.card.id } : {}), ...(d.live.interviews?.length ? { cards: d.live.interviews.map((v: any) => ({ t: "interview", v })) } : {}) } as TkMsg; msgs.push(r);
+      else if (d.live.user_text && !nativeResumeInput(d.live.card)) msgs.push({ id: nextId++, role: "user", body: d.live.user_text, at: d.live.started, steps: [], turn: d.live.turn, reaction: d.live.reaction || undefined } as RxMsg);
+      const r: Msg = { id: nextId++, role: "agent", body: d.live.text || "", at: Date.now(), steps: [], ...(d.live.card?.id ? { card: d.live.card.id } : {}), ...(d.live.interviews?.length ? { cards: d.live.interviews.map((v: any) => ({ t: "interview", v })) } : {}) } as TkMsg; progressSnapshot(r, d.live.reply_state); msgs.push(r);
       s.messages = msgs; s.state = "working"; s.rawLine = d.live.line || ""; liveAttach(ch, s, r);
-    } else if (!s.streaming && d.session?.state === "working") {
+    } else if (!s.streaming && d.session?.state === "working" && !d.session.native_progress) {
       // No live turn, but the task is working: its turn was cut off by an update and is being picked up (resumable turns). Wait for it.
       const r: Msg = { id: nextId++, role: "agent", body: "", at: Date.now(), steps: [] }; msgs.push(r);
       s.messages = msgs; s.state = "working"; s.rawLine = d.session.line || UPDATED_LINE; liveAttach(ch, s, r);
     } else if (!s.streaming) s.messages = msgs;
     planBriefs(s.messages, d.origin || null); planAttach(ch.slug, s.messages, d.plans || []);
     const last = [...s.messages].reverse().find(m => m.role === "agent");
-    if (last) for (const a of d.approvals || []) addApproval(last, a, false);   // after its screenshots/files (they used to be replaced)
+    if (last) for (const a of d.approvals || []) { const m = ["ssh","ssh_hostkey"].includes(a.perm) && a.turn ? (s.messages as TkMsg[]).find(x => x.role === "agent" && x.card === a.turn) || last : last; addApproval(m, a, false); }   // native receipts stay beside their originating request
     for (const o of d.offers || []) { const m = (s.messages as TkMsg[]).find(x => x.role === "agent" && o.turn && x.card === o.turn) || last; if (m) addOffer(m, ch, o, false); }   // connect cards, under the reply that offered them
     applySrv(s, d.session); s.loaded = true;
   } catch (e: any) { s.messages = [{ id: nextId++, role: "agent", body: `Couldn't load this task (${e.message}).`, at: Date.now(), steps: [] }]; s.loaded = true; }
@@ -2634,8 +2892,8 @@ function paintChat(s: Session) {
   morph(box, msgsHtml(s, ch));
   if (near) sc.scrollTop = sc.scrollHeight;
   const hd = document.getElementById("hdone"); if (hd) hd.outerHTML = headDone(s);
-  todoSync(ch.slug, s.id); tkSync(ch.slug, s.id); pomoSync(ch.slug, s.id); lnSync(ch.slug, s.id); stNow();
-  const side = document.querySelector(".sessions"); if (side) morph(side, sideList(ch, s, (document.getElementById("q") as HTMLInputElement | null)?.value ?? ""));
+  todoSync(ch.slug, s.id); tkSync(ch.slug, s.id); pomoSync(ch.slug, s.id); if (hasFeature("ambient")) lnSync(ch.slug, s.id); stNow();
+  repaint(ch); // Include the mobile task drawer when a pause or Stop here changes the task's state.
 }
 // The person's message a reaction belongs to: the one with that turn id, else the one this streamed reply answers.
 function rxTarget(s: Session, reply: Msg, turn?: string): RxMsg | undefined {
@@ -2643,17 +2901,26 @@ function rxTarget(s: Session, reply: Msg, turn?: string): RxMsg | undefined {
   for (let i = ms.indexOf(reply) - 1; i >= 0; i--) if (ms[i].role === "user") return ms[i];
 }
 function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
+  if ((ev.t === "channel_created" || ev.t === "task_started") && ev.channel?.slug) { addStartedSessions([{ ...ev.channel, session: ev.session }]); return; }
+  const holdingProgress = progressSlot(reply, true).mode === "progress";
+  const replacing = ev.t === "text" && !!String(ev.s || "").trim() && holdingProgress;
+  const finalProgress = ev.t === "done" && !ev.error && holdingProgress;
+  if (ev.t === "snapshot") progressReset(reply);
+  const beforeProgress = route().s === s && (replacing || finalProgress) ? progressBefore(reply.id) : undefined;
+  streamProgress(s, ev);
+  if (ev.t === "snapshot" && ev.turn) (reply as TkMsg).rid = ev.turn;   // a quote of resumed text keeps its originating turn
+  if (ev.t === "model_wait") { paintTask(ch, s); return; }
   if (ev.t === "snapshot" && ev.card?.id) { tkEvent(ch.slug, s.id, ev); (reply as TkMsg).card = ev.card.id; }
   if (ev.t === "session") { const tmp = s.tmp; applySrv(s, ev.session); s.state = "working"; if (tmp && location.hash.endsWith(`/s/${tmp}`)) history.replaceState(null, "", `#/${ch.slug}/s/${s.id}`); }
   else if (ev.t === "queued") s.rawLine = "finishing your last message first";
-  else if (ev.t === "text" || ev.t === "snapshot") { if (ev.t === "snapshot") { reply.body = ev.text || ""; s.rawLine = ev.line || s.rawLine; (ev.approvals || []).forEach((a: any) => addApproval(reply, a, false)); const u = rxTarget(s, reply, ev.turn); if (u && ev.reaction) u.reaction = ev.reaction; } else reply.body += ev.s; }
+  else if (ev.t === "text" || ev.t === "snapshot") { if (ev.t === "snapshot") { if (!progressSnapshot(reply, ev.reply_state)) reply.body = ev.text || ""; (reply as any).snap = 1; s.rawLine = ev.line || s.rawLine; (ev.approvals || []).forEach((a: any) => addApproval(reply, a, false)); const u = rxTarget(s, reply, ev.turn); if (u && ev.reaction) u.reaction = ev.reaction; } else reply.body += ev.s; }
   else if (ev.t === "reaction") { const u = rxTarget(s, reply, ev.msg); if (!u || !RX[ev.reaction]) return; u.reaction = ev.reaction; u.turn = ev.msg; if (route().s === s) { paintChat(s); rxPop(u); } else repaint(ch); return; }
-  else if (ev.t === "work") { if (reply.body.trim()) { (reply.pre ??= []).push(reply.body.trim()); reply.body = ""; } else return; }
+  else if (ev.t === "work") { if (!progressWorked(reply)) return; }   // classify as before; retain only the most recently confirmed note in the live slot
   else if (ev.t === "saved") (reply.saved ??= []).push(...(ev.saved || []));   // remember finished: where it really went
   else if (ev.t === "status") { s.rawLine = ev.line; const raw = (reply as any).raw ??= []; raw.push(ev.line); reply.steps = toSteps(raw); }
   else if (ev.t === "approval") { addApproval(reply, ev.approval, true); s.status = "waiting"; s.state = "idle"; s.rawLine = "waiting for your OK"; }
   // Decided (here, in another tab or inside Messages): the card stays, locked, showing the result (it used to vanish).
-  else if (ev.t === "approval_done") { apCards(String(ev.id)).forEach(k => { if (k.st === "pending" && !k.busy) { k.st = ev.status === "denied" ? "deny" : ev.status === "approved" ? "allowed" : "expired"; k.confirm = false; } }); s.status = "resolved"; s.state = "working"; s.rawLine = "working"; }
+  else if (ev.t === "approval_done") { apCards(ch.slug, String(ev.id)).forEach(k => { if (k.st === "pending" && !k.busy) { k.st = ev.status === "denied" ? "deny" : ev.status === "approved" ? "allowed" : "expired"; k.confirm = false; } }); s.status = "resolved"; s.state = "working"; s.rawLine = "working"; }
   else if (ev.t === "browser" || ev.t === "browser_handoff") { reply.cards = (reply.cards || []).filter(c => c.t !== "browser"); reply.cards.push({ t: "browser", url: ev.url, text: ev.instructions, fresh: true });  if (ev.t === "browser_handoff" && route().s === s) openPC(ch.slug, ev.url, ev.instructions); }
   else if (ev.t === "note") { const nb = nbOf(ch), n = ev.note; if (n?.id && !nb.notes.some((x: any) => x.id === n.id)) nb.notes.unshift({ id: n.id, sec: NB_SECS.some(x => x[0] === n.sec) ? n.sec : "how", text: n.text, at: n.at || Date.now(), you: false, fresh: true } as any); }
   else if (ev.t === "link_purchase" && hasFeature("billing")) (reply.cards ??= []).push({ t: "link", p: ev.purchase, fresh: true });
@@ -2661,10 +2928,11 @@ function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
   else if (ev.t === "connect_offer_done" && ev.offer && hasFeature("connected_apps")) cxoUpdate(ev.offer);
   else if (ev.t === "apps_changed") { if (LIVE && hasFeature("connected_apps")) fetch(`${LIVE.api}/apps`, { credentials: "same-origin" }).then(r => r.json()).then(d => { if (Array.isArray(d.accounts)) { cxSet(d.accounts); appDetailSync(d.accounts); } }).catch(() => {}); return; }   // the helper saved an account note
   else if (ev.t === "plan") { planEvent(ch.slug, reply, ev.plan); if (ev.plan?.status === "pending") { s.status = "waiting"; } }
-  else if (ev.t === "todos") { todoSet(ch.slug, s.id, ev.items || [], true); return; }
+  else if (ev.t === "todos") { todoSet(ch.slug, s.id, ev.items || [], ev.by === "helper" ? "helper" : "person"); return; }
   else if (ev.t === "spend_pause") { pauseSet([ev.pause]); (reply as any).paused = true; return; }   // why this turn is pausing (its card closes "paused" next)
   else if (ev.t === "byok_switch" && hasFeature("billing")) { noticeShow({ text: ev.notice }); bykSwitched(); return; }   // credits used up: chat now on their backup key (byok.ts), said once
   else if (ev.t === "pomodoro") { pomoSet(ch.slug, s.id, ev.pomodoro); return; }
+  else if (ev.t === "pomodoro_global") { pomoSet("*", "global", ev.pomodoro); return; }
   else if (ev.t === "livenotes") { lnSet(ch.slug, s.id, ev.livenotes); return; }
   else if (ev.t === "card_open" || ev.t === "steered" || ev.t === "card_event" || ev.t === "card_update" || ev.t === "card_close" || ev.t === "helper") {
     tkEvent(ch.slug, s.id, ev);
@@ -2682,13 +2950,21 @@ function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
     LIB[ch.slug] = [{ ...toArt(ev.file), fresh: true }, ...(LIB[ch.slug] || []).filter((a) => a.fid !== ev.file.id)];
   }
   else if (ev.t === "done") {
+    if(Number.isSafeInteger(ev.progress_omitted)&&ev.progress_omitted>0)reply.progressOmitted=ev.progress_omitted;
+    // A timed-out/incomplete model response is not its final answer. Keep earlier
+    // work history, but replace partial text with the server's recoverable outcome.
+    if (ev.recoverable === true && ["model_timeout", "model_output_limit"].includes(ev.error) && typeof ev.reply === "string") reply.body = ev.reply;
     // A paused turn: the server's stored reply is the cleaned report (a model's own Keep going / Stop here buttons are stripped,
     // the app's paused card has them), so it replaces the streamed text. Earlier bubbles stay; a reply that joins them is trimmed to its end.
     if ((reply as any).paused && typeof ev.reply === "string" && ev.reply.trim() && !ev.error) {
       let fin = ev.reply.trim(); for (const p of reply.pre || []) if (fin.startsWith(p)) fin = fin.slice(p.length).trim();
       if (fin) reply.body = fin;
     }
+    // The reply is the answer the server saved (text after the last tool call); narration folded into steps stays there, and whatever the
+    // server kept in the reply (a question, a card, code, a link) is not shown twice. The same split a reload makes.
+    finishReply(reply as any, ev.reply, ev.error);
     if (!reply.body.trim() && ev.reply && !reply.pre?.length) reply.body = ev.reply;
+    if (!reply.body.trim() && reply.prog?.length) reply.body = reply.prog.pop()!;
     if (!reply.body.trim() && reply.pre?.length) reply.body = reply.pre.pop()!;   // it spoke, worked, then said nothing more: its last words are the reply
     // Another turn of this task can still be streaming in this tab (a card that opened just after this reply): it stays live.
     const more = tkOn(ch.slug, s.id) && [...streamsOf(s)].some(r => r !== reply);
@@ -2696,12 +2972,7 @@ function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
     reply.at = Date.now(); if (!more) { s.streaming = false; s.attached = false; } if (ev.session) applySrv(s, ev.session); else if (!more) s.state = "idle";
     if (route().s === s) { s.unread = false; livePatch(ch, s, { seen: true }); }
   } else return;
-  if (route().s === s) paintChat(s); else repaint(ch);
-}
-async function readNd(r: Response, on: (ev: any) => void) {
-  const rd = r.body!.pipeThrough(new TextDecoderStream()).getReader(); let buf = "";
-  for (;;) { const { value, done } = await rd.read(); if (done) break; buf += value; let i;
-    while ((i = buf.indexOf("\n")) >= 0) { const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (line) { try { on(JSON.parse(line)); } catch {} } } }
+  if (route().s === s) { paintChat(s); if (beforeProgress) progressAfter(beforeProgress, reply, finalProgress); } else repaint(ch);
 }
 // The replies streaming in this tab, per task (a reply that ends doesn't end the task's live state while another still streams).
 const STREAMS = new WeakMap<Session, Set<Msg>>();
@@ -2724,15 +2995,21 @@ function addSteer(s: Session, reply: Msg, e: EventView) {
 // reply = null: a steer. The server decides: {"t":"steered"} = it joined the open card (no reply bubble of its own, the stream
 // ends); {"t":"card_open"} = the card had just closed, so this starts a new turn and its reply bubble appears now.
 async function streamTurn(ch: Channel, s: Session, text: string, reply: Msg | null, files: FileV[] = [], um?: TkMsg) {
+  const lease = streamLease(s); lease.pending = true;
+  try { await streamTurnOwned(ch, s, text, reply, files, um, lease); }
+  finally { streamRelease(lease); }
+}
+async function streamTurnOwned(ch: Channel, s: Session, text: string, reply: Msg | null, files: FileV[], um: TkMsg | undefined, lease: Lease) {
   const lazy = !reply, live = streamsOf(s); let r2 = reply, joined = false, got = 0, gotDone = false, lost = "";
   if (r2) { s.streaming = true; s.state = "working"; s.rawLine = s.rawLine || "reading your request"; live.add(r2); }
   const drop = () => { if (!r2) return; live.delete(r2); s.messages = s.messages.filter(m => m !== r2); r2 = null; s.streaming = live.size > 0; if (!s.streaming) s.state = "idle"; };
   try {
-    const r = await fetch(`${LIVE!.api}/res/${ch.slug}/stream`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ session: s.srv ? s.id : "new", message: text, files: files.map(f => f.id), ...(dpLoc() ? { loc: dpLoc() } : {}), ...(um?.cid ? { cid: um.cid } : {}), ...((um as any)?.cont ? { continue: (um as any).cont } : {}), ...(um?.reply?.text ? { reply: { id: um.reply.id || null, role: um.reply.role, text: um.reply.text } } : {}) }) });
-    if (!r.ok || !r.body) { const d = await r.json().catch(() => ({})); if (d.error === "payment_required") pdSet(d.access || null); throw new Error(d.error === "payment_required" ? d.message || "Your plan needs attention before I can work." : d.error || `HTTP ${r.status}`); }
-    await readNd(r, ev => {
+    const r = await streamFetch(`${LIVE!.api}/res/${ch.slug}/stream`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ session: s.srv ? s.id : "new", message: text, files: files.map(f => f.id), ...(dpLoc() ? { loc: dpLoc() } : {}), ...(um?.cid ? { cid: um.cid } : {}), ...((um as any)?.cont ? { continue: (um as any).cont } : {}), ...(um?.reply?.text ? { reply: { id: um.reply.id || null, role: um.reply.role, text: um.reply.text } } : {}) }) }, lease);
+    if (!r.ok || !r.body) { const d = await streamErrorBody(r, lease); if (d.error === "payment_required") pdSet(d.access || null); throw new Error(d.error === "payment_required" ? d.message || "Your plan needs attention before I can work." : d.error || `HTTP ${r.status}`); }
+    await readStream(r, ev => {
       got++;
-      if (ev.t === "steered") { joined = true; tkEvent(ch.slug, s.id, ev); drop(); if (um) joinSteer(s, um, ev); paintTask(ch, s); return; }
+      if (["card_open", "steered", "done"].includes(ev.t)) lease.pending = false;
+      if (ev.t === "steered") { joined = true; tkEvent(ch.slug, s.id, ev); drop(); if (um) joinSteer(s, um, ev); paintTask(ch, s); return true; }
       if (joined) return;
       if (!r2) {
         if (ev.t === "session") return;
@@ -2742,19 +3019,24 @@ async function streamTurn(ch: Channel, s: Session, text: string, reply: Msg | nu
       }
       if (ev.t === "done" && OLD_RESET.test(String(ev.error || ""))) { lost = "1Helm was updated"; return; }   // the old helper's last words after an update: not the answer, find the resumed turn
       if (ev.t === "done") gotDone = true; onEvent(ch, s, r2, ev);
-    });
+      return ev.t === "done";
+    }, lease);
     if (lazy && !joined && !r2) throw new Error("The connection closed before it was sent.");
   } catch (e: any) {
+    lease.pending = false;
+    if (!streamCurrent(lease)) return;
     // Nothing reached the helper: the bubble says so, with Retry (same client id, so a send that did land isn't doubled).
     if (um && !joined && ((lazy && !r2) || (!got && tkOn(ch.slug, s.id) && /a lot at once/i.test(e.message)))) { drop(); um.state = "failed"; um.err = e.message; paintTask(ch, s); return; }
     lost = String(e?.message || e || "closed");
-    if (r2 && !got && !r2.body) r2.body = `I couldn't reach 1Helm (${lost}). Send it again in a moment.`;
+    if (r2 && !got && !r2.body) r2.body = "I couldn't confirm this task's reply yet. Check this task before sending the request again.";
   }
+  if (!streamCurrent(lease)) return;
   if (joined || !r2) { if (r2) live.delete(r2); return; }
   if (!gotDone) {
     // The stream broke before the reply. A deploy restarts the helper (and the network can drop): never claim it's "still on it".
     // Find the turn again (attach, with backoff up to ~90 s): still running → keep streaming; picking up after an update → say so; ended → reload.
-    const how = got && s.srv ? await reattach(ch, s, r2, lost || "closed") : "gave_up";
+    const how = s.srv ? await reattach(ch, s, r2, lost || "closed", lease) : "gave_up";
+    if (!streamCurrent(lease)) return;
     live.delete(r2);
     if (how === "done") return;
     if (!tkOn(ch.slug, s.id) || !live.size) s.streaming = false;
@@ -2772,25 +3054,28 @@ const pause = (ms: number) => new Promise(z => setTimeout(z, ms));
 // A reply stream that broke: attach to the task's live turn again, 1, 2, 4, 8, 15 … s apart, for about 90 s.
 //   "done" = the turn finished while attached (its "done" event was handled) · "idle" = nothing runs any more (reload to see how it
 //   ended) · "gave_up" = no answer in time. Every try is a fresh request, so a deploy in between is just one more wait.
-async function reattach(ch: Channel, s: Session, reply: Msg, why: string): Promise<"done" | "idle" | "gave_up"> {
+async function reattach(ch: Channel, s: Session, reply: Msg, why: string, lease: Lease): Promise<"done" | "idle" | "gave_up"> {
   const t0 = Date.now(), api = LIVE?.api; let wait = 1000, tries = 0, saw = false;
   streamNote(api, { e: "stream_lost", why: why.slice(0, 120), sid: String(s.id) });
   s.streaming = true; s.state = "working"; s.rawLine = "reconnecting"; paintTask(ch, s);
   while (Date.now() - t0 < 90e3) {
     await pause(wait); wait = Math.min(wait * 2, 15e3); tries++;
+    if (!streamCurrent(lease)) return "gave_up";
     let ended: "" | "done" | "idle" = "", resuming = false;
     try {
-      const r = await fetch(`${api}/res/${ch.slug}/sessions/${s.id}/attach`, { credentials: "same-origin" });
+      const r = await streamFetch(`${api}/res/${ch.slug}/sessions/${s.id}/attach`, { credentials: "same-origin" }, lease, t0 + 90e3, 30000); // server may await journal recovery for 25s
       if (!r.ok || !r.body) continue;
-      await readNd(r, ev => {
-        if (ev.t === "idle") { ended = "idle"; return; }
+      let attached = false;
+      await readStream(r, ev => {
+        if (ev.t === "idle") { ended = "idle"; return true; }
         if (ev.t === "resuming") { resuming = true; s.rawLine = UPDATED_LINE; paintTask(ch, s); if (!saw) { saw = true; streamNote(api, { e: "resuming", sid: String(s.id), ms: Date.now() - t0 }); } return; }
         if (ev.t === "hb") return;
-        if (ev.t === "snapshot") streamNote(api, { e: "resumed", sid: String(s.id), ms: Date.now() - t0, tries, after_update: saw });
+        if (ev.t === "snapshot") { attached = true; streamNote(api, { e: "resumed", sid: String(s.id), ms: Date.now() - t0, tries, after_update: saw }); }
         if (ev.t === "done" && OLD_RESET.test(String(ev.error || ""))) return;   // the reset object's error: keep looking for the resumed turn
         if (ev.t === "done") ended = "done";
         onEvent(ch, s, reply, ev);
-      });
+        return ev.t === "done";
+      }, lease, { deadline: () => attached ? Infinity : t0 + 90e3 });
     } catch { continue; }
     if (ended) { if (ended === "idle") streamNote(api, { e: "ended", sid: String(s.id), ms: Date.now() - t0, tries }); return ended; }
     if (resuming) wait = 1000;   // it's coming back: look again soon
@@ -2800,11 +3085,37 @@ async function reattach(ch: Channel, s: Session, reply: Msg, why: string): Promi
 }
 async function liveAttach(ch: Channel, s: Session, reply: Msg) {
   if (s.attached) return; s.attached = true; s.streaming = true; streamsOf(s).add(reply);
+  const lease = streamLease(s);
+  try { await liveAttachOwned(ch, s, reply, lease); }
+  finally { streamRelease(lease); }
+}
+async function liveAttachOwned(ch: Channel, s: Session, reply: Msg, lease: Lease) {
   let end = "", lost = "";
-  try { const r = await fetch(`${LIVE!.api}/res/${ch.slug}/sessions/${s.id}/attach`, { credentials: "same-origin" }); await readNd(r, ev => { if (ev.t === "idle") { end = "idle"; s.streaming = false; s.loaded = false; liveLoad(ch, s); } else if (ev.t === "resuming") { s.rawLine = UPDATED_LINE; paintTask(ch, s); } else { if (ev.t === "done" && OLD_RESET.test(String(ev.error || ""))) return; if (ev.t === "done") end = "done"; onEvent(ch, s, reply, ev); } }); }
+  try { const r = await streamFetch(`${LIVE!.api}/res/${ch.slug}/sessions/${s.id}/attach`, { credentials: "same-origin" }, lease, Infinity, 30000); await readStream(r, ev => { if (ev.t === "idle") { end = "idle"; s.streaming = false; s.loaded = false; liveLoad(ch, s); } else if (ev.t === "resuming") { s.rawLine = UPDATED_LINE; paintTask(ch, s); } else { if (ev.t === "done" && OLD_RESET.test(String(ev.error || ""))) return; if (ev.t === "done") end = "done"; onEvent(ch, s, reply, ev); } return ev.t === "idle" || ev.t === "done"; }, lease); }
   catch (e: any) { lost = String(e?.message || e); }
-  if (!end && s.streaming) end = await reattach(ch, s, reply, lost || "closed");   // the stream broke mid-turn (a deploy): find it again
+  if (!streamCurrent(lease)) return;
+  if (!end && s.streaming) end = await reattach(ch, s, reply, lost || "closed", lease);   // the stream broke mid-turn (a deploy): find it again
+  if (!streamCurrent(lease)) return;
   streamsOf(s).delete(reply); s.attached = false; if (s.streaming && end !== "done") { s.streaming = false; s.loaded = false; if (route().s === s) liveLoad(ch, s); }
+}
+// A live socket is not proof that a turn is still running. Check durable state without
+// resending the user's message. An event/new send during this read wins over its snapshot.
+async function reconcileStream(ch: Channel, s: Session, server: any) {
+  if (!s.streaming || !s.srv || s.loading || !streamCheckDue(s, server)) return;
+  const state = streamState(s), epoch = state.epoch, revision = state.revision;
+  state.checking = true; state.checked = Date.now();
+  try {
+    const d = await api(`/res/${ch.slug}/sessions/${s.id}?n=80`, undefined, { signal: AbortSignal.timeout(12000) });
+    if (d.error || !d.session || epoch !== state.epoch || revision !== state.revision || !s.streaming) return;
+    if (!d.live && d.session.state !== "working") {
+      streamInvalidate(s); streamsOf(s).clear(); s.streaming = false; s.attached = false;
+      await liveLoad(ch, s, d); // replaces stale partial text/cards with the saved terminal outcome
+    } else {
+      tkLoad(ch.slug, s.id, d);
+      if (Date.now() - state.progress >= 45000) { state.waiting = "Waiting for the current step"; paintTask(ch, s); }
+    }
+  } catch { /* keep the actual partial reply; a failed status check is not a failed task */ }
+  finally { state.checking = false; }
 }
 function liveStart(ch: Channel, text: string, files: FileV[] = []) {
   const at = Date.now(), tmp = `t${nextId++}`;
@@ -2814,6 +3125,7 @@ function liveStart(ch: Channel, text: string, files: FileV[] = []) {
   ch.sessions.unshift(x); streamTurn(ch, x, text, reply, files); return x;
 }
 function liveReply(ch: Channel, s: Session, text: string, files: FileV[] = [], keepBox = false, cont?: string, rp: Pin | null = null) {
+  streamProgress(s, { t: "user_input" }); // invalidates an older in-flight status snapshot
   const at = Date.now(), b = keepBox ? null : $("#box") as HTMLTextAreaElement | null;
   if (b) { b.value = ""; b.style.height = "auto"; ($("#go") as HTMLButtonElement).disabled = true; $("#send").classList.remove("has"); }
   const rid = nextId++, um: TkMsg = { id: nextId++, role: "user", body: text, at, steps: [], files, cid: newCid() };   // ids in today's order
@@ -2848,8 +3160,10 @@ if (LIVE) document.addEventListener("click", e => {
 });
 // Permission requests (Sentinel). One card per request id per message; every copy of a request shares its state fields.
 function addApproval(m: Msg, a: any, fresh: boolean) {
-  if (!a || (m.cards ??= []).some(k => k.t === "approval" && String(k.a.id) === String(a.id))) return;
-  m.cards.push({ t: "approval", a, st: "pending", fresh });
+  if (!a) return;
+  const existing = (m.cards ??= []).find(k => k.t === "approval" && String(k.a.id) === String(a.id));
+  if (existing) { if (["ssh","ssh_hostkey"].includes(a.perm) && a.status !== "pending") { existing.a = {...existing.a,...a}; existing.st = nativeReceiptStatus(a); } return; }
+  m.cards.push({ t: "approval", a, st: nativeReceiptStatus(a), fresh });
 }
 // Connect cards (connect-card.ts): one per offer per message.
 function addOffer(m: Msg, ch: Channel, o: any, fresh: boolean) {
@@ -2857,7 +3171,7 @@ function addOffer(m: Msg, ch: Channel, o: any, fresh: boolean) {
   m.cards.push({ t: "offer", o, ch: ch.slug, fresh } as OfferCard);
 }
 const offerCards = () => channels.flatMap(c => c.sessions).flatMap(x => x.messages).flatMap(m => m.cards || []).filter(k => k.t === "offer") as OfferCard[];
-const apCards = (id: string) => channels.flatMap(c => c.sessions).flatMap(x => x.messages).flatMap(m => m.cards || []).filter(k => k.t === "approval" && String(k.a.id) === id);
+const apCards = (slug: string, id: string) => approvalCards(channels, slug, id);
 let akN = 0; const AK_SEEN = new Set<number>();
 document.addEventListener("animationstart", e => { const k = (e.target as HTMLElement).dataset?.ak; if (k) AK_SEEN.add(+k); }, true);
 const apRepaint = () => { const { ch, s } = route(); if (s) paintChat(s); else repaint(ch); };
@@ -2869,13 +3183,13 @@ function cardHtml(c: any, ch: Channel) {
   // Arrival animation for a card that came in live, until it has started once (even if a repaint replaces the node).
   const ak = c.fresh ? (c.ak ??= ++akN) : 0, fr = ak && !AK_SEEN.has(ak) ? " gu-in" : "", akA = ak ? ` data-ak="${ak}"` : "";
   if (c.t === "share") return shCardHtml(c, akA);   // share links + published pages (share.ts)
-  if (c.t === "approval") { const a = c.a, at = (k: string) => k === "cancel" ? `data-apcancel="${esc(String(a.id))}"` : `data-apv="${esc(ch.slug)}|${esc(String(a.id))}|${k === "confirm" ? "channel" : k}"${k === "confirm" ? " data-apconfirm" : ""}`;
-    return approvalHtml(a, { status: c.st || "pending", confirm: c.confirm, busy: c.busy, error: c.err, fresh: !!fr }, { helper: who(ch), channel: ch.name, attr: at, id: `ap${a.id}`, attrs: akA }); }
+  if (c.t === "approval") { const a = c.a, at = (k: string) => k === "cancel" ? `data-apcancel="${esc(ch.slug)}|${esc(String(a.id))}"` : `data-apv="${esc(ch.slug)}|${esc(String(a.id))}|${k === "confirm" ? "channel" : k}"${k === "confirm" ? " data-apconfirm" : ""}`;
+    return approvalHtml(a, { status: c.st || "pending", confirm: c.confirm, busy: c.busy, error: c.err, fresh: !!fr }, { helper: who(ch), channel: ch.name, attr: at, id: `ap-${ch.slug}-${a.id}`, attrs: akA }); }
   if (c.t === "interview") return ivCard(c, ch, !!fr);
   if (c.t === "lnrefine" && hasFeature("ambient")) return lnRefineCard(c.slug, c.sid, c.r, { fresh: !!fr, attrs: akA });
   if (c.t === "offer" && hasFeature("connected_apps")) return offerCardHtml(c, { helper: who(ch), fresh: !!fr, attrs: akA });
   if (c.t === "browser") return `<div class="acard gu-sys${fr}"${akA}><div class="gu-sh"><span class="gu-si">${ic.lib}${logoOver(c.url || "", 32)}</span><b>${c.text ? "Your turn in the browser" : `${esc(who(ch))} is using the browser`}</b></div><p class="gu-sl">${esc(c.text || HOST_OF(c.url) || c.url || "")}</p>
-      <div class="gu-btns"><button type="button" class="gu-b ${c.text ? "primary" : "secondary"}" data-watch="${esc(ch.slug)}" data-wurl="${esc(c.url || "")}" data-wnote="${esc(c.text || "")}">${c.text ? "Open the browser" : "Watch it live"}</button></div></div>`;
+      <div class="gu-btns"${c.text ? "" : ` data-computer-offer="${esc(ch.slug)}"${watchingComputer(ch.slug) ? " hidden" : ""}`}><button type="button" class="gu-b ${c.text ? "primary" : "secondary"}" data-watch="${esc(ch.slug)}" data-wurl="${esc(c.url || "")}" data-wnote="${esc(c.text || "")}">${c.text ? "Open the browser" : "Watch it live"}</button></div></div>`;
   if (c.t === "image") { const src = `${LIVE!.api}/res/${esc(ch.slug)}/shots/${esc(c.id)}.jpg`, cap = [c.caption, HOST_OF(c.url)].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
     return `<button class="shot" data-shot="${src}" data-cap="${esc(cap.join(" · "))}" aria-label="Open screenshot"><img src="${src}" alt="${esc(c.caption || "Screenshot")}" loading="lazy">${cap.length ? `<span>${esc(cap.join(" · "))}</span>` : ""}</button>`; }
   if (c.t === "link" && hasFeature("billing")) { const p = c.p; return `<div class="acard gu-sys${fr}"${akA}><div class="gu-sh"><span class="gu-si">${ic.check}${logoOver(p.merchant_url || "", 32)}</span><b>Approve in Link: ${esc(p.merchant_name || "")} $${(p.amount / 100).toFixed(2)}</b></div><p class="gu-sl">Link is sending the approval to your phone. Nothing is charged unless you approve.${p.test ? " (Test mode, no real charge.)" : ""}</p></div>`; }
@@ -2894,25 +3208,23 @@ if (LIVE) {
   // State lives on the card objects (every copy of the same request), so repaints keep the confirm step and the result.
   document.addEventListener("click", async e => {
     const t = e.target as HTMLElement, cn = t.closest<HTMLElement>("[data-apcancel]");
-    if (cn) { e.preventDefault(); apCards(cn.dataset.apcancel!).forEach(k => k.confirm = false); apRepaint(); if (!e.detail) document.querySelector<HTMLElement>(`#ap${cn.dataset.apcancel} [data-apv$="|channel"]`)?.focus(); return; }
+    if (cn) { e.preventDefault(); const [slug, id] = cn.dataset.apcancel!.split("|"); apCards(slug, id).forEach(k => k.confirm = false); apRepaint(); if (!e.detail) document.querySelector<HTMLElement>(`#ap-${slug}-${id} [data-apv$="|channel"]`)?.focus(); return; }
     const b = t.closest<HTMLElement>("[data-apv]"); if (!b) return;
-    e.preventDefault(); const [slug, id, decision] = b.dataset.apv!.split("|") as [string, string, Decision], ks = apCards(id);
+    e.preventDefault(); const [slug, id, decision] = b.dataset.apv!.split("|") as [string, string, Decision], ks = apCards(slug, id);
     if (!ks.length || ks.some(k => k.busy || k.st !== "pending")) return;
-    if (decision === "channel" && !b.hasAttribute("data-apconfirm")) { ks.forEach(k => { k.confirm = true; k.err = ""; }); apRepaint(); if (!e.detail) document.querySelector<HTMLElement>(`#ap${id} [data-apconfirm]`)?.focus(); return; }   // keyboard: move focus into the step
+    if (decision === "channel" && !b.hasAttribute("data-apconfirm")) { ks.forEach(k => { k.confirm = true; k.err = ""; }); apRepaint(); if (!e.detail) document.querySelector<HTMLElement>(`#ap-${slug}-${id} [data-apconfirm]`)?.focus(); return; }   // keyboard: move focus into the step
     ks.forEach(k => { k.busy = decision; k.err = ""; }); apRepaint();
     const r = await api(`/res/${slug}/approve`, { id: +id, decision, ...(decision === "channel" ? { confirm: true } : {}) }).catch((err) => ({ error: err.message }));
-    const already = /^already (approved|denied)/.exec(r?.error || "");
-    ks.forEach(k => { k.busy = "";
-      if (!r?.error) { k.st = decision; k.confirm = false; }
-      else if (already) { if (k.st === "pending") k.st = already[1] === "denied" ? "deny" : "allowed"; k.confirm = false; }
-      else k.err = `Couldn't send that (${r.error}). Try again.`; });
+    approvalResponse(channels, slug, id, decision, r);
     apRepaint();
   }, true);
   // Keep lists fresh: other tasks finishing, scheduled checks reporting in, approvals waiting.
   let sig = "";
   const poll = async () => {
     if (document.hidden) return;
-    const d = await api(`/app/boot?light=1&tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || "")}`).catch(() => null); if (!d?.channels) return;
+    if (Date.now() - (NB_AT.main || 0) >= 60000) nbSync(main);
+    const d = await api(`/app/boot?light=1&tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || "")}`, undefined, { signal: AbortSignal.timeout(12000) }).catch(() => null); if (!d?.channels) return;
+    pomoSet("*", "global", d.pomodoro_global);   // another device or the helper started / stopped it
     let changed = false, added = false;
     for (const c of d.channels) {
       let ch = channels.find(x => x.slug === c.slug);
@@ -2922,14 +3234,15 @@ if (LIVE) {
       for (const v of c.sessions) {
         let x = ch.sessions.find(y => y.id === v.id);
         if (!x) { x = { id: v.id, title: v.title, status: "resolved", state: "idle", updated: v.updated, messages: [], fresh: true } as Session; ch.sessions.unshift(x); changed = true; }
-        const before = x.srv?.updated; if (!x.streaming) applySrv(x, v); pomoSet(ch.slug, v.id, v.pomodoro); lnSet(ch.slug, v.id, v.livenotes);   // focus timers: every task, so a phase end elsewhere can say so
+        const before = x.srv?.updated, nativePhaseChanged = x.srv?.native_progress?.phase !== v.native_progress?.phase; if (!x.streaming) applySrv(x, v); pomoSet(ch.slug, v.id, v.pomodoro); lnSet(ch.slug, v.id, v.livenotes);   // focus timers: every task, so a phase end elsewhere can say so
+        if (x.streaming) void reconcileStream(ch, x, v);
         const hch = tkHelperCount(ch.slug, v.id, v.helpers);   // a helper started or finished: its card / handoff card shows up
-        if (before !== undefined && (before !== v.updated || hch) && !x.streaming && x.loaded) { x.loaded = false; if (route().s === x) liveLoad(ch, x); }
+        if (before !== undefined && (before !== v.updated || hch || nativePhaseChanged) && !x.streaming && x.loaded) { x.loaded = false; if (route().s === x) liveLoad(ch, x); }
       }
     }
     if (added) { if (!phone()) { const top = document.querySelector("#rail .chs")?.scrollTop ?? 0; if (document.querySelector("#rail .chs")) { $("#rail").innerHTML = railHtml(route().ch); railWire(top); } }
       else { const cl = document.getElementById("chlist"); if (cl) cl.innerHTML = chRows((document.getElementById("chq") as HTMLInputElement | null)?.value ?? ""); } }
-    const nsig = JSON.stringify(d.channels.map((c: any) => c.sessions.map((v: any) => [v.id, v.state, v.line, v.done, v.pinned, v.unread, v.updated, v.texts, v.helpers])));
+    const nsig = JSON.stringify(d.channels.map((c: any) => c.sessions.map((v: any) => [v.id, v.state, v.line, v.done, v.pinned, v.unread, v.updated, v.texts, v.helpers, v.title, v.title_revision])));
     if (changed || nsig !== sig) { sig = nsig; const { ch, s } = route(); if (s) { repaint(ch); const hd = document.getElementById("hdone"); if (hd) hd.outerHTML = headDone(s); } else refresh(); stNow(); }
     schPaint();   // the Scheduled count and view: jobs (and Send later) may have changed
     { const os = route().s; nfSeen(d.channels, os ? String(os.id) : null); }   // a task started waiting on you or finished: a soft chime (Settings → Notifications → Sounds)
@@ -3180,8 +3493,15 @@ function pcFit() { const pc = document.getElementById("pc"); if (!pc) return; co
 function openPC(slug: string, url = "", note = "") {
   const ch = channels.find(c => c.slug === slug); if (!ch) return;
   let pc = document.getElementById("pc"); if (!pc) { pc = document.createElement("section"); pc.id = "pc"; document.body.appendChild(pc); }
-  if (PC.slug === slug && document.body.classList.contains("pc-on")) { if (url) document.getElementById("pcurl")!.innerHTML = logoChip(url, 14) + esc(HOST_OF(url) || url); return; }
+  if (PC.slug === slug && document.body.classList.contains("pc-on")) {
+    if (url) document.getElementById("pcurl")!.innerHTML = logoChip(url, 14) + esc(HOST_OF(url) || url);
+    // A handoff can arrive after the person opened the viewer themselves. Show its
+    // instructions in the existing pane without reconnecting or taking control.
+    if (note) { let n = pc.querySelector<HTMLElement>(".pcnote"); if (!n) { n = document.createElement("div"); n.className = "pcnote"; pc.querySelector(".pchead")!.after(n); } n.textContent = note; PC.handoff = true; }
+    computerViewerChanged(slug); return;
+  }
   closePC(true); PC.slug = slug; PC.px = undefined; PC.tp = false; PC.handoff = !!note; pc.innerHTML = pcHtml(ch, url, note); document.body.classList.add("pc-on"); pcFit(); pcKbReset();
+  computerViewerChanged(slug);
   const scr = document.getElementById("pcscreen")!; pcTrackpad(scr);
   PC.kbOpen = false; (window as any).__pcKbShown = false; PC.vvMax = window.visualViewport?.height || 0;
   const kbx = document.getElementById("pckb") as HTMLTextAreaElement;
@@ -3200,7 +3520,7 @@ async function closePC(quiet = false) {
   try { rfb?.disconnect(); } catch {}
   if (was) api(`/ch/${was}/browser/release`, {}).catch(() => {});
   clearInterval(pcTick); clearInterval(pcClock); pcTick = pcClock = 0; pcDeadline = 0; document.getElementById("pcstill")?.remove();
-  if (!quiet) { document.body.classList.remove("pc-on"); const pc = document.getElementById("pc"); if (pc) { pc.innerHTML = ""; pc.style.height = ""; pc.style.top = ""; } PC.slug = undefined; }
+  if (!quiet) { document.body.classList.remove("pc-on"); const pc = document.getElementById("pc"); if (pc) { pc.innerHTML = ""; pc.style.height = ""; pc.style.top = ""; } PC.slug = undefined; computerViewerChanged(null); }
 }
 if (LIVE) {
   document.addEventListener("click", async e => {
@@ -3254,7 +3574,7 @@ if (LIVE && hasFeature("connected_apps") && new URLSearchParams(location.search)
   history.replaceState(null, "", location.pathname + location.hash); cxLoad(true);
 } else if (LIVE && hasFeature("connected_apps") && new URLSearchParams(location.search).get("appst")) {
   const sp = new URLSearchParams(location.search), app = sp.get("app") || "", okd = sp.get("appst") === "connected", back = sp.get("from"); history.replaceState(null, "", location.pathname + location.hash);
-  if (back === "apps") setTimeout(() => openApps(1)); else if (back !== "offer") openSettings("accounts");   // offer: back in the task, the card shows it
+  if (back === "apps") setTimeout(() => openApps()); else if (back !== "offer") openSettings("accounts");   // offer: back in the task, the card shows it
   const already = sp.get("already") === "1";
   fetch(`${LIVE.api}/apps`, { credentials: "same-origin" }).then(r => r.json()).then(d => { cxSet(d.accounts); const mine = (d.accounts || []).filter((x: Acct) => x.app === app), a = mine.find((x: Acct) => x.status === "connected") || mine[0];
     const name = a?.name || app; const live = a?.status === "connected", n = mine.filter((x: Acct) => x.status === "connected").length, newest = mine.find((x: Acct) => x.status === "connected");
@@ -3264,7 +3584,7 @@ if (LIVE && hasFeature("connected_apps") && new URLSearchParams(location.search)
 // Back from Stripe's plan picker: confirm, then drop the flag so a refresh doesn't repeat it.
 if (LIVE && hasFeature("connected_apps") && new URLSearchParams(location.search).get("google")) {
   const sp = new URLSearchParams(location.search), gs = sp.get("google"), back = sp.get("from"); history.replaceState(null, "", location.pathname + location.hash);
-  if (back === "apps") setTimeout(() => openApps(1)); else openSettings("accounts");
+  if (back === "apps") setTimeout(() => openApps()); else openSettings("accounts");
   note(gs === "connected" ? ic.check : g("help", 14), gs === "connected" ? "Google connected" : "Google didn't connect", gs === "connected" ? "Your helper can now read your email and calendar when you ask." : "Nothing changed. Try Connect again.", "");
 }
 if (LIVE && new URLSearchParams(location.search).get("plan") === "changed") {
@@ -3331,6 +3651,19 @@ function nbOf(ch: Channel) {
 }
 const nbNotes = (ch: Channel) => nbOf(ch).notes;
 const NBUI = { edit: 0 as number | string, add: "", menu: 0 as number | string };
+const NB_BEE_UNREAD = notebookBeeUnread(LIVE?.slug || "sandbox", "main", (() => { try { return localStorage; } catch { return undefined; } })());
+function nbBeePaint() {
+  if (!hasFeature("ambient")) return ;
+  document.querySelectorAll<HTMLAnchorElement>('a[href$="/notebook"]').forEach(el => {
+    const channel = el.getAttribute("href")?.match(/^#\/([^/]+)\/notebook$/)?.[1]; if (!channel) return;
+    const unread = channel === "main" && NB_BEE_UNREAD.unread();
+    el.setAttribute("aria-label", unread ? "Notebook — new from Bee" : "Notebook");
+    let dot = el.querySelector<HTMLElement>(".nbbeedot");
+    if (!dot) { dot = document.createElement("i"); dot.className = "nbbeedot"; dot.setAttribute("aria-hidden", "true"); (el.querySelector(".dti") || el).appendChild(dot); }
+    dot.hidden = !unread;
+  });
+}
+function nbBeeVisit(ch: Channel) { if (!hasFeature("ambient") || ch.slug !== "main" || document.hidden) return; NB_BEE_UNREAD.visit(); nbBeePaint(); }
 // Live: every change is saved on the server (the helper reads these notes at the start of each task).
 const nbApi = (ch: Channel, b: any) => LIVE ? fetch(`${LIVE.api}/notebook/${ch.slug}`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }).then(r => r.json()) : Promise.resolve({});
 // A refused secret (nosecrets: a password, key, card number or code) says where it belongs, and the unsaved copy goes away.
@@ -3420,6 +3753,7 @@ function bfMerge(ch: Channel, srv: BeeFact[]) {
 // that (bee-sync.js), so nothing waits on Bee. Only a failed call brings the card back, with a line saying so.
 // Swipe on touch does approve / deny; ← / → / ↓ work while the stack has focus.
 function nbBee(ch: Channel) {
+  if (!hasFeature("ambient")) return "";
   const list = ch.slug === "main" ? beePending(ch) : []; if (!list.length && !BF.out.length) { BF.done = 0; return ""; }
   const top = list[0], total = BF.done + list.length, pos = BF.done + 1, now = Date.now(), off = I('<path d="M18 6 6 18M6 6l12 12"/>', 14), pen = I('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>', 14);
   const skipI = I('<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/>', 14), many = list.length > 1;
@@ -3511,9 +3845,12 @@ function nbPage(ch: Channel) {
 }
 // Opening the Notebook re-reads it from the server, so things the helper saved since the page loaded are there.
 const NB_AT: Record<string, number> = {};
+const NB_REQUEST: Record<string, number> = {};
 function nbSync(ch: Channel, force = false) {
   if (!LIVE || NBUI.edit || NBUI.add || BF.edit || (!force && Date.now() - (NB_AT[ch.slug] || 0) < 3000)) return; NB_AT[ch.slug] = Date.now();
-  api(`/notebook/${ch.slug}`).then((d: any) => { if (!Array.isArray(d?.notes)) return;
+  const request = NB_REQUEST[ch.slug] = (NB_REQUEST[ch.slug] || 0) + 1;
+  api(`/notebook/${ch.slug}`).then((d: any) => { if (request !== NB_REQUEST[ch.slug] || !Array.isArray(d?.notes)) return;
+    if (ch.slug === "main") { NB_BEE_UNREAD.update(Array.isArray(d.bee?.pending) ? d.bee.pending : null); if (isNb() && route().ch === ch) nbBeeVisit(ch); nbBeePaint(); }
     const old = NBD[ch.slug]; (ch as any).notes = d.notes; bfMerge(ch, d.bee?.pending || []); delete NBD[ch.slug]; const nb = nbOf(ch);
     if (old) { const had = new Set(old.notes.map((n: any) => String(n.id))), was = new Set(old.notes.filter((n: any) => n.fresh).map((n: any) => String(n.id)));
       nb.notes.forEach((n: any) => { if (!had.has(String(n.id)) || was.has(String(n.id))) n.fresh = true; }); }   // "New" stays until the page reloads
@@ -3794,14 +4131,14 @@ const AS = { split: 0, open: false, all: [] as App[], cat: 0, one: false, q: "",
 const ACON: Record<string, boolean> = LIVE ? {} : { gmail: true, googlecalendar: true };
 const ACATS: [string, string | null][] = [["All", null], ["Connected", "__c"], ["Popular", "__f"], ["Email", "email"], ["Docs & files", "documents|file management & storage"], ["Design", "images & design"], ["Payments & money", "payment processing|accounting"], ["Shopping", "ecommerce"], ["Social", "social media marketing|social media"], ["Scheduling", "scheduling & booking|calendar"], ["Marketing", "marketing|marketing automation|email newsletters"], ["Team chat", "team collaboration|communication"], ["Tasks", "task management|project management|productivity"], ["CRM", "crm|sales & crm|contact management"]];
 const APAGE = 48;
-const conCount = () => Object.values(ACON).filter(Boolean).length;
+const conCount = () => Object.entries(ACON).filter(([slug, on]) => on && catalogAppVisible(slug)).length;
 function syncCon() { if (!LIVE) return; for (const k of Object.keys(ACON)) delete ACON[k];
   for (const a of CX.list || []) if (a.status === "connected" && !a.retired) ACON[a.app] = true; }   // a retired Google Super connection doesn't light up the Google apps
 function appAction(a: App) {
   if (ACON[a.s]) return `<button class="apbtn on" data-acon="${a.s}" aria-label="Connected. Manage">${ic.chev}</button>`;
   if (LIVE && a.b) return `<span class="apbtn built">Built in</span>`;
   if (AS.busy === a.s || (LIVE && CX.busy === a.s)) return `<button class="apbtn busy" disabled><i class="apspin"></i><span>Opening</span></button>`;
-  if (LIVE && a.x) return `<button class="apbtn soon" data-soon="app-${a.s}">Soon</button>`;
+  if (appIsSoon(a, !!LIVE, !!ACON[a.s])) return `<button class="apbtn soon" data-soon="app-${a.s}">Soon</button>`;
   return `<button class="apbtn" data-acon="${a.s}">${a.o ? "Connect" : "Add key"}</button>`;
 }
 // "Gmail is Google's email service, featuring spam protection, …" → "Google's email service, featuring spam protection, …": the first
@@ -3813,11 +4150,10 @@ const appCard = (a: App) => `<div class="apcard${ACON[a.s] ? " on" : ""}" data-a
   <div class="aprow">${appAction(a)}</div></div>`;
 function appsFilter() {
   const q = AS.q.trim().toLowerCase(), c = ACATS[AS.cat][1];
-  AS.list = AS.all.filter(t => (!AS.one || t.o) && (!c || (c === "__c" ? ACON[t.s] : c === "__f" ? t.f : c.split("|").some(x => t.c.includes(x)))) && (!q || t.n.toLowerCase().includes(q) || t.s.includes(q) || t.d.toLowerCase().includes(q) || t.c.some(x => x.includes(q))));
+  AS.list = AS.all.filter(t => !appIsSoon(t, !!LIVE, !!ACON[t.s]) && catalogAppVisible(t.s) && (!AS.one || t.o) && (!c || (c === "__c" ? ACON[t.s] : c === "__f" ? t.f : c.split("|").some(x => t.c.includes(x)))) && (!q || t.n.toLowerCase().includes(q) || t.s.includes(q) || t.d.toLowerCase().includes(q) || t.c.some(x => x.includes(q))));
   AS.split = 0;
   if (!q && !c && LIVE) { const on = AS.list.filter(t => ACON[t.s]); if (on.length) { AS.list = [...on, ...AS.list.filter(t => !ACON[t.s])]; AS.split = on.length; } }
   if (q) AS.list.sort((a, b) => (+b.n.toLowerCase().startsWith(q) - +a.n.toLowerCase().startsWith(q)) || (+!!b.f - +!!a.f) || b.o - a.o);
-  if (LIVE) { const ok = AS.list.filter(t => !t.x || ACON[t.s]), soon = AS.list.filter(t => t.x && !ACON[t.s]); AS.list = [...ok, ...soon]; }   // "Soon" apps always last
   AS.shown = 0; const g = document.getElementById("apgrid"); if (g) g.innerHTML = ""; appsMore(); appsCats();
 }
 function appsMore() {
@@ -3888,7 +4224,6 @@ document.addEventListener("click", e => {
 document.addEventListener("input", e => { const t = e.target as HTMLInputElement; if (t.id === "aq") { AS.q = t.value; appsFilter(); document.getElementById("apgrid")!.scrollTop = 0; } });
 document.addEventListener("change", e => { const t = e.target as HTMLInputElement; if (t.id === "aone") { AS.one = t.checked; appsFilter(); } });
 window.addEventListener("keydown", e => {
-  if (hasFeature("connected_apps") && (e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "a") { e.preventDefault(); AS.open ? closeApps() : S.open ? guarded(() => openApps()) : openApps(); return; }   // Apps closes Settings: ask about an unsaved form first
   if (e.key === "Escape" && AS.open) { e.preventDefault(); e.stopImmediatePropagation(); closeApps(); }
 }, true);
 
@@ -3899,7 +4234,7 @@ if (hasFeature("connected_apps")) amInit({ api: () => LIVE?.api || null, helper:
 if (hasFeature("connected_apps")) onAcctNote(cxSet, () => { if (S.open && S.sec === "accounts") cxListPaint(); });
 // Tap an app (Apps popup, its search, Settings → Connected accounts) → its own page: full description, what the helper can do, Connect.
 if (hasFeature("connected_apps")) initAppDetail({ api: LIVE?.api || null, helper: () => who(main), info: s => AS.all.find(x => x.s === s), connected: s => !!ACON[s], busy: () => !!CX.busy,
-  connect: (s, n, another) => appConnect(s, AS.open ? "apps" : "settings", n, cxoFrom(s), !!another), setAccounts: cxSet, manage: () => { closeApps(); openSettings("accounts"); }, note: (a, b) => note(g("help", 14), a, b, ""), draft: cxoDraftHtml });
+  connect: (s, n, another) => appConnect(s, AS.open ? "apps" : "settings", n, cxoFrom(s), !!another), setAccounts: cxSet, manage: () => { closeApps(); openSettings("accounts"); }, computerConnections: () => { closeApps(); openSettings(NETWORK_SEC); }, note: (a, b) => note(g("help", 14), a, b, ""), draft: cxoDraftHtml });
 // "Connect YouTube?" cards the helper puts in chat (connect-card.ts), and the app-page link a texted offer carries (?appinfo=).
 if (LIVE && hasFeature("connected_apps")) { cxoInit({ api: LIVE.api, helper: slug => { const c = channels.find(x => x.slug === slug); return c ? who(c) : who(main); }, connected: s => !!ACON[s],
   connect: (app, name, offer, another) => appConnect(app, "offer", name, offer, !!another), openDetail: (app, name) => openAppDetail(app, { name }), cards: offerCards,
@@ -3909,7 +4244,9 @@ if (LIVE && hasFeature("connected_apps")) { cxoInit({ api: LIVE.api, helper: slu
 
 // Opening the app lands inside General (Skipper is the front door). The channel list stays one tap away (back arrow).
 if (!/^#\/[^/]+/.test(location.hash)) history.replaceState(null, "", `${location.pathname}${location.search}#/${main.slug}`);
+sidebarInit(LIVE?.slug || "sandbox");
 render();
+if (LIVE) nbSync(main); // one boot read, then reuse the foreground list poll at most once a minute
 // Once per device after sign-in: "Let 1Helm use your location and microphone" (devperm.ts). It waits by itself for a calm moment
 // (3 s with no input, nothing open, nothing being typed), so it never lands under a tap that's already on its way.
 if (LIVE) setTimeout(() => void dpSheetMaybe(() => S.open || AS.open || !!document.querySelector(".dlgw.on")), 0);

@@ -10,6 +10,7 @@ mkdirSync(target, { recursive: true });
 await build({ external: ["/fonts/*", "/av/*", "/agent-avatars/*"],
   entryPoints: { app: source("src/v3.ts"), style: source("src/v3.css") },
   outdir: target, bundle: true, minify: true, format: "esm", target: "es2022", loader: { ".json": "json" } });
+await build({ entryPoints: [source("src/contacts-import-worker.ts")], outfile: `${target}/contacts-import-worker.js`, bundle: true, minify: true, format: "esm", target: "es2022" });
 await build({ external: ["/av/*"], entryPoints: [source("src/card.ts")], outfile: `${target}/card.js`, bundle: true, minify: true, format: "esm", target: "es2020" });
 await build({ entryPoints: [source("src/card.css")], outfile: `${target}/card.css`, bundle: true, minify: true });
 mkdirSync(`${target}/pdfjs`, { recursive: true });

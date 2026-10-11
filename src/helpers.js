@@ -33,6 +33,7 @@ export const HELPER_NAME_MAX = 80, HELPER_TASK_MAX = 8000;
 // ---- what a helper may use (Captain's answer A): the allowlist ----
 // Computer (full), public web text, and read-only app lookups. bring_back only restores the helper's OWN set-aside steps.
 export const HELPER_ALLOWED = new Set([
+  "load_tools", // schema discovery only; availableTools still enforces this allowlist
   "run_command", "read_file", "write_file", "edit_file", "search_files",   // full computer, in its own folder
   "fetch_url", "web_search", "search_web_vertical",                        // public web search + page text (no live browser) + live listings (read-only)
   "gmail_search", "gmail_read", "calendar_events", "app_actions", "find_app",   // read-only lookups in the person's apps and the app list

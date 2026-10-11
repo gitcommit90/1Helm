@@ -1,0 +1,41 @@
+/* Settings → Advanced → Custom MCP connections (custom-mcp.ts). Reuses the settings rows, toggle, form and button looks. */
+.sr .mcxexp{margin-left:0;background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--ink)}
+.mcxnote{margin:12px 4px 0;font-size:13.5px;line-height:1.45;color:var(--ink);padding:10px 14px;border-radius:14px;background:color-mix(in srgb,var(--warn) 12%,transparent)}
+.mcxlink{color:var(--accent);font:inherit;font-weight:600;text-decoration:underline;text-underline-offset:3px;padding:2px 0}
+.mcxlink:hover{color:var(--ink)}
+.mcxfine{max-width:620px}
+.mcxlist{list-style:none;margin:0;padding:0}
+.mcxrow{padding:14px 18px 10px;min-width:0}.mcxrow+.mcxrow{box-shadow:0 -1px 0 var(--line)}
+.mcxtop{display:flex;align-items:flex-start;gap:12px;min-width:0}
+.mcxtop .srt b{overflow-wrap:anywhere}
+.mcxend{overflow-wrap:anywhere;word-break:break-all}
+.mcxst{flex:none;display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--mute);text-align:right;max-width:44%}
+.mcxst.ok{color:var(--live)}.mcxst.bad{color:#d14343}.mcxst.warn{color:var(--warn)}
+.mcxacts{display:flex;flex-wrap:wrap;gap:2px 6px;margin:6px 0 0}
+.mcxacts .sa:disabled{opacity:.55;cursor:default}
+.mcxerr{margin:8px 0 0;font-size:13px;line-height:1.4;color:#d14343;overflow-wrap:anywhere}
+.mcxform .mcxerr{margin:12px 4px 0}
+.mcxrow .mcxfine{margin:8px 0 0}
+.mcxtools{list-style:none;margin:8px 0 4px;padding:0;display:flex;flex-direction:column;gap:8px;min-width:0}
+.mcxtools li{display:flex;flex-direction:column;gap:1px;font-size:13px;min-width:0}.mcxtools b{font:600 12.5px ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}.mcxtools span{color:var(--mute);overflow-wrap:anywhere}
+.mcxauth{border:0;margin:14px 0 0;padding:0;min-width:0}.mcxauth legend{font-size:13px;font-weight:600;color:var(--mute);margin:0 4px 6px;padding:0}
+.mcxopt{display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-radius:14px;cursor:pointer;box-shadow:0 0 0 1px var(--line);margin-top:8px;background:var(--sheet)}
+.mcxopt.on{box-shadow:0 0 0 2px var(--accent)}
+.mcxopt input{margin:3px 0 0;accent-color:var(--accent);flex:none;width:16px;height:16px}
+.mcxopt:has(input:focus-visible){outline:2px solid var(--ink);outline-offset:2px}
+.mcxdisc{margin:12px 4px 0;font-size:13px;font-weight:600;color:var(--mute);display:inline-flex;align-items:center;gap:6px;padding:4px 0}
+.mcxdisc::before{content:"";width:6px;height:6px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg);transition:transform .15s}
+.mcxdisc[aria-expanded=true]::before{transform:rotate(45deg)}
+.mcxdisc:hover{color:var(--ink)}
+[data-cmcprow] .tg:disabled{opacity:.5;cursor:default}
+.sform input[aria-invalid=true]{box-shadow:0 0 0 2px #d14343}
+.mcxform input[type=radio]{height:16px}
+.mcxform [hidden]{display:none}
+.mcxrow button:focus-visible,.mcxdisc:focus-visible,.mcxlink:focus-visible,.mcxform button:focus-visible,.mcxform input:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+@media (max-width:767px){
+  .mcxrow{padding:14px 16px 10px}
+  .mcxtop{flex-wrap:wrap}.mcxtop .srt{flex:1 1 60%}.mcxst{max-width:none}
+  .mcxacts{margin-left:0}.mcxerr,.mcxrow .mcxfine,.mcxtools{margin-left:0}
+  .mcxacts .sa{height:40px}
+  .mcxform input[type=radio]{height:18px;width:18px}
+}

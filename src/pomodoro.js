@@ -6,6 +6,10 @@
 //   the person) … → done (after the long break). Pausing keeps the time left.
 // - The state is deterministic: advance(st, now) gives the state at any time, so every read is exact and the app counts down
 //   from the end time locally. The DO alarm (armNow/alarm) only wakes to save the transition and tell open tabs.
+// - GLOBAL timer (Captain: "ask when you start if it's task specific or global"): one per person, not tied to any task or channel. It lives
+//   in the tenant's Archive DO (table pomodoro_global, pomoGlobalMethods below), so every channel, device and reload sees the same one.
+//   Same state machine; no DO alarm (every read advances it exactly, the app counts down locally). At most one global at a time:
+//   starting over a running one needs replace:true (the app asks first). The task timer rules above are unchanged.
 // - The helper's pomodoro tool: start/pause/resume/stop only on the person's quoted ask (person-asked.js); offer shows a card the
 //   person answers (their tap is the consent), with server-side limits; status answers their question. Not for helpers.
 // - Offer limits per tenant (D1 pomodoro_prefs, shared by all channels): "Don't suggest again" turns offers off; two "No thanks"
@@ -130,7 +134,7 @@ export const mentionsTimer = (words) => words.some((w) => /\b(pomodoros?|timers?
 
 // ---- the helper's tool ----
 export const POMODORO_TOOL = { type: "function", function: { name: "pomodoro",
-  description: "The focus timer (pomodoro) of THIS task. The person sees it in the task header; when a work round ends the task shows a break overlay with a countdown, then asks them to start the next round. Defaults: 25 min work, 5 min break, a 15 min long break after 4 rounds. "
+  description: "The focus timer (pomodoro): either of THIS task (scope \"task\") or the person's one GLOBAL timer (scope \"global\", not tied to any task or channel; it stays visible as they move around). When the person asks to START one and hasn't said which, DON'T guess: ask \"For this task, or everything (global)?\" and wait for their answer, then call with scope. Outside a task (no task open) it is always global. The task timer: The person sees it in the task header; when a work round ends the task shows a break overlay with a countdown, then asks them to start the next round. Defaults: 25 min work, 5 min break, a 15 min long break after 4 rounds. "
     + "start / pause / resume / stop: ONLY when the person asks you to in this conversation; pass their own words in person_asked (refused without a matching quote, and in scheduled runs, follow-ups and helpers). start replaces a running timer (use it to change the minutes); resume also starts the next round when one is waiting. "
     + "offer: shows a small card in the task (\"Want a focus timer?\") with Start / No thanks; their tap decides, so it needs no quote. Offer ONLY when the person brings up focus, procrastination, a pile of work, feeling overwhelmed or managing their time in this task (e.g. \"I keep procrastinating\", \"I need to focus for the next hour\", \"I'm overwhelmed with work today\"). Never as a generic add-on, never in unrelated tasks, never again after they said no. At most one offer per task per day and none while a timer runs; when the result says an offer isn't allowed, accept it and don't mention timers. "
     + "status: no quote needed; use it only to answer the person's own question (e.g. how long is left). "
@@ -141,6 +145,8 @@ export const POMODORO_TOOL = { type: "function", function: { name: "pomodoro",
     break_min: { type: "integer", description: "Short break minutes (default 5)" },
     long_break_min: { type: "integer", description: "Long break minutes after the last round (default 15; 0 = none)" },
     rounds: { type: "integer", description: "Work rounds in a set (default 4)" },
+    scope: { type: "string", enum: ["task", "global"], description: "start: required when you're in a task (the person's answer to task or global; ask if unclear). pause/resume/stop/status: which timer, if both exist (default: the one that exists)." },
+    replace: { type: "boolean", description: "start with scope global while a global timer already runs: true only after the person agreed to replace it." },
     person_asked: { type: "string", description: "For start, pause, resume and stop: a short exact quote of the person's words asking for it, e.g. 'start a 50 minute timer'. Not needed for status or offer." } }, required: ["action"] } } };
 
 // Quote check with timer wording (person-asked.js matches; the texts there are about marking done).
@@ -235,12 +241,35 @@ export const pomoMethods = {
     return { pomodoro: this.pomoEmit(session) };
   },
   async pomoPrefsPublic() { const p = await this.pomoPrefs(), now = this.pomoClock(); return { offers: p.offers === "off" ? "off" : now < p.suppressed_until ? "paused" : "on" }; },
-  // The helper's pomodoro tool, on the current task only.
+  // The tenant's global timer lives in the Archive DO (tests replace pomoGlobalStub with a fake).
+  pomoGlobalStub() { return this.env.ARCHIVE.get(this.env.ARCHIVE.idFromName(`archive:${this.get("tenant")}`)); },
+  async pomoGlobalPeek() { try { return await this.pomoGlobalStub().pomoGlobalView(); } catch { return null; } },
+  async pomoGlobalTool(action, a, now, session = null) {
+    const G = this.pomoGlobalStub();
+    if (action === "status") { const v = await this.pomoGlobalPeek(); return globalStatusText(v ? { ...v.timer } : null, now); }
+    let set = null; if (action === "start") { set = pomoSettings({ work_min: a.work_min, break_min: a.break_min, long_break_min: a.long_break_min, long_min: a.long_min, rounds: a.rounds }); if (set.error) return set.error; }
+    const prevView = await this.pomoGlobalPeek(), prev = prevView?.timer || null;
+    if (action === "start" && prev && prev.phase !== "done" && !a.replace) return `error: a global focus timer is already running (${phaseWords(prev)}). Ask the person whether to replace it; if yes, call start again with replace true.`;
+    const r = await G.pomoGlobalAction({ action, ...(set || {}), replace: !!a.replace }, "helper");
+    if (r.error) return `error: ${r.error}`;
+    this.pomoEmitGlobal(r.pomodoro, session);
+    const st = r.pomodoro?.timer || null;
+    if (action === "stop") return `Stopped the global focus timer (${prev?.done_rounds ?? 0} round${prev?.done_rounds === 1 ? "" : "s"} done). It's gone from the person's screen.`;
+    if (action === "start") return `Started a GLOBAL focus timer (not tied to any task; it stays on the person's screen as they move around): ${setWords(st)}. Round 1 ends in ${mins(st.work_min * MIN)}.${prev && prev.phase !== "done" ? " It replaced the one that was running." : ""}`;
+    return globalStatusText(st, now);
+  },
+  pomoEmitGlobal(v, session) { try { if (session) this.liveTurn?.(session)?.emit?.({ t: "pomodoro_global", pomodoro: v }); } catch {} },
+  // The helper's pomodoro tool: the current task's timer, or the person's global one (scope).
   async pomoTool(ctx = {}, a = {}) {
     const action = String(a.action || "").trim().toLowerCase(), session = ctx.session, now = this.pomoClock();
+    let scope = String(a.scope || "").trim().toLowerCase(); if (scope && scope !== "task" && scope !== "global") return 'error: scope must be "task" or "global".';
     if (ctx.kind === "helper") return "error: pomodoro isn't available to a helper.";
-    if (!session) return "error: this run isn't in a task, so there's no timer to use.";
-    if (action === "status") return statusText(this.pomoGet(session, now).st, now);
+    if (!session) { if (scope === "task") return "error: this run isn't in a task, so there's no task timer. Use scope global."; if (action === "offer") return "error: this run isn't in a task, so there's no timer to offer."; scope = "global"; }
+    if (action === "status") {
+      if (scope === "global") return this.pomoGlobalTool("status", a, now, session);
+      const t = statusText(this.pomoGet(session, now).st, now), g = scope ? "" : await this.pomoGlobalTool("status", a, now).catch(() => "");
+      return g && !g.startsWith("There's no") ? `${t} ${g}` : t;
+    }
     const words = personWords(ctx);
     if (action === "offer") {
       if (!words.length) return "error: offers are only for a conversation with the person (not scheduled runs or handed-back results). Don't mention timers.";
@@ -258,6 +287,13 @@ export const pomoMethods = {
     }
     if (!["start", "pause", "resume", "stop"].includes(action)) return "error: action must be start, pause, resume, stop, status or offer.";
     const q = timerQuote(a.person_asked, words); if (!q.ok) return q.error;
+    if (action === "start" && !scope) return 'error: ask the person first: "For this task, or everything (global)?" A task timer belongs to this task; a global one stays on their screen across all tasks and channels. Then call start again with scope task or global.';
+    if (!scope) {   // pause / resume / stop without a scope: the one that exists
+      const hasTask = !!this.pomoGet(session, now).st, hasGlobal = !!(await this.pomoGlobalPeek());
+      if (hasTask && hasGlobal) return "error: there's a timer in this task and a global one. Ask the person which one, then call again with scope task or global.";
+      scope = hasGlobal && !hasTask ? "global" : "task";
+    }
+    if (scope === "global") return this.pomoGlobalTool(action, a, now, session);
     let set = null; if (action === "start") { set = pomoSettings({ work_min: a.work_min, break_min: a.break_min, long_min: a.long_break_min ?? a.long_min, rounds: a.rounds }); if (set.error) return set.error; }
     const prev = this.pomoGet(session, now).st, r = applyAction(prev, action, now, set, "helper"); if (r.error) return r.error;
     this.pomoSave(session, r.st);
@@ -276,3 +312,35 @@ export const pomoMethods = {
     return note + (o ? offerNoteText(o) : "");
   },
 };
+
+// ---- the global timer (tenant-level; lives in the Archive DO, which is one per person) ----
+export const POMO_GLOBAL_DDL = "CREATE TABLE IF NOT EXISTS pomodoro_global (k TEXT PRIMARY KEY, st TEXT NOT NULL, updated INTEGER NOT NULL)";
+export const pomoGlobalMethods = {
+  pgClock() { return Date.now(); },
+  pgRaw() { this.sql.exec(POMO_GLOBAL_DDL); const r = this.sql.exec("SELECT st FROM pomodoro_global WHERE k='g'").toArray()[0]; if (!r) return null; try { return JSON.parse(r.st); } catch { return null; } },
+  pgSave(st) {
+    this.sql.exec(POMO_GLOBAL_DDL);
+    if (!st) this.sql.exec("DELETE FROM pomodoro_global WHERE k='g'");
+    else this.sql.exec("INSERT INTO pomodoro_global (k,st,updated) VALUES ('g',?,?) ON CONFLICT(k) DO UPDATE SET st=excluded.st, updated=excluded.updated", JSON.stringify(st), this.pgClock());
+  },
+  // The global timer as of now (a due transition or idle expiry is saved on read). → { st, events }.
+  pgGet(now = this.pgClock()) { const raw = this.pgRaw(); if (!raw) return { st: null, events: [] }; const r = advance(raw, now); if (r.events.length) this.pgSave(r.st); return r; },
+  async pomoGlobalView() { const now = this.pgClock(), { st } = this.pgGet(now); return st ? { timer: pomoPublic(st, now), offer: null } : null; },
+  // b: { action: get | start | pause | resume | skip | stop, replace?, work_min… }. → { pomodoro } or { error, code?, pomodoro }.
+  async pomoGlobalAction(b = {}, by = "person") {
+    const now = this.pgClock(), action = String(b.action || "get");
+    if (action === "get") return { pomodoro: await this.pomoGlobalView() };
+    if (!["start", "pause", "resume", "skip", "stop"].includes(action)) return { error: "action must be start, pause, resume, skip, stop or get" };
+    const { st } = this.pgGet(now);
+    let set = null;
+    if (action === "start") {
+      set = pomoSettings(b); if (set.error) return { error: set.error.replace(/^error: /, "") };
+      if (st && st.phase !== "done" && !b.replace) return { error: "A global timer is already running. Replace it?", code: "running", pomodoro: await this.pomoGlobalView() };
+    }
+    const r = applyAction(st, action, now, set, by);
+    if (r.error) return { error: r.error.replace(/^error: /, "").replace("in this task", "that's global"), pomodoro: await this.pomoGlobalView() };
+    this.pgSave(r.st);
+    return { pomodoro: await this.pomoGlobalView() };
+  },
+};
+export const globalStatusText = (st, now) => !st ? "There's no global focus timer." : statusText(st, now).replace("Focus timer in this task:", "Global focus timer (not tied to a task):");

@@ -6,10 +6,13 @@
 // - Billing: every model call is reserved against the tenant ledger (balance + daily safety limit), then settled at cost+15%.
 import { DurableObject } from "cloudflare:workers";
 import { enabled as eeEnabled, toolEnabled as eeToolEnabled } from "./ee/index.js";
+import { protectedRequest } from "./approval-scope.js";
 import { tolerantEnv, codeV, isResetErr } from "./do-stub.js";
 import { resumeInit, resumeMix, guardIn, JOURNALED, runIdOf } from "./resume.js";
 import { runTurnPi } from "./pi-engine.js";
 import { trackerInit, listCards, cardDetail, stepDetail, SILENT_TOOLS } from "./tracker.js";
+import { contextV2, CONTEXT_TOOLS, RUNTIME_CONTRACT, toolCatalog, loadedTools, selectedTools, contextMessages, contextReceipt, contextData } from "./context.js";
+import { channelLayers } from "./prompt/context-layers.js";
 import { savedTo } from "./saved-to.js";   // where a remember really saved (the chat's "Added to …" chip)
 import { SUMMARY_ROUTE, recoverCards, openCard, addInput, findByCid, markConsumed, stepBegin, stepEnd, stepSkipped, setStatus, commitCard, labelCard, labelInput, summarizeCard, cardView, eventView, withStepTitles, splitStepTitle, fallbackStepTitle, MAX_INPUTS } from "./tracker.js";
 import { steerText, SKIP_TEXT, TOO_MANY, LIMIT_REPORT_ASK } from "./steer.js";
@@ -18,15 +21,19 @@ import { workingSet, bringBack, sameAsShown, BRING_BACK_TOOL } from "./workmem.j
 import { linkCreatePurchase, linkGetPurchase } from "./ee/index.js";
 import { normSite, hostMatchesSite, loginForHost, loginSites } from "./logins.js";
 import { useOpenRouter, openRouterChat, jevNote, OR_MAX_OUT, OR_RESERVE_PRICE, aiOpts, prefixPrint, CACHE_WRITE_MULT } from "./model.js";
+import { modelDeadline, meaningfulDelta, modelFault, modelFailureReply, rememberModelFailure, claimOutputRecovery, retainModelUsage, drainModelUsage } from "./model-limits.js";
+import { splitProgress, answerText, mustShow } from "./progress-dedupe.js";
 import { deliverText, deliverCard, deliverReaction, textTyping, fetchTextedFile, appLink, textingLine } from "./ee/index.js";
 import { PAY_MSG, INACTIVE_MSG, PAUSED_TEXT } from "./ee/index.js";   // billing: what a read-only account is told
 import { saveCard, cardLayout, saveApprovalCard, approvalLayout, permLayout, confirmLayout } from "./cards.js";
 import { confirmInit, confirmGate, decideConfirm, confirmView, confirmStatus, CONFIRM, CONFIRM_TOOLS } from "./confirm.js";   // the confirm card for sends, deletes, shares…
 import { permsInit, permGate, decidePerm, permPromptLine, loadPerms, kindName, permView } from "./perms.js";   // Settings → Permissions: levels + per-kind asks
+import { NATIVE_TOOLS, NATIVE_TOOL_NAMES, SSH_PERMS, nativeInit, nativeMix, nativeTool, nativeExpire, decideSsh, sshApprovalView, sshApprovalStatus } from './native-network.js';
 import { fillGate, fillTaskGate, fillStepGate, siteOf as fillSiteOf } from "./personal-fill.js";   // "Fill in your personal details": asks first at every level
 import { GOOGLE_TOOLS, GOOGLE_TOOL_NAMES, runGoogleTool, APP_TOOLS, runAppTool } from "./ee/index.js";
 import { transportFor, ReadBatch } from "./ee/index.js";   // one Composio session per task; several reads in a step → one call
 import { appsMode, selfStatus, isEnded, endedToolText, ENDED_PREFIX } from "./ee/index.js";   // Self-managed apps: "Your Composio sign-in ended"
+import { withCustomRows, isCustomSlug, CUSTOM_WORDS } from "./ee/index.js";
 import { guardedTool, afterTurn as askAfterTurn } from "./ask-first.js";
 import { notifyTask, notifyReset, textAllowed } from "./notify.js";   // Settings → Notifications: push / text when a task needs you or is finished
 import { BUILTIN_TEXT } from "./ee/index.js";
@@ -53,6 +60,8 @@ import { installSnapshotRpc } from "./sqlite-snapshot.js";
 import { stopMix, untilStopped, stopError, planBudget, STOPPED_REPLY, STOPPED_TOOL_TEXT, STEP_LIMIT_CHAT_ASK } from "./stop.js";   // Stop / Stop all
 import { repeatWatch, REPEAT_NOTE, REPEAT_FALLBACK } from "./repeat-guard.js";   // a model step that starts repeating itself
 import { guardResume, noteRepeat, commandLimitMs, commandNotes, stepNotes, spendInit, spendMix, guardModel, guardTools, guardCall, noteCharge, reportAsk, pauseFallback, DAY_PAUSE_REPLY, OUT_OF_TIME_REPLY, SPEND_CEILING } from "./spendguard.js";   // per-turn budget, runaway pause, day/month guard
+import { spendPausesOn, stepAllowance } from './spend-preferences.js';
+import { trimTurnState, resumedReplyState, diagnosticTrace } from './spend-retention.js';
 import { safeName, mimeOf, humanBytes, MAX_UPLOAD, storeUpload, storeView, viewJpeg, fileTags } from "./files.js";
 import { APP_FILE_MAX } from "./ee/index.js";
 import { stPut, stDelete } from "./storage.js";
@@ -67,6 +76,9 @@ import { pinnedBlock, notebookMatches, identityNote, PINNED_BUDGET } from "./pin
 import { genuiPromptSection, genuiEnvOn, cardsToText, cardsTree, splitCardParts, isRealCard, hasCards, stripPauseButtons } from "./genui.js";
 // Texted files (photos, videos, documents): how long to gather a caption / more photos sent as separate messages.
 export const TEXT_GATHER_MS = 4000, TEXT_GATHER_MAX_MS = 15000;
+// Additive presentation snapshot; legacy accumulated text and turn execution stay
+// unchanged. Copy arrays so a live-load reader cannot mutate the running turn.
+const liveReplyState = (tc) => tc.replyState ? { reply_state: { ...tc.replyState, pre: [...tc.replyState.pre], prog: [...tc.replyState.prog] } } : {};
 const textKind = (mime, name = "") => /^image\//.test(mime) || /\.(heic|heif|jpe?g|png|gif|webp)$/i.test(name) ? "photo" : /^video\//.test(mime) || /\.(mov|mp4|m4v)$/i.test(name) ? "video"
   : /^audio\//.test(mime) || /\.(caf|m4a|mp3|wav)$/i.test(name) ? "voice message" : "file";
 const MAX_MB = Math.round(MAX_UPLOAD / 1048576);
@@ -83,6 +95,8 @@ export function textProblemsNote(probs) {
   return `Not everything they texted came through: ${probs.map((p) => p.reason === "storage_full" ? `${p.name} (${p.kind}) wasn't saved because their storage is full` : p.reason === "too_big" ? `${p.name} (${p.kind}${p.bytes ? `, ${humanBytes(p.bytes)}` : ""}) is too big to send by text (max ${MAX_MB} MB), so it wasn't saved` : p.reason === "unsupported" ? `${p.name} (${p.kind}) couldn't be opened` : `${p.name} (${p.kind}) failed to download`).join("; ")}. Tell them plainly in your reply${probs.some((p) => p.reason === "storage_full") ? " and that they can add storage in Settings → General → Usage or delete files they don't need" : probs.some((p) => p.reason === "too_big") ? " and that they can add it in the app instead" : ", and ask them to send it again or add it in the app"}.`;
 }
 import { MEMORY_EXPLAIN_TOOL, memoryExplain, explainChannel } from "./memory-explain.js";
+import { AMBIENT_QUERY_TOOL, ambientQuery } from "./ee/index.js";
+import { LOCATION_QUERY_TOOL, locationQuery } from "./location-query.js";
 import { READ_DOC_TOOL, readDoc } from "./docs/index.js";
 import { READ_SKILL_TOOL, readSkill } from "./skills/index.js";
 import { SAVE_SKILL_TOOL, saveSkill, listChannelSkills, channelSkillsLine } from "./skills/channel.js";   // this channel's own skills (skill-creator, B4)
@@ -90,6 +104,10 @@ import { FORGET_TOOL, forgetTool, forgottenInit, forgetKeys, forgottenEntries, i
 import { scrubSecrets, hasSecret } from "./secrets-scrub.js";   // nosecrets: passwords, keys, card numbers and codes never go into memory
 import { TODO_TOOL, mergeTodos, todoResult, todoContextNote, publicItems } from "./todos.js";
 import { MARK_DONE_TOOL, personWords, checkQuote, findTask } from "./person-asked.js";
+import { TASK_TOOLS, taskTitle } from "./task-tools.js";
+import { LIST_CHANNELS_TOOL, listChannels, routeTaskTool, receiveTaskAccess } from "./task-access.js";
+import { CREATE_CHANNEL_TOOL, START_TASK_TOOL, createChannelTool } from "./task-kickoff.js";
+import { recallHistory } from "./history-search.js";
 import { appFirstBlock, repeatBlock, repeatNote } from "./ee/index.js";
 import { integrationHint, hintNudge } from "./ee/index.js";
 import { APPS_USED_TOOL, APPS_USED_LINE, appsUsedTool, appsUsedLine, getAppsUsed, usedSlugs } from "./ee/index.js";   // "Apps I use": the person's own list, a heads-up for offers and hints   // a named service that has an integration: one hint line per message, one nudge per app per task
@@ -105,7 +123,7 @@ import { worklogInit, workLogged, wlNotes, isLookupTool, logBrowserTask, addFres
 import { helperName } from "./helper-name.js";
 import { locationOf, placeLine, tzLabel, LOC_USE_MS } from "./location.js";   // where the person is: one line per message (Notebook home + device → time zone)
 const WS_HEADER = "(Contacts — the person's shared address book:)";
-const SKIPPER_SLUG = "main";   // General's helper (whatever the person named it) is the only one that reads and writes every channel's memory.
+const SKIPPER_SLUG = "main";   // General is the only channel with cross-channel memory and direct task access.
 // Texts are plain: no markdown, no tables. Links stay as bare URLs so iMessage previews them.
 function toTextReply(md) {
   return cardsToText(String(md || "")).replace(/```[a-z]*\n?([\s\S]*?)```/g, "$1").replace(/!\[[^\]]*\]\(([^)]+)\)/g, "$1").replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, "$1: $2")
@@ -171,6 +189,7 @@ const TOOLS = () => (toolDefs ??= [
   { type: "function", function: { name: "list_workflows", description: "List this channel's workflows and follow-ups with status and next run.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "set_workflow_status", description: "Pause, resume or complete a workflow by id.", parameters: { type: "object", properties: { id: { type: "integer" }, status: { type: "string", enum: ["active", "paused", "complete"] } }, required: ["id", "status"] } } },
   TODO_TOOL,
+  ...TASK_TOOLS,
   WORK_LOG_TOOL,
 ]);
 let freshReady = false;
@@ -231,7 +250,7 @@ export function titleFrom(text) {
 }
 const previewOf = (s) => String(s || "").replace(/[*_#`>|]/g, "").replace(/\s+/g, " ").trim().slice(0, 160);
 // What the helper is doing right now, in plain words (the app shows "<helper> is <line>…").
-function lineFor(name, a = {}) {
+export function lineFor(name, a = {}) {
   let host = ""; try { host = new URL(String(a.url)).hostname.replace(/^www\./, ""); } catch {}
   const file = String(a.path || "").split("/").pop();
   return ({ run_command: "working on its computer", read_file: "looking through its files", search_files: "looking through its files",
@@ -240,7 +259,7 @@ function lineFor(name, a = {}) {
     browser_handoff: "waiting for you in the browser", browser_task: host ? `working on ${host}` : "using the browser", browser_screenshot: "taking a screenshot", browser_fill_card: "filling in the payment", browser_fill_login: a.site ? `signing in to ${normSite(a.site) || "a site"}` : "signing in", buy_with_link: "asking you to approve a purchase", gmail_search: "checking your email", gmail_read: "reading an email", gmail_draft: "writing a draft", gmail_send: "sending your email", calendar_events: "checking your calendar", calendar_add: "adding to your calendar",
     check_purchase: "checking the purchase", fetch_url: host ? `reading ${host}` : "reading a web page", web_search: "searching the web", search_web_vertical: a.kind === "flights" ? "checking flights" : a.kind === "hotels" ? "checking hotels" : a.kind === "finance" ? "checking the markets" : a.kind === "events" ? "looking for events" : "searching live listings", text_person: "texting you", text_captain: "texting you",
     schedule_workflow: "setting up a scheduled check", schedule_followup: "setting a reminder", recall_history: "looking back through earlier work", file_text: a.query ? `searching ${String(a.file || "a file").split("/").pop().slice(0, 60)}` : `reading ${String(a.file || "a file").split("/").pop().slice(0, 60)}`, work_log: "checking what it already looked up", bring_back: "looking back at an earlier step", remember: a.fact ? `remembering: ${String(a.fact).slice(0, 140)}` : "remembering",
-    save_skill: a.delete ? "deleting a saved skill" : a.slug ? `saving the ${String(a.slug).slice(0, 40)} skill` : "saving a skill", forget: a.confirmed ? "forgetting what you asked" : "finding what to forget", list_workflows: "checking its scheduled jobs", set_workflow_status: "updating a scheduled job", set_workflow_gate: "updating a scheduled job", save_run_notes: "saving notes", update_todos: "updating the to-do list", share_file: file ? `sharing ${file}` : "sharing a file", start_helper: a.name ? `starting a helper: ${String(a.name).slice(0, 60)}` : "starting a helper", stop_helper: "stopping a helper", read_skill: "checking its playbook", app_actions: a.app ? `looking in ${String(a.app).replace(/super$/, "")}` : "looking in your apps", app_run: "working in your apps", app_proxy: "working in your apps", apps_i_use: APPS_USED_LINE, ...CONNECT_LINES })[name] || "working";
+    save_skill: a.delete ? "deleting a saved skill" : a.slug ? `saving the ${String(a.slug).slice(0, 40)} skill` : "saving a skill", forget: a.confirmed ? "forgetting what you asked" : "finding what to forget", list_workflows: "checking its scheduled jobs", set_workflow_status: "updating a scheduled job", set_workflow_gate: "updating a scheduled job", save_run_notes: "saving notes", update_todos: "updating the to-do list", share_file: file ? `sharing ${file}` : "sharing a file", start_helper: a.name ? `starting a helper: ${String(a.name).slice(0, 60)}` : "starting a helper", stop_helper: "stopping a helper", read_skill: "checking its playbook", app_actions: a.app ? `looking in ${isCustomSlug(a.app) ? CUSTOM_WORDS : String(a.app).replace(/super$/, "")}` : "looking in your apps", app_run: "working in your apps", app_proxy: "working in your apps", apps_i_use: APPS_USED_LINE, ...CONNECT_LINES })[name] || "working";
 }
 // remember's result, plus a live "saved" event saying where it really went (saved-to.js), for the chat's "Added to …" chip.
 function savedNote(ctx, a, out) { const saved = savedTo("remember", a, out); if (saved.length) ctx.emit?.({ t: "saved", saved }); return out; }
@@ -298,6 +317,7 @@ export class Resident extends DurableObject {
     try { this.sql.exec("ALTER TABLE turns ADD COLUMN checkpoints INTEGER"); } catch {}
     try { this.sql.exec("ALTER TABLE turns ADD COLUMN step_in TEXT"); } catch {}
     try { this.sql.exec("ALTER TABLE turns ADD COLUMN parts TEXT"); } catch {}
+    try { this.sql.exec("ALTER TABLE turns ADD COLUMN progress TEXT"); } catch {}
     try { this.sql.exec("ALTER TABLE turns ADD COLUMN engine TEXT"); } catch {}
     try { this.sql.exec("ALTER TABLE turns ADD COLUMN cache_write_tok INTEGER"); } catch {}
     try { this.sql.exec("ALTER TABLE turns ADD COLUMN resumes INTEGER"); } catch {}   // resume.js: how many times a deploy cut this turn off and it carried on   // prompt-cache writes (model.js withCacheBreakpoints)
@@ -305,9 +325,12 @@ export class Resident extends DurableObject {
       CREATE TABLE IF NOT EXISTS grants (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, host TEXT NOT NULL, method TEXT NOT NULL DEFAULT '*', scope TEXT NOT NULL, session TEXT, uses_left INTEGER NOT NULL DEFAULT -1, expires INTEGER, approval_id INTEGER);`);
     confirmInit(this.sql);   // confirm.js: a confirm card's payload hash, view and one-time token
     permsInit(this.sql);   // perms.js: a permission request can be for a kind of action (perm), not only a site
+    nativeInit(this.sql);
     try { this.sql.exec("ALTER TABLE approvals ADD COLUMN via TEXT"); } catch {}   // egress-policy.js: form (a browser form) | command (older tables)
     // Tasks (sessions): several per channel. "done" belongs to the person (the General helper's mark_task_done only on their explicit, quoted ask); the helper's state is derived (working/waiting/watching/ready).
     this.sql.exec("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, done_at INTEGER, created INTEGER NOT NULL, updated INTEGER NOT NULL, last_reply_at INTEGER, seen_at INTEGER NOT NULL DEFAULT 0, waiting TEXT, preview TEXT)");
+    try { this.sql.exec("ALTER TABLE sessions ADD COLUMN title_manual INTEGER NOT NULL DEFAULT 0"); } catch {}   // person's names survive automatic texting-title updates and DO restarts
+    try { this.sql.exec("ALTER TABLE sessions ADD COLUMN title_revision INTEGER NOT NULL DEFAULT 0"); } catch {}   // title-only ordering token; do not change task activity/sort order on rename
     try { this.sql.exec("ALTER TABLE turns ADD COLUMN session TEXT"); } catch {}
     try { this.sql.exec("ALTER TABLE turns ADD COLUMN models TEXT"); } catch {}
     try { this.sql.exec("ALTER TABLE workflows ADD COLUMN session TEXT"); } catch {}
@@ -390,7 +413,7 @@ export class Resident extends DurableObject {
   async conns(fresh = false) {
     if (!this.env.COMPOSIO_KEY) return [];
     if (!fresh && this._conns && Date.now() - this._conns.at < 60000) return this._conns.list;
-    try { const list = await transportFor(this.env, this.get("tenant")).listConnections(fresh ? { fresh: true } : {}); this._conns = { at: Date.now(), list }; return list; }
+    try { const list = await withCustomRows(this.env, this.get("tenant"), await transportFor(this.env, this.get("tenant")).listConnections(fresh ? { fresh: true } : {})); this._conns = { at: Date.now(), list }; return list; }   // + this workspace's own custom MCP servers (custom-mcp.js)
     catch (e) { if (isEnded(e)) { this._conns = { at: Date.now(), list: [] }; return []; } return this._conns?.list || []; }   // sign-in ended: cmpGate says so
   }
 
@@ -585,6 +608,17 @@ export class Resident extends DurableObject {
   async forgetPlanHere(kw, o = {}) { if (!this.get("tenant")) return { items: [], turns: [], workflows: [], files: [] }; const keys = forgetKeys(kw); const r = await planLocal(this, keys, { ...o, query: (kw || []).join(", ") }); return { ...r, turns: r.turns.map(String) }; }
   async forgetHere(kw, ids = [], o = {}) { if (!this.get("tenant")) return { removed: {}, missing: [] }; const keys = forgetKeys(kw); const sweep = (await planLocal(this, keys, {})).turns; return executeLocal(this, keys, [...ids], { turns: sweep, channelId: this.get("channel_id"), origin: o.origin || "general" }); }
   forgottenNow(text) { return isForgotten(forgottenEntries(this.sql), text); }
+  // Additive internal RPC: ambient extraction checks General's current memory
+  // preferences before sending speech to a model and before publishing results.
+  // Return indexes only; callers receive no forgotten keywords or personal notes.
+  ambientPrivacy(texts) {
+    const mode = this.memoryMode();
+    if (!this.get("tenant") || this.get("channel") !== SKIPPER_SLUG) return { mode: "off", allowed: [], error: "General memory is not initialized here" };
+    if (mode !== "on") return { mode, allowed: [] };
+    if (!Array.isArray(texts) || texts.length > 1000 || texts.some((s) => typeof s !== "string") || texts.reduce((n, s) => n + s.length, 0) > 200000) return { mode: "off", allowed: [], error: "Invalid ambient privacy batch" };
+    const entries = forgottenEntries(this.sql);
+    return { mode, allowed: texts.flatMap((text, i) => isForgotten(entries, text) ? [] : [i]) };
+  }
   memjobCiteOf(ref) { try { const r = this.sql.exec("SELECT data FROM mj_cites WHERE ref=?", String(ref)).toArray()[0]; return r ? JSON.parse(r.data) : null; } catch { return null; } }
   async memoryRecall(q) { const r = await this.mem.recall(String(q || "")); return { ...r, pack: this.mem.pack(r) }; }
   workmemOn() { const v = this.get("workmem"); return v ? v === "on" : this.env.WORKMEM === "on"; }
@@ -593,7 +627,7 @@ export class Resident extends DurableObject {
   genuiOn() { const v = this.get("genui"); return v ? v === "on" : genuiEnvOn(this.env); }
   async setGenui(v) { if (!["on", "off", ""].includes(v)) return { error: "genui must be on, off or empty (= env default)" }; this.put("genui", v); return { genui: v || null, on: this.genuiOn() }; }
   browserAgentOn() { if (!eeEnabled(this.env)) return false; const v = this.get("browser_agent"); return v ? v === "jev" : this.env.BROWSER_AGENT === "jev"; }
-  tools() { ensureFreshTools(); const base0 = [...(eeEnabled(this.env) && this.env.COMPOSIO_KEY ? [...TOOLS(), ...GOOGLE_TOOLS, ...APP_TOOLS, ...(eventsReady(this.env) ? [APP_EVENTS_TOOL] : []), ...CONNECT_TOOLS, APPS_USED_TOOL, VERTICAL_SEARCH_TOOL] : TOOLS()), WEB_SEARCH_TOOL], base = this.workmemOn() ? [...base0, BRING_BACK_TOOL] : base0; return [...(this.browserAgentOn() ? [...base, BROWSER_TASK_TOOL] : base), ...HELPER_TOOLS, PROPOSE_PLAN_TOOL, POMODORO_TOOL, ...SHARE_TOOLS, ...(this.get("channel") === SKIPPER_SLUG ? [MARK_DONE_TOOL] : [])].filter((t) => (t !== FILE_TEXT_TOOL || this.scOn?.() !== false) && eeToolEnabled(this.env, t.function.name)); }   // sidecar.js: file_text only while sidecars are on
+  tools() { ensureFreshTools(); const base0 = [...(eeEnabled(this.env) && this.env.COMPOSIO_KEY ? [...TOOLS(), ...GOOGLE_TOOLS, ...APP_TOOLS, ...(eventsReady(this.env) ? [APP_EVENTS_TOOL] : []), ...CONNECT_TOOLS, APPS_USED_TOOL, VERTICAL_SEARCH_TOOL] : TOOLS()), WEB_SEARCH_TOOL], base = this.workmemOn() ? [...base0, BRING_BACK_TOOL] : base0; return [...(this.browserAgentOn() ? [...base, BROWSER_TASK_TOOL] : base), ...HELPER_TOOLS, PROPOSE_PLAN_TOOL, POMODORO_TOOL, ...SHARE_TOOLS, ...NATIVE_TOOLS, ...(this.get("channel") === SKIPPER_SLUG ? [MARK_DONE_TOOL, LIST_CHANNELS_TOOL, CREATE_CHANNEL_TOOL, START_TASK_TOOL, ...(eeEnabled(this.env) ? [AMBIENT_QUERY_TOOL] : []), LOCATION_QUERY_TOOL] : [])].filter((t) => (t !== FILE_TEXT_TOOL || this.scOn?.() !== false) && eeToolEnabled(this.env, t.function.name)); }   // sidecar.js: file_text only while sidecars are on
   async setBrowserAgent(v) { if (!["jev", "off", ""].includes(v)) return { error: "browser_agent must be jev, off or empty (= env default)" }; this.put("browser_agent", v); return { browser_agent: v || null, on: this.browserAgentOn() }; }
   archive() { return this.env.ARCHIVE.get(this.env.ARCHIVE.idFromName(`archive:${this.get("tenant")}`)); }
   // Where the person is (location.js placeLine), for the message (never the system prompt: it changes): home from the Notebook
@@ -727,7 +761,7 @@ export class Resident extends DurableObject {
     return `- (1Helm: out of credits for the parts 1Helm runs, so this turn skipped ${[mem ? "memory (no recall or saving)" : "", ...other.map((x) => x === "page" ? "reading a web page" : x)].filter(Boolean).join(", ")}. Plain chat ran on the person's own AI key.)`;
   }
 
-  async appsLine() {
+  async appsLine(layered = false) {
     const c = await this.conns(), on = c.filter((x) => x.status === "connected"), off = c.filter((x) => x.status !== "connected");
     // One entry per app with its accounts, oldest first: "Gmail [gmail]: work@x.com (default) (note: "my work email"), me@gmail.com".
     // An account's note is the person's own words about it (account notes, composio.js): it changes only when they edit it.
@@ -742,7 +776,10 @@ export class Resident extends DurableObject {
     // integration hint and offer_connect in the same turn.
     this._appsUsed = tid ? await getAppsUsed(this.env, tid) : null; this._usedSlugs = usedSlugs(this._appsUsed);
     const usedLine = appsUsedLine(this._appsUsed, c);
-    return `${selfNote ? `${selfNote.slice(2, -1)} ` : ""}Connected apps (the person signed in to these in Apps): ${apps.length ? apps.join("; ") : "none yet"}${off.length ? `. Expired (to reconnect one, call offer_connect with its app id so the Connect card shows): ${off.map((x) => `${x.name}${x.email ? ` (${x.email})` : ""}`).join(", ")}` : ""}.${several ? ` Where an app has several accounts, pass account (its label) to use a specific one, e.g. the personal one when they say so${noted ? ", memory says it's where that kind of thing lives, or an account's note says it's for that (a note is the person's own words about that account: \"use for anything work\" + a work request = that account, no need to ask). If none of those says which" : " or memory says it's where that kind of thing lives. If neither says which"} and it's new, ask which (each account by its label${noted ? " with its note under it" : ""}, plus \"All of them\") before searching; don't go through them one by one. \"all\" (or several labels separated by commas) reads every chosen account in one call.` : ""}${several || noted ? " When they tell you what an account is for (\"use my personal Gmail for trips\"), save it with note_account so it shows under that account in their app." : ""} Also available to you, with no sign-in, for everyone: the built-in apps that need no sign-in (${BUILTIN_TEXT(this.env)}). They're not the person's connections, so asked what's connected, name only the connected apps; but asked whether you have or can use one of them, say yes and use it. For any connected app or built-in app, use app_actions to find an action, then app_run. Every other app needs the person to connect it first, even ones that don't sign in with an account (AI model providers need the person's own API key): don't call app_actions or app_run for them. Reading is free; anything that sends, posts, creates, changes or deletes needs the person's explicit OK on that exact action first. If they ask for an app that isn't connected, call find_app, then offer_connect so the Connect card shows in the chat; don't send them to Settings or Apps. If they ask to connect another account of a connected app (\"connect another gmail\"), call offer_connect with another: true: the \"Connect another <app> account\" card shows in the chat. Each Google app is its own connection: use that app's id (gmail, googlecalendar, googledrive, googledocs, googlesheets, googleslides, googletasks), the one for the job: a spreadsheet's rows or cells is googlesheets, a document's text googledocs, finding, sharing or moving files googledrive.${usedLine ? `\n${usedLine}` : ""}\n`;
+    const inventory = `${selfNote ? `${selfNote.slice(2, -1)} ` : ""}Connected apps (the person signed in to these in Apps): ${apps.length ? apps.join("; ") : "none yet"}${off.length ? `. Expired (to reconnect one, call offer_connect with its app id so the Connect card shows): ${off.map((x) => `${x.name}${x.email ? ` (${x.email})` : ""}`).join(", ")}` : ""}.${usedLine ? `\n${usedLine}` : ""}\n`;
+    const instructions = `${several ? ` Where an app has several accounts, pass account (its label) to use a specific one, e.g. the personal one when they say so${noted ? ", memory says it's where that kind of thing lives, or an account's note says it's for that (a note is the person's own words about that account: \"use for anything work\" + a work request = that account, no need to ask). If none of those says which" : " or memory says it's where that kind of thing lives. If neither says which"} and it's new, ask which (each account by its label${noted ? " with its note under it" : ""}, plus \"All of them\") before searching; don't go through them one by one. \"all\" (or several labels separated by commas) reads every chosen account in one call.` : ""}${several || noted ? " When they tell you what an account is for (\"use my personal Gmail for trips\"), save it with note_account so it shows under that account in their app." : ""} Also available to you, with no sign-in, for everyone: the built-in apps that need no sign-in (${BUILTIN_TEXT(this.env)}). They're not the person's connections, so asked what's connected, name only the connected apps; but asked whether you have or can use one of them, say yes and use it. For any connected app or built-in app, use app_actions to find an action, then app_run. Every other app needs the person to connect it first, even ones that don't sign in with an account (AI model providers need the person's own API key): don't call app_actions or app_run for them. The person's explicit request authorizes its ordinary app reads and writes without a second confirmation. Payments and API-key operations keep protected approval. Never expand the requested account, recipients, content or scope. If they ask for an app that isn't connected, call find_app, then offer_connect so the Connect card shows in the chat; don't send them to Settings or Apps. If they ask to connect another account of a connected app (\"connect another gmail\"), call offer_connect with another: true: the \"Connect another <app> account\" card shows in the chat. Each Google app is its own connection: use that app's id (gmail, googlecalendar, googledrive, googledocs, googlesheets, googleslides, googletasks), the one for the job: a spreadsheet's rows or cells is googlesheets, a document's text googledocs, finding, sharing or moving files googledrive.`;
+    if (layered) return { inventory, instructions };
+    return `${selfNote ? `${selfNote.slice(2, -1)} ` : ""}Connected apps (the person signed in to these in Apps): ${apps.length ? apps.join("; ") : "none yet"}${off.length ? `. Expired (to reconnect one, call offer_connect with its app id so the Connect card shows): ${off.map((x) => `${x.name}${x.email ? ` (${x.email})` : ""}`).join(", ")}` : ""}.${several ? ` Where an app has several accounts, pass account (its label) to use a specific one, e.g. the personal one when they say so${noted ? ", memory says it's where that kind of thing lives, or an account's note says it's for that (a note is the person's own words about that account: \"use for anything work\" + a work request = that account, no need to ask). If none of those says which" : " or memory says it's where that kind of thing lives. If neither says which"} and it's new, ask which (each account by its label${noted ? " with its note under it" : ""}, plus \"All of them\") before searching; don't go through them one by one. \"all\" (or several labels separated by commas) reads every chosen account in one call.` : ""}${several || noted ? " When they tell you what an account is for (\"use my personal Gmail for trips\"), save it with note_account so it shows under that account in their app." : ""} Also available to you, with no sign-in, for everyone: the built-in apps that need no sign-in (${BUILTIN_TEXT(this.env)}). They're not the person's connections, so asked what's connected, name only the connected apps; but asked whether you have or can use one of them, say yes and use it. For any connected app or built-in app, use app_actions to find an action, then app_run. Every other app needs the person to connect it first, even ones that don't sign in with an account (AI model providers need the person's own API key): don't call app_actions or app_run for them. The person's explicit request authorizes its ordinary app reads and writes without a second confirmation. Payments and API-key operations keep protected approval. Never expand the requested account, recipients, content or scope. If they ask for an app that isn't connected, call find_app, then offer_connect so the Connect card shows in the chat; don't send them to Settings or Apps. If they ask to connect another account of a connected app (\"connect another gmail\"), call offer_connect with another: true: the \"Connect another <app> account\" card shows in the chat. Each Google app is its own connection: use that app's id (gmail, googlecalendar, googledrive, googledocs, googlesheets, googleslides, googletasks), the one for the job: a spreadsheet's rows or cells is googlesheets, a document's text googledocs, finding, sharing or moving files googledrive.${usedLine ? `\n${usedLine}` : ""}\n`;
   }
   // The system prompt (src/prompt/): the static core (byte-identical for everyone with the same feature switches), the cards
   // section, then this person's and channel's block. Nothing that changes per message goes here; it rides in the person's message.
@@ -753,7 +790,7 @@ export class Resident extends DurableObject {
   async channelSkills() { return listChannelSkills(this.sql); }
   async channelSkillDelete(slug) { return saveSkill(this.sql, { slug, delete: true }); }   // the app (Notebook → This channel's skills)
   promptFlags(stable = true, cards = this.genuiOn()) { return { browser_task: this.browserAgentOn(), apps: eeEnabled(this.env) && !!this.env.COMPOSIO_KEY, app_events: eeEnabled(this.env) && !!this.env.COMPOSIO_KEY && eventsReady(this.env), recall: this.memoryMode() === "on", compact: !!stable, cards: !!cards }; }
-  async systemPrompt(stable = false, cards = this.genuiOn()) {
+  async systemPrompt(stable = false, cards = this.genuiOn(), layered = false) {
     try { const ks = (await this.env.DB.prepare("SELECT name, hosts FROM vault WHERE tenant_id=? ORDER BY name").bind(this.get("tenant")).all()).results || [];
       this._keysLine = ks.length ? `Saved keys on this computer: ${ks.map((k) => `$${k.name} (works only with ${JSON.parse(k.hosts).join(", ")})`).join("; ")}.` : ""; } catch { this._keysLine = ""; }
     { const ls = await loginSites(this.env, this.get("tenant")); this._loginsLine = ls.length ? `Saved logins (browser_fill_login types them; you never see the passwords): ${ls.join(", ")}.${ls.some((x) => x.endsWith(" accounts)")) ? " For a site with several accounts, pass username (call it without one to get the list)." : ""}` : ""; }
@@ -780,16 +817,22 @@ export class Resident extends DurableObject {
     this._pinned = mem;   // the ask-first guard reads what the helper sees ("memory says all accounts")
     const recent = (d.messages || []).filter((m) => !m.system_message || m.system_message === "0" || m.system_message === 0).slice(-12)
       .map((m) => `[${new Date(Number(m.created)).toISOString().slice(0, 16)}] ${m.bot_id && m.bot_id !== "None" ? "helper" : "person"}: ${String(m.body || "").slice(0, 600)}`).join("\n");
-    const appsLine = eeEnabled(this.env) && this.env.COMPOSIO_KEY ? await this.appsLine() : "";
-    // What personal content this prompt carries (privacy.js provenance: endpoints whose terms ban personal input can't take it).
+    const appContext = eeEnabled(this.env) && this.env.COMPOSIO_KEY ? await this.appsLine(layered) : "";
+    const appsLine = layered ? appContext.inventory || "" : appContext;
+    // Record what content this prompt carries; these flags do not exclude Muse endpoints.
     this._promptProv = { personal: !!(profile?.first_name || this._loginsLine || this._keysLine || recent), memory: !!mem, apps: !!appsLine };
-    const block = channelBlock({ helperName: profile?.helper_name, firstName: profile?.first_name, tone: profile?.helper_tone, tz: this.tz(),
+    const channelOptions = { ee: eeEnabled(this.env), helperName: profile?.helper_name, firstName: profile?.first_name, tone: profile?.helper_tone, tz: this.tz(),
       channel: ch.name || this.get("channel"), purpose: ch.purpose || ch.topic, general: this.get("channel") === SKIPPER_SLUG, recall: mmode === "on",
       keysLine: this._keysLine, loginsLine: this._loginsLine, skillsLine: channelSkillsLine(listChannelSkills(this.sql)), appsLine,
       textingLine: eeEnabled(this.env) ? await textingLine(this.env, this.get("tenant")) : "",
       permLine: permPromptLine((await loadPerms(this.env, this.get("tenant"))).level),   // perms.js: "" on Standard (the block stays as it was)
       pinnedLabel: mmode === "on" ? "Pinned notes and preferences ((you) = their own words; everything else you remember arrives with each message as Memory recall):" : "Channel memory (durable knowledge and preferences, their own notes first):",
-      pinned: mem, recent });
+      pinned: mem, recent };
+    if (layered) {
+      const layers = channelLayers(channelOptions, { apps: appContext.instructions || "" });
+      return { core: staticCore({ ...this.promptFlags(stable, cards), context_v2: true, ee: eeEnabled(this.env) }), developer: layers.runtime + "\n\n" + RUNTIME_CONTRACT + (cards ? "\n\n" + genuiPromptSection() : ""), standing: layers.data };
+    }
+    const block = channelBlock(channelOptions);
     return `${staticCore({ ...this.promptFlags(stable, cards), ee: eeEnabled(this.env) })}${cards ? `\n\n${genuiPromptSection()}` : ""}\n\n${block}`;
   }
   history(session) {
@@ -845,7 +888,8 @@ export class Resident extends DurableObject {
 
   // One model call, streamed. Fires onComputerTool() as soon as a computer tool name appears in the stream.
   // The tools the model is offered: tools() minus this run's exclusions (helpers), each with a required step_title first (§4).
-  modelTools(tc = null) { const ex = tc?.exclude; return withStepTitles(ex?.size ? this.tools().filter((t) => !ex.has(t.function.name)) : this.tools(), { required: true }); }
+  availableTools(tc = null) { return [...this.tools(), ...(tc?.context?.version === 2 ? CONTEXT_TOOLS : [])].filter((t) => !tc?.exclude?.has(t.function.name) && (tc?.kind !== "helper" || t.function.name === "load_tools" || helperAllowed(t.function.name))); }
+  modelTools(tc = null) { const all = this.availableTools(tc); return withStepTitles(tc?.context?.version === 2 ? selectedTools(all, tc.loadedTools) : all, { required: true }); }
   // Two mode: the step's model choice. Before the call, the previous step's results can switch the rest of the turn to the top model
   // (route2.js escalation); after it, a Luna step that calls propose_plan or says it's stuck is redone once on the top model (the
   // Luna attempt's cost is kept; its live text, if any, isn't repeated).
@@ -853,7 +897,7 @@ export class Resident extends DurableObject {
   // call too), then tried once more with a short note; looping again → a plain message, no tools. Both engines call this. Each looped
   // step is billed (charge estimated at the price ceiling when the stream had no usage yet) and counted by the spend guard
   // (noteRepeat: two in a turn = the runaway "loop" pause).
-  // What a main-chat request carries, for endpoints whose terms ban personal or confidential input (privacy.js contributorBlock):
+  // What a main-chat request carries (metadata only; not a Muse eligibility gate):
   // the system prompt's personal parts (name, saved logins/keys, recent channel messages, the Notebook, connected apps), this turn's
   // memory recall, location, integration hint and attachments, and any tool call other than public web lookups (files on the computer,
   // connected apps, the browser, memory). Conservative on purpose: anything we can't classify counts.
@@ -868,7 +912,9 @@ export class Resident extends DurableObject {
     const r = await this.callModelStep(messages, onComputerTool, onText, maxOut, noTools, tc);
     if (!r.repeat) return r;
     noteRepeat(tc, r.repeat); console.log("model step repeating, retrying once", JSON.stringify({ ...r.repeat, unit: r.repeat.unit.slice(0, 40) }));
-    const r2 = await this.callModelStep([...messages, { role: "user", content: REPEAT_NOTE }], onComputerTool, onText, maxOut, noTools, tc);
+    let r2;
+    try { r2 = await this.callModelStep([...messages, { role: "user", content: REPEAT_NOTE }], onComputerTool, onText, maxOut, noTools, tc); }
+    catch (e) { retainModelUsage(this, tc, r); throw e; }
     const sum = { inTok: r.inTok + r2.inTok, cached: r.cached + r2.cached, cacheWrite: (r.cacheWrite || 0) + (r2.cacheWrite || 0), outTok: r.outTok + r2.outTok, charge: r.charge + r2.charge };
     if (!r2.repeat) return { ...r2, ...sum, repeated: r.repeat };
     noteRepeat(tc, r2.repeat); console.log("model step repeating again, plain message", r2.repeat.where);
@@ -881,12 +927,29 @@ export class Resident extends DurableObject {
     let spoke = false; const said = onText ? (s) => { spoke = true; onText(s); } : null;
     const r = await this.callModelOnce(messages, onComputerTool, said, maxOut, noTools, tc);
     if (noTools || !escalationAfter(this, tc, r)) return r;
-    const r2 = await this.callModelOnce(messages, onComputerTool, spoke ? null : onText, maxOut, noTools, tc);
+    let r2;
+    try { r2 = await this.callModelOnce(messages, onComputerTool, spoke ? null : onText, maxOut, noTools, tc); }
+    catch (e) { retainModelUsage(this, tc, r); throw e; }
     escalationAfter(this, tc, r2);
     return { ...r2, inTok: r.inTok + r2.inTok, cached: r.cached + r2.cached, cacheWrite: (r.cacheWrite || 0) + (r2.cacheWrite || 0), outTok: r.outTok + r2.outTok, charge: r.charge + r2.charge, redone: r.model };
   }
   async callModelOnce(messages, onComputerTool, onText = null, maxOut = MAX_OUT, noTools = false, tc = null) {
     if (tc?.abort === "hard") throw stopError();   // stopped: no further model calls
+    if (tc?.modelFailure) throw modelFault(tc.modelFailure.code, tc.modelFailure.phase);
+    if (tc?.context?.version === 2) {
+      tc.loadedTools = loadedTools(messages, tc.loadedTools);
+      messages = contextMessages(messages, tc.context);
+      const receipt = contextReceipt(tc.context, messages, noTools ? [] : this.modelTools(tc));
+      if (tc.contextTrace) {
+        // One receipt per turn, with compact per-call measurements. Repeating
+        // the complete inventory on every step would overflow the trace column.
+        tc.contextAudit ||= { tool: "context_receipt", args: "", ms: 0, out: "" };
+        if (!tc.contextTrace.includes(tc.contextAudit)) tc.contextTrace.push(tc.contextAudit);
+        tc.contextSteps ||= [];
+        tc.contextSteps.push({ step: tc.stepNo ?? 0, schemas: receipt.tools.length, schema_chars: receipt.tools.reduce((n, t) => n + t.chars, 0), message_chars: receipt.messages.reduce((n, m) => n + m.chars, 0) });
+        tc.contextAudit.out = JSON.stringify({ ...receipt, code_version: codeV(this.env), calls: tc.contextSteps });
+      }
+    }
     const MAX_OUT_ = maxOut, route = tc?.route || null, tools = noTools ? null : this.modelTools(tc);
     const estIn = Math.ceil(JSON.stringify(messages).length / 3);
     // Own AI key (byok.js): their endpoint and models, nothing reserved or charged for the call (their provider bills them).
@@ -911,8 +974,13 @@ export class Resident extends DurableObject {
     let thinkDone = false, sentAny = false;
     const emit = (s) => { if (!onText || !s) return; if (!sentAny) { s = s.replace(/^\s+/, ""); if (!s) return; } sentAny = true; onText(s); };
     // Stop: the person's Stop aborts this call mid-flight (the OpenRouter fetch and the stream being read).
-    const ac = tc ? new AbortController() : null, signal = ac?.signal; if (tc) tc.ac = ac;
-    let onAbort = null;
+    const ac = new AbortController(), signal = ac.signal; if (tc) tc.ac = ac;
+    // BYOK already has its own headers/idle/total limits. Do not shorten them.
+    const deadline = byok ? null : modelDeadline(ac);
+    const aborted = () => signal.reason?.modelFailure ? signal.reason : stopError();
+    const waitModel = (p, late = r => r?.body?.cancel?.()) => deadline ? deadline.wait(p, late) : p;
+    let onAbort = null, reader = null, modelResponding = false;
+    tc?.emit?.({ t: "model_wait", phase: "waiting", started_at: Date.now() });
     try {
       // Transient provider errors (capacity/overload) are retried a bounded number of times before the stream starts;
       // nothing is charged for failed attempts. Deterministic errors (bad request) fail at once.
@@ -926,43 +994,45 @@ export class Resident extends DurableObject {
       if (viaOR) {
         const sess = `${this.ctx.id.toString().slice(0, 24)}:${this.get("tenant") || ""}`;   // one cache key per channel (route2.js)
         const px = prefixPrint(messages, tools);   // gateway log: which cached prefix this call used (model.js)
-        const prov = this.provenance(messages, tc);   // privacy.js: what this payload carries (sensitive-content bans on discounted endpoints)
+        const prov = this.provenance(messages, tc);   // what this payload carries
         try {
-          stream = (await openRouterChat(this.env, { messages, ...(tools ? { tools } : {}), stream: true, max_tokens: OR_MAX_OUT }, sess, route, { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat", px, _prov: prov }, signal)).body;
+          stream = (await waitModel(openRouterChat(this.env, { messages, ...(tools ? { tools } : {}), stream: true, max_tokens: OR_MAX_OUT }, sess, route, { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat", px, _prov: prov }, signal))).body;
           provider = "openrouter"; thinkDone = true;   // OpenRouter streams reasoning separately; content is the answer
         } catch (e) {
           // 400 = our request is wrong: surface it. Anything else (402/429/5xx/network): retry once after 1.5 s, then Workers AI.
-          if (e.orStatus === 400 || e.privacy || signal?.aborted) throw signal?.aborted ? stopError() : e;   // privacy: nothing eligible, retrying can't help
+          if (e.orStatus === 400 || e.privacy || signal.aborted) throw signal.aborted ? aborted() : e;
           fellBack = String(e.message || e).slice(0, 160);
-          try { await new Promise((z) => setTimeout(z, 1500)); if (signal?.aborted) throw stopError();
-            stream = (await openRouterChat(this.env, { messages, ...(tools ? { tools } : {}), stream: true, max_tokens: OR_MAX_OUT }, sess, route, { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat-retry", px, _prov: prov }, signal)).body;
+          try { await waitModel(new Promise((z) => setTimeout(z, 1500))); if (signal.aborted) throw aborted();
+            stream = (await waitModel(openRouterChat(this.env, { messages, ...(tools ? { tools } : {}), stream: true, max_tokens: OR_MAX_OUT }, sess, route, { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat-retry", px, _prov: prov }, signal))).body;
             provider = "openrouter"; thinkDone = true; fellBack = null;
-          } catch (e2) { if (e2.orStatus === 400 || e2.privacy || signal?.aborted) throw signal?.aborted ? stopError() : e2; fellBack = String(e2.message || e2).slice(0, 160); console.log("openrouter unavailable twice, using workers ai", fellBack); }
+          } catch (e2) { if (e2.orStatus === 400 || e2.privacy || signal.aborted) throw signal.aborted ? aborted() : e2; fellBack = String(e2.message || e2).slice(0, 160); console.log("openrouter unavailable twice, using workers ai", fellBack); }
         }
       }
       if (!stream && viaOR && eeEnabled(this.env) && route2On(this.env)) throw new Error(`model unavailable: ${fellBack}`);   // two mode: Sol/Luna only, never Workers AI
       for (let attempt = 0; !stream; attempt++) {
-        if (signal?.aborted) throw stopError();
+        if (signal.aborted) throw aborted();
         try {
-          stream = await this.env.AI.run(this.env.MODEL, { messages, ...(tools ? { tools } : {}), stream: true, max_tokens: MAX_OUT_, reasoning_effort: "low" },
-            aiOpts(this.env, { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat-fallback" }, { extraHeaders: { "x-session-affinity": `res-${this.ctx.id.toString().slice(0, 24)}` } }));
+          stream = await waitModel(this.env.AI.run(this.env.MODEL, { messages, ...(tools ? { tools } : {}), stream: true, max_tokens: MAX_OUT_, reasoning_effort: "low" },
+            aiOpts(this.env, { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat-fallback" }, { extraHeaders: { "x-session-affinity": `res-${this.ctx.id.toString().slice(0, 24)}` } })), s => s?.cancel?.());
           break;
         } catch (e) {
+          if (signal.aborted) throw aborted();
           const m = String(e?.message || e), transient = /^(3040|3043|5030|5000|3007)\b|capacity|overloaded|temporarily|timeout|network/i.test(m) && !/^8007|must be valid|BadRequest/i.test(m);
           if (!transient || attempt >= 3) throw e;
           console.log("model retry", attempt + 1, m.slice(0, 120));
-          await new Promise((z) => setTimeout(z, 1500 * 2 ** attempt));
+          await waitModel(new Promise((z) => setTimeout(z, 1500 * 2 ** attempt)));
         }
       }
-      const reader = stream.pipeThrough(new TextDecoderStream()).getReader(); let buf = "";
+      deadline?.headers();
+      reader = stream.pipeThrough(new TextDecoderStream()).getReader(); let buf = "";
       if (signal) { onAbort = () => { reader.cancel().catch(() => {}); }; if (signal.aborted) onAbort(); else signal.addEventListener("abort", onAbort); }
       read: for (;;) {
-        const { value, done } = await reader.read(); if (signal?.aborted) throw stopError(); if (done) break;
+        const { value, done } = await waitModel(reader.read(), null); if (signal.aborted) throw aborted(); if (done) break;
         buf += value; let i;
         while ((i = buf.indexOf("\n")) >= 0) {
           const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
           if (!line.startsWith("data:")) continue;
-          const data = line.slice(5).trim(); if (data === "[DONE]") continue;
+          const data = line.slice(5).trim(); if (data === "[DONE]") break read;
           let ev; try { ev = JSON.parse(data); } catch { continue; }
           if (ev.error) throw new Error(`model error: ${String(ev.error.message || ev.error).slice(0, 200)}`);
           if (ev.model) served = ev.model;
@@ -975,6 +1045,10 @@ export class Resident extends DurableObject {
           const u = ev.usage; if (u) { usage.prompt_tokens += u.prompt_tokens || 0; usage.completion_tokens += u.completion_tokens || 0; usage.cached += u.prompt_tokens_details?.cached_tokens || 0; usage.cacheWrite += u.prompt_tokens_details?.cache_write_tokens || 0; if (u.cost != null) usage.cost = (usage.cost || 0) + Number(u.cost); }
           if (ev.choices?.[0]?.finish_reason) finish = ev.choices[0].finish_reason;
           const delta = ev.choices?.[0]?.delta || {};
+          if (meaningfulDelta(delta)) {
+            deadline?.progress();
+            if (!modelResponding) { modelResponding = true; tc?.emit?.({ t: "model_wait", phase: "responding" }); }
+          }
           // Opaque reasoning blocks (OpenRouter reasoning_details): kept as-is for replay to the same model (model.js replayFor), never read or shown.
           if (Array.isArray(delta.reasoning_details)) for (const d of delta.reasoning_details) { const last = rdet.at(-1);
             if (last && d && last.index != null && last.index === d.index && last.type === d.type && (typeof d.text === "string" || typeof d.summary === "string") && !d.data) { if (typeof d.text === "string") last.text = (last.text || "") + d.text; if (typeof d.summary === "string") last.summary = (last.summary || "") + d.summary; }
@@ -998,8 +1072,22 @@ export class Resident extends DurableObject {
         }
       }
     } catch (e) {
-      if (!byok) { await this.ledger().settle(rid, 0); this.resClose(rid); } throw signal?.aborted ? stopError() : e;
-    } finally { if (onAbort) signal.removeEventListener("abort", onAbort); if (tc && tc.ac === ac) tc.ac = null; }
+      const failure = signal.aborted ? aborted() : e;
+      // Retain real usage if the provider reported it before losing the stream;
+      // otherwise release the hold, never invent a charge for unobserved usage.
+      const observedCost = usage.cost != null ? Math.ceil(usage.cost * 1e9)
+        : provider !== "openrouter" && provider !== "byok" ? Math.ceil((usage.prompt_tokens - usage.cached) * PRICE.in + usage.cached * PRICE.cached + usage.completion_tokens * PRICE.out) : 0;
+      const charge = !byok ? Math.ceil(observedCost * MARKUP) : 0;
+      if (!byok) { await this.ledger().settle(rid, charge); this.resClose(rid); }
+      if (charge) { noteCharge(tc, charge); this.cardCharge(tc, charge); }
+      if (tc) tc.failedModelUsage = { in: usage.prompt_tokens, out: usage.completion_tokens, cached: usage.cached, cache_write: usage.cacheWrite, charge };
+      rememberModelFailure(this, tc, failure);
+      throw failure;
+    } finally {
+      deadline?.dispose(); if (onAbort) signal.removeEventListener("abort", onAbort);
+      try { reader?.cancel().catch(() => {}); } catch {}
+      if (tc && tc.ac === ac) tc.ac = null;
+    }
     const inTok = usage.prompt_tokens || estIn, cached = usage.cached, cacheWrite = usage.cacheWrite, outTok = usage.completion_tokens || (rep ? Math.ceil(rw.chars / 3) : 0);
     // OpenRouter reports the exact cost of the model that served the call; Workers AI is billed from its token prices. A step stopped
     // for repeating has no usage yet: what it wrote (≈3 chars a token) is billed at the price ceiling, so the spend guard sees it.
@@ -1216,12 +1304,17 @@ export class Resident extends DurableObject {
   }
   async localToolInner(name, a, ctx = {}) {
     const now = Date.now();
+    if (NATIVE_TOOL_NAMES.has(name)) return JSON.stringify(await nativeTool(this, name, a, ctx));
     if (ctx.emit && name !== "update_todos" && name !== "react") { ctx.line = lineFor(name, a); ctx.emit({ t: "status", line: ctx.line }); }   // to-do lists and reactions show themselves
     switch (name) {
       case "start_helper": case "stop_helper": case (ctx.kind === "helper" && !helperAllowed(name) ? name : null): return this.helperTool(name, a, ctx);
-      case "update_todos": return this.helperTodos(ctx, a);
+      case "list_channels": return listChannels(this, a);
+      case "create_channel": return createChannelTool(this, a, ctx);
+      case "start_task": return routeTaskTool(this, name, a, ctx);
+      case "update_todos": case "list_tasks": case "rename_task": case "read_task": case "create_task":
+        return routeTaskTool(this, name, a, ctx);
       case "publish_page": case "share_file_link": return await runShareTool(this, name, a, ctx);
-      case "mark_task_done": return this.markTaskDone(ctx, a);
+      case "mark_task_done": return routeTaskTool(this, name, a, ctx);
       case "propose_plan": return proposePlan(this, a, ctx);   // plans.js: a system plan card; only the person approves
       case "pomodoro": return this.pomoTool(ctx, a);
       case "react": {
@@ -1404,26 +1497,41 @@ export class Resident extends DurableObject {
         return savedNote(ctx, a, `Saved to this channel's notebook (the person can see and edit it there)${self ? "" : `; ${who} is in Contacts`}.${lifted ? " (They had asked you to forget this subject; saving it means memory may keep it again. Do this only because they asked.)" : ""}`);
       }
       case "memory_explain": return await memoryExplain(this, a, { general: this.get("channel") === SKIPPER_SLUG });
+      case "ambient_query": return JSON.stringify(await ambientQuery(this, a, ctx));
+      case "location_query": return JSON.stringify(await locationQuery(this, a, ctx));
       case "forget": return await forgetTool(this, a, { ...ctx, general: this.get("channel") === SKIPPER_SLUG });   // forget.js: plan, then delete after a yes
-      case "read_doc": return readDoc(a, this.docFlags());   // 1Helm's docs (src/docs/): no computer
-      case "read_skill": return readSkill(a, this.docFlags(), { extra: await this.channelSkills() });
+      case "load_tools": {
+        if (!ctx.context) return "error: context v2 is not enabled for this turn";
+        if (!Array.isArray(a.names) || !a.names.length || a.names.length > 30 || a.names.some((n) => typeof n !== "string")) return "error: provide 1–30 tool names";
+        const allowed = new Map(this.availableTools(ctx).map((t) => [t.function.name, t]));
+        const missing = a.names.filter((n) => !allowed.has(n));
+        if (missing.length) return JSON.stringify({ error: "Unknown or unavailable tools", names: missing });
+        ctx.loadedTools ||= new Set(); for (const n of a.names) ctx.loadedTools.add(n);
+        return JSON.stringify({ loaded: a.names, tools: a.names.map((n) => allowed.get(n)), note: "Schemas are available on your next model step. Nothing has been executed." });
+      }
+      case "read_context": {
+        if (!ctx.context) return "error: context v2 is not enabled for this turn";
+        if (a.section === "logins") return contextData("SAVED LOGIN AVAILABILITY", await loginSites(this.env, this.get("tenant")));
+        if (a.section === "keys") {
+          const rows = (await this.env.DB.prepare("SELECT name, hosts FROM vault WHERE tenant_id=? ORDER BY name").bind(this.get("tenant")).all()).results || [];
+          return contextData("SAVED KEY AVAILABILITY", rows.map((r) => ({ name: r.name, hosts: JSON.parse(r.hosts) })));
+        }
+        if (a.section === "other_tasks") return contextData("OTHER TASKS", this.otherTasksNote(ctx.session));
+        return "error: unknown context section";
+      }
+      case "recall_memory": {
+        if (!ctx.context) return "error: context v2 is not enabled for this turn";
+        if (typeof a.query !== "string" || !a.query.trim() || a.query.length > 2000) return "error: provide a nonempty query up to 2000 characters";
+        return this.recallContext(a.query, ctx);
+      }
+      case "read_doc": return readDoc(a, { ...this.docFlags(), context_v2: ctx.context?.version === 2 });   // no computer
+      case "read_skill": return readSkill(a, { ...this.docFlags(), context_v2: ctx.context?.version === 2 }, { extra: await this.channelSkills() });
       case "save_skill": return saveSkill(this.sql, a, ctx);   // skills/channel.js: only when the person asked   // skills (src/skills/): no computer
       case "bring_back": { const r = bringBack(a.key, ctx.wmFull, ctx.wmState); if (r != null) return r; const v = /^wl\d+$/i.test(String(a.key || "")) ? savedBody(this.sql, String(a.key).slice(2)) : null; return v != null ? `[restored ${a.key}]\n${v}` : "error: no set-aside step with that key in this request"; }
       case "work_log": return workLogTool(this, a, ctx);   // worklog.js: earlier lookups (email, calendar, apps, web)
       case "interview": return interviewTool(this, a, ctx);
       case "file_text": return await this.fileTextTool(a);   // sidecar.js: a Library file's prepared text, no computer
-      case "recall_history": {
-        const words = String(a.query || "").toLowerCase().split(/\s+/).filter((w) => w.length > 2).slice(0, 6); if (!words.length) return "error: query required";
-        const rows = this.sql.exec(`SELECT m.turn, m.role, m.content, m.tool_calls, m.at, t.session FROM msgs m LEFT JOIN turns t ON t.id=m.turn WHERE ${words.map(() => "(lower(coalesce(m.content,'')) LIKE ? OR lower(coalesce(m.tool_calls,'')) LIKE ?)").join(" AND ")} ORDER BY m.seq DESC LIMIT ?`,
-          ...words.flatMap((w) => [`%${w}%`, `%${w}%`]), Math.min(Number(a.limit) || 8, 20)).toArray();
-        if (!rows.length) return "No matches in past conversation.";
-        // status-notes.js: another task's lines say so, and a pause / limit notice is labelled a past status note (never work to resume).
-        // nosecrets: scrubbed whole before the excerpt is cut, so a secret split at the cut can't slip through.
-        return rows.map((r) => { const t = scrubSecrets(r.content || r.tool_calls || ""); const i = Math.max(0, t.toLowerCase().indexOf(words[0]) - 300);
-          const other = r.session && ctx.session && r.session !== ctx.session, note = r.role === "assistant" && (isStatusNotice(r.content) || looksLikeStatus(r.content));
-          // nosecrets: the stored chat keeps what the person typed, but searching back through it never hands a secret out again.
-          return `[${new Date(r.at).toISOString().slice(0, 16)} ${r.role}${other ? ", another task" : ""}${note ? ` ${STATUS_MARK}` : ""}] …${t.slice(i, i + 900)}…`; }).join("\n---\n").slice(0, 12000);
-      }
+      case "recall_history": return recallHistory(this.sql, a, ctx);
       case "share_file": { const t0 = Date.now(), out = await this.shareFile(a, ctx); this.warmPreviews(t0); return out; }   // file-preview.js: a deck/document it gave gets its viewer preview now
       case "list_workflows": return JSON.stringify(await this.listWorkflows());
       case "app_events": return await appEventsTool(this.env, this.get("tenant"), a, await this.conns(true));   // composio-triggers.js: an app's events, for on_event
@@ -1477,7 +1585,7 @@ export class Resident extends DurableObject {
     if (op === "alarm") { this.put("probe_alarm", JSON.stringify({ armed: Date.now(), sleep_ms: Math.min(300e3, Math.max(1000, Number(b.sleep_ms) || 60e3)), runs: [] })); await this.ctx.storage.setAlarm(Date.now() + 500); }
     let open = 0; try { open = this.sql.exec("SELECT COUNT(*) n FROM res_open").one().n; } catch {}
     let journal = [], card = null, wf = null;
-    try { journal = this.sql.exec("SELECT card, kind, status, step, resumes, json_extract(opts,'$.workflow_id') workflow_id FROM turn_runs").toArray(); } catch {}
+    try { journal = this.sql.exec("SELECT card, kind, status, step, resumes, code_v, last_resume, json_extract(opts,'$.workflow_id') workflow_id FROM turn_runs").toArray(); } catch {}
     if (b.card) { card = this.sql.exec("SELECT id, kind, status, steps, charge_nano, opened, closed FROM cards WHERE id=?", String(b.card)).toArray()[0] || null;
       if (card) card.events = this.sql.exec("SELECT seq, type, tool, status, at, ms, input FROM card_events WHERE card=? AND type='step' ORDER BY seq", card.id).toArray().map((e) => ({ ...e, input: String(e.input || "").slice(0, 160) })); }
     if (b.workflow) { wf = this.wf(Number(b.workflow)) || null; if (wf) { wf.turns = this.sql.exec("SELECT id, at, steps, tool_calls, charge_nano, error, resumes, substr(reply,1,1500) reply FROM turns WHERE workflow_id=? ORDER BY at", wf.id).toArray();
@@ -1700,7 +1808,7 @@ export class Resident extends DurableObject {
       const fwd = (o) => { if (o.t === "approval" || o.t === "approval_done") liveTurnOf(this, h.session)?.emit?.(o); };
       tc.subs.add(fwd);
       Object.defineProperty(tc.subs, "size", { configurable: true, get: () => (liveTurnOf(this, h.session)?.subs?.size ? 1 : 0) });
-      const at = (ms, fn) => timers.push(setTimeout(fn, Math.max(0, ms - Date.now())));
+      const at = (ms, fn) => timers.push(setTimeout(async () => { if (await this.spendRefresh(tc, opts)) fn(); }, Math.max(0, ms - Date.now())));
       at(h.deadline, () => { if (!tc.finished && !tc.abort) { tc.helperWhy = "time limit"; tc.abort = "soft"; } });
       at(h.deadline + HELPER_GRACE_MS, () => { if (!tc.finished) { tc.helperWhy ||= "time limit"; tc.abort = "hard"; } });
       at(h.deadline + HELPER_GRACE_MS + HELPER_FORCE_MS, () => { if (!tc.finished) this.helperFinish(h.id, { reply: "", charge: 0, tool_calls: 0, forced: true }, tc); });
@@ -1721,7 +1829,7 @@ export class Resident extends DurableObject {
         let status = "done", why = null, error = null, by = null;
         if (r.forced) { status = "stopped"; by = "limit"; why = "took too long"; }
         else if (r.error) { status = "failed"; error = plainError(r.error); }
-        else if (tc?.helperWhy || tc?.abort || r.hit_limit || charge >= HELPER_MAX_CHARGE) {
+        else if (tc?.helperWhy || tc?.abort || r.hit_limit || (spendPausesOn(tc) && charge >= HELPER_MAX_CHARGE)) {
           status = "stopped"; by = "limit"; why = tc?.helperWhy || (charge >= HELPER_MAX_CHARGE ? "cost limit" : "step limit");
         }
         if (r.forced && tc) tc.abort = "hard";
@@ -1784,6 +1892,7 @@ export class Resident extends DurableObject {
       const tc = helperTcOf(this, h.id);
       if (!tc && h.card && jr.has(h.card)) continue;   // waiting to carry on (resumeDue starts it)
       if (!tc) { this.sql.exec("UPDATE helpers SET status='interrupted', ended=?, handed=0 WHERE id=?", now, h.id); continue; }   // its run is gone
+      if (!await this.spendRefresh(tc)) continue;
       if (now >= h.deadline + HELPER_GRACE_MS + HELPER_FORCE_MS) { this.helperFinish(h.id, { reply: "", charge: 0, tool_calls: 0, forced: true }, tc); continue; }
       if (now >= h.deadline + HELPER_GRACE_MS) { tc.helperWhy ||= "time limit"; tc.abort = "hard"; }
       else if (now >= h.deadline && !tc.abort) { tc.helperWhy = "time limit"; tc.abort = "soft"; }
@@ -1814,7 +1923,7 @@ export class Resident extends DurableObject {
       if (so.mode !== "open") return { ok: true, session: sid, steered: true, dup: so.mode === "dup" };
     }
     cur = this.session(sid);
-    if (cur && !cur.done && cur.title !== tt && /^(Texts|Text with .+)$/.test(cur.title)) this.sql.exec("UPDATE sessions SET title=? WHERE id=?", tt, sid);   // helper renamed, or an old "Texts" title
+    if (cur && !cur.done && cur.title !== tt && /^(Texts|Text with .+)$/.test(cur.title)) this.sql.exec("UPDATE sessions SET title=? WHERE id=? AND title_manual=0", tt, sid);   // helper renamed, or an old "Texts" title; explicit names always win
     // Return at once (the webhook must answer Photon fast); the turn keeps running in this object, like chatStream.
     const run = (async () => {
       textTyping(this.env, tenant, true).catch(() => {});   // not awaited: the turn is journaled (resume.js) the moment it starts
@@ -1995,7 +2104,7 @@ export class Resident extends DurableObject {
       if (!tc) { w.close().catch(() => {}); return readable; }
     }
     if (!tc) { send({ t: "idle", session: this.sessionView(this.session(session)) }); w.close().catch(() => {}); return readable; }
-    send({ t: "snapshot", turn: tc.turn, started: tc.t0, text: tc.text, line: tc.line, reaction: tc.reaction || null, approvals: this.approvals(false, session), card: cardDetail(this.sql, session, tc.turn, { reply: tc.text }) });
+    send({ t: "snapshot", turn: tc.turn, started: tc.t0, text: tc.text, ...liveReplyState(tc), line: tc.line, reaction: tc.reaction || null, approvals: this.approvals(false, session), card: cardDetail(this.sql, session, tc.turn, { reply: tc.text }) });
     const hb = setInterval(() => send({ t: "hb" }), 15e3);
     const sub = (o) => { send(o); if (o.t === "done" || !open) { tc.subs.delete(sub); clearInterval(hb); if (open) w.close().catch(() => {}); open = false; } };
     tc.subs.add(sub);
@@ -2015,11 +2124,29 @@ export class Resident extends DurableObject {
     // wmFull/wmView (working memory) and jevFirst live here too. pend = this card's live inputs (steers), when it takes them.
     const tc = { key: crypto.randomUUID(), turn: null, session, kind, viaText: !!opts.viaText, photonMsg: opts.photonMsg || null, reaction: null, workflow_id: opts.workflow_id ?? null, subs: new Set(), text: "", line: "", inTool: 0, touch: false, texted: false, t0: Date.now(), finished: false, userText: kind === "chat" ? String(text).slice(0, 20000) : null,
       route: null, extraCharge: 0, wmFull: null, wmView: null, jevFirst: null, lastCmd: null, lastMsg: null, exclude: new Set((opts.exclude_tools || []).map(String)), abort: null, helper: opts.helper || null,
-      pend: null, committed: false, stepNo: 0, textSteered: false, ac: null };
+      pend: null, committed: false, stepNo: 0, textSteered: false, ac: null,
+      replyState: { body: "", pre: [], prog: [], held_progress: "" } };
+    if (opts.resume) {
+      let extra = {}; try { extra = JSON.parse(opts.resume.extra || "{}"); } catch {}
+      tc.outputLimitRetries = Math.min(1, Math.max(0, Number(extra.outputLimitRetries) || 0));
+      if (['model_timeout', 'model_output_limit'].includes(extra.modelFailure?.code)) tc.modelFailure = extra.modelFailure;
+      tc.failedModelUsage = extra.failedModelUsage || null;
+      // The journal retains said, not its original tool classification. As in
+      // runTurnInner, unknown resumed parts remain readable, never guessed away.
+      try { const said = JSON.parse(opts.resume.said || "[]"); if (Array.isArray(said) && said.every(x => typeof x === "string")) tc.replyState = resumedReplyState(said, Array.isArray(extra.saidMeta) ? extra.saidMeta : [], Number(extra.progressOmitted) || 0); } catch {}
+    }
     tc.stopped = new Promise((z) => { tc.stopWake = z; });   // resolves on the person's Stop (stop.js hardStop)
     if (send) tc.subs.add(send);
     if (opts.handoff) { tc.handoff = true; tc.handoffFrom = opts.handoff?.type || null; }   // its first message is a handed-back result, not the person's words (person-asked.js); "connect": connect-offer.js connectWriteBlock
-    tc.emit = (o) => { if (o.t === "text") tc.text += o.s; for (const s of [...tc.subs]) { try { s(o); } catch {} } };
+    tc.emit = (o) => {
+      const r = tc.replyState;
+      if (o.t === "text") { tc.text += o.s; r.body += o.s; }
+      else if (o.t === "work" && r.body.trim()) {
+        const b = r.body.trim(), progress = !mustShow(b);
+        (progress ? r.prog : r.pre).push(b); r.body = ""; r.held_progress = progress ? b : "";
+      }
+      for (const s of [...tc.subs]) { try { s(o); } catch {} }
+    };
     // The card: opened by the caller (steerOrOpen → card_open already sent), or here.
     if (opts.card) { const p = this.inputs.get(session); tc.pend = p && p.id === String(opts.card) ? p : null; tc.turn = String(opts.card); }
     else { const o = this.openTurnCard(tc, text, opts, !!before); tc.emit({ t: "card_open", card: o.card, msg: o.msg }); }
@@ -2035,7 +2162,7 @@ export class Resident extends DurableObject {
     const keep = setInterval(() => { if (tc.touch) this.computer().touch().catch(() => {}); this.journalBeat(tc); if (JOURNALED.has(kind)) this.armBeat(); }, 20e3);   // a stored alarm always covers a running turn (resume.js)
     // Time budget (plan tasks, Continue): past it, the run stops at its next step with a short report (soft stop). A resumed turn keeps what's left.
     const limMs = opts.max_ms ? (opts.resume ? Math.max(1000, opts.max_ms - (Date.now() - opts.resume.started)) : opts.max_ms) : 0;
-    const limT = limMs ? setTimeout(() => { if (!tc.finished && !tc.abort) { tc.limitWhy = "time"; tc.abort = "soft"; } }, limMs) : null;
+    const limT = limMs ? setTimeout(async () => { if (await this.spendRefresh(tc, opts) && !tc.finished && !tc.abort) { tc.limitWhy = "time"; tc.abort = "soft"; } }, limMs) : null;
     let r;
     try {
       await this.spendSlot(tc, opts);   // plan-started tasks: at most 3 task turns at once here; the rest wait ("Waiting")
@@ -2119,49 +2246,32 @@ export class Resident extends DurableObject {
     tc.turn = o.card.id;
     return o;
   }
-  async runTurnInner(tenant, channel, channelId, text, tc, opts = {}) {
-    const send = tc.emit;
-    const ctxMode = opts.ctx || this.env.CTX_MODE || "compact", compact = ctxMode !== "legacy";
-    const kind = opts.kind || "chat", maxSteps = opts.max_steps || (kind === "chat" && compact ? CHAT_MAX_STEPS : MAX_STEPS);
-    this.put("tenant", tenant); this.put("channel", channel); this.put("channel_id", channelId);
-    await this.byokRefresh(0, tc);   // own AI key: this turn's model calls go to their endpoint (byok.js; a backup key once credits are used up)
-    this._privacy = await privacyOf(this.env, tenant);   // AI data privacy for this turn's docs (read_doc); every model dispatch re-reads it
-    // resume.js: a turn a reset cut off carries on here (same card, same start time, same budget and charge so far).
-    const RS = opts.resume || null;
-    const turn = tc.turn, t0 = RS ? RS.started : Date.now();   // the turn id is its card's id (runTurn opened it)
-    tc.jevFirst = null;
-    const stats = { steps: 0, tool_calls: 0, computer_used: 0, computer_wait_ms: 0, model_ms: 0, in: 0, cached: 0, cache_write: 0, out: 0, charge: 0, models: [] };
-    if (RS?.guard && tc.abort !== "hard") { tc.guard = guardIn(RS.guard); guardResume(tc, RS.started); }   // the same budget and runaway watch, never a fresh one per deploy
-    else if (tc.abort !== "hard") await this.spendStart(tc, opts);   // spendguard.js: this turn's budget + runaway watch (+ today's check-in)
-    // Unattended runs don't carry the chat conversation: the workflow prompt + previous run report are the context.
-    const sys = { role: "system", content: await this.systemPrompt(compact) };
-    const hist = kind === "chat" ? (compact ? this.compactHistory(tc.session) : [...this.history(tc.session), ...this.usedAppsPair(tc.session)]) : [];
-    const others = kind === "chat" ? this.otherTasksNote(tc.session) : "";
-    const viaNote = tc.viaText ? this.genuiOn()
-      ? "\n\n(This message came by text from their phone. Your reply is sent back by text. A plain reply: short and plain, no markdown, tables or headings; links are fine. A card reply arrives as a tappable card they open in Messages: use one when it saves them typing (a choice, a form, a draft to approve). If a card couldn't open, they got its options as a numbered list, so a reply like \"2\" or \"the second one\" picks that option.)"
-      : "\n\n(This message came by text from their phone. Your reply is sent back as a text: keep it short and plain, no markdown, tables or headings. Links are fine.)" : "";
-    // Attached files: already in R2; named in the message, copied to the computer before its first command, images shown to the model.
-    const ap = kind === "chat" ? await this.attachParts(opts.files, tc.session, turn) : { att: [], pics: [], note: "" }, att = ap.att, pics = ap.pics;
-    tc.attached = att.length > 0 || pics.length > 0;   // privacy.js provenance: files in the request
-    const attNote = ap.note + (opts.note ? `\n\n(${String(opts.note).slice(0, 2000)})` : "");
-    const fileBody = ap.body || ""; tc.fileBody = fileBody; tc.sidecar = ap.sidecar || [];   // sidecar.js: the files' text, this message only (never saved)
-    if (fileBody) tc.attached = true;   // privacy.js provenance: file contents in the request
-    // Memory recall (P2): one sourced pack per message, chosen by search + rank, never a model call. Goes in the user message so the cached system prefix stays stable.
-    let recallNote = "";
-    const mmode = this.memoryMode();
+  // A semantic search rewrite can discard an exact Contacts alias ("my sister" → "sibling").
+  // Keep the person's actual words for the entity leg only, not the embedding/Hindsight query.
+  // Durable consumed inputs preserve this across resumes; pending additions and helper handoffs
+  // are not user context the running model has read. Bound the extra local alias-match input.
+  recallEntityQuery(query, tc) {
+    const original = String(tc.context?.userText ?? tc.userText ?? "").slice(0, 20000);
+    const additions = tc.turn ? this.sql.exec("SELECT text FROM card_events WHERE card=? AND type='msg' AND seq>1 AND consumed IS NOT NULL ORDER BY seq DESC LIMIT 8", String(tc.turn)).toArray().reverse() : [];
+    return [original, ...additions.map((m) => String(m.text || "").slice(0, 2000)), query].filter(Boolean).join("\n");
+  }
+  async recallContext(text, tc, { onDemand = true, at = Date.now() } = {}) {
+    const kind = "chat", turn = tc.turn, t0 = at, mmode = this.memoryMode();
+    if (mmode === "off") return onDemand ? "Memory is disabled for this channel." : "";
+    let recallNote = "", recallFailed = false;
     // Own AI key: memory costs credits (embeddings, the memory search). If the balance can't cover this message's search, recall is
     // skipped for the turn (byokSkipped: its notes + the Add credits line); every part below is still reserved before it runs.
     const recallPaid = mmode === "off" || !this.env.BYOK || !(kind === "chat" || kind === "followup") || tc.abort === "hard" || await this.byokCanPay(
       Math.ceil((String(text).length + 2000) * BYOK_METER.embed_token + (hsOn(this.env) ? BYOK_METER.hs_recall : 0)));
     if (!recallPaid) this.byokSkipped("recall", tc);
-    if (recallPaid && mmode !== "off" && (kind === "chat" || kind === "followup") && tc.abort !== "hard" && !RS) {   // a resume reuses the input it built
+    if (recallPaid && mmode !== "off" && (kind === "chat" || kind === "followup") && tc.abort !== "hard") {   // a resume reuses the input it built
       // P4 working memory: a follow-up ("what about her?", "and the other one?") is searched with this task's last 2 messages
       // from the person and the start of the last reply, so "her" carries Dana and "the other one" carries what was compared.
       const q = this.recallQuery(tc.session, String(text)).slice(0, 2000);
       try { const m0 = Date.now(); let qv = null; try { [qv] = await this.mem.embed([q]); } catch {}
         const skipper = this.get("channel") === SKIPPER_SLUG;
         // Entity leg (P3): Contacts resolves "my sister" → Dana first (µs alias match), and her names join the keyword search.
-        const ws = await this.archive().wsRecall(q, { channel: this.get("channel"), general: skipper }).catch((e) => ({ error: e.message, pack: "", ids: [], people: [] }));
+        const ws = await this.archive().wsRecall(onDemand ? this.recallEntityQuery(q, tc) : q, { channel: this.get("channel"), general: skipper }).catch((e) => ({ error: e.message, pack: "", ids: [], people: [] }));
         const extraTerms = (ws.people || []).flatMap((p) => [p.name, ...(p.aliases || [])]);
         const tz = this.tz(), scope = questionScope(String(text), t0, tz);
         // Hindsight is the official recall (its own 4 arms + reranker over this channel's bank). If the box can't be reached, the local ledger answers instead.
@@ -2181,8 +2291,54 @@ export class Resident extends DurableObject {
         const lk = relevantLookups(this.sql, String(text), { now: t0, tz });   // worklog.js: up to 3 related earlier lookups, one line each
         if (mmode === "on" && (pk || wpk || xpk || checks || lk)) recallNote = `\n\n${PACK_HEADER}${checks ? `\n(Memory check: ${checks})` : ""}${wpk ? `\n${WS_HEADER}\n${wpk}` : ""}${lk ? `\n${LOOKUPS_HEADER}\n${lk}` : ""}${pk ? `\n(This channel:)\n${pk}` : ""}${xpk ? `\n(From their other channels. Here in General you can see across all their channels. Say which channel a fact came from:)\n${xpk}` : ""}`;
         tc.memNote = recallNote;   // the ask-first guard reads it ("memory says which account")
-      } catch (e) { this.mem.receipt({ turn, session: tc.session, mode: mmode, query: q, error: String(e.message || e).slice(0, 300) }); }
+      } catch (e) { recallFailed = true; this.mem.receipt({ turn, session: tc.session, mode: mmode, query: q, error: String(e.message || e).slice(0, 300) }); }
     }
+    if (!onDemand) return recallNote;
+    const nb = this._pinnedOmitted?.length ? notebookMatches(this._pinnedOmitted, String(text)) : "";
+    if (nb) recallNote += "\n" + nb;
+    tc.memNote = recallNote;
+    if (recallFailed) return "Memory search failed; no conclusion about saved records can be drawn.";
+    return recallNote || (tc.creditsMem ? "Memory was not searched because its credits are unavailable." : "No related records were returned.");
+  }
+
+  async runTurnInner(tenant, channel, channelId, text, tc, opts = {}) {
+    const send = tc.emit;
+    const ctxMode = opts.ctx || this.env.CTX_MODE || "compact", compact = ctxMode !== "legacy";
+    const kind = opts.kind || "chat", maxSteps = opts.max_steps || (kind === "chat" && compact ? CHAT_MAX_STEPS : MAX_STEPS);
+    this.put("tenant", tenant); this.put("channel", channel); this.put("channel_id", channelId);
+    await this.byokRefresh(0, tc);   // own AI key: this turn's model calls go to their endpoint (byok.js; a backup key once credits are used up)
+    this._privacy = await privacyOf(this.env, tenant);   // AI data privacy for this turn's docs (read_doc); every model dispatch re-reads it
+    // resume.js: a turn a reset cut off carries on here (same card, same start time, same budget and charge so far).
+    const RS = opts.resume || null;
+    const turn = tc.turn, t0 = RS ? RS.started : Date.now();   // the turn id is its card's id (runTurn opened it)
+    tc.jevFirst = null;
+    const stats = { steps: 0, tool_calls: 0, computer_used: 0, computer_wait_ms: 0, model_ms: 0, in: 0, cached: 0, cache_write: 0, out: 0, charge: 0, models: [] };
+    if (RS?.guard && tc.abort !== "hard") { tc.guard = guardIn(RS.guard); await this.spendRefresh(tc, opts); guardResume(tc, RS.started); }   // accounting survives; the current account switch wins after a deploy
+    else if (tc.abort !== "hard") await this.spendStart(tc, opts);   // spendguard.js: this turn's budget + runaway watch (+ today's check-in)
+    // Unattended runs don't carry the chat conversation: the workflow prompt + previous run report are the context.
+    const savedContext = RS ? (() => { try { return JSON.parse(RS.extra || "{}").context; } catch { return null; } })() : null;
+    // In-flight turns keep their layout even when the deployment switch changes.
+    const layered = RS ? savedContext?.version === 2 : contextV2(this.env);
+    const prompt = await this.systemPrompt(compact, this.genuiOn(), layered);
+    tc.context = layered ? savedContext || { version: 2, ...prompt } : null;
+    if (savedContext) { try { tc.loadedTools = new Set(JSON.parse(RS.extra || "{}").loadedTools || []); } catch { tc.loadedTools = new Set(); } }
+    if (tc.context) tc.context.developer = savedContext?.developer || prompt.developer + "\n\n## Deferred tool catalog\n" + toolCatalog(this.availableTools(tc));
+    const sys = { role: "system", content: layered ? tc.context.core : prompt };
+    const hist = kind === "chat" ? (compact ? this.compactHistory(tc.session) : [...this.history(tc.session), ...this.usedAppsPair(tc.session)]) : [];
+    const others = kind === "chat" && !layered ? this.otherTasksNote(tc.session) : "";
+    const viaNote = tc.viaText ? this.genuiOn()
+      ? "\n\n(This message came by text from their phone. Your reply is sent back by text. A plain reply: short and plain, no markdown, tables or headings; links are fine. A card reply arrives as a tappable card they open in Messages: use one when it saves them typing (a choice, a form, a draft to approve). If a card couldn't open, they got its options as a numbered list, so a reply like \"2\" or \"the second one\" picks that option.)"
+      : "\n\n(This message came by text from their phone. Your reply is sent back as a text: keep it short and plain, no markdown, tables or headings. Links are fine.)" : "";
+    // Attached files: already in R2; named in the message, copied to the computer before its first command, images shown to the model.
+    const ap = kind === "chat" ? await this.attachParts(opts.files, tc.session, turn) : { att: [], pics: [], note: "" }, att = ap.att, pics = ap.pics;
+    tc.attached = att.length > 0 || pics.length > 0;   // privacy.js provenance: files in the request
+    const attNote = ap.note + (opts.note ? `\n\n(${String(opts.note).slice(0, 2000)})` : "");
+    const fileBody = ap.body || ""; tc.fileBody = fileBody; tc.sidecar = ap.sidecar || [];   // sidecar.js: the files' text, this message only (never saved)
+    if (fileBody) tc.attached = true;   // privacy.js provenance: file contents in the request
+    // Memory recall (P2): one sourced pack per message, chosen by search + rank, never a model call. Goes in the user message so the cached system prefix stays stable.
+    let recallNote = "";
+    const mmode = this.memoryMode();
+    if (!layered && !RS && (kind === "chat" || kind === "followup") && mmode !== "off") recallNote = await this.recallContext(String(text), tc, { onDemand: false, at: t0 });
     // This task's to-do list (update_todos), so the helper continues it instead of starting over. In the message, not the system prompt.
     const todoNote = (kind === "chat" || kind === "followup") && tc.session ? this.todoContext(tc.session) : "";
     // Helpers still running in this task (helpers.js, when present), so a reply mentions them.
@@ -2202,7 +2358,7 @@ export class Resident extends DurableObject {
     const ih = kind === "chat" && !RS ? await integrationHint(this, text) : { line: "", items: [] }; tc.hint = ih.items;
     const hintNote = ih.line ? `\n${ih.line}` : ""; tc.hintNote = hintNote;
     // Notebook notes left out of the pinned block (pinned-notes.js) that share words with this message: in the message, never the system prompt.
-    const nbNote = (kind === "chat" || kind === "followup") && this._pinnedOmitted?.length ? notebookMatches(this._pinnedOmitted, String(text || "")) : "";
+    const nbNote = !layered && (kind === "chat" || kind === "followup") && this._pinnedOmitted?.length ? notebookMatches(this._pinnedOmitted, String(text || "")) : "";
     // Reply on a chat bubble (reply-to.js): one line naming the earlier message this answers, in front of their words. Saved with
     // them (both engines), so later turns' history and a resume read it too; the cached prefix is untouched.
     const asked = kind === "chat" ? withReply(text, opts.reply) : text;
@@ -2232,22 +2388,40 @@ export class Resident extends DurableObject {
     if (kind === "chat" && !this.env.BYOK && tc.abort !== "hard" && !RS) tc.lab = startLab(this, tc, { kind, text: asked + attNote, hist, messages, needImg: tc.needImg, plan: opts.handoff?.type === "plan" });
     const stepIn = []; let checkpoints = 0;
     const trace = [];
+    if (tc.context) {
+      if (!savedContext) {
+        tc.context.userText = String(asked);
+        tc.context.modelUserText = userText;
+        tc.context.turn = { time: nowTag, location: placeNote, integration: hintNote, task_todos: todoNote, running_helpers: helperNote, focus_timer: pomoNote, live_notes: lnNote, attachment_manifest: attNote, attachments: fileBody, delivery: viaNote, event: opts.eventNote || "", route_guidance: tc.route?.note || "" };
+        tc.context.sections = [
+          { source: "core prompt + skill/doc indexes", order: 0, role: "system", chars: tc.context.core.length, reason: "core operating contract" },
+          { source: "runtime + GenUI + tool catalog", order: 1, role: "developer", chars: tc.context.developer.length, reason: "runtime capabilities and rules" },
+          { source: "profile + channel + pinned notes + apps", order: 2, role: "user", chars: JSON.stringify(tc.context.standing).length, reason: "standing user context (data)" },
+          ...Object.entries(tc.context.turn).map(([source, value], order) => ({ source, order: order + 3, role: "user", chars: value.length, included: !!value, reason: value ? "current turn context (data)" : "not applicable" })),
+          { source: "automatic recall", included: false, chars: 0, reason: "agent-requested through recall_memory" },
+        ];
+      }
+      tc.contextTrace = trace;
+    }
     if (ih.line) trace.push({ tool: "integration_hint", args: ih.items.map((x) => x.a.s).join(","), ms: 0, out: ih.line.slice(0, 700) });   // ops/evals see it; not a step
     if (tc.sidecar?.length) trace.push({ tool: "file_sidecar", args: tc.sidecar.map((x) => x.name).join(","), ms: 0, out: tc.sidecar.map((x) => `${x.name}: ${x.mode}${x.tokens ? ` (${x.tokens} tok)` : ""}`).join("; ").slice(0, 700) });   // sidecar.js: inline / card / not ready; not a step
     const engine = RS?.engine || opts.engine || this.get("engine") || this.env.ENGINE || "classic";
-    let warm = null, reply = "", error = null, nudged = false, emptyNudged = false, capped = false; const said = [], steerMsgs = [];
+    let warm = null, reply = "", error = null, nudged = false, emptyNudged = false, capped = false; const said = [], saidMeta = [], steerMsgs = [];   // saidMeta[i]: the tool calls around said[i] (progress-dedupe.js splitProgress)
     if (!RS) this.journalInput(tc, { userText, engine, ctxMode });   // resume.js: what a resume rebuilds the first message from
     // resume.js: the turn's saved steps, its open calls closed by type, one context note; stats, said and step carried over.
     const rs = RS ? await this.resumeState(tc, RS, hist, userMsg) : null;
     if (rs?.stats) Object.assign(stats, rs.stats, { models: [...(rs.stats.models || [])] });
-    if (rs) { said.push(...rs.said); if (rs.phase === "tools") stats.tool_calls += rs.lastCalls || 0; }
+    if (rs) { said.push(...rs.said); saidMeta.push(...(rs.saidMeta || rs.said.map(() => null)));   // old metadata remains unknown (keep)
+      if (rs.phase === "tools") stats.tool_calls += rs.lastCalls || 0; }
+    await this.spendRefresh(tc, opts); // resumeState restored counters/old pause; apply the current preference last
     if (tc.guard?.pre && tc.abort !== "hard") {
       // Today's check-in is due (spendguard.js): no model call, one plain line + the Keep going / Stop here card.
       if (!RS) this.save(turn, { role: "user", content: asked + attNote }); reply = DAY_PAUSE_REPLY; said.push(reply);
       this.save(turn, { role: "assistant", content: reply }); stats.hit_limit = 1; send?.({ t: "text", s: reply });
     } else if (engine === "pi") {
-      const r = await runTurnPi(this, { tc, sys: sys.content, hist, userText, kind, maxSteps, turn, opts, send, stats, trace, stepIn, TOOLS: this.tools(), COMPUTER_TOOLS, consts: { CHECKPOINT_TOKENS, MAX_OUT }, resume: rs });
+      const r = await runTurnPi(this, { tc, sys: sys.content, hist, userText, kind, maxSteps, turn, opts, send, stats, trace, stepIn, TOOLS: this.availableTools(tc), COMPUTER_TOOLS, consts: { CHECKPOINT_TOKENS, MAX_OUT }, resume: rs });
       reply = stripNotesEcho(r.reply); error = r.error; checkpoints = r.checkpoints; messages = r.messagesForNotes;
+      said.splice(0, said.length, ...r.said); saidMeta.splice(0, saidMeta.length, ...r.saidMeta);   // Pi uses the same terminal/history classifier; unknown resumed steps stay visible
       if (error === SPEND_CEILING) { error = null; reply = pauseFallback(reply.startsWith("Something went wrong") ? "" : reply); }
     } else {
     if (!rs) this.save(turn, { role: "user", content: asked + attNote });
@@ -2256,10 +2430,15 @@ export class Resident extends DurableObject {
       const wm = compact && this.workmemOn(), wmFull = new Map(), wmBase = messages.length - (rs ? rs.prior.length : 0), wmLog = [];
       if (rs) for (const m of rs.prior) if (m.role === "tool") wmFull.set(m.tool_call_id, m.content); stats.wm = wmLog; const wmState = { aside: new Map() }; tc.wmFull = wmFull; tc.wmAside = wmState.aside; tc.wmState = wmState;
       let late = false;
-      for (let step = rs ? rs.step + (rs.phase === "tools" ? 1 : 0) : 0; step < maxSteps; step++) {
+      for (let step = rs ? rs.step + (rs.phase === "tools" ? 1 : 0) : 0; ; step++) {
+        await this.spendRefresh(tc, opts);
+        if (!spendPausesOn(tc)) delete stats.hit_limit;
+        trimTurnState(tc, {said, saidMeta, stats, trace, stepIn, wmLog});
+        const stepLimit = stepAllowance(tc, maxSteps);
+        if (step >= stepLimit) { capped = true; break; }
         if (tc.abort === "hard") break;   // stopped: no further model calls (the reply is set below)
         tc.stepNo = step;
-        this.journalStep(tc, { step, phase: "model", stats, said, checkpoints });   // resume.js: where a reset would carry on from
+        this.journalStep(tc, { step, phase: "model", stats, said, saidMeta, checkpoints });   // resume.js: where a reset would carry on from
         // Steering: everything the person added since the last step is read before this call, as one message.
         const st = this.takeSteers(tc);
         if (st.length) { const sm = await this.steerMessage(tc, st, { late }); messages.push(sm.msg); steerMsgs.push(sm.msg); this.save(turn, { role: "user", content: sm.text }); }
@@ -2271,6 +2450,12 @@ export class Resident extends DurableObject {
           const fin = await this.callModel(messages, () => {}, tc.pause && send ? (s) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s }); } : null, 1500, true, tc);
           stats.steps++; stats.in += fin.inTok; stats.cached += fin.cached; stats.cache_write += fin.cacheWrite || 0; stats.out += fin.outTok; stats.charge += fin.charge; if (fin.model) stats.models.push(fin.routing ? `${fin.model} [${fin.routing.reason}/${fin.routing.floor}]` : fin.model);
           const a = { role: "assistant", content: fin.content }; messages.push(a); this.save(turn, a);
+          await this.spendRefresh(tc, opts);
+          if (!spendPausesOn(tc) && tc.abort !== 'hard') {
+            messages.splice(messages.indexOf(ask), 1);
+            const resume = {role:'user',content:'(The person turned off spending check-ins. Continue their task; the discretionary pause no longer applies.)'};
+            messages.push(resume); this.save(turn, resume); send?.({t:'work'}); continue;
+          }
           if (tc.pause && fin.content) said.push(fin.content);
           reply = fin.content || (tc.pause ? pauseFallback() : "Stopped at the limit without a report."); stats.hit_limit = 1; break;
         }
@@ -2284,34 +2469,38 @@ export class Resident extends DurableObject {
         const res = await this.callModel(wm ? tc.wmView : messages, () => {
           if (!warm) { const w0 = Date.now(); warm = this.computer().warm().then((r) => ({ ...r, ms: Date.now() - w0 })); }
         }, send ? (s) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s }); } : null, kind === "chat" ? MAX_OUT : 4096, false, tc);
-        if (res.content) said.push(res.content);
+        { const names = res.calls.map((c) => c.function?.name).filter(Boolean);
+          if (res.content) { said.push(res.content); saidMeta[said.length - 1] = { text: res.content, calls: names, later: [] }; }
+          else if (said.length && saidMeta[said.length - 1]) saidMeta[said.length - 1].later.push(...names); }
         stepIn.push(res.inTok);
         stats.model_ms += Date.now() - m0; stats.in += res.inTok; stats.cached += res.cached; stats.cache_write += res.cacheWrite || 0; stats.out += res.outTok; stats.charge += res.charge; if (res.model) stats.models.push((res.routing ? `${res.model} [${res.routing.reason}/${res.routing.floor}]` : res.model) + (res.fellBack ? ` [fallback: ${res.fellBack}]` : ""));
         const assistant = { role: "assistant", content: res.content, ...(res.calls.length ? { tool_calls: res.calls.map(({ bad_args, ...c }) => c) } : {}) };
         messages.push(res.reasoning && res.calls.length ? { ...assistant, ...res.reasoning } : assistant); this.save(turn, assistant);   // reasoning rides only in this turn's loop, never saved
-        this.journalStep(tc, { step, phase: "tools", stats, said, checkpoints });   // its model call is paid for: a reset now closes its calls and goes on
-        if (opts.max_charge && stats.charge >= opts.max_charge && !tc.abort) { tc.limitWhy = "cost"; tc.abort = "soft"; }   // cost cap (helpers, plan tasks): report next step
-        if (opts.soft_steps && stats.steps >= opts.soft_steps && !tc.abort) { tc.limitWhy = "steps"; tc.abort = "soft"; }   // step budget (plan tasks): report next step
-        guardModel(tc, stats, res.content, res.calls.length > 0, res.calls.map((c) => c.function?.name));   // spendguard.js: over the turn's budget or today's line → pause (report next step)
+        this.journalStep(tc, { step, phase: "tools", stats, said, saidMeta, checkpoints });   // its model call is paid for: a reset now closes its calls and goes on
+        if (spendPausesOn(tc) && opts.max_charge && stats.charge >= opts.max_charge && !tc.abort) { tc.limitWhy = "cost"; tc.abort = "soft"; }   // discretionary cost cap
+        if (spendPausesOn(tc) && opts.soft_steps && stats.steps >= opts.soft_steps && !tc.abort) { tc.limitWhy = "steps"; tc.abort = "soft"; }
+        guardModel(tc, stats, res.content, res.calls.length > 0 || res.finish === "length", res.calls.map((c) => c.function?.name));
+        // A steer cannot reset or bypass this card's output-limit allowance.
+        const outputRecovery = !res.calls.length && res.finish === "length" ? claimOutputRecovery(this, tc) : null;
         // The person added something while this answer was being written: it isn't the reply yet. The draft stays as a progress
         // note, the new message is read next, and the helper answers again (one reply per card).
         if (!res.calls.length && this.hasSteers(tc)) { send?.({ t: "work" }); late = true; continue; }
-        if (!res.calls.length && res.finish === "length" && step < maxSteps - 1) {
-          const nudge = { role: "user", content: "(Your last message was cut off at the output limit. Stop planning in prose; continue by calling the tools you need, keeping each call short.)" };
+        if (!res.calls.length && res.finish === "length" && step < stepLimit - 1) {
+          const nudge = { role: "user", content: outputRecovery };
           messages.push(nudge); this.save(turn, nudge); continue;
         }
         if (!res.calls.length && kind !== "chat" && stats.tool_calls === 0 && !nudged) {
           nudged = true; const nudge = { role: "user", content: "(Unattended run: nobody will reply. Don't describe a plan; do the work now by calling tools, then end with a short final report of what you found and did.)" };
-          messages.push(nudge); this.save(turn, nudge); said.length = 0; continue;
+          messages.push(nudge); this.save(turn, nudge); said.length = 0; saidMeta.length = 0; continue;
         }
-        if (!res.calls.length && !said.join("").trim() && !emptyNudged && step < maxSteps - 1) {
+        if (!res.calls.length && !said.join("").trim() && !emptyNudged && step < stepLimit - 1) {
           emptyNudged = true; const nudge = { role: "user", content: "(Your last message was empty. Don't start over. Give your answer now from what you've already done, or call the next tool you need.)" };
           messages.push(nudge); this.save(turn, nudge); stats.empty_nudge = 1; continue;
         }
         // live-check.js: the answer states live status (a flight landed, a price, a score) with no lookup in this turn → look first, once.
-        const ln = !res.calls.length && step < maxSteps - 1 ? liveNudge(tc, personWords(tc), res.content) : null;
-        if (ln) { said.pop(); send?.({ t: "work" }); const nudge = { role: "user", content: ln }; messages.push(nudge); this.save(turn, nudge); stats.live_nudge = 1; continue; }
-        if (!res.calls.length) { this.commitTurn(tc); reply = stripNotesEcho(said.join("\n\n")); break; }   // the reply closes the card
+        const ln = !res.calls.length && step < stepLimit - 1 ? liveNudge(tc, personWords(tc), res.content) : null;
+        if (ln) { said.pop(); saidMeta.length = Math.min(saidMeta.length, said.length); send?.({ t: "work" }); const nudge = { role: "user", content: ln }; messages.push(nudge); this.save(turn, nudge); stats.live_nudge = 1; continue; }
+        if (!res.calls.length) { this.commitTurn(tc); reply = stripNotesEcho(answerText(splitProgress(said, saidMeta))); break; }   // progress-dedupe.js: the reply is the answer; text written before tool calls is progress (kept in parts)   // the reply closes the card
         send?.({ t: "work" });
         // Several app_run calls in one step: each passes every check on its own, in order; the reads among them park in one batch and go
         // to Composio as ONE multi-execute (composio-transport.js ReadBatch). Writes and everything else run one at a time, as before.
@@ -2367,7 +2556,7 @@ export class Resident extends DurableObject {
         } finally { tc.readBatch = null; tc.onAppQueued = null; if (batch && parked.length) batch.cancel(); }   // stopped mid-step: parked reads never run
         guardTools(tc, res.calls.map((c) => [c.function.name, splitStepTitle(c.function.arguments).args]));   // runaway signs → pause (report next step)
         // Mid-turn checkpoint: the work so far is folded into working notes and the raw steps leave the context.
-        if (!wm && compact && res.inTok > Math.max(CHECKPOINT_TOKENS, (stepIn[0] || 0) + 20000) && step < maxSteps - 2) {
+        if (!wm && compact && res.inTok > Math.max(CHECKPOINT_TOKENS, (stepIn[0] || 0) + 20000) && step < stepLimit - 2) {
           const ask = { role: "user", content: "(Context checkpoint. Don't call tools. Write your working notes so you can continue without the raw steps above: the goal, what you've done, key findings with exact values/paths/commands, what's left and your next step. Be complete but compact.)" };
           const fin = await this.callModel([...messages, ask], () => {}, null, 1500, true, tc);
           stats.steps++; stats.in += fin.inTok; stats.cached += fin.cached; stats.cache_write += fin.cacheWrite || 0; stats.out += fin.outTok; stats.charge += fin.charge; if (fin.model) stats.models.push(fin.routing ? `${fin.model} [${fin.routing.reason}/${fin.routing.floor}]` : fin.model); checkpoints++;
@@ -2376,7 +2565,7 @@ export class Resident extends DurableObject {
           this.save(turn, ask); this.save(turn, { role: "assistant", content: fin.content });
           messages = [sys, ...hist, userMsg, ...steerMsgs, resume];   // what the person added stays in view
         }
-        if (step === maxSteps - 2 && kind !== "chat") {
+        if (step === stepLimit - 2 && kind !== "chat") {
           // Out of steps on an unattended run: one final tools-off call so the run always ends with a real report.
           const ask = { role: "user", content: "(Step limit reached. No more tools. Write your final report now: what you checked, what you found, whether you texted, and what the next run should reuse or do differently.)" };
           messages.push(ask); this.save(turn, ask); compactTools(messages);
@@ -2385,7 +2574,7 @@ export class Resident extends DurableObject {
           const a = { role: "assistant", content: fin.content }; messages.push(a); this.save(turn, a);
           reply = fin.content || "Run ended at the step limit without a report."; error = error || null; stats.hit_limit = 1; break;
         }
-        if (step === maxSteps - 1) capped = true;   // a chat turn out of steps: a short report below (after any steer is answered)
+        if (step === stepLimit - 1) capped = true;   // a chat turn out of steps: a short report below (after any steer is answered)
       }
     } catch (e) { if (isResetErr(e)) { tc.objectReset = true; throw e; }   // resume.js: a reset under this step isn't the turn's error
       if (tc.abort === "hard") error = null; else if (e.budget) { error = null; reply = pauseFallback(said.join("\n\n")); said.length = 0; said.push(reply); } else { error = e.message; if (!reply) reply = isByokError(e) ? e.message : e.privacy ? PRIVACY_EXHAUSTED : e.status === 402 ? (this.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : e.status === 429 ? DAY_LIMIT_REPLY : `Something went wrong: ${e.message}`; } }
@@ -2394,7 +2583,7 @@ export class Resident extends DurableObject {
     // (A stop that lands after the reply already closed the card changes nothing: that card is complete.)
     if (tc.abort === "hard" && !tc.committed) {
       tc.stoppedTurn = true; error = null; this.commitTurn(tc, true);
-      if (kind === "helper") reply = stripNotesEcho(said.join("\n\n")) || STOPPED_REPLY;   // a helper's report keeps what it had said
+      if (kind === "helper") reply = stripNotesEcho(answerText(splitProgress(said, saidMeta))) || STOPPED_REPLY;   // a helper's report keeps what it had said
       else { reply = STOPPED_REPLY; said.push(STOPPED_REPLY); }
     }
     // The loop ended without the reply closing the card (step limit, pi loop end) while the person had added something: one
@@ -2424,6 +2613,13 @@ export class Resident extends DurableObject {
       } catch (e) { if (isResetErr(e)) tc.objectReset = true; if (!tc.stoppedTurn) reply = "I used all my steps on this one. Say \"keep going\" and I'll continue."; console.log("step-limit report", e.message); }
       stats.hit_limit = 1; tc.limitWhy ||= "steps";
     }
+    // Includes failures in the post-loop steer/step-limit answer above. A model
+    // failure needs no further model to explain itself or repeat any tool.
+    if (tc.modelFailure && tc.abort !== "hard") {
+      error = tc.modelFailure.code; reply = modelFailureReply(tc.modelFailure);
+      said.length = 0; said.push(reply); this.save(turn, { role: "assistant", content: reply });
+    }
+    drainModelUsage(tc, stats);
     // Own AI key with no credits left for the parts 1Helm runs: one plain line with an Add credits link under the reply (byok.js).
     if (this.env.BYOK && !tc.stoppedTurn && !error && kind !== "helper" && !String(reply).includes("settings=credits") && (tc.creditsOut || (tc.creditsMem && this.byokNudgeDue(tc.session)))) {
       const add = `${reply ? "\n\n" : ""}${creditsLine(this.env.BYOK)}`; reply = `${reply || ""}${add}`; if (said.length) said[said.length - 1] += add; else said.push(reply.trim()); send?.({ t: "text", s: add });
@@ -2436,12 +2632,12 @@ export class Resident extends DurableObject {
     if (kind !== "chat" && kind !== "helper" && tc.session && reply && (kind === "followup" || tc.texted)) this.sql.exec("UPDATE cards SET hidden=0 WHERE id=?", turn);
     // A budgeted run (plan task, Continue) that hit its budget: "paused" ("Paused: hit its budget. Continue?" in the app).
     // Every guarded turn the person sees (spendguard.js) pauses the same way: why it paused is kept with the card (spend_pause → its line).
-    const paused = !tc.stoppedTurn && !error && (stats.hit_limit || tc.budgetHit) && (tc.pause || tc.limitWhy) && (opts.budget || (tc.guard && (kind === "chat" || kind === "followup")));
+    const paused = spendPausesOn(tc) && !tc.stoppedTurn && !error && (stats.hit_limit || tc.budgetHit) && (tc.pause || tc.limitWhy) && (opts.budget || (tc.guard && (kind === "chat" || kind === "followup")));
     if (paused) { const pv = await this.spendPaused(tc, stats); if (pv) send?.({ t: "spend_pause", pause: pv }); }
     commitCard(this.sql, tc, turn, { status: tc.stoppedTurn ? "stopped" : error ? "failed" : paused ? "paused" : "complete" });
     // Final title / one-line result / summary: a cheap labeller call, in parallel with the hand-off notes (§5).
     let ledger = null; try { ledger = this.ledger(); } catch {}
-    const sumP = summarizeCard({ env: this.env, ledger, meta: { tenant: this.get("tenant"), channel: this.get("channel") },
+    const sumP = tc.modelFailure ? Promise.resolve(null) : summarizeCard({ env: this.env, ledger, meta: { tenant: this.get("tenant"), channel: this.get("channel") },
       input: labelInput(this.sql, turn, { reply, error, name: kind === "chat" ? null : (opts.helper?.name || (opts.workflow_id != null ? this.wf(opts.workflow_id)?.name : null) || null) }) })
       .catch((e) => { console.log("labeller", e.message); return null; });
     let notes = null;
@@ -2453,6 +2649,7 @@ export class Resident extends DurableObject {
       } catch (e) { console.log("handoff", e.message); }
     }
     { const sk = this.byokSkipNote(tc); if (sk) notes = notes ? `${notes}\n${sk}` : sk; }   // own AI key: what was skipped for credits
+    drainModelUsage(tc, stats);   // optional post-completion notes may have paid usage before failing
     if (tc.extraCharge) { stats.charge += tc.extraCharge; tc.extraCharge = 0; }   // browser_task's own Ledger charges (already settled)
     // A computer that was started must stay saved: end-of-turn save (the computer sleeps on its own after 60 s idle).
     if (stats.computer_used) { try { await this.computer().save("turn"); } catch {} }
@@ -2463,9 +2660,12 @@ export class Resident extends DurableObject {
     let lt; const lab = await Promise.race([sumP, new Promise((z) => { lt = setTimeout(z, 6000); })]); clearTimeout(lt);
     if (lab) { labelCard(this.sql, tc, turn, lab); if (lab.billed) stats.charge += lab.charge_nano || 0; }
     else if (lab === undefined) this.ctx.waitUntil?.(sumP.then((l) => { if (!l) return; labelCard(this.sql, null, turn, l); if (l.billed && l.charge_nano) this.sql.exec("UPDATE turns SET charge_nano=charge_nano+? WHERE id=?", Math.round(l.charge_nano), turn); }));
-    this.sql.exec("INSERT INTO turns (id,at,user_text,reply,steps,tool_calls,computer_used,computer_wait_ms,model_ms,total_ms,in_tok,cached_tok,out_tok,charge_nano,error,kind,workflow_id,trace,notes,ctx,checkpoints,step_in,engine,session,models,cache_write_tok) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", turn, t0, text, reply, stats.steps, stats.tool_calls, stats.computer_used, stats.computer_wait_ms, stats.model_ms, Date.now() - t0, stats.in, stats.cached, stats.out, stats.charge, error, kind, opts.workflow_id ?? null, JSON.stringify(trace).slice(0, 60000), notes, ctxMode, checkpoints, JSON.stringify(stepIn), engine, tc.session, JSON.stringify(stats.models), stats.cache_write);
+    this.sql.exec("INSERT INTO turns (id,at,user_text,reply,steps,tool_calls,computer_used,computer_wait_ms,model_ms,total_ms,in_tok,cached_tok,out_tok,charge_nano,error,kind,workflow_id,trace,notes,ctx,checkpoints,step_in,engine,session,models,cache_write_tok) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", turn, t0, text, reply, stats.steps, stats.tool_calls, stats.computer_used, stats.computer_wait_ms, stats.model_ms, Date.now() - t0, stats.in, stats.cached, stats.out, stats.charge, error, kind, opts.workflow_id ?? null, diagnosticTrace(trace, tc.progressOmitted), notes, ctxMode, checkpoints, JSON.stringify(stepIn), engine, tc.session, JSON.stringify(stats.models), stats.cache_write);
     // Stopped by the person or ended by an error: the reply carries none of what it found, so its lookups are kept as "unfinished work" (worklog.js).
-    if (tc.stoppedTurn || error) this.ctx.waitUntil?.(retainPartial(this, tc.session, turn, tc.stoppedTurn ? "stopped by the person" : "ended by an error").catch((e) => console.log("retainPartial", e.message)));
+    if (tc.stoppedTurn || error) {
+      this.ctx.waitUntil?.(this.nativeCancel(tc.session, tc.stoppedTurn ? 'Task stopped' : 'Task failed').catch(() => {}));
+      this.ctx.waitUntil?.(retainPartial(this, tc.session, turn, tc.stoppedTurn ? "stopped by the person" : "ended by an error").catch((e) => console.log("retainPartial", e.message)));
+    }
     if (att.length) this.sql.exec("UPDATE turns SET files=? WHERE id=?", JSON.stringify(att.map((f) => f.id)), turn);
     if (RS) this.sql.exec("UPDATE turns SET resumes=? WHERE id=?", RS.resumes || 1, turn);
     // Memory ledger (P1): this turn's words, tool calls + results and hand-off notes, append-only. Embeddings are computed after the reply.
@@ -2480,10 +2680,11 @@ export class Resident extends DurableObject {
     // Background memory jobs (memjobs.js): this channel had activity, so upkeep / people / the nightly reflection are due again.
     if (kind === "chat" && this.get("tenant")) this.ctx.waitUntil?.(noteActivity(this.env, this.get("tenant"), this.get("channel")).catch((e) => console.log("memjob activity", e.message)));
     // Each thing it said between tool rounds is its own message bubble in the app ("Let me take a look." · steps · the answer).
-    const parts = said.flatMap((x) => splitCardParts(stripNotesEcho(x).trim())).filter(Boolean);
-    if (kind === "chat" && parts.length > 1 && !error) this.sql.exec("UPDATE turns SET parts=? WHERE id=?", JSON.stringify(parts), turn);
+    const parts = [], progress = [];   // progress = indexes of parts that are narration before a tool call (not the answer); old turns have none and the app classifies them itself
+    for (const x of splitProgress(said, saidMeta)) for (const p of splitCardParts(stripNotesEcho(x.text).trim())) if (p) { if (x.progress) progress.push(parts.length); parts.push(p); }
+    if (kind === "chat" && (parts.length > 1 || progress.length) && !error) this.sql.exec("UPDATE turns SET parts=?, progress=? WHERE id=?", JSON.stringify(parts), progress.length ? JSON.stringify(progress) : null, turn);
     tc.lab?.tokens?.(stepIn[0] ?? null);   // router lab: the real first call's input tokens, next to its estimate
-    return { reply, turn, total_ms: Date.now() - t0, ...stats, trace, error, notes, ctx: ctxMode, checkpoints, step_in: stepIn, engine, reaction: tc.reaction || null };
+    return { reply, turn, total_ms: Date.now() - t0, ...stats, trace, error, ...(tc.progressOmitted ? {progress_omitted:tc.progressOmitted} : {}), ...(tc.modelFailure && !tc.stoppedTurn ? { recoverable: true, failure_phase: tc.modelFailure.phase || null } : {}), notes, ctx: ctxMode, checkpoints, step_in: stepIn, engine, reaction: tc.reaction || null };
   }
 
   // ---- Own router (shadow) ----
@@ -2619,9 +2820,11 @@ export class Resident extends DurableObject {
     const nJobs = jobs ? (jobs[row.id] || 0) : this.sql.exec("SELECT COUNT(*) n FROM workflows WHERE session=? AND status='active'", row.id).one().n;
     const nPend = pend ? (pend[row.id] || 0) : this.sql.exec("SELECT COUNT(*) n FROM approvals WHERE session=? AND status='pending'", row.id).one().n;
     const resuming = !tc && this.resumingIn?.(row.id);   // resume.js: a reset cut its turn off and it's carrying on
-    const state = tc || resuming ? "working" : nPend || row.waiting ? "waiting" : nJobs ? "watching" : "ready";
-    return { id: row.id, title: row.title, pinned: !!row.pinned, done: !!row.done, done_at: row.done_at, state, line: tc ? (tc.line || "thinking") : resuming ? "picking up where it left off (1Helm was just updated)" : null, ...(tc?.slotWait ? { queued: true } : {}),
-      waiting: tc ? null : nPend ? "approval" : row.waiting || null, jobs: nJobs, unread: !!row.last_reply_at && row.last_reply_at > row.seen_at,
+    const nativeProgress = !tc && this.nativeProgress?.(row.id);
+    const checkin = !tc && this.spendWaiting?.(row.id);
+    const state = tc || resuming || nativeProgress ? "working" : nPend || row.waiting || checkin ? "waiting" : nJobs ? "watching" : "ready";
+    return { id: row.id, title: row.title, title_manual: !!row.title_manual, title_revision: Number(row.title_revision || 0), pinned: !!row.pinned, done: !!row.done, done_at: row.done_at, state, line: tc ? (tc.line || "thinking") : nativeProgress ? nativeProgress.line : resuming ? "picking up where it left off (1Helm was just updated)" : null, ...(nativeProgress?{native_progress:nativeProgress}:{}), ...(tc?.slotWait ? { queued: true } : {}),
+      waiting: tc ? null : nPend ? "approval" : row.waiting || (checkin ? "checkin" : null), jobs: nJobs, unread: !!row.last_reply_at && row.last_reply_at > row.seen_at,
       created: row.created, updated: row.updated, preview: row.preview || "", default: row.id === this.getRaw("default_session"), helpers: this.helperCount ? this.helperCount(row.id) : 0, ...this.pomoField(row.id), ...this.lnField(row.id), ...((texts || new Set(this.textsSessions())).has(row.id) ? { texts: true } : {}) };
   }
   // Texting conversations are titled "Text with <the helper's name>".
@@ -2631,7 +2834,7 @@ export class Resident extends DurableObject {
   }
   async listSessions() {
     // One-time: texting tasks made before the rename still say "Texts".
-    if (!this.getRaw("texts_titled") && this.get("tenant")) { const ids = this.textsSessions(); if (ids.length) { const tt = await this.textsTitle(); for (const id of ids) this.sql.exec("UPDATE sessions SET title=? WHERE id=? AND title='Texts'", tt, id); } this.put("texts_titled", "1"); }
+    if (!this.getRaw("texts_titled") && this.get("tenant")) { const ids = this.textsSessions(); if (ids.length) { const tt = await this.textsTitle(); for (const id of ids) this.sql.exec("UPDATE sessions SET title=? WHERE id=? AND title='Texts' AND title_manual=0", tt, id); } this.put("texts_titled", "1"); }
     const jobs = Object.fromEntries(this.sql.exec("SELECT session, COUNT(*) n FROM workflows WHERE status='active' AND session IS NOT NULL GROUP BY session").toArray().map((x) => [x.session, x.n]));
     const pend = Object.fromEntries(this.sql.exec("SELECT session, COUNT(*) n FROM approvals WHERE status='pending' AND session IS NOT NULL GROUP BY session").toArray().map((x) => [x.session, x.n]));
     const texts = new Set(this.textsSessions());
@@ -2642,6 +2845,11 @@ export class Resident extends DurableObject {
     if (preview) this.sql.exec("UPDATE sessions SET preview=? WHERE id=?", String(preview).slice(0, 300), id);   // a line for the list before any reply (interview.js)
     return this.sessionView(this.session(id));
   }
+  // General's explicit task tools only; additive so older Durable Objects can coexist during rollout.
+  async taskAccess(request) { return receiveTaskAccess(this, request); }
+  async startTaskFromGeneral(request) { return receiveTaskAccess(this, { ...request, operation: "start_task" }); }
+  // Additive intent-aware entry point: a new sender never falls back to an old receiver that forwards raw person text.
+  async startTaskIntentFromGeneral(request) { return receiveTaskAccess(this, { ...request, operation: "start_task" }); }
   // The person removes a task (offered for the Get to know you task, interview.js). Never the main chat or a texting thread.
   async removeSession(id) {
     if (!this.session(id) || id === this.getRaw("default_session") || this.textsSessions().includes(id)) return { error: "That task can't be removed." };
@@ -2649,8 +2857,11 @@ export class Resident extends DurableObject {
   }
   async updateSession(id, b = {}) {
     const s = this.session(id); if (!s) return { error: "No such task in this channel." };
+    if (!b || typeof b !== "object" || Array.isArray(b)) return { error: "Invalid task update.", status: 400 };
+    const hasTitle = Object.prototype.hasOwnProperty.call(b, "title"), title = hasTitle ? taskTitle(b.title) : null;
+    if (hasTitle && title === null) return { error: "Use a title of 1–120 characters on one line.", status: 400 };
     const now = Date.now();
-    if (typeof b.title === "string" && b.title.trim()) this.sql.exec("UPDATE sessions SET title=? WHERE id=?", b.title.trim().slice(0, 120), id);
+    if (hasTitle) this.sql.exec("UPDATE sessions SET title=?, title_manual=1, title_revision=title_revision+1 WHERE id=?", title, id);
     if (typeof b.pinned === "boolean") this.sql.exec("UPDATE sessions SET pinned=? WHERE id=?", b.pinned ? 1 : 0, id);
     // Texting conversations are ongoing threads: they can't be marked done (reopening an old one is fine).
     if (typeof b.done === "boolean" && !(b.done && this.textsSessions().includes(id))) this.sql.exec("UPDATE sessions SET done=?, done_at=? WHERE id=?", b.done ? 1 : 0, b.done ? now : null, id);
@@ -2865,9 +3076,10 @@ export class Resident extends DurableObject {
   async sessionDetail(id, limit = 80) {
     const s = this.session(id); if (!s) return { error: "No such task in this channel." };
     const react = Object.fromEntries(this.sql.exec("SELECT turn, reaction FROM reactions WHERE session=?", id).toArray().map((x) => [x.turn, x.reaction]));
-    const turns = this.sql.exec("SELECT id, at, kind, workflow_id, user_text, reply, tool_calls, total_ms, charge_nano, error, trace, files, parts, notes FROM turns WHERE session=? AND kind<>'helper' AND (kind='chat' OR (reply IS NOT NULL AND reply<>'')) ORDER BY at DESC LIMIT ?", id, limit).toArray().reverse()
+    const turns = this.sql.exec("SELECT id, at, kind, workflow_id, user_text, reply, tool_calls, total_ms, charge_nano, error, trace, files, parts, progress, notes FROM turns WHERE session=? AND kind<>'helper' AND (kind='chat' OR (reply IS NOT NULL AND reply<>'')) ORDER BY at DESC LIMIT ?", id, limit).toArray().reverse()
       .map((t) => { let steps = []; const ev = this.sql.exec("SELECT * FROM card_events WHERE card=? ORDER BY seq", t.id).toArray();
         const jp = (x) => { try { return JSON.parse(x); } catch { return {}; } };
+        const historyOmitted = Array.isArray(jp(t.trace)) ? jp(t.trace).find(x => x.tool === 'progress_history')?.omitted || 0 : 0;
         // Steps: the card's (agent-written titles) when the turn has one, else the trace (fallback titles).
         if (ev.length) steps = ev.filter((e) => e.type === "step" && e.status !== "skipped").map((e) => { const a = jp(e.input), saved = savedTo(e.tool, a, e.out_preview); return { tool: e.tool, line: lineFor(e.tool, a), title: e.title, seq: e.seq, status: e.status, ...(saved.length ? { saved } : {}) }; });
         else { try { steps = JSON.parse(t.trace || "[]").filter((x) => !SILENT_TOOLS.has(x.tool)).map((x) => { const a = jp(x.args), saved = savedTo(x.tool, a, x.out); return { tool: x.tool, line: lineFor(x.tool, a), title: fallbackStepTitle(x.tool, a), ...(saved.length ? { saved } : {}) }; }); } catch {} }
@@ -2878,15 +3090,18 @@ export class Resident extends DurableObject {
         const ups = (() => { try { return JSON.parse(t.files || "[]"); } catch { return []; } })();
         const fr = this.sql.exec("SELECT * FROM files WHERE turn=? AND deleted=0 ORDER BY at", t.id).toArray();
         const attached = ups.map((x) => this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(x)).toArray()[0]).filter(Boolean).map((x) => this.fileView(x)), shared = fr.filter((x) => x.source === "helper").map((x) => this.fileView(x));
-        return { id: t.id, card: t.id, msgs, at: t.at, kind: t.kind, workflow_id: t.workflow_id, user_text: t.kind === "chat" ? t.user_text : null, ...(react[t.id] ? { reaction: react[t.id] } : {}), reply: t.reply, ...(t.kind === "livenote" && t.notes ? (() => { try { const m = JSON.parse(t.notes); return m?.refine ? { livenote: { refine: m.refine } } : {}; } catch { return {}; } })() : {}), parts: (() => { try { return t.parts ? JSON.parse(t.parts) : null; } catch { return null; } })(), tool_calls: t.tool_calls, steps, total_ms: t.total_ms, charge_nano: t.charge_nano, error: t.error, images, attached, shared }; });
+return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id, card: t.id, msgs, at: t.at, kind: t.kind, workflow_id: t.workflow_id, user_text: t.kind === "chat" ? t.user_text : null, ...(react[t.id] ? { reaction: react[t.id] } : {}), reply: t.reply, ...(t.kind === "livenote" && t.notes ? (() => { try { const m = JSON.parse(t.notes); return m?.refine ? { livenote: { refine: m.refine } } : {}; } catch { return {}; } })() : {}), parts: (() => { try { return t.parts ? JSON.parse(t.parts) : null; } catch { return null; } })(), progress: (() => { try { return t.progress ? JSON.parse(t.progress) : null; } catch { return null; } })(), tool_calls: t.tool_calls, steps, total_ms: t.total_ms, charge_nano: t.charge_nano, error: t.error, images, attached, shared }; });
     const jobs = this.sql.exec("SELECT id,kind,name,interval_seconds,next_run,last_run,run_count,status FROM workflows WHERE session=? AND status IN ('active','paused') ORDER BY id", id).toArray();
     const tc = this.liveTurn(id);
     // resume.js: a turn an update cut off, waiting to carry on, shows as live too (the app attaches and gets {"t":"resuming"} first).
     const rj = !tc && this.resumingIn?.(id) ? this.sql.exec("SELECT card, started, text FROM turn_runs WHERE session=? AND status IN ('resuming','running') ORDER BY started LIMIT 1", id).toArray()[0] : null;
-    const live = tc ? { turn: tc.turn, started: tc.t0, text: tc.text, line: tc.line, user_text: tc.userText, reaction: tc.reaction || null, card: cardDetail(this.sql, id, tc.turn, { reply: tc.text }) }
+    const live = tc ? { turn: tc.turn, started: tc.t0, text: tc.text, ...liveReplyState(tc), line: tc.line, user_text: tc.userText, reaction: tc.reaction || null, card: cardDetail(this.sql, id, tc.turn, { reply: tc.text }) }
       : rj ? { turn: rj.card, started: rj.started, text: "", line: "picking up where it left off (1Helm was just updated)", user_text: rj.text, reaction: null, resuming: true, card: cardDetail(this.sql, id, rj.card, { reply: "" }) } : null;
+    // The initial input of a native continuation or delegated task brief is internal model context,
+    // not a message sent by the person. Genuine msg/steer events remain intact.
+    if (live?.card?.kind === "handoff" && live.card.from?.some(f=>f.type === "ssh" || f.type === "task")) live.user_text = null;
     attachInterviews(this.sql, id, turns, live);   // interview cards, with their saved answers (interview-chat.js)
-    return { session: this.sessionView(s), turns, cards: listCards(this.sql, id, { n: 30 }).cards, jobs, approvals: this.approvals(false, id), offers: offersView(this.sql, id), todos: this.todoItems(id), plans: plansOf(this.sql, id, this.tz()), origin: originOf(this.sql, id, this.tz()), live,
+    return { session: this.sessionView(s), turns, cards: listCards(this.sql, id, { n: 30 }).cards, jobs, approvals: [...this.approvals(false, id), ...(this.nativeApprovalHistory?.(id)||[])], offers: offersView(this.sql, id), todos: this.todoItems(id), plans: plansOf(this.sql, id, this.tz()), origin: originOf(this.sql, id, this.tz()), live,
       pauses: await this.spendPauses(id), usage: this.spendTaskUsage(id) };
   }
   // ---- Plans (plans.js): the person approves or denies a plan card (route or texted card, never a tool); a project's first task starts here by RPC. ----
@@ -2949,12 +3164,14 @@ export class Resident extends DurableObject {
   // Always Approve resolves like the default model: this conversation → this channel → workspace-wide → "ask".
   async approvalPolicy(session = null) {
     const tenant = this.get("tenant"), channel = this.get("channel");
-    let rows = [];
-    try { rows = (await this.env.DB.prepare("SELECT scope, scope_key, mode FROM approval_policy WHERE tenant_id=? AND ((scope='global' AND scope_key='') OR (scope='channel' AND scope_key=?) OR (scope='session' AND scope_key=?))").bind(tenant, channel, `${channel}:${session || "-"}`).all()).results || []; } catch {}
+    let rows = [], policyReadOk = true;
+    try { rows = (await this.env.DB.prepare("SELECT scope, scope_key, mode FROM approval_policy WHERE tenant_id=? AND ((scope='global' AND scope_key='') OR (scope='channel' AND scope_key=?) OR (scope='session' AND scope_key=?))").bind(tenant, channel, `${channel}:${session || "-"}`).all()).results || []; } catch { policyReadOk = false; }
     const at = (sc) => rows.find((r) => r.scope === sc)?.mode || null;
     const levels = { session: at("session"), channel: at("channel"), global: at("global") };
     const from = levels.session ? "session" : levels.channel ? "channel" : levels.global ? "global" : "default";
-    return { levels, effective: from === "default" ? "ask" : levels[from], from };
+    const effective = from === "default" ? "ask" : levels[from];
+    return { levels, effective, from, preset:null, policy_read_ok:policyReadOk,
+      web_effective:effective, web_from:from };
   }
   async setApprovalPolicy(scope, mode, confirm, session = null) {
     if (!["global", "channel", "session"].includes(scope)) return { error: "scope must be global, channel or session" };
@@ -2975,13 +3192,16 @@ export class Resident extends DurableObject {
     let owners = all.filter((t) => t.inTool > 0); if (!owners.length) owners = all;
     const sessions = [...new Set(owners.map((t) => t.session))];
     const pols = await Promise.all((sessions.length ? sessions : [null]).map((s) => this.approvalPolicy(s)));
+    // A preset is not financial consent. Arbitrary HTTP mutations cannot be
+    // classified as nonfinancial; only the existing explicit policy/grants apply.
     if (pols.every((p) => p.effective === "always")) return { verdict: "allow", why: `Always Approve (${pols[0].from})` };
     const now = Date.now();
     // Exact-host grants, plus a site the person already OK'd for this task another way ("*.<site>", coverSite: Link, a saved login,
     // their details). A covered site only lets a browser FORM through, never a command's request and never one carrying a saved key.
     const covers = via === "form" && !(keys || []).length;
+    const protectedOperation = protectedRequest(method, path, host), keyOperation = protectedRequest("GET", path, host);
     const grants = this.sql.exec("SELECT * FROM grants WHERE (host=? OR host LIKE '*.%') AND (method='*' OR method=?) AND (expires IS NULL OR expires>?) AND uses_left<>0 ORDER BY id", host, method, now).toArray()
-      .filter((g) => g.host === host || (covers && g.host.startsWith("*.") && (host === g.host.slice(2) || host.endsWith(g.host.slice(1)))));
+      .filter((g) => g.host === host || (covers && (!protectedOperation || !keyOperation && g.scope === "covered: your Link purchase") && g.host.startsWith("*.") && (host === g.host.slice(2) || host.endsWith(g.host.slice(1)))));
     const perTask = sessions.length && sessions.every((s) => s && grants.some((g) => g.session === s));
     const g = perTask ? grants.find((x) => x.session === sessions[0]) : grants.find((x) => x.session == null);
     if (g) { if (g.uses_left > 0) this.sql.exec("UPDATE grants SET uses_left=uses_left-1 WHERE id=?", g.id); return { verdict: "allow", why: `approved (${g.scope})` }; }
@@ -3037,14 +3257,16 @@ export class Resident extends DurableObject {
   async approvalCardData(id) {
     const a = this.sql.exec("SELECT * FROM approvals WHERE id=?", Number(id)).toArray()[0];
     if (!a) return { status: "expired" };
+    if (SSH_PERMS.has(a.perm)) return { status: sshApprovalStatus(a), approval: { id: a.id, host: a.host, ...sshApprovalView(a) } };
     if (a.perm === CONFIRM) return { status: confirmStatus(a), approval: { id: a.id, host: "", ...confirmView(a) } };
     const status = a.status === "pending" ? (Date.now() - a.at > APPROVAL_TTL ? "expired" : "pending") : a.status === "denied" ? "deny" : a.decision || "once";
     const keys = JSON.parse(a.keys || "[]");
     if (a.perm) return { status, approval: { id: a.id, host: "", ...permView(a) } };
     return { status, approval: { id: a.id, host: a.host, ...(a.bytes ? { bytes: a.bytes } : {}), ...(keys.length ? { keys } : {}), ...(a.via ? { via: a.via } : {}) } };
   }
-  approvalView(a) { return { id: a.id, at: a.at, host: a.host, method: a.method, path: a.path, ...(a.via ? { via: a.via } : {}), bytes: a.bytes, keys: JSON.parse(a.keys || "[]"), status: a.status, decision: a.decision, workflow_id: a.workflow_id, session: a.session || null, ...(a.perm === CONFIRM ? confirmView(a) : a.perm ? permView(a) : {}) }; }
+  approvalView(a) { return { id: a.id, at: a.at, host: a.host, method: a.method, path: a.path, ...(a.via ? { via: a.via } : {}), bytes: a.bytes, keys: JSON.parse(a.keys || "[]"), status: a.status, decision: a.decision, workflow_id: a.workflow_id, session: a.session || null, ...(SSH_PERMS.has(a.perm) ? sshApprovalView(a) : a.perm === CONFIRM ? confirmView(a) : a.perm ? permView(a) : {}) }; }
   approvals(all = false, session = null) {
+    nativeExpire(this);
     const w = [all ? null : "status='pending'", session ? "session=?" : null].filter(Boolean);
     return this.sql.exec(`SELECT * FROM approvals ${w.length ? "WHERE " + w.join(" AND ") : ""} ORDER BY id DESC LIMIT 50`, ...(session ? [session] : [])).toArray().map((a) => this.approvalView(a));
   }
@@ -3052,6 +3274,7 @@ export class Resident extends DurableObject {
   async decideApproval(id, decision) {
     const a = this.sql.exec("SELECT * FROM approvals WHERE id=?", id).toArray()[0]; if (!a) return { error: "no such request" };
     if (a.status !== "pending") return { error: `already ${a.status}` };
+    if (SSH_PERMS.has(a.perm)) return decideSsh(this, a, decision);
     if (a.perm === CONFIRM) return decideConfirm(this, a, decision);   // confirm.js: Confirm / Cancel on one exact action
     if (a.perm) return decidePerm(this, a, decision);   // perms.js: Allow once / Always allow <kind> / Don't allow
     if (!["once", "session", "channel", "deny"].includes(decision)) return { error: "decision must be once, session, channel or deny" };
@@ -3106,3 +3329,4 @@ stopMix(Resident);
 spendMix(Resident);
 resumeMix(Resident);   // resume.js: resumable chat turns (the journal, recovery, resume)
 installSnapshotRpc(Resident, "Resident", (self) => self.active?.size > 0);
+nativeMix(Resident);

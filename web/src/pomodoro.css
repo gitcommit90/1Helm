@@ -142,3 +142,14 @@
   .mh:has(.pmbtn){gap:4px}
   .pmbtn.m.idle{width:36px;background:none;color:var(--ink2)}
 }
+
+/* scope ask: "This task" / "Everything (global)" (pomodoro.ts askBody) */
+.pmasks{display:flex;flex-direction:column;gap:8px}
+.pmopt{display:flex;flex-direction:column;align-items:flex-start;gap:3px;text-align:left;padding:13px 14px;border-radius:16px;background:var(--abub);border:1.5px solid transparent;min-height:44px;transition:background .15s,border-color .15s,transform .1s}
+.pmopt b{font-size:14.5px;font-weight:600;color:var(--ink)}.pmopt span{font-size:12.5px;color:var(--mute);line-height:1.35}
+.pmopt:hover{background:var(--hover)}.pmopt:active{transform:scale(.985)}.pmopt:focus-visible{outline:2px solid var(--pm);outline-offset:2px}
+.pmback2{align-self:center;margin-top:8px;min-height:36px;padding:0 14px;border-radius:999px;color:var(--mute);font-size:13px}.pmback2:hover{background:var(--abub);color:var(--ink)}
+/* the global button: in the rail foot (desktop) or the header (phone) */
+#rail .foot .pmw.g .pmbtn.m{width:44px;height:44px}
+/* the "started · scope" toast must say its scope in full on a phone: let the line wrap */
+#toast:has([data-pmswitch],[data-pmreplace]) .tmsg b{white-space:normal}

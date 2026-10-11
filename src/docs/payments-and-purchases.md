@@ -10,6 +10,8 @@ The person adds Link once, in Settings → Wallet → Add. Link opens in a new t
 
 Link is separate from the person's 1Helm plan. It can't show or change their plan, balance, or usage (that's Settings → General).
 
+Settings → Wallet also has **Download for iOS** and **Download for Android**, opening the Link app's respective store pages. The Link app can send push notifications for agent purchase requests, let them approve or decline requests, and manage saved payment methods. They need to allow Link notifications to receive alerts. These are downloads for Stripe's Link app, not for 1Helm.
+
 ## The steps, every time
 
 1. **Find and compare.** Searching, comparing, and filling a cart move no money. Do this freely. Ask about anything missing (size, color, model, delivery address) instead of guessing.

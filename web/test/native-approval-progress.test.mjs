@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import {build} from 'esbuild';
+import {readFile} from 'node:fs/promises';
+const result=await build({entryPoints:['src/native-approval-progress.ts'],bundle:true,format:'esm',write:false});
+const {nativeResumeInput,nativeReceiptStatus,nativeHandoffText}=await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));
+const internal='(Platform event: the person approved one SSH session... Use ssh_session...)';
+assert.doesNotMatch(nativeHandoffText({type:'handoff',from:{type:'ssh'},text:internal}),/Platform event|ssh_session/);
+assert.equal(nativeHandoffText({type:'msg',text:internal}),internal,'never suppress human text by matching its contents');
+assert.equal(nativeResumeInput({kind:'handoff',from:[{type:'ssh',id:6}]}),true);
+for(const card of [null,{}, {kind:'chat',from:[{type:'ssh'}]}, {kind:'handoff',from:[{type:'helper'}]}, {kind:'chat',text:'(Platform event: the person approved one SSH session...)'}])assert.equal(nativeResumeInput(card),false);
+for(const [status,wanted] of [['pending','pending'],['consumed','consumed'],['approved','once'],['denied','deny'],['failed','failed'],['host_key_required','host_key_required'],['expired','expired'],['unexpected','failed']])assert.equal(nativeReceiptStatus({perm:'ssh',status}),wanted);
+assert.equal(nativeReceiptStatus({perm:'confirm',status:'pending'}),'pending');
+const v3=await readFile('src/v3.ts','utf8');
+assert.match(v3,/if \(lm.length\) lm.forEach/,'real human steer events still render before fallback guard');
+assert.match(v3,/d.live.user_text && !nativeResumeInput\(d.live.card\)/);
+assert.match(v3,/d.session\?\.state === "working" && !d.session.native_progress/,'connection setup is not a fake live model stream');
+assert.match(v3,/nativePhaseChanged/,'timed-out progress is refreshed even without a task timestamp change');
+console.log('Native approval UI: trusted metadata-only internal fallback suppression, human message preservation, durable receipt statuses and no fake stream passed.');

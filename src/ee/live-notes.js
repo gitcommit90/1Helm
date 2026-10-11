@@ -69,8 +69,8 @@ export const ASK_AFTER_MS = 60 * 60e3, ASK_WAIT_MS = 5 * 60e3, AWAY_MS = 30 * 60
 export const MAX_NANO = 1e9, MAX_TOKENS = 1500000;                      // per session: $1.00, 1.5M tokens
 export const NOTE_RESERVE = 1e7, FINAL_RESERVE = 1e8, MARKUP = 1.15;   // $0.01 per note-taker call, $0.10 per final pass
 // Cost per hour of Live notes from the mic (2026-10-08; replays of this note-taker, prompt + cadence + applyOps, over an 8-minute meeting
-// talked through without pauses; real OpenRouter usage.cost; before the ×1.15). /workspace/tmp-shots/stt/notereplay.mjs (old cadence,
-// ~174 passes an hour) and /workspace/tmp-shots/notetaker/replay.mjs (this code's cadence and request):
+// talked through without pauses; real OpenRouter usage.cost; before the ×1.15). local validation evidence (old cadence,
+// ~174 passes an hour) and local validation evidence (this code's cadence and request):
 //   speech to text (transcribe.js, Qwen3-ASR 0.6B): $0.012/h (was $0.031 on Workers AI Whisper)
 //   note-taker before: gpt-oss-120b on Cerebras at the old cadence, $0.21/h (~$0.41/h if the notes keep growing for the hour), and 8 of
 //     23 passes hit max_tokens (1500, mostly reasoning) and came back unreadable, so their lines went again. Haiku 5.5 effort high (the

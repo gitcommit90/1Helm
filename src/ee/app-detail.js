@@ -6,8 +6,9 @@
 import { call, RETIRED_APPS, latestVersion, versionQuery } from "./composio.js";
 import { transportFor } from "./composio-transport.js";
 import { isBuiltin, byokInfo } from "./builtin-apps.js";
+import { connectAuth, isOAuthScheme, keyScheme } from "./composio-auth.js";
 
-const MEM_TTL = 600e3, EDGE_TTL = 6 * 3600, CACHE_V = 3;   // v2 (10-06): "Built in" only for the audited apps (builtin-apps.js); v3: per Composio version
+const MEM_TTL = 600e3, EDGE_TTL = 6 * 3600, CACHE_V = 5;   // v5: PayPal's customer-owned S2S setup
 const MEM = new Map();            // "<version>:<slug>" → { at, data }
 const ver = (env) => (latestVersion(env) ? "latest" : "pinned");   // the Composio toolkit version this server uses (composio.js)
 // Keyed on this zone's own host (Cache API entries are per data center and only ever read back by this code; never served to visitors).
@@ -43,7 +44,7 @@ function provider(d, name) {
 }
 const KEYISH = { API_KEY: "an API key", BEARER_TOKEN: "an access token", BASIC: "a username and password", BASIC_WITH_JWT: "a username and password" };
 function modeText(mode, name, prov, managed) {
-  if (mode === "OAUTH2" || mode === "OAUTH1") return managed ? `Signs in with your ${prov} account` : `Signs in with ${prov} (needs its own developer app, not set up yet)`;
+  if (isOAuthScheme(mode)) return managed || mode === "DCR_OAUTH" ? `Signs in with your ${prov} account` : `Signs in with ${prov} (needs its own developer app, not set up yet)`;
   if (mode === "NO_AUTH") return "Built in: no sign-in needed";
   if (KEYISH[mode]) return `Needs ${KEYISH[mode]} from ${name}`;
   return `Needs credentials from ${name}`;
@@ -55,14 +56,15 @@ function howItConnects(d, name, slug = d.slug, env = null) {
   const details = d.auth_config_details || [], modes = [...new Set(details.map((a) => a.mode).filter(Boolean))], managed = d.composio_managed_auth_schemes || [];
   const prov = provider(d, name);
   const noauth = isBuiltin(slug, modes, env);
-  const keyish = modes.find((m) => m !== "OAUTH2" && m !== "OAUTH1" && m !== "NO_AUTH");
+  const selected = connectAuth(modes, managed), keyish = keyScheme(modes);
   const fieldsOf = (mode) => (details.find((a) => a.mode === mode)?.fields?.connected_account_initiation?.required || [])
     .filter((f) => f.user_visible !== false).slice(0, 6).map((f) => ({ label: String(f.displayName || f.name || "").slice(0, 80), help: firstSentence(f.description, 240) }));
   let connect;
   if (noauth) connect = { kind: "none", text: "Built in: there's nothing to connect. Your helper can use it right away." };
-  else if (managed.length) connect = { kind: "oauth", text: `${modeText(managed[0], name, prov, true)}. You sign in on ${own(prov)} own page, and 1Helm never sees your password.`, provider: prov };
+  else if (selected && isOAuthScheme(selected.scheme)) connect = { kind: "oauth", text: `${modeText(selected.scheme, name, prov, selected.managed)}. You sign in on ${own(prov)} own page, and 1Helm never sees your password.`, provider: prov };
   else if (keyish) {
     connect = { kind: "key", text: `${modeText(keyish, name, prov, false)}. You paste it on a secure page, and 1Helm never sees it.`, fields: fieldsOf(keyish) };
+    if (slug === "paypal") connect = { kind: "key", text: "Needs your PayPal developer app's Client ID and Client Secret. Choose Live or Sandbox on the secure setup page. 1Helm passes them securely to Composio; they aren't shared with your helper.", fields: [{ label: "Client ID", help: "From your PayPal developer app." }, { label: "Client Secret", help: "Must belong to the same app and environment." }, { label: "Environment", help: "Live or Sandbox." }] };
     // AI model providers (Gemini, OpenAI…): the person's OWN key from that provider, and the provider bills them directly.
     const hint = (details.find((a) => a.mode === keyish)?.fields?.connected_account_initiation?.required || []).map((f) => f.description).join(" ");
     const cats = (d.meta?.categories || []).map((c) => String(c?.name || c || ""));
@@ -71,7 +73,7 @@ function howItConnects(d, name, slug = d.slug, env = null) {
   }
   else if (modes.length && modes.every((m) => m === "NO_AUTH")) connect = { kind: "unavailable", text: `${name} isn't available in 1Helm yet: there's nothing to connect, and it doesn't run without a connection.` };
   else connect = { kind: "unavailable", text: `${name} needs its own developer app before it can connect, so it isn't available yet.` };
-  const auth = modes.length ? modes.filter((m) => m !== "NO_AUTH" || noauth).map((m) => ({ kind: m === "OAUTH2" || m === "OAUTH1" ? "oauth" : m === "NO_AUTH" ? "none" : "key", text: modeText(m, name, prov, managed.includes(m)) })) : [{ kind: connect.kind, text: connect.text }];
+  const auth = modes.length ? modes.filter((m) => m !== "NO_AUTH" || noauth).map((m) => ({ kind: isOAuthScheme(m) ? "oauth" : m === "NO_AUTH" ? "none" : "key", text: modeText(m, name, prov, managed.includes(m)) })) : [{ kind: connect.kind, text: connect.text }];
   return { connect, auth };
 }
 

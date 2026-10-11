@@ -34,6 +34,8 @@ import { textConnected, textSend } from "./ee/index.js";
 import { ESCALATE_STALL } from "./ee/index.js";
 import { PAUSE_FACTS, callKey } from "./ee/index.js";
 import { loopWords } from "./ee/index.js";   // a live search: changing a real field (date, place) is a new search, not a loop
+import { loadCheckins, normalizeCheckins } from "./agent-checkins.js";
+import { SPEND_PAUSES_KEY, spendPausesOn, applySpendPreference, readSpendPreference } from './spend-preferences.js';
 
 export const BASE_ALLOWANCE = 20e9;        // Personal plan usage ($20/month): the plan the per-turn numbers are tuned for
 export const TURN_SOFT = 15e7;             // $0.15 per turn before a pause
@@ -105,9 +107,9 @@ export function noteCalls(w, calls, at = Date.now()) {
   }
 }
 // → null, or { reason } for the first sign found (in this order).
-export function runawaySign(w, now = Date.now()) {
+export function runawaySign(w, now = Date.now(), checkins = RUNAWAY) {
   const c = w.calls, n = c.length; if (!n) return (w.outLoops || 0) >= RUNAWAY.outLoops ? { reason: "loop" } : null;
-  if (!w.said && c.filter((x) => !x.quiet).length >= RUNAWAY.silent) return { reason: "silent" };
+  if (!w.said && c.filter((x) => !x.quiet).length >= checkins.silent) return { reason: "silent" };
   const last = c[n - 1];
   if (!NO_LOOP.has(last.name) && last.words.size) {
     const idx = c.map((x, i) => (x.name === last.name && similar(x.words, last.words) >= RUNAWAY.similar ? i : -1)).filter((i) => i >= 0);
@@ -118,7 +120,7 @@ export function runawaySign(w, now = Date.now()) {
   }
   { let run = 0; for (let i = n - 1; i >= 0 && LOOK_BACK.has(c[i].name); i--) run++; if (run >= RUNAWAY.recallRun) return { reason: "loop", tool: last.name }; }
   if (new Set(c.map((x) => x.account).filter(Boolean)).size >= RUNAWAY.accounts) return { reason: "accounts" };
-  if (c.filter((x) => !x.quiet && now - x.at <= RUNAWAY.fastMs).length >= RUNAWAY.fast) return { reason: "fast" };   // reads are quick by nature
+  if (c.filter((x) => !x.quiet && now - x.at <= RUNAWAY.fastMs).length >= checkins.fast) return { reason: "fast" };   // reads are quick by nature
   if ((w.outLoops || 0) >= RUNAWAY.outLoops) return { reason: "loop" };   // commands whose output kept repeating one line
   if ((w.noProgress || 0) >= RUNAWAY.noProgress) return { reason: "loop" };   // appfirst.js: "you already have this" again and again
   return null;
@@ -152,7 +154,7 @@ export function noticeText(level, used, allowance, helper = "Your helper") {
 }
 
 // ---- per-turn checks (tc.guard is set by spendStart; a turn without one is unguarded, e.g. helpers) ----
-function pauseAt(tc, reason) { if (tc.abort || tc.pause) return false; tc.pause = { reason }; tc.abort = "soft"; return true; }
+function pauseAt(tc, reason) { if (!spendPausesOn(tc) || tc.abort || tc.pause) return false; tc.pause = { reason }; tc.abort = "soft"; return true; }
 const spentOf = (tc, stats) => (stats?.charge || 0) + (tc.extraCharge || 0);
 // After each model call: the turn's budget, and today's check-in line. names: the tools this step calls (a step that only reads the
 // playbook or updates the to-do list is left out of the soft budget: g.reading).
@@ -160,6 +162,7 @@ export function guardModel(tc, stats, content = "", more = true, names = []) {
   const g = tc?.guard; if (!g) return null;
   if (String(content || "").trim()) g.watch.said = true;
   const spent = spentOf(tc, stats), step = spent - (g.lastSpent || 0); g.lastSpent = spent;
+  if (!spendPausesOn(tc)) return null;
   if (!more) return null;   // this step is the answer: the turn ends anyway
   if (names.length && names.every((n) => QUIET.has(String(n)))) g.reading = (g.reading || 0) + Math.max(0, step);
   if (spent - (g.reading || 0) >= g.soft) return pauseAt(tc, "budget") ? tc.pause : null;
@@ -168,11 +171,11 @@ export function guardModel(tc, stats, content = "", more = true, names = []) {
 }
 // After a round of tool calls: [[name, args], …].
 export function guardTools(tc, calls, now = Date.now()) {
-  const g = tc?.guard; if (!g) return null;
+  const g = tc?.guard; if (!g || !spendPausesOn(tc)) return null;
   // integration-hint.js marks a call it answered without running (tc.unrun): skipped, so a one-time nudge and its retry never add up to a loop.
   if (tc.unrun?.length) calls = calls.filter(([n, a]) => { const i = tc.unrun.indexOf(callKey(String(n), a)); if (i < 0) return true; tc.unrun.splice(i, 1); return false; });
   noteCalls(g.watch, calls, now);
-  const s = runawaySign(g.watch, now);
+  const s = runawaySign(g.watch, now, normalizeCheckins(g.checkins));
   if (s?.reason === "loop" && escalatingNext(tc)) return null;   // the fast model repeating itself: route2 hands the next step to the stronger one first
   return s && pauseAt(tc, s.reason) ? tc.pause : null;
 }
@@ -205,7 +208,7 @@ function escalatingNext(tc) {
 }
 // Before every model call of a guarded turn: never start one that could cross the hard ceiling.
 export function guardCall(tc) {
-  const g = tc?.guard; if (!g) return;
+  const g = tc?.guard; if (!g || !spendPausesOn(tc)) return;
   const est = Math.max(2 * (g.biggest || 0), 1e7);   // 2× the biggest step so far (at least $0.01): conservative on purpose
   if ((tc.charged || 0) + (tc.extraCharge || 0) + est > g.hard) {
     tc.pause ||= { reason: "hard" }; tc.budgetHit = true;
@@ -222,7 +225,9 @@ export function noteRepeat(tc, rep = null) {
 // resume.js: a resumed turn keeps its guard (budget, runaway watch, what it spent); only its wall clock is set again, for what's left.
 export function guardResume(tc, startedAt) {
   if (!tc?.guard) return;
-  tc.guard.wallT = setTimeout(() => { if (!tc.finished && !tc.committed) pauseAt(tc, "time"); }, Math.max(1000, TIMING.wallMs - (Date.now() - Number(startedAt || Date.now()))));
+  tc.guard.checkins = normalizeCheckins(tc.guard.checkins);
+  tc.guard.started = Number(startedAt || Date.now());
+  if (spendPausesOn(tc)) tc.guard.wallT = setTimeout(async () => { await tc.refreshSpend?.(); if (!tc.finished && !tc.committed) pauseAt(tc, "time"); }, Math.max(1000, TIMING.wallMs - (Date.now() - tc.guard.started)));
 }
 export function noteCharge(tc, charge) { if (!tc) return; tc.charged = (tc.charged || 0) + charge; if (tc.guard) tc.guard.biggest = Math.max(tc.guard.biggest || 0, charge); }
 export const reportAsk = (tc, limitAsk) => tc?.pause && tc.kind !== "workflow" ? pauseAsk(tc.pause.reason) : limitAsk;
@@ -247,24 +252,45 @@ export function pauseView(row, helper = "Your helper") {
 const reasonOf = (tc) => tc.pause?.reason || (tc.limitWhy === "cost" ? "budget" : tc.limitWhy) || "budget";
 
 export function spendMix(Resident) { return Object.assign(Resident.prototype, {
+  async spendRefresh(tc, opts = tc.spendOptions || {}) {
+    tc.spendOptions = opts;
+    tc.refreshSpend = () => this.spendRefresh(tc, opts);
+    const enabled = await readSpendPreference(this.ledger());
+    applySpendPreference(tc, enabled);
+    if (enabled && tc.abort !== 'hard' && !tc.finished && !tc.committed) {
+      if (tc.guard && Date.now() - (tc.guard.started || tc.t0 || Date.now()) >= TIMING.wallMs) pauseAt(tc, 'time');
+      if (opts.max_ms && Date.now() - (opts.resume?.started || tc.t0 || Date.now()) >= opts.max_ms && !tc.abort) { tc.limitWhy = 'time'; tc.abort = 'soft'; }
+      if (tc.helper?.deadline && Date.now() >= tc.helper.deadline && !tc.abort) { tc.helperWhy = 'time limit'; tc.abort = 'soft'; }
+    }
+    return enabled;
+  },
+  // Durable source for task/list status; a guard pause is a question, not a finished result.
+  spendWaiting(session) {
+    return !!this.sql.exec("SELECT card FROM spend_pauses WHERE session=? AND status='paused' AND reason IN ('silent','fast') LIMIT 1", String(session)).toArray()[0];
+  },
   // Turn start: its budget, today's check-in line, a fresh runaway watch. A check-in that's already due pauses before any work.
   async spendStart(tc, opts = {}) {
+    await this.spendRefresh(tc, opts);
     if (guardOff(this.env) || tc.kind === "helper") return;
     let info = null; try { const L = this.ledger(); if (typeof L.guardInfo === "function") info = await L.guardInfo(); } catch (e) { console.log("spend guard info", e.message); }
     const allowance = Number(info?.allowance_nano) || 0, b = turnBudget(allowance, tc.kind);
     const person = tc.kind === "chat" || tc.kind === "followup";
     const checkinOff = !!info?.checkin_off && testModeOn(this.env);   // dev evals on a test account (Ledger.setCheckinTest)
     tc.guard = { ...b, watch: newWatch(), biggest: 0, dayBase: Number(info?.day_spent_nano) || 0, dayLine: person && info && !checkinOff ? dayLine(allowance, info.day_ok_nano) : 0 };
+    // Snapshot for this turn; resume.js persists it alongside counters, so a restart cannot reset or silently retune it.
+    // A saved change applies to the next turn, including Keep going after a pause.
+    tc.guard.checkins = await loadCheckins(this.env, this.get("tenant"));
     // Wall clock: working this long without its reply → pause at the next step (a running command ends by its own limit first).
-    tc.guard.wallT = setTimeout(() => { if (!tc.finished && !tc.committed) pauseAt(tc, "time"); }, TIMING.wallMs);
+    tc.guard.started = tc.t0 || Date.now();
+    tc.guard.wallT = setTimeout(async () => { await this.spendRefresh(tc, opts); if (!tc.finished && !tc.committed) pauseAt(tc, "time"); }, TIMING.wallMs);
     // Over today's line already: the check-in comes first (not for a helper's result coming back, nor right after a Continue).
-    const fresh = !opts.handoff || opts.handoff?.type === "plan";
-    if (tc.guard.dayLine && tc.guard.dayBase >= tc.guard.dayLine && fresh && !opts.spendContinue) { tc.pause = { reason: "day" }; tc.guard.pre = true; }
+    const fresh = opts.taskKickoff || !opts.handoff || opts.handoff?.type === "plan";
+    if (spendPausesOn(tc) && tc.guard.dayLine && tc.guard.dayBase >= tc.guard.dayLine && fresh && !opts.spendContinue) { tc.pause = { reason: "day" }; tc.guard.pre = true; }
   },
-  // Plan-started tasks: at most SLOT_MAX task turns work at once in this channel; the rest wait in order.
+  // Explicitly delegated tasks: at most SLOT_MAX task turns work at once in this channel; the rest wait in order.
   spendWorking(except = null) { return [...this.active.values()].filter((t) => t !== except && !t.finished && !t.slotWait && t.kind === "chat").length; },
   async spendSlot(tc, opts = {}) {
-    if (guardOff(this.env) || opts.handoff?.type !== "plan" || this.spendWorking(tc) < SLOT_MAX) return;
+    if (guardOff(this.env) || (!opts.taskKickoff && opts.handoff?.type !== "plan") || this.spendWorking(tc) < SLOT_MAX) return;
     tc.slotWait = true; tc.line = "waiting to start";
     try { setStatus(this.sql, tc, tc.turn, "queued"); } catch {}
     tc.emit?.({ t: "queued", why: "slots" });
@@ -294,6 +320,7 @@ export function spendMix(Resident) { return Object.assign(Resident.prototype, {
   async spendContinued(card) {
     const row = this.sql.exec("SELECT * FROM spend_pauses WHERE card=?", String(card)).toArray()[0]; if (!row) return null;
     this.sql.exec("UPDATE spend_pauses SET status='continued', decided_at=? WHERE card=?", Date.now(), row.card);
+    this.sql.exec("UPDATE sessions SET updated=? WHERE id=?", Date.now(), row.session);
     if (row.reason === "day") { try { const L = this.ledger(); if (typeof L.dayCheckin === "function") await L.dayCheckin(); } catch (e) { console.log("day checkin", e.message); } }
     return row;
   },
@@ -303,6 +330,7 @@ export function spendMix(Resident) { return Object.assign(Resident.prototype, {
     if (!c) return { error: "That card is gone.", status: 404 };
     if (c.status === "paused") this.sql.exec("UPDATE cards SET status='complete' WHERE id=?", c.id);
     this.sql.exec("UPDATE spend_pauses SET status='stopped', decided_at=? WHERE card=? AND status='paused'", Date.now(), c.id);
+    this.sql.exec("UPDATE sessions SET updated=? WHERE id=?", Date.now(), c.session);
     const row = this.sql.exec("SELECT * FROM spend_pauses WHERE card=?", c.id).toArray()[0];
     return { ok: true, card: c.id, pause: row ? pauseView(row, await helperName(this)) : null, session: this.sessionView(this.session(c.session)) };
   },

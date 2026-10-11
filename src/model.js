@@ -1,9 +1,10 @@
 import { route2On, policyRoute, markServed, choreRouteFor, dispatchOrder, LUNA } from "./ee/index.js";
 import { byokChat } from "./byok.js";
 import { privacyOf, enforceRequest, eligibleHosts, PrivacyBlocked, PRIVACY_EXHAUSTED } from "./privacy.js";   // AI data privacy: every dispatch
-import { fixedEffort, MAX_ATTEMPTS, isMuse } from "./ee/index.js";   // the managed pool: one fixed effort per model
+import { fixedEffort, MAX_ATTEMPTS, isMuse, aliasOf } from "./ee/index.js";   // the managed pool: one fixed effort per model
 import { testModelFor, testPayload, testHostsOf, testEffortOf } from "./internal-test-model.js";   // dev test workspaces: every call on TEST_MODEL
 import { boundedText } from "./bounded-body.js";
+import { modelSettingsEnv, configuredChore, configuredHosts, configuredEffort } from "./ee/index.js";
 // Model provider. ROUTER_MODE="two" (dev and live): the main chat follows the routing policy (route2.js decides a task category,
 // pool.js maps category × AI data privacy level to models with fixed efforts, twoChat below builds every attempt). Classic mode
 // (router.js / Jev Router) is kept behind ROUTER_MODE="classic". Every OpenRouter chat request passes orFetch, which validates it against
@@ -12,11 +13,10 @@ import { boundedText } from "./bounded-body.js";
 export const OR_MODEL = "typesafe/jev-router";
 export const OR_FALLBACKS = ["deepseek/deepseek-v4.1-flash", "z-ai/glm-5.3-flash"];
 export const OR_MAX_OUT = 8000;                         // reasoning tokens count toward max_tokens on OpenRouter
-// Per-step output cap on the main chat (Sol / Luna / the dev test model). Captain 10-07, replacing "no caps": one Sol step once wrote
-// 65,536 tokens of dates inside one run_command argument ($0.67) before the provider stopped it. 16k leaves room for high-effort
-// reasoning plus a long file written in one step; env STEP_MAX_TOKENS overrides it (1024–128000). Chores keep their own smaller caps.
+// Per-step output cap on the main chat (managed pool / the dev test model). Captain 10-10: raise the default from 16,384 to 50,000.
+// Reasoning tokens count toward this ceiling; env STEP_MAX_TOKENS overrides it (1024–128000). Chores keep their own smaller caps.
 // The streaming reader (repeat-guard.js) also stops a step that starts repeating itself long before this.
-export const STEP_MAX_OUT = 16384;
+export const STEP_MAX_OUT = 50000;
 export const stepMaxOut = (env) => { const n = Math.round(Number(env?.STEP_MAX_TOKENS)); return n >= 1024 ? Math.min(n, 128000) : STEP_MAX_OUT; };
 // Price ceiling (Captain, 2026-10-01): Jev may pick any model up to $3 in / $15 out per million tokens. Keeps the Sonnet 5.5 /
 // gpt-6.1-sol step-up, blocks gpt-6-astra and Opus. OpenRouter enforces it (no endpoint above it is used).
@@ -40,6 +40,19 @@ export async function openRouterChat(env, body, session, route = null, meta = {}
   // Dev test workspace (test-model.js): one call on the test model, whatever the route says. No pool models, no fallback list.
   const tm = await testModelFor(env, meta?.tenant);
   if (tm) return testChat(env, body, session, route, meta, signal, tm);
+  env = await modelSettingsEnv(env);
+  const memoryRole = /^memjob-(upkeep|people|reflect)-(write|verify)$/.exec(meta?.kind || "");
+  const role = memoryRole ? `${memoryRole[1]}_${memoryRole[2]}` : meta?.kind === "card-label" ? "label"
+    : meta?.kind === "memory-summary" ? "memory_summary" : meta?.kind === "sidecar-card" ? "sidecar_card"
+    : meta?.kind === "live-notes-final" ? "notes_final" : String(meta?.kind || "").startsWith("live-notes-") ? "notes"
+    : choreRouteFor(route, body, env) ? "handoff" : null;
+  const override = role && configuredChore(env, role, memoryRole?.[2] === "verify" ? "medium" : "low");
+  if (override) {
+    route = override;
+    const { reasoning, ...configuredBody } = body; body = configuredBody;
+    // Bedrock gpt-oss-20b does not support JSON mode. Match the existing memory-job model adapter.
+    if (!override.json && body.response_format) { const { response_format, ...rest } = body; body = rest; }
+  }
   // Routing policy (route2.js, ROUTER_MODE=two): the category's chain at the current privacy level, or a chore on its chore model.
   if (route2On(env) && (route?.two || route?.chore || !route)) return twoChat(env, body, session, route || policyRoute("general", "zdr", "default"), meta, signal);
   // The `models` list shares the request's one reasoning field, so a fallback that needs its own effort (an object
@@ -79,7 +92,7 @@ async function testChat(env, body, session, route, meta, signal, model) {
 // Two mode (the main chat's routing policy, route2.js + pool.js): one model per attempt, no OpenRouter `models` list (so nothing outside
 // the dispatch order can answer). Order: route2.js dispatchOrder (recovery model, then the category's chain at the account's CURRENT
 // privacy level, re-read here on every dispatch; ineligible models skipped). Each attempt is built here, last, so nothing upstream can
-// change it: the model's FIXED effort (pool.js fixedEffort: Muse Contributor xhigh, every other pool model max; never the route's,
+// change it: the model's FIXED effort (pool.js fixedEffort; never the route's,
 // the caller's, a retry's or the source model's), provider = the model's eligible endpoints at that level (privacy.js; OpenRouter moves
 // between them inside the request on an upstream 429/outage: the bounded same-model endpoint retry), require_parameters so no endpoint
 // may silently drop the reasoning setting, the $3/$15 ceiling, and the per-step output cap (stepMaxOut: a spend ceiling, not an effort
@@ -98,10 +111,10 @@ export function replayFor(messages, model) {
 }
 // One pool attempt's exact request (exported for the wire tests and the ops route preview).
 export function poolPayload(env, model, level, body, session, prov = null) {
-  const hosts = eligibleHosts(model, level, { prov });
+  const hosts = configuredHosts(env.MODEL_SETTINGS, model, level), meta = env.MODEL_SETTINGS?.catalog?.[model];
   const { reasoning, provider, models, model: _m, ...b } = body || {};   // a caller's/router's effort or provider never reaches the wire
   if (isMuse(model) && b.tool_choice != null && b.tool_choice !== "auto") throw new PrivacyBlocked(`${model} accepts only tool_choice auto`, { model });
-  return { ...b, messages: replayFor(b.messages, model), model, reasoning: { effort: fixedEffort(model) },
+  return { ...b, ...(meta ? { max_tokens: Math.min(Number(b.max_tokens) || stepMaxOut(env), meta.max_output, Math.max(1, meta.context_length - 1)) } : {}), messages: replayFor(b.messages, model), model, ...effortBody(configuredEffort(env.MODEL_SETTINGS, model), model),
     provider: { order: hosts, only: hosts, allow_fallbacks: true, require_parameters: true, max_price: OR_MAX_PRICE }, usage: { include: true },
     ...(session ? { session_id: String(session).slice(0, 256), prompt_cache_key: cacheKey(session) } : {}) };
 }
@@ -109,8 +122,9 @@ async function twoChat(env, body, session, route, meta, signal = null) {
   const chore = route.chore ? route : choreRouteFor(route, body, env);
   // host: one provider or a list in order; pin: only those providers (CHORE_MODELS oss20). Chores keep their own fixed settings.
   const one = async (model, effort, host, b, pin = false) => {
-    const r = await orFetch(env, { model, ...effortBody(effort, model), provider: { zdr: true, max_price: OR_MAX_PRICE, ...(host ? { order: [host].flat(), ...(pin ? { allow_fallbacks: false } : {}) } : {}) }, usage: { include: true },
-      ...(session ? { session_id: String(session).slice(0, 256), prompt_cache_key: cacheKey(session) } : {}), ...b }, meta, { "x-openrouter-metadata": "enabled" }, signal);
+    const cap = env.MODEL_SETTINGS?.catalog?.[model]?.max_output;
+    const r = await orFetch(env, { ...b, ...(cap ? { max_tokens: Math.min(Number(b.max_tokens) || OR_MAX_OUT, cap) } : {}), model, ...effortBody(effort, model), provider: { zdr: true, max_price: OR_MAX_PRICE, ...(route.runtimeSettings ? { require_parameters: true } : {}), ...(host ? { order: [host].flat(), ...(pin ? { only: [host].flat(), allow_fallbacks: false } : {}) } : {}) }, usage: { include: true },
+      ...(session ? { session_id: String(session).slice(0, 256), prompt_cache_key: cacheKey(session) } : {}) }, meta, { "x-openrouter-metadata": "enabled" }, signal);
     if (!r.ok) { const t = await boundedText(r, 64 * 1024).catch(() => ""); throw Object.assign(new Error(`openrouter ${model} ${r.status}: ${t.slice(0, 200)}`), { orStatus: r.status }); }
     return r;
   };
@@ -124,7 +138,7 @@ async function twoChat(env, body, session, route, meta, signal = null) {
     throw err;
   }
   const level = await privacyOf(env, meta?.tenant), prov = meta?._prov ?? null;
-  const { models: order, skipped } = dispatchOrder(route, level, { prov, body });
+  const { models: order, skipped } = dispatchOrder(route, level, { prov, body, settings: env.MODEL_SETTINGS });
   if (skipped.length) console.log("router: skipped", JSON.stringify({ level, category: route.category || null, skipped }));
   if (!order.length) throw new PrivacyBlocked(PRIVACY_EXHAUSTED, { level, category: route.category || null });
   const b = { ...body, max_tokens: stepMaxOut(env) };   // the main chat's per-step output cap
@@ -137,7 +151,9 @@ async function twoChat(env, body, session, route, meta, signal = null) {
       try {
         const r = await orFetch(env, poolPayload(env, order[i], level, b, session, prov), { ...meta, _privacy: level, _prov: prov }, { "x-openrouter-metadata": "enabled" }, signal);
         if (!r.ok) { const t = await boundedText(r, 64 * 1024).catch(() => ""); throw Object.assign(new Error(`openrouter ${order[i]} ${r.status}: ${t.slice(0, 200)}`), { orStatus: r.status }); }
-        const out = await firstOk(r, !!b.stream); markServed(route, order[i], i > 0); return out;
+        const out = await firstOk(r, !!b.stream); markServed(route, order[i], i > 0);
+        if (env.MODEL_SETTINGS) route.effort = configuredEffort(env.MODEL_SETTINGS, order[i]);
+        return out;
       } catch (e) {
         if (signal?.aborted) throw e; err = e; console.log("router: model failed", order[i], String(e.message).slice(0, 160));
         if (k < waits.length && (e.orStatus === 429 || /\b429\b|rate.?limit/i.test(String(e.message)))) { await sleep(waits[k], signal); continue; }
@@ -152,7 +168,7 @@ async function twoChat(env, body, session, route, meta, signal = null) {
 // system + tools as one block: any change in either (10-06 probe: one changed line at the end of the system prompt) makes the whole
 // ~25k-token prefix cold. Two calls with different px can't share a cache; same px and 0 cached means the provider side missed.
 export function h32(s) { let h = 0x811c9dc5; s = String(s ?? ""); for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } return (h >>> 0).toString(16).padStart(8, "0"); }
-export const prefixPrint = (messages, tools) => `${h32((messages || []).filter((m) => m?.role === "system").map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n"))}.${h32(tools ? JSON.stringify(tools) : "")}`;
+export const prefixPrint = (messages, tools) => `${h32((messages || []).filter((m) => ["system", "developer"].includes(m?.role)).map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join("\n"))}.${h32(tools ? JSON.stringify(tools) : "")}`;
 
 // Prompt caching: ONE capability for every route (Captain 10-08: 1Helm is model-agnostic, no per-model caching code). Every OpenRouter
 // request carries cache breakpoints in OpenRouter's standard form, `cache_control: {type: "ephemeral"}` on content blocks:
@@ -164,7 +180,7 @@ export const prefixPrint = (messages, tools) => `${h32((messages || []).filter((
 //   4. the last message: the moving breakpoint, so each step reads everything the step before it wrote.
 // At most 4 (Anthropic's limit). Chores (no session, or no tools) get only 1–2: a one-shot call would pay the write premium on
 // messages nobody reads again. Layout rule for callers: stable prefix first, volatile per-turn lines last (after breakpoint 3).
-// Checked 10-08 (probes in /workspace/tmp-shots/cachefix, same request marked vs plain):
+// Checked 10-08 (probes in local validation evidence, same request marked vs plain):
 //   explicit-cache families USE them: Anthropic (claude-haiku-5.5 on Amazon Bedrock: 0 → 51,303 cached on the 2nd step; Bedrock honours
 //   breakpoints on system, tools and tool/user messages); Alibaba Qwen first-party and Gemini explicit (OpenRouter docs: same syntax;
 //   Gemini uses only the last breakpoint).
@@ -186,12 +202,17 @@ export function withCacheBreakpoints(payload) {
   const msgs = payload?.messages; if (!Array.isArray(msgs) || !msgs.length) return payload;
   const out = { ...payload }, m = msgs.slice(), marks = new Set();
   if (Array.isArray(payload.tools) && payload.tools.length) { const t = payload.tools.slice(); t[t.length - 1] = { ...t[t.length - 1], cache_control: CACHE_CONTROL }; out.tools = t; }
-  let sys = -1; while (m[sys + 1]?.role === "system") sys++;            // the leading system message(s): mark the last one
+  let sys = -1; while (["system", "developer"].includes(m[sys + 1]?.role)) sys++; // stable instruction layers
   if (sys >= 0 && markable(m[sys])) marks.add(sys);
   if (payload.session_id && out.tools) {
     const back = (from, floor) => { for (let i = from; i > floor; i--) if (markable(m[i])) return i; return -1; };
     const lastUser = m.findLastIndex((x) => x?.role === "user");
-    const hist = lastUser > sys + 1 ? back(lastUser - 1, sys) : -1;    // 3. the stable history before the newest user message
+    let historyEnd = lastUser - 1;
+    // v2 puts volatile task data in its own user-data message, before the actual
+    // request. Do not pretend that per-turn block is stable conversation history.
+    const priorText = m[historyEnd]?.content;
+    if (typeof priorText === "string" && priorText.startsWith("[BEGIN TURN CONTEXT]")) historyEnd--;
+    const hist = lastUser > sys + 1 ? back(historyEnd, sys) : -1;
     if (hist >= 0) marks.add(hist);
     const tail = back(m.length - 1, Math.max(sys, hist));               // 4. the moving breakpoint
     if (tail >= 0) marks.add(tail);

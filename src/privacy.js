@@ -17,8 +17,7 @@
 // (verified per endpoint and per modality; a provider's chat policy says nothing about its image or voice API), call enforceRequest
 // (or endpointOk / eligibleHosts for non-OpenRouter APIs) on the exact provider/endpoint and the full submitted payload (reference
 // images, audio, voice samples, video, text) for initial requests, async submissions, retries and fallbacks. No eligible route →
-// explain the limitation; never weaken the level. Provider-specific restrictions (voice-use consent, sensitive-content bans on
-// discounted endpoints: `sensitiveBanned`) still apply on top.
+// explain the limitation; never weaken the level.
 
 export const PRIVACY_LEVELS = ["unrestricted", "no_training", "zdr"];
 export const DEFAULT_PRIVACY = "zdr";
@@ -51,15 +50,13 @@ export async function setPrivacy(env, tenantId, level, at = Date.now()) {
 // ---- The endpoint registry: modality → model → OpenRouter provider host → what that endpoint does with requests ----
 //   zdr:      verified zero data retention for this modality (OpenRouter /api/v1/endpoints/zdr, checked 2026-10-06…08)
 //   training: the endpoint may train on requests
-//   sensitiveBanned: the endpoint's terms forbid sensitive, confidential or personal input (Meta Discounted Services §6.2), so a request
-//             is eligible only with declared provenance showing none of that (contributorBlock). Consent to training does not waive it.
 // Hosts are listed in preference order. Sources: route2.js TWO_HOSTS / CHORE_MODELS, test-model.js (Haiku 5.5 ZDR on Bedrock and
-// Vertex), /workspace/research/muse-contributor-2026-10-08 (both Meta endpoints retain ~30 days; Contributor trains, Standard doesn't;
+// Vertex), local validation evidence (both Meta endpoints retain ~30 days; Contributor trains, Standard doesn't;
 // per-request data_collection deny / zdr were verified to reject Contributor).
 const Z = { zdr: true, training: false };
 export const ENDPOINTS = {
   chat: {
-    "meta/muse-spark-1.3-contributor": { meta: { zdr: false, training: true, sensitiveBanned: true } },
+    "meta/muse-spark-1.3-contributor": { meta: { zdr: false, training: true } },
     "meta/muse-spark-1.3": { meta: { zdr: false, training: false } },
     "deepseek/deepseek-v4.1-flash": { together: Z, modal: Z, coreweave: Z },
     "openai/gpt-6-luna": { azure: Z, "azure/us": Z, "azure/eu": Z },
@@ -71,6 +68,11 @@ export const ENDPOINTS = {
   // Speech to text (transcribe.js stt: dictation, Live notes, file sidecars), OpenRouter /audio/transcriptions. ZDR per /endpoints/zdr
   // (2026-10-08) for these exact model + host pairs; host slugs verified on the wire (provider.only ["deepinfra"] reaches deepinfra/us).
   transcription: {
+    // Exact Workers AI realtime endpoint: Cloudflare data-usage policy + Deepgram mip_opt_out=true
+    // (2026-10-11). transcribe-live.js also disables gateway logs, payload logs and cache explicitly.
+    // https://developers.cloudflare.com/workers-ai/platform/data-usage/
+    // https://developers.deepgram.com/trust-security/your-data
+    "@cf/deepgram/nova-3": { "cloudflare-workers-ai": Z },
     "qwen/qwen3-asr-0.6b": { deepinfra: Z },
     "openai/whisper-large-v3-turbo": { deepinfra: Z, groq: Z },
   },
@@ -85,26 +87,16 @@ export function endpointOk(ep, level) {
   if (level === "no_training") return ep.training === false;
   return true;
 }
-// Provenance of a request's full payload, declared by the caller that built it (Resident.provenance for the main chat):
-//   { declared: true, personal, memory, location, apps, files } — each true when that kind of content is in the payload.
-// Missing/undeclared provenance → blocked for sensitiveBanned endpoints (we can't establish eligibility).
-export const PROVENANCE_KEYS = ["personal", "memory", "location", "apps", "files"];
-export function contributorBlock(prov) {
-  if (!prov || prov.declared !== true) return "content provenance unknown";
-  const hit = PROVENANCE_KEYS.filter((k) => prov[k]);
-  return hit.length ? `request carries ${hit.join(", ")}` : null;
-}
-// The eligible hosts of a model at a level, in registry order; [] when none. opts.prov: the payload's provenance (sensitiveBanned).
-export function eligibleHosts(model, level, { modality = "chat", prov = null } = {}) {
+// The eligible hosts of a model at a level, in registry order; [] when none.
+// Content-category provenance does not impose additional model-specific exclusions.
+export function eligibleHosts(model, level, { modality = "chat" } = {}) {
   const reg = ENDPOINTS[modality]?.[model]; if (!reg) return [];
-  return Object.entries(reg).filter(([, ep]) => endpointOk(ep, level) && !(ep.sensitiveBanned && contributorBlock(prov))).map(([h]) => h);
+  return Object.entries(reg).filter(([, ep]) => endpointOk(ep, level)).map(([h]) => h);
 }
 // Why a model can't be used at this level (or null when it can): for logs, labels and the ops route preview.
 export function ineligibleWhy(model, level, { modality = "chat", prov = null } = {}) {
   const reg = ENDPOINTS[modality]?.[model]; if (!reg) return null;   // unregistered: allowed only under OpenRouter's strict ZDR filter
   if (eligibleHosts(model, level, { modality, prov }).length) return null;
-  const lv = Object.values(reg).some((ep) => endpointOk(ep, level));
-  if (lv) { const b = contributorBlock(prov); return `sensitive-content ban on a discounted endpoint (${b})`; }
   return `no ${PRIVACY_LABEL[normalizePrivacy(level)]} endpoint`;
 }
 
@@ -133,10 +125,13 @@ export function enforceRequest(payload, level, { prov = null, modality = "chat" 
   const reg = ENDPOINTS[modality][p.model];
   let hosts = eligibleHosts(p.model, level, { modality, prov });
   const only = Array.isArray(given.only) ? given.only : null, order = Array.isArray(given.order) ? given.order : [];
-  if (only) hosts = hosts.filter((h) => only.includes(h));
+  // OpenRouter endpoint tags may refine a registered provider (cerebras/fp16). Keep that narrower
+  // caller pin; do not replace it with the broad provider or accept an unrelated prefix.
+  const policyHost = (h) => Object.keys(reg).filter((base) => h === base || h.startsWith(`${base}/`)).sort((a, b) => b.length - a.length)[0];
+  if (only) hosts = only.filter((h) => typeof h === "string" && hosts.some((base) => h === base || h.startsWith(`${base}/`) && reg[base].zdr === true && reg[base].training === false) && endpointOk(reg[policyHost(h)], level));
   if (!hosts.length) throw new PrivacyBlocked(`privacy: ${p.model} is not allowed at ${level} (${ineligibleWhy(p.model, level, { modality, prov }) || "no requested host is eligible"})`, { model: p.model, level });
   const ordered = [...order.filter((h) => hosts.includes(h)), ...hosts.filter((h) => !order.includes(h))];
-  const allZdr = ordered.every((h) => reg[h].zdr === true && reg[h].training === false), trains = ordered.some((h) => reg[h].training);
+  const allZdr = ordered.every((h) => reg[policyHost(h)].zdr === true && reg[policyHost(h)].training === false), trains = ordered.some((h) => reg[policyHost(h)].training);
   const { zdr, data_collection, ...rest } = given;
   p.provider = { ...rest, order: ordered, only: ordered, data_collection: trains ? "allow" : "deny", ...(allZdr || level === "zdr" ? { zdr: true } : {}) };
   return p;

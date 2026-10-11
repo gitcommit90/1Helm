@@ -18,12 +18,13 @@ export const textSend = (env, tenantId, message) => enabled(env) ? deliverText(e
 const EE_TOOL_NAMES = new Set([
   "app_actions", "app_run", "app_proxy", "app_events", "apps_i_use", "find_app", "offer_connect",
   "gmail_search", "gmail_read", "gmail_draft", "gmail_send", "calendar_events", "calendar_add",
-  "search_web_vertical", "note_account", "text_person", "buy_with_link", "check_purchase", "browser_fill_card", "browser_task",
+  "search_web_vertical", "note_account", "text_person", "buy_with_link", "check_purchase", "browser_fill_card", "browser_task", "ambient_query",
 ]);
 export const toolEnabled = (env, name) => enabled(env) || !EE_TOOL_NAMES.has(name);
 
-const GLOBAL = [/^\/applogo\//, /^\/c\//, /^\/composio\//, /^\/hooks\/photon\//, /^\/stripe\/webhook$/];
+const GLOBAL = [/^\/models(?:\/|$)/,/^\/applogo\//, /^\/c\//, /^\/composio\//, /^\/hooks\/photon\//, /^\/stripe\/webhook$/];
 const WORKSPACE = [
+  /^\/api\/ambient(?:\/|$)/, /^\/api\/custom-mcp(?:\/|$)/, /^\/custom-mcp(?:\/|$)/, /^\/apps\/paypal\/setup$/,
   /^\/texting$/, /^\/api\/texting(?:\/|$)/, /^\/api\/google(?:\/|$)/,
   /^\/api\/apps(?:\/|$)/, /^\/api\/apps-used$/, /^\/apps\/done$/, /^\/google\/done$/,
   /^\/composio\/connect$/, /^\/api\/connect-offer$/, /^\/api\/meetings\//,
@@ -75,10 +76,22 @@ export { meetingsApi, meetingsCron } from "./meetings.js";
 export { holdFromFailure, holdOf, holdView, notePaid, pastdueApi, pastdueCron, pastdueSeen, pastdueSync } from "./pastdue.js";
 export { US_ONLY } from "./photon.js";
 export { changePlan, nextPlan } from "./plan-change.js";
-export { MAX_ATTEMPTS, fixedEffort, isMuse } from "./pool.js";
+export { MAX_ATTEMPTS, fixedEffort, isMuse, aliasOf } from "./pool.js";
 export { INACTIVE_MSG, PAUSED_TEXT, PAY_MSG } from "./readonly.js";
 export { CHORE_MODELS, ESCALATE_STALL, HANDOFF_PREFIX, LUNA, choreAttempts, choreModelOf, choreRoute, choreRouteFor, dispatchOrder, escalationAfter, escalationBefore, markServed, policyRoute, route2On, routeTwoTurn } from "./route2.js";
 export { clefVia, currentPool, decide, saveNightlyPool } from "./router.js";
 export { ledgerGuard } from "./spendguard-ledger.js";
 export { appLink, deliverCard, deliverReaction, deliverText, fetchTextedFile, textTyping, textingDebug, textingLine, textingNewCode, textingOff, textingPoll, textingStart, textingStatus, textingUseProject, textingWebhook } from "./texting.js";
 export { VERTICAL_SEARCH_TOOL, VS_NANO, VS_TOOL_NAME, loopWords, searchNote, verticalSearch } from "./vertical-search.js";
+
+export { ambientSettingsRoute } from "./ambient-settings.js";
+
+export { paypalSetupRoute } from "./composio-paypal.js";
+
+export { modelsRoute } from "./models-page.js";
+
+export { customMcpRoute, isCustomSlug, customUsable, ownerOf, CUSTOM_DENIED, withCustomRows, CUSTOM_WORDS } from "./custom-mcp.js";
+
+export { ambientQuery, AMBIENT_QUERY_TOOL } from "./ambient-query.js";
+
+export { modelSettingsEnv, configuredChore, configuredHosts, configuredEffort } from "./model-settings.js";

@@ -122,7 +122,7 @@ export async function cardRoute(req, env, ctx, url) {
     const d = String(input?.decision || "");
     if (!(sub === "/decide" && d === "deny")) return json({ error: "payment_required", message: "1Helm is read-only until the payment is fixed. Open the app to fix it." }, 402);
   }
-  if (kind === "approval" && sub) return approvalRoute(env, sub, c, helper, token, input);
+  if (kind === "approval" && sub) return approvalRoute(req, env, sub, c, helper, token, input);
   if (kind === "plan" && sub) return planRoute(env, ctx, sub, c, helper, token, input);
   if (kind === "interview" && sub) return ivCardRoute(env, sub, c, helper, () => limited(env, c, token, Date.now()), input);
   if (!sub) {
@@ -164,22 +164,34 @@ async function limited(env, c, token, now) {
   await env.DB.prepare("UPDATE cards SET acts=CASE WHEN ?-COALESCE(last_act_at,0)>=? THEN 1 ELSE acts+1 END, last_act_at=? WHERE token=?").bind(now, ACT_WINDOW, now, token).run();
   return false;
 }
-const DECISIONS = ["once", "session", "channel", "always", "deny"];   // always = a kind of action (perms.js); the Resident checks which fit
-async function approvalRoute(env, sub, c, helper, token, b) {
+const DECISIONS = ["once", "session", "channel", "always", "deny", "trust"];   // always = a kind of action (perms.js); the Resident checks which fit
+async function approvalRoute(req, env, sub, c, helper, token, b) {
   const R = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${c.tenant_id}:${c.channel}`));
+  const native = a => a?.approval?.perm === 'ssh' || a?.approval?.perm === 'ssh_hostkey';
+  const taskLink = async a => {
+    if (!native(a) || !a.approval.ssh?.task) return {};
+    const t = await env.DB.prepare('SELECT slug FROM tenants WHERE id=?').bind(c.tenant_id).first();
+    return t?.slug ? { task_url: `/w/${encodeURIComponent(t.slug)}/app#/${encodeURIComponent(c.channel)}/s/${encodeURIComponent(a.approval.ssh.task)}` } : {};
+  };
   if (sub === "/data") {
     const a = await R.approvalCardData(Number(c.approval_id));
-    return json({ kind: "approval", approval: { id: Number(c.approval_id), ...(a.approval || {}), status: a.status }, helper, channel: { name: c.channel_name || c.channel }, sentAt: Number(c.sent_at) });
+    return json({ kind: "approval", approval: { id: Number(c.approval_id), ...(a.approval || {}), status: a.status }, helper, channel: { name: c.channel_name || c.channel }, sentAt: Number(c.sent_at), ...await taskLink(a) });
   }
   // POST /decide
   if (await limited(env, c, token, Date.now())) return json({ error: "slow_down" }, 429);
   const decision = String(b?.decision || "");
-  if (!DECISIONS.includes(decision)) return json({ error: "decision must be once, session, channel, always or deny" }, 400);
+  if (!DECISIONS.includes(decision)) return json({ error: "decision must be once, session, channel, always, deny or trust" }, 400);
   if (decision === "channel" && b?.confirm !== true) return json({ error: "confirmation_required" }, 400);
   const id = Number(c.approval_id), cur = await R.approvalCardData(id);
+  if (decision === 'trust' && !native(cur)) return json({error:'Remembered server trust is only available for SSH approvals.'},400);
+  if (native(cur) && (req.headers.get('origin') !== new URL(req.url).origin || req.headers.get('sec-fetch-site') === 'cross-site')) return json({ error: 'Native approval decisions require a same-origin request.' }, 403);
   if (cur.status === "expired") return json({ error: "expired", status: "expired" }, 410);
-  if (cur.status !== "pending") return json({ ok: true, status: cur.status, already: true });
+  if (cur.status !== "pending") return json({ ok: true, status: cur.status, already: true, ...await taskLink(cur) });
   const r = await R.decideApproval(id, decision);          // the same path as the app's POST /api/res/<ch>/approve
+  if (native(cur)) {
+    const after = await R.approvalCardData(id);
+    return json({ ok: !r?.error, status: after.status, ...(r?.error ? { error: r.error } : {}), ...await taskLink(after) }, r?.error && after.status === 'pending' ? 409 : 200);
+  }
   if (r?.error) { const now = await R.approvalCardData(id); return now.status !== "pending" ? json({ ok: true, status: now.status, already: true }) : json({ error: r.error }, 409); }
   return json({ ok: true, status: decision });
 }

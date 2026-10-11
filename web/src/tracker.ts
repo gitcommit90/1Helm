@@ -7,6 +7,7 @@
 // v3.ts only hooks in: the header slots, the stage wrapper, liveLoad, the stream handler, msgHtml and repaints.
 import { cardStop, cardContinue } from "./stop";
 import { pauseOf } from "./spendguard";   // the working card's Stop
+import { nativeHandoffText } from "./native-approval-progress";
 export type HelperView = { id: number; name: string; task?: string; status: string; started: number; ended?: number | null; steps?: number; charge_nano?: number;
   parent_card?: string | null; card?: string | null; result_card?: string | null; stopped_by?: string | null };
 export type CardView = { id: string; session?: string; kind: string; status: string; title: string; title_src?: string; result?: string | null; opened: number;
@@ -455,7 +456,7 @@ function msgPane(e: EventView) {
 function handPane(e: EventView, k: string) {
   const f = e.from || {}, h = f.type === "helper" ? helperById(k, f.id ?? e.ref) : null;
   return `<div class="tk-msgp"><h3 class="tk-pt">${esc(f.type === "followup" ? `Follow-up: ${f.title || ""}` : f.type === "connect" ? f.title || "App connected" : `From background job #${f.id ?? e.ref}: ${f.title || h?.name || ""}`)}</h3><p class="tk-meta">${esc(hms(e.at))}</p>
-    <div class="tk-full">${esc(e.text || "")}</div>${h?.card ? `<button type="button" class="tk-lnk" data-tkopen="${esc(h.card)}">Open its card ›</button>` : f.type === "helper" ? `<button type="button" class="tk-lnk" data-tkhelper="${esc(String(f.id ?? e.ref))}">Open its card ›</button>` : ""}</div>`;
+    <div class="tk-full">${esc(nativeHandoffText(e))}</div>${h?.card ? `<button type="button" class="tk-lnk" data-tkopen="${esc(h.card)}">Open its card ›</button>` : f.type === "helper" ? `<button type="button" class="tk-lnk" data-tkhelper="${esc(String(f.id ?? e.ref))}">Open its card ›</button>` : ""}</div>`;
 }
 function paneHtml(d: CardDetail, k: string) {
   if (M.sel === "sum") return summaryHtml(d, k);

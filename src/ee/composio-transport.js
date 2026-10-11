@@ -33,6 +33,12 @@ const settled = (e) => e?.unknownOutcome || e?.rateLimited;
 import { slimInputs, exampleOf, cleanWant, fileInputs } from "./composio-schema.js";
 import { listManagedConnections, appConnectLink, appDisconnect, defaultsOf, notesOf, dropNotes, appName } from "./composio.js";   // a cycle on purpose: used only at call time
 import { appsMode, mcpCaller, isEnded, selfApps, rememberApps, SELF_DEFAULT_APPS, LIST } from "./composio-self.js";
+import { resolveAccountIdentity, disambiguateAccountLabels } from "./composio-identity.js";
+import { isCustomSlug, customUsable, ownerOf, assertCustom, CUSTOM_DENIED } from "./custom-mcp.js";
+// Custom MCP (custom-mcp.js): a CUSTOM_* toolkit is project-wide at Composio but belongs to one workspace. Every route below that names a
+// tool or toolkit checks it against customUsable() (D1, uncached: the workspace's own, enabled, fully synced servers) before anything is
+// sent, and ignores any account the caller passed (the owner's own connected account is used). Self-managed never has any.
+const CUSTOM_SELF = "Custom MCP servers need Managed apps; they aren't available on a self-managed Composio account.";
 
 const uid = (tenantId) => `1hc:${tenantId}`;
 // Composio's meta / helper tools: never an action the helper can see or run (BRIEF hard rule 4).
@@ -119,7 +125,14 @@ const DESC_CACHE = new Map(), DESC_TTL = 600e3;
 export function managedTransport(env, tenantId, ctx0 = {}) {
   const sessionsOn = () => latestVersion(env) && env.COMPOSIO_SESSIONS !== "off";
   // The task's session id: reused; made on first use; updated when the person's apps changed since.
+  // A custom toolkit stays in a session's scope only while this workspace may use it right now (an existing session is updated, not trusted).
+  async function scrubCustom(ctx) {
+    if (![...(ctx.toolkits || [])].some(isCustomSlug) && !Object.keys(ctx.accounts || {}).some(isCustomSlug)) return ctx;
+    const ok = await customUsable(env, tenantId), keep = (s) => !isCustomSlug(s) || ok.has(String(s).toLowerCase());
+    return { ...ctx, toolkits: (ctx.toolkits || []).filter(keep), accounts: Object.fromEntries(Object.entries(ctx.accounts || {}).filter(([k]) => keep(k))) };
+  }
   async function session(ctx, fresh = false) {
+    ctx = await scrubCustom(ctx);
     const st = storeOf(ctx), cfg = sessionConfig(tenantId, ctx), sig = sigOf(cfg);
     let rec = fresh ? null : st.get();
     if (rec?.id && rec.sig === sig) return rec.id;
@@ -152,6 +165,15 @@ export function managedTransport(env, tenantId, ctx0 = {}) {
     const want = [...new Set((slugs || []).map((s) => String(s || "").toUpperCase().replace(/[^A-Z0-9_]/g, "")).filter((s) => s && !isMetaTool(s)))];
     if (!want.length) return {};
     const out = {}, v = latestVersion(env) ? "L" : "P", now = Date.now();
+    const custom = want.filter(isCustomSlug);
+    if (custom.length) {   // never cached (it is one person's private server), always the latest version, only the owner's
+      const ok = await customUsable(env, tenantId);
+      for (const s of custom) { const o = ownerOf(ok, s); if (!o) continue;
+        const t = await req(env, ctx, "tools", `/tools/${s}?toolkit_versions=latest`, { custom: true }).catch(() => null);
+        if (t?.slug && String(t.toolkit?.slug || o.slug).toUpperCase() === o.slug) out[t.slug] = t; }
+      want.splice(0, want.length, ...want.filter((s) => !isCustomSlug(s)));
+      if (!want.length) return out;
+    }
     for (const s of want) { const c = DESC_CACHE.get(`${v}:${s}`); if (c && now - c.at < DESC_TTL) out[s] = c.t; }
     const miss = want.filter((s) => !out[s]);
     const keep = (t) => { if (t?.slug && !isMetaToolkit(t.toolkit?.slug)) { out[t.slug] = t; if (DESC_CACHE.size > 800) DESC_CACHE.clear(); DESC_CACHE.set(`${v}:${t.slug}`, { t, at: now }); } };
@@ -161,10 +183,10 @@ export function managedTransport(env, tenantId, ctx0 = {}) {
   }
   // The legacy search: Composio's tool listing for one app with our own top-up ranking (small apps).
   async function directSearch(want, ctx) {
-    const app = ctx.app;
-    let list = (await req(env, ctx, "tools", `/tools?toolkit_slug=${app}&query=${encodeURIComponent(want)}&limit=8${versionQuery(env)}`)).items || [];
+    const app = ctx.app, c = isCustomSlug(app), tk = c ? String(app).toUpperCase() : app, vq = c ? "&toolkit_versions=latest" : versionQuery(env), o = c ? { custom: true } : {};
+    let list = (await req(env, ctx, "tools", `/tools?toolkit_slug=${tk}&query=${encodeURIComponent(want)}&limit=8${vq}`, o)).items || [];
     if (list.length < 3) {
-      const words = String(want).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2), all = (await req(env, ctx, "tools", `/tools?toolkit_slug=${app}&limit=100${versionQuery(env)}`)).items || [];
+      const words = String(want).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2), all = (await req(env, ctx, "tools", `/tools?toolkit_slug=${tk}&limit=100${vq}`, o)).items || [];
       const score = (t) => { const h = `${t.slug} ${t.name} ${t.description}`.toLowerCase(); return words.reduce((n, w) => n + (h.includes(w) ? 1 : 0), 0); };
       const seen = new Set(list.map((t) => t.slug)); list = [...list, ...all.filter((t) => !seen.has(t.slug)).map((t) => [score(t), t]).sort((x, y) => y[0] - x[0]).slice(0, 8 - list.length).map((x) => x[1])];
     }
@@ -192,6 +214,7 @@ export function managedTransport(env, tenantId, ctx0 = {}) {
     // want: the helper's plain words. Only a cleaned copy (no personal data) reaches Composio.
     async search(want, ctx = ctx0) {
       const app = String(ctx.app || "").toLowerCase(), name = ctx.appName || app;
+      if (isCustomSlug(app)) await assertCustom(env, tenantId, app);
       const q = cleanWant(want, [name, app]);
       const base = { app, query: q, plan: [], pitfalls: [], difficulty: "", via: "direct" };
       if (!sessionsOn()) { const tools = await directSearch(q, { ...ctx, app }); return { ...base, tools: rankActions(tools.map((t) => t.slug), want).map((s) => tools.find((t) => t.slug === s)) }; }
@@ -222,6 +245,13 @@ export function managedTransport(env, tenantId, ctx0 = {}) {
     async execute(slug, args, version, ctx = ctx0) {
       slug = String(slug || "").toUpperCase();
       if (isMetaTool(slug)) throw new Error(`${slug} is one of Composio's own tools, which 1Helm never runs.`);
+      if (isCustomSlug(slug) || isCustomSlug(ctx.app)) {
+        // The owner's own server only. Never read-only (a server's hint isn't authorization: no parallel batch, no automatic re-send), never
+        // a caller-chosen account, always the latest version (custom tools exist only there).
+        if (!isCustomSlug(slug)) throw new Error(CUSTOM_DENIED);
+        const own = await assertCustom(env, tenantId, slug);
+        ctx = { ...ctx, readonly: false, batch: null, exactVersion: false, account: own.auth === "none" ? null : own.account_id || null }; version = "latest";
+      }
       if (sessionsOn() && !ctx.exactVersion) {
         if (ctx.readonly && ctx.batch) return ctx.batch.add({ slug, args, account: ctx.account || null }, ctx);
         let d;
@@ -243,6 +273,7 @@ export function managedTransport(env, tenantId, ctx0 = {}) {
     async multiExecute(reads, ctx = ctx0) {
       const list = (reads || []).slice(0, 50);
       for (const x of list) if (isMetaTool(x.slug)) throw new Error(`${x.slug} is one of Composio's own tools, which 1Helm never runs.`);
+      if (list.some((x) => isCustomSlug(x.slug) || isCustomSlug(x.app))) throw new Error("Custom MCP tools run one at a time, never in a batch.");
       if (!list.length) return [];
       if (!sessionsOn() || list.length === 1) return Promise.all(list.map((x) => directOrSession(x, ctx)));
       let d;
@@ -264,6 +295,7 @@ export function managedTransport(env, tenantId, ctx0 = {}) {
     async proxy(r, ctx = ctx0) {
       const toolkit = String(r?.toolkit || "").toLowerCase(), method = String(r?.method || "GET").toUpperCase();
       if (!toolkit || isMetaToolkit(toolkit) || toolkit.startsWith("composio")) throw new Error("1Helm never calls Composio's own API through app_proxy.");
+      if (isCustomSlug(toolkit) || isCustomSlug(ctx.app)) throw new Error("app_proxy isn't available for custom MCP servers. Use app_actions and app_run.");
       if (!PROXY_METHODS.has(method)) throw new Error(`app_proxy can't send ${method}.`);
       const params = []; for (const [name, v] of Object.entries(r.query || {})) for (const x of (Array.isArray(v) ? v : [v])) if (x != null) params.push({ name: String(name), value: typeof x === "object" ? JSON.stringify(x) : String(x), type: "query" });
       const call = { endpoint: String(r.endpoint || ""), method, ...(params.length ? { parameters: params } : {}), ...(method !== "GET" && r.body != null ? { body: r.body } : {}) };
@@ -294,7 +326,7 @@ export function managedTransport(env, tenantId, ctx0 = {}) {
   async function directExec(slug, args, version, ctx) {
     const body = { user_id: uid(tenantId), arguments: args || {}, version: version || toolVersion(env) };
     if (ctx.account) body.connected_account_id = ctx.account;
-    const d = await req(env, ctx, "execute", `/tools/execute/${slug}`, { method: "POST", retry: ctx.readonly ? "read" : "write", body: JSON.stringify(body) });
+    const d = await req(env, ctx, "execute", `/tools/execute/${slug}`, { method: "POST", retry: ctx.readonly ? "read" : "write", body: JSON.stringify(body), ...(isCustomSlug(slug) ? { custom: true } : {}) });   // custom: ownership was checked in execute()
     if (!d.successful) throw new Error(String(d.error || "the app said no").slice(0, 300));
     return d.data?.response_data ?? d.data;
   }
@@ -338,9 +370,27 @@ export class ReadBatch {
 const CONNECT_TOOLS_OK = new Set(["COMPOSIO_SEARCH_TOOLS", "COMPOSIO_MULTI_EXECUTE_TOOL", "COMPOSIO_MANAGE_CONNECTIONS", "COMPOSIO_GET_TOOL_SCHEMAS"]);
 const SLUG_RE = /^[a-z0-9_]{2,64}$/;
 const LIVE_ST = /^active$/i, KEEP_ST = /^(active|expired|failed|inactive|disabled)$/i;   // initiated / initializing = an unfinished sign-in: left out
+// An account id is only meaningful inside its owner's sign-in. Do not reuse identities
+// across D1 bindings, tenants, or replacement Composio sign-ins (token refresh is fine).
+const SELF_IDENTITY_OWNERS = new WeakMap();
+async function selfIdentityOwner(env, tenantId, mcp) {
+  let binding = mcp, revision = null;
+  let row;
+  if (env?.DB && tenantId) {
+    try { row = await env.DB.prepare("SELECT connected_at FROM composio_self WHERE tenant_id=?").bind(tenantId).first(); } catch {}
+    if (row?.connected_at) { binding = env.DB; revision = row.connected_at; }
+  }
+  let owners = SELF_IDENTITY_OWNERS.get(binding);
+  if (!owners) SELF_IDENTITY_OWNERS.set(binding, owners = new Map());
+  const previous = owners.get(tenantId);
+  if (previous?.at === revision) return previous.owner;
+  if (owners.size >= 500) owners.clear();
+  const owner = {}; owners.set(tenantId, { at: revision, owner }); return owner;
+}
 export function selfManagedTransport({ mcp, catalog, tenantId = "", env = null } = {}) {
   const call = async (tool, args, opts) => { if (!CONNECT_TOOLS_OK.has(tool)) throw new Error(`1Helm never calls ${tool}.`); return mcp(tool, args, opts); };
   const dataOf = (d) => d?.data ?? d ?? {};
+  const noCustom = (xs) => { if ((Array.isArray(xs) ? xs : [xs]).some((x) => isCustomSlug(x?.slug ?? x?.app ?? x))) throw Object.assign(new Error(CUSTOM_SELF), { unsupported: true }); };
   const sidOf = (ctx) => { const r = storeOf(ctx).get(); return r?.sig === "connect" ? r.id : null; };   // the task's Connect search session
   // read: the caller checked every action is read-only (stage 6: only then is a timeout / 5xx retried; see composio-self.js mcpCall).
   const multi = async (list, ctx = {}, read = false) => {
@@ -352,7 +402,7 @@ export function selfManagedTransport({ mcp, catalog, tenantId = "", env = null }
   };
   // Metadata: the public catalog first (tags matter: read-only or not), then the person's own schemas for anything it misses.
   async function describe(slugs, ctx = {}, schemas = null) {
-    const want = [...new Set((slugs || []).map((s) => String(s || "").toUpperCase().replace(/[^A-Z0-9_]/g, "")).filter((s) => s && !isMetaTool(s)))];
+    const want = [...new Set((slugs || []).map((s) => String(s || "").toUpperCase().replace(/[^A-Z0-9_]/g, "")).filter((s) => s && !isMetaTool(s) && !isCustomSlug(s)))];
     if (!want.length) return {};
     let out = {}; try { out = { ...(await catalog.describe(want, ctx)) }; } catch {}
     const miss = want.filter((s) => !out[s]);
@@ -368,28 +418,48 @@ export function selfManagedTransport({ mcp, catalog, tenantId = "", env = null }
   // Every account in the toolkits asked about, as listManagedConnections rows ({ id, app, name, status, email, label, default, memo? }).
   async function listConnections({ app = "", fresh = false, names = true } = {}) {
     app = String(app || "").toLowerCase();
+    const identityOwner = await selfIdentityOwner(env, tenantId, mcp);
     const c = tenantId && LIST.get(tenantId);
-    if (!fresh && c && Date.now() - c.at < 15000) return app ? c.list.filter((x) => x.app === app) : c.list;
+    if (!fresh && c?.owner === identityOwner && c.names === names && Date.now() - c.at < 15000) return app ? c.list.filter((x) => x.app === app) : c.list;
     const known = env && tenantId ? await selfApps(env, tenantId) : [];
     const ask = (xs) => call("COMPOSIO_MANAGE_CONNECTIONS", { toolkits: [...new Set(xs)].filter((s) => SLUG_RE.test(s)).slice(0, 60).map((name) => ({ name, action: "list" })) });
     let d;
     try { d = dataOf(await ask([...SELF_DEFAULT_APPS, ...known, ...(app ? [app] : [])])); }
     catch (e) { if (isEnded(e) || (!known.length && !app)) throw e; d = dataOf(await ask(SELF_DEFAULT_APPS)); }   // a toolkit Composio no longer knows: the common ones still list
     const [pref, memos] = env?.DB && tenantId ? await Promise.all([defaultsOf(env, tenantId), notesOf(env, tenantId)]) : [{}, {}];
-    const out = [], n = {}, nameOf = new Map();
+    const identityDeadline = Date.now() + 5000, budget = { left: 12 };
+    const out = [], n = {}, nameOf = new Map(), identities = [];
     for (const [tk, r] of Object.entries(d.results || {})) for (const a of r?.accounts || []) {
       if (!a?.id || !KEEP_ST.test(String(a.status || ""))) continue;
       if (!nameOf.has(tk)) nameOf.set(tk, names && env ? await appName(env, tk).catch(() => tk) : tk);
       n[tk] = (n[tk] || 0) + 1;
-      const u = a.user_info || {}, email = String(u.email || u.username || u.login || u.name || a.alias || "").replace(/\s+/g, " ").trim().slice(0, 80);
-      out.push({ id: String(a.id), app: tk, name: nameOf.get(tk), logo: `https://logos.composio.dev/api/${tk}`, status: LIVE_ST.test(String(a.status)) ? "connected" : "expired", email, label: email || `Account ${n[tk]}`,
-        default: false, _def: !!a.is_default, since: a.created_at || "", via: "self", ...(memos[a.id] ? { memo: memos[a.id] } : {}) });
+      const row = { id: String(a.id), app: tk, name: nameOf.get(tk), logo: `https://logos.composio.dev/api/${tk}`, status: LIVE_ST.test(String(a.status)) ? "connected" : "expired", email: "", label: `Account ${n[tk]}`,
+        default: false, _def: !!a.is_default, since: a.created_at || "", via: "self", ...(memos[a.id] ? { memo: memos[a.id] } : {}) };
+      out.push(row);
+      if (app && tk !== app) continue;
+      identities.push(async () => {
+        const identity = await resolveAccountIdentity({ scope: identityOwner, deadline: identityDeadline, budget, account: { ...a, status: String(a.status).toUpperCase(), toolkit: { slug: tk } }, lookup: async (plan) => {
+          // Connect MCP cannot proxy. Use only a verified profile tool, explicitly pinned
+          // to this listed account, never the toolkit's implicit/default account.
+          if (plan.type !== "tool") return null;
+          const [result] = await multi([{ slug: plan.tool, args: plan.args || {}, account: String(a.id) }], {}, true);
+          if (!result.ok) return null;
+          return result.data;
+        } });
+        row.email = identity.email; row.label = identity.label || row.label; row.identityKey = identity.identityKey;
+      });
     }
+    // A person's three Zoom accounts hydrate together; keep provider concurrency bounded.
+    let nextIdentity = 0;
+    await Promise.all(Array.from({ length: Math.min(4, identities.length) }, async () => {
+      while (nextIdentity < identities.length) await identities[nextIdentity++]();
+    }));
+    disambiguateAccountLabels(out);
     for (const tk of new Set(out.map((x) => x.app))) { const live = out.filter((x) => x.app === tk && x.status === "connected"); const def = live.find((x) => x.id === pref[tk]) || live.find((x) => x._def) || live[0]; if (def) def.default = true; }
     for (const x of out) delete x._def;
     const liveApps = [...new Set(out.filter((x) => x.status === "connected").map((x) => x.app))];
     if (env && tenantId && liveApps.some((s) => !known.includes(s))) await rememberApps(env, tenantId, liveApps);
-    if (tenantId && !app) LIST.set(tenantId, { at: Date.now(), list: out });
+    if (tenantId && !app) LIST.set(tenantId, { at: Date.now(), list: out, owner: identityOwner, names });
     return app ? out.filter((x) => x.app === app) : out;
   }
   return {
@@ -397,6 +467,7 @@ export function selfManagedTransport({ mcp, catalog, tenantId = "", env = null }
     sessionsOn: () => true,
     describe: (slugs, ctx) => describe(slugs, ctx),
     async search(want, ctx = {}) {
+      noCustom(ctx.app);
       const app = String(ctx.app || "").toLowerCase(), name = ctx.appName || app, q = cleanWant(want, [name, app]);
       const st = storeOf(ctx), sid = sidOf(ctx);
       const useCase = new RegExp(`\\b${name.replace(/[^\w ]/g, "")}\\b`, "i").test(q) ? q : `${name}: ${q}`;
@@ -412,13 +483,13 @@ export function selfManagedTransport({ mcp, catalog, tenantId = "", env = null }
       return { app, query: q, via: "connect", tools, plan: lines(res.recommended_plan_steps, 10, 320), pitfalls: lines(res.known_pitfalls, 8, 320), difficulty: String(res.difficulty || "").slice(0, 120), composio_connected: stt ? !!stt.has_active_connection : undefined };
     },
     async execute(slug, args, version, ctx = {}) {
-      slug = String(slug || "").toUpperCase();
+      slug = String(slug || "").toUpperCase(); noCustom(slug); noCustom(ctx.app);
       if (isMetaTool(slug)) throw new Error(`${slug} is one of Composio's own tools, which 1Helm never runs.`);
       if (ctx.readonly && ctx.batch) return ctx.batch.add({ slug, args, account: ctx.account || null }, ctx);
       const [r] = await multi([{ slug, args, account: ctx.account || null }], ctx, ctx.readonly === true);
       if (!r.ok) throw new Error(r.error); return r.data;
     },
-    async multiExecute(reads, ctx = {}) { const list = (reads || []).slice(0, 50); for (const x of list) if (isMetaTool(x.slug)) throw new Error(`${x.slug} is one of Composio's own tools, which 1Helm never runs.`); return list.length ? multi(list, ctx, true) : []; },
+    async multiExecute(reads, ctx = {}) { const list = (reads || []).slice(0, 50); noCustom(list); for (const x of list) if (isMetaTool(x.slug)) throw new Error(`${x.slug} is one of Composio's own tools, which 1Helm never runs.`); return list.length ? multi(list, ctx, true) : []; },
     // Connect cards own connecting: MANAGE_CONNECTIONS is called here, under them, never as a model tool. Always "list" before "add".
     listConnections,
     // → { url, newtab } (Composio's own page, in a new tab: it can't send the person back here), or { already } when the toolkit already

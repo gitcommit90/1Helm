@@ -44,12 +44,13 @@ export const WAITING_CONFIRM = (title) => `WAITING FOR CONFIRM: 1Helm was update
 
 // ---- what kind of call (§3.3.2) ----
 const READ = new Set(["web_search", "search_web_vertical", "fetch_url", "read_file", "search_files", "calendar_events", "gmail_search", "gmail_read", "work_log", "bring_back", "recall_history",
-  "read_skill", "read_doc", "browser_snapshot", "browser_screenshot", "browser_navigate", "list_workflows", "app_actions", "app_events", "find_app", "memory_explain", "check_purchase", "ping"]);
+  "read_skill", "read_doc", "load_tools", "read_context", "recall_memory", "ambient_query", "location_query", "list_channels", "list_tasks", "read_task", "browser_snapshot", "browser_screenshot", "browser_navigate", "list_workflows", "app_actions", "app_events", "find_app", "memory_explain", "check_purchase", "ping"]);
 const EXEC = new Set(["run_command", "write_file", "edit_file"]);
 const ONCE = new Set(["start_helper", "schedule_followup", "schedule_workflow"]);
 const LOCAL = new Set(["update_todos", "react", "set_workflow_gate", "save_run_notes"]);   // this object's own rows, set to a value: safe to run again
 export function toolClass(name, a = {}) {
   const n = String(name || "");
+  if (n === "update_todos" && (a?.channel || a?.task)) return "write";   // a targeted replacement may already have reached another task
   if (n === "app_run") return READ_ACT.test(String(a?.action || "").toUpperCase()) ? "read" : "write";
   if (n === "app_proxy") return String(a?.method || "GET").toUpperCase() === "GET" ? "read" : "write";
   return READ.has(n) ? "read" : EXEC.has(n) ? "exec" : ONCE.has(n) ? "once" : LOCAL.has(n) ? "local" : "write";   // anything else: never repeated blindly
@@ -89,11 +90,13 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
   journalInput(tc, { userText, engine, ctxMode }) {
     if (!jk(tc)) return;
     try { this.sql.exec("UPDATE turn_runs SET user_text=?, engine=?, route=?, extra=?, updated=? WHERE card=?", typeof userText === "string" ? userText : JSON.stringify(userText), engine, tc.route ? JSON.stringify(tc.route) : null,
-      JSON.stringify({ ctx: ctxMode, handoff: !!tc.handoff, handoffFrom: tc.handoffFrom || null, userText0: tc.userText, hint: tc.hint || null }), Date.now(), tc.turn); } catch (e) { console.log("journal input", e.message); }
+      JSON.stringify({ ctx: ctxMode, handoff: !!tc.handoff, handoffFrom: tc.handoffFrom || null, userText0: tc.userText, hint: tc.hint || null, outputLimitRetries: tc.outputLimitRetries || 0, modelFailure: tc.modelFailure || null, failedModelUsage: tc.failedModelUsage || null, ...(tc.context ? { context: tc.context } : {}) }), Date.now(), tc.turn); } catch (e) { console.log("journal input", e.message); }
   },
   // Every step: where the loop is, what it has spent, its guard, what it said. phase "model" = before step's model call, "tools" = after it.
-  journalStep(tc, { step, phase = "model", stats, said, checkpoints = 0 }) {
+  journalStep(tc, { step, phase = "model", stats, said, saidMeta, checkpoints = 0 }) {
     if (!jk(tc)) return;
+    if (tc.context) this.sql.exec("UPDATE turn_runs SET extra=json_set(COALESCE(extra,'{}'),'$.loadedTools',json(?)) WHERE card=?", JSON.stringify([...(tc.loadedTools || [])]), tc.turn);
+    if (Array.isArray(saidMeta)) this.sql.exec("UPDATE turn_runs SET extra=json_set(COALESCE(extra,'{}'),'$.saidMeta',json(?),'$.progressOmitted',?) WHERE card=?", JSON.stringify(saidMeta), tc.progressOmitted || 0, tc.turn);
     try { this.sql.exec("UPDATE turn_runs SET step=?, phase=?, stats=?, guard=?, said=?, route=?, extra=json_set(COALESCE(extra,'{}'),'$.checkpoints',?,'$.charged',?,'$.limitWhy',?,'$.pause',json(?)), beat=?, updated=? WHERE card=?",
       step, phase, JSON.stringify(stats || {}), guardOut(tc.guard), JSON.stringify(said || []), tc.route ? JSON.stringify(tc.route) : null, checkpoints, tc.charged || 0, tc.limitWhy || null, tc.pause ? JSON.stringify(tc.pause) : "null", Date.now(), Date.now(), tc.turn); }
     catch (e) { console.log("journal step", e.message); }
@@ -103,6 +106,13 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
     try { this.sql.exec("UPDATE turn_runs SET beat=? WHERE card=?", Date.now(), tc.turn);
       // a scheduled run that's alive keeps its workflow's lease, so a long run (or one being resumed) is never started a second time
       if (tc.workflow_id != null) this.sql.exec("UPDATE workflows SET lease_until=MAX(lease_until, ?) WHERE id=? AND lease_until>0", Date.now() + 14 * 60e3, tc.workflow_id); } catch {}
+  },
+  journalModelRecovery(tc) {
+    if (!jk(tc)) return;
+    // Do not swallow a failed write: retrying without its durable allowance
+    // could grant another recovery attempt after every deployment.
+    this.sql.exec("UPDATE turn_runs SET extra=json_set(COALESCE(extra,'{}'),'$.outputLimitRetries',?,'$.modelFailure',json(?),'$.failedModelUsage',json(?)) WHERE card=?",
+      tc.outputLimitRetries || 0, JSON.stringify(tc.modelFailure || null), JSON.stringify(tc.failedModelUsage || null), tc.turn);
   },
   journalDone(tc) { if (tc.turn) { try { this.sql.exec("DELETE FROM turn_runs WHERE card=?", tc.turn); this.sql.exec("DELETE FROM turn_effects WHERE card=?", tc.turn); } catch {} } if (tc.kind === "chat") this._resuming?.delete?.(tc.session); },
   effectStart(tc, callId, name, args) {
@@ -229,6 +239,7 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
   },
   // Give up on a journaled turn (its resumes are used up): the card ends interrupted, like recoverCards does at a start.
   abandonTurn(r) {
+    if (this.nativeCancel) this.ctx.waitUntil?.(this.nativeCancel(r.session, 'Task abandoned').catch(() => {}));
     console.log("resume: giving up", r.card, `${r.resumes} resumes`);
     this.sql.exec("DELETE FROM turn_runs WHERE card=?", r.card); this.sql.exec("DELETE FROM turn_effects WHERE card=?", r.card);
     recoverCards(this.sql, { skip: new Set(this.sql.exec("SELECT id FROM cards WHERE status IN ('queued','working','resuming') AND id<>?", r.card).toArray().map((x) => x.id)) });
@@ -322,6 +333,7 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
     const note = { role: "user", content: RESUME_NOTE };
     this.save(tc.turn, note);
     tc.charged = ex.charged || 0; if (ex.limitWhy) tc.limitWhy = ex.limitWhy; if (ex.pause) tc.pause = ex.pause;
+    tc.progressOmitted = Number(ex.progressOmitted) || 0;
     tc.handoff = tc.handoff || !!ex.handoff; tc.handoffFrom = tc.handoffFrom || ex.handoffFrom || null;
     if (ex.userText0 != null) tc.userText = ex.userText0; if (ex.hint) tc.hint = ex.hint;
     if (r.route) { try { tc.route = JSON.parse(r.route); } catch {} }
@@ -329,6 +341,7 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
     if (this.sql.exec("SELECT 1 x FROM card_events WHERE card=? AND type='msg' AND via='text' AND seq>1 LIMIT 1", tc.turn).toArray().length) tc.textSteered = true;
     tc.emit?.({ t: "resumed", card: cardView(this.sql, tc.turn) });
     const lastCalls = prior.filter((m) => m.role === "assistant").at(-1)?.tool_calls?.length || 0;
-    return { prior: [...prior, ...closed, note], stats: J(r.stats, null), said: J(r.said, []), step: r.step || 0, phase: r.phase || "model", checkpoints: ex.checkpoints ?? checkpoints, closedN: closed.length, lastCalls };
+    const said = J(r.said, []), saidMeta = Array.isArray(ex.saidMeta) && ex.saidMeta.length === said.length ? ex.saidMeta.map((m, i) => m && m.text === said[i] && Array.isArray(m.calls) && m.calls.every(x => typeof x === 'string') && Array.isArray(m.later) && m.later.every(x => typeof x === 'string') ? m : null) : said.map(() => null);
+    return { prior: [...prior, ...closed, note], stats: J(r.stats, null), said, saidMeta, step: r.step || 0, phase: r.phase || "model", checkpoints: ex.checkpoints ?? checkpoints, closedN: closed.length, lastCalls };
   },
 }); }

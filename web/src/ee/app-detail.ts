@@ -5,6 +5,7 @@
 // disconnecting go through the app's existing flow (deps.connect / POST /apps/disconnect + deps.setAccounts).
 import { appPageDiag } from "../clientlog";   // dev-only diagnostic (removable)
 import { ask, dialogOpen } from "../dialog";   // before this module's own Esc listener below, so the dialog's Esc wins
+import { matches } from "../shortcuts";   // the Apps shortcut can be rebound
 import { logoOver, workDomain, appLogo } from "../logo";
 import { acctNoteHtml, onAcctNote, acctNoteReset, acctNoteAfter } from "./acct-note";   // "Add a note for <helper>" under each account
 export type AppListInfo = { n: string; d: string; c: string[]; o?: number; x?: number; b?: number };
@@ -17,6 +18,7 @@ export type AppDetailDeps = {
   connect: (slug: string, name: string, another?: boolean) => void;        // existing connect flow (another: Add another account)
   setAccounts: (accounts: any[]) => void;               // existing connected-apps store
   manage: () => void;                                   // Settings → Connected accounts
+  computerConnections?: () => void;                     // native SSH/Tailscale enrollment, separate from app API credentials
   note: (title: string, sub: string) => void;
   draft?: (slug: string) => string;                     // opened from a Connect card (or a texted offer's link) with a draft: its HTML
 };
@@ -223,7 +225,7 @@ function howHtml(d: Detail) {
   const fields = (d.connect.fields || []).filter(f => f.label);
   const other = d.auth.filter(a => a.kind !== k && !/not set up/.test(a.text));
   const b = d.connect.byok;
-  return `<div class="apdhow"><span class="apdhowi">${icon}</span><p>${esc(d.connect.text)}</p></div>
+  return `${ST.slug === "tailscale" ? `<p class="apdmuted">This app connection accesses the Tailscale management API. It does not join the agent's 1HC computer to your tailnet. For native enrollment, use Settings → Connected accounts → Computer connections; that flow opens a Tailscale approval link and never asks for an API key.${D?.computerConnections ? ` <button class="apdbtn quiet" data-adnetwork>Open Computer connections</button>` : ""}</p>` : ""}<div class="apdhow"><span class="apdhowi">${icon}</span><p>${esc(d.connect.text)}</p></div>
     ${b ? `<p class="apdbyok">${esc(b.text)}${b.url ? ` <a class="apdlink" href="${esc(b.url)}" target="_blank" rel="noopener">Get a key from ${esc(b.provider)} ${IC.ext}</a>` : ""}</p>` : ""}
     ${fields.length ? `<ul class="apdfields">${fields.map(f => `<li><b>${esc(f.label)}</b>${f.help ? `<span>${esc(f.help)}</span>` : ""}</li>`).join("")}</ul>` : ""}
     ${other.length ? `<p class="apdmuted apdalso">${esc(d.name)} also supports: ${other.map(a => esc(a.text.replace(/^Needs /, "").replace(/^Signs in /, "signing in "))).join("; ")}.</p>` : ""}
@@ -368,6 +370,7 @@ function panelClick(e: MouseEvent) {
     const df = t.closest<HTMLElement>("[data-addef]"); if (df) { makeDefault(df.dataset.addef!); return; }
     const dc = t.closest<HTMLElement>("[data-addisc]"); if (dc) { disconnect(dc.dataset.addisc!); return; }
     if (t.closest("[data-admanage]")) { closeAppDetail(); D.manage(); return; }
+    if (t.closest("[data-adnetwork]")) { closeAppDetail(); D.computerConnections?.(); return; }
     const mo = t.closest<HTMLElement>("[data-admore]"); if (mo) { ST.more[mo.dataset.admore!] = true; paintTools(); return; }
     if (t.closest("[data-addesc]")) { ST.descMore = true; document.getElementById("apddesc")?.classList.add("open"); clampDesc(); return; }
   } catch (err) { console.error("app page: tap", err); paint(); }
@@ -378,7 +381,7 @@ function panelClick(e: MouseEvent) {
 window.addEventListener("keydown", e => {
   if (!shown() || dialogOpen()) return;   // a dialog over the page (Disconnect?) takes Esc itself
   if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); closeAppDetail(); return; }
-  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "a") closeAppDetail();   // the Apps shortcut closes the popup underneath too
+  if (matches("apps", e)) closeAppDetail();   // the Apps shortcut closes the popup underneath too
 }, true);
 
 // The server's whole connected-apps list after a change made elsewhere (an account note saved here or in Settings, or by the helper).

@@ -10,11 +10,12 @@ type Deps = {
   phone: () => boolean;
   working: (slug: string, sid: string) => boolean;   // the helper is working on this task right now (the "doing" item pulses)
   helper: (slug: string) => string;
+  current: () => string;   // only the task the person is viewing may open itself
   dragToClose: (el: HTMLElement, close: () => void) => void;
 };
 let D: Deps | null = null;
 const LISTS: Record<string, TodoItem[]> = {};   // "<slug>|<sid>" → items, as the server last said
-const TD = { open: "", btn: null as HTMLElement | null };
+const TD = { open: "", btn: null as HTMLElement | null, automatic: false };
 const key = (slug: string, sid: string) => `${slug}|${sid}`;
 const esc = (s: string) => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 const svg = (d: string, s = 16, w = 1.75) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
@@ -51,14 +52,20 @@ function paintBtns(k: string, bump = false) {
 }
 
 // Server truth arrives (session detail on load, a stream event, or a tick's reply).
-export function todoSet(slug: string, sid: any, items: TodoItem[], live = false) {
+export function todoSet(slug: string, sid: any, items: TodoItem[], source: "load" | "helper" | "person" = "load") {
   const k = key(slug, String(sid)), was = LISTS[k] || [];
   const list = (Array.isArray(items) ? items : []).filter(x => x && x.text).map(x => ({ id: String(x.id), text: String(x.text), status: (["todo", "doing", "done"].includes(x.status) ? x.status : "todo") as TodoItem["status"], ...(x.ready && x.status !== "done" ? { ready: true } : {}) }));
   LISTS[k] = list;
-  // Something got done while the panel is closed: a brief, gentle bump on the count. Nothing else.
-  const newlyDone = live && list.some(x => x.status === "done" && was.some(y => y.id === x.id && y.status !== "done"));
+  const changed = JSON.stringify(was) !== JSON.stringify(list);
+  const newlyDone = source !== "load" && list.some(x => x.status === "done" && was.some(y => y.id === x.id && y.status !== "done"));
   paintBtns(k, newlyDone && TD.open !== k);
   if (TD.open === k) { if (!list.length) todoClose(false); else paintPanel(); }
+  // A real helper write opens the current checklist, but not stale/history snapshots, person ticks,
+  // identical redelivery after dismissal, or work happening in another task/channel.
+  else if (source === "helper" && changed && list.length && D?.current() === k) {
+    const btn = [...document.querySelectorAll<HTMLElement>("[data-todo]")].find(b => b.dataset.todo === k && b.classList.contains("m") === D!.phone());
+    if (btn) { if (TD.open) todoClose(false); todoOpen(k, btn, true); }
+  }
 }
 export const todoItems = (slug: string, sid: any) => LISTS[key(slug, String(sid))] || [];
 // After the open task repaints: the header slot follows the task's real id (a new task gets it from the stream), and the
@@ -86,7 +93,7 @@ function panelBody(k: string) {
 function paintPanel() {
   const w = document.getElementById("tdpw"), pop = w?.querySelector<HTMLElement>(".tdpop"); if (!pop || !TD.open) return;
   const f = (document.activeElement as HTMLElement | null)?.dataset?.tdtick, sc = pop.querySelector(".tdlist")?.scrollTop ?? 0;
-  pop.innerHTML = `${D?.phone() ? `<i class="grab"></i>` : ""}${panelBody(TD.open)}`;
+  pop.innerHTML = `${D?.phone() && !TD.automatic ? `<i class="grab"></i>` : ""}${panelBody(TD.open)}`;
   const l = LISTS[TD.open] || []; pop.classList.toggle("all", !!l.length && l.every(x => x.status === "done"));
   const ls = pop.querySelector(".tdlist"); if (ls) ls.scrollTop = sc;
   if (f) pop.querySelector<HTMLElement>(`[data-tdtick="${CSS.escape(f)}"]`)?.focus({ preventScroll: true });
@@ -94,23 +101,31 @@ function paintPanel() {
 }
 function place() {
   const el = document.querySelector<HTMLElement>("#tdpw .tdpop"), b = TD.btn; if (!el) return;
+  if (D?.phone() && TD.automatic) {
+    // Reveal live updates above the draft, not over the mobile keyboard/composer.
+    const top = (document.querySelector(".mh")?.getBoundingClientRect().bottom || 64) + 8;
+    const bottom = document.querySelector("#send")?.getBoundingClientRect().top || innerHeight;
+    el.style.cssText = `left:8px;right:8px;top:${top}px;bottom:auto;max-height:${Math.max(80, Math.min(360, bottom - top - 12))}px;border-radius:20px`;
+    return;
+  }
   if (!b || !b.isConnected || D?.phone()) { el.removeAttribute("style"); return; }
   const r = anchorRect(b), W = Math.min(360, innerWidth - 24);   // folded into the header's ⋯: under ⋯
   el.style.width = `${W}px`; el.style.left = `${Math.max(12, Math.min(r.right - W, innerWidth - W - 12))}px`;
   el.style.top = `${r.bottom + 8}px`; el.style.maxHeight = `${Math.min(560, innerHeight - r.bottom - 20)}px`;
 }
-function todoOpen(k: string, btn: HTMLElement) {
+function todoOpen(k: string, btn: HTMLElement, automatic = false) {
   if (!D || !(LISTS[k] || []).length) return;
-  TD.open = k; TD.btn = btn;
+  TD.open = k; TD.btn = btn; TD.automatic = automatic;
   let w = document.getElementById("tdpw"); if (!w) { w = document.createElement("div"); w.id = "tdpw"; document.body.appendChild(w); }
-  w.innerHTML = `<div class="tdback" data-tdclose></div><div class="tdpop" role="dialog" aria-modal="true" aria-labelledby="tdtitle"></div>`;
+  w.classList.toggle("automatic", automatic);
+  w.innerHTML = `<div class="tdback" data-tdclose></div><div class="tdpop" role="dialog" aria-modal="${!automatic}" aria-labelledby="tdtitle"></div>`;
   paintBtns(k); paintPanel();
-  if (D.phone()) D.dragToClose(w.querySelector<HTMLElement>(".tdpop")!, () => todoClose());
+  if (D.phone() && !automatic) D.dragToClose(w.querySelector<HTMLElement>(".tdpop")!, () => todoClose());
   requestAnimationFrame(() => requestAnimationFrame(() => w!.classList.add("on")));
-  (w.querySelector<HTMLElement>(".tdrow.doing") || w.querySelector<HTMLElement>(".tdrow:not(.done)") || w.querySelector<HTMLElement>(".tdrow"))?.focus({ preventScroll: true });
+  if (!automatic) (w.querySelector<HTMLElement>(".tdrow.doing") || w.querySelector<HTMLElement>(".tdrow:not(.done)") || w.querySelector<HTMLElement>(".tdrow"))?.focus({ preventScroll: true });
 }
 export function todoClose(focus = true) {
-  const w = document.getElementById("tdpw"); if (!TD.open) return; const k = TD.open; TD.open = "";
+  const w = document.getElementById("tdpw"); if (!TD.open) return; const k = TD.open; focus = focus && !TD.automatic; TD.open = ""; TD.automatic = false;
   paintBtns(k);
   if (focus && !D?.phone()) document.querySelector<HTMLElement>(`[data-todo="${CSS.escape(k)}"]`)?.focus({ preventScroll: true });
   if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!TD.open) w.innerHTML = ""; }, 280);
@@ -139,16 +154,19 @@ export function todoInit(d: Deps) {
   window.addEventListener("keydown", e => {
     if (!TD.open) return;
     if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); todoClose(); return; }
+    if (TD.automatic && !(document.activeElement as HTMLElement | null)?.closest("#tdpw")) return;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       const rows = [...document.querySelectorAll<HTMLElement>("#tdpw .tdrow")], i = rows.indexOf(document.activeElement as HTMLElement); if (!rows.length) return;
       e.preventDefault(); rows[e.key === "ArrowDown" ? Math.min(rows.length - 1, i + 1) : Math.max(0, i - 1)].focus(); return;
     }
-    if (e.key === "Tab") {   // keep focus inside the panel
+    if (e.key === "Tab" && !TD.automatic) {   // only a manually opened modal traps focus
       const f = [...document.querySelectorAll<HTMLElement>("#tdpw .tdpop button")]; if (!f.length) return;
       const i = f.indexOf(document.activeElement as HTMLElement);
       if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); } else if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); f[0].focus(); }
     }
   }, true);
   window.addEventListener("resize", () => { if (TD.open) place(); });
+  document.addEventListener("input", () => { if (TD.open && TD.automatic) requestAnimationFrame(place); });
+  window.visualViewport?.addEventListener("resize", () => { if (TD.open) place(); });
   window.addEventListener("hashchange", () => todoClose(false));
 }

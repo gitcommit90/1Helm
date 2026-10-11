@@ -1,0 +1,20 @@
+/* Desktop channel panel: the global channel rail and phone drawer remain independent. */
+.sidebar-collapse,.sidebar-restore,#channel-sidebar-resize{display:none}
+@media (min-width:768px){
+  body #side{grid-column:2;min-width:0}
+  body #stage{grid-column:3}
+  body.sidebar-collapsed #side{display:none}
+  #side>.chhead{gap:8px}
+  #side>.chhead>div{min-width:0;flex:1}
+  #side>.chhead h2,#side>.chhead .chip{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sidebar-collapse{display:grid;place-items:center;flex:none;width:28px;height:32px;border-radius:9px;color:var(--mute)}
+  .sidebar-collapse:hover,.sidebar-restore:hover{background:var(--hover);color:var(--ink)}
+  .sidebar-restore{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;width:56px;min-height:44px;border-radius:12px;color:var(--ink2);font-size:10px}
+  .sidebar-restore svg{transform:rotate(180deg)}
+  .sidebar-restore[hidden],#channel-sidebar-resize[hidden]{display:none}
+  #channel-sidebar-resize{display:block;position:fixed;top:12px;bottom:12px;width:12px;z-index:35;cursor:col-resize;touch-action:none;border-radius:5px;outline:none}
+  #channel-sidebar-resize:after{content:"";position:absolute;left:5px;top:45%;height:40px;width:2px;border-radius:2px;background:var(--line2)}
+  #channel-sidebar-resize:hover:after,#channel-sidebar-resize:focus-visible:after,.sidebar-resizing #channel-sidebar-resize:after{top:8px;bottom:8px;height:auto;background:var(--accent)}
+  body.sidebar-resizing,body.sidebar-resizing *{cursor:col-resize!important;user-select:none!important}
+}
+@media (min-width:768px) and (pointer:coarse){.sidebar-collapse{width:36px;height:40px}}

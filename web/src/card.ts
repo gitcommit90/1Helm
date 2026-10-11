@@ -27,10 +27,12 @@ const token = decodeURIComponent(location.pathname.replace(/\/+$/, "").split("/"
 const base = `/c/${encodeURIComponent(token)}`;
 const esc = (s: any = "") => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 
-type Data = { kind?: "card" | "approval" | "plan" | "interview"; plan?: Plan | null; interview?: IvView; status?: string; body: string; answered: boolean; picked?: string; helper: { name: string; avatar: number }; sentAt: number;
+type Data = { kind?: "card" | "approval" | "plan" | "interview"; plan?: Plan | null; interview?: IvView; status?: string; task_url?: string; body: string; answered: boolean; picked?: string; helper: { name: string; avatar: number }; sentAt: number;
   approval?: Approval & { status?: ApStatus }; channel?: { name?: string } };
 const st: { d?: Data; reply?: string; note: "" | "sending" | "sent" | "error" | "slow" | "noloc"; ap?: { status: ApStatus; confirm?: boolean; busy?: Decision | "" }; pl?: { picks: Set<number>; answers?: Map<number, string>; busy?: PlanAct | ""; error?: string } } = { note: "" };
-const AP_STATUS = new Set(["pending", "once", "session", "channel", "always", "deny", "expired"]);
+const AP_STATUS = new Set(["pending", "once", "session", "channel", "always", "trust", "deny", "expired", "host_key_required", "consumed", "cancelled", "failed"]);
+// Server-owned deep link, restricted to an app task on this same origin.
+const approvalTaskHref = (value?: string) => typeof value === "string" && /^\/w\/[a-z0-9-]+\/app#\/[a-z0-9][a-z0-9-]{0,62}\/s\/[a-zA-Z0-9-]+$/.test(value) ? value : "";
 
 const root = document.createElement("main"); root.className = "cpage"; document.body.appendChild(root);
 root.innerHTML = `<header class="chead" id="chead"></header><div class="creply" id="creply"><div class="cload"><i></i><i></i><i></i></div></div><div class="cnote" id="cnote" role="status" aria-live="polite"></div>`;
@@ -58,7 +60,9 @@ function paint() {
   } else if (d.kind === "approval" && st.ap) {
     // The permission card (same markup as the app). Decided (here or anywhere) or expired: locked, showing the result.
     const a = d.approval!, at = (k: string) => k === "cancel" ? `data-cdx` : `data-cd="${k === "confirm" ? "channel" : k}"${k === "confirm" ? " data-cdok" : ""}`;
-    patchHtml($("creply"), approvalHtml(a, { status: st.ap.status, confirm: st.ap.confirm, busy: st.ap.busy, fresh: true }, { helper: name, channel: d.channel?.name || "", attr: at }));
+    const followup = st.ap.status === "host_key_required", task = approvalTaskHref(d.task_url);
+    const next = followup ? `<div class="gu-sys"><p class="gu-sl">Open the task in 1Helm to check the server fingerprint and confirm the new request. This card authorizes only its original request.</p>${task ? `<a class="gu-b primary" href="${esc(task)}" target="_blank" rel="noopener noreferrer">Open task to verify fingerprint</a>` : `<p class="gu-sl">Open 1Helm and return to the requesting channel's task.</p>`}</div>` : "";
+    patchHtml($("creply"), approvalHtml(a, { status: st.ap.status, confirm: st.ap.confirm, busy: st.ap.busy, fresh: true }, { helper: name, channel: d.channel?.name || "", attr: at }) + next);
   } else
   // Answered (here or anywhere): the controls lock and show what was picked.
   paintCard($("creply"), d.body, { owner, streaming: false, reply: st.reply });
@@ -96,8 +100,10 @@ document.addEventListener("click", async (e) => {
   try {
     const r = await fetch(`${base}/decide`, { method: "POST", credentials: "omit", headers: { "content-type": "application/json" }, body: JSON.stringify(decision === "channel" ? { decision, confirm: true } : { decision }) });
     const j = await r.json().catch(() => ({})); code = r.ok && j?.ok && !j.error ? 200 : r.status || -1; status = j?.status;
+    if (st.d && approvalTaskHref(j?.task_url)) st.d.task_url = j.task_url;
   } catch {}
   ap.busy = "";
+  if (code === 200 && ["ssh", "ssh_hostkey"].includes(st.d?.approval?.perm || "") && await refresh()) return;
   if (code === 200 || (AP_STATUS.has(status) && status !== "pending")) { ap.status = AP_STATUS.has(status) && status !== "pending" ? status : code === 410 ? "expired" : decision; ap.confirm = false; paint(); return; }
   if (code === 410) { ap.status = "expired"; ap.confirm = false; paint(); return; }
   if (code === 429) { st.note = "slow"; paint(); return; }

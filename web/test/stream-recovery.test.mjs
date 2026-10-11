@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import {build} from 'esbuild';
+const code=(await build({entryPoints:['src/stream-recovery.ts'],bundle:true,format:'esm',write:false})).outputFiles[0].text;
+const {streamLease,streamCurrent,streamRelease,streamInvalidate,streamState,streamProgress,streamCheckDue,readStream,streamFetch,streamErrorBody}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
+const enc=new TextEncoder(),response=events=>new Response(new ReadableStream({start(c){for(const e of events)c.enqueue(enc.encode(JSON.stringify(e)+'\n'));},cancel(){}}));
+const owner={},lease=streamLease(owner),state=streamState(owner),now=Date.now();
+state.progress=now-50000;assert(streamCheckDue(owner,{state:'working'},now));
+streamProgress(owner,{t:'hb'});assert.equal(state.progress,now-50000,'heartbeats are not task progress');
+streamProgress(owner,{t:'model_wait',phase:'waiting'});assert.equal(state.waiting,'Waiting for the model');
+streamProgress(owner,{t:'text',s:'answer'});assert.equal(state.waiting,'');assert(!streamCheckDue(owner,{state:'working'}));assert(streamCheckDue(owner,{state:'idle'}));
+lease.pending=true;assert(!streamCheckDue(owner,{state:'idle'}),'old terminal state cannot cancel an unacknowledged new POST');lease.pending=false;
+const rev=state.revision;streamProgress(owner,{t:'user_input'});assert.equal(state.revision,rev+1,'same-millisecond input invalidates snapshots');
+const events=[];await readStream(response([{t:'text',s:'hello'},{t:'done'}]),e=>{events.push(e);return e.t==='done'},lease,{idleMs:50});assert.equal(events.length,2,'done resolves without EOF');
+await assert.rejects(readStream(response([]),()=>{},lease,{idleMs:20}),/quiet/);
+assert.deepEqual(await streamErrorBody(response([]),lease,20),{},'incomplete error response body is bounded too');
+assert.deepEqual(await streamErrorBody(new Response('{"error":"payment_required"}',{status:402}),lease,50),{error:'payment_required'});
+await assert.rejects(readStream(response([{t:'hb'}]),()=>{},lease,{idleMs:1000,deadline:()=>Date.now()+10}),/quiet|timed out/);
+const stale=streamLease(owner),pending=readStream(response([]),()=>assert.fail('invalidated reader delivered an event'),stale,{idleMs:1000});streamInvalidate(owner);await assert.rejects(pending,/replaced/);assert(!streamCurrent(lease));assert(!streamCurrent(stale));
+const replacement=streamLease(owner);streamRelease(stale);assert(streamCurrent(replacement),'old cleanup cannot cancel replacement');
+const original=globalThis.fetch;let calls=0;
+try{globalThis.fetch=async(url,init)=>{calls++;assert.equal(init.method,'GET');return response([{t:'idle'}]);};const r=await streamFetch('http://fixture/attach',{method:'GET'},replacement);await readStream(r,e=>e.t==='idle',replacement);await assert.rejects(streamFetch('http://fixture/attach',{method:'GET'},replacement,Date.now()-1),/timed out/);assert.equal(calls,1);}finally{globalThis.fetch=original;streamRelease(replacement);}
+console.log('PASS stream recovery: heartbeat/progress, terminal without EOF, silence/deadline, generation races, GET-only ownership');

@@ -1,6 +1,5 @@
 // Copy and Reply on chat bubbles (the task view), and the reply pinned above the composer, like iMessage.
-// Desktop: hovering (or tabbing into) a message shows two round buttons at its bubble's outer edge, in the empty side margin
-// (never over its text, nothing moves). Touch: a tap on the bubble (or a long-press) opens the same two as a small labelled menu.
+// Desktop: hovering or tabbing into a bubble shows its own Copy / Reply buttons. Touch: hold the bubble to reveal them.
 // Copy puts the message's text on the clipboard (plain text, cleaned of card code and Markdown marks, plus rich HTML for apps that
 // paste formatting) and the button ticks "Copied". Reply pins a quote bar above the composer (who + the first lines + ✕); the next
 // send carries it (v3.ts: liveReply → /stream {reply: {id, role, text}}) and the bar clears; Esc or ✕ cancels. The pin is kept per
@@ -15,7 +14,7 @@ export type Pin = RRef & { mr: number };   // + the local message id (scroll tar
 type Found = { mr: number; role: Role; id: string | null; plain: string; html: string };
 type Deps = {
   key: () => string;   // the open task ("slug|sid"), "" elsewhere
-  msg: (mr: number) => Found | null;   // a message of the open task by its local id
+  msg: (mr: number, part?: string) => Found | null;   // a rendered bubble of the open task
   locate: (r: { role: Role; id: string | null; text: string; mr?: number }) => number | null;   // a quote's original, by server id then text
   who: (role: Role) => string;   // "You" / the helper's name
   repaint: () => void;   // the open task's messages
@@ -61,16 +60,17 @@ const IC = {
   tick: svg('<path d="M20 6 9 17l-5-5"/>', 15),
   x: svg('<path d="M18 6 6 18M6 6l12 12"/>', 15),
 };
-const M = { open: null as number | null, copied: null as number | null, copiedT: 0 as any, top: 0 };   // the touch menu's message, the message whose Copy just ticked (local ids)
+const M = { open: null as string | null, copied: null as string | null, copiedT: 0 as any, top: 0 };
+const actionKey = (mr: number, part = "") => `${mr}:${part}`;
 const PINS = new Map<string, Pin>();   // task → its pinned reply
 
-// The two buttons, inside a bubble (absolutely placed: outside the bubble on desktop, a menu on touch). mr = local message id.
-export function maActs(mr: number) {
-  const c = M.copied === mr;
-  return `<span class="mact" data-mact="${mr}"><button type="button" class="ma-copy${c ? " done" : ""}" data-macopy="${mr}" aria-label="${c ? "Copied" : "Copy message"}" title="${c ? "Copied" : "Copy"}">${c ? IC.tick : IC.copy}<span class="mal">${c ? "Copied" : "Copy"}</span></button><button type="button" class="ma-reply" data-mareply="${mr}" aria-label="Reply to this message" title="Reply">${IC.reply}<span class="mal">Reply</span></button></span>`;
+// The two buttons in a bubble's reserved action strip. mr identifies the turn; part identifies its visible text bubble.
+export function maActs(mr: number, part = "") {
+  const key = actionKey(mr, part), c = M.copied === key;
+  return `<span class="mact" data-mact="${key}" data-mapart="${part}"><button type="button" class="ma-copy${c ? " done" : ""}" data-macopy="${mr}" aria-label="${c ? "Copied" : "Copy message"}" title="${c ? "Copied" : "Copy"}">${c ? IC.tick : IC.copy}<span class="mal">${c ? "Copied" : "Copy"}</span></button><button type="button" class="ma-reply" data-mareply="${mr}" aria-label="Reply to this message" title="Reply">${IC.reply}<span class="mal">Reply</span></button></span>`;
 }
-// Class for a message whose touch menu is open (kept across repaints).
-export const maOpenCls = (mr: number) => (M.open === mr ? " macts" : "");
+// Class for the bubble whose touch controls are open (kept across repaints).
+export const maOpenCls = (mr: number, part = "") => (M.open === actionKey(mr, part) ? " macts" : "");
 // The quote above a sent reply. mr: the original's local id when this page knows it.
 export function maQuote(r: { role: Role; id?: string | null; text: string; mr?: number } | undefined) {
   if (!r?.text || !D) return "";
@@ -94,16 +94,19 @@ export function rqPut(key: string, p: Pin) { PINS.set(key, p); rqPaint(); }
 export const refOf = (p: Pin | null | undefined): RRef | null => (p ? { id: p.id, role: p.role, text: p.text } : null);
 
 // ---------- clipboard ----------
-async function clip(plain: string, html: string) {
+export async function copyToClipboard(plain: string, html = "") {
   try {
     const CI = (window as any).ClipboardItem;
     if (CI && navigator.clipboard?.write && html) { await navigator.clipboard.write([new CI({ "text/plain": new Blob([plain], { type: "text/plain" }), "text/html": new Blob([html], { type: "text/html" }) })]); return true; }
   } catch {}
   try { if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(plain); return true; } } catch {}
-  try {   // older browsers / no permission: a hidden textarea and the copy command
-    const ta = document.createElement("textarea"); ta.value = plain; ta.setAttribute("readonly", ""); ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
-    document.body.appendChild(ta); ta.select(); const ok = document.execCommand("copy"); ta.remove(); return ok;
-  } catch { return false; }
+  // Older browsers / no clipboard permission: preserve the original focus and selection around the copy command.
+  const focused = document.activeElement as HTMLElement | null, selection = window.getSelection();
+  const ranges = selection ? Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i).cloneRange()) : [];
+  const ta = document.createElement("textarea"); ta.value = plain; ta.setAttribute("readonly", ""); ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
+  try { document.body.appendChild(ta); ta.select(); return document.execCommand("copy"); }
+  catch { return false; }
+  finally { ta.remove(); if (focused?.isConnected) focused.focus({ preventScroll: true }); if (selection) { selection.removeAllRanges(); ranges.forEach(r => selection.addRange(r)); } }
 }
 function say(t: string) {   // screen readers: "Copied"
   let el = document.getElementById("ma-live"); if (!el) { el = document.createElement("div"); el.id = "ma-live"; el.className = "sr-only"; el.setAttribute("role", "status"); el.setAttribute("aria-live", "polite"); document.body.appendChild(el); }
@@ -111,24 +114,20 @@ function say(t: string) {   // screen readers: "Copied"
 }
 
 // ---------- the touch menu ----------
-// Our own repaints (menu open/close, Copied tick) keep the chat where it is: the chat's repaint snaps to the bottom when it's
-// within 140px of it, and that scroll used to close the menu the moment a long-press opened it (a reply near the bottom).
-function paint() {
-  const sc = document.getElementById("scroll"), top = sc?.scrollTop ?? 0;
-  D?.repaint(); if (sc && sc.scrollTop !== top) sc.scrollTop = top;
-  M.top = sc?.scrollTop ?? 0;
-}
-function menuOpen(mr: number) {
-  M.open = mr; paint();
-  // Above the bubble when there's room in the scroller, else below it.
-  requestAnimationFrame(() => {
-    const m = document.querySelector<HTMLElement>(`.m[data-mr="${mr}"]`), sc = document.getElementById("scroll"), a = m?.querySelector<HTMLElement>(".mact"); if (!m || !a) return;
-    const b = a.parentElement!.getBoundingClientRect(), top = sc ? sc.getBoundingClientRect().top : 0;
-    a.classList.toggle("below", b.top - top < 56);
+// Copy feedback updates controls in place, preserving keyboard focus, selection and reading position.
+function paintCopied() {
+  document.querySelectorAll<HTMLElement>(".msgs [data-macopy]").forEach(button => {
+    const copied = button.closest<HTMLElement>("[data-mact]")?.dataset.mact === M.copied;
+    button.classList.toggle("done", copied); button.title = copied ? "Copied" : "Copy";
+    button.setAttribute("aria-label", copied ? "Copied" : "Copy message");
+    button.innerHTML = `${copied ? IC.tick : IC.copy}<span class="mal">${copied ? "Copied" : "Copy"}</span>`;
   });
 }
-function menuClose() { if (M.open == null) return; M.open = null; paint(); }
-const TOUCH = () => matchMedia("(hover: none)").matches;
+function menuOpen(key: string) {
+  menuClose(); M.open = key; M.top = document.getElementById("scroll")?.scrollTop ?? 0;
+  document.querySelector(`[data-mact="${key}"]`)?.parentElement?.classList.add("macts");
+}
+function menuClose() { if (M.open == null) return; M.open = null; document.querySelectorAll(".msgs .bubble.macts").forEach(el => el.classList.remove("macts")); }
 const INTERACTIVE = "a,button,input,select,textarea,label,summary,details,video,audio,img,.acard,.gu,.fcard,.mfiles,[data-fv],[role=button]";
 
 export function maInit(deps: Deps) {
@@ -136,39 +135,45 @@ export function maInit(deps: Deps) {
   document.addEventListener("click", e => {
     const t = e.target as HTMLElement;
     const cp = t.closest<HTMLElement>("[data-macopy]");
-    if (cp) { e.preventDefault(); e.stopPropagation(); const mr = +cp.dataset.macopy!, f = D!.msg(mr); if (!f) return;
-      void clip(f.plain, f.html).then(ok => {
+    if (cp) { e.preventDefault(); e.stopPropagation(); const mr = +cp.dataset.macopy!, a = cp.closest<HTMLElement>("[data-mact]")!, key = a.dataset.mact!, f = D!.msg(mr, a.dataset.mapart); if (!f) return;
+      void copyToClipboard(f.plain, f.html).then(ok => {
         if (!ok) { D!.note("Couldn't copy", "Your browser didn't allow it. Select the text and copy it instead."); return; }
-        M.copied = mr; M.open = null; clearTimeout(M.copiedT); paint(); say("Copied");
-        M.copiedT = setTimeout(() => { if (M.copied === mr) { M.copied = null; paint(); } }, 1600);
+        M.copied = key; clearTimeout(M.copiedT); paintCopied(); say("Copied");
+        M.copiedT = setTimeout(() => { if (M.copied === key) { M.copied = null; paintCopied(); } }, 1600);
       }); return; }
     const rp = t.closest<HTMLElement>("[data-mareply]");
-    if (rp) { e.preventDefault(); e.stopPropagation(); const mr = +rp.dataset.mareply!, f = D!.msg(mr), key = D!.key(); if (!f || !key) return;
+    if (rp) { e.preventDefault(); e.stopPropagation(); const mr = +rp.dataset.mareply!, f = D!.msg(mr, rp.closest<HTMLElement>("[data-mact]")?.dataset.mapart), key = D!.key(); if (!f || !key) return;
       PINS.set(key, { id: f.id, role: f.role, text: excerpt(f.plain), mr }); M.open = null; D!.repaint(); rqPaint();
       const b = document.getElementById("box") as HTMLTextAreaElement | null; if (b) { b.focus(); b.setSelectionRange(b.value.length, b.value.length); }
       return; }
     if (t.closest("[data-rqx]")) { e.preventDefault(); rqClear(); (document.getElementById("box") as HTMLTextAreaElement | null)?.focus(); return; }
     const q = t.closest<HTMLElement>("[data-mq]");
     if (q) { e.preventDefault(); const [role, id, mr] = q.dataset.mq!.split("|"); jump({ role: role as Role, id: id || null, text: q.dataset.mqt || "", mr: mr ? +mr : undefined }); return; }
-    // Touch: a tap on a bubble (not on a link, a button, a card) opens its menu; any other tap closes it.
-    if (TOUCH()) {
-      const bub = t.closest<HTMLElement>(".msgs .m .bubble"), m = bub?.closest<HTMLElement>(".m[data-mr]");
-      if (bub && m && bub.querySelector(".mact") && !t.closest(INTERACTIVE) && !String(getSelection?.() || "").trim()) { const mr = +m.dataset.mr!; if (M.open === mr) menuClose(); else menuOpen(mr); return; }
-      if (M.open != null && !t.closest(".mact")) menuClose();
-    }
+    if (M.open != null && !t.closest(".mact")) menuClose();
   });
-  // Long-press (touch): the same menu, without the click that follows.
-  let lp: any = 0, lpAt: { x: number; y: number } | null = null, lpFired = false;
+  // Long-press only. Never capture the pointer or prevent touch movement/native text selection.
+  // Suppress only the held bubble's immediate compatibility click, never an unrelated next click.
+  let lp: any = 0, lpAt: { x: number; y: number; key: string } | null = null, held: { key: string; until: number } | null = null;
+  const cancel = () => { clearTimeout(lp); lpAt = null; };
+  const targetKey = (t: HTMLElement) => t.closest(".bubble")?.querySelector<HTMLElement>("[data-mact]")?.dataset.mact;
   document.addEventListener("touchstart", e => {
-    const t = e.target as HTMLElement, bub = t.closest<HTMLElement>(".msgs .m .bubble"), m = bub?.closest<HTMLElement>(".m[data-mr]");
-    lpFired = false; clearTimeout(lp); if (!bub || !m || !bub.querySelector(".mact") || t.closest(".mact") || t.closest("a,button,input,textarea")) return;
-    const p = e.touches[0]; lpAt = { x: p.clientX, y: p.clientY };
-    lp = setTimeout(() => { lpFired = true; menuOpen(+m.dataset.mr!); try { navigator.vibrate?.(8); } catch {} }, 450);
+    cancel(); held = null;
+    const t = e.target as HTMLElement, key = targetKey(t);
+    if (M.open && (!t.closest(".mact") || key !== M.open)) menuClose();
+    if (e.touches.length !== 1 || !key || !t.closest(".msgs") || t.closest(INTERACTIVE) || window.getSelection()?.toString()) return;
+    const p = e.touches[0]; lpAt = { x: p.clientX, y: p.clientY, key };
+    lp = setTimeout(() => { if (!lpAt || !t.isConnected || window.getSelection()?.toString()) return;
+      held = { key, until: Date.now() + 1200 }; menuOpen(key); try { navigator.vibrate?.(8); } catch {} }, 450);
   }, { passive: true });
-  document.addEventListener("touchmove", e => { if (!lpAt) return; const p = e.touches[0]; if (Math.abs(p.clientX - lpAt.x) > 8 || Math.abs(p.clientY - lpAt.y) > 8) { clearTimeout(lp); lpAt = null; } }, { passive: true });
-  document.addEventListener("touchend", () => { clearTimeout(lp); lpAt = null; }, { passive: true });
-  document.addEventListener("click", e => { if (lpFired) { lpFired = false; e.preventDefault(); e.stopPropagation(); } }, true);
-  document.addEventListener("contextmenu", e => { if (lpFired && (e.target as HTMLElement).closest?.(".msgs .m .bubble")) e.preventDefault(); });
+  document.addEventListener("touchmove", e => { if (!lpAt) return; const p = e.touches[0]; if (e.touches.length !== 1 || Math.abs(p.clientX - lpAt.x) > 8 || Math.abs(p.clientY - lpAt.y) > 8) { cancel(); held = null; menuClose(); } }, { passive: true });
+  document.addEventListener("touchend", () => { if (held) held.until = Date.now() + 700; cancel(); }, { passive: true });
+  document.addEventListener("touchcancel", () => { cancel(); held = null; menuClose(); }, { passive: true });
+  document.addEventListener("click", e => { const t = e.target as HTMLElement;
+    if (held && Date.now() < held.until && targetKey(t) === held.key && !t.closest(INTERACTIVE)) { held = null; e.preventDefault(); e.stopPropagation(); }
+  }, true);
+  document.addEventListener("selectionchange", () => { if (window.getSelection()?.toString()) cancel(); });
+  document.addEventListener("contextmenu", e => { if (held && Date.now() < held.until && targetKey(e.target as HTMLElement) === held.key && !(e.target as HTMLElement).closest(INTERACTIVE)) e.preventDefault(); });
+  window.addEventListener("hashchange", () => { cancel(); held = null; menuClose(); });
   // Esc: closes the touch menu, else cancels the pinned reply (while typing in the box, not while dictating: Esc stops that).
   document.addEventListener("keydown", e => {
     if (e.key !== "Escape" || e.defaultPrevented) return;
@@ -179,7 +184,7 @@ export function maInit(deps: Deps) {
     if (rqGet()) { e.preventDefault(); rqClear(); if (t.id !== "box") (document.getElementById("box") as HTMLTextAreaElement | null)?.focus(); }
   });
   // Scrolling the chat closes the menu (a real scroll by the person: not the repaint that opened it).
-  document.addEventListener("scroll", e => { const t = e.target as HTMLElement; if (M.open != null && t?.id === "scroll" && Math.abs(t.scrollTop - M.top) > 8) menuClose(); }, true);
+  document.addEventListener("scroll", e => { const t = e.target as HTMLElement; if (t?.id !== "scroll") return; cancel(); if (M.open != null && Math.abs(t.scrollTop - M.top) > 8) menuClose(); }, true);
 }
 // Scroll to a quote's original and flash it.
 function jump(r: { role: Role; id: string | null; text: string; mr?: number }) {

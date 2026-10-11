@@ -50,6 +50,7 @@ const pathOf = (k: string) => `/res/${k.split("|")[0]}/sessions/${k.split("|")[1
 // The mic: is this device the one recording task k, and what is it doing?
 const here = (k: string) => { const m = micInfo(); return m.k === k && m.state !== "off" ? m : null; };
 const canStart = () => B.bee || micSupported();
+export const lnCanStart = () => !!D && !D.look && canStart();
 const LAST = "1h-ln-src", TABMIC = "1h-ln-tabmic";
 const SRC_LABEL: Record<Src, [string, string]> = {
   bee: ["Your Bee", "Follows what your Bee hears."],
@@ -228,7 +229,7 @@ async function start(k: string, meeting = false) {
   } finally { STARTING.delete(k); }
 }
 // From a meeting reminder (meetings.ts): the task is open; the Start sheet with a meeting tab as the default.
-export async function lnStartFor(slug: string, sid: any) { const k = key(slug, sid); if (live(S[k]?.v) || !canStart()) return; await start(k, true); }
+export async function lnStartFor(slug: string, sid: any) { const k = key(slug, sid); if (live(S[k]?.v) || !lnCanStart()) return; await start(k, true); }
 // Stop: the device recording sends its last chunk first, so the final notes have every word.
 async function stop(k: string, sure = false) {
   if (!sure && !(await ask({ title: "Stop Live notes?", body: "1Helm writes the final notes and saves them to the Library under Meetings.", confirm: "Stop" }))) return;

@@ -1,7 +1,15 @@
 // Paid-plan Ledger accounting and notices for the 1HC deployment.
 import { CHECKIN_TEST_KEY, DAY_FACTOR, NOTICE_LEVELS, checkinOffTest, dayShare, noticeText, testModeOn } from "../spendguard.js";
 
+import { SPEND_PAUSES_KEY } from "../spend-preferences.js";
 export const ledgerGuard = {
+  spendPreferences() { return { enabled: this.guardKv(SPEND_PAUSES_KEY) !== 'off' }; },
+  setSpendPreferences(enabled) {
+    if (typeof enabled !== 'boolean') throw new TypeError('Choose on or off.');
+    this.guardKv(SPEND_PAUSES_KEY, enabled ? null : 'off');
+    if (!enabled) this.guardKv('notice_pending', null);
+    return this.spendPreferences();
+  },
   guardKv(k, v) {
     this.sql.exec("CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
     if (v === undefined) return this.sql.exec("SELECT v FROM kv WHERE k=?", k).toArray()[0]?.v ?? null;
@@ -24,7 +32,7 @@ export const ledgerGuard = {
     if (!allowance) allowance = Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM grants WHERE nano>0 AND kind IN ('included','topup','test') AND at>=?", from).toArray()[0].n);
     const used = Number(this.sql.exec("SELECT COALESCE(SUM(nano),0) n FROM spend WHERE at>=?", from).toArray()[0].n);
     const dayKey = `day_ok:${this.dayStart()}`;
-    return { allowance_nano: allowance, period_start: start, period_spent_nano: used, pct: allowance ? Math.min(100, Math.round(used / allowance * 100)) : 0,
+    return { spend_pauses: this.spendPreferences().enabled, allowance_nano: allowance, period_start: start, period_spent_nano: used, pct: allowance ? Math.min(100, Math.round(used / allowance * 100)) : 0,
       day_spent_nano: d.spent_nano + d.reserved_nano, day_share_nano: dayShare(allowance), day_ok_nano: Number(this.guardKv(dayKey)) || 0, day_cap_nano: d.cap_nano,
       ...(checkinOffTest(this.env, this.guardKv(CHECKIN_TEST_KEY)) ? { checkin_off: true } : {}) };
   },
@@ -39,6 +47,7 @@ export const ledgerGuard = {
   },
   // Crossed 50% / 80% since the last check: one notice (the highest level crossed), every lower level marked too.
   usageNotice(helper = "Your helper") {
+    if (!this.spendPreferences().enabled) return null;
     const g = this.guardInfo(); if (!g.allowance_nano) return null;
     const exact = g.period_spent_nano / g.allowance_nano * 100, per = g.period_start || "rolling";
     const due = NOTICE_LEVELS.filter((l) => exact >= l && !this.guardKv(`notice:${per}:${l}`));
@@ -49,6 +58,28 @@ export const ledgerGuard = {
     this.guardKv("notice_pending", JSON.stringify(n));
     return n;
   },
-  noticePending() { try { return JSON.parse(this.guardKv("notice_pending") || "null"); } catch { return null; } },
+  noticePending() { if (!this.spendPreferences().enabled) return null; try { return JSON.parse(this.guardKv("notice_pending") || "null"); } catch { return null; } },
   noticeSeen() { this.guardKv("notice_pending", null); return { ok: true }; },
 };
+
+// ---- Making a file (deckflow4, dev 10-07): steps that do no work, said where the helper reads it ----
+// A file from a brief should take 10 to 20 steps. Live runs spent 5 to 7 steps a turn on to-do updates sent alone, and 6 to 8 on
+// research the artifacts skill says a planning file doesn't need. Notes go on the tool result, once or twice a turn, never block.
+export const FILE_NOTES = { todoAlone: 2, searches: 1, pages: 2 };
+const BOOKKEEPING_ONLY = new Set(["update_todos", "react"]), RESEARCH = new Set(["web_search", "fetch_url", "work_log", "recall_history"]);
+export function stepNotes(tc, name, calls, out, args = {}) {
+  if (!tc || typeof out !== "string") return out;
+  const n = (tc.fileNotes = tc.fileNotes || { todo: 0, search: 0, page: 0, said: 0 });
+  if (name === "read_skill" && args?.slug === "artifacts") tc.fileTask = true;
+  if (name === "update_todos" && calls.length && calls.every((c) => BOOKKEEPING_ONLY.has(c.function?.name)) && n.todo < FILE_NOTES.todoAlone) {
+    n.todo++;
+    return `${out}\n[1Helm: this step only updated the to-do list, and every step is a full model call. Send to-do updates together with real work (the next command, the share), never on their own; the list doesn't need an update for every phase.]`;
+  }
+  if (!tc.fileTask || !RESEARCH.has(name)) return out;
+  if (name === "web_search") n.search++; else n.page++;
+  if (n.search > FILE_NOTES.searches || n.page > FILE_NOTES.pages) {
+    if (n.said >= 2) return out; n.said++;
+    return `${out}\n[1Helm: you're making a file from a brief, and that's past its research budget (one search, two pages). The artifacts skill: well-known facts need no source; build now with what you have.]`;
+  }
+  return out;
+}

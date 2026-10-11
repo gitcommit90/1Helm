@@ -15,20 +15,22 @@ export function hFit() {
   const h = head(); if (!h) return;
   const more = h.querySelector<HTMLElement>("[data-hmore]"), t = h.querySelector<HTMLElement>("h1"); if (!more || !t) return;
   const items = [...h.querySelectorAll<HTMLElement>(".ho[data-ho]")].sort((a, b) => +a.dataset.ho! - +b.dataset.ho!);
-  items.forEach(x => x.classList.remove("hhid")); more.hidden = true;
+  const rename = h.querySelector("[data-rename]");
+  items.forEach(x => x.classList.remove("hhid")); more.hidden = !rename;
   const cs = getComputedStyle(h), limit = h.getBoundingClientRect().right - parseFloat(cs.paddingRight) + 0.5;
   const kids = () => [...h.querySelectorAll<HTMLElement>("button, .meta, .who-chip")];
   const over = () => kids().some(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.right > limit; });
-  const tight = () => over() || (t.clientWidth < TITLE_MIN && t.scrollWidth > t.clientWidth + 1);
+  const titleText = t.querySelector<HTMLElement>("[data-task-title]") || t;
+  const tight = () => over() || (t.clientWidth < TITLE_MIN && titleText.scrollWidth > titleText.clientWidth + 1);
   if (tight()) {
     more.hidden = false;
     for (const x of items) { if (!tight()) break; if (x.dataset.ho === "0" || x.querySelector("button")) x.classList.add("hhid"); }
   }
   const folded = items.filter(x => x.classList.contains("hhid") && x.querySelector("button"));
-  more.hidden = !folded.length;
+  more.hidden = !folded.length && !rename;
   // something folded is live (recording, working, a timer running): a dot on ⋯ says so
   more.classList.toggle("lit", folded.some(x => !!x.querySelector(".ln-rec, .tk-dot, .pmbtn:not(.idle)")));
-  if (!folded.length && document.getElementById("hmenu")) closeMenu();
+  if (!folded.length && !rename && document.getElementById("hmenu")) closeMenu();
 }
 // Called after every render of the desktop stage.
 export function hWatch() {
@@ -45,8 +47,8 @@ export function anchorRect(b: HTMLElement): DOMRect {
 }
 
 // ---- the ⋯ menu: the folded actions, in the header's order ----
-const folded = () => [...document.querySelectorAll<HTMLElement>("#stage>header .ho.hhid")]
-  .map(x => x.querySelector<HTMLElement>("button")).filter((b): b is HTMLElement => !!b);
+const folded = () => [...document.querySelectorAll<HTMLElement>("#stage>header [data-rename]"), ...[...document.querySelectorAll<HTMLElement>("#stage>header .ho.hhid")]
+  .map(x => x.querySelector<HTMLElement>("button")).filter((b): b is HTMLElement => !!b)];
 const labelOf = (b: HTMLElement) => {
   if (b.matches(".hpin")) return b.textContent!.trim() === "Pinned" ? "Unpin" : "Pin";
   if (b.matches(".hdone")) return b.classList.contains("on") ? "Reopen" : "Mark done";

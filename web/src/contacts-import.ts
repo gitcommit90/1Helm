@@ -4,7 +4,7 @@
 // Photos come along as small 96 px JPEGs made here. Notes stay out unless the person ticks "Include notes".
 // v3.ts only hooks in: ciInit() once in live mode, ciOpen() from the Import buttons, and ctAv shows the photos.
 import { VList } from "./contacts-list.ts";
-import { readContactsFile, decodeBytes, planContacts, payload, pickPhone, pickEmail, phoneShow, type Plan, type Row, type Existing, type Kind } from "./contacts-parse.ts";
+import { payload, pickPhone, pickEmail, phoneShow, type Plan, type Row, type Existing, type Kind } from "./contacts-parse.ts";
 
 type Deps = {
   api: (path: string, body?: any) => Promise<any>;
@@ -37,6 +37,7 @@ const HOW: [string, string][] = [
 const SRC: Record<Kind, string> = { vcard: "vCard", google: "Google CSV", outlook: "Outlook CSV", csv: "spreadsheet" };
 
 let D: Deps | null = null;
+let readSerial = 0, cancelRead: (() => void) | null = null;
 const S = {
   el: null as HTMLElement | null, prev: null as HTMLElement | null,
   step: "pick" as "pick" | "reading" | "preview" | "importing" | "done",
@@ -45,7 +46,7 @@ const S = {
 };
 export const ciIsOpen = () => !!S.el;
 
-function reset() { S.err = ""; S.file = ""; S.plan = null; S.off = new Set(); S.join = new Set(); S.notes = false; S.why = false; S.q = ""; S.all = false; S.vis = []; S.sent = 0; S.total = 0; S.res = null; S.progress = ""; S.step = "pick"; }
+function reset() { readSerial++; cancelRead?.(); cancelRead = null; S.err = ""; S.file = ""; S.plan = null; S.off = new Set(); S.join = new Set(); S.notes = false; S.why = false; S.q = ""; S.all = false; S.vis = []; S.sent = 0; S.total = 0; S.res = null; S.progress = ""; S.step = "pick"; }
 
 export function ciInit(d: Deps) {
   D = d;
@@ -82,33 +83,34 @@ function close() {
 async function read(f: File) {
   if (!D || S.step === "importing") return;
   reset(); S.file = f.name; S.step = "reading"; S.progress = "Reading the file…"; paint();
+  const serial = readSerial;
   if (f.size > FILE_MAX) { fail("That file is too big for a contacts export (over 150 MB). Export a smaller group and import it in parts."); return; }
   if (!/\.(vcf|vcard|csv)$/i.test(f.name) && !/vcard|csv|comma/.test(f.type)) { fail("That isn't a contacts file. Pick a vCard (.vcf) or a Google / Outlook contacts CSV."); return; }
   try {
-    const text = decodeBytes(await f.arrayBuffer());
-    const r = readContactsFile(f.name, text); if ("error" in r) { fail(r.error); return; }
-    const p = planContacts(r.kind, r.rows, D.existing(), D.me()); if ("error" in p) { fail(p.error); return; }
-    const withPhoto = p.rows.filter(x => x.c.photo);
-    for (let i = 0; i < withPhoto.length; i++) {
-      if (!S.el || S.file !== f.name) return;   // closed or another file picked meanwhile
-      if (i % 25 === 0) { S.progress = `Reading photos… ${n(i)} of ${n(withPhoto.length)}`; paintProgress(); await new Promise(z => setTimeout(z, 0)); }
-      withPhoto[i].photo = await shrink(withPhoto[i].c.photo!).catch(() => undefined);
-      withPhoto[i].c.photo = null;   // the full-size picture isn't kept
-    }
-    if (!S.el) return;
+    const bytes = await f.arrayBuffer();
+    if (!S.el || serial !== readSerial) return;
+    const p = await new Promise<Plan>((resolve, reject) => {
+      let worker: Worker;
+      try { const url = new URL("./contacts-import-worker.js", import.meta.url); url.search = new URL(import.meta.url).search; worker = new Worker(url, { type: "module" }); }
+      catch { reject(new Error("Couldn't start background import. Reload the page and try again. Nothing has been imported.")); return; }
+      const finish = () => { worker.terminate(); if (serial === readSerial) cancelRead = null; };
+      cancelRead = () => { worker.terminate(); reject(new DOMException("Import cancelled", "AbortError")); };
+      worker.onerror = (e) => { e.preventDefault(); finish(); reject(new Error("Couldn't prepare that file in the background. Reload the page and try again. Nothing has been imported.")); };
+      worker.onmessageerror = () => { finish(); reject(new Error("Couldn't read the prepared contacts. Try the file again. Nothing has been imported.")); };
+      worker.onmessage = ({ data }) => {
+        if (serial !== readSerial) return;
+        if (data.type === "progress") { S.progress = data.phase === "photos" ? `Preparing photos… ${n(data.done)} of ${n(data.total)}` : "Reading contacts…"; paintProgress(); }
+        else if (data.type === "done") { finish(); resolve(data.plan); }
+        else if (data.type === "error") { finish(); reject(new Error(data.message)); }
+      };
+      try { worker.postMessage({ name: f.name, bytes, existing: D!.existing(), me: D!.me() }, [bytes]); }
+      catch (error) { finish(); reject(error); }
+    });
+    if (!S.el || serial !== readSerial) return;
     S.plan = p; S.step = "preview"; filter(); paint();
-  } catch { fail("Couldn't read that file. Try exporting it again."); }
+  } catch (error) { if (S.el && serial === readSerial) fail(error instanceof Error ? error.message : "Couldn't read that file. Try exporting it again."); }
 }
 function fail(msg: string) { S.err = msg; S.step = "pick"; paint(); }
-// A contact photo → a 96 px square JPEG data: URL (center crop). HEIC and broken pictures throw: the contact keeps its initials.
-async function shrink(ph: { mime: string; b64: string }): Promise<string | undefined> {
-  const bin = atob(ph.b64), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-  const bmp = await createImageBitmap(new Blob([u8], { type: ph.mime }));
-  const s = Math.min(bmp.width, bmp.height), cv = document.createElement("canvas"); cv.width = cv.height = 96;
-  const g = cv.getContext("2d")!; g.fillStyle = "#fff"; g.fillRect(0, 0, 96, 96); g.drawImage(bmp, (bmp.width - s) / 2, (bmp.height - s) / 2, s, s, 0, 0, 96, 96); bmp.close?.();
-  const url = cv.toDataURL("image/jpeg", 0.8); return url.length < 24000 ? url : undefined;
-}
-
 // ---------- the counts ----------
 const ticked = (i: number) => !S.off.has(i);
 const merges = (r: Row, i: number) => !!r.match || (!!r.maybe && S.join.has(i));
@@ -159,7 +161,7 @@ function pickHtml() {
     <p class="cifoot">${IC.lock}<span>The file is read on this device. It isn't uploaded or kept; only the contacts you pick are saved to Contacts.</span></p>`;
 }
 function progressHtml() {
-  return `<div class="cihead"><div><h2 id="ciT">Import contacts</h2><p>${esc(S.file)}</p></div></div><div class="ciwait"><span class="cispin"></span><span id="ciprog">${esc(S.progress)}</span></div>`;
+  return `<div class="cihead"><div><h2 id="ciT">Import contacts</h2><p>${esc(S.file)}</p></div><button type="button" class="cicb" data-cix aria-label="Cancel import">${IC.x}</button></div><div class="ciwait"><span class="cispin"></span><span id="ciprog">${esc(S.progress)}</span></div>`;
 }
 function previewHtml() {
   const p = S.plan!, k = counts(), sk = p.skipped.length, busy = S.step === "importing";

@@ -83,10 +83,12 @@
 .apdev>p{margin-top:12px}.apdev .apdtools{padding-bottom:8px}
 
 .apdcard{margin-top:22px;padding:18px;border-radius:18px;background:var(--sheet);box-shadow:inset 0 0 0 1px var(--line)}
+/* Provider instructions can include long URLs; wrap them within the sidebar cards. */
+.apdside .apdcard{min-width:0;overflow-wrap:anywhere}
 .apdside .apdcard:first-child{margin-top:22px}
 .apdcard h3{margin-bottom:12px}
 .apdhow{display:flex;gap:12px;align-items:flex-start}
-.apdhow p{margin:0;font-size:14.5px;line-height:1.5}
+.apdhow p{min-width:0;margin:0;font-size:14.5px;line-height:1.5}
 .apdhowi{flex:none;width:34px;height:34px;border-radius:11px;display:grid;place-items:center;background:var(--abub);color:var(--ink2)}
 .apdfields{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}
 .apdfields li{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border-radius:12px;background:var(--abub);font-size:13.5px}

@@ -1,5 +1,19 @@
 # Backup and restore
 
+Native transport is included in backups for each channel when the
+`NATIVE_TRANSPORT` binding is present. Maintenance mode stops its container and
+blocks new operations and state callbacks before taking the snapshot. Active
+operations must finish before backup can proceed.
+
+Restoring intentionally clears native SSH keys, server trust, Tailscale
+enrollment and session authority instead of reviving old credentials or
+previously revoked grants. Re-enroll Tailscale, install the newly generated SSH
+public key on approved servers, and approve server trust again after restoring.
+Saved tasks and files are restored normally; a native session is not resumed
+from backup. Backups predating this transport feature contain no transport
+snapshot. Restore those into a fresh transport namespace, not over an already
+enrolled one.
+
 Conversations, tasks, memory, usage history, file preparation jobs, and channel computer layer indexes live in SQLite-backed Durable Objects. A complete backup needs their snapshot **plus** D1, every R2 object, the private Wrangler config, and recovery secrets. Keep all parts under one backup ID. This cross-account procedure still needs a live Cloudflare restore rehearsal before relying on it for disaster recovery. Do not delete the original Worker or Durable Object namespaces until that rehearsal succeeds.
 
 ## Stop writes and snapshot Durable Objects

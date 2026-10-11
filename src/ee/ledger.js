@@ -80,7 +80,7 @@ export class Ledger extends DurableObject {
     const t = this.totals();
     if (t.balance_nano < nano) return { ok: false, reason: "out_of_credits", state: t };
     const d = this.dayInfo();
-    if (d.spent_nano + d.reserved_nano + nano > d.cap_nano) return { ok: false, reason: "day_limit", day: d, state: t };
+    if (this.spendPreferences().enabled && d.spent_nano + d.reserved_nano + nano > d.cap_nano) return { ok: false, reason: "day_limit", day: d, state: t };
     this.sql.exec("INSERT INTO res (id,nano,at) VALUES (?,?,?)", id, nano, Date.now());
     return { ok: true };
   }

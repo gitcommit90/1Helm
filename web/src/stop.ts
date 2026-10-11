@@ -42,7 +42,7 @@ export const cardContinue = (slug: string, sid: any, card: string) => `<button t
 /** Under the paused reply: why it paused (spendguard.ts, when the server said) + Keep going / Stop here. */
 export const pausedNote = (slug: string, sid: any, card: string) => {
   const p = pauseOf(card), kk = esc(`${slug}|${sid}|${card}`), busy = stopHereBusy(card);
-  return `<div class="paused-note${p ? " sg" : ""}" role="status">${p ? `<div class="pn-t"><b>${esc(p.title)}</b><span>${esc(p.line)}</span></div>` : `<span>Paused: it hit its budget. Keep going?</span>`}<div class="pn-b"><button type="button" data-continue="${kk}">${PLAY}<span>Keep going</span></button><button type="button" class="pn-stop" data-sgstop="${kk}"${busy ? " disabled" : ""}>${busy ? "Stopping…" : "Stop here"}</button></div></div>`;
+  return `<div class="paused-note${p ? " sg" : ""}" role="status">${p ? `<div class="pn-t"><b>${esc(p.title)}</b><span>${esc(p.line)}</span></div>` : `<span>Paused: it hit its budget. Keep going?</span>`}<div class="pn-b"><button type="button" data-continue="${kk}">${PLAY}<span>Keep going</span></button><button type="button" class="pn-stop" data-sgstop="${kk}"${busy ? " disabled" : ""}>${busy ? "Stopping…" : "Stop here"}</button></div>${p && ['silent', 'fast'].includes(p.reason) ? '<button type="button" class="pn-config" data-sgconfigure>Configure this in Settings</button>' : ''}</div>`;
 };
 export async function stopTask(slug: string, sid: any) {
   if (!D || stopBusy(slug, sid)) return null;

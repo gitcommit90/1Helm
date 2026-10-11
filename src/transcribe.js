@@ -7,7 +7,7 @@
 // OpenRouter (ZDR on DeepInfra and Groq); only if OpenRouter itself fails does a recording ≤ 20 MB go to Workers AI's copy of
 // Whisper (a different provider entirely, so dictation and Live notes keep working through an OpenRouter outage).
 //
-// Survey + bench (2026-10-08, /workspace/tmp-shots/stt: survey.json, results.json, bench.mjs). OpenRouter lists 26 transcription models;
+// Survey + bench (2026-10-08, local validation evidence: survey.json, results.json, bench.mjs). OpenRouter lists 26 transcription models;
 // 20 have a ZDR endpoint. Our audio: the 36 s two-voice meeting as 7 pause-cut webm chunks (what Live notes sends) and as one file,
 // the same with pink noise + babble, Spanish-accented English, UK/AU voices with noise, a Spanish meeting; 2.4 min and 30 min files.
 // WER: chunks clean / chunks noisy / file noisy / accent+noise / Spanish; p50 per chunk; 30 min file: WER, wall time. $ per audio hour.

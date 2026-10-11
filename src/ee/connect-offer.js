@@ -20,6 +20,7 @@ import { boundedJson } from "../bounded-body.js";
 // words, checked, not the model's say-so). Connect is Settings' Add another (/api/apps/connect with another: true, Managed or
 // Self-managed), and /apps/done marks the card connected only when an account that wasn't there at offer time (known) shows up, then
 // names its email in the card and the note back. Several offers for one app in a task: only after the last one connected.
+import { customMentions, displayOf, customUsable, CUSTOM_DENIED, isCustomSlug } from "./custom-mcp.js";
 import { RETIRED_APPS, RETIRED_NOTE, SUPER_COVERS, latestVersion } from "./composio.js";
 import { transportFor } from "./composio-transport.js";
 import { selfStatus, ENDED_LINE } from "./composio-self.js";
@@ -292,8 +293,11 @@ const cleanWhy = (s) => { let t = String(s || "").replace(/\*\*|__|`|#+\s/g, "")
 async function findApp(res, a, ctx) {
   const q = String(a.query || "").trim(); if (!q) return "error: say which app (query), e.g. \"YouTube\".";
   const list = await catalog(res.env);
-  if (!list.length) return "error: the app list couldn't be loaded just now. Try again in a minute.";
-  const hits = searchApps(list, q), named = hits.filter((h) => h.match === "name");
+  // The person's own custom MCP servers (custom-mcp.js) that the words name: this workspace's enabled, synced ones only.
+  let mine = []; try { mine = await customMentions(res.env, res.get("tenant"), q); } catch {}
+  { const raw = q.match(/custom_h[cp]_[a-z2-7]{16}/i)?.[0]; if (raw) { const u = (await customUsable(res.env, res.get("tenant"))).get(raw.toLowerCase()); if (!u) return CUSTOM_DENIED; if (!mine.includes(u)) mine.push(u); } }
+  if (!list.length && !mine.length) return "error: the app list couldn't be loaded just now. Try again in a minute.";
+  const hits = list.length ? searchApps(list, q) : [], named = hits.filter((h) => h.match === "name");
   const conns = named.length ? await res.conns() : [];
   const session = ctx.session || null, tenant = res.get("tenant");
   const off = (await offersFlag(res.env, tenant)) === "off";
@@ -301,6 +305,7 @@ async function findApp(res, a, ctx) {
     const kind = connectKind(x), st = statusFor(x.s, conns), prev = session ? offerRow(res.sql, session, x.s) : null;
     return { app: x.s, name: x.n, what: oneLine(x), status: statusText(st, kind), connects: byokText(x) || KIND_TEXT[kind], ...(prev ? { offered_in_this_task: offeredText(prev) } : {}), _k: kind, _st: st.status, _p: prev, _x: x };
   });
+  const own = mine.map((r) => ({ app: r.slug.toLowerCase(), name: displayOf(r), what: "a custom MCP server the person added in Settings → Advanced", status: "connected", connects: "already added by the person; nothing to connect" }));
   const related = hits.filter((h) => h.match === "related").map(({ a: x }) => `${x.n} (${x.s})`);
   let next;
   const top = out[0];
@@ -309,7 +314,8 @@ async function findApp(res, a, ctx) {
     const saved = sites.find((s) => words.some((w) => s.toLowerCase().includes(w)));
     return `Tell them plainly it isn't available as a connection yet, and offer to do it in the browser instead (browser_task${saved ? `; they saved a login for ${saved.replace(/ \(\d+ accounts\)$/, "")}, so sign in with browser_fill_login` : "; if the site needs a sign-in and there's no saved login, use browser_handoff so they sign in themselves"}).`;
   };
-  if (!top) next = `No app called "${q}" can be connected.${related.length ? ` Related apps (only if one clearly is what they meant): ${related.join(", ")}.` : ""} ${await browser()}`;
+  if (own.length) next = `${own[0].name} is the person's own custom MCP server and it is connected: use it (app_actions with app "${own[0].app}"). Don't offer to connect it.${top ? ` ${top.name} (the built-in app, ${top._st === "connected" ? "connected" : top._st === "expired" ? "its connection expired" : "not connected"}) is a different thing: never describe the custom server as expired or not connected because of it; mention the built-in one only if it matters.` : ""}`;
+  else if (!top) next = `No app called "${q}" can be connected.${related.length ? ` Related apps (only if one clearly is what they meant): ${related.join(", ")}.` : ""} ${await browser()}`;
   else if (top._k === "soon") next = `${top.name} isn't available as a connection yet. ${await browser()}`;
   else if (top._k === "retired") next = `${RETIRED_NOTE} Don't offer it; offer the individual app instead (find_app it).`;
   else if (top._k === "builtin") next = `${top.name} is built in: use it right away (app_actions with app "${top.app}"), nothing to connect.`;
@@ -321,7 +327,7 @@ async function findApp(res, a, ctx) {
     next = `${top.name} isn't connected, and they haven't said which ${kind} service they use: don't assume ${top.name}. Ask which one first${res.genuiOn?.() ? ` with a small card of choices (${PROVIDER_CHOICES[kind].join(", ")})` : ` (${PROVIDER_CHOICES[kind].slice(0, -1).join(", ")} or another)`} and end your turn; then offer_connect their pick.`;
   }
   else next = `${top.name} ${top._st === "expired" ? "was connected but the connection expired" : "isn't connected"}${res._usedSlugs?.has?.(top.app) ? " (it's on their Apps they use list)" : ""}: if it would help with what they asked, call offer_connect with app "${top.app}" (once in this task).${top._k === "key" ? ` It needs ${byokText(top._x) ? `their own API key from ${byokInfo(top.app, top.name, { cats: top._x.c || [] }).provider}, which they pay for directly` : "an API key from them"}, so say so in your line.` : ""}`;
-  return JSON.stringify({ query: q, matches: out.map(({ _k, _st, _p, _x, ...r }) => r), ...(related.length && !top ? { related } : {}), next });
+  return JSON.stringify({ query: q, matches: [...own, ...out.map(({ _k, _st, _p, _x, ...r }) => r)], ...(related.length && !top ? { related } : {}), next });
 }
 
 // ---------------- another account of a connected app ----------------
@@ -343,6 +349,7 @@ async function offerConnect(res, a, ctx) {
   if (ctx.kind === "helper") return "error: offer_connect isn't available to a background helper. Say in your report which app would help; the helper who started you can offer it.";
   if (!ctx.session || ctx.kind !== "chat") return "error: offer_connect only works while you're talking with the person in a task. Mention the app in your report instead.";
   const want = String(a.app || "").trim(); if (!want) return "error: which app? Pass its id from find_app (e.g. youtube).";
+  if (isCustomSlug(want)) return CUSTOM_DENIED;   // a custom MCP server is added in Settings → Advanced, never through a Connect card
   const list = await catalog(res.env);
   const all = [...list, ...RETIRED_ROWS], wc = compact(want);
   let x = all.find((r) => r.s === want.toLowerCase() || r._s === wc || r._c === wc);
@@ -381,7 +388,7 @@ async function offerConnect(res, a, ctx) {
     `${kind === "key" ? `Connecting ${x.n} ${byokText(x) || "needs an API key from them"} (pasted on a secure page). ` : ""}` +
     `End your turn now with one short line (don't repeat the card${draft ? " or the draft" : ""}); don't keep working on the part that needs it. When they connect, you get a note${another ? " naming the new account" : ""} and carry on.` +
     (another ? ` Connect opens ${x.n}'s own sign-in for a new account: they sign in to the other account there (if they're signed in to the one already connected, they pick "use another account").` : "") +
-    (draft ? ` Connecting isn't a yes to ${verb} it: after they connect, show the draft (with any changes they asked for) and ask before you ${verb} it.` : "") +
+    (draft ? ` Connection only supplies access, not new authorization. If their original request explicitly asked you to ${verb} this exact ordinary action, carry it out after connecting without a second yes. A draft-only request stays a draft. Preserve the requested account, recipients and content; ask if a consequential detail changed or was never authorized.` : "") +
     " If they tap Not now, it's not connected: don't offer it again in this task.";
 }
 
@@ -408,7 +415,7 @@ export function composioSigninOffer(res, ctx = {}) {
   ctx.emit?.({ t: "connect_offer", offer: view });
   return view;
 }
-const composioNote = () => "(Context note, not from the person: they just signed in to their own Composio account again from the card you showed. Their apps work again: carry on with what they asked. The usual rules still apply: ask before anything that sends, posts, buys or changes something.)";
+const composioNote = () => "(Context note, not from the person: they just signed in to their own Composio account again from the card you showed. Their apps work again: carry on with what they asked. Continue only the originally requested ordinary work, without asking for another confirmation. Connecting grants access, not permission for new actions. Payments and API-key operations retain protected approval.)";
 
 // ---------------- the person's taps ----------------
 // Resident side. op: dismiss (Not now). → { ok, offer } | { error }
@@ -433,17 +440,17 @@ const anotherNote = (o, accounts = []) => o.already
   : `(Context note, not from the person: they just connected another ${o.name} account from the card you showed: ${o.email || "(no email shown)"}. ` +
     `${accounts.length > 1 ? `${o.name} now has ${accounts.length} accounts: ${accounts.join(", ")}. ` : ""}Tell them in one short line that ${o.email || "it"} is connected. ` +
     "If they haven't said what it's for, offer to save a note on it (note_account) so you know when to use which; if they already said (\"my work email\"), save that note now. " +
-    `Carry on with anything else they asked; with several accounts, pass account to say which one. The usual rules still apply: sends, posts and changes go through the confirm card.)`;
+    `Carry on with anything else they asked; with several accounts, pass account to say which one. Their original request authorizes ordinary actions, not unrelated work. Payments and API-key operations keep protected approval.)`;
 export const connectedNote = (o, accounts) => o.another ? anotherNote(o, accounts) : `(Context note, not from the person: they just connected ${o.name} from the card you showed${o.why ? ` ("${o.why}")` : ""}${o.email ? `; the account is ${o.email}` : ""}. ` +
   `Carry on with what they asked, using ${o.name} now${o.app === "gmail" ? " (gmail_search / gmail_read / gmail_draft / gmail_send)" : o.app === "googlecalendar" ? " (calendar_events / calendar_add)" : ` (app_actions with app "${o.app}")`}. ` +
-  (o.draft ? `The card showed your draft, ${draftWords(o.draft)}\n` + (o.draft.kind === "event"
-    ? "Connecting is NOT a yes to create it, so don't yet. Do the checks first (look at that time for a clash), then show them this same event (with anything that changed) and ask \"Add it?\"; add it only after they say yes (with guests, calendar_add then shows its confirm card too). "
-    : "Connecting doesn't send it by itself. Do the checks first (the account it goes from), then call the send with this same draft (with anything that changed): 1Helm shows them a confirm card with it, and it goes only when they tap Confirm. Don't ask \"Send it?\" in your own words. ") : "") +
-  "The usual rules still apply: sends, posts and changes go through the confirm card; purchases through Link.)";
+  (o.draft ? `The card showed your draft, ${draftWords(o.draft)}\n` +
+    "Connection only supplies access, not new authorization. If their original request explicitly asked you to send or create this exact ordinary action, complete it without a second yes. A draft-only request stays a draft. Check the intended account and any calendar clash; preserve the requested recipients, content and scope. Ask only if a consequential detail is missing or changed. " : "") +
+  "Payments and API-key operations keep protected approval; purchases use Link.)";
 // "Never send just because they connected": in the turn the connected note starts, nothing the person said yet, a send / create /
 // change with person_confirmed is refused (resident.js localTool). Their yes comes as their own message, a new turn or a steer.
-// Since the confirm cards (confirm.js) the Resident strips person_confirmed from these tools before this check, so a send here shows
-// the confirm card instead (only their tap sends it); this block stays for any caller that still passes the flag.
+// Resident strips the obsolete person_confirmed flag before this check. Ordinary actions follow
+// the original user request; payment/key operations still pass confirmGate. Keep this legacy
+// guard for older direct callers: a model-set flag alone cannot turn connection into authority.
 const CONNECT_WRITES = new Set(["gmail_send", "calendar_add", "app_run", "app_proxy"]);
 export function connectWriteBlock(ctx, name, a) {
   if (!CONNECT_WRITES.has(name) || a?.person_confirmed !== true || ctx?.handoffFrom !== "connect" || personWords(ctx).length) return null;

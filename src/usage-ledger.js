@@ -27,7 +27,7 @@ export class UsageLedger extends DurableObject {
     this.expire(); nano = Math.max(0, Math.round(Number(nano) || 0));
     if (this.one("SELECT 1 x FROM res WHERE id=?", id) || this.one("SELECT 1 x FROM spend WHERE id=?", id)) return { ok: true };
     const day = this.dayInfo();
-    if (day.spent_nano + day.reserved_nano + nano > day.cap_nano) return { ok: false, reason: "day_limit", day };
+    if (this.spendPreferences().enabled && day.spent_nano + day.reserved_nano + nano > day.cap_nano) return { ok: false, reason: "day_limit", day };
     this.sql.exec("INSERT INTO res (id,nano,at) VALUES (?,?,?)", id, nano, Date.now());
     return { ok: true };
   }
@@ -44,7 +44,17 @@ export class UsageLedger extends DurableObject {
   }
   async opsTotals() { return this.state(); }
   async history(n = 200) { return this.sql.exec("SELECT role,content FROM (SELECT * FROM msgs ORDER BY seq DESC LIMIT ?) ORDER BY seq", n).toArray(); }
-  async guardInfo() { return { allowance_nano: 0, day_spent_nano: this.dayInfo().spent_nano, day_ok_nano: 0 }; }
+  spendPreferences() {
+    this.sql.exec("CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
+    return { enabled: this.one("SELECT v FROM kv WHERE k='spend_pauses'")?.v !== "off" };
+  }
+  setSpendPreferences(enabled) {
+    if (typeof enabled !== "boolean") throw new TypeError("Choose on or off.");
+    this.spendPreferences();
+    this.sql.exec("INSERT INTO kv VALUES ('spend_pauses',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", enabled ? "on" : "off");
+    return this.spendPreferences();
+  }
+  async guardInfo() { return { spend_pauses: this.spendPreferences().enabled, allowance_nano: 0, day_spent_nano: this.dayInfo().spent_nano, day_ok_nano: 0 }; }
   async noticePending() { return null; }
   async noticeSeen() { return { ok: true }; }
   async usageNotice() { return null; }

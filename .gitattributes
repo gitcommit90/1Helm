@@ -1,0 +1,2 @@
+# Unified diff context markers precede Go indentation; preserve this patch byte-for-byte.
+native-transport/tailscale-resume.patch whitespace=-space-before-tab

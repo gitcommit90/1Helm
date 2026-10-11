@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import { build } from 'esbuild';
+const code = (await build({entryPoints:['src/computer-offer.ts'],bundle:true,write:false,format:'esm'})).outputFiles[0].text;
+const { watchingComputer, computerViewerChanged } = await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
+const main = { dataset: { computerOffer: 'main' }, hidden: false }, other = { dataset: { computerOffer: 'other' }, hidden: false };
+const root = { querySelectorAll: () => [main, other] };
+assert.equal(watchingComputer('main'),false,'initial render does not require late PC state');
+computerViewerChanged('main',root); assert.equal(main.hidden,true); assert.equal(other.hidden,false);
+assert.equal(watchingComputer('main'),true,'new streamed cards read current viewer state');
+computerViewerChanged('main',root); assert.equal(main.hidden,true,'repeat open stays hidden');
+computerViewerChanged('other',root); assert.equal(main.hidden,false); assert.equal(other.hidden,true);
+computerViewerChanged(null,root); assert.equal(main.hidden,false); assert.equal(other.hidden,false);
+computerViewerChanged('main',root); assert.equal(main.hidden,true,'reopening hides the offer again');
+console.log('PASS viewer state: initial render, existing/new offers, same/different helper, repeat open, close/reopen');

@@ -17,6 +17,7 @@
 // the server stores and sends only that (tracker.js). Everything else passes through the leak guard (leakGuard): any run of words
 // from src/skills/**/*.md, src/docs/*.md or src/prompt/*.md is cut, whatever tool it came through (cat of a SKILL.md, a model
 // that pasted a playbook into a file, …). Pure functions; no I/O. Old stored previews go through the same code when they're sent.
+import { isCustomSlug, CUSTOM_WORDS } from "./ee/index.js";
 import { FILES } from "./skills/bundle.js";
 import { DOCS } from "./docs/index.js";
 import { SECTIONS } from "./prompt/index.js";
@@ -214,6 +215,11 @@ const DOC_LABEL = { "1helm": "how 1Helm works", "client-surfaces": "the app", me
 const slugOf = (s) => String(s ?? "").trim().toLowerCase().replace(/\/?skill\.md$/, "").replace(/^.*skills\//, "").replace(/\/.*$/, "").replace(/[\s_]+/g, "-").replace(/[^a-z0-9-]/g, "").slice(0, 40);
 const countLookups = (raw) => { const m = String(raw ?? "").match(/(\d+) earlier lookups?/); return m ? Number(m[1]) : null; };
 export const INTERNAL = {
+  // Context discovery/recall is model bookkeeping, like work_log and bring_back.
+  // In particular load_tools returns full internal schemas, not task deliverables.
+  load_tools: () => "Prepared the tools it needs",
+  read_context: () => "Checked the relevant saved context",
+  recall_memory: () => "Searched saved memory and earlier work",
   read_skill: (a, raw) => { const s = slugOf(a.slug); if (/^There's no skill called/.test(String(raw ?? "").trim()) || !s) return "Looked through its guides";
     const ref = String(a.ref ?? "").trim() ? human(String(a.ref).replace(/\.md$/i, "").split("/").pop()) : ""; return `Read the ${human(s)} guide${ref ? ` (${ell(ref, 30)})` : ""}`; },
   read_doc: (a, raw) => { const n = String(a.name ?? "").trim().toLowerCase().replace(/\.md$/, "").replace(/^.*\//, "").replace(/[\s_]+/g, "-");
@@ -225,6 +231,8 @@ export const INTERNAL = {
   integration_hint: () => "Checked which apps fit",
   save_run_notes: () => "Saved notes for the next run",
   update_todos: () => "Updated the to-do list",
+  list_tasks: (_a, raw) => { const r = jparse(String(raw)); return Array.isArray(r?.tasks) ? `Checked saved tasks (${r.tasks.length}${r.next_offset != null ? ', more available' : ''})` : "Checked saved tasks"; },
+  rename_task: (_a, raw) => { const r = jparse(String(raw)); return r?.renamed === true ? `Renamed the task to “${ell(one(r.title), 100)}”` : "Task title was not changed"; },
   react: () => "Reacted to your message",
   ping: () => "Checked the connection", example_tool: () => "Checked the connection",
 };
@@ -251,7 +259,7 @@ const actionWords = (action, app) => {
   let i = 1; for (let n = 1; n < seg.length; n++) if (seg.slice(0, n).join("") === A) { i = n; break; }
   return human(seg.slice(Math.min(i, seg.length - 1)).join(" "));
 };
-const appLabel = (s) => { const a = String(s || "").replace(/super$/i, "").replace(/[_-]+/g, " ").trim().toLowerCase(); return a ? a.replace(/\b\w/g, (c) => c.toUpperCase()) : "your apps"; };
+const appLabel = (s) => { if (isCustomSlug(s) || /^custom$/i.test(String(s))) return CUSTOM_WORDS; const a = String(s || "").replace(/super$/i, "").replace(/[_-]+/g, " ").trim().toLowerCase(); return a ? a.replace(/\b\w/g, (c) => c.toUpperCase()) : "your apps"; };
 const P = {
   web_search(c) {
     if (/^error|busy/i.test(c.s.plain)) return { error: /busy/i.test(c.s.plain) ? "Web search was busy, so nothing came back" : plainError(c.raw) };

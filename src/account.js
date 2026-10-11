@@ -77,11 +77,25 @@ async function pendingChange(env, userId) {
   return r ? { email: r.new_email, expires: Number(r.expires_at) } : null;
 }
 
+// Custom keyboard shortcuts: at most 64 actions, ids like "new-task", combos like "Mod+Shift+K" / "Alt+ArrowUp" / "" (off).
+const SC_ID = /^[a-z][a-z0-9.-]{0,39}$/, SC_COMBO = /^(?:(?:Mod|Ctrl|Meta|Alt|Shift)\+){0,4}(?:[^\s+]{1,20}|\+)$/;
+export function cleanShortcuts(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const out = {}, keys = Object.keys(v); if (keys.length > 64) return null;
+  for (const k of keys) { const c = v[k]; if (!SC_ID.test(k) || typeof c !== "string" || (c !== "" && !SC_COMBO.test(c))) return null; out[k] = c; }
+  return out;
+}
+export function shortcutsView(t) { try { const o = t.shortcuts ? JSON.parse(t.shortcuts) : null; return cleanShortcuts(o) || {}; } catch { return {}; } }
+
 // ---------------------------------------------------------------- owner API ----------------------------------------------------------------
 export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
   if (sub !== "/api/account" && !sub.startsWith("/api/account/")) return null;
+  if (req.method === 'GET' && sub === '/api/account/spend-pauses') {
+    try { return json(await env.LEDGER.get(env.LEDGER.idFromName(`tenant:${t.id}`)).spendPreferences()); }
+    catch { return json({ error: 'Spending settings are temporarily unavailable.' }, 503); }
+  }
   if (req.method === "GET" && sub === "/api/account")
-    return json({ name: t.first_name || "", email: user.email, pending: await pendingChange(env, user.id), sessions: await listSessions(env, req, user.id), passwordless: true, show_costs: Number(t.show_costs) === 1, ai_privacy: privacyView(t) });
+    return json({ name: t.first_name || "", email: user.email, pending: await pendingChange(env, user.id), sessions: await listSessions(env, req, user.id), passwordless: true, show_costs: Number(t.show_costs) === 1, shortcuts: shortcutsView(t), ai_privacy: privacyView(t) });
   if (req.method !== "POST") return json({ error: "method" }, 405);
   // CSRF: the session cookie is SameSite=Lax already; on top of that only same-origin JSON is accepted (a cross-site form can't send JSON).
   const origin = req.headers.get("origin");
@@ -91,6 +105,13 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
   catch (e) { return json({ error: e instanceof BodyTooLargeError ? "too_large" : "bad_request" }, e instanceof BodyTooLargeError ? 413 : 400); }
   const at = Date.now();
 
+  if (sub === '/api/account/spend-pauses') {
+    if (origin !== url.origin) return json({error:'forbidden'},403);
+    if (!b || typeof b.enabled !== 'boolean' || Object.keys(b).some(k => k !== 'enabled')) return json({ error: 'Choose on or off.' }, 400);
+    try { return json(await env.LEDGER.get(env.LEDGER.idFromName(`tenant:${t.id}`)).setSpendPreferences(b.enabled)); }
+    catch { return json({ error: 'Could not save spending settings. Try again.' }, 503); }
+  }
+
   if (sub === "/api/account/name") {
     const name = cleanName(b.name, 80);
     if (!name) return json({ error: "Type the name you want to go by." }, 400);
@@ -99,7 +120,14 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
   }
 
   // Display preferences, per account so they hold on every device. show_costs: the "This task: about $…" estimates (off by default).
+  // shortcuts: {actionId: "Mod+Shift+K" | ""} (only the actions the person changed; "" = turned off), replaced as a whole.
   if (sub === "/api/account/prefs") {
+    if (b.shortcuts !== undefined) {
+      const sc = cleanShortcuts(b.shortcuts);
+      if (!sc) return json({ error: "Those shortcuts aren't valid." }, 400);
+      await env.DB.prepare("UPDATE tenants SET shortcuts=?,updated_at=? WHERE id=?").bind(Object.keys(sc).length ? JSON.stringify(sc) : null, at, t.id).run();
+      return json({ ok: true, shortcuts: sc });
+    }
     if (typeof b.show_costs !== "boolean") return json({ error: "Nothing to change." }, 400);
     await env.DB.prepare("UPDATE tenants SET show_costs=?,updated_at=? WHERE id=?").bind(b.show_costs ? 1 : 0, at, t.id).run();
     return json({ ok: true, show_costs: b.show_costs });
