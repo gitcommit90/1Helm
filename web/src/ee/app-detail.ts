@@ -93,6 +93,7 @@ export function openAppDetail(slug: string, opts: { name?: string } = {}) {
 export function closeAppDetail() {
   const w = document.getElementById("appdw"); ST.open = false; ST.gen++; ST.opened++; clearInterval(busyT); acctNoteReset(); if (!w) return;
   w.classList.remove("on"); setTimeout(() => { if (!ST.open) w.innerHTML = ""; }, 220);
+  if (ST.from === "Connected accounts") document.querySelector<HTMLElement>(`#setw.on [data-adetail="${ST.slug}"]`)?.focus({ preventScroll: true });
 }
 export const appDetailOpen = () => shown();
 
@@ -184,7 +185,7 @@ function actionHtml() {
     // The accounts themselves (Default, Make default, Disconnect) are listed in their own section below; here: status + Add another.
     const live = s.d?.connection.accounts.filter(a => a.status === "connected") || [];
     const who = live.length > 1 ? ` · ${live.length} accounts` : live[0] ? ` · ${esc(live[0].label)}` : "";
-    const add = ST.busy ? `<button class="apdbtn" disabled><i class="apdspin"></i><span>Opening…</span></button>` : s.d?.connect.kind === "none" ? "" : `<button class="apdbtn" data-adadd>${IC.plus}<span>Add another account</span></button>`;
+    const add = ST.busy ? `<button class="apdbtn" disabled><i class="apdspin"></i><span>Opening…</span></button>` : s.d?.connect.kind === "none" || s.d?.connect.kind === "unavailable" ? "" : `<button class="apdbtn" data-adadd>${IC.plus}<span>Add another account</span></button>`;
     return `<span class="apdok">${IC.check}<span>Connected${who}</span></span>${add}${live.length ? "" : `<button class="apdbtn quiet" data-admanage>Manage</button>`}`;
   }
   if (s.builtIn) return `<span class="apdok built">${IC.bolt}<span>Built in · nothing to connect</span></span>`;
@@ -258,7 +259,7 @@ function accountsHtml(d: Detail) {
     const busy = ST.disc === a.id ? (a.status === "connected" ? "Disconnecting…" : "Removing…") : ST.disc === `d:${a.id}` ? "Saving…" : "";
     const acts = a.status === "connected"
       ? `${many && !a.default ? `<button class="apdbtn quiet" data-addef="${esc(a.id)}"${ST.disc ? " disabled" : ""}>${ST.disc === `d:${a.id}` ? "Saving…" : "Make default"}</button>` : ""}<button class="apdbtn quiet" data-addisc="${esc(a.id)}"${ST.disc ? " disabled" : ""}>${ST.disc === a.id ? busy : "Disconnect"}</button>`
-      : `<button class="apdbtn quiet" data-adcon>Reconnect</button><button class="apdbtn quiet" data-addisc="${esc(a.id)}"${ST.disc ? " disabled" : ""}>${ST.disc === a.id ? busy : "Remove"}</button>`;
+      : `${d.connect.kind === "unavailable" ? "" : `<button class="apdbtn quiet" data-adcon>Reconnect</button>`}<button class="apdbtn quiet" data-addisc="${esc(a.id)}"${ST.disc ? " disabled" : ""}>${ST.disc === a.id ? busy : "Remove"}</button>`;
     return `<li class="apdacc${a.status === "connected" ? "" : " off"}" data-adacc="${esc(a.id)}"><span class="apdacci lgo-host">${logoImg(ST.slug, ST.name, "apdaccl")}${logoOver(workDomain(a.email), 36)}</span>
       <span class="apdacct"><b><span class="apdaccn">${esc(a.label)}</span>${many && a.default ? `<em class="apddef">Default</em>` : ""}</b><span>${a.status === "connected" ? `Connected ${esc(fmtDay(a.since))}` : "Expired. Sign in again to keep it working."}</span></span>
       <span class="apdacca">${acts}</span><div class="apdaccnt">${acctNoteHtml(a)}</div></li>`;
@@ -405,7 +406,7 @@ export function initAppDetail(deps: AppDetailDeps) {
   document.addEventListener("keydown", e => {
     if (e.key !== "Enter" && e.key !== " ") return;
     const t = e.target as HTMLElement; const row = t.matches?.("[data-adetail-key]") ? t.closest<HTMLElement>("[data-adetail]") : null; if (!row) return;
-    e.preventDefault(); openAppDetail(row.dataset.adetail!, { name: row.querySelector(".aptxt b")?.textContent?.trim() || undefined });
+    e.preventDefault(); openAppDetail(row.dataset.adetail!, { name: row.querySelector(".aptxt b, .srt b")?.textContent?.trim() || undefined });
   });
   document.addEventListener("input", e => { const t = e.target as HTMLInputElement; if (t.id === "apdq") { ST.q = t.value; paintTools(); } });
   window.addEventListener("resize", () => { if (ST.open) place(); });

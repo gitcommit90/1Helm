@@ -139,10 +139,10 @@ function summary(st: St, done: boolean) {
   const h = esc(D!.helper()), rows: Record<string, Row[]> = {};
   for (const q of st.questions) for (const r of st.answers[q.id]?.rows || []) (rows[r.sec] ||= []).push(r);
   const n = Object.values(rows).reduce((x, l) => x + l.length, 0);
-  // The apps question writes no Notebook rows: its answer is the account's apps list (Settings → Connected accounts → Apps I use).
+  // The apps question writes no Notebook rows: its answer is the account's apps list for helper context.
   const aq = st.questions.find(q => q.look === "apps"), ap = aq ? (st.answers[aq.id]?.picks || []).filter(v => v !== aq.none) : [];
   const apNames = ap.map(v => aq!.apps?.find(o => o.v === v)?.label || v);
-  const apSec = apNames.length ? `<div class="iv-ss"><h3>Apps you use</h3><p>${svg(CHECK, 14)}<span>${esc(apNames.join(", "))}. ${h} offers to connect one when it comes up. Change them in Settings → Connected accounts.</span></p></div>` : "";
+  const apSec = apNames.length ? `<div class="iv-ss"><h3>Apps you use</h3><p>${svg(CHECK, 14)}<span>${esc(apNames.join(", "))}. ${h} offers to connect one when it comes up. Tell your helper whenever that changes.</span></p></div>` : "";
   const secs = SEC_ORDER.filter(k => rows[k]?.length).map(k => `<div class="iv-ss"><h3>${esc(st.secNames[k] || k)}</h3>${rows[k].map(r => `<p>${svg(CHECK, 14)}<span>${esc(r.text)}</span></p>`).join("")}</div>`).join("");
   return `<div class="iv-card iv-sum ${anim()}">
     <div class="iv-who">${D!.avatar()}<span>${h}</span></div>

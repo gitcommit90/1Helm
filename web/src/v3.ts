@@ -9,7 +9,7 @@ import { progressSlot, progressWorked, progressReset, progressSnapshot, progress
 import { bindTouchSwipe, bindSheetDismiss, gestureControl, gestureValueControl, scrollerOwns } from "./mobile-gestures";
 import { rpInit, rpMailto } from "./report";
 import { piKind, piOn, piInstall, piLabel, piSub, PI_ICON } from "./pwainstall";   // Install 1Helm as an app: catches beforeinstallprompt at import, before the UI renders   // Report an issue (its sheet's Esc, too; and it keeps the last log lines from the start)
-import { beeInit, beeSec, beeMark } from "./ee/bee";
+import { beeInit, beeOverview, beeSec, beeMark } from "./ee/bee";
 import { notebookBeeUnread } from "./ee/notebook-bee-unread";
 import { dpInit, dpSec, dpSheetMaybe, dpLoc, dpShareNow, DP_ICON } from "./devperm";   // location + mic, asked once up front (its sheet's Esc, too)   // Settings → Ambient → Bee: the card and the Connect sheet (its sheet's Esc, too)
 import { delInit, rowMore, headDelete, channelMore, sheetRows, MORE } from "./delete";   // deleting a chat / channel / the account
@@ -1138,7 +1138,7 @@ function paintMobileStatus(ch: Channel, s: Session | null) {
   }
   let stop = h.querySelector<HTMLButtonElement>(".mstop");
   if (s && stWorking(s)) {
-    if (!stop) { stop = document.createElement("button"); stop.className = "cb mstop"; stop.setAttribute("aria-label", "Stop this task"); stop.title = "Stop"; stop.innerHTML = SQ; h.insertBefore(stop, done?.parentElement || h.querySelector("[data-mmore]")); }
+    if (!stop) { stop = document.createElement("button"); stop.className = "cb mstop"; stop.setAttribute("aria-label", "Stop this task"); stop.title = "Stop"; stop.innerHTML = SQ; h.insertBefore(stop, done?.parentElement || h.querySelector("[data-mtools]")); }
     stop.dataset.stop = `${ch.slug}|${s.id}`; stop.disabled = stopBusy(ch.slug, s.id);
   } else stop?.remove();
   h.querySelector("[data-watch]")?.classList.toggle("busy", ch.sessions.some(x => x.state === "working"));
@@ -1282,7 +1282,8 @@ function partHtml(text: string, ch: Channel, s: Session | undefined, owner: obje
   if (LIVE && t === "Stopped.") return `<div class="stopped-note" role="status">${SQ}<span>Stopped by you</span></div>`;   // a task the person stopped (1HC stop.js)
   const bubble = (x: string, j: number) => { const y = scrubCode(x).trim(), key = `${part}-${j}`; if (!y) return "";
     if (message) MA_PARTS.get(message)!.set(key, y);
-    return `<div class="bubble${pre ? " pre" : ""}${message ? maOpenCls(message.id, key) : ""}">${message ? maActs(message.id, key) : ""}<div class="body">${chatCodeHtml(chatMarkdown(y))}</div></div>`; };
+    const card = (message as TkMsg | undefined)?.card;
+    return `<div class="bubble${pre ? " pre" : ""}${message ? maOpenCls(message.id, key) : ""}">${message ? maActs(message.id, key, LIVE && s && card && tkOn(ch.slug, s.id) ? card : "") : ""}<div class="body">${chatCodeHtml(chatMarkdown(y))}</div></div>`; };
   // Prose with code lines in it (or a code tail still streaming) paints part by part; a part that may still become code waits.
   const ps = replyParts(t, live);
   return ps.map((p, j) => {
@@ -1343,10 +1344,10 @@ function msgHtml(m: Msg, ch: Channel, prev?: Msg, live = false, s?: Session, rep
     const det = n ? `<details class="steps"><summary><span class="sico">${ic.term}</span><span>${n === 1 ? "1 step" : `${n} steps`}</span>${ic.chev}</summary>
     ${ls ? ls.map(x => `<div class="tk-sl s-${esc(x.status)}"><i></i><span>${esc(x.title)}</span></div>`).join("") : m.steps.map(x => `<code>${esc(x)}</code>`).join("")}</details>` : "";
     steps = det || tkCardLink(tm.card) ? `<div class="tk-live">${det}${tkCardLink(tm.card)}</div>` : "";
-  } else if (tkon) steps = tkChip(ch.slug, s!.id, tm.card);
+  } else if (tkon && ["paused", "failed", "interrupted", "stopped"].includes(tkCardView(ch.slug, s!.id, tm.card)?.status || "")) steps = tkChip(ch.slug, s!.id, tm.card);
   const slot = progressSlot(m, live);
   return `<div class="m agent${first ? " first" : ""}" data-mr="${m.id}"${tkon ? ` data-card="${esc(tm.card!)}"` : ""} title="${clock(m.at)}">
-    <div class="reply-steps">${m.note ? `<div class="mnote">${esc(m.note)}</div>` : ""}${steps}</div><div class="reply-slot" data-progress-mode="${slot.mode}">${!live && !String(m.body || "").trim() && (m.cards || []).some(c => c.t === "lnrefine") ? "" : partHtml(slot.text, ch, s, m, live, reply, false, m, slot.part)}${live && m.pre?.length && !slot.text.trim() ? TYPING : ""}</div><div class="reply-history">${progNotes(m)}</div>${tkon && !live && tkCardView(ch.slug, s!.id, tm.card)?.status === "paused" ? pausedNote(ch.slug, s!.id, tm.card!) : ""}${ctUsed(m)}${nbSaved(m, ch)}${chatCards(m.cards || [], ch)}</div>`;
+    <div class="reply-steps">${live && m.note ? `<div class="mnote">${esc(m.note)}</div>` : ""}${steps}</div><div class="reply-slot" data-progress-mode="${slot.mode}">${!live && !String(m.body || "").trim() && (m.cards || []).some(c => c.t === "lnrefine") ? "" : partHtml(slot.text, ch, s, m, live, reply, false, m, slot.part)}${live && m.pre?.length && !slot.text.trim() ? TYPING : ""}</div>${live ? `<div class="reply-history">${progNotes(m)}</div>` : ""}${tkon && !live && tkCardView(ch.slug, s!.id, tm.card)?.status === "paused" ? pausedNote(ch.slug, s!.id, tm.card!) : ""}${live ? ctUsed(m) + nbSaved(m, ch) : ""}${chatCards(m.cards || [], ch)}</div>`;
 }
 
 document.addEventListener("click", e => {
@@ -1441,7 +1442,7 @@ matchMedia("(max-width: 767px)").addEventListener("change", render);
 
 
 // ---------- Phone: Muse-style chat with a tasks drawer; channels switch from a sheet (no channel-list page) ----------
-const mState = { drawer: false, sheet: "", pendingClose: false, last: "" };
+const mState = { drawer: false, sheet: "", pendingClose: false, last: "", tools: "" };
 const isHome = () => !/^#\/[^/]+/.test(location.hash);
 const who = (c: Channel) => AGENT[c.slug] ?? c.name;
 const latest = (c: Channel) => c.sessions.reduce<Session | null>((a, x) => !a || x.updated > a.updated ? x : a, null);
@@ -1505,7 +1506,6 @@ function renderM() {
   stNow();
   bindDrawerGesture(m.querySelector<HTMLElement>(".cv")!);
   if (mState.pendingClose) { mState.pendingClose = false; requestAnimationFrame(() => requestAnimationFrame(() => setDrawer(false))); }
-  mhWatch();
 }
 function setDrawer(open: boolean) {
   mState.drawer = open;
@@ -1531,27 +1531,27 @@ function bindDrawerGesture(cv: HTMLElement) {
 function dTile(href: string, on: boolean, icon: string, label: string) {
   return `<a class="dt${on ? " on" : ""}" href="${href}" data-mgo${on ? ' aria-current="page"' : ""}><span class="dti">${icon}</span><span class="dtl">${label}</span></a>`;
 }
-// The task header keeps the title readable: when the actions don't fit, the least-used ones move into a ⋯ sheet
-// (New task first, then the computer, the focus timer, Mark done, the to-do list, and only on the narrowest phones Activity). Stop
-// always stays. The title then shrinks with an ellipsis, never below ~132px while something can still fold.
-let mhMo: MutationObserver | null = null, mhRaf = 0;
-function mhFit() {
-  const h = document.querySelector<HTMLElement>(".mh"), more = h?.querySelector<HTMLElement>("[data-mmore]"); if (!h || !more) return;
-  const items = [...h.querySelectorAll<HTMLElement>(".mo[data-mo]")].sort((a, b) => +a.dataset.mo! - +b.dataset.mo!);
-  mhMo?.disconnect();
-  const rename = h.querySelector("[data-rename]");
-  items.forEach(x => x.classList.remove("mhid")); more.hidden = !rename;
-  const pill = h.querySelector<HTMLElement>(".mpill"), txt = pill?.querySelector<HTMLElement>("[data-task-title]") || pill?.querySelector<HTMLElement>("span:last-child");
-  const tight = () => h.scrollWidth > h.clientWidth + 1 || (!!pill && !!txt && pill.offsetWidth < 132 && txt.scrollWidth > txt.clientWidth + 1);
-  if (tight()) { more.hidden = false; for (const x of items) { if (!tight()) break; if (x.querySelector("button")) x.classList.add("mhid"); } }
-  if (!items.some(x => x.classList.contains("mhid")) && !rename) more.hidden = true;
-  mhMo?.observe(h, { childList: true, subtree: true });
+// Native disclosure keeps every task tool in one predictable place. Remember its
+// state across background header repaints, but never carry it to another task.
+function closeMobileTools(focus = false) {
+  const details = document.querySelector<HTMLDetailsElement>("[data-mtools]");
+  mState.tools = "";
+  if (!details?.open) return;
+  details.open = false;
+  if (focus) details.querySelector<HTMLElement>("summary")?.focus({ preventScroll: true });
 }
-function mhWatch() {
-  mhMo ??= new MutationObserver(() => { cancelAnimationFrame(mhRaf); mhRaf = requestAnimationFrame(mhFit); });
-  mhFit();
-}
-addEventListener("resize", () => { if (phone()) { cancelAnimationFrame(mhRaf); mhRaf = requestAnimationFrame(mhFit); } });
+document.addEventListener("toggle", e => {
+  const d = e.target as HTMLDetailsElement;
+  if (d.matches?.("[data-mtools]") && d.isConnected) mState.tools = d.open ? d.dataset.toolsKey! : "";
+}, true);
+document.addEventListener("click", e => {
+  const t = e.target as HTMLElement;
+  if (!t.closest("[data-mtools]") || t.closest(".mtools-panel button")) closeMobileTools();
+}, true);
+window.addEventListener("keydown", e => {
+  if (e.key === "Escape" && document.querySelector("[data-mtools][open]")) { e.preventDefault(); e.stopImmediatePropagation(); closeMobileTools(true); }
+}, true);
+window.addEventListener("hashchange", () => closeMobileTools());
 function sheetHtml(kind: string) {
   // About this channel: who it is, what it's for, its notebook and schedule, and (live) deleting. Opened from the task header's title
   // and from the channel sheet. The three-note "remembers" preview is gone: the Notebook row says how much there is and opens it.
@@ -1584,11 +1584,6 @@ function sheetHtml(kind: string) {
         ${piKind() ? `<button class="srow nav" data-pwainst>${I(PI_ICON, 20)}<span>Install 1Helm app<small>${esc(piSub(piKind(), true))}</small></span>${ic.chev}</button>` : ""}
         ${touchy() ? "" : `<button class="srow nav" data-sgo="shortcuts">${g("kbd")}<span>Keyboard shortcuts</span>${ic.chev}</button>`}</div>
       <div class="sgroup"><button class="srow" data-snote="logout">${g("out")}<span class="red">Log out</span></button></div>`;
-  }
-  // The task header's overflow: the actions that didn't fit, in the header's order.
-  if (kind === "more") {
-    const hid = [...document.querySelectorAll<HTMLElement>(".mh [data-rename], .mh .mo.mhid button")];
-    return `<div class="sgroup">${hid.map((b, i) => `<button class="srow" data-mmi="${i}">${b.querySelector("svg")?.outerHTML ?? ""}<span>${esc(b.getAttribute("aria-label") || b.title || "")}</span></button>`).join("")}</div>`;
   }
   return "";
 }
@@ -1630,9 +1625,7 @@ document.addEventListener("click", e => {
   const sh = t.closest<HTMLElement>("[data-msheet]"); if (sh) openSheet(sh.dataset.msheet!);
   if (t.closest("[data-mchsw]")) openSheet("chs");
   if (t.closest("[data-mset]")) openSheet("set");
-  if (t.closest("[data-mmore]")) openSheet("more");
   if (t.closest("#sheet [data-mch], #sheet [data-sgo], #sheet [data-apps], #sheet [data-snote]")) closeSheet();
-  const mi = t.closest<HTMLElement>("[data-mmi]"); if (mi) { const b = [...document.querySelectorAll<HTMLElement>(".mh [data-rename], .mh .mo.mhid button")][+mi.dataset.mmi!]; closeSheet(); b?.click(); }
   const mt = t.closest<HTMLElement>("[data-mtheme]"); if (mt) { S.theme = mt.dataset.mtheme!; try { localStorage.setItem("v3theme", S.theme); } catch {} applyTheme(); mt.parentElement!.querySelectorAll<HTMLElement>("[data-mtheme]").forEach(x => { x.classList.toggle("on", x === mt); x.setAttribute("aria-checked", String(x === mt)); }); }
   if (t.closest("[data-sclose]")) closeSheet();
   if (t.closest("[data-mdrawer]")) setDrawer(true);
@@ -1778,9 +1771,6 @@ const fmtDay = (iso: string) => { const d = new Date(iso); return isNaN(+d) ? ""
 // App logos (Connected accounts, the connect card, the Apps list, app detail): logo.ts appLogo — tinted initial tile at once, the
 // logo fades in over it via /applogo/<app> on live, and the tile stays if it fails.
 const appImg = (a: { logo: string; name: string }) => appLogo(a.logo, a.name, "bico", 24);
-// Suggested when nothing is connected yet, or next to a retired Google Super connection: each Google app connects on its own.
-const CX_SUGG = ["gmail", "googlecalendar", "googledrive"];
-const RETIRED_NOTE = "Google Super is being retired. Connect the Google apps you use individually.";
 // Long lists: one entry per app (a multi-account app is one entry), 8 entries a page with Prev/Next, and a search box once there are more than 8.
 // The page and search stay put while Settings is open (e.g. after a disconnect); opening Settings again starts at page 1.
 const CX_PAGE = 8, CXP = { page: 0, q: "" };
@@ -1789,40 +1779,24 @@ function cxEntries() {
   const apps: string[] = []; for (const a of [...(CX.list || [])].reverse()) if (!apps.includes(a.app)) apps.push(a.app);
   return apps.map(app => ({ app, as: CX.list!.filter(a => a.app === app).reverse() }));
 }
-function cxEntryHtml(app: string, all: Acct[], as: Acct[]) {
-  const a0 = all[0];
-  if (a0.retired) return as.map(a => srow(appImg(a), `${esc(a.name)}${a.email ? `<em class="stag">${esc(a.email)}</em>` : ""}`, esc(a.note || RETIRED_NOTE), sa(CX.busy === a.id ? "Disconnecting…" : a.status === "connected" ? "Disconnect" : "Remove", `data-cxoff="${esc(a.id)}"`, "mute"), ` data-cxrow="${esc(a.app)}" data-retired`)).join("");
-  // The app's row with "Add another", then one row per account.
-  const live = all.filter(a => a.status === "connected"), many = live.length > 1, some = as.length < all.length ? ` · ${as.length} match${as.length === 1 ? "es" : ""}` : "";
-  const head = srow(appImg(a0), esc(a0.name), (live.length ? (many ? `${live.length} accounts` : "Connected") : "Needs a new sign-in") + some,
-    live.length ? sa(CX.busy === app ? "Opening…" : `${ic.plus}<span>Add another</span>`, `data-cxon="${esc(app)}" data-cxadd aria-label="Add another ${esc(a0.name)} account"`, "blue cxaddb") : "", ` data-cxrow="${esc(app)}" data-cxhead`);
-  // Under each account: its note for the helper, or "Add a note for <helper>" (acct-note.ts).
-  const noteRow = (a: Acct) => `<div class="acnrow" data-acnrow="${esc(a.id)}">${acctNoteHtml({ id: a.id, memo: a.memo, label: acLabel(a) })}</div>`;
-  return head + as.map(a => {
-    const def = many && a.default ? `<em class="stag cxdef">Default</em>` : "", lab = `<span class="cxalab">${esc(acLabel(a))}</span>${def}`;
-    return (a.status === "connected"
-      ? srow(`<span class="cxind"></span>`, lab, `Connected ${fmtDay(a.since)}`, `${many && !a.default ? sa(CX.busy === `d:${a.id}` ? "Saving…" : "Make default", `data-cxdef="${esc(a.id)}"`, "blue") : ""}${sa(CX.busy === a.id ? "Disconnecting…" : "Disconnect", `data-cxoff="${esc(a.id)}"`, "mute")}`, ` data-cxrow="${esc(app)}" data-cxacct`)
-      : srow(`<span class="cxind"></span>`, lab, "Expired. Sign in again to keep your helper working.", `${sa(CX.busy === app ? "Opening…" : "Reconnect", `data-cxon="${esc(app)}"`, "blue")}${sa(CX.busy === a.id ? "Removing…" : "Remove", `data-cxoff="${esc(a.id)}"`, "mute")}`, ` data-cxrow="${esc(app)}" data-cxacct`)) + noteRow(a);
-  }).join("");
+function cxEntryHtml(app: string, accounts: Acct[]) {
+  const a = accounts[0], count = accounts.length > 1 ? `<span class="sval">${accounts.length} accounts</span>` : "";
+  return srow(appImg(a), esc(a.name), "", `${count}${chev()}`, ` role="button" tabindex="0" data-adetail-key data-adetail="${esc(app)}" data-cxrow="${esc(app)}"`);
 }
 // The list itself (inside #cxlist, so typing in the search box only repaints this part).
 function cxListInner() {
   const ents = cxEntries(), q = CXP.q.trim().toLowerCase();
-  const sugg = !CX.list!.length || CX.list!.some(a => a.retired) ? CX_SUGG.filter(k => !CX.list!.some(a => a.app === k && a.status === "connected"))
-    .map(k => srow(appImg({ logo: `https://logos.composio.dev/api/${k}`, name: APP[k][0] }), APP[k][0], APP[k][1], sa(CX.busy === k ? "Opening…" : "Connect", `data-cxon="${k}"`, "blue"), ` data-cxrow="${k}"`)).join("") : "";
-  // Search: an app name matches the whole entry; otherwise only its matching accounts (by email or label) show, still under the app's row.
-  const hits = !q ? ents.map(e => ({ ...e, show: e.as })) : ents.map(e => {
-    const named = `${e.as[0].name} ${e.app}`.toLowerCase().includes(q);
-    return { ...e, show: named ? e.as : e.as.filter(a => `${acLabel(a)} ${a.email || ""} ${a.memo || ""}`.toLowerCase().includes(q)) };
-  }).filter(e => e.show.length);
+  // Search still finds an app by any of its account labels, email addresses or saved notes.
+  const hits = !q ? ents : ents.filter(e => `${e.as[0].name} ${e.app}`.toLowerCase().includes(q)
+    || e.as.some(a => `${acLabel(a)} ${a.email || ""} ${a.memo || ""}`.toLowerCase().includes(q)));
   if (q && !hits.length) return `<div class="sc">${srow("", "No apps match", `Nothing connected matches “${esc(CXP.q.trim())}”.`, "")}</div>`;
   const pages = Math.max(1, Math.ceil(hits.length / CX_PAGE)); CXP.page = Math.min(Math.max(0, CXP.page), pages - 1);
   const from = CXP.page * CX_PAGE, shown = hits.slice(from, from + CX_PAGE), last = CXP.page === pages - 1;
-  const rows = shown.map(e => cxEntryHtml(e.app, e.as, e.show)).join("") + (last && !q ? sugg : "");
+  const rows = shown.map(e => cxEntryHtml(e.app, e.as)).join("");
   const prev = I('<path d="m15 18-6-6 6-6"/>', 15), next = I('<path d="m9 18 6-6-6-6"/>', 15);
   const pager = pages < 2 ? "" : `<nav class="cxpager" aria-label="Connected apps pages"><span class="cxpn" aria-live="polite">${from + 1}–${from + shown.length} of ${hits.length} ${q ? "matching apps" : "apps"}</span>
     <span class="cxpb"><button type="button" class="sa cxpbtn" data-cxpg="-1"${CXP.page ? "" : " disabled"} aria-label="Previous page">${prev}<span>Prev</span></button><button type="button" class="sa cxpbtn" data-cxpg="1"${last ? " disabled" : ""} aria-label="Next page"><span>Next</span>${next}</button></span></nav>`;
-  return `<div class="sc">${rows || srow("", "Nothing connected yet", "", "")}</div>${pager}`;
+  return `<div class="sc">${rows || srow("", "Nothing connected yet", "Browse all apps to connect your first app.", "")}</div>${pager}`;
 }
 function accountsHtml() {
   cxLoad();
@@ -2302,7 +2276,7 @@ function secHtml(sec: string): string {
     case "accounts": return `<h2>Connected accounts</h2><p class="slead">Let ${esc(who(main))} read and act in your apps. You can disconnect anytime.</p>
       ${LIVE ? `<div class="sc">${srow(g("mon"), "Computer connections", "Native SSH keys, sessions and Tailscale for each channel computer", chev(), nav(NETWORK_SEC))}</div>` : ""}
       ${LIVE ? cmHtml() : ""}<button class="sbrowse cxbrowse" data-apps>${ic.apps}<span>Browse all apps</span><em>1,500+</em>${ic.chev}</button>
-      ${LIVE ? accountsHtml() + auHtml() : `<div class="sc">${srow(brand("google"), `${esc(EMAIL)}<em class="stag">Primary</em>`, "Connected Sep 26, 2026", `${ok("Connected")}${sa("Disconnect", 'data-snote="disc"', "mute")}`)}
+      ${LIVE ? accountsHtml() : `<div class="sc">${srow(brand("google"), `${esc(EMAIL)}<em class="stag">Primary</em>`, "Connected Sep 26, 2026", `${ok("Connected")}${sa("Disconnect", 'data-snote="disc"', "mute")}`)}
         ${["gmail", "googlecalendar", "googledrive"].map(k => srow(brand(k), APP[k][0], APP[k][1], S.conn[k] ? `${ok("On")}${sa("Turn off", `data-conn="${k}"`, "mute")}` : sa("Enable", `data-conn="${k}"`, "blue"))).join("")}</div>`}
       <p class="sfine">You sign in on each app's own page. 1Helm never sees those passwords.</p>`;
     case "wallet": if (LIVE) return `<div class="shero"><span class="shico">${g("wallet", 26)}</span><h2>Wallet</h2><p>Let ${esc(who(main))} buy things for you. You approve every purchase on your phone before any money moves.</p></div>
@@ -2335,7 +2309,8 @@ function secHtml(sec: string): string {
       return `<h2>Texting</h2><p class="slead">Text ${esc(who(main))} from your phone like a friend, and get a text when something needs you.</p>
       <div class="sc">${srow(brand("imessage"), `Text with ${esc(who(main))}`, sub, btn)}${LIVE ? "" : srow("", "Quiet hours", "No texts from 10 PM to 7 AM unless it's urgent", tg("quiet", "Quiet hours"))}</div>`;
     }
-    case "ambient": return beeSec() + acueSec();
+    case "ambient": return `<h2>Ambient</h2><p class="slead">Connect devices and services that help ${esc(who(main))} remember your day.</p><div class="sc">${beeOverview()}</div>`;
+    case "bee": return beeSec() + acueSec();
     case "device": return dpSec();   // devperm.ts
     case "notif": return nfHtml();   // notif.ts
     case "help": return `<h2>Help & support</h2><p class="slead">Stuck, or something looks wrong? We read every message.</p>
@@ -2497,26 +2472,6 @@ document.addEventListener("click", e => {
   if (LIVE && t.closest("[data-texting]")) { location.assign(`/w/${LIVE.slug}/texting`); return; }
   if (LIVE && cmClick(t)) return;   // How apps connect (apps-mode.ts)
   if (LIVE && t.closest("[data-cxretry]")) { CX.err = ""; cxLoad(true); sRender(); return; }
-  const cxon = t.closest<HTMLElement>("[data-cxon]"); if (LIVE && cxon) { appConnect(cxon.dataset.cxon!, "settings", "", null, cxon.hasAttribute("data-cxadd")); return; }
-  const cxoff = t.closest<HTMLElement>("[data-cxoff]"); if (LIVE && cxoff && !CX.busy) {
-    const id = cxoff.dataset.cxoff!, a = CX.list?.find(x => x.id === id); if (!a) return;
-    const rest = (CX.list || []).filter(x => x.app === a.app && x.id !== id && x.status === "connected").reverse(), next = a.default && rest.length ? rest[0] : null;
-    ask({ title: `Disconnect ${a.name}${a.label || a.email ? ` (${acLabel(a)})` : ""}?`, body: `${who(main)} won't be able to use ${rest.length ? "this account" : "it"} anymore.${next ? ` ${acLabel(next)} becomes your default ${a.name}.` : ""}`, confirm: "Disconnect", danger: true }).then(ok => {
-      if (!ok || CX.busy) return;
-      CX.busy = id; sRender();
-      fetch(`${LIVE.api}/apps/disconnect`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }) }).then(r => r.json())
-        .then(d => { CX.busy = ""; if (d.accounts) cxSet(d.accounts); else note(g("help", 14), `Couldn't disconnect ${a.name}`, d.error || "Try again in a minute.", ""); sRender(); }).catch(() => { CX.busy = ""; sRender(); });
-    });
-    return;
-  }
-  const cxdef = t.closest<HTMLElement>("[data-cxdef]"); if (LIVE && cxdef && !CX.busy) {
-    const id = cxdef.dataset.cxdef!, a = CX.list?.find(x => x.id === id); if (!a) return;
-    CX.busy = `d:${id}`; sRender();
-    fetch(`${LIVE.api}/apps/default`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }) }).then(r => r.json())
-      .then(d => { CX.busy = ""; if (d.accounts) { cxSet(d.accounts); note(ic.check, `Default ${a.name} changed`, `${who(main)} now uses ${acLabel(a)} unless you name another account.`, ""); } else note(g("help", 14), "Couldn't change the default", d.error || "Try again in a minute.", ""); sRender(); })
-      .catch(() => { CX.busy = ""; sRender(); });
-    return;
-  }
   if (LIVE && t.closest("[data-crt]")) { CR.open = !CR.open; sRender(); return; }
   const crp = t.closest<HTMLElement>("[data-crp]"); if (LIVE && crp && !CR.busy) {
     CR.busy = +crp.dataset.crp!; sRender();
@@ -2804,6 +2759,7 @@ if (LIVE) { pomoInit({ api, phone, dragToClose, note: (i, t, b, a) => note(i, t,
       location.hash = `/${c.slug}/s/${sid}`; } }); }
 if (LIVE) tkInit({ api, base: () => LIVE.api, phone, dragToClose, plain: t => plain(t), note: (a, b) => note(ic.clock, a, b, ""),
   fileChip: (slug, f) => { const c = channels.find(x => x.slug === slug); return c ? fileCard(c, f, false) : ""; },
+  savedChip: (slug, x) => { const c = channels.find(c => c.slug === slug); return c ? savedChip(x, c) : ""; },
   helper: slug => { const c = channels.find(x => x.slug === slug); return c ? who(c) : "your helper"; },
   working: (slug, sid) => !!channels.find(c => c.slug === slug)?.sessions.some(x => String(x.id) === sid && x.streaming),
   current: () => { const { ch, s } = route(); return s && !isLib() && !isNb() && !isCt() ? `${ch.slug}|${s.id}` : ""; },
@@ -3596,7 +3552,7 @@ if (LIVE && new URLSearchParams(location.search).get("plan") === "changed") {
 // (?settings=byok and ?settings=credits are byok.ts's.)
 if (LIVE) {
   const u = new URL(location.href), sec = u.searchParams.get("settings") || "", topup = u.searchParams.get("topup") === "1", resub = u.searchParams.get("resubscribed") === "1";
-  const known = sec === "usage" || sec === "account" || SECS.some(x => x[0] && x[0] === sec);
+  const known = sec === "usage" || sec === "account" || sec === "bee" || SECS.some(x => x[0] && x[0] === sec);
   if (known || topup || resub) {
     if (known) u.searchParams.delete("settings"); u.searchParams.delete("topup"); u.searchParams.delete("resubscribed");
     history.replaceState(null, "", u.pathname + u.search + u.hash);

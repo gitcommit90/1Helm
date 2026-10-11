@@ -26,8 +26,8 @@ type State = { state: "none" | "pairing" | "connecting" | "connected" | "needs_r
   writes?: { stuck: number; owed: number } };   // Notebook changes owed to Bee (bee-sync.js): stuck = stopped retrying, shown with Retry
 type Deps = {
   live: { api: string; slug: string } | null;
-  repaint: () => void;                       // Settings, if it's open on Ambient
-  shown: () => boolean;                      // Settings is open on Ambient
+  repaint: () => void;                       // Settings, if it's open on Ambient or Bee
+  shown: () => boolean;                      // Settings is open on Ambient or Bee
   note: (title: string, sub: string, bad?: boolean) => void;
   srow: (icon: string, title: string, sub: string, right: string, attrs?: string) => string;
   helper: () => string;
@@ -223,6 +223,15 @@ async function bfDo(op: "count" | "start" | "pause" | "resume" | "cancel" | "ski
 }
 export function beeImport() { if (!D || B.sheet) return; BF.err = ""; beeOpen(4); }
 
+export function beeOverview(): string {
+  if (!D) return "";
+  if (!B.err) beeLoad();
+  setTimeout(() => { schedule(); scheduleRefresh(); }, 0);
+  const s = B.st?.state;
+  const status = B.err ? "Couldn't load status" : !B.st ? "Checking…" : s === "connected" ? "Connected" : s === "needs_reconnect" ? "Needs reconnect" : s === "pairing" || s === "connecting" ? "Connecting…" : s === "unavailable" ? "Not available yet" : "Not connected";
+  return D.srow(beeMark(), "Bee", status, `<span class="schev">${I('<path d="m9 18 6-6-6-6"/>')}</span>`, ' role="button" tabindex="0" data-sgo="bee" data-ambient-provider="bee"');
+}
+
 export function beeSec(): string {
   if (!D) return "";
   beeLoad();
@@ -244,7 +253,7 @@ export function beeSec(): string {
   const links = `<a class="sr" href="${LINKS.privacy}" target="_blank" rel="noopener" data-beelink="privacy"><span class="bico">${ic.shield}</span><span class="srt"><b>Bee privacy</b><span>Bee's Privacy Notice</span></span><span class="schev">${ic.ext}</span></a>
     <a class="sr beesub2" href="${LINKS.protects}" target="_blank" rel="noopener" data-beelink="protects"><span class="srt"><b>How Bee protects your data</b></span><span class="schev">${ic.ext}</span></a>
     <a class="sr beesub2" href="${LINKS.audit}" target="_blank" rel="noopener" data-beelink="audit"><span class="srt"><b>Security audit</b><span>Trail of Bits, September 2026 (PDF)</span></span><span class="schev">${ic.ext}</span></a>`;
-  return `<h2>Ambient</h2><p class="slead">Devices that listen through your day, so ${h} remembers what was said. Nothing connects unless you connect it here.</p>
+  return `<h2>Bee</h2><p class="slead">Connect your Bee so ${h} can remember its conversations.</p>
     <div class="sc beecard">${card}</div>${B.err && st ? `<p class="beeerr" role="alert">${esc(B.err)}</p>` : ""}
     <div class="sc">${links}</div>`;
 }
@@ -255,7 +264,7 @@ function sheetBody(): string {
   const head = (n: string) => `<div class="dlggrab"></div><div class="bshd">${beeMark(42)}<div><h2 id="bst">${st?.reconnecting || st?.state === "needs_reconnect" ? "Reconnect your Bee" : "Connect your Bee"}</h2>${n ? `<p class="bsn">${n}</p>` : ""}</div></div>`;
   if (B.step === 4) return `<div class="dlggrab"></div><div class="bshd">${beeMark(42)}<div><h2 id="bst">Your Bee</h2></div></div>${importHtml(false)}`;
   if (B.step === 3) return `${head("")}<div class="bsdone"><span class="bsok">${I('<path d="M20 6 9 17l-5-5"/>', 26, 2.2)}</span><h3>Connected as ${esc(st?.name || "your Bee account")}</h3>
-    <p>Your Bee is connected to 1Helm. You can disconnect anytime in Settings → Ambient.</p></div>${st?.offer !== false || st?.backfill ? importHtml(true) : `<div class="bsbtns"><button type="button" class="dlgb ok" data-bsx>Done</button></div>`}`;
+    <p>Your Bee is connected to 1Helm. You can disconnect anytime in Settings → Ambient → Bee.</p></div>${st?.offer !== false || st?.backfill ? importHtml(true) : `<div class="bsbtns"><button type="button" class="dlgb ok" data-bsx>Done</button></div>`}`;
   if (B.step === 1) return `${head("Step 1 of 2")}
     <h3 class="bsh3">Turn on Developer mode in the Bee app</h3>
     <ol class="bsol"><li>Update the Bee app to the newest version.</li><li>Open <b>Settings</b> and tap <b>Version</b> 5 times.</li><li><b>Developer</b> now shows in Settings.</li></ol>
