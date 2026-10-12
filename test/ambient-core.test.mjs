@@ -101,7 +101,12 @@ globalThis.fetch = async (url, init) => { requests.push({ url, body: JSON.parse(
 try {
   const modelStore = new AmbientStore(host), lines = ambientLines(conv(90, "Remind me to buy groceries", T));
   await assert.rejects(modelStore.extract(lines, [{ id: "ambient:full-persistent-id-must-not-be-copied", text: "Previous grocery plan", owner: "wearer", kind: "task" }], { plan: "plus" }, { source: "bee", source_id: "90", hash: "retry-test", error: "Extraction waiting to retry (validate_evidence: model_evidence_invalid)" }));
-  assert.equal(requests.length, 2, "invalid contract receives one bounded retry"); assert.equal(requests[0].body.provider.zdr, true); assert.equal(requests[0].body.model, "openai/gpt-6-luna");
+  assert.equal(requests.length, 2, "invalid contract receives one bounded retry");
+  for (const { body } of requests) {
+    assert.equal(body.provider.zdr, true);
+    assert.equal(body.model, "openai/gpt-6-luna", "initial extraction and bounded retry retain the chosen model");
+    assert.equal(body.reasoning.effort, "low");
+  }
   assert.equal(JSON.parse(requests[0].body.messages[1].content).lines[0].line, 0, "model receives explicit source line identifiers");
   assert.equal(JSON.parse(requests[0].body.messages[1].content).previous[0].id, "previous:0");
   assert.ok(!JSON.stringify(requests[0].body.messages).includes("ambient:full-persistent-id"), "historical refs cannot require copying long hashes");
