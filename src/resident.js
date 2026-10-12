@@ -81,6 +81,7 @@ import { repeatWatch, toolBatchWatch, REPEAT_NOTE, REPEAT_FALLBACK } from "./rep
 import { guardResume, noteRepeat, commandLimitMs, commandNotes, stepNotes, spendInit, spendMix, guardModel, guardTools, guardCall, noteCharge, reportAsk, pauseFallback, DAY_PAUSE_REPLY, OUT_OF_TIME_REPLY, SPEND_CEILING } from "./spendguard.js";   // per-turn budget, runaway pause, day/month guard
 import { spendPausesOn, stepAllowance } from './spend-preferences.js';
 import { trimTurnState, resumedReplyState, diagnosticTrace } from './spend-retention.js';
+import { savedWorkflowHardReport } from './workflow-hard-report.js';
 import { safeName, mimeOf, humanBytes, MAX_UPLOAD, storeUpload, storeView, viewJpeg, fileTags } from "./files.js";
 import { APP_FILE_MAX } from "./ee/index.js";
 import { stPut, stDelete } from "./storage.js";
@@ -2737,7 +2738,7 @@ export class Resident extends DurableObject {
         if (step === stepLimit - 1) capped = true;   // a chat turn out of steps: a short report below (after any steer is answered)
       }
     } catch (e) { if (isResetErr(e)) { tc.objectReset = true; throw e; }   // resume.js: a reset under this step isn't the turn's error
-      if (tc.abort === "hard") error = null; else if (e.budget) { error = null; reply = pauseFallback(said.join("\n\n")); said.length = 0; said.push(reply); } else { error = e.message; if (!reply) reply = isByokError(e) ? e.message : e.privacy ? PRIVACY_EXHAUSTED : e.status === 402 ? (this.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : e.status === 429 ? DAY_LIMIT_REPLY : `Something went wrong: ${e.message}`; } }
+      if (tc.abort === "hard") error = null; else if (e.budget) { error = null; reply = (kind === "workflow" ? savedWorkflowHardReport(this.sql, turn) : null) || pauseFallback(said.join("\n\n")); said.length = 0; said.push(reply); } else { error = e.message; if (!reply) reply = isByokError(e) ? e.message : e.privacy ? PRIVACY_EXHAUSTED : e.status === 402 ? (this.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : e.status === 429 ? DAY_LIMIT_REPLY : `Something went wrong: ${e.message}`; } }
     }
     // Stopped by the person (stop.js): what it already did stays, the reply is one plain line, no model call.
     // (A stop that lands after the reply already closed the card changes nothing: that card is complete.)

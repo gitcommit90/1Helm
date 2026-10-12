@@ -1,5 +1,25 @@
 # Source update: 2026-10-12
 
+## Workflow spending-limit report follow-up
+
+Classic workflows stopped by the hard spending limit can now show a bounded
+partial report from completed, already-presented steps on the same card. The
+report makes no new model or tool call, does not raise the limit, and explicitly
+does not claim the entire workflow finished. Secret filtering and plain-text
+quoting are applied; arbitrary output is not guaranteed safe by filtering alone.
+
+Source correspondence:
+
+- Worker: `9e5e39c25f68b416bb591be5a6f5d6fd04254480` → `f551528c4b1188db5f26c2373a53a7235812fb46`.
+- Web: `7b0706aee0ffee61c9b100397287dfe75219a89c` (unchanged).
+- Public base: `c5319972b8bde90cb935c75ab780154cfc635948`.
+
+Portable receipt/security tests and an offline classic-workflow integration
+test cover this path. Own-key and optional Cloud boundaries remain unchanged.
+Hosted release-check environment helpers remain excluded. No web assets,
+schema, installation configuration or native clients changed. This source
+update is not a live-provider or deployment-transition acceptance result.
+
 ## Bounded tool-batch follow-up
 
 This update rejects oversized or repetitious tool batches before executing any
