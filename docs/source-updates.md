@@ -1,5 +1,20 @@
 # Source update: 2026-10-12
 
+## Source correspondence
+
+| Source | Previous reviewed snapshot | Reconciled snapshot |
+| --- | --- | --- |
+| Worker | `084d79ffa6d919a6a32942317ea5b4928030be76` | `39b8e9e4ce175f7bd0acc5025d55bfc04b96cbd7` |
+| Web | `4cebd963315939f38073ba3785e1b72ffcf234ad` | `7b0706aee0ffee61c9b100397287dfe75219a89c` |
+
+The public comparison starts at `7f548dd8e6f03dded2ec2c88e708ff2e87c24867`.
+Reviewed runtime and regression-test content is recorded in
+`bb73ae574a1e72d72d0f0e6f7b74e729e1050286`; this follow-up records source
+correspondence only. These identifiers describe reviewed integration inputs;
+they do not make excluded Cloud operational files part of this repository.
+
+## Changes
+
 This reviewed update adds strict structured responses for background work,
 bounded schema retries, stable task transcripts and managed task model affinity.
 The nine managed background roles retain their selected model and low reasoning
