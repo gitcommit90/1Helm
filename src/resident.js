@@ -77,7 +77,7 @@ import { sidecarMix } from "./sidecar.js";
 import { FILE_TEXT_TOOL } from "./file-text-tool.js";   // every file arriving is turned into text in the background (FilePrep); Send uses it
 import { installSnapshotRpc } from "./sqlite-snapshot.js";
 import { stopMix, untilStopped, stopError, planBudget, STOPPED_REPLY, STOPPED_TOOL_TEXT, STEP_LIMIT_CHAT_ASK } from "./stop.js";   // Stop / Stop all
-import { repeatWatch, REPEAT_NOTE, REPEAT_FALLBACK } from "./repeat-guard.js";   // a model step that starts repeating itself
+import { repeatWatch, toolBatchWatch, REPEAT_NOTE, REPEAT_FALLBACK } from "./repeat-guard.js";   // a model step that starts repeating itself
 import { guardResume, noteRepeat, commandLimitMs, commandNotes, stepNotes, spendInit, spendMix, guardModel, guardTools, guardCall, noteCharge, reportAsk, pauseFallback, DAY_PAUSE_REPLY, OUT_OF_TIME_REPLY, SPEND_CEILING } from "./spendguard.js";   // per-turn budget, runaway pause, day/month guard
 import { spendPausesOn, stepAllowance } from './spend-preferences.js';
 import { trimTurnState, resumedReplyState, diagnosticTrace } from './spend-retention.js';
@@ -1059,7 +1059,7 @@ export class Resident extends DurableObject {
       else if (!r.ok) throw r.reason === "day_limit" ? Object.assign(new Error(DAY_LIMIT_ERR), { status: 429 }) : Object.assign(new Error("out_of_credits"), { status: 402 });
     }
     let byokFast = false;
-    const rw = repeatWatch(); let rep = null;   // repeat-guard.js: this step's text, reasoning and each call's arguments
+    const rw = repeatWatch(), bw = toolBatchWatch(); let rep = null;   // text/arguments and bounded cross-call batches
     const rdet = [];
     let ep = "", fellBack = null, finish = null, refusal = null, content = "", calls = [], usage = { prompt_tokens: 0, completion_tokens: 0, cached: 0, cacheWrite: 0, cost: null }, fired = false, served = null, routing = null, provider = "workers-ai", servedProvider = null, servedHost = null;
     // Live text: hold everything until "</think>" (the model prints its reasoning first), then stream the rest.
@@ -1156,6 +1156,8 @@ export class Resident extends DurableObject {
           // Looping (repeat-guard.js): stop reading now (cancelling the stream ends the upstream generation) and drop the step.
           if ((delta.reasoning && rw.feed("reasoning", String(delta.reasoning))) || (delta.content && rw.feed("text", delta.content))
             || (delta.tool_calls || []).some((t) => t.function?.arguments && rw.feed(`call:${t.index ?? 0}`, t.function.arguments))) { rep = rw.hit; reader.cancel().catch(() => {}); break read; }
+          const batchRepeat = bw.feed(delta.tool_calls || []);
+          if (batchRepeat) { rep = batchRepeat; reader.cancel().catch(() => {}); break read; }
           if (delta.content) {
             content += delta.content;
             if (thinkDone) emit(delta.content);

@@ -1,5 +1,22 @@
 # Source update: 2026-10-12
 
+## Bounded tool-batch follow-up
+
+This update rejects oversized or repetitious tool batches before executing any
+operation from the rejected model step. It preserves existing retry behavior,
+own-key provider choice and billing, and optional Cloud feature gates.
+
+Source correspondence:
+
+- Worker: `66d3e1c86cff0dc887c0865795d432cb2f1e15f8` → `9e5e39c25f68b416bb591be5a6f5d6fd04254480`.
+- Web: `7b0706aee0ffee61c9b100397287dfe75219a89c` (unchanged).
+- Public base: `24e500f0d538ae8df63f98bd0e35a94abdab2bdf`.
+
+Portable tests cover fragmented arguments, distinct calls, malformed indices,
+stream cancellation and whole-step rejection. Hosted deployment fixtures remain
+excluded; this is not live-provider or full hosted append-runtime acceptance.
+No web assets, schema, installation configuration or native clients changed.
+
 ## Memory-context follow-up
 
 The comparison for this follow-up starts at public
