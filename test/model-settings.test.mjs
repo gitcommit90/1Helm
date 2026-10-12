@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
-import { defaultModelSettings, validateModelSettings, modelSettingsView, saveModelSettings, resetModelSettings, restoreModelSettings, readModelSettings, modelSettingsEnv } from "../src/ee/model-settings.js";
+import { defaultModelSettings, validateModelSettings, modelSettingsView, saveModelSettings, resetModelSettings, restoreModelSettings, readModelSettings, modelSettingsEnv, modelSettingsOptions } from "../src/ee/model-settings.js";
 import { openRouterChat, orFetch } from "../src/model.js";
 import { policyRoute, HANDOFF_PREFIX, jevAsk } from "../src/ee/route2.js";
 import { browserPlan } from "../src/ee/browser-agent.js";
@@ -19,6 +19,7 @@ const DB = { withSession(mode) { assert.equal(mode, "first-primary"); primaryRea
   const o = { bind(...v) { a = v; return o; }, first: async () => s.get(...a) || null, all: async () => ({ results: s.all(...a) }), run: async () => ({ meta: { changes: Number(s.run(...a).changes) } }) }; return o;
 } };
 const env = { ONEHELM_EE: "1hc", DB, ENV_NAME: "dev", ROUTER_MODE: "two", OPENROUTER_API_KEY: "unit-key", PROMPT_CACHE: "off", CHORE_MODEL_LABEL: "dsflash", CHORE_MODEL_BROWSER: "dsflash" };
+assert.equal(modelSettingsOptions(env).choreDefaults.label, "Inherited: anthropic/claude-haiku-5.5, LOW reasoning; no other-model fallback");
 const cfg = defaultModelSettings(); let revision = 0;
 const save = async (c = cfg) => { const v = await saveModelSettings(env, { revision, config: c }, "unit@example.com"); revision = v.revision; return v; };
 const bad = (change) => { const c = structuredClone(cfg); change(c); assert.throws(() => validateModelSettings(c), (e) => e.status === 400); };
@@ -50,9 +51,9 @@ const route = policyRoute("general", "zdr", "test");
 const call = (r = route, kind = "chat", b = body, e = env) => openRouterChat(e, b, "session-kept", r, { tenant: "t", kind });
 try {
   await call(); assert.equal(sent.at(-1).model, POOL.deepseek.model); assert.equal(sent.at(-1).reasoning.effort, "max");
-  // Existing label's unusual Qwen primary is unchanged until its role is explicitly overridden.
+  // Canonical label default ignores old experimental environment aliases.
   const { labelChore } = await import("../src/tracker.js");
-  await call(labelChore(env), "card-label", { messages: body.messages }); assert.equal(sent.at(-1).model, "qwen/qwen3.8-27b");
+  await call(labelChore(env), "card-label", { messages: body.messages }); assert.equal(sent.at(-1).model, POOL.haiku.model);
   cfg.efforts.sol = "low"; cfg.efforts.haiku = "medium"; cfg.chains.general.zdr = ["sol", "haiku"];
   await save();
   await call(); assert.equal(sent.at(-1).model, POOL.sol.model); assert.equal(sent.at(-1).reasoning.effort, "low");
@@ -62,7 +63,7 @@ try {
   assert.deepEqual(sent.at(-1).provider.only, ["azure", "azure/us", "azure/eu"]);
   failures.add(POOL.sol.model); const before = sent.length; await call(); failures.clear();
   assert.deepEqual(sent.slice(before).map((p) => [p.model, p.reasoning.effort]), [[POOL.sol.model, "low"], [POOL.haiku.model, "medium"]]);
-  await call(labelChore(env), "card-label", { messages: body.messages }); assert.equal(sent.at(-1).model, "qwen/qwen3.8-27b");
+  await call(labelChore(env), "card-label", { messages: body.messages }); assert.equal(sent.at(-1).model, POOL.haiku.model);
   await assert.rejects(saveModelSettings(env, { revision: 0, config: cfg }, "other"), (e) => e.status === 409);
   // Distinct databases are used in deployment; environment key also guards accidental mixing here.
   assert.equal((await modelSettingsView({ ...env, ENV_NAME: "live" })).revision, 0);
@@ -79,8 +80,10 @@ try {
   const oldMemoryRoute = mjRoute(env, "people", "verify");
   await call(oldMemoryRoute, "memjob-people-verify", { ...body, response_format: { type: "json_object" } });
   assert.equal(sent.at(-1).model, "openai/gpt-oss-20b"); assert.equal(sent.at(-1).reasoning.effort, "high"); assert.equal(sent.at(-1).response_format, undefined);
-  failures.add("openai/gpt-oss-20b"); await call(oldMemoryRoute, "memjob-people-verify"); failures.clear();
-  assert.equal(sent.at(-1).model, "openai/gpt-oss-120b"); assert.equal(sent.at(-1).reasoning.effort, "medium");
+  failures.add("openai/gpt-oss-20b");
+  const failureStart = sent.length;
+  await assert.rejects(call(oldMemoryRoute, "memjob-people-verify"), /503/); failures.clear();
+  assert.ok(sent.slice(failureStart).every(p => p.model === "openai/gpt-oss-20b"), "selected role never substitutes OSS 120B or another model on failure");
   let plan = await browserPlan(env); await orFetch(env, { ...plan[0], messages: body.messages }, { tenant: "t", kind: "browser-oss" });
   assert.equal(sent.at(-1).model, POOL.haiku.model); assert.equal(sent.at(-1).reasoning.effort, "medium"); assert.equal(sent.at(-1).provider.zdr, true);
   cfg.chores.browser = { model: "luna", effort: "low" }; cfg.decider = "~typesafe/jev-latest"; await save();

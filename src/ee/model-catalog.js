@@ -1,7 +1,7 @@
 // Public OpenRouter metadata only. Never fetch a browser-supplied URL or forward an API key.
 // Replacement endpoints remain ZDR even on permissive accounts; the request price ceiling is unchanged.
 import { registered, eligibleHosts, PRIVACY_LEVELS } from "../privacy.js";
-import { MUSE_C, MUSE_S } from "./pool.js";
+import { MUSE_C, MUSE_S, autoToolsOnly } from "./pool.js";
 const OR = "https://openrouter.ai/api/v1";
 export const MODEL_PRICE_LIMIT = { prompt: 3, completion: 15 };
 const EFFORTS = ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -9,6 +9,12 @@ export const validModelId = (id) => typeof id === "string" && id.length <= 160 &
 const positive = (n) => Number.isSafeInteger(n) && n > 0;
 const price = (p) => p != null && p !== "" && Number.isFinite(Number(p)) && Number(p) >= 0 ? Number(p) * 1e6 : null;
 const host = (s) => typeof s === "string" && /^[a-z0-9][a-z0-9/_-]{0,99}$/.test(s);
+// Published endpoint flags can overstate support. Meta rejected `none` in the
+// live 2026-10-12 final-report check, matching the existing pool restriction.
+// Apply to saved snapshots too; this does not change model, limits or history.
+export function effectiveTaskCatalog(catalog, model = catalog?.id) {
+  return catalog && autoToolsOnly(model) ? { ...catalog, tool_choice: ["auto"] } : catalog;
+}
 async function get(path) {
   try {
     // Workers supports follow/manual, not error. Manual plus !ok below rejects redirects without following them.
@@ -50,7 +56,7 @@ export function assessModelCatalog(models, endpoints) {
       pricing: { prompt: limits.length ? Math.max(...limits.map((e) => price(e.pricing.prompt))) : price(m.pricing?.prompt),
         completion: limits.length ? Math.max(...limits.map((e) => price(e.pricing.completion))) : price(m.pricing?.completion) },
       json: limits.length > 0 && limits.every((e) => e.supported_parameters.includes("response_format")),
-      tool_choice: ["auto", "none", "required", "function"].filter((choice) => limits.length && limits.every((e) => e.supports_tool_choice?.[choice] === true)),
+      tool_choice: (autoToolsOnly(m.id) ? ["auto"] : ["auto", "none", "required", "function"]).filter((choice) => limits.length && limits.every((e) => e.supports_tool_choice?.[choice] === true)),
     };
   });
 }
@@ -62,6 +68,17 @@ export async function modelCatalog(env, { q = "" } = {}) {
   const all = assessModelCatalog(models, endpoints), query = q.trim().toLowerCase();
   return { models: all.filter((m) => !query || `${m.id} ${m.name}`.toLowerCase().includes(query)), fetched_at: Date.now(),
     policy: "New models use verified zero-data-retention endpoints. Existing registered Muse models retain their current privacy restrictions. All replacements require tool support and the existing $3 input / $15 output per million token ceiling." };
+}
+// A new task needs published limits, including for built-in slots. Fetch once
+// per task (the caller persists the result), never once per step or message.
+export async function taskModelCatalog(model) {
+  if (!validModelId(model)) throw new Error("Invalid task model ID.");
+  const known = registered(model);
+  const [models, endpoints] = await Promise.all([get("/models"), get(known ? `/models/${model}/endpoints` : "/endpoints/zdr")]);
+  const selected = known ? endpoints.map((e) => ({ ...e, model_id: model })) : endpoints.filter((e) => e.model_id === model);
+  const record = assessModelCatalog(models.filter((m) => m.id === model), selected)[0];
+  if (!validCatalogRecord(record, model)) throw Object.assign(new Error(`Published capabilities for ${model} are unavailable or incompatible. No task request was sent; try again shortly.`), { status: 503 });
+  return record;
 }
 // Persist only this bounded, validated server snapshot. Stored rows are not a source of arbitrary provider URLs.
 export function validCatalogRecord(m, id) {

@@ -200,6 +200,9 @@ export async function executeLocal(res, keys, ids = [], o = {}) {
   // The background jobs' run log (dev D1) quotes facts and words: scrub what matches.
   removed.logs = await scrubLogs(res, [{ keys }]);
   addForgotten(sql, keys, o.origin || "here", removed.notes + removed.facts + removed.memories + removed.turns);
+  // Existing append-only tasks must stop replaying deleted memory snapshots,
+  // including on the very next step of the turn performing this deletion.
+  res.put?.("task_memory_revision", crypto.randomUUID());
   return { removed, missing, hsError: o.hsError || null };
 }
 async function scrubLogs(res, entries) {

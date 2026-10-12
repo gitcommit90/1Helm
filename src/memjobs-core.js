@@ -5,6 +5,8 @@ import { CHORE_MODELS } from "./ee/index.js";
 import { terms } from "./memory.js";
 import { cardsToText } from "./genui.js";
 import { hasSecret } from "./secrets-scrub.js";
+import { StructuredOutputError } from "./structured-output.js";
+import { backgroundRoute } from "./ee/index.js";
 
 export const MJ_MARKUP = 1.15;
 export const MAX_OUT = 6000;   // reasoning tokens count toward max_tokens on OpenRouter
@@ -15,18 +17,21 @@ export const WINDOW = { upkeep: { turns: 40, chars: 24000 }, people: { turns: 60
 // write = the step that proposes changes, verify = the step that checks them. "key" or "key:effort", keys as route2.js CHORE_MODELS.
 // Eval (7 subtly wrong claims with real quotes + 6 true ones, ×2): DeepSeek V4.1 Flash caught 14/14 and kept 12/12 at ~$0.0007 a
 // verify; gpt-oss-120b at low effort passed a pasted-email "PIN" claim twice (12/14); at medium it was 14/14 at ~$0.0025. Writing:
-// Flash and 120b found the same facts and corrections; Flash at about half the cost. So: Flash writes everything; the hourly upkeep
-// is also verified by Flash (cheap, it runs most); the daily people run and the nightly reflection (pinned in every channel) get
-// gpt-oss-120b at medium as an independent judge, since a second model doesn't share the writer's blind spots.
+// Flash and 120b found the same facts and corrections; Flash at about half the cost. Flash writes everything; hourly upkeep
+// keeps its established Flash/off verifier. The 2026-10-12 confirmation benchmark selected Flash/LOW for people and reflection
+// verification only. Those two verifiers now fail closed on their selected model;
+// the established fallback policy and all other chore efforts remain unchanged.
 // Override with CHORE_MODEL_UPKEEP / _PEOPLE / _REFLECT (write) and CHORE_MODEL_MJVERIFY (every verify step).
-export const MJ_MODELS = { upkeep: { write: "dsflash", verify: "dsflash" }, people: { write: "dsflash", verify: "oss120:medium" }, reflect: { write: "dsflash", verify: "oss120:medium" } };
+export const MJ_MODELS = { upkeep: { write: "dsflash", verify: "dsflash" }, people: { write: "dsflash", verify: "dsflash:low" }, reflect: { write: "dsflash", verify: "dsflash:low" } };
 export function mjModelKey(env, job, step) {
   const v = String((step === "verify" ? env?.CHORE_MODEL_MJVERIFY : env?.[`CHORE_MODEL_${String(job).toUpperCase()}`]) || MJ_MODELS[job]?.[step] || "oss120").trim().toLowerCase();
   const [k, effort] = v.split(":");
   return CHORE_MODELS[k] ? { k, effort: effort || null } : { k: "oss120", effort: null };
 }
-// A chore route (model.js / route2.js shape): the chosen model, then gpt-oss-120b on Cerebras as the one fallback.
+// Evaluated verifiers use their isolated policy; other jobs keep their existing fallback.
 export function mjRoute(env, job, step) {
+  const selected = backgroundRoute(`${job}_${step}`);
+  if (selected) return { ...selected, json: true, label: `memjob/${job}/${step}` };
   const { k, effort } = mjModelKey(env, job, step), m = CHORE_MODELS[k];
   const a = { model: m.model, host: m.hosts.length > 1 ? m.hosts : m.hosts[0], effort: effort || m.effort || "low", ...(m.pin ? { pin: true } : {}) };
   const fb = k === "oss120" ? [] : [{ model: CHORE_MODELS.oss120.model, host: CHORE_MODELS.oss120.hosts[0], effort: step === "verify" ? "medium" : "low" }];
@@ -114,9 +119,17 @@ ${VSHAPE}`;
 // an unreadable reply fails (never pass by default).
 export async function verifyClaims(ask, tz, job, claims, L, extra = "", ctx = {}) {
   if (!claims.length) return { pass: new Set(), results: [] };
-  const r = await ask(job, "verify", verifyPrompt({ job, claims, L, tz, extra, first: ctx.first, names: ctx.names }));
-  if (r.skipped) return { pass: new Set(), results: [], skipped: r.skipped };
-  const j = parseJson(r.text), res = Array.isArray(j?.results) ? j.results : [];
+  const ids = new Set(claims.map(c => c.id));
+  let res;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = await ask(job, "verify", verifyPrompt({ job, claims, L, tz, extra, first: ctx.first, names: ctx.names }));
+    if (r.skipped) return { pass: new Set(), results: [], skipped: r.skipped };
+    const j = parseJson(r.text); res = Array.isArray(j?.results) ? j.results : [];
+    // Exactly one verdict per supplied claim. An incomplete review is not a no-change result.
+    const complete = res.length === ids.size && new Set(res.map(x => x?.id)).size === ids.size && res.every(x => ids.has(x?.id));
+    if (complete) break;
+    if (attempt === 1) throw new StructuredOutputError("memory verdict IDs do not match the supplied claims");
+  }
   const pass = new Set(res.filter((x) => x && x.refute === "pass" && x.evidence_grounded === "pass").map((x) => String(x.id)));
   return { pass: new Set(claims.map((c) => c.id).filter((id) => pass.has(id))), results: res.map((x) => ({ id: String(x?.id), refute: x?.refute, evidence_grounded: x?.evidence_grounded, reason: clip(x?.reason, 200) })) };
 }
@@ -124,9 +137,15 @@ export async function verifyClaims(ask, tz, job, claims, L, extra = "", ctx = {}
 // Every model call in a run goes through here: tallies the cost and the model, and records the step (what it returned, briefly).
 export function stepper(host, run) {
   return async (job, step, messages) => {
-    const r = await host.chat(job, step, messages, run);
-    if (r.skipped) { run.steps.push({ step, skipped: r.skipped }); return r; }
+    let r;
+    try { r = await host.chat(job, step, messages, run); }
+    catch (e) {
+      run.cost_nano += Number(e.cost_nano) || 0; if (e.model) run.models.add(e.model);
+      run.steps.push({ step, model: e.model || null, cost_nano: Number(e.cost_nano) || 0, error: e.structured ? "invalid structured output" : "model call failed" });
+      throw e;
+    }
     run.cost_nano += Number(r.cost_nano) || 0; if (r.model) run.models.add(r.model);
+    if (r.skipped) { run.steps.push({ step, skipped: r.skipped, cost_nano: Number(r.cost_nano) || 0 }); return r; }
     run.steps.push({ step, model: r.model || null, cost_nano: Number(r.cost_nano) || 0, chars: String(r.text || "").length });
     return r;
   };

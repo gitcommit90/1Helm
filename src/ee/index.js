@@ -95,3 +95,6 @@ export { customMcpRoute, isCustomSlug, customUsable, ownerOf, CUSTOM_DENIED, wit
 export { ambientQuery, AMBIENT_QUERY_TOOL } from "./ambient-query.js";
 
 export { modelSettingsEnv, configuredChore, configuredHosts, configuredEffort } from "./model-settings.js";
+
+export { authorizeTaskProfile, TaskAffinityBlocked, ensureTaskRuntime, recordTaskServed } from "./task-profile.js";
+export { backgroundRole, backgroundRoute, backgroundPolicy, backgroundReserve } from "./background-policy.js";

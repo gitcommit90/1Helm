@@ -1,4 +1,23 @@
-# Source update: 2026-10-11
+# Source update: 2026-10-12
+
+This reviewed update adds strict structured responses for background work,
+bounded schema retries, stable task transcripts and managed task model affinity.
+The nine managed background roles retain their selected model and low reasoning
+setting; provider failures do not silently substitute a different model.
+Managed task selection remains inside the EE boundary. Public installs continue
+to use their own provider credentials and the existing own-key task runtime.
+
+Public response-size limits, owner sign-in, storage, backup and feature gates are
+preserved. Cloud support diagnostics and operator release tooling are excluded;
+this update adds no public support-access route or database migration. The native
+clients are unchanged. The web bundle is rebuilt from the public source.
+
+Run `npm run test:runtime` for the structured response, background policy,
+transcript, and managed-task isolation regressions, alongside the checks below.
+Synthetic local checks do not establish live provider, container, or device
+behavior in another operator's environment.
+
+## Previous source update: 2026-10-11
 
 This update brings the Worker and web app forward to the October 11 Cloud
 runtime snapshot. It includes channel/task access, task titles and checklists,

@@ -90,7 +90,7 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
   journalInput(tc, { userText, engine, ctxMode }) {
     if (!jk(tc)) return;
     try { this.sql.exec("UPDATE turn_runs SET user_text=?, engine=?, route=?, extra=?, updated=? WHERE card=?", typeof userText === "string" ? userText : JSON.stringify(userText), engine, tc.route ? JSON.stringify(tc.route) : null,
-      JSON.stringify({ ctx: ctxMode, handoff: !!tc.handoff, handoffFrom: tc.handoffFrom || null, userText0: tc.userText, hint: tc.hint || null, outputLimitRetries: tc.outputLimitRetries || 0, modelFailure: tc.modelFailure || null, failedModelUsage: tc.failedModelUsage || null, ...(tc.context ? { context: tc.context } : {}) }), Date.now(), tc.turn); } catch (e) { console.log("journal input", e.message); }
+      JSON.stringify({ ctx: ctxMode, appendRuntime: !!tc.appendRuntime, handoff: !!tc.handoff, handoffFrom: tc.handoffFrom || null, userText0: tc.userText, hint: tc.hint || null, outputLimitRetries: tc.outputLimitRetries || 0, modelFailure: tc.modelFailure || null, failedModelUsage: tc.failedModelUsage || null, ...(tc.context ? { context: tc.appendRuntime ? { version: 2, core: "", developer: "", standing: {}, turn: {} } : tc.context } : {}) }), Date.now(), tc.turn); } catch (e) { console.log("journal input", e.message); }
   },
   // Every step: where the loop is, what it has spent, its guard, what it said. phase "model" = before step's model call, "tools" = after it.
   journalStep(tc, { step, phase = "model", stats, said, saidMeta, checkpoints = 0 }) {
@@ -328,7 +328,8 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
   // Everything a resumed turn needs, in one place (runTurnInner calls it). → { prior (closed and noted), stats, said, step, phase, checkpoints }
   async resumeState(tc, r, hist, userMsg) {
     const ex = J(r.extra, {});
-    const { prior, checkpoints } = this.resumePrior(tc.turn, hist, userMsg);
+    const { prior, checkpoints } = tc.appendRuntime ? { prior: tc.transcript.messages(), checkpoints: tc.transcript.state().compactions } : this.resumePrior(tc.turn, hist, userMsg);
+    tc.contextOverflowRetried = !!ex.contextOverflowRetried;
     const closed = await this.resumeClose(tc, prior);
     const note = { role: "user", content: RESUME_NOTE };
     this.save(tc.turn, note);
@@ -336,7 +337,7 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
     tc.progressOmitted = Number(ex.progressOmitted) || 0;
     tc.handoff = tc.handoff || !!ex.handoff; tc.handoffFrom = tc.handoffFrom || ex.handoffFrom || null;
     if (ex.userText0 != null) tc.userText = ex.userText0; if (ex.hint) tc.hint = ex.hint;
-    if (r.route) { try { tc.route = JSON.parse(r.route); } catch {} }
+    if (r.route && !tc.appendRuntime) { try { tc.route = JSON.parse(r.route); } catch {} }
     // a text that joined this (app-started) turn gets its reply by text too
     if (this.sql.exec("SELECT 1 x FROM card_events WHERE card=? AND type='msg' AND via='text' AND seq>1 LIMIT 1", tc.turn).toArray().length) tc.textSteered = true;
     tc.emit?.({ t: "resumed", card: cardView(this.sql, tc.turn) });

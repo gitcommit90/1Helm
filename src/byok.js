@@ -126,7 +126,7 @@ const quirkKey = (cfg, model) => `${cfg.base}|${model}`;
 function applyQuirks(cfg, req) {
   const q = quirks.get(quirkKey(cfg, req.model)); if (!q) return req;
   const out = { ...req };
-  for (const p of q) { if (p === "max_tokens>mct" && out.max_tokens) { out.max_completion_tokens = out.max_tokens; delete out.max_tokens; } else delete out[p]; }
+  for (const p of q) { if (p === "response_format" && req.response_format?.type === "json_schema") continue; if (p === "max_tokens>mct" && out.max_tokens) { out.max_completion_tokens = out.max_tokens; delete out.max_tokens; } else delete out[p]; }
   return out;
 }
 
@@ -173,7 +173,7 @@ async function byokPost(cfg, req, { signal = null, fetchImpl = globalThis.fetch 
     if (r.ok) return r;
     const { raw, detail } = await errorDetail(cfg, r);
     if (r.status === 400 && attempt < 3) {
-      const p = DROPPABLE.find((k) => k in body && new RegExp(`\\b${k}\\b`).test(raw));
+      const p = DROPPABLE.find((k) => k in body && !(k === "response_format" && req.response_format?.type === "json_schema") && new RegExp(`\\b${k}\\b`).test(raw));
       if (p) {
         const q = quirks.get(quirkKey(cfg, body.model)) || new Set();
         const mct = p === "max_tokens" && /max_completion_tokens/.test(raw);
@@ -233,6 +233,12 @@ async function firstEventOk(cfg, stream) {
 export async function byokChat(cfg, body, { fast = false, signal = null, fetchImpl = globalThis.fetch, privacy = null } = {}) {
   if (!cfg || cfg.missing || typeof cfg.key !== "string") throw new ByokError(missingText(cfg));   // "" = no key (Ollama, LM Studio, vLLM…)
   const model = fast ? (cfg.fast || cfg.model) : cfg.model, req = { ...byokBody(body, model), ...byokPrivacyFields(cfg, privacy) };
+  if (body.response_format?.type === "json_schema" && isOpenRouterBase(cfg.base)) {
+    req.provider = { ...req.provider, require_parameters: true };
+    // These OpenRouter endpoints advertise schemas but not temperature; strict parameter filtering otherwise
+    // rejects the request before inference. Respect the person's selected main/fast model and every privacy field.
+    if (["anthropic/claude-haiku-5.5", "openai/gpt-6-luna"].includes(model)) delete req.temperature;
+  }
   let r;
   try { r = await byokPost(cfg, req, { signal, fetchImpl }); }
   catch (e) { if (privacy && isOpenRouterBase(cfg.base) && POLICY_REFUSAL_RE.test(`${e?.detail || ""} ${e?.message || ""}`)) throw new ByokError(byokPrivacyText(cfg, privacy, model), e.http, e.detail); throw e; }

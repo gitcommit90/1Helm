@@ -3,6 +3,7 @@
 import { POOL, CHAINS, CATEGORIES, CATEGORY_LABEL } from "./pool.js";
 import { PRIVACY_LEVELS, eligibleHosts } from "../privacy.js";
 import { modelCatalog, validCatalogRecord, validModelId } from "./model-catalog.js";
+import { BACKGROUND_POLICIES } from "./background-policy.js";
 
 // OpenRouter /api/v1/models, checked 2026-10-10. "none" is available only when reasoning is optional.
 const EFFORTS = {
@@ -19,7 +20,8 @@ export const SETTINGS_CHORE_MODELS = {
   luna: { model: POOL.luna.model, hosts: ["azure", "azure/us", "azure/eu"], efforts: ["default", ...EFFORTS.luna] },
   sol: { model: POOL.sol.model, hosts: ["azure", "azure/us", "azure/eu"], efforts: ["default", ...EFFORTS.sol] },
 };
-export const SETTINGS_CHORES = ["handoff", "label", "browser", "notes", "notes_final", "memory_summary", "sidecar_card", "upkeep_write", "upkeep_verify", "people_write", "people_verify", "reflect_write", "reflect_verify"];
+export const LEGACY_SETTINGS_CHORES = ["handoff", "label", "browser", "notes", "notes_final", "memory_summary", "sidecar_card", "upkeep_write", "upkeep_verify", "people_write", "people_verify", "reflect_write", "reflect_verify"];
+export const SETTINGS_CHORES = [...LEGACY_SETTINGS_CHORES, "notes_refine", "ambient_extract", "ambient_review"];
 const DECIDERS = ["default", "perplexity/pplx-decider-v1.1-27b", "~typesafe/jev-latest"];
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const own = (o, k) => Object.prototype.hasOwnProperty.call(o || {}, k);
@@ -35,16 +37,18 @@ export function modelSettingsOptions(env = {}, config = null) {
     chores: SETTINGS_CHORES,
     choreDefaults: {
       handoff: `Inherited: ${env.CHORE_MODEL_HANDOFF || env.CHORE_MODEL || "oss120"}, provider default effort`,
-      label: `Inherited: Qwen 3.8 27B, reasoning off; ${env.CHORE_MODEL_LABEL || env.CHORE_MODEL || "oss120"} fallback`,
+      label: `Inherited: gpt-oss-120b on Cerebras, low reasoning; ${env.CHORE_MODEL_LABEL || env.CHORE_MODEL || "oss120"} configured fallback`,
       browser: `Inherited: ${env.CHORE_MODEL_BROWSER || env.CHORE_MODEL || "oss120"}; DeepSeek/Haiku reasoning off, gpt-oss low`,
       notes: `Inherited: ${env.CHORE_MODEL_NOTES || "haiku"}, reasoning off for Haiku/DeepSeek`,
       notes_final: "Inherited: Luna medium, gpt-oss fallback", memory_summary: "Inherited: Qwen 3.8 27B off, gpt-oss then Workers AI fallback",
       sidecar_card: "Inherited: built-in file summary route",
       ...Object.fromEntries(["upkeep", "people", "reflect"].flatMap((job) => [
         [`${job}_write`, `Inherited: ${env[`CHORE_MODEL_${job.toUpperCase()}`] || "dsflash"}`],
-        [`${job}_verify`, `Inherited: ${env.CHORE_MODEL_MJVERIFY || (job === "upkeep" ? "dsflash" : "oss120:medium")}`],
+        [`${job}_verify`, `Inherited: ${env.CHORE_MODEL_MJVERIFY || (job === "upkeep" ? "dsflash" : "dsflash:low")}`],
       ])),
+      ...Object.fromEntries(Object.entries(BACKGROUND_POLICIES).map(([role, p]) => [role, `Inherited: ${p.model}, ${p.effort.toUpperCase()} reasoning; no other-model fallback`])),
     },
+    backgroundPolicies: BACKGROUND_POLICIES,
     choreModels: [{ key: "default", model: "Built-in defaults", efforts: ["default"] }, ...Object.entries(SETTINGS_CHORE_MODELS).map(([key, m]) => ({ key, model: m.model, efforts: m.efforts }))],
     deciders: DECIDERS.map((key) => ({ key, label: key === "default" ? "Built-in default" : key.startsWith("~") ? "TypeSafe Jev" : "Perplexity" })) };
 }
@@ -52,6 +56,15 @@ function keys(o, expected, path) {
   if (!o || typeof o !== "object" || Array.isArray(o) || Object.keys(o).length !== expected.length || expected.some((k) => !own(o, k))) fail(`Invalid ${path}: supply exactly ${expected.join(", ")}.`);
 }
 export function validateModelSettings(config) {
+  // Old revisions remain immutable. Only the complete historical shape is
+  // expanded; partial/new malformed configs must not silently acquire defaults.
+  if (config?.chores && Object.keys(config.chores).length === LEGACY_SETTINGS_CHORES.length && LEGACY_SETTINGS_CHORES.every(k => own(config.chores, k))) {
+    for (const role of LEGACY_SETTINGS_CHORES) keys(config.chores[role], ["model", "effort"], role);
+    config = clone(config);
+    config.chores.notes_refine = clone(config.chores.notes);
+    config.chores.ambient_extract = { model: "default", effort: "default" };
+    config.chores.ambient_review = { model: "default", effort: "default" };
+  }
   keys(config, ["efforts", "chains", "chores", "decider", ...(own(config, "models") ? ["models"] : []), ...(own(config, "catalog") ? ["catalog"] : [])], "settings");
   if (own(config, "models")) keys(config.models, Object.keys(POOL), "model slots");
   if (own(config, "catalog")) {
@@ -112,7 +125,7 @@ export async function modelSettingsView(env) {
   let config = null, config_error = null;
   try { config = configOf(row); } catch (e) { config_error = e.message; }
   return { environment: settingsEnvironment(env), revision: Number(row?.revision || 0), config: config || defaultModelSettings(), config_error, defaults: defaultModelSettings(), options: modelSettingsOptions(env, config), history,
-    inherited: !row?.config, effective: "New model calls, including the next step of running tasks. In-flight calls finish with their existing settings." };
+    inherited: !row?.config, effective: "New tasks and background calls use these defaults. Append-runtime tasks keep their original model and effort. Legacy tasks use changes on their next call. Privacy restrictions and explicit operator revocations still apply immediately." };
 }
 function revisionOf(value) { if (!Number.isSafeInteger(value) || value < 0) fail("A valid settings revision is required."); return value; }
 async function write(env, revision, config, by, action) {
@@ -166,7 +179,7 @@ export function configuredChore(env, role, fallbackEffort = "low") {
   const meta = env.MODEL_SETTINGS.catalog?.[c.model];
   const m = SETTINGS_CHORE_MODELS[c.model] || { model: c.model, hosts: configuredHosts(env.MODEL_SETTINGS, c.model, "zdr") }, fallback = SETTINGS_CHORE_MODELS.oss120;
   return { model: m.model, host: m.hosts, effort: c.effort, pin: true, chore: true, only: true, runtimeSettings: true, max_output: meta?.max_output, json: meta ? meta.json : c.model !== "oss20",
-    fallbacks: c.model === "oss120" ? [] : [{ model: fallback.model, host: fallback.hosts, effort: fallbackEffort, pin: true }] };
+    fallbacks: own(BACKGROUND_POLICIES, role) || c.model === "oss120" ? [] : [{ model: fallback.model, host: fallback.hosts, effort: fallbackEffort, pin: true }] };
 }
 
 export const slotModel = (settings, key) => settings?.models?.[key] || POOL[key]?.model;

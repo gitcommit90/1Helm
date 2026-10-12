@@ -5,6 +5,8 @@ import { fixedEffort, MAX_ATTEMPTS, isMuse, aliasOf } from "./ee/index.js";   //
 import { testModelFor, testPayload, testHostsOf, testEffortOf } from "./internal-test-model.js";   // dev test workspaces: every call on TEST_MODEL
 import { boundedText } from "./bounded-body.js";
 import { modelSettingsEnv, configuredChore, configuredHosts, configuredEffort } from "./ee/index.js";
+import { authorizeTaskProfile, TaskAffinityBlocked } from "./ee/index.js";
+import { backgroundRole, backgroundRoute } from "./ee/index.js";
 // Model provider. ROUTER_MODE="two" (dev and live): the main chat follows the routing policy (route2.js decides a task category,
 // pool.js maps category × AI data privacy level to models with fixed efforts, twoChat below builds every attempt). Classic mode
 // (router.js / Jev Router) is kept behind ROUTER_MODE="classic". Every OpenRouter chat request passes orFetch, which validates it against
@@ -36,22 +38,33 @@ export const effortFor = (e, model) => e === "none" && reasoningMandatory(model)
 export const effortBody = (e, model) => { e = effortFor(e, model); return !e || e === "default" ? {} : e === "none" ? { reasoning: { enabled: false } } : { reasoning: { effort: e } }; };
 // signal (optional): the person's Stop aborts the call mid-flight (the fetch and its streamed body).
 export async function openRouterChat(env, body, session, route = null, meta = {}, signal = null) {
+  // A task's identity takes precedence over defaults, test overrides and legacy
+  // fallback chains. Authorization is fresh even though model settings are frozen.
+  if (route?.taskAffinity) return taskChat(env, body, route, meta, signal);
   if (env.BYOK) return byokChat(env.BYOK, body, { fast: byokFast(route, body), signal, privacy: await privacyOf(env, meta?.tenant) });
   // Dev test workspace (test-model.js): one call on the test model, whatever the route says. No pool models, no fallback list.
   const tm = await testModelFor(env, meta?.tenant);
   if (tm) return testChat(env, body, session, route, meta, signal, tm);
   env = await modelSettingsEnv(env);
   const memoryRole = /^memjob-(upkeep|people|reflect)-(write|verify)$/.exec(meta?.kind || "");
-  const role = memoryRole ? `${memoryRole[1]}_${memoryRole[2]}` : meta?.kind === "card-label" ? "label"
+  const scopedRole = backgroundRole(meta?.kind) || route?.backgroundRole;
+  const role = scopedRole || (memoryRole ? `${memoryRole[1]}_${memoryRole[2]}` : meta?.kind === "card-label" ? "label"
     : meta?.kind === "memory-summary" ? "memory_summary" : meta?.kind === "sidecar-card" ? "sidecar_card"
     : meta?.kind === "live-notes-final" ? "notes_final" : String(meta?.kind || "").startsWith("live-notes-") ? "notes"
-    : choreRouteFor(route, body, env) ? "handoff" : null;
+    : choreRouteFor(route, body, env) ? "handoff" : null);
   const override = role && configuredChore(env, role, memoryRole?.[2] === "verify" ? "medium" : "low");
   if (override) {
     route = override;
     const { reasoning, ...configuredBody } = body; body = configuredBody;
     // Bedrock gpt-oss-20b does not support JSON mode. Match the existing memory-job model adapter.
-    if (!override.json && body.response_format) { const { response_format, ...rest } = body; body = rest; }
+    if (!override.json && body.response_format && body.response_format.type !== "json_schema") { const { response_format, ...rest } = body; body = rest; }
+  }
+  if (scopedRole) {
+    // These evaluated chores are one model in both router modes. In particular,
+    // classic's global `models` fallback list must never escape this policy.
+    route = { ...(override || backgroundRoute(scopedRole)), fallbacks: [], chore: true, only: true };
+    const { models, reasoning, ...singleBody } = body;
+    return twoChat(env, singleBody, session, route, meta, signal);
   }
   // Routing policy (route2.js, ROUTER_MODE=two): the category's chain at the current privacy level, or a chore on its chore model.
   if (route2On(env) && (route?.two || route?.chore || !route)) return twoChat(env, body, session, route || policyRoute("general", "zdr", "default"), meta, signal);
@@ -60,7 +73,7 @@ export async function openRouterChat(env, body, session, route = null, meta = {}
   const fbs = (route?.fallbacks || []).map((f) => typeof f === "string" ? { model: f } : f);
   const inList = (f) => Object.keys(f).length === 1 && effortFor(route.effort, f.model) === route.effort;
   const solo = fbs.filter((f) => !inList(f)), base = { usage: { include: true }, ...(session ? { session_id: String(session).slice(0, 256) } : {}) };
-  const send = (p) => orFetch(env, { ...p, ...base, ...body }, meta, { "x-openrouter-metadata": "enabled" }, signal);
+  const send = (p) => orFetch(env, { ...p, ...base, ...body, provider: { ...body.provider, ...p.provider } }, meta, { "x-openrouter-metadata": "enabled" }, signal);
   const fail = async (r) => { const t = await boundedText(r, 64 * 1024).catch(() => ""); return Object.assign(new Error(`openrouter ${r.status}: ${t.slice(0, 200)}`), { orStatus: r.status }); };
   let r = await send({ ...(route ? { model: route.model, models: [...fbs.filter(inList).map((f) => f.model), ...OR_FALLBACKS].filter((m, i, a) => m !== route.model && a.indexOf(m) === i).slice(0, 3), ...effortBody(route.effort, route.model) }
         : { model: OR_MODEL, models: OR_FALLBACKS }), provider: { zdr: true, max_price: OR_MAX_PRICE, ...(route?.host ? { order: [route.host].flat() } : {}) } });
@@ -71,6 +84,49 @@ export async function openRouterChat(env, body, session, route = null, meta = {}
   }
   if (!r.ok) throw await fail(r);
   return r;
+}
+
+// OpenRouter's session stickiness is disabled by an explicit provider.order.
+// Keep the privacy-validated allowlist and every other constraint; remove only
+// manual preference, including the order added by the shared privacy validator.
+const taskStickyPayload = (payload) => {
+  const { order, ...provider } = payload.provider;
+  return { ...payload, provider };
+};
+export function taskPayload(profile, body, { hosts, level } = {}) {
+  const { reasoning, provider, models, model, session_id, prompt_cache_key, ...rest } = body || {};
+  if (isMuse(profile.requestedModel) && rest.tool_choice != null && rest.tool_choice !== "auto")
+    throw new TaskAffinityBlocked("This task's model supports only automatic tool selection. No different model was substituted.", "unsupported-tool-choice");
+  const p = { ...rest, messages: replayFor(rest.messages, profile.requestedModel), model: profile.requestedModel,
+    max_tokens: Math.min(Number(rest.max_tokens) || profile.maxOutput, profile.maxOutput), ...effortBody(profile.effort, profile.requestedModel),
+    provider: { only: hosts || profile.hosts, allow_fallbacks: true, require_parameters: true, max_price: OR_MAX_PRICE },
+    usage: { include: true }, session_id: cacheKey(profile.cacheSession), prompt_cache_key: cacheKey(profile.cacheSession) };
+  return taskStickyPayload(level ? enforceRequest(p, level) : p);
+}
+async function taskChat(env, body, route, meta, signal) {
+  const profile = route.taskProfile;
+  // Exactly one application retry for a transient pre-response failure. Endpoint
+  // fallback is bounded to this model's snapshotted eligible hosts, never models.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const auth = await authorizeTaskProfile(env, profile, meta?.tenant, body);
+    try {
+      const r = await orFetch(env, taskPayload(profile, body, auth), { ...meta, _taskAffinity: true }, { "x-openrouter-metadata": "enabled" }, signal);
+      if (!r.ok) {
+        const status = r.status, detail = await boundedText(r, 64 * 1024).catch(() => "");
+        if (/context.{0,40}(length|window|limit)|maximum.{0,30}token|too many tokens/i.test(detail))
+          throw Object.assign(new Error("The task model rejected the request because its context window is full."), { orStatus: status, contextOverflow: true });
+        throw Object.assign(new Error(`Task model unavailable (${status}).`), { orStatus: status });
+      }
+      const out = await firstOk(r, !!body.stream);
+      route.served = profile.requestedModel;
+      return out;
+    } catch (e) {
+      if (signal?.aborted || e.privacy || e.taskAffinity || /context|maximum.*token|token.*limit/i.test(String(e.message))) throw e;
+      const transient = e.orStatus === 429 || e.orStatus >= 500 || e instanceof TypeError;
+      if (attempt === 0 && transient) continue;
+      throw Object.assign(new TaskAffinityBlocked("This task's model is unavailable right now. Retry shortly; your conversation is saved and no different model was substituted.", "model-unavailable"), { orStatus: e.orStatus || 503 });
+    }
+  }
 }
 
 // Test model (test-model.js): main chat capped per step like two mode (stepMaxOut). orFetch rewrites the payload (model, hosts, ZDR, reasoning effort
@@ -289,11 +345,22 @@ export async function orFetch(env, payload, meta = {}, extraHeaders = {}, signal
   // AI data privacy (privacy.js): the one chokepoint for every OpenRouter chat call validates the request against the account's current
   // level (twoChat passes the level it just read; anything else reads it now). Ineligible → PrivacyBlocked, nothing is sent.
   payload = enforceRequest(payload, meta?._privacy ?? await privacyOf(env, meta?.tenant), { prov: meta?._prov ?? null });
+  if (meta?._taskAffinity) payload = taskStickyPayload(payload);
   if (payload.messages) payload = { ...payload, messages: replayFor(payload.messages, payload.model) };   // opaque reasoning: only to the model that wrote it
   // Dev test workspace (test-model.js): every OpenRouter chat call goes to the test model (ZDR endpoints: stricter than any level).
   // The privacy check above already ran on the request as the policy built it.
-  const tm = await testModelFor(env, meta?.tenant);
+  const tm = meta?._taskAffinity ? null : await testModelFor(env, meta?.tenant);
   if (tm) payload = testPayload(payload, tm, OR_MAX_PRICE, testHostsOf(env), meta?._reasoningOff ? "none" : testEffortOf(env));
+  // Background chores historically sent temperature:0, which these endpoints silently ignored. With strict parameter
+  // enforcement that now makes otherwise schema-capable endpoints ineligible. Their advertised capabilities
+  // (2026-10-11) omit temperature. Apply after test-model rewriting; preserve other models and normal chat.
+  const strictChore = /^(?:live-notes-(?:note|final|refine)|ambient-(?:extract|review)|memjob-(?:upkeep|people|reflect)-(?:write|verify)|sidecar-card|sidecar-vision-[a-z]+|card-label|memory-summary|browser-(?:oss|jev))$/.test(meta?.kind || "")
+    || (meta?.kind === "chat" && payload.response_format?.json_schema?.name === "handoff_notes");
+  if (payload.response_format?.type === "json_schema" && strictChore
+      && ["anthropic/claude-haiku-5.5", LUNA].includes(payload.model)) {
+    const { temperature, ...supported } = payload; payload = supported;
+  }
+  if (payload.response_format?.type === "json_schema") payload = { ...payload, provider: { ...payload.provider, require_parameters: true } };
   if (env.PROMPT_CACHE !== "off") payload = withCacheBreakpoints(payload);   // prompt caching, every route (withCacheBreakpoints); PROMPT_CACHE="off" = kill switch
   const body = JSON.stringify(payload);
   return orSend(env, "chat/completions", () => body, meta, extraHeaders, signal);

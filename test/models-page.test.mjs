@@ -50,6 +50,13 @@ await test("page and API read only their environment with safe headers", async (
     const text = await r.text(); assert.match(text, /Models/); assert.doesNotMatch(text, /https:\/\/[^" ]+\/models/);
     assert.match(text, env === dev ? /Save for Dev/ : /Save for Production/);
     const api = await call("/models/api", { env }); const data = await api.json(); assert.equal(data.revision, 0); assert.equal(data.environment, env.ENV_NAME); assert.equal(data.options.models.length, 6);
+    assert.equal(data.options.chores.length, 16);
+    assert.deepEqual(Object.keys(data.options.backgroundPolicies).sort(), ["label", "notes", "notes_refine", "notes_final", "sidecar_card", "ambient_extract", "ambient_review", "people_verify", "reflect_verify"].sort());
+    for (const [role, policy] of Object.entries(data.options.backgroundPolicies)) {
+      assert.equal(policy.effort, "low"); assert.match(data.options.choreDefaults[role], /LOW reasoning; no other-model fallback/);
+      assert.equal(data.config.chores[role].model, "default");
+    }
+    assert.match(text, /Other roles are outside this rollout/); assert.doesNotMatch(text, /An explicit choice uses GPT OSS 120B/);
     const head = await call("/models", { env, method: "HEAD" }); assert.equal(head.status, 200); assert.equal(await head.text(), "");
   }
 });

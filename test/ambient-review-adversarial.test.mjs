@@ -94,7 +94,7 @@ for(const mutation of ['privacy','repair','source']){
  globalThis.fetch=async(url,options)=>{
   assert.match(String(url),/^https:\/\/openrouter\.ai\//,'no real or unexpected network destination');
   const body=JSON.parse(options.body),input=JSON.parse(body.messages.at(-1).content),isReview=Array.isArray(input.candidates);
-  const payload=isReview?{items:input.candidates.map(retain)}:{items:[{kind:'task',line:0,quote:input.lines[0].text,speech_act:'intention',status:'open'}]};
+  const payload=isReview?{items:input.candidates.map(retain)}:{items:[{kind:'task',line:0,quote:input.lines[0].text,speech_act:'intention',status:'open',due_text:'',relation:null,supersedes:[]}]};
   const result=()=>new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(payload)},finish_reason:'stop'}],usage:{cost:0.0004,prompt_tokens:200,completion_tokens:50}}),{headers:{'content-type':'application/json'}});
   if(!isReview){extractionCalls++;return result();}
   reviewCalls++;if(reviewCalls===1)return new Promise(resolve=>{finishOld=()=>resolve(result());});return result();

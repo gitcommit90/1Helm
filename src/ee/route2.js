@@ -275,7 +275,7 @@ export function failedResult(text) {
   if (/^(error\b|Your tool arguments were not valid JSON|Validation failed for tool|Tool \S+ not found)/i.test(t)) return true;   // classic + pi
   const m = t.match(/^exit (\d+)/); return !!m && [2, 124, 126, 127, 137].includes(Number(m[1]));   // exit 1 is often just "no match"
 }
-const recoverable = (tc) => !!tc?.route?.two && !tc.route.test && !!tc.esc && !tc.esc.done && (tc.route.served || tc.route.primary) !== IN_TURN_TARGET;
+const recoverable = (tc) => !!tc?.route?.two && !tc.route.taskAffinity && !tc.route.test && !!tc.esc && !tc.esc.done && (tc.route.served || tc.route.primary) !== IN_TURN_TARGET;
 export function escalateTurn(R, tc, reason) {
   if (!recoverable(tc)) return false;
   tc.esc.done = reason;
@@ -322,6 +322,10 @@ export function choreRouteFor(route, body, env = null) {
 // CURRENT level; each kept only if some endpoint of it is eligible at that level for this payload (privacy.js), and not a Meta model
 // when the request forces a tool choice (Meta accepts only "auto"). Deduplicated, at most MAX_MODELS. skipped: why each was left out.
 export function dispatchOrder(route, level, { prov = null, body = null, settings = null } = {}) {
+  if (route?.taskAffinity) {
+    const model = route.taskProfile?.requestedModel;
+    return model ? { models: [model], skipped: [] } : { models: [], skipped: [{ model: null, why: "missing task profile" }] };
+  }
   const lead = [route?.recovery, route?.policy ? null : route?.primary].map((m) => replacementModel(settings, m)).filter(Boolean);
   const configured = settings?.chains?.[normalizeCategory(route?.category)]?.[normalizePrivacy(level)];
   const list = [...lead, ...(configured ? configured.map((k) => slotModel(settings, k)).filter(Boolean) : chainModels(normalizeCategory(route?.category), normalizePrivacy(level)).map((m) => replacementModel(settings, m)))];

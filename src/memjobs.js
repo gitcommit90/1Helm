@@ -16,7 +16,10 @@
 import { openRouterChat, useOpenRouter, OR_RESERVE_PRICE } from "./model.js";
 import { hsOn, recall as hsRecall, retain as hsRetain, forgetDocument } from "./hindsight.js";
 import { METER as BYOK_METER } from "./byok-meter.js";
+import { structuredChat, parseStructuredResponse, StructuredOutputError } from "./structured-output.js";
+import { memorySchema } from "./background-schemas.js";
 import { MJ_MARKUP, MAX_OUT, FIRST_LOOKBACK_MS, WINDOW, mjRoute, clip, one, rid, sameFact, parseJson, looksSecret, dayOf, hourOf, when, labelTurns, renderTurns, citeTurn, RUN, COMMON, verifyClaims, stepper, skippedRun } from "./memjobs-core.js";
+import { backgroundPolicy, backgroundReserve } from "./ee/index.js";
 import { people, peopleHost } from "./memjobs-people.js";
 import { reflect, reflectHost } from "./memjobs-reflect.js";
 export * from "./memjobs-core.js";
@@ -144,16 +147,29 @@ export const residentHost = (res, skipperSlug = "main") => ({
   async chat(job, step, messages, run) {
     if (!useOpenRouter(res.env)) return { skipped: "no chore model available" };
     await res.byokRefresh(60e3);
-    const env = res.env, byok = !!env.BYOK, chars = messages.reduce((n, m) => n + String(m.content || "").length, 0);
-    const reserve = byok ? 0 : Math.ceil((Math.ceil(chars / 3) * OR_RESERVE_PRICE.in + MAX_OUT * OR_RESERVE_PRICE.out) * MJ_MARKUP), id = `mj-${job}-${step}:${crypto.randomUUID()}`, L = res.ledger();
-    if (!byok) { const r = await L.reserve(id, reserve); if (!r?.ok) return { skipped: r?.reason || "out_of_credits" }; }
-    const route = mjRoute(env, job, step);
-    let j;
-    try { const resp = await openRouterChat(env, { messages, max_tokens: MAX_OUT, temperature: 0, ...(route.json ? { response_format: { type: "json_object" } } : {}) }, null, route, { tenant: res.get("tenant"), channel: res.get("channel"), kind: `memjob-${job}-${step}` }); j = await resp.json(); }
-    catch (e) { if (!byok) await L.settle(id, 0).catch(() => {}); throw e; }
-    const cost = byok ? 0 : Math.ceil(Number(j?.usage?.cost || 0) * 1e9), charge = Math.ceil(cost * MJ_MARKUP);
-    if (!byok) await L.settle(id, charge).catch((e) => console.log("memjob settle", e.message));
-    return { text: String(j?.choices?.[0]?.message?.content ?? ""), cost_nano: charge, model: j?.model || route.model };
+    const env = res.env, byok = !!env.BYOK, L = res.ledger(), route = mjRoute(env, job, step), schema = memorySchema(job, step);
+    const policy = backgroundPolicy(`${job}_${step}`);
+    let charged = 0;
+    try {
+      const result = await structuredChat(async (request) => {
+        const reserve = byok ? 0 : policy ? backgroundReserve(request) : Math.ceil((Math.ceil(JSON.stringify(request).length / 3) * OR_RESERVE_PRICE.in + MAX_OUT * OR_RESERVE_PRICE.out) * MJ_MARKUP);
+        const id = `mj-${job}-${step}:${crypto.randomUUID()}`;
+        if (!byok) { const r = await L.reserve(id, reserve); if (!r?.ok) throw Object.assign(new Error("memory job spending paused"), { skipped: r?.reason || "out_of_credits" }); }
+        let j;
+        try { const resp = await openRouterChat(env, request, null, route, { tenant: res.get("tenant"), channel: res.get("channel"), kind: `memjob-${job}-${step}` }); j = await resp.json(); }
+        catch (e) { if (!byok) await L.settle(id, 0).catch(() => {}); throw e; }
+        const charge = byok ? 0 : Math.ceil(Math.ceil(Number(j?.usage?.cost || 0) * 1e9) * MJ_MARKUP);
+        charged += charge;
+        if (!byok) await L.settle(id, charge).catch((e) => console.log("memjob settle", e.message));
+        const data = parseStructuredResponse(j, schema);
+        if (step === "write" && data.status === "no_change" && (data.people || data.claims).length) throw new StructuredOutputError("no_change must have an empty proposal list");
+        return j;
+      }, { messages, max_tokens: policy?.maxTokens || MAX_OUT, temperature: 0 }, { name: `memory_${job}_${step}`, schema, maxAttempts: 2 });
+      return { text: JSON.stringify(result.data), cost_nano: charged, model: result.response?.model || route.model };
+    } catch (e) {
+      if (e.skipped) return { skipped: e.skipped, cost_nano: charged, model: route.model };
+      e.cost_nano = charged; e.model = route.model; throw e;
+    }
   },
   // Memory this channel already holds that's close to the window: its Hindsight bank (when on) + its saved facts in the ledger.
   async known(q) {

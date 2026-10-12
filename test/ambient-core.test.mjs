@@ -101,7 +101,7 @@ globalThis.fetch = async (url, init) => { requests.push({ url, body: JSON.parse(
 try {
   const modelStore = new AmbientStore(host), lines = ambientLines(conv(90, "Remind me to buy groceries", T));
   await assert.rejects(modelStore.extract(lines, [{ id: "ambient:full-persistent-id-must-not-be-copied", text: "Previous grocery plan", owner: "wearer", kind: "task" }], { plan: "plus" }, { source: "bee", source_id: "90", hash: "retry-test", error: "Extraction waiting to retry (validate_evidence: model_evidence_invalid)" }));
-  assert.equal(requests.length, 1); assert.equal(requests[0].body.provider.zdr, true); assert.equal(requests[0].body.model, "anthropic/claude-haiku-5.5");
+  assert.equal(requests.length, 2, "invalid contract receives one bounded retry"); assert.equal(requests[0].body.provider.zdr, true); assert.equal(requests[0].body.model, "openai/gpt-6-luna");
   assert.equal(JSON.parse(requests[0].body.messages[1].content).lines[0].line, 0, "model receives explicit source line identifiers");
   assert.equal(JSON.parse(requests[0].body.messages[1].content).previous[0].id, "previous:0");
   assert.ok(!JSON.stringify(requests[0].body.messages).includes("ambient:full-persistent-id"), "historical refs cannot require copying long hashes");
@@ -113,8 +113,7 @@ try {
   const rid = reserved.at(-1)[0]; assert.equal(settled.filter(([id]) => id === rid).length, 1, "invalid JSON does not settle/refund twice"); assert.equal(settled.find(([id]) => id === rid)[1], 115000);
   assert.equal(modelStore.rows("SELECT COUNT(*) n FROM ambient_attempts")[0].n, 0);
   globalThis.fetch = async () => Response.json({ choices: [{ message: { content: JSON.stringify({ items: [{ kind: "reminder", quote: lines[0].text, line: 0 }] }) }, finish_reason: "stop" }], usage: { cost: 0.0001 } });
-  const unclassified = validateAmbient(await modelStore.extract(lines, [], { plan: "plus" }), lines)[0];
-  assert.equal(unclassified.kind, "idea"); assert.equal(unclassified.uncertainty, "speech_act_uncertain"); assert.equal(unclassified.needs_review, true, "fresh model missing speech act cannot create confirmed task");
+  await assert.rejects(modelStore.extract(lines, [], { plan: "plus" }), /missing speech_act/, "fresh model missing required speech act cannot create a confirmed task");
   allowSpend = false; const attempts = requests.length; await assert.rejects(modelStore.extract(lines, [], { plan: "plus" }), /spending paused/); assert.equal(requests.length, attempts, "daily limit stops dispatch");
 } finally { globalThis.fetch = originalFetch; }
 console.log("PASS ambient core: speaker attribution, full chunking, live and raw recall, version replacement, quote validation, unknown-owner review, completion provenance, deletion reversal, scoped paging, privacy, retries, generation race, read-only and disconnected indexing.");

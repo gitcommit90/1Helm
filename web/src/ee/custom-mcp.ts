@@ -151,12 +151,13 @@ function head() {
   return `<h2>${CMCP_TITLE}</h2><p class="slead">Settings for people who want to go beyond the defaults.</p>`;
 }
 const SPIN = `<span class="bico"><i class="apspin"></i></span>`;
-export function cmcpPage(): string {
+export function cmcpPage(withHeading = true): string {
   if (!D) return "";
   if (!D.api && !M.loaded) { M.loaded = true; M.available = false; M.reason = "unconfigured"; }   // design sandbox: no Worker to ask
   load();
+  const heading = withHeading ? head() : "";
   const title = `Custom MCP connections<em class="stag mcxexp">Experimental</em>`;
-  if (!M.loaded) return `${head()}<div class="sc">${D.srow(M.err ? "" : SPIN, M.err ? "Couldn't load" : "Loading…", M.err ? esc(M.err) : "", M.err ? `<button class="sa blue" data-cmcp-retry>Try again</button>` : "")}</div>`;
+  if (!M.loaded) return `${heading}<div class="sc">${D.srow(M.err ? "" : SPIN, M.err ? "Couldn't load" : "Loading…", M.err ? esc(M.err) : "", M.err ? `<button class="sa blue" data-cmcp-retry>Try again</button>` : "")}</div>`;
   const off = !M.available;
   const why = !off ? "" : M.reason === "self_managed"
     ? `<p class="mcxnote" role="status">Custom MCP connections need Managed apps. You're using your own Composio account. <button type="button" class="mcxlink" data-sgo="accounts">Choose how apps connect</button></p>`
@@ -166,9 +167,9 @@ export function cmcpPage(): string {
   const top = `<div class="sc">${D.srow("", title, "Connect your own remote MCP server to give your assistants additional tools.", `${M.toggling ? `<i class="apspin" aria-hidden="true"></i>` : ""}${toggle}`, " data-cmcprow")}</div>${why}
     <p class="sfine mcxfine">Requests go through Composio to the server you supply. Whoever runs that server controls its tools and how it handles your data. Turning this on doesn't approve every tool action: your assistant still asks first when it normally would.</p>`;
   const offNote = `<p class="sfine mcxfine">${kept}Turning this off can't undo anything already sent to a server.</p>`;
-  if (off || !M.enabled) return `${head()}${top}${off ? "" : offNote}`;
+  if (off || !M.enabled) return `${heading}${top}${off ? "" : offNote}`;
   const list = M.servers.length ? `<ul class="sc mcxlist" aria-label="Custom MCP servers">${M.servers.map(serverRow).join("")}</ul>` : `<div class="sc">${D.srow("", "No servers yet", "Add one to give your assistants its tools.", "")}</div>`;
-  return `${head()}${top}<h3>Servers</h3>${list}${M.adding ? formHtml() : `<div class="sadd"><button type="button" class="sa blue" data-cmcp-add>${D.icon("plus", 15)}<span>Add server</span></button></div>`}
+  return `${heading}${top}<h3>Servers</h3>${list}${M.adding ? formHtml() : `<div class="sadd"><button type="button" class="sa blue" data-cmcp-add>${D.icon("plus", 15)}<span>Add server</span></button></div>`}
     <p class="sfine mcxfine">Turning this off keeps your saved connections, but can't undo anything already sent to a server.</p>`;
 }
 
