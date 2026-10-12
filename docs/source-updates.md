@@ -1,5 +1,25 @@
 # Source update: 2026-10-12
 
+## Memory-context follow-up
+
+The comparison for this follow-up starts at public
+`4705bbbddc423df1985bdea93cf689b466b15284`. Worker source is reconciled from
+`39b8e9e4ce175f7bd0acc5025d55bfc04b96cbd7` through
+`66d3e1c86cff0dc887c0865795d432cb2f1e15f8`; web source remains
+`7b0706aee0ffee61c9b100397287dfe75219a89c`.
+
+Context v2 now consistently describes personal memory as on-demand. Before
+claiming a needed personal fact is absent, the helper is told to look it up in
+the current turn, distinguish an unavailable lookup from an absent fact, and
+reuse sufficient supplied facts without unrelated searches. General names the
+actual source channel when answering from another channel's memory.
+
+The public own-key runtime, optional-memory behavior and EE boundaries remain
+unchanged. Local prompt-contract coverage is included in `npm run test:runtime`;
+it does not establish live model behavior. Hosted deployment configuration and
+release-only test harness changes remain excluded. No schema, web asset or
+native-client update is included in this follow-up.
+
 ## Source correspondence
 
 | Source | Previous reviewed snapshot | Reconciled snapshot |
