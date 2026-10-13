@@ -1,29 +1,18 @@
-// Evaluated background roles. Keep independent of settings/transport so the UI and
-// runtime share one policy without changing other chores or main-chat routing.
-const models = {
-  haiku: { model: "anthropic/claude-haiku-5.5", hosts: ["google-vertex", "amazon-bedrock"] },
-  luna: { model: "openai/gpt-6-luna", hosts: ["azure", "azure/us", "azure/eu"] },
-  dsflash: { model: "deepseek/deepseek-v4.1-flash", hosts: ["together", "modal", "coreweave"] },
-};
-const policy = (modelKey, maxTokens, timeoutMs = 90000) => Object.freeze({ modelKey, ...models[modelKey],
-  hosts: Object.freeze([...models[modelKey].hosts]), effort: "low", maxTokens, timeoutMs, fallbackPolicy: "same-model-only" });
-export const BACKGROUND_POLICIES = Object.freeze({
-  label: policy("haiku", 2048, 30000),
-  notes: policy("luna", 1500),
-  notes_refine: policy("dsflash", 8192),
-  notes_final: policy("haiku", 4000),
-  sidecar_card: policy("haiku", 1600),
-  ambient_extract: policy("luna", 3000),
-  ambient_review: policy("dsflash", 3000),
-  people_verify: policy("dsflash", 6000),
-  reflect_verify: policy("dsflash", 6000),
+// Output and time limits for the evaluated background roles. Which model runs each role, its reasoning level and its fallbacks are the
+// role's saved setting (model-jobs.js), not part of this file.
+const limits = (maxTokens, timeoutMs = 90000) => Object.freeze({ maxTokens, timeoutMs });
+export const BACKGROUND_LIMITS = Object.freeze({
+  label: limits(2048, 30000),
+  notes: limits(1500),
+  notes_refine: limits(8192),
+  notes_final: limits(4000),
+  sidecar_card: limits(1600),
+  ambient_extract: limits(3000),
+  ambient_review: limits(3000),
+  people_verify: limits(6000),
+  reflect_verify: limits(6000),
 });
-export const backgroundPolicy = role => BACKGROUND_POLICIES[role] || null;
-export function backgroundRoute(role) {
-  const p = backgroundPolicy(role);
-  return p ? { model: p.model, host: [...p.hosts], effort: p.effort, pin: true,
-    fallbacks: [], only: true, chore: true, backgroundRole: role } : null;
-}
+export const backgroundPolicy = role => BACKGROUND_LIMITS[role] || null;
 export function backgroundRole(kind) {
   return ({ "card-label": "label", "live-notes-note": "notes", "live-notes-refine": "notes_refine",
     "live-notes-final": "notes_final", "sidecar-card": "sidecar_card", "ambient-extract": "ambient_extract",

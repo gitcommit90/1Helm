@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Resident } from '../src/resident.js';
-import { REPEAT_FALLBACK } from '../src/repeat-guard.js';
+import { REPEAT_FALLBACK, TOOL_BATCH } from '../src/repeat-guard.js';
+import { SEED } from './helpers/seed-settings.mjs';
 
 const encode = value => new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`);
 function stream(mode, stats) {
@@ -25,7 +26,7 @@ test('actual public Resident parser bounds core BYOK and EE streams, preserving 
       const ownKey=lane!=='ee-workers';
       let mode='repeat', stats, reserved=0, settled=0;
       const cfg={base:'https://provider.example.test/v1',key:'',model:'fixture-model'};
-      const R={env:{...(lane.startsWith('ee')?{ONEHELM_EE:'1hc'}:{}),...(ownKey?{BYOK:cfg}:{MODEL:'fixture-model',AI:{run:async()=>stream(mode,stats)}})},
+      const R={env:{...(lane.startsWith('ee')?{ONEHELM_EE:'1hc'}:{}),...(ownKey?{BYOK:cfg}:{MODEL_SETTINGS:SEED,AI:{run:async()=>stream(mode,stats)}})},
         ctx:{id:{toString:()=> 'fixture-resident'}},get:()=>null,modelTools:()=>[],cardCharge:()=>{},resOpen:()=>{},resClose:()=>{},
         ledger:()=>({reserve:async()=>{reserved++;return {ok:true};},settle:async()=>{settled++;return {ok:true};}})};
       globalThis.fetch=async(url,init)=>{assert.equal(String(url),cfg.base+'/chat/completions');assert.equal(JSON.parse(init.body).model,cfg.model);return new Response(stream(mode,stats));};
@@ -35,7 +36,7 @@ test('actual public Resident parser bounds core BYOK and EE streams, preserving 
         // Cancellation propagates asynchronously through BYOK's stream wrappers.
         await new Promise(resolve=>setImmediate(resolve));
         if(mode==='normal') {assert.equal(result.calls.length,32);assert.equal(result.repeat,undefined);}
-        else {assert.equal(result.calls.length,0);assert.equal(result.content,'');assert.equal(result.finish,'repeat');assert.equal(result.repeat.kind,mode==='repeat'?'batch-repeat':'batch-limit');assert.ok(stats.pulled<40);assert.ok(stats.cancelled>0);}
+        else {assert.equal(result.calls.length,0);assert.equal(result.content,'');assert.equal(result.finish,'repeat');assert.equal(result.repeat.kind,mode==='repeat'?'batch-repeat':'batch-limit');assert.ok(stats.pulled<TOOL_BATCH.maxCalls+16);assert.ok(stats.cancelled>0);}
         if(ownKey) {assert.equal(result.charge,0);assert.equal(reserved,0);assert.equal(settled,0);}
       }
       if(!ownKey) {assert.equal(reserved,3);assert.equal(settled,3);}

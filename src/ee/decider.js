@@ -1,20 +1,19 @@
 // The decider (Captain 2026-10-08): the router/decider that answers our yes-no and pick-one questions (route2.js task?/hard?, the browser
 // agent's next action and "is it done?") is Perplexity's decider on OpenRouter, replacing TypeSafe Jev (half the price: $0.02/M in, $0 out).
 // Endpoint /api/v1/systemone: { model, provider, state, questions } -> { answers, usage: { cost }, model }. One endpoint, Perplexity's own
-// (perplexity/pplx-decider-v1.1-27b-20261006), and it is on OpenRouter's /api/v1/endpoints/zdr list (checked 2026-10-08), as is
-// typesafe/jev-1.13. Prompt caching does not apply (no implicit caching on this model, and no chat prefix).
-// Kill switch: env DECIDER_MODEL swaps the model id with no code change (e.g. "~typesafe/jev-latest" to go back to Jev). Every
-// caller uses deciderModel(env); nothing else names the model.
+// Prompt caching does not apply (no implicit caching on this model, and no chat prefix).
+// The model is the saved setting of the job "decider" (model-jobs.js; change it on the Models page). Every caller uses deciderModel(env),
+// where env carries the saved settings (modelSettingsEnv); nothing else names the model.
 import { aigOn, aigMeta, aigPayload, OR_MAX_PRICE } from "../model.js";
+import { jobSetting, settingsOf } from "./model-jobs.js";
 
-export const DECIDER_DEFAULT = "perplexity/pplx-decider-v1.1-27b";
 export const DECIDER_IN_NANO = 20;       // $0.02 per million input tokens; estimate only when usage.cost is missing
 export const DECIDER_URL = "https://openrouter.ai/api/v1/systemone";
-export const deciderModel = (env) => (env?.MODEL_SETTINGS?.decider && env.MODEL_SETTINGS.decider !== "default" ? env.MODEL_SETTINGS.decider : null) || String(env?.DECIDER_MODEL || "").trim() || DECIDER_DEFAULT;
+export const deciderModel = (env) => jobSetting(settingsOf(env), "decider").model;
 // Provider rules like every other route: the model's own host only (perplexity/… → "perplexity", ~typesafe/jev-latest → "typesafe"),
 // no fallbacks, ZDR only, the price ceiling. If that host ever drops ZDR, OpenRouter refuses and the caller sees the error (no retry without it).
-export const deciderHost = (model) => String(model || DECIDER_DEFAULT).replace(/^~/, "").split("/")[0];
-export const deciderProvider = (model = DECIDER_DEFAULT) => { const h = deciderHost(model); return { order: [h], only: [h], allow_fallbacks: false, zdr: true, max_price: OR_MAX_PRICE }; };
+export const deciderHost = (model) => String(model).replace(/^~/, "").split("/")[0];
+export const deciderProvider = (model) => { const h = deciderHost(model); return { order: [h], only: [h], allow_fallbacks: false, zdr: true, max_price: OR_MAX_PRICE }; };
 
 // POST one decision request. Through the AI Gateway when on (logged and tagged kind "decider"; gateway trouble falls back to OpenRouter
 // directly, a gateway 429 is returned as-is, like orFetch). Returns the fetch Response.

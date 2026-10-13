@@ -13,7 +13,7 @@ import { runTurnPi } from "./pi-engine.js";
 import { TaskTranscript, TASK_ARCHIVE_TOOL, contextBudget, contextSize, estimateTokens, compactionPlan, transcriptGroups, prefixDigest, transcriptDelete, hasTaskTranscript } from "./task-transcript.js";
 import { ensureTaskRuntime, authorizeTaskProfile, recordTaskServed } from "./ee/index.js";
 import { trackerInit, listCards, cardDetail, stepDetail, SILENT_TOOLS } from "./tracker.js";
-import { contextV2, CONTEXT_TOOLS, RUNTIME_CONTRACT, toolCatalog, loadedTools, selectedTools, contextMessages, contextReceipt, contextData } from "./context.js";
+import { contextV2, CONTEXT_TOOLS, RUNTIME_CONTRACT, toolCatalog, loadedTools, selectedTools, EAGER_TOOLS, contextMessages, contextReceipt, contextData } from "./context.js";
 import { channelLayers } from "./prompt/context-layers.js";
 import { savedTo } from "./saved-to.js";   // where a remember really saved (the chat's "Added to …" chip)
 import { SUMMARY_ROUTE, recoverCards, openCard, addInput, findByCid, markConsumed, stepBegin, stepEnd, stepSkipped, setStatus, commitCard, labelCard, labelInput, summarizeCard, cardView, eventView, withStepTitles, splitStepTitle, fallbackStepTitle, MAX_INPUTS } from "./tracker.js";
@@ -23,7 +23,7 @@ import { replyRef, replyIn, withReply } from "./reply-to.js";   // Reply on a ch
 import { workingSet, bringBack, sameAsShown, BRING_BACK_TOOL } from "./workmem.js";
 import { linkCreatePurchase, linkGetPurchase } from "./ee/index.js";
 import { normSite, hostMatchesSite, loginForHost, loginSites } from "./logins.js";
-import { useOpenRouter, openRouterChat, jevNote, OR_MAX_OUT, OR_RESERVE_PRICE, aiOpts, prefixPrint, CACHE_WRITE_MULT } from "./model.js";
+import { useOpenRouter, openRouterChat, jevNote, OR_MAX_OUT, OR_RESERVE_PRICE, aiOpts, prefixPrint, runPrint, CACHE_WRITE_MULT } from "./model.js";
 import { S, structuredChat, structuredFormat, parseStructuredResponse, workersStructuredResponse } from "./structured-output.js";
 export const SUMMARY_SCHEMA = S.object({ summary: { ...S.string, minLength: 1 } });
 export const HANDOFF_SCHEMA = S.object({ completed: S.array(S.string), changed_files: S.array(S.string), working_commands: S.array(S.string), decisions: S.array(S.string), key_facts: S.array(S.string), unfinished: S.array(S.string) });
@@ -58,13 +58,15 @@ import { notifyTask, notifyReset, textAllowed } from "./notify.js";   // Setting
 import { BUILTIN_TEXT } from "./ee/index.js";
 import { turnCalls, recordLines, RECORD_HEAD, REC_TURNS, usedApps, usedAppsNote } from "./turnrec.js";   // compact context: earlier turns' tool record + integrations used
 import { runBrowserTask } from "./ee/index.js";
+import { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput } from "./ee/index.js";
 import { CONNECT_TOOLS, CONNECT_LINES, connectOfferInit, connectTool, offersView, offerAct, offerGet, offerConnected, composioSigninOffer, connectWriteBlock, appCatalog, catalogFile } from "./ee/index.js";
-import { helpersInit, HELPER_TOOLS, HELPER_PROMPT, HELPER_MAX_STEPS, HELPER_MAX_CHARGE, HELPER_DEADLINE_MS, HELPER_GRACE_MS, HELPER_FORCE_MS, HELPER_NAME_MAX, HELPER_TASK_MAX, helperExclude, helperAllowed, helperJobText, helperStartedText, helperNoteText, handoffSteerText, handoffAwayText, followupText, plainError, helperView, helperRow, runningHelpers, startRefusal, recoverHelpers, pendingHandoffs, helperNextWake, liveTurnOf, helperTcOf, emitHelper } from "./helpers.js";
-import { decide, currentPool, saveNightlyPool, clefVia } from "./ee/index.js";
+import { helpersInit, HELPER_TOOLS, HELPER_PROMPT, HELPER_MAX_STEPS, HELPER_MAX_CHARGE, HELPER_DEADLINE_MS, HELPER_GRACE_MS, HELPER_FORCE_MS, HELPER_NAME_MAX, HELPER_TASK_MAX, HELPER_MESSAGE_MAX, HELPER_MESSAGES_MAX, COORDINATOR_MAX_CHILDREN, COORDINATOR_LIMITS, helperExclude, helperAllowed, helperContextSnapshot, helperDir, helperJobText, coordinatorFinalText, helperStartedText, helperNoteText, helperMessageRows, helperMessagePending, helperMessageText, handoffSteerText, handoffAwayText, followupText, plainError, helperView, helperRow, coordinatorChildren, runningHelpers, startRefusal, recoverHelpers, pendingHandoffs, helperNextWake, liveTurnOf, helperTcOf, emitHelper } from "./helpers.js";
+import { decide, currentPool, saveNightlyPool } from "./ee/index.js";
+import { decisionCaller } from "./ee/index.js";
 import { startLab } from "./internal-shim.js";   // dev only: Jev / Perplexity / Clef pick from the lab pool, never the route
-import { route2On, routeTwoTurn, escalationBefore, escalationAfter, HANDOFF_PREFIX } from "./ee/index.js";   // routing policy (ROUTER_MODE=two)
+import { route2On, routeTwoTurn, escalationBefore, escalationAfter, dispatchOrder, HANDOFF_PREFIX } from "./ee/index.js";   // routing policy (ROUTER_MODE=two)
 import { privacyOf, PRIVACY_EXHAUSTED } from "./privacy.js";   // AI data privacy: the account's level, read on every dispatch
-import { isMuse } from "./ee/index.js";
+import { jobModel, jobCost, modelSettingsEnv } from "./ee/index.js";
 import { METER as BYOK_METER, BYOK_MARKUP } from "./byok-meter.js";
 import { loadByok, byokEnv, byokChat, isByokError, BYOK_CREDITS_REPLY, fallbackNotice, creditsLine, CREDITS_TOOL_ERR } from "./byok.js";   // own AI key: their endpoint for AI, our parts metered
 import { checkRule, nextRun, describe, validTz, DEFAULT_TZ } from "./schedule.js";
@@ -77,7 +79,8 @@ import { sidecarMix } from "./sidecar.js";
 import { FILE_TEXT_TOOL } from "./file-text-tool.js";   // every file arriving is turned into text in the background (FilePrep); Send uses it
 import { installSnapshotRpc } from "./sqlite-snapshot.js";
 import { stopMix, untilStopped, stopError, planBudget, STOPPED_REPLY, STOPPED_TOOL_TEXT, STEP_LIMIT_CHAT_ASK } from "./stop.js";   // Stop / Stop all
-import { repeatWatch, toolBatchWatch, REPEAT_NOTE, REPEAT_FALLBACK } from "./repeat-guard.js";   // a model step that starts repeating itself
+import { savedModelPrice, estimateStepCost } from "./step-price.js";   // a step with no reported cost: the model's own saved price, never the ceiling
+import { repeatWatch, toolBatchWatch, stepNote, stepFallback } from "./repeat-guard.js";   // a model step that starts repeating itself
 import { guardResume, noteRepeat, commandLimitMs, commandNotes, stepNotes, spendInit, spendMix, guardModel, guardTools, guardCall, noteCharge, reportAsk, pauseFallback, DAY_PAUSE_REPLY, OUT_OF_TIME_REPLY, SPEND_CEILING } from "./spendguard.js";   // per-turn budget, runaway pause, day/month guard
 import { spendPausesOn, stepAllowance } from './spend-preferences.js';
 import { trimTurnState, resumedReplyState, diagnosticTrace } from './spend-retention.js';
@@ -91,7 +94,8 @@ import { questionScope, localDay } from "./dates.js";
 import { opsResident } from "./internal-shim.js";
 import { hsOn, bankId, ensureBank, retain as hsRetain, recall as hsRecall, packHs } from "./hindsight.js";
 import { runJob, residentHost, noteActivity, REFLECT_ID } from "./memjobs.js";   // background memory jobs (Stage 3): silent, memory only
-import { staticCore, channelBlock } from "./prompt/index.js";
+import { staticCore, channelBlock, familyGuidance } from "./prompt/index.js";
+import { cutTitle, cutLazy, guidanceFor, stubTool, checkArgs, coerceArgs } from "./payload-cut.js";
 import { pinnedBlock, notebookMatches, identityNote, PINNED_BUDGET } from "./pinned-notes.js";   // the Notebook block: budgeted, their own notes first
 import { genuiPromptSection, genuiEnvOn, cardsToText, cardsTree, splitCardParts, isRealCard, hasCards, stripPauseButtons } from "./genui.js";
 // Texted files (photos, videos, documents): how long to gather a caption / more photos sent as separate messages.
@@ -158,7 +162,7 @@ const MARKUP = 1.15, MAX_OUT = 2048, MAX_STEPS = 12, WF_MAX_STEPS = 24, HISTORY_
 // Bounded context ("compact" mode, default): a step costs about the same however long the session gets.
 const CHAT_MAX_STEPS = 60;           // affordable now that context is bounded
 const CHECKPOINT_TOKENS = 40000;
-const WM_BUDGET = 60000;            // chars of this request's own steps kept in full under WORKMEM=on (~15k tokens)     // mid-turn: when a step's input passes this, fold the work so far into working notes
+const WM_BUDGET = 55000, WM_HUGE = { hugeAt: 20000, hugeKeep: 7500 };   // chars of this request's own steps kept in full under WORKMEM=on (~14k tokens); a batch starts at 10% over (workmem BATCH_MARGIN, so at about 60,000 as before)     // mid-turn: when a step's input passes this, fold the work so far into working notes
 const HANDOFF_MIN_TOOLS = 3;         // end of turn: turns with this many tool calls leave hand-off notes instead of their raw work log
 const HISTORY_CHARS = 60000;         // cross-turn: newest visible turns (+ notes) up to this budget; older ones stay searchable via recall_history
 const APPROVAL_TTL = 3600e3;          // an undecided permission request expires on its iMessage card after an hour
@@ -173,14 +177,14 @@ const q = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
 export const REACTIONS = { love: "❤️", like: "👍", dislike: "👎", laugh: "😂", emphasize: "‼️", question: "❓" };
 let toolDefs;
 const TOOLS = () => (toolDefs ??= [
-  { type: "function", function: { name: "run_command", description: "Run a bash command on this channel's Linux computer (cwd /workspace, which holds this channel's files: workspace/, files/, home/). Use for anything shell-like: python, curl, git, jq, etc. Output is truncated to the last 20k characters. A command may run 4 minutes; one still running then is stopped with everything it started.", parameters: { type: "object", properties: { command: { type: "string" }, timeout_minutes: { type: "integer", minimum: 1, maximum: 15, description: "Only when the person asked for a long job (a big download, a long build or install): how many minutes this one command may run, up to 15. Leave it out otherwise. Never use it to wait or retry until something changes." } }, required: ["command"] } } },
-  { type: "function", function: { name: "read_file", description: "Read a text file from this channel's computer (path relative to /workspace or absolute). For a document the person gave you (PDF, Word, spreadsheet, slides in /workspace/files), use file_text instead: it has the text, and read_file would show raw bytes.", parameters: { type: "object", properties: { path: { type: "string" }, max_bytes: { type: "integer" } }, required: ["path"] } } },
+  { type: "function", function: { name: "run_command", description: "Run a bash command on this channel's Linux computer. Main turns start in /workspace (workspace/, files/, home/); background helpers start in their own /workspace/workspace/helpers/<id>/ folder. Use for anything shell-like: python, curl, git, jq, etc. Output is truncated to the last 20k characters. A command may run 4 minutes; one still running then is stopped with everything it started.", parameters: { type: "object", properties: { command: { type: "string" }, timeout_minutes: { type: "integer", minimum: 1, maximum: 15, description: "Only when the person asked for a long job (a big download, a long build or install): how many minutes this one command may run, up to 15. Leave it out otherwise. Never use it to wait or retry until something changes." } }, required: ["command"] } } },
+  { type: "function", function: { name: "read_file", description: "Read a text file from this channel's computer (path relative to this turn's working folder or absolute). For a document the person gave you (PDF, Word, spreadsheet, slides in /workspace/files), use file_text instead: it has the text, and read_file would show raw bytes.", parameters: { type: "object", properties: { path: { type: "string" }, max_bytes: { type: "integer" } }, required: ["path"] } } },
   { type: "function", function: { name: "write_file", description: "Create or overwrite a text file on this channel's computer.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
   { type: "function", function: { name: "edit_file", description: "Change part of an existing text file by replacing an exact snippet. old_text must appear exactly once (include a few surrounding lines to make it unique), or set replace_all to change every occurrence. Prefer this over write_file for existing files: send only the part that changes. Returns a short diff.", parameters: { type: "object", properties: { path: { type: "string" }, old_text: { type: "string", description: "Exact text currently in the file, whitespace included" }, new_text: { type: "string" }, replace_all: { type: "boolean" } }, required: ["path", "old_text", "new_text"] } } },
   { type: "function", function: { name: "search_files", description: "Search file contents in this channel's files with ripgrep (case-insensitive). Returns matching lines with paths.", parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" } }, required: ["pattern"] } } },
   { type: "function", function: { name: "browser_navigate", description: "Open a web page in this channel's real Chrome browser (it runs on the channel computer; the person can watch it live and logins/cookies persist between conversations). Returns a text outline of the page where every clickable/typeable element has a ref like [e7]. Use for sites that need JavaScript, logins, forms, carts or checkout; for simply reading a page or feed prefer fetch_url.", parameters: { type: "object", properties: { url: { type: "string", description: "Full http(s) URL" } }, required: ["url"] } } },
   { type: "function", function: { name: "browser_snapshot", description: "Get a fresh text outline of the page currently open in the browser (refs change after every page change, so snapshot again before acting on a changed page).", parameters: { type: "object", properties: {} } } },
-  { type: "function", function: { name: "browser_act", description: "Do 1–20 steps in the open page, in order, using refs from the latest outline. Kinds: click {ref}; fill {ref, text, submit?} (replaces the field's text; submit presses Enter); type {ref, text} (appends); select {ref, text} (dropdown option); press {key: Enter|Tab|Escape|ArrowDown|ArrowUp|PageDown|...}; scroll {direction: down|up}; wait {ms}. Returns the new outline. Typing the person's personal details (name, phone, email, address, date of birth) needs their OK the first time: 1Helm asks them with a card unless they've always allowed it. Never type a password, card number or ID number here.", parameters: { type: "object", properties: { actions: { type: "array", items: { type: "object", properties: { kind: { type: "string", enum: ["click", "fill", "type", "select", "press", "scroll", "wait"] }, ref: { type: "string" }, text: { type: "string" }, submit: { type: "boolean" }, key: { type: "string" }, direction: { type: "string" }, ms: { type: "integer" } }, required: ["kind"] } }, fills_personal: { type: "boolean", description: "true when any text you type is the person's (or their guest's) name, phone, email, address or date of birth" } }, required: ["actions"] } } },
+  { type: "function", function: { name: "browser_act", description: "Do 1–20 steps in the open page, in order, using refs from the latest outline. Kinds: click {ref}; fill {ref, text, submit?} (replaces the field's text; submit presses Enter); type {ref, text} (appends); select {ref, text} (dropdown option); press {key: Enter|Tab|Escape|ArrowDown|ArrowUp|PageDown|...}; scroll {direction: down|up}; wait {ms}. Returns the new outline. Typing the person's personal details (name, phone, email, address, date of birth) is allowed directly on the Standard permission level; on Careful or Locked down 1Helm asks them first with a card (Allow once or Always allow). Never type a password, card number or ID number here.", parameters: { type: "object", properties: { actions: { type: "array", items: { type: "object", properties: { kind: { type: "string", enum: ["click", "fill", "type", "select", "press", "scroll", "wait"] }, ref: { type: "string" }, text: { type: "string" }, submit: { type: "boolean" }, key: { type: "string" }, direction: { type: "string" }, ms: { type: "integer" } }, required: ["kind"] } }, fills_personal: { type: "boolean", description: "true when any text you type is the person's (or their guest's) name, phone, email, address or date of birth" } }, required: ["actions"] } } },
   { type: "function", function: { name: "browser_handoff", description: "Ask the person to take over the browser themselves: logging in when there's no saved login for the site (if there is one, use browser_fill_login instead), a CAPTCHA, a code sent to their phone, card details, ID numbers (passport, license, SSN), personal details they didn't allow you to fill in, or approving a purchase. Never type passwords, card numbers or one-time codes yourself. The app shows them the live browser with a Take control button. After calling this, end your turn and tell them briefly what to do; continue when they say they're done.", parameters: { type: "object", properties: { instructions: { type: "string", description: "One or two plain sentences for the person, e.g. 'Please sign in to Target, then tell me when you're done.'" } }, required: ["instructions"] } } },
   { type: "function", function: { name: "browser_screenshot", description: "Take a screenshot of the page open in the browser and show it to the person right in this chat (they see the picture; you don't). Use when they ask to see something, or to show proof of a result (a confirmation, a price, an order). Say in one short line what it shows.", parameters: { type: "object", properties: { caption: { type: "string", description: "A few words describing what the picture shows, e.g. 'omaha.com front page'" } } } } },
   { type: "function", function: { name: "buy_with_link", description: "Ask the person to approve a purchase with their Link wallet. Use only when they asked you to buy something, after you've reached the store's checkout and read the exact total (items + shipping + tax). Link texts/notifies them to approve; nothing is charged unless they approve. Returns a purchase id. Then end your turn telling them to approve in Link; when they say they approved, call check_purchase.", parameters: { type: "object", properties: { amount_cents: { type: "integer", description: "Exact checkout total in cents, e.g. 4375 for $43.75" }, currency: { type: "string" }, merchant_name: { type: "string" }, merchant_url: { type: "string", description: "The store's checkout page URL" }, context: { type: "string", description: "At least 100 characters the person reads in Link: what exactly is being bought, quantity, from which store, the total with shipping/tax, and that they asked for it." } }, required: ["amount_cents", "merchant_name", "merchant_url", "context"] } } },
@@ -188,7 +192,7 @@ const TOOLS = () => (toolDefs ??= [
   { type: "function", function: { name: "browser_fill_card", description: "After check_purchase says approved: type Link's one-time card (number, expiry, security code, and optionally the cardholder name/billing ZIP) into the checkout form in the browser. You never see the card; pass the refs of the fields from the latest outline. Afterwards take a snapshot, check the total still matches, and press the store's Pay button.", parameters: { type: "object", properties: { purchase_id: { type: "string" }, number_ref: { type: "string" }, expiry_ref: { type: "string", description: "Ref of a combined MM/YY field, if the form has one" }, exp_month_ref: { type: "string" }, exp_year_ref: { type: "string" }, cvc_ref: { type: "string" }, name_ref: { type: "string" }, zip_ref: { type: "string" } }, required: ["purchase_id", "number_ref", "cvc_ref"] } } },
   { type: "function", function: { name: "browser_fill_login", description: "Sign in with a login the person saved in Settings → Passwords & keys (the saved sites are listed in your instructions). Open the site's sign-in page first, then pass the site and the refs of the username/email field and the password field from the latest outline. 1Helm types the saved username and password itself, and only if the open page belongs to that site (the site or a subdomain); you never see the password. Sites that ask for the username first and the password on the next page: call it once for each step. Afterwards press the sign-in button (or set submit) and snapshot to check it worked. No saved login for the site, or it asks for a code or CAPTCHA: use browser_handoff.", parameters: { type: "object", properties: { site: { type: "string", description: "The saved login's site, e.g. costco.com" }, username_ref: { type: "string", description: "Ref of the username/email field, if the page shows one" }, password_ref: { type: "string", description: "Ref of the password field, if the page shows one" }, username: { type: "string", description: "Which saved account to use, when the site has more than one (the list says '2 accounts'). Leave out to get the list of usernames; ask the person if it isn't clear which one." }, submit: { type: "boolean", description: "Press Enter in the last filled field to sign in" } }, required: ["site"] } } },
   { type: "function", function: { name: "fetch_url", description: "Read a public URL without starting the computer. A web page comes back as clean readable text (rendered like a browser would, links kept); a feed, API or file comes back as the response body as is. Truncated to 20k chars. Use run_command+curl+jq when you need to filter large data.", parameters: { type: "object", properties: { url: { type: "string" }, raw: { type: "boolean", description: "true: the page's raw HTML source instead of readable text" } }, required: ["url"] } } },
-  { type: "function", function: { name: "text_person", description: "Send one iMessage text to this person's phone. Use only when they asked to be texted (e.g. a workflow's delivery contract) and the condition is met. Never text quiet/no-news results. It only reaches the person themselves, never their contacts or anyone else, so if they ask you to text someone else, say plainly that you can't send texts to other people yet and offer to draft the message for them to send.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
+  { type: "function", function: { name: "text_person", description: "Send one text message to this person's phone (an iMessage on an iPhone, a regular text message on Android). Use only when they asked to be texted (e.g. a workflow's delivery contract) and the condition is met. Never text quiet/no-news results. It only reaches the person themselves, never their contacts or anyone else, so if they ask you to text someone else, say plainly that you can't send texts to other people yet and offer to draft the message for them to send.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
   { type: "function", function: { name: "react", description: "Optional: put a reaction on the person's latest message in this task, like an iMessage tapback: love ❤️, like 👍, dislike 👎, laugh 😂, emphasize ‼️, question ❓. It shows on their message (and as a real tapback on their phone when they texted you). Use it only if and when it feels natural: a quick 👍 to acknowledge a task (\"got it, starting\"), or ❤️ / 😂 to show warmth. It is never a substitute for an answer they need, so reply as you normally would. At most one reaction per message from them: calling it again replaces your earlier one. Don't overuse it; most messages need none.", parameters: { type: "object", properties: { reaction: { type: "string", enum: ["love", "like", "dislike", "laugh", "emphasize", "question"] } }, required: ["reaction"] } } },
   { type: "function", function: { name: "schedule_workflow", description: "Create a recurring workflow in this channel: the prompt runs on schedule with no one watching. For calendar times (\"every weekday at 7am\", \"Sundays 8pm\", \"last Friday of the month\") use `schedule` (a cron rule in the person's time zone, DST-safe). For monitors (\"check every 30 min\") use interval_seconds. ONLY when the person asks for something to happen whenever something happens in one of their connected apps (\"when an email from Dana arrives, save it to my notebook\"), use on_event instead (find the event with app_events first) and pass person_asked: each event then runs this workflow once with the event as its input. Never set one up on your own idea.", parameters: { type: "object", properties: { name: { type: "string" }, prompt: { type: "string", description: "Self-contained instructions for every run (for on_event: what to do with each event, and whether to tell the person)" }, schedule: { type: "string", description: "5-field cron rule in the person's local time: minute hour day-of-month month day-of-week. E.g. \"0 7 * * MON-FRI\" (weekdays 7:00), \"0 20 * * SUN\", \"0 17 * * 5L\" (last Friday), \"0 9 1 * *\" (1st of month)." }, time_zone: { type: "string", description: "IANA zone for schedule; defaults to the person's time zone" }, interval_seconds: { type: "integer", minimum: 60, description: "For fixed-interval repeats (monitors). Runs without a gate are spaced at least 15 min apart; add a gate (set_workflow_gate) for faster checks" }, start_in_seconds: { type: "integer" }, max_runs: { type: "integer", description: "0 = forever" }, replace_existing: { type: "boolean", description: "Set only after you paused/completed a similar existing workflow" },
     on_event: { type: "object", description: "Run when an app event happens instead of on a schedule", properties: { app: { type: "string", description: "app id, e.g. gmail" }, event: { type: "string", description: "event id from app_events, e.g. GMAIL_NEW_GMAIL_MESSAGE" }, settings: { type: "object", description: "the event's settings from app_events, e.g. {\"query\": \"from:dana@example.com\"}" }, account: { type: "string", description: "which account to watch when they have several (label or email)" }, tell_person: { type: "boolean", description: "true only if the person asked to be told or texted when it happens; otherwise its runs never message them" } }, required: ["app", "event"] },
@@ -215,7 +219,7 @@ const TOOLS = () => (toolDefs ??= [
 let freshReady = false;
 const ensureFreshTools = () => { if (!freshReady) { addFresh([...TOOLS(), ...GOOGLE_TOOLS, ...APP_TOOLS, WEB_SEARCH_TOOL, VERTICAL_SEARCH_TOOL]); freshReady = true; } };   // worklog.js: fresh: true skips the work log's reuse
 // Offered only when the browser slot switch is on (env BROWSER_AGENT=jev or the channel's TEST_MODE setting).
-const BROWSER_TASK_TOOL = { type: "function", function: { name: "browser_task", description: "Do a whole multi-step job in the browser fast and cheaply: a fast browser agent clicks, types and chooses step by step until the task is done, then reports one line read from the final page. Prefer this over browser_navigate/browser_act for anything with more than one or two steps (forms, searches, carts, sorting, finding a value). Give the start url and the task in plain words, including every exact value to type. It returns the final page; if it says it handed back or stopped, continue yourself with browser_snapshot/browser_act. Your own rules still apply (logins: browser_fill_login for saved ones, otherwise hand off; codes, card details, ID numbers and purchases: hand off or use Link; the person's details need their OK the first time, which 1Helm asks for).", parameters: { type: "object", properties: { url: { type: "string", description: "Full start URL; omit to continue on the open page" }, task: { type: "string" }, values: { type: "array", items: { type: "string" }, description: "Optional: exact strings it may need to type" }, fills_personal: { type: "boolean", description: "true when it will type the person's (or their guest's) name, phone, email, address or date of birth" } }, required: ["task"] } } };
+const BROWSER_TASK_TOOL = { type: "function", function: { name: "browser_task", description: "Hand a multi-step browser job to the browser worker. If it finishes within about a minute, its result comes back in this turn. If it takes longer, this call returns \"still working in the background\" with a job number, the job keeps going on its own, and its result arrives later as a new message in this task (do not present it as finished until then). Give the start URL and the task, including exact values to type. A browser agent picks actions one at a time, up to 25 steps. Only one browser job can run per channel; list_browser_tasks checks it and stop_browser_task stops it. Check a consequential result against the page. Logins, codes, cards, ID numbers and purchases still use the separate secure paths.", parameters: { type: "object", properties: { url: { type: "string", description: "Full start URL; omit to continue on the open page" }, task: { type: "string" }, values: { type: "array", items: { type: "string" }, description: "Optional: exact strings it may need to type" }, fills_personal: { type: "boolean", description: "true when it will type the person's (or their guest's) name, phone, email, address or date of birth" } }, required: ["task"] } } };
 // Keep the two most recent tool results whole; older ones in this turn shrink to head+tail (the model already acted on them).
 function compactTools(messages) {
   const idx = messages.map((m, i) => (m.role === "tool" ? i : -1)).filter((i) => i >= 0);
@@ -279,7 +283,7 @@ export function lineFor(name, a = {}) {
     browser_handoff: "waiting for you in the browser", browser_task: host ? `working on ${host}` : "using the browser", browser_screenshot: "taking a screenshot", browser_fill_card: "filling in the payment", browser_fill_login: a.site ? `signing in to ${normSite(a.site) || "a site"}` : "signing in", buy_with_link: "asking you to approve a purchase", gmail_search: "checking your email", gmail_read: "reading an email", gmail_draft: "writing a draft", gmail_send: "sending your email", calendar_events: "checking your calendar", calendar_add: "adding to your calendar",
     check_purchase: "checking the purchase", fetch_url: host ? `reading ${host}` : "reading a web page", web_search: "searching the web", search_web_vertical: a.kind === "flights" ? "checking flights" : a.kind === "hotels" ? "checking hotels" : a.kind === "finance" ? "checking the markets" : a.kind === "events" ? "looking for events" : "searching live listings", text_person: "texting you", text_captain: "texting you",
     schedule_workflow: "setting up a scheduled check", schedule_followup: "setting a reminder", recall_history: "looking back through earlier work", file_text: a.query ? `searching ${String(a.file || "a file").split("/").pop().slice(0, 60)}` : `reading ${String(a.file || "a file").split("/").pop().slice(0, 60)}`, work_log: "checking what it already looked up", bring_back: "looking back at an earlier step", remember: a.fact ? `remembering: ${String(a.fact).slice(0, 140)}` : "remembering",
-    save_skill: a.delete ? "deleting a saved skill" : a.slug ? `saving the ${String(a.slug).slice(0, 40)} skill` : "saving a skill", forget: a.confirmed ? "forgetting what you asked" : "finding what to forget", list_workflows: "checking its scheduled jobs", set_workflow_status: "updating a scheduled job", set_workflow_gate: "updating a scheduled job", save_run_notes: "saving notes", update_todos: "updating the to-do list", share_file: file ? `sharing ${file}` : "sharing a file", start_helper: a.name ? `starting a helper: ${String(a.name).slice(0, 60)}` : "starting a helper", stop_helper: "stopping a helper", read_skill: "checking its playbook", app_actions: a.app ? `looking in ${isCustomSlug(a.app) ? CUSTOM_WORDS : String(a.app).replace(/super$/, "")}` : "looking in your apps", app_run: "working in your apps", app_proxy: "working in your apps", apps_i_use: APPS_USED_LINE, ...CONNECT_LINES })[name] || "working";
+    save_skill: a.delete ? "deleting a saved skill" : a.slug ? `saving the ${String(a.slug).slice(0, 40)} skill` : "saving a skill", forget: a.confirmed ? "forgetting what you asked" : "finding what to forget", list_workflows: "checking its scheduled jobs", set_workflow_status: "updating a scheduled job", set_workflow_gate: "updating a scheduled job", save_run_notes: "saving notes", update_todos: "updating the to-do list", share_file: file ? `sharing ${file}` : "sharing a file", start_helper: a.name ? `starting a helper: ${String(a.name).slice(0, 60)}` : "starting a helper", stop_helper: "stopping a helper", start_browser_task: "starting a browser job", list_browser_tasks: "checking browser jobs", stop_browser_task: "stopping a browser job", read_skill: "checking its playbook", app_actions: a.app ? `looking in ${isCustomSlug(a.app) ? CUSTOM_WORDS : String(a.app).replace(/super$/, "")}` : "looking in your apps", app_run: "working in your apps", app_proxy: "working in your apps", apps_i_use: APPS_USED_LINE, ...CONNECT_LINES })[name] || "working";
 }
 // remember's result, plus a live "saved" event saying where it really went (saved-to.js), for the chat's "Added to …" chip.
 function savedNote(ctx, a, out) { const saved = savedTo("remember", a, out); if (saved.length) ctx.emit?.({ t: "saved", saved }); return out; }
@@ -313,6 +317,7 @@ async function cmpGate(res, ctx) {
 function cmpCard(res, ctx) { try { if (res.sql) composioSigninOffer(res, ctx); } catch (e) { console.log("composio sign-in card", e.message); } }
 
 const resetError = () => Object.assign(new Error("Durable Object reset because its code was updated."), { objectReset: true });
+export const LAZY_TOOLS_NOTE = "\n\n## Task tools\nEvery tool is available in this task. Tools with a short description and no listed parameters need load_tools first: it returns their full parameters and any usage guidance. A call with wrong arguments is not run and returns the correct schema. Runtime permission and approval checks remain authoritative. Changing account context arrives as labeled data updates, not instructions.";
 export class Resident extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env); this.env = tolerantEnv(env);   // do-stub.js: DO→DO calls survive a deploy's skew/reset window
@@ -402,7 +407,11 @@ export class Resident extends DurableObject {
     spendInit(this.sql);   // spendguard.js: pause cards (Keep going / Stop here)
     pomoInit(this.sql);   // focus timers per task (pomodoro.js)
     this.lnInit();   // Live notes per task (live-notes.js): the LiveNotes DO's mirror
-    helpersInit(this.sql); forgottenInit(this.sql); if (env.BACKUP_MAINTENANCE !== "1") this.helpersRecover({ boot: true }).catch((e) => console.log("helpers recover", e.message));
+    helpersInit(this.sql); browserJobsInit(this.sql); forgottenInit(this.sql);
+    if (env.BACKUP_MAINTENANCE !== "1") {
+      this.helpersRecover({ boot: true }).catch((e) => console.log("helpers recover", e.message));
+      this.browserJobsRecover({ boot: true }).catch((e) => console.log("browser jobs recover", e.message));
+    }
   }
   get(k) { return this.getRaw(k); }
   getRaw(k) { return this.sql.exec("SELECT v FROM kv WHERE k=?", k).toArray()[0]?.v; }
@@ -475,11 +484,11 @@ export class Resident extends DurableObject {
     try { await this.mem.embedMissing(); } catch (e) { console.log("memory embed", e.message); }
     // Summaries first and on their own: a slow or failed supersession pass must never stop them (P3 bench run 2 wrote none).
     if (on && this.env.MEMORY_SUMMARIES !== "off" && !hsOn(this.env)) { try { if (await this.mem.summarizeSegments((messages) => this.indexModel(messages))) await this.mem.embedMissing(); } catch (e) { console.log("memory summaries", e.message); } }
-    if (on && this.env.MEMORY_SUPERSEDE !== "off" && !hsOn(this.env)) { try { const clef = clefVia(this.env, "clef-flash", { tenant: this.get("tenant"), channel: this.get("channel"), kind: "memory-supersede" });
+    if (on && this.env.MEMORY_SUPERSEDE !== "off" && !hsOn(this.env)) { try { const sup = await jobCost(this.env, "memory_supersede"), clef = await decisionCaller(this.env, "memory_supersede", { tenant: this.get("tenant"), channel: this.get("channel"), kind: "memory-supersede" });
       await this.mem.supersedeNew(async (b) => {   // own AI key: reserved first (at most a token per character of the question), else skipped
-        const h = await this.byokHold("clef", JSON.stringify(b ?? "").length * 90); if (!h) throw new Error("out of credits: supersede skipped");
+        const h = await this.byokHold("clef", JSON.stringify(b ?? "").length * sup.in_nano); if (!h) throw new Error("out of credits: supersede skipped");
         let r; try { r = await clef(b); } catch (e) { await h.done(0); throw e; }
-        await h.done(Number((r?.result ?? r)?.usage?.input_tokens || 0) * 90); return r; }); } catch (e) { console.log("memory supersede", e.message); } }
+        await h.done(Number((r?.result ?? r)?.usage?.input_tokens || 0) * sup.in_nano); return r; }); } catch (e) { console.log("memory supersede", e.message); } }
   }
   // The background index writes summaries with the default Workers AI model (no thinking, small output). Our cost; not billed to the person.
   // Captain 2026-10-03: summaries need no tools, so use the fastest ZDR host: Qwen3.8-27B on Cerebras, then gpt-oss-120b on Cerebras,
@@ -494,7 +503,7 @@ export class Resident extends DurableObject {
       } catch (e) { if (this.env.BYOK) throw e; console.log("summary via openrouter failed, using workers ai", String(e.message || e).slice(0, 160)); }
       if (this.env.BYOK) return "";   // own AI key: never 1Helm's models instead
     }
-    const r = await structuredChat(async ({ provider, ...body }) => workersStructuredResponse(await this.env.AI.run(this.env.MODEL, body, aiOpts(this.env, { tenant: this.get("tenant"), channel: this.get("channel"), kind: "memory-summary" }))),
+    const r = await structuredChat(async ({ provider, ...body }) => workersStructuredResponse(await this.env.AI.run(await jobModel(this.env, "workers_ai_chat"), body, aiOpts(this.env, { tenant: this.get("tenant"), channel: this.get("channel"), kind: "memory-summary" }))),
       { messages, max_tokens: 900, temperature: 0, reasoning_effort: "low" }, { name: "memory_summary", schema: SUMMARY_SCHEMA });
     return r.data.summary;
   }
@@ -524,7 +533,7 @@ export class Resident extends DurableObject {
     if (big) { q.mostly_noise = { type: "noul", instructions: "Is most of the tool output irrelevant to the task (boilerplate, logs, repeated lines)?" };
       q.keep = { type: "choice", instructions: "Which part of the output matters most for the task?", criteria: { start: "the first part", middle: "the middle", end: "the last part", all: "it is all needed", none: "none of it" } }; }
     let A = {}, err = null;
-    try { const r = await clefVia(this.env, "clef-flash", { tenant: this.get("tenant"), channel: this.get("channel"), kind: "clef-doors-shadow" })({ state: { task, tool: name, arguments: args, output_head: lines.slice(0, 40).join("\n").slice(0, 2500), output_tail: big ? lines.slice(-20).join("\n").slice(0, 1500) : "", output_chars: out.length }, questions: q }); A = r.answers || {}; }
+    try { const r = await (await decisionCaller(this.env, "doors_shadow", { tenant: this.get("tenant"), channel: this.get("channel"), kind: "clef-doors-shadow" }))({ state: { task, tool: name, arguments: args, output_head: lines.slice(0, 40).join("\n").slice(0, 2500), output_tail: big ? lines.slice(-20).join("\n").slice(0, 1500) : "", output_chars: out.length }, questions: q }); A = r.answers || {}; }
     catch (e) { err = String(e.message || e).slice(0, 200); }
     const n = (k) => A[k]?.noul ?? null, top = (k) => { const p = A[k]?.probabilities; return p ? Object.entries(p).sort((a, b) => b[1] - a[1])[0][0] : A[k]?.choice ?? null; };
     this.sql.exec("INSERT INTO clef_doors (at,turn,tool,args,out_chars,needed,narrower,from_memory,mostly_noise,keep,ms,error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", Date.now(), turn, name, args.slice(0, 300), out.length, n("needed"), n("narrower"), n("from_memory"), n("mostly_noise"), top("keep"), Date.now() - t0, err);
@@ -648,7 +657,8 @@ export class Resident extends DurableObject {
   genuiOn() { const v = this.get("genui"); return v ? v === "on" : genuiEnvOn(this.env); }
   async setGenui(v) { if (!["on", "off", ""].includes(v)) return { error: "genui must be on, off or empty (= env default)" }; this.put("genui", v); return { genui: v || null, on: this.genuiOn() }; }
   browserAgentOn() { if (!eeEnabled(this.env)) return false; const v = this.get("browser_agent"); return v ? v === "jev" : this.env.BROWSER_AGENT === "jev"; }
-  tools() { ensureFreshTools(); const base0 = [...(eeEnabled(this.env) && this.env.COMPOSIO_KEY ? [...TOOLS(), ...GOOGLE_TOOLS, ...APP_TOOLS, ...(eventsReady(this.env) ? [APP_EVENTS_TOOL] : []), ...CONNECT_TOOLS, APPS_USED_TOOL, VERTICAL_SEARCH_TOOL] : TOOLS()), WEB_SEARCH_TOOL], base = this.workmemOn() ? [...base0, BRING_BACK_TOOL] : base0; return [...(this.browserAgentOn() ? [...base, BROWSER_TASK_TOOL] : base), ...HELPER_TOOLS, PROPOSE_PLAN_TOOL, POMODORO_TOOL, ...SHARE_TOOLS, ...NATIVE_TOOLS, ...(this.get("channel") === SKIPPER_SLUG ? [MARK_DONE_TOOL, LIST_CHANNELS_TOOL, CREATE_CHANNEL_TOOL, START_TASK_TOOL, ...(eeEnabled(this.env) ? [AMBIENT_QUERY_TOOL] : []), LOCATION_QUERY_TOOL] : [])].filter((t) => (t !== FILE_TEXT_TOOL || this.scOn?.() !== false) && eeToolEnabled(this.env, t.function.name)); }   // sidecar.js: file_text only while sidecars are on
+  tools() { ensureFreshTools(); const base0 = [...(eeEnabled(this.env) && this.env.COMPOSIO_KEY ? [...TOOLS(), ...GOOGLE_TOOLS, ...APP_TOOLS, ...(eventsReady(this.env) ? [APP_EVENTS_TOOL] : []), ...CONNECT_TOOLS, APPS_USED_TOOL, VERTICAL_SEARCH_TOOL] : TOOLS()), WEB_SEARCH_TOOL], base = this.workmemOn() ? [...base0, BRING_BACK_TOOL] : base0; return [...(this.browserAgentOn() ? [...base, BROWSER_TASK_TOOL] : base), LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, ...HELPER_TOOLS, PROPOSE_PLAN_TOOL, POMODORO_TOOL, ...SHARE_TOOLS, ...NATIVE_TOOLS, ...(this.get("channel") === SKIPPER_SLUG ? [MARK_DONE_TOOL, LIST_CHANNELS_TOOL, CREATE_CHANNEL_TOOL, START_TASK_TOOL, ...(eeEnabled(this.env) ? [AMBIENT_QUERY_TOOL] : []), LOCATION_QUERY_TOOL] : [])].filter((t) => (t !== FILE_TEXT_TOOL || this.scOn?.() !== false) && eeToolEnabled(this.env, t.function.name)); }   // sidecar.js: file_text only while sidecars are on
+  async setBrowserWait(ms) { const n = ms === "" || ms == null ? "" : String(Math.min(Math.max(Math.floor(Number(ms)) || 0, 0), 90000)); this.put("browser_wait_ms", n); return { browser_wait_ms: n === "" ? null : Number(n) }; }   // TEST_MODE only (index.js); empty = the default
   async setBrowserAgent(v) { if (!["jev", "off", ""].includes(v)) return { error: "browser_agent must be jev, off or empty (= env default)" }; this.put("browser_agent", v); return { browser_agent: v || null, on: this.browserAgentOn() }; }
   archive() { return this.env.ARCHIVE.get(this.env.ARCHIVE.idFromName(`archive:${this.get("tenant")}`)); }
   // Where the person is (location.js placeLine), for the message (never the system prompt: it changes): home from the Notebook
@@ -671,6 +681,13 @@ export class Resident extends DurableObject {
   // removed once it's settled. A deploy that kills a model call mid-flight leaves its row, and the next start of this object releases
   // it (settle 0: we eat the one lost call) instead of the Ledger charging the person its full worst case 10 minutes later.
   resOpen(rid, nano, tc = null) { try { this.sql.exec("INSERT OR REPLACE INTO res_open (rid, card, nano, at) VALUES (?,?,?,?)", rid, tc?.card || tc?.turn || null, Math.round(Number(nano) || 0), Date.now()); } catch (e) { console.log("res_open", e.message); } }
+  // A settled charge that had to use the price ceiling because the model's saved price is unknown: logged, and written to the ledger's
+  // events (shown by /ledger?ledger=1) so the charge can be found and corrected. Never throws: billing goes on.
+  async savedCatalog() { try { return (await modelSettingsEnv(this.env)).MODEL_SETTINGS?.catalog || null; } catch { return null; } }   // the saved models' facts, prices included
+  async notePriceUnknown(rid, info) {
+    console.log("BILLING price_unknown", JSON.stringify({ rid, ...info }));
+    try { await this.ledger().notePriceUnknown(rid, info.nano); } catch (e) { console.log("price_unknown event", String(e?.message || e).slice(0, 120)); }
+  }
   resClose(rid) { try { this.sql.exec("DELETE FROM res_open WHERE rid=?", rid); } catch {} }
   // At a fresh start nothing of this object is in flight, so every row left is a call a reset killed: release it at the Ledger.
   async resOpenRelease() {
@@ -810,8 +827,8 @@ export class Resident extends DurableObject {
   // (same shape as SKILLS in src/skills/index.js) and in the per-channel prompt block. A built-in slug wins.
   async channelSkills() { return listChannelSkills(this.sql); }
   async channelSkillDelete(slug) { return saveSkill(this.sql, { slug, delete: true }); }   // the app (Notebook → This channel's skills)
-  promptFlags(stable = true, cards = this.genuiOn()) { return { browser_task: this.browserAgentOn(), apps: eeEnabled(this.env) && !!this.env.COMPOSIO_KEY, app_events: eeEnabled(this.env) && !!this.env.COMPOSIO_KEY && eventsReady(this.env), recall: this.memoryMode() === "on", compact: !!stable, cards: !!cards }; }
-  async systemPrompt(stable = false, cards = this.genuiOn(), layered = false) {
+  promptFlags(stable = true, cards = this.genuiOn(), append = false) { return { ...(append ? { append: true } : {}), browser_task: this.browserAgentOn(), apps: eeEnabled(this.env) && !!this.env.COMPOSIO_KEY, app_events: eeEnabled(this.env) && !!this.env.COMPOSIO_KEY && eventsReady(this.env), recall: this.memoryMode() === "on", compact: !!stable, cards: !!cards }; }
+  async systemPrompt(stable = false, cards = this.genuiOn(), layered = false, append = false) {
     try { const ks = (await this.env.DB.prepare("SELECT name, hosts FROM vault WHERE tenant_id=? ORDER BY name").bind(this.get("tenant")).all()).results || [];
       this._keysLine = ks.length ? `Saved keys on this computer: ${ks.map((k) => `$${k.name} (works only with ${JSON.parse(k.hosts).join(", ")})`).join("; ")}.` : ""; } catch { this._keysLine = ""; }
     { const ls = await loginSites(this.env, this.get("tenant")); this._loginsLine = ls.length ? `Saved logins (browser_fill_login types them; you never see the passwords): ${ls.join(", ")}.${ls.some((x) => x.endsWith(" accounts)")) ? " For a site with several accounts, pass username (call it without one to get the list)." : ""}` : ""; }
@@ -851,7 +868,7 @@ export class Resident extends DurableObject {
       pinned: mem, recent };
     if (layered) {
       const layers = channelLayers(channelOptions, { apps: appContext.instructions || "" });
-      return { core: staticCore({ ...this.promptFlags(stable, cards), context_v2: true, ee: eeEnabled(this.env) }), developer: layers.runtime + "\n\n" + RUNTIME_CONTRACT + (cards ? "\n\n" + genuiPromptSection() : ""), standing: layers.data };
+      return { core: staticCore({ ...this.promptFlags(stable, cards, append), context_v2: true, ee: eeEnabled(this.env), lean_families: cutLazy(this.env) && !!append }), developer: layers.runtime + "\n\n" + RUNTIME_CONTRACT + (cards ? "\n\n" + genuiPromptSection() : ""), standing: layers.data };
     }
     const block = channelBlock(channelOptions);
     return `${staticCore({ ...this.promptFlags(stable, cards), ee: eeEnabled(this.env) })}${cards ? `\n\n${genuiPromptSection()}` : ""}\n\n${block}`;
@@ -923,8 +940,19 @@ export class Resident extends DurableObject {
 
   // One model call, streamed. Fires onComputerTool() as soon as a computer tool name appears in the stream.
   // The tools the model is offered: tools() minus this run's exclusions (helpers), each with a required step_title first (§4).
-  availableTools(tc = null) { return [...this.tools(), ...(tc?.context?.version === 2 ? CONTEXT_TOOLS : []), ...(tc?.appendRuntime ? [TASK_ARCHIVE_TOOL] : [])].filter((t) => !tc?.exclude?.has(t.function.name) && (tc?.kind !== "helper" || t.function.name === "load_tools" || helperAllowed(t.function.name))); }
-  modelTools(tc = null) { if (tc?.appendTools) return tc.appendTools; const all = this.availableTools(tc); return withStepTitles(tc?.context?.version === 2 && !tc?.appendRuntime ? selectedTools(all, tc.loadedTools) : all, { required: true }); }
+  // bring_back restores steps the working set set aside; the append task runtime never sets any aside (read_task_archive is its way back), so the tool isn't offered there.
+  availableTools(tc = null) { return [...this.tools(), ...(tc?.context?.version === 2 ? CONTEXT_TOOLS : []), ...(tc?.appendRuntime ? [TASK_ARCHIVE_TOOL] : [])].filter((t) => !tc?.exclude?.has(t.function.name) && !(tc?.appendRuntime && t.function.name === "bring_back") && (tc?.kind !== "helper" || t.function.name === "load_tools" || helperAllowed(t.function.name, tc.helper, tc.coordinatorPhase))); }
+  // Classic lane: every available tool in catalog order, built once per run (r35-cache-fix), so the tools block never changes.
+  // Append lane with PAYLOAD_CUT lazy (tc.appendLazy): every tool from turn 0 too, but non-eager ones as stubs (payload-cut.js);
+  // the list is fixed when the task is created, so the cached prefix never changes.
+  modelTools(tc = null) {
+    if (tc?.appendTools) return tc.appendTools;
+    if (tc && !tc.appendRuntime && tc.classicTools) return tc.classicTools;
+    const compact = cutTitle(this.env) || !!tc?.appendLazy, all = this.availableTools(tc);
+    const list = withStepTitles(tc?.appendLazy ? all.map((t) => EAGER_TOOLS.has(t.function.name) || t.function.name === TASK_ARCHIVE_TOOL.function.name ? t : stubTool(t)) : all, { required: true, compact });
+    if (tc && !tc.appendRuntime) tc.classicTools = list;
+    return list;
+  }
   // Two mode: the step's model choice. Before the call, the previous step's results can switch the rest of the turn to the top model
   // (route2.js escalation); after it, a Luna step that calls propose_plan or says it's stuck is redone once on the top model (the
   // Luna attempt's cost is kept; its live text, if any, isn't repeated).
@@ -944,6 +972,7 @@ export class Resident extends DurableObject {
       files: !!(tc?.needImg || tc?.attached) };
   }
   async callModel(messages, onComputerTool, onText = null, maxOut = MAX_OUT, noTools = false, tc = null) {
+    if (tc?.kind === "helper" && tc.helper?.id) this.helperAttachMessages(tc, messages);
     if (tc?.appendRuntime) await this.governTaskContext(messages, tc);
     let r;
     try { r = await this.callModelStep(messages, onComputerTool, onText, maxOut, noTools, tc); }
@@ -957,23 +986,24 @@ export class Resident extends DurableObject {
       r = await this.callModelStep(messages, onComputerTool, onText, maxOut, noTools, tc);
     }
     if (tc?.appendRuntime) tc.transcript.observe(r.inTok, messages, this.modelTools(tc));
+    if (tc?.kind === "helper" && tc.helper?.id) this.helperMessagesSeen(tc);
     if (!r.repeat) return r;
     noteRepeat(tc, r.repeat); console.log("model step repeating, retrying once", JSON.stringify({ ...r.repeat, unit: r.repeat.unit.slice(0, 40) }));
     let r2;
-    try { const note = { role: "user", content: REPEAT_NOTE }; if (tc?.appendRuntime) { messages.push(note); this.save(tc.turn, note); }
+    try { const note = { role: "user", content: stepNote(r.repeat) }; if (tc?.appendRuntime) { messages.push(note); this.save(tc.turn, note); }
       r2 = await this.callModelStep(tc?.appendRuntime ? messages : [...messages, note], onComputerTool, onText, maxOut, noTools, tc); }
     catch (e) { retainModelUsage(this, tc, r); throw e; }
     const sum = { inTok: r.inTok + r2.inTok, cached: r.cached + r2.cached, cacheWrite: (r.cacheWrite || 0) + (r2.cacheWrite || 0), outTok: r.outTok + r2.outTok, charge: r.charge + r2.charge };
     if (!r2.repeat) return { ...r2, ...sum, repeated: r.repeat };
-    noteRepeat(tc, r2.repeat); console.log("model step repeating again, plain message", r2.repeat.where);
-    onText?.(REPEAT_FALLBACK);
-    return { ...r2, ...sum, content: REPEAT_FALLBACK, calls: [], finish: "repeat", repeated: r2.repeat };
+    noteRepeat(tc, r2.repeat); console.log("model step repeating again, plain message", r2.repeat.where, r2.repeat.kind, r2.repeat.calls || "");
+    const fallback = stepFallback(r2.repeat); onText?.(fallback);
+    return { ...r2, ...sum, content: fallback, calls: [], finish: "repeat", repeated: r2.repeat };
   }
   async governTaskContext(messages, tc, forced = null) {
     const store = tc.transcript, tools = this.modelTools(tc), budget = contextBudget(tc.taskProfile);
     const revision = this.get("task_memory_revision") || null;
     if ((store.state().memoryRevision || null) !== revision) {
-      const prompt = await this.systemPrompt(true, this.genuiOn(), true);
+      const prompt = await this.systemPrompt(true, this.genuiOn(), true, true);
       const prefix = typeof prompt === "string" ? [{ role: "system", content: prompt }] : [{ role: "system", content: prompt.core }, { role: "developer", content: prompt.developer }, { role: "user", content: contextData("USER CONTEXT", prompt.standing) }];
       const turns = this.sql.exec("SELECT id,user_text,reply FROM turns WHERE kind='chat' AND session=? ORDER BY at,rowid", tc.session).toArray();
       const visible = turns.flatMap(t => [{ role: "user", content: this.cardUserText(t.id, t.user_text || "") }, ...(t.reply ? [{ role: "assistant", content: t.reply }] : [])]);
@@ -1012,6 +1042,16 @@ export class Resident extends DurableObject {
     messages.splice(0, messages.length, ...store.request());
     if (tc.appendStats) tc.appendStats.context_compactions = (tc.appendStats.context_compactions || 0) + 1;
   }
+  // Can every model this classic route may use take tool_choice "none"? When one can't (Muse takes only "auto"), the final call drops the
+  // tools as before, because the router would otherwise skip that model and change the model, and the cache with it.
+  async noneToolChoiceOk(route, tc) {
+    if (!route2On(this.env) || !route?.two || route.chore) return true;
+    try {
+      const level = await privacyOf(this.env, this.get("tenant")), o = { prov: this.provenance([], tc), settings: this.env.MODEL_SETTINGS };
+      const a = dispatchOrder(route, level, { ...o, body: { tool_choice: "none" } }).models, b = dispatchOrder(route, level, { ...o, body: {} }).models;
+      return a.length > 0 && a.length === b.length;
+    } catch { return false; }
+  }
   async callModelStep(messages, onComputerTool, onText = null, maxOut = MAX_OUT, noTools = false, tc = null) {
     if (tc?.appendRuntime || !tc?.route?.two) return this.callModelOnce(messages, onComputerTool, onText, maxOut, noTools, tc);
     escalationBefore(this, tc, messages);
@@ -1042,9 +1082,9 @@ export class Resident extends DurableObject {
         tc.contextAudit.out = JSON.stringify({ ...receipt, code_version: codeV(this.env), calls: tc.contextSteps });
       }
     }
-    const MAX_OUT_ = maxOut, route = tc?.route || null, tools = noTools && !tc?.appendRuntime ? null : this.modelTools(tc);
+    const MAX_OUT_ = maxOut, route = tc?.route || null; let tools = noTools && !tc?.appendRuntime ? null : this.modelTools(tc);
     const requestMaxOut = tc?.taskProfile ? Math.min(noTools ? maxOut : tc.taskProfile.maxOutput, tc.taskProfile.maxOutput) : OR_MAX_OUT;
-    const backgroundFormat = tc?.appendRuntime && noTools ? (tc.taskProfile.catalog.tool_choice.includes("none") ? { tool_choice: "none" } : {}) : noTools && messages.at(-1)?.role === "user" && String(messages.at(-1)?.content).startsWith(HANDOFF_PREFIX) ? { response_format: structuredFormat("handoff_notes", HANDOFF_SCHEMA) } : {};
+    let backgroundFormat = tc?.appendRuntime && noTools ? (tc.taskProfile.catalog.tool_choice.includes("none") ? { tool_choice: "none" } : {}) : noTools && messages.at(-1)?.role === "user" && String(messages.at(-1)?.content).startsWith(HANDOFF_PREFIX) ? { response_format: structuredFormat("handoff_notes", HANDOFF_SCHEMA) } : {};
     const estIn = Math.ceil(JSON.stringify(messages).length / 3);
     // Own AI key (byok.js): their endpoint and models, nothing reserved or charged for the call (their provider bills them).
     let byok = this.env.BYOK || null, viaOR = !byok && useOpenRouter(this.env);
@@ -1060,6 +1100,12 @@ export class Resident extends DurableObject {
       else if (!r.ok) throw r.reason === "day_limit" ? Object.assign(new Error(DAY_LIMIT_ERR), { status: 429 }) : Object.assign(new Error("out_of_credits"), { status: 402 });
     }
     let byokFast = false;
+    // Classic lane, a call with the tools off (final report, step-limit report, context checkpoint, a steer answered after the loop):
+    // the tools block is part of the cached prefix, so it stays exactly as in the previous call and tool_choice "none" turns the tools
+    // off instead (r35-cache-fix; the append lane already does this). Not for the hand-off notes (their own prompt and JSON format),
+    // own-key chat (their endpoint's tool_choice support is unknown) or when a model in this route can't take tool_choice "none".
+    const keepToolsOff = noTools && !tc?.appendRuntime && !!tc && viaOR && !byok && !backgroundFormat.response_format && await this.noneToolChoiceOk(route, tc);
+    if (keepToolsOff) { tools = this.modelTools(tc); backgroundFormat = { tool_choice: "none" }; }
     const rw = repeatWatch(), bw = toolBatchWatch(); let rep = null;   // text/arguments and bounded cross-call batches
     const rdet = [];
     let ep = "", fellBack = null, finish = null, refusal = null, content = "", calls = [], usage = { prompt_tokens: 0, completion_tokens: 0, cached: 0, cacheWrite: 0, cost: null }, fired = false, served = null, routing = null, provider = "workers-ai", servedProvider = null, servedHost = null;
@@ -1087,7 +1133,7 @@ export class Resident extends DurableObject {
       }
       if (viaOR) {
         const sess = tc?.taskProfile?.cacheSession || `${this.ctx.id.toString().slice(0, 24)}:${this.get("tenant") || ""}`;
-        const px = prefixPrint(messages, tools);   // gateway log: which cached prefix this call used (model.js)
+        const px = `${prefixPrint(messages, tools)}.${runPrint(tc)}`;   // gateway log: which cached prefix this call used, and which task/run it belongs to (model.js)
         const prov = this.provenance(messages, tc);   // what this payload carries
         try {
           stream = (await waitModel(openRouterChat(this.env, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true, max_tokens: requestMaxOut }, sess, route, { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat", px, _prov: prov }, signal))).body;
@@ -1106,7 +1152,7 @@ export class Resident extends DurableObject {
       for (let attempt = 0; !stream; attempt++) {
         if (signal.aborted) throw aborted();
         try {
-          stream = await waitModel(this.env.AI.run(this.env.MODEL, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true, max_tokens: MAX_OUT_, reasoning_effort: "low" },
+          stream = await waitModel(this.env.AI.run(await jobModel(this.env, "workers_ai_chat"), { messages, ...(tools && !keepToolsOff ? { tools } : {}), ...(keepToolsOff ? {} : backgroundFormat), stream: true, max_tokens: MAX_OUT_, reasoning_effort: "low" },
             aiOpts(this.env, { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat-fallback" }, { extraHeaders: { "x-session-affinity": `res-${this.ctx.id.toString().slice(0, 24)}` } })), s => s?.cancel?.());
           break;
         } catch (e) {
@@ -1200,10 +1246,21 @@ export class Resident extends DurableObject {
     }
     const inTok = usage.prompt_tokens || estIn, cached = usage.cached, cacheWrite = usage.cacheWrite, outTok = usage.completion_tokens || (rep ? Math.ceil(rw.chars / 3) : 0);
     // OpenRouter reports the exact cost of the model that served the call; Workers AI is billed from its token prices. A step stopped
-    // for repeating has no usage yet: what it wrote (≈3 chars a token) is billed at the price ceiling, so the spend guard sees it.
-    const cost = provider === "byok" ? 0 : provider === "openrouter" && usage.cost != null ? Math.ceil(usage.cost * 1e9)
-      : provider === "openrouter" && rep ? Math.ceil((inTok - cached + cacheWrite * (CACHE_WRITE_MULT - 1)) * OR_RESERVE_PRICE.in + outTok * OR_RESERVE_PRICE.out)
-      : Math.ceil((inTok - cached) * PRICE.in + cached * PRICE.cached + outTok * PRICE.out), charge = Math.ceil(cost * MARKUP);
+    // for repeating has no usage yet: its tokens are estimated (input from the request size, output ≈3 chars a token) so the spend guard sees it.
+    // Settled charge = the cost OpenRouter reported. When none came back (a step the repeat guard stopped, or a reply with no cost) the
+    // charge is the tokens at the served model's own saved price, never the reservation ceiling. With no saved price the ceiling is
+    // used but recorded as "price unknown" (below), so a charge at that price is never silent.
+    let priceUnknown = null;
+    const costless = provider === "openrouter" && usage.cost == null;
+    let cost;
+    if (provider === "byok") cost = 0;
+    else if (provider === "openrouter" && usage.cost != null) cost = Math.ceil(usage.cost * 1e9);
+    else if (costless) {
+      const est = estimateStepCost({ inTok, cached, cacheWrite, outTok }, savedModelPrice([await this.savedCatalog(), tc?.taskProfile?.catalog], [served, tc?.taskProfile?.requestedModel, route?.served, route?.model]));
+      cost = est.nano; if (est.unknown) priceUnknown = { served: served || route?.model || null, inTok, outTok, nano: Math.ceil(cost * MARKUP), repeat: !!rep };
+    } else cost = Math.ceil((inTok - cached) * PRICE.in + cached * PRICE.cached + outTok * PRICE.out);
+    const charge = Math.ceil(cost * MARKUP);
+    if (priceUnknown) await this.notePriceUnknown(rid, priceUnknown);
     if (provider === "byok") routing = { reason: "byok", floor: byokFast ? "fast" : "main", effort: null };
     if (charge > reserve) console.log("charge above reservation", { charge, reserve, served });
     if (!byok) { await this.ledger().settle(rid, charge); this.resClose(rid); } noteCharge(tc, charge);
@@ -1224,8 +1281,8 @@ export class Resident extends DurableObject {
       try { JSON.parse(args); } catch { bad = args; args = "{}"; }  // never put invalid JSON back into history: the API rejects the whole conversation
       return { ...c, id: c.id || `call_${i}_${Date.now()}`, function: { ...c.function, arguments: args }, ...(bad != null ? { bad_args: bad } : {}) };
     });
-    const reasoning = provider === "openrouter" && rdet.length && (tc?.appendRuntime || isMuse(route?.served)) ? { reasoning_details: rdet, _rmodel: tc?.taskProfile?.requestedModel || served || route?.served } : null;
-    return { content: content.trim(), calls, inTok, cached, cacheWrite, outTok, charge, finish, ...(refusal ? { refusal } : {}), model: served || (provider === "workers-ai" ? this.env.MODEL : provider === "byok" ? (byokFast ? byok.fast : byok.model) : null), routing, fellBack: provider === "workers-ai" ? fellBack : null, ...(reasoning ? { reasoning } : {}) };
+    const reasoning = provider === "openrouter" && rdet.length && (tc?.appendRuntime || route?.replayReasoning) ? { reasoning_details: rdet, _rmodel: tc?.taskProfile?.requestedModel || served || route?.served } : null;
+    return { content: content.trim(), calls, inTok, cached, cacheWrite, outTok, charge, finish, ...(refusal ? { refusal } : {}), model: served || (provider === "workers-ai" ? await jobModel(this.env, "workers_ai_chat") : provider === "byok" ? (byokFast ? byok.fast : byok.model) : null), routing, fellBack: provider === "workers-ai" ? fellBack : null, ...(reasoning ? { reasoning } : {}) };
   }
 
   // Computer tool → shell command on this channel's computer. Returns the raw { code, out }.
@@ -1235,7 +1292,7 @@ export class Resident extends DurableObject {
     const no = await permGate(this, tc, name, a); if (no) return { code: 1, out: no };   // perms.js: their level asks first
     const nf = name === "browser_task" ? await fillTaskGate(this, tc, a) : await fillGate(this, tc, name, a); if (nf) return { code: 1, out: nf };   // personal-fill.js: their details need their OK; cards/passwords/IDs never
     if (tc) { tc.inTool++; tc.line = lineFor(name, a); tc.emit?.({ t: "status", line: tc.line }); }
-    try { const r = await untilStopped(tc, this.execComputerToolInner(name, a, tc), { code: 130, out: STOPPED_TOOL_TEXT }); if (r?.code === 0) repeatNote(tc, name, a, r.out); return r; } finally { if (tc) tc.inTool--; }
+    try { let r = await untilStopped(tc, this.execComputerToolInner(name, a, tc), { code: 130, out: STOPPED_TOOL_TEXT }); if (r?.code === 0) repeatNote(tc, name, a, r.out); else r = this.browserBusyNote(r, tc?.session); return r; } finally { if (tc) tc.inTool--; }
   }
   // Before a browser call (both engines): the same page as last time with nothing done since, or the sign-in page / web app of a
   // service the account has a connected app for (appfirst.js). → the refusal text, or null. Handoff and fill_login also check the
@@ -1260,7 +1317,10 @@ export class Resident extends DurableObject {
       default: return { code: 2, out: `unknown tool ${name}` };
     }
     if (tc) tc.lastCmd = name === "run_command" || name === "search_files" ? cmd : null;   // the exact shell line, for the card step's receipts
-    const r = await this.computer().exec(cmd, { save: name === "read_file" || name === "search_files" ? "none" : "defer", ...(tc?.key ? { tag: tc.key } : {}), ...(tc?.turn && tc?.callId ? { run: runIdOf(tc.turn, tc.callId) } : {}), timeoutMs: commandLimitMs(name, a) });   // run: a deploy mid-command can re-attach to it (resume.js)   // tag: Stop can kill it
+    // Every command has its own shell. Give a helper a private default cwd so concurrent jobs do not
+    // accidentally read or write each other's relative paths on the shared channel computer.
+    const work = tc?.kind === "helper" && tc.helper?.id ? `mkdir -p -- ${q(helperDir(tc.helper.id))} && cd -- ${q(helperDir(tc.helper.id))} && ` : "";
+    const r = await this.computer().exec(work + cmd, { save: name === "read_file" || name === "search_files" ? "none" : "defer", ...(tc?.key ? { tag: tc.key } : {}), ...(tc?.turn && tc?.callId ? { run: runIdOf(tc.turn, tc.callId) } : {}), timeoutMs: commandLimitMs(name, a) });   // run: a deploy mid-command can re-attach to it (resume.js)   // tag: Stop can kill it
     if (r?.storage_note) r.out = `${String(r.out || "").replace(/\n*$/, "")}\n\n${r.storage_note}`;   // storage.js: a computer save was refused (storage full)
     return name === "run_command" ? commandNotes(r, tc) : r;   // spendguard.js: timed out / the same line over and over → a note (and the runaway watch counts it)
   }
@@ -1297,6 +1357,8 @@ export class Resident extends DurableObject {
     const C = this.computer(); if (tc) tc.touch = true;
     if (name === "browser_task") {
       if (!this.browserAgentOn()) return { code: 2, out: "browser_task is not available; use browser_navigate/browser_act." };
+      // In a task with the person it runs as a browser job that the turn waits for; any other caller (a workflow run, a follow-up) runs it here.
+      if (tc?.kind === "chat" && tc.session && tc.turn) return await this.browserTaskJob(a, tc);
       const r = await runBrowserTask(this, C, a, tc, { guard: (acts, page) => fillStepGate(this, tc, acts, page) }); if (tc) tc.extraCharge = (tc.extraCharge || 0) + (r.charge || 0);
       logBrowserTask(this, tc, a, r.out);   // worklog.js: what it found stays findable (logged only, never replayed)
       const host = (() => { try { return new URL(r.page?.url || "about:blank").host; } catch { return ""; } })();
@@ -1398,6 +1460,18 @@ export class Resident extends DurableObject {
     let a = {}; try { a = JSON.parse(call.function.arguments || "{}"); } catch { return `error: tool arguments were not valid JSON: ${call.function.arguments?.slice(0, 200)}`; }
     a = splitStepTitle(a).args;   // the card's step title never reaches a tool
     if (ctx) { ctx.callId = call.id; ctx.callNo = (ctx.callNo || 0) + 1; }   // appfirst.js: "from step N" in a repeat's nudge
+    if (ctx.appendLazy && !EAGER_TOOLS.has(call.function.name) && call.function.name !== TASK_ARCHIVE_TOOL.function.name) {   // payload-cut.js: stubbed tool
+      const full = this.availableTools(ctx).find((t) => t.function.name === call.function.name);
+      if (full) {
+        a = coerceArgs(a, full.function.parameters); const problems = checkArgs(a, full.function.parameters), seen = ctx.loadedTools?.has(full.function.name);
+        const g = seen ? [] : guidanceFor([full.function.name], ctx.loadedTools || new Set(), familyGuidance({ ...this.promptFlags(true), context_v2: true }));
+        if (problems.length || g.length) {
+          ctx.loadedTools ||= new Set(); ctx.loadedTools.add(full.function.name);
+          try { ctx.transcript.metadata({ loaded: [...ctx.loadedTools] }); } catch {}
+          return `error: ${problems.length ? `this call was not run because its arguments do not match the tool: ${problems.join("; ")}.` : "this call was not run because the tool's usage guidance had not been loaded yet."} Nothing was executed. Full tool and guidance follow; call it again with correct arguments.\n` + JSON.stringify({ tool: full, ...(g.length ? { guidance: g.join("\n\n") } : {}) });
+        }
+      }
+    }
     noteRan(ctx, call.function.name);   // live-check.js: which tools ran in this turn (a lookup before stating live status)
     if (ctx?.exclude?.has?.(call.function.name)) return `error: ${call.function.name} isn't available ${ctx.kind === "helper" ? "to a helper. Say in your report what it was needed for; the helper who started you handles it" : "in this run"}.`;   // offered or not, never run
     if (ctx) ctx.lastCmd = null;
@@ -1426,7 +1500,8 @@ export class Resident extends DurableObject {
     if (ctx.emit && name !== "update_todos" && name !== "react") { ctx.line = lineFor(name, a); ctx.emit({ t: "status", line: ctx.line }); }   // to-do lists and reactions show themselves
     switch (name) {
       case "read_task_archive": return ctx.transcript && (ctx.transcript.state().memoryRevision || null) === (this.get("task_memory_revision") || null) ? JSON.stringify(ctx.transcript.archive(a)) : "Archive unavailable pending an authorized privacy context reset.";
-      case "start_helper": case "stop_helper": case (ctx.kind === "helper" && !helperAllowed(name) ? name : null): return this.helperTool(name, a, ctx);
+      case "start_helper": case "list_helpers": case "send_helper": case "stop_helper": case (ctx.kind === "helper" && !helperAllowed(name, ctx.helper, ctx.coordinatorPhase) ? name : null): return this.helperTool(name, a, ctx);
+      case "start_browser_task": case "stop_browser_task": case "list_browser_tasks": return this.browserJobTool(name, a, ctx);
       case "list_channels": return listChannels(this, a);
       case "create_channel": return createChannelTool(this, a, ctx);
       case "start_task": return routeTaskTool(this, name, a, ctx);
@@ -1625,8 +1700,11 @@ export class Resident extends DurableObject {
         const allowed = new Map(this.availableTools(ctx).map((t) => [t.function.name, t]));
         const missing = a.names.filter((n) => !allowed.has(n));
         if (missing.length) return JSON.stringify({ error: "Unknown or unavailable tools", names: missing });
+        const before = new Set(ctx.loadedTools || []);
         ctx.loadedTools ||= new Set(); for (const n of a.names) ctx.loadedTools.add(n);
-        return JSON.stringify({ loaded: a.names, tools: a.names.map((n) => allowed.get(n)), note: "Schemas are available on your next model step. Nothing has been executed." });
+        if (ctx.appendLazy) { try { ctx.transcript.metadata({ loaded: [...ctx.loadedTools] }); } catch (e) { console.log("load_tools persist", e.message); } }   // payload-cut.js: later turns send the same tool list
+        const guidance = cutLazy(this.env) || ctx.appendLazy ? guidanceFor(a.names, before, familyGuidance({ ...this.promptFlags(true), context_v2: true })) : [];
+        return JSON.stringify({ loaded: a.names, tools: a.names.map((n) => allowed.get(n)), ...(guidance.length ? { guidance: guidance.join("\n\n") } : {}), note: ctx.appendLazy ? "Use these full descriptions and parameters. The tool list itself is unchanged. Nothing has been executed." : "Schemas are available on your next model step. Nothing has been executed." });
       }
       case "read_context": {
         if (!ctx.context) return "error: context v2 is not enabled for this turn";
@@ -1672,7 +1750,7 @@ export class Resident extends DurableObject {
   async armNow() {
     const wt0 = this.sql.exec("SELECT MIN(CASE WHEN lease_until>next_run THEN lease_until ELSE next_run END) t FROM workflows WHERE status='active' AND on_event IS NULL").one().t;
     const et = eventsNext(this.sql), wt = wt0 == null ? et : et == null ? wt0 : Math.min(wt0, et);   // + app events waiting to run (app-events.js)
-    const ht0 = helperNextWake(this.sql), pt = this.pomoNext(), ht = pt == null ? ht0 : ht0 == null ? pt : Math.min(ht0, pt);   // + focus timer phase ends (pomodoro.js)
+    const ht1 = helperNextWake(this.sql), bj = browserJobNextWake(this.sql), ht0 = ht1 == null ? bj : bj == null ? ht1 : Math.min(ht1, bj), pt = this.pomoNext(), ht = pt == null ? ht0 : ht0 == null ? pt : Math.min(ht0, pt);   // + focus timer phase ends (pomodoro.js)
     const r0 = wt == null ? ht : ht == null ? wt : Math.min(wt, ht);   // + helper deadlines and owed results
     const lt0 = laterNext(this.sql), jt0 = this.journalNext(), bt = this.textBatchNext(), jt = jt0 == null ? bt : bt == null ? jt0 : Math.min(jt0, bt), lt = lt0 == null ? jt : jt == null ? lt0 : Math.min(lt0, jt);   // + running turns' heartbeat / due resumes (resume.js)
     const r = lt == null ? r0 : r0 == null ? lt : Math.min(r0, lt);   // + scheduled messages (send-later.js)
@@ -1730,6 +1808,7 @@ export class Resident extends DurableObject {
     try { this.resumeDue(); } catch (e) { console.log("resume alarm", e.message); }   // resume.js: turns a reset cut off carry on first (not awaited)
     if (this.env.TEST_MODE === "1") await this.probeAlarmRun(info).catch((e) => console.log("alarm probe", e.message));
     await this.helpersRecover().catch((e) => console.log("helpers alarm", e.message));   // owed helper results, helper deadlines
+    await this.browserJobsRecover().catch((e) => console.log("browser jobs alarm", e.message));
     try { this.textBatchRecover(); } catch (e) { console.log("text batch recover", e.message); }   // texts a deploy caught mid-gather (not awaited)
     await this.laterFireDue().catch((e) => console.log("send later alarm", e.message));   // the person's scheduled messages, before any long workflow run
     await this.pomoAlarm().catch((e) => console.log("pomodoro alarm", e.message));   // focus timer phase ends, before any long workflow run
@@ -1885,37 +1964,288 @@ export class Resident extends DurableObject {
   async gateRuns(n = 30) { return this.sql.exec("SELECT at,workflow_id,code,ms,verdict,substr(out,-300) out FROM gate_runs ORDER BY id DESC LIMIT ?", n).toArray(); }
   async runNow(id) { const w = this.wf(id); if (!w) return { error: "no such workflow" }; if (w.on_event) return { error: "it runs only when its app event happens" }; if (w.lease_until > Date.now()) return { error: "already running" }; const r = await this.runWorkflow(w); await this.arm(); return r; }
 
-  // ---- Background helpers (helpers.js; contract §6 + Captain's answers A/B). start_helper/stop_helper land here from localTool,
+  // A background browser job owns this channel's one Chrome tab until it finishes or the person takes control.
+  // The row is written before the start tool returns. A reset makes it uncertain and never replays a click.
+  async browserJobTool(name, a = {}, ctx = {}) {
+    if (ctx.kind === "helper") return "error: background browser jobs are not available to a generic helper.";
+    if (!ctx.session || ctx.kind !== "chat") return "error: browser jobs can only be managed in a task with the person.";
+    if (name === "list_browser_tasks") {
+      // The channel has one browser, so a working job from another task is listed too, marked with that task.
+      const own = this.sql.exec("SELECT * FROM browser_jobs WHERE session=? ORDER BY id DESC LIMIT 20", ctx.session).toArray().map(browserJobView);
+      const other = this.sql.exec("SELECT * FROM browser_jobs WHERE session<>? AND status IN ('queued','running','stopping') ORDER BY id", ctx.session).toArray()
+        .map((j) => ({ ...browserJobView(j), from_another_task: true, task_id: j.session, task_title: this.session(j.session)?.title || null, note: "This job belongs to another task in this channel. It holds the shared browser. stop_browser_task can stop it." }));
+      return JSON.stringify({ jobs: [...other, ...own] });
+    }
+    if (name === "stop_browser_task") {
+      const j = browserJobRow(this.sql, a.id);
+      if (!j) return `error: no browser job #${a.id} exists in this channel.`;
+      const elsewhere = j.session !== ctx.session, working = ["queued", "running", "stopping"].includes(j.status);
+      if (!working) return elsewhere ? `error: no browser job #${a.id} is working in this channel.` : `Browser job #${j.id} already ${j.status}.`;
+      // The same person owns every task in this channel and its one browser, so a working job can be stopped from any task. The owning task is told.
+      if (elsewhere) this.sql.exec("UPDATE browser_jobs SET status='stopping',error=COALESCE(error,?) WHERE id=?", "Stopped from another task in this channel at the person's request.", j.id);
+      else this.sql.exec("UPDATE browser_jobs SET status='stopping' WHERE id=?", j.id);
+      return elsewhere ? `Browser job #${j.id} (from another task${this.session(j.session)?.title ? `, "${this.session(j.session).title}"` : ""}) will stop before its next action. An action already in progress may still complete; its result will be reported in that task.`
+        : `Browser job #${j.id} will stop before its next action. An action already in progress may still complete; its result will be reported.`;
+    }
+    if (!this.browserAgentOn()) return "error: background browser jobs are not available on this channel.";
+    if (!ctx.turn) return "error: a live task card is required before a background browser job can start.";
+    const inp = browserJobInput(a); if (inp.error) return `error: ${inp.error}`;
+    const af = await this.browserFirstCheck("browser_task", inp, ctx); if (af) return `error: ${af}`;
+    const nf = await fillTaskGate(this, ctx, inp); if (nf) return nf;
+    { const busy = activeBrowserJob(this.sql); if (busy) return `error: another background browser job is already running in this channel (${this.browserJobWhere(busy, ctx.session)}). Wait for it to finish or stop it with stop_browser_task.`; }
+    const { job: j } = this.browserJobCreate(ctx, inp, "");
+    return browserJobStartedText(j);
+  }
+  // "from this task" or `from another task "Title"`, with how long ago it started, for refusal texts.
+  browserJobWhere(j, session) {
+    const mins = Math.max(0, Math.round((Date.now() - Number(j.started)) / 60e3)), title = this.session(j.session)?.title;
+    return `${j.session === session ? "from this task" : `from another task${title ? ` "${title}"` : ""}`}, started ${mins} min ago`;
+  }
+  // The shared computer refuses shell commands and browser steps while a job holds the browser. Say which job and how to stop it.
+  browserBusyNote(r, session) {
+    if (!r || typeof r.out !== "string" || !/background browser (job|task)|Another browser task is using/.test(r.out)) return r;
+    const j = activeBrowserJob(this.sql); if (!j) return r;
+    return { ...r, out: `${r.out.replace(/\s+$/, "")} It is browser job #${j.id} (${this.browserJobWhere(j, session)}). To stop it, call stop_browser_task with id ${j.id}.` };
+  }
+  // Test accounts only (index.js): stop every working browser job in this channel, so a crashed check cannot leave one behind.
+  async stopBrowserJobs() {
+    const ids = this.sql.exec("SELECT id FROM browser_jobs WHERE status IN ('queued','running','stopping')").toArray().map((x) => x.id);
+    this.sql.exec("UPDATE browser_jobs SET status='stopping',error=COALESCE(error,'Stopped by a test cleanup.') WHERE status IN ('queued','running')");
+    return { stopping: ids, working: this.sql.exec("SELECT COUNT(*) n FROM browser_jobs WHERE status IN ('queued','running','stopping')").one().n };
+  }
+  // Writes the job row, then starts its run. Returns the row and the run's promise (it never rejects).
+  browserJobCreate(ctx, inp, mode) {
+    const now = Date.now(), token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+    const parent = ctx.card || ctx.turn || null;
+    this.sql.exec("INSERT INTO browser_jobs (session,parent_card,url,task,vals,fills_personal,status,started,deadline,token,mode) VALUES (?,?,?,?,?,?,'queued',?,?,?,?)",
+      ctx.session, parent, inp.url, inp.task, JSON.stringify(inp.values), inp.fills_personal ? 1 : 0, now, now + BROWSER_JOB_DEADLINE_MS, token, mode || null);
+    const j = browserJobRow(this.sql, this.sql.exec("SELECT last_insert_rowid() id").one().id);
+    if (parent) { try { this.sql.exec("UPDATE card_events SET ref=? WHERE card=? AND type='step' AND tool IN ('start_browser_task','browser_task') AND status='running' AND ref IS NULL", String(j.id), parent); } catch {} }
+    const run = this.browserJobRun(j.id).catch((e) => console.log("browser job run", j.id, String(e.message || e).slice(0, 200)));
+    this.ctx.waitUntil?.(run); this._browserJobRuns = [...(this._browserJobRuns || []), run];
+    this.arm().catch(() => {});
+    return { job: j, run };
+  }
+  // browser_task in a task with the person: start a browser job and wait for it for a short while. If it finishes in that window,
+  // its result goes back to this tool call (and no message follows). If not, the call returns now, the job keeps the channel's browser
+  // and keeps going, and its result arrives as a new message like any background job. Browser actions are never replayed.
+  async browserTaskJob(a, tc) {
+    const inp = browserTaskInput(a); if (inp.error) return { code: 1, out: `error: ${inp.error}` };
+    const busy = activeBrowserJob(this.sql);
+    if (busy) return { code: 1, out: `error: browser job #${busy.id} is still working in this channel's browser (${this.browserJobWhere(busy, tc.session)}). Wait for its result, or stop it with stop_browser_task (id ${busy.id}).` };
+    const { job: j, run } = this.browserJobCreate(tc, inp, "task");
+    const inline = (this._inlineBrowserJobs ||= new Set()); inline.add(j.id);
+    let settled = false; run.then(() => { settled = true; });
+    const waitMs = browserTaskWaitMs({ BROWSER_TASK_WAIT_MS: this.get("browser_wait_ms") || this.env.BROWSER_TASK_WAIT_MS }), t0 = Date.now(), nap = (ms) => new Promise((z) => setTimeout(z, ms));
+    while (!settled) {
+      if (tc.abort === "hard") this.sql.exec("UPDATE browser_jobs SET status='stopping' WHERE id=? AND status IN ('queued','running')", j.id);
+      else if (this.hasSteers?.(tc)) this.sql.exec("UPDATE browser_jobs SET status='stopping' WHERE id=? AND status IN ('queued','running')", j.id);   // the person wrote again: stop at the next boundary, as before
+      else if (tc.abort === "soft") break;   // the turn is at its limit: leave the job to run on
+      if (Date.now() - t0 >= waitMs) break;
+      await Promise.race([run, nap(Math.min(200, Math.max(1, waitMs - (Date.now() - t0))))]);
+    }
+    if (!settled) {
+      inline.delete(j.id);   // from here the run's own end delivers the result as a message
+      const row = browserJobRow(this.sql, j.id);
+      return { code: 0, out: browserTaskMovedText(row) };
+    }
+    inline.delete(j.id);
+    const row = browserJobRow(this.sql, j.id);
+    this.sql.exec("UPDATE browser_jobs SET handed=1 WHERE id=?", j.id);
+    if (row.charge_nano) tc.extraCharge = (tc.extraCharge || 0) + row.charge_nano;
+    if (row.status === "stopped" && this.hasSteers?.(tc)) return { code: 0, out: `browser_task handed back for the person's updated request. No further browser actions were started.\nSteps already completed (do not repeat): ${row.last_step || 0} browser step(s)\nPage: ${row.last_title || ""} — ${row.last_url || row.url || "not opened"}\n` };
+    const out = String(row.report || row.error || "No result was saved.");
+    logBrowserTask(this, tc, a, out);   // worklog.js: what it found stays findable (logged only, never replayed)
+    const tail = row.status === "uncertain" ? "\n(The last browser action may have completed. Do not repeat it without checking the page.)" : "";
+    return { code: row.status === "done" ? 0 : 1, out: out + tail + "\n(The page outline is not included. Call browser_snapshot only if you need to check or continue on the page.)" };
+  }
+  async browserJobRun(id) {
+    let j = browserJobRow(this.sql, id); if (!j || j.status !== "queued") return;
+    const C = this.computer(); let owned = false, lost = false, renew = null, keepLease = false;
+    try {
+      // A missing method on an older ChannelComputer fails closed before any browser call.
+      // Record possible ownership before RPC. A reset can hide a successful acquire response.
+      this.sql.exec("UPDATE browser_jobs SET lease_acquired=1 WHERE id=?", id);
+      const grant = await C.acquireBrowserOwner(j.token, BROWSER_JOB_LEASE_MS);
+      if (!grant?.ok) { this.sql.exec("UPDATE browser_jobs SET lease_acquired=0 WHERE id=?", id); this.browserJobFinish(id, "blocked", grant?.error || "Could not take the browser."); return; }
+      owned = true;
+      j = browserJobRow(this.sql, id);
+      if (j.status === "stopping") { this.browserJobFinish(id, "stopped", "Stopped before the first browser action."); return; }
+      this.sql.exec("UPDATE browser_jobs SET status='running' WHERE id=? AND status='queued'", id);
+      const live = () => liveTurnOf(this, j.session);
+      const tc = { kind: "browser_job", turn: j.parent_card, session: j.session, inTool: 1,
+        subs: { get size() { return live()?.subs?.size || 0; } }, emit: (o) => live()?.emit?.(o) };
+      this._browserJob = { id, session: j.session, turn: j.parent_card, tc };
+      renew = setInterval(() => { C.renewBrowserOwner(j.token, BROWSER_JOB_LEASE_MS).then((r) => { if (!r?.ok) lost = true; }, () => { lost = true; }); C.touch().catch(() => {}); }, 30e3);
+      // A browser_task that is still waiting in its turn stops at the next boundary when the person writes again, as the attended tool did.
+      const shouldStop = () => {
+        if (this._inlineBrowserJobs?.has(id) && this.hasSteers?.(live())) this.sql.exec("UPDATE browser_jobs SET status='stopping' WHERE id=? AND status='running'", id);
+        return lost || Date.now() >= j.deadline || browserJobRow(this.sql, id)?.status !== "running";
+      };
+      const beforeBrowse = (op) => {
+        if (shouldStop()) throw Object.assign(new Error("browser job stopped at a safe boundary"), { stopped: true });
+        this.sql.exec("UPDATE browser_jobs SET pending_op=? WHERE id=? AND status='running'", op, id);
+      };
+      const afterBrowse = (_op, page) => this.sql.exec("UPDATE browser_jobs SET last_step=last_step+1,pending_op=NULL,last_url=?,last_title=? WHERE id=?",
+        String(page.url || "").slice(0, 2000), String(page.title || "").slice(0, 300), id);
+      const args = { url: j.url, task: j.task, values: JSON.parse(j.vals || "null"), fills_personal: !!j.fills_personal };
+      const r = await runBrowserTask(this, C, args, tc, { ownerToken: j.token, shouldStop, beforeBrowse, afterBrowse, detailedReport: true, purchaseGuard: j.mode !== "task",
+        guard: (acts, page) => fillStepGate(this, tc, acts, page) });
+      const latest = browserJobRow(this.sql, id);
+      const status = r.uncertain || latest.pending_op ? "uncertain" : latest.status === "stopping" || r.stopped || r.taken_over || lost ? "stopped" : r.code === 0 ? "done" : "blocked";
+      keepLease = status === "uncertain";
+      this.browserJobFinish(id, status, r.out, r.charge);
+    } catch (e) {
+      const latest = browserJobRow(this.sql, id), status = latest?.pending_op ? "uncertain" : "failed";
+      keepLease = status === "uncertain";
+      this.browserJobFinish(id, status, String(e.message || e));
+    } finally {
+      if (renew) clearInterval(renew);
+      if (this._browserJob?.id === id) this._browserJob = null;
+      // After an uncertain action, let the short lease expire. A late network
+      // request remains tied to this job rather than borrowing another task's grant.
+      if (!keepLease && (owned || browserJobRow(this.sql, id)?.lease_acquired)) {
+        const released = await C.releaseBrowserOwner(j.token).catch(() => null);
+        if (released?.ok || released?.owner_lost) this.sql.exec("UPDATE browser_jobs SET lease_acquired=0 WHERE id=?", id);
+        else this.sql.exec("UPDATE browser_jobs SET status='uncertain',ended=?,report=COALESCE(report,'')||? WHERE id=?", Date.now(), " Browser ownership release was not confirmed. No browser action was replayed.", id);
+      }
+      // The follow-on assistant starts only after confirmed release. An uncertain
+      // action keeps the tab reserved, so its handoff waits past the owner lease.
+      if (!this._inlineBrowserJobs?.has(id)) this.browserJobDeliver(id);   // browser_task is still waiting for it and returns the result itself
+      await this.arm().catch(() => {});
+    }
+  }
+  browserJobFinish(id, status, report, charge = 0) {
+    const j = browserJobRow(this.sql, id); if (!j || !["queued", "running", "stopping"].includes(j.status)) return j;
+    this.sql.exec("UPDATE browser_jobs SET status=?,ended=?,report=?,charge_nano=? WHERE id=?", status, Date.now(), String(report || "").slice(0, 20000), Math.max(0, Math.round(Number(charge) || 0)), id);
+    return browserJobRow(this.sql, id);
+  }
+  browserJobDeliver(id) {
+    if (this._inlineBrowserJobs?.has(Number(id))) return browserJobRow(this.sql, id);
+    let j = browserJobRow(this.sql, id); if (!j || j.handed || !["done", "failed", "blocked", "stopped", "uncertain"].includes(j.status)) return j;
+    if (j.status === "uncertain" && Number(j.ended || j.started) + BROWSER_JOB_RELEASE_GRACE_MS > Date.now()) return j;
+    const cid = `browser-job:${j.id}`;
+    const h = this.handoff(j.session, { text: browserJobHandoff(j), away: browserJobHandoff(j, true), cid, ref: cid, from: { type: "browser_job", id: j.id, title: "Browser job" } });
+    if (h?.mode === "open" || h?.mode === "steer" || h?.mode === "dup" || h?.mode === "gone")
+      this.sql.exec("UPDATE browser_jobs SET handed=1,result_card=? WHERE id=?", h.card?.id || null, id);
+    j = browserJobRow(this.sql, id); return j;
+  }
+  async browserJobsRecover({ boot = false } = {}) {
+    const now = Date.now(); let recovered = false;
+    for (const j of this.sql.exec("SELECT * FROM browser_jobs WHERE status IN ('queued','running','stopping')").toArray()) {
+      if (!boot && this._browserJob?.id === j.id && now < j.deadline) continue;
+      recovered = true;
+      const reason = boot ? "The browser job was interrupted by a restart. Its last action may have completed; no action was replayed." : "The browser job reached its time limit. Its last action may have completed; no action was replayed.";
+      this.sql.exec("UPDATE browser_jobs SET status='uncertain',ended=?,report=COALESCE(report,?) WHERE id=?", now, reason, j.id);
+      // Do not release an unknown in-flight action after a reset. Its owner lease
+      // expires on its own, and the person can still take control immediately.
+    }
+    if (boot) { if (recovered || browserJobNextWake(this.sql) != null) await this.arm().catch(() => {}); return; }
+    for (const j of pendingBrowserHandoffs(this.sql)) this.browserJobDeliver(j.id);
+  }
+
+  // ---- Background helpers (helpers.js; contract §6 + Captain's answers A/B). Helper controls land here from localTool,
   // and so does any tool a helper run isn't allowed to use (classic engine: it's refused here, never run).
+  // Keep each queued instruction in the helper's channel-local storage. Include it in the next model request and its
+  // saved transcript. A returned model call proves only that the model saw the instruction, not that it followed it.
+  // The messages for a call that follows the last model call: with working memory, that call's own view plus whatever was added after
+  // it (so the request only appends); without it, the raw messages, which already hold everything. A final report, step-limit
+  // report or steer answer is built from here, never by trimming older results again (r35-cache-fix).
+  finalView(tc, messages) { return tc?.wmView && tc.wmSrcLen != null && !tc.appendRuntime ? [...tc.wmView, ...messages.slice(tc.wmSrcLen)] : messages; }
+  helperAttachMessages(tc, messages) {
+    const h = helperRow(this.sql, tc.helper.id);
+    if (!h || h.status !== "running" || h.session !== tc.session) return;
+    for (const m of helperMessageRows(this.sql, h.id).filter((x) => x.session === tc.session && x.status !== "not_seen")) {
+      const note = `[Helper follow-up #${m.id}] ${helperMessageText([m])}`;
+      if (m.status === "queued") {
+        this.sql.exec("UPDATE helper_messages SET status='presented', presented_at=? WHERE id=? AND status='queued'", Date.now(), m.id);
+        this.save(tc.turn, { role: "user", content: note });
+      }
+      if (messages.some((x) => x.role === "user" && typeof x.content === "string" && x.content.includes(`[Helper follow-up #${m.id}]`))) continue;
+      // The request is rebuilt each step (a working-set copy, or pi's messages converted again), so a note added to it would sit at the
+      // end of every request and move one place later each step, which breaks the provider's cached prefix (r35-cache-fix). The note
+      // goes in once, at the position where it first appeared, and is put back at that same position on every later step.
+      tc.helperNoteAt ||= new Map();
+      if (!tc.helperNoteAt.has(m.id)) tc.helperNoteAt.set(m.id, messages.length);
+      messages.splice(Math.min(tc.helperNoteAt.get(m.id), messages.length), 0, { role: "user", content: note });
+    }
+  }
+  helperMessagesSeen(tc) {
+    this.sql.exec("UPDATE helper_messages SET status='seen', seen_at=? WHERE helper_id=? AND session=? AND status='presented'", Date.now(), tc.helper.id, tc.session);
+  }
+  helperQueued(tc) { return tc?.kind === "helper" && tc.helper?.id ? helperMessagePending(this.sql, tc.helper.id) > 0 : false; }
   async helperTool(name, a = {}, ctx = {}) {
-    if (ctx.kind === "helper") return `error: ${name} isn't available to a helper. Say in your report what it was needed for; the helper who started you handles it.`;
+    const coordinator = ctx.kind === "helper" && ctx.helper?.id ? helperRow(this.sql, ctx.helper.id) : null;
+    const coordinating = coordinator?.role === "coordinator" && coordinator.status === "running" && coordinator.phase === "dispatch" && ctx.coordinatorPhase === "dispatch" && coordinator.session === ctx.session;
+    if (ctx.kind === "helper" && (!coordinating || !helperAllowed(name, coordinator, "dispatch"))) return `error: ${name} isn't available to this helper. Say in your report what it was needed for; the helper who started you handles it.`;
+    if (name === "list_helpers") {
+      if (!ctx.session || (ctx.kind !== "chat" && !coordinating)) return "error: helper work can only be listed from a task with the person.";
+      const rows = coordinating ? coordinatorChildren(this.sql, coordinator.id) : this.sql.exec("SELECT * FROM helpers WHERE session=? ORDER BY id DESC LIMIT 50", ctx.session).toArray();
+      return JSON.stringify(rows.map((h) => ({ id: h.id, name: h.name, role: h.role || "worker", coordinator_id: h.coordinator_id ?? null, phase: h.phase || null, status: h.status, started: h.started, ended: h.ended, steps: h.steps,
+        messages: helperMessageRows(this.sql, h.id).filter((m) => m.session === ctx.session).map((m) => ({ id: m.id, status: m.status, queued_at: m.queued_at, seen_at: m.seen_at, text: m.text })) })));
+    }
+    if (name === "send_helper") {
+      if (!ctx.session || (ctx.kind !== "chat" && !coordinating)) return "error: helpers can only be messaged from a task with the person.";
+      const h = helperRow(this.sql, a.id);
+      if (!h || h.session !== ctx.session || (coordinating && h.coordinator_id !== coordinator.id)) return `error: there's no helper #${a.id} available to you in this task.`;
+      if (h.status !== "running" || helperTcOf(this, h.id)?.committed) return `error: helper #${h.id} is no longer accepting messages.`;
+      const msg = scrubSecrets(String(a.message || "").trim());
+      if (!msg) return "error: message is required.";
+      if (msg.length > HELPER_MESSAGE_MAX) return `error: message must be at most ${HELPER_MESSAGE_MAX} characters; shorten it without dropping the person's limits.`;
+      if (helperMessageRows(this.sql, h.id).length >= HELPER_MESSAGES_MAX) return `error: helper #${h.id} has reached its ${HELPER_MESSAGES_MAX} follow-up message limit.`;
+      this.sql.exec("INSERT INTO helper_messages (helper_id,session,text,status,queued_at) VALUES (?,?,?,'queued',?)", h.id, ctx.session, msg, Date.now());
+      const id = this.sql.exec("SELECT last_insert_rowid() id").one().id;
+      return `Queued follow-up #${id} for helper #${h.id}. Queued does not mean the worker has seen or followed it; check list_helpers and its later report.`;
+    }
     if (name === "stop_helper") {
       const h = helperRow(this.sql, a.id);
-      if (!h || h.session !== ctx.session) return `error: there's no helper #${a.id} in this task.`;
+      if (!h || h.session !== ctx.session || (coordinating && h.coordinator_id !== coordinator.id)) return `error: there's no helper #${a.id} available to you in this task.`;
       if (h.status !== "running") return `Helper #${h.id} had already ${h.status === "done" ? "finished" : h.status}; nothing to stop.`;
-      const r = await this.helperStop(ctx.session, h.id, "agent");
+      const r = await this.helperStop(ctx.session, h.id, coordinating ? "coordinator" : "agent");
       return r.error ? `error: ${r.error}` : `Stopped helper #${h.id} "${h.name}". Its result won't come back.`;
     }
-    if (!ctx.session || ctx.kind !== "chat") return "error: helpers can only be started while working on a task with the person.";
-    const nm = String(a.name || "").replace(/\s+/g, " ").trim().slice(0, HELPER_NAME_MAX), task = String(a.task || "").trim().slice(0, HELPER_TASK_MAX);
+    if (!ctx.session || (ctx.kind !== "chat" && !coordinating)) return "error: helpers can only be started while working on a task with the person.";
+    const role = a.role == null ? "worker" : String(a.role);
+    if (role !== "worker" && role !== "coordinator") return "error: role must be worker or coordinator.";
+    if (coordinating && role !== "worker") return "error: a coordinator can start direct worker children only; there is no deeper nesting.";
+    const nm = scrubSecrets(String(a.name || "").replace(/\s+/g, " ").trim()).slice(0, HELPER_NAME_MAX), task = scrubSecrets(String(a.task || "").trim()).slice(0, HELPER_TASK_MAX);
     if (!nm || !task) return "error: name and task are both required.";
-    const now = Date.now(), no = startRefusal(this.sql, ctx.session, now); if (no) return no;
     const parent = ctx.card || ctx.turn || null;
-    this.sql.exec("INSERT INTO helpers (session,parent_card,name,task,status,started,deadline) VALUES (?,?,?,?,'running',?,?)", ctx.session, parent, nm, task, now, now + HELPER_DEADLINE_MS);
+    const callId = ctx.callId ? String(ctx.callId) : null;
+    if (coordinating && (!parent || !callId)) return "error: this child start has no saved call identity; retry only after checking the coordinator's record.";
+    if (parent && callId) {
+      const priorSpawn = this.sql.exec("SELECT * FROM helpers WHERE parent_card=? AND spawn_call_id=?", parent, callId).toArray()[0];
+      if (priorSpawn) return `Helper #${priorSpawn.id} "${priorSpawn.name}" was already started by this call. Do not start it again.`;
+    }
+    const now = Date.now(), no = startRefusal(this.sql, ctx.session, now); if (no) return no;
+    if (role === "coordinator" && runningHelpers(this.sql, ctx.session).length >= 2) return "error: a coordinator needs room for at least one child within this task's three running helper slots.";
+    if (coordinating && coordinatorChildren(this.sql, coordinator.id).length >= COORDINATOR_MAX_CHILDREN) return `error: this coordinator has already started its ${COORDINATOR_MAX_CHILDREN} direct children.`;
+    if (coordinating && now >= coordinator.deadline) return "error: the coordinator's shared deadline has passed; report the work completed so far.";
+    const prior = coordinating ? [] : this.sql.exec("SELECT id,user_text,reply FROM turns WHERE session=? AND kind='chat' AND id<>? ORDER BY at DESC LIMIT 6", ctx.session, parent || "").toArray().reverse()
+      .map((r) => ({ user_text: this.cardUserText(r.id, r.user_text || ""), reply: stripNotesEcho(r.reply || "") }));
+    const current = parent ? this.cardUserText(parent, ctx.userText || ctx.context?.userText || "") : ctx.userText || ctx.context?.userText || "";
+    const inherited = coordinating ? coordinator.context || helperContextSnapshot({ current: coordinator.task }) : helperContextSnapshot({ current, prior });
+    this.sql.exec("INSERT INTO helpers (session,parent_card,name,task,context,status,started,deadline,role,coordinator_id,phase,spawn_call_id) VALUES (?,?,?,?,?,'running',?,?,?,?,?,?)",
+      ctx.session, parent, nm, task, inherited, now, coordinating ? coordinator.deadline : now + HELPER_DEADLINE_MS, role, coordinating ? coordinator.id : null, role === "coordinator" ? "dispatch" : null, callId);
     const h = helperRow(this.sql, this.sql.exec("SELECT last_insert_rowid() id").one().id);
     // The start_helper step in the parent card carries the helper id (the app shows the helper chip on it).
-    if (parent) { try { this.sql.exec("UPDATE card_events SET ref=? WHERE card=? AND type='step' AND tool='start_helper' AND status='running' AND ref IS NULL", String(h.id), parent); } catch {} }
+    if (parent) { try { this.sql.exec("UPDATE card_events SET ref=? WHERE card=? AND call_id=? AND type='step' AND tool='start_helper' AND status='running' AND ref IS NULL", String(h.id), parent, callId); } catch {} }
     emitHelper(this, h);
     const run = this.helperRun(h).catch((e) => console.log("helper run", h.id, e.message));
     this.ctx.waitUntil?.(run); this._helperRuns = [...(this._helperRuns || []), run];
     this.arm().catch(() => {});   // the alarm backs up the deadline timers
-    return helperStartedText(h);
+    return coordinating ? `Worker #${h.id} "${h.name}" started. Its report goes to you for your final combined report, not directly to the main helper.` : helperStartedText(h);
   }
-  // One helper job: an unattended sub-turn (kind "helper": no history, no sessQ, never steerable) on the allowlisted tools.
+  // One helper job: an unattended sub-turn (kind "helper": a saved snapshot, no live history or sessQ, never steerable) on the allowlisted tools.
   // resume (resume.js): a helper run a deploy cut off carries on in its own card, with its deadline timers set again.
-  async helperRun(h, { resume = null, card = null } = {}) {
-    const opts = { kind: "helper", session: h.session, helper: h, parent_card: h.parent_card, max_steps: HELPER_MAX_STEPS, max_charge: HELPER_MAX_CHARGE, exclude_tools: helperExclude(this.tools()), ...(resume ? { resume, card } : {}) };
-    const p = this.runTurn(this.get("tenant"), this.get("channel"), this.get("channel_id"), helperJobText(h, this.get("channel")), null, opts);
+  async helperRun(h, { resume = null, card = null, phase = null } = {}) {
+    const coordinatorPhase = h.role === "coordinator" ? phase || h.phase || "dispatch" : null;
+    const share = h.coordinator_id ? COORDINATOR_LIMITS.child : coordinatorPhase ? COORDINATOR_LIMITS[coordinatorPhase] : null;
+    const opts = { kind: "helper", session: h.session, helper: h, parent_card: h.parent_card,
+      coordinator_phase: coordinatorPhase, max_steps: share?.steps || HELPER_MAX_STEPS, max_charge: share?.charge || HELPER_MAX_CHARGE,
+      ...(share ? { hard_charge: share.charge } : {}), exclude_tools: helperExclude(this.tools(), h, coordinatorPhase), ...(resume ? { resume, card } : {}) };
+    const prompt = coordinatorPhase === "aggregate" ? coordinatorFinalText(h, coordinatorChildren(this.sql, h.id), this.get("channel")) : helperJobText(h, this.get("channel"));
+    const p = this.runTurn(this.get("tenant"), this.get("channel"), this.get("channel_id"), prompt, null, opts);
     // runTurn registers the turn (tc.helper = opts.helper, its hidden card in tc.turn) synchronously: helpers have no session queue.
     const tc = [...this.active.values()].find((t) => t.helper?.id === h.id && !t.finished) || null;
     const timers = [];
@@ -1930,35 +2260,81 @@ export class Resident extends DurableObject {
       const at = (ms, fn) => timers.push(setTimeout(async () => { if (await this.spendRefresh(tc, opts)) fn(); }, Math.max(0, ms - Date.now())));
       at(h.deadline, () => { if (!tc.finished && !tc.abort) { tc.helperWhy = "time limit"; tc.abort = "soft"; } });
       at(h.deadline + HELPER_GRACE_MS, () => { if (!tc.finished) { tc.helperWhy ||= "time limit"; tc.abort = "hard"; } });
-      at(h.deadline + HELPER_GRACE_MS + HELPER_FORCE_MS, () => { if (!tc.finished) this.helperFinish(h.id, { reply: "", charge: 0, tool_calls: 0, forced: true }, tc); });
+      at(h.deadline + HELPER_GRACE_MS + HELPER_FORCE_MS, () => { if (!tc.finished) this.helperFinish(h.id, { reply: "", charge: 0, tool_calls: 0, forced: true }, tc, coordinatorPhase); });
     }
     let r;
     try { r = await p; } catch (e) { r = { reply: "", error: e.message }; } finally { for (const t of timers) clearTimeout(t); }
-    return this.helperFinish(h.id, r, tc);
+    return this.helperFinish(h.id, r, tc, coordinatorPhase);
+  }
+  coordinatorStopChildren(id, by = "coordinator") {
+    for (const child of coordinatorChildren(this.sql, id).filter((x) => x.status === "running")) {
+      this.sql.exec("UPDATE helpers SET status='stopped', stopped_by=?, why=?, ended=?, handed=1 WHERE id=? AND status='running'", by, "coordinator stopped", Date.now(), child.id);
+      this.sql.exec("UPDATE helper_messages SET status='not_seen', ended_at=? WHERE helper_id=? AND status IN ('queued','presented')", Date.now(), child.id);
+      const tc = helperTcOf(this, child.id); if (tc) tc.abort = "hard";
+      emitHelper(this, helperRow(this.sql, child.id));
+    }
+  }
+  // A coordinator's dispatch has ended and all direct children are terminal. A
+  // stored phase change claims exactly one final aggregation run. A reset before
+  // its card is journaled returns it to waiting in helpersRecover.
+  coordinatorReady(id) {
+    const h = helperRow(this.sql, id);
+    if (!h || h.role !== "coordinator" || h.status !== "running" || h.phase !== "waiting") return h;
+    const children = coordinatorChildren(this.sql, id);
+    if (children.some((x) => x.status === "running")) return h;
+    if (Date.now() >= h.deadline + HELPER_GRACE_MS) {
+      const partial = children.map((c) => `Worker #${c.id} "${c.name}": ${c.status}. ${String(c.report || c.error || c.why || "No report.").slice(0, 1400)}`).join("\n");
+      this.sql.exec("UPDATE helpers SET status='stopped', stopped_by='limit', why='time limit', report=?, ended=?, handed=0 WHERE id=? AND status='running' AND phase='waiting'",
+        `The coordinator ran out of time before it could combine its workers' reports.\n${partial}`, Date.now(), id);
+      return this.helperFinish(id);
+    }
+    this.sql.exec("UPDATE helpers SET phase='aggregating', card=NULL WHERE id=? AND status='running' AND phase='waiting'", id);
+    if (!this.sql.exec("SELECT changes() n").one().n) return helperRow(this.sql, id);
+    const next = helperRow(this.sql, id); emitHelper(this, next);
+    const run = this.helperRun(next, { phase: "aggregate" }).catch((e) => console.log("coordinator final", id, e.message));
+    this.ctx.waitUntil?.(run); this._helperRuns = [...(this._helperRuns || []), run];
+    this.arm().catch(() => {});
+    return next;
   }
   // Records how a run ended (if it's still marked running) and hands the result to the main helper when one is owed.
   // r = null: only deliver an owed handoff (alarm / restart). Stops by the person or the main helper never hand off.
-  helperFinish(id, r = null, tc = null) {
+  helperFinish(id, r = null, tc = null, phase = null) {
     let h = helperRow(this.sql, id); if (!h) return null;
     const now = Date.now();
     if (r) {
-      const charge = Math.max(h.charge_nano || 0, Math.round(Number(r.charge) || 0)), steps = Math.max(h.steps || 0, Number(r.tool_calls) || 0);
+      const finalPhase = h.role === "coordinator" && phase === "aggregate";
+      const charge = finalPhase ? (h.charge_nano || 0) + Math.round(Number(r.charge) || 0) : Math.max(h.charge_nano || 0, Math.round(Number(r.charge) || 0));
+      const steps = finalPhase ? (h.steps || 0) + (Number(r.tool_calls) || 0) : Math.max(h.steps || 0, Number(r.tool_calls) || 0);
+      const modelSteps = finalPhase ? (h.model_steps || 0) + (Number(r.steps) || 0) : Math.max(h.model_steps || 0, Number(r.steps) || 0);
       const rep = cardsToText(String(r.reply || "")).trim().slice(0, 20000) || null, card = r.turn || tc?.card || tc?.turn || h.card || null;
+      if (h.role === "coordinator" && phase === "dispatch" && h.phase === "dispatch" && h.status === "running" && coordinatorChildren(this.sql, id).length && !r.error && !r.forced && !tc?.helperWhy && now < h.deadline + HELPER_GRACE_MS) {
+        this.sql.exec("UPDATE helpers SET phase='waiting', dispatch_report=?, charge_nano=?, steps=?, model_steps=?, card=? WHERE id=? AND status='running' AND phase='dispatch'", rep, charge, steps, modelSteps, card, id);
+        h = helperRow(this.sql, id); emitHelper(this, h);
+        return this.coordinatorReady(id);
+      }
+      if (h.role === "coordinator" && phase === "dispatch" && coordinatorChildren(this.sql, id).length) this.coordinatorStopChildren(id);
       if (h.status === "running") {
         let status = "done", why = null, error = null, by = null;
         if (r.forced) { status = "stopped"; by = "limit"; why = "took too long"; }
         else if (r.error) { status = "failed"; error = plainError(r.error); }
         else if (tc?.helperWhy || tc?.abort || r.hit_limit || (spendPausesOn(tc) && charge >= HELPER_MAX_CHARGE)) {
-          status = "stopped"; by = "limit"; why = tc?.helperWhy || (charge >= HELPER_MAX_CHARGE ? "cost limit" : "step limit");
+          status = "stopped"; by = "limit"; why = tc?.helperWhy || (tc?.limitWhy === "cost" || charge >= HELPER_MAX_CHARGE ? (h.coordinator_id || h.role === "coordinator" ? "cost target" : "cost limit") : "step limit");
         }
         if (r.forced && tc) tc.abort = "hard";
-        this.sql.exec("UPDATE helpers SET status=?, ended=?, report=?, error=?, stopped_by=?, why=?, charge_nano=?, steps=?, card=? WHERE id=?", status, now, rep, error, by, why, charge, steps, card, id);
-      } else this.sql.exec("UPDATE helpers SET charge_nano=?, steps=?, report=COALESCE(report, ?), card=COALESCE(card, ?), ended=COALESCE(ended, ?) WHERE id=?", charge, steps, rep, card, now, id);
+        this.sql.exec("UPDATE helpers SET status=?, ended=?, report=?, error=?, stopped_by=?, why=?, charge_nano=?, steps=?, model_steps=?, card=?, phase=CASE WHEN role='coordinator' THEN 'done' ELSE phase END WHERE id=?", status, now, rep, error, by, why, charge, steps, modelSteps, card, id);
+      } else this.sql.exec("UPDATE helpers SET charge_nano=?, steps=?, model_steps=?, report=COALESCE(report, ?), card=COALESCE(card, ?), ended=COALESCE(ended, ?) WHERE id=?", charge, steps, modelSteps, rep, card, now, id);
       h = helperRow(this.sql, id); emitHelper(this, h);
+    }
+    if (["done", "stopped", "failed", "interrupted"].includes(h.status)) this.sql.exec("UPDATE helper_messages SET status='not_seen', ended_at=? WHERE helper_id=? AND status IN ('queued','presented')", now, id);
+    if (h.coordinator_id) {
+      if (["done", "stopped", "failed", "interrupted"].includes(h.status) && !h.handed) this.sql.exec("UPDATE helpers SET handed=1 WHERE id=?", id);
+      this.coordinatorReady(h.coordinator_id);
+      return helperRow(this.sql, id);
     }
     if (h.handed || !["done", "stopped", "failed", "interrupted"].includes(h.status) || (h.stopped_by && h.stopped_by !== "limit")) return h;
     this.sql.exec("UPDATE helpers SET handed=1 WHERE id=?", id);
-    const res = this.handoff(h.session, { text: handoffSteerText(h), away: handoffAwayText(h), ref: String(h.id), from: { type: "helper", id: h.id, title: h.name } });
+    const unseen = helperMessageRows(this.sql, h.id).filter((m) => m.status === "not_seen").length;
+    const res = this.handoff(h.session, { text: handoffSteerText(h, unseen), away: handoffAwayText(h, unseen), ref: String(h.id), from: { type: "helper", id: h.id, title: h.name } });
     if (res?.card?.id) this.sql.exec("UPDATE helpers SET result_card=? WHERE id=?", res.card.id, id);
     h = helperRow(this.sql, id); emitHelper(this, h);
     return h;
@@ -1968,7 +2344,7 @@ export class Resident extends DurableObject {
   handoff(session, input) {
     if (!this.session(session)) return { mode: "gone" };
     const { away, ...inp } = input, text = away ?? inp.text;
-    const r = this.steerOrOpen ? this.steerOrOpen(session, { type: "handoff", ...inp }) : { mode: "open", card: null };
+    const r = this.steerOrOpen ? this.steerOrOpen(session, { type: "handoff", ...inp }, inp.from?.type === "browser_job" ? { overflow: "open" } : {}) : { mode: "open", card: null };
     if (r.mode !== "open") return r;
     const viaText = this.textsSessions().includes(session);
     const run = (async () => {
@@ -1992,10 +2368,14 @@ export class Resident extends DurableObject {
     const h = helperRow(this.sql, id);
     if (!h || h.session !== String(session)) return { error: "No such helper in this task." };
     if (h.status === "running") {
-      this.sql.exec("UPDATE helpers SET status='stopped', stopped_by=?, why=?, ended=? WHERE id=?", by, by === "person" ? "stopped by the person" : "stopped by the main helper", Date.now(), h.id);
+      this.sql.exec("UPDATE helpers SET status='stopped', stopped_by=?, why=?, ended=? WHERE id=?", by, by === "person" ? "stopped by the person" : by === "coordinator" ? "stopped by the coordinator" : "stopped by the main helper", Date.now(), h.id);
+      this.sql.exec("UPDATE helper_messages SET status='not_seen', ended_at=? WHERE helper_id=? AND status IN ('queued','presented')", Date.now(), h.id);
       const tc = helperTcOf(this, h.id); if (tc) tc.abort = "hard";
+      if (h.role === "coordinator") this.coordinatorStopChildren(h.id, by);
+      if (h.coordinator_id) this.sql.exec("UPDATE helpers SET handed=1 WHERE id=?", h.id);
     }
     const v = emitHelper(this, helperRow(this.sql, id));
+    if (h.coordinator_id) this.coordinatorReady(h.coordinator_id);
     this.arm().catch(() => {});
     return { ok: true, helper: v };
   }
@@ -2005,17 +2385,45 @@ export class Resident extends DurableObject {
     const now = Date.now();
     // resume.js: a helper whose run is journaled carries on after a deploy (it's interrupted only when its resume gives up)
     const journaled = () => { try { return new Set(this.sql.exec("SELECT card FROM turn_runs").toArray().map((x) => x.card)); } catch { return new Set(); } };
-    if (boot) { if (recoverHelpers(this.sql, now, journaled()).length) await this.arm(); return; }
+    if (boot) {
+      const jr = journaled();
+      for (const h of this.sql.exec("SELECT * FROM helpers WHERE role='coordinator' AND status='running' AND phase IN ('dispatch','aggregating')").toArray()) {
+        if (h.card && jr.has(h.card)) continue;
+        const turn = h.card ? this.sql.exec("SELECT id,reply,error,charge_nano,steps,tool_calls FROM turns WHERE id=?", h.card).toArray()[0] : null;
+        if (turn) this.helperFinish(h.id, { reply: turn.reply, error: turn.error, charge: turn.charge_nano, steps: turn.steps, tool_calls: turn.tool_calls, turn: turn.id }, null, h.phase === "aggregating" ? "aggregate" : "dispatch");
+        else if (h.phase === "aggregating") this.sql.exec("UPDATE helpers SET phase='waiting', card=NULL WHERE id=? AND phase='aggregating' AND status='running'", h.id);
+      }
+      const interrupted = recoverHelpers(this.sql, now, jr);
+      for (const id of interrupted) if (helperRow(this.sql, id)?.role === "coordinator") this.coordinatorStopChildren(id);
+      if (interrupted.length) await this.arm();
+      for (const child of this.sql.exec("SELECT id FROM helpers WHERE coordinator_id IS NOT NULL AND status IN ('done','failed','stopped','interrupted') AND handed=0").toArray()) this.helperFinish(child.id);
+      for (const h of this.sql.exec("SELECT id FROM helpers WHERE role='coordinator' AND status='running' AND phase='waiting'").toArray()) this.coordinatorReady(h.id);
+      return;
+    }
     const jr = journaled();
-    for (const h of this.sql.exec("SELECT * FROM helpers WHERE status='running'").toArray()) {
+    for (const h of this.sql.exec("SELECT * FROM helpers WHERE role='coordinator' AND status='running' AND phase IN ('dispatch','aggregating')").toArray()) {
+      if (helperTcOf(this, h.id) || (h.card && jr.has(h.card))) continue;
+      const turn = h.card ? this.sql.exec("SELECT id,reply,error,charge_nano,steps,tool_calls FROM turns WHERE id=?", h.card).toArray()[0] : null;
+      if (turn) this.helperFinish(h.id, { reply: turn.reply, error: turn.error, charge: turn.charge_nano, steps: turn.steps, tool_calls: turn.tool_calls, turn: turn.id }, null, h.phase === "aggregating" ? "aggregate" : "dispatch");
+      else if (h.phase === "aggregating") this.sql.exec("UPDATE helpers SET phase='waiting', card=NULL WHERE id=? AND phase='aggregating' AND status='running'", h.id);
+    }
+    for (const saved of this.sql.exec("SELECT id FROM helpers WHERE status='running'").toArray()) {
+      const h = helperRow(this.sql, saved.id); if (!h || h.status !== "running") continue;
+      if (h.role === "coordinator" && h.phase === "waiting") {
+        if (now >= h.deadline + HELPER_GRACE_MS) this.coordinatorStopChildren(h.id, "limit");
+        this.coordinatorReady(h.id); continue;
+      }
+      if (h.role === "coordinator" && h.phase === "aggregating" && !h.card) { this.sql.exec("UPDATE helpers SET phase='waiting' WHERE id=?", h.id); this.coordinatorReady(h.id); continue; }
       const tc = helperTcOf(this, h.id);
       if (!tc && h.card && jr.has(h.card)) continue;   // waiting to carry on (resumeDue starts it)
-      if (!tc) { this.sql.exec("UPDATE helpers SET status='interrupted', ended=?, handed=0 WHERE id=?", now, h.id); continue; }   // its run is gone
+      if (!tc) { this.sql.exec("UPDATE helpers SET status='interrupted', ended=?, handed=0 WHERE id=?", now, h.id); if (h.role === "coordinator") this.coordinatorStopChildren(h.id); if (h.coordinator_id) this.helperFinish(h.id); continue; }   // its run is gone
       if (!await this.spendRefresh(tc)) continue;
-      if (now >= h.deadline + HELPER_GRACE_MS + HELPER_FORCE_MS) { this.helperFinish(h.id, { reply: "", charge: 0, tool_calls: 0, forced: true }, tc); continue; }
+      if (now >= h.deadline + HELPER_GRACE_MS + HELPER_FORCE_MS) { this.helperFinish(h.id, { reply: "", charge: 0, tool_calls: 0, forced: true }, tc, tc.coordinatorPhase); continue; }
       if (now >= h.deadline + HELPER_GRACE_MS) { tc.helperWhy ||= "time limit"; tc.abort = "hard"; }
       else if (now >= h.deadline && !tc.abort) { tc.helperWhy = "time limit"; tc.abort = "soft"; }
     }
+    for (const child of this.sql.exec("SELECT id FROM helpers WHERE coordinator_id IS NOT NULL AND status IN ('done','failed','stopped','interrupted') AND handed=0").toArray()) this.helperFinish(child.id);
+    for (const h of this.sql.exec("SELECT id FROM helpers WHERE role='coordinator' AND status='running' AND phase='waiting'").toArray()) this.coordinatorReady(h.id);
     for (const h of pendingHandoffs(this.sql)) this.helperFinish(h.id);
   }
 
@@ -2242,7 +2650,7 @@ export class Resident extends DurableObject {
     // because several turns (different tasks, scheduled runs, helpers) can be in flight at once: route, extraCharge (browser_task),
     // wmFull/wmView (working memory) and jevFirst live here too. pend = this card's live inputs (steers), when it takes them.
     const tc = { key: crypto.randomUUID(), turn: null, session, kind, viaText: !!opts.viaText, photonMsg: opts.photonMsg || null, reaction: null, workflow_id: opts.workflow_id ?? null, subs: new Set(), text: "", line: "", inTool: 0, touch: false, texted: false, t0: Date.now(), finished: false, userText: kind === "chat" ? String(text).slice(0, 20000) : null,
-      route: null, extraCharge: 0, wmFull: null, wmView: null, jevFirst: null, lastCmd: null, lastMsg: null, exclude: new Set((opts.exclude_tools || []).map(String)), abort: null, helper: opts.helper || null,
+      route: null, extraCharge: 0, wmFull: null, wmView: null, jevFirst: null, lastCmd: null, lastMsg: null, exclude: new Set((opts.exclude_tools || []).map(String)), abort: null, helper: opts.helper || null, coordinatorPhase: opts.coordinator_phase || null,
       pend: null, committed: false, stepNo: 0, textSteered: false, ac: null,
       replyState: { body: "", pre: [], prog: [], held_progress: "" } };
     if (opts.resume) {
@@ -2442,16 +2850,19 @@ export class Resident extends DurableObject {
     // The rollout flag selects NEW task lanes. Once persisted, a task never
     // silently falls back to reconstructed legacy history during a flag change.
     tc.appendRuntime = eeEnabled(this.env) && kind === "chat" && !!tc.session && (RS ? !!resumeExtra.appendRuntime : existingAppend || (this.env.APPEND_TASK_RUNTIME === "on" && !this.env.BYOK));
-    if (tc.appendRuntime) { tc.transcript = new TaskTranscript(this.ctx.storage, tc.session); tc.appendStats = stats; }
+    if (tc.appendRuntime) { tc.transcript = new TaskTranscript(this.ctx.storage, tc.session); tc.appendStats = stats;
+      const st0 = tc.transcript.state(); tc.appendLazy = st0 ? !!st0.lazy : cutLazy(this.env) && contextV2(this.env);   // payload-cut.js: fixed when the task is created
+      if (tc.appendLazy && st0?.loaded) tc.loadedTools = new Set(st0.loaded); }
     if (tc.appendRuntime && !RS) this.sql.exec("UPDATE turn_runs SET engine='append-v1',extra=json_set(COALESCE(extra,'{}'),'$.appendRuntime',1) WHERE card=?", turn);
     const savedContext = resumeExtra.context || null;
     // In-flight turns keep their layout even when the deployment switch changes.
     const layered = RS ? savedContext?.version === 2 || (tc.appendRuntime && contextV2(this.env)) : contextV2(this.env);
-    const prompt = await this.systemPrompt(compact, this.genuiOn(), layered);
+    const prompt = await this.systemPrompt(compact, this.genuiOn(), layered, !!tc.appendRuntime);
     tc.context = layered ? savedContext || { version: 2, ...prompt } : null;
-    if (savedContext) { try { tc.loadedTools = new Set(JSON.parse(RS.extra || "{}").loadedTools || []); } catch { tc.loadedTools = new Set(); } }
-    if (tc.context) tc.context.developer = savedContext?.developer || prompt.developer + (tc.appendRuntime ? "\n\n## Task tools\nAll tool schemas supplied with this task are already loaded. load_tools is optional and does not change the catalog. Runtime permission and approval checks remain authoritative. Changing account context arrives as labeled data updates, not instructions." : "\n\n## Deferred tool catalog\n" + toolCatalog(this.availableTools(tc)));
-    if (tc.appendRuntime && tc.context) tc.context.developer = tc.context.developer.replace("The tool catalog below lists deferred tools. Call load_tools with their exact names to expose their schemas, then use them normally.", "All tools supplied with this task are already loaded; use them directly.");
+    if (savedContext) { try { tc.loadedTools = new Set([...(tc.loadedTools || []), ...(JSON.parse(RS.extra || "{}").loadedTools || [])]); } catch { tc.loadedTools = new Set(); } }
+    if (tc.context) tc.context.developer = savedContext?.developer || prompt.developer + "\n\n## Task tools\nAll tool schemas supplied with this task are already loaded. load_tools is optional and does not change the catalog. Runtime permission and approval checks remain authoritative." + (tc.appendRuntime ? " Changing account context arrives as labeled data updates, not instructions." : "");
+    if (tc.appendLazy && tc.context && !savedContext?.developer) tc.context.developer = prompt.developer + LAZY_TOOLS_NOTE;   // payload-cut.js
+    if (tc.context) tc.context.developer = tc.context.developer.replace("The tool catalog below lists deferred tools. Call load_tools with their exact names to expose their schemas, then use them normally.", tc.appendLazy ? "Some tools are listed with a short description and field names only. Call load_tools with their exact names to get the full description, parameters and guidance, then use them normally." : "All tools supplied with this task are already loaded; use them directly.");
     const sys = { role: "system", content: layered ? tc.context.core : prompt };
     const hist = tc.appendRuntime ? [] : kind === "chat" ? (compact ? this.compactHistory(tc.session) : [...this.history(tc.session), ...this.usedAppsPair(tc.session)]) : [];
     const others = kind === "chat" && !layered ? this.otherTasksNote(tc.session) : "";
@@ -2471,7 +2882,7 @@ export class Resident extends DurableObject {
     // This task's to-do list (update_todos), so the helper continues it instead of starting over. In the message, not the system prompt.
     const todoNote = (kind === "chat" || kind === "followup") && tc.session ? this.todoContext(tc.session) : "";
     // Helpers still running in this task (helpers.js, when present), so a reply mentions them.
-    const helperNote = (kind === "chat" || kind === "followup") && tc.session && this.helperNote ? this.helperNote(tc.session) : "";
+    const helperNote = (kind === "chat" || kind === "followup") && tc.session && this.helperNote ? this.helperNote(tc.session) + browserJobNote(this.sql, tc.session) : "";
     // A running focus timer (pomodoro.js): a compact fact, only while it counts down. In the message, not the system prompt.
     const pomoNote = (kind === "chat" || kind === "followup") && tc.session ? this.pomoNote(tc.session) : "";
     // Live notes (live-notes.js, SPEC §9.4): while live, the elapsed time, the doc's path and the last ~5 min of transcript; after, a pointer
@@ -2502,7 +2913,7 @@ export class Resident extends DurableObject {
     if (eeEnabled(this.env) && !tc.appendRuntime && this.env.OWN_ROUTER === "on" && useOpenRouter(this.env) && !this.env.BYOK && tc.abort !== "hard" && !RS) {
       try { ownDecision = await this.ownRouterShadow(tc.session || `wf:${opts.workflow_id || ""}`, hist, asked + attNote, Math.ceil(JSON.stringify(messages).length / 3), tc.needImg);
         if (ownDecision?.pick) { tc.route = { model: ownDecision.pick.model, effort: ownDecision.pick.effort, host: ownDecision.pick.host, fallbacks: ownDecision.fallbacks.map((f) => f.model), reason: ownDecision.reason, floor: ownDecision.floor };
-          const clefNano = Math.ceil((ownDecision.clef_in || 0) * (this.env.OWN_ROUTER_CLEF === "clef-flash" ? 90 : 240) * MARKUP), rid = `rtr:${crypto.randomUUID()}`;
+          const clefNano = Math.ceil((ownDecision.clef_in || 0) * (await jobCost(this.env, "classic_decider")).in_nano * MARKUP), rid = `rtr:${crypto.randomUUID()}`;
           if (clefNano > 0 && (await this.ledger().reserve(rid, clefNano)).ok) { await this.ledger().settle(rid, clefNano); stats.charge += clefNano; } }
       } catch (e) { ownDecision = { error: String(e.message || e).slice(0, 200) }; console.log("own router failed, using jev router", ownDecision.error); }
     }
@@ -2545,7 +2956,7 @@ export class Resident extends DurableObject {
         const old = this.sql.exec("SELECT id,user_text,reply FROM turns WHERE kind='chat' AND session=? ORDER BY at,rowid", tc.session).toArray();
         const bootstrap = old.length ? [{ role: "user", content: "[Legacy context import: the following is saved visible dialogue. Historical tool payloads, original runtime context and provider reasoning were not fully persisted and cannot be replayed exactly. Use recall_history for available older work.]" }, ...old.flatMap(r => [{ role: "user", content: this.cardUserText(r.id, r.user_text || "") }, ...(r.reply ? [{ role: "assistant", content: r.reply }] : [])])] : [];
         store.create(layeredInput.slice(0, prefixN), this.modelTools(tc), bootstrap, { bootstrap: !!old.length });
-        store.metadata({ memoryRevision: this.get("task_memory_revision") || null });
+        store.metadata({ memoryRevision: this.get("task_memory_revision") || null, ...(tc.appendLazy ? { lazy: true } : {}) });
       }
       tc.appendTools = store.tools();
       (this._appendTurns ||= new Map()).set(turn, tc);
@@ -2592,7 +3003,7 @@ export class Resident extends DurableObject {
       let late = false;
       for (let step = rs ? rs.step + (rs.phase === "tools" ? 1 : 0) : 0; ; step++) {
         await this.spendRefresh(tc, opts);
-        if (!spendPausesOn(tc)) delete stats.hit_limit;
+        if (!spendPausesOn(tc) && !opts.hard_charge) delete stats.hit_limit;
         trimTurnState(tc, {said, saidMeta, stats, trace, stepIn, wmLog});
         const stepLimit = stepAllowance(tc, maxSteps);
         if (step >= stepLimit) { capped = true; break; }
@@ -2605,13 +3016,13 @@ export class Resident extends DurableObject {
         late = false;
         if (tc.abort === "soft") {
           // A limit (cost cap or deadline) stopped this run: tools off, one final report.
-          const ask = { role: "user", content: reportAsk(tc, LIMIT_REPORT_ASK) }; messages.push(ask); this.save(turn, ask); if (!tc.appendRuntime) compactTools(messages);
+          const ask = { role: "user", content: reportAsk(tc, LIMIT_REPORT_ASK) }; messages.push(ask); this.save(turn, ask); 
           let spoke = false;   // a pause's report is the reply the person reads: it streams
-          const fin = await this.callModel(messages, () => {}, tc.pause && send ? (s) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s }); } : null, 1500, true, tc);
+          const fin = await this.callModel(this.finalView(tc, messages), () => {}, tc.pause && send ? (s) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s }); } : null, 1500, true, tc);
           stats.steps++; stats.in += fin.inTok; stats.cached += fin.cached; stats.cache_write += fin.cacheWrite || 0; stats.out += fin.outTok; stats.charge += fin.charge; if (fin.model) stats.models.push(fin.routing ? `${fin.model} [${fin.routing.reason}/${fin.routing.floor}]` : fin.model);
           const a = { role: "assistant", content: fin.content }; messages.push(a); this.save(turn, a);
           await this.spendRefresh(tc, opts);
-          if (!spendPausesOn(tc) && tc.abort !== 'hard') {
+          if (!spendPausesOn(tc) && !opts.hard_charge && tc.abort !== 'hard') {
             if (!tc.appendRuntime) messages.splice(messages.indexOf(ask), 1);
             const resume = {role:'user',content:'(The person turned off spending check-ins. Continue their task; the discretionary pause no longer applies.)'};
             messages.push(resume); this.save(turn, resume); send?.({t:'work'}); continue;
@@ -2624,7 +3035,7 @@ export class Resident extends DurableObject {
         let spoke = false;
         // P4 working memory (WORKMEM=on): per-step working set from the originals (protected + scored, dropped results leave a keyed label
         // and come back when the focus touches them). Off: the old trim + 40k checkpoint.
-        if (wm) { const ws = workingSet(messages, wmFull, { budget: WM_BUDGET, base: wmBase, task: text, state: wmState }); wmLog.push({ step, kept: ws.receipts.kept, aside: ws.receipts.dropped.length, newly: ws.receipts.newly, size: ws.receipts.size }); tc.wmView = ws.messages; }
+        if (wm) { const ws = workingSet(messages, wmFull, { budget: WM_BUDGET, ...WM_HUGE, base: wmBase, task: text, state: wmState }); wmLog.push({ step, kept: ws.receipts.kept, aside: ws.receipts.dropped.length, newly: ws.receipts.newly, size: ws.receipts.size }); tc.wmView = ws.messages; tc.wmSrcLen = messages.length; }
         else if (!tc.appendRuntime) compactTools(messages);
         const res = await this.callModel(wm ? tc.wmView : messages, () => {
           if (!warm) { const w0 = Date.now(); warm = this.computer().warm().then((r) => ({ ...r, ms: Date.now() - w0 })); }
@@ -2638,7 +3049,7 @@ export class Resident extends DurableObject {
         const canonicalAssistant = res.reasoning && (tc.appendRuntime || res.calls.length) ? { ...assistant, ...res.reasoning } : assistant;
         messages.push(canonicalAssistant); this.save(turn, tc.appendRuntime ? canonicalAssistant : assistant);
         this.journalStep(tc, { step, phase: "tools", stats, said, saidMeta, checkpoints });   // its model call is paid for: a reset now closes its calls and goes on
-        if (spendPausesOn(tc) && opts.max_charge && stats.charge >= opts.max_charge && !tc.abort) { tc.limitWhy = "cost"; tc.abort = "soft"; }   // discretionary cost cap
+        if ((opts.hard_charge || spendPausesOn(tc)) && opts.max_charge && stats.charge >= opts.max_charge && !tc.abort) { tc.limitWhy = "cost"; tc.abort = "soft"; }   // coordinator allocation or discretionary cost cap, after this model call
         if (spendPausesOn(tc) && opts.soft_steps && stats.steps >= opts.soft_steps && !tc.abort) { tc.limitWhy = "steps"; tc.abort = "soft"; }
         guardModel(tc, stats, res.content, res.calls.length > 0 || res.finish === "length", res.calls.map((c) => c.function?.name));
         // A steer cannot reset or bypass this card's output-limit allowance.
@@ -2646,6 +3057,9 @@ export class Resident extends DurableObject {
         // The person added something while this answer was being written: it isn't the reply yet. The draft stays as a progress
         // note, the new message is read next, and the helper answers again (one reply per card).
         if (!res.calls.length && this.hasSteers(tc)) { send?.({ t: "work" }); late = true; continue; }
+        if (!res.calls.length && kind === "helper" && this.helperQueued(tc) && step < stepLimit - 1) {
+          said.pop(); saidMeta.pop(); continue;   // a follow-up arrived during the final model call
+        }
         if (!res.calls.length && res.finish === "length" && step < stepLimit - 1) {
           const nudge = { role: "user", content: outputRecovery };
           messages.push(nudge); this.save(turn, nudge); continue;
@@ -2682,7 +3096,7 @@ export class Resident extends DurableObject {
           const sp = splitStepTitle(call.function.arguments), xcall = { ...call, function: { ...call.function, arguments: sp.args } };
           if (batch && call.function.name !== "app_run") await settle();
           // A new message arrived: the calls not started yet are skipped (recorded), so the helper reads it first.
-          if (this.hasSteers(tc)) {
+          if (this.hasSteers(tc) || this.helperQueued(tc)) {
             stepSkipped(this.sql, tc, { tool: call.function.name, args: sp.args, title: sp.title, call_id: call.id });
             const toolMsg = { role: "tool", tool_call_id: call.id, content: SKIP_TEXT }; if (wm) wmFull.set(call.id, SKIP_TEXT);
             messages.push(toolMsg); this.save(turn, toolMsg); continue;
@@ -2729,8 +3143,8 @@ export class Resident extends DurableObject {
         if (step === stepLimit - 2 && kind !== "chat") {
           // Out of steps on an unattended run: one final tools-off call so the run always ends with a real report.
           const ask = { role: "user", content: "(Step limit reached. No more tools. Write your final report now: what you checked, what you found, whether you texted, and what the next run should reuse or do differently.)" };
-          messages.push(ask); this.save(turn, ask); if (!tc.appendRuntime) compactTools(messages);
-          const fin = await this.callModel(messages, () => {}, null, 1500, true, tc);
+          messages.push(ask); this.save(turn, ask); 
+          const fin = await this.callModel(this.finalView(tc, messages), () => {}, null, 1500, true, tc);
           stats.steps++; stats.in += fin.inTok; stats.cached += fin.cached; stats.cache_write += fin.cacheWrite || 0; stats.out += fin.outTok; stats.charge += fin.charge; if (fin.model) stats.models.push(fin.routing ? `${fin.model} [${fin.routing.reason}/${fin.routing.floor}]` : fin.model);
           const a = { role: "assistant", content: fin.content }; messages.push(a); this.save(turn, a);
           reply = fin.content || "Run ended at the step limit without a report."; error = error || null; stats.hit_limit = 1; break;
@@ -2753,9 +3167,9 @@ export class Resident extends DurableObject {
       try {
         tc.stepNo = stats.steps;
         const sm = await this.steerMessage(tc, this.takeSteers(tc), { pics: engine !== "pi" });
-        messages.push(sm.msg); this.save(turn, tc.appendRuntime ? sm.msg : { role: "user", content: sm.text }); if (!tc.appendRuntime) compactTools(messages);
+        messages.push(sm.msg); this.save(turn, tc.appendRuntime ? sm.msg : { role: "user", content: sm.text }); 
         let spoke = false;
-        const fin = await this.callModel(messages, () => {}, send ? (s) => { if (!spoke && (said.length || reply)) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s }); } : null, kind === "chat" ? MAX_OUT : 4096, true, tc);
+        const fin = await this.callModel(this.finalView(tc, messages), () => {}, send ? (s) => { if (!spoke && (said.length || reply)) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s }); } : null, kind === "chat" ? MAX_OUT : 4096, true, tc);
         stats.steps++; stats.in += fin.inTok; stats.cached += fin.cached; stats.cache_write += fin.cacheWrite || 0; stats.out += fin.outTok; stats.charge += fin.charge; if (fin.model) stats.models.push(fin.routing ? `${fin.model} [${fin.routing.reason}/${fin.routing.floor}]` : fin.model);
         const a = { role: "assistant", content: fin.content }; messages.push(a); this.save(turn, a);
         if (fin.content) { said.push(fin.content); reply = stripNotesEcho(fin.content); if (tc.limitWhy === "steps" && !tc.pause && !opts.budget) tc.limitWhy = null; }   // it answered what they added: not a pause
@@ -2764,9 +3178,9 @@ export class Resident extends DurableObject {
     // A chat turn that used all its steps (and wasn't answered above): one tools-off call for a short report, never a bare "I stopped".
     if (capped && !reply && !error && !tc.committed && !tc.stoppedTurn) {
       try {
-        const ask = { role: "user", content: STEP_LIMIT_CHAT_ASK }; messages.push(ask); this.save(turn, ask); if (!tc.appendRuntime) compactTools(messages);
+        const ask = { role: "user", content: STEP_LIMIT_CHAT_ASK }; messages.push(ask); this.save(turn, ask); 
         let spoke = false;
-        const fin = await this.callModel(messages, () => {}, send ? (x) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s: x }); } : null, MAX_OUT, true, tc);
+        const fin = await this.callModel(this.finalView(tc, messages), () => {}, send ? (x) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s: x }); } : null, MAX_OUT, true, tc);
         stats.steps++; stats.in += fin.inTok; stats.cached += fin.cached; stats.cache_write += fin.cacheWrite || 0; stats.out += fin.outTok; stats.charge += fin.charge; if (fin.model) stats.models.push(fin.routing ? `${fin.model} [${fin.routing.reason}/${fin.routing.floor}]` : fin.model);
         const a = { role: "assistant", content: fin.content }; messages.push(a); this.save(turn, a);
         reply = stripNotesEcho(fin.content || "") || "I used all my steps on this one. Say \"keep going\" and I'll continue.";
@@ -2865,7 +3279,7 @@ export class Resident extends DurableObject {
       .map((m) => ({ role: m.role, content: (m.role === "assistant" ? cardsToText(m.content || "") : String(m.content || "")).slice(0, 1500) }));
     const incRaw = this.get(`own_inc:${session}`), incumbent = incRaw ? JSON.parse(incRaw) : null;
     const failed = Number(this.get(`jev_failed:${session}`) || 0);
-    const d = await decide(this.env, { pool, convo, incumbent, failed, inTok, cachedTok: incumbent ? Math.round(inTok * 0.8) : 0, clef: clefVia(this.env, this.env.OWN_ROUTER_CLEF || "clef", { tenant: this.get("tenant"), channel: this.get("channel"), kind: "router" }) });
+    const d = await decide(this.env, { pool, convo, incumbent, failed, inTok, cachedTok: incumbent ? Math.round(inTok * 0.8) : 0, clef: await decisionCaller(this.env, "classic_decider", { tenant: this.get("tenant"), channel: this.get("channel"), kind: "router" }) });
     if (d.pick) this.put(`own_inc:${session}`, JSON.stringify({ model: d.pick.model, effort: d.pick.effort }));
     return d;
   }
@@ -2874,7 +3288,7 @@ export class Resident extends DurableObject {
     const jev = { live, served: stats.models, model: m?.[1] || null, reason: m?.[2] || null, floor: m?.[3] || null, effort: jf?.effort ?? null, est_cost: jf?.est_cost ?? null, steps: stats.steps, charge_nano: stats.charge, in: stats.in, out: stats.out };
     if (jf) this.put(`jev_failed:${session}`, String(jf.failed || 0));
     if (tc) tc.jevFirst = null;
-    const clefCost = Math.round((d.clef_in || 0) * (this.env.OWN_ROUTER_CLEF === "clef-flash" ? 90 : 240));   // nano$ (Workers AI price), our cost only
+    const clefCost = Math.round((d.clef_in || 0) * (await jobCost(this.env, "classic_decider")).in_nano);   // nano$ (Workers AI price), our cost only
     await this.env.DB.prepare("INSERT INTO router_shadow (at, tenant_id, channel, session, turn, ours, jev, clef_nano) VALUES (?,?,?,?,?,?,?,?)")
       .bind(Date.now(), this.get("tenant") || "", this.get("channel") || "", session || "", turn, JSON.stringify(d), JSON.stringify(jev), clefCost).run();
   }
@@ -3254,13 +3668,15 @@ export class Resident extends DurableObject {
         if (ev.length) steps = ev.filter((e) => e.type === "step" && e.status !== "skipped").map((e) => { const a = jp(e.input), saved = savedTo(e.tool, a, e.out_preview); return { tool: e.tool, line: lineFor(e.tool, a), title: e.title, seq: e.seq, status: e.status, ...(saved.length ? { saved } : {}) }; });
         else { try { steps = JSON.parse(t.trace || "[]").filter((x) => !SILENT_TOOLS.has(x.tool)).map((x) => { const a = jp(x.args), saved = savedTo(x.tool, a, x.out); return { tool: x.tool, line: lineFor(x.tool, a), title: fallbackStepTitle(x.tool, a), ...(saved.length ? { saved } : {}) }; }); } catch {} }
         // The person's messages of this card: the first one plus everything added while it worked (MsgView, with reactions).
-        const msgs = t.kind !== "chat" ? [] : ev.length ? ev.filter((e) => e.type === "msg").map((e) => eventView(this.sql, e))
+        // A handoff card (helper report, follow-up, browser job, app connected) opened with model-only text: never a message of the person.
+        const handoffCard = this.sql.exec("SELECT kind FROM cards WHERE id=?", t.id).toArray()[0]?.kind === "handoff";
+        const msgs = t.kind !== "chat" || handoffCard ? [] : ev.length ? ev.filter((e) => e.type === "msg").map((e) => eventView(this.sql, e))
           : [{ seq: 1, type: "msg", at: t.at, id: t.id, cid: null, text: t.user_text ?? "", files: [], via: "app", consumed: 0, reaction: react[t.id] || null }];
         const images = this.sql.exec("SELECT id, url, caption FROM shots WHERE turn=? ORDER BY at", t.id).toArray();
         const ups = (() => { try { return JSON.parse(t.files || "[]"); } catch { return []; } })();
         const fr = this.sql.exec("SELECT * FROM files WHERE turn=? AND deleted=0 ORDER BY at", t.id).toArray();
         const attached = ups.map((x) => this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(x)).toArray()[0]).filter(Boolean).map((x) => this.fileView(x)), shared = fr.filter((x) => x.source === "helper").map((x) => this.fileView(x));
-return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id, card: t.id, msgs, at: t.at, kind: t.kind, workflow_id: t.workflow_id, user_text: t.kind === "chat" ? t.user_text : null, ...(react[t.id] ? { reaction: react[t.id] } : {}), reply: t.reply, ...(t.kind === "livenote" && t.notes ? (() => { try { const m = JSON.parse(t.notes); return m?.refine ? { livenote: { refine: m.refine } } : {}; } catch { return {}; } })() : {}), parts: (() => { try { return t.parts ? JSON.parse(t.parts) : null; } catch { return null; } })(), progress: (() => { try { return t.progress ? JSON.parse(t.progress) : null; } catch { return null; } })(), tool_calls: t.tool_calls, steps, total_ms: t.total_ms, charge_nano: t.charge_nano, error: t.error, images, attached, shared }; });
+return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id, card: t.id, msgs, at: t.at, kind: t.kind, workflow_id: t.workflow_id, user_text: t.kind === "chat" && !handoffCard ? t.user_text : null, ...(react[t.id] ? { reaction: react[t.id] } : {}), reply: t.reply, ...(t.kind === "livenote" && t.notes ? (() => { try { const m = JSON.parse(t.notes); return m?.refine ? { livenote: { refine: m.refine } } : {}; } catch { return {}; } })() : {}), parts: (() => { try { return t.parts ? JSON.parse(t.parts) : null; } catch { return null; } })(), progress: (() => { try { return t.progress ? JSON.parse(t.progress) : null; } catch { return null; } })(), tool_calls: t.tool_calls, steps, total_ms: t.total_ms, charge_nano: t.charge_nano, error: t.error, images, attached, shared }; });
     const jobs = this.sql.exec("SELECT id,kind,name,interval_seconds,next_run,last_run,run_count,status FROM workflows WHERE session=? AND status IN ('active','paused') ORDER BY id", id).toArray();
     const tc = this.liveTurn(id);
     // resume.js: a turn an update cut off, waiting to carry on, shows as live too (the app attaches and gets {"t":"resuming"} first).
@@ -3269,7 +3685,10 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id,
       : rj ? { turn: rj.card, started: rj.started, text: "", line: "picking up where it left off (1Helm was just updated)", user_text: rj.text, reaction: null, resuming: true, card: cardDetail(this.sql, id, rj.card, { reply: "" }) } : null;
     // The initial input of a native continuation or delegated task brief is internal model context,
     // not a message sent by the person. Genuine msg/steer events remain intact.
-    if (live?.card?.kind === "handoff" && live.card.from?.some(f=>f.type === "ssh" || f.type === "task")) live.user_text = null;
+    // The same goes for every other handoff card (a helper's report, a due follow-up, a browser job result, an app connected): its
+    // opening text is a "Context note, not from the person" for the model. History never shows it (msgs is empty for these turns), so
+    // the live view must not either. A card the person typed into (kind chat) keeps its user_text.
+    if (live && (live.card?.kind === "handoff" || tc?.handoff)) live.user_text = null;
     attachInterviews(this.sql, id, turns, live);   // interview cards, with their saved answers (interview-chat.js)
     return { session: this.sessionView(s), turns, cards: listCards(this.sql, id, { n: 30 }).cards, jobs, approvals: [...this.approvals(false, id), ...(this.nativeApprovalHistory?.(id)||[])], offers: offersView(this.sql, id), todos: this.todoItems(id), plans: plansOf(this.sql, id, this.tz()), origin: originOf(this.sql, id, this.tz()), live,
       pauses: await this.spendPauses(id), usage: this.spendTaskUsage(id) };
@@ -3358,8 +3777,29 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id,
   // that have a computer tool running right now (else every turn in flight). If that's more than one task, it is allowed only when
   // the permission covers every one of them, and the approval card goes to all of them.
   async egressDecision({ host, method, path, bytes, keys, via = null }) {
+    // During a browser job, an approval belongs to that job's task, not whichever
+    // unrelated turn is active. After a reset the lease can outlive the runner;
+    // without its in-memory owner, deny rather than borrow another task's grant.
+    let browserOwner = { owned: false };
+    let mayOwn = !!this._browserJob;
+    if (!mayOwn) { try { mayOwn = !!this.sql.exec("SELECT id FROM browser_jobs WHERE lease_acquired=1 AND started>? LIMIT 1", Date.now() - 15 * 60e3).toArray().length; }
+      catch { mayOwn = false; } } // Older partial test objects have no browser job table and cannot own a job.
+    if (mayOwn) {
+      try { browserOwner = await this.computer().browserOwnerState(); }
+      catch { return { verdict: "deny", why: "browser ownership could not be checked" }; }
+    }
+    if (browserOwner?.human_controlled && mayOwn)
+      return { verdict: "deny", why: "the person took control of a background browser task" };
     const all = [...this.active.values()].filter((t) => !t.finished);
-    let owners = all.filter((t) => t.inTool > 0); if (!owners.length) owners = all;
+    let owners;
+    if (browserOwner?.owned || browserOwner?.in_flight) {
+      const job = this._browserJob, row = job && browserJobRow(this.sql, job.id);
+      if (!job || !row || row.status !== "running" || row.session !== job.session)
+        return { verdict: "deny", why: "background browser task attribution is unavailable" };
+      owners = [job.tc];
+    } else {
+      owners = all.filter((t) => t.inTool > 0); if (!owners.length) owners = all;
+    }
     const sessions = [...new Set(owners.map((t) => t.session))];
     const pols = await Promise.all((sessions.length ? sessions : [null]).map((s) => this.approvalPolicy(s)));
     // A preset is not financial consent. Arbitrary HTTP mutations cannot be

@@ -26,6 +26,7 @@ import { STEP_TITLE_PROMPT } from "../steer.js";
 import { HELPER_PROMPT } from "../helpers.js";
 import { DOCS_INDEX } from "../docs/index.js";
 import { SKILLS_INDEX, coreSkillsIndex } from "../skills/index.js";
+import { splitFamilies } from "../payload-cut.js";
 import { AMBIENT_PROMPT } from "../ee/ambient-query.js";
 import { LOCATION_PROMPT } from "../location-query.js";
 
@@ -37,8 +38,9 @@ export const SECTIONS = [
 ];
 // browser_task: the browser agent tool is offered · apps: Composio (Gmail/Calendar/app tools) · recall: memory recall arrives per
 // message (memory mode "on") · compact: earlier turns are what was said + hand-off notes · cards: the app draws card replies ·
-// app_events: apps AND this server has its Composio webhook (COMPOSIO_WEBHOOK_SECRET; composio-triggers.js eventsReady) ·
-export const FLAGS = ["browser_task", "apps", "recall", "compact", "cards", "app_events", "context_v2"];
+// app_events: apps AND this server has its Composio webhook (COMPOSIO_WEBHOOK_SECRET; composio-triggers.js eventsReady) · append: the main
+// chat turn uses the append task runtime (the task's own transcript is replayed, not the compact what-was-said history) ·
+export const FLAGS = ["browser_task", "apps", "recall", "compact", "cards", "app_events", "context_v2", "append", "lean_families"];   // lean_families: payload-cut.js moves per-family guidance out of the core (append tasks only)
 const CONSTS = { step_title: STEP_TITLE_PROMPT, helper_prompt: HELPER_PROMPT };
 
 export function render(md, flags = {}) {
@@ -54,8 +56,13 @@ const cache = new Map();
 // The static core for one set of switches. Same switches → the same string, byte for byte.
 export function staticCore(flags = {}) {
   const f = { ...Object.fromEntries(FLAGS.map((k) => [k, !!flags[k]])), ee: flags.ee !== false }, key = FLAGS.map((k) => (f[k] ? 1 : 0)).join("") + (f.ee ? "1" : "0");
-  if (!cache.has(key)) cache.set(key, SECTIONS.map(([, md]) => render(md, f)).join("\n\n"));
+  if (!cache.has(key)) cache.set(key, (f.lean_families ? splitFamilies(SECTIONS.map(([n, md]) => [n, render(md, f)])).sections : SECTIONS.map(([, md]) => [0, render(md, f)])).map(([, t]) => t).join("\n\n"));
   return cache.get(key);
+}
+// The guidance staticCore leaves out when lean_families is on: { familyId: text }.
+export function familyGuidance(flags = {}) {
+  const f = Object.fromEntries(FLAGS.map((k) => [k, !!flags[k]]));
+  return splitFamilies(SECTIONS.map(([n, md]) => [n, render(md, f)])).guidance;
 }
 
 const TONES = ["", "They asked you to be warm and chatty.", "They asked you to explain things simply, without jargon."];

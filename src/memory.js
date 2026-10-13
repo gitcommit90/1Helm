@@ -5,8 +5,8 @@
 import { questionScope, annotateRecord, localDay } from "./dates.js";
 import { cardsToText } from "./genui.js";
 import { markStatus } from "./status-notes.js";   // a record of a pause / limit notice reads as a past status note
+import { jobModel } from "./ee/index.js";
 import { scrubSecrets } from "./secrets-scrub.js";   // nosecrets: a password, key, card number or code is never kept in the ledger
-export const EMBED_MODEL = "@cf/baai/bge-m3";
 const STOP = new Set("a an and are as at be but by can did do does for from had has have how i if in is it its me my of on or our so that the their them then there these they this to us was we were what when where which who why will with you your should would could about after before since just also into than only not no yes".split(" "));
 export const terms = (s) => [...new Set(String(s).toLowerCase().match(/[a-z0-9][a-z0-9.$%+-]*[a-z0-9%]|[a-z0-9]/g) || [])].filter((w) => !STOP.has(w) && w.length > 1).slice(0, 24);
 const dot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
@@ -68,7 +68,7 @@ export class Memory {
     // hold (Resident, own AI key): reserved before the call; false = the credits can't cover it, so nothing is embedded (never on credit).
     const h = this.hold ? await this.hold(texts) : null;
     if (h === false) throw Object.assign(new Error("out of credits: embedding skipped"), { credits: true });
-    let r; try { r = await this.env.AI.run(EMBED_MODEL, { text: texts }, this.meta("memory-embed")); } catch (e) { await h?.done(0); throw e; }
+    let r; try { r = await this.env.AI.run(await jobModel(this.env, "embed_memory"), { text: texts }, this.meta("memory-embed")); } catch (e) { await h?.done(0); throw e; }
     // Charged by input tokens: Workers AI's count when it gives one, else ~4 characters a token (never above what was reserved).
     await h?.done(Number(r?.usage?.prompt_tokens) || Math.ceil(texts.reduce((n, t) => n + String(t).length, 0) / 4));
     return (r.data || []).map(unit);

@@ -33,7 +33,7 @@ export function salientLines(c, n = 3) {
 // at the end), so the start of the prompt changes only when a new batch is set aside. Batches drop to LOW of the budget, so the
 // prefix stays the same for many steps and the provider's prompt cache keeps hitting. `state` persists across steps of one request.
 export const REF_TOOLS = new Set(["read_skill", "read_doc"]), REF_USED_AFTER = 3, REF_KEEP = 12000, BOOKKEEPING = new Set(["update_todos", "work_log", "bring_back"]);
-export const PIN_MAX = 12000, PIN_BUDGET = 26000, MAIN_REF = /^\[1Helm skill: [\w-]+, reference: (?:presentation|pdf|document|spreadsheet|markdown|web-page)\]/;
+export const BATCH_MARGIN = 1.1, PIN_MAX = 12000, PIN_BUDGET = 26000, MAIN_REF = /^\[1Helm skill: [\w-]+, reference: (?:presentation|pdf|document|spreadsheet|markdown|web-page)\]/;
 // Exact command lines a reference gives (node/python3/bash + a skill script + its arguments), first one per script.
 export function refCommands(c, n = 5) {
   const out = [], seen = new Set();
@@ -82,32 +82,42 @@ export function workingSet(messages, full, o = {}) {
   st.pinned = new Set([...pinned].map((i) => out[i].tool_call_id));
   // Apply the sticky labels first (same text every step = same prefix bytes).
   for (const i of toolIdx) { const id = out[i].tool_call_id; if (st.aside.has(id) && !protectedIdx.has(i)) out[i] = { ...out[i], content: st.aside.get(id) }; }
+  // Huge results get head+tail so one 200k-char log can't sink the budget. STICKY and stateless (r35-cache-fix): the rule depends only
+  // on the result's own length, so the same text is sent at every step (also after the result is no longer one of the newest 3, and
+  // also after a resume rebuilds this state). Before, only the newest 3 were trimmed, and a trimmed result grew back to full size
+  // after 3 newer results, which rewrote an early part of the prompt and lost the provider's cache. A bring_back copy (pinned) stays whole.
+  st.trimmed = st.trimmed || new Set(); const hugeAt = o.hugeAt ?? budget / 3, hugeKeep = o.hugeKeep ?? budget / 8;
+  for (const i of toolIdx) { const id = out[i].tool_call_id, c = String(out[i].content || "");
+    if (c.length <= hugeAt || pinned.has(i) || (st.aside.has(id) && !protectedIdx.has(i))) continue;
+    st.trimmed.add(id); out[i] = { ...out[i], content: `${c.slice(0, hugeKeep)}\n…[${c.length - 2 * hugeKeep} chars set aside, key ${id}; bring_back(key) for all]…\n${c.slice(-hugeKeep)}` }; }
   let size = out.slice(base).reduce((a, m) => a + cost(m), 0);
   // References: used (REF_USED_AFTER real steps since) and still in full. Past REF_KEEP chars together → all set aside now.
   const isRef = (i) => REF_TOOLS.has(String(argsOf.get(out[i].tool_call_id) || "").match(/^\w+/)?.[0]);
   const real = toolIdx.filter((i) => !isRef(i) && !BOOKKEEPING.has(String(argsOf.get(out[i].tool_call_id) || "").match(/^\w+/)?.[0]));
   const usedRefs = toolIdx.filter((i) => isRef(i) && !protectedIdx.has(i) && !pinned.has(i) && !st.aside.has(out[i].tool_call_id) && String(out[i].content || "").length >= 400 && real.filter((j) => j > i).length >= refAfter);
-  const setAside = (i) => { const id = out[i].tool_call_id, c = String(out[i].content || ""), label = refLabel(argsOf.get(id), c, id); st.aside.set(id, label); out[i] = { ...out[i], content: label }; size -= c.length - label.length; receipts.newly++; };
-  if (usedRefs.reduce((a, i) => a + String(out[i].content || "").length, 0) > refKeep) for (const i of usedRefs) setAside(i);
-  if (size > budget) {
+  // Labels are made from the original text (messages[i]), not the head+tail copy of a huge result, so they keep its commands and key lines.
+  const orig = (i) => String(messages[i].content || "");
+  const setAside = (i) => { const id = out[i].tool_call_id, c = orig(i), label = refLabel(argsOf.get(id), c, id); size -= String(out[i].content || "").length - label.length; st.aside.set(id, label); out[i] = { ...out[i], content: label }; receipts.newly++; };
+  if (usedRefs.reduce((a, i) => a + orig(i).length, 0) > refKeep) for (const i of usedRefs) setAside(i);
+  // A batch rewrites an early part of the prompt, so it only starts when the prompt is clearly over budget (BATCH_MARGIN), then
+  // drops to LOW of the budget so the next batch is many steps away. Within the batch, results that don't touch the current focus
+  // go first, oldest first, and the results the task is working on stay in full.
+  if (size > budget * (o.margin ?? BATCH_MARGIN)) {
     // New batch: score only blocks still in full; lowest first; drop until LOW × budget.
     const lastText = [...out].reverse().find((m) => m.role === "assistant" && m.content)?.content || "";
     const persons = out.filter((m, i) => i >= base && m.role === "user").map((m) => typeof m.content === "string" ? m.content : "").join(" ");
     const focus = idents(`${o.task || ""} ${persons} ${lastText}`);
     const cand = toolIdx.filter((i) => !protectedIdx.has(i) && !pinned.has(i) && !st.aside.has(out[i].tool_call_id) && String(out[i].content || "").length >= 400);
     const scored = cand.map((i, k) => { const ids = idents(`${argsOf.get(out[i].tool_call_id) || ""} ${out[i].content}`); let ov = 0; for (const x of ids) if (focus.has(x)) ov++;
-      return { i, s: isRef(i) ? -1 : ov * 3 + (k / Math.max(1, cand.length)) * 2 }; }).sort((a, b) => a.s - b.s);   // references go first
+      return { i, s: isRef(i) ? -1 : ov > 0 ? 1e6 + ov * 3 + k : k }; }).sort((a, b) => a.s - b.s);   // references go first, then unrelated results oldest first, then related ones
     for (const b of scored) {
       if (size <= budget * low) break;
       if (isRef(b.i)) { setAside(b.i); continue; }
-      const id = out[b.i].tool_call_id, c = String(out[b.i].content || ""), keep = salientLines(c);
+      const id = out[b.i].tool_call_id, c = orig(b.i), keep = salientLines(c);
       const label = `[set aside to save room: ${argsOf.get(id)?.slice(0, 120) || "tool"} → ${c.length} chars. ${keep.length ? `Key lines:\n${keep.join("\n")}\n` : `First line: ${c.split("\n").find((l) => l.trim())?.slice(0, 140) || ""}. `}key ${id}; bring_back(key) for the full output]`;
-      st.aside.set(id, label); out[b.i] = { ...out[b.i], content: label }; size -= c.length - label.length; receipts.newly++;
+      size -= String(out[b.i].content || "").length - label.length; st.aside.set(id, label); out[b.i] = { ...out[b.i], content: label }; receipts.newly++;
     }
   }
-  // Huge protected results still get head+tail so one 200k-char log can't sink the budget.
-  st.trimmed = st.trimmed || new Set();
-  for (const i of protectedIdx) { const c = String(out[i].content || ""); if (c.length > budget / 3) st.trimmed.add(out[i].tool_call_id); if (c.length > budget / 3) out[i] = { ...out[i], content: `${c.slice(0, budget / 8)}\n…[${c.length - budget / 4} chars set aside, key ${out[i].tool_call_id}; bring_back(key) for all]…\n${c.slice(-budget / 8)}` }; }
   receipts.dropped = [...st.aside.keys()]; receipts.kept = toolIdx.length - receipts.dropped.length; receipts.size = size;
   return { messages: out, receipts, state: st };
 }

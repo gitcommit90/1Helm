@@ -49,8 +49,14 @@ export async function newSession(env, req, userId) {
 }
 // Log out: the session row goes too, so a copied cookie stops working and the device leaves the list.
 export async function endSession(env, req) {
-  const tok = cookieToken(req); if (!tok) return;
-  await env.DB.prepare("DELETE FROM sessions WHERE token_hash=?").bind(await sha256(tok)).run().catch(() => {});
+  // Different cookie paths or domains can leave more than one session in a
+  // browser. Revoke all presented sessions before clearing the root cookie.
+  const tokens = [...new Set((req.headers.get("cookie") || "").split(";")
+    .map(value => value.trim().match(/^hc_session=([a-f0-9]+)/)?.[1]).filter(Boolean))];
+  if (!tokens.length) return;
+  const statements = await Promise.all(tokens.map(async token =>
+    env.DB.prepare("DELETE FROM sessions WHERE token_hash=?").bind(await sha256(token))));
+  await env.DB.batch(statements);
 }
 
 // "Chrome on Mac", "Safari on iPhone".

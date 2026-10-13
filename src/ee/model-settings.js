@@ -1,197 +1,254 @@
-// Runtime administration: stable route slots with validated OpenRouter model replacements.
+// The saved model settings: the single source of truth for every model the platform uses. Each job (model-jobs.js) has its own saved
+// model, reasoning level and fallback list. Runtime code reads only these (modelSettingsEnv), and the Models page writes them.
 // Reads are uncached and use D1's primary session: an already-running Durable Object sees saves on its next dispatch.
-import { POOL, CHAINS, CATEGORIES, CATEGORY_LABEL } from "./pool.js";
-import { PRIVACY_LEVELS, eligibleHosts } from "../privacy.js";
+//
+// Storage: append-only versions in model_job_settings_versions (new in migration 058). The earlier slot-based table
+// (model_settings_versions) is only read, once, to carry an environment's existing choices into the first version.
+import { PRIVACY_LEVELS } from "../privacy.js";
 import { modelCatalog, validCatalogRecord, validModelId } from "./model-catalog.js";
-import { BACKGROUND_POLICIES } from "./background-policy.js";
+import { JOBS, JOB_IDS, JOB_KINDS, GROUPS, takesChat, canChat, nativeFor, zdrApplies, ModelSettingsError, jobDef, jobSetting, settingsOf, entriesOf, factsOf, zdrBlocked, privacyCoverage } from "./model-jobs.js";
+import { seedFromLegacy, mergeLevels } from "./model-seed.js";
 
-// OpenRouter /api/v1/models, checked 2026-10-10. "none" is available only when reasoning is optional.
-const EFFORTS = {
-  "muse-c": ["minimal", "low", "medium", "high", "xhigh", "max"],
-  "muse-s": ["minimal", "low", "medium", "high", "xhigh", "max"],
-  deepseek: ["none", "low", "high", "max"], luna: ["none", "low", "medium", "high", "xhigh", "max"],
-  sol: ["low", "medium", "high", "xhigh", "max"], haiku: ["none", "low", "medium", "high", "xhigh", "max"],
-};
-export const SETTINGS_CHORE_MODELS = {
-  oss120: { model: "openai/gpt-oss-120b", hosts: ["cerebras"], efforts: ["default", "low", "medium", "high"] },
-  oss20: { model: "openai/gpt-oss-20b", hosts: ["amazon-bedrock"], efforts: ["default", "low", "medium", "high"] },
-  dsflash: { model: POOL.deepseek.model, hosts: ["together", "modal", "coreweave"], efforts: ["default", ...EFFORTS.deepseek] },
-  haiku: { model: POOL.haiku.model, hosts: ["amazon-bedrock", "google-vertex"], efforts: ["default", ...EFFORTS.haiku] },
-  luna: { model: POOL.luna.model, hosts: ["azure", "azure/us", "azure/eu"], efforts: ["default", ...EFFORTS.luna] },
-  sol: { model: POOL.sol.model, hosts: ["azure", "azure/us", "azure/eu"], efforts: ["default", ...EFFORTS.sol] },
-};
-export const LEGACY_SETTINGS_CHORES = ["handoff", "label", "browser", "notes", "notes_final", "memory_summary", "sidecar_card", "upkeep_write", "upkeep_verify", "people_write", "people_verify", "reflect_write", "reflect_verify"];
-export const SETTINGS_CHORES = [...LEGACY_SETTINGS_CHORES, "notes_refine", "ambient_extract", "ambient_review"];
-const DECIDERS = ["default", "perplexity/pplx-decider-v1.1-27b", "~typesafe/jev-latest"];
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const own = (o, k) => Object.prototype.hasOwnProperty.call(o || {}, k);
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 export const settingsEnvironment = (env) => env?.ENV_NAME === "dev" ? "dev" : "live";
-export function defaultModelSettings() {
-  return { efforts: Object.fromEntries(Object.entries(POOL).map(([k, m]) => [k, m.effort])), chains: clone(CHAINS),
-    chores: Object.fromEntries(SETTINGS_CHORES.map((k) => [k, { model: "default", effort: "default" }])), decider: "default" };
-}
-export function modelSettingsOptions(env = {}, config = null) {
-  return { models: Object.entries(POOL).map(([key, m]) => { const id = slotModel(config, key), meta = config?.catalog?.[id]; return { key, model: id, default_model: m.model, efforts: meta?.efforts || EFFORTS[key], levels: meta?.levels || PRIVACY_LEVELS.filter((lv) => eligibleHosts(m.model, lv).length) }; }),
-    categories: CATEGORIES.map((key) => ({ key, label: CATEGORY_LABEL[key] })), levels: PRIVACY_LEVELS,
-    chores: SETTINGS_CHORES,
-    choreDefaults: {
-      handoff: `Inherited: ${env.CHORE_MODEL_HANDOFF || env.CHORE_MODEL || "oss120"}, provider default effort`,
-      label: `Inherited: gpt-oss-120b on Cerebras, low reasoning; ${env.CHORE_MODEL_LABEL || env.CHORE_MODEL || "oss120"} configured fallback`,
-      browser: `Inherited: ${env.CHORE_MODEL_BROWSER || env.CHORE_MODEL || "oss120"}; DeepSeek/Haiku reasoning off, gpt-oss low`,
-      notes: `Inherited: ${env.CHORE_MODEL_NOTES || "haiku"}, reasoning off for Haiku/DeepSeek`,
-      notes_final: "Inherited: Luna medium, gpt-oss fallback", memory_summary: "Inherited: Qwen 3.8 27B off, gpt-oss then Workers AI fallback",
-      sidecar_card: "Inherited: built-in file summary route",
-      ...Object.fromEntries(["upkeep", "people", "reflect"].flatMap((job) => [
-        [`${job}_write`, `Inherited: ${env[`CHORE_MODEL_${job.toUpperCase()}`] || "dsflash"}`],
-        [`${job}_verify`, `Inherited: ${env.CHORE_MODEL_MJVERIFY || (job === "upkeep" ? "dsflash" : "dsflash:low")}`],
-      ])),
-      ...Object.fromEntries(Object.entries(BACKGROUND_POLICIES).map(([role, p]) => [role, `Inherited: ${p.model}, ${p.effort.toUpperCase()} reasoning; no other-model fallback`])),
-    },
-    backgroundPolicies: BACKGROUND_POLICIES,
-    choreModels: [{ key: "default", model: "Built-in defaults", efforts: ["default"] }, ...Object.entries(SETTINGS_CHORE_MODELS).map(([key, m]) => ({ key, model: m.model, efforts: m.efforts }))],
-    deciders: DECIDERS.map((key) => ({ key, label: key === "default" ? "Built-in default" : key.startsWith("~") ? "TypeSafe Jev" : "Perplexity" })) };
-}
+export { ModelSettingsError };
+
+const EFFORTS = ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const QUIRKS = ["auto_tool_choice_only", "reasoning_replay", "no_temperature", "rate_limit_waits", "reasoning_mandatory", "no_json"];
+const TABLE = "model_job_settings_versions";
+const CREATE = `CREATE TABLE IF NOT EXISTS ${TABLE} (environment TEXT NOT NULL, revision INTEGER NOT NULL, config TEXT NOT NULL, at INTEGER NOT NULL, by TEXT NOT NULL, action TEXT NOT NULL, PRIMARY KEY (environment, revision))`;
+// Other models (speech, search index, pictures, Cloudflare) can't be checked against OpenRouter's chat catalog: only the shape is.
+const looseId = (id) => typeof id === "string" && id.length <= 160 && /^[@~a-zA-Z0-9][a-zA-Z0-9._~:-]*(\/[a-zA-Z0-9][a-zA-Z0-9._:~-]*)+$/.test(id);
+
+// ---- validation ----
 function keys(o, expected, path) {
   if (!o || typeof o !== "object" || Array.isArray(o) || Object.keys(o).length !== expected.length || expected.some((k) => !own(o, k))) fail(`Invalid ${path}: supply exactly ${expected.join(", ")}.`);
 }
-export function validateModelSettings(config) {
-  // Old revisions remain immutable. Only the complete historical shape is
-  // expanded; partial/new malformed configs must not silently acquire defaults.
-  if (config?.chores && Object.keys(config.chores).length === LEGACY_SETTINGS_CHORES.length && LEGACY_SETTINGS_CHORES.every(k => own(config.chores, k))) {
-    for (const role of LEGACY_SETTINGS_CHORES) keys(config.chores[role], ["model", "effort"], role);
-    config = clone(config);
-    config.chores.notes_refine = clone(config.chores.notes);
-    config.chores.ambient_extract = { model: "default", effort: "default" };
-    config.chores.ambient_review = { model: "default", effort: "default" };
-  }
-  keys(config, ["efforts", "chains", "chores", "decider", ...(own(config, "models") ? ["models"] : []), ...(own(config, "catalog") ? ["catalog"] : [])], "settings");
-  if (own(config, "models")) keys(config.models, Object.keys(POOL), "model slots");
-  if (own(config, "catalog")) {
-    if (!config.catalog || typeof config.catalog !== "object" || Array.isArray(config.catalog) || Object.keys(config.catalog).length > 19) fail("Invalid model metadata.");
-    for (const [id, record] of Object.entries(config.catalog)) if (!validCatalogRecord(record, id)) fail("Invalid model metadata.");
-  }
-  keys(config.efforts, Object.keys(POOL), "model efforts");
-  const seen = new Map();
-  for (const key of Object.keys(POOL)) {
-    const id = slotModel(config, key), meta = config.catalog?.[id];
-    if (!validModelId(id) || id !== POOL[key].model && !meta) fail(`Choose a validated OpenRouter model for ${key}.`);
-    if (!(meta?.efforts || EFFORTS[key]).includes(config.efforts[key])) fail(`Unsupported effort for ${key}.`);
-    if (seen.has(id) && seen.get(id) !== config.efforts[key]) fail(`The same model (${id}) must use the same effort in every main slot.`);
-    seen.set(id, config.efforts[key]);
-  }
-  keys(config.chains, CATEGORIES, "routes");
-  for (const category of CATEGORIES) {
-    keys(config.chains[category], PRIVACY_LEVELS, `${category} routes`);
-    for (const level of PRIVACY_LEVELS) {
-      const a = config.chains[category][level];
-      if (!Array.isArray(a) || a.length < 1 || a.length > 3 || new Set(a).size !== a.length) fail(`${category}/${level}: choose one to three different models.`);
-      for (const key of a) if (typeof key !== "string" || !own(POOL, key) || !configuredHosts(config, slotModel(config, key), level).length) fail(`${category}/${level}: ${String(key)} is not an eligible model.`);
-    }
-  }
-  keys(config.chores, SETTINGS_CHORES, "background roles");
-  for (const role of SETTINGS_CHORES) {
-    const c = config.chores[role]; keys(c, ["model", "effort"], role);
-    const meta = config.catalog?.[c.model];
-    const efforts = c.model === "default" ? ["default"] : own(SETTINGS_CHORE_MODELS, c.model) ? SETTINGS_CHORE_MODELS[c.model].efforts : meta?.levels?.includes("zdr") ? meta.efforts : [];
-    if (!efforts.includes(c.effort)) fail(`${role}: unsupported model or effort.`);
-  }
-  if (!DECIDERS.includes(config.decider)) fail("Choose a supported routing decider.");
-  return clone(config);
+function validFacts(m, id) {
+  if (m?.eligible === true) return validCatalogRecord(m, id);
+  const allowed = ["id", "name", "kinds", "efforts", "quirks", "json", "in_nano"];
+  return !!m && typeof m === "object" && m.id === id && Object.keys(m).every((k) => allowed.includes(k)) && typeof m.name === "string" && m.name.length <= 160
+    && (m.kinds == null || (Array.isArray(m.kinds) && m.kinds.length <= 8 && m.kinds.every((k) => typeof k === "string" && k.length <= 40)))
+    && Array.isArray(m.efforts) && m.efforts.length <= 12 && m.efforts.every((e) => EFFORTS.includes(e))
+    && (m.quirks == null || (typeof m.quirks === "object" && Object.entries(m.quirks).every(([k, v]) => QUIRKS.includes(k) && v === true)))
+    && (m.json == null || typeof m.json === "boolean") && (m.in_nano == null || (Number.isFinite(m.in_nano) && m.in_nano >= 0 && m.in_nano <= 100000));
 }
-function dbOf(env) { return env?.DB?.withSession ? env.DB.withSession("first-primary") : env?.DB; }
-async function readRow(env, revision = null, { legacy = false } = {}) {
-  const db = dbOf(env); if (!db) { if (legacy) return null; fail("Model settings storage is unavailable.", 503); }
-  try {
-    return await db.prepare(`SELECT revision,config,at,by,action FROM model_settings_versions WHERE environment=?${revision == null ? " ORDER BY revision DESC LIMIT 1" : " AND revision=?"}`)
-      .bind(settingsEnvironment(env), ...(revision == null ? [] : [revision])).first();
-  } catch (e) {
-    // During staged rollout, environments without the additive migration keep the established code defaults.
-    if (legacy && /no such table: model_settings_versions/i.test(String(e?.message))) return null;
-    fail("Model settings could not be read. Try again.", 503);
+// Whether a model can run a kind of job: models for the kind's own call, plus (for any-model kinds) every model that can chat.
+export const kindOk = (meta, kind) => meta?.eligible === true ? takesChat(kind) : Array.isArray(meta?.kinds) && (meta.kinds.includes(kind.pick) || (!!kind.any && (canChat(meta) || nativeFor(meta, kind))));
+function validEntry(e, path, config, def, isMain) {
+  const allowed = isMain ? ["model", "effort", "hosts", "pin", "strict", "fallbacks"] : ["model", "effort", "hosts", "pin", "strict"];
+  if (!e || typeof e !== "object" || Array.isArray(e) || Object.keys(e).some((k) => !allowed.includes(k)) || !own(e, "model") || !own(e, "effort")) fail(`Invalid ${path}.`);
+  const kind = JOB_KINDS[def.kind], meta = config.catalog?.[e.model];
+  if (!looseId(e.model) || !meta) fail(`${path}: choose a validated model.`);
+  if (!kindOk(meta, kind)) fail(`${path}: ${meta.name || e.model} can't be used for ${def.label}.${kind.needs ? ` ${kind.needs}` : ""}`);
+  if (kind.effort) { if (!(meta.efforts || []).includes(e.effort)) fail(`${path}: ${meta.name || e.model} doesn't support reasoning level ${String(e.effort)}.`); }
+  else if (e.effort != null) fail(`${path}: this job has no reasoning level.`);
+  if (e.hosts != null && (!Array.isArray(e.hosts) || e.hosts.length > 8 || !e.hosts.every((h) => typeof h === "string" && /^[a-z0-9][a-z0-9/_.-]{0,99}$/.test(h)))) fail(`${path}: invalid providers.`);
+  if (e.pin != null && typeof e.pin !== "boolean") fail(`${path}: invalid provider pin.`);
+  if (e.strict != null && e.strict !== true) fail(`${path}: invalid flag.`);
+  if (zdrApplies(kind, meta) && zdrBlocked(config, e.model)) fail(`${path}: ${meta.name || e.model} has no zero-data-retention provider, so it can't run ${def.label}.`);
+}
+export function validateModelSettings(config, { fill = false } = {}) {
+  config = clone(config);
+  if (fill && config?.jobs && typeof config.jobs === "object") for (const id of JOB_IDS) if (!own(config.jobs, id)) config.jobs[id] = null;
+  keys(config, ["version", "jobs", "catalog"], "settings");
+  if (config.version !== 2) fail("Unsupported settings version.");
+  if (!config.catalog || typeof config.catalog !== "object" || Array.isArray(config.catalog) || Object.keys(config.catalog).length > 120) fail("Invalid model metadata.");
+  for (const [id, m] of Object.entries(config.catalog)) if (!validFacts(m, id)) fail(`Invalid model metadata for ${id}.`);
+  if (Object.values(config.catalog).filter((m) => m.eligible === true).length > 30) fail("Too many model replacements.");
+  keys(config.jobs, JOB_IDS, "jobs");
+  for (const def of JOBS) {
+    const job = config.jobs[def.id], kind = JOB_KINDS[def.kind];
+    if (job === null && fill) continue;   // only while filling in jobs a later release added
+    validEntry(job, def.label, config, def, true);
+    if (!Array.isArray(job.fallbacks) || job.fallbacks.length > kind.fallbacks) fail(`${def.label}: at most ${kind.fallbacks} fallback model${kind.fallbacks === 1 ? "" : "s"}.`);
+    job.fallbacks.forEach((f, i) => validEntry(f, `${def.label} fallback ${i + 1}`, config, def, false));
+    const ids = entriesOf(job).map((e) => e.model);
+    if (new Set(ids).size !== ids.length) fail(`${def.label}: each model can be listed once.`);
   }
+  return config;
+}
+
+// ---- storage ----
+const dbOf = (env) => env?.DB?.withSession ? env.DB.withSession("first-primary") : env?.DB;
+const LAST_GOOD = new Map();   // per environment: the last settings that were read and checked, used only if a later read fails
+async function readRow(env, revision = null) {
+  const db = dbOf(env); if (!db) throw new ModelSettingsError("Model settings storage is unavailable. Nothing was sent.");
+  const q = () => db.prepare(`SELECT revision,config,at,by,action FROM ${TABLE} WHERE environment=?${revision == null ? " ORDER BY revision DESC LIMIT 1" : " AND revision=?"}`)
+    .bind(settingsEnvironment(env), ...(revision == null ? [] : [revision])).first();
+  try { return await q(); }
+  catch (e) {
+    if (!/no such table/i.test(String(e?.message))) throw e;
+    await db.prepare(CREATE).run();   // the table is new in migration 058; creating it here is the same statement and is safe to repeat
+    return await q();
+  }
+}
+async function insertRow(env, revision, config, by, action) {
+  const db = dbOf(env), env_ = settingsEnvironment(env);
+  const r = await db.prepare(`INSERT INTO ${TABLE} (environment,revision,config,at,by,action) SELECT ?,?,?,?,?,? WHERE COALESCE((SELECT MAX(revision) FROM ${TABLE} WHERE environment=?),0)=?`)
+    .bind(env_, revision + 1, JSON.stringify(config), Date.now(), String(by || "admin").slice(0, 254), action, env_, revision).run();
+  return Number(r?.meta?.changes) === 1;
 }
 function configOf(row) {
-  if (!row?.config) return null;
-  try { return validateModelSettings(JSON.parse(row.config)); } catch { fail("Stored model settings are invalid; restore or reset them from Models.", 503); }
+  try { return validateModelSettings(JSON.parse(row.config)); }
+  catch { throw new ModelSettingsError("Stored model settings are invalid. Restore an earlier version from Models. Nothing was sent."); }
 }
+// The earlier slot-based settings, read once to carry over what an environment had chosen. Absent table, row or reset = no saved choices.
+async function earlierSettings(env) {
+  const db = dbOf(env);
+  try {
+    const row = await db.prepare("SELECT config FROM model_settings_versions WHERE environment=? ORDER BY revision DESC LIMIT 1").bind(settingsEnvironment(env)).first();
+    if (!row?.config) return null;
+    const c = JSON.parse(row.config);
+    return c && typeof c === "object" && !Array.isArray(c) ? c : null;
+  } catch (e) {
+    if (/no such table/i.test(String(e?.message))) return null;
+    throw e;
+  }
+}
+// The first saved version: what is in effect today (model-seed.js). Runs once per environment.
+async function firstVersion(env) {
+  const earlier = await earlierSettings(env), seeded = seedFromLegacy(env, earlier);
+  let config;
+  try { config = validateModelSettings(seeded); }
+  catch (e) { console.error("model settings: the first version could not be made from the earlier settings", String(e?.message || e)); throw new ModelSettingsError("The model settings could not be set up from the earlier settings. Nothing was sent."); }
+  const ok = await insertRow(env, 0, config, "system", earlier ? "migrate" : "seed");
+  console.log("model settings: first version saved", JSON.stringify({ environment: settingsEnvironment(env), from: earlier ? "earlier settings" : "first-run data", won: ok }));
+  return ok;
+}
+// A job added by a later release has no saved setting yet: its starting value is copied in once, as a new version.
+async function addMissingJobs(env, row, config) {
+  const missing = JOB_IDS.filter((id) => !config.jobs[id]);
+  if (!missing.length) return null;
+  const seeded = seedFromLegacy(env, null), next = clone(config);
+  for (const id of missing) next.jobs[id] = seeded.jobs[id];
+  for (const [id, m] of Object.entries(seeded.catalog)) if (!own(next.catalog, id)) next.catalog[id] = m;
+  const valid = validateModelSettings(next);
+  const ok = await insertRow(env, Number(row.revision), valid, "system", `add-jobs:${missing.join(",")}`.slice(0, 120));
+  console.log("model settings: added jobs from first-run data", missing.join(","), ok ? "saved" : "another instance saved first");
+  return ok;
+}
+let FIRST_RUN;
+const firstRunSettings = () => (FIRST_RUN ||= validateModelSettings(seedFromLegacy({}, null)));
 export async function readModelSettings(env) {
-  const row = await readRow(env, null, { legacy: true });
-  return { revision: Number(row?.revision || 0), config: configOf(row) };
+  // Without the EE switch the shared settings table is neither read nor written: callers get the first-run data, held in memory.
+  if (env?.ONEHELM_EE !== "1hc") return { revision: 0, config: firstRunSettings() };
+  const key = settingsEnvironment(env);
+  try {
+    for (let tries = 0; tries < 3; tries++) {
+      let row = await readRow(env);
+      if (!row) { await firstVersion(env); row = await readRow(env); if (!row) continue; }
+      let config; const raw = JSON.parse(row.config);
+      try { config = validateModelSettings(raw); }
+      catch {
+        // Only jobs missing from an otherwise valid version are filled in; any other fault is reported, never repaired by guessing.
+        try { config = validateModelSettings(raw, { fill: true }); } catch { throw new ModelSettingsError("Stored model settings are invalid. Restore an earlier version from Models. Nothing was sent."); }
+        if (JOB_IDS.some((id) => !config.jobs[id])) { await addMissingJobs(env, row, config); continue; }
+      }
+      const out = { revision: Number(row.revision), config };
+      LAST_GOOD.set(key, out);
+      return out;
+    }
+    throw new ModelSettingsError("Model settings could not be completed. Nothing was sent.");
+  } catch (e) {
+    const good = LAST_GOOD.get(key);
+    if (good) {
+      console.error("model settings: read failed, using the last saved copy this instance read", String(e?.message || e).slice(0, 200));
+      return { ...good, stale: true };
+    }
+    console.error("model settings: read failed and there is no saved copy", String(e?.message || e).slice(0, 200));
+    throw e instanceof ModelSettingsError ? e : new ModelSettingsError("Model settings could not be read. Nothing was sent.");
+  }
 }
+// A snapshot for one dispatch only. Never mutate the Worker env or keep this on a long-lived Resident.
+export async function modelSettingsEnv(env) {
+  if (env?.BYOK || env?.MODEL_SETTINGS) return env;
+  // Without the EE switch nothing reads the shared settings table: a deployment gets the first-run data, unchanged and in memory only.
+  if (env?.ONEHELM_EE !== "1hc") return Object.assign(Object.create(env || null), { MODEL_SETTINGS: firstRunSettings(), MODEL_SETTINGS_REVISION: 0 });
+  const s = await readModelSettings(env);
+  return Object.assign(Object.create(env || null), { MODEL_SETTINGS: s.config, MODEL_SETTINGS_REVISION: s.revision, ...(s.stale ? { MODEL_SETTINGS_STALE: true } : {}) });
+}
+
+// The saved main model of one job, for callers that only need the model's name (speech, search index, pictures).
+// These parts of the platform run on 1Helm's own account even for own-key accounts, so they always read the saved settings.
+const jobSettings = async (env) => env?.MODEL_SETTINGS || (env?.ONEHELM_EE === "1hc" ? (await readModelSettings(env)).config : firstRunSettings());
+export async function jobModel(env, id) { return jobSetting(await jobSettings(env), id).model; }
+// The saved model of a job and its estimated cost in nano-dollars per input token (a model's saved facts), for jobs billed by size.
+export async function jobCost(env, id) { const s = await jobSettings(env), model = jobSetting(s, id).model; return { model, in_nano: Number(s.catalog?.[model]?.in_nano) || 240 }; }
+// The saved main model and fallbacks of one job, in order.
+export async function jobModels(env, id) { return entriesOf(jobSetting(await jobSettings(env), id)).map((e) => e.model); }
+
+// ---- the page's view ----
+// Per kind of job, the models the picker offers: exactly the ones the save check accepts (kindOk) that also meet the job's
+// zero-data-retention rule, so a normal pick is never refused.
+function choicesOf(config) {
+  const out = {}, kinds = new Map();
+  for (const k of Object.values(JOB_KINDS)) { out[k.pick] = []; kinds.set(k.pick, k); }
+  for (const [id, m] of Object.entries(config.catalog)) {
+    for (const [pick, kind] of kinds) {
+      if (!kindOk(m, kind) || (zdrApplies(kind, m) && zdrBlocked(config, id))) continue;
+      out[pick].push({ id, name: m.name || id, efforts: m.efforts || [], validated: m.eligible === true, chat: canChat(m) });
+    }
+  }
+  return out;
+}
+export const modelSettingsOptions = (config) => ({ groups: GROUPS, jobs: JOBS, kinds: JOB_KINDS, levels: PRIVACY_LEVELS, choices: choicesOf(config) });
 export async function modelSettingsView(env) {
-  const row = await readRow(env);
-  const history = (await dbOf(env).prepare("SELECT revision,at,by,action FROM model_settings_versions WHERE environment=? ORDER BY revision DESC LIMIT 30").bind(settingsEnvironment(env)).all()).results || [];
-  let config = null, config_error = null;
-  try { config = configOf(row); } catch (e) { config_error = e.message; }
-  return { environment: settingsEnvironment(env), revision: Number(row?.revision || 0), config: config || defaultModelSettings(), config_error, defaults: defaultModelSettings(), options: modelSettingsOptions(env, config), history,
-    inherited: !row?.config, effective: "New tasks and background calls use these defaults. Append-runtime tasks keep their original model and effort. Legacy tasks use changes on their next call. Privacy restrictions and explicit operator revocations still apply immediately." };
+  const db = dbOf(env), s = await readModelSettings(env);
+  const history = (await db.prepare(`SELECT revision,at,by,action FROM ${TABLE} WHERE environment=? ORDER BY revision DESC LIMIT 30`).bind(settingsEnvironment(env)).all()).results || [];
+  return { environment: settingsEnvironment(env), revision: s.revision, config: s.config, stale: !!s.stale, options: modelSettingsOptions(s.config), history,
+    effective: "New tasks and background calls use these settings. Running tasks keep the model and reasoning level they started with. Privacy restrictions and explicit operator revocations still apply immediately." };
 }
+
+// ---- writing ----
 function revisionOf(value) { if (!Number.isSafeInteger(value) || value < 0) fail("A valid settings revision is required."); return value; }
 async function write(env, revision, config, by, action) {
-  revisionOf(revision); const db = dbOf(env); if (!db) fail("Model settings storage is unavailable.", 503);
-  const r = await db.prepare("INSERT INTO model_settings_versions (environment,revision,config,at,by,action) SELECT ?,?,?,?,?,? WHERE COALESCE((SELECT MAX(revision) FROM model_settings_versions WHERE environment=?),0)=?")
-    .bind(settingsEnvironment(env), revision + 1, config == null ? null : JSON.stringify(config), Date.now(), String(by || "admin").slice(0, 254), action, settingsEnvironment(env), revision).run();
-  if (Number(r?.meta?.changes) !== 1) fail("Settings changed in another window. Reload before saving.", 409);
+  revisionOf(revision);
+  if (!dbOf(env)) throw new ModelSettingsError("Model settings storage is unavailable.");
+  if (!(await insertRow(env, revision, config, by, action))) fail("Settings changed in another window. Reload before saving.", 409);
   return modelSettingsView(env);
 }
-async function validatedSelection(env, config) {
-  // Never trust a browser's endpoint/pricing/capability snapshot, including an echoed prior version.
-  if (!config || typeof config !== "object" || Array.isArray(config)) fail("Invalid settings.");
-  const clean = clone(config); delete clean.catalog;
-  const ids = new Set();
-  if (clean.models) for (const [key, id] of Object.entries(clean.models)) {
-    if (!own(POOL, key) || !validModelId(id)) fail("Invalid replacement model ID.");
-    if (id !== POOL[key].model) ids.add(id);
+// Never trust a browser's endpoint, price or capability snapshot: only the jobs come from the browser. A model the saved settings
+// already know keeps its saved record; a new chat model is checked against OpenRouter's catalog; other new models are checked for shape.
+async function validatedSelection(env, config, current) {
+  if (!config || typeof config !== "object" || Array.isArray(config) || !config.jobs || typeof config.jobs !== "object") fail("Invalid settings.");
+  const next = { version: 2, jobs: clone(config.jobs), catalog: clone(current.catalog) };
+  const need = new Map();
+  for (const def of JOBS) {
+    const job = next.jobs[def.id]; if (!job || typeof job !== "object") continue;
+    for (const e of [job, ...(Array.isArray(job.fallbacks) ? job.fallbacks : [])]) if (e && typeof e.model === "string" && !own(next.catalog, e.model)) need.set(e.model, def);
   }
-  for (const c of Object.values(clean.chores || {})) if (c?.model !== "default" && !own(SETTINGS_CHORE_MODELS, c?.model)) {
-    if (!validModelId(c?.model)) fail("Invalid background model ID."); ids.add(c.model);
+  let live = null;
+  for (const [id, def] of need) {
+    const kind = JOB_KINDS[def.kind], pick = kind.pick;
+    if (takesChat(kind)) {
+      if (!validModelId(id)) fail("Invalid model ID.");
+      live ||= new Map((await modelCatalog(env)).models.map((m) => [m.id, m]));
+      const m = live.get(id); if (!m?.eligible) fail(`${id}: ${m?.reasons?.join("; ") || "not available in OpenRouter's catalog"}.`);
+      next.catalog[id] = m;
+    } else {
+      if (!looseId(id)) fail("Invalid model ID.");
+      next.catalog[id] = { id, name: id, kinds: [pick], efforts: [] };
+    }
   }
-  if (ids.size > 19) fail("Too many model replacements.");
-  if (ids.size) {
-    const catalog = await modelCatalog(env), map = new Map(catalog.models.map((m) => [m.id, m])); clean.catalog = {};
-    for (const id of ids) { const m = map.get(id); if (!m?.eligible) fail(`${id}: ${m?.reasons?.join("; ") || "not available in OpenRouter's catalog"}.`); clean.catalog[id] = m; }
-  }
-  return validateModelSettings(clean);
+  // Drop catalog entries nothing uses any more, except facts the first version carried (they stay selectable).
+  const used = new Set(); for (const j of Object.values(next.jobs)) if (j) for (const e of entriesOf(j)) used.add(e.model);
+  for (const [id, m] of Object.entries(next.catalog)) if (m.eligible === true && !used.has(id)) delete next.catalog[id];
+  return validateModelSettings(next);
 }
-export const saveModelSettings = async (env, { revision, config }, by) => {
+export async function saveModelSettings(env, { revision, config }, by) {
   revisionOf(revision);
-  // Stale writes should fail before fetching a changing external catalog (atomic write still rechecks).
-  const current = await readRow(env); if (Number(current?.revision || 0) !== revision) fail("Settings changed in another window. Reload before saving.", 409);
-  return write(env, revision, await validatedSelection(env, config), by, "save");
-};
-export const resetModelSettings = (env, { revision }, by) => write(env, revision, null, by, "reset");
+  // Stale writes fail before fetching a changing external catalog (the atomic write checks again).
+  const current = await readModelSettings(env); if (current.revision !== revision) fail("Settings changed in another window. Reload before saving.", 409);
+  return write(env, revision, await validatedSelection(env, config, current.config), by, "save");
+}
 export async function restoreModelSettings(env, { revision, restore_revision }, by) {
   revisionOf(restore_revision);
   const row = restore_revision ? await readRow(env, restore_revision) : null;
-  if (restore_revision && !row) fail("That settings version does not exist.", 404);
-  const config = configOf(row);
-  return write(env, revision, config ? await validatedSelection(env, config) : null, by, `restore:${restore_revision}`);
+  if (!row) fail("That settings version does not exist.", 404);
+  const current = await readModelSettings(env).catch(() => ({ config: { catalog: {} } }));
+  return write(env, revision, await validatedSelection(env, configOf(row), { catalog: { ...current.config.catalog, ...clone(configOf(row).catalog) } }), by, `restore:${restore_revision}`);
 }
-// Snapshot belongs to one dispatch only. Never mutate Worker env or keep this on a long-lived Resident.
-export async function modelSettingsEnv(env) {
-  if (env?.ONEHELM_EE !== "1hc" || env?.BYOK) return env;
-  const settings = await readModelSettings(env);
-  return Object.assign(Object.create(env || null), { MODEL_SETTINGS: settings.config, MODEL_SETTINGS_REVISION: settings.revision });
-}
-export function configuredChore(env, role, fallbackEffort = "low") {
-  const c = env?.MODEL_SETTINGS?.chores?.[role]; if (!c || c.model === "default") return null;
-  const meta = env.MODEL_SETTINGS.catalog?.[c.model];
-  const m = SETTINGS_CHORE_MODELS[c.model] || { model: c.model, hosts: configuredHosts(env.MODEL_SETTINGS, c.model, "zdr") }, fallback = SETTINGS_CHORE_MODELS.oss120;
-  return { model: m.model, host: m.hosts, effort: c.effort, pin: true, chore: true, only: true, runtimeSettings: true, max_output: meta?.max_output, json: meta ? meta.json : c.model !== "oss20",
-    fallbacks: own(BACKGROUND_POLICIES, role) || c.model === "oss120" ? [] : [{ model: fallback.model, host: fallback.hosts, effort: fallbackEffort, pin: true }] };
-}
-
-export const slotModel = (settings, key) => settings?.models?.[key] || POOL[key]?.model;
-export const configuredAlias = (settings, model) => Object.keys(POOL).find((key) => slotModel(settings, key) === model) || null;
-export const configuredEffort = (settings, model) => { const key = configuredAlias(settings, model); return settings?.efforts?.[key] ?? POOL[key]?.effort ?? null; };
-// Resolve old, persisted routes and recovery constants through their stable slot on every call.
-export const replacementModel = (settings, model) => { const key = Object.keys(POOL).find((k) => POOL[k].model === model); return key ? slotModel(settings, key) : configuredAlias(settings, model) ? model : null; };
-export function configuredHosts(settings, model, level) {
-  const meta = settings?.catalog?.[model];
-  if (!meta) return eligibleHosts(model, level);
-  if (!meta.levels.includes(level)) return [];
-  const registered = eligibleHosts(model, level);
-  // Catalog records for new IDs are strict ZDR; known IDs still intersect the static policy registry.
-  return eligibleHosts(model, "unrestricted").length ? meta.hosts.filter((h) => registered.some((base) => h === base || h.startsWith(`${base}/`))) : meta.hosts;
-}
+export { mergeLevels, factsOf, privacyCoverage, jobDef };

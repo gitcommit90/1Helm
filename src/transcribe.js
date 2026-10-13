@@ -36,15 +36,15 @@
 import { aiOpts, orFetchPath } from "./model.js";
 import { cappedResponseJson } from "./bounded-response.js";
 import { enforceRequest } from "./privacy.js";
+import { jobModel, jobModels } from "./ee/index.js";
 import { STT_NANO_PER_SEC, MARKUP } from "./stt-pricing.js";
 export { STT_NANO_PER_SEC, MARKUP } from "./stt-pricing.js";
 
-export const STT_MODEL = "qwen/qwen3-asr-0.6b";                      // env.STT_MODEL overrides
-export const STT_FALLBACK_MODEL = "openai/whisper-large-v3-turbo";   // OpenRouter, when STT_MODEL fails
-export const STT_WAI_MODEL = "@cf/openai/whisper-large-v3-turbo";    // Workers AI, only when OpenRouter fails
-// Privacy (privacy.js): both OpenRouter models are registered under ENDPOINTS.transcription with their ZDR hosts, and every request is
+// The models are saved settings (model-jobs.js): "stt" is the main speech to text model with its OpenRouter fallbacks, and "stt_cloudflare"
+// is the Workers AI model used only when every OpenRouter model failed. Change them on the Models page.
+// Privacy (privacy.js): the OpenRouter models are registered under ENDPOINTS.transcription with their ZDR hosts, and every request is
 // checked by enforceRequest at "zdr", the strictest level, which every level allows (stricter is never a weaker route): the audio only
-// ever reaches zero-data-retention endpoints, whatever the account chose. A model set by env.STT_MODEL that isn't registered gets
+// ever reaches zero-data-retention endpoints, whatever the account chose. A saved model that isn't registered gets
 // OpenRouter's strictest filter (zdr, data_collection deny). Workers AI (the last fallback) is Cloudflare's own inference, not OpenRouter.
 export const sttProvider = (model) => enforceRequest({ model, provider: { zdr: true } }, "zdr", { modality: "transcription" }).provider;
 export const WAI_NANO_PER_MIN = 513000;           // Workers AI list: $0.000513 per audio minute
@@ -59,7 +59,7 @@ const HEARD_NOTHING = "Couldn't hear that, try again.";
 const TOO_LONG = "That recording is too long. Keep it under 5 minutes.";
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 export const AUDIO = /^(audio\/[a-z0-9.+-]+|video\/(webm|mp4|quicktime)|application\/octet-stream)$/;
-export const sttModels = (env) => [...new Set([String(env?.STT_MODEL || STT_MODEL).trim() || STT_MODEL, STT_FALLBACK_MODEL])];
+export const sttModels = (env) => jobModels(env, "stt");
 
 // The body, read with a hard cap (a lying or missing content-length can't make us buffer more than the limit).
 export async function readCapped(req, max) {
@@ -145,7 +145,7 @@ const segsOf = (list, text) => keepSegs(Array.isArray(list) && list.length ? lis
 export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, estSec = 0, prompt = "" } = {}) {
   const size = src.size ?? src.bytes?.byteLength ?? 0, open = src.open || (() => new Response(src.bytes).body);
   const errs = []; let lost = 0, timeout = false;
-  for (const model of sttModels(env)) {
+  for (const model of await sttModels(env)) {
     const prefix = `{"model":${JSON.stringify(model)},"provider":${JSON.stringify(sttProvider(model))},"response_format":"verbose_json","input_audio":{"format":${JSON.stringify(format)},"data":"`;
     try {
       const { make } = audioBody(prefix, `"}}`, size, open);
@@ -165,16 +165,16 @@ export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, est
   }
   if (!env.AI || !src.bytes || src.bytes.byteLength > WAI_MAX_BYTES) throw Object.assign(new Error(`couldn't transcribe it (${errs.join("; ")})`), { nano: lost, timeout });
   console.log("stt: openrouter failed, using workers ai", errs.join("; ").slice(0, 300));
-  let out;
+  let out; const waiModel = await jobModel(env, "stt_cloudflare");
   try {
-    const run = env.AI.run(STT_WAI_MODEL, { audio: b64(src.bytes), task: "transcribe", vad_filter: true, ...(prompt ? { initial_prompt: prompt.slice(-400) } : {}) }, aiOpts(env, meta));
+    const run = env.AI.run(waiModel, { audio: b64(src.bytes), task: "transcribe", vad_filter: true, ...(prompt ? { initial_prompt: prompt.slice(-400) } : {}) }, aiOpts(env, meta));
     let timer; out = await (tryMs ? Promise.race([run, new Promise((_, no) => { timer = setTimeout(() => no(Object.assign(new Error("timed out"), { name: "TimeoutError" })), tryMs); })]).finally(() => clearTimeout(timer)) : run);
   } catch (e) {
     const to = e?.name === "TimeoutError";
     throw Object.assign(new Error(`couldn't transcribe it (${errs.join("; ")}; workers ai: ${String(e?.message || e).slice(0, 160)})`), { nano: lost + (to ? waiCost({}, src.bytes.byteLength) : 0), timeout: to });
   }
   const segs = segsOf(out?.segments, out?.text);
-  return { segs, text: segs.map((x) => x.t).join(" "), dur: Number(out?.transcription_info?.duration) || 0, model: STT_WAI_MODEL, nano: lost + waiCost(out, src.bytes.byteLength) };
+  return { segs, text: segs.map((x) => x.t).join(" "), dur: Number(out?.transcription_info?.duration) || 0, model: waiModel, nano: lost + waiCost(out, src.bytes.byteLength) };
 }
 
 // L: this workspace's Ledger stub (reserve/settle). meta: AI Gateway metadata ({ tenant, kind }).

@@ -14,6 +14,7 @@
 // Billing: every model call is reserved first and settled at usage.cost × 1.15 (like every model call); a refused reservation
 // skips the run (never on credit). Own AI key: the call goes to their fast model; Hindsight work is metered like elsewhere.
 import { openRouterChat, useOpenRouter, OR_RESERVE_PRICE } from "./model.js";
+import { modelSettingsEnv } from "./ee/index.js";
 import { hsOn, recall as hsRecall, retain as hsRetain, forgetDocument } from "./hindsight.js";
 import { METER as BYOK_METER } from "./byok-meter.js";
 import { structuredChat, parseStructuredResponse, StructuredOutputError } from "./structured-output.js";
@@ -147,7 +148,7 @@ export const residentHost = (res, skipperSlug = "main") => ({
   async chat(job, step, messages, run) {
     if (!useOpenRouter(res.env)) return { skipped: "no chore model available" };
     await res.byokRefresh(60e3);
-    const env = res.env, byok = !!env.BYOK, L = res.ledger(), route = mjRoute(env, job, step), schema = memorySchema(job, step);
+    const env = res.env, byok = !!env.BYOK, L = res.ledger(), route = mjRoute(await modelSettingsEnv(env), job, step), schema = memorySchema(job, step);
     const policy = backgroundPolicy(`${job}_${step}`);
     let charged = 0;
     try {

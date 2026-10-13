@@ -1,4 +1,5 @@
 // node --import ./test/stubs/register.mjs test/ambient-core.test.mjs
+import { SEED } from "./helpers/seed-settings.mjs";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { retainReview } from "./ambient-review-stub.mjs";
@@ -9,7 +10,7 @@ db.exec("CREATE TABLE convs(id INTEGER PRIMARY KEY,start_time INTEGER,r2_key TEX
 const sql = { exec(q, ...args) { if (!args.length && q.split(";").filter((s) => s.trim()).length > 1) { db.exec(q); return { toArray: () => [] }; } const s = db.prepare(q); const rows = /^\s*(SELECT|PRAGMA|WITH)/i.test(q) ? s.all(...args) : (s.run(...args), []); return { toArray: () => rows }; } };
 let active = true, memory = true, hidden = "", arms = [], settled = [], reserved = [], allowSpend = true, calls = 0, cueSettings = null, cueReadFails = false;
 const host = { sql, ctx: { storage: { transactionSync(fn) { db.exec("BEGIN"); try { const r = fn(); db.exec("COMMIT"); return r; } catch (e) { db.exec("ROLLBACK"); throw e; } } } }, gen: 0,
-  env: { ONEHELM_EE: "1hc",  OPENROUTER_API_KEY: "test", DB: { prepare(query) { return { bind() { return { first: async () => { if (query.includes("SELECT v FROM tenant_flags")) { if (cueReadFails) throw Error("private DB details"); return cueSettings ? { v: JSON.stringify(cueSettings) } : null; } return { status: active ? "active" : "read_only", plan: "plus" }; } }; } }; } },
+  env: { ONEHELM_EE: "1hc", MODEL_SETTINGS: SEED, MODEL_SETTINGS_REVISION: 1, OPENROUTER_API_KEY: "test", DB: { prepare(query) { return { bind() { return { first: async () => { if (query.includes("SELECT v FROM tenant_flags")) { if (cueReadFails) throw Error("private DB details"); return cueSettings ? { v: JSON.stringify(cueSettings) } : null; } return { status: active ? "active" : "read_only", plan: "plus" }; } }; } }; } },
     RESIDENT: { idFromName: (x) => x, get(name) { assert.equal(name, "res:test:main"); return { ambientPrivacy: async (texts) => ({ mode: memory ? "on" : "off", allowed: texts.flatMap((s, i) => hidden && s.includes(hidden) ? [] : [i]) }) }; } }, WS: { get: async () => null } },
   get: (k) => kv.get(k), put: (k, v) => v == null ? kv.delete(k) : kv.set(k, String(v)), tid: () => kv.get("tenant"), arm: async (at) => arms.push(at), bump() {}, ledger: () => ({ reserve: async (id, n) => { reserved.push([id, n]); return { ok: allowSpend, reason: "day_limit" }; }, settle: async (id, n) => settled.push([id, n]) }) };
 let store = new AmbientStore(host);

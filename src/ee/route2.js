@@ -1,9 +1,9 @@
 // Task-aware model routing (ROUTER_MODE="two"; Captain 2026-10-08, notes/2026-10-08-privacy-routing/PROMPT.md). Replaces the two-model
-// Sol/Luna rule. Per message from the person, ONE decider call (decider.js: Perplexity, perplexity/pplx-decider-v1.1-27b, env
-// DECIDER_MODEL the kill switch) answers three questions on the last few messages: is it part of a task (stats only), which task
-// CATEGORY it is (pool.js CATEGORIES), and whether an earlier result fell short (quality recovery). The category × the account's AI
-// data privacy level (privacy.js) gives the ordered model list (pool.js CHAINS). The decider never chooses reasoning effort: every
-// managed model has one fixed effort (pool.js POOL), applied on the wire in model.js twoChat, fallbacks included.
+// Sol/Luna rule. Per message from the person, ONE decider call (decider.js; its model is the saved setting of the job "decider") answers
+// three questions on the last few messages: is it part of a task (stats only), which task CATEGORY it is (pool.js CATEGORIES), and
+// whether an earlier result fell short (quality recovery). The category's saved list (the job "chat.<category>", model-jobs.js), filtered
+// by the account's AI data privacy level (privacy.js), gives the ordered models. The decider never chooses reasoning effort: each model in
+// the list carries its own saved reasoning level, applied on the wire in model.js twoChat, fallbacks included.
 // No decider call: unattended runs (scheduled jobs, follow-ups, helpers) and a bare "keep going" with work open reuse the task's
 // category (stored per session), else "general". A decider error/timeout/garbage → the task's category, else "general" (cheapest).
 // One model per turn (switching breaks the prompt cache), except a deliberate quality-recovery switch:
@@ -21,54 +21,22 @@
 
 import { testModelFor, testRoute } from "../internal-test-model.js";   // dev test workspaces: no decider call, one model (TEST_MODEL)
 import { deciderFetch, deciderModel, deciderProvider } from "./decider.js";
-import { modelSettingsEnv, slotModel, replacementModel, configuredHosts } from "./model-settings.js";
+import { askDecider, usesSystemone } from "./text-decision.js";
+import { modelSettingsEnv } from "./model-settings.js";
+import { settingsOf, jobSetting, entriesOf, allowedEntries, chatJobId, configuredHosts, choreRouteOf, jobRoute, factsOf } from "./model-jobs.js";
 import { startShadow, shadowOn, residentWaitUntil } from "./decision-shadow.js";   // dev only: another decider next to the live one, never decides
 import { privacyOf, normalizePrivacy, eligibleHosts, ineligibleWhy } from "../privacy.js";
-import { SOL, LUNA, HAIKU, POOL_MODELS, CATEGORIES, CATEGORY_LABEL, DEFAULT_CATEGORY, RECOVERY, IN_TURN_TARGET, MAX_MODELS, normalizeCategory, chainModels, fixedEffort, aliasOf, guessCategory, autoToolsOnly } from "./pool.js";
+import { CATEGORIES, CATEGORY_LABEL, DEFAULT_CATEGORY, RECOVERY, IN_TURN_JOB, MAX_MODELS, normalizeCategory, guessCategory } from "./pool.js";
 
-export { SOL, LUNA, HAIKU };
 export const ROUTER_TWO = "two";
 export const route2On = (env) => env?.ONEHELM_EE === "1hc" && String(env?.ROUTER_MODE || "classic").trim().toLowerCase() === ROUTER_TWO;
-export const JEV = "~typesafe/jev-latest";            // the old decider: kept only as the router lab's baseline / DECIDER_MODEL kill-switch value
-export const TWO_MODELS = POOL_MODELS;                 // every model the main chat may use (pool.js)
 
 // The person asks for the best model → treated as an explicit request for a more thorough attempt (RECOVERY), never an effort change.
 export const BEST_RE = /\b(use (your|the) (best|smartest|strongest|top|most powerful|biggest) (model|brain|ai)|your (best|smartest|strongest|most powerful) (model|ai))\b/i;
 // A bare go-on ("Keep going.", "continue", "ok, go ahead") that carries on work already under way keeps the task's category, no decider call.
 export const CONTINUE_RE = /^\s*(?:(?:ok(?:ay)?|yes|sure)[,.!]?\s+)?(?:please\s+)?(?:keep going|continue|carry on|go on|go ahead|proceed|resume|keep at it|finish (?:it|up))(?:,?\s*please)?[.!]*\s*$/i;
-// Chores (nobody waits on them or reads them directly): gpt-oss-120b, fastest ZDR host first.
-export const CHORE_ROUTE = { model: "openai/gpt-oss-120b", host: "cerebras", effort: "default", fallbacks: [], only: true, chore: true };
-// Which model runs a chore (CHORE_MODEL, eval 2026-10-06 in tmp-shots/oss20): "oss120" (default, unset), "oss20", "dsflash" or "haiku". Per chore:
-// CHORE_MODEL_HANDOFF / CHORE_MODEL_LABEL / CHORE_MODEL_BROWSER / CHORE_MODEL_NOTES override it. gpt-oss-20b isn't on Cerebras. Its fastest ZDR host is
-// Amazon Bedrock, pinned. "dsflash": DeepSeek V4.1 Flash with reasoning off, pinned to its fastest ZDR hosts (Together, Modal, CoreWeave).
-// These chore configurations are internal background calls with their own fixed settings; they are not the managed pool's routing
-// (pool.js), and they stay on zero-data-retention endpoints at every privacy level.
-// "haiku": Claude Haiku 5.5 with reasoning OFF, pinned to its ZDR hosts (Amazon Bedrock first, then Google Vertex; privacy.js ENDPOINTS).
-// Reasoning is off on purpose: these are fixed-settings chores, not the pool (pool.js fixedEffort is for the main chat). The Live notes
-// note-taker (replay 2026-10-08, tmp-shots/stt + tmp-shots/notetaker) on gpt-oss-120b spent its 1500-token cap on reasoning in 8 of 23
-// passes and returned nothing readable; Haiku with reasoning off had 0 unreadable passes, similar notes, and cost less.
-export const CHORE_MODELS = { oss120: { model: "openai/gpt-oss-120b", hosts: ["cerebras"] }, oss20: { model: "openai/gpt-oss-20b", hosts: ["amazon-bedrock"], pin: true },
-  dsflash: { model: "deepseek/deepseek-v4.1-flash", hosts: ["together", "modal", "coreweave"], pin: true, effort: "none" },
-  haiku: { model: "anthropic/claude-haiku-5.5", hosts: ["amazon-bedrock", "google-vertex"], pin: true, effort: "none" } };
-export const CHORES = ["handoff", "label", "browser", "notes"];
-// A chore's own default when CHORE_MODEL_<CHORE> isn't set: the Live notes note-taker (and its auto-refine draft) is Haiku
-// (Captain 2026-10-08). CHORE_MODEL_NOTES still overrides it; the global CHORE_MODEL doesn't (it predates this choice).
-export const CHORE_DEFAULTS = { notes: "haiku" };
-export function choreModelOf(env, chore) {
-  const own = env?.[`CHORE_MODEL_${String(chore).toUpperCase()}`], def = CHORE_DEFAULTS[chore];
-  const v = String(own || def || env?.CHORE_MODEL || "oss120").trim().toLowerCase();
-  return CHORE_MODELS[v] ? v : def || "oss120";
-}
-// The attempts for one chore, in order: [{model, host, effort, pin}]. host is a string or a list (OpenRouter provider.order).
-export function choreAttempts(env, chore, effort = "default") {
-  const k = choreModelOf(env, chore), m = CHORE_MODELS[k], a = { model: m.model, host: m.hosts.length > 1 ? m.hosts : m.hosts[0], effort: m.effort || effort, ...(m.pin ? { pin: true } : {}) };
-  return k === "oss120" ? [a] : [a, { model: CHORE_MODELS.oss120.model, host: CHORE_MODELS.oss120.hosts[0], effort }];
-}
-// The hand-off route for this env: CHORE_ROUTE itself by default, else the chosen model with 120b behind it.
-export function choreRoute(env, chore = "handoff") {
-  const [a, ...rest] = choreAttempts(env, chore, CHORE_ROUTE.effort);
-  return rest.length ? { ...CHORE_ROUTE, model: a.model, host: a.host, pin: a.pin, effort: a.effort, fallbacks: rest } : CHORE_ROUTE;
-}
+// Background jobs (chores: nobody waits on them or reads them directly) each have their own saved setting (model-jobs.js choreRouteOf):
+// the model, its reasoning level and its fallbacks. They run on zero-data-retention endpoints at every privacy level.
 
 export const JEV_URL = "https://openrouter.ai/api/v1/systemone";
 export const JEV_TIMEOUT_MS = 4000;                     // a slow decider never holds the reply: timeout → the task's category / general
@@ -97,20 +65,32 @@ export const UNMET_QUESTION = "Does the latest message say an earlier result in 
   + "they repeat a correction, or they ask for a more thorough attempt? A plain follow-up question, thanks, or a new request is No.";
 
 // Route objects: what callModel / openRouterChat read. reason/floor keep the "[reason/floor]" label in turn stats, e.g.
-// "deepseek/deepseek-v4.1-flash [policy/deepseek general·zdr decider]". level is informational: dispatch re-reads the current level.
-export function policyRoute(category, level, why, { recovery = null, note = null } = {}) {
+// "deepseek-flash general·zdr decider". level is informational: dispatch re-reads the current level.
+// settings: the saved model settings (env.MODEL_SETTINGS). The route records the first model that would run and, for a turn that may
+// switch models mid-way, the saved "escalate" model; the model list itself is read again from the settings on every dispatch.
+export const modelLabel = (settings, model) => String(factsOf(settings, model)?.name || String(model).split("/").pop()).toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-|-$/g, "");
+const entryOf = (settings, id) => entriesOf(jobSetting(settings, id))[0];
+export function policyRoute(settings, category, level, why, { recoveryJob = null, alternate = false, recovery = null, recoveryEffort = null, note = null } = {}) {
   category = normalizeCategory(category); level = normalizePrivacy(level);
-  const chain = chainModels(category, level), first = recovery && POOL_MODELS.includes(recovery) ? recovery : chain[0], k = aliasOf(first);
-  return { two: true, policy: true, category, level, why, primary: first, model: first, effort: fixedEffort(first), ...(recovery ? { recovery: first } : {}), ...(note ? { note } : {}),
-    fallbacks: chain.filter((m) => m !== first), only: true, label: `${k}/${category} ${why}`, reason: "policy", floor: `${k} ${category}·${level} ${why}` };
+  const job = jobSetting(settings, chatJobId(category)), list = allowedEntries(settings, job, level), all = entriesOf(job);
+  let rec = null;
+  if (recoveryJob) rec = entryOf(settings, recoveryJob);
+  else if (alternate) rec = list[1] || null;
+  else if (recovery) rec = { model: recovery, effort: recoveryEffort };
+  const first = rec || list[0] || all[0], esc = settings.jobs?.[IN_TURN_JOB] ? entryOf(settings, IN_TURN_JOB) : null;
+  return { two: true, policy: true, category, level, why, primary: first.model, model: first.model, effort: first.effort, ...(rec ? { recovery: rec.model, recoveryEffort: rec.effort ?? null } : {}), ...(note ? { note } : {}),
+    ...(esc ? { escalate: { model: esc.model, effort: esc.effort ?? null } } : {}),
+    fallbacks: all.map((e) => e.model).filter((m) => m !== first.model), only: true, label: `${modelLabel(settings, first.model)}/${category} ${why}`, reason: "policy", floor: `${modelLabel(settings, first.model)} ${category}·${level} ${why}` };
 }
-// Legacy: an old Sol/Luna route (stored on a turn journaled before this deploy and resumed after it) keeps its model first.
-export function twoRoute(model, why) { return policyRoute(DEFAULT_CATEGORY, "zdr", why, { recovery: model }); }
+// Legacy: a route stored on a turn journaled before the saved settings existed names its model directly; that model goes first.
+export function twoRoute(settings, model, why) { return policyRoute(settings, DEFAULT_CATEGORY, "zdr", why, { recovery: model }); }
 // openRouterChat calls this around each attempt so the label always names the model that actually answered.
-export function markServed(route, model, fellBack = false) {
-  if (!route?.two) return; const k = aliasOf(model) || String(model).split("/").pop(), why = fellBack ? "fallback" : route.why;
+export function markServed(route, model, fellBack = false, settings = null) {
+  if (!route?.two) return; const k = modelLabel(settings, model), why = fellBack ? "fallback" : route.why;
   route.served = model; route.floor = `${k} ${route.category || DEFAULT_CATEGORY}·${route.level || "zdr"} ${why}`; route.label = `${k}/${route.category || DEFAULT_CATEGORY} ${why}`;
+  if (quirkOfModel(settings, model, "reasoning_replay")) route.replayReasoning = true; else delete route.replayReasoning;
 }
+const quirkOfModel = (settings, model, name) => !!factsOf(settings, model)?.quirks?.[name];
 
 export function verdict(p) {
   if (typeof p !== "number" || !Number.isFinite(p) || p < 0 || p > 1) return "unsure";
@@ -120,7 +100,7 @@ export function verdict(p) {
 // The questions and the systemone body. The decision shadow (decision-shadow.js) and the router lab send these same questions.
 export const JEV_QUESTIONS = { is_task: { type: "noul", instructions: JEV_QUESTION }, category: { type: "choice", instructions: CATEGORY_QUESTION, criteria: CATEGORY_CRITERIA },
   unmet: { type: "noul", instructions: UNMET_QUESTION } };
-export const jevBody = (state, env = null) => ({ model: deciderModel(env), provider: deciderProvider(deciderModel(env)), state, questions: JEV_QUESTIONS });
+export const jevBody = (state, env) => ({ model: deciderModel(env), provider: deciderProvider(deciderModel(env)), state, questions: JEV_QUESTIONS });
 // A choice answer → a category id, or null (missing/invalid). Accepts { choice } or { probabilities } (the most likely offered id).
 export function categoryOf(a) {
   if (!a || typeof a !== "object") return null;
@@ -134,6 +114,12 @@ export async function jevAsk(env, state, { fetchImpl = globalThis.fetch, timeout
   const t0 = Date.now(), ac = new AbortController(), timer = setTimeout(() => ac.abort(Object.assign(new Error("timeout"), { name: "TimeoutError" })), timeoutMs);
   try {
     env = await modelSettingsEnv(env);
+    if (!usesSystemone(env.MODEL_SETTINGS, "decider") || jobSetting(env.MODEL_SETTINGS, "decider").fallbacks?.length) {   // any other chat model answers the same questions as strict JSON (text-decision.js)
+      const a = await askDecider(env, state, JEV_QUESTIONS, { timeoutMs, meta });
+      if (a.error && !a.answers) return { p: null, cost: Number(a.nano || 0) / 1e9, ms: a.ms, error: `decider: ${a.error}` };
+      const category = categoryOf(a.answers?.category);
+      return { p: a.answers?.is_task?.noul ?? null, category, unmet: a.answers?.unmet?.noul ?? null, cost: Number(a.nano || 0) / 1e9, ms: a.ms, model: a.model || null, ...(category ? {} : { error: "decider: no category" }) };
+    }
     const r = await deciderFetch(env, JSON.stringify(jevBody(state, env)), { signal: ac.signal, title: "1Helm router", meta, fetchImpl });
     const j = await r.json().catch(() => null);
     if (!r.ok || !j) return { p: null, cost: 0, ms: Date.now() - t0, error: `decider ${r.status}: ${JSON.stringify(j?.error || j || "").slice(0, 160)}` };
@@ -158,36 +144,37 @@ export function jevState({ hist = [], text = "", prevTools = 0, openWork = [], p
 //   category: the decider's choice; missing → the task's category so far, else general.
 //   recovery: unmet ≥ UNMET_FROM, or "use your best model" → RECOVERY for the task's category (the work that fell short).
 export function routeFromAnswers(env, text, { p = null, category = null, unmet = null, error = null } = {}, { level = "zdr", prevCategory = null } = {}) {
+  const settings = settingsOf(env);
   const v = error && !category ? "unsure" : verdict(p);
   const cat = normalizeCategory(category || prevCategory || DEFAULT_CATEGORY);
   const best = BEST_RE.test(String(text || "")), fell = typeof unmet === "number" && unmet >= UNMET_FROM;
   if (fell || best) {
     const base = normalizeCategory(prevCategory || cat), rc = RECOVERY[base], why = fell ? `recover:${base}` : "ask:best";
-    const alt = rc.alternate ? chainModels(base, normalizePrivacy(level))[1] : null;
-    return { route: policyRoute(base, level, why, { recovery: rc.model || alt, note: rc.note || null }), verdict: "recover" };
+    return { route: policyRoute(settings, base, level, why, { recoveryJob: rc.job || null, alternate: !!rc.alternate, note: rc.note || null }), verdict: "recover" };
   }
-  return { route: policyRoute(cat, level, category ? "decider" : error ? "decider:unsure" : "default"), verdict: v };
+  return { route: policyRoute(settings, cat, level, category ? "decider" : error ? "decider:unsure" : "default"), verdict: v };
 }
 // What the dashboard shows for one side (decision-shadow.js judge): the route's model is the comparison key, the label the second one.
 export function routeJudge(env, text, ctx = {}) {
   return (a) => {
     const err = a?.error || null, ans = err ? { error: err } : { p: a?.is_task?.noul ?? null, category: categoryOf(a?.category), unmet: a?.unmet?.noul ?? null };
     const { route, verdict: label } = routeFromAnswers(env, text, ans, ctx);
-    return { key: route.model, label, route: aliasOf(route.model), why: route.why, category: route.category, effort: route.effort, p: ans.p ?? null, unmet: ans.unmet ?? null };
+    return { key: route.model, label, route: modelLabel(settingsOf(env), route.model), why: route.why, category: route.category, effort: route.effort, p: ans.p ?? null, unmet: ans.unmet ?? null };
   };
 }
 
 // The routes decided without asking the decider (a job, a bare go-on with work open), or null when the message goes to the decider.
 // The decision shadow's test-mode probe uses the same gates, so it only probes messages the decider would really see.
 export function jevGate(env, { kind = "chat", text, prevTools = 0, openWork = [], prevCategory = null, level = "zdr" }) {
-  if (kind !== "chat") return policyRoute(prevCategory || DEFAULT_CATEGORY, level, "job");
-  if (CONTINUE_RE.test(String(text || "")) && (prevTools > 0 || openWork.length)) return policyRoute(prevCategory || DEFAULT_CATEGORY, level, "continue");
+  if (kind !== "chat") return policyRoute(settingsOf(env), prevCategory || DEFAULT_CATEGORY, level, "job");
+  if (CONTINUE_RE.test(String(text || "")) && (prevTools > 0 || openWork.length)) return policyRoute(settingsOf(env), prevCategory || DEFAULT_CATEGORY, level, "continue");
   return null;
 }
 // The decider's answer in the decision shadow's shape (decision-shadow.js startShadow finish / jevProbe).
 export const jevOutcome = (jev) => jev.error && !jev.category ? { error: jev.error, ms: jev.ms } : { answers: { is_task: { noul: jev.p }, category: { choice: jev.category }, unmet: { noul: jev.unmet } }, ms: jev.ms, nano: Math.round((jev.cost || 0) * 1e9), src: jev.cost ? "reported" : null, model: jev.model || null };
 
 export async function chooseTwo(env, { kind = "chat", text, hist, prevTools = 0, openWork = [], prevCategory = null, level = "zdr" }, opts = {}) {
+  env = await modelSettingsEnv(env);
   const g = jevGate(env, { kind, text, prevTools, openWork, prevCategory, level }); if (g) return { route: g, jev: null };
   const state = jevState({ hist, text, prevTools, openWork, prevCategory }), jevP = jevAsk(env, state, opts);   // the decider's request is on its way first
   let sh = null; try { sh = opts.shadow?.({ kind: "route", state, questions: JEV_QUESTIONS, judge: routeJudge(env, text, { level, prevCategory }), preview: state.latest_message }) || null; } catch {}
@@ -217,18 +204,19 @@ export function setTurnRoute(R, tc, route) { R._route = route; if (tc) tc.route 
 // Returns the decision for turn stats; never throws (any failure → the task's category, else general).
 export async function routeTwoTurn(R, tc, { kind, text, hist, stats }) {
   let d;
-  const tenant = R.get?.("tenant"), level = await privacyOf(R.env, tenant), prevCategory = sessionCategory(R, tc?.session);
+  const env = await modelSettingsEnv(R.env);   // unreadable settings stop the turn here, with a clear error, before anything is sent
+  const tenant = R.get?.("tenant"), level = await privacyOf(env, tenant), prevCategory = sessionCategory(R, tc?.session);
   // Dev test workspace (test-model.js): no decider call; the test model runs the whole turn and never escalates. The route the policy
   // WOULD have taken (task category by keyword guess / the task's category, the account's current level) rides on the route for labels.
-  const tm = await testModelFor(R.env, tenant);
+  const tm = await testModelFor(env, tenant);
   if (tm) {
-    const would = policyRoute(kind === "chat" ? (prevCategory && CONTINUE_RE.test(String(text || "")) ? prevCategory : guessCategory(text)) : prevCategory || DEFAULT_CATEGORY, level, "would");
+    const would = policyRoute(env.MODEL_SETTINGS, kind === "chat" ? (prevCategory && CONTINUE_RE.test(String(text || "")) ? prevCategory : guessCategory(text)) : prevCategory || DEFAULT_CATEGORY, level, "would");
     d = { route: { ...testRoute(tm), category: would.category, level, would: { model: would.model, effort: would.effort, chain: [would.model, ...would.fallbacks] } }, jev: null };
-    d.route.label = `${d.route.label} would:${aliasOf(would.model)}@${would.effort} ${would.category}·${level}`;
-    testShadow(R, tc, d.route, { kind, text, hist, level, prevCategory });
+    d.route.label = `${d.route.label} would:${modelLabel(env.MODEL_SETTINGS, would.model)}@${would.effort} ${would.category}·${level}`;
+    testShadow(R, tc, d.route, { kind, text, hist, level, prevCategory }, env);
   }
-  else try { d = await chooseTwo(R.env, { kind, text, hist, prevTools: prevToolsOf(R, tc?.session), openWork: openWorkOf(R, tc?.session), prevCategory, level }, { shadow: routeShadow(R, tc), meta: { tenant, channel: R.get?.("channel") } }); }
-  catch (e) { d = { route: policyRoute(prevCategory || DEFAULT_CATEGORY, level, "decider:unsure"), jev: { error: String(e?.message || e).slice(0, 160), verdict: "unsure" } }; }
+  else try { d = await chooseTwo(env, { kind, text, hist, prevTools: prevToolsOf(R, tc?.session), openWork: openWorkOf(R, tc?.session), prevCategory, level }, { shadow: routeShadow(R, tc, env), meta: { tenant, channel: R.get?.("channel") } }); }
+  catch (e) { d = { route: policyRoute(env.MODEL_SETTINGS, prevCategory || DEFAULT_CATEGORY, level, "decider:unsure"), jev: { error: String(e?.message || e).slice(0, 160), verdict: "unsure" } }; }
   const nano = Math.ceil((d.jev?.cost || 0) * 1e9 * JEV_MARKUP);
   if (nano > 0) { try { const rid = `rtr:${crypto.randomUUID()}`; if ((await R.ledger().reserve(rid, nano)).ok) { await R.ledger().settle(rid, nano); if (stats) stats.charge += nano; } } catch (e) { console.log("decider charge", e.message); } }
   setTurnRoute(R, tc, d.route);
@@ -239,22 +227,22 @@ export async function routeTwoTurn(R, tc, { kind, text, hist, stats }) {
 }
 
 // The decision shadow's starter for this turn (dev + DECISION_SHADOW="on" only; decision-shadow.js), or undefined.
-function routeShadow(R, tc) {
-  const wu = residentWaitUntil(R); if (!wu || !shadowOn(R.env)) return undefined;
+function routeShadow(R, tc, env) {
+  const wu = residentWaitUntil(R); if (!wu || !shadowOn(env)) return undefined;
   const meta = { tenant: R.get?.("tenant") || null, channel: R.get?.("channel") || null, session: tc?.session || null };
-  return ({ preview, ...spec }) => startShadow(R.env, wu, { ...spec, meta: { ...meta, preview } });
+  return ({ preview, ...spec }) => startShadow(env, wu, { ...spec, meta: { ...meta, preview } });
 }
 
 // Dev test override (decision-shadow.js both_shadow): the test model runs the turn exactly as before (testRoute, no decider call in the
 // turn); for a message the decider would have seen (same gates), the live and shadow deciders are asked in the background on the
 // exact state. Nothing is billed, nothing waits, the route never changes.
-function testShadow(R, tc, route, { kind, text, hist, level, prevCategory }) {
+function testShadow(R, tc, route, { kind, text, hist, level, prevCategory }, env) {
   try {
-    const wu = residentWaitUntil(R); if (!wu || !shadowOn(R.env)) return;
+    const wu = residentWaitUntil(R); if (!wu || !shadowOn(env)) return;
     const prevTools = prevToolsOf(R, tc?.session), openWork = openWorkOf(R, tc?.session);
-    if (jevGate(R.env, { kind, text, prevTools, openWork, prevCategory, level })) return;
+    if (jevGate(env, { kind, text, prevTools, openWork, prevCategory, level })) return;
     const state = jevState({ hist, text, prevTools, openWork, prevCategory });
-    const sh = startShadow(R.env, wu, { kind: "route", state, questions: JEV_QUESTIONS, judge: routeJudge(R.env, text, { level, prevCategory }), jevProbe: () => jevAsk(R.env, state).then(jevOutcome),
+    const sh = startShadow(env, wu, { kind: "route", state, questions: JEV_QUESTIONS, judge: routeJudge(env, text, { level, prevCategory }), jevProbe: () => jevAsk(env, state).then(jevOutcome),
       meta: { tenant: R.get?.("tenant") || null, channel: R.get?.("channel") || null, session: tc?.session || null, preview: state.latest_message } });
     sh.actual({ model: route.model, route: route.label });
   } catch (e) { console.log("decision shadow (test mode)", String(e?.message || e).slice(0, 160)); }
@@ -265,7 +253,7 @@ function testShadow(R, tc, route, { kind, text, hist, level, prevCategory }) {
 //   - the same tool failed in two steps in a row (an "error…" result, invalid/cut-off JSON, a command killed or not found)  → "tool-errors"
 //   - ESCALATE_STALL steps in a row with no progress (every call repeats one made earlier this turn, or every result failed) → "stalled"
 // After a call: two malformed tool calls this turn → "bad-calls"; a final answer saying it's stuck after tool work → that same step
-// is redone on Sol. Every switch moves the rest of the turn to Sol (pool.js IN_TURN_TARGET), once; a turn already on Sol never switches.
+// is redone on the saved "escalate" model. Every switch moves the rest of the turn to that model (model-jobs.js), once; a turn already on it never switches.
 export const ESCALATE_FAILS = 2, ESCALATE_STALL = 3;
 export const STUCK_RE = /\b(I'?m|I am|I've been|I have been) (stuck|going (around )?in circles)\b|\bkeep(s)? (getting|hitting|running into) (the same |this |that )?(error|failure|problem)|\bI (can'?t|cannot|couldn'?t|could not) (figure out|get (it|this|that) to work|make (it|this) work)\b|\b(ran|run) out of (ideas|things to try)\b/i;
 export const newEsc = () => ({ pending: [], seen: new Set(), failTool: null, fails: 0, stall: 0, bad: 0, tools: 0, done: null });
@@ -275,11 +263,12 @@ export function failedResult(text) {
   if (/^(error\b|Your tool arguments were not valid JSON|Validation failed for tool|Tool \S+ not found)/i.test(t)) return true;   // classic + pi
   const m = t.match(/^exit (\d+)/); return !!m && [2, 124, 126, 127, 137].includes(Number(m[1]));   // exit 1 is often just "no match"
 }
-const recoverable = (tc) => !!tc?.route?.two && !tc.route.taskAffinity && !tc.route.test && !!tc.esc && !tc.esc.done && (tc.route.served || tc.route.primary) !== IN_TURN_TARGET;
+const recoverable = (tc) => !!tc?.route?.two && !tc.route.taskAffinity && !tc.route.test && !!tc.esc && !tc.esc.done && !!tc.route.escalate && (tc.route.served || tc.route.primary) !== tc.route.escalate.model;
 export function escalateTurn(R, tc, reason) {
   if (!recoverable(tc)) return false;
   tc.esc.done = reason;
-  setTurnRoute(R, tc, policyRoute(tc.route.category, tc.route.level, `escalated:${reason}`, { recovery: IN_TURN_TARGET }));
+  const to = tc.route.escalate, k = modelLabel(null, to.model), why = `escalated:${reason}`, { served, ...keep } = tc.route;
+  setTurnRoute(R, tc, { ...keep, why, model: to.model, primary: to.model, effort: to.effort, recovery: to.model, recoveryEffort: to.effort, label: `${k}/${keep.category} ${why}`, floor: `${k} ${keep.category}·${keep.level} ${why}` });
   if (tc.routeStats) tc.routeStats.escalated = reason;
   console.log("router: rest of the turn on the recovery model", JSON.stringify({ reason, session: tc.session || null, kind: tc.kind || null, category: tc.route.category }));
   return true;
@@ -311,12 +300,16 @@ export function escalationAfter(R, tc, r) {
 // Hand-off notes (written after the reply, read only by the helper's future self) are a chore: gpt-oss-120b, not the pool.
 // Matched on the prompt resident.js sends for them (test/route2.test.mjs checks it's still there).
 export const HANDOFF_PREFIX = "(Turn finished; the person has your reply.";
-export function choreRouteFor(route, body, env = null) {
-  if (!route?.two || body?.tools) return null;
+export const isHandoff = (route, body) => {
+  if (!route?.two || body?.tools) return false;
   const last = (body?.messages || []).at(-1);
-  return last?.role === "user" && typeof last.content === "string" && last.content.startsWith(HANDOFF_PREFIX) ? choreRoute(env, "handoff") : null;
+  return last?.role === "user" && typeof last.content === "string" && last.content.startsWith(HANDOFF_PREFIX);
+};
+// The hand-off job's route from the saved settings, or (without settings) a marker route that names the job.
+export function choreRouteFor(route, body, env = null) {
+  if (!isHandoff(route, body)) return null;
+  return env?.MODEL_SETTINGS ? choreRouteOf(env.MODEL_SETTINGS, "handoff") : jobRoute("handoff");
 }
-
 
 // The models one main-chat dispatch may try, in order (model.js twoChat): a recovery/legacy model first, then the category's chain at the
 // CURRENT level; each kept only if some endpoint of it is eligible at that level for this payload (privacy.js), and not a Meta model
@@ -324,22 +317,28 @@ export function choreRouteFor(route, body, env = null) {
 export function dispatchOrder(route, level, { prov = null, body = null, settings = null } = {}) {
   if (route?.taskAffinity) {
     const model = route.taskProfile?.requestedModel;
-    return model ? { models: [model], skipped: [] } : { models: [], skipped: [{ model: null, why: "missing task profile" }] };
+    return model ? { models: [model], attempts: [{ model, effort: route.taskProfile?.effort ?? null }], skipped: [] } : { models: [], attempts: [], skipped: [{ model: null, why: "missing task profile" }] };
   }
-  const lead = [route?.recovery, route?.policy ? null : route?.primary].map((m) => replacementModel(settings, m)).filter(Boolean);
-  const configured = settings?.chains?.[normalizeCategory(route?.category)]?.[normalizePrivacy(level)];
-  const list = [...lead, ...(configured ? configured.map((k) => slotModel(settings, k)).filter(Boolean) : chainModels(normalizeCategory(route?.category), normalizePrivacy(level)).map((m) => replacementModel(settings, m)))];
+  level = normalizePrivacy(level);
+  const job = jobSetting(settings, chatJobId(route?.category)), own = entriesOf(job);
+  // A model named directly on a route (a recovery switch, or a route saved before these settings) goes first with its saved effort.
+  const effortOf = (model) => [...Object.values(settings.jobs)].flatMap((j) => j ? entriesOf(j) : []).find((e) => e.model === model)?.effort ?? null;
+  const lead = [route?.recovery, route?.policy ? null : route?.primary].filter(Boolean).map((model) => ({ model, effort: route?.recovery === model && route.recoveryEffort !== undefined ? route.recoveryEffort : effortOf(model) }));
+  const list = [...lead, ...own];
   const forced = body?.tool_choice != null && body.tool_choice !== "auto";
-  const models = [], skipped = [];
-  for (const m of list) {
-    if (models.includes(m) || skipped.some((s) => s.model === m)) continue;
-    if (forced && autoToolsOnly(m)) { skipped.push({ model: m, why: "forced tool choice (Meta accepts only auto)" }); continue; }
-    const meta = settings?.catalog?.[m], choice = typeof body?.tool_choice === "object" ? "function" : body?.tool_choice;
-    if (meta && choice && !meta.tool_choice.includes(choice)) { skipped.push({ model: m, why: "unsupported tool choice" }); continue; }
+  const attempts = [], skipped = [];
+  for (const e of list) {
+    const m = e.model;
+    if (attempts.some((a) => a.model === m) || skipped.some((s) => s.model === m)) continue;
+    const meta = settings?.catalog?.[m];
+    if (forced && meta?.quirks?.auto_tool_choice_only) { skipped.push({ model: m, why: "forced tool choice (this model accepts only auto)" }); continue; }
+    const choice = typeof body?.tool_choice === "object" ? "function" : body?.tool_choice;
+    if (meta?.tool_choice && choice && !meta.tool_choice.includes(choice)) { skipped.push({ model: m, why: "unsupported tool choice" }); continue; }
     const images = body?.messages?.some((msg) => Array.isArray(msg.content) && msg.content.some((part) => part.type === "image_url"));
-    if (meta && images && !meta.input_modalities.includes("image")) { skipped.push({ model: m, why: "no image input" }); continue; }
-    if (!configuredHosts(settings, m, normalizePrivacy(level)).length) { skipped.push({ model: m, why: ineligibleWhy(m, level, { prov }) || "no eligible configured endpoint" }); continue; }
-    models.push(m);
+    if (meta?.input_modalities && images && !meta.input_modalities.includes("image")) { skipped.push({ model: m, why: "no image input" }); continue; }
+    if (!configuredHosts(settings, m, level).length) { skipped.push({ model: m, why: ineligibleWhy(m, level, { prov }) || "no eligible configured endpoint" }); continue; }
+    attempts.push({ model: m, effort: e.effort ?? null });
   }
-  return { models: models.slice(0, MAX_MODELS), skipped };
+  const kept = attempts.slice(0, MAX_MODELS);
+  return { models: kept.map((a) => a.model), attempts: kept, skipped };
 }

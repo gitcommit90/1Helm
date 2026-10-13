@@ -45,7 +45,8 @@ import { DurableObject } from "cloudflare:workers";
 import { tolerantEnv } from "../do-stub.js";
 import { openSecret } from "../sentinel.js";
 import { openRouterChat } from "../model.js";
-import { backgroundRole, backgroundPolicy, backgroundRoute, backgroundReserve } from "./background-policy.js";
+import { backgroundRole, backgroundPolicy, backgroundReserve } from "./background-policy.js";
+import { jobRoute } from "./model-jobs.js";
 import { stPut, stDelete } from "../storage.js";
 import { safeName } from "../files.js";
 import { beeEvent, LIVE_V } from "./bee.js";
@@ -87,7 +88,7 @@ export const MIC_GRACE_MS = 12e3, MIC_LOST_MS = 90e3, MIC_PROMPT_CHARS = 300;   
 // The Computer class's "basic" container at cost + 15%, per second (bee-sync.js JOB_NANO_PER_SEC).
 export const JOB_NANO_PER_SEC = Math.ceil((1 * 0.0000025 + 0.25 * 0.000020 + 4 * 0.00000007) * 1e9 * 1.15);
 export const CHUNK_RESERVE = Math.ceil((CHUNK_MS + 60e3) / 1000 * JOB_NANO_PER_SEC);
-export const FINAL_ROUTE = backgroundRoute("notes_final");
+export const FINAL_ROUTE = jobRoute("notes_final");
 export function notesRequest(kind, messages) {
   return { messages, max_tokens: backgroundPolicy(backgroundRole(`live-notes-${kind}`)).maxTokens, temperature: 0,
     response_format: structuredFormat(`live_notes_${kind}`, kind === "note" ? NOTE_PATCH_SCHEMA : FINAL_NOTES_SCHEMA), provider: { require_parameters: true } };
@@ -609,7 +610,7 @@ export class LiveNotes extends DurableObject {
   }
   // A model call, reserved first. → {text, nano, tokens} | {refused: reason} | throws.
   async model(kind, messages, maxTokens) {
-    const route = backgroundRoute(backgroundRole(`live-notes-${kind}`));
+    const route = jobRoute(backgroundRole(`live-notes-${kind}`));
     const r = await openRouterChat(this.env, notesRequest(kind, messages), null, route, { tenant: this.tid(), channel: this.get("channel"), kind: `live-notes-${kind}` });
     const j = await r.json();
     return { response: j, text: String(j?.choices?.[0]?.message?.content ?? ""), finish: j?.choices?.[0]?.finish_reason || null, nano: Math.ceil(Math.ceil(Number(j?.usage?.cost || 0) * 1e9) * MARKUP), tokens: Number(j?.usage?.prompt_tokens || 0) + Number(j?.usage?.completion_tokens || 0) };
@@ -696,7 +697,7 @@ export class LiveNotes extends DurableObject {
     if (!tkey) {
       const mic = s.source === "mic";
       const body = JSON.stringify({ source: mic ? "mic" : "bee", task: this.get("task"), session: n, started_at: s.started_at, ended_at: s.ended_at, conversations: s.convs || [],
-        ...(mic ? { microphone: { chunks: s.chunks || 0, paused: s.pauses || [], transcription: `${sttModels(this.env)[0]} (OpenRouter, zero data retention; Whisper large-v3-turbo if it failed)` } } : {}),
+        ...(mic ? { microphone: { chunks: s.chunks || 0, paused: s.pauses || [], transcription: `${(await sttModels(this.env))[0]} (OpenRouter, zero data retention; Whisper large-v3-turbo if it failed)` } } : {}),
         utterances: utts.map((u) => mic ? { id: u.uid, at: u.at, text: u.text } : { conv: u.conv, id: u.uid, at: u.at, speaker: u.speaker, text: u.text, realtime: !!u.rt }) });
       try { const k = transcriptKey(tid, this.get("channel"), this.get("task"), n); await stPut(env, k, body, { httpMetadata: { contentType: "application/json" } }, { check: true, replace: true }); tkey = k; this.setS(n, { transcript_key: k }); }
       catch (e) { this.setS(n, { note: "Your storage is full, so the raw transcript wasn't kept." }); await this.ev(`transcript not saved: ${String(e?.message || e).slice(0, 100)}`); }

@@ -1,8 +1,8 @@
 // Environment-wide model controls. Only MODEL_ADMINS grants access, never TEST_MODE or ops view-as.
-import { modelSettingsView, saveModelSettings, resetModelSettings, restoreModelSettings } from "./model-settings.js";
+import { modelSettingsView, saveModelSettings, restoreModelSettings, readModelSettings } from "./model-settings.js";
 import { modelCatalog } from "./model-catalog.js";
-import { pageDialog } from "../page-dialog.js";
 import { boundedText, BodyTooLargeError } from "../bounded-body.js";
+import { modelDashboard } from "./model-dashboard.js";
 
 const HEADERS = { "cache-control": "no-store, private", "x-robots-tag": "noindex, nofollow", "x-content-type-options": "nosniff", "referrer-policy": "same-origin", "content-security-policy": "frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -15,7 +15,7 @@ export async function modelsRoute(req, env, user) {
   if (!user) return api ? json({ error: "Sign in again to manage models." }, 401) : new Response(null, { status: 302, headers: { ...HEADERS, location: "/onboard?next=/models" } });
   if (!isModelAdmin(env, user)) return api ? json({ error: "This account cannot manage models." }, 403) : html('<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Models · 1Helm</title><h1>Models</h1><p>This account cannot manage models.</p><p><a href="/">Back to 1Helm</a></p></html>', 403);
   const catalog = path === "/models/api/catalog", read = path === "/models" || path === "/models/api" || catalog;
-  const action = { "/models/api/save": saveModelSettings, "/models/api/reset": resetModelSettings, "/models/api/restore": restoreModelSettings }[path];
+  const action = { "/models/api/save": saveModelSettings, "/models/api/restore": restoreModelSettings }[path];
   if (!read && !action) return json({ error: "Not found." }, 404);
   if (read ? !["GET", "HEAD"].includes(req.method) : req.method !== "POST") return json({ error: "Method not allowed." }, 405, { allow: read ? "GET, HEAD" : "POST" });
   if (!read) {
@@ -26,7 +26,7 @@ export async function modelsRoute(req, env, user) {
   }
   try {
     let view;
-    if (catalog) view = await modelCatalog(env, { q: String(url.searchParams.get("q") || "").slice(0, 120) });
+    if (catalog) view = await modelCatalog(env, { q: String(url.searchParams.get("q") || "").slice(0, 120), settings: (await readModelSettings(env)).config });
     else if (read) view = await modelSettingsView(env);
     else {
       const raw = await boundedText(req, 32768);
@@ -36,115 +36,223 @@ export async function modelsRoute(req, env, user) {
       if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "Settings must be a JSON object." }, 400);
       view = await action(env, body, user.email);
     }
+    if (!catalog) view = { ...view, dashboard: modelDashboard(view) };
     const response = path === "/models" ? html(modelsHtml(view, env)) : json(view);
     return req.method === "HEAD" ? new Response(null, { status: response.status, headers: response.headers }) : response;
   } catch (e) {
     if (e instanceof BodyTooLargeError) return json({ error: "Settings request is too large." }, 413);
     // Validation messages are intentional API output; database/provider internals never are.
     const status = [400, 404, 409, 503].includes(e?.status) ? e.status : 503;
-    const error = status === 503 ? catalog ? "OpenRouter's model catalog is unavailable. Your settings have not changed; try again shortly." : "Model settings are temporarily unavailable. Try again shortly." : e.message;
+    const error = e?.modelSettings ? e.message : status === 503 ? catalog ? "OpenRouter's model catalog is unavailable. Your settings have not changed; try again shortly." : "Model settings are temporarily unavailable. Try again shortly." : e.message;
     return api ? json({ error }, status) : html(`<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Models · 1Helm</title><h1>Models</h1><p>${esc(error)}</p><p><a href="/models">Try again</a></p></html>`, status);
   }
 }
 
 const CSS = `@font-face{font-family:IS;src:url(/fonts/instrument-sans.woff2)}@font-face{font-family:ISe;src:url(/fonts/instrument-serif.woff2)}
-*{box-sizing:border-box}body{margin:0;background:#f3f2ef;color:#1c1b19;font:15px/1.5 IS,system-ui,sans-serif}main{max-width:960px;margin:auto;padding:42px 24px 110px}a{color:inherit;text-underline-offset:4px}nav{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:32px}.back{margin-right:auto;color:#625e56;font-size:13px}.environments{display:flex;gap:4px;padding:4px;background:#e8e6e0;border-radius:999px}.environments a{padding:7px 15px;border-radius:999px;text-decoration:none;font-size:13px}.environments a[aria-current=page]{background:#1c1b19;color:#fff}.eyebrow{font-size:12px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:#625e56;margin:0 0 8px}h1{font:400 48px/1.1 ISe,Georgia,serif;margin:0 0 12px}h2{font-size:17px;margin:0}p{margin:8px 0}.lead{color:#625e56;max-width:660px;margin-bottom:24px}.scope{display:flex;align-items:center;gap:10px;margin-bottom:20px;font-size:13px}.badge{background:#f5bd3c;border-radius:999px;padding:4px 10px;font-weight:600}.live .badge{background:#e4eadc}.muted{color:#625e56;font-size:13px}.section-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:24px 0 12px}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.model-card{min-width:0;background:#fff;border:1px solid #dedbd3;border-radius:16px;padding:18px}.model-card h3{font-size:16px;margin:0 0 4px}.model-id{font-size:11px;line-height:1.5;color:#625e56;overflow-wrap:anywhere;margin:0 0 18px;min-height:33px}label{display:block;font-size:12px;font-weight:600}select{display:block;width:100%;min-height:42px;background:#fff;color:#1c1b19;border:1px solid #c9c5bb;border-radius:9px;padding:8px 28px 8px 10px;font:14px IS,system-ui,sans-serif;margin-top:5px}button{font:600 14px IS,system-ui,sans-serif;border:1px solid #c9c5bb;background:#fff;color:#1c1b19;border-radius:999px;padding:10px 16px;min-height:42px;cursor:pointer}button:disabled{cursor:default;opacity:.48}button.primary{background:#1c1b19;border-color:#1c1b19;color:#fff}button.small{font-size:12px;min-height:34px;padding:5px 12px}button:hover:enabled{filter:brightness(.96)}:focus-visible{outline:3px solid #9a6500;outline-offset:3px}details.panel{margin-top:20px;background:#fff;border:1px solid #dedbd3;border-radius:16px;padding:18px 20px}summary{cursor:pointer;font-weight:600;font-size:16px}summary .muted{font-weight:400;margin-left:6px}.panel>p{margin:12px 0 18px}.routes-category{border-top:1px solid #e7e5e0;padding:18px 0}.routes-category h3{font-size:14px;margin:0 0 10px}.privacy-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.route-box{min-width:0}.route-box h4{font-size:12px;color:#625e56;font-weight:600;margin:0 0 10px}.route-box label{margin-top:8px;font-weight:400}.chore-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.chore-grid .model-card{background:#faf9f7}.chore-grid label+label{margin-top:12px}.history-list{list-style:none;margin:16px 0 0;padding:0}.history-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid #e7e5e0;padding:12px 0}.history-copy{min-width:0;overflow-wrap:anywhere;font-size:13px}.history-copy span{display:block;color:#625e56;font-size:12px}.actions{position:sticky;bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;margin-top:24px;background:#fff;border:1px solid #c9c5bb;border-radius:16px;box-shadow:0 5px 24px #1c1b1910}.action-buttons{display:flex;gap:8px;flex-shrink:0}#feedback{font-size:13px;margin:0;overflow-wrap:anywhere}#feedback.error{color:#9b2c1f}.footnote{font-size:12px;color:#625e56;margin:20px 0 0}.reload{margin-top:8px}.empty{color:#625e56;font-size:13px}#extra{margin-top:18px}noscript{display:block;background:#fff;padding:16px;border:1px solid #dedbd3;border-radius:12px}
-@media(max-width:700px){main{padding:32px 16px 70px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}h1{font-size:40px}.privacy-grid{grid-template-columns:1fr}.route-box{padding:12px;background:#f3f2ef;border-radius:12px}.actions{align-items:stretch;flex-direction:column;bottom:8px}.action-buttons{justify-content:flex-end}.scope{align-items:flex-start}.scope .badge{flex-shrink:0}.chore-grid{grid-template-columns:1fr}nav{gap:12px}.back{width:100%}.section-head .muted{font-size:12px}summary .muted{display:block;margin:4px 0 0}.model-card{padding:14px}.model-card h3{font-size:14px}}
+:root{--bg:#f3f2ef;--card:#fff;--ink:#1c1b19;--muted:#625e56;--line:#dedbd3;--line2:#c9c5bb;--soft:#e8e6e0;--ok:#2d6a2d;--bad:#9b2c1f;--tag:#e4eadc;--warn:#fff1d6;--warnline:#b97a12;--focus:#9a6500}
+@media(prefers-color-scheme:dark){:root{--bg:#161512;--card:#201f1b;--ink:#efede7;--muted:#a8a398;--line:#38352f;--line2:#4a463e;--soft:#2a2823;--ok:#8fcf8f;--bad:#ff9d8f;--tag:#2c3a2c;--warn:#3a2f12;--warnline:#8a6a12;--focus:#f5bd3c}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 IS,system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:36px 24px 80px}a{color:inherit;text-underline-offset:4px}
+nav{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:24px}.back{margin-right:auto;color:var(--muted);font-size:13px}.environments{display:flex;gap:4px;padding:4px;background:var(--soft);border-radius:999px}.environments a{padding:7px 15px;border-radius:999px;text-decoration:none;font-size:13px}.environments a[aria-current=page]{background:var(--ink);color:var(--bg)}
+h1{font:400 44px/1.1 ISe,Georgia,serif;margin:0 0 8px}h2{font-size:17px;margin:0}p{margin:6px 0}.lead{color:var(--muted);margin:0 0 6px}.muted{color:var(--muted);font-size:13px}
+.group{margin-top:28px}.group-head{margin-bottom:8px}.group-head p{color:var(--muted);font-size:13px;margin:2px 0 0}
+.jobs{list-style:none;margin:0;padding:0;background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+.job{padding:8px 18px;border-top:1px solid var(--line)}.job:first-child{border-top:0}
+.jrow{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1.1fr) 150px auto;gap:12px;align-items:center;min-height:40px}
+.job-name{font-weight:600;line-height:1.25}.job-desc{font-size:12px;color:var(--muted);margin:0;line-height:1.3}.job-needs{font-size:12px;color:var(--muted);margin:2px 0 0;line-height:1.3;font-style:italic}
+.job-model{font-weight:600;overflow-wrap:anywhere;line-height:1.25}
+.actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;align-items:center}
+.fixed{font-size:13px;color:var(--muted)}
+select{display:block;min-height:34px;width:100%;background:var(--card);color:var(--ink);border:1px solid var(--line2);border-radius:9px;padding:4px 24px 4px 10px;font:14px IS,system-ui,sans-serif}
+button{font:600 13px IS,system-ui,sans-serif;border:1px solid var(--line2);background:var(--card);color:var(--ink);border-radius:999px;padding:6px 14px;min-height:34px;cursor:pointer}button:disabled,select:disabled{cursor:default;opacity:.5}button:hover:enabled{filter:brightness(.96)}
+button.small{padding:4px 10px;min-height:30px}button.link{border:0;background:none;color:var(--muted);text-decoration:underline;text-underline-offset:3px;padding:6px 4px;font-weight:500}
+.jpanel{margin:8px 0 6px;padding:10px;background:var(--soft);border-radius:10px}.jpanel[hidden]{display:none}
+.entries{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.entry{display:grid;grid-template-columns:minmax(0,1.5fr) 150px auto;gap:10px;align-items:center;padding:6px 8px;background:var(--card);border-radius:8px}
+.entry-name{font-weight:600;overflow-wrap:anywhere}.entry-role{display:block;font-size:11px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}.entry-id{display:block;font-size:12px;font-weight:400;color:var(--muted);overflow-wrap:anywhere}
+.privacy{display:flex;flex-wrap:wrap;gap:4px 14px;margin:4px 0 0;font-size:12px;color:var(--muted)}.privacy b{font-weight:600;color:var(--ink)}
+.privacy.alert{color:var(--bad);font-weight:600}.privacy.alert b{color:var(--bad)}
+.warn{margin:6px 0 0;font-size:12px;background:var(--warn);border:1px solid var(--warnline);border-radius:8px;padding:4px 10px}
+.status{font-size:12px;min-height:0;margin:4px 0 0;color:var(--muted)}.status.ok{color:var(--ok)}.status.error{color:var(--bad)}.status:empty{display:none}
+:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+#page-status{font-size:13px;margin:12px 0 0}#page-status.error{color:var(--bad)}
+.banner{background:var(--warn);color:var(--ink);border:1px solid var(--warnline);padding:12px 14px;border-radius:12px;margin:14px 0}
+.footnote{font-size:12px;color:var(--muted);margin:24px 0 0}
+details.history{margin-top:28px}details.history summary{cursor:pointer;font-weight:600}.history ul{list-style:none;margin:8px 0 0;padding:0;background:var(--card);border:1px solid var(--line);border-radius:12px}.history li{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 14px;border-top:1px solid var(--line);font-size:13px}.history li:first-child{border-top:0}
+dialog.picker{border:1px solid var(--line);border-radius:18px;padding:0;width:min(560px,calc(100vw - 32px));max-height:calc(100dvh - 48px);background:var(--card);color:var(--ink)}dialog.picker::backdrop{background:#0006}
+dialog.picker[open]{display:flex;flex-direction:column}.picker-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:16px 18px 8px}.picker-head h2{font-size:17px}.picker-head p{font-size:12px;color:var(--muted);margin:2px 0 0}
+.picker-search{display:block;padding:0 18px 8px}.picker-search input{width:100%;min-height:42px;border:1px solid var(--line2);border-radius:9px;padding:8px 10px;font:14px IS,system-ui,sans-serif;background:var(--card);color:var(--ink)}
+.picker-list{overflow:auto;overscroll-behavior:contain;min-height:0;padding:0 8px 8px;margin:0;list-style:none}.picker-list h3{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:10px 10px 4px}
+.picker-list button{display:block;width:100%;text-align:left;border:0;border-radius:10px;background:none;font-weight:500;padding:8px 10px;min-height:0}.picker-list button:hover:enabled{background:var(--soft);filter:none}.picker-list button b{display:block;font-weight:600}.picker-list button span{display:block;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.picker-foot{padding:8px 18px 14px;font-size:12px;color:var(--muted);border-top:1px solid var(--line)}
+@media(max-width:760px){main{padding:24px 16px 60px}h1{font-size:36px}.job{padding:10px 14px}.jrow{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"n a" "m m" "e e";gap:6px 10px}.jrow>.c-name{grid-area:n}.jrow>.c-model{grid-area:m}.jrow>.c-effort{grid-area:e}.jrow>.actions{grid-area:a}.entry{grid-template-columns:1fr;gap:8px}dialog.picker{width:100%;max-width:none;margin:auto 0 0;border-radius:18px 18px 0 0;max-height:90dvh}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}`;
 
-const PICKER_CSS = `.model-name{font-size:16px;font-weight:600;line-height:1.3;margin:8px 0}.slot-label{font-size:11px;font-weight:500;color:#625e56}.choose-model{width:100%;margin:4px 0 14px;border-radius:9px;font-size:13px}.model-card .model-id{margin-bottom:8px;min-height:30px}.picker{border:1px solid #dedbd3;border-radius:22px;padding:0;width:min(780px,calc(100vw - 32px));max-height:calc(100dvh - 32px);color:#1c1b19;background:#fff;box-shadow:0 24px 80px #1c1b1933}.picker::backdrop{background:#1c1b1966}.picker-head{padding:22px 24px 16px;border-bottom:1px solid #e7e5e0;display:flex;gap:16px;align-items:flex-start;justify-content:space-between}.picker-head h2{font-size:20px}.picker-head p{margin-bottom:0}.picker-close{min-width:42px;padding:8px}.picker-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;padding:20px 24px}.picker-search input{width:100%;min-height:44px;margin:6px 0 8px;padding:10px 12px;border:1px solid #c9c5bb;border-radius:9px;font:14px IS,system-ui,sans-serif;background:#fff;color:#1c1b19}.catalog-status{min-height:36px;font-size:12px;color:#625e56;margin:0 0 8px}.catalog-results{list-style:none;padding:0;margin:0;max-height:330px;overflow:auto;overscroll-behavior:contain}.catalog-results li+li{margin-top:6px}.catalog-results button{display:block;width:100%;text-align:left;border-radius:10px;padding:10px 12px;font-weight:500}.catalog-results button[aria-pressed=true]{border-color:#1c1b19;box-shadow:inset 0 0 0 1px #1c1b19;background:#f3f2ef}.catalog-results span{display:block;overflow-wrap:anywhere}.catalog-results .result-id,.catalog-results .result-reason{font-size:11px;color:#625e56;font-weight:400;margin-top:3px}.catalog-results .result-reason{color:#8b4b17}.picker-preview{min-width:0;padding:16px;background:#f5f4f1;border-radius:12px}.picker-preview h3{margin:0 0 6px;font-size:16px;overflow-wrap:anywhere}.picker-preview p{font-size:12px;overflow-wrap:anywhere}.picker-preview label{margin-top:16px}.picker-facts{font-size:12px;margin:16px 0}.picker-facts dt{color:#625e56}.picker-facts dd{margin:0 0 8px;overflow-wrap:anywhere}.picker-foot{display:flex;align-items:center;justify-content:space-between;gap:16px;border-top:1px solid #e7e5e0;padding:16px 24px}.picker-foot p{font-size:12px;color:#625e56;margin:0;max-width:420px}.picker-foot button{flex-shrink:0}.picker-warning{color:#8b4b17}.picker-current{font-size:12px;line-height:1.5}.picker-current b{display:block;font-weight:500;color:#625e56}.picker-current span{overflow-wrap:anywhere}.draft-note{font-size:12px;color:#625e56}.restore-role{font-size:12px;margin-top:10px}.picker-policy{font-size:11px;line-height:1.5;color:#625e56;margin:12px 0 0}.picker-reset-search{font-size:12px;min-height:34px;padding:5px 12px}
-.picker[open]{display:flex;flex-direction:column}.picker-head,.picker-foot{flex-shrink:0}.picker-body{overflow:auto;overscroll-behavior:contain;min-height:0}.picker-foot{background:#fff}
-@media(max-width:700px){.picker{width:100%;max-width:none;max-height:95dvh;margin:auto 0 0;border-radius:22px 22px 0 0}.picker-head{padding:18px 16px 12px}.picker-body{padding:16px;grid-template-columns:1fr;gap:16px}.catalog-results{max-height:220px}.picker-foot{padding:14px 16px;align-items:stretch;flex-direction:column}.picker-foot button{width:100%}.picker-preview{padding:14px}.picker-close{flex-shrink:0}.model-name{font-size:14px}}`;
-
-// Plain script text avoids bundler keepNames helpers in serialized functions. Dynamic values
-// are inserted with textContent, never innerHTML, including history actor names and errors.
+// Plain script text. Every dynamic value is inserted with textContent, never innerHTML.
 const JS = `(function(){
-var state=JSON.parse(document.getElementById('model-state').textContent), saved=JSON.stringify(state.config), busy=false, conflict=false, confirming=false;
-var form=document.getElementById('model-form'), feedback=document.getElementById('feedback'), save=document.getElementById('save'), reset=document.getElementById('reset');
-var names={'muse-c':'Muse Contributor','muse-s':'Muse Standard',deepseek:'DeepSeek Flash',luna:'Luna',sol:'Sol',haiku:'Haiku',oss120:'GPT OSS 120B',oss20:'GPT OSS 20B',dsflash:'DeepSeek Flash',default:'Use built-in default'};
-var levelNames={unrestricted:'Unrestricted',no_training:'No training',zdr:'Zero data retention'};
-var choreNames={handoff:'Task handoffs',label:'Task titles',browser:'Browser summaries',notes:'Incremental notes',notes_refine:'Notes refinement',notes_final:'Final notes',ambient_extract:'Ambient extraction',ambient_review:'Ambient review',memory_summary:'Conversation summaries',sidecar_card:'File summaries',upkeep_write:'Memory upkeep',upkeep_verify:'Memory upkeep verification',people_write:'People memory',people_verify:'People memory verification',reflect_write:'Memory reflection',reflect_verify:'Memory reflection verification'};
-var metadata={},picker=document.getElementById('model-picker'),search=document.getElementById('catalog-query'),results=document.getElementById('catalog-results'),catalogStatus=document.getElementById('catalog-status'),pickButton=document.getElementById('pick-model'),target=null,selected=null,pickEffort='',catalogAbort=null,catalogTimer=0,catalogSequence=0;
+var state=JSON.parse(document.getElementById('model-state').textContent),busy=false,target=null,seq=0,timer=null;
+var EFFORT={none:'Reasoning off',default:'Provider default',minimal:'Minimal',low:'Low',medium:'Medium',high:'High',xhigh:'Extra high',max:'Maximum'};
+var pageStatus=document.getElementById('page-status'),root=document.getElementById('groups');
+var picker=document.getElementById('model-picker'),search=document.getElementById('catalog-query'),list=document.getElementById('picker-list'),pickerStatus=document.getElementById('picker-status');
 function E(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
-function keyOf(x){return typeof x==='string'?x:x.key}function labelOf(x){return typeof x==='string'?x:x.label||x.key}
-function choice(label,values,value,change){var wrap=E('label','',label),select=E('select');values.forEach(function(v){var option=E('option','',v.label||v.key);option.value=v.key;select.append(option)});select.value=value;select.addEventListener('change',function(){change(select.value);changed()});wrap.append(select);return wrap}
-function effortOptions(m){return m.efforts.map(function(e){return{key:e,label:e==='none'?'Off':e==='default'?'Model default':e==='xhigh'?'Extra high':e==='max'?'Maximum':e.charAt(0).toUpperCase()+e.slice(1)}})}
-function slotInfo(key,config){config=config||state.config;var row=state.options.models.find(function(m){return m.key===key}),id=config.models&&config.models[key]||row.model,detail=metadata[id]||(config.catalog&&config.catalog[id])||{};return Object.assign({},row,detail,{id:id,model:id,name:detail.name||(id===row.model&&row.name)||names[key]||id})}
-function choreInfo(key,config){config=config||state.config;var c=config.chores[key],policy=state.options.backgroundPolicies&&state.options.backgroundPolicies[key],inherited=c.model==='default',row=state.options.choreModels.find(function(m){return m.key===(inherited&&policy?policy.modelKey:c.model)}),id=inherited&&policy?policy.model:row?row.model:c.model,detail=metadata[id]||(config.catalog&&config.catalog[id])||{};return Object.assign({},row||{},detail,{id:inherited&&!policy?'default':id,model:id,name:inherited&&!policy?'Built-in default':detail.name||(row&&(row.label||names[row.key]))||id,effort:inherited&&policy?policy.effort:c.effort,efforts:inherited?['default']:detail.efforts||(row&&row.efforts)||[c.effort]})}
-function slotLabel(key){return slotInfo(key).name}
-function say(message,error){feedback.textContent=message;feedback.className=error?'error':''}
-function changed(){if(!busy&&!conflict)say(JSON.stringify(state.config)!==saved?'Unsaved changes.':'All changes saved.');save.disabled=busy||conflict||JSON.stringify(state.config)===saved}
+function clone(x){return JSON.parse(JSON.stringify(x))}
+function eff(e){return EFFORT[e]||e||''}
+function say(el,text,cls){el.textContent=text||'';el.className=el.className.replace(/ ?(ok|error)/g,'')+(cls?' '+cls:'')}
+function defOf(id){return state.options.jobs.find(function(j){return j.id===id})}
+function viewOf(id){return state.dashboard.jobs.find(function(j){return j.id===id})}
+function takesChat(v){return ['chat','chore','classic'].indexOf(v.pick)>=0||!!v.any}
+function nameOf(id){var m=state.config.catalog[id];return m&&m.name?m.name:id}
+function entriesOf(job){return [{model:job.model,effort:job.effort,hosts:job.hosts,pin:job.pin,strict:job.strict}].concat(job.fallbacks||[])}
+function pack(entries){var first=clone(entries[0]);first.fallbacks=entries.slice(1).map(function(e){return clone(e)});Object.keys(first).forEach(function(k){if(first[k]===undefined)delete first[k]});first.fallbacks.forEach(function(f){Object.keys(f).forEach(function(k){if(f[k]===undefined)delete f[k]})});return first}
+function effortsFor(id){var m=state.config.catalog[id];return m&&m.efforts?m.efforts:[]}
+var open={};
+function row(job,idx,total,li){
+ var e=document.createElement('li');e.className='entry';var v=viewOf(job.id);
+ var a=E('div','entry-name');a.append(E('span','entry-role',idx===0?'Model':'Fallback '+idx));
+ var entry=idx===0?job.main:job.fallbacks[idx-1];
+ a.append(document.createTextNode(entry.name),E('span','entry-id',entry.id));
+ var mid=E('div');
+ if(v.has_effort){var ch=effortsFor(entry.id);if(ch.length>1){var es=E('select');es.setAttribute('aria-label','Reasoning for '+v.label+(idx?' fallback '+idx:''));ch.forEach(function(x){var o=E('option','',eff(x));o.value=x;es.append(o)});es.value=entry.effort;es.addEventListener('change',function(){edit(job.id,li,function(arr){arr[idx].effort=es.value})});mid.append(es)}else mid.append(E('span','fixed',eff(entry.effort)))}
+ var act=E('div','actions');
+ var change=E('button','small','Change');change.type='button';change.setAttribute('aria-label','Change '+(idx?'fallback '+idx:'model')+' for '+v.label);change.addEventListener('click',function(){openPicker(job.id,idx)});act.append(change);
+ if(total>1){
+  if(idx>0){var up=E('button','small','Up');up.type='button';up.setAttribute('aria-label','Move up');up.addEventListener('click',function(){edit(job.id,li,function(arr){var t=arr[idx-1];arr[idx-1]=arr[idx];arr[idx]=t})});act.append(up)}
+  if(idx<total-1){var dn=E('button','small','Down');dn.type='button';dn.setAttribute('aria-label','Move down');dn.addEventListener('click',function(){edit(job.id,li,function(arr){var t=arr[idx+1];arr[idx+1]=arr[idx];arr[idx]=t})});act.append(dn)}
+  if(idx>0){var rm=E('button','small','Remove');rm.type='button';rm.setAttribute('aria-label','Remove from '+v.label);rm.addEventListener('click',function(){edit(job.id,li,function(arr){arr.splice(idx,1)})});act.append(rm)}
+ }
+ e.append(a,mid,act);return e
+}
+function card(v){
+ var li=E('li','job');li.dataset.job=v.id;var n=1+v.fallbacks.length;
+ var r=E('div','jrow'),nm=E('div','c-name');nm.append(E('div','job-name',v.label),E('p','job-desc',v.description));if(v.needs)nm.append(E('p','job-needs',v.needs));
+ var md=E('div','c-model job-model',v.main.name),ef=E('div','c-effort');
+ if(v.has_effort){var ch=effortsFor(v.main.id);if(ch.length>1){var es=E('select');es.setAttribute('aria-label','Reasoning for '+v.label);ch.forEach(function(x){var o=E('option','',eff(x));o.value=x;es.append(o)});es.value=v.main.effort;es.addEventListener('change',function(){edit(v.id,li,function(arr){arr[0].effort=es.value})});ef.append(es)}else ef.append(E('span','fixed',eff(v.main.effort)))}
+ var act=E('div','actions');
+ var change=E('button','','Change');change.type='button';change.setAttribute('aria-label','Change model for '+v.label);change.addEventListener('click',function(){openPicker(v.id,0)});act.append(change);
+ var panel=E('div','jpanel');panel.hidden=!open[v.id];panel.id='fb-'+v.id.replace(/[^a-z0-9]/gi,'-');
+ var tg=E('button','small','Fallbacks ('+v.fallbacks.length+')');tg.type='button';tg.setAttribute('aria-expanded',open[v.id]?'true':'false');tg.setAttribute('aria-controls',panel.id);
+ tg.addEventListener('click',function(){open[v.id]=!open[v.id];panel.hidden=!open[v.id];tg.setAttribute('aria-expanded',open[v.id]?'true':'false')});if(v.max_fallbacks>0)act.append(tg);
+ r.append(nm,md,ef,act);li.append(r);
+ var ul=E('ol','entries');ul.setAttribute('aria-label','Models for '+v.label);
+ for(var i=0;i<n;i++)ul.append(row(v,i,n,li));
+ panel.append(ul);
+ if(v.fallbacks.length<v.max_fallbacks){var add=E('button','small','Add fallback');add.type='button';add.style.marginTop='8px';add.addEventListener('click',function(){openPicker(v.id,n)});panel.append(add)}
+ if(v.max_fallbacks>0)li.append(panel);
+ var lv=['unrestricted','no_training','zdr'];
+ if(v.privacy==='list'){
+  var none=lv.some(function(l){return !v.coverage[l].allowed}),differs=lv.some(function(l){var c=v.coverage[l];return c.allowed&&c.first!==v.main.name});
+  if(none||differs){var p=E('p','privacy'+(none?' alert':''));lv.forEach(function(l){var c=v.coverage[l],s=E('span');s.append(E('b','',state.dashboard.level_labels[l]+': '));s.append(c.allowed?E('span','',c.first):E('span','','no allowed model'));p.append(s)});li.append(p)}
+ }
+ else if(v.privacy==='zdr'&&open[v.id])panel.append(E('p','job-desc','Always uses zero-data-retention providers, whatever the privacy setting.'));
+ v.warnings.forEach(function(w){if(/no allowed model/.test(w)||open[v.id]){var d=E('p','warn',w);d.setAttribute('role','note');li.append(d)}});
+ var st=E('p','status');st.setAttribute('role','status');st.setAttribute('aria-live','polite');li.append(st);
+ return li
+}
 function render(){
- var warning=document.getElementById('config-warning');warning.hidden=!state.config_error;warning.textContent=state.config_error?'Saved settings could not be read. Model calls are paused until you restore defaults, restore a previous revision, or save valid settings. The controls below show editable defaults.':'';
- var efforts=document.getElementById('efforts');efforts.replaceChildren();
- state.options.models.forEach(function(row){var m=slotInfo(row.key),card=E('div','model-card'),button=E('button','choose-model','Change model');button.type='button';button.dataset.pickSlot=row.key;button.setAttribute('aria-label','Change '+(names[row.key]||row.key)+' model');button.addEventListener('click',function(){openPicker('slot',row.key)});card.append(E('p','slot-label',(names[row.key]||row.key)+' position'),E('h3','model-name',m.name),E('p','model-id',m.id),button);card.append(choice('Reasoning effort',effortOptions(m),state.config.efforts[row.key],function(v){state.config.efforts[row.key]=v}));efforts.append(card)});
- renderRoutes();renderChores();renderHistory();document.getElementById('revision').textContent='Revision '+state.revision;changed();
+ var b=document.getElementById('banner');b.hidden=!state.stale;b.textContent=state.stale?'The saved settings could not be read just now, so this page and running tasks are using the last copy that was read. Check the logs, then reload.':'';
+ root.replaceChildren();
+ state.dashboard.groups.forEach(function(g){
+  var jobs=state.dashboard.jobs.filter(function(j){return j.group===g.id});if(!jobs.length)return;
+  var sec=E('section','group'),head=E('div','group-head'),ul=E('ul','jobs');head.append(E('h2','',g.title));if(g.note)head.append(E('p','',g.note));
+  jobs.forEach(function(j){ul.append(card(j))});sec.append(head,ul);root.append(sec)
+ });
+ var h=document.getElementById('history-list');h.replaceChildren();
+ (state.history||[]).forEach(function(x){var li=E('li');var t=E('span','',new Date(x.at).toLocaleString()+' by '+x.by+': '+x.action+' (revision '+x.revision+')');li.append(t);
+  if(x.revision!==state.revision){var r=E('button','small','Restore');r.type='button';r.setAttribute('aria-label','Restore revision '+x.revision);r.addEventListener('click',function(){post('restore',{revision:state.revision,restore_revision:x.revision},pageStatus)});li.append(r)}h.append(li)})
 }
-function renderRoutes(){
- var routes=document.getElementById('routes'),active=Array.from(routes.querySelectorAll('select')).indexOf(document.activeElement);routes.replaceChildren();
- state.options.categories.forEach(function(category){var k=keyOf(category),section=E('section','routes-category'),grid=E('div','privacy-grid');section.append(E('h3','',labelOf(category)));
- state.options.levels.forEach(function(level){var l=keyOf(level),box=E('div','route-box');box.append(E('h4','',levelNames[l]||labelOf(level)));var chain=state.config.chains[k][l];
- var options=state.options.models.filter(function(m){var current=slotInfo(m.key);return !current.levels||current.levels.includes(l)}).map(function(m){return{key:m.key,label:slotLabel(m.key)}});
- chain.forEach(function(model,i){box.append(choice(i===0?'First choice':'Fallback '+i,options,model,function(v){var existing=chain.indexOf(v);if(existing!==-1)chain[existing]=chain[i];chain[i]=v;renderRoutes()}))});grid.append(box)});section.append(grid);routes.append(section)});
- if(active>=0)routes.querySelectorAll('select')[active].focus({preventScroll:true});
+function lock(v){busy=v;document.querySelectorAll('#groups button,#groups select,#history-list button').forEach(function(e){e.disabled=v})}
+async function post(action,body,statusEl){
+ if(busy)return false;lock(true);say(statusEl,'Saving…');
+ try{
+  var r=await fetch('/models/api/'+action,{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json','x-model-settings':'1'},body:JSON.stringify(body)});
+  var data=await r.json().catch(function(){return{}});
+  if(!r.ok){
+   if(r.status===401){say(statusEl,'Not saved. Sign in again and retry.','error');lock(false);return false}
+   var msg='Not saved. '+(data.error||'Try again.');
+   if(r.status===409){try{var latest=await (await fetch('/models/api',{credentials:'same-origin',cache:'no-store'})).json();state=latest;render();say(pageStatus,msg+' Showing the latest settings.','error')}catch(e){say(statusEl,msg,'error')}}
+   else say(statusEl,msg,'error');
+   lock(false);return false
+  }
+  var key=statusEl.closest&&statusEl.closest('[data-job]')?statusEl.closest('[data-job]').dataset.job:null;
+  state=data;render();lock(false);
+  var fresh=key?document.querySelector('[data-job="'+key+'"] .status'):pageStatus;if(fresh){say(fresh,'Saved','ok');setTimeout(function(){if(fresh.textContent==='Saved')say(fresh,'')},4000)}
+  return true
+ }catch(e){say(statusEl,'Not saved. Check your connection and try again.','error');lock(false);return false}
 }
-function renderChores(){
- var chores=document.getElementById('chores'),active=Array.from(chores.querySelectorAll('select')).indexOf(document.activeElement);chores.replaceChildren();
- state.options.chores.forEach(function(chore){var k=keyOf(chore),c=state.config.chores[k],card=E('div','model-card'),m=choreInfo(k),policy=state.options.backgroundPolicies&&state.options.backgroundPolicies[k],button=E('button','choose-model','Change model');card.dataset.chore=k;button.type='button';button.dataset.pickChore=k;button.addEventListener('click',function(){openPicker('chore',k)});card.append(E('h3','',typeof chore==='string'?(choreNames[k]||k):labelOf(chore)),E('p','model-name',m.name));
- var info=state.options.choreDefaults&&state.options.choreDefaults[k];card.append(E('p','model-id',c.model==='default'?(typeof info==='string'?info:info&&info.label||'Current task default'):m.id),button);
- if(policy)card.append(E('p','effective-background','Effective selection: '+m.id+' · '+(m.effort==='default'?'provider-default reasoning':m.effort==='none'?'reasoning OFF':m.effort.toUpperCase()+' reasoning')),E('p','muted','No automatic fallback to another model.'));
- else card.append(E('p','muted','Outside the nine-role rollout; existing routing and fallback policy unchanged.'));
- card.append(choice('Reasoning effort',c.model==='default'&&policy?[{key:'default',label:m.effort.toUpperCase()+' (built-in policy)'}]:effortOptions(m),c.effort,function(v){c.effort=v;renderChores()}));if(c.model!=='default'){var restore=E('button','small restore-role','Use built-in default');restore.type='button';restore.addEventListener('click',function(){state.config.chores[k]={model:'default',effort:'default'};renderChores();changed()});card.append(restore)}chores.append(card)});
- if(active>=0)chores.querySelectorAll('select')[active].focus({preventScroll:true});
- var extra=document.getElementById('extra');extra.replaceChildren();if(state.options.deciders)extra.append(choice('Task category decider',state.options.deciders,state.config.decider,function(v){state.config.decider=v}),E('p','muted','Classifies work to choose a route. These models do not expose a reasoning effort setting.'));
+function edit(id,li,fn){
+ var cfg=clone(state.config),arr=entriesOf(cfg.jobs[id]);
+ if(fn(arr)===false||!arr.length)return;cfg.jobs[id]=pack(arr);
+ return post('save',{revision:state.revision,config:{version:2,jobs:cfg.jobs}},li.querySelector('.status'))
 }
-function currentTarget(){return target.kind==='slot'?{info:slotInfo(target.key),effort:state.config.efforts[target.key]}:{info:choreInfo(target.key),effort:choreInfo(target.key).effort}}
-function selectionReasons(model){var reasons=(model.reasons||[]).slice();if(model.eligible===false&&!reasons.length)reasons.push('This model is not currently available.');if(!target)return reasons;var required=new Set();if(target.kind==='chore')required.add('zdr');else Object.values(state.config.chains).forEach(function(routes){Object.keys(routes).forEach(function(level){if(routes[level].includes(target.key))required.add(level)})});required.forEach(function(level){if(!(model.levels||[]).includes(level))reasons.push('This position requires '+(levelNames[level]||level)+' endpoints'+(target.kind==='slot'?' in its current routes.':'.'))});return reasons}
-function openPicker(kind,key){if(busy||conflict)return;target={kind:kind,key:key};selected=null;pickEffort='';search.value='';results.replaceChildren();catalogStatus.textContent='Loading OpenRouter models…';document.getElementById('picker-title').textContent='Change '+(kind==='slot'?(names[key]||key):(choreNames[key]||key));var cur=currentTarget();document.getElementById('picker-current').textContent=cur.info.id+' · '+cur.effort;document.getElementById('picker-policy').textContent='Search by model name, provider, or OpenRouter ID. Availability and supported effort are checked again when you save.';renderSelection();picker.showModal();search.focus();loadCatalog()}
-function closePicker(){clearTimeout(catalogTimer);catalogSequence++;if(catalogAbort)catalogAbort.abort();picker.close();target=null;selected=null}
-function renderSelection(){var preview=document.getElementById('picker-preview');preview.replaceChildren();var reasons=selected?selectionReasons(selected):[];pickButton.disabled=!selected||reasons.length>0;if(!selected){preview.append(E('h3','','Choose a model'),E('p','','Select a search result to review its capabilities and effort before staging the change.'));return}preview.append(E('h3','',selected.name||selected.id),E('p','model-id',selected.id));
- if(reasons.length)preview.append(E('p','picker-warning',reasons.join(' ')));
- var facts=E('dl','picker-facts'),fact=function(label,value){if(value===undefined||value===null||value==='')return;facts.append(E('dt','',label),E('dd','',String(value)))};
- if(Number(selected.context_length)>0)fact('Context',Number(selected.context_length).toLocaleString()+' tokens');if(Number(selected.max_output)>0)fact('Maximum output',Number(selected.max_output).toLocaleString()+' tokens');
- if(selected.pricing)fact('Provider price per million tokens','$'+selected.pricing.prompt+' input · $'+selected.pricing.completion+' output');fact('Privacy',(selected.levels||[]).map(function(l){return levelNames[l]||l}).join(', '));preview.append(facts);
- if(selected.efforts&&selected.efforts.length)preview.append(choice('Reasoning effort',effortOptions(selected),pickEffort,function(value){pickEffort=value}));else preview.append(E('p','muted','This model has no selectable reasoning effort.'));preview.append(E('p','muted','This selection is a draft until you review and confirm Save.'));
+function openPicker(id,idx){
+ if(busy)return;var v=viewOf(id);target={id:id,idx:idx,def:defOf(id),view:v};
+ document.getElementById('picker-title').textContent=(idx===0?'Model':idx>=1+v.fallbacks.length?'New fallback':'Fallback '+idx)+' for '+v.label;
+ var cur=idx<=v.fallbacks.length?(idx===0?v.main:v.fallbacks[idx-1]):null;
+ document.getElementById('picker-now').textContent=cur?'In use now: '+cur.name:'';
+ var chat=takesChat(v);
+ document.getElementById('picker-note').textContent=v.needs?v.needs:v.any?'Any chat model with a zero-data-retention provider can do this job, and so can the special decision models.':v.pick==='chore'?'Only models with a zero-data-retention provider are offered.':chat?'':'Pick a listed model, or type another model ID.';
+ search.value='';search.placeholder=chat?'Search by name, provider or ID':'Search the list, or type a model ID';list.replaceChildren();pickerStatus.textContent=chat?'Loading models…':'';
+ if(!picker.open)picker.showModal();search.focus();loadCatalog()
 }
-function selectModel(model){selected=model;metadata[model.id]=model;var current=currentTarget();pickEffort=model.efforts&&model.efforts.includes(current.effort)?current.effort:model.default_effort||(model.efforts&&model.efforts[0])||'default';results.querySelectorAll('button').forEach(function(button){button.setAttribute('aria-pressed',String(button.dataset.model===model.id))});renderSelection()}
-async function loadCatalog(){var seq=++catalogSequence;if(catalogAbort)catalogAbort.abort();catalogAbort=new AbortController();catalogStatus.textContent='Loading OpenRouter models…';results.replaceChildren();try{var response=await fetch('/models/api/catalog?q='+encodeURIComponent(search.value.trim()),{credentials:'same-origin',cache:'no-store',headers:{accept:'application/json'},signal:catalogAbort.signal});var data=await response.json();if(seq!==catalogSequence||!picker.open)return;if(!response.ok)throw new Error(data.error||'Could not load the model catalog.');var models=data.models||[];catalogStatus.textContent=models.length?models.length+' models found. Select one to review.':'No models found. Try another name, provider, or model ID.';if(data.policy)document.getElementById('picker-policy').textContent=data.policy;
- models.forEach(function(model){var row=E('li'),button=E('button');button.type='button';button.dataset.model=model.id;button.setAttribute('aria-pressed',String(selected&&selected.id===model.id));button.append(E('span','',model.name||model.id),E('span','result-id',model.id));if(model.eligible===false)button.append(E('span','result-reason',(model.reasons||['Unavailable']).join(' ')));button.addEventListener('click',function(){selectModel(model)});row.append(button);results.append(row)});
- }catch(error){if(seq!==catalogSequence||error.name==='AbortError')return;catalogStatus.textContent=error.message||'Could not load models. Try again.';var retry=E('button','picker-reset-search','Try again');retry.type='button';retry.addEventListener('click',loadCatalog);var li=E('li');li.append(retry);results.append(li)}}
-search.addEventListener('input',function(){clearTimeout(catalogTimer);catalogSequence++;if(catalogAbort)catalogAbort.abort();catalogStatus.textContent='Searching…';catalogTimer=setTimeout(loadCatalog,220)});
-search.addEventListener('keydown',function(e){if(e.key==='ArrowDown'){var first=results.querySelector('button');if(first){e.preventDefault();first.focus()}}});
-results.addEventListener('keydown',function(e){if(e.key!=='ArrowDown'&&e.key!=='ArrowUp')return;var buttons=Array.from(results.querySelectorAll('button')),i=buttons.indexOf(document.activeElement);if(i<0)return;e.preventDefault();buttons[(i+(e.key==='ArrowDown'?1:buttons.length-1))%buttons.length].focus()});
-document.getElementById('picker-close').addEventListener('click',closePicker);picker.addEventListener('cancel',function(e){e.preventDefault();closePicker()});
-pickButton.addEventListener('click',function(){if(!target||!selected||selectionReasons(selected).length)return;if(target.kind==='slot'){if(!state.config.models)state.config.models=Object.fromEntries(state.options.models.map(function(m){return[m.key,m.model]}));state.config.models[target.key]=selected.id;state.config.efforts[target.key]=pickEffort}else state.config.chores[target.key]={model:selected.id,effort:pickEffort};closePicker();render();say('Model selection staged. Save to review and confirm the change.')});
-function reviewChanges(){var before=JSON.parse(saved),lines=[];state.options.models.forEach(function(row){var a=slotInfo(row.key,before),b=slotInfo(row.key);if(a.id!==b.id||before.efforts[row.key]!==state.config.efforts[row.key])lines.push((names[row.key]||row.key)+': '+a.id+' ('+before.efforts[row.key]+') → '+b.id+' ('+state.config.efforts[row.key]+')')});state.options.chores.forEach(function(role){var key=keyOf(role),a=choreInfo(key,before),b=choreInfo(key);if(before.chores[key].model!==state.config.chores[key].model||before.chores[key].effort!==state.config.chores[key].effort)lines.push((choreNames[key]||key)+': '+a.id+' ('+a.effort+') → '+b.id+' ('+b.effort+')')});state.options.categories.forEach(function(category){var key=keyOf(category);state.options.levels.forEach(function(level){var lv=keyOf(level);if(JSON.stringify(before.chains[key][lv])!==JSON.stringify(state.config.chains[key][lv]))lines.push(labelOf(category)+' · '+(levelNames[lv]||lv)+': '+before.chains[key][lv].map(function(k){return slotInfo(k,before).name}).join(' → ')+' becomes '+state.config.chains[key][lv].map(slotLabel).join(' → '))})});if(before.decider!==state.config.decider)lines.push('Task category decider: '+before.decider+' → '+state.config.decider);return lines.join(String.fromCharCode(10)+String.fromCharCode(10))}
-function renderHistory(){var history=document.getElementById('history');history.replaceChildren();if(!state.history.length){history.append(E('li','empty','No saved changes yet. Current settings match the defaults.'));return}
- state.history.forEach(function(h){var row=E('li'),copy=E('div','history-copy','Revision '+h.revision+(h.revision===state.revision?' · Current':''));copy.append(E('span','',(h.action||'Saved')+' · '+new Date(h.at||h.created_at).toLocaleString()+(h.by?' · '+h.by:'')));row.append(copy);if(h.revision!==state.revision){var button=E('button','small','Restore');button.type='button';button.dataset.restore=h.revision;button.setAttribute('aria-label','Restore revision '+h.revision);button.addEventListener('click',function(){restore(h.revision)});row.append(button)}history.append(row)})}
-function lock(value){busy=value;form.querySelectorAll('select,button').forEach(function(e){e.disabled=value});save.disabled=busy||confirming||conflict||JSON.stringify(state.config)===saved;reset.disabled=busy||conflict;form.querySelectorAll('[data-restore]').forEach(function(e){e.disabled=busy||conflict})}
-async function submit(action,body){if(busy||conflict)return;lock(true);say('Saving…');try{var response=await fetch('/models/api/'+action,{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json','x-model-settings':'1',accept:'application/json'},body:JSON.stringify(body)});var data=await response.json().catch(function(){return{error:'Could not read the response. Reload to check the saved settings.'}});if(!response.ok){if(response.status===409){conflict=true;document.getElementById('reload').hidden=false}if(response.status===401)document.getElementById('signin').hidden=false;throw new Error(data.error||'Could not save model settings.')}state=data;saved=JSON.stringify(state.config);render();say('Saved for '+document.body.dataset.environment+'. New model calls use these settings.')}catch(e){say(e.message||'Could not save. Check your connection and try again.',true)}finally{lock(false)}}
-form.addEventListener('submit',async function(e){e.preventDefault();if(busy||conflict||confirming||JSON.stringify(state.config)===saved)return;confirming=true;save.disabled=true;try{if(await window.ask({title:'Apply model changes to '+document.body.dataset.environment+'?',body:'These changes apply to everyone in '+document.body.dataset.environment+', including helpers and scheduled tasks.'+String.fromCharCode(10)+String.fromCharCode(10)+reviewChanges(),confirm:'Apply to '+document.body.dataset.environment}))await submit('save',{revision:state.revision,config:state.config})}finally{confirming=false;lock(false)}});
-reset.addEventListener('click',async function(){if(await window.ask({title:'Restore default settings?',body:'This changes all model settings for '+document.body.dataset.environment+'. The current settings stay in history.',confirm:'Restore defaults'}))submit('reset',{revision:state.revision})});
-async function restore(revision){if(await window.ask({title:'Restore revision '+revision+'?',body:'This changes all model settings for '+document.body.dataset.environment+'. Unsaved edits will be replaced.',confirm:'Restore revision'}))submit('restore',{revision:state.revision,restore_revision:revision})}
+function closePicker(){clearTimeout(timer);seq++;if(picker.open)picker.close();target=null}
+function modelButton(m,sub,onPick){var li=E('li'),b=E('button');b.type='button';b.append(E('b','',m.name),E('span','',sub));b.addEventListener('click',onPick);li.append(b);return li}
+function inUse(q){
+ var all=state.options.choices[target.view.pick]||[],taken={};
+ entriesOf(state.config.jobs[target.id]).forEach(function(e,i){if(i!==target.idx)taken[e.model]=1});
+ return all.filter(function(m){return !taken[m.id]&&(!q||(m.name+' '+m.id).toLowerCase().indexOf(q.toLowerCase())>=0)})
+}
+async function loadCatalog(){
+ var mine=++seq,q=search.value.trim(),chat=takesChat(target.view);
+ list.replaceChildren();var local=inUse(q);
+ if(local.length){list.append(E('h3','','Already known'));local.forEach(function(m){list.append(modelButton(m,m.id,function(){choose(m)}))})}
+ if(!chat){
+  var typed=q.length>2&&/^[@~a-zA-Z0-9][a-zA-Z0-9._~:-]*(\\/[a-zA-Z0-9][a-zA-Z0-9._:~-]*)+$/.test(q)&&!local.some(function(m){return m.id===q});
+  if(typed){list.append(E('h3','','Other model ID'));list.append(modelButton({id:q,name:q,efforts:[]},'Use this model ID exactly as typed',function(){choose({id:q,name:q,efforts:[]})}))}
+  pickerStatus.textContent=local.length||typed?'':'No match. Type a full model ID such as provider/model-name.';return
+ }
+ try{
+  var r=await fetch('/models/api/catalog?q='+encodeURIComponent(q),{credentials:'same-origin',cache:'no-store'}),data=await r.json();
+  if(mine!==seq)return;if(!r.ok)throw new Error(data.error||'Could not load models.');
+  var ids={};local.forEach(function(m){ids[m.id]=1});
+  var taken={};entriesOf(state.config.jobs[target.id]).forEach(function(e,i){if(i!==target.idx)taken[e.model]=1});
+  var more=data.models.filter(function(m){return m.eligible&&!ids[m.id]&&!taken[m.id]&&(target.view.privacy!=='zdr'||(m.levels||[]).indexOf('zdr')>=0)});
+  list.replaceChildren();
+  if(local.length){list.append(E('h3','','Already known'));local.forEach(function(m){list.append(modelButton(m,m.id,function(){choose(m)}))})}
+  if(more.length)list.append(E('h3','','More models'));
+  more.slice(0,40).forEach(function(m){list.append(modelButton(m,m.id+' · $'+m.pricing.prompt+' in, $'+m.pricing.completion+' out per million tokens',function(){choose(m)}))});
+  pickerStatus.textContent=local.length+more.length?(more.length>40?'Showing 40 of '+more.length+'. Type to narrow the list.':''):'No eligible models match.'
+ }catch(e){if(mine!==seq)return;pickerStatus.textContent=e.message||'Could not load models. Try again.'}
+}
+function choose(m){
+ var t=target;closePicker();var li=document.querySelector('[data-job="'+t.id+'"]'),pick=t.view.pick,hasEffort=t.view.has_effort;
+ edit(t.id,li,function(arr){
+  var old=arr[t.idx],efforts=m.efforts||effortsFor(m.id),cur=old?old.effort:null,next=null;
+  if(hasEffort)next=efforts.indexOf(cur)>=0?cur:(m.default_effort&&efforts.indexOf(m.default_effort)>=0?m.default_effort:efforts[0]);
+  var e={model:m.id,effort:next};if(pick==='chore'||pick==='classic'||(t.view.any&&(m.chat||m.eligible)))e.strict=true;
+  if(old&&old.model===m.id)return false;
+  if(t.idx>=arr.length)arr.push(e);else arr[t.idx]=e
+ })
+}
+search.addEventListener('input',function(){clearTimeout(timer);seq++;pickerStatus.textContent='Searching…';timer=setTimeout(loadCatalog,220)});
+document.getElementById('picker-close').addEventListener('click',closePicker);
+picker.addEventListener('cancel',function(e){e.preventDefault();closePicker()});
+picker.addEventListener('click',function(e){if(e.target===picker)closePicker()});
 render();
-document.querySelectorAll('nav a').forEach(function(link){link.addEventListener('click',async function(e){if(JSON.stringify(state.config)===saved&&!busy)return;e.preventDefault();if(busy){say('Wait for the save to finish before leaving.');return}if(await window.ask({title:'Leave without saving?',body:'Your model setting edits have not been saved.',confirm:'Discard edits'}))location.href=link.href})});
 })();`;
 
 export function modelsHtml(view, env) {
   const dev = env.ENV_NAME === "dev", environment = dev ? "Dev" : "Production";
   // History contains actor strings; JSON script data must escape '<' and Unicode separators.
-  const initial = JSON.stringify(view).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Models · ${environment} · 1Helm</title><link rel="icon" href="/1helm-icon-64.png"><style>${CSS}${PICKER_CSS}</style>${pageDialog("warm")}</head>
+  if (!view.dashboard) view = { ...view, dashboard: modelDashboard(view) };
+  const initial = JSON.stringify(view).replace(/</g, "\\u003c").replace(new RegExp("\\u2028", "g"), "\\u2028").replace(new RegExp("\\u2029", "g"), "\\u2029");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Models · ${environment} · 1Helm</title><link rel="icon" href="/1helm-icon-64.png"><style>${CSS}</style></head>
 <body class="${dev ? "dev" : "live"}" data-environment="${environment}"><main><nav aria-label="Model settings navigation"><a class="back" href="${dev ? "/releases" : "/"}">${dev ? "← Releases" : "← 1Helm"}</a><div class="environments" aria-label="Environment">${dev ? "Development" : "Production"}</div></nav>
-<p class="eyebrow">1Helm administration</p><h1>Models</h1><p class="lead">Replace the models 1Helm uses with choices from OpenRouter. Pick a model and its effort, then review and confirm your changes for everyone in this environment.</p>
-<div class="scope"><span class="badge">${environment}</span><span>Changes apply here only. Switch environments to manage the other site.</span></div>
-${dev ? '<p class="muted">Production controls become available when this feature is released. Each environment requires its own sign-in.</p>' : ""}
-<noscript>Turn on JavaScript to edit model settings.</noscript><p id="config-warning" role="alert" style="background:#fff1d6;border:1px solid #b97a12;padding:14px;border-radius:12px" hidden></p><form id="model-form"><section aria-labelledby="models-heading"><div class="section-head"><h2 id="models-heading">Main models</h2><span class="muted" id="revision">Revision ${esc(view.revision)}</span></div><p class="muted">Replacing a model updates its position everywhere it is used below, including helpers and scheduled tasks. Background tasks have their own choices.</p><div class="grid" id="efforts"></div></section>
-<details class="panel" id="routing-panel"><summary>Where they are used <span class="muted">First choices and fallbacks</span></summary><p class="muted">Choose the normal model order for each kind of work and account privacy setting. Fallbacks run when a model is unavailable. Choosing an existing fallback swaps their order. Quality recovery may select a different configured model, and paused tasks may resume with their previous model. Privacy requirements still apply to every request.</p><div id="routes"></div></details>
-<details class="panel" id="background-panel" open><summary>Background tasks <span class="muted">Nine selected roles, plus unchanged support tasks</span></summary><p class="muted">The nine selected roles show their effective model and reasoning below: titles, incremental notes, notes refinement, final notes, file summaries, ambient extraction, ambient review, people verification, and reflection verification. Their built-in choices use LOW reasoning and never substitute another model on failure. Explicit saved choices remain visible and take precedence. Own-key accounts use their own model; an explicitly enabled test-model override remains separate.</p><p class="muted">Other roles are outside this rollout and retain existing behavior, including GPT OSS where configured. Their explicit choices retain the existing GPT OSS 120B availability fallback (medium for memory verification, low otherwise). No global removal of OSS or changes to main chat, speech recognition, embeddings, or file vision.</p><div class="chore-grid" id="chores"></div><div id="extra"></div></details>
-<details class="panel" id="history-panel"><summary>Change history <span class="muted">Restore a previous revision</span></summary><ul class="history-list" id="history"></ul></details>
-<div class="actions"><div><p id="feedback" role="status" aria-live="polite">Loading settings…</p><a class="reload" id="reload" href="/models" hidden>Reload the latest settings before saving</a><a id="signin" href="/onboard?next=/models" hidden>Sign in again</a></div><div class="action-buttons"><button type="button" id="reset">Restore defaults</button><button type="submit" class="primary" id="save" disabled>Save for ${environment}</button></div></div>
-</form><p class="footnote">Changes take effect on new model calls. Calls already running finish with their current settings. This page manages chat and reasoning models; speech, embeddings, file vision, and router experiments are separate.</p></main>
-<dialog id="model-picker" class="picker" aria-labelledby="picker-title"><div class="picker-head"><div><h2 id="picker-title">Change model</h2><p class="picker-current"><b>Current draft</b><span id="picker-current"></span></p></div><button type="button" class="picker-close" id="picker-close" aria-label="Close model picker">×</button></div><div class="picker-body"><div><label class="picker-search" for="catalog-query">Search OpenRouter models<input id="catalog-query" type="search" placeholder="Name, provider, or model ID" autocomplete="off" aria-controls="catalog-results"></label><p id="catalog-status" class="catalog-status" role="status" aria-live="polite"></p><ul id="catalog-results" class="catalog-results" aria-label="OpenRouter models"></ul><p class="picker-policy" id="picker-policy"></p></div><section id="picker-preview" class="picker-preview" aria-label="Selected model preview"></section></div><div class="picker-foot"><p>Selecting a model only updates your draft. Save will show the current and new settings for confirmation before anything changes.</p><button type="button" class="primary" id="pick-model" disabled>Use selection</button></div></dialog>
+<h1>Models</h1><p class="lead">The model, reasoning level and fallback models saved for every job on ${environment}. These settings are the only place models are chosen. Each change saves right away. Running tasks finish with the model they started with.</p>
+<noscript>Turn on JavaScript to see and change model settings.</noscript><div class="banner" id="banner" role="alert" hidden></div><p id="page-status" role="status" aria-live="polite"></p>
+<div id="groups"></div>
+<details class="history"><summary>History</summary><ul id="history-list"></ul></details>
+<p class="footnote">Revision ${esc(view.revision)}. Only models that meet the privacy, tool and price limits are offered. When an account's privacy setting forbids a model, that model is skipped and the next one in the list is tried.</p></main>
+<dialog id="model-picker" class="picker" aria-labelledby="picker-title"><div class="picker-head"><div><h2 id="picker-title">Choose a model</h2><p id="picker-now"></p><p id="picker-note"></p></div><button type="button" id="picker-close" aria-label="Close">Close</button></div>
+<label class="picker-search"><input id="catalog-query" type="search" placeholder="Search by name, provider or ID" autocomplete="off" aria-label="Search models"></label>
+<ul id="picker-list" class="picker-list" aria-label="Models"></ul><div class="picker-foot" id="picker-status" role="status" aria-live="polite"></div></dialog>
 <script id="model-state" type="application/json">${initial}</script><script>${JS}</script></body></html>`;
 }

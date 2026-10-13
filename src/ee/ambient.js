@@ -1,7 +1,10 @@
 // Provider-neutral ambient extraction, hosted in the tenant's existing BeeSync DO.
 // Raw speech is data, never executable instructions. Queries never call a provider/model.
-import { openRouterChat, OR_RESERVE_PRICE } from "../model.js";
-import { backgroundRole, backgroundRoute, backgroundPolicy, backgroundReserve } from "./background-policy.js";
+import { openRouterChat } from "../model.js";
+import { savedModelPrice, estimateStepCost } from "../step-price.js";
+import { modelSettingsEnv } from "./model-settings.js";
+import { backgroundRole, backgroundPolicy, backgroundReserve } from "./background-policy.js";
+import { jobRoute } from "./model-jobs.js";
 import { loadByok, byokEnv } from "../byok.js";
 import { scrubSecrets } from "../secrets-scrub.js";
 import { ambientCueLines } from "./ambient-cues.js";
@@ -14,7 +17,7 @@ import { AMBIENT_REVIEW_VERSION, AMBIENT_REVIEW_SYSTEM, ambientReviewInput, appl
 export const AMBIENT_VERSION = 2, CHUNK_CHARS = 10000, BATCH_CHUNKS = 6;
 // Stage-isolated defaults; saved role selections are resolved at dispatch.
 export function ambientModelRoute(env, kind) {
-  return backgroundRoute(kind === "ambient-review" ? "ambient_review" : "ambient_extract");
+  return jobRoute(kind === "ambient-review" ? "ambient_review" : "ambient_extract");
 }
 // Pending grounded drafts must be validated again when category invariants change.
 // This is not a source/projection version: already processed speech is untouched.
@@ -502,8 +505,17 @@ export class AmbientStore {
       if (chunk) chunk.phase = `${kind}:provider_request`;
       const r = await openRouterChat(env, request, null, route, { tenant: h.tid(), channel: "main", kind }, AbortSignal.timeout(90000));
       if (chunk) chunk.phase = "provider_response";
-      const j = await r.json(), cost = own ? 0 : j.usage?.cost != null ? Math.ceil(Number(j.usage.cost) * 1e9 * 1.15)
-        : Math.ceil((Number(j.usage?.prompt_tokens || Math.ceil(JSON.stringify(messages).length / 3)) * OR_RESERVE_PRICE.in + Number(j.usage?.completion_tokens || Math.ceil(String(j.choices?.[0]?.message?.content || "").length / 3)) * OR_RESERVE_PRICE.out) * 1.15);
+      const j = await r.json();
+      // No reported cost: the model's own saved price (step-price.js), never the reservation ceiling; with no saved price the ceiling is
+      // used and recorded as "price unknown".
+      let cost = 0;
+      if (!own && j.usage?.cost != null) cost = Math.ceil(Number(j.usage.cost) * 1e9 * 1.15);
+      else if (!own) {
+        const est = estimateStepCost({ inTok: Number(j.usage?.prompt_tokens || Math.ceil(JSON.stringify(messages).length / 3)), cached: Number(j.usage?.prompt_tokens_details?.cached_tokens || 0), outTok: Number(j.usage?.completion_tokens || Math.ceil(String(j.choices?.[0]?.message?.content || "").length / 3)) },
+          savedModelPrice([h.env.MODEL_SETTINGS?.catalog, (await modelSettingsEnv(h.env)).MODEL_SETTINGS?.catalog], [j.model, route?.model]));
+        cost = Math.ceil(est.nano * 1.15);
+        if (est.unknown) { console.log("BILLING price_unknown", JSON.stringify({ rid, kind, model: j.model || route?.model || null, nano: cost })); try { await L.notePriceUnknown(rid, cost); } catch {} }
+      }
       if (chunk) chunk.phase = "settle_spend";
       await L.settle(rid, cost); settled = true; h.bump({ ambient_calls: 1, ambient_nano: cost });
       if (kind === "ambient-review") h.bump({ ambient_review_calls: 1, ambient_review_nano: cost });

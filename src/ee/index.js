@@ -18,7 +18,7 @@ export const textSend = (env, tenantId, message) => enabled(env) ? deliverText(e
 const EE_TOOL_NAMES = new Set([
   "app_actions", "app_run", "app_proxy", "app_events", "apps_i_use", "find_app", "offer_connect",
   "gmail_search", "gmail_read", "gmail_draft", "gmail_send", "calendar_events", "calendar_add",
-  "search_web_vertical", "note_account", "text_person", "buy_with_link", "check_purchase", "browser_fill_card", "browser_task", "ambient_query",
+  "search_web_vertical", "note_account", "text_person", "buy_with_link", "check_purchase", "browser_fill_card", "browser_task", "start_browser_task", "list_browser_tasks", "stop_browser_task", "ambient_query",
 ]);
 export const toolEnabled = (env, name) => enabled(env) || !EE_TOOL_NAMES.has(name);
 
@@ -76,9 +76,9 @@ export { meetingsApi, meetingsCron } from "./meetings.js";
 export { holdFromFailure, holdOf, holdView, notePaid, pastdueApi, pastdueCron, pastdueSeen, pastdueSync } from "./pastdue.js";
 export { US_ONLY } from "./photon.js";
 export { changePlan, nextPlan } from "./plan-change.js";
-export { MAX_ATTEMPTS, fixedEffort, isMuse, aliasOf } from "./pool.js";
+export { MAX_ATTEMPTS } from "./pool.js";
 export { INACTIVE_MSG, PAUSED_TEXT, PAY_MSG } from "./readonly.js";
-export { CHORE_MODELS, ESCALATE_STALL, HANDOFF_PREFIX, LUNA, choreAttempts, choreModelOf, choreRoute, choreRouteFor, dispatchOrder, escalationAfter, escalationBefore, markServed, policyRoute, route2On, routeTwoTurn } from "./route2.js";
+export { ESCALATE_STALL, HANDOFF_PREFIX, choreRouteFor, dispatchOrder, escalationAfter, escalationBefore, isHandoff, markServed, policyRoute, route2On, routeTwoTurn } from "./route2.js";
 export { clefVia, currentPool, decide, saveNightlyPool } from "./router.js";
 export { ledgerGuard } from "./spendguard-ledger.js";
 export { appLink, deliverCard, deliverReaction, deliverText, fetchTextedFile, textTyping, textingDebug, textingLine, textingNewCode, textingOff, textingPoll, textingStart, textingStatus, textingUseProject, textingWebhook } from "./texting.js";
@@ -94,7 +94,10 @@ export { customMcpRoute, isCustomSlug, customUsable, ownerOf, CUSTOM_DENIED, wit
 
 export { ambientQuery, AMBIENT_QUERY_TOOL } from "./ambient-query.js";
 
-export { modelSettingsEnv, configuredChore, configuredHosts, configuredEffort } from "./model-settings.js";
+export { modelSettingsEnv, readModelSettings, jobModel, jobModels, jobCost } from "./model-settings.js";
+export { choreRouteOf, jobRoute, jobSetting, settingsOf, entriesOf, configuredHosts, quirkOf, effortBody, effortFor, reasoningMandatory } from "./model-jobs.js";
+export { decisionCaller, askDecider } from "./text-decision.js";
+export { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, START_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput, browserPurchaseGuard } from "./browser-tasks.js";
 
 export { authorizeTaskProfile, TaskAffinityBlocked, ensureTaskRuntime, recordTaskServed } from "./task-profile.js";
-export { backgroundRole, backgroundRoute, backgroundPolicy, backgroundReserve } from "./background-policy.js";
+export { backgroundRole, backgroundPolicy, backgroundReserve } from "./background-policy.js";

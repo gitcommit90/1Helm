@@ -76,7 +76,7 @@ function appKind(app, act) {
   return "apps";
 }
 const COMPUTER_RUN = new Set(["run_command", "write_file", "edit_file"]);
-const VISIT = new Set(["browser_navigate", "browser_act", "browser_task", "browser_fill_login", "fetch_url"]);
+const VISIT = new Set(["browser_navigate", "browser_act", "browser_task", "start_browser_task", "browser_fill_login", "fetch_url"]);
 export const GATED_TOOLS = new Set(["gmail_search", "gmail_read", "calendar_events", "app_run", "app_proxy", "web_search", "search_web_vertical", "start_helper", "schedule_workflow", "schedule_followup", ...COMPUTER_RUN, ...VISIT]);
 export function kindFor(name, a = {}, conns = []) {
   if (name === "gmail_search" || name === "gmail_read") return "email";
@@ -163,6 +163,7 @@ const doingOf = (name, a = {}) => {
     case "browser_navigate": case "fetch_url": { let h = ""; try { h = new URL(String(a.url)).host; } catch {} return h ? `visit ${h}` : "visit a website"; }
     case "browser_act": return "click and type on the open web page";
     case "browser_task": return a.url ? `use the browser on ${(() => { try { return new URL(String(a.url)).host; } catch { return "a website"; } })()}` : "use the browser";
+    case "start_browser_task": return a.url ? `start a browser job on ${(() => { try { return new URL(String(a.url)).host; } catch { return "a website"; } })()}` : "start a browser job";
     case "browser_fill_login": return `sign in to ${q(a.site, 60) || "a site"}`;
     case "web_search": return `search the web for "${q(a.query, 80)}"`;
     case "search_web_vertical": return `search ${q(a.kind, 20) || "live results"} for "${q([a.query, a.from, a.to, a.near].filter(Boolean).join(" "), 80)}"`;

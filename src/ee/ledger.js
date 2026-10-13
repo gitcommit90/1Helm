@@ -29,6 +29,8 @@ export class Ledger extends DurableObject {
   }
   resEventsInit() { this.sql.exec("CREATE TABLE IF NOT EXISTS res_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, kind TEXT NOT NULL, nano INTEGER NOT NULL, at INTEGER NOT NULL)"); }
   async resEvents(since = 0) { this.resEventsInit(); this.sql.exec("DELETE FROM res_events WHERE at<?", Date.now() - 7 * 86400e3); return this.sql.exec("SELECT id,kind,nano,at FROM res_events WHERE at>=? ORDER BY seq DESC LIMIT 200", Number(since) || 0).toArray(); }
+  // A charge settled at the price ceiling because the model's price was unknown (resident.js notePriceUnknown). Only an event row; no balance change.
+  async notePriceUnknown(id, nano) { this.resEventsInit(); this.sql.exec("INSERT INTO res_events (id,kind,nano,at) VALUES (?,?,?,?)", String(id).slice(0, 80), "price_unknown", Math.round(Number(nano) || 0), Date.now()); }
   async state() { this.expire(); return { ...this.totals(), today: this.dayInfo() }; }
   async opsTotals() { return this.totals(); }   // dev ops (ops-read.js): the balance without the housekeeping writes
   // TEST_MODE: lowering the balance is recorded as usage (so monthly expiry math is realistic); raising it is a test grant.

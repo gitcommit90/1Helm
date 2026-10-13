@@ -1,4 +1,5 @@
 // Independent second-stage contract/state tests. Fake model decisions are NOT quality proof.
+import { SEED } from "./helpers/seed-settings.mjs";
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
@@ -53,7 +54,7 @@ function fixture(){
  const db=new DatabaseSync(':memory:'),kv=new Map([['tenant','review-fixture'],['status','active']]);db.exec('CREATE TABLE convs(id INTEGER PRIMARY KEY,start_time INTEGER,r2_key TEXT)');
  const sql={exec(q,...args){if(!args.length&&q.split(';').filter(x=>x.trim()).length>1){db.exec(q);return{toArray:()=>[]};}const st=db.prepare(q),rows=/^\s*(SELECT|WITH|PRAGMA)/i.test(q)?st.all(...args):(st.run(...args),[]);return{toArray:()=>rows};}};
  const F={db,sql,kv,extractCalls:0,reviewCalls:0,mode:'on',forbidden:'',privacyCalls:0};
- const env={ONEHELM_EE:"1hc",OPENROUTER_API_KEY:'unit-no-network',WS:{get:async()=>null},DB:{prepare(){return{bind(){return this;},first:async()=>({status:'active',plan:'plus'})};}},RESIDENT:{idFromName:x=>x,get:()=>({ambientPrivacy:async texts=>{F.privacyCalls++;return{mode:F.mode,allowed:texts.flatMap((s,i)=>F.forbidden&&s.includes(F.forbidden)?[]:[i])};}})}};
+ const env={ONEHELM_EE:"1hc",MODEL_SETTINGS:SEED,MODEL_SETTINGS_REVISION:1,OPENROUTER_API_KEY:'unit-no-network',WS:{get:async()=>null},DB:{prepare(){return{bind(){return this;},first:async()=>({status:'active',plan:'plus'})};}},RESIDENT:{idFromName:x=>x,get:()=>({ambientPrivacy:async texts=>{F.privacyCalls++;return{mode:F.mode,allowed:texts.flatMap((s,i)=>F.forbidden&&s.includes(F.forbidden)?[]:[i])};}})}};
  F.host={sql,env,gen:0,ctx:{storage:{transactionSync:fn=>{db.exec('BEGIN');try{const r=fn();db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}}}},tid:()=> 'review-fixture',get:k=>kv.get(k),put:(k,v)=>v==null?kv.delete(k):kv.set(k,String(v)),arm:async()=>{},bump(){},ledger:()=>({settle:async()=>{}})};
  F.install=()=>{F.store=new AmbientStore(F.host);F.store.extract=async ls=>{F.extractCalls++;return{items:ls.map((l,line)=>({kind:'task',quote:l.text,line,status:'open',speech_act:'intention'}))};};F.store.review=async info=>{F.reviewCalls++;return{items:info.candidates.map(retain)};};};F.install();
  F.conv=(text=lines[0].text)=>({id:91,state:'COMPLETED',start_time:T,end_time:T+1000,transcriptions:[{realtime:false,utterances:[{id:'r0',text,spoken_at:T,speaker:{id:'owner',is_user:true}}]}]});

@@ -1,22 +1,23 @@
 // node --import ./test/stubs/register.mjs test/structured-notes-compat.test.mjs
 import assert from "node:assert/strict";
 import { orFetch, openRouterChat, OR_MAX_PRICE } from "../src/model.js";
-import { choreRoute, LUNA } from "../src/ee/route2.js";
+import { ID, SEED, withSettings } from "./helpers/seed-settings.mjs";
+import { choreRouteOf, quirkOf } from "../src/ee/model-jobs.js";
+const LUNA = ID.LUNA, noTemperature = (m) => quirkOf(SEED, m, "no_temperature");
 import { FINAL_ROUTE } from "../src/ee/live-notes.js";
 import { structuredFormat, S } from "../src/structured-output.js";
 import { byokChat } from "../src/byok.js";
-import { backgroundRoute } from "../src/ee/background-policy.js";
 
 const saved = globalThis.fetch, sent = [];
 globalThis.fetch = async (_url, init) => {
   sent.push(JSON.parse(init.body));
   return new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: '{"summary":"ok"}' } }] }));
 };
-const env = { ONEHELM_EE: "1hc", OPENROUTER_API_KEY: "fixture", ROUTER_MODE: "two", PROMPT_CACHE: "off" };
+const env = withSettings({ ONEHELM_EE: "1hc", OPENROUTER_API_KEY: "fixture", ROUTER_MODE: "two", PROMPT_CACHE: "off" });
 const body = { messages: [{ role: "user", content: "Fixture" }], temperature: 0, max_tokens: 1500,
   response_format: structuredFormat("notes", S.object({ summary: S.string })) };
 try {
-  for (const [kind, route] of [["live-notes-note", backgroundRoute("notes")], ["live-notes-final", FINAL_ROUTE]]) {
+  for (const [kind, route] of [["live-notes-note", choreRouteOf(SEED, "notes")], ["live-notes-final", choreRouteOf(SEED, "notes_final")]]) {
     await openRouterChat(env, body, null, route, { kind });
     const wire = sent.at(-1);
     assert.equal(wire.model, route.model); assert.equal(wire.temperature, undefined);
@@ -48,7 +49,7 @@ try {
   for (const selected of [LUNA, "anthropic/claude-haiku-5.5"]) {
     for (const fast of [false, true]) {
       const cfg = { base: "https://openrouter.ai/api/v1", key: "fixture", model: fast ? "person-main" : selected, fast: selected };
-      await byokChat(cfg, body, { fast, privacy: "zdr" });
+      await byokChat(cfg, body, { fast, privacy: "zdr", noTemperature });
       assert.equal(sent.at(-1).model, selected); assert.equal(sent.at(-1).temperature, undefined);
       assert.equal(sent.at(-1).provider.zdr, true); assert.equal(sent.at(-1).provider.require_parameters, true);
       assert.deepEqual(sent.at(-1).response_format, body.response_format);

@@ -3,9 +3,9 @@
 import assert from "node:assert/strict";
 import { ensureTaskRuntime, authorizeTaskProfile, taskRoute, TASK_PROFILE_KEY, recordTaskServed, approvedTaskTransition, readTaskProfile } from "../src/ee/task-profile.js";
 import { openRouterChat, taskPayload, orFetch } from "../src/model.js";
-import { defaultModelSettings } from "../src/ee/model-settings.js";
+import { seedSettings, ID } from "./helpers/seed-settings.mjs";
 import { taskModelCatalog } from "../src/ee/model-catalog.js";
-import { MUSE_C, SOL } from "../src/ee/pool.js";
+const MUSE_C = ID.MUSE_C, SOL = ID.SOL;
 import { dispatchOrder, escalationAfter, escalationBefore, newEsc } from "../src/ee/route2.js";
 
 const catalog = (id, hosts, context = 262144) => ({ id, eligible: true, hosts, efforts: ["minimal", "low", "high"],
@@ -14,10 +14,10 @@ const catalog = (id, hosts, context = 262144) => ({ id, eligible: true, hosts, e
 // Actual public Muse endpoint metadata advertised all choices while Meta's
 // 400 response explicitly rejected none/required/named choices.
 const records = { [MUSE_C]: { ...catalog(MUSE_C, ["meta"]), tool_choice: ["auto", "none", "required", "function"] }, [SOL]: catalog(SOL, ["azure"]) };
-let settings = defaultModelSettings(), revision = 1, level = "unrestricted", fetches = [], calls = 0;
+let settings = seedSettings(), revision = 1, level = "unrestricted", fetches = [], calls = 0;
 const env = { ONEHELM_EE: "1hc", OPENROUTER_API_KEY: "synthetic-fixture", ROUTER_MODE: "two", TASK_MODEL_CATALOG: records,
   DB: { prepare(sql) { return { bind() { return this; }, async first() {
-    if (sql.includes("model_settings_versions")) return { revision, config: JSON.stringify(settings) };
+    if (sql.includes("model_job_settings_versions")) return { revision, config: JSON.stringify(settings) };
     if (sql.includes("ai_privacy")) return { ai_privacy: level };
     throw new Error(`Unexpected database query: ${sql}`);
   } }; } } };
@@ -43,7 +43,7 @@ assert.deepEqual(repairedProfile, { ...staleProfile, catalog: { ...staleProfile.
 assert.deepEqual(records[MUSE_C].tool_choice, ["auto", "none", "required", "function"], "source snapshot is not mutated");
 for (const tool_choice of ["none", "required", { type: "function", function: { name: "lookup" } }]) {
   await assert.rejects(authorizeTaskProfile(env, staleProfile, "tenant-a", { tool_choice }), e => e.reason === "unsupported-tool-choice");
-  assert.throws(() => taskPayload(staleProfile, { tool_choice }), e => e.reason === "unsupported-tool-choice");
+  assert.throws(() => taskPayload(staleProfile, { tool_choice }, { settings }), e => e.reason === "unsupported-tool-choice");
 }
 assert.equal(calls, 0, "unsupported tool choices are blocked before a provider call");
 const original = structuredClone(profile), messages = [{ role: "system", content: "Stable system" }];
@@ -51,7 +51,7 @@ const tools = [{ type: "function", function: { name: "lookup", parameters: { typ
 for (let turn = 1; turn <= 50; turn++) {
   // Rebuild the resident/turn view from serialized state each time (restart-equivalent profile boundary).
   tc = { session: "task-a" };
-  if (turn === 2) { settings.chains.general.unrestricted = ["sol"]; settings.efforts["muse-c"] = "high"; revision++; }
+  if (turn === 2) { settings.jobs["chat.general"] = { model: SOL, effort: "high", fallbacks: [] }; revision++; }
   profile = await ensureTaskRuntime(R, tc, args());
   assert.deepEqual(profile, original, "defaults and effort edits cannot mutate an existing task");
   messages.push({ role: "user", content: `Message ${turn}: ${"keep the decision ".repeat(100)}` });
@@ -104,7 +104,8 @@ globalThis.fetch = async (_u, init) => { calls++; fetches.push(JSON.parse(init.b
 await openRouterChat(env, { messages }, "s", tc.route, { tenant: "tenant-a" });
 assert.equal(calls, 2); assert(fetches.every((p) => p.model === MUSE_C));
 assert.deepEqual(fetches[0], fetches[1], "same-model retry preserves exact payload/cache identity");
-assert(fetches.every((p) => !("order" in p.provider)));
+// r35-cache-fix: the recorded warm host (recordTaskServed above: meta) is the only order entry; the full eligible list is never sent
+assert(fetches.every((p) => p.provider.order?.length === 1 && p.provider.order[0] === "meta" && p.provider.only.includes("meta") && p.provider.allow_fallbacks === true));
 calls = 0;
 globalThis.fetch = async (_u, init) => { calls++; fetches.push(JSON.parse(init.body)); return new Response("unavailable", { status: 503 }); };
 await assert.rejects(openRouterChat(env, { messages }, "s", tc.route, { tenant: "tenant-a" }), (e) => e.reason === "model-unavailable");
@@ -139,7 +140,8 @@ recordTaskServed(R, providerTc, { model: SOL, provider: "Azure Europe", provider
 assert.equal(providerTc.taskProfile.preferredHost, "azure/eu");
 const providerAuth = await authorizeTaskProfile(env, providerTc.taskProfile, "tenant-a");
 const sticky = taskPayload(providerTc.taskProfile, { messages: [] }, providerAuth);
-assert(!("order" in sticky.provider));
+assert.deepEqual(sticky.provider.order, ["azure/eu"], "r35-cache-fix: only the recorded warm host, never the full eligible list");
+assert(!("order" in taskPayload({ ...providerTc.taskProfile, preferredHost: undefined }, { messages: [] }, providerAuth).provider), "no warm host recorded yet: no order");
 assert.deepEqual(sticky.provider.only, ["azure/us", "azure/eu"]);
 recordTaskServed(R, providerTc, { model: SOL, provider: "Mystery Regional Endpoint" });
 assert.equal(providerTc.taskProfile.preferredHost, "azure/eu");
@@ -147,10 +149,11 @@ assert.equal(providerTc.taskProfile.preferredHost, "azure/eu");
 const providerWires = [];
 globalThis.fetch = async (_url, init) => { providerWires.push(JSON.parse(init.body)); return response(); };
 await openRouterChat(env, { messages: [], provider: { order: ["outside"], only: ["outside"] } }, "ignored", providerTc.route, { tenant: "tenant-a" });
-assert.deepEqual(providerWires[0], sticky, "final privacy boundary also removes order, without widening caller-overridden hosts");
+const sortOnly = (w) => ({ ...w, provider: { ...w.provider, only: [...w.provider.only].sort() } });   // the validator lists the preferred host first; it is a whitelist, its order carries no meaning
+assert.deepEqual(sortOnly(providerWires[0]), sortOnly(sticky), "final privacy boundary keeps only the warm host as order, without widening caller-overridden hosts");
 await openRouterChat({ ...env, TASK_REVOKED_HOSTS: "azure/us" }, { messages: [] }, "ignored", providerTc.route, { tenant: "tenant-a" });
 assert.deepEqual(providerWires[1].provider.only, ["azure/eu"], "revocation narrows final wire whitelist");
-assert(!("order" in providerWires[1].provider));
+assert.deepEqual(providerWires[1].provider.order, ["azure/eu"], "the warm host is still preferred when it remains eligible");
 assert.equal(providerWires[1].provider.zdr, true); assert.equal(providerWires[1].provider.data_collection, "deny");
 assert.equal(providerWires[1].provider.require_parameters, true);
 assert.deepEqual(providerWires[1].provider.max_price, { prompt: 3, completion: 15 });
@@ -160,7 +163,7 @@ const retryEnv = { ...env }, retryWires = [];
 globalThis.fetch = async (_url, init) => { retryWires.push(JSON.parse(init.body)); if (retryWires.length === 1) { retryEnv.TASK_REVOKED_HOSTS = "azure/us"; return new Response("unavailable", { status: 503 }); } return response(); };
 await openRouterChat(retryEnv, { messages: [] }, "ignored", providerTc.route, { tenant: "tenant-a" });
 assert.equal(retryWires.length, 2); assert.deepEqual(retryWires[1].provider.only, ["azure/eu"]);
-assert(retryWires.every(p => !("order" in p.provider) && p.model === SOL && p.session_id === sticky.session_id));
+assert(retryWires.every(p => p.provider.order?.length === 1 && p.provider.order[0] === "azure/eu" && p.model === SOL && p.session_id === sticky.session_id));
 let legacyWire;
 globalThis.fetch = async (_url, init) => { legacyWire = JSON.parse(init.body); return response(); };
 await orFetch(env, { model: SOL, messages: [], provider: { order: ["azure/eu", "azure/us"], only: ["azure/us", "azure/eu"] } }, { tenant: "tenant-a" });
@@ -180,7 +183,7 @@ globalThis.fetch = async (url) => {
   if (String(url).endsWith("/models")) return Response.json({ data: [{ id: MUSE_C, architecture: { input_modalities: ["text"], output_modalities: ["text"] }, reasoning: { mandatory: true, supported_efforts: ["low"] } }] });
   return Response.json({ data: { endpoints: [{ tag: "meta", context_length: 99999, max_completion_tokens: 12345, pricing: { prompt: "0.0000001", completion: "0.0000002" }, supported_parameters: ["tools", "max_tokens", "reasoning"], supports_tool_choice: { auto: true, none: true, required: true, function: true } }] } });
 };
-const liveShape = await taskModelCatalog(MUSE_C);
+const liveShape = await taskModelCatalog(MUSE_C, settings);
 assert.equal(liveShape.context_length, 99999); assert.equal(liveShape.max_output, 12345);
 assert.deepEqual(liveShape.tool_choice, ["auto"]);
 assert.equal(seenUrls.length, 2);

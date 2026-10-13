@@ -83,14 +83,16 @@ When the person taps a card, it arrives as an ordinary message from them. Read i
 - a Form: the submit label, then one "label: value" line per field
 If they answer a card by typing instead ("2", "the second one", "Thursday"), match it to that card's options in order.`;
 let _section = null;
+// The component library's own text says "tables for comparisons"; there is no table component here (Rows is the closest), so say that.
+const LIB_FIX = [["(tables for comparisons, charts for trends, forms for input, etc.)", "(Rows for label and value lists, Bars for trends, Form for input, etc.)"]];
 export function genuiPromptSection() {
-  return _section ||= `${INTRO}\n\n${generatePrompt({
+  return _section ||= `${INTRO}\n\n${LIB_FIX.reduce((t, [a, b]) => t.replace(a, b), generatePrompt({
     root: "Stack",
     preamble: "How to write a card reply (openui-lang):",
     components: Object.fromEntries(Object.entries(COMP).map(([k, [signature, description]]) => [k, { signature, description }])),
     examples: EXAMPLES,
     additionalRules: RULES,
-  }).trim()}`;
+  }).trim())}`;
 }
 
 // ---- Detection (the contract, same as design-sandbox src/genui-render.ts section 1: keep the two in step) ----

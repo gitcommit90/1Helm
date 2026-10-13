@@ -14,7 +14,7 @@ for (const value of [undefined, "", "true", "1", "1HC"]) {
   assert.equal(route2On(env), false);
   for (const [path, scope] of [["/c/card-token", "global"], ["/composio/webhook", "global"], ["/stripe/webhook", "global"], ["/api/apps", "workspace"], ["/api/portal", "workspace"], ["/api/res/main/sessions/123/livenotes", "workspace"], ["/api/res/main/event-log", "workspace"], ["/api/res/main/event-workflow", "workspace"]])
     assert.equal(routeEnabled(env, path, scope), false, `${scope} ${path}`);
-  for (const tool of ["app_run", "gmail_search", "text_person", "browser_task", "buy_with_link"])
+  for (const tool of ["app_run", "gmail_search", "text_person", "browser_task", "start_browser_task", "list_browser_tasks", "stop_browser_task", "buy_with_link"])
     assert.equal(toolEnabled(env, tool), false, tool);
   assert.equal(routeEnabled(env, "/api/share", "workspace"), true);
   assert.equal(toolEnabled(env, "web_search"), true);
@@ -29,6 +29,7 @@ assert.ok(registry(on).crons.includes("bee"));
 assert.equal(route2On(on), true);
 assert.equal(routeEnabled(on, "/api/apps", "workspace"), true);
 assert.equal(toolEnabled(on, "app_run"), true);
+for (const tool of ["start_browser_task", "list_browser_tasks", "stop_browser_task"]) assert.equal(toolEnabled(on, tool), true, tool);
 
 const publicPrompt = staticCore({ apps: false, browser_task: false, ee: false });
 for (const slug of ["gmail", "google-calendar", "google-drive"]) {

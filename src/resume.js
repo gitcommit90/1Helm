@@ -221,7 +221,12 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
     // A helper carries on through its own runner (deadline timers, approvals forwarding, its result handed back to the task).
     if (r.kind === "helper" && opts.helper?.id != null) {
       const h = this.sql.exec("SELECT * FROM helpers WHERE id=?", opts.helper.id).toArray()[0];
-      if (h && h.status === "running") { const run = this.helperRun(h, { resume: opts.resume, card: r.card }).catch((e) => console.log("resumed helper", e.message)); this.ctx.waitUntil?.(run); (this._resumeRuns ||= []).push(run); return run; }
+      if (h && h.status === "running") { const run = this.helperRun(h, { resume: opts.resume, card: r.card, phase: opts.coordinator_phase || null }).catch((e) => console.log("resumed helper", e.message)); this.ctx.waitUntil?.(run); (this._resumeRuns ||= []).push(run); return run; }
+      // A Stop may have landed just before the deployment. Never restart a
+      // terminal helper's saved turn or leave its journal waking the alarm.
+      this.sql.exec("DELETE FROM turn_runs WHERE card=?", r.card); this.sql.exec("DELETE FROM turn_effects WHERE card=?", r.card);
+      commitCard(this.sql, null, r.card, { status: h?.status === "done" ? "complete" : h?.status === "failed" ? "failed" : "stopped" });
+      return null;
     }
     const run = (async () => {
       let res;
@@ -302,7 +307,8 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
         if (r && !r.lost) tc.reattached = (tc.reattached || 0) + 1;
       }
       else if (eff.cls === "once") {
-        const h = name === "start_helper" ? this.sql.exec("SELECT id, name FROM helpers WHERE parent_card=? AND started>=? ORDER BY id LIMIT 1", turn, eff.at).toArray()[0] : null;
+        const h = name === "start_helper" ? this.sql.exec("SELECT id, name FROM helpers WHERE parent_card=? AND spawn_call_id=? LIMIT 1", turn, String(call.id)).toArray()[0] ||
+          this.sql.exec("SELECT id, name FROM helpers WHERE parent_card=? AND spawn_call_id IS NULL AND started>=? ORDER BY id LIMIT 1", turn, eff.at).toArray()[0] : null;
         const w = name !== "start_helper" ? this.sql.exec("SELECT id, name FROM workflows WHERE COALESCE(session,'')=? AND created>=? ORDER BY id LIMIT 1", tc.session || "", eff.at).toArray()[0] : null;
         if (h) text = `Helper #${h.id} "${h.name}" was already started (1Helm was updated just after). It's still yours: don't start it again.`;
         else if (w) text = `Already scheduled as #${w.id} "${w.name}" (1Helm was updated just after). Don't schedule it again.`;

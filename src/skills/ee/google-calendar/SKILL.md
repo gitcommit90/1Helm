@@ -21,7 +21,7 @@ skill adds 1Helm's defaults and rules on top. Where they disagree, this wins.
 
 ## Which tool
 - What's on, am I free: `calendar_events` (from and to with their offset).
-- A plain new event: `calendar_add`. Always pass their time zone as its time zone input.
+- A plain new event: `calendar_add`. Set the time zone input only when the event is in a zone other than theirs.
 - Moving, changing, deleting, other calendars, free-slot search, reminders, video links, repeating events: `app_actions` with app
   googlecalendar, then `app_run`.
 

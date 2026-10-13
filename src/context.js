@@ -10,7 +10,7 @@ export const CONTEXT_TOOLS = [
 // Frequently used primitives need no discovery round trip. Every other available
 // tool remains discoverable by its actual name and description, never hidden by a
 // request classifier. Exclusions are applied BEFORE catalog/schema selection.
-export const EAGER_TOOLS = new Set(["load_tools", "read_context", "recall_memory", "ambient_query", "location_query", "read_skill", "read_doc", "run_command", "read_file", "write_file", "edit_file", "web_search", "fetch_url", "app_actions", "app_run", "list_channels", "create_channel", "start_task", "list_tasks", "read_task", "rename_task", "remember", "recall_history", "update_todos", "file_text"]);
+export const EAGER_TOOLS = new Set(["load_tools", "read_context", "recall_memory", "ambient_query", "location_query", "read_skill", "read_doc", "run_command", "read_file", "write_file", "edit_file", "web_search", "fetch_url", "app_actions", "app_run", "list_channels", "create_channel", "start_task", "list_tasks", "read_task", "rename_task", "remember", "recall_history", "update_todos", "file_text", "start_helper", "list_helpers", "send_helper", "stop_helper", "start_browser_task", "list_browser_tasks", "stop_browser_task"]);
 export function toolCatalog(tools) {
   return tools.filter((t) => !EAGER_TOOLS.has(t.function.name)).map((t) => `- ${t.function.name}: ${t.function.description.split(/(?<=\.)\s/)[0]}`).join("\n");
 }

@@ -1,6 +1,5 @@
 // Genuine streaming composer dictation. Audio/transcripts live only in this socket, never storage or logs.
 import { ENDPOINTS, endpointOk, privacyOf } from './privacy.js';
-export const LIVE_MODEL = '@cf/deepgram/nova-3';
 export const PCM_SECOND = 32000, WINDOW_BYTES = PCM_SECOND * 60;
 const BURST_BYTES = PCM_SECOND * 2, STARTUP_BYTES_MAX = PCM_SECOND * 8;
 // Workers AI Nova-3 realtime: $0.0092/audio minute, usual 15% markup (2026-10-11).
@@ -28,8 +27,8 @@ export function boundedDictationLedger(ledger, deps = {}) {
   const bound = { reserve: (...a) => call('reserve', a), settle: (...a) => call('settle', a), dictationLease: (...a) => call('dictationLease', a) };
   boundedLedgers.add(bound); return bound;
 }
-export function liveProviderRequest(env) {
-  const query = new URLSearchParams({ model: LIVE_MODEL, encoding: 'linear16', sample_rate: '16000', channels: '1', interim_results: 'true', punctuate: 'true', endpointing: '300', mip_opt_out: 'true' });
+export function liveProviderRequest(env, model) {
+  const query = new URLSearchParams({ model, encoding: 'linear16', sample_rate: '16000', channels: '1', interim_results: 'true', punctuate: 'true', endpointing: '300', mip_opt_out: 'true' });
   return { url: `https://gateway.ai.cloudflare.com/v1/${env.CF_ACCOUNT_ID}/${env.AIG_ID}/workers-ai?${query}`, headers: {
     Upgrade: 'websocket', 'cf-aig-authorization': `Bearer ${env.AIG_TOKEN}`,
     'cf-aig-collect-log': 'false', 'cf-aig-collect-log-payload': 'false', 'cf-aig-skip-cache': 'true',
@@ -53,7 +52,8 @@ export async function transcribeLive(req, env, ledger, { tenant, look = false } 
   if (req.headers.get('Origin') !== new URL(req.url).origin) return fail(403, 'Open dictation from this app.');
   if (req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return fail(426, 'A WebSocket connection is required.');
   if (!env.AIG_TOKEN || !env.AIG_ID || !env.CF_ACCOUNT_ID) return fail(503, 'Live dictation is unavailable.');
-  if (!endpointOk(ENDPOINTS.transcription[LIVE_MODEL]?.['cloudflare-workers-ai'], await privacyOf(env, tenant))) return fail(451, 'Live dictation is unavailable with your privacy setting.');
+  const liveModel = deps.liveModel || await (await import('./ee/index.js')).jobModel(env, 'live_dictation');   // the saved model of the job "live_dictation"
+  if (!endpointOk(ENDPOINTS.transcription[liveModel]?.['cloudflare-workers-ai'], await privacyOf(env, tenant))) return fail(451, 'Live dictation is unavailable with your privacy setting.');
   const id = `dictation:${crypto.randomUUID()}`;
   ledger = boundedDictationLedger(ledger, deps);
   let acquired = false, reserveAttempted = false, upstream;
@@ -65,7 +65,7 @@ export async function transcribeLive(req, env, ledger, { tenant, look = false } 
     if (!hold.ok) { await ledger.dictationLease(id, true); return fail(402, 'Your usage allowance is unavailable.'); }
     // The fetch signal remains associated with its upgraded WebSocket. AbortSignal.timeout
     // would therefore kill healthy dictation at 15s; clear a connection-only timer on upgrade.
-    const spec = liveProviderRequest(env), controller = new AbortController();
+    const spec = liveProviderRequest(env, liveModel), controller = new AbortController();
     const connectTimer = setTimeout(() => controller.abort(), 15000);
     let response;
     try { response = await (deps.fetch || fetch)(spec.url, { headers: spec.headers, signal: controller.signal }); }

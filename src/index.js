@@ -63,8 +63,8 @@ import { saveNightlyPool } from "./ee/index.js";
 import { route2On } from "./ee/index.js";
 import { privacyBoot, privacyView, setPrivacy, isPrivacyLevel } from "./privacy.js";   // AI data privacy (onboarding step, boot)
 import { routerPage, routerData, routerLabApi } from "./internal-shim.js";
-import { pruneShadow, shadowData, askSystemone } from "./ee/index.js";
-import { deciderModel } from "./ee/index.js";
+import { pruneShadow, shadowData } from "./ee/index.js";
+import { decisionCaller, askDecider, jobModel, jobRoute } from "./ee/index.js";
 import { pruneLab, labData } from "./internal-shim.js";
 import { parityRoute } from "./internal-shim.js";
 import { pageDialog } from "./page-dialog.js";
@@ -175,7 +175,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "223";
+const APP_V = "224";
 const archive = (env, tenantId) => env.ARCHIVE.get(env.ARCHIVE.idFromName(`archive:${tenantId}`));
 const IMPORT_PART = 50 * 1024 * 1024;
 export async function handleImport(req, env, tenantId, importId, rest) {
@@ -843,7 +843,9 @@ export default {
       }
 
       if (p === "/auth/logout" && req.method === "POST") {
-        await endSession(env, req);
+        // A failed revoke must not look like a logout: the browser keeps its cookie and is told to try again.
+        try { await endSession(env, req); }
+        catch { return json({ error: "We couldn't log you out. Please try again." }, 503); }
         return new Response(null, { status: 204, headers: { "set-cookie": "hc_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0", "cache-control": "no-store" } });
       }
 
@@ -1429,7 +1431,7 @@ export default {
           try {
             let res = null;
             if (viaOR) { try { res = await (await openRouterChat(env, { messages, max_tokens: OR_MAX_OUT }, `ledger:${t.id}`, null, { tenant: t.id, kind: "api-chat" })).json(); orCost = res.usage?.cost ?? null; served = res.model; } catch (e) { if (e.orStatus === 400) throw e; res = null; } }
-            if (!res) res = await env.AI.run(env.MODEL, { messages, max_tokens: MAX_OUT, reasoning_effort: "low" }, aiOpts(env, { tenant: t.id, kind: "api-chat-fallback" }));
+            if (!res) res = await env.AI.run(await jobModel(env, "workers_ai_chat"), { messages, max_tokens: MAX_OUT, reasoning_effort: "low" }, aiOpts(env, { tenant: t.id, kind: "api-chat-fallback" }));
             let text = res.choices?.[0]?.message?.content ?? res.response ?? "";
             if (text.includes("</think>")) text = text.split("</think>").pop();
             out = text.trim(); usage = res.usage || {};
@@ -1441,7 +1443,7 @@ export default {
           const costNano = orCost != null ? Math.ceil(orCost * 1e9) : Math.ceil((inTok - cached) * PRICE.in + cached * PRICE.cached + outTok * PRICE.out);
           const chargeNano = Math.ceil(costNano * MARKUP);
           const st = await L.settle(rid, chargeNano, [{ role: "user", content: String(message) }, { role: "assistant", content: out }]);
-          return json({ reply: out, charge_nano: chargeNano, model: served || env.MODEL, usage: { in: inTok, cached, out: outTok }, state: st });
+          return json({ reply: out, charge_nano: chargeNano, model: served || await jobModel(env, "workers_ai_chat"), usage: { in: inTok, cached, out: outTok }, state: st });
         }
 
         if (sub === "/api/topup" && req.method === "POST") {
@@ -1472,19 +1474,19 @@ export default {
         // TEST_MODE only: one tiny call down each model path, reporting whether it went through the AI Gateway.
         if (sub === "/api/test/aig" && env.TEST_MODE === "1") {
           const out = { gateway: env.AIG_ID || null, tenant: t.id }, m = { tenant: t.id, kind: "aig-check" }, msg = [{ role: "user", content: "Say OK" }];
-          try { const r = await openRouterChat(env, { messages: msg, max_tokens: 40 }, null, { model: "deepseek/deepseek-v4.1-flash", effort: "none", fallbacks: [] }, m);
+          try { const r = await openRouterChat(env, { messages: msg, max_tokens: 40 }, null, jobRoute("label"), m);
             const j = await r.json(); out.openrouter = { ok: true, via: r.headers.get("cf-aig-log-id") ? "gateway" : "direct", log: r.headers.get("cf-aig-log-id"), model: j.model, cost: j.usage?.cost }; } catch (e) { out.openrouter = { ok: false, error: String(e.message).slice(0, 200) }; }
-          try { const r = await env.AI.run(env.MODEL, { messages: msg, max_tokens: 40, chat_template_kwargs: { enable_thinking: false } }, aiOpts(env, m));
+          try { const r = await env.AI.run(await jobModel(env, "workers_ai_chat"), { messages: msg, max_tokens: 40, chat_template_kwargs: { enable_thinking: false } }, aiOpts(env, m));
             out.workers_ai = { ok: true, log: env.AI.aiGatewayLogId || null, text: String(r.choices?.[0]?.message?.content ?? r.response ?? "").slice(0, 40) }; } catch (e) { out.workers_ai = { ok: false, error: String(e.message).slice(0, 200) }; }
-          try { const r = await env.AI.run("@cf/cloudflare/clef-flash", { model: "clef-flash", state: { conversation: "user: hi" }, questions: { greeting: { type: "noul", instructions: "Is this a greeting?" } } }, aiOpts(env, m));
+          try { const r = await (await decisionCaller(env, "memory_supersede", m))({ state: { conversation: "user: hi" }, questions: { greeting: { type: "noul", instructions: "Is this a greeting?" } } });
             out.clef = { ok: true, log: env.AI.aiGatewayLogId || null, answers: !!(r?.answers || r?.result?.answers) }; } catch (e) { out.clef = { ok: false, error: String(e.message).slice(0, 200) }; }
-          try { const r = await askSystemone(env, deciderModel(env), { task: "say hi" }, { done: { type: "noul", instructions: "Is the task trivial?" } }, { meta: m, title: "1Helm aig-check" });
+          try { const r = await askDecider(env, { task: "say hi" }, { done: { type: "noul", instructions: "Is the task trivial?" } }, { meta: m, title: "1Helm aig-check" });
             out.decider = { ok: !r.error, model: r.model, ms: r.ms, nano: r.nano, error: r.error || undefined }; } catch (e) { out.decider = { ok: false, error: String(e.message).slice(0, 200) }; }
           return json(out);
         }
         if (sub === "/api/test/stream" && env.TEST_MODE === "1") {
           const tools = [{ type: "function", function: { name: "run_command", description: "Run a shell command", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } }];
-          const s = await env.AI.run(env.MODEL, { messages: [{ role: "user", content: url.searchParams.get("q") || "List the files in the current directory using the tool." }], tools, stream: true, max_tokens: 300, chat_template_kwargs: { enable_thinking: false } });
+          const s = await env.AI.run(await jobModel(env, "workers_ai_chat"), { messages: [{ role: "user", content: url.searchParams.get("q") || "List the files in the current directory using the tool." }], tools, stream: true, max_tokens: 300, chat_template_kwargs: { enable_thinking: false } });
           return new Response(s, { headers: { "content-type": "text/plain" } });
         }
         if (sub === "/api/test/wf" && env.TEST_MODE === "1") { const d = await archive(env, t.id).channel(url.searchParams.get("c") || "7", 1); return json({ workflows: d.workflows, followups: d.followups }); }
@@ -1742,7 +1744,7 @@ export default {
           const o = row && await env.WS.get(row.r2key); if (!o) return new Response("not found", { status: 404 });
           return new Response(o.body, { headers: { "content-type": "image/jpeg", "cache-control": "private, max-age=31536000, immutable" } });
         }
-        const rp = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/(chat|stream|transcript|reset|workflows|runs|outbox|import-workflows|run-workflow|workflow-status|ensure|reschedule|gates|anatomy|memory|engine|browser-agent|turnstats|approvals|egress|approve|approval-policy|revoke-grant|sentinel|clef-doors|genui|event-log|event-workflow|network)$/);
+        const rp = sub.match(/^\/api\/res\/([a-z0-9][a-z0-9-]{0,62})\/(chat|stream|transcript|reset|workflows|runs|outbox|import-workflows|run-workflow|workflow-status|ensure|reschedule|gates|anatomy|memory|engine|browser-agent|browser-wait|browser-jobs-stop|turnstats|approvals|egress|approve|approval-policy|revoke-grant|sentinel|clef-doors|genui|event-log|event-workflow|network)$/);
         if (cp || rp) {
           const chans = await archive(env, t.id).channels();
           const slugOf = (c) => c.slug || c.name;
@@ -1763,6 +1765,8 @@ export default {
           if (rp[2] === "event-log") return json(await R.eventLog(url.searchParams.get("id") ? Number(url.searchParams.get("id")) : null, 50));   // app-events.js: verdicts only, never event bodies
           if (rp[2] === "event-workflow" && env.TEST_MODE === "1" && req.method === "POST") { await R.bind(t.id, slugOf(ch), String(ch.id)); return json(await R.testEventWorkflow(await boundedJson(req))); }   // dev live checks: a made-up trigger, never sent to Composio
           if (rp[2] === "runs") return json(await R.runs(Number(url.searchParams.get("n")) || 30));
+          if (rp[2] === "browser-jobs-stop" && env.TEST_MODE === "1" && req.method === "POST") return json(await R.stopBrowserJobs());   // test only: stop any working browser job
+          if (rp[2] === "browser-wait" && env.TEST_MODE === "1" && req.method === "POST") { const b = await boundedJson(req); return json(await R.setBrowserWait(b.ms)); }   // test only: how long browser_task waits ("" = default)
           if (rp[2] === "browser-agent" && env.TEST_MODE === "1" && req.method === "POST") { const b = await boundedJson(req); return json(await R.setBrowserAgent(String(b.mode ?? ""))); }
           if (rp[2] === "genui" && env.TEST_MODE === "1" && req.method === "POST") { const b = await boundedJson(req); return json(await R.setGenui(String(b.mode ?? ""))); }
           if (rp[2] === "engine" && env.TEST_MODE === "1" && req.method === "POST") { const b = await boundedJson(req); return json(await R.setEngine(String(b.engine))); }

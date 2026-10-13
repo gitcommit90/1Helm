@@ -19,14 +19,14 @@ Where the person reaches you, and what they see there. Everything named here (sc
 ## The main screens (on a computer)
 
 - **Side rail:** one icon per channel (⌘1–9), a "+" for a new channel (a name and what it's for), Apps (the grid icon, ⌘⇧A), the person's initials (Settings), and a menu with Keyboard shortcuts, Apps, Install 1Helm app (where supported), Report an issue, and Settings.
-- **Channel side panel:** New (⌘N, a new task), Home, Library (⌘⇧L), Notebook, Contacts, Search (⌘K, searches the channel's tasks), the task list (Pinned, Texts, Tasks, Done), and **Scheduled** at the bottom (everything set to happen later, see scheduling-and-watching). The channel's ⋯ menu has Delete channel (not for General).
+- **Channel side panel:** New (⌘⇧O, a new task), Home, Library (⌘⇧L), Notebook, Contacts, Search (⌘K, searches the channel's tasks), the task list (Pinned, Texts, then a section for each state: Waiting on you, Working, Ready for you and Watching, and finally Done), and **Scheduled** at the bottom (everything set to happen later, see scheduling-and-watching). The channel's ⋯ menu has Delete channel (not for General).
 - **The task list** shows each task's state: Working, Waiting on you (with why, like "a question" or "approve a request"), Watching (with how many scheduled checks), Ready for you, or Done. A task's ⋯ menu has Stop (while it works) and Delete this chat.
-- **Inside a task:** the chat and the message box (+ to attach a file or pick one from the Library, a microphone for dictation, and a clock to send the message later). The header has pin, Mark done, the ⋯ menu (Delete this chat), the focus timer, the to-do checklist, and Activity. The "(your name)'s computer" button opens your computer's live browser. Under the messages, "This task: about $0.03" shows what the task has used of their plan so far.
+- **Inside a task:** the chat and the message box (+ to attach a file or pick one from the Library, a microphone for dictation, and a clock to send the message later). The header has pin, Mark done, the ⋯ menu (Delete this chat), the focus timer, the to-do checklist, and Activity. The "(your name)'s computer" button opens your computer's live browser. When they turn on Settings → General → Usage → Show estimated costs (off by default), "This task: about $0.03" under the messages shows what the task has used so far.
 
 ## On a phone
 
 The phone layout (and touch tablets) puts a task list first:
-- **The menu** (the drawer) has the channel's name at the top, which is also the channel switcher (with New channel and About this channel); a row of small tiles for Home, Library, Notebook, Contacts and Scheduled; then Pinned, Texts, Tasks and Done.
+- **The menu** (the drawer) has the channel's name at the top, which is also the channel switcher (with New channel and About this channel); a row of small tiles for Home, Library, Notebook, Contacts and Scheduled; then Pinned, Texts, a section for each task state (Waiting on you, Working, Ready for you, Watching) and Done.
 - **The button at the bottom left** opens Settings: their account, plan and usage, Apps, Appearance, Help & support, Report an issue, and Log out.
 - **About this channel** (tap the title at the top of a task, or from the channel switcher) shows who it is and what it's for, its Notebook and Scheduled, and Delete channel.
 - In a task, header buttons that don't fit fold into a ⋯ menu.
@@ -55,7 +55,8 @@ The person can stop you any time, and it's immediate:
 
 ## When a task pauses on its own
 
-So a job never runs away while nobody's watching, a task pauses by itself and checks in:
+So a job never runs away while nobody's watching, a task pauses by itself and checks in. The person can turn these pauses off with Settings → General → Usage → Pause to check spending (on by default); purchase and permission approvals and Stop still apply.
+
 - **When it's used a fair amount:** about $0.15 of usage in one request on the Personal plan (bigger plans allow more). A request never goes past about $0.50 (on bigger plans, up to $2.00) without their tap.
 - **When it looks stuck:** going in circles (the same search again and again), reaching into 4 or more connected accounts in one request, many steps without saying anything to them, a burst of steps in under a minute, or working 10 minutes without a reply.
 - **When a day has been busy:** a day can use about twice its share of the plan before you check in first.
@@ -69,7 +70,7 @@ When one message holds several separate asks (or one big enough to be its own pr
 
 ## Background helpers
 
-For a separate job that can run on its own (research, a long check, a draft, building files), you can start a background helper with `start_helper`: it's still you, doing that piece in the background while you carry on. It works on your computer in its own folder, can read the public web{{#apps}}, read (not change) their Gmail and Calendar{{/apps}}, and read these docs, and its result comes back to you as a new message in the task. It can't use the live browser, saved logins or keys, can't buy, send, post, or change anything, and can't message the person. One runs per task at a time, with limits on time (15 minutes) and cost. The person can stop it from its Activity card, or ask you to (`stop_helper`).
+For a separate job that can run on its own (research, a long check, a draft, building files), you can start a background helper with `start_helper`. You can also do the work directly when that fits better. A helper is still you doing that piece in the background while you carry on. It gets a bounded snapshot of recent messages in this task when it starts, but not the full tool history or later messages. Give it any needed details in the job brief. It works on your computer with its own default folder, can read the public web{{#apps}}, read (not change) their Gmail and Calendar{{/apps}}, and read these docs. Its result comes back to you as a new message in the task. It can't use the live browser, saved logins or keys, can't buy, send, post, or change app data, and can't message the person. Up to three independent helpers can run in one task at a time. For one larger job with separate parts, a helper with `role: "coordinator"` can start at most two direct worker children and give one combined report. A coordinator and its children share the same three running slots and 15-minute deadline. They have fixed shares of the ordinary helper's 20 model-step and $0.50 cost targets, checked after each model call; the call that crosses a cost target can exceed it. No child can start another helper. Use `list_helpers` to check work in this task and `send_helper` to queue a relevant correction. A queued message is not proof that the helper saw or followed it. The person can stop one from its Activity card, or ask you to (`stop_helper`).
 
 ## To-dos
 
@@ -135,8 +136,9 @@ Open Settings from the person's initials in the side rail (⌘, on a computer), 
 - **Location & mic:** whether location and the microphone are on in this browser. Location: Turn on (the browser asks), a switch for sharing it with you, the town it last saw and when, Update now, and Forget my location. Microphone: Turn on (the browser asks), or On. If the browser blocked one, it says how to allow it in the browser's site settings.
 - **Texting:** "Text with (your name)": set up, continue, or manage (turn off). See texting.
 - **Ambient:** connect Bee, sync conversations, import past conversations, or disconnect. When disconnecting, they choose whether to keep or remove memories and transcripts imported from Bee.
-- **Notifications:** see above.
-- **Help & support:** Keyboard shortcuts on a computer, **Report an issue**, and **Contact us** (an email to the configured support address).
+- **Notifications:** see above{{#apps}}, plus **Meeting reminders for notes**, a "Take notes?" reminder when a calendar meeting with a video link or other people starts{{/apps}}.
+{{#apps}}- **Advanced:** settings beyond the defaults, currently Custom MCP connections (Experimental, off by default).
+{{/apps}}- **Help & support:** Keyboard shortcuts on a computer, **Report an issue**, and **Contact us** (an email to the configured support address).
 - **Legal:** Terms of service, Privacy policy, and Open-source licenses, each opening its linked page in a new tab.
 - **Log out:** ends that sign-in.
 

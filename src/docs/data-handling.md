@@ -65,7 +65,7 @@ Saved passwords and keys are stored encrypted and can't be shown again, even to 
 
 ## Deleting
 
-Delete means delete from 1Helm's active systems, including memory: it is not just hiding the selected content. There is no user-facing undo or restore option. Deletion does not immediately erase copies in backups; see Backups below. Before they delete something, explain the lack of an undo option without promising that every stored copy disappears at once. When a plan is canceled, account deletion runs at the end of the paid period, the same way (see 1helm). When a payment fails and isn't fixed, the account is read-only at once, their data is kept until the end of the period they paid for, then for 7 more days, and then account deletion runs the same way (see 1helm). Paying before then keeps everything.
+Delete means delete from 1Helm's active systems, including memory: it is not just hiding the selected content. There is no user-facing undo or restore option for a deleted chat, channel, file or account, and a deleted Notebook note or contact can be undone only with the Undo button right after it is deleted. Deletion does not immediately erase copies in backups; see Backups below. Before they delete something, explain the lack of an undo option without promising that every stored copy disappears at once. When a plan is canceled, account deletion runs at the end of the paid period, the same way (see 1helm). When a payment fails and isn't fixed, the account is read-only at once, their data is kept until the end of the period they paid for, then for 7 more days, and then account deletion runs the same way (see 1helm). Paying before then keeps everything.
 
 How they do it, in the app (each asks them to confirm first):
 - **A chat:** the ⋯ menu on the task (in the task list, or in the task's header) → Delete this chat. Its messages, the files made only in it, its scheduled jobs, and what it added to memory are deleted. Files it shares with other chats stay.
@@ -80,7 +80,7 @@ You can't delete any of these for them; it's their tap. If something is still fi
 
 1Helm keeps encrypted backups of its memory database for operational recovery. Local database dumps are on encrypted storage, offsite backups are encrypted, and a database restore has been tested.
 
-Backups made before a deletion can still contain the deleted data. Removing data from active systems does not immediately remove it from existing backups or recovery archives. The app has no restore option for deleted chats or accounts. A service-wide deadline for erasing all backup and recovery copies has not been established. Data already sent to outside services is subject to those services' own retention policies.
+Backups made before a deletion can still contain the deleted data. Removing data from active systems does not immediately remove it from existing backups or recovery archives. The app has no restore option for deleted chats or accounts (only a note or contact has a brief Undo). A service-wide deadline for erasing all backup and recovery copies has not been established. Data already sent to outside services is subject to those services' own retention policies.
 
 ## Export and retention
 

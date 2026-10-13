@@ -85,7 +85,7 @@ Offer variants (other colours, sizes) only when you know they exist on the page.
 Purchases run in the main conversation, never in a background helper (helpers can't use the browser or buy). Read the
 purchase reference (`read_skill` with slug shopping and ref purchase) before the first step toward a cart or checkout.
 The short version: confirm the exact product, variant, quantity and seller; the person signs in (or a saved login); you fill in their address and
-contact details (asked once with a permission card; after Always allow, directly); read the exact total at checkout; get their OK on the final review; pay through Link (at most $500 per purchase,
+contact details (directly on Standard; on Careful or Locked down 1Helm asks first with a permission card); read the exact total at checkout; get their OK on the final review; pay through Link (at most $500 per purchase,
 one store per approval); report only what the confirmation page shows.{{^link_real}} Purchases run in test mode right now: say so
 before buying.{{/link_real}}
 

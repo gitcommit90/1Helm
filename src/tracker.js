@@ -4,7 +4,7 @@
 // Mutating calls take the per-turn context `tc` and emit the stream events themselves (card_event, card_update, card_close).
 import { isCustomSlug, CUSTOM_WORDS } from "./ee/index.js";
 import { S, structuredChat, structuredFormat } from "./structured-output.js";
-import { backgroundPolicy, backgroundRoute, backgroundReserve } from "./ee/index.js";
+import { backgroundPolicy, backgroundReserve, jobRoute } from "./ee/index.js";
 import { titleFrom } from "./resident.js";
 import { CHAT_TITLE_PROMPT, cleanChatTitle, fallbackChatTitle } from "./chat-titles.js";
 import { cardsToText } from "./genui.js";
@@ -63,12 +63,13 @@ export const SILENT_TOOLS = new Set(["update_todos", "react", "integration_hint"
 export const STEP_TITLE_PROP = { type: "string", description: "Step title the person sees: plain English, past tense, under 70 characters, saying what this call does for the task, e.g. \"Searched memory for fragmented message handling\" or \"Read the pricing section of plans.md\". No tool names or code." };
 // Adds `step_title` as the FIRST property of every tool (OpenAI {type:"function",function:{…}} or bare {name,parameters}).
 // required:true (the model's schema) also prepends it to `required`; pi's validator gets required:false.
-export function withStepTitles(tools, { required = true } = {}) {
+export const STEP_TITLE_PROP_SHORT = { type: "string", description: "Past tense, plain English, under 70 characters. No tool names or code." };   // payload-cut.js: the full rule is in the system prompt once
+export function withStepTitles(tools, { required = true, compact = false } = {}) {
   return (tools || []).map((t) => {
     const fn = t.function || t, p = fn.parameters || { type: "object", properties: {} };
     const props = p.properties || {};
     const req = (p.required || []).filter((x) => x !== "step_title");
-    const parameters = { ...p, properties: { step_title: STEP_TITLE_PROP, ...Object.fromEntries(Object.entries(props).filter(([k]) => k !== "step_title")) },
+    const parameters = { ...p, properties: { step_title: compact ? STEP_TITLE_PROP_SHORT : STEP_TITLE_PROP, ...Object.fromEntries(Object.entries(props).filter(([k]) => k !== "step_title")) },
       ...(required ? { required: ["step_title", ...req] } : p.required ? { required: req } : {}) };
     return t.function ? { ...t, function: { ...fn, parameters } } : { ...t, parameters };
   });
@@ -464,11 +465,11 @@ function legacyStepDetail(sql, session, id, seq) {
 // Captain 2026-10-05: the labeller is billed to the person (reserved and settled on the tenant ledger like any model call;
 // the caller adds it to stats.charge). false would make it platform overhead. cards.charge_nano records its cost either way.
 export const BILL_LABELLER = true;
-// gpt-oss-120b backup at low effort: reasoning is mandatory there, so OpenRouter refuses it with reasoning off ("none").
-export const OSS_BACKUP = { model: "openai/gpt-oss-120b", host: "cerebras", effort: "low" };
-export const LABEL_ROUTE = backgroundRoute("label");
-// Memory summaries (Resident.indexModel): the same Qwen → gpt-oss-120b (low) pair, then Workers AI.
-export const SUMMARY_ROUTE = { model: "qwen/qwen3.8-27b", host: "cerebras/fp16", effort: "none", fallbacks: [OSS_BACKUP] };
+// The label and memory summary routes only name their job; the model, reasoning level and fallbacks come from the saved settings
+// (model-jobs.js) when the call is made.
+export const LABEL_ROUTE = jobRoute("label");
+// Memory summaries (Resident.indexModel): the job "memory_summary", then Workers AI (the job "workers_ai_chat") as the last resort.
+export const SUMMARY_ROUTE = jobRoute("memory_summary");
 // Same managed model in either router; failure uses deterministic autoLabels.
 export const LABEL_CHORE = LABEL_ROUTE;
 export const labelChore = () => LABEL_CHORE;

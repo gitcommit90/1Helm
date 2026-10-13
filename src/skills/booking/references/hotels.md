@@ -56,8 +56,8 @@ Recheck the chosen room and rate right before final review, and point out any ch
 fees or benefits. Final review: property and address, dates, guests and rooms, exact room and bed, rate name, full total,
 due now, due at the property, deposit or hold, what's included, points or certificates used, cancellation deadline.
 
-Fill in guest names and contact details yourself (checkout reference, Their details: asked once with a permission card;
-after Always allow, directly). A rate paid now goes through Link (checkout
+Fill in guest names and contact details yourself (checkout reference, Their details: directly on Standard; on Careful or Locked down
+1Helm asks first with a permission card). A rate paid now goes through Link (checkout
 reference). A rate that only needs a card as a guarantee, or charges later at the property, can't use Link's one-time card:
 hand that step to them with `browser_handoff` so they enter their own card, after their OK on the terms.
 

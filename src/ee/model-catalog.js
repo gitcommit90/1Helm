@@ -1,7 +1,6 @@
 // Public OpenRouter metadata only. Never fetch a browser-supplied URL or forward an API key.
 // Replacement endpoints remain ZDR even on permissive accounts; the request price ceiling is unchanged.
-import { registered, eligibleHosts, PRIVACY_LEVELS } from "../privacy.js";
-import { MUSE_C, MUSE_S, autoToolsOnly } from "./pool.js";
+import { registered, eligibleHosts, PRIVACY_LEVELS, ENDPOINTS } from "../privacy.js";
 const OR = "https://openrouter.ai/api/v1";
 export const MODEL_PRICE_LIMIT = { prompt: 3, completion: 15 };
 const EFFORTS = ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -12,9 +11,12 @@ const host = (s) => typeof s === "string" && /^[a-z0-9][a-z0-9/_-]{0,99}$/.test(
 // Published endpoint flags can overstate support. Meta rejected `none` in the
 // live 2026-10-12 final-report check, matching the existing pool restriction.
 // Apply to saved snapshots too; this does not change model, limits or history.
-export function effectiveTaskCatalog(catalog, model = catalog?.id) {
-  return catalog && autoToolsOnly(model) ? { ...catalog, tool_choice: ["auto"] } : catalog;
+// settings: the saved model settings, which say which models accept only automatic tool choice.
+export function effectiveTaskCatalog(catalog, model = catalog?.id, settings = null) {
+  return catalog && settings?.catalog?.[model]?.quirks?.auto_tool_choice_only ? { ...catalog, tool_choice: ["auto"] } : catalog;
 }
+// Registered models whose endpoints all keep or train on requests (so they never appear on OpenRouter's zero-data-retention list).
+export const retainedModels = () => Object.keys(ENDPOINTS.chat).filter((m) => eligibleHosts(m, "zdr").length === 0);
 async function get(path) {
   try {
     // Workers supports follow/manual, not error. Manual plus !ok below rejects redirects without following them.
@@ -24,7 +26,7 @@ async function get(path) {
     return data;
   } catch { throw Object.assign(new Error("OpenRouter's model catalog is unavailable. Your current settings have not changed; try again shortly."), { status: 503 }); }
 }
-export function assessModelCatalog(models, endpoints) {
+export function assessModelCatalog(models, endpoints, { autoOnly = () => false } = {}) {
   const byId = new Map();
   for (const e of endpoints) { if (!byId.has(e.model_id)) byId.set(e.model_id, []); byId.get(e.model_id).push(e); }
   return models.filter((m) => validModelId(m.id) && m.architecture?.output_modalities?.includes("text")).map((m) => {
@@ -41,7 +43,7 @@ export function assessModelCatalog(models, endpoints) {
       && positive(e.context_length) && positive(e.max_completion_tokens)
       && (!efforts.some((x) => x !== "default") || e.supported_parameters?.includes("reasoning"))
       && (e.status == null || e.status === 0));
-    const knownRetained = m.id === MUSE_C || m.id === MUSE_S;
+    const knownRetained = registered(m.id) && eligibleHosts(m.id, "zdr").length === 0;
     const endpointsOk = capable.filter((e) => !registered(m.id) || eligibleHosts(m.id, knownRetained ? "unrestricted" : "zdr").some((h) => e.tag === h || e.tag.startsWith(`${h}/`)));
     if (!all.length) reasons.push("No verified zero-data-retention endpoint");
     else if (!priced.length) reasons.push("Above the existing $3 input / $15 output per million token limit, or unknown pricing");
@@ -56,27 +58,27 @@ export function assessModelCatalog(models, endpoints) {
       pricing: { prompt: limits.length ? Math.max(...limits.map((e) => price(e.pricing.prompt))) : price(m.pricing?.prompt),
         completion: limits.length ? Math.max(...limits.map((e) => price(e.pricing.completion))) : price(m.pricing?.completion) },
       json: limits.length > 0 && limits.every((e) => e.supported_parameters.includes("response_format")),
-      tool_choice: (autoToolsOnly(m.id) ? ["auto"] : ["auto", "none", "required", "function"]).filter((choice) => limits.length && limits.every((e) => e.supports_tool_choice?.[choice] === true)),
+      tool_choice: (autoOnly(m.id) ? ["auto"] : ["auto", "none", "required", "function"]).filter((choice) => limits.length && limits.every((e) => e.supports_tool_choice?.[choice] === true)),
     };
   });
 }
-export async function modelCatalog(env, { q = "" } = {}) {
+export async function modelCatalog(env, { q = "", settings = null } = {}) {
   if (typeof q !== "string" || q.length > 160) throw Object.assign(new Error("Search must be 160 characters or fewer."), { status: 400 });
-  const [models, endpoints, contributor, standard] = await Promise.all([get("/models"), get("/endpoints/zdr"),
-    get(`/models/${MUSE_C}/endpoints`), get(`/models/${MUSE_S}/endpoints`)]);
-  endpoints.push(...contributor.map((e) => ({ ...e, model_id: MUSE_C })), ...standard.map((e) => ({ ...e, model_id: MUSE_S })));
-  const all = assessModelCatalog(models, endpoints), query = q.trim().toLowerCase();
+  const retained = retainedModels(), autoOnly = (id) => !!settings?.catalog?.[id]?.quirks?.auto_tool_choice_only;
+  const [models, endpoints, ...kept] = await Promise.all([get("/models"), get("/endpoints/zdr"), ...retained.map((m) => get(`/models/${m}/endpoints`))]);
+  retained.forEach((m, i) => endpoints.push(...kept[i].map((e) => ({ ...e, model_id: m }))));
+  const all = assessModelCatalog(models, endpoints, { autoOnly }), query = q.trim().toLowerCase();
   return { models: all.filter((m) => !query || `${m.id} ${m.name}`.toLowerCase().includes(query)), fetched_at: Date.now(),
-    policy: "New models use verified zero-data-retention endpoints. Existing registered Muse models retain their current privacy restrictions. All replacements require tool support and the existing $3 input / $15 output per million token ceiling." };
+    policy: "New models use verified zero-data-retention endpoints. Existing registered models keep their current privacy restrictions. All replacements require tool support and the existing $3 input / $15 output per million token ceiling." };
 }
 // A new task needs published limits, including for built-in slots. Fetch once
 // per task (the caller persists the result), never once per step or message.
-export async function taskModelCatalog(model) {
+export async function taskModelCatalog(model, settings = null) {
   if (!validModelId(model)) throw new Error("Invalid task model ID.");
   const known = registered(model);
   const [models, endpoints] = await Promise.all([get("/models"), get(known ? `/models/${model}/endpoints` : "/endpoints/zdr")]);
   const selected = known ? endpoints.map((e) => ({ ...e, model_id: model })) : endpoints.filter((e) => e.model_id === model);
-  const record = assessModelCatalog(models.filter((m) => m.id === model), selected)[0];
+  const record = assessModelCatalog(models.filter((m) => m.id === model), selected, { autoOnly: (id) => !!settings?.catalog?.[id]?.quirks?.auto_tool_choice_only })[0];
   if (!validCatalogRecord(record, model)) throw Object.assign(new Error(`Published capabilities for ${model} are unavailable or incompatible. No task request was sent; try again shortly.`), { status: 503 });
   return record;
 }

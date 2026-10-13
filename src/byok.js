@@ -230,14 +230,14 @@ async function firstEventOk(cfg, stream) {
 // privacy: the account's AI data privacy level (privacy.js). Sign in with OpenRouter keys get it as OpenRouter's per-request data policy
 // (their chosen model is kept; if none of its endpoints qualify, OpenRouter refuses and the person is told why, never moved to another
 // model or to 1Helm's own models). Other endpoints can't be steered: their provider's terms apply (Settings says so).
-export async function byokChat(cfg, body, { fast = false, signal = null, fetchImpl = globalThis.fetch, privacy = null } = {}) {
+export async function byokChat(cfg, body, { fast = false, signal = null, fetchImpl = globalThis.fetch, privacy = null, noTemperature = null } = {}) {
   if (!cfg || cfg.missing || typeof cfg.key !== "string") throw new ByokError(missingText(cfg));   // "" = no key (Ollama, LM Studio, vLLM…)
   const model = fast ? (cfg.fast || cfg.model) : cfg.model, req = { ...byokBody(body, model), ...byokPrivacyFields(cfg, privacy) };
   if (body.response_format?.type === "json_schema" && isOpenRouterBase(cfg.base)) {
     req.provider = { ...req.provider, require_parameters: true };
     // These OpenRouter endpoints advertise schemas but not temperature; strict parameter filtering otherwise
     // rejects the request before inference. Respect the person's selected main/fast model and every privacy field.
-    if (["anthropic/claude-haiku-5.5", "openai/gpt-6-luna"].includes(model)) delete req.temperature;
+    if (noTemperature?.(model)) delete req.temperature;   // the saved facts of that model say it has no temperature setting
   }
   let r;
   try { r = await byokPost(cfg, req, { signal, fetchImpl }); }

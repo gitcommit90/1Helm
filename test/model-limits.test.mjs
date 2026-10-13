@@ -47,7 +47,7 @@ try{
  await scenario('capped no-tool cost enters soft spend guard',{
   setup(W){const base=W.R.spendStart.bind(W.R);W.R.spendStart=async(tc,opts)=>{await base(tc,opts);tc.guard.soft=10000000;};},
   fetch:(_b,_s,n)=>n===1?finish('length','',.02):finish('stop','I stopped at the spending check.',.001),status:'paused',
-  async run({run,requests}){const r=await run;assert.equal(requests.length,2);assert(!requests[1].body.tools,'soft budget permits only tools-off report');assert.equal(r.error,null);assert.equal(r.hit_limit,1);return r;}
+  async run({run,requests}){const r=await run;assert.equal(requests.length,2);assert(!requests[1].body.tools||requests[1].body.tool_choice==='none','soft budget permits only a tools-off report: no tools, or the same tools with tool_choice none (r35-cache-fix)');assert.equal(r.error,null);assert.equal(r.hit_limit,1);return r;}
  });
  await scenario('usage before silent tail is billed exactly once',{
   fetch:()=>new Response(new ReadableStream({start(c){c.enqueue(event({choices:[{delta:{}}],usage:{prompt_tokens:321,completion_tokens:123,cost:.004}}));}})),
@@ -103,7 +103,7 @@ try{
  await scenario('late steer reporting timeout preserves the steer and truthful failure',{
   opts:{max_steps:2},
   fetch:(_b,_s,n,W)=>{if(n===2){const session=W.dodb.prepare('SELECT session FROM cards LIMIT 1').get().session;assert.equal(W.R.steerOrOpen(session,{type:'msg',text:'Also include my new request'}).mode,'steer');}return n<=2?toolAnswer():new Promise(()=>{});},
-  async run({run,W,requests}){const r=await run;assert.equal(r.error,'model_timeout');assert.match(r.reply,/stopped this attempt/);assert.equal(requests.length,3);assert(!requests[2].body.tools);assert.match(JSON.stringify(requests[2].body.messages),/Also include my new request/);assert.equal(W.cards().length,1);return r;}
+  async run({run,W,requests}){const r=await run;assert.equal(r.error,'model_timeout');assert.match(r.reply,/stopped this attempt/);assert.equal(requests.length,3);assert(!requests[2].body.tools||requests[2].body.tool_choice==='none');assert.match(JSON.stringify(requests[2].body.messages),/Also include my new request/);assert.equal(W.cards().length,1);return r;}
  });
  await scenario('failure-journal write error still releases the model hold',{
   setup(W){W.R.journalModelRecovery=()=>{throw new Error('fixture journal unavailable');};},

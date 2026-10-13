@@ -56,6 +56,7 @@ export class UsageLedger extends DurableObject {
   }
   async guardInfo() { return { spend_pauses: this.spendPreferences().enabled, allowance_nano: 0, day_spent_nano: this.dayInfo().spent_nano, day_ok_nano: 0 }; }
   async noticePending() { return null; }
+  async notePriceUnknown() { return null; }   // self-hosted usage keeps no price-unknown event log
   async noticeSeen() { return { ok: true }; }
   async usageNotice() { return null; }
 }

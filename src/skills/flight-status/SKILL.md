@@ -66,8 +66,8 @@ watch for it already:
   read, what counts as a change, how to tell them (in the task, or by `text_person` only if they asked to be texted), and when
   to stop. Each run sees only that, not this conversation.
 - **Cadence:** about daily while departure is more than 48 hours away, hourly from 48 hours to 6 hours out, every 15 minutes
-  from 6 hours before departure until it lands. Update the job's schedule as it moves between bands, and end it with
-  `set_workflow_status` after landing.
+  from 6 hours before departure until it lands. When it moves to a new band, complete the old job with `set_workflow_status` and create the new one with
+  `schedule_workflow` using `replace_existing: true`; end it with `set_workflow_status` after landing.
 - **A gate** (`set_workflow_gate`) makes the quiet checks cost no AI: a small script saved in `/workspace/workspace/` that
   reads the status, compares it with the last reported one, and exits 0 when nothing changed, 3 when something did. Run it
   once yourself before relying on it.

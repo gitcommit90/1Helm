@@ -44,13 +44,12 @@
 // pplx-embed-v1-0.6b ties the best quality at a third of bge-m3's price and the lowest latency, so it indexes the sidecars.
 import { DurableObject } from "cloudflare:workers";
 import { S, structuredChat, structuredFormat, workersStructuredResponse } from "./structured-output.js";
-import { backgroundPolicy, backgroundRoute, backgroundReserve } from "./ee/index.js";
+import { backgroundPolicy, backgroundReserve, jobRoute, jobModel } from "./ee/index.js";
 import { tolerantEnv, isResetErr } from "./do-stub.js";
 import { installSnapshotRpc } from "./sqlite-snapshot.js";
 import { stPut, stDelete, stDeleteListed } from "./storage.js";
 import { openRouterChat, orFetchPath, aiOpts, h32 } from "./model.js";
 import { cappedResponseJson } from "./bounded-response.js";
-import { choreRoute } from "./ee/index.js";
 import { testModelFor } from "./internal-test-model.js";
 import { STT_NANO_PER_SEC, stt, audioBody, b64 } from "./transcribe.js";
 export { audioBody };
@@ -69,14 +68,13 @@ export const WAIT_MS = 2000;                        // the most a Send waits for
 export const HEAD_TOKENS = 4000;                    // a long file whose card isn't made yet: its first ~4k tokens come with the outline
 export const MAX_TRIES = 4;
 export const OCR_MAX_PAGES = 40;                    // scanned pages read per file
-// The index's vectors: perplexity/pplx-embed-v1-0.6b through OpenRouter (ZDR: Perplexity's own endpoint). SIDECAR_EMBED_MODEL overrides;
-// each index records its model, so a file is always searched with the model it was indexed with. Bench below the header.
-export const EMBED_MODEL = "perplexity/pplx-embed-v1-0.6b", EMBED_DIMS = 1024, EMBED_BATCH = 50, INDEX_MAX_CHUNKS = 3000;
+// The index's vectors come from the saved model of the job "embed_files", through OpenRouter (zero-data-retention endpoints only).
+// Each index records its model, so a file is always searched with the model it was indexed with. Bench below the header.
+export const EMBED_DIMS = 1024, EMBED_BATCH = 50, INDEX_MAX_CHUNKS = 3000;
 export const EMBED_NANO_PER_TOKEN = 30;   // reservation ceiling ($0.03/M, the dearest ZDR model compared); settled at usage.cost
-// Pictures (photos, screenshots; never documents: those are anydoc / pdf-inspector's): Gemma 4 on Workers AI (bench 2026-10-08 on a receipt: exact text, ~18 neurons ≈ $0.0002 a picture;
-// Mistral Small 3.1 and Llama 4 Scout were as exact at 2-2.5× the price). SIDECAR_VISION_MODEL overrides. A dev test workspace
-// (test-model.js) uses its test model through OpenRouter instead, like every other model call there.
-export const VISION_MODEL = "@cf/google/gemma-4-26b-a4b-it", VISION_NANO = { in: 100, out: 300 };
+// Pictures (photos, screenshots; never documents: those are anydoc / pdf-inspector's): the saved model of the job "vision_files" on Workers AI.
+// A dev test workspace (test-model.js) uses its test model through OpenRouter instead, like every other model call there.
+export const VISION_NANO = { in: 100, out: 300 };
 export const VISION_RESERVE = Math.ceil((3000 * VISION_NANO.in + 2500 * VISION_NANO.out) * MARKUP);
 export const CARD_MAX_OUT = backgroundPolicy("sidecar_card").maxTokens;
 export const WHISPER_MAX_BYTES = 20 * 1024 * 1024, AUDIO_MAX_SEC = 3 * 3600;   // = transcribe.js WAI_MAX_BYTES (a literal: import cycle)
@@ -192,7 +190,7 @@ export async function runPrep(P, job, tries = 1) {
   // Stage 2: the card (a refusal leaves it out; everything else stays), then the index.
   const c = await P.paid(job, "card", backgroundReserve(cardRequest(job, kind, md, sections), 2), () => makeCard(env, job, kind, md, sections, meta(job, kind)));
   const card = c.refused ? null : c.value; if (c.refused) notes.push(`no summary card: ${refusedLine(c.refused)}`);
-  let vec = null, vecDims = EMBED_DIMS; const embModel = env.SIDECAR_EMBED_MODEL || EMBED_MODEL; job.emb_model = embModel;
+  let vec = null, vecDims = EMBED_DIMS; const embModel = await jobModel(env, "embed_files"); job.emb_model = embModel;
   if (chunks.length) { const v = await indexChunks(P, job, md, chunks.slice(0, INDEX_MAX_CHUNKS), meta(job, kind)); if (v.refused) notes.push(`searched by words only: ${refusedLine(v.refused)}`); else { vec = v.packed; vecDims = v.dims; } }
   const w2 = await writeSidecar(P, job, { ...doc, card, notes, made_at: now(), ...(vec ? { vec: { model: embModel, dims: vecDims } } : {}) }, vec ? { bytes: vec, dims: vecDims, model: embModel } : null, doc);
   if (w2.skipped) return { ...text, status: "ready", notes: [...notes, "no summary card or index (storage is full)"] };
@@ -275,7 +273,7 @@ export function cardRequest(job, kind, md, sections) {
   return { messages, max_tokens: CARD_MAX_OUT, temperature: 0, response_format: structuredFormat("file_card", CARD_SCHEMA) };
 }
 export async function makeCard(env, job, kind, md, sections, meta) {
-  const r = await structuredChat(body => openRouterChat(env, body, null, backgroundRoute("sidecar_card"), { ...meta, kind: "sidecar-card" }), cardRequest(job, kind, md, sections), { name: "file_card", schema: CARD_SCHEMA });
+  const r = await structuredChat(body => openRouterChat(env, body, null, jobRoute("sidecar_card"), { ...meta, kind: "sidecar-card" }), cardRequest(job, kind, md, sections), { name: "file_card", schema: CARD_SCHEMA });
   return { value: parseCard(JSON.stringify(r.data)), nano: Math.ceil(Math.ceil(Number(r.usage.cost || 0) * 1e9) * MARKUP) };
 }
 export function parseCard(text) {
@@ -298,10 +296,10 @@ export async function vision(env, meta, image, mode) {
   const tm = await testModelFor(env, meta.tenant);
   let value, nano = 0;
   if (tm) {
-    const r = await structuredChat(body => openRouterChat(env, body, null, choreRoute(env, "sidecar"), { ...meta, kind: `sidecar-vision-${mode}` }), { messages: [{ role: "user", content }], max_tokens: 2500, temperature: 0 }, { name: "image_description", schema: VISION_SCHEMA });
+    const r = await structuredChat(body => openRouterChat(env, body, null, jobRoute("sidecar_card"), { ...meta, kind: `sidecar-vision-${mode}` }), { messages: [{ role: "user", content }], max_tokens: 2500, temperature: 0 }, { name: "image_description", schema: VISION_SCHEMA });
     value = r.data; nano = Math.ceil(Math.ceil(Number(r.usage.cost || 0) * 1e9) * MARKUP);
   } else {
-    const model = env.SIDECAR_VISION_MODEL || VISION_MODEL;
+    const model = await jobModel(env, "vision_files");
     try {
       const r = await structuredChat(async ({ provider, ...body }) => workersStructuredResponse(await env.AI.run(model, body, aiOpts(env, { ...meta, kind: `sidecar-vision-${mode}` }))), { messages: [{ role: "user", content }], max_tokens: 2500, temperature: 0 },
         { name: "image_description", schema: VISION_SCHEMA, onUsage: u => { nano += Math.ceil(((Number(u.prompt_tokens) || 1500) * VISION_NANO.in + (Number(u.completion_tokens) || 800) * VISION_NANO.out) * MARKUP); } });
@@ -412,7 +410,7 @@ export function splitWav(b, max) {
 // ---- the index: vectors for each chunk, in batches, each batch kept as it's paid for ----
 // texts → { vectors, nano } through OpenRouter's /embeddings (model.js orFetchPath: the AI Gateway, our key), ZDR endpoints only.
 export async function embedTexts(env, texts, meta, model = null) {
-  const m = model || env.SIDECAR_EMBED_MODEL || EMBED_MODEL;
+  const m = model || await jobModel(env, "embed_files");
   const r = await orFetchPath(env, "embeddings", { model: m, input: texts, provider: { zdr: true } }, meta);
   const j = await cappedResponseJson(r, 8 << 20).catch(() => null);
   if (!r.ok || !Array.isArray(j?.data) || j.data.length !== texts.length) throw new Error(`embeddings ${r.status}: ${JSON.stringify(j?.error || j || {}).slice(0, 160)}`);
@@ -680,7 +678,7 @@ export function residentSidecar() { return {
   // The query's vector against the file's chunk vectors, with the model the file was indexed with. Paid like any step (a few tokens).
   async sidecarVecRank(vecKey, q) {
     const o = await this.env.WS.get(vecKey); if (!o) return [];
-    const dims = Number(o.customMetadata?.dims) || EMBED_DIMS, model = o.customMetadata?.model || EMBED_MODEL;
+    const dims = Number(o.customMetadata?.dims) || EMBED_DIMS, model = o.customMetadata?.model || await jobModel(this.env, "embed_files");
     const packed = new Int8Array(await o.arrayBuffer());
     const rid = `fq:${crypto.randomUUID()}`, L = this.ledger(), reserve = Math.ceil((tokensOf(q) + 16) * EMBED_NANO_PER_TOKEN * MARKUP) + 100;
     const held = await L.reserve(rid, reserve).catch(() => ({ ok: false })); if (!held?.ok) return [];

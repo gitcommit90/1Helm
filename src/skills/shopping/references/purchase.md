@@ -16,8 +16,8 @@ is how they apply to a store checkout.
 
 Add exactly what they chose to the store's cart in the browser and go to checkout. Fill in their shipping address, name, phone
 and email yourself (`fills_personal: true`) from what they told you or their account and Notebook, unless the signed-in
-account already filled them; never invent one. The first time, 1Helm asks them with a permission card; after they tap
-Always allow, fill them in directly. If they don't allow it, hand that form to them with `browser_handoff`. Payment still
+account already filled them; never invent one. On the Standard permission level fill them in directly; on Careful or Locked down, 1Helm asks them with a
+permission card first. If they don't allow it, hand that form to them with `browser_handoff`. Payment still
 goes only through Link, with the exact total confirmed. Choose the delivery option they asked for, or the standard one, and say which.
 
 Read the exact total from the checkout page: items, shipping, tax, discounts actually applied. Totals before that page are

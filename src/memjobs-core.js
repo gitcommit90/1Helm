@@ -1,41 +1,26 @@
 // Shared parts of the background memory jobs (memjobs.js, memjobs-people.js, memjobs-reflect.js): the models, the window of the
 // person's turns, the plain code check behind "cite or omit", the shared prompt rules, and the verify step (Muse's refute +
 // evidence_grounded lenses). Nothing here writes anything.
-import { CHORE_MODELS } from "./ee/index.js";
 import { terms } from "./memory.js";
 import { cardsToText } from "./genui.js";
 import { hasSecret } from "./secrets-scrub.js";
 import { StructuredOutputError } from "./structured-output.js";
-import { backgroundRoute } from "./ee/index.js";
+import { choreRouteOf, jobRoute, settingsOf } from "./ee/index.js";
 
 export const MJ_MARKUP = 1.15;
 export const MAX_OUT = 6000;   // reasoning tokens count toward max_tokens on OpenRouter
 export const FIRST_LOOKBACK_MS = 48 * 3600e3;
 export const WINDOW = { upkeep: { turns: 40, chars: 24000 }, people: { turns: 60, chars: 24000 }, reflect: { turns: 80, chars: 30000 } };
 
-// ---------- models (eval 2026-10-06, tmp-shots/memjobs/eval) ----------
-// write = the step that proposes changes, verify = the step that checks them. "key" or "key:effort", keys as route2.js CHORE_MODELS.
-// Eval (7 subtly wrong claims with real quotes + 6 true ones, ×2): DeepSeek V4.1 Flash caught 14/14 and kept 12/12 at ~$0.0007 a
-// verify; gpt-oss-120b at low effort passed a pasted-email "PIN" claim twice (12/14); at medium it was 14/14 at ~$0.0025. Writing:
-// Flash and 120b found the same facts and corrections; Flash at about half the cost. Flash writes everything; hourly upkeep
-// keeps its established Flash/off verifier. The 2026-10-12 confirmation benchmark selected Flash/LOW for people and reflection
-// verification only. Those two verifiers now fail closed on their selected model;
-// the established fallback policy and all other chore efforts remain unchanged.
-// Override with CHORE_MODEL_UPKEEP / _PEOPLE / _REFLECT (write) and CHORE_MODEL_MJVERIFY (every verify step).
-export const MJ_MODELS = { upkeep: { write: "dsflash", verify: "dsflash" }, people: { write: "dsflash", verify: "dsflash:low" }, reflect: { write: "dsflash", verify: "dsflash:low" } };
-export function mjModelKey(env, job, step) {
-  const v = String((step === "verify" ? env?.CHORE_MODEL_MJVERIFY : env?.[`CHORE_MODEL_${String(job).toUpperCase()}`]) || MJ_MODELS[job]?.[step] || "oss120").trim().toLowerCase();
-  const [k, effort] = v.split(":");
-  return CHORE_MODELS[k] ? { k, effort: effort || null } : { k: "oss120", effort: null };
-}
-// Evaluated verifiers use their isolated policy; other jobs keep their existing fallback.
+// ---------- models ----------
+// write = the step that proposes changes, verify = the step that checks them. Each of the six steps (upkeep, people and reflect, write and
+// verify) is a job with its own saved model, reasoning level and fallbacks (model-jobs.js); change them on the Models page. The evaluation
+// notes that chose the first values (2026-10-06 and 2026-10-12 benchmarks) are in notes/ and are not repeated here.
+// env must carry the saved settings (model-settings.js modelSettingsEnv). Own-key accounts get a marker route: their endpoint answers.
 export function mjRoute(env, job, step) {
-  const selected = backgroundRoute(`${job}_${step}`);
-  if (selected) return { ...selected, json: true, label: `memjob/${job}/${step}` };
-  const { k, effort } = mjModelKey(env, job, step), m = CHORE_MODELS[k];
-  const a = { model: m.model, host: m.hosts.length > 1 ? m.hosts : m.hosts[0], effort: effort || m.effort || "low", ...(m.pin ? { pin: true } : {}) };
-  const fb = k === "oss120" ? [] : [{ model: CHORE_MODELS.oss120.model, host: CHORE_MODELS.oss120.hosts[0], effort: step === "verify" ? "medium" : "low" }];
-  return { ...a, fallbacks: fb, only: true, chore: true, json: k !== "oss20", label: `memjob/${job}/${step}` };   // gpt-oss-20b's host (Bedrock) has no JSON mode
+  const label = `memjob/${job}/${step}`;
+  if (env?.BYOK && !env.MODEL_SETTINGS) return { ...jobRoute(`${job}_${step}`), label };
+  return { ...choreRouteOf(settingsOf(env), `${job}_${step}`), label };
 }
 
 // ---------- small helpers ----------

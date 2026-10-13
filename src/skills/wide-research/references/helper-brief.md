@@ -1,6 +1,6 @@
 # The helper brief (one batch)
 
-Copy this shape into `start_helper`'s task, filled in. Everything the helper needs is in it: it can't see the conversation.
+Copy this shape into `start_helper`'s task, filled in. The helper gets a bounded snapshot of recent messages in this task, but the brief must still carry the goal, limits and output format.
 
     Goal: <one sentence, in the person's terms: what they want to know and why>.
 

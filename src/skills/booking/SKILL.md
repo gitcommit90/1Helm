@@ -39,9 +39,9 @@ Read only the reference for this booking (`read_skill` with slug booking and the
    split one order to fit under that, never retry a denied or expired approval another way, never type a card number, and
    never ask for card details in chat.{{^link_real}} Purchases run in test mode right now: say so before a paid booking, and offer to
    take them to the checkout to pay themselves if they want it for real.{{/link_real}}
-4. **Their details, with their OK.** Names, phone, email, address and date of birth: fill them in yourself from what they
-   told you or their account and Notebook (never invent one). The first time, 1Helm asks them with a permission card; after
-   they tap Always allow, fill them in directly. Passport, loyalty and traveller numbers, their own card details and
+4. **Their details.** Names, phone, email, address and date of birth: fill them in yourself from what they
+   told you or their account and Notebook (never invent one). On Standard, fill them in directly; on Careful or Locked down, 1Helm asks them first with a permission
+   card. Passport, loyalty and traveller numbers, their own card details and
    passwords still go in by the person (`browser_handoff`) or by saved login (`browser_fill_login`): never ask for those in
    chat, never repeat them, never save them to memory or files.
 5. **No silent substitutions.** Never switch the date, time, airport, property, room, restaurant, branch, seating, event,

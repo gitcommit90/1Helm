@@ -15,7 +15,13 @@ export const REPEAT = { checkEvery: 512, minChars: 4000, keep: 40000,
 
 // A model step cannot pre-author hundreds of operations before seeing feedback.
 // Independent of optional spend pauses; reject the whole step, never a prefix.
-export const TOOL_BATCH = Object.freeze({ maxCalls: 32, maxPeriod: 4, minCycles: 4, minCalls: 8, signatureChars: 8192, signatureDepth: 32 });
+// batch-repeat: the same call (same tool, same arguments apart from the step title) 8 or more in a row, a short cycle of calls (up to 4)
+// repeated 4 times, or the same call anywhere in the batch 8 or more times. batch-limit: more than maxCalls calls in one step, however
+// different they are. A reviewed looping step wrote the same five calls (four file reads and a search) again and again, over a thousand calls
+// in all, and only the step titles and the search pattern changed. A cycle of 5 slipped past the period limit of 4, so only the limit
+// stopped it at call 33. The same-call count catches such a loop at about call 35 for any cycle length, and the limit rose to 64 because
+// a step that reads 30 to 60 different files or pages is ordinary and a limit of 32 is too tight for it.
+export const TOOL_BATCH = Object.freeze({ maxCalls: 64, maxPeriod: 4, minCycles: 4, minCalls: 8, maxSameCall: 8, minDiverse: 12, signatureChars: 8192, signatureDepth: 32 });
 function callSignature(name, args) {
   if (!name || args.length > TOOL_BATCH.signatureChars) return null;
   try {
@@ -32,7 +38,10 @@ function callSignature(name, args) {
 }
 export function toolBatchWatch() {
   const calls = new Map(); let hit = null, chars = 0;
-  const stop = (kind, span) => (hit = { where: "tool_calls", kind, span, period: 0, unit: "bounded tool batch", chars });
+  // What the stopped batch held, so a log line says whether it was one call written over and over or many different calls.
+  const summary = () => { const names = {}, sigs = new Set(); for (const c of calls.values()) { names[c.name || "?"] = (names[c.name || "?"] || 0) + 1; if (c.signature) sigs.add(c.signature); }
+    return Object.entries(names).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([n, k]) => `${n}x${k}`).join(",") + ` (${sigs.size} different of ${calls.size})`; };
+  const stop = (kind, span) => (hit = { where: "tool_calls", kind, span, period: 0, unit: "bounded tool batch", chars, calls: summary() });
   return {
     feed(deltas = []) {
       if (hit) return hit;
@@ -51,6 +60,13 @@ export function toolBatchWatch() {
         c.signature = c.oversized ? null : callSignature(c.name, c.args);
         calls.set(index, c);
       }
+      // The same completed call (tool and arguments, step title aside) too many times in one batch, whatever sits between the copies.
+      const seen = new Map();
+      for (const c of calls.values()) if (c.signature) { const n = (seen.get(c.signature) || 0) + 1; seen.set(c.signature, n);
+        if (n >= TOOL_BATCH.maxSameCall) { stop("batch-repeat", n); hit.period = 0; hit.unit = "same call many times in one batch"; return hit; } }
+      // Low variety: 12 or more completed calls of which fewer than half are different (a loop whose copies are spread over many calls).
+      if (calls.size >= TOOL_BATCH.minDiverse) { let done = 0; for (const c of calls.values()) if (c.signature) done++;
+        if (done >= TOOL_BATCH.minDiverse && seen.size * 2 < done) { stop("batch-repeat", done); hit.period = 0; hit.unit = "few different calls in one batch"; return hit; } }
       // Do not skip gaps or incomplete arguments: they break a repeated pattern.
       const keys = [...calls.keys()].sort((a, b) => a - b);
       const signatures = keys.map(k => calls.get(k).signature);
@@ -113,4 +129,10 @@ export function repeatWatch(o = REPEAT) {
 
 // What the model is told before its one retry, and the plain message when the retry loops too.
 export const REPEAT_NOTE = "(1Helm note, not from the person: your last output started repeating the same thing over and over, so it was stopped and thrown away, including any tool call in it. Produce a concise answer now. Don't write long lists or data out by hand: if something needs many repeated lines, write a short script that makes them, or ask the person.)";
+// A batch of tool calls (too many, or the same ones again and again) gets its own retry note, which tells the model to make fewer calls
+// and wait for results instead of telling it to stop working and answer. Too many calls is not repetition, so its final message differs.
+export const BATCH_NOTE = `(1Helm note, not from the person: your last step asked for too many tool calls at once, or for the same call more than once, so it was stopped and none of them ran. Ask for each call only once, make at most 20 calls in one step, wait for their results, and then continue. If one small script can do the same work, write that instead.)`;
+export const BATCH_FALLBACK = "Sorry, I tried to do too many things at once on that step, so I stopped it before anything ran. Nothing from that step was run. Could you tell me again what you need, or break it into a smaller piece?";
+export const stepNote = (hit) => String(hit?.kind || "").startsWith("batch-") ? BATCH_NOTE : REPEAT_NOTE;
+export const stepFallback = (hit) => hit?.kind === "batch-limit" ? BATCH_FALLBACK : REPEAT_FALLBACK;
 export const REPEAT_FALLBACK = "Sorry, I got stuck repeating myself on that step, so I stopped it before it went any further. Nothing from that step was run. Could you tell me again what you need, or break it into a smaller piece?";

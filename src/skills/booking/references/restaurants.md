@@ -48,8 +48,8 @@ Final review: restaurant and address, local date and time, party size, seating, 
 no-show terms, and any special request being sent (only requests they gave you; a "special occasion" note promises
 nothing). Get their OK on those terms before pressing the final button.
 
-Fill in the guest name, phone and email on the booking form yourself (checkout reference, Their details: the first time
-1Helm asks them with a permission card; after Always allow, fill them in directly), unless they're already filled from
+Fill in the guest name, phone and email on the booking form yourself (checkout reference, Their details: on Standard fill them in directly; on Careful or Locked down
+1Helm asks them first with a permission card), unless they're already filled from
 their signed-in account on that site. A deposit or prepayment goes
 through Link (checkout reference). Parties beyond what the site allows: tell them to arrange it with the restaurant; never
 split the group.

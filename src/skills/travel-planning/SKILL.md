@@ -130,8 +130,8 @@ go" â†’ `TRIVAGO_MCP_TRIVAGO_DESTINATION_PRICE_TRENDS`; current weather there â†
 handoff notes in this skill's handoff reference) and do the check in the same conversation. Don't send the person off to do
 it. In planning-only posture, booking may search and compare but stops short of checkout: no traveller or payment details,
 no "shall I book it?". Bring the result back into the plan and ask the next planning question. When they do book, the
-booking skill's rules apply: you fill in their contact details yourself once they've allowed it (a permission card the first
-time, then directly after Always allow); passport and card details stay with them and Link.
+booking skill's rules apply: you fill in their contact details yourself (directly on Standard; on Careful or Locked
+down 1Helm asks them first with a permission card); passport and card details stay with them and Link.
 
 Live results can break a candidate. Then come back with the specific mismatch and the best real alternative. Never quietly
 change an airport, date, route, flight, cabin, ticket structure, price limit or refund condition to make it fit.

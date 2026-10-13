@@ -36,9 +36,9 @@ export const SHADOW_KINDS = ["route", "browser_action", "browser_done"];
 export const PREVIEW_CHARS = 160;
 const MAX_BODY = 64 << 10;
 
-// Off when the real decider IS the shadow model (Jev is gone, so it would only compare Perplexity with itself); on again only if
-// DECIDER_MODEL is switched back to something else and DECISION_SHADOW=on.
-export const shadowOn = (env) => env?.ENV_NAME === "dev" && deciderModel(env) !== SHADOW_MODEL && String(env?.DECISION_SHADOW || "").trim().toLowerCase() === "on"
+// Off when the real decider IS the shadow model (it would only compare the model with itself); on only if the saved "decider" job is
+// something else and DECISION_SHADOW=on. env must carry the saved settings (model-settings.js modelSettingsEnv) when the flag is on.
+export const shadowOn = (env) => env?.ENV_NAME === "dev" && String(env?.DECISION_SHADOW || "").trim().toLowerCase() === "on" && (!env.MODEL_SETTINGS || deciderModel(env) !== SHADOW_MODEL)
   && !env?.BYOK && !!env?.OPENROUTER_API_KEY && !!env?.DB;
 
 // A short preview that is safe to keep: secrets scrubbed, one line, ≤ PREVIEW_CHARS.
@@ -182,7 +182,7 @@ export function shadowQuery(params) {
 export async function shadowData(env, params = {}, now = Date.now()) {
   const q = shadowQuery(params), since = now - WINDOWS[q.window];
   const testScope = String(env.TEST_MODEL_SCOPE || "test-accounts").trim().toLowerCase();
-  const state = { on: shadowOn(env), flag: String(env.DECISION_SHADOW || ""), model: SHADOW_MODEL, task_model: String(env.TASK_MODEL || "luna"),
+  const state = { on: shadowOn(env), flag: String(env.DECISION_SHADOW || ""), model: SHADOW_MODEL, task_model: String(env.TASK_MODEL || ""),
     test_model: env.ENV_NAME === "dev" && env.TEST_MODEL ? String(env.TEST_MODEL) : null, test_scope: testScope, router_mode: String(env.ROUTER_MODE || "classic") };
   const w = ["d.at >= ?"], a = [since];
   if (q.kind !== "all") { w.push("d.kind = ?"); a.push(q.kind); }

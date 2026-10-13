@@ -1,4 +1,5 @@
 // node --import ./test/stubs/register.mjs test/structured-output.test.mjs
+import { SEED } from "./helpers/seed-settings.mjs";
 import assert from "node:assert/strict";
 import { S, structuredFormat, structuredChat, parseStructuredResponse, assertStructuredSchema } from "../src/structured-output.js";
 import { openRouterChat } from "../src/model.js";
@@ -27,7 +28,7 @@ assert.equal(failed.attempts, 2); assert.equal(failed.usage.cost, .002);
 const saved = globalThis.fetch; const sent = [];
 globalThis.fetch = async (url, init) => { sent.push(JSON.parse(init.body)); return new Response(JSON.stringify(response(good))); };
 try {
-  await openRouterChat({ OPENROUTER_API_KEY: "test", PROMPT_CACHE: "off" }, { messages: [{ role: "user", content: "test" }], response_format: structuredFormat("test", schema), provider: { require_parameters: true } }, null,
+  await openRouterChat({ MODEL_SETTINGS: SEED, OPENROUTER_API_KEY: "test", PROMPT_CACHE: "off" }, { messages: [{ role: "user", content: "test" }], response_format: structuredFormat("test", schema), provider: { require_parameters: true } }, null,
     { model: "qwen/qwen3.8-27b", host: "cerebras/fp16", effort: "none" });
   assert.deepEqual(sent[0].provider.order, ["cerebras/fp16"]); assert.equal(sent[0].provider.max_price.prompt, 3);
   assert.equal(sent[0].provider.require_parameters, true); assert.equal(sent[0].provider.zdr, true);
@@ -58,7 +59,7 @@ const labelInput = { kind: "chat", chatTitle: true, msgs: [{ at: 1, text: "Plan 
 let managedCalls = 0, release, sawAbort = false;
 const settled = [];
 globalThis.fetch = async (_url, init) => { managedCalls++; init.signal.addEventListener("abort", () => { sawAbort = true; }, { once: true }); return new Promise(resolve => { release = resolve; }); };
-const pendingLabels = summarizeCard({ input: labelInput, timeoutMs: 5, env: { OPENROUTER_API_KEY: "fixture" },
+const pendingLabels = summarizeCard({ input: labelInput, timeoutMs: 5, env: { MODEL_SETTINGS: SEED, OPENROUTER_API_KEY: "fixture" },
   ledger: { reserve: async () => ({ ok: true }), settle: async (_id, nano) => { settled.push(nano); } } });
 await new Promise(resolve => setTimeout(resolve, 20));
 assert.ok(sawAbort); assert.deepEqual(settled, [], "keep reservation until an abort-racing paid response is consumed");
@@ -69,7 +70,7 @@ assert.deepEqual(settled, [1150000], "late usage settles once; timed-out content
 let aborted = false;
 globalThis.fetch = async (_url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => { aborted = true; reject(init.signal.reason); }, { once: true }));
 try {
-  const r = await summarizeCard({ input: labelInput, timeoutMs: 5, env: { OPENROUTER_API_KEY: "fixture", ROUTER_MODE: "two" }, bill: false });
+  const r = await summarizeCard({ input: labelInput, timeoutMs: 5, env: { MODEL_SETTINGS: SEED, OPENROUTER_API_KEY: "fixture", ROUTER_MODE: "two" }, bill: false });
   assert.equal(r.title_src, "auto"); assert.ok(aborted);
 } finally { globalThis.fetch = saved; }
 console.log("PASS handoff deterministic rendering, actual retry seam/accounting, managed timeout late-usage accounting and OpenRouter abort");

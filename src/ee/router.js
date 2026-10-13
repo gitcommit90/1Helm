@@ -199,4 +199,5 @@ export function decideFromAnswers(env, { pool, cands, answers: A, incumbent = nu
   return { pick, fallbacks, reason: why, floor, task: top("task"), difficulty: +diff.toFixed(2), precision: +prec.toFixed(2), big_model_gain: +gain.toFixed(2), visual: +vis.toFixed(2),
     latency: +lat.toFixed(2), failed, stay_cost: stay, switch_cost: sw, candidates: ev.length, admitted: below ? 0 : adm.length, ...(below ? { below_floor: true } : {}), answer_tok: ans, list: ev };
 }
-export const clefVia = (env, model = "clef", meta = {}) => async (body) => await env.AI.run(`@cf/cloudflare/${model}`, { model, ...body }, aiOpts(env, meta));
+// model: the full model id saved for the job (for example "@cf/cloudflare/clef-flash"); the request names the short model too.
+export const clefVia = (env, model, meta = {}) => async (body) => await env.AI.run(model, { model: String(model).split("/").pop(), ...body }, aiOpts(env, meta));

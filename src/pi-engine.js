@@ -18,7 +18,9 @@ import { answerText, splitProgress } from "./progress-dedupe.js";
 import {spendPausesOn,stepAllowance} from './spend-preferences.js';
 import {trimTurnState} from './spend-retention.js';
 
-const MODEL = { id: "glm-5.3-flash", name: "glm-5.3-flash", api: "openai-completions", provider: "cloudflare-workers-ai", baseUrl: "binding:AI",
+// A description the agent library needs. It does not choose the model: every call goes through the resident, which uses the saved setting of the
+// job that matches the request (model-jobs.js).
+const MODEL = { id: "routed", name: "routed", api: "openai-completions", provider: "cloudflare-workers-ai", baseUrl: "binding:AI",
   reasoning: false, input: ["text"], cost: { input: 0.15, output: 0.5, cacheRead: 0.03, cacheWrite: 0 }, contextWindow: 131072, maxTokens: 4096 };
 const zeroUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
 const textOf = (c) => typeof c === "string" ? c : (c || []).filter((b) => b.type === "text").map((b) => b.text).join("");
@@ -79,7 +81,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
   const limitPrompts = new Set(); let reportInFlight = false;
   const limitPrompt = text => { const p = piUser(text); limitPrompts.add(p); return p; };
   const liftLimit = ctx => {
-    if (!limitAsked || spendPausesOn(tc) || tc.abort === 'hard') return false;
+    if (!limitAsked || spendPausesOn(tc) || opts.hard_charge || tc.abort === 'hard') return false;
     limitAsked = false; stepCapped = false; delete stats.hit_limit;
     ctx.tools = tools; ctx.messages = ctx.messages.filter(m => !limitPrompts.has(m));
     finalMsgs = ctx.messages; return true;
@@ -104,7 +106,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
           if (!warm) { const w0 = Date.now(); warm = res.computer().warm().then((x) => ({ ...x, ms: Date.now() - w0 })); }
         }, send ? (t) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s: t }); } : null, kind === "chat" ? MAX_OUT : 4096, noTools, tc);
         stepIn.push(r.inTok); queueMicrotask(() => journal("tools")); stats.in += r.inTok; stats.cached += r.cached; stats.cache_write += r.cacheWrite || 0; stats.out += r.outTok; stats.charge += r.charge; if (r.model) stats.models.push(r.routing ? `${r.model} [${r.routing.reason}/${r.routing.floor}]` : r.model);
-        if (spendPausesOn(tc) && opts.max_charge && stats.charge >= opts.max_charge && !tc.abort) { tc.limitWhy = "cost"; tc.abort = "soft"; }
+        if ((opts.hard_charge || spendPausesOn(tc)) && opts.max_charge && stats.charge >= opts.max_charge && !tc.abort) { tc.limitWhy = "cost"; tc.abort = "soft"; }
         if (spendPausesOn(tc) && opts.soft_steps && steps + 1 >= opts.soft_steps && !tc.abort) { tc.limitWhy = "steps"; tc.abort = "soft"; }
         guardModel(tc, stats, r.content, r.calls.length > 0 || r.finish === "length", r.calls.map((c) => c.function?.name));
         // pi can consume steering before getFollowUpMessages; count the capped
@@ -182,7 +184,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
     beforeToolCall: async ({ args, toolCall }) => {
       if (tc.abort === "hard") return { block: true, reason: STOPPED_TOOL_TEXT };   // stopped by the person: nothing more runs
       if (args && args.__invalid_json != null) return { block: true, reason: `Your tool arguments were not valid JSON (likely cut off at the output limit). Retry with shorter arguments. Received: ${args.__invalid_json}` };
-      if (res.hasSteers(tc)) { const sp = splitStepTitle(args || {}); stepSkipped(sql, tc, { tool: toolCall?.name, args: sp.args, title: sp.title, call_id: toolCall?.id }); return { block: true, reason: SKIP_REASON }; }
+      if (res.hasSteers(tc) || res.helperQueued?.(tc)) { const sp = splitStepTitle(args || {}); stepSkipped(sql, tc, { tool: toolCall?.name, args: sp.args, title: sp.title, call_id: toolCall?.id }); return { block: true, reason: SKIP_REASON }; }
       return undefined;
     },
     getSteeringMessages: async () => steerPi(lastWasFinal()),
@@ -216,9 +218,10 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
     shouldStopAfterTurn: async () => { await res.spendRefresh?.(tc, opts); return steps >= limit() || tc.abort === "hard"; },
     getFollowUpMessages: async () => {
       await res.spendRefresh?.(tc, opts);
-      if ((limitAsked || reportInFlight) && !spendPausesOn(tc) && tc.abort !== 'hard') { reportInFlight=false; return [piUser('(The person turned off spending check-ins. Continue their task; the discretionary pause no longer applies.)')]; }
+      if ((limitAsked || reportInFlight) && !spendPausesOn(tc) && !opts.hard_charge && tc.abort !== 'hard') { reportInFlight=false; return [piUser('(The person turned off spending check-ins. Continue their task; the discretionary pause no longer applies.)')]; }
       const last = lastAssistant;
       const late = await steerPi(true); if (late.length) return late;   // landed while the answer was being written
+      if (kind === "helper" && res.helperQueued?.(tc) && steps < limit() - 1) return [piUser("(A new follow-up instruction arrived from the main helper. Read it before you finish your report.)")];
       if (last?.role === "assistant" && last.stopReason === "length" && steps < limit() - 1)
         return [piUser(outputRecovery)];
       if (kind !== "chat" && toolCalls === 0 && !nudged && !limitAsked) { nudged = true; said.length = 0; saidMeta.length = 0;

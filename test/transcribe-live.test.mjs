@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import worker, { Ledger } from '../src/index.js';
-import { bridgeDictation, transcribeLive, boundedDictationLedger, LIVE_MODEL, LIVE_MINUTE_NANO, liveCharge, liveProviderRequest } from '../src/transcribe-live.js';
+import { bridgeDictation, transcribeLive, boundedDictationLedger, LIVE_MINUTE_NANO, liveCharge, liveProviderRequest } from '../src/transcribe-live.js';
+import { ID, SEED } from './helpers/seed-settings.mjs';
+const LIVE_MODEL = ID.LIVE;
 import { ENDPOINTS } from '../src/privacy.js';
 const dbs = [];
 function sqlDB() {
@@ -119,10 +121,10 @@ try {
     c.close(); await b.drain(); await Promise.all(kept); assert.ok(kept.length > 0); assert.equal(real.totals().reserved_nano, 0);
   });
 
-  const base = 'https://owner.example.com', env = { AIG_TOKEN: 'dummy-secret', AIG_ID: '1hc-dev', CF_ACCOUNT_ID: 'account', AIG_LOG_PAYLOADS: '1' };
+  const base = 'https://owner.example.com', env = { MODEL_SETTINGS: SEED, AIG_TOKEN: 'dummy-secret', AIG_ID: '1hc-dev', CF_ACCOUNT_ID: 'account', AIG_LOG_PAYLOADS: '1' };
   const req = (headers = {}, method = 'GET') => new Request(base + '/w/ck1/api/transcribe/live', { method, headers: { Origin: base, Upgrade: 'websocket', ...headers } });
   await test('exact provider URL/privacy despite Dev payload logging; input gates before reserves; unavailable registry fails closed', async () => {
-    const spec = liveProviderRequest(env), url = new URL(spec.url); assert.equal(url.searchParams.get('mip_opt_out'), 'true'); assert.equal(url.searchParams.get('interim_results'), 'true');
+    const spec = liveProviderRequest(env, LIVE_MODEL), url = new URL(spec.url); assert.equal(url.searchParams.get('mip_opt_out'), 'true'); assert.equal(url.searchParams.get('interim_results'), 'true');
     for (const k of ['cf-aig-collect-log', 'cf-aig-collect-log-payload']) assert.equal(spec.headers[k], 'false'); assert.equal(spec.headers['cf-aig-skip-cache'], 'true');
     const L = { dictationLease() { throw Error('must not reserve'); } };
     assert.equal((await transcribeLive(req(), env, L, { look: true })).status, 403);

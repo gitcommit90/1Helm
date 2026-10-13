@@ -79,7 +79,7 @@ await scenario("tool: pause/resume/stop/status pick the timer that exists, ask w
 });
 await scenario("tool: helpers and runs without the person's words still can't start a global timer", async () => {
   const A = archive(), R = resident(A), s = (await R.createSession("x")).id;
-  assert.match(await R.localTool("pomodoro", { action: "start", scope: "global", person_asked: "start a pomodoro" }, { kind: "helper", turn: "h", session: s, userText: "start a pomodoro" }), /isn't available to a helper/);
+  assert.match(await R.localTool("pomodoro", { action: "start", scope: "global", person_asked: "start a pomodoro" }, { kind: "helper", turn: "h", session: s, userText: "start a pomodoro" }), /isn't available to this helper/);
   assert.match(await R.localTool("pomodoro", { action: "start", scope: "global", person_asked: "start a pomodoro" }, { kind: "chat", turn: "x", session: s, handoff: true, userText: "start a pomodoro" }), /no message from the person/);
   assert.equal(await A.pomoGlobalView(), null);
 });
