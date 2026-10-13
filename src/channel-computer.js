@@ -27,7 +27,11 @@ const MIN_AWAKE_AFTER_CMD_MS = 10e3;
 const EXEC_TIMEOUT_MS = 15 * 60e3;    // one command may run up to 15 min; the computer never idle-stops while a command is running // never stop (idle/credits) within 10 s of the last command
 const BROWSER_OWNER_TTL_MS = 2 * 60e3; // A crashed browser job gives up the shared tab without an explicit release.
 const BROWSER_OWNER_MAX_TTL_MS = 15 * 60e3;
-const COMPUTER_BUSY_TTL_MS = 60 * 60e3; // After a reset, keep an uncertain operation from admitting a different browser job.
+// After a reset, keep an uncertain operation from admitting a different browser job, but only as long as that kind of
+// operation can still be running. A browser call is short (wake, then one request to Chrome); a shell command may run up to
+// EXEC_TIMEOUT_MS. A row left by a deploy therefore blocks for minutes, never for an hour.
+const COMPUTER_BUSY_TTL_MS = { browser: 3 * 60e3, owner_browser: 3 * 60e3, command: EXEC_TIMEOUT_MS + 60e3 };
+const COMPUTER_BUSY_TTL_DEFAULT_MS = 3 * 60e3;
 const RESTART_GAP_MS = 2e3;        // measured: 0 s gap → 3/8 starts needed retries; 2 s → 8/8 first-try; 5 s adds wait for nothing
 // The Sentinel terminates HTTPS with a per-container CA that exists only at runtime; trust it before anything else runs.
 const CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
@@ -410,7 +414,7 @@ export class ChannelComputer extends DurableObject {
   // The browser service is only reachable from here: containers have no public ingress, and getTcpPort is DO-only.
   // A reset can leave a container command or browser request running after this object's in-memory counts vanish.
   // Keep a separate durable reservation before each first await. Confirmed completion removes only its own row.
-  #busyStart(kind) { const id = crypto.randomUUID(), now = Date.now(); this.sql.exec("DELETE FROM computer_busy WHERE until<=?", now); this.sql.exec("INSERT INTO computer_busy (id,kind,until) VALUES (?,?,?)", id, kind, now + COMPUTER_BUSY_TTL_MS); return id; }
+  #busyStart(kind) { const id = crypto.randomUUID(), now = Date.now(); this.sql.exec("DELETE FROM computer_busy WHERE until<=?", now); this.sql.exec("INSERT INTO computer_busy (id,kind,until) VALUES (?,?,?)", id, kind, now + (COMPUTER_BUSY_TTL_MS[kind] ?? COMPUTER_BUSY_TTL_DEFAULT_MS)); return id; }
   #busyEnd(id) { this.sql.exec("DELETE FROM computer_busy WHERE id=?", id); }
   #busyActive(kind = null) { return !!this.sql.exec(kind ? "SELECT 1 FROM computer_busy WHERE kind=? AND until>? LIMIT 1" : "SELECT 1 FROM computer_busy WHERE until>? LIMIT 1", ...(kind ? [kind, Date.now()] : [Date.now()])).toArray().length; }
   #browserOwner() {

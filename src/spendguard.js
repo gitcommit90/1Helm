@@ -255,7 +255,8 @@ export function spendMix(Resident) { return Object.assign(Resident.prototype, {
   async spendRefresh(tc, opts = tc.spendOptions || {}) {
     tc.spendOptions = opts;
     tc.refreshSpend = () => this.spendRefresh(tc, opts);
-    const enabled = await readSpendPreference(this.ledger());
+    let L = null; try { L = this.ledger(); } catch { L = null; }   // no Ledger binding (old stub/test env): same as an unreadable preference, the ON policy
+    const enabled = await readSpendPreference(L);
     applySpendPreference(tc, enabled);
     if (enabled && tc.abort !== 'hard' && !tc.finished && !tc.committed) {
       if (tc.guard && Date.now() - (tc.guard.started || tc.t0 || Date.now()) >= TIMING.wallMs) pauseAt(tc, 'time');

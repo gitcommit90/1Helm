@@ -21,7 +21,11 @@ const byNewest = (a, b) => at(b) - at(a) || (String(a.id) < String(b.id) ? 1 : S
 
 // The person's own words: a Notebook note they wrote or edited, or an answer from Get to know you. A Bee note is theirs once edited.
 export const ownNote = (m) => m.author_type === "human" && m.src !== "reflection" && (m.src !== "bee" || !!m.edited);
-export const identityNote = (m) => m.sec === "how" || IDENTITY.test(String(m.content || ""));
+// A note another channel (General) saved into this channel's Notebook because the person asked for it there. The channel's next turn
+// is not told to search for it, so it is pinned like a core fact (Release 36: General saved "gate code 4417" into #bench2, and bench2 answered "I have no record").
+export const FROM_GENERAL = "general";
+export const fromGeneral = (m) => m.src === FROM_GENERAL;
+export const identityNote = (m) => m.sec === "how" || fromGeneral(m) || IDENTITY.test(String(m.content || ""));
 
 // Bee notes reach the helper as ordinary memory (bee-sync.js §0): never named, tagged like anything else it remembers.
 const tag = (m) => ownNote(m) ? "you" : m.kind === "preference" && m.author_type !== "human" ? "preference" : "remembered";

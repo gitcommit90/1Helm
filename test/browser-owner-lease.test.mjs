@@ -134,6 +134,38 @@ assert.equal((await pendingRetry).taken_over, true);
 assert.equal(retryCalls, 1, "the owner must not send a second request after takeover");
 container.getTcpPort = originalPort; await C.releaseControl();
 
+// A reservation left behind by a reset (a deploy) must expire by the kind of operation, not block the computer for an hour.
+{
+  sql.exec("DELETE FROM computer_busy"); await C.releaseControl();
+  C.put("browser_owner", ""); C.put("browser_owner_until", "0");
+  const realNow = Date.now, t0 = realNow();
+  const at = (ms) => { Date.now = () => t0 + ms; };
+  try {
+    for (const kind of ["browser", "owner_browser"]) {
+      sql.exec("DELETE FROM computer_busy");
+      sql.exec("INSERT INTO computer_busy (id,kind,until) VALUES (?,?,?)", `orphan-${kind}`, kind, t0 + 3 * 60e3);
+      at(60e3); assert.equal((await C.acquireBrowserOwner(ownerA)).browser_busy, true, `a fresh ${kind} row still blocks`);
+      at(4 * 60e3); assert.equal((await C.acquireBrowserOwner(ownerA)).ok, true, `an orphaned ${kind} row stops blocking after minutes`);
+      assert.equal((await C.releaseBrowserOwner(ownerA)).ok, true);
+    }
+    // A real new reservation gets the short limit for browser calls and the long limit for shell commands.
+    at(0); sql.exec("DELETE FROM computer_busy");
+    const gate = deferred(); C.ensureRunning = async () => { await gate.promise; return { cold: false }; };
+    const pending = C.browser("navigate", { url: "https://example.com/" });
+    const row = sql.exec("SELECT until FROM computer_busy").toArray()[0];
+    assert.ok(row.until - t0 <= 3 * 60e3, "a browser reservation expires within 3 minutes");
+    gate.resolve(); await pending;
+    assert.equal(sql.exec("SELECT 1 FROM computer_busy").toArray().length, 0, "a finished call removes its own reservation");
+    C.ensureRunning = async () => ({ cold: false });
+    const g2 = deferred(); C.installSkills = async () => {}; C.loadStandins = async () => {}; C.sh = async () => { await g2.promise; return { code: 0, out: "ok" }; };
+    const cmd = C.exec("echo ok", { save: "none" });
+    await Promise.resolve();
+    const crow = sql.exec("SELECT until FROM computer_busy WHERE kind='command'").toArray()[0];
+    assert.ok(crow.until - t0 > 15 * 60e3 && crow.until - t0 <= 17 * 60e3, "a command reservation outlasts the longest command only slightly");
+    g2.resolve(); await cmd;
+  } finally { Date.now = realNow; }
+}
+
 assert.equal((await C.acquireBrowserOwner(ownerA)).ok, true);
 C.save = async () => ({ ok: true });
 container.destroy = async () => { container.running = false; };

@@ -52,6 +52,30 @@ export function aliasesFor(p) {
   const rel = norm(p.rel).replace(/^(your|my) /, ""); if (rel && rel.split(" ").length <= 3) out.add(`my ${rel}`);
   return [...out].filter((a) => a.length > 1);
 }
+// The shared address book as a short block for every channel's standing context, so a contact saved anywhere (the Contacts page, another
+// channel) is in the next turn without a memory search. Newest change first; cut at the budget with a closing line naming recall_memory.
+export const CONTACTS_BUDGET = 3000;
+export function contactsBlock(list, { budget = CONTACTS_BUDGET } = {}) {
+  const ps = (list || []).filter((p) => p?.name).slice().sort((a, b) => (Number(b.updated) || 0) - (Number(a.updated) || 0) || String(a.name).localeCompare(String(b.name)));
+  const lines = []; let used = 0, left = 0;
+  const more = (n) => `(+${n} more contact${n === 1 ? "" : "s"} not listed here. Search them with recall_memory.)`;
+  for (const p of ps) { const ln = `- ${People.prototype.card(p)}`.slice(0, 400);
+    if (left || used + ln.length + 1 > budget - more(9999).length - 1) { left++; continue; } lines.push(ln); used += ln.length + 1; }
+  if (left) lines.push(more(left));
+  return lines.join("\n");
+}
+// Does a remembered fact's subject name a person or organization (a Contacts entry), or a thing ("gate code", "wifi password", "the car")?
+// Only people get a contact: a contact is shared by every channel, so a thing's name there would show that a channel-only fact exists.
+// A person when: already in Contacts; the call gave contact details (relation, phone, email, birthday, other names); or the name looks
+// like a name (1 to 4 capitalized words, none of them a common noun for a thing).
+const THING_WORDS = new Set("code codes password passwords passcode pin key keys wifi wi-fi number numbers account accounts address car truck bike house home apartment door gate garage lock safe locker combination login username token license plate id card insurance policy order reservation booking flight trip project plan budget list note notes recipe schedule appointment meeting event bill invoice the my our a an".split(" "));
+export function personSubject(about, o = {}, known = []) {
+  const name = String(about || "").trim(); if (!name) return false;
+  const k = norm(name); if (known.some((p) => aliasesFor(p).includes(k))) return true;
+  if (o.relation || o.phone || o.email || o.birthday || (Array.isArray(o.also_called) && o.also_called.length)) return true;
+  const words = name.split(/\s+/);
+  return words.length <= 4 && words.every((w) => /^\p{Lu}[\p{L}'.-]*$/u.test(w) && !THING_WORDS.has(w.toLowerCase()));
+}
 export class People {
   constructor(sql, env) {
     this.sql = sql; this.env = env;

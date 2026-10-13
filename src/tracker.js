@@ -562,6 +562,6 @@ export async function summarizeCard({ env, ledger = null, meta = {}, input, bill
   if (billed) { try { await ledger.settle(rid, charge); } catch (e) { console.log("labeller settle", e.message); } }
   const p = parseLabels(text, input.steps || []);
   const labels = p ? { ...p, title_src: "model", charge_nano: charge, billed } : { ...autoLabels(input), charge_nano: charge, billed };
-  if (input.chatTitle) labels.chat_title = p?.chat_title || fallbackChatTitle(input.msgs?.[0]?.text || input.title);
+  if (input.chatTitle) labels.chat_title = p?.chat_title || (input.msgs?.[0]?.text ? fallbackChatTitle(input.msgs[0].text) : undefined);   // a file-only first message has no words to name the chat from: the placeholder the chat started with (the file name) stays
   return labels;
 }

@@ -11,12 +11,13 @@ export function channelLayers(o, extra = {}) {
   o.general && o.ee !== false ? AMBIENT_PROMPT : "",
   o.general ? LOCATION_PROMPT : "",
   o.recall ? "Personal memory is available on demand through recall_memory." : "Automatic personal memory recall is not active.",
+  o.contacts ? "The person's Contacts (shared address book: names, relations, other names, phones, emails) are listed in the user context. Look there before saying you have no record of a person or their email or phone." : "",
   o.permLine || "", extra.apps || ""].filter(Boolean).join("\n");
   return { runtime, data: {
     profile: { helper_name: o.helperName || "your 1Helm helper", first_name: o.firstName || null, tone: ["default", "warm and chatty", "simple explanations without jargon"][Number(o.tone || 0)] || "default", timezone: o.tz },
     channel: { name: o.channel, purpose: o.purpose || "", general: !!o.general },
     connections: o.appsLine || "No connected apps.", texting: o.textingLine || "",
     saved_credentials: "Availability details can be read with read_context. Secret values are never returned.",
-    channel_skills: o.skillsLine || "", pinned_notes: o.pinned || "", earlier_channel_messages: o.recent || "",
+    contacts: o.contacts || "", channel_skills: o.skillsLine || "", pinned_notes: o.pinned || "", earlier_channel_messages: o.recent || "",
   } };
 }

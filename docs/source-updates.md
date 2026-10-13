@@ -3,13 +3,13 @@
 ## Saved model settings, background browser jobs and helper coordinators
 
 This update reconciles the Worker from `f551528c4b1188db5f26c2373a53a7235812fb46`
-to `05f733ceb422bc5b6a00c1a8f67a4f4d6c848bc5` and the web app from
+to `834af860ef88864cd5765bf5b48cf54e4f1f6239` and the web app from
 `7b0706aee0ffee61c9b100397287dfe75219a89c` to
 `24c621d7a8506efb2ea8ab5457b6de520a4a4fbe`.
 
 Source correspondence:
 
-- Worker: `f551528c4b1188db5f26c2373a53a7235812fb46` → `05f733ceb422bc5b6a00c1a8f67a4f4d6c848bc5`.
+- Worker: `f551528c4b1188db5f26c2373a53a7235812fb46` → `834af860ef88864cd5765bf5b48cf54e4f1f6239`.
 - Web: `7b0706aee0ffee61c9b100397287dfe75219a89c` → `24c621d7a8506efb2ea8ab5457b6de520a4a4fbe`.
 - Public base: `12fc9c2028f9c3f11941e862034226f5383e2533`.
 
@@ -24,6 +24,8 @@ Changes:
 - The classic lane keeps one frozen tool list per run and turns tools off with `tool_choice` set to `none`, so cached prompt prefixes stay valid. The `PAYLOAD_CUT` switch, off unless set, shortens step titles and sends non-core tools as short stubs.
 - Logging out revokes every session cookie the browser sends, and a storage failure now returns an error instead of looking like a success.
 - Prompt, documentation and skill wording was corrected, and a `business-setup` skill and a short cost-first rule were added.
+- Notes saved from General into another channel are marked as pinned there. The contacts list is read fresh into standing context, and only a person or organization becomes a contact, so a fact about a thing stays a channel note.
+- Browser job busy reservations expire by kind, and a finished job's handoff note was corrected. Spending pause preferences and the spend guard received small fixes.
 - The web app folds an ignored connect or share suggestion into a "Skipped" row, removes the live browser card when nothing is running, shows message actions beside the bubble on pointer devices, and never shows a handoff card's opening text as the person's message.
 
 Portable regression tests for these paths are part of `npm run test:runtime`,

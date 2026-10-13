@@ -96,7 +96,8 @@ import { hsOn, bankId, ensureBank, retain as hsRetain, recall as hsRecall, packH
 import { runJob, residentHost, noteActivity, REFLECT_ID } from "./memjobs.js";   // background memory jobs (Stage 3): silent, memory only
 import { staticCore, channelBlock, familyGuidance } from "./prompt/index.js";
 import { cutTitle, cutLazy, guidanceFor, stubTool, checkArgs, coerceArgs } from "./payload-cut.js";
-import { pinnedBlock, notebookMatches, identityNote, PINNED_BUDGET } from "./pinned-notes.js";   // the Notebook block: budgeted, their own notes first
+import { contactsBlock, personSubject } from "./people.js";
+import { pinnedBlock, notebookMatches, identityNote, FROM_GENERAL, PINNED_BUDGET } from "./pinned-notes.js";   // the Notebook block: budgeted, their own notes first
 import { genuiPromptSection, genuiEnvOn, cardsToText, cardsTree, splitCardParts, isRealCard, hasCards, stripPauseButtons } from "./genui.js";
 // Texted files (photos, videos, documents): how long to gather a caption / more photos sent as separate messages.
 export const TEXT_GATHER_MS = 4000, TEXT_GATHER_MAX_MS = 15000;
@@ -201,7 +202,7 @@ const TOOLS = () => (toolDefs ??= [
   { type: "function", function: { name: "save_run_notes", description: "Unattended workflow runs only: save notes that the NEXT run of this workflow receives verbatim (replacing the old notes). Include the exact command/script to run, where state/dedup data lives, and lessons learned. Call once at the end of every run.", parameters: { type: "object", properties: { notes: { type: "string" } }, required: ["notes"] } } },
   { type: "function", function: { name: "set_workflow_gate", description: "Recurring workflows only: set a shell command (run on this channel's computer, cwd /workspace) that the scheduler runs by itself BEFORE waking you. Exit 0 = nothing to do (you are not woken, the run costs no AI). Exit 3 = something needs you (you're woken with its output). Any other exit = the check broke (you're woken to fix it). Use this for monitors that are quiet most runs. Pass an empty command to remove the gate.", parameters: { type: "object", properties: { id: { type: "integer" }, command: { type: "string" } }, required: ["id", "command"] } } },
   { type: "function", function: { name: "recall_history", description: "Search this channel's full past conversation, including the raw work logs (commands, tool output) of earlier turns that are no longer in your context. Use when you need an exact detail from earlier work. For earlier email, calendar, app or web lookups, use work_log first.", parameters: { type: "object", properties: { query: { type: "string", description: "Words to look for" }, limit: { type: "integer" } }, required: ["query"] } } },
-  { type: "function", function: { name: "remember", description: "Save a lasting fact to memory. It stays in this channel's notes (from General you can also save into another channel's notes with channel). Use it when the person tells you something lasting about a person in their life or about themselves. about = the person's name, or \"me\". For a new person also give relation (e.g. \"Your sister\"), other names they use, phone/email/birthday: those go in the shared Contacts address book so every channel knows WHO they are, but the fact itself stays here.", parameters: { type: "object", properties: { about: { type: "string" }, fact: { type: "string" }, relation: { type: "string" }, also_called: { type: "array", items: { type: "string" } }, phone: { type: "string" }, email: { type: "string" }, birthday: { type: "string" }, channel: { type: "string", description: "From General only: the channel slug whose notes to save into (default: this channel)" }, section: { type: "string", enum: ["about", "how", "people", "places", "now"], description: "Where it shows in the person's Notebook: about = basics about them, how = how they like things done (preferences, rules, sign-offs, formats), people = someone in their life, places = a place, now = current goals/projects. Default: about for them, people for someone else." } }, required: ["about", "fact"] } } },
+  { type: "function", function: { name: "remember", description: "Save a lasting fact to memory. It stays in this channel's notes (from General you can also save into another channel's notes with channel). Use it when the person tells you something lasting about a person in their life or about themselves. about = the person's name, or \"me\". For a thing (a gate code, a car, a project) that is not a person or organization, about = what it is; it is saved as a note only and never becomes a contact. For a new person also give relation (e.g. \"Your sister\"), other names they use, phone/email/birthday: those go in the shared Contacts address book so every channel knows WHO they are, but the fact itself stays here.", parameters: { type: "object", properties: { about: { type: "string" }, fact: { type: "string" }, relation: { type: "string" }, also_called: { type: "array", items: { type: "string" } }, phone: { type: "string" }, email: { type: "string" }, birthday: { type: "string" }, channel: { type: "string", description: "From General only: the channel slug whose notes to save into (default: this channel)" }, section: { type: "string", enum: ["about", "how", "people", "places", "now"], description: "Where it shows in the person's Notebook: about = basics about them, how = how they like things done (preferences, rules, sign-offs, formats), people = someone in their life, places = a place, now = current goals/projects. Default: about for them, people for someone else." } }, required: ["about", "fact"] } } },
   MEMORY_EXPLAIN_TOOL,
   FORGET_TOOL,
   READ_DOC_TOOL,
@@ -458,9 +459,9 @@ export class Resident extends DurableObject {
   }
   // A remembered fact is ALSO a Notebook row (Archive memory_items, author "agent"), so the person sees it there and can edit
   // or delete it. The ledger row uses the same id (m:<id>) the Notebook mirror uses, so it's never stored twice.
-  async rememberLocal(who, fact, src = "", sec = "about") {
+  async rememberLocal(who, fact, src = "", sec = "about", from = "") {
     fact = scrubSecrets(fact);   // nosecrets: the remember tool refuses a secret; anything else that saves here never keeps one
-    const row = await this.archive().noteAdd(this.get("channel_id"), sec, fact, "agent").catch((e) => { console.log("notebook write", e.message); return null; });
+    const row = await this.archive().noteAdd(this.get("channel_id"), sec, fact, "agent", from ? { src: from } : {}).catch((e) => { console.log("notebook write", e.message); return null; });
     const id = row ? `m:${row.id}` : `r:${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
     this.mem.put({ id, at: Date.now(), kind: "fact", author: "remember", source: `remembered about ${who}${src ? ` · ${src}` : ""}`, text: fact });
     this.ctx.waitUntil?.(this.memIndex());
@@ -539,7 +540,7 @@ export class Resident extends DurableObject {
     this.sql.exec("INSERT INTO clef_doors (at,turn,tool,args,out_chars,needed,narrower,from_memory,mostly_noise,keep,ms,error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", Date.now(), turn, name, args.slice(0, 300), out.length, n("needed"), n("narrower"), n("from_memory"), n("mostly_noise"), top("keep"), Date.now() - t0, err);
   }
   async clefDoorsLog(n = 50) { try { return this.sql.exec("SELECT * FROM clef_doors ORDER BY id DESC LIMIT ?", n).toArray(); } catch { return []; } }
-  async rememberHere(who, fact, src, sec) { if (!this.get("tenant")) return { error: "no such channel" }; return { ok: true, ...(await this.rememberLocal(who, fact, src, sec)) }; }
+  async rememberHere(who, fact, src, sec, from = "") { if (!this.get("tenant")) return { error: "no such channel" }; return { ok: true, ...(await this.rememberLocal(who, fact, src, sec, from)) }; }   // from = "general" marks a note saved here by General, which this channel pins (pinned-notes.js)
   // Read by the General helper only: this channel's best rows for a question (embedding passed in, so no second embed).
   async recallFor(q, qv, k = 4, extraTerms = [], scope = null) { if (this.memoryMode() === "off") return { rows: [] }; const r = await this.mem.recall(String(q || ""), { qv, k, reserve: 1, extraTerms, scope }); return { rows: r.rows, topSim: r.topSim }; }
   // memory_explain, read by the General helper: this channel's explanation (memory-explain.js). Read-only.
@@ -866,7 +867,8 @@ export class Resident extends DurableObject {
       permLine: permPromptLine((await loadPerms(this.env, this.get("tenant"))).level),   // perms.js: "" on Standard (the block stays as it was)
       pinnedLabel: mmode === "on" ? "Pinned notes and preferences ((you) = their own words; everything else you remember arrives with each message as Memory recall):" : "Channel memory (durable knowledge and preferences, their own notes first):",
       pinned: mem, recent };
-    if (layered) {
+    if (layered) {   // Contacts are shared by every channel and can change outside this channel's turns (the Contacts page, another channel): read them fresh
+      try { channelOptions.contacts = contactsBlock(await this.archive().peopleList()); } catch (e) { console.log("contacts block", e.message); }
       const layers = channelLayers(channelOptions, { apps: appContext.instructions || "" });
       return { core: staticCore({ ...this.promptFlags(stable, cards, append), context_v2: true, ee: eeEnabled(this.env), lean_families: cutLazy(this.env) && !!append }), developer: layers.runtime + "\n\n" + RUNTIME_CONTRACT + (cards ? "\n\n" + genuiPromptSection() : ""), standing: layers.data };
     }
@@ -1672,9 +1674,13 @@ export class Resident extends DurableObject {
         // nosecrets: a password, key, card number or code never goes in the Notebook or memory. Saved logins and keys have their own place.
         if (hasSecret(fact) || hasSecret(about)) return "Not saved: that looks like a password, key, card number, ID number or one-time code, and secrets are never kept in the notebook or memory. Tell the person in plain words, and offer to save it where it belongs instead: a login or API key in Settings → Passwords & keys (a saved login is typed in for them without you ever seeing it), a card through Link. If there's a lasting fact around it (e.g. which bank they use), save just that, without the secret.";
         const self = /^(me|myself|the person|user|you)$/i.test(about);
-        const sec = ["about", "how", "people", "places", "now"].includes(a.section) ? a.section : self ? "about" : "people";
+        // Only a person or organization becomes a contact (people.js personSubject). A fact about a thing ("gate code") is a note in this
+        // channel's Notebook and nothing else: Contacts are shared, so a contact for it would show every channel that the fact exists.
+        const person = !self && personSubject(about, a, await this.archive().peopleList().catch(() => []));
+        const sec = ["about", "how", "people", "places", "now"].includes(a.section) ? a.section : self || !person ? "about" : "people";
         let who = "them";
-        if (!self) { const p = await this.archive().personUpsert({ name: about, rel: a.relation, aka: a.also_called || [], phone: a.phone, email: a.email, bday: a.birthday }, "Learned in chat");
+        if (!self && !person) { who = about; if (!fact.toLowerCase().includes(about.toLowerCase())) fact = `${about}: ${fact}`; }
+        if (person) { const p = await this.archive().personUpsert({ name: about, rel: a.relation, aka: a.also_called || [], phone: a.phone, email: a.email, bday: a.birthday }, "Learned in chat");
           if (p?.error) return `error: ${p.error}`; who = `${p.name}${p.rel ? ` (${p.rel})` : ""}`;
           // The Notebook row has to say who it's about ("Joseph's wife." alone doesn't say Lilly).
           const first = String(p.name).split(/\s+/)[0]; if (!fact.toLowerCase().includes(first.toLowerCase())) fact = `${p.name}: ${fact}`; }
@@ -1682,13 +1688,13 @@ export class Resident extends DurableObject {
         if (target && target !== this.get("channel")) {
           if (this.get("channel") !== SKIPPER_SLUG) return "error: saving into another channel's notes works only from General. Save it here, or tell the person they can tell you in General.";
           const R = this.env.RESIDENT.get(this.env.RESIDENT.idFromName(`res:${this.get("tenant")}:${target}`));
-          const r = await R.rememberHere(who, fact, `from General${ctx.session ? ` · task ${String(ctx.session).slice(0, 8)}` : ""}`, sec);
+          const r = await R.rememberHere(who, fact, `from General${ctx.session ? ` · task ${String(ctx.session).slice(0, 8)}` : ""}`, sec, FROM_GENERAL);
           return savedNote(ctx, a, r?.ok ? `Saved in #${target}'s notebook only.` : `error: ${r?.error || "could not save"}`);
         }
         const lifted = liftForgotten(this.sql, fact);   // forget.js: they asked for this to be remembered again
         const note = await this.rememberLocal(who, fact, ctx.session ? `task ${String(ctx.session).slice(0, 8)}` : "", sec);
         if (note.sec) ctx.emit?.({ t: "note", note });
-        return savedNote(ctx, a, `Saved to this channel's notebook (the person can see and edit it there)${self ? "" : `; ${who} is in Contacts`}.${lifted ? " (They had asked you to forget this subject; saving it means memory may keep it again. Do this only because they asked.)" : ""}`);
+        return savedNote(ctx, a, `Saved to this channel's notebook (the person can see and edit it there)${self || !person ? "" : `; ${who} is in Contacts`}.${lifted ? " (They had asked you to forget this subject; saving it means memory may keep it again. Do this only because they asked.)" : ""}`);
       }
       case "memory_explain": return await memoryExplain(this, a, { general: this.get("channel") === SKIPPER_SLUG });
       case "ambient_query": return JSON.stringify(await ambientQuery(this, a, ctx));
@@ -3668,10 +3674,10 @@ export class Resident extends DurableObject {
         if (ev.length) steps = ev.filter((e) => e.type === "step" && e.status !== "skipped").map((e) => { const a = jp(e.input), saved = savedTo(e.tool, a, e.out_preview); return { tool: e.tool, line: lineFor(e.tool, a), title: e.title, seq: e.seq, status: e.status, ...(saved.length ? { saved } : {}) }; });
         else { try { steps = JSON.parse(t.trace || "[]").filter((x) => !SILENT_TOOLS.has(x.tool)).map((x) => { const a = jp(x.args), saved = savedTo(x.tool, a, x.out); return { tool: x.tool, line: lineFor(x.tool, a), title: fallbackStepTitle(x.tool, a), ...(saved.length ? { saved } : {}) }; }); } catch {} }
         // The person's messages of this card: the first one plus everything added while it worked (MsgView, with reactions).
-        // A handoff card (helper report, follow-up, browser job, app connected) opened with model-only text: never a message of the person.
+        // A handoff card (helper report, follow-up, browser job, app connected) opened with model-only text: never a message of the person (but a steer they type into it is).
         const handoffCard = this.sql.exec("SELECT kind FROM cards WHERE id=?", t.id).toArray()[0]?.kind === "handoff";
-        const msgs = t.kind !== "chat" || handoffCard ? [] : ev.length ? ev.filter((e) => e.type === "msg").map((e) => eventView(this.sql, e))
-          : [{ seq: 1, type: "msg", at: t.at, id: t.id, cid: null, text: t.user_text ?? "", files: [], via: "app", consumed: 0, reaction: react[t.id] || null }];
+        const msgs = t.kind !== "chat" ? [] : ev.length ? ev.filter((e) => e.type === "msg").map((e) => eventView(this.sql, e))   // a handoff card's opening text is a "handoff" event, so only a genuine steer the person typed into it shows here
+          : handoffCard ? [] : [{ seq: 1, type: "msg", at: t.at, id: t.id, cid: null, text: t.user_text ?? "", files: [], via: "app", consumed: 0, reaction: react[t.id] || null }];
         const images = this.sql.exec("SELECT id, url, caption FROM shots WHERE turn=? ORDER BY at", t.id).toArray();
         const ups = (() => { try { return JSON.parse(t.files || "[]"); } catch { return []; } })();
         const fr = this.sql.exec("SELECT * FROM files WHERE turn=? AND deleted=0 ORDER BY at", t.id).toArray();

@@ -18,5 +18,5 @@ export function applySpendPreference(tc, enabled) {
 export async function readSpendPreference(ledger) {
   // Old isolates/stubs retain the existing ON policy. A failed read never
   // silently disables safeguards; the next successful boundary reads it again.
-  try { return (await ledger.spendPreferences()).enabled !== false; } catch { return true; }
+  try { return (await ledger?.spendPreferences()).enabled !== false; } catch { return true; }
 }
