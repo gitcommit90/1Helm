@@ -1,4 +1,38 @@
-# Source update: 2026-10-12
+# Source update: 2026-10-13
+
+## Saved model settings, background browser jobs and helper coordinators
+
+This update reconciles the Worker from `f551528c4b1188db5f26c2373a53a7235812fb46`
+to `05f733ceb422bc5b6a00c1a8f67a4f4d6c848bc5` and the web app from
+`7b0706aee0ffee61c9b100397287dfe75219a89c` to
+`24c621d7a8506efb2ea8ab5457b6de520a4a4fbe`.
+
+Source correspondence:
+
+- Worker: `f551528c4b1188db5f26c2373a53a7235812fb46` → `05f733ceb422bc5b6a00c1a8f67a4f4d6c848bc5`.
+- Web: `7b0706aee0ffee61c9b100397287dfe75219a89c` → `24c621d7a8506efb2ea8ab5457b6de520a4a4fbe`.
+- Public base: `12fc9c2028f9c3f11941e862034226f5383e2533`.
+
+Changes:
+
+- Every model job (chat lists, background roles, speech, search index, file pictures and decisions) now has its own saved model, reasoning level and fallback models. The managed Models page and its storage stay in `src/ee/` behind the EE switch. Without the switch, a deployment uses the same first-run settings held in memory, never reads the shared settings table, and keeps own-key accounts on their own endpoint and model.
+- Migration `0050_model_job_settings.sql` adds the `model_job_settings_versions` table. It is additive, it does not change `model_settings_versions`, and only the EE settings page reads or writes it.
+- `browser_task` now waits about 45 seconds. A longer job moves to the background, and one job can run per channel with an owner lease and human takeover. Starting, listing and stopping browser jobs is part of the EE tool set.
+- Helpers can take a bounded part of the current request, start in their own folder and receive queued follow-up messages. A coordinator helper can start at most two worker children and returns one combined report.
+- A model step that stops without a reported cost is billed at the served model's saved price and no longer at the reservation ceiling. When no saved price exists, the ceiling is used and a `price_unknown` event is recorded.
+- A tool batch is stopped when one call repeats 8 or more times, when fewer than half of 12 or more calls are different, or when it holds more than 64 calls. The model gets a note that matches the reason.
+- The classic lane keeps one frozen tool list per run and turns tools off with `tool_choice` set to `none`, so cached prompt prefixes stay valid. The `PAYLOAD_CUT` switch, off unless set, shortens step titles and sends non-core tools as short stubs.
+- Logging out revokes every session cookie the browser sends, and a storage failure now returns an error instead of looking like a success.
+- Prompt, documentation and skill wording was corrected, and a `business-setup` skill and a short cost-first rule were added.
+- The web app folds an ignored connect or share suggestion into a "Skipped" row, removes the live browser card when nothing is running, shows message actions beside the bubble on pointer devices, and never shows a handoff card's opening text as the person's message.
+
+Portable regression tests for these paths are part of `npm run test:runtime`,
+`npm run test:core` and `npm run test:web`. They use synthetic data and offline
+fixtures. Hosted deployment fixtures, release and diagnostics tooling,
+operator-only modules, private configuration, host paths and the `e2e/` live
+checks remain excluded. This source update is not a live-provider, container
+or deployment-transition acceptance result. Native clients and installation
+configuration are unchanged.
 
 ## Workflow spending-limit report follow-up
 

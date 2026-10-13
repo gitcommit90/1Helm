@@ -6,6 +6,13 @@ After reviewing new migration files and changes to `wrangler.example.jsonc`, bri
 
 When changing the channel computer Dockerfile, Wrangler builds a new container image at deploy time; a working Docker daemon is required. Existing D1 and R2 data stay in Cloudflare. Do not import a legacy v1.x Linux database into this Worker: the schema and runtime are different, so use a fresh installation.
 
+## October 13 source update
+
+Apply ordered D1 migration `0050` using the normal migration runner. It adds the
+`model_job_settings_versions` table, which only the Cloud-only Models page uses,
+so a self-hosted install without `ONEHELM_EE` is unaffected. No new binding,
+variable or Durable Object migration is required.
+
 ## October 11 source update
 
 Apply ordered D1 migrations `0041` through `0049` using the normal migration

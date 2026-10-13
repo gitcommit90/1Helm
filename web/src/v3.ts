@@ -14,7 +14,7 @@ import { notebookBeeUnread } from "./ee/notebook-bee-unread";
 import { dpInit, dpSec, dpSheetMaybe, dpLoc, dpShareNow, DP_ICON } from "./devperm";   // location + mic, asked once up front (its sheet's Esc, too)   // Settings → Ambient → Bee: the card and the Connect sheet (its sheet's Esc, too)
 import { delInit, rowMore, headDelete, channelMore, sheetRows, MORE } from "./delete";   // deleting a chat / channel / the account
 import { openNewChannel, createViaApi, type NewChannel } from "./newchannel";   // second, for the same reason (New channel sheet)
-import { shInit, shFiles, shCards, shEvent, shCardHtml, shFileBtn, shViewerBtns, shBadge, shLibHtml, shFileGone } from "./share";   // share links + published pages (its sheet's Esc, too)
+import { shInit, shFiles, shCards, shEvent, shCardHtml, shFold, shFileBtn, shViewerBtns, shBadge, shLibHtml, shFileGone } from "./share";   // share links + published pages (its sheet's Esc, too)
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { fileUrl as fileResUrl } from "./file-url.mjs";
@@ -29,13 +29,14 @@ import { ciInit, ciOpen } from "./contacts-import";
 import { clInit, clList, clMount, pills } from "./contacts-list";
 import { cmInit, numRows, readNums, numsOf, mergeOpen, mergeLocal, dupBanner, dupClick, findDups, type Num } from "./contacts-merge";   // several numbers per contact, merge, duplicates   // the Contacts list: letter sections, A–Z rail, windowed rows   // Contacts → Import (vCard / Google / Outlook CSV, read in the browser)
 import { SCENES } from "./genui-scenes";
-import { renderCard, replyParts, partOwner, scrubCode, cardText, plainPreview, wireCards } from "./genui-render";
+import { renderCard, foldHtml, replyParts, partOwner, scrubCode, cardText, plainPreview, wireCards } from "./genui-render";
 import { approvalHtml, type Decision } from "./approval-card";
 import { approvalCards, approvalResponse } from "./approval-live";
-import { nativeResumeInput, nativeReceiptStatus } from "./native-approval-progress";
+import { nativeResumeInput, internalHandoffInput, nativeReceiptStatus } from "./native-approval-progress";
 import { pmInit, pmHtml, pmClick, pmAfter, pmFocusCheckins } from "./perms";   // Settings → Permissions (live): level + "Always allowed"
 import { NETWORK_SEC, networkInit, networkHtml, networkClick, networkChange, networkVisible } from "./computer-network";
 import { watchingComputer, computerViewerChanged } from "./computer-offer";
+import { settleBrowserCards } from "./browser-card";
 import { initAppDetail, openAppDetail, appDetailSync, appDetailRepaint } from "./ee/app-detail";
 import { appIsSoon, catalogAppVisible } from "./apps-availability";
 import { initAcctNote, onAcctNote, acctNoteHtml, acctNoteReset, acctNoteAfter } from "./ee/acct-note";   // a note per connected account, for the helper
@@ -54,7 +55,7 @@ import { logoOver, logoChip, workDomain, appLogo, logoWarm } from "./logo";
 import { ivInit, ivSet, ivIs, ivView } from "./interview";
 import { apkRegister, apkHtml, apkReset, type AppOpt } from "./ee/apps-pick";   // Settings → Connected accounts → Apps I use
 import { ivcHtml } from "./interview-card";
-import { offerCardHtml, cxoInit, cxoUpdate, cxoFrom, cxoBoot, cxoDraftHtml, type OfferCard } from "./ee/connect-card";
+import { offerCardHtml, offerFold, cxoInit, cxoUpdate, cxoFrom, cxoBoot, cxoDraftHtml, type OfferCard } from "./ee/connect-card";
 import { planInit, planAttach, planEvent, planCardHtml, planBriefs, briefMsgHtml } from "./plan-live";   // plan cards (propose_plan)
 import { bcxInit, bcxUsage } from "./ee/cancel";
 import { pdInit, pdSet } from "./ee/pastdue";   // payment failed: read-only banner (Fix payment) + disabled composers
@@ -733,12 +734,21 @@ document.addEventListener("input", e => { const t = e.target as HTMLInputElement
   window.addEventListener("resize", () => { if (PK.open) pkPlace(); });
   window.addEventListener("hashchange", () => pkClose(false));
 }
-function chatCards(cards: any[], ch: Channel) {
+// An agent suggestion the person ignored (still waiting, and they have since sent another message) folds into the same "Skipped" row
+// as an unanswered reply card. Pending approvals, interviews, plans and live notes never fold; used cards keep their own look.
+function foldTitle(c: any): string {
+  if (c.t === "offer") return offerFold(c);
+  if (c.t === "share") return shFold(c);
+  if (c.t === "contact") return CX_DONE[c.k] ? "" : `Add ${c.c.name} to your contacts?`;
+  return "";
+}
+function chatCards(cards: any[], ch: Channel, reply?: string) {
   let html = "", group = false;
   for (const c of cards) { const tile = c.t === "file" || c.t === "image";
     if (tile && !group) html += '<div class="chat-file-grid">';
     if (!tile && group) html += '</div>';
-    html += cardHtml(c, ch); group = tile;
+    const ft = foldTitle(c);
+    html += ft ? foldHtml(`card:${ch.slug}:${c.t}:${c.o?.id ?? c.id ?? c.k}`, ft, cardHtml(c, ch), reply !== undefined) : cardHtml(c, ch); group = tile;
   }
   return html + (group ? '</div>' : '');
 }
@@ -1303,6 +1313,7 @@ function cardFile(ch: Channel, name: string) {
 const cardIcon = (name: string) => { const k = fkind(name); return `<span class="aico k-${k}">${I(KIND[k][1], 30)}</span>`; };
 // Every message of a task, each knowing the next thing the person said after it (that locks a card's controls).
 function msgsHtml(s: Session, ch: Channel) {
+  settleBrowserCards(s);   // the live "using the browser" card goes once nothing is running, however the end was missed
   const next: (string | undefined)[] = []; let u: string | undefined;
   for (let i = s.messages.length - 1; i >= 0; i--) { next[i] = u; if (s.messages[i].role === "user") u = s.messages[i].body; }
   return s.messages.map((m, i) => msgHtml(m, ch, s.messages[i - 1], !!s.streaming && i === s.messages.length - 1, s, next[i])).join("") + (LIVE && s.srv ? slBubbles(ch.slug, s.id) : "") + (LIVE && s.srv && !s.streaming && showCosts() ? usageNote(ch.slug, s.id) : "");
@@ -1347,7 +1358,7 @@ function msgHtml(m: Msg, ch: Channel, prev?: Msg, live = false, s?: Session, rep
   } else if (tkon && ["paused", "failed", "interrupted", "stopped"].includes(tkCardView(ch.slug, s!.id, tm.card)?.status || "")) steps = tkChip(ch.slug, s!.id, tm.card);
   const slot = progressSlot(m, live);
   return `<div class="m agent${first ? " first" : ""}" data-mr="${m.id}"${tkon ? ` data-card="${esc(tm.card!)}"` : ""} title="${clock(m.at)}">
-    <div class="reply-steps">${live && m.note ? `<div class="mnote">${esc(m.note)}</div>` : ""}${steps}</div><div class="reply-slot" data-progress-mode="${slot.mode}">${!live && !String(m.body || "").trim() && (m.cards || []).some(c => c.t === "lnrefine") ? "" : partHtml(slot.text, ch, s, m, live, reply, false, m, slot.part)}${live && m.pre?.length && !slot.text.trim() ? TYPING : ""}</div>${live ? `<div class="reply-history">${progNotes(m)}</div>` : ""}${tkon && !live && tkCardView(ch.slug, s!.id, tm.card)?.status === "paused" ? pausedNote(ch.slug, s!.id, tm.card!) : ""}${live ? ctUsed(m) + nbSaved(m, ch) : ""}${chatCards(m.cards || [], ch)}</div>`;
+    <div class="reply-steps">${live && m.note ? `<div class="mnote">${esc(m.note)}</div>` : ""}${steps}</div><div class="reply-slot" data-progress-mode="${slot.mode}">${!live && !String(m.body || "").trim() && (m.cards || []).some(c => c.t === "lnrefine") ? "" : partHtml(slot.text, ch, s, m, live, reply, false, m, slot.part)}${live && m.pre?.length && !slot.text.trim() ? TYPING : ""}</div>${live ? `<div class="reply-history">${progNotes(m)}</div>` : ""}${tkon && !live && tkCardView(ch.slug, s!.id, tm.card)?.status === "paused" ? pausedNote(ch.slug, s!.id, tm.card!) : ""}${live ? ctUsed(m) + nbSaved(m, ch) : ""}${chatCards(m.cards || [], ch, reply)}</div>`;
 }
 
 document.addEventListener("click", e => {
@@ -2499,7 +2510,13 @@ document.addEventListener("click", e => {
   }
   const sn = t.closest<HTMLElement>("[data-snote]"); if (sn) {
     closeMenu();
-    if (LIVE && sn.dataset.snote === "logout") { fetch("/auth/logout", { method: "POST", credentials: "same-origin" }).finally(() => location.assign("/")); return; }
+    if (LIVE && sn.dataset.snote === "logout") {
+      fetch("/auth/logout", { method: "POST", credentials: "same-origin" }).then(r => {
+        if (r.status !== 204) throw new Error("Logout failed");
+        location.assign("/");
+      }).catch(() => note(g("help", 14), "Couldn't log out", "We couldn't confirm that you were logged out. Please try again.", ""));
+      return;
+    }
     const [a, b] = SNOTE[sn.dataset.snote!] ?? ["Coming soon", ""]; note(g("help", 14), a, `${b}${LIVE ? "" : " (Not wired up in the sandbox.)"}`, ""); return;
   }
   if (!S.open) return;
@@ -2823,7 +2840,7 @@ async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
     if (d.live && !s.streaming) {
       const lm = (d.live.card?.events || []).filter((e: any) => e.type === "msg");
       if (lm.length) lm.forEach((x: any, i: number) => msgs.push(userOf(x, { at: d.live.started }, i)));
-      else if (d.live.user_text && !nativeResumeInput(d.live.card)) msgs.push({ id: nextId++, role: "user", body: d.live.user_text, at: d.live.started, steps: [], turn: d.live.turn, reaction: d.live.reaction || undefined } as RxMsg);
+      else if (d.live.user_text && !nativeResumeInput(d.live.card) && !internalHandoffInput(d.live.card)) msgs.push({ id: nextId++, role: "user", body: d.live.user_text, at: d.live.started, steps: [], turn: d.live.turn, reaction: d.live.reaction || undefined } as RxMsg);
       const r: Msg = { id: nextId++, role: "agent", body: d.live.text || "", at: Date.now(), steps: [], ...(d.live.card?.id ? { card: d.live.card.id } : {}), ...(d.live.interviews?.length ? { cards: d.live.interviews.map((v: any) => ({ t: "interview", v })) } : {}) } as TkMsg; progressSnapshot(r, d.live.reply_state); msgs.push(r);
       s.messages = msgs; s.state = "working"; s.rawLine = d.live.line || ""; liveAttach(ch, s, r);
     } else if (!s.streaming && d.session?.state === "working" && !d.session.native_progress) {

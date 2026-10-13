@@ -2,7 +2,7 @@
 @import "./plan-card.css";
 /* Cards in chat (generative UI): the approved the design sandbox/genui look, ported from src/genui.css. Shared by the app
    (v3.css) and the inside-Messages card page (card.css); both define the color tokens. Markup: src/genui-render.ts. */
-.gu-reply{width:100%;max-width:560px}.gu-stack{display:flex;flex-direction:column;gap:10px}
+.gu-reply{width:100%;max-width:560px;position:relative}.gu-stack{display:flex;flex-direction:column;gap:10px}
 .gu-in{animation:gin .25s ease both}@keyframes gin{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .gu-say{background:var(--abub);border-radius:22px;padding:12px 18px;max-width:92%;align-self:flex-start;line-height:1.45;overflow-wrap:anywhere}.gu-say p{margin:0}.gu-say p+p{margin-top:.55em}.gu-say b{font-weight:600}
 .gu-tip{display:flex;gap:9px;align-items:flex-start;font-size:13.5px;color:var(--mute);padding:0 6px}.gu-tip svg{flex:none;margin-top:2px}.gu-tip b{color:var(--ink2)}
@@ -88,3 +88,15 @@ a.gu-thumb{transition:transform .12s}a.gu-thumb:hover{transform:scale(1.02)}
   .gu-bars{gap:6px;padding:12px 10px 8px}.gu-thumb{width:96px}
 }
 @media (prefers-reduced-motion:reduce){.gu-in,.gu-bar i,.gu-track i,.gu-bspin{animation:none}}
+
+/* Cards the person never answered fold into a one-line "Skipped" row (genui-render.ts). No transition on first paint, so history loads folded. */
+.gu-skiph{display:flex;align-items:center;gap:8px;max-height:0;opacity:0;overflow:hidden;visibility:hidden;margin:0;padding:0 14px;border-radius:999px;background:var(--hover);color:var(--mute);font-size:14px;text-align:left;max-width:100%;
+  transition:max-height .3s ease .25s,opacity .25s ease .3s,margin .3s ease .25s,padding .3s ease .25s,visibility 0s .6s}
+.gu-skiph span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.gu-skiph svg{flex:none;transition:transform .2s}
+.gu-skip .gu-skiph{max-height:40px;opacity:1;visibility:visible;padding:9px 14px}.gu-skip.open .gu-skiph{margin-bottom:8px}.gu-skip.open .gu-skiph svg{transform:rotate(180deg)}.gu-skiph:hover{color:var(--ink2)}
+.gu-skipb{display:grid;grid-template-rows:1fr}.gu-skipi{min-height:0}
+.gu-skip .gu-skipi{overflow:hidden}
+.gu-skip:not(.open) .gu-skipb{grid-template-rows:0fr;opacity:0;visibility:hidden;transition:grid-template-rows .45s cubic-bezier(.4,0,.2,1) .12s,opacity .3s ease .12s,visibility 0s .57s}
+.gu-skip.open .gu-skipb{transition:grid-template-rows .3s ease,opacity .2s ease}
+.gu-dust{position:absolute;left:0;top:0;width:100%;height:0;pointer-events:none;z-index:2}.gu-dust i{position:absolute;border-radius:50%;background:var(--mute);opacity:0}
+@media(prefers-reduced-motion:reduce){.gu-skiph,.gu-skipb,.gu-skip:not(.open) .gu-skipb,.gu-skip.open .gu-skipb{transition-duration:.12s;transition-delay:0s}}

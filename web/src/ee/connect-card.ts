@@ -107,6 +107,11 @@ export function draftHtml(d: Draft | null | undefined, opts: { helper: string; s
   return "";
 }
 
+/** The title to show in a "Skipped:" row when the person ignored this card, or "" when the card must stay as it is (used, or not a suggestion). */
+export function offerFold(c: OfferCard): string {
+  const o = c.o; if (o.status !== "pending" || o.app === "composio" || (!o.another && !!D?.connected(o.app))) return "";
+  return o.another ? `Connect another ${o.name} account` : `${o.reconnect ? "Reconnect" : "Connect"} ${o.name}?`;
+}
 /** One card. state: pending (Connect / Not now), connected (✓ … connected), dismissed (Not now · Don't suggest…). */
 export function offerCardHtml(c: OfferCard, opts: { helper: string; fresh?: boolean; attrs?: string } = { helper: "Your helper" }) {
   const o = c.o, k = `${esc(c.ch)}|${o.id}`, conn = o.status === "connected" || (o.status === "pending" && !o.another && !!D?.connected(o.app));   // another: it's connected already

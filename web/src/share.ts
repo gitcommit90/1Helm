@@ -115,6 +115,11 @@ export function shEvent(reply: any, o: Offer) {
   OF.set(o.id, o); OV.set(o.id, { ...(OV.get(o.id) || {}), fresh: true });
   if (!(reply.cards ??= []).some((c: any) => c.t === "share" && c.id === o.id)) reply.cards.push({ t: "share", id: o.id });
 }
+/** Title for a "Skipped:" row when this offer is still waiting for an answer, else "". */
+export function shFold(c: Card): string {
+  const o = OF.get(c.id); if (!o || (o.status as string) !== "pending") return "";
+  return o.kind === "page" ? `${o.update ? "Update" : "Publish"} "${o.title || o.name}" at your address?` : `Make a public link for "${o.file?.name}"?`;
+}
 export function shCardHtml(c: Card, attrs = "") {
   const o = OF.get(c.id); if (!o) return "";
   const v = OV.get(o.id) || {}, k = esc(o.id), page = o.kind === "page", fr = v.fresh ? " gu-in" : ""; v.fresh = false;

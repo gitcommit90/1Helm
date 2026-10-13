@@ -346,7 +346,57 @@ export function renderCard(body: string, o: { owner: object; ref: any; sid: stri
     return { text: txt || scrubCode(scan(src).drop.replace(/^\s*```.*$/gm, "")).trim() };
   }
   if (!o.streaming) REG.set(key, { root, ref: o.ref, s });
-  return { html: `<div class="gu-reply${locked ? " locked" : ""}" data-guk="${esc(key)}">${inner}</div>` };
+  // A card the person never answered, once they have said something else, folds into a one-line "Skipped" row they can tap to read.
+  const skip = locked && !o.streaming && !pk.act && interactive(root);
+  return { html: foldHtml(key, skipTitle(root), inner, skip, locked) };
+}
+/** The fold wrapper: the card inside a "Skipped: <title>" row that shows when `skip` is true. Shared with the system cards (connect, share). */
+export function foldHtml(key: string, title: string, inner: string, skip: boolean, locked = false) {
+  const open = OPEN.has(key);
+  return `<div class="gu-reply${locked ? " locked" : ""}${skip ? " gu-skip" : ""}${skip && open ? " open" : ""}" data-guk="${esc(key)}">`
+    + `<button type="button" class="gu-skiph" data-gskip tabindex="${skip ? 0 : -1}" aria-expanded="${skip && open}"><span>Skipped: ${esc(title)}</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>`
+    + `<div class="gu-skipb"><div class="gu-skipi">${inner}</div></div></div>`;
+}
+const OPEN = new Set<string>();   // skipped cards the person opened (survives repaints)
+const interactive = (root: any) => ["Options", "Button", "Form", "Stepper", "Choice", "Field"].some((t) => all(root, t).length);
+function skipTitle(root: any) {
+  const lab = (t: string, k: string) => all(root, t).map((x) => str(x.props[k])).find(Boolean);
+  const say = sayTips(root)[0] || lab("Choice", "label") || lab("Field", "label") || lab("Stepper", "label") || lab("Form", "submit") || "card";
+  const t = say.replace(/[*_`#>]/g, "").replace(/\s+/g, " ").trim();
+  return t.length > 70 ? t.slice(0, 69).trimEnd() + "…" : t;
+}
+// While a card folds, keep what the person is looking at where it is (browsers differ in scroll anchoring).
+// Applies when they are at the bottom of the chat or the card is already above the screen.
+function holdScroll(card: HTMLElement) {
+  let sc: HTMLElement | null = card.parentElement; while (sc && sc !== document.body && !/(auto|scroll)/.test(getComputedStyle(sc).overflowY)) sc = sc.parentElement;
+  const m = card.closest<HTMLElement>(".m") || card, nx = m.nextElementSibling as HTMLElement | null; if (!sc || sc === document.body || !nx) return;
+  const box = sc, stuck = box.scrollHeight - box.scrollTop - box.clientHeight < 90, above = m.getBoundingClientRect().bottom <= box.getBoundingClientRect().top + 1;
+  if (!stuck && !above) return;
+  let last = nx.getBoundingClientRect().top; const end = Date.now() + 600;
+  const frame = () => { const y = nx.getBoundingClientRect().top; if (y !== last) box.scrollTop += y - last; if (Date.now() < end) requestAnimationFrame(frame); };
+  requestAnimationFrame(frame);
+}
+// Live only: the card swells a hair, then a few faint dots drift off it while it folds (CSS does the folding). Removed when done.
+function dust(el: HTMLElement) {
+  if (typeof el.animate !== "function" || matchMedia("(prefers-reduced-motion: reduce)").matches || el.classList.contains("open")) return;
+  const w = el.offsetWidth, h = Math.min(el.offsetHeight, 520); if (w < 40 || h < 40) return;
+  el.animate([{ transform: "scale(1)", filter: "brightness(1)" }, { transform: "scale(1.015)", filter: "brightness(1.05)", offset: 0.5 }, { transform: "scale(1)", filter: "brightness(1)" }], { duration: 240, easing: "ease-out" });
+  const box = document.createElement("div"); box.className = "gu-dust"; box.setAttribute("aria-hidden", "true");
+  const anims: Animation[] = [];
+  for (let i = 0; i < 30; i++) {
+    const d = document.createElement("i"), x = Math.random() * w, y = Math.random() * h, sz = 2 + Math.random() * 2;
+    d.style.cssText = `left:${x}px;top:${y}px;width:${sz}px;height:${sz}px`; box.appendChild(d);
+    anims.push(d.animate([{ opacity: 0, transform: "translate(0,0)" }, { opacity: 0.55, offset: 0.25 }, { opacity: 0, transform: `translate(${(Math.random() - 0.5) * 28}px,${-6 - Math.random() * 20}px)` }],
+      { duration: 380 + Math.random() * 120, delay: 100 + Math.random() * 160, easing: "ease-out", fill: "both" }));
+  }
+  el.appendChild(box);
+  const done = () => box.remove(); Promise.all(anims.map((a) => a.finished)).then(done, done); setTimeout(done, 1000);
+}
+let watching = false;
+function watchSkips() {
+  if (watching || typeof MutationObserver === "undefined") return; watching = true;
+  new MutationObserver((ms) => { for (const x of ms) { const el = x.target as HTMLElement; if (el.classList?.contains("gu-skip") && !(x.oldValue || "").split(" ").includes("gu-skip")) { holdScroll(el); dust(el); } } })
+    .observe(document.body, { subtree: true, attributes: true, attributeFilter: ["class"], attributeOldValue: true });
 }
 
 // ── 6. Taps. A tap sends a normal user message (shared contract); state changes repaint via the caller's morph. ──
@@ -368,7 +418,10 @@ function msgFor(g: Reg, t: HTMLElement): string | null {
 }
 /** Wire taps once per page. onSend(ref, text): send `text` as the person's message. onChange(ref): repaint that card. */
 export function wireCards(h: { onSend: (ref: any, text: string, meta?: { action?: string }) => void; onChange: (ref: any) => void }) {
+  watchSkips();
   document.addEventListener("click", (e) => {
+    const sk = (e.target as HTMLElement).closest<HTMLElement>("[data-gskip]");
+    if (sk) { const b = sk.closest<HTMLElement>("[data-guk]"); if (b?.classList.contains("gu-skip")) { const k = b.dataset.guk!, on = !OPEN.has(k); on ? OPEN.add(k) : OPEN.delete(k); b.classList.toggle("open", on); sk.setAttribute("aria-expanded", String(on)); } return; }
     const t = (e.target as HTMLElement).closest<HTMLElement>("[data-gset],[data-gbtn],[data-gsub],[data-ginc],[data-gchip]"); if (!t) return;
     const box = t.closest<HTMLElement>("[data-guk]"), g = box && REG.get(box.dataset.guk!); if (!g || box!.classList.contains("locked") || (t as HTMLButtonElement).disabled) return;
     e.preventDefault(); const s = g.s;

@@ -1,17 +1,13 @@
 /* ---------- Copy + Reply on chat bubbles, the reply pinned above the composer (msgreply.ts) ---------- */
 .msgs .m .bubble{position:relative}
 .msgs{overflow-x:clip}   /* the buttons never make the chat scroll sideways (a focused button would scroll it into view) */
-/* Keep the reply stack compact until its controls are shown. The revealed strip still
-   takes up layout space, so Copy / Reply never cover history, text or task cards. */
+/* Placement depends on how the device reveals the actions.
+   Pointer devices: the strip sits beside the bubble (left of a user bubble, right of an agent bubble), so nothing
+   is reserved under it and showing or hiding it (opacity only) never moves anything.
+   Touch devices: press and hold shows the strip under the bubble, in the space the bubble opens for it. */
 .msgs .m .bubble:has(>.mact){margin-bottom:6px;min-width:68px;--action-space:34px}
 .msgs .m .bubble:has(>.mact .ma-task){min-width:102px}
-/* Expanding the action strip must not make scroll anchoring move the hovered or
-   held bubble away from the pointer. Normal chat anchoring resumes on dismissal. */
-.msgs:has(.bubble.macts,.bubble.ma-space,.mact :focus-visible){overflow-anchor:none}
-@media(hover:hover){.msgs:has(.bubble:hover>.mact){overflow-anchor:none}}
-.mact{position:absolute;top:100%;padding-top:2px;display:flex;gap:4px;opacity:0;pointer-events:none;transition:opacity .12s;white-space:nowrap;z-index:2;font-size:13px;line-height:1}
-.m.agent .mact{left:0}
-.m.user .mact{right:0;flex-direction:row-reverse}
+.mact{position:absolute;display:flex;gap:4px;opacity:0;pointer-events:none;transition:opacity .12s;white-space:nowrap;z-index:2;font-size:13px;line-height:1}
 .mact button{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:30px;height:30px;padding:0 7px;border-radius:999px;border:1px solid var(--line);background:var(--sheet);color:var(--mute);cursor:pointer;font:inherit;flex:none}
 .mact button:hover{color:var(--ink);background:var(--hover)}
 .mact button:focus-visible{outline:2px solid var(--accent);outline-offset:1px;color:var(--ink)}
@@ -19,14 +15,24 @@
 .mact button.done{color:var(--live);border-color:color-mix(in srgb,var(--live) 45%,var(--line))}
 /* the "Copied" tick says so in words for a moment, in a small label above it (the buttons keep their width) */
 .mact button.done .mal{display:block;position:absolute;bottom:calc(100% + 5px);left:50%;transform:translateX(-50%);padding:3px 8px;border-radius:8px;background:var(--ink);color:var(--sheet);font-size:12px;font-weight:500;pointer-events:none;white-space:nowrap}
-@media (hover:hover){.bubble:hover>.mact{opacity:1;pointer-events:auto}.msgs .m .bubble:has(>.mact):hover{margin-bottom:var(--action-space)}}
 .bubble:has(>.mact :focus-visible)>.mact,.bubble.macts>.mact{opacity:1;pointer-events:auto}
-.msgs .m .bubble:has(>.mact :focus-visible),.msgs .m .bubble.macts{margin-bottom:var(--action-space)}
-/* Keep opened rails in place until the pointer leaves the conversation. Collapsing
-   an earlier rail while aiming at a later bubble would move its Copy / Reply target. */
-.msgs .m .bubble.ma-space{margin-bottom:var(--action-space)}
-/* Touch: a held bubble reveals only its controls. A normal tap leaves them hidden. */
+/* Pointer devices: beside the bubble. The 8px padding on the bubble side is the hover bridge, so the pointer can
+   cross from the bubble to the buttons without the strip vanishing. Wide bubbles stop short of the strip's width
+   (3 buttons, 98px, plus the bridge) so the strip always has room in the column and never scrolls the chat sideways. */
+@media (hover:hover){
+  .msgs .m .bubble:has(>.mact){max-width:min(86%,calc(100% - 112px))}
+  .mact{bottom:8px}
+  .m.agent .mact{left:100%;padding-left:8px}
+  .m.user .mact{right:100%;padding-right:8px;flex-direction:row-reverse}
+  .bubble:hover>.mact{opacity:1;pointer-events:auto}
+}
+/* Touch: a held bubble reveals only its controls under it. A normal tap leaves them hidden. */
 @media (hover:none){
+  .msgs:has(.bubble.macts,.bubble.ma-space,.mact :focus-visible){overflow-anchor:none}
+  .mact{top:100%;padding-top:2px}
+  .m.agent .mact{left:0}
+  .m.user .mact{right:0;flex-direction:row-reverse}
+  .msgs .m .bubble:has(>.mact :focus-visible),.msgs .m .bubble.macts,.msgs .m .bubble.ma-space{margin-bottom:var(--action-space)}
   .msgs .m .bubble:has(>.mact){--action-space:48px;min-width:92px}
   .msgs .m .bubble:has(>.mact .ma-task){min-width:140px}
   .msgs .mact button{height:44px;min-width:44px}
