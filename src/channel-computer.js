@@ -32,6 +32,10 @@ const BROWSER_OWNER_MAX_TTL_MS = 15 * 60e3;
 // EXEC_TIMEOUT_MS. A row left by a deploy therefore blocks for minutes, never for an hour.
 const COMPUTER_BUSY_TTL_MS = { browser: 3 * 60e3, owner_browser: 3 * 60e3, command: EXEC_TIMEOUT_MS + 60e3 };
 const COMPUTER_BUSY_TTL_DEFAULT_MS = 3 * 60e3;
+// A reservation written by an earlier instance of this object (a deploy or reset ended the call that would have removed it) keeps
+// the computer busy for this long, enough for a browser call already sent to finish, and no longer. Shell commands used to leave a
+// 16 minute block that refused every browser task with "still completing another operation".
+const COMPUTER_BUSY_ORPHAN_MS = 2 * 60e3;
 const RESTART_GAP_MS = 2e3;        // measured: 0 s gap → 3/8 starts needed retries; 2 s → 8/8 first-try; 5 s adds wait for nothing
 // The Sentinel terminates HTTPS with a per-container CA that exists only at runtime; trust it before anything else runs.
 const CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
@@ -140,6 +144,8 @@ export class ChannelComputer extends DurableObject {
       CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, what TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS egress (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, host TEXT, method TEXT, status INTEGER, verdict TEXT, why TEXT, keys TEXT, refused TEXT, ms INTEGER);
       CREATE TABLE IF NOT EXISTS computer_busy (id TEXT PRIMARY KEY, kind TEXT NOT NULL, until INTEGER NOT NULL);`);
+    for (const col of ["instance TEXT", "at INTEGER"]) { try { this.sql.exec(`ALTER TABLE computer_busy ADD COLUMN ${col}`); } catch {} }   // rows from before this column keep the old, full expiry
+    this.busyInstance = crypto.randomUUID();
     if (env.BACKUP_MAINTENANCE !== "1") this.reattachContainer();
   }
   // A Worker-only deploy resets this object but not its container (no image change → no rollout), and monitor() doesn't carry over
@@ -414,12 +420,25 @@ export class ChannelComputer extends DurableObject {
   // The browser service is only reachable from here: containers have no public ingress, and getTcpPort is DO-only.
   // A reset can leave a container command or browser request running after this object's in-memory counts vanish.
   // Keep a separate durable reservation before each first await. Confirmed completion removes only its own row.
-  #busyStart(kind) { const id = crypto.randomUUID(), now = Date.now(); this.sql.exec("DELETE FROM computer_busy WHERE until<=?", now); this.sql.exec("INSERT INTO computer_busy (id,kind,until) VALUES (?,?,?)", id, kind, now + (COMPUTER_BUSY_TTL_MS[kind] ?? COMPUTER_BUSY_TTL_DEFAULT_MS)); return id; }
+  #busyStart(kind) { const id = crypto.randomUUID(), now = Date.now(); this.sql.exec("DELETE FROM computer_busy WHERE until<=?", now); this.sql.exec("INSERT INTO computer_busy (id,kind,until,instance,at) VALUES (?,?,?,?,?)", id, kind, now + (COMPUTER_BUSY_TTL_MS[kind] ?? COMPUTER_BUSY_TTL_DEFAULT_MS), this.busyInstance, now); return id; }
   #busyEnd(id) { this.sql.exec("DELETE FROM computer_busy WHERE id=?", id); }
-  #busyActive(kind = null) { return !!this.sql.exec(kind ? "SELECT 1 FROM computer_busy WHERE kind=? AND until>? LIMIT 1" : "SELECT 1 FROM computer_busy WHERE until>? LIMIT 1", ...(kind ? [kind, Date.now()] : [Date.now()])).toArray().length; }
+  #busyActive(kind = null) {
+    // A row from another instance (or from before the instance column) is an orphan: its start is `at`, or the expiry minus its kind's limit.
+    const now = Date.now(), cmd = COMPUTER_BUSY_TTL_MS.command;
+    const live = `until>? AND (instance=? OR COALESCE(at, until - CASE kind WHEN 'command' THEN ${cmd} ELSE ${COMPUTER_BUSY_TTL_DEFAULT_MS} END)+?>?)`;
+    const args = [now, this.busyInstance, COMPUTER_BUSY_ORPHAN_MS, now];
+    return !!this.sql.exec(`SELECT 1 FROM computer_busy WHERE ${kind ? "kind=? AND " : ""}${live} LIMIT 1`, ...(kind ? [kind, ...args] : args)).toArray().length;
+  }
   #browserOwner() {
     const token = this.get("browser_owner"), until = Number(this.get("browser_owner_until") || 0);
     return token && until > Date.now() ? { token, until } : null;
+  }
+  // Test route only (resident deployProbe op "computer"): what is holding browser admission, with no tokens. Additive RPC.
+  async busyDebug() {
+    const now = Date.now();
+    return { now, instance: this.busyInstance, in_memory: { browser: this.browserInFlight || 0, owner_browser: this.ownerBrowserInFlight || 0, command: this.commandInFlight || 0 },
+      owner: (() => { const o = this.#browserOwner(); return { owned: !!o, until: o?.until || null }; })(), human_lease_until: Number(this.get("lease_until") || 0) || null,
+      rows: this.sql.exec("SELECT kind, until, at, instance FROM computer_busy ORDER BY until").toArray().map((r) => ({ kind: r.kind, until: r.until, at: r.at, age_ms: r.at ? now - r.at : null, expires_in_ms: r.until - now, same_instance: r.instance === this.busyInstance, legacy: r.instance == null })) };
   }
   async browserOwnerState() {
     const owner = this.#browserOwner();

@@ -148,6 +148,19 @@ container.getTcpPort = originalPort; await C.releaseControl();
       at(4 * 60e3); assert.equal((await C.acquireBrowserOwner(ownerA)).ok, true, `an orphaned ${kind} row stops blocking after minutes`);
       assert.equal((await C.releaseBrowserOwner(ownerA)).ok, true);
     }
+    // A command reservation left by an earlier instance of the object (a reset killed the call) blocks only briefly, not for 16 minutes.
+    sql.exec("DELETE FROM computer_busy");
+    sql.exec("INSERT INTO computer_busy (id,kind,until,instance,at) VALUES (?,?,?,?,?)", "orphan-cmd", "command", t0 + 16 * 60e3, "previous-instance", t0);
+    sql.exec("DELETE FROM computer_busy"); sql.exec("INSERT INTO computer_busy (id,kind,until) VALUES (?,?,?)", "legacy-cmd", "command", t0 + 16 * 60e3);   // no instance, no start: the start is the expiry minus 16 minutes
+    at(3 * 60e3); assert.equal((await C.acquireBrowserOwner(ownerA)).ok, true, "a legacy command row stops blocking two minutes after its start");
+    assert.equal((await C.releaseBrowserOwner(ownerA)).ok, true); at(0);
+    sql.exec("DELETE FROM computer_busy"); sql.exec("INSERT INTO computer_busy (id,kind,until,instance,at) VALUES (?,?,?,?,?)", "orphan-cmd", "command", t0 + 16 * 60e3, "previous-instance", t0);
+    at(60e3); assert.equal((await C.acquireBrowserOwner(ownerA)).browser_busy, true, "a just-orphaned command row still blocks briefly");
+    at(3 * 60e3); assert.equal((await C.acquireBrowserOwner(ownerA)).ok, true, "an orphaned command row stops blocking after two minutes");
+    assert.equal((await C.releaseBrowserOwner(ownerA)).ok, true);
+    sql.exec("INSERT INTO computer_busy (id,kind,until,instance,at) VALUES (?,?,?,?,?)", "live-cmd", "command", t0 + 16 * 60e3, C.busyInstance, t0);
+    at(10 * 60e3); assert.equal((await C.acquireBrowserOwner(ownerA)).browser_busy, true, "a command still running in this instance keeps blocking");
+    sql.exec("DELETE FROM computer_busy");
     // A real new reservation gets the short limit for browser calls and the long limit for shell commands.
     at(0); sql.exec("DELETE FROM computer_busy");
     const gate = deferred(); C.ensureRunning = async () => { await gate.promise; return { cold: false }; };

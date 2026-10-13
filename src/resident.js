@@ -1785,6 +1785,7 @@ export class Resident extends DurableObject {
       const run = this.runWorkflow(this.wf(id)).catch((e) => console.log("probe workflow", e.message)); this.ctx.waitUntil?.(run);
       return { workflow: id, started: Date.now() };
     }
+    if (op === "computer") return { code_v: codeV(this.env), computer: await this.computer().busyDebug() };
     if (op === "alarm") { this.put("probe_alarm", JSON.stringify({ armed: Date.now(), sleep_ms: Math.min(300e3, Math.max(1000, Number(b.sleep_ms) || 60e3)), runs: [] })); await this.ctx.storage.setAlarm(Date.now() + 500); }
     let open = 0; try { open = this.sql.exec("SELECT COUNT(*) n FROM res_open").one().n; } catch {}
     let journal = [], card = null, wf = null;

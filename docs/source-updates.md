@@ -3,13 +3,13 @@
 ## Saved model settings, background browser jobs and helper coordinators
 
 This update reconciles the Worker from `f551528c4b1188db5f26c2373a53a7235812fb46`
-to `834af860ef88864cd5765bf5b48cf54e4f1f6239` and the web app from
+to `3583747fc673579012edc6d20b6e8d3f911dbc96` and the web app from
 `7b0706aee0ffee61c9b100397287dfe75219a89c` to
 `24c621d7a8506efb2ea8ab5457b6de520a4a4fbe`.
 
 Source correspondence:
 
-- Worker: `f551528c4b1188db5f26c2373a53a7235812fb46` → `834af860ef88864cd5765bf5b48cf54e4f1f6239`.
+- Worker: `f551528c4b1188db5f26c2373a53a7235812fb46` → `3583747fc673579012edc6d20b6e8d3f911dbc96`.
 - Web: `7b0706aee0ffee61c9b100397287dfe75219a89c` → `24c621d7a8506efb2ea8ab5457b6de520a4a4fbe`.
 - Public base: `12fc9c2028f9c3f11941e862034226f5383e2533`.
 
