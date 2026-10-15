@@ -5,7 +5,7 @@
 //   Allow calls getUserMedia({audio}) (tracks stopped at once) and getCurrentPosition right inside the tap, so the installed app
 //   and iOS Safari see a real user gesture. Not now just closes it; Settings → Location & mic has the same controls.
 //   It appears only at a calm moment and only a deliberate Allow or Not now dismisses it for good (see dpSheetMaybe, openSheet).
-// - Location while it's allowed: a coarse fix (lat/lng rounded to 2 decimals, about 1 km) when the app opens, when it comes back
+// - Location while it's allowed: the fix exactly as the browser reports it (never rounded: Captain 2026-10-14, data is stored as the source gave it) when the app opens, when it comes back
 //   into focus with a fix older than 15 minutes, and with each message (dpLoc() → /stream { loc }). POST /api/location names the
 //   place (1HC location.js). Never asks the browser on its own: only when the permission is already "granted".
 // - "Share my location" on a card (Button action share_location): dpShareNow(), inside the tap.
@@ -59,7 +59,6 @@ export const DP_ICON = {
   mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/>',
 };
 const ic = { loc: I(DP_ICON.loc, 20), mic: I(DP_ICON.mic, 20), bell: I('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>', 20), sloc: I(DP_ICON.loc), smic: I(DP_ICON.mic), check: I('<path d="M20 6 9 17l-5-5"/>', 15) };
-const coarse = (x: number) => Math.round(x * 100) / 100;
 const off = () => ls.get(K.off) === "1";
 const cached = (): Fix | null => { try { const f = JSON.parse(ls.get(K.fix) || "null"); return f && Number.isFinite(f.lat) && Number.isFinite(f.lng) && Number(f.at) > 0 ? f : null; } catch { return null; } };
 const hasGeo = () => typeof navigator !== "undefined" && !!navigator.geolocation;
@@ -83,7 +82,7 @@ function getFix(): Promise<Fix | null> {
   if (P.inflight) return P.inflight;
   P.inflight = new Promise<Fix | null>((done) => {
     navigator.geolocation.getCurrentPosition(
-      (p) => { P.loc = "granted"; rememberGrants(); done({ lat: coarse(p.coords.latitude), lng: coarse(p.coords.longitude), at: Date.now() }); },
+      (p) => { P.loc = "granted"; rememberGrants(); done({ lat: p.coords.latitude, lng: p.coords.longitude, at: Date.now() }); },
       (e) => { if (e?.code === 1) { P.loc = "denied"; rememberGrants(); } done(null); },
       { enableHighAccuracy: false, timeout: 20000, maximumAge: 10 * 60e3 });
   }).then(async (f) => { P.inflight = null; if (f) await keep(f); return f; });

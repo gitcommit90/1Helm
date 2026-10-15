@@ -26,7 +26,7 @@ const unordered = conv(1, "second", T + 1000); unordered.transcriptions[0].utter
 assert.deepEqual(ambientLines(unordered).map((x) => x.text), ["first", "second"]); assert.equal(ambientLines(unordered)[0].speaker, "wearer");
 const large = ambientLines(conv(2, "x".repeat(35000))); assert.equal(large.map((l) => l.text).join("").length, 35000); assert.ok(ambientChunks(large).length > 3);
 assert.equal(validateAmbient({ items: [{ kind: "task", quote: "I am not done with the library books", line: 0, status: "completed" }] }, [{ text: "I am not done with the library books", speaker: "Ana", offset: 0 }])[0].status, "open");
-assert.throws(() => validateAmbient({ items: [{ kind: "task", quote: "hallucinated", line: 0 }] }, [{ text: "real source" }]));
+assert.equal(validateAmbient({ items: [{ kind: "task", quote: "hallucinated", line: 0 }] }, [{ text: "real source" }])[0].grounding.state, "unlocated", "a miss is kept as unlocated, not dropped or thrown");
 
 await store.ingest("bee", 1, conv(1, "I need to return the library books", T, "Unknown", true));
 let q = store.query({ mode: "transcript", from: T - 1, to: T + 1 }); assert.equal(q.transcripts.length, 1); assert.equal(q.coverage.live_sources, 1); assert.equal(q.transcripts[0].extraction_state, "queued");
@@ -48,7 +48,7 @@ await store.ingest("bee", 4, conv(4, "Another separate intention", T + 5000)); a
 assert.equal(store.query({ from: T + 2999, to: T + 3001 }).items.length, 1, "dates select utterance, not 24h source start");
 
 memory = false; const beforeOff = calls; await store.run(); assert.equal(calls, beforeOff, "memory off prevents model calls"); assert.ok(store.query().coverage.failed);
-memory = true; store.sql.exec("UPDATE ambient_chunks SET retry_at=0"); hidden = "Another separate"; await store.run(); assert.equal(store.query({ query: hidden }).items.length, 0, "forgotten text never extracted"); hidden = "";
+memory = true; store.sql.exec("UPDATE ambient_chunks SET retry_at=0"); hidden = "Another separate"; await store.run(); assert.ok(!store.query({ query: hidden }).items.some((i) => i.text.includes(hidden)), "forgotten text never extracted (a query now matches by any word, so other items may rank)"); hidden = "";
 await store.ingest("bee", 5, conv(5, "Retry me safely", T + 6000)); store.extract = async () => { throw new Error("provider down PRIVATE DETAILS"); }; await store.run(); assert.ok(store.query().coverage.failed);
 assert.equal(JSON.parse(host.get("ambient_error")).phase, "model_dispatch"); assert.ok(!host.get("ambient_note").includes("PRIVATE DETAILS")); assert.ok(!host.get("ambient_error").includes("PRIVATE DETAILS"));
 store = new AmbientStore(host); store.extract = extract; store.review = retainReview; store.sql.exec("UPDATE ambient_chunks SET retry_at=0,reservation_id='interrupted-model' WHERE state='failed'"); await store.run(); assert.ok(settled.some(([id, n]) => id === "interrupted-model" && n === 0)); assert.equal(store.query().coverage.failed, 0, "persistent retry survives reconstruction");

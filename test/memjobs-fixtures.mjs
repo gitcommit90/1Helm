@@ -1,8 +1,6 @@
-// Shared fixtures for the background memory job tests (memjobs*.test.mjs): fake transcripts, a fake host for the runners, a
-// scripted verify, and world(): the real Resident + Archive on node:sqlite with OpenRouter faked at fetch, a fake Hindsight box and
+// Shared fixtures for tests that need a whole Resident and Archive (the memory jobs these were written for are gone): fake transcripts and world(): the real Resident + Archive on node:sqlite with OpenRouter faked at fetch, a fake Hindsight box and
 // a Ledger that records every reservation and settlement.
 import { DatabaseSync } from "node:sqlite";
-import { sameFact } from "../src/memjobs.js";
 import { terms } from "../src/memory.js";
 import { unmark } from "./cache-unmark.mjs";   // model.js adds prompt-cache breakpoints; the fake reads plain content
 
@@ -16,27 +14,6 @@ export const TURNS = [
   turn("t5", "2026-10-06T16:52:00Z", "I'm vegetarian, so skip the steakhouse ideas."),
 ];
 export const J = (o) => JSON.stringify(o);
-export function fakeHost(o = {}) {
-  const st = { cur: {}, retained: [], contacts: JSON.parse(J(o.contacts || [])), facts: [], refl: null, logs: [], calls: [], writes: 0 };
-  const h = { st, tenant: "t1", channel: o.channel || "moving", general: !!o.general, now: () => o.now ?? NOW, tz: () => TZ, memoryOn: () => o.memory !== false,
-    access: async () => o.access || { mode: "full", status: "active" }, first: async () => "Sam",
-    cursor: (j) => st.cur[j] ?? null, setCursor: (j, at) => { st.cur[j] = at; },
-    turnsSince: async (since) => (o.turns || TURNS).filter((t) => t.at > since), crossTurns: async (since) => (o.turns || TURNS).filter((t) => t.at > since),
-    chat: async (job, step, messages) => { st.calls.push({ job, step, sys: messages[0].content, user: messages[1].content }); const r = await o.brain(job, step, messages, st); return typeof r === "string" ? { text: r, cost_nano: 1000, model: "fake" } : r; },
-    known: async () => (o.known || []).map((k) => ({ ...k })), held: async (t) => (o.held || []).some((x) => sameFact(x, t)),
-    retainFact: async (f) => { st.writes++; st.retained.push(f); return { id: `u:${st.retained.length}` }; },
-    contacts: async () => st.contacts,
-    upsertContact: async (c, origin) => { st.writes++; let p = c.id ? st.contacts.find((x) => x.id === c.id) : null; if (!p) { p = { id: `n${st.contacts.length}`, name: c.name, rel: c.rel || "", aka: c.aka || [], facts: [], origin }; st.contacts.push(p); } else if (c.rel) p.rel = c.rel; return p; },
-    addPersonFact: async (pid, text, src, replaces, cite) => { st.writes++; const f = { id: `f${st.facts.length}`, pid, text, src, replaces, cite }; st.facts.push(f); return f; },
-    setReflection: async (text, meta) => { st.writes++; const replaced = !!st.refl; st.refl = { text, meta }; return { replaced }; },
-    log: async (row) => { st.logs.push(row); } };
-  return h;
-}
-// The scripted write step's claims (by turn label) and the verify step's verdicts (by the claim's text).
-// The scripted verify: every claim passes both lenses unless its text matches one of `bad`.
-export const verdictsBy = (bad) => (messages) => { const ids = [...messages[1].content.matchAll(/^(c\d+)\. (.*)$/gm)].map((m) => [m[1], m[2]]);
-  return J({ results: ids.map(([id, show]) => ({ id, refute: bad.some((re) => re.test(show)) ? "fail" : "pass", evidence_grounded: bad.some((re) => re.test(show)) ? "fail" : "pass", reason: "" })) }); };
-
 
 export async function world() {
   const mod = await import("../src/index.js"), { Archive } = mod, { Resident } = await import("../src/resident.js");
@@ -106,8 +83,7 @@ export async function world() {
   seed(RM, [turn("t1", 0, "Big news: I'm moving to Denver in March. The new place is in the Highlands neighborhood."), turn("t2", 0, "Dana said she'll lend me her car for the move, I need to call her Thursday."), turn("t3", 0, "My brother Leo is helping me pack, he lives in Boulder.")].map((t, i) => ({ ...t, at: at(i), session: "s-0000aaaa-1111", title: "Moving" })));
   seed(RT, [{ id: "x1", at: at(5), session: "s-0000cccc-3333", title: "Flights", user_text: "Keep it short, two lines max. No emojis.", reply: "OK." }]);
   const outboxBefore = () => [RM, RT, RG].map((R) => ({ out: R.sql.exec("SELECT COUNT(*) n FROM outbox").one().n, sess: R.sql.exec("SELECT COUNT(*) n FROM sessions").one().n, turns: R.sql.exec("SELECT COUNT(*) n FROM turns").one().n, wf: R.sql.exec("SELECT COUNT(*) n FROM workflows").one().n }));
-  const runs = () => d1.prepare("SELECT * FROM memjob_runs ORDER BY started_at").all();
-  return { env, A, RM, RT, RG, d1, HS, ledgerLog, orCalls, seed, settle, runs, outboxBefore, at,
+  return { env, A, RM, RT, RG, d1, HS, ledgerLog, orCalls, seed, settle, outboxBefore, at,
     script: (s) => { SCRIPT = s; }, balance: (v) => { balanceOk = v; } };
 }
 

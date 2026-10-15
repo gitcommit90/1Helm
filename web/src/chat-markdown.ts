@@ -19,7 +19,22 @@ const chat = new Marked({ breaks: true, renderer: {
     return false;
   },
 } });
+// Every streamed event repaints the whole task, so the same message text is rendered again and again. The result depends only on the
+// text (and the page address, which does not change inside the app), so it is kept per exact text. The cache holds at most
+// CACHE_MAX entries and about CACHE_CHARS characters of source text, and drops the oldest first.
+const CACHE_MAX = 400, CACHE_CHARS = 600_000; let cacheChars = 0;
+const cache = new Map<string, string>();
 export const chatMarkdown = (text: string) => {
+  const hit = cache.get(text);
+  if (hit !== undefined) { cache.delete(text); cache.set(text, hit); return hit; }
+  const html = render(text);
+  if (text.length <= 100_000) {
+    cache.set(text, html); cacheChars += text.length;
+    for (const [k] of cache) { if (cache.size <= CACHE_MAX && cacheChars <= CACHE_CHARS) break; cache.delete(k); cacheChars -= k.length; }
+  }
+  return html;
+};
+const render = (text: string) => {
   const html = DOMPurify.sanitize(chat.parse(text, { async: false }));
   if (!/<(?:img|a)\b/.test(html)) return html;
   const root = document.createElement("div"); root.innerHTML = html;

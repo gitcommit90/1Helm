@@ -29,5 +29,5 @@ assert.equal(review.uncertainty, 'speech_act_uncertain'); assert.equal(review.re
 assert.equal(review.notification_status, undefined, 'uncertain speech cannot become a captured reminder');
 assert.equal(validateAmbient({ items: [item(6), item(6, { kind: 'idea' })] }, lines).length, 1, 'one occurrence is not duplicated across task categories');
 assert.deepEqual(validateAmbient({ items: [item(2)] }, lines.map(x => ({ ...x, intentional_capture: true }))), [], 'capture cue never overrides a demonstration label');
-assert.throws(() => validateAmbient({ items: [item(0, { quote: 'An invented demonstration that was never spoken.' })] }, lines), /grounded/, 'nonpersonal label cannot legitimize invented evidence');
+assert.equal(validateAmbient({ items: [item(0, { quote: 'An invented demonstration that was never spoken.' })] }, lines).length, 0, 'a nonpersonal label never yields a record, even for invented evidence');
 console.log('PASS synthetic speech-act label enforcement, real mixed directives, conditional and tentative intentions, trailing cue context, uncertainty isolation, attribution and cross-kind duplicate prevention; model classification still requires live evaluation');

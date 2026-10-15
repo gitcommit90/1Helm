@@ -22,6 +22,8 @@ type Deps = {
   note: (title: string, sub: string, bad?: boolean) => void;
   srow: (icon: string, title: string, sub: string, right: string, attrs?: string) => string;
   helper: () => string;
+  look?: boolean;                                             // a dev "view as": never asks
+  blocked?: () => boolean;                                    // another permission sheet is open (devperm.ts): wait for it
 };
 let D: Deps | null = null;
 const P: { prefs: Prefs; loaded: boolean; key: string | null; texting: boolean; dev: "off" | "on" | "busy" | "test"; ep: string; why: string; err: string; hasSub: boolean; devices: number; last: PushRec | null; testAt: number } =
@@ -152,6 +154,30 @@ export async function nfLoad(force = false) {
   P.why = P.dev === "on" ? "" : deviceWhy();
   D.repaint();
   heal();
+  autoAsk();
+}
+// Notifications are on by default, so a device that hasn't decided yet gets the browser's own permission request, with no text of
+// our own. Chrome and Edge allow the request as soon as the page has loaded. Safari (and every browser on iPhone and iPad) and Firefox
+// only allow it from a tap or key press, so there it waits for the first one. Asked once per device and display mode: a dismissed
+// request is not repeated by itself, and Settings → Notifications still turns it on. Never asked in view-as, after "This device"
+// was switched off by hand, when every notification switch is off, or while the location & mic sheet is open (that sheet asks too).
+const ASKED = () => `1hc.nf.asked${standalone() ? ".app" : ""}`;
+const needsGesture = () => { const u = navigator.userAgent; return ios() || /Firefox\/|FxiOS/.test(u) || (/Safari\//.test(u) && !/Chrom(e|ium)|CriOS|Edg|OPR|Android/.test(u)); };
+const askWanted = () => !!D?.live && !D.look && canPush() && Notification.permission === "default" && !!P.key && P.loaded && P.dev === "off"
+  && (P.prefs.needs || P.prefs.finished || P.prefs.meetings !== false) && lsGet(OFF) !== "1" && lsGet(ASKED()) === null;
+let armed = false;
+function autoAsk() {
+  if (!askWanted()) return;
+  if (!needsGesture()) { lsSet(ASKED(), "1"); void deviceOn(true); return; }
+  if (armed) return; armed = true;
+  const tap = (e: Event) => {
+    if (e.type === "keydown" && (e as KeyboardEvent).key !== "Enter" && (e as KeyboardEvent).key !== " ") return;
+    if (D?.blocked?.()) return;   // keep waiting: the sheet's own button will ask
+    removeEventListener("click", tap, true); removeEventListener("keydown", tap, true); armed = false;
+    if (!askWanted()) return;
+    lsSet(ASKED(), "1"); void deviceOn(true);   // requestPermission() is reached inside this tap
+  };
+  addEventListener("click", tap, true); addEventListener("keydown", tap, true);
 }
 // Notifications are allowed here but this context isn't signed up (an installed app on iPhone or a Mac's Dock keeps its own
 // subscriptions; a browser can drop one): sign it up again silently, the same way the switch in Settings does. Once per load,

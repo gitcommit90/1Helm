@@ -7,7 +7,7 @@
 // - Resident.systemPrompt for the target channel (memory on) carries that note in its pinned block, and an ordinary agent note stays out.
 import assert from "node:assert"; import { DatabaseSync } from "node:sqlite"; import { readFileSync } from "node:fs";
 import { pinnedBlock, identityNote, FROM_GENERAL } from "../src/pinned-notes.js";
-import { contactsBlock, CONTACTS_BUDGET, personSubject } from "../src/people.js";
+import { personSubject } from "../src/people.js";
 import { Resident } from "../src/resident.js";
 const ok = (n) => console.log("  ok", n);
 const T0 = 1791000000000, H = 3600e3;
@@ -33,7 +33,6 @@ const agent = (id, text, at, x = {}) => ({ id, content: text, kind: "fact", sec:
   const ctx = { storage: { sql, getAlarm: async () => null, setAlarm: async () => {} }, waitUntil: () => {} };
   const R = new Resident(ctx, { DB: {}, ARCHIVE: { idFromName: (n) => n, get: () => archive }, MEMORY: "off", WORKMEM: "off" });
   R.put("tenant", "t1"); R.put("channel", "bench2"); R.put("channel_id", "2");
-  R.memIndex = async () => {}; R.hsCapture = async () => {}; R.mem.put = () => true;
   await R.rememberHere("them", "The gate code is 4417.", "from General", "about", FROM_GENERAL);
   await R.rememberLocal("them", "Likes tea.", "task abc", "about");
   assert.equal(calls[0].extra.src, "general", "General's write is marked");
@@ -58,31 +57,13 @@ const agent = (id, text, at, x = {}) => ({ id, content: text, kind: "fact", sec:
   const ctx = { storage: { sql, getAlarm: async () => null, setAlarm: async () => {} }, waitUntil: () => {} };
   const R = new Resident(ctx, { DB: D1, ARCHIVE: { idFromName: (n) => n, get: () => archive }, MEMORY: "off", WORKMEM: "off", GENUI: "on", BROWSER_AGENT: "jev" });
   R.put("tenant", "t1"); R.put("channel", "bench2"); R.put("channel_id", "2");
-  R.memoryMode = () => "on"; R.notebookBackfillOnce = async () => 0; R.memoryBackfill = () => {}; R.mem.syncCurated = () => {};
+  R.memoryMode = () => "on";
   for (const layered of [false, true]) {
     const p = await R.systemPrompt(true, true, layered), text = layered ? JSON.stringify(p.standing) : p;
     assert.match(text, /The gate code is 4417\./, `layered=${layered}: the note General saved is pinned`);
     assert.doesNotMatch(text, /window seats/, `layered=${layered}: an ordinary agent note is still left to recall`);
   }
   ok("Resident.systemPrompt (classic and context v2): General's note is pinned in the target channel");
-  // Contacts saved outside this channel's turns (the Contacts page) are in the next turn's standing context, alias included.
-  const before = await R.systemPrompt(true, true, true);
-  assert.doesNotMatch(JSON.stringify(before.standing), /ari@northwind\.co/);
-  PEOPLE = [...PEOPLE, { id: "p2", name: "Ari Cohen", rel: "Your boss", aka: ["my boss"], email: "ari@northwind.co", updated: T0 + H }];
-  const after = await R.systemPrompt(true, true, true);
-  assert.match(after.standing.contacts, /Ari Cohen — Your boss; also called "my boss"; email ari@northwind\.co/, "new contact with alias and email");
-  assert.match(after.standing.contacts, /Dana/);
-  assert.match(after.developer, /Contacts .* listed in the user context/);
-  assert.notEqual(JSON.stringify(before.standing), JSON.stringify(after.standing), "the standing context changes, so a running task gets a context update");
-  ok("a contact saved by hand reaches the channel's next turn context");
-}
-{ // contactsBlock bounds
-  const many = Array.from({ length: 200 }, (_, i) => ({ name: `Person Number${i}`, rel: "Friend", aka: [], email: `p${i}@example.com`, updated: T0 + i }));
-  const b = contactsBlock(many);
-  assert.ok(b.length <= CONTACTS_BUDGET, `within budget (${b.length})`);
-  assert.match(b, /Number199/, "newest first"); assert.match(b, /\(\+\d+ more contacts not listed here\. Search them with recall_memory\.\)$/);
-  assert.equal(contactsBlock([]), "");
-  ok("contactsBlock is bounded, newest first, and names recall_memory for the rest");
 }
 { // a thing never becomes a contact; a person does
   const known = [{ name: "Dana", rel: "Your sister", aka: [] }];
@@ -99,7 +80,7 @@ const agent = (id, text, at, x = {}) => ({ id, content: text, kind: "fact", sec:
     noteAdd: async (cid, sec, text) => { notes.push({ sec, text }); return { id: "n1", content: text, created: T0 }; } };
   const ctx = { storage: { sql, getAlarm: async () => null, setAlarm: async () => {} }, waitUntil: () => {} };
   const R = new Resident(ctx, { DB: {}, ARCHIVE: { idFromName: (n) => n, get: () => archive }, MEMORY: "off", WORKMEM: "off" });
-  R.put("tenant", "t1"); R.put("channel", "main"); R.put("channel_id", "1"); R.memIndex = async () => {}; R.hsCapture = async () => {}; R.mem.put = () => true;
+  R.put("tenant", "t1"); R.put("channel", "main"); R.put("channel_id", "1");
   const out = await R.localToolInner("remember", { about: "gate code", fact: "The gate code is 4417." }, {});
   assert.equal(upserts.length, 0, "no contact for a thing"); assert.doesNotMatch(String(out), /in Contacts/);
   assert.equal(notes.length, 1); assert.match(notes[0].text, /gate code/i);

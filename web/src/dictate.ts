@@ -1,6 +1,7 @@
 // Streaming composer dictation. Typing is authoritative; nothing is auto-sent.
 import { DictationBuffer, type Transcript } from './dictation-buffer';
 import { DictationAudio } from './dictation-audio';
+import { pcmProcessor } from './pcm';
 type Deps = { api: string; note: (title: string, sub: string) => void };
 type Key = 'box' | 'nbox';
 type Session = {
@@ -14,29 +15,82 @@ type Session = {
 let D: Deps | null = null, active: Session | null = null, history: Session | null = null, generation = 0, icon = '';
 const LABEL = 'Talk instead of typing';
 const STOP = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="1" y="1" width="10" height="10" rx="2.5" fill="currentColor"/></svg>';
-const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const current = (s: Session) => active === s && s.generation === generation && location.hash === s.hash && s.textarea.isConnected && document.getElementById(s.key) === s.textarea;
 export function dictBtn(key: Key, svg: string) { icon = svg; return `<button type="button" class="cbtn mic dict" data-dict="${key}" title="${LABEL}" aria-label="${LABEL}">${svg}</button>`; }
+let announced = '', lastOn = false;
+// One visually hidden live region for screen readers; nothing is shown on screen.
+function announce(words: string) {
+  let el = document.getElementById('dsr');
+  if (!el) { el = document.createElement('div'); el.id = 'dsr'; el.className = 'dsr'; el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite'); document.body.append(el); }
+  if (words !== announced) { announced = words; el.textContent = words; }
+}
 function paint() {
   const s = active;
   for (const b of document.querySelectorAll<HTMLButtonElement>('[data-dict]')) {
     const on = s && b.dataset.dict === s.key && b.closest('form') === s.textarea.closest('form');
-    b.classList.toggle('on', !!on); b.classList.toggle('rec', !!on && s.phase === 'rec'); b.classList.toggle('busy', !!on && s.phase !== 'rec');
+    b.classList.toggle('on', !!on); b.classList.toggle('rec', !!on && s.phase === 'rec'); b.classList.toggle('busy', !!on && s.phase === 'finishing'); b.classList.toggle('arm', !!on && s.phase === 'starting');
     b.disabled = !!on && s.phase === 'finishing'; b.setAttribute('aria-pressed', String(!!on));
     const label = !on ? LABEL : s.phase === 'rec' ? 'Stop dictation' : s.phase === 'starting' ? 'Cancel microphone startup' : 'Finishing dictation';
     b.setAttribute('aria-label', label); b.title = label;
-    const view = !on ? 'idle' : s.phase === 'rec' ? 'rec' : 'spin';
-    if (b.dataset.view !== view) { b.innerHTML = view === 'idle' ? icon : view === 'rec' ? `${STOP}<span class="dtime"></span>` : '<span class="dspin"></span>'; b.dataset.view = view; }
-    const tm = b.querySelector('.dtime'); if (tm && s) { const time = fmt((performance.now() - s.start) / 1000); if (tm.textContent !== time) tm.textContent = time; }
+    const view = !on || s.phase === 'starting' ? 'idle' : s.phase === 'rec' ? 'rec' : 'spin';
+    if (b.dataset.view !== view) { b.innerHTML = view === 'idle' ? icon : view === 'rec' ? STOP : '<span class="dspin"></span>'; b.dataset.view = view; }
     b.style.setProperty('--lvl', String(on ? s.level : 0));
   }
-  for (const f of document.querySelectorAll<HTMLElement>('form.dicting')) if (!s || f !== s.textarea.closest('form')) { f.classList.remove('dicting', 'dbusy'); f.querySelector('.dictst')?.remove(); }
-  const form = s?.textarea.closest('form'); if (!s || !form) return;
-  form.classList.add('dicting'); form.classList.toggle('dbusy', s.phase === 'finishing');
-  let status = form.querySelector<HTMLElement>('.dictst');
-  if (!status) { status = document.createElement('div'); status.className = 'dictst'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); form.append(status); }
-  const words = s.phase === 'starting' ? 'Opening microphone…' : s.phase === 'finishing' ? 'Finishing… Your edits are kept.' : s.audio.ready ? 'Listening — keep talking or edit. Tap stop when done.' : 'Listening — connecting transcription. Your audio is being kept.';
-  if (status.textContent !== words) status.textContent = words;
+  for (const t of document.querySelectorAll<HTMLTextAreaElement>('textarea.dact')) if (t !== s?.textarea) t.classList.remove('dact', 'drec');
+  if (s) { s.textarea.classList.add('dact'); s.textarea.classList.toggle('drec', s.phase === 'rec'); }
+  for (const f of document.querySelectorAll<HTMLElement>('form.dicting')) if (!s || s.phase === 'starting' || f !== s.textarea.closest('form')) f.classList.remove('dicting');
+  if (s?.phase === 'rec') cueOn(s); else cueOff();
+  if (s) announce(s.phase === 'rec' ? 'Recording' : s.phase === 'finishing' ? 'Finishing' : 'Starting');
+  else if (lastOn) announce('Stopped');
+  lastOn = !!s;
+  const form = s?.textarea.closest('form'); if (s && form && s.phase !== 'starting') form.classList.add('dicting');
+}
+// Talk-now cue: a thin bar at the real caret of the dictation textarea (the native caret is hidden while recording), glowing with the voice level.
+type Cue = { s: Session; el: HTMLElement; mirror: HTMLElement; raf: number; key: string; x: number; y: number; h: number; ro: ResizeObserver; off: () => void };
+let cue: Cue | null = null;
+const MIRROR_PROPS = ['direction', 'boxSizing', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'fontStyle', 'fontVariant', 'fontWeight', 'fontStretch', 'fontSize', 'fontFamily', 'lineHeight', 'letterSpacing', 'wordSpacing', 'textTransform', 'textIndent', 'tabSize', 'textAlign'] as const;
+function cueFrame(c: Cue) {
+  c.raf = 0;
+  const s = c.s; if (cue !== c || active !== s || s.phase !== 'rec') return;
+  const t = s.textarea, form = t.closest('form'); if (!form || !t.isConnected) return;
+  const cs = getComputedStyle(t), tr = t.getBoundingClientRect(), fr = form.getBoundingClientRect();
+  const pos = t.selectionEnd, w = t.clientWidth;
+  const key = [w, cs.fontSize, cs.fontFamily, cs.lineHeight, cs.paddingLeft, cs.paddingTop, cs.letterSpacing].join('|');
+  const m = c.mirror;
+  if (key !== c.key || m.dataset.v !== t.value.slice(0, pos)) {
+    for (const p of MIRROR_PROPS) m.style[p] = cs[p];
+    m.style.width = w + 'px';
+    m.textContent = t.value.slice(0, pos);
+    const mark = document.createElement('span'); mark.textContent = '\u200b'; m.append(mark);
+    c.x = mark.offsetLeft; c.y = mark.offsetTop; c.h = mark.offsetHeight; c.key = key; m.dataset.v = t.value.slice(0, pos);
+  }
+  const top = c.y - t.scrollTop, left = c.x - t.scrollLeft, h = c.h || parseFloat(cs.fontSize) * 1.2;
+  const inView = top >= -1 && top + h <= t.clientHeight + 1 && left >= 0 && left <= w && tr.width > 0;
+  c.el.style.visibility = inView && t.selectionStart === t.selectionEnd ? 'visible' : 'hidden';
+  c.el.style.height = h + 'px';
+  c.el.style.left = (tr.left - fr.left - form.clientLeft + t.clientLeft + left - 1) + 'px';
+  c.el.style.top = (tr.top - fr.top - form.clientTop + t.clientTop + top) + 'px';
+  c.el.style.setProperty('--lvl', String(s.level));
+}
+function cueSchedule() { if (cue && !cue.raf) cue.raf = requestAnimationFrame(() => cue && cueFrame(cue)); }
+function cueOn(s: Session) {
+  if (cue?.s === s && cue.el.isConnected) return;
+  cueOff();
+  const form = s.textarea.closest('form'); if (!form) return;
+  const el = document.createElement('span'); el.className = 'dcue'; el.setAttribute('aria-hidden', 'true'); form.append(el);
+  const mirror = document.createElement('div'); mirror.className = 'dmirror'; mirror.setAttribute('aria-hidden', 'true'); document.body.append(mirror);
+  const go = () => cueSchedule(), t = s.textarea;
+  const ro = new ResizeObserver(go); ro.observe(t);
+  const evs: [EventTarget, string, boolean][] = [[t, 'input', false], [t, 'scroll', false], [t, 'keyup', false], [t, 'pointerup', false], [t, 'focus', false], [document, 'selectionchange', false], [window, 'resize', false], [window, 'scroll', true]];
+  for (const [o, n, cap] of evs) o.addEventListener(n, go, cap);
+  const off = () => { ro.disconnect(); for (const [o, n, cap] of evs) o.removeEventListener(n, go, cap); };
+  cue = { s, el, mirror, raf: 0, key: '', x: 0, y: 0, h: 0, ro, off };
+  cueFrame(cue);
+}
+function cueOff() {
+  const c = cue; if (!c) return; cue = null;
+  if (c.raf) cancelAnimationFrame(c.raf);
+  c.off(); c.el.remove(); c.mirror.remove();
 }
 function releaseMic(s: Session) {
   s.stream?.getTracks().forEach(t => t.stop()); s.source?.disconnect(); s.node?.disconnect(); s.ctx.close().catch(() => {});
@@ -73,17 +127,9 @@ function apply(s: Session, event: Transcript) {
   const [a, z] = s.buffer.inserted ? [s.buffer.cursor, s.buffer.cursor] : restore();
   write(s, value, a, z, direction); t.scrollTop = scroll;
 }
-// Worklet keeps audio independent of painting/typing. Real mono PCM16 frames,
-// downsampled continuously to16kHz and emitted every100ms (not blob batches).
-const PROCESSOR = `class DictationPCM extends AudioWorkletProcessor {
-  constructor(){super();this.sum=0;this.count=0;this.phase=0;this.chunk=[];this.stopped=false;
-    this.port.onmessage=e=>{if(e.data==='stop'){this.stopped=true;this.flush();this.port.postMessage({type:'flushed'});}};}
-  flush(){if(!this.chunk.length)return;const pcm=new Int16Array(this.chunk);this.chunk=[];this.port.postMessage({type:'audio',pcm:pcm.buffer},[pcm.buffer]);}
-  process(inputs){if(this.stopped)return false;const data=inputs[0]?.[0];if(!data)return true;let peak=0;
-    for(const v of data){peak=Math.max(peak,Math.abs(v));this.sum+=v;this.count++;this.phase+=16000;
-      if(this.phase>=sampleRate){this.phase-=sampleRate;const x=Math.max(-1,Math.min(1,this.sum/this.count));this.chunk.push(Math.round(x*(x<0?32768:32767)));this.sum=0;this.count=0;if(this.chunk.length>=1600)this.flush();}}
-    this.port.postMessage({type:'level',value:peak});return true;}
-}registerProcessor('dictation-pcm',DictationPCM);`;
+// Worklet keeps audio independent of painting/typing. Real mono PCM16 frames, downsampled continuously to 16 kHz and emitted
+// every 100 ms (not blob batches). The worklet source is shared with Live notes (pcm.ts).
+const PROCESSOR = pcmProcessor('dictation-pcm', true);
 async function start(key: Key) {
   const textarea = document.getElementById(key) as HTMLTextAreaElement | null;
   if (!textarea || !D) return;
@@ -133,7 +179,7 @@ async function start(key: Key) {
     const node = s.node = new AudioWorkletNode(ctx, 'dictation-pcm');
     node.port.onmessage = e => {
       if (!current(s)) { if (active === s) end(s); return; }
-      if (e.data.type === 'level') { s.level = Math.min(1, e.data.value * 4); return; }
+      if (e.data.type === 'level') { s.level = Math.min(1, e.data.value * 4); cueSchedule(); return; }
       if (e.data.type === 'audio' && !s.flushed) {
         try { s.audio.push(e.data.pcm); } catch (err: any) { fail(s, err.message); return; }
         pumpAudio(s);

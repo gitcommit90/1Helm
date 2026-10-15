@@ -17,7 +17,6 @@ import { openRouterChat } from "../src/model.js";
 import { browserPlan } from "../src/ee/browser-agent.js";
 import { stt, sttModels } from "../src/transcribe.js";
 import { embedTexts, vision } from "../src/sidecar.js";
-import { Memory } from "../src/memory.js";
 import { clefVia } from "../src/ee/router.js";
 import { transcribeLive } from "../src/transcribe-live.js";
 import { ENDPOINTS } from "../src/privacy.js";
@@ -35,6 +34,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
     "src/ee/model-seed.js": "the first-run data and the one-time carry-over: copied into the saved settings, never read at run time",
     "src/privacy.js": "what each provider does with data, per model and host (privacy facts, not a choice of model)",
     "src/ee/decision-shadow.js": "dev-only comparison of two deciders (off unless DECISION_SHADOW=on); never answers a request",
+    "src/ee/hindsight-models.js": "the memory server's own models, set on its host and not on the Models page; shown there read only",
   };
   const files = walk("src").map((f) => f.replace(/\\/g, "/")), found = {};
   for (const f of files) { const hits = [...strip(readFileSync(f, "utf8")).matchAll(ID_RE)].map((m) => m[2]); if (hits.length) found[f] = [...new Set(hits)]; }
@@ -85,7 +85,7 @@ probes.escalate = async (S, model) => {
   assert.equal(escalateTurn(R, tc, "stuck"), true); const r = dispatchOrder(tc.route, "zdr", { settings: S });
   const w = await chat(envFor(S), tc.route, "chat"); return [r.attempts[0].model, w.model, tc.route.escalate.model]; };
 probes.decider = async (S) => { const env = envFor(S); wire = []; await jevAsk(env, { latest_message: "hi" }, {}); return [deciderModel(env), lastWire("/systemone").model]; };
-for (const id of ["handoff", "label", "browser", "notes", "notes_refine", "notes_final", "memory_summary", "sidecar_card", "ambient_extract", "ambient_review", "upkeep_write", "upkeep_verify", "people_write", "people_verify", "reflect_write", "reflect_verify"])
+for (const id of ["handoff", "label", "browser", "notes", "notes_refine", "notes_final", "sidecar_card", "ambient_extract", "ambient_review"])
   probes[id] = async (S) => {
     const route = choreRouteOf(S, id), out = [route.model];
     if (id === "browser") out.push((await browserPlan(envFor(S)))[0].model);
@@ -102,12 +102,12 @@ probes.live_dictation = async (S, model) => {
     await transcribeLive(new Request("https://x.test/live", { headers: { Upgrade: "websocket", Origin: "https://x.test" } }), envFor(S, { AIG_TOKEN: "t", AIG_ID: "g", CF_ACCOUNT_ID: "a" }), ledger, { tenant: "t" }, { fetch: async (u) => { seen.push(new URL(u).searchParams.get("model")); throw new Error("stop"); } }).catch(() => {});
   } finally { delete ENDPOINTS.transcription[model]; } return [seen[0]]; };
 probes.embed_files = async (S) => { wire = []; await embedTexts(envFor(S), ["hello"], { tenant: "t" }); return [lastWire("/embeddings").model]; };
-probes.embed_memory = async (S) => { const calls = []; const m = { env: envFor(S, { AI: { run: async (name) => { calls.push(name); return { data: [[0.1, 0.2]] }; } } }), hold: null, meta: () => ({}) }; await Memory.prototype.embed.call(m, ["x"]); return [calls[0]]; };
+probes.embed_memory = async (S) => [await jobModel(envFor(S), "embed_memory")];   // the ambient passage index embeds with this job (the local ledger that shared it is gone)
 probes.vision_files = async (S) => { const calls = [];
   const env = envFor(S, { AI: { run: async (name) => { calls.push(name); return { choices: [{ message: { content: '{"description":"d","text":""}' }, finish_reason: "stop" }], usage: {} }; } } });
   await vision(env, { tenant: null }, { data: new Uint8Array([1, 2, 3]), mime: "image/png" }, "chat").catch(() => {}); return [calls[0]]; };
 probes.workers_ai_chat = async (S) => [await jobModel(envFor(S), "workers_ai_chat")];
-for (const id of ["memory_supersede", "doors_shadow", "classic_decider"]) probes[id] = async (S) => {
+for (const id of ["doors_shadow", "classic_decider"]) probes[id] = async (S) => {
   const calls = [], env = envFor(S, { AI: { run: async (name) => { calls.push(name); return { answers: {} }; } } }), info = await jobCost(env, id);
   await clefVia(env, info.model)({ state: {}, questions: {} }); return [info.model, calls[0]]; };
 probes.classic_router = async (S, model) => { const w = await chat(envFor(S, { ROUTER_MODE: "classic" }), null, "chat"); return [w.model]; };
@@ -154,6 +154,6 @@ console.log("PASS model source of truth: guard, every job from its saved setting
     assert.ok(!j.fallbacks.some((f) => f.model === j.model), `${d.id} fallback differs from its main model`);
   }
   assert.deepEqual([seeded.jobs.browser.model, seeded.jobs.browser.fallbacks[0].model, seeded.jobs.browser.fallbacks[0].effort, seeded.jobs.browser.fallbacks[0].pin], ["openai/gpt-oss-120b", "deepseek/deepseek-v4.1-flash", "low", true]);
-  assert.deepEqual([seeded.jobs.handoff.model, seeded.jobs.handoff.effort, seeded.jobs.memory_summary.model, seeded.jobs.memory_summary.effort], ["deepseek/deepseek-v4.1-flash", "low", "deepseek/deepseek-v4.1-flash", "low"]);
+  assert.deepEqual([seeded.jobs.handoff.model, seeded.jobs.handoff.effort], ["deepseek/deepseek-v4.1-flash", "low"]);
   console.log("  ok every background job in the seed has a fallback");
 }

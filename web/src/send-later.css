@@ -21,7 +21,6 @@ form.sl-on .slchip{flex:1 0 100%;order:-1}
 .nmodal.sl-on .nrow{flex:1 0 100%}
 .nmodal.sl-on textarea{flex:1 0 100%}
 .ngo.slgo{background:var(--sl);color:var(--slink)}
-form.dicting .slchip{display:none}
 
 /* The picker: a popover over the composer (desktop), a bottom sheet (phone). */
 #slw{position:fixed;inset:0;z-index:72;pointer-events:none}

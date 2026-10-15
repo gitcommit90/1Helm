@@ -13,7 +13,7 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
 const questions = { same: { type: "noul", instructions: "Same detail?" }, kind: { type: "choice", instructions: "Which?", criteria: { a: "first", b: "second" } } };
 const settingsWith = (job, model) => { const s = clone(SEED); s.jobs[job] = { model, effort: null, fallbacks: [] }; return validateModelSettings(s); };
 const CLASSIC_ONLY = Object.keys(SEED.catalog).find((k) => SEED.catalog[k].kinds?.join() === "classic");
-const CLEF = jobSetting(SEED, "memory_supersede").model;
+const CLEF = jobSetting(SEED, "doors_shadow").model;
 let sent = [], reply = null, aiCalls = [];
 globalThis.fetch = async (url, init) => { const b = JSON.parse(init.body); sent.push({ url: String(url), body: b }); return reply(b); };
 const ok = (content, extra = {}) => Response.json({ model: "x/y", choices: [{ message: { content }, finish_reason: "stop", ...extra }], usage: { cost: 0.000002, prompt_tokens: 120 } });
@@ -30,10 +30,10 @@ for (const k of ["speech", "speech_live", "speech_cloudflare", "embedding_files"
 assert.ok(!JOB_KINDS.decider.needs && !JOB_KINDS.workers_decider.needs);
 
 // ---- save validation ----
-for (const job of ["memory_supersede", "doors_shadow", "classic_decider", "decider"]) { assert.doesNotThrow(() => settingsWith(job, ID.DEEPSEEK), `${job} accepts a chat model`); assert.throws(() => settingsWith(job, ID.STT), /can't be used for/); }
-assert.throws(() => settingsWith("memory_supersede", ID.MUSE_C), /zero-data-retention/, "a chat model with no zero-data-retention provider is refused");
+for (const job of ["doors_shadow", "doors_shadow", "classic_decider", "decider"]) { assert.doesNotThrow(() => settingsWith(job, ID.DEEPSEEK), `${job} accepts a chat model`); assert.throws(() => settingsWith(job, ID.STT), /can't be used for/); }
+assert.throws(() => settingsWith("doors_shadow", ID.MUSE_C), /zero-data-retention/, "a chat model with no zero-data-retention provider is refused");
 assert.throws(() => settingsWith("stt", ID.DEEPSEEK), /Needs a speech-to-text model/, "the safety net message names what the job needs");
-for (const job of ["memory_supersede", "doors_shadow", "classic_decider", "decider"]) for (const m of [CLEF, ID.PPLX, ID.JEV]) assert.doesNotThrow(() => settingsWith(job, m), `${job} accepts ${m}`);
+for (const job of ["doors_shadow", "doors_shadow", "classic_decider", "decider"]) for (const m of [CLEF, ID.PPLX, ID.JEV]) assert.doesNotThrow(() => settingsWith(job, m), `${job} accepts ${m}`);
 
 // ---- picker lists: only models the save check accepts ----
 { const opts = modelSettingsOptions(SEED), ids = (k) => opts.choices[k].map((m) => m.id);
@@ -45,11 +45,11 @@ for (const job of ["memory_supersede", "doors_shadow", "classic_decider", "decid
   assert.ok(ids("speech").includes(ID.STT) && !ids("speech").includes(ID.DEEPSEEK)); assert.ok(ids("embedding_files").every((id) => !SEED.catalog[id].kinds?.includes("chat")));
   assert.ok(!ids("chore").includes(ID.MUSE_C), "the picker never offers a model the zero-data-retention rule refuses"); }
 { const v = (id) => jobView(SEED, JOBS.find((j) => j.id === id));
-  assert.equal(v("stt").needs, "Needs a speech-to-text model."); assert.equal(v("vision_files").needs, "Needs a model that can read pictures."); assert.equal(v("memory_supersede").needs, null); assert.equal(v("memory_supersede").any, true); assert.equal(v("handoff").any, false); }
+  assert.equal(v("stt").needs, "Needs a speech-to-text model."); assert.equal(v("vision_files").needs, "Needs a model that can read pictures."); assert.equal(v("doors_shadow").needs, null); assert.equal(v("doors_shadow").any, true); assert.equal(v("handoff").any, false); }
 
 // ---- native path unchanged ----
 assert.equal(methodOf(SEED, CLEF), "clef"); assert.equal(usesSystemone(SEED, "decider"), true); assert.equal(methodOf(SEED, ID.DEEPSEEK), "chat");
-{ reset(); const env = envFor(SEED), call = await decisionCaller(env, "memory_supersede", { kind: "memory-supersede" });
+{ reset(); const env = envFor(SEED), call = await decisionCaller(env, "doors_shadow", { kind: "doors-shadow" });
   const r = await call({ state: { s: 1 }, questions });
   assert.equal(sent.length, 0, "Clef: no chat request"); assert.equal(aiCalls.length, 1); assert.equal(aiCalls[0].model, CLEF); assert.equal(aiCalls[0].body.model, CLEF.split("/").pop());
   assert.deepEqual(aiCalls[0].body.state, { s: 1 }); assert.deepEqual(aiCalls[0].body.questions, questions); assert.equal(r.usage.input_tokens, 77); }
@@ -57,22 +57,22 @@ assert.equal(methodOf(SEED, CLEF), "clef"); assert.equal(usesSystemone(SEED, "de
   const r = await askDecider(env, { x: 1 }, questions, {}); assert.equal(sent.length, 1); assert.match(sent[0].url, /systemone/); assert.equal(sent[0].body.model, ID.PPLX); assert.deepEqual(r.answers, { same: { noul: 0.4 }, kind: { choice: "b" } }); }
 
 // ---- JSON path ----
-const S2 = settingsWith("memory_supersede", ID.DEEPSEEK);
+const S2 = settingsWith("doors_shadow", ID.DEEPSEEK);
 assert.equal(methodOf(S2, ID.DEEPSEEK), "chat");
-{ reset(); reply = () => ok('{"same":{"noul":0.9},"kind":{"choice":"a"}}'); const env = envFor(S2), call = await decisionCaller(env, "memory_supersede", { tenant: "t", kind: "memory-supersede" });
+{ reset(); reply = () => ok('{"same":{"noul":0.9},"kind":{"choice":"a"}}'); const env = envFor(S2), call = await decisionCaller(env, "doors_shadow", { tenant: "t", kind: "doors-shadow" });
   const r = await call({ state: { new_statement: "hi" }, questions });
   assert.equal(aiCalls.length, 0, "no Clef call"); assert.equal(sent.length, 1); assert.match(sent[0].url, /chat\/completions/); assert.equal(sent[0].body.model, ID.DEEPSEEK);
   assert.equal(sent[0].body.response_format.type, "json_schema"); assert.equal(sent[0].body.provider.zdr, true, "zero-data-retention endpoints like every background chat call");
   assert.deepEqual(r.answers, { same: { noul: 0.9 }, kind: { choice: "a" } }, "the native answer shape"); assert.equal(r.usage.input_tokens, 120); assert.ok(r.usage.cost > 0);
   assert.match(JSON.stringify(sent[0].body.messages), /untrusted/); }
-{ reply = () => ok("sure, here you go"); await assert.rejects(askAnswers(envFor(S2), "memory_supersede", { state: {}, questions }), /malformed/, "text that is not JSON is an error"); }
-{ reply = () => ok('{"same":{"noul":7},"kind":{"choice":"a"}}'); await assert.rejects(askAnswers(envFor(S2), "memory_supersede", { state: {}, questions }), /malformed/, "an out-of-range probability is an error"); }
-{ reply = () => ok('{"same":{"noul":0.5},"kind":{"choice":"zzz"}}'); await assert.rejects(askAnswers(envFor(S2), "memory_supersede", { state: {}, questions }), /malformed/, "a choice that wasn't offered is an error"); }
-{ reply = () => ok('{"same":{"noul":0.5}}'); await assert.rejects(askAnswers(envFor(S2), "memory_supersede", { state: {}, questions }), /malformed/, "a missing answer is an error"); }
-{ reply = () => Response.json({ choices: [{ message: { content: null, refusal: "I can't help" }, finish_reason: "stop" }] }); await assert.rejects(askAnswers(envFor(S2), "memory_supersede", { state: {}, questions }), /malformed|refus/, "a refusal is an error"); }
-{ reply = () => Response.json({ error: { message: "down" } }, { status: 503 }); await assert.rejects(askAnswers(envFor(S2), "memory_supersede", { state: {}, questions }), "a failed request is an error"); }
-{ reply = () => new Promise(() => {}); const t0 = Date.now(); await assert.rejects(askAnswers(envFor(S2), "memory_supersede", { state: {}, questions, timeoutMs: 60 }), /timeout/); assert.ok(Date.now() - t0 < 2000, "a timeout ends the call"); }
-{ let n = 0; reply = () => ok(n++ ? '{"same":{"noul":0.2},"kind":{"choice":"b"}}' : "not json"); const r = await askAnswers(envFor(S2), "memory_supersede", { state: {}, questions }); assert.equal(r.answers.kind.choice, "b", "one repair attempt, like other structured chores"); assert.equal(n, 2); }
+{ reply = () => ok("sure, here you go"); await assert.rejects(askAnswers(envFor(S2), "doors_shadow", { state: {}, questions }), /malformed/, "text that is not JSON is an error"); }
+{ reply = () => ok('{"same":{"noul":7},"kind":{"choice":"a"}}'); await assert.rejects(askAnswers(envFor(S2), "doors_shadow", { state: {}, questions }), /malformed/, "an out-of-range probability is an error"); }
+{ reply = () => ok('{"same":{"noul":0.5},"kind":{"choice":"zzz"}}'); await assert.rejects(askAnswers(envFor(S2), "doors_shadow", { state: {}, questions }), /malformed/, "a choice that wasn't offered is an error"); }
+{ reply = () => ok('{"same":{"noul":0.5}}'); await assert.rejects(askAnswers(envFor(S2), "doors_shadow", { state: {}, questions }), /malformed/, "a missing answer is an error"); }
+{ reply = () => Response.json({ choices: [{ message: { content: null, refusal: "I can't help" }, finish_reason: "stop" }] }); await assert.rejects(askAnswers(envFor(S2), "doors_shadow", { state: {}, questions }), /malformed|refus/, "a refusal is an error"); }
+{ reply = () => Response.json({ error: { message: "down" } }, { status: 503 }); await assert.rejects(askAnswers(envFor(S2), "doors_shadow", { state: {}, questions }), "a failed request is an error"); }
+{ reply = () => new Promise(() => {}); const t0 = Date.now(); await assert.rejects(askAnswers(envFor(S2), "doors_shadow", { state: {}, questions, timeoutMs: 60 }), /timeout/); assert.ok(Date.now() - t0 < 2000, "a timeout ends the call"); }
+{ let n = 0; reply = () => ok(n++ ? '{"same":{"noul":0.2},"kind":{"choice":"b"}}' : "not json"); const r = await askAnswers(envFor(S2), "doors_shadow", { state: {}, questions }); assert.equal(r.answers.kind.choice, "b", "one repair attempt, like other structured chores"); assert.equal(n, 2); }
 assert.throws(() => answerSchema({ q: { type: "other" } }), /unsupported question type/);
 assert.deepEqual(answerSchema({ s: { type: "score", criteria: ["a", "b", "c"] } }).properties.s.properties.score.maximum, 2);
 
@@ -85,9 +85,9 @@ assert.deepEqual(answerSchema({ s: { type: "score", criteria: ["a", "b", "c"] } 
   reply = () => Response.json({ error: "x" }, { status: 500 }); const e = await askDecider(env, { a: 1 }, JEV_QUESTIONS, {}); assert.ok(e.error && !e.answers, "askDecider never throws"); }
 { const S4 = settingsWith("doors_shadow", ID.DEEPSEEK); reset(); reply = () => ok('{"same":{"noul":0.1},"kind":{"choice":"a"}}'); const r = await (await decisionCaller(envFor(S4), "doors_shadow", {}))({ state: {}, questions }); assert.equal(r.answers.same.noul, 0.1); assert.equal(aiCalls.length, 0); }
 // ---- symmetric: Perplexity on Memory corrections (systemone), Clef on the Request sorter (Workers AI), mixed fallbacks ----
-{ const S5 = settingsWith("memory_supersede", ID.PPLX); reset();
+{ const S5 = settingsWith("doors_shadow", ID.PPLX); reset();
   reply = () => Response.json({ model: ID.PPLX, answers: { same: { noul: 0.95 }, kind: { choice: "a" } }, usage: { cost: 0.00001 } });
-  const env = envFor(S5), call = await decisionCaller(env, "memory_supersede", { kind: "memory-supersede" }), r = await call({ state: { s: 1 }, questions });
+  const env = envFor(S5), call = await decisionCaller(env, "doors_shadow", { kind: "doors-shadow" }), r = await call({ state: { s: 1 }, questions });
   assert.equal(aiCalls.length, 0, "no Workers AI call"); assert.equal(sent.length, 1); assert.match(sent[0].url, /systemone/); assert.equal(sent[0].body.model, ID.PPLX); assert.deepEqual(sent[0].body.state, { s: 1 });
   assert.equal(r.answers.same.noul, 0.95); assert.ok(r.usage.input_tokens > 0 && r.usage.cost > 0, "cost comes back in the Clef usage shape");
   reply = () => Response.json({ error: "boom" }, { status: 500 }); await assert.rejects(call({ state: {}, questions }), /HTTP 500/, "a failed Perplexity call throws like a failed Clef call"); }
@@ -95,9 +95,9 @@ assert.deepEqual(answerSchema({ s: { type: "score", criteria: ["a", "b", "c"] } 
   const d = await askDecider(env, { latest_message: "hi" }, { same: { type: "noul", instructions: "x" }, kind: { type: "choice", instructions: "y", criteria: { a: "1", b: "2" } } }, {});
   assert.equal(sent.length, 0); assert.equal(aiCalls.length, 1); assert.equal(aiCalls[0].model, CLEF); assert.deepEqual(d.answers, { same: { noul: 0.9 }, kind: { choice: "a" } }); assert.ok(!d.error && d.nano > 0);
   aiCalls = []; const rr = await jevAsk(envFor(S6, {}), { latest_message: "x" }, {}); assert.equal(aiCalls.length, 1, "the router's decider call goes through Workers AI"); assert.equal(sent.length, 0); }
-{ const S7 = clone(SEED); S7.jobs.memory_supersede = { model: ID.PPLX, effort: null, fallbacks: [{ model: ID.DEEPSEEK, effort: null }, { model: CLEF, effort: null }] };
+{ const S7 = clone(SEED); S7.jobs.doors_shadow = { model: ID.PPLX, effort: null, fallbacks: [{ model: ID.DEEPSEEK, effort: null }, { model: CLEF, effort: null }] };
   reset(); reply = (b) => b.model === ID.PPLX ? Response.json({ error: "down" }, { status: 503 }) : ok('{"same":{"noul":0.3},"kind":{"choice":"b"}}');
-  const r = await askJob(envFor(S7), "memory_supersede", { state: {}, questions }); assert.equal(r.answers.same.noul, 0.3, "the chat fallback answers after the native model fails");
+  const r = await askJob(envFor(S7), "doors_shadow", { state: {}, questions }); assert.equal(r.answers.same.noul, 0.3, "the chat fallback answers after the native model fails");
   assert.deepEqual(sent.map((x) => x.body.model), [ID.PPLX, ID.DEEPSEEK]); assert.equal(aiCalls.length, 0);
-  reset(); reply = () => Response.json({ error: "down" }, { status: 503 }); const r2 = await askJob(envFor(S7), "memory_supersede", { state: {}, questions }); assert.equal(r2.answers.same.noul, 0.9, "then Clef answers when both fail"); assert.equal(aiCalls.length, 1); }
+  reset(); reply = () => Response.json({ error: "down" }, { status: 503 }); const r2 = await askJob(envFor(S7), "doors_shadow", { state: {}, questions }); assert.equal(r2.answers.same.noul, 0.9, "then Clef answers when both fail"); assert.equal(aiCalls.length, 1); }
 console.log("PASS text decisions: native Clef unchanged, JSON path for any chat model, save check, picker lists, capability notes");

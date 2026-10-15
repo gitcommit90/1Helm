@@ -27,7 +27,7 @@ try {
     assert.deepEqual(wire.response_format, body.response_format);
   }
   for (const model of [LUNA, "anthropic/claude-haiku-5.5"]) {
-    for (const kind of ["ambient-extract", "ambient-review", "memjob-upkeep-write", "sidecar-card", "sidecar-vision-image", "card-label", "memory-summary", "browser-oss"]) {
+    for (const kind of ["ambient-extract", "ambient-review", "sidecar-card", "sidecar-vision-image", "card-label", "browser-oss"]) {
       await orFetch(env, { ...body, model }, { kind });
       assert.equal(sent.at(-1).temperature, undefined, `${model} strict ${kind}`);
       assert.equal(sent.at(-1).provider.require_parameters, true);

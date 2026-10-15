@@ -148,7 +148,7 @@ await test("catalog is admin-only, read-only, no-store and never forwards creden
     current.config.jobs["chat.technical"] = { model: candidate.id, effort: "low", fallbacks: [current.config.jobs["chat.technical"], ...current.config.jobs["chat.technical"].fallbacks].map(({ fallbacks, ...e }) => e).slice(0, 2) };
     const saved = await post("/models/api/save", { revision: current.revision, config: { version: 2, jobs: current.config.jobs } }); assert.equal(saved.status, 200); const updated = await saved.json();
     assert.equal(updated.config.jobs["chat.technical"].model, candidate.id); assert.equal(updated.config.catalog[candidate.id].name, candidate.name);
-    assert.equal((await (await call("/models/api", { env: live })).json()).config.jobs["chat.technical"].model, ID.SOL, "the other environment is untouched");
+    assert.equal((await (await call("/models/api", { env: live })).json()).config.jobs["chat.technical"].model, ID.HAIKU, "the other environment is untouched");
     globalThis.fetch = async () => { throw new Error("secret upstream failure"); };
     const failed = await call("/models/api/catalog"); assert.equal(failed.status, 503); noStore(failed); assert.match((await failed.json()).error, /catalog is unavailable/);
   } finally { globalThis.fetch = originalFetch; }
@@ -203,16 +203,29 @@ await test("a page change replaces the model of one job only, and the row shows 
 });
 
 await test("fallback order, reasoning and removal save like any other change", async () => {
-  const view = await (await call("/models/api")).json(), cfg = structuredClone(view.config), job = cfg.jobs["chat.apps_complete"];
+  const view = await (await call("/models/api")).json(), cfg = structuredClone(view.config), job = cfg.jobs["chat.general"];
   assert.ok(job.fallbacks.length >= 2); const [a, b] = [job.fallbacks[0], job.fallbacks[1]];
   job.fallbacks = [b, a, ...job.fallbacks.slice(2)]; job.effort = "high";
   let saved = await (await post("/models/api/save", { revision: view.revision, config: { version: 2, jobs: cfg.jobs } })).json();
-  assert.deepEqual(saved.config.jobs["chat.apps_complete"].fallbacks.slice(0, 2).map((f) => f.model), [b.model, a.model]);
-  const cut = structuredClone(saved.config.jobs); cut["chat.apps_complete"].fallbacks = []; 
-  saved = await (await post("/models/api/save", { revision: saved.revision, config: { version: 2, jobs: cut } })).json(); assert.deepEqual(saved.config.jobs["chat.apps_complete"].fallbacks, []);
-  const bad = structuredClone(saved.config.jobs); bad["chat.apps_complete"].fallbacks = [{ model: bad["chat.apps_complete"].model, effort: bad["chat.apps_complete"].effort }];
+  assert.deepEqual(saved.config.jobs["chat.general"].fallbacks.slice(0, 2).map((f) => f.model), [b.model, a.model]);
+  const cut = structuredClone(saved.config.jobs); cut["chat.general"].fallbacks = []; 
+  saved = await (await post("/models/api/save", { revision: saved.revision, config: { version: 2, jobs: cut } })).json(); assert.deepEqual(saved.config.jobs["chat.general"].fallbacks, []);
+  const bad = structuredClone(saved.config.jobs); bad["chat.general"].fallbacks = [{ model: bad["chat.general"].model, effort: bad["chat.general"].effort }];
   assert.equal((await post("/models/api/save", { revision: saved.revision, config: { version: 2, jobs: bad } })).status, 400, "a model can be listed once");
   assert.equal((await post("/models/api/save", { revision: saved.revision, config: { version: 2, jobs: { ...cut, evil: cut.handoff } } })).status, 400);
+});
+
+await test("search lists saved models with the live name, price and reasoning levels, not the saved copy", async () => {
+  const page = await (await call("/models")).text();
+  const src = page.match(/function mergeKnown\(.*\n/)?.[0];
+  assert.ok(src, "the picker has a function that merges saved models with the live catalog");
+  const mergeKnown = new Function(`${src}; return mergeKnown;`)();
+  const saved = [{ id: "xiaomi/mimo-v2.6-flash", name: "Xiaomi: MiMo-V2.6-Flash (old)", efforts: ["low"] }, { id: "@cf/old/model", name: "Old model", efforts: [] }];
+  const fresh = [{ id: "xiaomi/mimo-v2.6-flash", name: "Xiaomi: MiMo-V2.6-Flash", efforts: ["none", "low"], default_effort: "low", pricing: { prompt: 0.14, completion: 0.28 } }];
+  const out = mergeKnown(saved, fresh, "mimo");
+  assert.equal(out.length, 1); assert.equal(out[0].name, "Xiaomi: MiMo-V2.6-Flash"); assert.deepEqual(out[0].pricing, { prompt: 0.14, completion: 0.28 }); assert.deepEqual(out[0].efforts, ["none", "low"]);
+  assert.deepEqual(mergeKnown(saved, fresh, "").map((m) => m.id), ["xiaomi/mimo-v2.6-flash", "@cf/old/model"], "saved models missing from the live catalog stay listed");
+  assert.match(page, /local=mergeKnown\(inUse\(''\),data\.models,q\)/, "search results go through the merge");
 });
 
 console.log(`PASS ${checks} model page security and integration checks`);

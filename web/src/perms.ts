@@ -9,7 +9,7 @@
 // v3.ts only hooks in: pmHtml() for the section, pmClick() in the Settings click handler, pmInit() once in live mode.
 // Class names: pm* (never "ad…": ad blockers hide those).
 type Kind = { id: string; name: string; level: string };
-type Checkins = { silent: number; fast: number };
+type Checkins = { enabled: boolean; silent: number; fast: number };
 type Level = { id: string; name: string; sub: string };
 type View = { level: string; levels: Level[]; kinds: Kind[]; direct_protocols?: { ssh: "deny" | "ask" | "trusted" }; allowed: { kind: string; name: string; at: number }[]; sites: { channel: string; channel_name: string; id: number; host: string; at: number }[] };
 type Deps = {
@@ -25,7 +25,9 @@ type Deps = {
   logoOver: (host: string, size: number) => string;
 };
 let D: Deps | null = null;
-const checkinDraft: Partial<Record<keyof Checkins, string>> = {};
+// Off by default. When it's on, the first update comes after 50 tool calls and the fast limit is 20 calls in 60 seconds (1HC agent-checkins.js).
+const CHECKIN_FALLBACK: Checkins = { enabled: false, silent: 50, fast: 20 };
+const checkinDraft: Partial<Record<'silent' | 'fast', string>> = {};
 let checkinFocus = false;
 export function pmFocusCheckins() { checkinFocus = true; pmAfter(); }
 export function pmAfter() {
@@ -42,7 +44,7 @@ const asksAt = (level: string, kind: Kind) => kind.id === "personal" || (ranks[l
 export function pmInit(d: Deps) { D = d;
   document.addEventListener('input', event => {
     const input = event.target as HTMLInputElement;
-    const key = input.dataset?.pmcheckinput as keyof Checkins;
+    const key = input.dataset?.pmcheckinput as 'silent' | 'fast';
     if (key === 'silent' || key === 'fast') checkinDraft[key] = input.value;
   });
 }
@@ -60,6 +62,7 @@ export function pmHtml(): string {
   const head = `<h2>Permissions</h2><p class="slead">How often should ${who} check with you first?</p>`;
   if (!P.v) return `${head}<div class="sc">${P.err ? srow("", "Couldn't load", "Check your connection and try again.", sa("Try again", "data-pmretry", "blue")) : srow(`<span class="bico"><i class="apspin"></i></span>`, "Loading…", "", "")}</div>`;
   const v = P.v, busy = P.busy;
+  const ci: Checkins = { ...CHECKIN_FALLBACK, ...(v as View & { agent_checkins?: Checkins }).agent_checkins };
   const radio = (l: Level) => { const on = v.level === l.id, wait = busy === `level:${l.id}`;
     return `<button class="sr sradio pmlv${on ? " on" : ""}" role="radio" aria-checked="${on}" data-pmlevel="${esc(l.id)}"${busy ? " disabled" : ""}><span class="srt"><b>${esc(l.name)}${l.id === "standard" ? `<em class="stag">Default</em>` : ""}</b><span>${esc(l.sub)}</span></span><span class="rck">${wait ? `<i class="apspin"></i>` : icon("check")}</span></button>`; };
   // A kind with level "standard" (Fill in your personal details) asks on every level; the others from their level up.
@@ -77,11 +80,12 @@ export function pmHtml(): string {
     <p class="sfine">Connected-app actions and website requests can require approval, including spending and unclassified actions. Saved “Always allowed” exceptions still apply. Separate checkout and publish confirmations remain in place.</p>
     <section id="pm-checkins" tabindex="-1" aria-labelledby="pm-checkins-title">
       <h3 id="pm-checkins-title">Agent check-ins</h3>
-      <p class="sfine">Choose when work pauses to check with you. Applies across this account, starting with the next turn (including Keep going). Defaults: 15 calls before the first update, and 20 calls within 60 seconds.</p>
-      <div class="sc">${(['silent', 'fast'] as const).map(key => {
-        const saved = esc(String(checkinDraft[key] ?? (v as View & { agent_checkins?: Checkins }).agent_checkins?.[key] ?? (key === 'silent' ? 15 : 20)));
+      <p class="sfine">Choose when work pauses to check with you. Applies across this account, starting with the next turn (including Keep going).</p>
+      <div class="sc">${srow("", "Pause to check in", "After a number of tool calls without an update", `<button type="button" class="tg${ci.enabled ? " on" : ""}" role="switch" aria-checked="${ci.enabled}" aria-label="Agent check-ins" data-pmcheckswitch${busy ? " disabled" : ""}><i></i></button>`, " data-pmcheckrow")}
+      ${ci.enabled ? (['silent', 'fast'] as const).map(key => {
+        const saved = esc(String(checkinDraft[key] ?? ci[key]));
         return `<div class="sr pmcheckrow"><label class="srt" for="pm-checkin-${key}"><b>${key === 'silent' ? 'Before the first update' : 'Within 60 seconds'}</b><span>${key === 'silent' ? 'Pause after this many tool calls without an update from your agent.' : 'Pause after this many tool calls in a rolling 60-second window, even if your agent has given an update.'}</span></label><div class="pmcheckcontrol"><input id="pm-checkin-${key}" data-pmcheckinput="${key}" type="number" min="1" max="1000" step="1" value="${saved}" aria-label="${key === 'silent' ? 'Tool calls before the first update' : 'Tool calls within 60 seconds'}"${busy ? ' disabled' : ''}><button type="button" class="sa" data-pmchecksave="${key}"${busy ? ' disabled' : ''}>${busy === `checkin:${key}` ? 'Saving…' : 'Save'}</button></div></div>`;
-      }).join('')}</div>
+      }).join('') : ''}</div>
       <p class="sfine">Reading agent references and to-do bookkeeping don't count. A visible to-do list, reaction or message counts as an update. Other pause rules, spending limits and approval controls are unchanged.</p>
     </section>
     <h3>Direct network protocols</h3>
@@ -96,10 +100,21 @@ export function pmHtml(): string {
 export function pmClick(t: HTMLElement): boolean {
   if (!D || !P.v) { if (t.closest("[data-pmretry]")) { load(true); D?.rerender(); return true; } return false; }
   const v = P.v, d = D;
+  if (t.closest('[data-pmcheckswitch]')) {
+    if (P.busy) return true;
+    const next = !({ ...CHECKIN_FALLBACK, ...(v as View & { agent_checkins?: Checkins }).agent_checkins }).enabled;
+    P.busy = 'checkin:enabled'; d.rerender();
+    d.api('/permissions', { agent_checkins: { enabled: next } }).then(r => {
+      if (r?.error || r?.agent_checkins?.enabled !== next) throw new Error(r?.error || 'The server did not confirm this change.');
+      P.v = r; P.at = Date.now(); d.note(next ? 'Agent check-ins on' : 'Agent check-ins off', 'Applies from the next turn, including Keep going.');
+    }).catch(err => d.note("Couldn't save the check-in", err.message || 'Try again.'))
+      .finally(() => { P.busy = ''; d.rerender(); });
+    return true;
+  }
   const checkin = t.closest<HTMLElement>('[data-pmchecksave]');
   if (checkin) {
     if (P.busy) return true;
-    const key = checkin.dataset.pmchecksave as keyof Checkins;
+    const key = checkin.dataset.pmchecksave as 'silent' | 'fast';
     if (!['silent', 'fast'].includes(key)) return true;
     const input = document.getElementById(`pm-checkin-${key}`) as HTMLInputElement | null;
     const value = input?.valueAsNumber;

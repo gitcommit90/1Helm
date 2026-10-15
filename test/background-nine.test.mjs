@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { ambientModelRoute } from "../src/ee/ambient.js";
-import { mjRoute } from "../src/memjobs-core.js";
 import { openRouterChat } from "../src/model.js";
 import { structuredFormat } from "../src/structured-output.js";
 import { BACKGROUND_LIMITS, backgroundRole, backgroundReserve } from "../src/ee/background-policy.js";
-import { choreRouteOf, jobRoute } from "../src/ee/model-jobs.js";
+import { choreRouteOf, jobRoute, settingsOf } from "../src/ee/model-jobs.js";
+// The memory jobs are gone, but their saved model settings remain: the route of a job step as the old runner built it.
 import { ID, SEED, withSettings } from "./helpers/seed-settings.mjs";
 import { notesRequest } from "../src/ee/live-notes.js";
 import { cardRequest } from "../src/sidecar.js";
@@ -16,13 +16,9 @@ const DS = ID.DEEPSEEK, HAIKU = ID.HAIKU, LUNA = ID.LUNA;
 const roles = { "card-label": ["label", HAIKU, 2048], "live-notes-note": ["notes", LUNA, 1500],
   "live-notes-refine": ["notes_refine", DS, 8192], "live-notes-final": ["notes_final", HAIKU, 4000],
   "sidecar-card": ["sidecar_card", HAIKU, 1600], "ambient-extract": ["ambient_extract", LUNA, 3000],
-  "ambient-review": ["ambient_review", DS, 3000], "memjob-people-verify": ["people_verify", DS, 6000],
-  "memjob-reflect-verify": ["reflect_verify", DS, 6000] };
-assert.equal(Object.keys(BACKGROUND_LIMITS).length, 9);
+  "ambient-review": ["ambient_review", DS, 3000] };
+assert.equal(Object.keys(BACKGROUND_LIMITS).length, 7);
 const E0 = withSettings({});
-for (const job of ["people", "reflect", "upkeep"]) assert.equal(mjRoute(E0, job, "write").effort, "none");
-assert.equal(mjRoute(E0, "upkeep", "verify").effort, "none");
-assert.equal(mjRoute(withSettings({}, JSON.parse(JSON.stringify(SEED))), "upkeep", "verify").effort, "none");
 assert.equal(choreRouteOf(SEED, "handoff").model, "deepseek/deepseek-v4.1-flash");
 for (const kind of ["ambient-extract", "ambient-review"]) assert.deepEqual(ambientModelRoute({ CHORE_MODEL_AMBIENT: "oss20" }, kind), jobRoute(backgroundRole(kind)), "the route only names the job; a variable can't change it");
 assert.equal(LABEL_TIMEOUT_MS, 30000);
@@ -61,13 +57,10 @@ try {
       assert.equal(sent.length, n + 2, "the main model, then its one saved fallback, nothing else"); fail = false;
     }
   }
-  // Memory summaries are their own saved job (DeepSeek, then GLM, gpt-oss-120b): in the older router mode too, and no unrelated model list rides along.
-  await openRouterChat({ ...env, ROUTER_MODE: "classic" }, body, null, jobRoute("memory_summary"), { kind: "memory-summary" });
-  assert.equal(sent.at(-1).model, ID.DEEPSEEK); assert.equal(sent.at(-1).models, undefined, "one model per request; the fallbacks are tried one at a time");
   // A saved choice replaces the policy for that role alone.
-  const custom = JSON.parse(JSON.stringify(SEED)); custom.jobs.people_verify = { model: HAIKU, effort: "high", hosts: ["amazon-bedrock", "google-vertex"], pin: true, strict: true, fallbacks: [] };
+  const custom = JSON.parse(JSON.stringify(SEED)); custom.jobs.ambient_review = { model: HAIKU, effort: "high", hosts: ["amazon-bedrock", "google-vertex"], pin: true, strict: true, fallbacks: [] };
   const envC = { ...env, MODEL_SETTINGS: custom };
-  await openRouterChat(envC, body, null, mjRoute(envC, "people", "verify"), { kind: "memjob-people-verify" });
+  await openRouterChat(envC, body, null, jobRoute("ambient_review"), { kind: "ambient-review" });
   assert.equal(sent.at(-1).model, HAIKU); assert.deepEqual(sent.at(-1).reasoning, { effort: "high" }); assert.equal(sent.at(-1).models, undefined);
   // Cloud-only TEST_MODEL overrides are intentionally absent from public source.
   const n = sent.length;

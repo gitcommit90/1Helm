@@ -10,7 +10,7 @@ import { seedFresh, seedFromLegacy } from "../src/ee/model-seed.js";
 import { JOBS, JOB_IDS, jobSetting, choreRouteOf } from "../src/ee/model-jobs.js";
 import { openRouterChat } from "../src/model.js";
 import { policyRoute, dispatchOrder } from "../src/ee/route2.js";
-import { ID, SEED, seedSettings } from "./helpers/seed-settings.mjs";
+import { ID, SEED, seedSettings, withSettings, withExtraModels, EXTRA_FACTS } from "./helpers/seed-settings.mjs";
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const sql = new DatabaseSync(":memory:");
@@ -36,14 +36,14 @@ bad((c) => { c.jobs.decider.effort = "low"; }, /no reasoning level/); bad((c) =>
 bad((c) => { c.jobs["chat.general"].fallbacks.push({ model: ID.MUSE_C, effort: "low" }); }, /listed once/);
 bad((c) => { c.jobs["chat.general"].fallbacks = Array(6).fill(0).map((_, i) => ({ model: `x/m${i}`, effort: "low" })); });
 bad((c) => { c.jobs["recover.technical"].fallbacks = [{ model: ID.HAIKU, effort: "low" }]; }, /fallback/);
-bad((c) => { c.jobs.decider.model = ID.STT; }, /can't be used/); bad((c) => { c.jobs.memory_supersede.model = ID.STT; }, /can't be used/); bad((c) => { c.jobs["chat.technical"].model = ID.STT; }, /can't be used/);
+bad((c) => { c.jobs.decider.model = ID.STT; }, /can't be used/); bad((c) => { c.jobs.doors_shadow.model = ID.STT; }, /can't be used/); bad((c) => { c.jobs["chat.technical"].model = ID.STT; }, /can't be used/);
 bad((c) => { c.jobs.handoff = { model: ID.MUSE_C, effort: "low", fallbacks: [] }; }, /can't be used/);
 bad((c) => { c.catalog["acme/leaky"] = { id: "acme/leaky", name: "Leaky", eligible: true, reasons: [], efforts: ["low"], default_effort: "low", levels: ["unrestricted"], hosts: ["h"], context_length: 1000, max_output: 100,
   input_modalities: ["text"], pricing: { prompt: 1, completion: 1 }, json: true, tool_choice: ["auto"] }; c.jobs.handoff = { model: "acme/leaky", effort: "low", fallbacks: [] }; }, /zero-data-retention/);
 bad((c) => { c.jobs.handoff = { model: "not a model id", effort: "low", fallbacks: [] }; }); bad((c) => { c.jobs.handoff.hosts = ["bad host!"]; });
 bad((c) => { c.catalog["evil/x"] = { id: "evil/x", name: "x", kinds: ["chat"], efforts: ["low"], hosts: ["a"] }; }, /metadata/);
 assert.deepEqual(Object.keys(SEED.jobs).sort(), [...JOB_IDS].sort(), "every job has a saved setting, and only the known jobs");
-assert.ok(JOBS.length >= 36 && new Set(JOB_IDS).size === JOBS.length);
+assert.ok(JOBS.length === 32 && new Set(JOB_IDS).size === JOBS.length);
 for (const j of Object.values(SEED.jobs)) for (const e of [j, ...j.fallbacks]) assert.ok(SEED.catalog[e.model], `${e.model} is described in the saved settings`);
 
 // ---- 2) the first saved version: nothing saved yet → the first-run data, once, with the variable that used to choose a model carried in ----
@@ -63,16 +63,16 @@ for (const j of Object.values(SEED.jobs)) for (const e of [j, ...j.fallbacks]) a
 // ---- 3) a save is a new version; history; stale and concurrent writes ----
 let revision = 1;
 const save = async (config, e = env) => { const v = await saveModelSettings(e, { revision, config }, "unit@example.com"); revision = v.revision; return v; };
-{ const cfg = clone(SEED); cfg.jobs["chat.general"] = { model: ID.SOL, effort: "low", fallbacks: [{ model: ID.HAIKU, effort: "medium" }] };
+{ const cfg = clone(SEED); cfg.jobs["chat.general"] = { model: ID.LUNA, effort: "low", fallbacks: [{ model: ID.HAIKU, effort: "medium" }] };
   const v = await save(cfg); assert.equal(v.revision, 2); assert.deepEqual(v.config.jobs["chat.general"], cfg.jobs["chat.general"]);
   assert.equal(v.history[0].action, "save"); assert.equal(v.history[0].by, "unit@example.com");
-  assert.equal(v.options.groups.length, 7); assert.ok(v.options.choices.chat.some((m) => m.id === ID.SOL));
+  assert.equal(v.options.groups.length, 7); assert.ok(v.options.choices.chat.some((m) => m.id === ID.LUNA));
   await assert.rejects(saveModelSettings(env, { revision: 1, config: cfg }, "other"), (e) => e.status === 409);
   const writes = await Promise.allSettled([saveModelSettings(env, { revision, config: cfg }, "a"), saveModelSettings(env, { revision, config: cfg }, "b")]);
   assert.equal(writes.filter((r) => r.status === "fulfilled").length, 1); assert.equal(writes.find((r) => r.status === "rejected").reason.status, 409); revision++;
   // a browser can't smuggle endpoint, price or capability data in: only the jobs are taken, the catalog stays the server's
-  const evil = clone((await readModelSettings(env)).config); evil.catalog[ID.SOL] = { id: ID.SOL, name: "x", kinds: ["chat"], efforts: ["low"], hosts: ["attacker"] };
-  await save(evil); assert.deepEqual((await readModelSettings(env)).config.catalog[ID.SOL], SEED.catalog[ID.SOL]); }
+  const evil = clone((await readModelSettings(env)).config); evil.catalog[ID.LUNA] = { id: ID.LUNA, name: "x", kinds: ["chat"], efforts: ["low"], hosts: ["attacker"] };
+  await save(evil); assert.deepEqual((await readModelSettings(env)).config.catalog[ID.HAIKU], SEED.catalog[ID.HAIKU]); }
 
 // ---- 4) a saved change is what the very next dispatch uses (nothing cached) ----
 const sent = []; let failures = new Set(); const originalFetch = globalThis.fetch;
@@ -82,23 +82,24 @@ const body = { messages: [{ role: "user", content: "Hello" }], max_tokens: 100, 
 const call = (route, kind = "chat", e = env, b = body) => openRouterChat(e, b, "session-kept", route, { tenant: "t", kind });
 try {
   const route = async () => policyRoute((await readModelSettings(env)).config, "general", "zdr", "test");
-  await call(await route()); assert.equal(sent.at(-1).model, ID.SOL); assert.equal(sent.at(-1).reasoning.effort, "low", "the saved effort, not the caller's");
-  failures.add(ID.SOL); let n = sent.length; await call(await route()); failures.clear();
-  assert.deepEqual(sent.slice(n).map((p) => [p.model, p.reasoning.effort]), [[ID.SOL, "low"], [ID.HAIKU, "medium"]], "each fallback uses its own saved effort");
+  await call(await route()); assert.equal(sent.at(-1).model, ID.LUNA); assert.equal(sent.at(-1).reasoning.effort, "low", "the saved effort, not the caller's");
+  failures.add(ID.LUNA); let n = sent.length; await call(await route()); failures.clear();
+  assert.deepEqual(sent.slice(n).map((p) => [p.model, p.reasoning.effort]), [[ID.LUNA, "low"], [ID.HAIKU, "medium"]], "each fallback uses its own saved effort");
   const c2 = clone((await readModelSettings(env)).config); c2.jobs["chat.general"].effort = "high"; await save(c2); await call(await route()); assert.equal(sent.at(-1).reasoning.effort, "high");
   c2.jobs["chat.general"] = { model: ID.LUNA, effort: "none", fallbacks: [] }; await save(c2); await call(await route()); assert.deepEqual(sent.at(-1).reasoning, { enabled: false });
   // background jobs, one by one: the saved model, effort and fallbacks for that job
   const c3 = clone((await readModelSettings(env)).config);
   c3.jobs.label = { model: ID.OSS120, effort: "medium", hosts: ["cerebras"], pin: true, fallbacks: [] };
   c3.jobs.handoff = { model: ID.HAIKU, effort: "high", fallbacks: [{ model: ID.OSS120, effort: "low", hosts: ["cerebras"], pin: false }] };
-  c3.jobs.people_verify = { model: ID.OSS20, effort: "high", hosts: ["amazon-bedrock"], pin: true, strict: true, fallbacks: [] };
   await save(c3);
+  // gpt-oss-20b is not in the saved catalog (no job uses it), so this job is tried on a settings copy that carries its facts
+  const c20 = withExtraModels(c3); c20.jobs.ambient_review = { model: ID.OSS20, effort: "high", hosts: ["amazon-bedrock"], pin: true, strict: true, fallbacks: [] }; const e20 = withSettings(env, c20);
   await call({ chore: true }, "card-label"); assert.equal(sent.at(-1).model, ID.OSS120); assert.equal(sent.at(-1).reasoning.effort, "medium");
   await call((await route()), "chat", env, { messages: [{ role: "user", content: "(Turn finished; the person has your reply. Write notes.)" }] });
   assert.equal(sent.at(-1).model, ID.HAIKU, "hand-off notes read the saved handoff job"); assert.equal(sent.at(-1).reasoning.effort, "high");
-  await call({ chore: true }, "memjob-people-verify", env, { ...body, response_format: { type: "json_object" } });
+  await call({ chore: true }, "ambient-review", e20, { ...body, response_format: { type: "json_object" } });
   assert.equal(sent.at(-1).model, ID.OSS20); assert.equal(sent.at(-1).response_format, undefined, "a model with no JSON mode gets no response format");
-  failures.add(ID.OSS20); n = sent.length; await assert.rejects(call({ chore: true }, "memjob-people-verify"), /503/); failures.clear();
+  failures.add(ID.OSS20); n = sent.length; await assert.rejects(call({ chore: true }, "ambient-review", e20), /503/); failures.clear();
   assert.ok(sent.slice(n).every((p) => p.model === ID.OSS20), "a job with no fallbacks never substitutes another model");
   // Public source ignores private test model overrides and keeps the saved route; an own-key account keeps its own precedence
   await call(await route(), "chat", { ...env, TEST_MODEL: ID.HAIKU, TEST_MODEL_SCOPE: "all-dev", TEST_MODEL_EFFORT: "high" }); assert.equal(sent.at(-1).model, ID.LUNA);
@@ -106,7 +107,7 @@ try {
   // restore an earlier version: new revision, the old content, history says so
   const hist = (await modelSettingsView(env)).history, first = hist.filter((h) => h.action === "save").at(-1).revision;
   const restored = await restoreModelSettings(env, { revision, restore_revision: first }, "admin"); revision = restored.revision;
-  assert.ok(restored.history.some((r) => r.action === `restore:${first}`)); await call(await route()); assert.equal(sent.at(-1).model, ID.SOL);
+  assert.ok(restored.history.some((r) => r.action === `restore:${first}`)); await call(await route()); assert.equal(sent.at(-1).model, ID.LUNA);
   await assert.rejects(restoreModelSettings(env, { revision, restore_revision: 999 }, "admin"), (e) => e.status === 404);
   assert.deepEqual(rows().map((r) => r.revision), rows().map((_, i) => i + 1), "versions are append-only and consecutive");
 } finally { globalThis.fetch = originalFetch; }
@@ -115,9 +116,11 @@ try {
 { const SPEC = { "muse-c": [ID.MUSE_C, "xhigh"], "muse-s": [ID.MUSE_S, "xhigh"], deepseek: [ID.DEEPSEEK, "max"], luna: [ID.LUNA, "xhigh"], sol: [ID.SOL, "high"], haiku: [ID.HAIKU, "xhigh"] };
   const legacy = { efforts: Object.fromEntries(Object.entries(SPEC).map(([k, v]) => [k, v[1]])),
     chains: Object.fromEntries(["general", "research", "apps_economical", "skills", "spreadsheet", "technical", "apps_complete"].map((c) => [c, { unrestricted: ["muse-c", "deepseek", "sol"], no_training: ["deepseek", "sol", "muse-s"], zdr: ["deepseek", "sol", "haiku"] }])),
-    chores: Object.fromEntries(["handoff", "label", "browser", "notes", "notes_refine", "notes_final", "memory_summary", "sidecar_card", "ambient_extract", "ambient_review", "upkeep_write", "upkeep_verify", "people_write", "people_verify", "reflect_write", "reflect_verify"].map((r) => [r, { model: "default", effort: "default" }])),
+    chores: Object.fromEntries(["handoff", "label", "browser", "notes", "notes_refine", "notes_final", "sidecar_card", "ambient_extract", "ambient_review"].map((r) => [r, { model: "default", effort: "default" }])),
     decider: "default" };
   legacy.efforts.sol = "low"; legacy.efforts.haiku = "medium";
+  // Sol and Jev are no longer in the first-run data; an earlier saved row can still name them, with their facts carried in its own catalog
+  legacy.models = { sol: ID.SOL }; legacy.catalog = { [ID.SOL]: { id: ID.SOL, ...EXTRA_FACTS[ID.SOL] }, [ID.JEV]: { id: ID.JEV, ...EXTRA_FACTS[ID.JEV] } };
   // what the earlier page did when Sol was chosen for everyday chat: Sol first in every level's list
   legacy.chains.general = { unrestricted: ["sol", "muse-c", "deepseek"], no_training: ["sol", "deepseek", "muse-s"], zdr: ["sol", "deepseek", "haiku"] }; legacy.chains.technical = { unrestricted: ["haiku"], no_training: ["haiku", "sol"], zdr: ["haiku"] };
   legacy.chores.label = { model: "oss120", effort: "medium" }; legacy.chores.notes = { model: "dsflash", effort: "none" }; legacy.chores.handoff = { model: "haiku", effort: "high" }; legacy.decider = ID.JEV;
@@ -137,13 +140,13 @@ try {
   // (models that level may use, so privacy is unchanged); its first choice and the order of its own models never change
   assert.deepEqual(level("technical", "zdr"), [[ID.HAIKU, "medium"], [ID.SOL, "low"]]); assert.deepEqual(level("technical", "no_training"), [[ID.HAIKU, "medium"], [ID.SOL, "low"]]);
   assert.deepEqual(level("technical", "unrestricted"), [[ID.HAIKU, "medium"], [ID.SOL, "low"]]);
-  assert.equal(s.jobs["recover.technical"].model, ID.SOL); assert.equal(s.jobs["recover.technical"].effort, "low", "recovery uses the saved effort of the slot it used");
+  assert.equal(s.jobs["recover.technical"].model, ID.HAIKU); assert.equal(s.jobs["recover.technical"].effort, "medium", "recovery uses the saved effort of the slot it uses (Haiku, since Sol left the first-run data)");
   assert.equal(jobSetting(s, "decider").model, ID.JEV);
   const lab = choreRouteOf(s, "label"); assert.deepEqual([lab.model, lab.effort, lab.host, lab.pin, lab.fallbacks.length, lab.runtimeSettings], [ID.OSS120, "medium", "cerebras", true, 0, true]);
   const notes = choreRouteOf(s, "notes"); assert.deepEqual([notes.model, notes.effort, notes.fallbacks.length], [ID.DEEPSEEK, "none", 1]);
   const hand = choreRouteOf(s, "handoff"); assert.deepEqual([hand.model, hand.effort, hand.fallbacks.map((f) => [f.model, f.effort])], [ID.HAIKU, "high", [[ID.OSS120, "low"]]]);
-  assert.equal(choreRouteOf(s, "browser").model, ID.OSS20, "the variable CHORE_MODEL_BROWSER was carried over once");
-  assert.equal(choreRouteOf(s, "upkeep_verify").model, ID.DEEPSEEK); assert.equal(choreRouteOf(s, "upkeep_verify").effort, "none");
+  assert.equal(choreRouteOf(s, "browser").model, ID.OSS120, "oss20 is no longer a known value of CHORE_MODEL_BROWSER, so it means 120b like any unknown value");
+  assert.equal(choreRouteOf(s, "ambient_review").model, ID.DEEPSEEK); assert.equal(choreRouteOf(s, "ambient_review").effort, "low");
   // the earlier row is only read, never changed
   assert.equal(sql.prepare("SELECT COUNT(*) n FROM model_settings_versions WHERE environment='live'").get().n, 1);
   // an invalid earlier row stops the carry-over with a clear error; it is never replaced by guessing

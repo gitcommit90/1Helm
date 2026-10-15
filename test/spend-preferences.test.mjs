@@ -8,8 +8,11 @@ import {guardCall,guardModel,guardTools,newWatch} from '../src/spendguard.js';
 const dbs=[];
 function ledger(){const db=new DatabaseSync(':memory:');dbs.push(db);const sql={exec(q,...a){if(!a.length&&q.split(';').filter(x=>x.trim()).length>1){db.exec(q);return {toArray:()=>[]};}const st=db.prepare(q),rows=/^\s*(SELECT|WITH|PRAGMA)/i.test(q)?st.all(...a):(st.run(...a),[]);return{toArray:()=>rows,one:()=>rows[0]};}};return new Ledger({storage:{sql,transactionSync:f=>f()}},{});}
 const a=ledger(),b=ledger();
-assert.deepEqual(a.spendPreferences(),{enabled:true});assert.equal(await readSpendPreference({}),true);
-await a.grant('included',20e9,'included');await a.setDayCapTest(1);
+assert.deepEqual(a.spendPreferences(),{enabled:false},'off by default');assert.deepEqual(b.spendPreferences(),{enabled:false});assert.equal(await readSpendPreference({}),true);
+assert.equal(await readSpendPreference(a),false,'a new account is off');
+// day limit does not apply while it is off
+await a.grant('included',20e9,'included');await a.setDayCapTest(1);assert.equal((await a.reserve('default-off',100)).ok,true);await a.settle('default-off',100);
+a.setSpendPreferences(true);b.setSpendPreferences(true);assert.equal(a.guardKv('spend_pauses'),'on');
 assert.equal((await a.reserve('on',100)).reason,'day_limit');
 a.setSpendPreferences(false);assert.equal(b.spendPreferences().enabled,true);assert.equal(a.spendPreferences().enabled,false);
 assert.equal((await a.reserve('off',100)).ok,true);await a.settle('off',100);
@@ -23,7 +26,7 @@ const api=async(body,{origin=url.origin,method=body===undefined?'GET':'POST',ten
 assert.equal((await api({enabled:false},{origin:'https://attacker.example'})).status,403);
 assert.equal((await api({enabled:false},{ct:'text/plain'})).status,403);
 for(const bad of [null,{},[],{enabled:'false'},{enabled:0},{enabled:false,tenant:'b'}])assert.equal((await api(bad)).status,400);
-assert.deepEqual(await(await api({enabled:false})).json(),{enabled:false});assert.deepEqual(await(await api()).json(),{enabled:false});assert.deepEqual(await(await api(undefined,{tenant:'b'})).json(),{enabled:true});
+assert.deepEqual(await(await api({enabled:false})).json(),{enabled:false});assert.deepEqual(await(await api()).json(),{enabled:false});assert.deepEqual(await(await api(undefined,{tenant:'b'})).json(),{enabled:true});assert.deepEqual(await(await api({enabled:true})).json(),{enabled:true});
 assert.equal((await api(undefined,{method:'DELETE'})).status,405);
 const tc={kind:'chat',charged:5e9,guard:{soft:1,hard:1,dayLine:1,dayBase:100,watch:newWatch()}};
 applySpendPreference(tc,false);guardCall(tc);guardModel(tc,{charge:10e9},'',true,[]);

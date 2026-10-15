@@ -123,3 +123,14 @@
 @keyframes bfin{from{transform:translateY(10px) scale(.965)}to{transform:none}}
 @media (prefers-reduced-motion:reduce){.bfgone,.bfgone.s{animation:bffade .15s linear forwards}.bftop.bfin{animation:none}.bftop{transition:none}@keyframes bffade{to{opacity:0}}}
 @media (max-width:640px){.bfcard{padding:14px 14px 12px}.bfp{font-size:16.5px}.bfacts{gap:6px}.bfacts .sa{flex:1 1 auto;height:40px}.bfacts .bfok{margin-left:0}}
+/* "New speaker detected" (v3.ts nbSpk): one card per speaker per recording, under the facts. Fixed control height, so Accept,
+   Possible matches and Confirm never move what is around them. */
+.spkl{display:flex;flex-direction:column;gap:12px;margin-top:12px}.bfstack+.spkl{margin-top:16px}
+.spkn{margin:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;font-size:17px;line-height:1.4;color:var(--ink);overflow-wrap:anywhere}.spkn b{font-weight:600}
+.spkas{color:var(--ink2)}.spkas::before{content:"→";margin-right:8px;color:var(--faint)}
+.spke{display:flex;flex-direction:column;gap:12px}.spkin{width:100%;height:40px;font-size:16px;padding:0 12px}
+.spkm{display:flex;flex-direction:column;gap:8px}.spkm h3{margin:0;font-size:12.5px;font-weight:600;color:var(--mute)}
+.spkp{display:flex;align-items:center;gap:10px;min-height:40px}.spkp span{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;font-size:15.5px;color:var(--ink)}
+.spkp .bfok{height:36px;display:inline-flex;align-items:center;gap:6px;background:var(--ink);color:var(--sheet);box-shadow:none;padding:0 16px;white-space:nowrap}
+.spk .sa[disabled]{opacity:.55;pointer-events:none}
+@media (max-width:640px){.spkp .bfok{height:40px}.spkn{font-size:16.5px}}

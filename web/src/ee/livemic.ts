@@ -1,7 +1,9 @@
 // Live notes from this device's microphone (the server's live-mic.js). Same Live notes, a different input: when there's no Bee (or
 // the person picks "Use this device's mic instead"), the device that started Live notes records and sends short chunks; the server
 // transcribes them and feeds the one note-taker. livenotes.ts owns the UI; this file owns the microphone.
-// - Chunks: one MediaRecorder per chunk, so every chunk is a whole file Whisper can read. Cut at a pause in speech (≥ 0.4 s of quiet
+// - Chunks: each chunk is a whole file the speech model can read. Where the browser has an AudioWorklet and a running audio context
+//   (every current browser) the chunk is a 16-bit PCM WAV file at 16 kHz, mono (pcm.ts; 32 KB a second), the only format AssemblyAI
+//   Universal-3.6 Pro takes. Otherwise it is one MediaRecorder per chunk (webm or mp4), which the server sends to Qwen3-ASR. Cut at a pause in speech (≥ 0.4 s of quiet
 //   after ≥ 3 s), at the latest after 10 s: pause cuts don't split words (Whisper's error rate halves on them, see live-mic.js) and a
 //   sentence goes out as soon as it ends. A chunk with no voice in it isn't sent (no cost, no "Thank you." hallucinations).
 // - Sending: in order, one at a time, retried with backoff (1 → 15 s) until the server answers; each chunk is kept in IndexedDB
@@ -23,6 +25,7 @@
 // Pure parts (sourceChoice, sourceOptions, tabSupport, shareCheck, shareError, whoOf, shareEndedView, createCutter, createQueue,
 // micStateOf) are tested in test/livemic.test.mjs.
 import { streamNote } from "../clientlog";
+import { pcmProcessor, wavOf, WAV_TYPE } from "../pcm";
 
 export type Src = "bee" | "mic" | "tab";
 export type MicState = "off" | "starting" | "live" | "paused";
@@ -159,10 +162,12 @@ export function micStateOf(o: { visible: boolean; trackLive: boolean; muted: boo
 // at once. Each source has its own level meter, so a chunk knows who spoke in it (whoOf).
 export type Input = { kind: "mic" | "tab"; system: boolean; tab: MediaStream | null; mic: MediaStream | null };
 type Run = { k: string; mic: string; base: string; path: string; now: () => number; onChange: () => void; onStopped: () => void; note: (t: string, s: string) => void };
+// What a chunk recorder offers: a MediaRecorder, or the PCM recorder below (same four members).
+type Rec = { state: string; mimeType: string; onstop: ((e?: any) => void) | null; stop(): void };
 type Meter = { an: AnalyserNode; buf: Float32Array };
 const M = {
   run: null as Run | null, state: "off" as MicState, needTap: false, pausedAt: 0, why: "",
-  input: null as Input | null, stream: null as MediaStream | null, rec: null as MediaRecorder | null, parts: [] as Blob[], type: "",
+  input: null as Input | null, stream: null as MediaStream | null, rec: null as Rec | null, type: "", pcm: false, pcmP: Promise.resolve() as Promise<unknown>,
   ctx: null as AudioContext | null, meters: { all: null as Meter | null, mic: null as Meter | null, tab: null as Meter | null },
   cut: createCutter(), vMic: createCutter(), vTab: createCutter(), chunkAt: 0, chunkT: 0, untick: null as null | (() => void), unbeat: null as null | (() => void), pingAt: 0, wake: null as any,
   q: null as ReturnType<typeof createQueue> | null, tab: Math.random().toString(36).slice(2), sentAt: 0, shareErr: "",
@@ -255,21 +260,45 @@ export async function tabAcquire(withMic: boolean): Promise<TabGot> {
 
 const lvl = (m: Meter | null) => { if (!m) return null; m.an.getFloatTimeDomainData(m.buf as any); let s = 0; for (const v of m.buf) s += v * v; return Math.sqrt(s / m.buf.length); };
 function levelNow(): number | null { return M.ctx?.state !== "running" ? null : lvl(M.meters.all); }
+const PCM_NAME = "livemic-pcm";
+// One chunk of 16 kHz mono PCM: a worklet node per chunk (the same worklet as live dictation) fills `parts`; stop() asks the worklet
+// for its last samples, then calls onstop. A new chunk's node starts before the old one is stopped, so no samples fall between them.
+export function pcmRec(ctx: AudioContext, stream: MediaStream, parts: ArrayBuffer[]): Rec | null {
+  let node: AudioWorkletNode, src: MediaStreamAudioSourceNode, mute: GainNode;
+  try { node = new AudioWorkletNode(ctx, PCM_NAME); src = ctx.createMediaStreamSource(stream); mute = ctx.createGain(); } catch { return null; }
+  mute.gain.value = 0; src.connect(node); node.connect(mute); mute.connect(ctx.destination);
+  let timer: ReturnType<typeof setTimeout> | undefined, over = false;
+  const rec: Rec = { state: "recording", mimeType: WAV_TYPE, onstop: null, stop() {
+    if (rec.state === "inactive") return; rec.state = "inactive";
+    try { node.port.postMessage("stop"); timer = setTimeout(done, 500); } catch { done(); }
+  } };
+  const done = () => { if (over) return; over = true; clearTimeout(timer); try { src.disconnect(); node.disconnect(); mute.disconnect(); } catch {} rec.onstop?.(); };
+  node.port.onmessage = (e) => { if (over) return; if (e.data?.type === "audio") parts.push(e.data.pcm); else if (e.data?.type === "flushed") done(); };
+  return rec;
+}
 function newRec() {
   if (!M.stream) return;
+  const at = M.chunkAt = M.run!.now(), t = M.chunkT = performance.now(), meta = M.meta = { voiced: 0, blind: false, who: "" }; M.cut.reset(t); M.vMic.reset(t); M.vTab.reset(t);
+  const run = (rec: Rec, parts: any[]) => {
+    M.rec = rec; M.type = rec.mimeType;
+    rec.onstop = () => finishChunk(parts, rec.mimeType || M.type, at, performance.now() - t, meta.voiced, meta.blind, meta.who);
+  };
+  // WAV when the worklet is loaded and the audio context is running (a suspended one delivers no samples: the recorder below is then the safe path).
+  if (M.pcm && M.ctx?.state === "running") {
+    const parts: ArrayBuffer[] = [], rec = pcmRec(M.ctx, M.stream, parts);
+    if (rec) { run(rec, parts); return; }
+  }
   const type = pickType(); let rec: MediaRecorder;
   try { rec = new MediaRecorder(M.stream, type ? { mimeType: type, audioBitsPerSecond: 32000 } : undefined); } catch { pause("recorder"); return; }
-  M.rec = rec; M.parts = []; M.type = (rec.mimeType || type || "audio/webm");
-  const parts = M.parts, at = M.chunkAt = M.run!.now(), t = M.chunkT = performance.now(), meta = M.meta = { voiced: 0, blind: false, who: "" }; M.cut.reset(t); M.vMic.reset(t); M.vTab.reset(t);
+  const parts: Blob[] = []; run(rec as unknown as Rec, parts); M.type = (rec.mimeType || type || "audio/webm");
   rec.ondataavailable = (e) => { if (e.data?.size) parts.push(e.data); };
-  rec.onstop = () => finishChunk(parts, rec.mimeType || M.type, at, performance.now() - t, meta.voiced, meta.blind, meta.who);
   rec.onerror = () => { diag({ what: "recorder error" }); rotate(); };
   try { rec.start(); } catch { pause("recorder"); }
 }
 // The chunk is over: send it (unless nobody spoke), and the next one has already started.
-function finishChunk(parts: Blob[], mime: string, at: number, ms: number, voiced: number, blind: boolean, who = "") {
+function finishChunk(parts: (Blob | ArrayBuffer)[], mime: string, at: number, ms: number, voiced: number, blind: boolean, who = "") {
   const r = M.run; if (!r || !parts.length) return;
-  const blob = new Blob(parts, { type: mime.split(";")[0] });
+  const blob = mime === WAV_TYPE ? wavOf(parts as ArrayBuffer[]) : new Blob(parts as Blob[], { type: mime.split(";")[0] });
   if (!blind && voiced < 250) return;                 // silence: nothing to send
   if (blob.size < 200) return;
   const st = micStored(r.k) || { id: r.mic, seq: 0 }; const seq = st.seq; store(r.k, { ...st, id: r.mic, seq: seq + 1 });
@@ -315,7 +344,11 @@ function useInput(input: Input) {
   }
   M.ctx?.close().catch(() => {}); M.ctx = null;
   try { M.ctx = new (window.AudioContext || (window as any).webkitAudioContext)(); M.ctx.resume().catch(() => {}); } catch { M.ctx = null; }
-  const ctx = M.ctx;
+  const ctx = M.ctx; M.pcm = false; M.pcmP = Promise.resolve();
+  if (ctx && ctx.audioWorklet && typeof AudioWorkletNode !== "undefined") {   // the PCM worklet (pcm.ts); until it is loaded chunks use MediaRecorder
+    let u = ""; try { u = URL.createObjectURL(new Blob([pcmProcessor(PCM_NAME)], { type: "text/javascript" })); } catch {}
+    if (u) M.pcmP = ctx.audioWorklet.addModule(u).then(() => { if (M.ctx === ctx) M.pcm = true; }).catch(() => {}).finally(() => URL.revokeObjectURL(u));
+  }
   if (input.kind === "mic" || !input.tab) {
     M.stream = input.mic;
     try { if (ctx && input.mic) M.meters.all = meter(ctx, ctx.createMediaStreamSource(input.mic)); } catch {}
@@ -330,6 +363,8 @@ function useInput(input: Input) {
     M.meters.all = meter(ctx, sum); M.stream = dest.stream;
   } catch (e: any) { diag({ what: "mix failed", err: String(e?.message || e).slice(0, 120) }); M.stream = input.tab; M.meters = { all: null, mic: null, tab: null }; }
 }
+// Wait (at most 1.5 s) for the PCM worklet, so the first chunk of a start or a resume is already WAV.
+const pcmWait = () => Promise.race([M.pcmP, new Promise((z) => setTimeout(z, 1500))]);
 function goLive() {
   const was = M.state, at = M.pausedAt, why = M.why;
   M.state = "live"; M.needTap = false; M.why = ""; M.pausedAt = 0; M.shareErr = "";
@@ -364,7 +399,7 @@ async function check() {
     if (tr && tr.readyState === "live" && !tr.muted) { goLive(); return; }
     if (!tr || tr.readyState !== "live") {
       const g = await micAcquire(); if (!M.run || M.state !== "paused") { if (g.ok) micRelease(g.stream); return; }
-      if (g.ok) { useInput({ kind: "mic", system: false, tab: null, mic: g.stream }); goLive(); } else { M.needTap = true; diag({ what: "resume needs a tap", name: g.name }); M.run.onChange(); }
+      if (g.ok) { useInput({ kind: "mic", system: false, tab: null, mic: g.stream }); await pcmWait(); if (!M.run || M.state !== "paused") return; goLive(); } else { M.needTap = true; diag({ what: "resume needs a tap", name: g.name }); M.run.onChange(); }
     }
   }
 }
@@ -373,7 +408,7 @@ export async function micResumeTap() {
   if (!M.run) return; M.needTap = false;
   const g = await micAcquire();
   if (!g.ok) { M.needTap = true; M.run.note(g.title, g.body); M.run.onChange(); return; }
-  inputRelease(M.input); useInput({ kind: "mic", system: false, tab: null, mic: g.stream }); M.state = "paused"; goLive();
+  inputRelease(M.input); useInput({ kind: "mic", system: false, tab: null, mic: g.stream }); M.state = "paused"; await pcmWait(); if (!M.run) return; goLive();
 }
 // After sharing stopped (shareEndedView's buttons, inside the tap): "mic" goes on with the person's mic only; "again" opens the
 // browser's picker again (withMic: their mic too). → false when it didn't start (M.shareErr / a note says why).
@@ -382,7 +417,7 @@ export async function micShareAct(act: "mic" | "again", withMic = true): Promise
   if (act === "mic") {
     let mic = M.input?.mic && liveTrack(M.input.mic) ? M.input.mic : null;
     if (!mic) { const g = await micAcquire(); if (!g.ok) { r.note(g.title, g.body); return false; } mic = g.stream; }
-    micRelease(M.input?.tab); useInput({ kind: "mic", system: false, tab: null, mic }); setKind(r.k, "mic"); goLive(); return true;
+    micRelease(M.input?.tab); useInput({ kind: "mic", system: false, tab: null, mic }); setKind(r.k, "mic"); await pcmWait(); if (M.run !== r) return false; goLive(); return true;
   }
   const keepMic = M.input?.mic && liveTrack(M.input.mic) ? M.input.mic : null;
   const g = await tabAcquire(withMic && !keepMic);
@@ -390,7 +425,7 @@ export async function micShareAct(act: "mic" | "again", withMic = true): Promise
   if (!g.ok) { M.shareErr = g.fix; r.onChange(); return false; }
   if (keepMic && withMic) g.input.mic = keepMic; else if (keepMic) micRelease(keepMic);
   if (g.micNote) r.note("Your microphone didn't start", g.micNote);
-  useInput(g.input); setKind(r.k, "tab"); goLive(); return true;
+  useInput(g.input); setKind(r.k, "tab"); await pcmWait(); if (M.run !== r) return false; goLive(); return true;
 }
 
 // Start recording for task k (after the server said Live notes are on with this mic id). input: from micAcquire() (a stream) or
@@ -410,7 +445,7 @@ export async function micRun(o: Run, input: MediaStream | Input | null) {
   }
   let use = inp;
   if (!use) { const g = await micAcquire(); if (!g.ok) { M.state = "paused"; M.needTap = true; M.pausedAt = Date.now(); post({ action: "mic", mic: o.mic, state: "paused" }); o.onChange(); return; } use = { kind: "mic", system: false, tab: null, mic: g.stream }; }
-  useInput(use); goLive();
+  useInput(use); await pcmWait(); if (M.run !== o || M.state !== "starting") return; goLive();
   diag({ what: "started", type: M.type, ios: ios(), wake: !!(navigator as any).wakeLock, via: via(), mic: !!use.mic });
 }
 // Stop recording. flush: send the last chunk and wait for everything (up to 10 s) → true when all of it reached the server.

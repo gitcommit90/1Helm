@@ -11,7 +11,8 @@ import { rpInit, rpMailto } from "./report";
 import { piKind, piOn, piInstall, piLabel, piSub, PI_ICON } from "./pwainstall";   // Install 1Helm as an app: catches beforeinstallprompt at import, before the UI renders   // Report an issue (its sheet's Esc, too; and it keeps the last log lines from the start)
 import { beeInit, beeOverview, beeSec, beeMark } from "./ee/bee";
 import { notebookBeeUnread } from "./ee/notebook-bee-unread";
-import { dpInit, dpSec, dpSheetMaybe, dpLoc, dpShareNow, DP_ICON } from "./devperm";   // location + mic, asked once up front (its sheet's Esc, too)   // Settings → Ambient → Bee: the card and the Connect sheet (its sheet's Esc, too)
+import { wkMdFromHtml, wkRichOk } from "./wk-rich";
+import { dpInit, dpSec, dpSheetMaybe, dpSheetOpen, dpLoc, dpShareNow, DP_ICON } from "./devperm";   // location + mic, asked once up front (its sheet's Esc, too)   // Settings → Ambient → Bee: the card and the Connect sheet (its sheet's Esc, too)
 import { delInit, rowMore, headDelete, channelMore, sheetRows, MORE } from "./delete";   // deleting a chat / channel / the account
 import { openNewChannel, createViaApi, type NewChannel } from "./newchannel";   // second, for the same reason (New channel sheet)
 import { shInit, shFiles, shCards, shEvent, shCardHtml, shFold, shFileBtn, shViewerBtns, shBadge, shLibHtml, shFileGone } from "./share";   // share links + published pages (its sheet's Esc, too)
@@ -80,7 +81,9 @@ const LNAME: Record<string, string> = { main: "General" };
 const titleCase = (slug: string) => { const t = slug.replace(/-/g, " "); return t.charAt(0).toUpperCase() + t.slice(1); };
 // A channel made in 1HC has a real name ("Taxes 2026"); imported ones only have their slug as a name, so those get title case.
 const liveName = (c: { slug: string; name?: string }) => LNAME[c.slug] ?? (c.name && c.name !== c.slug ? c.name : titleCase(c.slug));
-const BOOT: any = LIVE ? await fetch(`${LIVE.api}/app/boot?tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || "")}`, { credentials: "same-origin" }).then(r => r.json()).catch(() => ({ channels: [] })) : null;
+// The page HTML starts this request before the script downloads (proto src/index.js BOOT_EARLY); use it once, else ask now.
+const earlyBoot: Promise<any> | undefined = (window as any).__1HC_BOOT; (window as any).__1HC_BOOT = undefined;
+const BOOT: any = LIVE ? await (earlyBoot || fetch(`${LIVE.api}/app/boot?tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || "")}`, { credentials: "same-origin" }).then(r => r.json()).catch(() => ({ channels: [] }))) : null;
 const hasFeature = (feature: string) => !LIVE || Array.isArray(BOOT?.features) && BOOT.features.includes(feature);
 const byok = () => hasFeature("billing") ? billingByok : coreByok;
 const BYK_SEC = coreByok.BYK_SEC, BYK_TITLE = coreByok.BYK_TITLE;
@@ -105,7 +108,7 @@ const liveNotesWrap = (slug: string, sid: any, html: string) => hasFeature("ambi
 const CO: { on: boolean | null; busy: boolean } = { on: null, busy: false };
 const showCosts = () => CO.on ?? !!BOOT?.account?.show_costs;
 const SPEND: { on: boolean | null; busy: boolean; error: string } = { on: null, busy: false, error: '' };
-const spendPauses = () => SPEND.on ?? BOOT?.account?.spend_pauses !== false;
+const spendPauses = () => SPEND.on ?? BOOT?.account?.spend_pauses === true;   // off by default
 if (LIVE) ivSet(BOOT?.interview);   // Get to know you: which task in General is the interview (interview.ts)
 let PERSON = LIVE?.person?.trim() || "Joseph Yaksich";   // let: Settings → Your account can change the name and email
 let EMAIL = LIVE?.email?.trim() || "you@example.com";
@@ -241,6 +244,10 @@ if (LIVE) window.addEventListener("click", e => {
 // breaks: a single newline is a line break, as the person typed it (a sign-off quoted as "> Best,\n> Joseph" stays two lines).
 const md = (s: string) => DOMPurify.sanitize(marked.parse(s, { async: false, breaks: true }) as string);
 const live = (s: Session) => s.status === "open" || s.status === "waiting";
+// The one place the unread / needs-you dot lives: a fixed-width slot at the far right of a task row, after the pin and more buttons.
+// The slot holds the time (rows that show one) or the dot, never both, and keeps its width, so nothing moves when the dot appears or clears.
+const rowDot = (x: Session) => !x.done && (x.status === "waiting" || x.unread) ? `<i class="dot" title="${x.unread ? "New result" : "Needs you"}"></i>` : "";
+const rowTail = (x: Session, when = true) => `<span class="tail">${rowDot(x) || (when ? `<span class="when">${ago(x.done ? doneAt(x) : x.updated)}</span>` : "")}</span>`;
 function ago(t: number) {
   const m = Math.round((Date.now() - t) / 60e3);
   if (m < 1) return "now"; if (m < 60) return `${m}m`; const h = Math.round(m / 60); if (h < 24) return `${h}h`;
@@ -320,7 +327,7 @@ function render() {
 
   if (isSch()) { $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + schPage(ch.slug); schAfter(schSec()); return; }
   if (isLib()) { $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + libPage(ch); return; }
-  if (isNb()) { $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + nbPage(ch); nbAfter(); nbSync(ch); return; }
+  if (isNb()) { $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + nbPage(ch); nbAfter(); nbSync(ch); if (nbVar()) void nbpLoad(ch); return; }
   if (isCt()) { $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + ctPage(); ctAfter(); return; }
   $("#stage").innerHTML = (LIVE ? pcFab(ch) : "") + (s ? `
     <header class="th"><span class="ho" data-ho="0"><span class="who-chip">${av(ch, "av sm")}${esc(AGENT[ch.slug] ?? ch.name)}</span></span><h1 title="${esc(s.title)}">${canRename(s) ? `<button class="task-title" data-rename="${esc(ch.slug)}|${esc(s.id)}" aria-label="Rename task" title="Rename task"><span data-task-title>${esc(s.title)}</span></button>` : esc(s.title)}</h1><span class="ho" data-ho="1">${headPin(s)}</span>${headDone(s)}${LIVE && s.srv ? `<span class="ho" data-ho="3">${headDelete(ch.slug, s.id)}</span>` : ""}${LIVE ? `${hasFeature("ambient") ? `<span class="ho" data-ho="7">${lnBtn(ch.slug, s.id)}</span>` : ""}<span class="ho" data-ho="6">${pomoBtn(ch.slug, s.id)}</span><span class="ho" data-ho="5">${todoBtn(ch.slug, s.id)}</span><span class="ho" data-ho="4">${tkBtn(ch.slug, s.id)}</span>` : ""}<button class="hmore" data-hmore aria-label="More actions" title="More actions" aria-haspopup="menu" aria-expanded="false" hidden>${MORE}</button></header>
@@ -398,7 +405,7 @@ function tasksHtml(ch: Channel) {
   const act = un.filter(x => !x.done && !isTexts(x)).sort((a, b) => pri(a) - pri(b) || b.updated - a.updated), txt = un.filter(x => !x.done && isTexts(x)).sort((a, b) => b.updated - a.updated);
   const done = un.filter(x => x.done).sort(byDone).slice(0, 4);
   const task = (x: Session) => `<a class="task${freshOnce("task", x, x.fresh)}${x.done ? " isdone" : ""}" href="#/${ch.slug}/s/${x.id}">${box(x)}
-    <span class="tbody"><span class="tt">${esc(x.title)}</span><span class="tl">${!x.done && (x.unread || x.status === "waiting") ? `<i class="ldot" title="${x.unread ? "New from " + esc(who(ch)) : "Needs you"}"></i>` : ""}${esc(x.done ? "Done" : lineOf(x))}</span></span>${rowStop(ch.slug, x.id, x.title, stWorking(x))}${pinBtn(x)}<span class="when">${ago(x.updated)}</span></a>`;
+    <span class="tbody"><span class="tt">${esc(x.title)}</span><span class="tl">${esc(x.done ? "Done" : lineOf(x))}</span></span>${rowStop(ch.slug, x.id, x.title, stWorking(x))}${pinBtn(x)}${rowTail(x)}</a>`;
   const shut = (k: string) => folded(ch, `home-${k}`), sec = (k: string, label: string, n: number) => foldHead("hsec", `home-${k}`, label, n, shut(k));
   const group = (k: string, label: string, items: Session[]) => items.length ? `${foldHead("hsec hst", `home-${k}`, label, 0, shut(k))}${shut(k) ? "" : items.map(task).join("")}` : "";
   return `${pins.length ? `${sec("pinned", `${ic.pin}Pinned`, pins.length)}${shut("pinned") ? "" : pins.map(task).join("")}` : ""}
@@ -636,8 +643,8 @@ async function upload(key: string | null, slug: string, list: File[]) {
   }));
   refresh();
 }
-function pickFiles(on: (l: File[]) => void) {
-  const i = document.createElement("input"); i.type = "file"; i.multiple = true; i.style.display = "none";
+function pickFiles(on: (l: File[]) => void, accept = "") {
+  const i = document.createElement("input"); i.type = "file"; if (accept) i.accept = accept; else i.multiple = true; i.style.display = "none";
   i.onchange = () => { on([...(i.files || [])]); i.remove(); }; document.body.appendChild(i); i.click();
 }
 const upKey = () => NT.open ? "nbox" : "box", upSlug = (key: string) => key === "nbox" ? (NT.to || route().ch.slug) : route().ch.slug;
@@ -1205,7 +1212,7 @@ function sideList(ch: Channel, s: Session | null, q: string) {
   const ql = q.toLowerCase();
   const list = ch.sessions.filter(x => !ql || x.title.toLowerCase().includes(ql) || x.messages.some(m => m.body.toLowerCase().includes(ql)));
   const row = (x: Session) => `<a class="sess${x === s ? " on" : ""}${freshOnce("sess", x, x.fresh)}${x.done ? " isdone" : ""}" href="#/${ch.slug}/s/${x.id}">${box(x, true)}
-      <span class="t">${esc(x.title)}</span>${LIVE && hasFeature("ambient") ? lnDot(ch.slug, x.id) : ""}${rowStop(ch.slug, x.id, x.title, stWorking(x))}${pinBtn(x)}${LIVE && x.srv ? rowMore(ch.slug, x.id, x.title) : ""}${!x.done && (x.status === "waiting" || x.unread) ? `<i class="dot" title="${x.unread ? "New result" : "Needs you"}"></i>` : `<span class="when">${ago(x.done ? doneAt(x) : x.updated)}</span>`}</a>`;
+      <span class="t">${esc(x.title)}</span>${LIVE && hasFeature("ambient") ? lnDot(ch.slug, x.id) : ""}${rowStop(ch.slug, x.id, x.title, stWorking(x))}${pinBtn(x)}${LIVE && x.srv ? rowMore(ch.slug, x.id, x.title) : ""}${rowTail(x)}</a>`;
   // Searching shows every match: folded sections open while there's a query (the saved choice comes back when it's cleared).
   const group = (key: string, label: string, items: Session[], nc = false) => { if (!items.length) return ""; const shut = !ql && folded(ch, `side-${key}`);
     return `${foldHead("grp", `side-${key}`, label, nc ? 0 : items.length, shut, !!ql)}${shut ? "" : items.map(row).join("")}`; };
@@ -1246,7 +1253,7 @@ function refresh() {
   if (isLib()) { const f = document.getElementById("lfiles"), c = document.getElementById("colls"); if (f) f.innerHTML = libFilesHtml(); if (c) c.innerHTML = collHtml(); const lb = document.querySelector(".lbar.first h2"); if (lb) lb.textContent = `${lib(ch).length} files`; clearFresh(ch); return; }
   if (phone()) {
     const mt = document.getElementById("mtasks"); if (!s && mt) { morph(mt, tasksHtml(ch)); $("#mhead").innerHTML = homeHead(ch); }
-    else if (!typing && !mState.drawer && !isCt() && !isSch()) renderM();   // Contacts doesn't change here; re-rendering would drop the search box's focus (Scheduled repaints itself: schPaint)
+    else if (!typing && !mState.drawer && !isCt() && !isSch() && !(isNb() && !s)) renderM();   // the Notebook patches itself (nbPaint); rebuilding the phone screen mid-scroll sends the page back to the top   // Contacts doesn't change here; re-rendering would drop the search box's focus (Scheduled repaints itself: schPaint)
     const dl = document.getElementById("dlist"); if (dl) morph(dl, sessRows(ch, s, ($("#dq") as HTMLInputElement)?.value ?? ""));
   } else if (!s && (isNb() || isCt() || isSch())) {
     const ss = document.querySelector(".sessions"); if (ss) morph(ss, sideList(ch, s, ($("#q") as HTMLInputElement)?.value ?? ""));   // background refresh on Notebook/Contacts: only the side list
@@ -1480,7 +1487,7 @@ function chRows(q: string) {
 function sessRows(ch: Channel, s: Session | null, q: string) {
   const ql = q.trim().toLowerCase();
   const list = [...ch.sessions].sort((a, b) => b.updated - a.updated).filter(x => !ql || x.title.toLowerCase().includes(ql) || x.messages.some(m => m.body.toLowerCase().includes(ql)));
-  const one = (x: Session) => `<a class="ds${x === s ? " on" : ""}${x.done ? " isdone" : ""}" href="#/${ch.slug}/s/${x.id}" data-mgo>${!x.done && (x.status === "waiting" || x.unread) ? `<i class="udot"></i>` : ""}${box(x)}<span>${esc(x.title)}</span>${rowStop(ch.slug, x.id, x.title, stWorking(x))}${pinBtn(x)}${LIVE && x.srv ? rowMore(ch.slug, x.id, x.title) : ""}</a>`;
+  const one = (x: Session) => `<a class="ds${x === s ? " on" : ""}${x.done ? " isdone" : ""}" href="#/${ch.slug}/s/${x.id}" data-mgo>${box(x)}<span>${esc(x.title)}</span>${rowStop(ch.slug, x.id, x.title, stWorking(x))}${pinBtn(x)}${LIVE && x.srv ? rowMore(ch.slug, x.id, x.title) : ""}${rowTail(x, false)}</a>`;
   // The same sections as the desktop side panel (sideList): Pinned, Texts, the task-state sections, Done, each folding with its caret. Same fold keys,
   // so a section folded here is folded there too (in this browser). Searching opens every section.
   const group = (key: string, label: string, items: Session[], nc = false) => { if (!items.length) return ""; const shut = !ql && folded(ch, `side-${key}`);
@@ -1498,7 +1505,7 @@ function renderM() {
   const head = `<header class="mh"><button class="cb" data-mdrawer aria-label="Tasks and channels" aria-controls="mobile-tasks" aria-expanded="${mState.drawer}">${ic.menu}${other || elsewhere ? `<i class="udot"></i>` : ""}</button>
     ${s && canRename(s) ? `<div class="mpill task-pill"><button class="task-about" data-msheet="about" aria-label="About ${esc(ch.name)}" title="About ${esc(ch.name)}">${av(ch, "av sm")}</button><button class="task-title" data-rename="${esc(ch.slug)}|${esc(s.id)}" aria-label="Rename task" title="Rename task"><span data-task-title>${esc(s.title)}</span></button></div>` : `<button class="mpill" data-msheet="about">${isSch() ? `<span class="pico">${ic.clock}</span>` : isLib() ? `<span class="pico">${ic.lib}</span>` : isCt() ? `<span class="pico">${ic.people}</span>` : isNb() ? `<span class="pico">${ic.nb}</span>` : av(ch, "av sm")}<span>${esc(isSch() ? "Scheduled" : isCt() ? (ctSel() ? ctSel()!.name : "Contacts") : isNb() ? `${who(ch)}'s notebook` : isLib() ? `${ch.name} Library` : s ? s.title : `${ch.name} Home`)}</span></button>`}<span class="grow"></span>${LIVE ? pomoGlobalBtn(true) : ""}${LIVE && s ? `<span class="mo" data-mo="3">${hasFeature("ambient") ? lnBtn(ch.slug, s.id, true) : ""}${pomoBtn(ch.slug, s.id, true)}</span><span class="mo" data-mo="5">${todoBtn(ch.slug, s.id, true)}</span><span class="mo" data-mo="6">${tkBtn(ch.slug, s.id, true)}</span>` : ""}${LIVE ? `<span class="mo" data-mo="2"><button class="cb${ch.sessions.some(x => x.state === "working") ? " busy" : ""}" data-watch="${esc(ch.slug)}" aria-label="Open ${esc(who(ch))}'s computer">${ic.screen}</button></span>` : ""}${s && stWorking(s) ? `<button class="cb mstop" data-stop="${esc(ch.slug)}|${esc(s.id)}" aria-label="Stop this task" title="Stop">${SQ}</button>` : ""}${s ? `<span class="mo" data-mo="4"><button class="cb mdone${s.done ? " on" : ""}" data-done="${s.id}" aria-label="${s.done ? "Reopen" : "Mark done"}">${box(s).replace(/ data-done="[^"]+"/, "").replace('role="checkbox" tabindex="0"', 'aria-hidden="true"')}</button></span>` : ""}<span class="mo" data-mo="1"><button class="cb" data-ntask aria-label="New task">${ic.newS}</button></span><button class="cb mmore" data-mmore aria-label="More actions" aria-haspopup="dialog" hidden>${MORE}</button></header>`;
   if (s) { if (LIVE && s.unread) livePatch(ch, s, { seen: true }); s.unread = false; if (LIVE && !s.loaded && !s.loading) liveLoad(ch, s); }
-  if (isNb() && !s) nbSync(ch);
+  if (isNb() && !s) { nbSync(ch); if (nbVar()) void nbpLoad(ch); }
   const chat = isSch() ? `${head}${schPage(ch.slug).replace('class="dhome" id="scroll"', 'class="scroll" id="scroll"')}` : isCt() ? `${head}${ctPage().replace('class="dhome" id="scroll"', 'class="scroll" id="scroll"')}` : isNb() ? `${head}${nbPage(ch).replace('class="dhome" id="scroll"', 'class="scroll" id="scroll"')}` : isLib() ? `${head}${libPage(ch).replace('class="dhome" id="scroll"', 'class="scroll" id="scroll"')}` : s
     ? LIVE && ivIs(ch.slug, s.id) ? `${head}${ivView()}` : `${head}${liveNotesWrap(ch.slug, s.id, `<div class="scroll" id="scroll"><div class="msgs">${msgsHtml(s, ch)}</div></div><div class="dock">${composer(`Message ${esc(who(ch))}`)}</div>`)}`
     : `${head}<div class="scroll" id="scroll"><div class="mhome"><div id="mhead">${homeHead(ch)}</div><div id="mtasks">${tasksHtml(ch)}</div></div></div>
@@ -2702,7 +2709,7 @@ if (LIVE) {
 registerShortcut({ id: "shortcuts", label: "Keyboard shortcuts", def: "Mod+/", run: () => { sGo("shortcuts"); } });
 scInit({ live: LIVE, boot: BOOT?.account?.shortcuts, slug: LIVE?.slug || "sandbox", repaint: () => { if (S.open && S.sec === "shortcuts") sRender(); },
   relabel: () => { render(); }, note: (t, sub, bad) => note(bad ? g("help", 14) : ic.check, t, sub, ""), srow, sa });
-nfInit({ live: LIVE, texting: hasFeature("texting"), ambient: hasFeature("ambient"), repaint: () => { if (S.open && S.sec === "notif") sRender(); }, note: (t, s, bad) => note(bad ? g("help", 14) : ic.check, t, s, ""), srow, helper: () => who(main) });
+nfInit({ live: LIVE, look: !!BOOT?.look, blocked: () => dpSheetOpen(), texting: hasFeature("texting"), ambient: hasFeature("ambient"), repaint: () => { if (S.open && S.sec === "notif") sRender(); }, note: (t, s, bad) => note(bad ? g("help", 14) : ic.check, t, s, ""), srow, helper: () => who(main) });
 rpInit({ live: LIVE, before: () => { closeMenu(); if (mState.sheet === "set") closeSheet(); } , note: (t, s) => note(ic.check, t, s, "") });
 if (hasFeature("connected_apps")) cmcpInit({ api: LIVE ? (path, init) => fetch(`${LIVE.api}/${path}`, { method: init?.method || "GET", credentials: "same-origin", ...(init?.body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) } : {}) })
     .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) { const er = d?.error, e: any = new Error((typeof er === "string" ? er : er?.message) || `Something went wrong (${r.status}).`); e.status = r.status; e.code = er?.code; throw e; } return d; }) : null,
@@ -2945,7 +2952,15 @@ function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
     reply.at = Date.now(); if (!more) { s.streaming = false; s.attached = false; } if (ev.session) applySrv(s, ev.session); else if (!more) s.state = "idle";
     if (route().s === s) { s.unread = false; livePatch(ch, s, { seen: true }); }
   } else return;
+  // Streamed text and status lines can arrive several times a frame: join them into one repaint per animation frame.
+  // Anything that needs the new DOM at once (progress notes, the end of the reply, reactions) still paints now.
+  if (route().s === s && !beforeProgress && (ev.t === "text" || ev.t === "status")) { paintSoon(s); return; }
   if (route().s === s) { paintChat(s); if (beforeProgress) progressAfter(beforeProgress, reply, finalProgress); } else repaint(ch);
+}
+const PAINT_SOON = new Set<Session>();
+function paintSoon(s: Session) {
+  if (PAINT_SOON.has(s)) return; PAINT_SOON.add(s);
+  requestAnimationFrame(() => { PAINT_SOON.delete(s); const { ch, s: cur } = route(); if (cur === s) paintChat(s); else repaint(ch); });
 }
 // The replies streaming in this tab, per task (a reply that ends doesn't end the task's live state while another still streams).
 const STREAMS = new WeakMap<Session, Set<Msg>>();
@@ -3687,6 +3702,7 @@ function nbPanel(ch: Channel, k: string, full: boolean) {
     ${!full && all.length > shown.length ? `<a class="nbsee" href="${nbHref(ch, k)}"><span>See all ${all.length}</span>${ic.chev}</a>` : ""}</section>`;
 }
 function nbBody(ch: Channel) {
+  if (nbVar()) { const w = nbWiki(ch); if (w !== null) return w; }
   const nb = nbOf(ch), name = who(ch), tab = nbTab(), count = (k: string) => nb.notes.filter(n => n.sec === k).length;
   const tabs = `<nav class="ntabs" aria-label="Notebook sections"><a href="${nbHref(ch)}"${tab === "ov" ? ` class="on" aria-current="page"` : ""}>Overview</a>${NB_SECS.map(([k, t]) => `<a href="${nbHref(ch, k)}"${tab === k ? ` class="on" aria-current="page"` : ""}>${t}<span class="ntc">${count(k)}</span></a>`).join("")}</nav>`;
   if (tab !== "ov") return `${tabs}<div class="nbsecp">${nbPanel(ch, tab, true)}</div>`;
@@ -3727,7 +3743,8 @@ function bfMerge(ch: Channel, srv: BeeFact[]) {
 // Swipe on touch does approve / deny; ← / → / ↓ work while the stack has focus.
 function nbBee(ch: Channel) {
   if (!hasFeature("ambient")) return "";
-  const list = ch.slug === "main" ? beePending(ch) : []; if (!list.length && !BF.out.length) { BF.done = 0; return ""; }
+  const list = ch.slug === "main" ? beePending(ch) : [], spk = nbSpk(ch);
+  if (!list.length && !BF.out.length) { BF.done = 0; return spk ? `<section class="nsec nbeenew" id="nb-bee"><div class="nsh"><h2>New from Bee</h2></div>${spk}</section>` : ""; }
   const top = list[0], total = BF.done + list.length, pos = BF.done + 1, now = Date.now(), off = I('<path d="M18 6 6 18M6 6l12 12"/>', 14), pen = I('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>', 14);
   const skipI = I('<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/>', 14), many = list.length > 1;
   const head = (f: BeeFact, n: number, of = total) => `<div class="bfhd"><span class="nbee">${beeMark(14)}From your Bee</span>${f.at ? `<span class="bfat">${fileDate(f.at)}</span>` : ""}<span class="bfn">${n} of ${of}</span></div>`;
@@ -3743,7 +3760,49 @@ function nbBee(ch: Channel) {
   const gone = BF.out.map(o => `<div class="bfcard bfgone ${o.dir}" data-bfk="${o.k}" aria-hidden="true" inert style="animation-delay:-${Math.min(400, now - o.t)}ms${o.from ? `;--x0:${o.from}px` : ""}">${head(o.f, o.n, Math.max(total, o.n))}<p class="bfp">${esc(o.f.text)}</p><div class="bfacts"><span class="sa bfno">${off}Deny</span>${o.dir === "s" || many ? `<span class="sa mute bfskip">${skipI}Skip</span>` : ""}<span class="sa mute">${pen}Edit</span><span class="sa bfok">${ic.check}Approve</span></div></div>`).join("");
   const behind = Math.min(list.length - 1, 2), peek = [2, 1].filter(i => i <= behind).map(i => `<div class="bfcard bfpeek p${i}" aria-hidden="true">${i === 1 ? `${head(list[1], pos + 1)}<p class="bfp">${esc(list[1].text)}</p>` : ""}</div>`).join("");
   return `<section class="nsec nbeenew" id="nb-bee"><div class="nsh"><h2>New from Bee</h2><span>Your Bee picked ${list.length === 1 ? "this" : "these"} up. Approve what's right and it joins the notebook.</span></div>
-    <div class="bfstack${behind > 0 ? ` d${behind}` : ""}${top ? "" : " bfempty"}" aria-keyshortcuts="ArrowRight ArrowLeft ArrowDown">${peek}${top ? card(top) : ""}${gone}</div></section>`;
+    <div class="bfstack${behind > 0 ? ` d${behind}` : ""}${top ? "" : " bfempty"}" aria-keyshortcuts="ArrowRight ArrowLeft ArrowDown">${peek}${top ? card(top) : ""}${gone}</div>${spk}</section>`;
+}
+// "New speaker detected" (General only, in the New from Bee area; bee-speakers.js): one card per speaker per recording, as Bee labelled
+// it. Edit or Accept, then Possible matches from Contacts, each with Confirm. Confirm links that speaker in that recording to that person;
+// nothing else is ever linked. No helper or status text: the card shows Bee's label, the name given to it, and the matches.
+type BeeSpk = { rec: string; spk: string; label: string; name: string | null; state: "new" | "accepted"; excerpt?: string; at?: number | null };
+const SPK = { edit: "", busy: new Set<string>(), sent: new Set<string>(), matches: {} as Record<string, { id: string; name: string }[] | undefined> };
+const spkKey = (x: BeeSpk) => `${x.rec}|${x.spk}`;
+const beeSpk = (ch: Channel): BeeSpk[] => ((ch as any).beeSpeakers || []).filter((x: BeeSpk) => !SPK.sent.has(spkKey(x)));
+if (!LIVE) (window as any).__beeSpeakersDemo = (on: boolean | "matched" = true) => { const m = channels.find(c => c.slug === "main"); if (!m) return;
+  (m as any).beeSpeakers = on ? [{ rec: "77", spk: "id:s2", label: "Speaker 2", name: on === "matched" ? "Priya" : null, state: on === "matched" ? "accepted" : "new", excerpt: "Yes, and the bread. … And a bottle of vinho verde.", at: NOW - 3 * H }] : [];
+  SPK.matches["77|id:s2"] = on === "matched" ? [{ id: "p1", name: "Priya Shah" }, { id: "p4", name: "Priya Natarajan" }] : undefined; if (isNb()) render(); };
+function nbSpk(ch: Channel) {
+  const list = ch.slug === "main" ? beeSpk(ch) : []; if (!list.length) return "";
+  const pen = I('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>', 14);
+  return `<div class="spkl">${list.map(x => { const k = spkKey(x), busy = SPK.busy.has(k), m = SPK.matches[k];
+    if (x.state === "accepted" && m === undefined && LIVE) void spkMatches(ch, x);
+    const head = `<div class="bfhd"><span class="nbee">${beeMark(14)}New speaker detected</span>${x.at ? `<span class="bfat">${fileDate(x.at)}</span>` : ""}</div>`;
+    const who = `<p class="spkn"><b title="${esc(x.excerpt || "")}">${esc(x.label)}</b>${x.name && x.name !== x.label ? `<span class="spkas">${esc(x.name)}</span>` : ""}</p>`;
+    const body = SPK.edit === k
+      ? `<div class="spke"><input class="nedit spkin" id="spkedit" value="${esc(x.name || x.label)}" aria-label="Name for ${esc(x.label)}"><div class="bfacts"><button class="sa mute" data-spkcancel>Cancel</button><button class="sa bfok" data-spksave="${esc(k)}">${ic.check}Save</button></div></div>`
+      : x.state === "new"
+        ? `<div class="bfacts"><button class="sa mute" data-spkedit="${esc(k)}"${busy ? " disabled" : ""}>${pen}Edit</button><button class="sa bfok" data-spkok="${esc(k)}"${busy ? " disabled" : ""}>${ic.check}Accept</button></div>`
+        : `${m?.length ? `<div class="spkm"><h3>Possible matches</h3>${m.map(p => `<div class="spkp"><span>${esc(p.name)}</span><button class="sa bfok" data-spkconf="${esc(k)}" data-spkp="${esc(p.id)}"${busy ? " disabled" : ""}>${ic.check}Confirm</button></div>`).join("")}</div>` : ""}<div class="bfacts"><button class="sa mute" data-spkedit="${esc(k)}"${busy ? " disabled" : ""}>${pen}Edit</button></div>`;
+    return `<div class="bfcard spk" data-spkk="${esc(k)}" role="group" aria-label="New speaker detected: ${esc(x.label)}">${head}${who}${body}</div>`; }).join("")}</div>`;
+}
+async function spkCall(body: any): Promise<any> {
+  if (LIVE) { try { return await api("/bee/speaker", body); } catch { return { net: true }; } }
+  await new Promise(z => setTimeout(z, 200)); return body.op === "confirm" ? { ok: true } : { ok: true, matches: [{ id: "p1", name: "Priya Shah" }] };
+}
+async function spkMatches(ch: Channel, x: BeeSpk) {
+  const k = spkKey(x); SPK.matches[k] = []; const r = await spkCall({ op: "matches", rec: x.rec, spk: x.spk });
+  SPK.matches[k] = Array.isArray(r?.matches) ? r.matches : []; if (isNb() && !NBUI.edit && !NBUI.add && !BF.edit && !SPK.edit) nbRefresh();
+}
+async function spkAct(ch: Channel, op: "edit" | "accept" | "confirm", k: string, extra: any = {}) {
+  const x = beeSpk(ch).find(y => spkKey(y) === k); if (!x || SPK.busy.has(k)) return;
+  SPK.busy.add(k); SPK.edit = ""; if (op === "confirm") SPK.sent.add(k); nbRefresh();
+  const r = await spkCall({ op, rec: x.rec, spk: x.spk, ...extra }); SPK.busy.delete(k);
+  if (r?.ok) {
+    if (op === "confirm") (ch as any).beeSpeakers = ((ch as any).beeSpeakers || []).filter((y: BeeSpk) => spkKey(y) !== k);
+    else { x.state = "accepted"; if (op === "edit") x.name = extra.name; SPK.matches[k] = Array.isArray(r.matches) ? r.matches : SPK.matches[k]; }
+  }
+  SPK.sent.delete(k); if (isNb()) nbRefresh();
 }
 // A card on its way off: drawn until its animation ends, then removed from the page by itself (no repaint of the Notebook).
 function bfLeave(f: BeeFact, dir: BfOut["dir"]) {
@@ -3810,7 +3869,390 @@ const swEnd = (e: PointerEvent) => {
   c.style.transform = ""; c.dataset.sw = "";
 };
 document.addEventListener("pointerup", swEnd); document.addEventListener("pointercancel", swEnd);
+// ---------- Notebook as pages (Memory Overhaul phase 6, DESIGN.md section 8) ----------
+// Design A, "Encyclopedia": a page list on the left, one article in the middle, the portrait and facts box on the right, and one Edit button
+// for the whole page. Live, the pages come from GET /notebook/<channel>/pages (a Hindsight knowledge page per topic, read by its ## headings)
+// and the screen is on only when the server sends boot.flags.notebook_pages === true (the old Notebook is the rollback). If the pages can't
+// be read, the old Notebook shows instead. In the design sandbox (LIVE unset) the same screen runs on demo data at #/main/notebook-a.
+// The Bee review reuses the real handlers (data-bfok, data-spkok, ...) in one queue: a slim row above the article, and on a phone a pill.
+const nbPagesFlag = () => !!LIVE && BOOT?.flags?.notebook_pages === true;
+const nbVar = (): "" | "a" => LIVE ? (nbPagesFlag() ? "a" : "") : (/^#\/[^/]+\/notebook-a[13]?(?:\/|$)/.test(location.hash) ? "a" : "");
+const wkPhone = () => matchMedia("(max-width:767px)").matches;
+window.matchMedia("(max-width:767px)").addEventListener("change", () => { if (isNb() && nbVar()) nbRefresh(); });
+window.addEventListener("hashchange", () => { if (!isNb()) NBW.sheet = false; });   // leaving the Notebook closes the Bee tray, so it is the pill on the way back
+type WkSec = { id: string; h: string; text: string; sec: string };
+type WkPage = { k: string; title: string; group: number; kind: "page" | "notes"; secs: WkSec[]; ready: boolean; state?: "ready" | "building" | "empty" };
+const NBW = { pg: {} as Record<string, string>, ch: "", seen: "", edit: "", menu: false, sheet: false, seeded: false, saving: false, hash: "", fix: {} as Record<string, string>, info: {} as Record<string, string>, focus: "" };
+const WK_GROUPS = ["Pages", "More"];
+// What the server sends (API contract with the Worker): the tree and facts, then one page's markdown.
+type NbpTree = { id: string; title: string; group: "pages" | "more"; kind: "page" | "notes"; updated_at: number | null };
+type NbpPage = { id: string; title: string; markdown: string; updated_at: number | null; sources: { kind: string; id: string; title: string; at: number }[]; state: "ready" | "building" | "empty" };
+type Nbp = { person: { first: string; name: string; photo: string | null } | null; facts: { label: string; value: string }[]; tree: NbpTree[]; ready: boolean; failed: boolean; at: number; busy: boolean; preBusy: boolean; reals: number; redo: boolean;
+  pages: Record<string, NbpPage | "busy" | "failed">; saved: Record<string, { at: number; markdown: string }> };
+const NBP: Record<string, Nbp> = {};
+const nbpState = (slug: string): Nbp => NBP[slug] ||= { person: null, facts: [], tree: [], ready: false, failed: false, at: 0, busy: false, preBusy: false, reals: 0, redo: false, pages: {}, saved: {} };
+const nbpIdle = (ch: Channel) => isNb() && !!nbVar() && route().ch === ch && !NBW.edit && !NBUI.edit && !NBUI.add && !BF.edit;
+// The page text is Markdown. A page is its text before the first "## " (the introduction, no heading) and then one section per "## ".
+function nbpSecs(markdown: string): WkSec[] {
+  const out: WkSec[] = []; let h: string | null = null, buf: string[] = [], fence = false;
+  const flush = () => { const text = buf.join("\n").trim(); if (h !== null || text) out.push({ id: `s${out.length}`, h: h ?? "", text, sec: "" }); buf = []; };
+  for (const l of markdown.replace(/\r\n?/g, "\n").split("\n")) {
+    if (/^\s*```/.test(l)) fence = !fence;
+    const m = !fence && /^## +(.+?)(?: +#+)?\s*$/.exec(l);
+    if (m) { flush(); h = m[1].trim(); }
+    else if (!fence && h === null && /^# /.test(l) && !buf.some(x => x.trim()) && !out.length) continue;   // the page's own title line
+    else buf.push(l);
+  }
+  flush(); return out;
+}
+const nbpMarkdown = (secs: WkSec[]) => secs.map(s => s.h ? `## ${s.h}\n\n${s.text}` : s.text).join("\n\n");
+function nbpCurId(ch: Channel): string { const st = nbpState(ch.slug), id = NBW.pg[ch.slug]; return st.tree.some(t => t.id === id) ? id : st.tree[0]?.id || ""; }
+async function nbpPage(ch: Channel, id: string, force = false, pre = false) {
+  const st = nbpState(ch.slug), t = st.tree.find(x => x.id === id); if (!LIVE || !t || t.kind !== "page") return;
+  const have = st.pages[id]; if (!force && have && have !== "failed") return;
+  if (!have || have === "failed") st.pages[id] = "busy";
+  let d: any; try { d = await api(`/notebook/${ch.slug}/pages/${encodeURIComponent(id)}${pre ? "?prefetch=1" : ""}`); } catch { d = null; }
+  if (!d || typeof d.markdown !== "string") { if (st.pages[id] === "busy") st.pages[id] = "failed"; return; }
+  if (nbpApply(ch, id, d) && nbpIdle(ch) && nbpCurId(ch) === id) nbPaint(ch);
+}
+// Stores one page's data, from the pages call (its "pages" map) or from the per-page route. Returns true when the page text or state changed.
+// A page with no state (an older server) is "ready" when it has text and "empty" when it has none, so the article is never blank.
+function nbpApply(ch: Channel, id: string, d: any): boolean {
+  const st = nbpState(ch.slug), t = st.tree.find(x => x.id === id); if (!t || !d || typeof d.markdown !== "string") return false;
+  const was = typeof st.pages[id] === "object" ? st.pages[id] as NbpPage : null, sv = st.saved[id];
+  // An edit just saved shows at once; the page itself refreshes later, so the server's older text doesn't replace it until it catches up.
+  if (sv && (d.updated_at == null || d.updated_at < sv.at) && Date.now() - sv.at < 30 * 60e3) d = { ...d, markdown: sv.markdown }; else delete st.saved[id];
+  const state = d.markdown.trim() ? "ready" : d.state === "building" ? "building" : "empty";
+  st.pages[id] = { id, title: String(d.title || t.title), markdown: d.markdown, updated_at: d.updated_at ?? null, sources: Array.isArray(d.sources) ? d.sources : [], state };
+  return !was || was.markdown !== d.markdown || was.state !== state;
+}
+// pre: the background read made before the person opens the Notebook (?prefetch=1). It fills the same cache, never asks the server to build a page,
+// never marks the screen failed, and only repaints if the Notebook is already open. A real open after it always reads again (st.pre), which is what asks for a build.
+async function nbpLoad(ch: Channel, force = false, pre = false) {
+  if (!LIVE) return; const st = nbpState(ch.slug);
+  // A real read never waits for a prefetch (in flight, failed or aborted): both run, and whichever returns first paints in place. Only a real read in flight, or a real read that
+  // succeeded under 5 s ago, stops another real read (st.at is set only by a successful real read, so a failed or prefetch-only history never suppresses it).
+  if (pre) { if (st.busy || st.preBusy) return; st.preBusy = true; }
+  else { if (st.busy) { st.redo = true; return; } if (!force && Date.now() - st.at < 5000) return; st.busy = true; }
+  const real = st.reals;
+  let d: any; try { d = await api(`/notebook/${ch.slug}/pages${pre ? "?prefetch=1" : ""}`); } catch { d = null; }
+  if (pre) st.preBusy = false; else st.busy = false;
+  const redo = !pre && st.redo; if (!pre) st.redo = false;
+  if (pre && (st.reals !== real || !(d && Array.isArray(d.tree)))) return;   // a failed prefetch changes nothing; a real read that landed first is newer
+  if (!d || !Array.isArray(d.tree)) { if (!st.ready && !st.failed) { st.failed = true; if (isNb() && route().ch === ch) nbPaint(ch); } return; }   // can't be read: the old Notebook shows
+  if (!pre) { st.reals++; st.at = Date.now(); }
+  const p = d.person || {}, first = !st.ready;
+  st.person = { first: String(p.first || ""), name: String(p.name || p.first || ""), photo: p.photo ? String(p.photo) : null };
+  st.facts = Array.isArray(d.facts) ? d.facts.map((f: any) => ({ label: String(f.label ?? ""), value: String(f.value ?? "") })) : [];
+  st.tree = d.tree.filter((t: any) => t && typeof t.id === "string"); st.ready = true; st.failed = false;
+  // The pages call carries every page, so a tap on another page draws from memory. Only a page missing from it (an older server) is read on its own.
+  const all = d.pages && typeof d.pages === "object" ? d.pages : {}; for (const t of st.tree) if (t.kind === "page" && all[t.id]) nbpApply(ch, t.id, all[t.id]);
+  const id = nbpCurId(ch); if (id && !all[id]) await nbpPage(ch, id, true, pre);
+  if (redo) { void nbpLoad(ch, true); return; }
+  if (first && isNb() && route().ch === ch) nbPaint(ch); else if (nbpIdle(ch)) nbPaint(ch);
+}
+function WK_DEMO(): { k: string; title: string; group: number; secs: WkSec[] }[] {
+  const f = PERSON.split(" ")[0];
+  return [
+    { k: "about", title: `About ${f}`, group: 0, secs: [
+      { id: "ab0", h: "", sec: "about", text: `${PERSON} lives in Portland, Oregon, with his partner Sam and their daughter Maya. He works in software, bikes to work most days, and keeps a close eye on household spending.` },
+      { id: "ab1", h: "Home and family", sec: "people", text: "Joseph and Sam live in the Pearl District with Maya, who plays soccer on Tuesdays and Thursdays at 5:30 PM. Sam has a dentist appointment on Thursdays at 3:15 this month, so Joseph does school pickup.\n\nGrandma's birthday is October 14, and she likes a phone call in the morning." },
+      { id: "ab2", h: "Work", sec: "about", text: "He works in software on the platform team, where Dana is a coworker. Most weekdays start with a bike commute of about 22 minutes, and wind over 15 mph matters more to him than light rain.\n\nHe works from home on Fridays." },
+      { id: "ab3", h: "How he likes things done", sec: "how", text: "- Short answers, with the important part first.\n- Ask before sending, paying or deleting anything.\n- Texts are fine for anything urgent, but nothing between 10 PM and 7 AM.\n- A heads-up before any bill over $200." },
+      { id: "ab4", h: "Money", sec: "places", text: "Bills come from PGE, NW Natural and Comcast. He is saving toward a six-month emergency fund of about $27,000, and spending has stayed under the weekly budget of $450 for the past three weeks." },
+      { id: "ab5", h: "Travel", sec: "now", text: "He is planning a first trip to Japan from November 3 to 13, Tokyo first and then Kyoto. He prefers an aisle seat on long flights and is watching a Delta fare, which is $1,742 today.\n\nHe usually flies out of Portland (PDX) and likes to keep layovers under two hours." },
+      { id: "ab6", h: "Projects", sec: "now", text: "A portfolio site is live at portfolio-7ok.pages.dev, and he works on it for a few hours on Saturday mornings." } ] },
+    { k: "people", title: "People", group: 0, secs: [
+      { id: "pe0", h: "", sec: "people", text: "Sam, Maya and Grandma are the family Skipper schedules around. Dana and Ari come up most among coworkers and friends." },
+      { id: "pe1", h: "Family", sec: "people", text: "Sam is his partner. Her dentist appointments are on Thursdays at 3:15 this month.\n\nMaya is their daughter and plays soccer on Tuesdays and Thursdays at 5:30 PM, starting October 6.\n\nGrandma's birthday is October 14, and she likes a phone call in the morning." },
+      { id: "pe2", h: "Work", sec: "people", text: "Dana is a coworker on the platform team." },
+      { id: "pe3", h: "Friends", sec: "people", text: "Ari is a friend who recently moved, and dinner with Ari is set for Friday." } ] },
+    { k: "places", title: "Places", group: 0, secs: [
+      { id: "pl0", h: "", sec: "places", text: "Home is in the Pearl District in Portland (97205), and most errands stay within a few miles of it." },
+      { id: "pl1", h: "Home and city", sec: "places", text: "Maya's school lets out early on Wednesdays at 1:15 PM. The bike route to work takes about 22 minutes." },
+      { id: "pl2", h: "Accounts", sec: "places", text: "Bills come from PGE, NW Natural and Comcast, and anything over $200 gets a heads-up first. The portfolio site is live at portfolio-7ok.pages.dev." } ] },
+    { k: "routines", title: "Routines", group: 0, secs: [
+      { id: "ro0", h: "", sec: "how", text: "Weekdays follow the bike commute and Maya's soccer schedule, and weekends are for family errands and the side project." },
+      { id: "ro1", h: "Weekdays", sec: "how", text: "- Bike to work, about 22 minutes.\n- Maya's soccer on Tuesdays and Thursdays at 5:30 PM.\n- School pickup on Thursdays, because of Sam's dentist." },
+      { id: "ro2", h: "Weekends", sec: "how", text: "A few hours on the portfolio site on Saturday morning, then family errands." } ] },
+    { k: "now", title: "What's going on", group: 0, secs: [
+      { id: "no0", h: "", sec: "now", text: "The Japan trip is the main open item, and the emergency fund is on track." },
+      { id: "no1", h: "This month", sec: "now", text: "The Delta fare is being watched, and the Tokyo hotel was found for $48 less a night. Saving toward the six-month emergency fund of about $27,000 continues." },
+      { id: "no2", h: "Open items", sec: "now", text: "- RSVP for Maya's fall festival.\n- The PG&E bill of $214, to review.\n- A reply to Ari about dinner." } ] },
+  ];
+}
+const WK_INFO: [string, string][] = [["Born", "March 9, 1988"], ["Lives in", "Portland, Oregon"], ["Partner", "Sam"], ["Child", "Maya"], ["Works in", "Software"], ["Time zone", "Pacific"]];
+const wkFacts = (ch: Channel): [string, string][] => LIVE ? nbpState(ch.slug).facts.map(f => [f.label, f.value] as [string, string]) : WK_INFO.map(([k, v]) => [k, NBW.info[k] ?? v] as [string, string]);
+let wkDemoPhoto: string | null = null;
+const wkPerson = (ch: Channel) => { if (!LIVE) return { first: PERSON.split(" ")[0], name: PERSON, photo: wkDemoPhoto };
+  const p = nbpState(ch.slug).person, first = p?.first || LIVE.person?.trim().split(" ")[0] || ""; return { first, name: p?.name || LIVE.person?.trim() || first, photo: p?.photo || null }; };
+// The side box (portrait and facts) belongs to the first page. A channel with no facts yet shows it only in General, so a project channel's article is not squeezed.
+const wkAside = (ch: Channel) => !LIVE || ch.slug === "main" || nbpState(ch.slug).facts.length > 0 || !!nbpState(ch.slug).person?.photo;
+const wkText = (s: WkSec) => NBW.fix[s.id] ?? s.text;
+const wkCur = (ch: Channel, pages: WkPage[]) => { const id = LIVE ? nbpCurId(ch) : NBW.pg[ch.slug]; return pages.find(p => p.k === id) || pages[0]; };
+// Page text is Markdown, drawn with the app's own renderer. Links in a page open in a new tab.
+const wkHtml = (t: string) => md(t).replace(/<a href="(https?:)/g, '<a target="_blank" rel="noopener noreferrer" href="$1');
+// The portrait: the person's photo when there is one, otherwise the channel tile's letter (first letter of the first name) in a color taken from the name.
+const wkPortrait = (p: { first: string; name: string; photo: string | null }, cls = "") => p.photo
+  ? `<img class="wkph wkimg ${cls}" src="${esc(p.photo)}" alt="${esc(p.name)}">`
+  : `<span class="mono wkph ${cls}" role="img" aria-label="${esc(p.name)}" style="--c:${MONO_C[[...p.first].reduce((n, c) => n + c.charCodeAt(0), 0) % MONO_C.length]}">${esc(p.first.charAt(0).toUpperCase())}</span>`;
+const wkX = I('<path d="M18 6 6 18M6 6l12 12"/>', 16);
+const wkChev = I('<path d="m6 9 6 6 6-6"/>', 16);
+// A list is edited as plain lines, without the "- " markers, when every line of it is a plain item.
+const wkList = (t: string) => { const ls = t.split("\n").filter(l => l.trim()); return ls.length > 0 && ls.every(l => /^- /.test(l)); };
+const wkUnlist = (t: string) => t.split("\n").map(l => l.replace(/^- /, "")).join("\n");
+const wkTa = (id: string, v0: string, label: string) => { const v = wkList(v0) ? wkUnlist(v0) : v0; return `<textarea class="nedit wkta" data-wkf="${id}" rows="1" aria-label="${esc(label)}">${esc(v)}</textarea>`; };
+// A section or the lead paragraph, drawn the same way in view and Edit. In Edit the drawn text itself is editable (contenteditable), so the person never
+// sees Markdown. A section holding anything the in-place editor cannot turn back into Markdown keeps the plain editor.
+const WK0 = new WeakMap<HTMLElement, string>();   // each editable block's HTML as drawn, to tell an untouched block from an edited one
+const wkBody = (s: WkSec, edit: boolean, label: string, lead = false) => {
+  const h = wkHtml(wkText(s)), cls = lead ? "wklead" : "wkbody";
+  if (!edit) return `<div class="${cls}">${h}</div>`;
+  if (!wkRichOk(h)) return lead ? `<div class="wklead">${wkTa(s.id, wkText(s), label)}</div>` : wkTa(s.id, wkText(s), label);
+  return `<div class="${cls} wkrt" data-wkf="${s.id}" contenteditable="true" role="textbox" aria-multiline="true" aria-label="${esc(label)}">${h || "<p><br></p>"}</div>`;
+};
+const wkNotesList = (ch: Channel) => `<div class="wknotes">${NB_SECS.map(([k, t]) => { const all = nbOrder(nbNotes(ch).filter(n => n.sec === k));
+  return `<section><h3>${t}</h3><div class="nblist">${nbAddBox(k)}${all.map(n => nbRow(ch, n)).join("")}</div><button class="sa mute wkaddn" data-nadd="${k}">${ic.plus}<span>Add a note</span></button></section>`; }).join("")}</div>`;
+// The at-a-glance box. "box" is the Wikipedia-style panel; "band" is the single row used by direction C.
+// The at-a-glance box: the portrait, the name, and the facts as rows (inputs while editing).
+function wkInfo(ch: Channel, edit: boolean) {
+  const rows = wkFacts(ch), p = wkPerson(ch);
+  const dd = (v: string, i: number, k: string) => edit ? `<textarea class="wkfv" data-wkf="i:${i}" rows="1" spellcheck="false" aria-label="${esc(k)}">${esc(v)}</textarea>` : esc(v);
+  const dl = !rows.length ? "" : `<dl>${rows.map(([k, v], i) => `<div><dt>${esc(k)}</dt><dd>${dd(v, i, k)}</dd></div>`).join("")}</dl>`;
+  const cam = I('<path d="M3 8a2 2 0 0 1 2-2h2l1.5-2h7L17 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><circle cx="12" cy="13" r="3.5"/>', 16);
+  // The portrait keeps one wrapper in both modes, so entering Edit adds overlay buttons and moves nothing.
+  const over = !edit ? "" : `<button type="button" class="wkphb" data-wkphoto aria-label="${p.photo ? "Change photo" : "Add a photo"}"${NBW.saving ? " disabled" : ""}><span class="wkphc" aria-hidden="true">${cam}</span></button>${p.photo ? `<button type="button" class="wkphrm" data-wkphoto-rm aria-label="Remove photo"${NBW.saving ? " disabled" : ""}>${wkX}</button>` : ""}`;
+  const portrait = `<div class="wkphw">${wkPortrait(p)}${over}</div>`;
+  return `<aside class="wkinfo" aria-label="${esc(p.first)} at a glance">${portrait}<div class="wkin"><b>${esc(p.name)}</b></div>${dl}</aside>`;
+}
+function wkMenu(pages: WkPage[], cur: WkPage) {
+  return `<div class="wkmenu" role="menu">${WK_GROUPS.map((g, i) => { const ps = pages.filter(p => p.group === i); return !ps.length ? "" : `<div class="wkmg">${g}</div>${ps.map(p => `<button role="menuitem" data-wkpage="${esc(p.k)}"${p.k === cur.k ? ` class="on" aria-current="page"` : ""}>${esc(p.title)}</button>`).join("")}`; }).join("")}</div>`;
+}
+const wkRail = (pages: WkPage[], cur: WkPage) =>
+  `<nav class="wkrail" aria-label="Notebook pages">${WK_GROUPS.map((g, i) => { const ps = pages.filter(p => p.group === i); return !ps.length ? "" : `<div class="wkg">${g}</div>${ps.map(p => `<a href="#" data-wkpage="${esc(p.k)}"${p.k === cur.k ? ` class="on" aria-current="page"` : ""}>${esc(p.title)}</a>`).join("")}`; }).join("")}</nav>`;
+function wkA(ch: Channel, pages: WkPage[]) {
+  const q = wkPhone() ? wkQueue(ch) : [];   // phone: the Bee review is a pill at the bottom edge that opens a tray
+  const pg = wkCur(ch, pages), ed = NBW.edit === "page" && pg.kind === "page", about = pg.k === pages[0].k && pg.kind === "page" && wkAside(ch);
+  const secs = pg.secs.filter(s => ed || s.text.trim()), lead = secs.find(s => !s.h), rest = secs.filter(s => s.h);
+  const secEd = NBW.edit.startsWith("sec:") && pg.kind === "page" ? NBW.edit.slice(4) : "";
+  const penI = I('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>', 14);
+  const btns = `<div class="wkbtns wksecb"><button class="sa mute" data-wkcancel${NBW.saving ? " disabled" : ""}>Cancel</button><button class="sa wkpri" data-wksave${NBW.saving ? " disabled" : ""}>Save</button></div>`;
+  const sec = (s: WkSec) => ed ? (s.h ? `<section class="wksec"><h2>${esc(s.h)}</h2>${wkBody(s, true, s.h)}</section>` : wkBody(s, true, "Introduction", true))
+    : secEd && s.id === secEd && s.h ? `<section class="wksec" id="wk-${s.id}" data-wked data-unsaved="wk" data-unsaved-key="section:${esc(pg.k)}:${esc(s.id)}"><h2>${esc(s.h)}</h2>${wkBody(s, true, s.h)}${btns}</section>`
+    : s.h ? `<section class="wksec" id="wk-${s.id}"><h2>${esc(s.h)}${pg.kind === "page" && pg.ready && !secEd && !ed ? `<button type="button" class="wkseced" data-wksec="${s.id}" aria-label="Edit ${esc(s.h)}">${penI}</button>` : ""}</h2>${wkBody(s, false, s.h)}</section>` : wkBody(s, false, "Introduction", true);
+  const wait = pg.kind === "page" && pg.ready && !ed && !secs.length ? `<p class="wkstill">Still learning. This page fills in as you talk.</p>` : "";
+  const body = pg.kind === "notes" ? wkNotesList(ch) : `${wait}${lead ? sec(lead) : ""}${about ? wkInfo(ch, ed) : ""}${rest.map(sec).join("")}`;
+  const canEdit = pg.kind === "page" && pg.ready && (secs.length > 0 || (about && wkFacts(ch).length > 0));
+  const dis = NBW.saving ? " disabled" : "";
+  const act = !canEdit || secEd ? "" : ed ? `<div class="wkbtns"><button class="sa mute" data-wkcancel${dis}>Cancel</button><button class="sa wkpri" data-wksave${dis}>Save</button></div>` : `<button class="sa wkedit" data-wkedit>${ic.pen}<span>Edit</span></button>`;
+  if (!q.length) NBW.sheet = false;
+  if (NBW.seen !== pg.k) { if (NBW.seen) NBW.sheet = false; NBW.seen = pg.k; }   // phone: the Bee tray goes back to the pill whenever the page changes
+  const layer = !q.length ? "" : NBW.sheet
+    ? `<div class="wkdock"><div class="wktray" role="dialog" aria-label="New from your Bee"><button class="wkx" data-wkbee="close" aria-label="Close">${wkX}</button>${wkBeeItem(ch, q[0], BF.done + 1, BF.done + q.length, q.length > 1)}</div></div>`
+    : ed ? "" : `<div class="wkdock"><button class="wkpill" data-wkbee="open" aria-haspopup="dialog" aria-label="${q.length} new from your Bee">${beeMark(14)}<span>${q.length} new</span></button></div>`;
+  return `<div class="wkcols${q.length ? " wkdk" : ""}">${wkRail(pages, pg)}<article class="wkart${about ? " info" : ""}${pg.kind === "page" && !pg.ready ? " wkwait" : ""}"${ed ? ` data-wked data-unsaved="wk" data-unsaved-key="page:${esc(pg.k)}"` : ""}>
+    <div class="wkhead"><div class="wkt wkmw"><h1>${esc(pg.title)}</h1><button class="wkmb" data-wkmenu aria-haspopup="menu" aria-expanded="${NBW.menu}" aria-label="Choose a page">${wkChev}</button>${NBW.menu ? wkMenu(pages, pg) : ""}</div>${act}</div>${body}</article>${layer}</div>`;
+}
+// The compact Bee review for the directions: one slim tray, one queue. Bee facts and new speakers share a row that shows the first item with its
+// count ("1 of 3") and actions, so the article stays the main content. Skip sends any item to the back. The tray is gone when nothing is pending.
+// It reuses the real review's data and its click handlers (data-bfok, data-bfno, data-bfedit, data-bfsave, data-spkok, ...), nothing else of it.
+type WkQ = { k: string; at: number; f?: BeeFact; s?: BeeSpk };
+const WKQ = { n: 0, rank: new Map<string, number>(), no: new Set<string>() };
+function wkQueue(ch: Channel): WkQ[] {
+  if (ch.slug !== "main") return [];
+  const all: WkQ[] = [...beePending(ch).map(f => ({ k: `f${f.id}`, at: f.at || 0, f })), ...beeSpk(ch).map(s => ({ k: `s${spkKey(s)}`, at: s.at || 0, s }))];
+  return all.map((x, i) => ({ x, i })).sort((a, b) => ((WKQ.rank.get(a.x.k) || 0) - (WKQ.rank.get(b.x.k) || 0)) || a.i - b.i).map(o => o.x);
+}
+function wkBee(ch: Channel) {
+  const q = wkQueue(ch); if (!q.length) return "";
+  return `<section class="wkbt" id="wk-bee" aria-label="New from your Bee">${wkBeeItem(ch, q[0], BF.done + 1, BF.done + q.length, q.length > 1)}</section>`;
+}
+// One pending item (a fact or a speaker) with its actions. count: show "1 of 4" (the one-at-a-time views); the list shows the date only.
+function wkBeeItem(ch: Channel, top: WkQ, pos: number, total: number, many: boolean, count = true) {
+  const off = I('<path d="M18 6 6 18M6 6l12 12"/>', 14), pen = I('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>', 14), skipI = I('<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/>', 14);
+  const meta = (label: string) => `<span class="wkbmeta">${count && total > 1 ? `<span class="wkbn">${pos} of ${total}</span>` : ""}<span>${label}${top.at ? ` · ${fileDate(top.at)}` : ""}</span></span>`;
+  const skip = many ? `<button class="sa mute" data-wkskip="${esc(top.k)}" title="Show this one later">${skipI}Skip</button>` : "";
+  const mark = `<span class="wkbico">${beeMark(16)}</span>`;
+  let inner = "";
+  if (top.f) {
+    const f = top.f, err = BF.err?.id === f.id ? `<p class="wkberr" role="status">${g("help", 14)}${esc(BF.err.msg)}</p>` : "";
+    inner = String(BF.edit) === String(f.id)
+      ? `<div class="wkbi editing" role="group" aria-label="Edit what your Bee picked up" data-unsaved="note" data-unsaved-key="bee:${f.id}">${mark}<div class="wkbbody">${meta("From your Bee")}<textarea class="nedit wkbta" id="bfedit" rows="2" aria-label="What your Bee picked up">${esc(f.text)}</textarea>${err}</div>
+        <div class="wkbacts"><button class="sa mute" data-bfcancel>Cancel</button><button class="sa wkbok" data-bfsave="${f.id}">${ic.check}Save and approve</button></div></div>`
+      : `<div class="wkbi" role="group" aria-label="From your Bee, ${pos} of ${total}">${mark}<div class="wkbbody"><p class="wkbp">${esc(f.text)}</p>${meta("From your Bee")}${err}</div>
+        <div class="wkbacts"><button class="sa wkbno" data-bfno="${f.id}">${off}Deny</button>${skip}<button class="sa mute" data-bfedit="${f.id}">${pen}Edit</button><button class="sa wkbok" data-bfok="${f.id}">${ic.check}Approve</button></div></div>`;
+  } else if (top.s) {
+    const x = top.s, k = spkKey(x), busy = SPK.busy.has(k), m = SPK.matches[k]?.filter(p => !WKQ.no.has(`${k}|${p.id}`));
+    if (x.state === "accepted" && SPK.matches[k] === undefined && LIVE) void spkMatches(ch, x);
+    const who = `<p class="wkbp"><b title="${esc(x.excerpt || "")}">${esc(x.label)}</b>${x.name && x.name !== x.label ? `<span class="wkbas">${esc(x.name)}</span>` : ""}</p>`;
+    if (SPK.edit === k) inner = `<div class="wkbi editing" role="group" aria-label="Name for ${esc(x.label)}">${mark}<div class="wkbbody">${meta("New speaker detected")}<input class="nedit wkbin" id="spkedit" value="${esc(x.name || x.label)}" aria-label="Name for ${esc(x.label)}"></div>
+      <div class="wkbacts"><button class="sa mute" data-spkcancel>Cancel</button><button class="sa wkbok" data-spksave="${esc(k)}">${ic.check}Save</button></div></div>`;
+    else inner = `<div class="wkbi" role="group" aria-label="New speaker detected: ${esc(x.label)}">${mark}<div class="wkbbody">${who}${meta("New speaker detected")}</div>
+      <div class="wkbacts">${skip}<button class="sa mute" data-spkedit="${esc(k)}"${busy ? " disabled" : ""}>${pen}Edit</button>${x.state === "new" ? `<button class="sa wkbok" data-spkok="${esc(k)}"${busy ? " disabled" : ""}>${ic.check}Accept</button>` : ""}</div></div>
+      ${x.state === "accepted" && m?.length ? `<div class="wkbm">${m.map(p => `<div class="wkbmr"><span>Is it ${esc(p.name)}?</span><button class="sa mute" data-wkno="${esc(k)}" data-wkp="${esc(p.id)}"${busy ? " disabled" : ""}>Not them</button><button class="sa wkbok" data-spkconf="${esc(k)}" data-spkp="${esc(p.id)}"${busy ? " disabled" : ""}>${ic.check}Confirm</button></div>`).join("")}</div>` : ""}`;
+  }
+  return inner;
+}
+function wkDemoPages(): WkPage[] {
+  return [...WK_DEMO().map(p => ({ ...p, kind: "page" as const, ready: true })), { k: "notes", title: "All notes", group: 1, kind: "notes" as const, secs: [], ready: true }];
+}
+function wkPages(ch: Channel): WkPage[] {
+  if (!LIVE) return wkDemoPages();
+  const st = nbpState(ch.slug); if (!st.ready) return [];
+  return st.tree.map(t => { const p = st.pages[t.id], ok = typeof p === "object";
+    return { k: t.id, title: t.title, group: t.group === "more" ? 1 : 0, kind: t.kind, secs: t.kind === "page" && ok ? nbpSecs(p.markdown) : [], ready: t.kind === "notes" || ok, state: ok ? p.state : undefined }; });
+}
+// The old section links (#/main/notebook/people, from "Added to Notebook") open All notes.
+function wkHashPage(ch: Channel, pages: WkPage[]) {
+  const h = location.hash; if (h === NBW.hash) return; NBW.hash = h;
+  const sec = h.match(/^#\/[^/]+\/notebook\/([a-z]+)/)?.[1], notes = pages.find(p => p.kind === "notes");
+  if (sec && NB_SECS.some(s => s[0] === sec) && notes) { NBW.pg[ch.slug] = notes.k; NBW.sheet = false; }
+}
+// null: the pages can't be read, so the old Notebook is drawn instead.
+function nbWiki(ch: Channel): string | null {
+  if (!LIVE && !NBW.seeded) { NBW.seeded = true; queueMicrotask(() => { (window as any).__beeFactsDemo(true); (window as any).__beeSpeakersDemo(true); }); }
+  if (NBW.ch !== ch.slug) { NBW.ch = ch.slug; NBW.seen = ""; NBW.edit = ""; NBW.menu = false; NBW.sheet = false; NBW.hash = ""; }
+  if (LIVE) { const st = nbpState(ch.slug); if (st.failed || (st.ready && !st.tree.length)) return null; if (!st.ready) { void nbpLoad(ch); return `<div class="wk wkcold"></div>`; } }
+  const pages = wkPages(ch); wkHashPage(ch, pages);
+  const cur = wkCur(ch, pages); if (LIVE && cur.kind === "page" && !cur.ready) void nbpPage(ch, cur.k);
+  const bee = wkPhone() ? "" : wkBee(ch);
+  return `<div class="wk wk-a">${bee ? `<div class="wkbee">${bee}</div>` : ""}${wkA(ch, pages)}</div>`;
+}
+// The portrait photo: the person's original file goes to POST /notebook/<channel>/photo as the raw body, unscaled (the server keeps it as it arrived and checks the type
+// from the bytes). POST .../photo/delete removes it. The box keeps its size and the CSS crops the picture to it, so nothing moves.
+async function wkPhoto(ch: Channel, file: File | null) {
+  const st = nbpState(ch.slug);
+  if (!LIVE) { wkDemoPhoto = file ? URL.createObjectURL(file) : null; nbRefresh(); return; }
+  let r: any;
+  try {
+    if (!file) r = await api(`/notebook/${ch.slug}/photo/delete`, {});
+    else { const x = await fetch(`${LIVE.api}/notebook/${ch.slug}/photo`, { method: "POST", credentials: "same-origin", headers: file.type ? { "content-type": file.type } : {}, body: file });
+      r = await x.json().catch(() => ({})); if (!x.ok && !r.error) r = { ...r, error: `Upload failed (${x.status})` }; }
+  } catch { r = { error: "net" }; }
+  if (r?.error || !r?.ok) { wkToast(r || {}); return; }
+  if (st.person) st.person.photo = file ? (r.photo ? String(r.photo) : st.person.photo) : null;
+  if (isNb() && route().ch === ch) nbPaint(ch); void nbpLoad(ch, true);
+}
+const wkToast = (r: any) => note(g("help", 14), r?.secret ? "Not saved: that looks like a password or key" : "Couldn't save that", r?.secret ? "Secrets aren't kept in the notebook. Save logins and keys in Settings → Passwords & keys." : "Check your connection and try again.", "");
+// Leaves an edit. A section edit repaints in place and keeps the scroll position; the page edit rebuilds as before.
+function wkLeave(ch: Channel) {
+  const sec = NBW.edit.startsWith("sec:"), sc = document.getElementById("scroll"), top = sc?.scrollTop ?? 0; NBW.edit = "";
+  if (sec) { nbPaint(ch); if (sc) sc.scrollTop = top; } else nbRefresh();
+}
+async function wkSave() {
+  const box = document.querySelector<HTMLElement>("[data-wked]"); if (!box || NBW.saving) return;
+  const ch = route().ch, fields = [...box.querySelectorAll<HTMLElement>("[data-wkf]")];
+  const rt = (f: HTMLElement) => f.classList.contains("wkrt"), val = (f: HTMLElement) => (f as HTMLTextAreaElement).value, same = (f: HTMLElement) => f.innerHTML === WK0.get(f);   // an untouched block keeps its Markdown exactly
+  const joined = (s: string, raw: string) => wkList(s) ? raw.split("\n").map(l => l.trim()).filter(Boolean).map(l => `- ${l}`).join("\n") : raw.trim();
+  if (!LIVE) {   // the sandbox keeps an edit as the person's own note, like the real thing does
+    const secs = wkPages(ch).flatMap(p => p.secs); let changed = 0;
+    const add = (sec: string, text: string) => { nbNotes(ch).push(nn(sec, text, 0, undefined, { you: true, fresh: true })); changed++; };
+    fields.forEach(f => { const id = f.dataset.wkf!;
+      if (rt(f)) { const s = secs.find(x => x.id === id); if (!s || same(f)) return; const nv = wkMdFromHtml(f), was = wkText(s); if (nv && nv !== was) { NBW.fix[id] = nv; add(s.sec, wkList(nv) ? wkUnlist(nv).replace(/\n/g, ". ") : nv); } return; }
+      const v = (f.classList.contains("wkfv") ? val(f).replace(/\s*\n\s*/g, " ") : val(f)).trim();
+      if (id.startsWith("i:")) { const row = wkFacts(ch)[Number(id.slice(2))]; if (row && v && v !== row[1]) { NBW.info[row[0]] = v; add("about", `${row[0]}: ${v}`); } return; }
+      const s = secs.find(x => x.id === id); if (!s || !v) return; const was = wkText(s), nv = joined(was, val(f)); if (nv !== was) { NBW.fix[id] = nv; add(s.sec, wkList(was) ? wkUnlist(nv).replace(/\n/g, ". ") : nv); } });
+    wkLeave(ch); if (changed) note(ic.check, "Saved to the notebook", "", ""); return;
+  }
+  const st = nbpState(ch.slug), id = nbpCurId(ch), page = st.pages[id]; if (typeof page !== "object") return;
+  const secs = nbpSecs(page.markdown), jobs: { section: string | null; text: string; apply: () => void }[] = [];
+  fields.forEach(f => { const fid = f.dataset.wkf!;
+    if (rt(f)) { const s = secs.find(x => x.id === fid); if (!s || same(f)) return; const nv = wkMdFromHtml(f); if (nv && nv !== s.text) jobs.push({ section: s.h || null, text: nv, apply: () => { s.text = nv; } }); return; }
+    const v = (f.classList.contains("wkfv") ? val(f).replace(/\s*\n\s*/g, " ") : val(f)).trim();
+    if (fid.startsWith("i:")) { const row = st.facts[Number(fid.slice(2))]; if (row && v && v !== row.value) jobs.push({ section: null, text: `${row.label}: ${v}`, apply: () => { row.value = v; } }); return; }
+    const s = secs.find(x => x.id === fid); if (!s) return; const nv = joined(s.text, val(f)); if (nv && nv !== s.text) jobs.push({ section: s.h || null, text: nv, apply: () => { s.text = nv; } }); });
+  if (!jobs.length) { wkLeave(ch); return; }
+  NBW.saving = true; box.querySelectorAll<HTMLButtonElement>("[data-wkcancel],[data-wksave]").forEach(b => { b.disabled = true; });
+  let failed: any = null, applied = 0;
+  for (const j of jobs) {
+    let r: any; try { r = await api(`/notebook/${ch.slug}/pages/${encodeURIComponent(id)}/edit`, { section: j.section, text: j.text }); } catch { r = { net: true }; }
+    if (!r?.ok) { failed = r || {}; break; }
+    j.apply(); applied++;
+  }
+  NBW.saving = false;
+  if (applied) { page.markdown = nbpMarkdown(secs); st.saved[id] = { at: Date.now(), markdown: page.markdown }; }
+  if (failed) { wkToast(failed); box.querySelectorAll<HTMLButtonElement>("[data-wkcancel],[data-wksave]").forEach(b => { b.disabled = false; }); return; }
+  wkLeave(ch); note(ic.check, "Saved to the notebook", "", ""); nbSync(ch, true);
+}
+// "Not them": that match is wrong for this speaker. It goes away at once, and the server remembers it so it isn't offered again.
+async function wkNotThem(ch: Channel, k: string, contact: string) {
+  const x = beeSpk(ch).find(y => spkKey(y) === k); if (!x) return; const key = `${k}|${contact}`;
+  WKQ.no.add(key); nbRefresh();
+  const r = await spkCall({ op: "not_them", rec: x.rec, sid: x.spk, spk: x.spk, contact });
+  if (!r?.ok) { WKQ.no.delete(key); wkToast(r); if (isNb()) nbRefresh(); }
+}
+// Fact values are textareas that take exactly the height of their text, so Edit never changes a row's height.
+function wkFit() { if (CSS.supports("field-sizing", "content")) return; document.querySelectorAll<HTMLTextAreaElement>(".wkfv").forEach(t => { t.style.height = "0"; t.style.height = `${t.scrollHeight}px`; }); }
+window.addEventListener("resize", () => { if (document.querySelector(".wkfv, .wkta")) { wkFit(); document.querySelectorAll<HTMLTextAreaElement>(".wkta").forEach(t => { t.style.height = "auto"; t.style.height = `${t.scrollHeight}px`; }); } });
+function wkAfter() {
+  document.querySelectorAll<HTMLElement>(".wkrt").forEach(e => { if (!WK0.has(e)) WK0.set(e, e.innerHTML); });
+  document.querySelectorAll<HTMLTextAreaElement>(".wkta").forEach(t => { t.style.height = "auto"; t.style.height = `${t.scrollHeight}px`; });
+  wkFit();
+  if (NBW.focus) { const t = document.querySelector<HTMLElement>(NBW.focus); NBW.focus = ""; if (t instanceof HTMLTextAreaElement || t instanceof HTMLInputElement) { t.focus({ preventScroll: true }); t.setSelectionRange(t.value.length, t.value.length); t.closest("[data-wked]")?.scrollIntoView({ block: "nearest" }); } }
+}
+document.addEventListener("click", e => {
+  const t = e.target as HTMLElement; if (!isNb() || !nbVar()) return;
+  const ch = route().ch;
+  if (NBW.menu && !t.closest(".wkmw")) { NBW.menu = false; nbRefresh(); }
+  const sk = t.closest<HTMLElement>("[data-wkskip]"); if (sk) { if (wkQueue(ch).length > 1) { WKQ.rank.set(sk.dataset.wkskip!, ++WKQ.n); BF.edit = 0; nbRefresh(); } return; }
+  const bs = t.closest<HTMLElement>("[data-wkbee]"); if (bs) { NBW.sheet = bs.dataset.wkbee === "open"; NBW.menu = false; BF.edit = 0; SPK.edit = ""; nbRefresh(); return; }
+  const nt = t.closest<HTMLElement>("[data-wkno]"); if (nt) { void wkNotThem(ch, nt.dataset.wkno!, nt.dataset.wkp!); return; }
+  const pgl = t.closest<HTMLElement>("[data-wkpage]"); if (pgl) { e.preventDefault(); NBW.pg[ch.slug] = pgl.dataset.wkpage!; NBW.edit = ""; NBW.menu = false; NBW.sheet = false; nbRefresh(); document.getElementById("scroll")?.scrollTo({ top: 0 }); return; }
+  if (t.closest("[data-wkmenu]")) { NBW.menu = !NBW.menu; nbRefresh(); return; }
+  const se = t.closest<HTMLElement>("[data-wksec]"); if (se) { const sc = document.getElementById("scroll"), top = sc?.scrollTop ?? 0; NBW.edit = `sec:${se.dataset.wksec}`; nbPaint(ch); if (sc) sc.scrollTop = top;
+    document.querySelector<HTMLElement>("[data-wked] [data-wkf]")?.focus({ preventScroll: true }); return; }
+  if (t.closest("[data-wkphoto-rm]")) { void wkPhoto(ch, null); return; }
+  if (t.closest("[data-wkphoto]")) { pickFiles(l => { if (l[0]) void wkPhoto(ch, l[0]); }, "image/*"); return; }
+  if (t.closest("[data-wkedit]")) { NBW.edit = "page"; nbRefresh(); return; }
+  if (t.closest("[data-wkcancel]")) { if (!NBW.saving) { wkLeave(ch); } return; }
+  if (t.closest("[data-wksave]")) { void wkSave(); return; }
+});
+document.addEventListener("keydown", e => {
+  const t = e.target as HTMLElement; if (!isNb() || !nbVar()) return;
+  if (e.key === "Escape" && NBW.sheet && !BF.edit && !SPK.edit) { e.preventDefault(); e.stopImmediatePropagation(); NBW.sheet = false; nbRefresh(); return; }
+  if (e.key === "Escape" && NBW.menu) { e.preventDefault(); e.stopImmediatePropagation(); NBW.menu = false; nbRefresh(); return; }
+  if (!t.matches("[data-wkf]")) return;
+  if (e.key === "Enter" && t.classList.contains("wkfv") && !e.metaKey && !e.ctrlKey) { e.preventDefault(); return; }
+  if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); (document.querySelector("[data-wkcancel]") as HTMLElement)?.click(); }
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void wkSave(); }
+}, true);
+// Edited text takes no formatting except bold, italic, lists and paragraphs: a paste or drop brings in plain text, and other format commands are refused.
+const wkPlain = (txt: string) => { let ls = txt.replace(/\r/g, "").split("\n"); if (ls.length > 1) ls = ls.filter(l => l.trim()); ls.forEach((l, i) => { if (i) document.execCommand("insertParagraph"); if (l) document.execCommand("insertText", false, l); }); };
+document.addEventListener("paste", e => { if (!(e.target as HTMLElement)?.closest?.(".wkrt")) return; e.preventDefault(); wkPlain(e.clipboardData?.getData("text/plain") ?? ""); }, true);
+document.addEventListener("drop", e => { if ((e.target as HTMLElement)?.closest?.(".wkrt")) e.preventDefault(); }, true);
+document.addEventListener("beforeinput", e => { if (!(e.target as HTMLElement)?.closest?.(".wkrt")) return; if ((/^format/.test(e.inputType) && !/^format(Bold|Italic)$/.test(e.inputType)) || e.inputType === "insertFromDrop") e.preventDefault(); }, true);
+// Typing over all of a link's text would leave the first letter in the link and put the rest outside it, because the browser moves a cursor at the end of a
+// link to just after it. So the link's text is replaced here and keeps its URL, and the letters typed straight after stay in the link until the cursor moves.
+let wkLink: HTMLAnchorElement | null = null;
+const wkAtEnd = (a: HTMLAnchorElement, r: StaticRange) => r.collapsed && (a.contains(r.startContainer) ? r.startContainer === a.lastChild && r.startOffset === (a.lastChild?.textContent?.length ?? 0) : (r.startContainer === a.nextSibling && r.startOffset === 0) || (r.startContainer === a.parentNode && r.startOffset === [...a.parentNode!.childNodes].indexOf(a) + 1));
+const wkLinkPut = (a: HTMLAnchorElement, text: string, append: boolean) => {
+  a.textContent = (append ? a.textContent : "") + text; const t = a.firstChild!, nr = document.createRange(), sel = getSelection(); nr.setStart(t, t.textContent!.length); nr.collapse(true); sel?.removeAllRanges(); sel?.addRange(nr);
+  a.closest(".wkrt")?.dispatchEvent(new Event("input", { bubbles: true })); wkLink = a;
+};
+document.addEventListener("beforeinput", e => {
+  if (!(e.target as HTMLElement)?.closest?.(".wkrt") || e.inputType !== "insertText" || !e.data || e.isComposing) { wkLink = null; return; }
+  const tr = e.getTargetRanges()[0]; if (!tr) { wkLink = null; return; }
+  if (wkLink?.isConnected && wkAtEnd(wkLink, tr)) { e.preventDefault(); wkLinkPut(wkLink, e.data, true); return; }
+  wkLink = null;
+  const sel = getSelection(), ca = sel && sel.rangeCount && !sel.isCollapsed ? sel.getRangeAt(0).commonAncestorContainer : null, a = ca && (ca.nodeType === 1 ? ca as Element : ca.parentElement)?.closest("a");
+  if (a && sel!.toString() === a.textContent && a.textContent) { e.preventDefault(); wkLinkPut(a as HTMLAnchorElement, e.data, false); }
+}, true);
+document.addEventListener("keydown", e => { if (e.key.length > 1 || e.metaKey || e.ctrlKey) wkLink = null; }, true);
+document.addEventListener("mousedown", () => { wkLink = null; }, true);
+document.addEventListener("focusin", e => { if ((e.target as HTMLElement)?.closest?.(".wkrt")) { try { document.execCommand("defaultParagraphSeparator", false, "p"); } catch {} } });
+document.addEventListener("input", e => { const t = e.target as HTMLElement; if (nbVar() && (t.classList.contains("wkta") || (t.classList.contains("wkfv") && !CSS.supports("field-sizing", "content")))) { (t as HTMLTextAreaElement).style.height = "0"; (t as HTMLTextAreaElement).style.height = `${t.scrollHeight}px`; } });
+unsavedKind("wk", {
+  active: () => !!NBW.edit,
+  title: () => "Save your changes to this page?", body: () => "You changed the text but haven't saved it.",
+  save: () => (document.querySelector("[data-wksave]") as HTMLElement)?.click(),
+  discard: () => { wkLeave(route().ch); },
+  leave: "[data-wkpage],[data-wkedit]",
+});
+
+// The pages screen is drawn unless its pages could not be read (or the channel has none), then the old Notebook is.
+const nbWikiUse = (ch: Channel) => !!nbVar() && !(LIVE && (NBP[ch.slug]?.failed || (NBP[ch.slug]?.ready && !NBP[ch.slug].tree.length)));
 function nbPage(ch: Channel) {
+  if (nbWikiUse(ch)) return `<div class="dhome" id="scroll"><div class="lwrap wkwrap" id="nbody">${nbBody(ch)}</div></div>`;
   const n = nbNotes(ch).length;
   return `<div class="dhome" id="scroll"><div class="lwrap nbwrap">
     <div class="lhead">${av(ch, "av lh")}<div class="lht"><h1>${esc(who(ch))}'s notebook</h1><p>What ${esc(who(ch))} has learned in ${esc(ch.name)}. ${n} ${n === 1 ? "note" : "notes"}, all in plain words.</p></div>${nbHelpGone() ? `<button class="nbq" data-nbhelp="on">${NB_HELP}<span>How it works</span></button>` : ""}</div>
@@ -3824,12 +4266,12 @@ function nbSync(ch: Channel, force = false) {
   const request = NB_REQUEST[ch.slug] = (NB_REQUEST[ch.slug] || 0) + 1;
   api(`/notebook/${ch.slug}`).then((d: any) => { if (request !== NB_REQUEST[ch.slug] || !Array.isArray(d?.notes)) return;
     if (ch.slug === "main") { NB_BEE_UNREAD.update(Array.isArray(d.bee?.pending) ? d.bee.pending : null); if (isNb() && route().ch === ch) nbBeeVisit(ch); nbBeePaint(); }
-    const old = NBD[ch.slug]; (ch as any).notes = d.notes; bfMerge(ch, d.bee?.pending || []); delete NBD[ch.slug]; const nb = nbOf(ch);
+    const old = NBD[ch.slug]; (ch as any).notes = d.notes; bfMerge(ch, d.bee?.pending || []); if (ch.slug === "main") (ch as any).beeSpeakers = Array.isArray(d.bee?.speakers) ? d.bee.speakers : []; delete NBD[ch.slug]; const nb = nbOf(ch);
     if (old) { const had = new Set(old.notes.map((n: any) => String(n.id))), was = new Set(old.notes.filter((n: any) => n.fresh).map((n: any) => String(n.id)));
       nb.notes.forEach((n: any) => { if (!had.has(String(n.id)) || was.has(String(n.id))) n.fresh = true; }); }   // "New" stays until the page reloads
-    if (isNb() && route().ch === ch && !NBUI.edit && !NBUI.add && !BF.edit) render(); }).catch(() => {});
+    if (isNb() && route().ch === ch && !NBUI.edit && !NBUI.add && !BF.edit && !NBW.edit) nbPaint(ch); }).catch(() => {});
 }
-function nbAfter() { const t = document.getElementById("nedit") as HTMLTextAreaElement | null || document.getElementById("nadd") as HTMLTextAreaElement | null; if (t) { if (t.scrollHeight > t.clientHeight) t.style.height = `${Math.min(t.scrollHeight + 2, innerHeight * 0.5)}px`; t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }   // a long note opens tall enough to read whole
+function nbAfter() { if (nbWikiUse(route().ch)) wkAfter(); const t = document.getElementById("nedit") as HTMLTextAreaElement | null || document.getElementById("nadd") as HTMLTextAreaElement | null; if (t) { if (t.scrollHeight > t.clientHeight) t.style.height = `${Math.min(t.scrollHeight + 2, innerHeight * 0.5)}px`; t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }   // a long note opens tall enough to read whole
 // Unsaved edits (unsaved.ts): editing another note, leaving the Notebook, Esc, a reload... ask first.
 unsavedKind("note", {
   active: () => !!(NBUI.edit || NBUI.add || BF.edit),
@@ -3839,6 +4281,22 @@ unsavedKind("note", {
   discard: () => { NBUI.edit = 0; NBUI.add = ""; BF.edit = 0; nbRefresh(); },
   leave: "[data-nedit],[data-nadd],[data-bfedit]",
 });
+// Data that arrives after the Notebook opened (the server re-read, the pages tree, a page's text) is patched into the screen that's showing. Rebuilding #scroll
+// (render() or innerHTML on it) throws away the element the finger is dragging, so the page jumped to the top mid-gesture.
+function nbPaint(ch: Channel) {
+  const sc = document.getElementById("scroll"); if (!sc || !isNb() || route().ch !== ch) { render(); return; }
+  const t = document.createElement("template"); t.innerHTML = nbPage(ch); const n = t.content.firstElementChild; if (n) morph(sc, n.innerHTML); nbAfter();
+}
+// After the app has drawn and the browser is idle, read the current channel's Notebook into memory (the pages tree, its first page, the notes and Bee items),
+// so opening it draws at once from the cache and then updates in place. Only for a channel the person is in, only with the pages flag, and again when the channel changes.
+const NB_PRE: Record<string, number> = {};
+function nbPrefetch() {
+  if (!LIVE || !nbVar()) return; const ch = route().ch; if (!ch || !channels.includes(ch) || isNb() || Date.now() - (NB_PRE[ch.slug] || 0) < 300e3) return; NB_PRE[ch.slug] = Date.now();
+  void nbpLoad(ch, false, true); nbSync(ch);
+}
+const nbPrefetchNow = () => { try { nbPrefetch(); } catch {} };   // boot data is already in when this file runs, so the read starts at once
+const nbPrefetchLater = () => { const go = () => { try { nbPrefetch(); } catch {} }; if ("requestIdleCallback" in window) (window as any).requestIdleCallback(go, { timeout: 4000 }); else setTimeout(go, 1500); };
+if (LIVE) { setTimeout(nbPrefetchNow, 0); window.addEventListener("hashchange", () => setTimeout(nbPrefetchLater, 800)); }
 function nbRefresh() { const b = document.getElementById("nbody"); if (b) { b.innerHTML = nbBody(route().ch); nbAfter(); } }
 // "Added to …" under a reply: one chip per place a remember really saved (m.saved, from the tool's result; never guessed from
 // the step line, which said Notebook even when it went to Dana's contact). The design sandbox's scripted "remember:" steps are
@@ -3872,6 +4330,11 @@ document.addEventListener("click", e => {
   const hp = t.closest<HTMLElement>("[data-nbhelp]"); if (hp) { const on = hp.dataset.nbhelp === "on"; nbHelpSet(!on);
     if (on && nbTab() !== "ov") { location.hash = nbHref(ch).slice(1); return; } render();
     if (on) { const h = document.getElementById("nbhelp"); h?.scrollIntoView({ block: "nearest" }); h?.querySelector<HTMLElement>("[data-nbhelp]")?.focus({ preventScroll: true }); } else document.querySelector<HTMLElement>("[data-nbhelp=on]")?.focus({ preventScroll: true }); return; }
+  const so = t.closest<HTMLElement>("[data-spkok]"); if (so) { void spkAct(ch, "accept", so.dataset.spkok!); return; }
+  const se = t.closest<HTMLElement>("[data-spkedit]"); if (se) { SPK.edit = se.dataset.spkedit!; nbRefresh(); const i = document.getElementById("spkedit") as HTMLInputElement | null; if (i) { i.focus(); i.select(); } return; }
+  if (t.closest("[data-spkcancel]")) { SPK.edit = ""; nbRefresh(); return; }
+  const ss = t.closest<HTMLElement>("[data-spksave]"); if (ss) { const v = (document.getElementById("spkedit") as HTMLInputElement | null)?.value.trim(); if (!v) return; void spkAct(ch, "edit", ss.dataset.spksave!, { name: v }); return; }
+  const sc = t.closest<HTMLElement>("[data-spkconf]"); if (sc) { void spkAct(ch, "confirm", sc.dataset.spkconf!, { person: sc.dataset.spkp }); return; }
   const bo = t.closest<HTMLElement>("[data-bfok]"); if (bo) { void beeFactAct(ch, "approve", Number(bo.dataset.bfok)); return; }
   const bn = t.closest<HTMLElement>("[data-bfno]"); if (bn) { void beeFactAct(ch, "deny", Number(bn.dataset.bfno)); return; }
   const bk = t.closest<HTMLElement>("[data-bfskip]"); if (bk) { beeSkip(ch, Number(bk.dataset.bfskip)); return; }
@@ -3904,6 +4367,10 @@ document.addEventListener("keydown", e => {
     if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); CT.fadd = 0; ctRefresh(); }
     return; }
   if (isNb() && NBUI.menu && e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); const id = NBUI.menu; NBUI.menu = 0; nbRefresh(); document.querySelector<HTMLElement>(`[data-nmore="${id}"]`)?.focus(); return; }
+  if (isNb() && t.id === "spkedit") {
+    if (e.key === "Enter") { e.preventDefault(); (document.querySelector("[data-spksave]") as HTMLElement)?.click(); }
+    if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); SPK.edit = ""; nbRefresh(); }
+    return; }
   if (isNb() && t.id === "bfedit") {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey || !e.shiftKey)) { e.preventDefault(); (document.querySelector("[data-bfsave]") as HTMLElement)?.click(); }
     if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); guarded(() => { BF.edit = 0; nbRefresh(); }); }
@@ -4223,3 +4690,4 @@ if (LIVE) nbSync(main); // one boot read, then reuse the foreground list poll at
 // Once per device after sign-in: "Let 1Helm use your location and microphone" (devperm.ts). It waits by itself for a calm moment
 // (3 s with no input, nothing open, nothing being typed), so it never lands under a tap that's already on its way.
 if (LIVE) setTimeout(() => void dpSheetMaybe(() => S.open || AS.open || !!document.querySelector(".dlgw.on")), 0);
+
