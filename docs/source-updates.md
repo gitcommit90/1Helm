@@ -3,13 +3,13 @@
 ## Memory on Hindsight, Notebook pages, audio conversion and settings defaults
 
 This update reconciles the Worker from `3583747fc673579012edc6d20b6e8d3f911dbc96`
-to `60a9633b2d28d3bfff845d23f8c3d41f1fcf3343` and the web app from
+to `5b746f1072614964a776621c887a464d1d6a1901` and the web app from
 `24c621d7a8506efb2ea8ab5457b6de520a4a4fbe` to
 `b4ea73bddd011f8d2baea92fce93b38e32577f6c`.
 
 Source correspondence:
 
-- Worker: `3583747fc673579012edc6d20b6e8d3f911dbc96` → `60a9633b2d28d3bfff845d23f8c3d41f1fcf3343`.
+- Worker: `3583747fc673579012edc6d20b6e8d3f911dbc96` → `5b746f1072614964a776621c887a464d1d6a1901`.
 - Web: `24c621d7a8506efb2ea8ab5457b6de520a4a4fbe` → `b4ea73bddd011f8d2baea92fce93b38e32577f6c`.
 - Public base: `1247b4d8cb4c13282cd66224eca0ae28e3c7c8ee`.
 
@@ -24,6 +24,7 @@ Changes:
 - Static files requested with a version are cached for a year only when the version matches the Worker's own version. The page starts the first data request before the script downloads, and long answers repaint once per frame.
 - Agent check-ins have an on and off switch that is off by default (migration `0056`). The licensed Cloud ledger now keeps the spending pause preference off unless the person turns it on. A self-hosted usage ledger keeps its earlier default.
 - The licensed modules received the Models page cleanup (retired jobs removed, a catalog of used models only, models chosen elsewhere shown read only), Bee raw transcripts with a speaker review, ambient search grounding and a daily read-only billing check.
+- The licensed Bee sync object gained test hook methods behind its test guard, and the test hook that stores a conversation now cancels delayed deletes of the same document first, as the real sync does.
 - The web app has a Notebook article editor, quieter dictation, Live notes recorded as 16 kHz WAV and an unread dot in a fixed slot of every task row.
 
 Migrations `0051` to `0056` are additive. They add `hs_health`, `hs_rebuild_runs`, `tenants.front_door`, the memory envelope tables, the exact location columns and `agent_checkin_prefs.enabled`. Dev-only diagnostic tables, the hosted OCR Worker, operator modules, the private release and test tooling, `docs/hindsight` and every private configuration remain excluded. The hosted memory server, container and live provider checks were not run for this source update, so it is not a live-provider or deployment-transition acceptance result.

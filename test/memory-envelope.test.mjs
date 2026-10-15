@@ -580,6 +580,12 @@ const T1 = Date.UTC(2026, 9, 14, 16, 2);   // Oct 14 09:02 in Los Angeles
   // clear: documents, rows and transcripts go
   assert.deepEqual(await bs.testConvClear("t1", [501, 502]), { removed: 2 });
   assert.deepEqual([bsql.prepare("SELECT COUNT(*) n FROM convs").get().n, bsql.prepare("SELECT COUNT(*) n FROM speakers WHERE rec IN ('501','502')").get().n, m.R2.has("t/t1/bee/conv/501.json"), m.bank().docs.has("bee:conv:501")], [0, 0, false, false]);
+  // a clear leaves delayed deletes of the document (hs_forget); a later put of the same document must cancel them like the real sync does
+  d1.prepare("INSERT OR REPLACE INTO hs_forget (bank,doc,due,tries) VALUES (?,?,?,0)").run(bs.bank(), "bee:conv:501", Date.now() + 1000);
+  const forgetBefore = d1.prepare("SELECT COUNT(*) n FROM hs_forget WHERE doc='bee:conv:501'").get().n;
+  await bs.testConvPut("t1", conv(501, "2026-10-12T18:00:00Z", "A new text."));
+  assert.equal(forgetBefore, 1); assert.equal(d1.prepare("SELECT COUNT(*) n FROM hs_forget WHERE doc='bee:conv:501' AND bank=?").get(bs.bank()).n, 0, "a put cancels the delayed delete of that document in the bank");
+  await bs.testConvClear("t1", [501]);
   ok("J. dev test hook: any conversation id is stored like a real sync (R2 transcript, convs row, memory, speaker rows), the same label in two recordings never merges, Confirm retains again from the stored transcript, gates and clear");
 }
 

@@ -305,11 +305,24 @@ export class BeeSync extends DurableObject {
     const env = this.env, tid = this.tid(), id = Number(conv?.id); if (!Number.isSafeInteger(id) || id <= 0) throw new Error("conversation id must be a positive integer");
     const body = JSON.stringify(transcriptDoc(conv, hsWriters(env))), key = r2Key(tid, id), bytes = new TextEncoder().encode(body).byteLength;
     await stPut(env, key, body, { httpMetadata: { contentType: "application/json" } }, { check: true, replace: true });
+    // The same step the real sync takes (above): an earlier clear of this document left delayed deletes (hs_forget, after 2 min, 10 min, 30 min and 2 h) that would remove it again.
+    await ensureDeletionTables(env); await env.DB.prepare("DELETE FROM hs_forget WHERE bank=? AND doc=?").bind(this.bank(), docId(id)).run();
     const r = await this.hsBeePut(conv), chars = beeContentOf(env, conv).length;
     this.sql.exec(`INSERT INTO convs (id,start_time,end_time,updated_at,retained_at,r2_key,bytes,chars,at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
       start_time=excluded.start_time,end_time=excluded.end_time,updated_at=excluded.updated_at,retained_at=excluded.retained_at,r2_key=excluded.r2_key,bytes=excluded.bytes,chars=excluded.chars,at=excluded.at`,
       id, msOf(conv.start_time), msOf(conv.end_time), conv.updated_at ?? null, now(), key, bytes, chars, now());
     return { ...(r || {}), conversation: id, r2_key: key, stored: { convs: true, r2: true }, speakers: this.pendingSpeakers().filter((x) => String(x.rec) === String(id)).length };
+  }
+  // The two calls below run General's Resident inside this object. A Durable Object stub cannot be returned to the caller over RPC
+  // (DataCloneError: "Proxy could not be serialized"), so the dev test route (ambient-test.js) must never call hsGeneral() itself.
+  async testHsSearch(tenant, args) {
+    await this.testGuard(tenant);
+    const R = await this.hsGeneral(), r = await R.localTool("ambient_query", args, {});
+    return typeof r === "string" ? JSON.parse(r) : r;
+  }
+  async testHsDrop(tenant, docs) {
+    await this.testGuard(tenant);
+    return (await this.hsGeneral()).hsDrop(docs);
   }
   // The same conversations removed again: General's memory document, the convs row, the speaker rows and the transcript.
   async testConvClear(tenant, ids) {
