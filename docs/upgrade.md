@@ -6,6 +6,23 @@ After reviewing new migration files and changes to `wrangler.example.jsonc`, bri
 
 When changing the channel computer Dockerfile, Wrangler builds a new container image at deploy time; a working Docker daemon is required. Existing D1 and R2 data stay in Cloudflare. Do not import a legacy v1.x Linux database into this Worker: the schema and runtime are different, so use a fresh installation.
 
+## October 15 source update
+
+Apply ordered D1 migrations `0051` through `0056` using the normal migration
+runner. They only add tables and columns, and the Worker also creates its own
+tables when they are missing. Migration `0056` adds the on and off switch for
+agent check-ins. It is off until the owner turns it on in Settings, so a
+deployment does not start asking for check-ins by itself.
+
+Memory now needs a Hindsight service. The example configuration does not set
+`MEMORY`, so memory stays off and nothing changes for an install that never
+turned it on. If you set `MEMORY` to `on` earlier, the old local memory ledger is
+gone and recall stays empty until you add a `HINDSIGHT` binding to your own Hindsight server,
+the secret `HINDSIGHT_API_KEY` and `MEMORY_BACKEND` set to `hindsight`. Existing ledger
+tables stay in storage and are not read. Audio conversion stays off unless
+`AUDIO_CONVERT` is `on`. No new binding, variable or Durable Object migration is
+required otherwise.
+
 ## October 13 source update
 
 Apply ordered D1 migration `0050` using the normal migration runner. It adds the

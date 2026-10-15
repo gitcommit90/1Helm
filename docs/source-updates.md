@@ -1,6 +1,34 @@
-# Source update: 2026-10-13
+# Source update: 2026-10-15
 
-## Saved model settings, background browser jobs and helper coordinators
+## Memory on Hindsight, Notebook pages, audio conversion and settings defaults
+
+This update reconciles the Worker from `3583747fc673579012edc6d20b6e8d3f911dbc96`
+to `60a9633b2d28d3bfff845d23f8c3d41f1fcf3343` and the web app from
+`24c621d7a8506efb2ea8ab5457b6de520a4a4fbe` to
+`b4ea73bddd011f8d2baea92fce93b38e32577f6c`.
+
+Source correspondence:
+
+- Worker: `3583747fc673579012edc6d20b6e8d3f911dbc96` → `60a9633b2d28d3bfff845d23f8c3d41f1fcf3343`.
+- Web: `24c621d7a8506efb2ea8ab5457b6de520a4a4fbe` → `b4ea73bddd011f8d2baea92fce93b38e32577f6c`.
+- Public base: `1247b4d8cb4c13282cd66224eca0ae28e3c7c8ee`.
+
+Changes:
+
+- Hindsight is the only memory. The old local ledger (its rows, embeddings, ranked recall, supersede pass and segment summaries), the upkeep, people and nightly reflection jobs, the Contacts block in the prompt and the forget tool and skill are removed, and a request to forget something is an ordinary turn. When memory is on and the Hindsight service does not answer, the helper says that memory is unavailable and does not guess. An install that never sets `MEMORY` (the example configuration does not) keeps memory off and sees no change. An install that set `MEMORY` to `on` without a Hindsight service binding now has no recall, and the old ledger tables stay in storage and are not read.
+- New memory features are off unless their variable is `on`, and none is in the example configuration. `HS_FOUNDATIONS` gives each bank a template (missions and mental models), cancels queued work before a delete and runs a daily bank health check. `HS_WRITERS` retains every kind of channel content into its bank and can rebuild a bank from stored source. `HS_USE` puts a profile and automatic recall into a turn. `HS_WALLS` lets the person choose whether General reads other channels without asking. `HS_ENVELOPE` adds time, place, people and source to each retained item and reads photo and video capture metadata. All of them need the Hindsight binding, and the later ones need the earlier ones.
+- Notebook pages are written from a channel's own Hindsight mental models, with a profile photo, section editing and a facts box. The web app shows them only when the boot answer sets `flags.notebook_pages`, which the Worker does only when `ENV_NAME` is `dev`.
+- Audio inside files (mp3, Opus, AAC, FLAC, Vorbis and ALAC) can be converted to 16 kHz mono WAV in the Worker when `AUDIO_CONVERT` is `on`. The decoders are Symphonia (MPL-2.0) compiled to WebAssembly from `tools/symphonia-wasm` and opus-decoder (MIT). Licenses and credits are in `THIRD-PARTY-NOTICES.md` and `src/vendor/audio/README.md`.
+- Scanned pages in the prep container job are read by Indra OCR, with pinned wheels and model files that are checked by hash. The hosted OCR Worker and the container image layer that adds screenshot text recognition are not part of the public source, so a screenshot read reports no text unless you install the OCR packages.
+- A file edited by the helper now updates the same Library file, keeps the uploaded original and never creates a second copy with a number in its name. The helper's writing rules follow a plain writing style prompt.
+- Static files requested with a version are cached for a year only when the version matches the Worker's own version. The page starts the first data request before the script downloads, and long answers repaint once per frame.
+- Agent check-ins have an on and off switch that is off by default (migration `0056`). The licensed Cloud ledger now keeps the spending pause preference off unless the person turns it on. A self-hosted usage ledger keeps its earlier default.
+- The licensed modules received the Models page cleanup (retired jobs removed, a catalog of used models only, models chosen elsewhere shown read only), Bee raw transcripts with a speaker review, ambient search grounding and a daily read-only billing check.
+- The web app has a Notebook article editor, quieter dictation, Live notes recorded as 16 kHz WAV and an unread dot in a fixed slot of every task row.
+
+Migrations `0051` to `0056` are additive. They add `hs_health`, `hs_rebuild_runs`, `tenants.front_door`, the memory envelope tables, the exact location columns and `agent_checkin_prefs.enabled`. Dev-only diagnostic tables, the hosted OCR Worker, operator modules, the private release and test tooling, `docs/hindsight` and every private configuration remain excluded. The hosted memory server, container and live provider checks were not run for this source update, so it is not a live-provider or deployment-transition acceptance result.
+
+## Saved model settings, background browser jobs and helper coordinators (2026-10-13)
 
 This update reconciles the Worker from `f551528c4b1188db5f26c2373a53a7235812fb46`
 to `3583747fc673579012edc6d20b6e8d3f911dbc96` and the web app from
