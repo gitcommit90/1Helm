@@ -7,7 +7,8 @@
 import { PRIVACY_LEVELS } from "../privacy.js";
 import { modelCatalog, validCatalogRecord, validModelId } from "./model-catalog.js";
 import { JOBS, JOB_IDS, JOB_KINDS, GROUPS, takesChat, canChat, nativeFor, zdrApplies, ModelSettingsError, jobDef, jobSetting, settingsOf, entriesOf, factsOf, zdrBlocked, privacyCoverage } from "./model-jobs.js";
-import { seedFromLegacy, mergeLevels } from "./model-seed.js";
+import { seedFromLegacy, mergeLevels, SEED_FACTS } from "./model-seed.js";
+import { ambientSearchOn } from "../legacy-flags.js";
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const own = (o, k) => Object.prototype.hasOwnProperty.call(o || {}, k);
@@ -28,12 +29,14 @@ function keys(o, expected, path) {
 }
 function validFacts(m, id) {
   if (m?.eligible === true) return validCatalogRecord(m, id);
-  const allowed = ["id", "name", "kinds", "efforts", "quirks", "json", "in_nano"];
+  const allowed = ["id", "name", "kinds", "efforts", "quirks", "json", "in_nano", "formats", "sec_nano"];
   return !!m && typeof m === "object" && m.id === id && Object.keys(m).every((k) => allowed.includes(k)) && typeof m.name === "string" && m.name.length <= 160
     && (m.kinds == null || (Array.isArray(m.kinds) && m.kinds.length <= 8 && m.kinds.every((k) => typeof k === "string" && k.length <= 40)))
     && Array.isArray(m.efforts) && m.efforts.length <= 12 && m.efforts.every((e) => EFFORTS.includes(e))
     && (m.quirks == null || (typeof m.quirks === "object" && Object.entries(m.quirks).every(([k, v]) => QUIRKS.includes(k) && v === true)))
-    && (m.json == null || typeof m.json === "boolean") && (m.in_nano == null || (Number.isFinite(m.in_nano) && m.in_nano >= 0 && m.in_nano <= 100000));
+    && (m.json == null || typeof m.json === "boolean") && (m.in_nano == null || (Number.isFinite(m.in_nano) && m.in_nano >= 0 && m.in_nano <= 100000))
+    && (m.formats == null || (Array.isArray(m.formats) && m.formats.length >= 1 && m.formats.length <= 12 && m.formats.every((f) => typeof f === "string" && /^[a-z0-9]{2,8}$/.test(f))))
+    && (m.sec_nano == null || (Number.isFinite(m.sec_nano) && m.sec_nano >= 0 && m.sec_nano <= 1000000));
 }
 // Whether a model can run a kind of job: models for the kind's own call, plus (for any-model kinds) every model that can chat.
 export const kindOk = (meta, kind) => meta?.eligible === true ? takesChat(kind) : Array.isArray(meta?.kinds) && (meta.kinds.includes(kind.pick) || (!!kind.any && (canChat(meta) || nativeFor(meta, kind))));
@@ -71,6 +74,14 @@ export function validateModelSettings(config, { fill = false } = {}) {
   return config;
 }
 
+// The saved catalog holds only models that some job uses as its model or as a fallback (Captain, 2026-10-15). A model that a save leaves unused
+// drops out. The picker can still add it again: SEED_FACTS holds the facts of the speech, search, picture and Cloudflare models, and chat
+// models come from OpenRouter's live catalog.
+export function pruneCatalog(config) {
+  const used = new Set(); for (const j of Object.values(config.jobs || {})) if (j) for (const e of entriesOf(j)) used.add(e.model);
+  return { ...config, catalog: Object.fromEntries(Object.entries(config.catalog || {}).filter(([id]) => used.has(id))) };
+}
+
 // ---- storage ----
 const dbOf = (env) => env?.DB?.withSession ? env.DB.withSession("first-primary") : env?.DB;
 const LAST_GOOD = new Map();   // per environment: the last settings that were read and checked, used only if a later read fails
@@ -91,8 +102,16 @@ async function insertRow(env, revision, config, by, action) {
     .bind(env_, revision + 1, JSON.stringify(config), Date.now(), String(by || "admin").slice(0, 254), action, env_, revision).run();
   return Number(r?.meta?.changes) === 1;
 }
+// A saved version can name jobs that a later release removed (for example the memory jobs). The validator requires exactly the jobs that exist
+// now, so reading drops any job id that is not in the registry, and nothing else is changed. The stored row is left as it is.
+export function withoutRetiredJobs(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || !raw.jobs || typeof raw.jobs !== "object" || Array.isArray(raw.jobs)) return raw;
+  const known = new Set(JOB_IDS), dropped = Object.keys(raw.jobs).filter((id) => !known.has(id));
+  if (!dropped.length) return raw;
+  return { ...raw, jobs: Object.fromEntries(Object.entries(raw.jobs).filter(([id]) => known.has(id))) };
+}
 function configOf(row) {
-  try { return validateModelSettings(JSON.parse(row.config)); }
+  try { return validateModelSettings(withoutRetiredJobs(JSON.parse(row.config))); }
   catch { throw new ModelSettingsError("Stored model settings are invalid. Restore an earlier version from Models. Nothing was sent."); }
 }
 // The earlier slot-based settings, read once to carry over what an environment had chosen. Absent table, row or reset = no saved choices.
@@ -140,14 +159,14 @@ export async function readModelSettings(env) {
     for (let tries = 0; tries < 3; tries++) {
       let row = await readRow(env);
       if (!row) { await firstVersion(env); row = await readRow(env); if (!row) continue; }
-      let config; const raw = JSON.parse(row.config);
+      let config; const stored = JSON.parse(row.config), raw = withoutRetiredJobs(stored), retired = Object.keys(stored?.jobs || {}).filter((id) => !JOB_IDS.includes(id));
       try { config = validateModelSettings(raw); }
       catch {
         // Only jobs missing from an otherwise valid version are filled in; any other fault is reported, never repaired by guessing.
         try { config = validateModelSettings(raw, { fill: true }); } catch { throw new ModelSettingsError("Stored model settings are invalid. Restore an earlier version from Models. Nothing was sent."); }
         if (JOB_IDS.some((id) => !config.jobs[id])) { await addMissingJobs(env, row, config); continue; }
       }
-      const out = { revision: Number(row.revision), config };
+      const out = { revision: Number(row.revision), config, ...(retired.length ? { retired } : {}) };
       LAST_GOOD.set(key, out);
       return out;
     }
@@ -177,6 +196,8 @@ const jobSettings = async (env) => env?.MODEL_SETTINGS || (env?.ONEHELM_EE === "
 export async function jobModel(env, id) { return jobSetting(await jobSettings(env), id).model; }
 // The saved model of a job and its estimated cost in nano-dollars per input token (a model's saved facts), for jobs billed by size.
 export async function jobCost(env, id) { const s = await jobSettings(env), model = jobSetting(s, id).model; return { model, in_nano: Number(s.catalog?.[model]?.in_nano) || 240 }; }
+// The saved facts of every model (name, kinds, accepted audio formats, price per audio second, ...), for callers that check one model.
+export async function modelFacts(env) { return (await jobSettings(env)).catalog || {}; }
 // The saved main model and fallbacks of one job, in order.
 export async function jobModels(env, id) { return entriesOf(jobSetting(await jobSettings(env), id)).map((e) => e.model); }
 
@@ -186,7 +207,8 @@ export async function jobModels(env, id) { return entriesOf(jobSetting(await job
 function choicesOf(config) {
   const out = {}, kinds = new Map();
   for (const k of Object.values(JOB_KINDS)) { out[k.pick] = []; kinds.set(k.pick, k); }
-  for (const [id, m] of Object.entries(config.catalog)) {
+  const known = Object.fromEntries(Object.entries(SEED_FACTS).map(([id, f]) => [id, { id, ...clone(f) }]));
+  for (const [id, m] of Object.entries({ ...known, ...config.catalog })) {
     for (const [pick, kind] of kinds) {
       if (!kindOk(m, kind) || (zdrApplies(kind, m) && zdrBlocked(config, id))) continue;
       out[pick].push({ id, name: m.name || id, efforts: m.efforts || [], validated: m.eligible === true, chat: canChat(m) });
@@ -194,11 +216,15 @@ function choicesOf(config) {
   }
   return out;
 }
-export const modelSettingsOptions = (config) => ({ groups: GROUPS, jobs: JOBS, kinds: JOB_KINDS, levels: PRIVACY_LEVELS, choices: choicesOf(config) });
+// Jobs the Models page doesn't show because nothing runs them in this environment. Their saved setting stays in the settings.
+// embed_memory is used only by the ambient passage index (ambient-index.js), which LEGACY_AMBIENT_SEARCH can turn off.
+export const hiddenJobs = (env) => ambientSearchOn(env) ? [] : ["embed_memory"];
+export const modelSettingsOptions = (config, hidden = []) => ({ groups: GROUPS, jobs: JOBS.filter((j) => !hidden.includes(j.id)), kinds: JOB_KINDS, levels: PRIVACY_LEVELS, choices: choicesOf(config) });
 export async function modelSettingsView(env) {
   const db = dbOf(env), s = await readModelSettings(env);
   const history = (await db.prepare(`SELECT revision,at,by,action FROM ${TABLE} WHERE environment=? ORDER BY revision DESC LIMIT 30`).bind(settingsEnvironment(env)).all()).results || [];
-  return { environment: settingsEnvironment(env), revision: s.revision, config: s.config, stale: !!s.stale, options: modelSettingsOptions(s.config), history,
+  const hidden = hiddenJobs(env);
+  return { environment: settingsEnvironment(env), revision: s.revision, config: s.config, stale: !!s.stale, hidden, options: modelSettingsOptions(s.config, hidden), history,
     effective: "New tasks and background calls use these settings. Running tasks keep the model and reasoning level they started with. Privacy restrictions and explicit operator revocations still apply immediately." };
 }
 
@@ -227,22 +253,28 @@ async function validatedSelection(env, config, current) {
       if (!validModelId(id)) fail("Invalid model ID.");
       live ||= new Map((await modelCatalog(env)).models.map((m) => [m.id, m]));
       const m = live.get(id); if (!m?.eligible) fail(`${id}: ${m?.reasons?.join("; ") || "not available in OpenRouter's catalog"}.`);
-      next.catalog[id] = m;
+      next.catalog[id] = own(SEED_FACTS, id) && SEED_FACTS[id].quirks ? { ...m, quirks: clone(SEED_FACTS[id].quirks) } : m;   // known quirks (e.g. no temperature) are kept when a known model is added again
     } else {
       if (!looseId(id)) fail("Invalid model ID.");
-      next.catalog[id] = { id, name: id, kinds: [pick], efforts: [] };
+      // A speech model the first-run data describes keeps its name, kinds, accepted formats and price (model-seed.js SEED_FACTS).
+      const known = own(SEED_FACTS, id) && SEED_FACTS[id].kinds?.includes(pick) ? { id, ...clone(SEED_FACTS[id]) } : null;
+      next.catalog[id] = known || { id, name: id, kinds: [pick], efforts: [] };
     }
   }
-  // Drop catalog entries nothing uses any more, except facts the first version carried (they stay selectable).
-  const used = new Set(); for (const j of Object.values(next.jobs)) if (j) for (const e of entriesOf(j)) used.add(e.model);
-  for (const [id, m] of Object.entries(next.catalog)) if (m.eligible === true && !used.has(id)) delete next.catalog[id];
-  return validateModelSettings(next);
+  return validateModelSettings(pruneCatalog(next));
 }
 export async function saveModelSettings(env, { revision, config }, by) {
   revisionOf(revision);
   // Stale writes fail before fetching a changing external catalog (the atomic write checks again).
   const current = await readModelSettings(env); if (current.revision !== revision) fail("Settings changed in another window. Reload before saving.", 409);
   return write(env, revision, await validatedSelection(env, config, current.config), by, "save");
+}
+// For admin scripts: saves a complete settings object (jobs and model facts), checked by the same validator and written as a new version.
+// The Models page never uses it, because the page may not supply model facts.
+export async function saveFullModelSettings(env, { revision, config }, by, action = "admin") {
+  revisionOf(revision);
+  const current = await readModelSettings(env); if (current.revision !== revision) fail("Settings changed in another window. Reload before saving.", 409);
+  return write(env, revision, validateModelSettings(pruneCatalog(withoutRetiredJobs(config))), by, String(action).slice(0, 120));
 }
 export async function restoreModelSettings(env, { revision, restore_revision }, by) {
   revisionOf(restore_revision);

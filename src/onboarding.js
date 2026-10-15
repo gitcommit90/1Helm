@@ -1,3 +1,4 @@
+import { ONBOARD_STATIC_CSS_V, ONBOARD_STATIC_JS_V } from "./asset-version.js";
 import { pageDialog } from "./page-dialog.js";
 import { US_ONLY as US_ONLY_MSG } from "./ee/index.js";
 import { includedGb, fmtGb } from "./storage.js";
@@ -13,7 +14,7 @@ const helperChoices = [
 
 function shell(title, body, { narrow = false, script = true } = {}) {
   return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>${h(title)} · 1Helm</title><meta name="robots" content="noindex"><meta name="theme-color" content="#f3f2ef"><link rel="icon" type="image/png" href="/1helm-icon-64.png"><link rel="apple-touch-icon" href="/1helm-sailboat.png"><link rel="stylesheet" href="/onboard-static/style.css?v=3">${script ? '<script defer src="/onboard-static/app.js?v=2"></script>' : ""}</head>
+<title>${h(title)} · 1Helm</title><meta name="robots" content="noindex"><meta name="theme-color" content="#f3f2ef"><link rel="icon" type="image/png" href="/1helm-icon-64.png"><link rel="apple-touch-icon" href="/1helm-sailboat.png"><link rel="stylesheet" href="/onboard-static/style.css?v=${ONBOARD_STATIC_CSS_V}">${script ? `<script defer src="/onboard-static/app.js?v=${ONBOARD_STATIC_JS_V}"></script>` : ""}</head>
 <body><div class="ambient one"></div><div class="ambient two"></div><main class="shell${narrow ? " narrow" : ""}"><a class="brand" href="/" aria-label="1Helm home"><img src="/1helm-icon.png" alt=""><span>1Helm</span></a>${body}</main></body></html>`, {
     headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex" },
   });

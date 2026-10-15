@@ -109,7 +109,7 @@ export async function runBrowserTask(res, C, a, tc, { guard, ownerToken = null, 
   // Dev test workspace (test-model.js): no decider call; the test model (via orFetch, which pins it) answers the same questions as JSON.
   const tm = await testModelFor(env, meta.tenant);
   // Decision shadow (dev only, decision-shadow.js; off while the decider IS the shadow model, i.e. by default): the same state + questions
-  // go to Perplexity's decider next to the real decider's first try (DECIDER_MODEL, e.g. Jev); its answer is only recorded. One step on
+  // go to Perplexity's decider next to the real decider's first try (the saved request sorter model); its answer is only recorded. One step on
   // the decider's own trajectory: what the shadow picks is never done. With the test model deciding (both_shadow), the decider (raced
   // against JEV_PROBE_MS) and Perplexity are both probes on the state the decider would have had; the test model's pick is what's
   // carried out, as before. Not billed to the person.

@@ -9,14 +9,12 @@ export const BACKGROUND_LIMITS = Object.freeze({
   sidecar_card: limits(1600),
   ambient_extract: limits(3000),
   ambient_review: limits(3000),
-  people_verify: limits(6000),
-  reflect_verify: limits(6000),
 });
 export const backgroundPolicy = role => BACKGROUND_LIMITS[role] || null;
 export function backgroundRole(kind) {
   return ({ "card-label": "label", "live-notes-note": "notes", "live-notes-refine": "notes_refine",
     "live-notes-final": "notes_final", "sidecar-card": "sidecar_card", "ambient-extract": "ambient_extract",
-    "ambient-review": "ambient_review", "memjob-people-verify": "people_verify", "memjob-reflect-verify": "reflect_verify" })[kind] || null;
+    "ambient-review": "ambient_review" })[kind] || null;
 }
 // Conservative reservation at the existing managed $3/$15-per-million ceiling.
 // UTF-8 bytes upper-bound source tokens; framing allowance includes chat/schema

@@ -18,6 +18,8 @@ import { linkDisconnect } from "./ee/index.js";
 import { openSecret } from "./sentinel.js";
 import { stDeleteListed } from "./storage.js";
 import { boundedJson, BodyTooLargeError } from "./bounded-body.js";
+import { hsEnvelope } from "./hs-flag.js";
+import { dedupeForgetDocs, addTombstones } from "./memory-sources.js";
 
 const GENERAL = "main";
 const now = () => Date.now();
@@ -89,6 +91,20 @@ export async function hsForgetDocs(env, bank, docs) {
   for (const d of docs) await env.DB.prepare("INSERT INTO hs_forget (bank,doc,due,tries) VALUES (?,?,?,0) ON CONFLICT(bank,doc) DO UPDATE SET due=excluded.due, tries=0").bind(bank, d, now()).run();
   return hsForgetDue(env, { bank });
 }
+// The one function every delete of memory documents goes through (Library, Notebook, contacts, imports, chats, Bee).
+// With HS_ENVELOPE on, the deleted documents give up their dedupe records (Captain 2026-10-14, decision 8: a later upload of the same file
+// is stored again), and a deleted import document ("imp:") leaves a tombstone that only an automatic re-sync respects (o.tombstone false:
+// forgetting a whole source or channel leaves none). Then the documents are deleted from the bank now and again later (hsForgetDocs).
+// o.hindsight false: only the D1 records are cleared (the Resident's writers are off, so its bank is not touched).
+export async function forgetMemoryDocs(env, tenant, channel, docs, o = {}) {
+  const list = [...new Set((docs || []).filter(Boolean).map(String))]; if (!list.length) return 0;
+  if (hsEnvelope(env) && tenant && channel) {
+    try { await dedupeForgetDocs(env, tenant, channel, list); } catch (e) { console.log("dedupe forget", e.message); }
+    if (o.tombstone !== false) try { await addTombstones(env, tenant, channel, list); } catch (e) { console.log("tombstone", e.message); }
+  }
+  if (o.hindsight === false || !hsOn(env)) return 0;
+  return hsForgetDocs(env, bankId(env, tenant, channel), list);
+}
 // Due documents: delete (404 is fine), then schedule the next re-check; after the last one the row goes.
 export async function hsForgetDue(env, { bank = null, limit = 200 } = {}) {
   if (!hsOn(env)) return 0; await ensureDeletionTables(env);
@@ -124,13 +140,13 @@ export async function deleteSession(env, tenantId, slug, sessionId, { reason = "
   try {
     // 1. What only the object knows, saved before its rows go: Hindsight items, texted cards (D1).
     const inv = await R.sessionInventory(sid);
-    const bank = hsOn(env) ? bankId(env, tenantId, slug) : null;
     job.meta.counts ||= {};
     job.meta.counts.hindsight_docs = (job.meta.counts.hindsight_docs || 0) + inv.hsDocs.length;
-    if (bank) await hsForgetDocs(env, bank, inv.hsDocs);
+    await forgetMemoryDocs(env, tenantId, slug, inv.hsDocs);
     const d1 = await deleteSessionD1(env, tenantId, slug, sid, inv);
     // 2. The chat itself, inside the channel's object (files out of R2 first).
     const r = await R.deleteSessionData(sid);
+    if (r.hsFileDocs?.length) { job.meta.counts.hindsight_docs += r.hsFileDocs.length; await forgetMemoryDocs(env, tenantId, slug, r.hsFileDocs); }   // HS_WRITERS: files that went with the chat
     // 3. A task started from a plan in this chat, in another channel, loses its excerpt and its link back here.
     try { for (const c of await archive(env, tenantId).channels()) { const s = c.slug || c.name; if (s !== slug) await resident(env, tenantId, s).forgetOriginOf(sid); } } catch (e) { console.log("forget origin", e.message); }
     const counts = { ...numbersOnly(r.counts), ...d1, hindsight_docs: job.meta.counts.hindsight_docs, kept_files: r.kept.length, removed_from_computer: r.removed_from_computer };
@@ -167,7 +183,7 @@ async function deleteSessionD1(env, tid, slug, sid, inv) {
 export async function deleteNote(env, tenantId, slug, channelId, noteId) {
   const r = await archive(env, tenantId).noteDelete(channelId, noteId);
   const m = await resident(env, tenantId, slug).noteForget(String(noteId));
-  if (hsOn(env)) await hsForgetDocs(env, bankId(env, tenantId, slug), m.hsDocs).catch((e) => console.log("note forget", e.message));
+  await forgetMemoryDocs(env, tenantId, slug, m.hsDocs).catch((e) => console.log("note forget", e.message));
   return { ...r, ok: true, memory_rows: m.rows };
 }
 
@@ -184,12 +200,13 @@ async function wipeChannelEverywhere(env, job, tid, slug, cid, prefix = "") {
     if (!hsOn(env)) return 0;
     const r = await forgetChannel(env, tid, slug);
     await DB.prepare("DELETE FROM hs_forget WHERE bank=?").bind(bankId(env, tid, slug)).run().catch(() => {});
+    await DB.prepare("DELETE FROM hs_rebuild_runs WHERE bank=?").bind(bankId(env, tid, slug)).run().catch(() => {});   // HS_WRITERS: a channel deleted mid rebuild no longer counts as a running one
     return r.deleted;
   });
   await step(env, job, k("d1"), async () => {
     const out = {};
     for (const [t, q] of [["resident_schedules", "DELETE FROM resident_schedules WHERE tenant_id=? AND channel=?"], ["texted_cards", "DELETE FROM cards WHERE tenant_id=? AND channel=?"], ["router_shadow", "DELETE FROM router_shadow WHERE tenant_id=? AND channel=?"], ...(env.ENV_NAME === "dev" ? [["decision_shadow", "DELETE FROM decision_shadow WHERE tenant_id=? AND channel=?"], ["router_lab_runs", "DELETE FROM router_lab_runs WHERE tenant_id=? AND channel=?"], ["router_lab_incumbents", "DELETE FROM router_lab_incumbents WHERE tenant_id=? AND channel=?"]] : []),
-      ["link_purchases", "DELETE FROM link_purchases WHERE tenant_id=? AND channel=?"], ["approval_policy", "DELETE FROM approval_policy WHERE tenant_id=? AND scope='channel' AND scope_key=?"]])
+      ["link_purchases", "DELETE FROM link_purchases WHERE tenant_id=? AND channel=?"], ["memory_dedupe", "DELETE FROM memory_dedupe WHERE tenant_id=? AND channel=?"], ["memory_tombstones", "DELETE FROM memory_tombstones WHERE tenant_id=? AND channel=?"], ["approval_policy", "DELETE FROM approval_policy WHERE tenant_id=? AND scope='channel' AND scope_key=?"]])
       out[t] = Number((await DB.prepare(q).bind(tid, slug).run().catch(() => ({ meta: {} }))).meta?.changes || 0);
     // Share links of its files, offers prepared in it, and pages published from it (bytes first, then the row).
     out.share_links = Number((await DB.prepare("DELETE FROM share_links WHERE tenant_id=? AND channel=?").bind(tid, slug).run().catch(() => ({ meta: {} }))).meta?.changes || 0);
@@ -281,6 +298,7 @@ async function deleteTenantD1(env, tid, m, reason = "person") {
   // Deleted some other way while on hold (Delete account): the hold ends here, with no address kept and no emails (pastdue.js).
   if (reason !== "unpaid") out.payment_hold = Number((await DB.prepare("UPDATE payment_holds SET state='deleted', deleted_at=?, email='', slug='', updated_at=? WHERE tenant_id=? AND state IN ('unpaid','paid')").bind(now(), now(), tid).run().catch(() => ({ meta: {} }))).meta?.changes || 0);
   out.hs_forget = Number((await DB.prepare("DELETE FROM hs_forget WHERE bank LIKE ?").bind(`${bankId(env, tid, "x").slice(0, -1)}%`).run().catch(() => ({ meta: {} }))).meta?.changes || 0);
+  await DB.prepare("DELETE FROM hs_rebuild_runs WHERE bank LIKE ?").bind(`${bankId(env, tid, "x").slice(0, -1)}%`).run().catch(() => {});   // HS_WRITERS: the account's rebuild rows
   out.child_jobs = Number((await DB.prepare("DELETE FROM deletion_jobs WHERE tenant_id=? AND kind<>'account'").bind(tid).run()).meta?.changes || 0);
   if (m.user) out.sessions = Number((await DB.prepare("DELETE FROM sessions WHERE user_id=?").bind(m.user).run()).meta?.changes || 0);
   if (m.user) out.email_changes = Number((await DB.prepare("DELETE FROM email_changes WHERE user_id=?").bind(m.user).run().catch(() => ({ meta: {} }))).meta?.changes || 0);   // account.js

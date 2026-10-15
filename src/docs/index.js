@@ -26,7 +26,7 @@ export const DOCS = [
   { name: "security", summary: "verified security answers: encryption in transit and at rest, HTTPS and TLS, encrypted backups and tested recovery, saved credentials", md: security },
   { name: "1helm", summary: "what 1Helm is: one helper, channels and tasks, plans, billing, storage and canceling, which AI models answer, the app's main parts", md: product },
   { name: "client-surfaces", summary: "the web app on a computer and a phone, every Settings section, notifications, Report an issue, Stop and automatic pauses, plans, Activity, to-dos, focus timer, send later, dictation", md: surfaces },
-  { name: "memory", summary: "what you remember and where, the Notebook, Contacts (import, merge), the work log, General vs other channels, how to correct, forget or delete something", md: memory },
+  { name: "memory", summary: "what you remember and where, the Notebook, Contacts (import, merge), the work log, General vs other channels, how to correct or delete something", md: memory },
   { name: "connectors", summary: "connecting apps (Gmail, Google Calendar, Slack and more), finding an app and offering to connect it, several accounts and account notes, which account to check, disconnecting", md: connectors },
   { name: "browser", summary: "your browser and web search: what it reaches, signing in, watching and taking over, downloads, what it can't do", md: browser },
   { name: "payments-and-purchases", summary: "buying things with Link: the steps, approvals, the one-time card, refunds and cancellations", md: payments },

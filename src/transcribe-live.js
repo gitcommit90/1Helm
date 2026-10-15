@@ -1,5 +1,10 @@
-// Genuine streaming composer dictation. Audio/transcripts live only in this socket, never storage or logs.
-import { ENDPOINTS, endpointOk, privacyOf } from './privacy.js';
+// Live composer dictation. Audio/transcripts live only in this socket, never storage or logs. The saved job "live_dictation" lists
+// its models in order (AssemblyAI Universal-3.6 Pro, then Deepgram Nova 3, as chosen by the Captain on 2026-10-15). The first one the
+// account's AI data privacy setting allows runs the session. AssemblyAI takes whole WAV files only, so it runs through
+// transcribe-live-chunks.js (the audio cut at pauses into short chunks); Deepgram Nova 3 is a WebSocket that returns words while
+// they are spoken, and it is the fallback when AssemblyAI isn't allowed, can't be used, or fails during the session.
+import { ENDPOINTS, endpointOk, eligibleHosts, privacyOf } from './privacy.js';
+// transcribe-live-chunks.js, transcribe.js and model-settings.js are imported only where they are used, so a Deepgram-only session loads none of them.
 export const PCM_SECOND = 32000, WINDOW_BYTES = PCM_SECOND * 60;
 const BURST_BYTES = PCM_SECOND * 2, STARTUP_BYTES_MAX = PCM_SECOND * 8;
 // Workers AI Nova-3 realtime: $0.0092/audio minute, usual 15% markup (2026-10-11).
@@ -51,32 +56,55 @@ export async function transcribeLive(req, env, ledger, { tenant, look = false } 
   if (req.method !== 'GET') return fail(405, 'Use a WebSocket connection.');
   if (req.headers.get('Origin') !== new URL(req.url).origin) return fail(403, 'Open dictation from this app.');
   if (req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return fail(426, 'A WebSocket connection is required.');
-  if (!env.AIG_TOKEN || !env.AIG_ID || !env.CF_ACCOUNT_ID) return fail(503, 'Live dictation is unavailable.');
-  const liveModel = deps.liveModel || await (await import('./ee/index.js')).jobModel(env, 'live_dictation');   // the saved model of the job "live_dictation"
-  if (!endpointOk(ENDPOINTS.transcription[liveModel]?.['cloudflare-workers-ai'], await privacyOf(env, tenant))) return fail(451, 'Live dictation is unavailable with your privacy setting.');
+  const settings = deps.liveModel ? null : await import('./ee/index.js');
+  const models = deps.liveModel ? [deps.liveModel] : await settings.jobModels(env, 'live_dictation');   // the saved model of the job "live_dictation", then its fallback
+  const level = await privacyOf(env, tenant), gatewayOk = !!(env.AIG_TOKEN && env.AIG_ID && env.CF_ACCOUNT_ID);
+  const routes = []; let blocked = false;
+  for (const model of models) {
+    const cf = ENDPOINTS.transcription[model]?.['cloudflare-workers-ai'], deepgram = !!cf;   // a model registered on Workers AI is a streaming WebSocket; any other is a whole-recording model
+    const allowed = deepgram ? endpointOk(cf, level) : eligibleHosts(model, level, { modality: 'transcription' }).length > 0;   // only a registered endpoint, never a guess
+    if (!allowed) { blocked = true; continue; }
+    if (deepgram ? gatewayOk : !!env.OPENROUTER_API_KEY) routes.push({ model, deepgram });
+  }
+  if (!routes.length) return blocked ? fail(451, 'Live dictation is unavailable with your privacy setting.') : fail(503, 'Live dictation is unavailable.');
+  const primary = routes[0], fallbackRoute = primary.deepgram ? null : routes.find(r => r.deepgram) || null;
   const id = `dictation:${crypto.randomUUID()}`;
   ledger = boundedDictationLedger(ledger, deps);
   let acquired = false, reserveAttempted = false, upstream;
+  // A WebSocket to Deepgram's Nova-3 through the AI gateway (accepted), or throws.
+  const openDeepgram = async model => {
+    const spec = liveProviderRequest(env, model), controller = new AbortController();
+    // The fetch signal remains associated with its upgraded WebSocket. AbortSignal.timeout
+    // would therefore kill healthy dictation at 15s; clear a connection-only timer on upgrade.
+    const connectTimer = setTimeout(() => controller.abort(), 15000);
+    let response;
+    try { response = await (deps.fetch || fetch)(spec.url, { headers: spec.headers, signal: controller.signal }); }
+    finally { clearTimeout(connectTimer); }
+    const socket = response.webSocket;
+    if (response.status !== 101 || !socket) { try { socket?.close(); } catch {} throw new Error('upgrade'); }
+    socket.accept(); return socket;
+  };
   try {
     acquired = true; // Clean up even if acquisition committed but its acknowledgement was lost.
     if (!(await ledger.dictationLease(id)).ok) return fail(409, 'Dictation is already open in another tab.');
     reserveAttempted = true;
     const hold = await ledger.reserve(`${id}:0`, LIVE_MINUTE_NANO);
     if (!hold.ok) { await ledger.dictationLease(id, true); return fail(402, 'Your usage allowance is unavailable.'); }
-    // The fetch signal remains associated with its upgraded WebSocket. AbortSignal.timeout
-    // would therefore kill healthy dictation at 15s; clear a connection-only timer on upgrade.
-    const spec = liveProviderRequest(env, liveModel), controller = new AbortController();
-    const connectTimer = setTimeout(() => controller.abort(), 15000);
-    let response;
-    try { response = await (deps.fetch || fetch)(spec.url, { headers: spec.headers, signal: controller.signal }); }
-    finally { clearTimeout(connectTimer); }
-    upstream = response.webSocket;
-    if (response.status !== 101 || !upstream) throw new Error('upgrade');
+    if (primary.deepgram) {
+      upstream = await openDeepgram(primary.model);
+    } else {
+      // Gateway payload logging is off for live dictation even on dev: audio and text stay in this socket.
+      // The saved settings are read once here (a snapshot), so each chunk's call doesn't read them again.
+      const { ChunkProvider } = await import('./transcribe-live-chunks.js'), { STT_NANO_PER_SEC } = await import('./transcribe.js');
+      const snap = await (settings || await import('./ee/index.js')).modelSettingsEnv(env), quiet = Object.assign(Object.create(snap), { AIG_LOG_PAYLOADS: '0' }), facts = snap.MODEL_SETTINGS?.catalog?.[primary.model];
+      upstream = new ChunkProvider({ model: primary.model, env: quiet, meta: { tenant, kind: 'live-dictation' }, rate: Number(facts?.sec_nano) || STT_NANO_PER_SEC, liveCharge, tryMs: deps.chunkTryMs,
+        stt: deps.stt, openFallback: fallbackRoute ? () => openDeepgram(fallbackRoute.model) : null });
+    }
     const [client, server] = Object.values(new (deps.WebSocketPair || WebSocketPair)());
     // Workers compatibility dates >=2026-03-17 default binary frames to Blob.
     // Set this before accept so byte caps/accounting see PCM ArrayBuffers from the first frame.
     server.binaryType = 'arraybuffer';
-    upstream.accept(); server.accept();
+    if (primary.deepgram) upstream.accept(); server.accept();
     // Capture may begin while this authenticated handshake is in flight. Only
     // measured server setup time earns a bounded one-time catch-up allowance.
     const startupAudioBytes = Math.floor(Math.min(STARTUP_BYTES_MAX, BURST_BYTES + Math.max(0, now() - startedAt) * PCM_SECOND / 1000) / 2) * 2;
@@ -98,12 +126,14 @@ export function bridgeDictation(client, provider, ledger, id, deps = {}) {
   let queued = 0, chain = Promise.resolve(), closing = false, stopping = false, finished = null, timer, flushTimer;
   let segment = null, revision = 0, finalStart = -1;
   const send = event => { try { client.send(JSON.stringify(event)); } catch {} };
+  // What to settle for this window's audio: Deepgram's per-minute rate, or (a chunked provider) the answers' real cost x 1.15.
+  const charge = () => provider.takeCharge ? provider.takeCharge(LIVE_MINUTE_NANO) : liveCharge(bytes);
   const finish = (message = null) => {
     if (finished) return finished;
     closing = true; clearEvery(timer); clearLater(flushTimer);
     try { provider.close(1000, 'Done'); } catch {}
     finished = (async () => {
-      try { await ledger.settle(`${id}:${seq}`, liveCharge(bytes)); }
+      try { await ledger.settle(`${id}:${seq}`, charge()); }
       finally { await ledger.dictationLease(id, true); }
     })().catch(() => { /* Existing reservation expiry covers a failed settlement; never log content. */ }).finally(() => {
       send(message ? { type: 'error', message } : { type: 'done' });
@@ -119,7 +149,7 @@ export function bridgeDictation(client, provider, ledger, id, deps = {}) {
     leaseAt = now(); return true;
   };
   const rotate = async () => {
-    await ledger.settle(`${id}:${seq}`, liveCharge(bytes));
+    await ledger.settle(`${id}:${seq}`, charge());
     bytes = 0; seq++; windowAt = now();
     if (!(await ledger.reserve(`${id}:${seq}`, LIVE_MINUTE_NANO)).ok) { await finish('Your usage allowance is unavailable. Your text is still here.'); return false; }
     return true;

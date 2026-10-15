@@ -23,6 +23,7 @@
 import { emailChangePage } from "./onboarding.js";
 import { boundedForm, boundedJson, BodyTooLargeError } from "./bounded-body.js";
 import { privacyView, setPrivacy, isPrivacyLevel } from "./privacy.js";   // Settings → General → AI data privacy
+import { hsWalls, frontDoorSet } from "./walls.js";   // HS_WALLS: General's front door setting
 
 const enc = new TextEncoder();
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -101,7 +102,8 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
     catch { return json({ error: 'Spending settings are temporarily unavailable.' }, 503); }
   }
   if (req.method === "GET" && sub === "/api/account")
-    return json({ name: t.first_name || "", email: user.email, pending: await pendingChange(env, user.id), sessions: await listSessions(env, req, user.id), passwordless: true, show_costs: Number(t.show_costs) === 1, shortcuts: shortcutsView(t), ai_privacy: privacyView(t) });
+    return json({ name: t.first_name || "", email: user.email, pending: await pendingChange(env, user.id), sessions: await listSessions(env, req, user.id), passwordless: true, show_costs: Number(t.show_costs) === 1, shortcuts: shortcutsView(t), ai_privacy: privacyView(t),
+      ...(hsWalls(env) ? { front_door_available: true, front_door: Number(t.front_door) === 1 } : {}) });   // HS_WALLS: General's front door (walls.js)
   if (req.method !== "POST") return json({ error: "method" }, 405);
   // CSRF: the session cookie is SameSite=Lax already; on top of that only same-origin JSON is accepted (a cross-site form can't send JSON).
   const origin = req.headers.get("origin");
@@ -133,6 +135,13 @@ export async function accountRoute(req, env, t, user, url, sub, deps = {}) {
       if (!sc) return json({ error: "Those shortcuts aren't valid." }, 400);
       await env.DB.prepare("UPDATE tenants SET shortcuts=?,updated_at=? WHERE id=?").bind(Object.keys(sc).length ? JSON.stringify(sc) : null, at, t.id).run();
       return json({ ok: true, shortcuts: sc });
+    }
+    // HS_WALLS: General's front door. true = General reads other channels without asking; false (default) = it asks with the "Inspect other channels?" card.
+    if (b.front_door !== undefined) {
+      if (!hsWalls(env)) return json({ error: "Nothing to change." }, 400);
+      if (typeof b.front_door !== "boolean") return json({ error: "front_door must be true or false." }, 400);
+      await frontDoorSet(env, t.id, b.front_door);
+      return json({ ok: true, front_door: b.front_door });
     }
     if (typeof b.show_costs !== "boolean") return json({ error: "Nothing to change." }, 400);
     await env.DB.prepare("UPDATE tenants SET show_costs=?,updated_at=? WHERE id=?").bind(b.show_costs ? 1 : 0, at, t.id).run();

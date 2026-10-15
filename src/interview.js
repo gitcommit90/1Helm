@@ -8,6 +8,7 @@ import { boundedJson } from "./bounded-body.js";
 // nothing leaves 1Helm. Progress lives in D1 (interviews, migrations_020_interview.sql) so they can stop and pick up later.
 // The task is never marked done here: the person ticks it themselves (the Captain's done rule).
 import { APP_OPTIONS, NONE, optionsView, getAppsUsed, setAppsUsed } from "./ee/index.js";
+import { hsNoteNotify } from "./hindsight-writers.js";   // HS_WRITERS: the interview's Notebook rows reach the channel's bank like any note
 export const IV_TITLE = "Get to know you";
 export const IV_PREVIEW = "~3 min, all optional. A few quick taps so your helper knows you.";
 export const IV_SRC = "interview";
@@ -257,9 +258,9 @@ export async function interviewApi(req, env, t, url, { json, cf = {}, look = fal
     if (b.op === "answer") {
       const a = normalizeAnswer(q, b, known), texts = rowsFor(q.id, a, known);
       // A new answer replaces the rows this question wrote before (going back and changing it never doubles up).
-      for (const r of prev.rows || []) await A.noteDelete(ch.id, r.id).catch(() => {});
+      for (const r of prev.rows || []) { await A.noteDelete(ch.id, r.id).catch(() => {}); await hsNoteNotify(env, t.id, "main", ch.id, r.id); }
       const rows = [];
-      for (const text of texts) { const n = await A.noteAdd(ch.id, q.sec, text, "human", { src: IV_SRC, q: q.id }); rows.push({ id: String(n.id), sec: q.sec, text: n.content }); }
+      for (const text of texts) { const n = await A.noteAdd(ch.id, q.sec, text, "human", { src: IV_SRC, q: q.id }); rows.push({ id: String(n.id), sec: q.sec, text: n.content }); await hsNoteNotify(env, t.id, "main", ch.id, n.id); }
       answers[q.id] = { ...a, rows, at: Date.now() };
       // The apps question: the account's apps list (apps-used.js). Apps the helper added outside these options stay on it.
       if (q.look === "apps") { const cur = await getAppsUsed(env, t.id); const extra = cur.apps.filter((k) => !APP_OPTIONS.some((o) => o.k === k));

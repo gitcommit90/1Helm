@@ -7,12 +7,13 @@ import { backupControl, isBackupPath } from "./backup-control.js";
 import { enabled as eeEnabled, features as eeFeatures, routeEnabled as eeRouteEnabled } from "./ee/index.js";
 import { tolerantEnv, DO_TRANSIENT_RE, RPC_SKEW_RE, rpcSkew, codeV, isResetErr } from "./do-stub.js";
 import { opsRoute, viewAsGate, viewAsToken } from "./internal-shim.js";
-import { ambientSettingsRoute } from "./ee/index.js";
+import { ambientSettingsRoute, dailyBillingFlag } from "./ee/index.js";
 import { SW_RE, swResponse } from "./pwa.js";   // Web Push service worker (notify.js)
 import { notifApi } from "./notify.js";
 import { meetingsApi, meetingsCron } from "./ee/index.js";   // Meeting reminders for notes (Google Calendar / Outlook → "Take notes?")
 import { reportApi, reportsPage, reportShot } from "./reports.js";
-import { MANIFEST_RE, PWA_ICON_RE, manifestResponse, pwaHead, iconName } from "./pwa.js";
+import { MANIFEST_RE, PWA_ICON_RE, manifestResponse, pwaHead, iconName, DEV_ICON_V } from "./pwa.js";
+import { versionedAsset as versionedAssetFor } from "./asset-version.js";
 import { cardRoute } from "./cards.js";
 import { logoRoute } from "./logo.js";
 import { appLogoRoute } from "./ee/index.js";
@@ -43,7 +44,7 @@ export { UsageLedger };
 export { Sentinel } from "./sentinel.js";
 import { sealSecret, newStandin } from "./sentinel.js";
 import { linkStartConnect, linkStatus, linkDisconnect, linkListPurchases, linkGetPurchase, linkApi } from "./ee/index.js";
-import { beeRoute, beeJobOn, beeJobAlarm, beeLiveOn, beeLiveStopOn, beeOps, beeCron, beePendingFacts, beeNoteEdited, beeNoteDeleted, beeNoteRestored } from "./ee/index.js";   // Settings → Ambient → Bee: pairing, sealed token, /v1/me in a container job
+import { beeRoute, beeJobOn, beeJobAlarm, beeLiveOn, beeLiveStopOn, beeOps, beeCron, beePendingFacts, beePendingSpeakers, beeNoteEdited, beeNoteDeleted, beeNoteRestored } from "./ee/index.js";   // Settings → Ambient → Bee: pairing, sealed token, /v1/me in a container job
 export { BeeSync } from "./ee/index.js";
 export { LiveNotes } from "./ee/index.js";
 export { FilePrep } from "./sidecar.js";   // file sidecars: one object per file version prepares its text in the background
@@ -58,6 +59,7 @@ import { releasesPage, pushRelease, undoRelease, isReleaseAdmin } from "./intern
 import { kanbanProxy } from "./internal-shim.js";
 import { AGE_VERSION, AGE_ERROR, ageOf, ageCookie, agePage, ageNext, recordAge } from "./age-gate.js";
 import { modelsRoute } from "./ee/index.js";
+import { healthCron } from "./hindsight-health.js";
 import { hindsightSelfTest, hsOn, sweepBanks, recall as hsRecall, bankId as hsBankId } from "./hindsight.js";
 import { saveNightlyPool } from "./ee/index.js";
 import { route2On } from "./ee/index.js";
@@ -88,16 +90,21 @@ const PRICE = { in: 150, cached: 30, out: 500 }; // glm-5.3-flash nano$/token (C
 import { useOpenRouter, openRouterChat, OR_MAX_OUT, OR_RESERVE_PRICE, aiOpts } from "./model.js";
 import { byokApi, loadByok, byokChat, BYOK_PLAN, ledgerByok } from "./byok.js";
 import { orStart, orFinish, orCookie, orCookieOf } from "./byok-openrouter.js";   // Sign in with OpenRouter (the BYOK panel's optional button)   // own AI key: the byok plan's settings + routing (+ a backup key on a full plan)
-import { People } from "./people.js";
-import { memjobsCron, REFLECT_ID, REFLECT_MAX } from "./memjobs.js";
+import { People, aliasesFor } from "./people.js";
+import { seenAdd, seenSet, backfillSeen, seenBackfillAdmin, hsWalls } from "./walls.js";   // HS_WALLS: Contacts visibility per channel, General's front door
+import { REFLECT_ID } from "./pinned-notes.js";
+const REFLECT_MAX = 1500;   // the longest "How to work with you" row the retired nightly reflection wrote
+import { pagesRoute, imageKind, PHOTO_MAX_BYTES } from "./notebook-pages.js";   // phase 6: the Notebook as pages
+import { hsNoteNotify, hsContactNotify } from "./hindsight-writers.js";   // HS_WRITERS: Notebook notes and Contacts cards into the channel's bank
 import { permsApi } from "./perms.js";   // Settings → Permissions: level + "Always allow" kinds and sites
 import { nativeSameOrigin, SSH_PERMS } from './native-network.js';
 import { transportGate, transportHeaders, httpsOrigin } from './transport-security.js';
 import { importContacts, photoOf, IMPORT_BATCH_MAX } from "./contacts-import.js";
 import { scrubSecrets, hasSecret, SECRET_NOTE } from "./secrets-scrub.js";   // nosecrets: no password, key, card number or code in the Notebook
-import { locationRoute, saveLocation, cleanFix, pickHome } from "./location.js";   // where the person is: the app's coarse fix, the helper's place line
+import { locationRoute, saveLocation, rawFix } from "./location.js";   // where the person is: the app's coarse fix, the helper's place line
 import { replyRef } from "./reply-to.js";   // Reply on a chat bubble: the quoted message rides with /stream and send-later
 const MARKUP = 1.15;
+import { PLAIN_STYLE } from "./plain-style.js";
 const MAX_OUT = 2048;
 const RESERVED = new Set("admin api app assets auth billing blog cdn demo docs help mail provision security status support www 1helm cloudflare login signup static dev staging test internal captain root system cloud gateway portal account accounts dashboard console design models hooks onboard download downloads manual terms privacy legal pricing about home news careers jobs press email smtp imap ftp ns ns1 ns2 m mobile ios android".split(" "));
 const slugValid = (s) => /^(?=.{3,48}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])$/.test(s) && !s.includes("--") && !/^\d+$/.test(s) && !RESERVED.has(s);
@@ -175,7 +182,12 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "224";
+const APP_V = "225";
+// Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
+// Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
+const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
+// Static files requested with ?v= are cached for a year only when ?v= matches this Worker's own version (src/asset-version.js).
+const versionedAsset = (url, r) => versionedAssetFor(url, r, { APP_V, ONBOARD_V, DEV_ICON_V });
 const archive = (env, tenantId) => env.ARCHIVE.get(env.ARCHIVE.idFromName(`archive:${tenantId}`));
 const IMPORT_PART = 50 * 1024 * 1024;
 export async function handleImport(req, env, tenantId, importId, rest) {
@@ -591,9 +603,10 @@ export default {
     // Own router pool: rebuilt nightly at 2:17 AM PT (09:17 UTC) when the own router is on (dev only for now).
     // Hindsight: delete banks whose account or channel no longer exists. Nightly at 3:17 AM PT (10:17 UTC).
     if (ev.cron === "17 * * * *" && hsOn(env) && new Date(ev.scheduledTime).getUTCHours() === 10) ctx.waitUntil(hsSweep(env).then((r) => console.log("hindsight sweep", JSON.stringify({ ...r, skipped: r.skipped.length }))).catch((e) => console.log("hindsight sweep failed", e.message)));
-    // Background memory jobs (memjobs.js): upkeep (hourly after activity), people (daily), the nightly reflection (3-5 AM their time).
-    // Silent: they change memory only. Off with MEMJOBS="off".
-    if (ev.cron === "17 * * * *" && env.MEMJOBS !== "off") ctx.waitUntil(memjobsCron(env, { residentOf: (tid, ch) => env.RESIDENT.get(env.RESIDENT.idFromName(`res:${tid}:${ch}`)), now: ev.scheduledTime }).then((r) => console.log("memjobs cron", JSON.stringify(r))).catch((e) => console.log("memjobs cron failed", e.message)));
+    // Billing flag (billing-flag.js): once a day, find price_unknown events and turns charged over 10x their list-price estimate. Read-only: no charge changes.
+    if (ev.cron === "17 * * * *" && eeEnabled(env) && new Date(ev.scheduledTime).getUTCHours() === 10) ctx.waitUntil(dailyBillingFlag(env, { since: (ev.scheduledTime || Date.now()) - 864e5, residentOf: (tid, ch) => env.RESIDENT.get(env.RESIDENT.idFromName(`res:${tid}:${ch}`)), ledgerOf: (tid) => ledger(env, tid) }).catch((e) => console.log("billing flag failed", e.message)));
+    // Hindsight bank health (hindsight-health.js, HS_FOUNDATIONS): about one check per bank per day, spread over the hourly runs. Results: /_ops/hs-health.
+    if (ev.cron === "17 * * * *" && hsOn(env)) ctx.waitUntil(healthCron(env, { now: ev.scheduledTime }).then((r) => { if (r.checked || r.errors) console.log("hindsight health", JSON.stringify(r)); }).catch((e) => console.log("hindsight health failed", e.message)));
     // Decision shadow rows (dev only): kept 7 days.
     if (ev.cron === "17 * * * *" && env.ENV_NAME === "dev") ctx.waitUntil(pruneLab(env).then((n) => { if (n) console.log("router lab pruned", n); }).catch((e) => console.log("router lab prune failed", e.message)));
     if (ev.cron === "17 * * * *" && eeEnabled(env) && env.ENV_NAME === "dev") ctx.waitUntil(pruneShadow(env).then((n) => { if (n) console.log("decision shadow pruned", n); }).catch((e) => console.log("decision shadow prune failed", e.message)));
@@ -727,7 +740,7 @@ export default {
       // COMPOSIO_TOOLKIT_VERSION="latest".
       if (env.ASSETS && p === "/app-static/integrations.json" && catalogFile(env) !== "integrations.json") { const u = new URL(req.url); u.pathname = `/app-static/${catalogFile(env)}`; return env.ASSETS.fetch(new Request(u, req)); }
       if ((p === "/onboard/v1/" || p === "/onboard/v1/index.html") && !(await ageAccess(req, env, { allowPending: false })).allowed) return agePage();
-      if (env.ASSETS && (p.startsWith("/app-static/") || p.startsWith("/onboard-static/") || p.startsWith("/onboard/v1/") || p === "/onboard/kit.js" || p === "/onboard/kit.css" || p.startsWith("/fonts/") || p.startsWith("/av/") || p === "/1helm-sailboat.png" || PWA_ICON_RE.test(p))) return env.ASSETS.fetch(req);
+      if (env.ASSETS && (p.startsWith("/app-static/") || p.startsWith("/onboard-static/") || p.startsWith("/onboard/v1/") || p === "/onboard/kit.js" || p === "/onboard/kit.css" || p.startsWith("/fonts/") || p.startsWith("/av/") || p === "/1helm-sailboat.png" || PWA_ICON_RE.test(p))) return versionedAsset(url, await env.ASSETS.fetch(req));
       if (p === "/admin/reconcile") {
         if (req.method !== "POST" || env.ENV_NAME !== "dev" || env.TEST_MODE !== "1" || req.headers.get("origin") !== origin || !isReleaseAdmin(env, await currentUser(req, env)))
           return json({ error: "not found" }, 404);
@@ -1089,9 +1102,9 @@ export default {
         if (sub === "/" ) return classic ? page(`${t.slug} · 1Helm`, workspaceHtml(t, env)) : Response.redirect(appUrl(origin, t, url.search), 302);
         // The v3 app on real data, pointed at this workspace's API.
         if (sub === "/app" || sub === "/app/") return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<link rel="icon" type="image/png" href="${iconName("/1helm-icon-64.png", env.ENV_NAME === "dev")}">${pwaHead(t.slug, env.ENV_NAME === "dev")}<title>1Helm</title><meta name="theme-color" content="#f3f2ef" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#121212" media="(prefers-color-scheme: dark)"><link rel="stylesheet" href="/app-static/style.css?v=${APP_V}"></head>
+<link rel="icon" type="image/png" href="${iconName("/1helm-icon-64.png", env.ENV_NAME === "dev")}">${pwaHead(t.slug, env.ENV_NAME === "dev")}<title>1Helm</title><meta name="theme-color" content="#f3f2ef" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#121212" media="(prefers-color-scheme: dark)"><link rel="preload" href="/fonts/instrument-sans.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/fonts/instrument-serif.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/app-static/style.css?v=${APP_V}"></head>
 <body><nav id="rail"></nav><aside id="side"></aside><main id="stage"></main><div id="m"></div><div id="sheet"></div>
-<script>window.__1HC=${scriptJson({ api: `/w/${t.slug}/api`, slug: t.slug, classic: `/w/${t.slug}/?classic=1`, person: t.first_name || "", email: user.email, support: env.SUPPORT_EMAIL || env.EMAIL_FROM, helper: helperName(t), avatar: Number(t.helper_avatar || 8) })}</script><script type="module" src="/app-static/app.js?v=${APP_V}"></script></body></html>`, { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
+<script>window.__1HC=${scriptJson({ api: `/w/${t.slug}/api`, slug: t.slug, classic: `/w/${t.slug}/?classic=1`, person: t.first_name || "", email: user.email, support: env.SUPPORT_EMAIL || env.EMAIL_FROM, helper: helperName(t), avatar: Number(t.helper_avatar || 8) })}</script><script>${BOOT_EARLY}</script><script type="module" src="/app-static/app.js?v=${APP_V}"></script></body></html>`, { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
         // Deleting a chat, a channel or the account (deletion.js). Before the access check: deleting always works, even unpaid.
         { const dr = await deletionRoute(req, env, t, url, sub); if (dr) return dr; }
         // Settings → General → Your account: name, sign-in email, signed-in devices (account.js). Also before the access check.
@@ -1135,9 +1148,9 @@ export default {
             used_text: storage.used_text, limit_text: storage.limit_text, counted_at: storage.counted_at, notice: storage.notice };
           if (access.reason === "payment_failed" && !look) await pastdueSeen(env, t.id, tzIn);   // its reminder emails use their time zone
           const account = eeEnabled(env)
-            ? { plan: PLANS[planKey(t.plan)].name, plan_key: planKey(t.plan), price: PLANS[planKey(t.plan)].price, ...(t.plan === BYOK_PLAN ? { byok: true } : {}), ...(storage ? { storage } : {}), balance: usd(ls.balance_nano), usagePercent: month ? month.pct : Math.min(100, Math.round(used / granted * 100)), ...(month ? { month } : {}), ...(notice ? { notice } : {}), spend_pauses: gi?.spend_pauses !== false, shortcuts: shortcutsView(t), show_costs: Number(t.show_costs) === 1, ai_privacy: await privacyBoot(env, t) }
+            ? { plan: PLANS[planKey(t.plan)].name, plan_key: planKey(t.plan), price: PLANS[planKey(t.plan)].price, ...(t.plan === BYOK_PLAN ? { byok: true } : {}), ...(storage ? { storage } : {}), balance: usd(ls.balance_nano), usagePercent: month ? month.pct : Math.min(100, Math.round(used / granted * 100)), ...(month ? { month } : {}), ...(notice ? { notice } : {}), spend_pauses: gi?.spend_pauses === true, shortcuts: shortcutsView(t), show_costs: Number(t.show_costs) === 1, ai_privacy: await privacyBoot(env, t) }
             : { plan: "Self-hosted", plan_key: "byok", price: 0, byok: true, ...(publicStorage ? { storage: publicStorage } : {}), today: ls.today, spend_pauses: gi?.spend_pauses !== false, shortcuts: shortcutsView(t), show_costs: Number(t.show_costs) === 1, ai_privacy: await privacyBoot(env, t) };
-          return json({ tenant: t.slug, features: eeFeatures(env), access, contacts, contactDups, person: { name: t.first_name || "", email: user.email }, helper: { name: helperName(t), avatar: Number(t.helper_avatar || 8) }, account, ...(light ? {} : { interview: interviewBoot(iv) }), ...(look ? { look: true } : {}), channels: out, pomodoro_global: await A.pomoGlobalView().catch(() => null) });   // look: a dev "view as" (the app never asks it for location or the mic)
+          return json({ tenant: t.slug, features: eeFeatures(env), access, flags: { notebook_pages: env.ENV_NAME === "dev" }, contacts, contactDups, person: { name: t.first_name || "", email: user.email }, helper: { name: helperName(t), avatar: Number(t.helper_avatar || 8) }, account, ...(light ? {} : { interview: interviewBoot(iv) }), ...(look ? { look: true } : {}), channels: out, pomodoro_global: await A.pomoGlobalView().catch(() => null) });   // look: a dev "view as" (the app never asks it for location or the mic)
         }
         // Share links and published pages (src/share.js): the owner's list, create / revoke, publish / unpublish, offer taps.
         if (sub === "/api/share" || sub.startsWith("/api/share/")) return await shareApi(req, env, t, sub, access);
@@ -1260,14 +1273,16 @@ export default {
         if (sub === "/api/contacts" && req.method === "GET") { const A = archive(env, t.id); return json({ contacts: await A.peopleList(), dups: await A.peopleDups() }); }
         if (sub === "/api/contacts" && req.method === "POST") {
           const A = archive(env, t.id), b = await boundedJson(req);
-          if (b.op === "save") { const c = b.contact || {}; return json(await A.personUpsert({ id: c.id, create: !c.id, name: c.name, rel: c.rel, aka: Array.isArray(c.aka) ? c.aka : [], replaceAka: !!c.id, phone: c.phone, email: c.email,
-            ...(Array.isArray(c.phones) ? { phones: c.phones.slice(0, 12) } : {}), ...(Array.isArray(c.emails) ? { emails: c.emails.slice(0, 12) } : {}), bday: c.bday, addr: c.addr, group: c.group }, "You added")); }
+          if (b.op === "save") { const c = b.contact || {}; const saved = await A.personUpsert({ id: c.id, create: !c.id, name: c.name, rel: c.rel, aka: Array.isArray(c.aka) ? c.aka : [], replaceAka: !!c.id, phone: c.phone, email: c.email,
+            ...(Array.isArray(c.phones) ? { phones: c.phones.slice(0, 12) } : {}), ...(Array.isArray(c.emails) ? { emails: c.emails.slice(0, 12) } : {}), bday: c.bday, addr: c.addr, group: c.group }, "You added"); if (saved?.id) ctx?.waitUntil?.(hsContactNotify(env, t.id, [saved.id])); return json(saved); }
           // Merge two contacts (people.js mergePlan / merge): preview = the combined contact without saving anything.
-          if (b.op === "merge") { const r = await A.personMerge(String(b.keep || ""), String(b.drop || ""), b.pick && typeof b.pick === "object" ? b.pick : {}, !!b.preview); return r?.error ? json(r, 400) : json(r); }
+          if (b.op === "merge") { const r = await A.personMerge(String(b.keep || ""), String(b.drop || ""), b.pick && typeof b.pick === "object" ? b.pick : {}, !!b.preview); if (!b.preview && !r?.error) ctx?.waitUntil?.(hsContactNotify(env, t.id, [String(b.keep || ""), String(b.drop || "")])); return r?.error ? json(r, 400) : json(r); }
           if (b.op === "notdup") return json(await A.personNotDup(String(b.a || ""), String(b.b || "")));
-          if (b.op === "delete") return json(await A.personRemove(String(b.id)));
-          if (b.op === "fact") { const f = await A.personFact(String(b.id), String(b.text || "").trim(), "You added"); return f ? json(f) : json({ error: "no such contact" }, 404); }
+          if (b.op === "delete") { const r = await A.personRemove(String(b.id)); ctx?.waitUntil?.(hsContactNotify(env, t.id, [String(b.id)])); return json(r); }
+          if (b.op === "fact") { const f = await A.personFact(String(b.id), String(b.text || "").trim(), "You added"); if (f) ctx?.waitUntil?.(hsContactNotify(env, t.id, [String(b.id)])); return f ? json(f) : json({ error: "no such contact" }, 404); }
           if (b.op === "dropfact") return json(await A.personFactDrop(String(b.id), String(b.fact)));
+          // HS_WALLS: "Seen in" = the channels that see this contact (General always sees everyone). Replaces the list; only existing channels count.
+          if (b.op === "seen" && hsWalls(env)) { const r = await A.personSeenSet(String(b.id || ""), Array.isArray(b.channels) ? b.channels.slice(0, 100) : []); return r?.error ? json(r, 404) : json(r); }
           return json({ error: "op must be save, delete, fact, dropfact, merge or notdup" }, 400);
         }
         // Contacts import (contacts-import.js): parsed contacts from the app, never a file. Batches of up to IMPORT_BATCH_MAX.
@@ -1277,22 +1292,62 @@ export default {
           catch (e) { if (e instanceof BodyTooLargeError) return json({ error: "Too much in one go. Import fewer contacts at a time." }, 413); b = null; }
           if (!b || !Array.isArray(b.contacts)) return json({ error: "contacts must be a list" }, 400);
           if (b.contacts.length > IMPORT_BATCH_MAX) return json({ error: `Send at most ${IMPORT_BATCH_MAX} contacts at a time` }, 400);
-          return json(await archive(env, t.id).peopleImport(b.contacts, String(b.source || "")));
+          const imported = await archive(env, t.id).peopleImport(b.contacts, String(b.source || "")); ctx?.waitUntil?.(hsContactNotify(env, t.id, null));   // the cards the import added, a batch at a time
+          return json(imported);
         }
         { const ph = sub.match(/^\/api\/contacts\/photo\/([a-z0-9]{1,40})$/);
           if (ph && req.method === "GET") { const p = await archive(env, t.id).personPhoto(ph[1]); return p ? new Response(p.bytes, { headers: { "content-type": p.type, "cache-control": "private, max-age=86400" } }) : new Response("", { status: 404 }); } }
         if (sub === "/api/test/wsmem" && env.TEST_MODE === "1") { const A = archive(env, t.id); if (req.method === "POST") { const b = await boundedJson(req); return json(await A.wsRecall(String(b.q || ""))); } return json(await A.wsStats()); }
+        // The person's own photo for the Notebook page (notebook-pages-do.js): GET the original bytes (view-as can read), POST a raw image body to set or replace it, POST /photo/delete to remove it.
+        // The photo is the account's, kept with General, so every channel's URL answers with the same file.
+        { const pm = sub.match(/^\/api\/notebook\/([a-z0-9][a-z0-9-]{0,62})\/photo(\/delete)?$/);
+          if (pm) {
+            const A = archive(env, t.id), chans = await A.channels(), ch = chans.find((c) => (c.slug || c.name) === pm[1]), main = chans.find((c) => (c.slug || c.name) === "main"); if (!ch || !main) return json({ error: "no such channel" }, 404);
+            const R = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${t.id}:main`));
+            if (req.method === "GET" && !pm[2]) {
+              const ph = await R.nbPhotoGet(); if (!ph) return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
+              const inm = req.headers.get("if-none-match"), hd = servedHeaders(ph.mime, ph.name);
+              const o = await env.WS.get(ph.r2key, inm ? { onlyIf: { etagDoesNotMatch: inm.replace(/^W\//, "").replace(/"/g, "") } } : {}); if (!o) return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
+              if (!("body" in o) || !o.body) return new Response(null, { status: 304, headers: { ...hd, etag: o.httpEtag } });
+              return new Response(o.body, { headers: { ...hd, etag: o.httpEtag, "content-length": String(o.size) } });
+            }
+            if (req.method !== "POST") return json({ error: "method" }, 405);
+            if (viewAsToken(req)) return json({ error: "view_as_read_only", message: "This is a read-only view." }, 403);
+            if (access.mode === "read_only") return payRequired(access);
+            await R.bind(t.id, "main", String(main.id));
+            if (pm[2]) return json(await R.nbPhotoClear());
+            const len = Number(req.headers.get("content-length") || -1);
+            if (!req.body || len < 0) return json({ error: "Send the photo as the request body with a Content-Length." }, 411);
+            if (len > PHOTO_MAX_BYTES) return json({ error: `That photo is ${Math.round(len / 1048576)} MB. The limit is ${PHOTO_MAX_BYTES / 1048576} MB.` }, 413);
+            const bytes = new Uint8Array(await req.arrayBuffer()), mime = imageKind(bytes);
+            if (!bytes.length || !mime) return json({ error: "Send a JPEG, PNG or WebP photo." }, 400);
+            const sha = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((b) => b.toString(16).padStart(2, "0")).join("");
+            let f; try { f = await storeUpload(env, t.id, "main", { name: safeName(`Profile photo.${mime === "image/jpeg" ? "jpg" : mime.slice(6)}`), mime, len: bytes.length, body: bytes }); }
+            catch (e) { if (e.code === "storage_full") return json({ error: e.message, storage_full: true, storage: storageView(e.storage) }, 507); throw e; }
+            const r = await R.nbPhotoSet({ tenant: t.id, channel: "main", channelId: String(main.id), f, sha });
+            return json({ ok: true, same: !!r.same, photo: `/w/${t.slug}/api/notebook/${pm[1]}/photo?v=${r.at}` });
+          } }
+        // The Notebook as pages (notebook-pages.js): the channel's mental models as Hindsight wrote them, and the person's edits saved as notes.
+        { const pm = sub.match(/^\/api\/notebook\/([a-z0-9][a-z0-9-]{0,62})\/pages((?:\/[a-z0-9-]{1,40}){0,2})$/);
+          if (pm) {
+            const A = archive(env, t.id), ch = (await A.channels()).find((c) => (c.slug || c.name) === pm[1]); if (!ch) return json({ error: "no such channel" }, 404);
+            const look = !!viewAsToken(req), write = req.method !== "GET";
+            if (write && look) return json({ error: "view_as_read_only", message: "This is a read-only view." }, 403);
+            const R = write ? env.RESIDENT.get(env.RESIDENT.idFromName(`res:${t.id}:${pm[1]}`)) : null; if (R) await R.bind(t.id, pm[1], String(ch.id));
+            const interview = pm[1] === "main" && !write ? await env.DB.prepare("SELECT answers, known FROM interviews WHERE tenant_id=?").bind(t.id).first().catch(() => null) : null;
+            return pagesRoute(req, env, t, pm[1], pm[2], { A, ch, look, R, interview, photo: async () => env.RESIDENT.get(env.RESIDENT.idFromName(`res:${t.id}:main`)).nbPhotoGet(), resident: async () => { const r = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${t.id}:${pm[1]}`)); await r.bind(t.id, pm[1], String(ch.id)); return r; } });
+          } }
         { const nm = sub.match(/^\/api\/notebook\/([a-z0-9][a-z0-9-]{0,62})$/);
           // GET: this channel's Notebook rows, fresh (the boot copy goes stale when the helper saves something mid-visit).
           if (nm && req.method === "GET") {
             const A = archive(env, t.id), ch = (await A.channels()).find((c) => (c.slug || c.name) === nm[1]); if (!ch) return json({ error: "no such channel" }, 404);
-            const R = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${t.id}:${nm[1]}`)); await R.bind(t.id, nm[1], String(ch.id)); await R.notebookBackfillOnce().catch(() => {});
+            const R = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${t.id}:${nm[1]}`)); await R.bind(t.id, nm[1], String(ch.id));
             const d = await A.channel(ch.id, 1);
             // skills: this channel's own skills (skills/channel.js), saved at the person's ask, for a list the app can show.
             const skills = (await R.channelSkills().catch(() => [])).map((x) => ({ slug: x.slug, description: x.description, body: x.body, at: x.updated }));
             // General: the Bee facts waiting for review ("New from Bee", bee.js / bee-sync.js §7), when a Bee is connected.
-            const bee = nm[1] === "main" ? await beePendingFacts(env, t.id) : null;
-            return json({ notes: (d.memory || []).filter((m) => m.status !== "superseded").map((m) => ({ id: String(m.id), sec: m.sec || "", text: String(m.content), at: Number(m.edited || m.created) || 0, you: m.author_type === "human", ...(m.src ? { src: m.src } : {}) })), skills, ...(bee ? { bee: { pending: bee } } : {}) });
+            const bee = nm[1] === "main" ? await beePendingFacts(env, t.id) : null, speakers = nm[1] === "main" ? await beePendingSpeakers(env, t.id) : null;   // + New speaker detected (bee-speakers.js)
+            return json({ notes: (d.memory || []).filter((m) => m.status !== "superseded").map((m) => ({ id: String(m.id), sec: m.sec || "", text: String(m.content), at: Number(m.edited || m.created) || 0, you: m.author_type === "human", ...(m.src ? { src: m.src } : {}) })), skills, ...(bee || speakers?.length ? { bee: { pending: bee || [], ...(speakers?.length ? { speakers } : {}) } } : {}) });
           }
           if (nm && req.method === "POST") {
             const A = archive(env, t.id), ch = (await A.channels()).find((c) => (c.slug || c.name) === nm[1]); if (!ch) return json({ error: "no such channel" }, 404);
@@ -1303,8 +1358,8 @@ export default {
             // (op add, bee: true) → the fact again (POST) and the note linked to it (bee.js).
             if (b.op === "add") { if (!text || !["ov", "about", "how", "people", "places", "now"].includes(b.sec)) return json({ error: "text and section required" }, 400);
               if (b.bee && nm[1] === "main") { const r = await beeNoteRestored(env, t.id, b.sec, text); if (r) return json(r); }
-              return json(await A.noteAdd(ch.id, b.sec, text)); }
-            if (b.op === "edit") { if (!text) return json({ error: "text required" }, 400); const r = await A.noteEdit(ch.id, b.id, text); if (r?.bee_fact_id != null) await beeNoteEdited(env, t.id, r); return json(r || { error: "no such note" }); }
+              const added = await A.noteAdd(ch.id, b.sec, text); ctx?.waitUntil?.(hsNoteNotify(env, t.id, nm[1], ch.id, added.id)); return json(added); }
+            if (b.op === "edit") { if (!text) return json({ error: "text required" }, 400); const r = await A.noteEdit(ch.id, b.id, text); if (r) ctx?.waitUntil?.(hsNoteNotify(env, t.id, nm[1], ch.id, b.id)); if (r?.bee_fact_id != null) await beeNoteEdited(env, t.id, r); return json(r || { error: "no such note" }); }
             if (b.op === "delete") { const n = nm[1] === "main" ? ((await A.channel(ch.id, 1)).memory || []).find((m) => String(m.id) === String(b.id) && m.bee_fact_id != null) : null;
               const r = await deleteNote(env, t.id, nm[1], ch.id, String(b.id));   // the note AND its memory copies (deletion.js)
               if (n) await beeNoteDeleted(env, t.id, n);
@@ -1409,7 +1464,7 @@ export default {
           const { message } = await boundedJson(req);
           if (!message || String(message).length > 20000) return json({ error: "Message required (max 20k chars)." }, 400);
           const history = await L.history(20);
-          const messages = [{ role: "system", content: "You are the person's 1Helm helper: a warm, capable assistant for a nontechnical person. Be concise and practical." },
+          const messages = [{ role: "system", content: "You are the person's 1Helm helper: a warm, capable assistant for a nontechnical person. Be concise and practical. " + PLAIN_STYLE },
             ...history.map((m) => ({ role: m.role, content: m.content })), { role: "user", content: String(message) }];
           // Own AI key: their endpoint answers, nothing is reserved or charged, and nothing else is tried if it fails.
           const bk = t.plan === BYOK_PLAN ? await loadByok(env, t.id).catch(() => null) : null;
@@ -1478,7 +1533,7 @@ export default {
             const j = await r.json(); out.openrouter = { ok: true, via: r.headers.get("cf-aig-log-id") ? "gateway" : "direct", log: r.headers.get("cf-aig-log-id"), model: j.model, cost: j.usage?.cost }; } catch (e) { out.openrouter = { ok: false, error: String(e.message).slice(0, 200) }; }
           try { const r = await env.AI.run(await jobModel(env, "workers_ai_chat"), { messages: msg, max_tokens: 40, chat_template_kwargs: { enable_thinking: false } }, aiOpts(env, m));
             out.workers_ai = { ok: true, log: env.AI.aiGatewayLogId || null, text: String(r.choices?.[0]?.message?.content ?? r.response ?? "").slice(0, 40) }; } catch (e) { out.workers_ai = { ok: false, error: String(e.message).slice(0, 200) }; }
-          try { const r = await (await decisionCaller(env, "memory_supersede", m))({ state: { conversation: "user: hi" }, questions: { greeting: { type: "noul", instructions: "Is this a greeting?" } } });
+          try { const r = await (await decisionCaller(env, "doors_shadow", m))({ state: { conversation: "user: hi" }, questions: { greeting: { type: "noul", instructions: "Is this a greeting?" } } });
             out.clef = { ok: true, log: env.AI.aiGatewayLogId || null, answers: !!(r?.answers || r?.result?.answers) }; } catch (e) { out.clef = { ok: false, error: String(e.message).slice(0, 200) }; }
           try { const r = await askDecider(env, { task: "say hi" }, { done: { type: "noul", instructions: "Is the task trivial?" } }, { meta: m, title: "1Helm aig-check" });
             out.decider = { ok: !r.error, model: r.model, ms: r.ms, nano: r.nano, error: r.error || undefined }; } catch (e) { out.decider = { ok: false, error: String(e.message).slice(0, 200) }; }
@@ -1772,7 +1827,7 @@ export default {
           if (rp[2] === "engine" && env.TEST_MODE === "1" && req.method === "POST") { const b = await boundedJson(req); return json(await R.setEngine(String(b.engine))); }
           if (rp[2] === "turnstats" && env.TEST_MODE === "1") return json(await R.turnStats(Number(url.searchParams.get("n")) || 20));
           if (rp[2] === "anatomy" && env.TEST_MODE === "1") return json(await R.contextAnatomy());
-          if (rp[2] === "memory" && env.TEST_MODE === "1") { if (req.method === "POST") { const b = await boundedJson(req); return json(b.workmem != null ? await R.setWorkmem(String(b.workmem)) : b.seedRows ? await R.memSeedRows(String(b.session || "bench"), b.seedRows) : b.index ? await R.memIndexNow() : b.seed ? await R.rememberHere(String(b.seed.who || "them"), String(b.seed.fact || ""), "bench seed") : b.recall != null ? await R.memoryRecall(String(b.recall)) : await R.setMemoryMode(String(b.mode ?? ""))); } return json(await R.memoryStats()); }
+          if (rp[2] === "memory" && env.TEST_MODE === "1") { if (req.method === "POST") { const b = await boundedJson(req); return json(b.workmem != null ? await R.setWorkmem(String(b.workmem)) : b.seed ? await R.rememberHere(String(b.seed.who || "them"), String(b.seed.fact || ""), "bench seed") : await R.setMemoryMode(String(b.mode ?? ""))); } return json(await R.memoryStats()); }
           if (rp[2] === "clef-doors" && env.TEST_MODE === "1") return json(await R.clefDoorsLog(Number(url.searchParams.get("n")) || 50));
           if (rp[2] === "gates") return json(await R.gateRuns(Number(url.searchParams.get("n")) || 30));
           if (rp[2] === "approvals" && req.method === "GET") return json({ pending: await R.approvals(url.searchParams.get("all") === "1", url.searchParams.get("session")), policy: await R.approvalPolicy(url.searchParams.get("session")), grants: await R.listGrants() });
@@ -1799,7 +1854,7 @@ export default {
           if (rp[2] === "stream") {
             const { message, session, files, cid, continue: cont, loc, reply } = await boundedJson(req, 64 * 1024);
             // The app's coarse fix rides with each message when location is on (location.js); saved before the turn reads it.
-            if (cleanFix(loc) && !viewAsToken(req)) await saveLocation(env, t.id, loc, Number(loc.at) || Date.now()).catch((e) => console.log("location", e.message));
+            if (rawFix(loc) && !viewAsToken(req)) await saveLocation(env, t.id, loc, Number(loc.at) || Date.now()).catch((e) => console.log("location", e.message));
             const fids = Array.isArray(files) ? files.map(String).filter((x) => /^[0-9a-f-]{36}$/.test(x)).slice(0, 10) : [];
             if ((!message && !fids.length) || String(message || "").length > 20000) return json({ error: "Message required (max 20k chars)." }, 400);
             // cid: the app's own id for this message, so a retry joins as a dup instead of twice. A message sent while the helper works
@@ -2520,7 +2575,7 @@ export class Archive extends DurableObject {
     // Unique even when many notes land in the same millisecond (a Bee import adds dozens at once).
     let id = `n${Date.now()}${Math.floor(Math.random() * 1000)}`;
     for (let i = 0; i < 50 && this.sql.exec("SELECT 1 FROM rows WHERE tbl='memory_items' AND id=?", id).toArray().length; i++) id = `n${Date.now()}${Math.floor(Math.random() * 1e6)}`;
-    const row = { ...(extra.src ? { src: String(extra.src).slice(0, 40), q: String(extra.q || "").slice(0, 40) } : {}), ...(Number(extra.bee_fact_id) > 0 ? { bee_fact_id: Number(extra.bee_fact_id) } : {}), id, channel_id: String(cid), kind: sec === "ov" ? "summary" : author === "human" ? "preference" : sec === "how" ? "preference" : "fact", content: scrubSecrets(String(text)).slice(0, 2000), sec, author_type: author === "human" ? "human" : "agent", scope: "channel", status: "current", created: Date.now() };
+    const row = { ...(extra.src ? { src: String(extra.src).slice(0, 40), q: String(extra.q || "").slice(0, 40) } : {}), ...(Number(extra.bee_fact_id) > 0 ? { bee_fact_id: Number(extra.bee_fact_id) } : {}), ...(extra.page ? { page: extra.page } : {}), id, channel_id: String(cid), kind: sec === "ov" ? "summary" : author === "human" ? "preference" : sec === "how" ? "preference" : "fact", content: scrubSecrets(String(text)), sec, author_type: author === "human" ? "human" : "agent", scope: "channel", status: "current", created: Date.now() };
     this.sql.exec("INSERT INTO rows (tbl,id,channel_id,data) VALUES ('memory_items',?,?,?)", id, String(cid), JSON.stringify(row)); return row;
   }
   // Bee (bee-sync.js): link an existing From-Bee note to its fact (a note written without the link is matched back by its text).
@@ -2529,32 +2584,43 @@ export class Archive extends DurableObject {
     const row = { ...JSON.parse(r.data), src: "bee", bee_fact_id: Number(factId) };
     this.sql.exec("UPDATE rows SET data=? WHERE tbl='memory_items' AND id=?", JSON.stringify(row), String(id)); return row;
   }
+  // HS_WRITERS (hindsight-writers.js): one Notebook row, and a channel's rows oldest first (the rebuild reads them in pages).
+  async noteRow(cid, id) { const r = this.sql.exec("SELECT data FROM rows WHERE tbl='memory_items' AND id=? AND channel_id=?", String(id), String(cid)).toArray()[0]; return r ? JSON.parse(r.data) : null; }
+  async noteRows(cid, after = "", limit = 50, upTo = Infinity) {
+    const all = this.sql.exec("SELECT data FROM rows WHERE tbl='memory_items' AND channel_id=?", String(cid)).toArray().map((r) => JSON.parse(r.data)).filter((m) => m.status !== "superseded" && m.src !== "reflection" && Number(m.created || 0) <= upTo)
+      .sort((a, b) => (Number(a.created) || 0) - (Number(b.created) || 0) || String(a.id).localeCompare(String(b.id))), key = (m) => `${String(Number(m.created) || 0).padStart(15, "0")}|${m.id}`;
+    const rows = all.filter((m) => !after || key(m) > after).slice(0, limit); return { rows, next: rows.length ? key(rows[rows.length - 1]) : null, done: rows.length < limit };
+  }
   async noteEdit(cid, id, text) {
     const r = this.sql.exec("SELECT data FROM rows WHERE tbl='memory_items' AND id=? AND channel_id=?", String(id), String(cid)).toArray()[0]; if (!r) return null;
-    const row = { ...JSON.parse(r.data), content: scrubSecrets(String(text)).slice(0, 2000), author_type: "human", edited: Date.now() };
+    const row = { ...JSON.parse(r.data), content: scrubSecrets(String(text)), author_type: "human", edited: Date.now() };
     this.sql.exec("UPDATE rows SET data=? WHERE tbl='memory_items' AND id=?", JSON.stringify(row), String(id)); return row;
   }
   // Workspace-shared memory: people (= Contacts) + workspace facts, one registry for every channel (people.js).
   get people() { return (this._people ||= new People(this.sql, this.env)); }
-  _embedLater() { this.ctx.waitUntil?.(this.people.mem.embedMissing(500).catch((e) => console.log("ws memory embed", e.message))); }
   async peopleList() { return this.people.list(); }
   async personGet(id) { return this.people.get(id); }
-  async personUpsert(o, origin = "") { const r = this.people.upsert(o || {}, origin); this._embedLater(); return r; }
+  // channels (optional, HS_WALLS): the channel or channels the person came up in, recorded in people_seen. The Contacts screen passes none.
+  async personUpsert(o, origin = "", channels = null) { return this.people.upsert(o || {}, origin, channels); }
+  // HS_WALLS (walls.js): the Contacts screen's "Seen in" edit and the helper's save into another channel; the one time backfill (dry unless apply).
+  async personSeenAdd(id, channels) { return { ok: true, added: seenAdd(this.sql, String(id), channels) }; }
+  async personSeenSet(id, channels) {
+    if (!this.people.get(id)) return { error: "no such contact" };
+    const known = new Set(this.sql.exec("SELECT data FROM rows WHERE tbl='channels'").toArray().map((r) => { try { return JSON.parse(r.data); } catch { return {}; } }).filter((c) => c.kind !== "dm" && !c.deleting).map((c) => c.slug || c.name));
+    const want = (Array.isArray(channels) ? channels : []).map((c) => String(c)).filter((c) => known.has(c));
+    return { ok: true, seen: seenSet(this.sql, String(id), want) };
+  }
+  async peopleSeenBackfill(apply = false) { void this.people; return this.ctx.storage.transactionSync(() => backfillSeen(this.sql, { dry: !apply, aliasesFor })); }
   async personRemove(id) { return this.people.remove(id); }
   async personMerge(keep, drop, pick = {}, preview = false) {
     const P = this.people; if (preview) { const m = P.mergePlan(keep, drop, pick); if (m.error) return m; const { _, ...plan } = m; return plan; }
-    const r = this.ctx.storage.transactionSync(() => P.merge(keep, drop, pick)); if (!r?.error) this._embedLater(); return r; }
+    const r = this.ctx.storage.transactionSync(() => P.merge(keep, drop, pick)); return r; }
   async personNotDup(a, b) { return this.people.notDup(a, b); }
   async peopleDups() { return this.people.duplicates(); }
-  // One embedding loop for a whole import (its batches arrive back to back; parallel loops would embed the same rows twice).
-  async peopleImport(list, source = "") { const P = this.people; const r = this.ctx.storage.transactionSync(() => importContacts(P, list, source));
-    if (!this._impEmbed) { this._impEmbed = true; const left = () => this.sql.exec("SELECT COUNT(*) n FROM mem_rows WHERE vec IS NULL").one().n;
-      this.ctx.waitUntil?.((async () => { for (let i = 0, n = left(); i < 80 && n; i++) { await P.mem.embedMissing(320); const m = left(); if (m >= n) break; n = m; } })()   // stops when a round makes no progress
-        .catch((e) => console.log("contacts import embed", e.message)).finally(() => { this._impEmbed = false; })); }
-    return r; }
+  async peopleImport(list, source = "") { const P = this.people; return this.ctx.storage.transactionSync(() => importContacts(P, list, source)); }
   async personPhoto(id) { return photoOf(this.sql, id); }
-  async personFact(personId, text, src = "", replaces = null, extra = null) { const r = this.people.addFact(personId, text, src, replaces, extra); this._embedLater(); return r; }
-  // The nightly reflection (memjobs.js): ONE Notebook row in General (id REFLECT_ID), "How to work with <first name>", replaced each
+  async personFact(personId, text, src = "", replaces = null, extra = null) { return this.people.addFact(personId, text, src, replaces, extra); }
+  // The nightly reflection (retired, nothing calls this now): ONE Notebook row in General (id REFLECT_ID), "How to work with <first name>", replaced each
   // night (never appended). Pinned (kind preference) and read by every channel's prompt. If the person edited it themself (it's
   // then theirs: author_type human), the job leaves it as they wrote it until they delete it.
   async reflectionSet(text, meta = {}) {
@@ -2568,20 +2634,16 @@ export class Archive extends DurableObject {
     return { replaced: !!old, row };
   }
   async reflectionNote() { const r = this.sql.exec("SELECT data FROM rows WHERE tbl='memory_items' AND id=?", REFLECT_ID).toArray()[0]; return r ? JSON.parse(r.data) : null; }
-  // Where they live, from the Notebook (location.js pickHome), for the helper's place line (next to the device's location, if any):
-  // this channel's notes and General's (where "Get to know you" saves "Lives in or near …"). Never another project's notes.
-  async homeNote(cid, firstName = "") {
-    const gen = this.sql.exec("SELECT data FROM rows WHERE tbl='channels'").toArray().map((r) => JSON.parse(r.data)).find((c) => (c.slug || c.name) === "main");
-    const ids = [...new Set([String(cid), gen ? String(gen.id) : ""].filter(Boolean))];
-    const rows = this.sql.exec(`SELECT data FROM rows WHERE tbl='memory_items' AND channel_id IN (${ids.map(() => "?").join(",")}) AND (data LIKE '%live%' OR data LIKE '%home%' OR data LIKE '%based%' OR data LIKE '%reside%' OR data LIKE '%address%' OR data LIKE '%house%' OR data LIKE '%apartment%' OR data LIKE '%flat%' OR data LIKE '%place is%')`, ...ids).toArray().map((r) => JSON.parse(r.data));
-    return pickHome(rows, firstName);
-  }
+  // The home note and its supersede lived here (regular expressions over the Notebook). Where the person lives comes from Hindsight now.
+  // These two stay as empty answers so an older object that still calls them during a deploy gets a reply. Nothing calls them any more.
+  async homeNote() { return ""; }
+  async noteSupersedeHome() { return []; }
   async personFactDrop(personId, factId) { return this.people.dropFact(personId, factId); }
   // forget (forget.js): a Contacts fact really deleted (row + its search copy), with the versions it replaced or that replaced it.
   async personFactForget(personId, factId) { return this.people.forgetFact(personId, factId); }
-  async wsNote(text, src = "") { const r = this.people.addNote(text, src); this._embedLater(); return r; }
+  async wsNote(text, src = "") { return this.people.addNote(text, src); }
   async wsRecall(q, o = {}) { return this.people.recall(String(q || ""), o); }
-  async wsStats() { return { people: this.people.list().length, ...this.people.mem.stats() }; }
+  async wsStats() { return { people: this.people.list().length }; }
   async noteDelete(cid, id) { const n = this.sql.exec("SELECT COUNT(*) n FROM rows WHERE tbl='memory_items' AND id=? AND channel_id=?", String(id), String(cid)).one().n; this.sql.exec("DELETE FROM rows WHERE tbl='memory_items' AND id=? AND channel_id=?", String(id), String(cid)); return { ok: true, deleted: Number(n) || 0 }; }
   async channel(cid, limit = 400) {
     const q = (t, extra = "") => this.sql.exec(`SELECT data FROM rows WHERE tbl=? AND channel_id=? ${extra}`, t, String(cid)).toArray().map((r) => JSON.parse(r.data));

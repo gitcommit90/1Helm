@@ -1,6 +1,6 @@
 // Since the 2026-10-08 swap, the real decider IS Perplexity's (decider.js), so this shadow is off by default (shadowOn): it would only
-// compare the model with itself. Set DECIDER_MODEL back to "~typesafe/jev-latest" (the kill switch) with DECISION_SHADOW="on" and it
-// compares Jev with Perplexity again. "Jev" below means the real decider; the /router page and its data keep working either way.
+// compare the model with itself. Saving a Jev style decider as the request sorter's model on the Models page, with DECISION_SHADOW="on", makes it
+// compare Jev with Perplexity again. "Jev" below means the real decider; the /router page and its data keep working either way.
 // Decision shadow (Captain 2026-10-08, dev only): every real Jev decision, side by side with what Perplexity's decider
 // (perplexity/pplx-decider-v1.1-27b, OpenRouter /api/v1/systemone) answers for the EXACT same state and questions. Two Jev uses:
 //   route           route2.js chooseTwo: the per-message task?/hard? questions (OpenRouter systemone). Both answers go through the
@@ -182,7 +182,7 @@ export function shadowQuery(params) {
 export async function shadowData(env, params = {}, now = Date.now()) {
   const q = shadowQuery(params), since = now - WINDOWS[q.window];
   const testScope = String(env.TEST_MODEL_SCOPE || "test-accounts").trim().toLowerCase();
-  const state = { on: shadowOn(env), flag: String(env.DECISION_SHADOW || ""), model: SHADOW_MODEL, task_model: String(env.TASK_MODEL || ""),
+  const state = { on: shadowOn(env), flag: String(env.DECISION_SHADOW || ""), model: SHADOW_MODEL,
     test_model: env.ENV_NAME === "dev" && env.TEST_MODEL ? String(env.TEST_MODEL) : null, test_scope: testScope, router_mode: String(env.ROUTER_MODE || "classic") };
   const w = ["d.at >= ?"], a = [since];
   if (q.kind !== "all") { w.push("d.kind = ?"); a.push(q.kind); }

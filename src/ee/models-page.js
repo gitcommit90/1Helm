@@ -3,6 +3,7 @@ import { modelSettingsView, saveModelSettings, restoreModelSettings, readModelSe
 import { modelCatalog } from "./model-catalog.js";
 import { boundedText, BodyTooLargeError } from "../bounded-body.js";
 import { modelDashboard } from "./model-dashboard.js";
+import { outsideModels } from "./outside-models.js";
 
 const HEADERS = { "cache-control": "no-store, private", "x-robots-tag": "noindex, nofollow", "x-content-type-options": "nosniff", "referrer-policy": "same-origin", "content-security-policy": "frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -36,7 +37,7 @@ export async function modelsRoute(req, env, user) {
       if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "Settings must be a JSON object." }, 400);
       view = await action(env, body, user.email);
     }
-    if (!catalog) view = { ...view, dashboard: modelDashboard(view) };
+    if (!catalog) view = { ...view, dashboard: modelDashboard(view), outside: outsideModels(env) };
     const response = path === "/models" ? html(modelsHtml(view, env)) : json(view);
     return req.method === "HEAD" ? new Response(null, { status: response.status, headers: response.headers }) : response;
   } catch (e) {
@@ -155,6 +156,10 @@ function render(){
   var sec=E('section','group'),head=E('div','group-head'),ul=E('ul','jobs');head.append(E('h2','',g.title));if(g.note)head.append(E('p','',g.note));
   jobs.forEach(function(j){ul.append(card(j))});sec.append(head,ul);root.append(sec)
  });
+ var out=document.getElementById('outside');out.replaceChildren();
+ if((state.outside||[]).length){var oh=E('div','group-head');oh.append(E('h2','','Chosen elsewhere'),E('p','','Read only. These models are not set on this page.'));out.append(oh);
+  state.outside.forEach(function(g){var sec=E('section','group'),head=E('div','group-head'),ul=E('ul','jobs');head.append(E('h2','',g.title));if(g.note)head.append(E('p','',g.note));
+   g.items.forEach(function(i){var li=E('li','job'),n=E('div','c-name');n.append(E('strong','',i.label));li.append(n,E('div','c-model',i.model));if(i.detail)li.append(E('p','muted',i.detail));ul.append(li)});sec.append(head,ul);out.append(sec)})}
  var h=document.getElementById('history-list');h.replaceChildren();
  (state.history||[]).forEach(function(x){var li=E('li');var t=E('span','',new Date(x.at).toLocaleString()+' by '+x.by+': '+x.action+' (revision '+x.revision+')');li.append(t);
   if(x.revision!==state.revision){var r=E('button','small','Restore');r.type='button';r.setAttribute('aria-label','Restore revision '+x.revision);r.addEventListener('click',function(){post('restore',{revision:state.revision,restore_revision:x.revision},pageStatus)});li.append(r)}h.append(li)})
@@ -200,11 +205,14 @@ function inUse(q){
  entriesOf(state.config.jobs[target.id]).forEach(function(e,i){if(i!==target.idx)taken[e.model]=1});
  return all.filter(function(m){return !taken[m.id]&&(!q||(m.name+' '+m.id).toLowerCase().indexOf(q.toLowerCase())>=0)})
 }
+function priceLine(m){var p=m.pricing;return p&&p.prompt!=null&&p.completion!=null?m.id+' · $'+p.prompt+' in, $'+p.completion+' out per million tokens':m.id}
+// Saved models are listed with the live catalog's name, reasoning levels and price. The saved copy is from when the model was first picked and goes out of date.
+function mergeKnown(saved,fresh,q){var by={},w=(q||'').toLowerCase();fresh.forEach(function(f){by[f.id]=f});return saved.filter(function(m){return by[m.id]||!w||(m.name+' '+m.id).toLowerCase().indexOf(w)>=0}).map(function(m){var f=by[m.id];return f?Object.assign({},m,{name:f.name||m.name,efforts:f.efforts||m.efforts,default_effort:f.default_effort,pricing:f.pricing}):m})}
 async function loadCatalog(){
  var mine=++seq,q=search.value.trim(),chat=takesChat(target.view);
  list.replaceChildren();var local=inUse(q);
- if(local.length){list.append(E('h3','','Already known'));local.forEach(function(m){list.append(modelButton(m,m.id,function(){choose(m)}))})}
  if(!chat){
+  if(local.length){list.append(E('h3','','Already known'));local.forEach(function(m){list.append(modelButton(m,m.id,function(){choose(m)}))})}
   var typed=q.length>2&&/^[@~a-zA-Z0-9][a-zA-Z0-9._~:-]*(\\/[a-zA-Z0-9][a-zA-Z0-9._:~-]*)+$/.test(q)&&!local.some(function(m){return m.id===q});
   if(typed){list.append(E('h3','','Other model ID'));list.append(modelButton({id:q,name:q,efforts:[]},'Use this model ID exactly as typed',function(){choose({id:q,name:q,efforts:[]})}))}
   pickerStatus.textContent=local.length||typed?'':'No match. Type a full model ID such as provider/model-name.';return
@@ -212,15 +220,15 @@ async function loadCatalog(){
  try{
   var r=await fetch('/models/api/catalog?q='+encodeURIComponent(q),{credentials:'same-origin',cache:'no-store'}),data=await r.json();
   if(mine!==seq)return;if(!r.ok)throw new Error(data.error||'Could not load models.');
-  var ids={};local.forEach(function(m){ids[m.id]=1});
+  local=mergeKnown(inUse(''),data.models,q);var ids={};local.forEach(function(m){ids[m.id]=1});
   var taken={};entriesOf(state.config.jobs[target.id]).forEach(function(e,i){if(i!==target.idx)taken[e.model]=1});
   var more=data.models.filter(function(m){return m.eligible&&!ids[m.id]&&!taken[m.id]&&(target.view.privacy!=='zdr'||(m.levels||[]).indexOf('zdr')>=0)});
   list.replaceChildren();
-  if(local.length){list.append(E('h3','','Already known'));local.forEach(function(m){list.append(modelButton(m,m.id,function(){choose(m)}))})}
+  if(local.length){list.append(E('h3','','Already known'));local.forEach(function(m){list.append(modelButton(m,priceLine(m),function(){choose(m)}))})}
   if(more.length)list.append(E('h3','','More models'));
-  more.slice(0,40).forEach(function(m){list.append(modelButton(m,m.id+' · $'+m.pricing.prompt+' in, $'+m.pricing.completion+' out per million tokens',function(){choose(m)}))});
+  more.slice(0,40).forEach(function(m){list.append(modelButton(m,priceLine(m),function(){choose(m)}))});
   pickerStatus.textContent=local.length+more.length?(more.length>40?'Showing 40 of '+more.length+'. Type to narrow the list.':''):'No eligible models match.'
- }catch(e){if(mine!==seq)return;pickerStatus.textContent=e.message||'Could not load models. Try again.'}
+ }catch(e){if(mine!==seq)return;if(local.length){list.replaceChildren(E('h3','','Already known (saved copy)'));local.forEach(function(m){list.append(modelButton(m,m.id,function(){choose(m)}))})}pickerStatus.textContent=e.message||'Could not load models. Try again.'}
 }
 function choose(m){
  var t=target;closePicker();var li=document.querySelector('[data-job="'+t.id+'"]'),pick=t.view.pick,hasEffort=t.view.has_effort;
@@ -246,9 +254,10 @@ export function modelsHtml(view, env) {
   const initial = JSON.stringify(view).replace(/</g, "\\u003c").replace(new RegExp("\\u2028", "g"), "\\u2028").replace(new RegExp("\\u2029", "g"), "\\u2029");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Models · ${environment} · 1Helm</title><link rel="icon" href="/1helm-icon-64.png"><style>${CSS}</style></head>
 <body class="${dev ? "dev" : "live"}" data-environment="${environment}"><main><nav aria-label="Model settings navigation"><a class="back" href="${dev ? "/releases" : "/"}">${dev ? "← Releases" : "← 1Helm"}</a><div class="environments" aria-label="Environment">${dev ? "Development" : "Production"}</div></nav>
-<h1>Models</h1><p class="lead">The model, reasoning level and fallback models saved for every job on ${environment}. These settings are the only place models are chosen. Each change saves right away. Running tasks finish with the model they started with.</p>
+<h1>Models</h1><p class="lead">The model, reasoning level and fallback models saved for every job on ${environment}. The jobs listed here take their model from these settings. Accounts that bring their own key use their own endpoint, and the dev test model override (TEST_MODEL) replaces them on dev. Each change saves right away. Running tasks finish with the model they started with.</p>
 <noscript>Turn on JavaScript to see and change model settings.</noscript><div class="banner" id="banner" role="alert" hidden></div><p id="page-status" role="status" aria-live="polite"></p>
 <div id="groups"></div>
+<div id="outside"></div>
 <details class="history"><summary>History</summary><ul id="history-list"></ul></details>
 <p class="footnote">Revision ${esc(view.revision)}. Only models that meet the privacy, tool and price limits are offered. When an account's privacy setting forbids a model, that model is skipped and the next one in the list is tried.</p></main>
 <dialog id="model-picker" class="picker" aria-labelledby="picker-title"><div class="picker-head"><div><h2 id="picker-title">Choose a model</h2><p id="picker-now"></p><p id="picker-note"></p></div><button type="button" id="picker-close" aria-label="Close">Close</button></div>

@@ -57,36 +57,34 @@ import f54 from "../skills/business-setup/SKILL.md";
 import f55 from "../skills/events/SKILL.md";
 import f56 from "../skills/finance/SKILL.md";
 import f57 from "../skills/flight-status/SKILL.md";
-import f58 from "../skills/forget/SKILL.md";
-import f59 from "../skills/forget/references/where-it-lives.md";
-import f60 from "../skills/ee/gmail/SKILL.md";
-import f61 from "../skills/ee/google-calendar/SKILL.md";
-import f62 from "../skills/ee/google-drive/SKILL.md";
-import f63 from "../skills/image-search/SKILL.md";
-import f64 from "../skills/image-search/scripts/images.py";
-import f65 from "../skills/native-network/SKILL.md";
-import f66 from "../skills/native-network/references/ssh.md";
-import f67 from "../skills/native-network/references/tailscale.md";
-import f68 from "../skills/photo-library/SKILL.md";
-import f69 from "../skills/photo-library/scripts/photos.py";
-import f70 from "../skills/places-search/SKILL.md";
-import f71 from "../skills/self-awareness/SKILL.md";
-import f72 from "../skills/self-awareness/references/question-types.md";
-import f73 from "../skills/self-awareness/references/when-asked.md";
-import f74 from "../skills/self-awareness/scripts/inventory.sh";
-import f75 from "../skills/shopping/SKILL.md";
-import f76 from "../skills/shopping/references/purchase.md";
-import f77 from "../skills/skill-creator/SKILL.md";
-import f78 from "../skills/skill-creator/references/template.md";
-import f79 from "../skills/travel-planning/SKILL.md";
-import f80 from "../skills/travel-planning/references/fact-checks.md";
-import f81 from "../skills/travel-planning/references/flights.md";
-import f82 from "../skills/travel-planning/references/handoff.md";
-import f83 from "../skills/travel-planning/references/itinerary.md";
-import f84 from "../skills/travel-planning/references/planning-kickoff.md";
-import f85 from "../skills/wide-research/SKILL.md";
-import f86 from "../skills/wide-research/references/helper-brief.md";
-import f87 from "../skills/wide-research/scripts/fetch_many.py";
+import f58 from "../skills/ee/gmail/SKILL.md";
+import f59 from "../skills/ee/google-calendar/SKILL.md";
+import f60 from "../skills/ee/google-drive/SKILL.md";
+import f61 from "../skills/image-search/SKILL.md";
+import f62 from "../skills/image-search/scripts/images.py";
+import f63 from "../skills/native-network/SKILL.md";
+import f64 from "../skills/native-network/references/ssh.md";
+import f65 from "../skills/native-network/references/tailscale.md";
+import f66 from "../skills/photo-library/SKILL.md";
+import f67 from "../skills/photo-library/scripts/photos.py";
+import f68 from "../skills/places-search/SKILL.md";
+import f69 from "../skills/self-awareness/SKILL.md";
+import f70 from "../skills/self-awareness/references/question-types.md";
+import f71 from "../skills/self-awareness/references/when-asked.md";
+import f72 from "../skills/self-awareness/scripts/inventory.sh";
+import f73 from "../skills/shopping/SKILL.md";
+import f74 from "../skills/shopping/references/purchase.md";
+import f75 from "../skills/skill-creator/SKILL.md";
+import f76 from "../skills/skill-creator/references/template.md";
+import f77 from "../skills/travel-planning/SKILL.md";
+import f78 from "../skills/travel-planning/references/fact-checks.md";
+import f79 from "../skills/travel-planning/references/flights.md";
+import f80 from "../skills/travel-planning/references/handoff.md";
+import f81 from "../skills/travel-planning/references/itinerary.md";
+import f82 from "../skills/travel-planning/references/planning-kickoff.md";
+import f83 from "../skills/wide-research/SKILL.md";
+import f84 from "../skills/wide-research/references/helper-brief.md";
+import f85 from "../skills/wide-research/scripts/fetch_many.py";
 export const FILES = {
   "artifacts/SKILL.md": f0,
   "artifacts/references/charts.md": f1,
@@ -146,34 +144,32 @@ export const FILES = {
   "events/SKILL.md": f55,
   "finance/SKILL.md": f56,
   "flight-status/SKILL.md": f57,
-  "forget/SKILL.md": f58,
-  "forget/references/where-it-lives.md": f59,
-  "gmail/SKILL.md": f60,
-  "google-calendar/SKILL.md": f61,
-  "google-drive/SKILL.md": f62,
-  "image-search/SKILL.md": f63,
-  "image-search/scripts/images.py": f64,
-  "native-network/SKILL.md": f65,
-  "native-network/references/ssh.md": f66,
-  "native-network/references/tailscale.md": f67,
-  "photo-library/SKILL.md": f68,
-  "photo-library/scripts/photos.py": f69,
-  "places-search/SKILL.md": f70,
-  "self-awareness/SKILL.md": f71,
-  "self-awareness/references/question-types.md": f72,
-  "self-awareness/references/when-asked.md": f73,
-  "self-awareness/scripts/inventory.sh": f74,
-  "shopping/SKILL.md": f75,
-  "shopping/references/purchase.md": f76,
-  "skill-creator/SKILL.md": f77,
-  "skill-creator/references/template.md": f78,
-  "travel-planning/SKILL.md": f79,
-  "travel-planning/references/fact-checks.md": f80,
-  "travel-planning/references/flights.md": f81,
-  "travel-planning/references/handoff.md": f82,
-  "travel-planning/references/itinerary.md": f83,
-  "travel-planning/references/planning-kickoff.md": f84,
-  "wide-research/SKILL.md": f85,
-  "wide-research/references/helper-brief.md": f86,
-  "wide-research/scripts/fetch_many.py": f87,
+  "gmail/SKILL.md": f58,
+  "google-calendar/SKILL.md": f59,
+  "google-drive/SKILL.md": f60,
+  "image-search/SKILL.md": f61,
+  "image-search/scripts/images.py": f62,
+  "native-network/SKILL.md": f63,
+  "native-network/references/ssh.md": f64,
+  "native-network/references/tailscale.md": f65,
+  "photo-library/SKILL.md": f66,
+  "photo-library/scripts/photos.py": f67,
+  "places-search/SKILL.md": f68,
+  "self-awareness/SKILL.md": f69,
+  "self-awareness/references/question-types.md": f70,
+  "self-awareness/references/when-asked.md": f71,
+  "self-awareness/scripts/inventory.sh": f72,
+  "shopping/SKILL.md": f73,
+  "shopping/references/purchase.md": f74,
+  "skill-creator/SKILL.md": f75,
+  "skill-creator/references/template.md": f76,
+  "travel-planning/SKILL.md": f77,
+  "travel-planning/references/fact-checks.md": f78,
+  "travel-planning/references/flights.md": f79,
+  "travel-planning/references/handoff.md": f80,
+  "travel-planning/references/itinerary.md": f81,
+  "travel-planning/references/planning-kickoff.md": f82,
+  "wide-research/SKILL.md": f83,
+  "wide-research/references/helper-brief.md": f84,
+  "wide-research/scripts/fetch_many.py": f85,
 };

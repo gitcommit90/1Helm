@@ -3,11 +3,12 @@ import { CHECKIN_TEST_KEY, DAY_FACTOR, NOTICE_LEVELS, checkinOffTest, dayShare, 
 
 import { SPEND_PAUSES_KEY } from "../spend-preferences.js";
 export const ledgerGuard = {
-  spendPreferences() { return { enabled: this.guardKv(SPEND_PAUSES_KEY) !== 'off' }; },
+  // Off unless the person turned it on. 'on' is stored explicitly now; 'off' rows from before stay off. No row means the default (off).
+  spendPreferences() { return { enabled: this.guardKv(SPEND_PAUSES_KEY) === 'on' }; },
   setSpendPreferences(enabled) {
     if (typeof enabled !== 'boolean') throw new TypeError('Choose on or off.');
-    this.guardKv(SPEND_PAUSES_KEY, enabled ? null : 'off');
-    if (!enabled) this.guardKv('notice_pending', null);
+    this.guardKv(SPEND_PAUSES_KEY, enabled ? 'on' : 'off');
+    if (!enabled && !String(this.guardKv('notice_pending') || '').includes('"byok"')) this.guardKv('notice_pending', null);
     return this.spendPreferences();
   },
   guardKv(k, v) {
@@ -58,7 +59,12 @@ export const ledgerGuard = {
     this.guardKv("notice_pending", JSON.stringify(n));
     return n;
   },
-  noticePending() { if (!this.spendPreferences().enabled) return null; try { return JSON.parse(this.guardKv("notice_pending") || "null"); } catch { return null; } },
+  // With "Pause to check spending" off (the default), the 50% / 80% usage notices stay hidden. The notice that the person's own AI
+  // key took over (kind "byok") is not about spending, so it still shows.
+  noticePending() {
+    let n = null; try { n = JSON.parse(this.guardKv("notice_pending") || "null"); } catch { return null; }
+    return n && (this.spendPreferences().enabled || n.kind === "byok") ? n : null;
+  },
   noticeSeen() { this.guardKv("notice_pending", null); return { ok: true }; },
 };
 

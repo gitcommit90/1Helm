@@ -35,7 +35,7 @@ import { ESCALATE_STALL } from "./ee/index.js";
 import { PAUSE_FACTS, callKey } from "./ee/index.js";
 import { loopWords } from "./ee/index.js";   // a live search: changing a real field (date, place) is a new search, not a loop
 import { loadCheckins, normalizeCheckins } from "./agent-checkins.js";
-import { SPEND_PAUSES_KEY, spendPausesOn, applySpendPreference, readSpendPreference } from './spend-preferences.js';
+import { SPEND_PAUSES_KEY, CHECKIN_PAUSES, spendPausesOn, checkinsOn, applySpendPreference, readSpendPreference } from './spend-preferences.js';
 
 export const BASE_ALLOWANCE = 20e9;        // Personal plan usage ($20/month): the plan the per-turn numbers are tuned for
 export const TURN_SOFT = 15e7;             // $0.15 per turn before a pause
@@ -45,6 +45,7 @@ export const UNATTENDED_SOFT = 0.8;        // scheduled runs (nobody to tap): re
 export const DAY_FACTOR = 2;               // a day may use 2× its share before a check-in
 export const NOTICE_LEVELS = [50, 80];
 export const SLOT_MAX = 3;
+// silent and fast here are only the fallback when no account values are passed (tests). Accounts get theirs from agent-checkins.js.
 export const RUNAWAY = { silent: 15, repeat: 4, repeatEdited: 7, similar: 0.7, accounts: 4, fast: 20, fastMs: 60e3, outLoops: 2, noProgress: 3, recallRun: 12 };
 const LOOK_BACK = new Set(["work_log", "bring_back", "recall_history"]);   // calls that only look back at what's already known
 // Time (live check 10-06: a retry loop written INSIDE one run_command sat "working" for 10+ minutes at 3 steps / $0.01):
@@ -106,10 +107,18 @@ export function noteCalls(w, calls, at = Date.now()) {
     w.calls.push({ name: String(name), words: String(name) === "search_web_vertical" ? loopWords(args) : argWords(args), account: accountOf(args), at, quiet: QUIET.has(String(name)) });
   }
 }
+// The two agent check-in signs alone (agent-checkins.js), for a turn whose spending pauses are off. enabled false looks for nothing.
+export function checkinSign(w, now = Date.now(), checkins = RUNAWAY) {
+  if (checkins.enabled === false) return null;
+  const c = w.calls.filter((x) => !x.quiet);
+  if (!w.said && c.length >= checkins.silent) return { reason: "silent" };
+  if (c.filter((x) => now - x.at <= RUNAWAY.fastMs).length >= checkins.fast) return { reason: "fast" };
+  return null;
+}
 // → null, or { reason } for the first sign found (in this order).
 export function runawaySign(w, now = Date.now(), checkins = RUNAWAY) {
   const c = w.calls, n = c.length; if (!n) return (w.outLoops || 0) >= RUNAWAY.outLoops ? { reason: "loop" } : null;
-  if (!w.said && c.filter((x) => !x.quiet).length >= checkins.silent) return { reason: "silent" };
+  if (checkins.enabled !== false && !w.said && c.filter((x) => !x.quiet).length >= checkins.silent) return { reason: "silent" };
   const last = c[n - 1];
   if (!NO_LOOP.has(last.name) && last.words.size) {
     const idx = c.map((x, i) => (x.name === last.name && similar(x.words, last.words) >= RUNAWAY.similar ? i : -1)).filter((i) => i >= 0);
@@ -120,7 +129,7 @@ export function runawaySign(w, now = Date.now(), checkins = RUNAWAY) {
   }
   { let run = 0; for (let i = n - 1; i >= 0 && LOOK_BACK.has(c[i].name); i--) run++; if (run >= RUNAWAY.recallRun) return { reason: "loop", tool: last.name }; }
   if (new Set(c.map((x) => x.account).filter(Boolean)).size >= RUNAWAY.accounts) return { reason: "accounts" };
-  if (c.filter((x) => !x.quiet && now - x.at <= RUNAWAY.fastMs).length >= checkins.fast) return { reason: "fast" };   // reads are quick by nature
+  if (checkins.enabled !== false && c.filter((x) => !x.quiet && now - x.at <= RUNAWAY.fastMs).length >= checkins.fast) return { reason: "fast" };   // reads are quick by nature
   if ((w.outLoops || 0) >= RUNAWAY.outLoops) return { reason: "loop" };   // commands whose output kept repeating one line
   if ((w.noProgress || 0) >= RUNAWAY.noProgress) return { reason: "loop" };   // appfirst.js: "you already have this" again and again
   return null;
@@ -154,7 +163,7 @@ export function noticeText(level, used, allowance, helper = "Your helper") {
 }
 
 // ---- per-turn checks (tc.guard is set by spendStart; a turn without one is unguarded, e.g. helpers) ----
-function pauseAt(tc, reason) { if (!spendPausesOn(tc) || tc.abort || tc.pause) return false; tc.pause = { reason }; tc.abort = "soft"; return true; }
+function pauseAt(tc, reason) { if (tc.abort || tc.pause || !(spendPausesOn(tc) || (checkinsOn(tc) && CHECKIN_PAUSES.includes(reason)))) return false; tc.pause = { reason }; tc.abort = "soft"; return true; }
 const spentOf = (tc, stats) => (stats?.charge || 0) + (tc.extraCharge || 0);
 // After each model call: the turn's budget, and today's check-in line. names: the tools this step calls (a step that only reads the
 // playbook or updates the to-do list is left out of the soft budget: g.reading).
@@ -171,11 +180,12 @@ export function guardModel(tc, stats, content = "", more = true, names = []) {
 }
 // After a round of tool calls: [[name, args], …].
 export function guardTools(tc, calls, now = Date.now()) {
-  const g = tc?.guard; if (!g || !spendPausesOn(tc)) return null;
+  const g = tc?.guard; if (!g || !(spendPausesOn(tc) || checkinsOn(tc))) return null;
   // integration-hint.js marks a call it answered without running (tc.unrun): skipped, so a one-time nudge and its retry never add up to a loop.
   if (tc.unrun?.length) calls = calls.filter(([n, a]) => { const i = tc.unrun.indexOf(callKey(String(n), a)); if (i < 0) return true; tc.unrun.splice(i, 1); return false; });
   noteCalls(g.watch, calls, now);
-  const s = runawaySign(g.watch, now, normalizeCheckins(g.checkins));
+  const ck = normalizeCheckins(g.checkins);
+  const s = spendPausesOn(tc) ? runawaySign(g.watch, now, ck) : checkinSign(g.watch, now, ck);   // spending pauses off: only the check-in signs
   if (s?.reason === "loop" && escalatingNext(tc)) return null;   // the fast model repeating itself: route2 hands the next step to the stronger one first
   return s && pauseAt(tc, s.reason) ? tc.pause : null;
 }

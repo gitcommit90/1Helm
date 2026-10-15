@@ -3,7 +3,7 @@
 //
 // Conversion: anydoc (firecrawl/anydoc 0.2.4, MIT) with pdf-inspector (MIT) inside, built to WASM from source with one 1Helm addition
 // (src/vendor/anydoc/anydoc-wasm.patch on anydoc 261fc25): pdfPages, a PDF's Markdown page by page with the pages that need OCR
-// (pdf-inspector's own OCR then reads those in the container job, sidecar.js). Linked with a 64 MB memory ceiling
+// (Indra OCR then reads those in the container job, sidecar.js). Linked with a 64 MB memory ceiling
 // (RUSTFLAGS="-C link-arg=--max-memory=67108864"), so a file too big to convert makes the WASM trap ("unreachable") instead of
 // growing the isolate past its 128 MB: the trap is caught, the instance is thrown away (__reset) and the file goes to the container
 // job (sidecar.js). Build: cargo build -p anydoc-wasm --target wasm32-unknown-unknown --release, then

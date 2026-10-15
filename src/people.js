@@ -1,9 +1,8 @@
 // Workspace-shared memory (memory item 1, Captain 2026-10-02): one registry of people + workspace facts for the whole account.
 // Lives in the tenant's Archive DO, so every channel's resident reads the same thing. Contacts in the app is this same registry.
-// Rules: facts are append-only (a changed fact supersedes, never overwrites); recall = alias match (µs) + the shared ledger's search.
-import { Memory } from "./memory.js";
-import { aiOpts } from "./model.js";
+// Rules: facts are append-only (a changed fact supersedes, never overwrites); recall = alias match (µs); Hindsight does the searching.
 import { ensureImportTables, e164, emailKey } from "./contacts-import.js";
+import { hsWalls, seenInit, seenAdd, seenMap, seenOf, seenDropPerson, seenMerge, canSee, GENERAL } from "./walls.js";   // HS_WALLS: which channel saw which person (DESIGN.md 6.6)
 const norm = (s) => String(s || "").toLowerCase().replace(/[’']/g, "'").replace(/[^a-z0-9' ]+/g, " ").replace(/\s+/g, " ").trim();
 const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const rid = () => `${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
@@ -52,18 +51,6 @@ export function aliasesFor(p) {
   const rel = norm(p.rel).replace(/^(your|my) /, ""); if (rel && rel.split(" ").length <= 3) out.add(`my ${rel}`);
   return [...out].filter((a) => a.length > 1);
 }
-// The shared address book as a short block for every channel's standing context, so a contact saved anywhere (the Contacts page, another
-// channel) is in the next turn without a memory search. Newest change first; cut at the budget with a closing line naming recall_memory.
-export const CONTACTS_BUDGET = 3000;
-export function contactsBlock(list, { budget = CONTACTS_BUDGET } = {}) {
-  const ps = (list || []).filter((p) => p?.name).slice().sort((a, b) => (Number(b.updated) || 0) - (Number(a.updated) || 0) || String(a.name).localeCompare(String(b.name)));
-  const lines = []; let used = 0, left = 0;
-  const more = (n) => `(+${n} more contact${n === 1 ? "" : "s"} not listed here. Search them with recall_memory.)`;
-  for (const p of ps) { const ln = `- ${People.prototype.card(p)}`.slice(0, 400);
-    if (left || used + ln.length + 1 > budget - more(9999).length - 1) { left++; continue; } lines.push(ln); used += ln.length + 1; }
-  if (left) lines.push(more(left));
-  return lines.join("\n");
-}
 // Does a remembered fact's subject name a person or organization (a Contacts entry), or a thing ("gate code", "wifi password", "the car")?
 // Only people get a contact: a contact is shared by every channel, so a thing's name there would show that a channel-only fact exists.
 // A person when: already in Contacts; the call gave contact details (relation, phone, email, birthday, other names); or the name looks
@@ -84,11 +71,11 @@ export class People {
       CREATE TABLE IF NOT EXISTS people_notdup (a TEXT NOT NULL, b TEXT NOT NULL, PRIMARY KEY (a, b));
       CREATE TABLE IF NOT EXISTS people_facts (id TEXT PRIMARY KEY, person TEXT NOT NULL, text TEXT NOT NULL, src TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL, superseded_by TEXT);
       CREATE INDEX IF NOT EXISTS people_facts_p ON people_facts(person, at);`);
+    seenInit(sql);   // people_seen (person, channel, at): additive, created next to people_facts. HS_WALLS reads it; the writes always happen.
     ensureImportTables(sql);   // photos + phone/email keys from contacts imports (contacts-import.js)
     // Facts the background people upkeep learned (memjobs.js): the channel they were learned in (only that channel and General see
     // them, the memory wall) and their evidence (the person's quoted words, the turn, when).
     for (const c of ["channel TEXT", "cite TEXT"]) { try { sql.exec(`ALTER TABLE people_facts ADD COLUMN ${c}`); } catch {} }
-    this.mem = new Memory(sql, env, (kind) => aiOpts(env, { kind, scope: "workspace" }));
     if (!sql.exec("PRAGMA table_info(people)").toArray().some((c) => c.name === "phones")) this.migrateLists();
   }
   // One-time, in place, on a workspace made before several numbers per contact: the phone / email become the primary entries,
@@ -102,7 +89,7 @@ export class People {
       for (const f of sql.exec("SELECT id, text FROM people_facts WHERE person=? AND superseded_by IS NULL AND text LIKE 'Other %'", r.id).toArray()) {
         const o = parseOther(f.text); if (!o) continue;
         (o.kind === "phone" ? ph : em).push(...o.list);
-        sql.exec("UPDATE people_facts SET superseded_by='lists' WHERE id=?", f.id); this.mem.supersede(`f:${f.id}`, "lists");
+        sql.exec("UPDATE people_facts SET superseded_by='lists' WHERE id=?", f.id);
       }
       const P = cleanList("phone", ph), E = cleanList("email", em);
       sql.exec("UPDATE people SET phones=?, emails=?, phone=?, email=? WHERE id=?", JSON.stringify(P), JSON.stringify(E), P[0]?.v ?? null, E[0]?.v ?? null, r.id); n++;
@@ -114,13 +101,14 @@ export class People {
     this.sql.exec("UPDATE people SET phones=?, emails=?, phone=?, email=?, updated=? WHERE id=?", JSON.stringify(phones), JSON.stringify(emails), phones[0]?.v ?? null, emails[0]?.v ?? null, Date.now(), String(id));
   }
   lists(id) { const r = this.sql.exec("SELECT phones, emails FROM people WHERE id=?", String(id)).toArray()[0]; return { phones: JSON.parse(r?.phones || "[]"), emails: JSON.parse(r?.emails || "[]") }; }
-  row(r, ph) { const P = JSON.parse(r?.phones || "[]"), E = JSON.parse(r?.emails || "[]");
+  row(r, ph, seen) { const P = JSON.parse(r?.phones || "[]"), E = JSON.parse(r?.emails || "[]");
     return r && { id: r.id, name: r.name, rel: r.rel, aka: JSON.parse(r.aka || "[]"), phone: P[0]?.v || r.phone || undefined, email: E[0]?.v || r.email || undefined, phones: shown(P), emails: shown(E), bday: r.bday || undefined, addr: r.addr || undefined, group: r.grp, from: r.origin, created: r.created, updated: r.updated,
-    photo: (ph ? ph.has(r.id) : this.sql.exec("SELECT 1 FROM people_photos WHERE person=?", r.id).toArray().length) ? 1 : undefined,
+    ...(seen ? { seen: seen.get(r.id) || [] } : {}), photo: (ph ? ph.has(r.id) : this.sql.exec("SELECT 1 FROM people_photos WHERE person=?", r.id).toArray().length) ? 1 : undefined,
     facts: this.sql.exec("SELECT id, text, src, at, channel, cite FROM people_facts WHERE person=? AND superseded_by IS NULL ORDER BY at DESC", r.id).toArray()
       .map(({ channel, cite, ...f }) => ({ ...f, ...(channel ? { channel } : {}), ...(cite ? { cite: (() => { try { return JSON.parse(cite); } catch { return null; } })() } : {}) })) }; }
-  list() { const ph = new Set(this.sql.exec("SELECT person FROM people_photos").toArray().map((x) => x.person)); return this.sql.exec("SELECT * FROM people WHERE deleted=0 ORDER BY name COLLATE NOCASE").toArray().map((r) => this.row(r, ph)); }
-  get(id) { return this.row(this.sql.exec("SELECT * FROM people WHERE id=? AND deleted=0", String(id)).toArray()[0]); }
+  // With HS_WALLS on, each person carries seen: the channels they came up in (General is never listed, it sees everyone).
+  list() { const ph = new Set(this.sql.exec("SELECT person FROM people_photos").toArray().map((x) => x.person)), seen = hsWalls(this.env) ? seenMap(this.sql) : null; return this.sql.exec("SELECT * FROM people WHERE deleted=0 ORDER BY name COLLATE NOCASE").toArray().map((r) => this.row(r, ph, seen)); }
+  get(id) { const r = this.sql.exec("SELECT * FROM people WHERE id=? AND deleted=0", String(id)).toArray()[0]; return r && this.row(r, undefined, hsWalls(this.env) ? new Map([[r.id, seenOf(this.sql, r.id)]]) : null); }
   // Find by any alias (name, first name, aka, "my sister"). Exact alias match only, so "Dana" never grabs "Danielle".
   find(ref) { const k = norm(ref); if (!k) return null; return this.list().find((p) => aliasesFor(p).includes(k) || aliasesFor(p).includes(k.replace(/^my /, "my "))) || null; }
   // People mentioned in a message: every alias checked as a whole phrase. Longest alias wins ties; at most 4 people.
@@ -132,10 +120,16 @@ export class People {
   }
   // o.phones / o.emails (lists, from the app's Edit form) replace the lists. A single o.phone / o.email (the helper, older callers)
   // ADDS that number as the primary one and keeps the others, so learning a new number never loses the old one.
-  upsert(o, origin = "") {
+  // channels (optional): where the person came up (the helper's remember, the people job). The Contacts screen passes none, so a typed
+  // or edited contact is never made visible to a channel by that.
+  upsert(o, origin = "", channels = null) {
     const now = Date.now(), name = String(o.name || "").trim().slice(0, 120);
     // o.create (the app's "Add contact"): always a new card. Matching by name or "my brother" there renamed the person's other brother.
-    let p = o.id ? this.get(o.id) : o.create ? null : (this.find(name) || (o.rel ? this.find(`my ${norm(o.rel).replace(/^(your|my) /, "")}`) : null));
+    const byName = o.id || o.create ? null : this.find(name);
+    let p = o.id ? this.get(o.id) : o.create ? null : (byName || (o.rel ? this.find(`my ${norm(o.rel).replace(/^(your|my) /, "")}`) : null));
+    // HS_WALLS: a contact found only by its relation ("my sister") is reused only when the channel saving it may see that contact. Otherwise a new card
+    // is made, so a channel can never rename a hidden contact or learn its name from the save's reply. A contact found by the name the helper gave is fine.
+    if (p && !byName && !o.id && channels && hsWalls(this.env) && !canSee(p.seen, { channel: [].concat(channels)[0], general: [].concat(channels).includes(GENERAL) })) p = null;
     const aka = [...new Set([...(p?.aka || []), ...(o.aka || []).map((x) => String(x).trim()).filter(Boolean)])].slice(0, 20);
     const cur = p ? this.lists(p.id) : { phones: [], emails: [] };
     const next = (kind, many, one, have) => Array.isArray(many) ? cleanList(kind, many) : one ? cleanList(kind, [{ v: one, t: have.find((x) => x.k === keyOf(kind, one))?.t ?? "" }, ...have], one) : have;
@@ -153,15 +147,10 @@ export class People {
       this.setLists(p.id, P, E);
       p = this.get(p.id);
     }
-    this.cardRow(p, origin || "contacts");
+    if (channels && p.id) { seenAdd(this.sql, p.id, channels); if (hsWalls(this.env)) p = this.get(p.id); }
     return p;
   }
-  // The contact card itself is a ledger row too (versioned by its update time), so meaning-search finds "my sister" → Dana.
-  cardRow(p, author) {
-    this.mem.put({ id: `p:${p.id}@${p.updated}`, at: Date.now(), kind: "person", author, source: `contacts · ${p.name}`, text: this.card(p) });
-    for (const old of this.sql.exec("SELECT id FROM mem_rows WHERE id LIKE ? AND id<>? AND superseded_by IS NULL", `p:${p.id}@%`, `p:${p.id}@${p.updated}`).toArray()) this.mem.supersede(old.id, `p:${p.id}@${p.updated}`);
-  }
-  remove(id) { this.sql.exec("UPDATE people SET deleted=1, updated=? WHERE id=?", Date.now(), String(id)); this.sql.exec("DELETE FROM people_notdup WHERE a=? OR b=?", String(id), String(id)); this.sql.exec("DELETE FROM people_photos WHERE person=?", String(id)); this.sql.exec("DELETE FROM people_keys WHERE person=?", String(id)); this.sql.exec("UPDATE mem_rows SET superseded_by='deleted' WHERE id LIKE ? AND superseded_by IS NULL", `p:${id}@%`); return { ok: true }; }
+  remove(id) { seenDropPerson(this.sql, id); this.sql.exec("UPDATE people SET deleted=1, updated=? WHERE id=?", Date.now(), String(id)); this.sql.exec("DELETE FROM people_notdup WHERE a=? OR b=?", String(id), String(id)); this.sql.exec("DELETE FROM people_photos WHERE person=?", String(id)); this.sql.exec("DELETE FROM people_keys WHERE person=?", String(id)); return { ok: true }; }
   // ---------- merging two contacts into one (Captain 2026-10-06: "two contacts for my brother") ----------
   // The plan both the app's preview and the merge use: numbers and emails deduped by their key (E.164 for US phones), aliases
   // combined (the name that loses becomes one), facts combined without repeats. Name / relation / group / birthday / address
@@ -188,16 +177,14 @@ export class People {
     sql.exec("UPDATE people SET name=?, rel=?, aka=?, grp=?, bday=?, addr=?, updated=? WHERE id=?", m.name, m.rel, JSON.stringify(m.aka), m.group, m.bday || null, m.addr || null, now, a);
     this.setLists(a, m._.phones, m._.emails);
     sql.exec("UPDATE people_facts SET person=? WHERE person=?", a, b);
-    for (const id of m._.dupFacts) { sql.exec("UPDATE people_facts SET superseded_by='merged' WHERE id=?", id); this.mem.supersede(`f:${id}`, "merged"); }
+    for (const id of m._.dupFacts) { sql.exec("UPDATE people_facts SET superseded_by='merged' WHERE id=?", id); }
     sql.exec("INSERT OR IGNORE INTO people_keys (k, person) SELECT k, ? FROM people_keys WHERE person=?", a, b); sql.exec("DELETE FROM people_keys WHERE person=?", b);
     if (m.photo === "drop") { sql.exec("DELETE FROM people_photos WHERE person=?", a); sql.exec("UPDATE people_photos SET person=? WHERE person=?", a, b); }
     sql.exec("DELETE FROM people_photos WHERE person=?", b);
     sql.exec("DELETE FROM people_notdup WHERE a=? OR b=?", b, b);
     sql.exec("UPDATE people SET deleted=1, updated=? WHERE id=?", now, b);
-    const p = this.get(a);
-    for (const old of sql.exec("SELECT id FROM mem_rows WHERE id LIKE ? AND superseded_by IS NULL", `p:${b}@%`).toArray()) this.mem.supersede(old.id, `p:${a}@${p.updated}`);
-    this.cardRow(p, "contacts merge");
-    return p;
+    seenMerge(sql, a, b);   // the survivor is seen wherever either was
+    return this.get(a);
   }
   // Likely duplicates for the "Suggested duplicates" list: the same phone number or email, or the same name. Pairs the person
   // said aren't duplicates stay out. At most 20 pairs.
@@ -224,8 +211,7 @@ export class People {
     const { channel = null, ...cite } = extra || {};
     this.sql.exec("INSERT INTO people_facts (id,person,text,src,at,channel,cite) VALUES (?,?,?,?,?,?,?)", id, p.id, String(text).slice(0, 1000), String(src).slice(0, 200), at, channel ? String(channel).slice(0, 64) : null, extra ? JSON.stringify(cite).slice(0, 2000) : null);
     if (replaces) this.sql.exec("UPDATE people_facts SET superseded_by=? WHERE id=? AND person=?", id, String(replaces), p.id);
-    this.mem.put({ id: `f:${id}`, at, kind: "fact", author: src || "helper", source: `about ${p.name}${p.rel ? ` (${p.rel})` : ""}`, text: String(text) });
-    if (replaces) this.mem.supersede(`f:${replaces}`, `f:${id}`);
+    if (channel) seenAdd(this.sql, p.id, [channel], at);   // a fact learned in a channel means the person came up there
     return { id, text, src, at };
   }
   // forget (forget.js): delete = delete. The fact, every version linked to it (superseded_by both ways), and their search rows.
@@ -233,12 +219,12 @@ export class People {
     const ids = new Set([String(factId)]), q = [String(factId)];
     while (q.length && ids.size < 12) { const x = q.shift(); for (const r of this.sql.exec("SELECT id, superseded_by FROM people_facts WHERE person=? AND (id=? OR superseded_by=?)", String(personId), x, x).toArray()) for (const y of [r.id, r.superseded_by]) if (y && !ids.has(y) && this.sql.exec("SELECT 1 FROM people_facts WHERE id=? AND person=?", y, String(personId)).toArray().length) { ids.add(y); q.push(y); } }
     let n = 0;
-    for (const id of ids) { n += Number(this.sql.exec("SELECT COUNT(*) n FROM people_facts WHERE id=? AND person=?", id, String(personId)).one().n) || 0; this.sql.exec("DELETE FROM people_facts WHERE id=? AND person=?", id, String(personId)); this.sql.exec("DELETE FROM mem_rows WHERE id=?", `f:${id}`); try { this.sql.exec("DELETE FROM mem_fts WHERE id=?", `f:${id}`); } catch {} }
+    for (const id of ids) { n += Number(this.sql.exec("SELECT COUNT(*) n FROM people_facts WHERE id=? AND person=?", id, String(personId)).one().n) || 0; this.sql.exec("DELETE FROM people_facts WHERE id=? AND person=?", id, String(personId)); }
     return { ok: true, deleted: n };
   }
-  dropFact(personId, factId) { this.sql.exec("UPDATE people_facts SET superseded_by='deleted' WHERE id=? AND person=?", String(factId), String(personId)); this.mem.supersede(`f:${factId}`, "deleted"); return { ok: true }; }
-  // A workspace fact not about one person ("I'm vegetarian", "we live in Portland").
-  addNote(text, src = "") { const id = `w:${rid()}`; this.mem.put({ id, at: Date.now(), kind: "fact", author: src || "helper", source: "about you", text: String(text).slice(0, 2000) }); return { id }; }
+  dropFact(personId, factId) { this.sql.exec("UPDATE people_facts SET superseded_by='deleted' WHERE id=? AND person=?", String(factId), String(personId)); return { ok: true }; }
+  // A workspace fact not about one person: nothing is stored here any more (it went into the retired ledger). Kept so an older object that still calls it gets an answer.
+  addNote() { return { id: `w:${rid()}` }; }
   // One line per person for the helper. Every number / email with its label, primary first:
   // "Sam Rivera — Your brother; phones (503) 555-0187 personal (primary), (503) 555-0100 work; email sam@x.com personal".
   card(p) {
@@ -252,7 +238,8 @@ export class People {
   // (name, relation, aliases, phone, email) plus facts the person typed into Contacts themself. What a channel learns stays in that channel:
   // facts the background people upkeep learned show only in the channel they came from (o.channel) and in General (o.general).
   async recall(query, o = {}) {
-    const t0 = Date.now(), ppl = this.mentioned(query);
+    // HS_WALLS: a channel other than General answers only for the people seen in it. General (o.general) sees everyone.
+    const walls = hsWalls(this.env) && !o.general, t0 = Date.now(), ppl = this.mentioned(query).filter((p) => !walls || canSee(p.seen ?? seenOf(this.sql, p.id), { channel: o.channel }));
     const cards = ppl.map((p) => { const mine = p.facts.filter((f) => /^You /.test(f.src)), learned = p.facts.filter((f) => f.channel && !/^You /.test(f.src) && (o.general || f.channel === o.channel));
       return `[contact · ${p.name}] ${this.card(p)}${mine.length ? `\n  Added by the person in Contacts: ${mine.slice(0, 8).map((f) => f.text).join(" · ")}` : ""}${learned.length ? `\n  Learned from what the person said${o.general ? "" : " in this channel"}: ${learned.slice(0, 8).map((f) => `${f.text}${o.general ? ` (#${f.channel})` : ""}`).join(" · ")}` : ""}`; });
     return { people: ppl.map((p) => ({ id: p.id, name: p.name, aliases: aliasesFor(p) })), ids: [], topSim: 0, ms: Date.now() - t0, pack: cards.join("\n") };

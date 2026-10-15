@@ -53,7 +53,7 @@ export { PAUSE_FACTS, appFirstBlock, callKey, repeatBlock, repeatNote } from "./
 export { appLogoRoute } from "./applogo.js";
 export { APPS_USED_LINE, APPS_USED_TOOL, APP_OPTIONS, NONE, appsUsedApi, appsUsedLine, appsUsedTool, getAppsUsed, optionsView, setAppsUsed, usedSlugs } from "./apps-used.js";
 export { BeeSync };
-export { beeCron, beeJobAlarm, beeJobOn, beeLiveOn, beeLiveStopOn, beeNoteDeleted, beeNoteEdited, beeNoteRestored, beeOps, beePendingFacts, beeRoute } from "./bee.js";
+export { beeCron, beeJobAlarm, beeJobOn, beeLiveOn, beeLiveStopOn, beeNoteDeleted, beeNoteEdited, beeNoteRestored, beeOps, beePendingFacts, beePendingSpeakers, beeRoute } from "./bee.js";
 export { runBrowserTask } from "./browser-agent.js";
 export { BUILTIN_APPS, BUILTIN_TEXT, builtinApps } from "./builtin-apps.js";
 export { cancelApi, cancelCron, cancelSync, cancelWebhook } from "./cancel.js";
@@ -94,7 +94,9 @@ export { customMcpRoute, isCustomSlug, customUsable, ownerOf, CUSTOM_DENIED, wit
 
 export { ambientQuery, AMBIENT_QUERY_TOOL } from "./ambient-query.js";
 
-export { modelSettingsEnv, readModelSettings, jobModel, jobModels, jobCost } from "./model-settings.js";
+export { modelSettingsEnv, readModelSettings, jobModel, jobModels, jobCost, modelFacts } from "./model-settings.js";
+export { MOONDREAM } from "./model-seed.js";
+export { dailyBillingFlag, flagTurns, FLAG_MIN_CHARGE } from "./billing-flag.js";
 export { choreRouteOf, jobRoute, jobSetting, settingsOf, entriesOf, configuredHosts, quirkOf, effortBody, effortFor, reasoningMandatory } from "./model-jobs.js";
 export { decisionCaller, askDecider } from "./text-decision.js";
 export { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, START_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput, browserPurchaseGuard } from "./browser-tasks.js";

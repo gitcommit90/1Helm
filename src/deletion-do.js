@@ -13,6 +13,7 @@
 import { stDelete } from "./storage.js";
 import { previewKeys, dropPreviewRows } from "./file-preview.js";   // the file viewer's hidden PDF previews go with their files
 import { sidecarKeys, dropSidecarRows } from "./sidecar-rows.js";   // and so do their text sidecars
+import { hsWriters, DOC, convDocOf } from "./hindsight-writers.js";   // HS_WRITERS: the documents a chat, a file or a note has in the channel's bank
 
 const CHUNK = 90;                                   // Durable Object SQL allows 100 bound parameters per statement
 const chunks = (a, n = CHUNK) => { const o = []; for (let i = 0; i < a.length; i += n) o.push(a.slice(i, i + n)); return o; };
@@ -68,7 +69,14 @@ export const residentDeletion = {
     const interviews = has(this.sql, "chat_interviews") ? this.sql.exec("SELECT id FROM chat_interviews WHERE session=?", sid).toArray().map((r) => r.id) : [];
     // Facts the background memory upkeep drew from this chat (memjobs.js) are Hindsight documents "fact-u:…" too.
     const mj = has(this.sql, "mj_cites") ? this.sql.exec("SELECT ref FROM mj_cites WHERE session=? AND job='upkeep'", sid).toArray().map((r) => `fact-${r.ref}`) : [];
-    return { exists: !!this.session(sid), turns, approvals, plans, interviews, hsDocs: [...turns.map((t) => `turn-${t}`), ...mj], texts: this.textsSessions().includes(sid), default: this.getRaw("default_session") === sid, live: this.liveIn(sid), bank: this.hsBankId?.() || null };
+    // HS_WRITERS: the chat's conversation documents (one per local day, a day either side in case the time zone changed) and its task card.
+    const wd = [];
+    if (hsWriters(this.env)) {
+      const tz = this.tz?.() || "UTC", add = (x) => { if (x) wd.push(x); };
+      for (const c of chunks(turns)) for (const r of this.sql.exec(`SELECT at, session, workflow_id FROM turns WHERE id IN (${ph(c)})`, ...c).toArray()) for (const d of [-1, 0, 1]) add(convDocOf({ session: r.session, workflowId: r.workflow_id, at: Number(r.at) + d * 86400e3 }, tz));
+      add(DOC.task(sid)); if (has(this.sql, "hs_outbox")) for (const d of new Set(wd)) this.sql.exec("DELETE FROM hs_outbox WHERE doc=? AND del=0", d);   // a queued write for the deleted chat never lands
+    }
+    return { exists: !!this.session(sid), turns, approvals, plans, interviews, hsDocs: [...turns.map((t) => `turn-${t}`), ...mj, ...new Set(wd)], texts: this.textsSessions().includes(sid), default: this.getRaw("default_session") === sid, live: this.liveIn(sid), bank: this.hsBankId?.() || null };
   },
   // Is this file used outside the chat being deleted? (attached to a message in another chat, or held for a scheduled message
   // that isn't this chat's). Returns where, so the file can move there; null = only this chat used it.
@@ -116,7 +124,7 @@ export const residentDeletion = {
     }
     const shots = sql.exec("SELECT id, r2key FROM shots WHERE session=?", sid).toArray();
     for (const c of chunks(turns)) for (const s of sql.exec(`SELECT id, r2key FROM shots WHERE turn IN (${ph(c)})`, ...c).toArray()) if (!shots.some((x) => x.id === s.id)) shots.push(s);
-    counts.r2_objects = await r2DeleteKeys(this.env, [...gone.flatMap((f) => [{ key: f.r2key, size: f.bytes }, f.view_key, f.prev_key && { key: f.prev_key, size: f.prev_bytes ?? null }]), ...previewKeys(sql, gone.map((f) => f.id)), ...sidecarKeys(sql, gone.map((f) => f.id)), ...shots.map((s) => s.r2key)]);
+    counts.r2_objects = await r2DeleteKeys(this.env, [...gone.flatMap((f) => [{ key: f.r2key, size: f.bytes }, f.view_key, f.prev_key && { key: f.prev_key, size: f.prev_bytes ?? null }, f.orig_key && f.orig_key !== f.prev_key && f.orig_key !== f.r2key && { key: f.orig_key, size: f.orig_bytes ?? null }]), ...previewKeys(sql, gone.map((f) => f.id)), ...sidecarKeys(sql, gone.map((f) => f.id)), ...shots.map((s) => s.r2key)]);
     const rm = gone.filter((f) => Number(f.synced) !== 0).map((f) => `files/${f.name}`);   // copies on the channel computer
     // Their share links die with them (share.js keeps them in D1, keyed by file).
     const tid = this.get("tenant");
@@ -158,7 +166,7 @@ export const residentDeletion = {
     // 6. Its files leave the channel computer too (on its next use, or now in the background), and the next save is a full base.
     if (rm.length) { this.put("rm_paths", JSON.stringify([...new Set([...jp(this.getRaw("rm_paths")), ...rm])])); this.ctx.waitUntil?.(this.syncRemovals().catch((e) => console.log("file removal", e.message))); }
     try { await this.arm(); } catch {}
-    return { ok: true, existed, counts, kept, removed_from_computer: rm.length, live: this.liveIn(sid) };
+    return { ok: true, existed, counts, kept, removed_from_computer: rm.length, live: this.liveIn(sid), hsFileDocs: gone.map((f) => DOC.file(f.id)) };
   },
   // A task started from a plan in the deleted chat keeps living (it's its own chat), but loses the excerpt of the deleted one
   // and its link back to it. Called here and, by the Worker, on every other channel's Resident.
@@ -180,13 +188,14 @@ export const residentDeletion = {
   // and the pre-Notebook copy r:… it replaced). Rows it had superseded count again. → Hindsight document ids to delete.
   async noteForget(noteId) {
     const sql = this.sql, id = `m:${String(noteId)}`;
-    if (!has(sql, "mem_rows")) return { rows: 0, hsDocs: [`fact-${id}`] };
+    if (!has(sql, "mem_rows")) return { rows: 0, hsDocs: [`fact-${id}`, DOC.note(noteId)] };
     const mine = sql.exec("SELECT id FROM mem_rows WHERE id=? OR id LIKE ?", id, `${id}@%`).toArray().map((r) => r.id);
     const copies = mine.length ? sql.exec(`SELECT id FROM mem_rows WHERE id LIKE 'r:%' AND superseded_by IN (${ph(mine)})`, ...mine).toArray().map((r) => r.id) : [];
     const all = [...mine, ...copies];
     const n = delIn(sql, "mem_rows", "id", all); delIn(sql, "mem_fts", "id", all);
     for (const c of chunks(all)) sql.exec(`UPDATE mem_rows SET superseded_by=NULL WHERE superseded_by IN (${ph(c)})`, ...c);
-    return { rows: n, hsDocs: [...new Set([`fact-${id}`, ...all.map((x) => `fact-${x}`)])], bank: this.hsBankId?.() || null };
+    if (has(sql, "hs_outbox")) sql.exec("DELETE FROM hs_outbox WHERE doc=? AND del=0", DOC.note(noteId));   // HS_WRITERS: a queued write of the deleted note never lands
+    return { rows: n, hsDocs: [...new Set([`fact-${id}`, DOC.note(noteId), ...all.map((x) => `fact-${x}`)])], bank: this.hsBankId?.() || null };
   },
   // The whole channel: stop everything, delete every R2 object this object knows (files, views, screenshots), then the storage.
   async wipeChannel() {
@@ -221,6 +230,8 @@ export const archiveDeletion = {
     this.sql.exec("UPDATE rows SET data=? WHERE tbl='channels' AND id=?", JSON.stringify({ ...jp(r.data, {}), deleting: Date.now() }), String(cid)); return true;
   },
   async deleteChannelRows(cid) {
+    // HS_WALLS: the channel's "people seen here" rows go with it (walls.js).
+    if (has(this.sql, "people_seen")) { const r = this.sql.exec("SELECT data FROM rows WHERE tbl='channels' AND id=?", String(cid)).toArray()[0], c = r ? jp(r.data, null) : null; if (c) this.sql.exec("DELETE FROM people_seen WHERE channel=?", String(c.slug || c.name)); }
     const counts = Object.fromEntries(this.sql.exec("SELECT tbl, COUNT(*) n FROM rows WHERE channel_id=? GROUP BY tbl", String(cid)).toArray().map((r) => [r.tbl, r.n]));
     this.sql.exec("DELETE FROM rows WHERE channel_id=?", String(cid));
     counts.channels = count(this.sql, "rows", "tbl='channels' AND id=?", String(cid));

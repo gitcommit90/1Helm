@@ -4,6 +4,7 @@ import { personWords, quoteProblem, checkQuote } from "./person-asked.js";
 import { mergeTodos, publicItems } from "./todos.js";
 import { scrubSecrets } from "./secrets-scrub.js";
 import { startTaskHere, taskIntentSource } from "./task-kickoff.js";
+import { frontDoorGate } from "./front-door.js";
 
 export const LIST_CHANNELS_TOOL = { type: "function", function: { name: "list_channels", description: "General only: discover existing project channels in this workspace, with their slugs, names and purposes. Use the returned slug with list_tasks, read_task, create_task, rename_task, update_todos or mark_task_done to work there. For requests across all channels, visit each result and follow each task page. Does not include private direct-message channels.", parameters: { type: "object", properties: { query: { type: "string", description: "Optional literal text in a channel name, slug or purpose; omit for all channels." } } } } };
 const OPERATIONS = new Set(["list_tasks", "read_task", "create_task", "rename_task", "update_todos", "mark_task_done", "start_task"]);
@@ -43,6 +44,8 @@ export async function routeTaskTool(R, name, a = {}, ctx = {}) {
       if (name === "start_task") { const r = JSON.parse(result); if (r.started) ctx.emit?.({ t: "task_started", channel: viewChannel(found.channel), session: r.session }); }
       return result;
     }
+    // HS_WALLS: reading another channel's tasks waits for General's front door or the "Inspect other channels?" card. Writes (create, rename, checklists, done, start) never ask.
+    if (name === "list_tasks" || name === "read_task") { const no = await frontDoorGate(R, ctx, `look at the tasks in #${channel}`); if (no) return fail(no, { channel }); }
     const args = { ...a, channel };
     if (!["list_tasks", "create_task", "start_task"].includes(name) && !String(a.task || "").trim()) return fail("Name a task in the target channel (use list_tasks first). The current conversation is in General; nothing was changed.", { channel });
     const words = source?.words || personWords(ctx);

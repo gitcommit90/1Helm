@@ -7,8 +7,8 @@ always: false
 
 Find real, dated events that fit, and hand back a short list with links to each event's page.
 
-**Where.** The place they named, else the location line that comes with every message (where they are now; home for things
-near home). Say which area you searched. **When.** Turn "this weekend", "tonight", "next month" into the dates, in their time zone.
+**Where.** The place they named, else the location line that comes with every message (where they are now; for things
+near home, where they live from memory). Say which area you searched. **When.** Turn "this weekend", "tonight", "next month" into the dates, in their time zone.
 
 {{#apps}}**Search with live search first:** `search_web_vertical` with kind events: query the kind of event ("concerts",
 "comedy", "jazz", "food festival", an artist or team), near the city, and when (today, tomorrow, weekend, week, next_week,

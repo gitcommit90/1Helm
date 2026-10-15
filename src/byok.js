@@ -43,7 +43,7 @@ export const MAX_JSON_BYTES = 2 << 20;      // a non-streamed answer
 export const MAX_STREAM_BYTES = 16 << 20;   // a streamed answer (reasoning streams can be long)
 export const MAX_ERR_BYTES = 4096;          // what is read of an error body
 export const TEST_LIMIT = 8, TEST_WINDOW_MS = 10 * 60e3;   // Test connection (and Save, which tests first): 8 per 10 minutes
-export { BYOK_MARKUP, METER } from "./byok-meter.js";
+export { BYOK_MARKUP, METER, HS_CHUNK_CHARS, HS_FACTS_PER_CALL, HS_CONSOLIDATE_FACTS, HS_REFRESH_WINDOW_MS, hsRetainBatchNano, hsRetainNano, hsRawNano, HS_RECALL_TIERS, hsRecallNano } from "./byok-meter.js";
 
 export class ByokError extends Error {
   // status stays 502 whatever the provider said: 402/429 mean "1Helm credits / daily limit" everywhere else in the app.

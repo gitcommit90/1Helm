@@ -54,7 +54,7 @@ export function dedupeProgress(parts) { const xs = (parts || []).map((x) => Stri
 // splitProgress(said, meta) -> [{ text, progress }] (deduped; order kept). meta[i] = { calls: names of the tool calls in the step that
 // wrote said[i], later: names of calls in the following steps that wrote no text } or null/absent when unknown. Unsure => not progress.
 // A part with a question, a card, a file link or code is never progress: it is something to act on or keep.
-export const BOOKKEEPING = new Set(["remember", "react", "forget", "note_account", "save_run_notes", "update_todos", "rename_task", "mark_task_done", "set_workflow_status", "set_workflow_gate", "share_file", "share_file_link", "publish_page", "offer_connect", "pomodoro"]);
+export const BOOKKEEPING = new Set(["remember", "react", "note_account", "save_run_notes", "update_todos", "rename_task", "mark_task_done", "set_workflow_status", "set_workflow_gate", "share_file", "share_file_link", "publish_page", "offer_connect", "pomodoro"]);
 const bk = (m) => !!m && [...(m.calls || []), ...(m.later || [])].every((n) => BOOKKEEPING.has(n));
 export const mustShow = (s) => protectedPart(s) || /\?/.test(s) || /\]\(\s*(?:https?:|\/)/.test(s) || /\bhttps?:\/\/\S+/.test(s);
 const trivial = (s) => String(s).trim().length < 20 && !mustShow(s);

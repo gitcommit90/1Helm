@@ -84,7 +84,7 @@ they state with `remember` (a concise fact, not the receipt).
 ## The flow
 
 1. **Pin down the request.** Turn relative dates into exact local dates. Make reversible assumptions to search ("me" = one
-   adult; a service at their home = the location line's Home, not where their phone is now) and say them with the results.
+   adult; a service at their home = where they live from memory, not where their phone is now) and say them with the results.
    Never invent names, ages, numbers, access needs, diet or payment details.
 2. **Ask only for a true blocker.** Start searching as soon as a useful search can run. Ask only when a missing fact would
    change the search a lot, risk booking the wrong thing, or is needed to book. One question at a time, with a suggested

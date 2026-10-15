@@ -72,7 +72,7 @@ export const HELPER_ALLOWED = new Set([
 // recall_history / memory_explain: the person's chat and memory (the brief must carry what the job needs).
 export const HELPER_DENIED = [
   "start_helper", "stop_helper", "list_helpers", "send_helper",           // no helper controls inside a helper
-  "text_person", "text_captain", "react", "share_file", "remember", "update_todos", "mark_task_done", "recall_history", "memory_explain", "forget", "save_skill", "interview", "pomodoro",   // chat, UI, memory, done, focus timer (the person decides)
+  "text_person", "text_captain", "react", "share_file", "remember", "update_todos", "mark_task_done", "recall_history", "memory_explain", "save_skill", "interview", "pomodoro",   // chat, UI, memory, done, focus timer (the person decides)
   "browser_navigate", "browser_snapshot", "browser_act", "browser_handoff", "browser_screenshot", "browser_task", "start_browser_task", "list_browser_tasks", "stop_browser_task",       // live browser
   "browser_fill_login", "browser_fill_card", "buy_with_link", "check_purchase",                                         // credentials, wallet
   "schedule_workflow", "schedule_followup", "set_workflow_status", "set_workflow_gate", "save_run_notes", "list_workflows", "app_events",   // workers (app_events: only for setting up an app-event workflow)

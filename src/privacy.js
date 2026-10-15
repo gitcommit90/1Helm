@@ -73,6 +73,11 @@ export const ENDPOINTS = {
     // https://developers.cloudflare.com/workers-ai/platform/data-usage/
     // https://developers.deepgram.com/trust-security/your-data
     "@cf/deepgram/nova-3": { "cloudflare-workers-ai": Z },
+    // AssemblyAI Universal-3.6 Pro (2026-10-15): AssemblyAI is OpenRouter's only host (tag "assemblyai"). It is on OpenRouter's
+    // /api/v1/endpoints/zdr list, and real calls confirmed it: zdr:true and data_collection:"deny" both answer 200, while a
+    // non-ZDR model (openai/whisper-1) with the same filter answers 404 "No endpoints found matching your data policy".
+    // OpenRouter's endpoint data doesn't state AssemblyAI's own data policy, so this entry rests on that list alone.
+    "assemblyai/universal-3-6-pro": { assemblyai: Z },
     "qwen/qwen3-asr-0.6b": { deepinfra: Z },
     "openai/whisper-large-v3-turbo": { deepinfra: Z, groq: Z },
   },

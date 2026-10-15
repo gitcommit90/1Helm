@@ -23,6 +23,7 @@ import { BUILTIN_APPS } from "./ee/index.js";
 import { boundedJson, BodyTooLargeError } from "./bounded-body.js";
 import { isCustomSlug, customUsable, ownerOf, CUSTOM_DENIED } from "./ee/index.js";
 import { loadCheckins, saveCheckins, checkinPatchOk } from './agent-checkins.js';
+import { hsWalls, frontDoorGet, frontDoorSet } from './walls.js';   // HS_WALLS: the "channels" kind is General's front door (front-door.js)
 import { sshPermission, setSshPermission, nativeAvailable, nativeSameOrigin } from './native-network.js';
 
 export const PERM_DDL = ["ALTER TABLE approvals ADD COLUMN perm TEXT", "ALTER TABLE approvals ADD COLUMN what TEXT"];
@@ -52,6 +53,9 @@ export const KINDS = [
   // Asks at every level, Standard included (personal-fill.js gates the browser typing tools). The card's question names the details
   // and the site ("OK to fill in your name, phone and email on opentable.com?"): see permQuestion.
   { id: "custom_mcp", name: "Use tools from your custom MCP servers", level: "standard", ask: "OK to use this tool from your custom MCP server?", always: "Always allow custom MCP tools" },
+  // General's front door (HS_WALLS, walls.js and front-door.js): never asked by level. With front_door off, General's reads of other channels wait for this card.
+  // "Always" is not a perm_allow row: it sets the account's front_door to 1 (Settings turns it off again). It sits at Standard so no level hides it.
+  { id: "channels", name: "Look in your other channels", level: "standard", ask: "Inspect other channels?", always: "Always let General look in other channels" },
   { id: "personal", name: "Fill in your personal details", level: "standard", ask: "OK to fill in your personal details on this website?", always: "Always allow filling in your details" },
 ];
 export const KIND = Object.fromEntries(KINDS.map((k) => [k.id, k]));
@@ -144,10 +148,11 @@ export async function loadPerms(env, tenant) {
 }
 export async function allowKind(env, tenant, kind, via = "card") {
   if (!KIND[kind]) return { error: "unknown kind" };
+  if (kind === "channels") return frontDoorSet(env, tenant, true);   // the front door is a setting on the account, not a perm_allow row
   await env.DB.prepare("INSERT INTO perm_allow (tenant_id,kind,at,via) VALUES (?,?,?,?) ON CONFLICT(tenant_id,kind) DO UPDATE SET at=excluded.at, via=excluded.via").bind(tenant, kind, Date.now(), via).run();
   return { ok: true };
 }
-export const asks = (level, kind) => kind === 'personal' || kind === 'custom_mcp' || (RANK[level] ?? 0) >= (RANK[KIND[kind]?.level] ?? 99);
+export const asks = (level, kind) => kind === 'personal' || kind === 'custom_mcp' || kind === 'channels' || (RANK[level] ?? 0) >= (RANK[KIND[kind]?.level] ?? 99);
 
 // ---- the texts the helper sees ----
 const doingOf = (name, a = {}) => {
@@ -173,10 +178,12 @@ const doingOf = (name, a = {}) => {
   }
   return "do this";
 };
-export const notAllowed = (kind) => kind === "personal"
+export const notAllowed = (kind) => kind === "channels"
+  ? `NOT ALLOWED: the person said no to "${kindName(kind)}" this time, so nothing was read from their other channels. Don't try another way to read them. Tell them in one short line what you couldn't look up, and answer from this channel if you can.`
+  : kind === "personal"
   ? `NOT ALLOWED: the person said no to "${kindName(kind)}" this time, so nothing was typed. Don't type their details another way. If the form still needs them, use browser_handoff so they fill those fields in themselves, and tell them in one short line.`
   : `NOT ALLOWED: the person said no to "${kindName(kind)}" this time, so nothing was done. Don't try another way to get it. Tell them in one short line what you couldn't do without it, and carry on with the rest if you can.`;
-const needs = (kind, where) => `NEEDS PERMISSION: ${kind === "personal" ? "1Helm asks the person before" : "the person chose to be asked before"} "${kindName(kind)}", and they haven't answered yet, so nothing was done. The question is waiting for them ${where}. End your turn now with one short line saying what you're waiting on; don't ask again in your own words and don't try another way. When they allow it, you'll be told and can carry on.`;
+const needs = (kind, where) => `NEEDS PERMISSION: ${kind === "personal" || kind === "channels" ? "1Helm asks the person before" : "the person chose to be asked before"} "${kindName(kind)}", and they haven't answered yet, so nothing was done. The question is waiting for them ${where}. End your turn now with one short line saying what you're waiting on; don't ask again in your own words and don't try another way. When they allow it, you'll be told and can carry on.`;
 
 // ---- the gate ----
 // → null (go ahead) or the text the tool returns instead. tc = the turn's context.
@@ -276,7 +283,7 @@ export async function permsApi(req, env, t, { channels }) {
     catch (e) { return json({ error: e instanceof BodyTooLargeError ? "too_large" : "bad_request" }, e instanceof BodyTooLargeError ? 413 : 400); }
     if (b.agent_checkins != null) {
       if (!nativeSameOrigin(req)) return json({ error: 'Check-in changes require a same-origin request.' }, 403);
-      if (!checkinPatchOk(b.agent_checkins)) return json({ error: 'Agent check-ins accept silent and fast whole-number thresholds from 1 to 1000.' }, 400);
+      if (!checkinPatchOk(b.agent_checkins)) return json({ error: 'Agent check-ins accept enabled (true or false), and silent and fast whole numbers from 1 to 1000.' }, 400);
       await saveCheckins(env, t.id, b.agent_checkins);
     } else if (b.direct_protocols != null) {
       if (!nativeSameOrigin(req)) return json({ error: 'Native permission changes require a same-origin request.' }, 403);
@@ -289,6 +296,7 @@ export async function permsApi(req, env, t, { channels }) {
       await DB.prepare("INSERT INTO perm_prefs (tenant_id,level,updated_at) VALUES (?,?,?) ON CONFLICT(tenant_id) DO UPDATE SET level=excluded.level, updated_at=excluded.updated_at").bind(t.id, b.level, Date.now()).run();
     } else if (b.revoke != null) {
       if (!KIND[b.revoke]) return json({ error: "unknown kind" }, 400);
+      if (b.revoke === "channels") await frontDoorSet(env, t.id, false); else
       await DB.prepare("DELETE FROM perm_allow WHERE tenant_id=? AND kind=?").bind(t.id, String(b.revoke)).run();
     } else if (b.allow != null) {
       if (!KIND[b.allow]) return json({ error: "unknown kind" }, 400);
@@ -304,7 +312,8 @@ export async function permsView(env, t, channels) {
   const DB = env.DB;
   const lv = await DB.prepare("SELECT level FROM perm_prefs WHERE tenant_id=?").bind(t.id).first().catch(() => null);
   const allowed = ((await DB.prepare("SELECT kind, at FROM perm_allow WHERE tenant_id=? ORDER BY at DESC").bind(t.id).all().catch(() => null))?.results || [])
-    .filter((r) => KIND[r.kind]).map((r) => ({ kind: r.kind, name: kindName(r.kind), at: r.at }));
+    .filter((r) => KIND[r.kind] && r.kind !== "channels").map((r) => ({ kind: r.kind, name: kindName(r.kind), at: r.at }));
+  if (hsWalls(env) && await frontDoorGet(env, t.id)) allowed.unshift({ kind: "channels", name: kindName("channels"), at: null });   // the front door is on: listed with the other always-allowed kinds, and revoking it turns it off
   // "Always allow <site>" (Sentinel, per channel): each channel's lasting grants.
   const sites = [];
   try {
@@ -314,7 +323,8 @@ export async function permsView(env, t, channels) {
       for (const g of gs || []) if (g.scope === "this channel" && !String(g.host).startsWith("perm:")) sites.push({ channel: slug, channel_name: c.name || slug, id: g.id, host: g.host, scope: g.scope, at: g.at });
     }
   } catch {}
-  return { level: levelOk(lv?.level) ? lv.level : "standard", levels: LEVELS, kinds: KINDS.map(({ id, name, level }) => ({ id, name, level })), allowed, sites,
+  return { level: levelOk(lv?.level) ? lv.level : "standard", levels: LEVELS, kinds: KINDS.filter((k) => k.id !== "channels" || hsWalls(env)).map(({ id, name, level }) => ({ id, name, level })),
+    ...(hsWalls(env) ? { front_door: !!(await frontDoorGet(env, t.id)) } : {}), allowed, sites,
     agent_checkins: await loadCheckins(env, t.id),
     direct_protocols: { ssh: (await sshPermission(env, t.id)).mode }, native_network_available: nativeAvailable(env) };
 }

@@ -13,12 +13,15 @@ import { CATEGORIES } from "./pool.js";
 import { JOBS, JOB_KINDS, configuredHosts } from "./model-jobs.js";
 
 const MUSE_C = "meta/muse-spark-1.3-contributor", MUSE_S = "meta/muse-spark-1.3", DEEPSEEK = "deepseek/deepseek-v4.1-flash";
-const LUNA = "openai/gpt-6-luna", SOL = "openai/gpt-6.1-sol", HAIKU = "anthropic/claude-haiku-5.5";
-const OSS120 = "openai/gpt-oss-120b", OSS20 = "openai/gpt-oss-20b", QWEN = "qwen/qwen3.8-27b", GLM = "z-ai/glm-5.3-flash";
-const PPLX_DECIDER = "perplexity/pplx-decider-v1.1-27b", JEV = "~typesafe/jev-latest", JEV_ROUTER = "typesafe/jev-router";
-const STT = "qwen/qwen3-asr-0.6b", STT_FALLBACK = "openai/whisper-large-v3-turbo", STT_WAI = "@cf/openai/whisper-large-v3-turbo", LIVE_STT = "@cf/deepgram/nova-3";
+const LUNA = "openai/gpt-6-luna", HAIKU = "anthropic/claude-haiku-5.5";
+const OSS120 = "openai/gpt-oss-120b", GLM = "z-ai/glm-5.3-flash";
+const PPLX_DECIDER = "perplexity/pplx-decider-v1.1-27b", JEV_ROUTER = "typesafe/jev-router";
+// Speech to text, in order (the Captain, 2026-10-15, "it is an accuracy choice"): AssemblyAI Universal-3.6 Pro first, then the earlier order.
+const STT_BEST = "assemblyai/universal-3-6-pro", STT = "qwen/qwen3-asr-0.6b", STT_FALLBACK = "openai/whisper-large-v3-turbo", STT_WAI = "@cf/openai/whisper-large-v3-turbo", LIVE_STT = "@cf/deepgram/nova-3";
 const CLEF = "@cf/cloudflare/clef", CLEF_FLASH = "@cf/cloudflare/clef-flash";
 const EMBED_FILES = "perplexity/pplx-embed-v1-0.6b", EMBED_MEMORY = "@cf/baai/bge-m3", VISION = "@cf/google/gemma-4-26b-a4b-it", WAI_CHAT = "@cf/zai-org/glm-5.3-flash";
+// The browser look's model (sidecar.js lookModel; SIDECAR_LOOK_MODEL overrides). Not a saved job: Moondream 3.1 on Workers AI.
+export const MOONDREAM = "@cf/moondream/moondream3.1-9B-A2B";
 
 const LEVELS = ["unrestricted", "no_training", "zdr"];
 // OpenRouter /api/v1/models reasoning levels, checked 2026-10-10. "none" is offered only when reasoning is optional.
@@ -29,21 +32,24 @@ export const SEED_FACTS = {
   [MUSE_S]: { name: "Muse Standard", kinds: ["chat"], efforts: ALL, quirks: { auto_tool_choice_only: true, reasoning_replay: true } },
   [DEEPSEEK]: { name: "DeepSeek Flash", kinds: ["chat", "chore", "classic"], efforts: ["default", "none", "low", "high", "max"] },
   [LUNA]: { name: "Luna", kinds: ["chat", "chore"], efforts: ["default", "none", "low", "medium", "high", "xhigh", "max"], quirks: { no_temperature: true, rate_limit_waits: true } },
-  [SOL]: { name: "Sol", kinds: ["chat", "chore"], efforts: ["default", "low", "medium", "high", "xhigh", "max"] },
   [HAIKU]: { name: "Haiku", kinds: ["chat", "chore"], efforts: ["default", "none", "low", "medium", "high", "xhigh", "max"], quirks: { no_temperature: true } },
   [OSS120]: { name: "GPT OSS 120B", kinds: ["chore"], efforts: ["default", "low", "medium", "high"], quirks: { reasoning_mandatory: true } },
-  [OSS20]: { name: "GPT OSS 20B", kinds: ["chore"], efforts: ["default", "low", "medium", "high"], quirks: { reasoning_mandatory: true, no_json: true } },
-  [QWEN]: { name: "Qwen 3.8 27B", kinds: ["chore"], efforts: ["default", "none", "low", "medium", "high"] },
-  [GLM]: { name: "GLM 5.3 Flash", kinds: ["chore", "classic"], efforts: ["default", "none", "low", "medium", "high"] },
+  // Reasoning levels as OpenRouter lists them (checked 2026-10-15): Qwen supports xhigh, medium and low and can turn reasoning off; GLM supports
+  // low, high and max and can't turn it off (mandatory), so "none" is sent as "low" there.
+  [GLM]: { name: "GLM 5.3 Flash", kinds: ["chore", "classic"], efforts: ["low", "high", "max"], quirks: { reasoning_mandatory: true } },
   [PPLX_DECIDER]: { name: "Perplexity Decider", kinds: ["decider"], efforts: [] },
-  [JEV]: { name: "TypeSafe Jev", kinds: ["decider"], efforts: [] },
   [JEV_ROUTER]: { name: "TypeSafe Jev Router", kinds: ["classic"], efforts: [] },
+  // formats: the input_audio formats it accepts (checked 2026-10-15: webm, m4a, mp4, mp3, ogg and flac answer 400 "only wav is supported";
+  // 16-bit PCM WAV at any rate or channel count works, 8-bit and mu-law WAV don't; no length limit found up to 20 min / 38 MB).
+  // sec_nano: price in nano-dollars per audio second, rounded up ($0.0000833333/s on OpenRouter), used for reservations.
+  [STT_BEST]: { name: "AssemblyAI Universal-3.6 Pro", kinds: ["speech", "speech_live"], efforts: [], formats: ["wav"], sec_nano: 83334 },
   [STT]: { name: "Qwen3 ASR 0.6B", kinds: ["speech"], efforts: [] },
   [STT_FALLBACK]: { name: "Whisper Large v3 Turbo", kinds: ["speech"], efforts: [] },
   [STT_WAI]: { name: "Whisper Large v3 Turbo (Cloudflare)", kinds: ["speech_cloudflare"], efforts: [] },
   [LIVE_STT]: { name: "Deepgram Nova 3 (Cloudflare)", kinds: ["speech_live"], efforts: [] },
   [CLEF]: { name: "Clef (Cloudflare)", kinds: ["workers_decider"], efforts: [], in_nano: 240 },
-  [CLEF_FLASH]: { name: "Clef Flash (Cloudflare)", kinds: ["workers_decider"], efforts: [], in_nano: 90 },
+  // Clef Flash: $0.038 per million input tokens on Cloudflare (Workers AI model list, checked 2026-10-15), so 38 nano-dollars per token.
+  [CLEF_FLASH]: { name: "Clef Flash (Cloudflare)", kinds: ["workers_decider"], efforts: [], in_nano: 38 },
   [EMBED_FILES]: { name: "Perplexity Embed 0.6B", kinds: ["embedding_files"], efforts: [] },
   [EMBED_MEMORY]: { name: "BGE M3 (Cloudflare)", kinds: ["embedding_memory"], efforts: [] },
   [VISION]: { name: "Gemma 4 26B (Cloudflare)", kinds: ["vision"], efforts: [] },
@@ -51,30 +57,29 @@ export const SEED_FACTS = {
 };
 
 // ---- the earlier built-in defaults, used only to reproduce what was in effect ----
-const OLD_POOL = { "muse-c": [MUSE_C, "xhigh"], "muse-s": [MUSE_S, "xhigh"], deepseek: [DEEPSEEK, "max"], luna: [LUNA, "xhigh"], sol: [SOL, "high"], haiku: [HAIKU, "xhigh"] };
-const C = "muse-c", S = "muse-s", D = "deepseek", L = "luna", O = "sol", H = "haiku";
+const OLD_POOL = { "muse-c": [MUSE_C, "xhigh"], "muse-s": [MUSE_S, "xhigh"], deepseek: [DEEPSEEK, "max"], luna: [LUNA, "xhigh"], haiku: [HAIKU, "xhigh"] };
+const C = "muse-c", S = "muse-s", D = "deepseek", L = "luna", H = "haiku";
+// Sol left the first-run data (Captain, 2026-10-15), so Haiku takes its place in each list, once per list.
 const OLD_CHAINS = {
   general: { unrestricted: [C, D, L], no_training: [D, S, L], zdr: [D, L, H] },
-  research: { unrestricted: [C, D, O], no_training: [S, D, O], zdr: [D, O, H] },
-  apps_economical: { unrestricted: [C, D, H], no_training: [D, S, H], zdr: [D, H, O] },
-  skills: { unrestricted: [C, D, O], no_training: [D, O, S], zdr: [D, O, H] },
-  spreadsheet: { unrestricted: [L, O, C], no_training: [L, O, S], zdr: [L, O, H] },
-  technical: { unrestricted: [O, H, D], no_training: [O, H, D], zdr: [O, H, D] },
-  apps_complete: { unrestricted: [H, O, D], no_training: [H, O, D], zdr: [H, O, D] },
+  research: { unrestricted: [C, D, H], no_training: [S, D, H], zdr: [D, H] },
+  apps_economical: { unrestricted: [C, D, H], no_training: [D, S, H], zdr: [D, H] },
+  skills: { unrestricted: [C, D, H], no_training: [D, H, S], zdr: [D, H] },
+  spreadsheet: { unrestricted: [L, H, C], no_training: [L, H, S], zdr: [L, H] },
+  technical: { unrestricted: [H, D], no_training: [H, D], zdr: [H, D] },
+  apps_complete: { unrestricted: [H, D], no_training: [H, D], zdr: [H, D] },
 };
-const OLD_RECOVERY = { apps_economical: H, apps_complete: H, technical: O, spreadsheet: O };
-const OLD_IN_TURN = O;
+const OLD_RECOVERY = { apps_economical: H, apps_complete: H, technical: H, spreadsheet: H };
+const OLD_IN_TURN = H;
 // The earlier chore model keys: model, hosts in order, whether the hosts were pinned, the model's own reasoning default.
-const OLD_CHORE = { oss120: { model: OSS120, hosts: ["cerebras"] }, oss20: { model: OSS20, hosts: ["amazon-bedrock"], pin: true },
+const OLD_CHORE = { oss120: { model: OSS120, hosts: ["cerebras"] },
   dsflash: { model: DEEPSEEK, hosts: ["together", "modal", "coreweave"], pin: true, effort: "none" },
   haiku: { model: HAIKU, hosts: ["amazon-bedrock", "google-vertex"], pin: true, effort: "none" },
-  luna: { model: LUNA, hosts: ["azure", "azure/us", "azure/eu"], pin: true }, sol: { model: SOL, hosts: ["azure", "azure/us", "azure/eu"], pin: true } };
+  luna: { model: LUNA, hosts: ["azure", "azure/us", "azure/eu"], pin: true } };
 const bg = (model, hosts, effort = "low") => ({ model, hosts, effort, pin: true });
 const OLD_POLICY = { label: bg(HAIKU, ["google-vertex", "amazon-bedrock"]), notes: bg(LUNA, ["azure", "azure/us", "azure/eu"]),
   notes_refine: bg(DEEPSEEK, ["together", "modal", "coreweave"]), notes_final: bg(HAIKU, ["google-vertex", "amazon-bedrock"]), sidecar_card: bg(HAIKU, ["google-vertex", "amazon-bedrock"]),
-  ambient_extract: bg(LUNA, ["azure", "azure/us", "azure/eu"]), ambient_review: bg(DEEPSEEK, ["together", "modal", "coreweave"]),
-  people_verify: bg(DEEPSEEK, ["together", "modal", "coreweave"]), reflect_verify: bg(DEEPSEEK, ["together", "modal", "coreweave"]) };
-const OLD_MJ = { upkeep: { write: "dsflash", verify: "dsflash" }, people: { write: "dsflash", verify: "dsflash:low" }, reflect: { write: "dsflash", verify: "dsflash:low" } };
+  ambient_extract: bg(LUNA, ["azure", "azure/us", "azure/eu"]), ambient_review: bg(DEEPSEEK, ["together", "modal", "coreweave"]) };
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const own = (o, k) => Object.prototype.hasOwnProperty.call(o || {}, k);
@@ -93,7 +98,6 @@ const ruleFallbacks = (model, effort = "low") => {
   const m = OLD_CHORE[r[1]], e = (SEED_FACTS[m.model].efforts || []).includes(effort) ? effort : "low";
   return [entry(m.model, e, { hosts: [...(r[2] || m.hosts)], pin: true })];
 };
-const OSS_BACKUP_LOW = () => entry(OSS120, "low", { hosts: ["cerebras"], pin: false });
 function choreKeyOf(env, chore, dflt) {
   const own = env?.[`CHORE_MODEL_${String(chore).toUpperCase()}`];
   const v = String(own || dflt || env?.CHORE_MODEL || "oss120").trim().toLowerCase();
@@ -102,13 +106,6 @@ function choreKeyOf(env, chore, dflt) {
 // The earlier jobs that came from environment variables or code, in effect with no saved override.
 function inEffectChore(env, role, legacy) {
   if (own(OLD_POLICY, role)) { const p = OLD_POLICY[role]; return { ...entry(p.model, p.effort, { hosts: [...p.hosts], pin: true }), fallbacks: ruleFallbacks(p.model, p.effort) }; }
-  const mj = /^(upkeep|people|reflect)_(write|verify)$/.exec(role);
-  if (mj) {
-    const [, job, step] = mj;
-    const v = String((step === "verify" ? env?.CHORE_MODEL_MJVERIFY : env?.[`CHORE_MODEL_${job.toUpperCase()}`]) || OLD_MJ[job][step] || "oss120").trim().toLowerCase();
-    const [k0, eff] = v.split(":"), k = OLD_CHORE[k0] ? k0 : "oss120", effort = OLD_CHORE[k0] ? eff || null : null;
-    return { ...choreKeyEntry(k, effort, "low"), fallbacks: k === "oss120" ? [] : [entry(OSS120, step === "verify" ? "medium" : "low", { hosts: ["cerebras"], pin: false })] };
-  }
   if (role === "handoff") {
     // Captain's change: task handoffs default to DeepSeek Flash at low reasoning (an explicit CHORE_MODEL_HANDOFF still wins).
     if (!env?.CHORE_MODEL_HANDOFF && !env?.CHORE_MODEL) { const first = choreKeyEntry("dsflash", "low"); return { ...first, fallbacks: ruleFallbacks(first.model, "low") }; }
@@ -122,17 +119,12 @@ function inEffectChore(env, role, legacy) {
     return k === "oss120" ? { ...entry(OSS120, "low", { hosts: ["cerebras"], pin: true }), fallbacks: ruleFallbacks(OSS120, "low") }
       : { ...first, fallbacks: [entry(OSS120, "low", { hosts: ["cerebras"], pin: true })] };
   }
-  if (role === "memory_summary") {
-    // Captain's change: conversation summaries run on DeepSeek Flash at low reasoning. GLM and then gpt-oss-120b stay behind it
-    // (the earlier route's shared fallback list), so it already has fallbacks and the Haiku rule adds nothing.
-    return { ...choreKeyEntry("dsflash", "low"), fallbacks: [entry(GLM, "none", { pin: false }), OSS_BACKUP_LOW()] };
-  }
   return null;
 }
 // A saved earlier chore selection replaces the built-in one for its role.
 function savedChore(legacy, role) {
   const c = legacy?.chores?.[role]; if (!c || c.model === "default") return null;
-  const meta = legacy?.catalog?.[c.model], fallbackEffort = /^(upkeep|people|reflect)_verify$/.test(role) ? "medium" : "low";
+  const meta = legacy?.catalog?.[c.model], fallbackEffort = "low";
   const known = OLD_CHORE[c.model];
   const model = known ? known.model : c.model, hosts = known ? [...known.hosts] : meta?.hosts ? [...meta.hosts] : undefined;
   const isPolicy = own(OLD_POLICY, role) || c.model === "oss120";
@@ -158,21 +150,19 @@ export function mergeLevels(lists, allowed = () => true) {
   return out;
 }
 
-export const LEGACY_CHORES = ["handoff", "label", "browser", "notes", "notes_refine", "notes_final", "memory_summary", "sidecar_card", "ambient_extract", "ambient_review",
-  "upkeep_write", "upkeep_verify", "people_write", "people_verify", "reflect_write", "reflect_verify"];
+export const LEGACY_CHORES = ["handoff", "label", "browser", "notes", "notes_refine", "notes_final", "sidecar_card", "ambient_extract", "ambient_review"];
 
 // The jobs that don't depend on the earlier saved format (environment variables and built-in values).
 function otherJobs(env) {
-  const sttList = [...new Set([String(env?.STT_MODEL || STT).trim() || STT, STT_FALLBACK])];
+  const sttList = [...new Set([String(env?.STT_MODEL || STT_BEST).trim() || STT_BEST, STT, STT_FALLBACK])];
   return {
     stt: { model: sttList[0], effort: null, fallbacks: sttList.slice(1).map((m) => entry(m, null)) },
     stt_cloudflare: { model: STT_WAI, effort: null, fallbacks: [] },
-    live_dictation: { model: LIVE_STT, effort: null, fallbacks: [] },
+    live_dictation: { model: STT_BEST, effort: null, fallbacks: [entry(LIVE_STT, null)] },
     embed_files: { model: String(env?.SIDECAR_EMBED_MODEL || "").trim() || EMBED_FILES, effort: null, fallbacks: [] },
     embed_memory: { model: EMBED_MEMORY, effort: null, fallbacks: [] },
     vision_files: { model: String(env?.SIDECAR_VISION_MODEL || "").trim() || VISION, effort: null, fallbacks: [] },
     workers_ai_chat: { model: String(env?.MODEL || "").trim() || WAI_CHAT, effort: null, fallbacks: [] },
-    memory_supersede: { model: CLEF_FLASH, effort: null, fallbacks: [] },
     doors_shadow: { model: CLEF_FLASH, effort: null, fallbacks: [] },
     classic_decider: { model: `@cf/cloudflare/${String(env?.OWN_ROUTER_CLEF || "").trim() || "clef"}`, effort: null, fallbacks: [] },
     classic_router: { model: JEV_ROUTER, effort: null, fallbacks: [entry(DEEPSEEK, null), entry(GLM, null)] },
@@ -187,7 +177,8 @@ function finish(jobs, extraFacts = {}) {
   // A model the first-run facts don't describe (named by an environment variable) is described by the jobs that use it.
   const picks = (id) => [...new Set(JOBS.filter((d) => jobs[d.id] && [jobs[d.id].model, ...jobs[d.id].fallbacks.map((f) => f.model)].includes(id)).map((d) => JOB_KINDS[d.kind].pick))];
   for (const id of used) if (!own(catalog, id)) catalog[id] = own(SEED_FACTS, id) ? { id, ...clone(SEED_FACTS[id]) } : { id, name: id, kinds: picks(id), efforts: ["default", "none", "low", "medium", "high"] };
-  for (const [id, f] of Object.entries(SEED_FACTS)) if (!own(catalog, id)) catalog[id] = { id, ...clone(f) };
+  // The catalog holds only models that some job uses as its model or a fallback (Captain, 2026-10-15). SEED_FACTS stays the list of known facts.
+  for (const id of Object.keys(catalog)) if (!used.has(id)) delete catalog[id];
   return { version: 2, jobs, catalog };
 }
 
@@ -196,10 +187,10 @@ export function seedFresh(env = {}) { return seedFromLegacy(env, null); }
 
 // What was in effect, as v2 settings. env: the Worker's variables. legacy: the latest saved earlier settings (or null).
 export function seedFromLegacy(env = {}, legacy = null) {
-  const slot = (key) => entry(legacy?.models?.[key] || OLD_POOL[key][0], legacy?.efforts?.[key] ?? OLD_POOL[key][1]);
+  const slot = (key) => entry(legacy?.models?.[key] || OLD_POOL[key]?.[0], legacy?.efforts?.[key] ?? OLD_POOL[key]?.[1]);
   const jobs = {};
   for (const cat of CATEGORIES) {
-    const chains = legacy?.chains?.[cat] || OLD_CHAINS[cat], list = mergeLevels(chains, (k, lv) => configuredHosts({ catalog: legacy?.catalog || {} }, slot(k).model, lv).length > 0).map(slot).filter((e, i, a) => a.findIndex((x) => x.model === e.model) === i);
+    const chains0 = legacy?.chains?.[cat] || OLD_CHAINS[cat], chains = Object.fromEntries(Object.entries(chains0).map(([lv, l]) => [lv, (l || []).filter((k) => own(OLD_POOL, k) || legacy?.models?.[k])])), list = mergeLevels(chains, (k, lv) => configuredHosts({ catalog: legacy?.catalog || {} }, slot(k).model, lv).length > 0).map(slot).filter((e, i, a) => a.findIndex((x) => x.model === e.model) === i);
     const [first, ...rest] = list;
     jobs[`chat.${cat}`] = { ...first, fallbacks: rest };
   }

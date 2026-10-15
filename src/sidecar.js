@@ -5,7 +5,9 @@
 // share_file output, new or a new version), Resident.sidecarKick queues ONE prep job for those exact bytes (the file's r2key) on the
 // FilePrep Durable Object named "prep:<r2key>" (so a job is never run twice for the same bytes, and a new version is a new job):
 //   1. Markdown (sidecar-convert.js): docx/xlsx/pptx/odt/rtf/epub/csv/PDF by anydoc + pdf-inspector in WASM, in the Worker, no network;
-//      plain text formats decoded; a scanned PDF's pages (pdf-inspector says which need OCR) read by pdf-inspector's own OCR;
+//      plain text formats decoded; a scanned PDF's pages (pdf-inspector says which need OCR) read by Indra OCR: on the OCR Worker first
+//      (ocr-worker/, service binding OCR: the Indra pipeline in JavaScript, about 2 s a page, no container), and only a page it can't read
+//      (a Chinese line, over its caps, an error) in the container job, which stays as the fallback and as the only path where the binding is absent;
 //   2. pictures: a description plus every piece of text in them (a cheap vision model); audio and video: a timed transcript
 //      (transcribe.js stt: Qwen3-ASR 0.6B through OpenRouter, ZDR, the same model as dictation and Live notes; bench there);
 //   3. long files only (over INLINE_TOKENS), after the text is reported usable ("text"): a summary card from the cheap chore model
@@ -14,20 +16,20 @@
 // which a short file never needs: its whole text goes into the message.
 // Files the Worker can't safely hold (over 20 MB; spreadsheets over 1 MB; a conversion that hits the WASM's 64 MB ceiling) go to a
 // short container job on the Computer class as "prepjob:<tenant>" (stock node image, like beejob: no workspace, never the person's
-// computer): native anydoc / pdf-inspector, including pdf-inspector's own OCR for scanned PDF pages.
+// computer): native anydoc / pdf-inspector, and Indra OCR for scanned PDF pages.
 //
 // Storage: hidden companions next to the file, like file-preview.js's .preview.pdf: <r2key>.sidecar.json (the Markdown, outline,
 // chunks, card) and, for indexed files, <r2key>.sidecar.vec (int8 vectors). Written through storage.js (counted in Files, refused when
 // the account is full), deleted with the file (deleteFile, chat/channel deletion), and made again for a new version (new r2key).
 // The Resident keeps one row per file (file_sidecars) with the card and outline, so a Send needs no R2 read for a big file's card.
 //
-// On Send (attachParts, both engines): wait at most WAIT_MS for stage 1. A file of ≤ INLINE_TOKENS goes in whole, wrapped as untrusted
+// On Send (attachParts, both engines): wait at most WAIT_MS for stage 1 (up to OCR_WAIT_MS, 8 s, while scanned pages are being read on the OCR Worker). A file of ≤ INLINE_TOKENS goes in whole, wrapped as untrusted
 // content and headed so the helper answers from it in one step; a longer one as its card + outline (stage 2 done) or else its outline +
 // opening, with the file_text tool to read a section or search inside. Not ready in time → the note of before (the path on the computer). These parts ride in the person's message (after the cached system prompt, tools and
 // history) and only the short note is saved in the history; file_text reads any Library file again later.
 //
-// Money: every AI call and container second is reserved on the Ledger first and settled at the real cost × 1.15 (a refusal skips that
-// step, never a negative balance; the free Markdown is still kept). Deploy-safe: the job lives in the FilePrep object's storage and
+// Money: every AI call, container second and OCR Worker page is reserved on the Ledger first and settled at the real cost × 1.15 (a refusal skips that
+// step, never a negative balance; the free Markdown is still kept). An OCR Worker page is paid by the Workers CPU ms it reports. Deploy-safe: the job lives in the FilePrep object's storage and
 // runs from its alarm (retried by Cloudflare after a reset; MAX_TRIES of our own); paid results (OCR pages, transcript pieces, the card,
 // vector batches) are kept as they finish so a retry doesn't pay twice; sidecarDone is idempotent (keyed by file + r2key).
 //
@@ -44,19 +46,21 @@
 // pplx-embed-v1-0.6b ties the best quality at a third of bge-m3's price and the lowest latency, so it indexes the sidecars.
 import { DurableObject } from "cloudflare:workers";
 import { S, structuredChat, structuredFormat, workersStructuredResponse } from "./structured-output.js";
-import { backgroundPolicy, backgroundReserve, jobRoute, jobModel } from "./ee/index.js";
+import { backgroundPolicy, backgroundReserve, jobRoute, jobModel, MOONDREAM } from "./ee/index.js";
 import { tolerantEnv, isResetErr } from "./do-stub.js";
 import { installSnapshotRpc } from "./sqlite-snapshot.js";
 import { stPut, stDelete, stDeleteListed } from "./storage.js";
 import { openRouterChat, orFetchPath, aiOpts, h32 } from "./model.js";
 import { cappedResponseJson } from "./bounded-response.js";
 import { testModelFor } from "./internal-test-model.js";
-import { STT_NANO_PER_SEC, stt, audioBody, b64 } from "./transcribe.js";
+import { STT_NANO_PER_SEC, stt, audioBody, b64, sttRate } from "./transcribe.js";
 export { audioBody };
 export const MARKUP = 1.15;   // cost + 15%, like every metered part (transcribe.js MARKUP; local so module import order never matters)
 import { viewJpeg, humanBytes, extOf } from "./files.js";
 import { SC_V, kindOf, convertBytes, textToMd, sectionsOf, outlineLines, chunksOf, keywordRank, vectorRank, quantize, fuse, cardSource, tokensOf,
   WORKER_MAX_BYTES, XLSX_WORKER_MAX, MD_MAX_CHARS, CHARS_PER_TOKEN, anydocFormat } from "./sidecar-convert.js";
+import { PLAIN_STYLE } from "./plain-style.js";
+import { indraSetup } from "./sidecar-ocr.js";
 
 // A file this small goes into the message whole (~25-30 pages of text). Live check 2026-10-08 (tmp-shots/sidecar2/probe): given a
 // 12.7k-token, 15-page report's first 4k tokens and outline (its card not made yet), the helper still searched the rest for "net income"
@@ -68,6 +72,16 @@ export const WAIT_MS = 2000;                        // the most a Send waits for
 export const HEAD_TOKENS = 4000;                    // a long file whose card isn't made yet: its first ~4k tokens come with the outline
 export const MAX_TRIES = 4;
 export const OCR_MAX_PAGES = 40;                    // scanned pages read per file
+// The OCR Worker (ocr-worker/, service binding OCR): scanned pages are read there first, one RPC call per page, and only a page it can't read
+// (a Chinese line, over its caps, an error or a timeout) goes to the container job. Workers CPU is $0.02 per million ms, plus the Worker request
+// ($0.30 per million) and the R2 read ($0.36 per million), in nano-dollars; the Worker reports the CPU ms it used (an estimate fitted to the CPU
+// times Cloudflare reported, because a Worker can't read its own CPU clock). Charged at cost + 15% like every step.
+export const OCR_WORKER_CONCURRENCY = 6;            // pages in flight at once (the Worker takes one page at a time per isolate and spreads the rest)
+export const OCR_PAGE_TIMEOUT_MS = 60e3;            // a page that takes longer goes to the container job
+export const OCR_NANO_PER_CPU_MS = 20, OCR_NANO_PER_CALL = 660, OCR_CPU_CAP_MS = 20000;
+export const ocrNano = (cpuMs) => Math.ceil((Math.max(0, Number(cpuMs) || 0) * OCR_NANO_PER_CPU_MS + OCR_NANO_PER_CALL) * MARKUP);
+export const OCR_PAGE_RESERVE = ocrNano(OCR_CPU_CAP_MS);
+export const OCR_WAIT_MS = 8000;                    // the most a Send waits in all when the pages are being read by the OCR Worker (WAIT_MS otherwise)
 // The index's vectors come from the saved model of the job "embed_files", through OpenRouter (zero-data-retention endpoints only).
 // Each index records its model, so a file is always searched with the model it was indexed with. Bench below the header.
 export const EMBED_DIMS = 1024, EMBED_BATCH = 50, INDEX_MAX_CHUNKS = 3000;
@@ -75,6 +89,10 @@ export const EMBED_NANO_PER_TOKEN = 30;   // reservation ceiling ($0.03/M, the d
 // Pictures (photos, screenshots; never documents: those are anydoc / pdf-inspector's): the saved model of the job "vision_files" on Workers AI.
 // A dev test workspace (test-model.js) uses its test model through OpenRouter instead, like every other model call there.
 export const VISION_NANO = { in: 100, out: 300 };
+// Moondream 3.1 (Workers AI, not a chat model: {task, image, ...} in, {answer, caption, points} out): $0.30 / $1.00 per million tokens.
+export const MOONDREAM_NANO = { in: 300, out: 1000 };
+export const lookModel = (env) => String(env?.SIDECAR_LOOK_MODEL || "").trim() || MOONDREAM;   // the browser look's model
+export const MOONDREAM_RESERVE = Math.ceil((9000 * MOONDREAM_NANO.in + 1500 * MOONDREAM_NANO.out) * MARKUP);   // up to three calls on one picture
 export const VISION_RESERVE = Math.ceil((3000 * VISION_NANO.in + 2500 * VISION_NANO.out) * MARKUP);
 export const CARD_MAX_OUT = backgroundPolicy("sidecar_card").maxTokens;
 export const WHISPER_MAX_BYTES = 20 * 1024 * 1024, AUDIO_MAX_SEC = 3 * 3600;   // = transcribe.js WAI_MAX_BYTES (a literal: import cycle)
@@ -155,7 +173,7 @@ export class FilePrep extends DurableObject {
     const nano = Math.max(0, Math.min(reserve, Math.ceil(r.nano || 0)));
     await L.settle(rid, nano).catch(() => {});
     this.put("cost", String(Number(this.get("cost") || 0) + nano));
-    const v = { value: r.value, nano }, js = JSON.stringify(v); if (keep && js.length < 1_500_000) this.put(`step:${step}`, js);   // a DO value holds ≤ 2 MB
+    const v = { value: r.value, nano }, js = JSON.stringify(v); if (keep && r.keep !== false && js.length < 1_500_000) this.put(`step:${step}`, js);   // a DO value holds ≤ 2 MB
     return v;
   }
   computerJob() { return this.env.COMPUTER.get(this.env.COMPUTER.idFromName(`prepjob:${this.getJ("job").tenant}`)); }
@@ -232,10 +250,21 @@ async function prepText(P, job) {
       if (r.refused) return { status: "skipped", error: refusedLine(r.refused) };
       md = `# Picture: ${job.name}\n\n${r.description || "(no description)"}${r.text ? `\n\n## Text in the picture\n\n${r.text}` : "\n\n(No text in the picture.)"}`; extra = { picture: true };
     } else if (kind === "audio" || kind === "video") {
-      const r = await transcribeFile(P, job, meta(job, kind));
-      if (r.refused) return { status: "skipped", error: refusedLine(r.refused) };
-      if (r.error) return { status: "failed", error: r.error };
-      md = r.md; extra = { seconds: r.seconds }; if (r.note) notes.push(r.note);
+      // A video gets two independent parts: what it shows (Gemma, "## What the video shows") above its transcript; either one alone is kept.
+      const guard = async (f) => { try { return await f(); } catch (e) { if (e?.gone) throw e; return { error: `couldn't be made (${String(e?.message || e).slice(0, 80)})`, thrown: e }; } };
+      const v = kind === "video" ? await guard(() => describeVideo(P, job, meta(job, kind))) : null;
+      const r = kind === "video" ? await guard(() => transcribeFile(P, job, meta(job, kind))) : await transcribeFile(P, job, meta(job, kind));
+      const seen = v && !v.error && !v.refused ? v : null;
+      if (!seen) {
+        if (r.refused) return { status: "skipped", error: refusedLine(r.refused) };
+        if (r.thrown) throw r.thrown;   // a transient failure: the job retries
+        if (r.error) return { status: "failed", error: r.error };
+      }
+      if (v && !seen) notes.push(`what the video shows: ${v.refused ? refusedLine(v.refused) : v.error}`);
+      const speech = !r.error && !r.refused ? r : null;
+      if (seen && !speech) notes.push(`transcript: ${r.refused ? refusedLine(r.refused) : r.error}`);
+      md = [seen && `# Video: ${job.name}\n\n## What the video shows\n\n${seen.description || "(no description)"}${seen.text ? `\n\n### Text on screen\n\n${seen.text}` : ""}`, speech?.md].filter(Boolean).join("\n\n");
+      extra = speech ? { seconds: speech.seconds } : {}; if (seen) extra.video_seen = true; if (speech?.note) notes.push(speech.note);
     } else {
       let conv = big ? { code: "tooBig" } : convertBytes(await getBytes(), job.name);
       if (conv.code === "tooBig") { const c = await containerConvert(P, job); if (c.refused) return { status: "skipped", error: refusedLine(c.refused) }; conv = c; if (!c.error) notes.push("converted by the container job (too big for the Worker)"); }
@@ -266,7 +295,8 @@ Answer with JSON only, no prose around it:
  "numbers": ["up to 12 key amounts or quantities, each saying what it is"],
  "dates": ["up to 12 key dates, each saying what happens then"],
  "outline": ["up to 12 short lines: the file's parts in order"]}
-Use exact values from the file. Empty lists are fine.`;
+Use exact values from the file. Empty lists are fine.
+${PLAIN_STYLE}`;
 export function cardRequest(job, kind, md, sections) {
   const src = cardSource(md, sections);
   const messages = [{ role: "system", content: CARD_SYSTEM }, { role: "user", content: `File: ${job.name} (${kind}, ${humanBytes(Number(job.bytes) || 0)}, about ${tokensOf(md)} tokens)\n\n${untrustedFile(job.name, src)}` }];
@@ -288,10 +318,47 @@ export function parseCard(text) {
 }
 
 // ---- pictures: a vision model ----
+// One Moondream call. stream:false; the answer is unwrapped from .result when nested; an empty answer is retried up to 2 more times.
+// → { out, nano }; throws with .nano (the cost so far) on failure.
+export async function moondreamRun(env, meta, model, body) {
+  let nano = 0;
+  try {
+    for (let i = 0; i < 3; i++) {
+      const r = await env.AI.run(model, { ...body, stream: false }, aiOpts(env, meta));
+      const out = r?.result && typeof r.result === "object" ? r.result : r, u = out?.metrics || r?.metrics || out?.usage || {};
+      nano += Math.ceil(((Number(u.input_tokens ?? u.prompt_tokens) || 1500) * MOONDREAM_NANO.in + (Number(u.output_tokens ?? u.completion_tokens) || 100) * MOONDREAM_NANO.out) * MARKUP);
+      if (String(out?.answer ?? "").trim() || String(out?.caption ?? "").trim() || out?.points?.length) return { out, nano };
+    }
+    return { out: {}, nano };
+  } catch (e) { e.nano = nano; throw e; }
+}
+// Points are 0 to 1 fractions of the picture; → [[x, y]] in pixels (what click_at takes).
+export const pointsToPixels = (points, { width, height }) => (Array.isArray(points) ? points : []).map((p) => [Number(p?.x), Number(p?.y)]).filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y)).slice(0, 10).map(([x, y]) => [Math.round(x * width), Math.round(y * height)]);
+// The browser's look: caption always; query when there is a question; point when there is a find. Parts run side by side and fail alone.
+// → { description, answer, points, failed: [part names], nano }
+export async function lookMoondream(env, meta, image, { question, find, width, height }) {
+  const model = lookModel(env), url = `data:${image.mime};base64,${b64(image.data)}`, m = { ...meta, kind: "browser-look" };
+  const calls = { description: () => moondreamRun(env, m, model, { task: "caption", image: url, caption_length: "normal" }) };
+  if (question) calls.answer = () => moondreamRun(env, m, model, { task: "query", image: url, question, reasoning: false, max_tokens: 300, temperature: 0 });
+  if (find) calls.points = () => moondreamRun(env, m, model, { task: "point", image: url, target: find });
+  const names = Object.keys(calls), rs = await Promise.allSettled(names.map((k) => calls[k]()));
+  const res = { description: "", answer: "", points: null, failed: [], nano: 0 };
+  rs.forEach((r, i) => {
+    const k = names[i]; res.nano += r.status === "fulfilled" ? r.value.nano : Math.ceil(Number(r.reason?.nano) || 0);
+    const o = r.status === "fulfilled" ? r.value.out : null;
+    if (k === "description") res.description = String(o?.caption ?? "").trim();
+    else if (k === "answer") res.answer = String(o?.answer ?? "").trim();
+    else if (o) res.points = pointsToPixels(o.points, { width, height });
+    if (!o || (k !== "points" && !res[k])) res.failed.push(k);
+  });
+  return res;
+}
 // image: { data: Uint8Array, mime } → { value: {description, text} | {text}, nano }
-export async function vision(env, meta, image, mode) {
+export async function vision(env, meta, image, mode, opts = {}) {
   const url = `data:${image.mime};base64,${b64(image.data)}`;
-  const prompt = `Describe this picture in 2-3 sentences, then copy every piece of text in it exactly, line by line. Answer with JSON only: {"description": "...", "text": "..."} (text empty when there is none).`;
+  let prompt = `Describe this picture in 2-3 sentences, then copy every piece of text in it exactly, line by line. Answer with JSON only: {"description": "...", "text": "..."} (text empty when there is none).`;
+  // The browser's look: one more line asking for the answer (and pixel positions) inside the description. VISION_SCHEMA stays the same.
+  if (opts.question) prompt += `\nAlso answer this question inside "description": ${JSON.stringify(String(opts.question).slice(0, 500))}. Give the x,y pixel position (from the top left corner) of anything the question names, for this ${opts.width || 1280}x${opts.height || 800} picture.`;
   const content = [{ type: "text", text: prompt }, { type: "image_url", image_url: { url } }];
   const tm = await testModelFor(env, meta.tenant);
   let value, nano = 0;
@@ -329,7 +396,32 @@ export function fillPages(md, texts, needsOcr) {
   return s.replace(/\[Page (\d+)\]\n\n(?=\n\n\[Page |\s*$)/g, (m, n) => texts.has(Number(n)) ? `[Page ${n}]\n\n${texts.get(Number(n))}` : m);
 }
 
-// ---- audio and video: transcribe.js stt (Qwen3-ASR 0.6B through OpenRouter, ZDR; Whisper turbo through OpenRouter if it fails; ----
+// ---- video: Gemma on Workers AI takes the file itself as a video_url part (probe 2026-10-14: the request body must stay under ~16 MB,
+// so a video up to 12 MB; the model samples a fixed number of frames, ~2.4k input tokens for 3 s or 60 s alike). Thinking is off:
+// otherwise Gemma spends its whole max_tokens on hidden reasoning.
+export const VIDEO_MAX_BYTES = 12 * 1024 * 1024;
+export const VIDEO_RESERVE = Math.ceil((3000 * VISION_NANO.in + 1500 * VISION_NANO.out) * MARKUP);
+export const VIDEO_PROMPT = `Describe what happens in this video over time in a few sentences (what is shown, what changes, what is done), then copy every piece of on-screen text exactly, line by line. Answer with JSON only: {"description": "...", "text": "..."} (text empty when there is none).`;
+export async function describeVideo(P, job, meta) {
+  const size = Number(job.bytes) || 0;
+  if (size > VIDEO_MAX_BYTES) return { error: `too big to look at (${humanBytes(size)}; up to ${humanBytes(VIDEO_MAX_BYTES)})` };
+  const r = await P.paid(job, "video", VIDEO_RESERVE, async () => {
+    const o = await P.env.WS.get(job.r2key); if (!o) throw Object.assign(new Error("the file is missing from storage"), { gone: true });
+    const url = `data:${/^video\//.test(job.mime) ? job.mime : "video/mp4"};base64,${b64(new Uint8Array(await o.arrayBuffer()))}`;
+    const content = [{ type: "text", text: VIDEO_PROMPT }, { type: "video_url", video_url: { url } }];
+    const model = await jobModel(P.env, "vision_files"); let nano = 0;
+    try {
+      const x = await structuredChat(async ({ provider, ...body }) => workersStructuredResponse(await P.env.AI.run(model, body, aiOpts(P.env, { ...meta, kind: "sidecar-vision-video" }))),
+        { messages: [{ role: "user", content }], max_tokens: 1500, temperature: 0, chat_template_kwargs: { enable_thinking: false } },
+        { name: "image_description", schema: VISION_SCHEMA, onUsage: u => { nano += Math.ceil(((Number(u.prompt_tokens) || 2500) * VISION_NANO.in + (Number(u.completion_tokens) || 400) * VISION_NANO.out) * MARKUP); } });
+      return { value: x.data, nano };
+    } catch (e) { e.nano = nano; throw e; }
+  });
+  return r.refused ? r : r.value;
+}
+
+// ---- audio and video: transcribe.js stt (the saved order: AssemblyAI Universal-3.6 Pro for WAV files, Qwen3-ASR 0.6B, then Whisper turbo, all
+// through OpenRouter, ZDR; a WAV piece of 16 MB or less reaches AssemblyAI whole, 37 MB at most per request; mp3, m4a and video skip AssemblyAI unless AUDIO_CONVERT is on and the converter turns them into WAV, below; ----
 // Workers AI's Whisper for a piece ≤ 20 MB if OpenRouter fails), the file streamed from R2 as the request body (no memory limit below
 // OpenRouter's 50 MB request cap ≈ 37 MB of audio). Bigger MP3/WAV are cut in the Worker; a bigger video isn't transcribed (uploads
 // stop at 50 MB). Bench (2026-10-08, transcribe.js): the 30-min MP3 in 20 s at 3.5% WER, $0.006; a 50-min file works, a 60-min one is
@@ -341,30 +433,67 @@ async function sttOnce(env, meta, src, format, estSec) {
   const x = await stt(env, src, { format, meta: { ...meta, kind: "sidecar-transcribe" }, estSec });
   return { segs: x.segs.map((g) => ({ s: Math.round(g.s), t: g.t })), dur: x.dur, nano: Math.ceil(x.nano * MARKUP) };
 }
+// AUDIO_CONVERT "on": audio inside the file (mp3, FLAC, Opus and Vorbis in ogg or webm, AAC-LC and ALAC in m4a, mp4 or mov) is converted to 16 kHz mono WAV in this Worker
+// (audio-convert.js, CPU only, streaming, the file read from R2 by range), so AssemblyAI gets it, which takes WAV only. The original file
+// is not changed: the WAV pieces exist only as request bodies. The first piece is made before anything is sent anywhere: when the
+// converter doesn't read the file (another codec, an unfinished recording, more than 2 Opus channels) or fails, this returns null
+// and the file goes to the other speech models exactly as before, with no request made to AssemblyAI. → { pieces, stats } | null
+export const audioConvertOn = (env) => String(env?.AUDIO_CONVERT || "").toLowerCase() === "on";
+async function convertedPieces(P, job, ext) {
+  const env = P.env, size = Number(job.bytes) || 0;
+  if (!audioConvertOn(env) || ext === "wav" || size < 64) return null;
+  try {
+    const { convertAudio } = await import("./audio-convert.js");
+    const read = async (offset, length) => { const o = await env.WS.get(job.r2key, { range: { offset, length } }); if (!o) throw Object.assign(new Error("the file is missing from storage"), { gone: true }); return new Uint8Array(await o.arrayBuffer()); };
+    const c = await convertAudio(read, size, { maxSec: AUDIO_MAX_SEC });
+    async function* pieces() {   // no variable of this frame keeps a piece after it is handed out: the loop below drops it before asking for the next
+      const it = c.pieces[Symbol.asyncIterator]();
+      try { for (;;) { const r = await it.next(); if (r.done) return; yield wavPiece(r.value); r.value = null; } } finally { await it.return?.(); }
+    }
+    const wavPiece = (p) => { const data = p.data; p.data = null; return { size: data.byteLength, open: async () => asStream(data)(), bytes: data, sec: p.sec, wav: true }; };
+    return { pieces: pieces(), stats: c.stats, kind: c.kind };
+  } catch (e) {
+    if (e?.gone) throw e;
+    console.log("audio convert skipped", job.name, `${e?.name || "Error"}: ${String(e?.message || e).slice(0, 120)}`);
+    return null;
+  }
+}
 async function transcribeFile(P, job, meta) {
   const e = extOf(job.name) || (/video/.test(job.mime) ? "mp4" : "mp3"), size = Number(job.bytes) || 0, env = P.env;
-  let pieces;
-  if (size <= STT_OR_MAX_BYTES) pieces = [{ size, open: async () => { const o = await env.WS.get(job.r2key); if (!o) throw Object.assign(new Error("the file is missing from storage"), { gone: true }); return o.body; }, small: size <= WHISPER_MAX_BYTES }];
+  let pieces; const conv = await convertedPieces(P, job, e);
+  if (conv) pieces = conv.pieces;
+  else if (size <= STT_OR_MAX_BYTES) pieces = [{ size, open: async () => { const o = await env.WS.get(job.r2key); if (!o) throw Object.assign(new Error("the file is missing from storage"), { gone: true }); return o.body; }, small: size <= WHISPER_MAX_BYTES }];
   else if (e === "mp3" || e === "wav") {
     const o = await env.WS.get(job.r2key); if (!o) throw Object.assign(new Error("the file is missing from storage"), { gone: true });
     const all = new Uint8Array(await o.arrayBuffer());
     pieces = (e === "wav" ? splitWav(all, 16 * 1024 * 1024) : splitMp3(all, 16 * 1024 * 1024)).map((p) => ({ size: p.data.byteLength, open: async () => asStream(p.data)(), bytes: p.data, sec: p.sec }));
   } else return { error: `it's too big to transcribe here (${humanBytes(size)}; up to ${humanBytes(STT_OR_MAX_BYTES)})` };
-  const lines = []; let seconds = 0, offSec = 0, n = 0;
-  for (const [i, pc] of pieces.entries()) {
-    if (offSec > AUDIO_MAX_SEC) { lines.push(`(The transcript stops here: only the first ${AUDIO_MAX_SEC / 3600} hours are transcribed.)`); break; }
-    const estSec = pc.sec || Math.min(AUDIO_MAX_SEC, pc.size / 4000);   // ≥ 32 kbps: an upper bound on its length
-    const reserve = Math.ceil((estSec + 60) * STT_NANO_PER_SEC * MARKUP);
-    const r = await P.paid(job, `stt:${i}`, reserve, async () => {
-      if (pc.small && !pc.bytes) { const o = await env.WS.get(job.r2key); if (o) pc.bytes = new Uint8Array(await o.arrayBuffer()); }   // only kept for the fallback
-      const x = await sttOnce(env, meta, pc, e === "m4a" || e === "aac" ? "m4a" : e, estSec); pc.bytes = null;
-      return { value: { segs: x.segs, dur: x.dur }, nano: x.nano };
-    });
-    if (r.refused) { if (!n) return r; lines.push(`(The transcript stops here: ${refusedLine(r.refused)}.)`); break; }
-    n++;
-    for (const x of r.value.segs) lines.push({ at: offSec + x.s, t: x.t });
-    const d = r.value.dur || pc.sec || 0; offSec += d; seconds += d;
+  const lines = []; let seconds = 0, offSec = 0, n = 0, i = -1, capped = false;
+  try {
+    for await (const pc of pieces) {
+      i++;
+      if (offSec > AUDIO_MAX_SEC) { lines.push(`(The transcript stops here: only the first ${AUDIO_MAX_SEC / 3600} hours are transcribed.)`); capped = true; break; }
+      const format = pc.wav ? "wav" : e === "m4a" || e === "aac" ? "m4a" : e;
+      const estSec = pc.sec || Math.min(AUDIO_MAX_SEC, pc.size / 4000);   // ≥ 32 kbps: an upper bound on its length
+      const reserve = Math.ceil((estSec + 60) * await sttRate(env, format).catch(() => STT_NANO_PER_SEC) * MARKUP);   // a WAV piece can go to AssemblyAI (dearer)
+      const r = await P.paid(job, `stt:${i}`, reserve, async () => {
+        if (pc.small && !pc.bytes) { const o = await env.WS.get(job.r2key); if (o) pc.bytes = new Uint8Array(await o.arrayBuffer()); }   // only kept for the fallback
+        const x = await sttOnce(env, meta, pc, format, estSec); pc.bytes = null;
+        return { value: { segs: x.segs, dur: x.dur }, nano: x.nano };
+      });
+      if (pc.wav) { pc.bytes = null; pc.open = null; }   // a converted piece is up to 16 MB: let it go before the next one is made
+      if (r.refused) { if (!n) return r; lines.push(`(The transcript stops here: ${refusedLine(r.refused)}.)`); break; }
+      n++;
+      for (const x of r.value.segs) lines.push({ at: offSec + x.s, t: x.t });
+      const d = r.value.dur || pc.sec || 0; offSec += d; seconds += d;
+    }
+  } catch (err) {
+    // The converter failing after its first piece (a damaged stretch of the file): keep what was transcribed. A storage or network error retries the job.
+    if (!conv || !n || !(err?.name === "Corrupt" || err?.name === "Unsupported")) throw err;
+    console.log("audio convert stopped", job.name, String(err?.message || err).slice(0, 120));
+    lines.push("(The transcript stops here: the rest of the audio couldn't be read.)");
   }
+  if (conv && !capped && conv.stats().truncated) lines.push(`(The transcript stops here: only the first ${AUDIO_MAX_SEC / 3600} hours are transcribed.)`);
   if (!lines.some((l) => typeof l === "object")) return { error: "no speech in it" };
   return { md: transcriptMd(job.name, lines, seconds), seconds: Math.round(seconds) };
 }
@@ -436,35 +565,36 @@ async function indexChunks(P, job, md, chunks, meta) {
 }
 
 // ---- the container job (Computer class, "prepjob:<tenant>"): what anydoc / pdf-inspector can do but not inside the Worker ----
-// Scanned PDF pages (pdf-inspector's own OCR: PDFium + ONNX Runtime + PP-OCRv6 Small, all local in the container, no hosted fallback)
+// Scanned PDF pages are read by the OCR Worker first (see ocrPages); this is where the pages it can't read go, and every page when the binding is absent.
+// Scanned PDF pages (Indra OCR, sidecar-ocr.js: ONNX Runtime + a small set of ONNX models, all local in the container, no hosted fallback)
 // and files too big for the Worker's memory (native anydoc / pdf-inspector). The stock node image, like beejob: no workspace, never the
-// person's computer. Tools are installed once per container start, pinned and checked (the npm packages by version, PDFium and ONNX
-// Runtime by SHA-256, pdf-inspector verifies its models itself). It reads /tmp/1hc-prep-<id>/in.<ext> (copied from R2 on stdin) and
-// prints one JSON line after PREP_MARK. Bench (local, same packages): a 1-page scanned bill 0.8 s (OCR 0.33 s), 12 scanned pages 4.3 s.
+// person's computer. Tools are installed once per container start under /opt/1hc-prep, pinned and checked (the npm packages by version;
+// for OCR, uv, the Python wheels and the model files by SHA-256, see sidecar-ocr.js for the pins and the license note). pdf-inspector still
+// decides which pages are scans (the Worker's WASM, and the "md" op below); only the "ocr" op reads them, and only the pages asked for.
+// It reads /tmp/1hc-prep-<id>/in.<ext> (copied from R2 on stdin) and prints one JSON line after PREP_MARK.
+// Bench (a private benchmark, 4 cores, Indra OCR in mode ocr at 200 DPI): the 1-page sample bill CER 0.0238, a 15-page annual report
+// CER 0.0005 at 0.32 s a page. The numbers for this container setup were measured the same way.
 export const PREP_MARK = "@@1HC-PREP@@";
-// Pages are rasterized for OCR at 200 DPI, not pdf-inspector's default 150. A scan is usually made at 200-300 DPI; at 150 its small
-// print is shrunk below what the text detector finds. On the sample water bill (test/fixtures/sidecar/scan.pdf, a 200-DPI scan) 150
-// DPI lost the heading line "WATER BILL - CITY OF PORTLAND" and misspelled three labels ("adress", "Blling", "Due dat"); 200 DPI read
-// every line right (confidence 0.946 → 0.986) at ~1.4 s a page instead of ~0.3 s (local bench, tmp-shots/sidecar2/ocr-probe.mjs).
+// Pages are rasterized for OCR at 200 DPI. A scan is usually made at 200-300 DPI, and the bench read both the sample bill and the
+// synthetic scans best at 200 (the earlier engine lost the bill's heading line and misspelled three labels at 150 DPI).
 export const OCR_DPI = 200;
 export const PREP_NPM = "@firecrawl/anydoc@0.2.4 @firecrawl/pdf-inspector@1.25.2";
-export const PDFIUM_URL = "https://github.com/firecrawl/pdfium-rs/releases/download/native-v7988/firecrawl-pdfium-linux-x64.tgz", PDFIUM_SHA = "6248189e07bbc33cdeb31976c539a88614307c8a19f3276dbd018efbe5b4a2a2";
-export const ORT_URL = "https://github.com/microsoft/onnxruntime/releases/download/v1.27.0/onnxruntime-linux-x64-1.27.0.tgz", ORT_SHA = "547e40a48f1fe73e3f812d7c88a948612c23f896b91e4e2ee1e232d7b468246f";
 const T = "/opt/1hc-prep";
 export const PREP_SETUP = `set -e; mkdir -p ${T}; cd ${T}
-[ -d node_modules/@firecrawl/pdf-inspector ] && [ -d node_modules/@firecrawl/anydoc ] || { npm init -y >/dev/null; npm i --no-audit --no-fund --loglevel=error ${PREP_NPM} 2>&1 | tail -n 3; }
 if [ "$1" = ocr ]; then
-  [ -f pdfium/lib/libpdfium.so ] || { curl -fsSL -o p.tgz ${PDFIUM_URL}; echo "${PDFIUM_SHA}  p.tgz" | sha256sum -c - >/dev/null; mkdir -p pdfium; tar xzf p.tgz -C pdfium; rm p.tgz; }
-  [ -f ort/lib/libonnxruntime.so ] || { curl -fsSL -o o.tgz ${ORT_URL}; echo "${ORT_SHA}  o.tgz" | sha256sum -c - >/dev/null; mkdir -p ort; tar xzf o.tgz -C ort --strip-components=1; rm o.tgz; }
+  ${indraSetup(T)}
+else
+  [ -d node_modules/@firecrawl/pdf-inspector ] && [ -d node_modules/@firecrawl/anydoc ] || { npm init -y >/dev/null; npm i --no-audit --no-fund --loglevel=error ${PREP_NPM} 2>&1 | tail -n 3; }
 fi`;
 export const PREP_JS = `const fs=require("fs"),path=require("path"),MARK=${JSON.stringify(PREP_MARK)},T=${JSON.stringify(T)};
 const out=(o)=>process.stdout.write("\\n"+MARK+JSON.stringify(o)+"\\n",()=>process.exit(0));
 const [dir,ext,op,pagesArg]=process.argv.slice(2),inp=path.join(dir,"in."+ext),req=(m)=>require(path.join(T,"node_modules",m));
 (async()=>{
- if(op==="ocr"){process.env.PDFIUM_LIB_PATH=T+"/pdfium/lib/libpdfium.so";process.env.ORT_DYLIB_PATH=T+"/ort/lib/libonnxruntime.so";process.env.PDF_INSPECTOR_MODEL_CACHE=T+"/models";
-  const pi=req("@firecrawl/pdf-inspector"),pages=String(pagesArg||"").split(",").map(Number).filter((n)=>n>0);
-  const r=await pi.processPdfWithOcr(fs.readFileSync(inp),{mode:pi.OcrMode?pi.OcrMode.Auto:"Auto",dpi:${OCR_DPI},...(pages.length?{pageNumbers:pages}:{})});
-  return out({pages:(r.pages||[]).map((p)=>({page:p.pageNumber,md:String(p.markdown||""),src:p.provenance&&p.provenance.source,conf:p.provenance&&p.provenance.ocrConfidence})),routed:r.pagesRoutedToOcr||[],ocrMs:r.ocrTimeMs});}
+ if(op==="ocr"){
+  const r=require("child_process").spawnSync(T+"/venv/bin/python",[T+"/ocr.py",inp,String(pagesArg||""),"${OCR_MAX_PAGES}","${OCR_DPI}"],{encoding:"utf8",maxBuffer:256*1024*1024,env:{...process.env,INDRA_OCR_MODEL_DIR:T+"/models",HF_HUB_OFFLINE:"1",PYTHONDONTWRITEBYTECODE:"1"}});
+  const line=String(r.stdout||"").split("\\n").filter((l)=>l.startsWith("{")).pop();
+  if(!line)return out({error:"the OCR stopped without an answer (exit "+r.status+"): "+String(r.stderr||"").trim().split("\\n").pop().slice(0,200)});
+  return out(JSON.parse(line));}
  if(op==="md"){
   if(ext==="pdf"){const pi=req("@firecrawl/pdf-inspector");const r=pi.extractPagesMarkdown(fs.readFileSync(inp));
    const pages=(r.pages||[]).map((p)=>({page:(p.page??0)+1,md:String(p.markdown||""),ocr:!!p.needsOcr}));
@@ -511,9 +641,9 @@ export async function prepJobAlarm(dobj) {
   await dobj.ctx.storage.setAlarm(last + 60e3);
 }
 // FilePrep side: the container's seconds are paid like any step.
-async function containerJob(P, job, op, pages = []) {
+async function containerJob(P, job, op, pages = [], stepSuffix = "") {
   const ext = extOf(job.name);
-  const r = await P.paid(job, `job:${op}`, JOB_RESERVE, async () => { const x = await P.computerJob().prepJob({ r2key: job.r2key, ext, op, pages }); return { value: x, nano: Math.ceil((Number(x?.ms) || 0) / 1000 * JOB_NANO_PER_SEC) }; });
+  const r = await P.paid(job, `job:${op}${stepSuffix ? `:${stepSuffix}` : ""}`, JOB_RESERVE, async () => { const x = await P.computerJob().prepJob({ r2key: job.r2key, ext, op, pages }); return { value: x, nano: Math.ceil((Number(x?.ms) || 0) / 1000 * JOB_NANO_PER_SEC) }; });
   return r.refused ? r : r.value || { error: "no answer" };
 }
 async function containerConvert(P, job) {
@@ -522,13 +652,58 @@ async function containerConvert(P, job) {
   if (x.pages) return { md: x.pages.map((p) => `\n\n[Page ${p.page}]\n\n${p.ocr ? "" : String(p.md || "").trim()}`).join(""), needsOcr: x.needsOcr || x.pages.filter((p) => p.ocr).map((p) => p.page) };
   return { md: String(x.md || "") };
 }
-// Scanned pages: pdf-inspector's OCR (Auto: it reads only the pages its own check routes to OCR). → { pages: Map page → md, read, note } | { refused }
+// Scanned pages: Indra OCR in forced OCR mode, on exactly the pages pdf-inspector flagged. → { pages: Map page → md, read, note } | { refused }
+// Each page is tried on the OCR Worker first (when the binding exists: not in self-hosting, nor on prod until it's configured). Its answer is kept
+// the moment it arrives (a paid step per page, like every step here), so a retry never reads or pays for a finished page again. A page the
+// Worker can't read goes, with the other such pages, to the container job in one call, as before this Worker existed.
 async function ocrPages(P, job, pages) {
-  const want = pages.slice(0, OCR_MAX_PAGES), x = await containerJob(P, job, "ocr", want);
-  if (x.refused) return x;
-  if (x.error) return { pages: new Map(), read: 0, note: `scanned pages not read (${x.error})` };
-  const m = new Map(); for (const p of x.pages || []) if (want.includes(p.page)) m.set(p.page, String(p.md || "").trim());
-  return { pages: m, read: m.size, note: pages.length > OCR_MAX_PAGES ? `only the first ${OCR_MAX_PAGES} of ${pages.length} scanned pages were read` : "" };
+  const want = pages.slice(0, OCR_MAX_PAGES), extra = pages.length > OCR_MAX_PAGES ? `only the first ${OCR_MAX_PAGES} of ${pages.length} scanned pages were read` : "";
+  const viaWorker = typeof P.env.OCR?.ocrPage === "function";
+  const m = new Map(), notes = []; let rest = want, refused = null;
+  if (viaWorker) {
+    try { await P.res(job).sidecarOcrHint(job.file_id, job.r2key, want.length); } catch (e) { if (isResetErr(e)) throw e; }   // the Send waits longer for it
+    const got = await pool(want, OCR_WORKER_CONCURRENCY, async (pg) => { const r = await ocrWorkerPage(P, job, pg); if (r?.refused) refused ||= r; return r; }, () => !!refused);
+    rest = [];
+    want.forEach((pg, i) => { const r = got[i]; if (r?.md != null) m.set(pg, String(r.md).trim()); else if (r?.fallback) rest.push(pg); });
+  }
+  if (rest.length && !refused) {
+    const x = await containerJob(P, job, "ocr", rest, viaWorker ? rest.join(",") : "");
+    if (x.refused) refused = x;
+    else if (x.error) notes.push(`scanned pages not read (${x.error})`);
+    else {
+      for (const p of x.pages || []) if (rest.includes(p.page)) m.set(p.page, String(p.md || "").trim());
+      if (viaWorker) for (const pg of rest) P.put(`ocrfb:${pg}`, "container");   // done: a retry doesn't ask the Worker again
+    }
+  }
+  if (refused) {
+    if (!m.size) return refused;
+    notes.push(`${want.length - m.size} scanned page(s) not read: ${refusedLine(refused.refused)}`);
+  }
+  return { pages: m, read: m.size, note: [extra, ...notes].filter(Boolean).join("; ") };
+}
+// One page on the OCR Worker. → { md } | { fallback: reason } | { refused }. Terminal answers (Chinese, over the caps, no such page) are kept so a
+// retry goes straight to the container; a transient failure (a timeout, an error, the Worker busy) is not.
+const OCR_TERMINAL = new Set(["cjk", "caps", "page", "password", "bad", "missing"]);
+async function ocrWorkerPage(P, job, page) {
+  const fb = P.get(`ocrfb:${page}`); if (fb) return { fallback: fb };
+  const r = await P.paid(job, `ocrw:${page}`, OCR_PAGE_RESERVE, async () => {
+    let a, timer;
+    try { a = await Promise.race([P.env.OCR.ocrPage({ r2key: job.r2key, page, dpi: OCR_DPI }), new Promise((_, no) => { timer = setTimeout(() => no(new Error("the OCR Worker took too long")), Number(P.env.OCR_TIMEOUT_MS) || OCR_PAGE_TIMEOUT_MS); })]); }
+    catch (e) { if (isResetErr(e)) throw e; console.log("ocr worker", job.r2key, page, String(e?.message || e).slice(0, 160)); return { value: { fallback: "error" }, nano: 0, keep: false }; }
+    finally { clearTimeout(timer); }
+    const nano = a && a.cpuMs != null ? ocrNano(a.cpuMs) : 0;
+    if (a?.ok && typeof a.md === "string") return { value: { md: a.md, conf: a.conf ?? null, cpu_ms: a.cpuMs ?? null }, nano };
+    const reason = String(a?.reason || "error");
+    return { value: { fallback: reason }, nano, keep: OCR_TERMINAL.has(reason) };
+  });
+  if (r.refused) return r;
+  return r.value?.fallback ? { fallback: r.value.fallback } : { md: r.value?.md ?? "" };
+}
+// Runs fn over items with at most n at once; results by index. stop() true: no new item starts (those not started stay undefined).
+async function pool(items, n, fn, stop = () => false) {
+  const out = new Array(items.length); let next = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (next < items.length && !stop()) { const i = next++; out[i] = await fn(items[i]); } }));
+  return out;
 }
 
 // ======================================================================================================================================
@@ -579,6 +754,7 @@ export function residentSidecar() { return {
       return { stale: true };
     }
     const status = r?.status === "ready" ? "ready" : r?.status === "text" ? "text" : r?.status === "skipped" ? "skipped" : "failed";
+    this.sql.exec("DELETE FROM kv WHERE k=?", `sc_ocr:${fileId}`);   // the OCR hint (sidecarOcrHint) is spent once the text is reported
     // "text" (stage 1 of a long file) never replaces a finished row for the same bytes.
     if (status === "text" && row && row.src_key === srcKey && (row.status === "ready" || row.status === "skipped" || row.status === "failed")) return { ok: true };
     this.sql.exec(`INSERT INTO file_sidecars (file_id, src_key, status, v, kind, key, vec_key, bytes, tokens, card, outline, notes, error, cost_nano, ms, queued_at, at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -586,6 +762,8 @@ export function residentSidecar() { return {
       card=excluded.card, outline=excluded.outline, notes=excluded.notes, error=excluded.error, cost_nano=excluded.cost_nano, ms=excluded.ms, at=excluded.at`,
       String(fileId), srcKey, status, r?.v ?? null, r?.kind ?? null, r?.key ?? null, r?.vec_key ?? null, r?.bytes ?? null, r?.tokens ?? null, r?.card ? JSON.stringify(r.card) : null,
       r?.outline ? JSON.stringify(r.outline) : null, r?.notes?.length ? JSON.stringify(r.notes) : null, r?.error ?? null, r?.cost_nano ?? null, r?.ms ?? null, row?.queued_at ?? now(), now());
+    // HS_WRITERS (hindsight-writers.js): the Markdown is ready, so the file goes into the channel's bank as file:<id> (once per version of its bytes).
+    if (status === "ready" || status === "text") { const p = this.hsFileSync?.(fileId); if (p) this.ctx?.waitUntil?.(p.catch((e) => console.log("file memory", String(e?.message || e).slice(0, 120)))); }
     return { ok: true };
   },
   // The file is gone (deleteFile): its sidecar goes with it.
@@ -595,13 +773,25 @@ export function residentSidecar() { return {
     await sidecarPurge(this.env, r.src_key);
     this.sql.exec("DELETE FROM file_sidecars WHERE file_id=?", String(id));
   },
+  // The prep job tells the channel it is reading scanned pages on the OCR Worker (about two seconds a page, a few at once), so a Send may wait longer
+  // for the text than WAIT_MS. Kept for a minute at most; only a hint, never a promise.
+  sidecarOcrHint(fileId, srcKey, pages) {
+    const row = this.scRow(fileId);
+    if (!row || row.src_key !== srcKey) return { stale: true };
+    this.put(`sc_ocr:${fileId}`, JSON.stringify({ at: now(), key: srcKey, pages: Number(pages) || 0 }));
+    return { ok: true };
+  },
+  scOcrHinted(f) { const h = jp(this.get(`sc_ocr:${f.id}`)); return !!h && h.key === f.r2key && now() - Number(h.at || 0) < 60e3; },
   // Wait (≤ ms, shared by all the files) until each file's prep has finished one way or the other. → Map file_id → row
+  // A wait of the usual length (WAIT_MS) is stretched, up to OCR_WAIT_MS in all, while a file that is still being prepared is having scanned pages
+  // read on the OCR Worker, so the first answer usually has the text. Nothing else about the wait changes.
   async sidecarWait(files, ms = WAIT_MS) {
-    const end = now() + ms, out = new Map();
+    const t0 = now(), out = new Map(); let end = t0 + ms;
     for (const f of files) this.sidecarKick(f);   // idempotent: starts one only when there's none for these bytes, or it went stale
     for (;;) {
-      let pending = 0;
-      for (const f of files) { const r = this.scRow(f.id); out.set(f.id, r && r.src_key === f.r2key ? r : null); if (r && r.src_key === f.r2key && (r.status === "queued" || r.status === "working")) pending++; }
+      let pending = 0, hinted = false;
+      for (const f of files) { const r = this.scRow(f.id); out.set(f.id, r && r.src_key === f.r2key ? r : null); if (r && r.src_key === f.r2key && (r.status === "queued" || r.status === "working")) { pending++; if (this.scOcrHinted(f)) hinted = true; } }
+      if (hinted && ms >= WAIT_MS) end = Math.max(end, t0 + OCR_WAIT_MS);
       if (!pending || now() >= end) return out;
       await new Promise((z) => setTimeout(z, Math.min(100, Math.max(1, end - now()))));
     }

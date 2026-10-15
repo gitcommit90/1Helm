@@ -2,8 +2,7 @@
 // the tenant id. No always-on server and no held connection: a DO alarm (adaptive: see cadence() below) and Sync now run ONE short container job
 // (bee.js SYNC_JS on the Computer class as "beejob:<tenant>", the Bee CA pinned, the token on stdin) that reads
 // GET /v1/changes?cursor= and the changed conversations, then the container is stopped at once.
-//   - A finished conversation (end_time set) → General's Hindsight bank through retain() (it scrubs secrets): content =
-//     short_summary + summary, timestamp = start_time, metadata {source: bee, vendor_id, started_at, ended_at, location},
+//   - A finished conversation (end_time set), with HS_WRITERS on → General's Hindsight bank as its words in chunks, no extraction (hsBeePut, which scrubs secrets),
 //     document_id "bee:conv:<id>". Retained again when its updated_at changes (the same document_id replaces it in Hindsight).
 //     A conversation Bee no longer has (404) is forgotten (deletion.js hsForgetDocs: re-checked, since retain is async).
 //   - Its raw transcript → R2 "t/<tenant>/bee/conv/<id>.json" through storage.js (counts toward the storage cap; the t/<tenant>/
@@ -20,7 +19,7 @@
 //   - 401 → bee_accounts.status needs_reconnect, the alarm stops; Reconnect (bee.js verify → start) resumes from the cursor.
 //     429 / 5xx / no answer → backoff 5, 10, 20, 40, 60 min (the job itself retries each call 3 times first).
 //   - Cost: every run reserves its container time from the account's Ledger first (never on credit, never a negative balance) and
-//     settles the measured seconds; every retain reserves its Hindsight cost (byok.js METER.hs_retain_char) the same way. Out of
+//     settles the measured seconds; every retain reserves its Hindsight cost (byok.js hsRetainNano) the same way. Out of
 //     credits / the daily limit / a read-only (unpaid) account → nothing runs, the card says why, the next alarm tries again.
 //   - Disconnect: keep (memories and transcripts stay; the cursor goes) or remove (every bee:conv:<id> document in General's bank
 //     and every transcript under t/<tenant>/bee/ are deleted, then this DO's storage).
@@ -30,13 +29,16 @@
 import { DurableObject } from "cloudflare:workers";
 import { tolerantEnv, codeV } from "../do-stub.js";
 import { openSecret } from "../sentinel.js";
-import { hsOn, bankId, retain as hsRetain } from "../hindsight.js";
-import { hsForgetDocs, ensureDeletionTables, deleteNote } from "../deletion.js";
+import { hsOn, bankId, contentHash } from "../hindsight.js";
+import { forgetMemoryDocs, ensureDeletionTables, deleteNote } from "../deletion.js";
+import { hsNoteNotify, hsWriters, inboxEligible, DOC as HS_DOC } from "../hindsight-writers.js";   // HS_WRITERS: Bee facts saved as Notebook notes reach General's bank (note:<id>)
 import { stPut, stDelete, stDeleteListed, StorageFull } from "../storage.js";
-import { METER as BYOK_METER } from "../byok-meter.js";
+import { templateModelCount } from "../hindsight-template.js";
+import { METER, hsRetainNano, hsRawNano, HS_REFRESH_WINDOW_MS } from "../byok-meter.js";
 import { scrubSecrets } from "../secrets-scrub.js";
 import { beeSyncJob, beeFactsJob, beeEvent, JOB_IDLE_MS, SYNC_KILL_MS } from "./bee.js";
-import { AmbientStore } from "./ambient.js";
+import { AmbientStore, ambientLines, ambientLocation } from "./ambient.js";
+import { speakersMix } from "./bee-speakers.js";   // HS_ENVELOPE: the new speaker review (one row per speaker per recording)
 
 export const EVERY_MS = 5 * 60e3, MANUAL_GAP_MS = 15e3, MAX_PER_RUN = 25, OVERLAP_MS = 10 * 60e3, STALE_CURSOR_MS = 6 * 86400e3, MAX_BACKOFF_MS = 60 * 60e3;
 // The Computer class's "basic" container at cost + 15%, per second (the same formula as index.js COMPUTER_NANO_PER_SEC).
@@ -119,23 +121,18 @@ export function addRange(list, from, to) {
   for (const r of all) { const last = out[out.length - 1]; if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]); else out.push([r[0], r[1]]); }
   return out;
 }
-// What goes into memory for one finished conversation.
-export function retainItem(conv) {
-  const addr = typeof conv.primary_location?.address === "string" ? conv.primary_location.address.trim() : "";
-  const content = [conv.short_summary, conv.summary].map((s) => typeof s === "string" ? s.trim() : "").filter(Boolean).join("\n\n");
-  return { content, at: msOf(conv.start_time) ?? msOf(conv.created_at) ?? now(), context: `conversation recorded by Bee${addr ? ` at ${addr}` : ""}`.slice(0, 300),
-    document_id: docId(conv.id), metadata: { source: "bee", vendor_id: String(conv.id), started_at: iso(conv.start_time), ended_at: iso(conv.end_time), location: addr || null } };
-}
+// What counts as the content of a conversation: its transcript lines with HS_WRITERS on (they go to General's bank as raw chunks, hsBeePut), nothing otherwise.
+export const beeContentOf = (env, conv) => hsWriters(env) ? ambientLines(conv).map((l) => l.text).join("\n") : "";
 // What goes to R2: the raw transcript and the times around it (the summary is in memory already).
-export const transcriptDoc = (conv) => ({ source: "bee", id: conv.id, start_time: conv.start_time ?? null, end_time: conv.end_time ?? null, updated_at: conv.updated_at ?? null,
+export const transcriptDoc = (conv, withSummary = false) => ({ source: "bee", id: conv.id, ...(withSummary ? { short_summary: typeof conv.short_summary === "string" ? conv.short_summary : null, summary: typeof conv.summary === "string" ? conv.summary : null } : {}), start_time: conv.start_time ?? null, end_time: conv.end_time ?? null, updated_at: conv.updated_at ?? null,
   state: conv.state ?? null, device_type: conv.device_type ?? null, timezone: conv.timezone ?? null, primary_location: conv.primary_location ?? null, transcriptions: Array.isArray(conv.transcriptions) ? conv.transcriptions : [] });
 
 // Facts (§7): a full listing at least hourly (plus whenever the change feed names a fact); a write job's longest bill.
 export const FACTS_EVERY_MS = 60 * 60e3;
 // Backfill: 20 conversations per container job, the next batch 1 s after; seeds (the Captain's first sync, 10-07: 6 conversations,
-// 10,125 summary characters, $0.00142 job + retains → ~$0.00024 each; ~0.4 s of job time each) until this account has its own.
+// 10,125 summary characters, $0.00142 job + retains → ~$0.00024 each at the old meter; ~0.4 s of job time each; the retain part is now priced by hsRetainNano, about $0.0008 each) until this account has its own.
 export const BF_BATCH = 20, BF_GAP_MS = 1000, BF_SEED_MS = 700, BF_BATCH_OVERHEAD_MS = 3000;
-export const BF_SEED_RETAIN_NANO = Math.ceil(1688 * BYOK_METER.hs_retain_char * RETAIN_MARKUP);
+export const BF_SEED_RETAIN_NANO = Math.ceil(hsRetainNano(1688) * RETAIN_MARKUP);
 export const FACTS_RESERVE_NANO = Math.ceil(120 * JOB_NANO_PER_SEC);
 // Notebook section for a fact: "people" when it's about someone else (a relation word or a people-ish tag), else "about".
 const REL = /\b(wife|husband|partner|girlfriend|boyfriend|fianc[eé]e?|spouse|sister|brother|sibling|mother|father|mom|dad|parents?|son|daughter|kids?|child(ren)?|grand(ma|pa|mother|father|son|daughter)|aunt|uncle|cousin|niece|nephew|friends?|coworkers?|co-workers?|colleagues?|boss|manager|team ?mates?|neighbou?rs?|roommates?|in-laws?)\b/i;
@@ -257,10 +254,13 @@ export class BeeSync extends DurableObject {
     }
     if (this.bf()?.status === "running") await this.bfStep().catch(async (e) => { await this.ev(`backfill step failed: ${String(e?.message || e).slice(0, 160)}`); });
     if (this.ambient.running()) await this.ambientRun();
+    await this.hsInboxSync().catch((e) => console.log("bee inbox memory", String(e?.message || e).slice(0, 120)));   // HS_WRITERS: confirmed inbox items → General's bank
     const bfNext = this.bf()?.status === "running" ? now() + BF_GAP_MS : Infinity, liveNext = this.get("status") === "active" ? Math.max(now() + 1000, this.dueAt()) : Infinity;
     const at = Math.min(bfNext, liveNext, this.writesDueAt(), this.ambient.running() ? this.ambient.dueAt() : Infinity); if (at < Infinity) await this.ctx.storage.setAlarm(Math.max(at, now() + 500));
   }
   ambientQuery(args = {}) { return this.ambient.query(args); }
+  // Added alongside ambientQuery (RPC methods are only ever added): same query, plus meaning based search.
+  async ambientSearch(args = {}) { return this.ambient.search(args); }
   async armAmbientRecovery() { if (this.get("ambient_recovery_arm") === "1" && this.ambient.running()) { await this.arm(now() + 1000); this.put("ambient_recovery_arm", null); } }
   async ambientStatus() { await this.armAmbientRecovery(); return { ...this.ambient.query({ limit: 1 }).coverage, worker_version: codeV(this.env), counters: this.counters(), diagnostic: (() => { try { return JSON.parse(this.get("ambient_error") || "null"); } catch { return null; } })() }; }
   async ambientReindex(tenant) {
@@ -289,6 +289,40 @@ export class BeeSync extends DurableObject {
     if (!/^[^@]+@example\.com$/i.test(row?.email || "")) throw new Error("test accounts only");
     if (!this.tid()) this.put("tenant", tenant);
     await this.ambient.ingest("fixture", conv.id, conv); await this.ambientRun(true); return this.ambientQuery({ limit: 50 });
+  }
+  // Dev acceptance only (same gate as ambientFixture): a synthetic Bee conversation with any id, stored the way a real sync stores one: the raw
+  // transcript in R2 (transcriptDoc), the convs row, and the General memory write with the speaker review rows, so Confirm's re-retain
+  // from the stored transcript (speakerRetain) runs for real. The route (ambient-test.js) checks the request, and this checks the account.
+  async testGuard(tenant) {
+    if (this.env.ENV_NAME !== "dev" || this.env.TEST_MODE !== "1" || this.get("account_deleted")) throw new Error("fixture unavailable");
+    if (this.tid() && this.tid() !== tenant) throw new Error("tenant mismatch");
+    const row = await this.env.DB.prepare("SELECT u.email FROM tenants t JOIN users u ON u.id=t.owner_user_id WHERE t.id=?").bind(tenant).first();
+    if (!/^[^@]+@example\.com$/i.test(row?.email || "")) throw new Error("test accounts only");
+    if (!this.tid()) this.put("tenant", tenant);
+  }
+  async testConvPut(tenant, conv) {
+    await this.testGuard(tenant);
+    const env = this.env, tid = this.tid(), id = Number(conv?.id); if (!Number.isSafeInteger(id) || id <= 0) throw new Error("conversation id must be a positive integer");
+    const body = JSON.stringify(transcriptDoc(conv, hsWriters(env))), key = r2Key(tid, id), bytes = new TextEncoder().encode(body).byteLength;
+    await stPut(env, key, body, { httpMetadata: { contentType: "application/json" } }, { check: true, replace: true });
+    const r = await this.hsBeePut(conv), chars = beeContentOf(env, conv).length;
+    this.sql.exec(`INSERT INTO convs (id,start_time,end_time,updated_at,retained_at,r2_key,bytes,chars,at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+      start_time=excluded.start_time,end_time=excluded.end_time,updated_at=excluded.updated_at,retained_at=excluded.retained_at,r2_key=excluded.r2_key,bytes=excluded.bytes,chars=excluded.chars,at=excluded.at`,
+      id, msOf(conv.start_time), msOf(conv.end_time), conv.updated_at ?? null, now(), key, bytes, chars, now());
+    return { ...(r || {}), conversation: id, r2_key: key, stored: { convs: true, r2: true }, speakers: this.pendingSpeakers().filter((x) => String(x.rec) === String(id)).length };
+  }
+  // The same conversations removed again: General's memory document, the convs row, the speaker rows and the transcript.
+  async testConvClear(tenant, ids) {
+    await this.testGuard(tenant); const out = { removed: 0 };
+    for (const raw of ids) {
+      const id = Number(raw); if (!Number.isSafeInteger(id) || id <= 0) continue;
+      const row = this.sql.exec("SELECT r2_key FROM convs WHERE id=?", id).toArray()[0];
+      try { await (await this.hsGeneral()).hsDrop([docId(id)]); } catch (e) { console.log("test conv clear", String(e?.message || e).slice(0, 120)); }
+      await stDelete(this.env, [row?.r2_key || r2Key(this.tid(), id)]).catch(() => {});
+      this.sql.exec("DELETE FROM convs WHERE id=?", id); try { this.spkInit(); this.sql.exec("DELETE FROM speakers WHERE rec=?", String(id)); } catch {}
+      out.removed++;
+    }
+    return out;
   }
   async ambientFixtureClear() { const rows = this.ambient.rows("SELECT source_id FROM ambient_sources WHERE source='fixture'"); for (const row of rows) this.ambient.remove("fixture", row.source_id); return { removed: rows.length }; }
   async wipeAccount(tenant) {
@@ -408,7 +442,7 @@ export class BeeSync extends DurableObject {
       this.ambient.remove("bee", id);
       this.unpend(id);
       await stDelete(env, [row?.r2_key || r2Key(tid, id)]); // ongoing captures also have raw objects, before a finished convs row exists
-      if (row) { if (st.hsOk) await hsForgetDocs(env, st.bank, [docId(id)]); this.sql.exec("DELETE FROM convs WHERE id=?", id); return "gone"; }
+      if (row) { await forgetMemoryDocs(env, tid, GENERAL, [docId(id)], { hindsight: st.hsOk }); this.sql.exec("DELETE FROM convs WHERE id=?", id); try { this.spkInit(); this.sql.exec("DELETE FROM speakers WHERE rec=?", String(id)); } catch {} return "gone"; }
       return null;
     }
     if (c.status !== 200 || !c.conv) { this.pend(id, `Bee answered ${c.status || c.error || "nothing"}`); return "failed"; }
@@ -418,7 +452,7 @@ export class BeeSync extends DurableObject {
     let bytes = row?.bytes || 0, key = row?.r2_key || null, rawOk = true;
     try {
       await this.ambient.ingest("bee", id, conv, async () => {
-        const body = JSON.stringify(transcriptDoc(conv));
+        const body = JSON.stringify(transcriptDoc(conv, hsWriters(env)));   // HS_WRITERS: the summary stays with the transcript, so a rebuild can put it in the context
         await stPut(env, r2Key(tid, id), body, { httpMetadata: { contentType: "application/json" } }, { check: true, replace: true });
         bytes = new TextEncoder().encode(body).byteLength;
       });
@@ -432,19 +466,23 @@ export class BeeSync extends DurableObject {
     }
     if (conv.end_time == null) { if (rawOk) this.unpend(id); return rawOk ? "live" : "failed"; }
     await this.lnNotify(conv).catch((e) => console.log("bee live notes notify", String(e?.message || e).slice(0, 120)));   // Live notes' auto refine (§9.5)
-    if (row && row.updated_at === (conv.updated_at ?? null) && (row.retained_at || !retainItem(conv).content)) { if (rawOk) this.unpend(id); return rawOk ? "same" : "failed"; }
+    if (row && row.updated_at === (conv.updated_at ?? null) && (row.retained_at || !beeContentOf(env, conv))) { if (rawOk) this.unpend(id); return rawOk ? "same" : "failed"; }
     if (st.creditsOut) { this.pend(id, "waiting for credits"); return "waiting"; }
     // Raw storage admission above applies to finished and ongoing recordings alike.
     // 2. the summary → General's memory, reserved first
-    const item = retainItem(conv); let retainedAt = row?.retained_at || null;
+    const item = { content: beeContentOf(env, conv) }; let retainedAt = row?.retained_at || null;
     if (item.content && st.hsOk) {
-      const cost = Math.ceil(item.content.length * BYOK_METER.hs_retain_char * RETAIN_MARKUP), rid = `bee-retain:${crypto.randomUUID()}`;
+      // The refresh runs of a new window (3 models in General) are charged only when the last charged window ended (src/byok.js hs_refresh_run), as for any retained text.
+      // Bee option A: the words go in as chunks with no model call, so the rest of the price is the chunk facts' consolidation (hsRawNano, about 60 characters of time and
+      // speaker per line on top of the words).
+      const win = await this.hsRefreshTake(), models = win.models;
+      const cost = Math.ceil((hsRawNano(item.content.length + 60 * item.content.split("\n").length) + models * METER.hs_refresh_run) * RETAIN_MARKUP), rid = `bee-retain:${crypto.randomUUID()}`;
       let h = null; try { h = await st.L.reserve(rid, cost); } catch (e) { h = { ok: false, reason: "ledger" }; }
-      if (!h?.ok) { st.creditsOut = h?.reason || "out_of_credits"; this.pend(id, "waiting for credits"); return "waiting"; }
+      if (!h?.ok) { await this.hsRefreshGive(win); st.creditsOut = h?.reason || "out_of_credits"; this.pend(id, "waiting for credits"); return "waiting"; }
       try {
         await ensureDeletionTables(env); await env.DB.prepare("DELETE FROM hs_forget WHERE bank=? AND doc=?").bind(st.bank, docId(id)).run();   // an old removal mustn't delete it again
-        await hsRetain(env, st.bank, [item]);
-      } catch (e) { await st.L.settle(rid, 0).catch(() => {}); this.pend(id, "memory not saved"); console.log("bee retain", String(e?.message || e).slice(0, 160)); return "failed"; }
+        await this.hsBeePut(conv);   // the transcript as raw text chunks (bee:conv:<id>, strategy raw-transcript), through General's Resident
+      } catch (e) { await st.L.settle(rid, 0).catch(() => {}); await this.hsRefreshGive(win); this.pend(id, "memory not saved"); console.log("bee retain", String(e?.message || e).slice(0, 160)); return "failed"; }
       await st.L.settle(rid, cost).catch(() => {}); st.retainNano += cost; st.retainChars += item.content.length; retainedAt = now();
       this.bump({ retain_n: 1, retain_nano: cost });
     }
@@ -470,7 +508,7 @@ export class BeeSync extends DurableObject {
   // seconds; seeded from the Captain's first sync until there are 3.
   perConv() {
     const c = this.counters(), rows = this.sql.exec("SELECT COUNT(*) n, AVG(chars) a FROM convs WHERE retained_at IS NOT NULL").toArray()[0] || {};
-    const retain = c.retain_n >= 3 ? c.retain_nano / c.retain_n : Number(rows.n) >= 3 ? Number(rows.a) * BYOK_METER.hs_retain_char * RETAIN_MARKUP : BF_SEED_RETAIN_NANO;
+    const retain = c.retain_n >= 3 ? c.retain_nano / c.retain_n : Number(rows.n) >= 3 ? hsRetainNano(Number(rows.a)) * RETAIN_MARKUP : BF_SEED_RETAIN_NANO;
     const b = this.bf(), ms = b?.done >= 10 && b.active_ms ? b.active_ms / b.done : BF_SEED_MS;
     return { nano: Math.ceil(retain + ms / 1000 * JOB_NANO_PER_SEC), ms };
   }
@@ -612,14 +650,15 @@ export class BeeSync extends DurableObject {
       const kept = this.convCount(); await this.ev(`sync: off (disconnected; kept ${kept} conversation${kept === 1 ? "" : "s"} in memory)`);
       return { memories: "kept", kept };
     }
+    try { await this.hsInboxClear(); } catch (e) { console.log("bee inbox clear", String(e?.message || e).slice(0, 120)); }   // HS_WRITERS: the inbox documents go with the recordings
     this.ambient.clear();
     let notes = 0; try { notes = await this.removeFactNotes(); } catch (e) { console.log("bee remove notes", String(e?.message || e).slice(0, 120)); }
     const ids = this.sql.exec("SELECT id FROM convs").toArray().map((r) => Number(r.id));
-    if (ids.length && hsOn(this.env)) await hsForgetDocs(this.env, this.bank(), ids.map(docId));   // queued in D1 + re-checked: a retain still landing goes too
+    if (ids.length) await forgetMemoryDocs(this.env, this.tid(), GENERAL, ids.map(docId));   // queued in D1 + re-checked: a retain still landing goes too
     this.put("remove_r2", "1"); await this.removeTranscripts().catch((e) => console.log("bee remove r2", String(e?.message || e).slice(0, 120)));
     const r2Left = this.get("remove_r2") === "1";
     await this.ev(`sync: off (disconnected; removed ${ids.length} conversation${ids.length === 1 ? "" : "s"} from memory${r2Left ? "; transcripts retried in 1 min" : " and their transcripts"}${notes ? `; ${notes} From-Bee note${notes === 1 ? "" : "s"} removed from the Notebook` : ""})`);
-    if (r2Left) { this.sql.exec("DELETE FROM convs"); this.sql.exec("DELETE FROM pending"); this.sql.exec("DELETE FROM facts"); await this.ctx.storage.setAlarm(now() + 60e3); return { memories: "removed", removed: ids.length }; }
+    if (r2Left) { this.sql.exec("DELETE FROM convs"); this.sql.exec("DELETE FROM pending"); this.sql.exec("DELETE FROM facts"); try { this.spkInit(); this.sql.exec("DELETE FROM speakers"); } catch {} await this.ctx.storage.setAlarm(now() + 60e3); return { memories: "removed", removed: ids.length }; }
     await this.ctx.storage.deleteAll(); this.init(); this.ambient = new AmbientStore(this);
     return { memories: "removed", removed: ids.length };
   }
@@ -706,9 +745,80 @@ export class BeeSync extends DurableObject {
     return this.writesView();
   }
   async firstName() { return (await this.env.DB.prepare("SELECT first_name FROM bee_accounts WHERE tenant_id=?").bind(this.tid()).first().catch(() => null))?.first_name || ""; }
+  // HS_WRITERS (DESIGN section 7, option (a)): the voice inbox stays a screen on top of Hindsight, and an item the person confirmed or the extractor
+  // located with confidence is retained into General's bank as inbox:<item id>, with its status in the text. A changed status replaces the
+  // document, and an item that is gone (its conversation was deleted, or a newer one replaced it) loses its document. The table hs_inbox holds
+  // what was sent (a hash per item), so only the difference is sent, and a pass that stops half way finishes at the next one.
+  hsInboxReady() { this.sql.exec("CREATE TABLE IF NOT EXISTS hs_inbox (id TEXT PRIMARY KEY, hash TEXT NOT NULL, source_id TEXT)"); }
+  // General's bank has one mental model refresh window, kept by its Resident (resident.js hsRefreshTake), so a chat turn and a Bee conversation in
+  // the same window are charged once between them. If the Resident can't answer (an old object during a deploy), this object's own clock is used.
+  async hsRefreshTake() {
+    try { const t = await (await this.hsGeneral()).hsRefreshWindow("take"); if (t && Number.isFinite(t.models)) return { ...t, via: "resident" }; } catch (e) { console.log("refresh window", String(e?.message || e).slice(0, 120)); }
+    const prev = this.get("hs_refresh_at") ?? null, models = Number(prev) > now() - HS_REFRESH_WINDOW_MS ? 0 : templateModelCount("general"), mark = models ? now() : null;
+    if (mark) this.put("hs_refresh_at", mark);
+    return { models, mark, prev, via: "local" };
+  }
+  async hsRefreshGive(w) {
+    if (!w?.mark) return;
+    if (w.via === "resident") { try { await (await this.hsGeneral()).hsRefreshWindow("give", { mark: w.mark, prev: w.prev }); } catch (e) { console.log("refresh window give back", String(e?.message || e).slice(0, 120)); } }
+    else if (Number(this.get("hs_refresh_at")) === w.mark) this.put("hs_refresh_at", w.prev ?? null);
+  }
+  async hsGeneral() { const tid = this.tid(), cid = await this.generalCid(); const R = this.env.RESIDENT.get(this.env.RESIDENT.idFromName(`res:${tid}:${GENERAL}`)); await R.bind(tid, GENERAL, String(cid)); return R; }
+  async hsInboxSync({ force = false } = {}) {
+    if (!hsWriters(this.env) || !hsOn(this.env) || !this.tid() || this.get("account_deleted")) return null;
+    const rev = String(this.get("ambient_revision") || "0"); if (!force && this.get("hs_inbox_rev") === rev) return null;
+    this.hsInboxReady();
+    const all = []; for (let after = "", i = 0; i < 100; i++) { const r = this.ambient.inboxRows(after, 200); all.push(...r.rows); if (r.done) break; after = r.rows[r.rows.length - 1].id; }
+    const eligible = all.filter(inboxEligible), have = new Map(this.sql.exec("SELECT id, hash FROM hs_inbox").toArray().map((r) => [r.id, r.hash])), ids = new Set(eligible.map((x) => x.id)), changed = [];
+    for (const it of eligible) { const hash = await contentHash(JSON.stringify([it.kind, it.text, it.status, it.due_text, (it.evidence || []).map((e) => e.quote)])); if (have.get(it.id) !== hash) changed.push({ it, hash }); }
+    const gone = [...have.keys()].filter((id) => !ids.has(id));
+    if (!changed.length && !gone.length) { this.put("hs_inbox_rev", rev); return { sent: 0, dropped: 0 }; }
+    const R = await this.hsGeneral();
+    for (let i = 0; i < changed.length; i += 40) {
+      const part = changed.slice(i, i + 40), r = await R.hsInboxPut(part.map((x) => x.it));
+      if (r?.error) throw new Error(r.error);
+      for (const x of part) this.sql.exec("INSERT INTO hs_inbox (id, hash, source_id) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET hash=excluded.hash, source_id=excluded.source_id", x.it.id, x.hash, String(x.it.source_id || ""));   // saved after each part
+    }
+    for (let i = 0; i < gone.length; i += 100) { const part = gone.slice(i, i + 100); await R.hsDrop(part.map(HS_DOC.inbox)); for (const id of part) this.sql.exec("DELETE FROM hs_inbox WHERE id=?", id); }
+    this.put("hs_inbox_rev", rev); return { sent: changed.length, dropped: gone.length };
+  }
+  // The rebuild: every inbox item that qualifies, in id order (hindsight-rebuild.js).
+  async hsInboxSource(after = "", limit = 40) {
+    const r = this.ambient.inboxRows(after, limit), rows = r.rows.filter(inboxEligible);
+    return { items: rows, next: r.rows.length ? r.rows[r.rows.length - 1].id : null, done: r.done };
+  }
+  // The inbox was cleared (Disconnect with memories removed): every inbox document goes.
+  async hsInboxClear() {
+    if (!hsWriters(this.env) || !hsOn(this.env)) return 0; this.hsInboxReady();
+    const ids = this.sql.exec("SELECT id FROM hs_inbox").toArray().map((r) => r.id); if (!ids.length) return 0;
+    const R = await this.hsGeneral(); await R.hsDrop(ids.map(HS_DOC.inbox)); this.sql.exec("DELETE FROM hs_inbox"); this.put("hs_inbox_rev", null); return ids.length;
+  }
+  // HS_WRITERS: the transcript of one conversation into General's bank, through General's Resident (it owns the bank, the outbox and the rebuild).
+  async hsBeePut(conv) {
+    const tid = this.tid(), cid = await this.generalCid(), addr = typeof conv.primary_location?.address === "string" && conv.primary_location.address.trim() ? conv.primary_location.address : "", lines = ambientLines(conv);
+    try { this.speakersSeen(conv, lines); } catch (e) { console.log("bee speakers", String(e?.message || e).slice(0, 120)); }   // the new speaker review (bee-speakers.js)
+    const R = this.env.RESIDENT.get(this.env.RESIDENT.idFromName(`res:${tid}:${GENERAL}`)); await R.bind(tid, GENERAL, String(cid));
+    const r = await R.hsBeePut({ id: conv.id, lines, at: msOf(conv.start_time) ?? msOf(conv.created_at) ?? now(), address: addr, summary: String(conv.short_summary || conv.summary || ""), started: iso(conv.start_time), ended: iso(conv.end_time),
+      location: ambientLocation(conv), primary: conv.primary_location ?? null, timezone: typeof conv.timezone === "string" ? conv.timezone : null, device: typeof conv.device_type === "string" ? conv.device_type : null, start_raw: conv.start_time ?? null, end_raw: conv.end_time ?? null, speakers: this.speakerLinks(conv.id) });   // the envelope (adapters/bee.js); an older Resident ignores the extra fields
+    if (r?.error) throw new Error(r.error); return r;
+  }
+  // The rebuild (hindsight-rebuild.js): finished conversations, oldest first, as { id, lines, at, address, summary, started, ended }, read from their saved transcripts.
+  // after: the start_time and id of the last one given ("<ms>|<id>"). upTo: only conversations that started by then.
+  async hsBeeSource(after = "", limit = 10, upTo = Infinity) {
+    const all = this.sql.exec("SELECT id, start_time, r2_key FROM convs WHERE r2_key IS NOT NULL ORDER BY start_time, id").toArray().filter((r) => Number(r.start_time || 0) <= upTo), key = (r) => `${String(Number(r.start_time) || 0).padStart(15, "0")}|${r.id}`;
+    const rows = all.filter((r) => !after || key(r) > after).slice(0, limit), out = [];
+    for (const r of rows) {
+      const o = await this.env.WS.get(r.r2_key); if (!o) continue; let d; try { d = JSON.parse(await o.text()); } catch { continue; }
+      const addr = typeof d.primary_location?.address === "string" && d.primary_location.address.trim() ? d.primary_location.address : "";
+      out.push({ id: d.id ?? r.id, lines: ambientLines(d), at: msOf(d.start_time) ?? Number(r.start_time) ?? now(), address: addr, summary: String(d.short_summary || d.summary || ""), started: iso(d.start_time), ended: iso(d.end_time),
+        location: ambientLocation(d), primary: d.primary_location ?? null, timezone: typeof d.timezone === "string" ? d.timezone : null, device: typeof d.device_type === "string" ? d.device_type : null, start_raw: d.start_time ?? null, end_raw: d.end_time ?? null, speakers: this.speakerLinks(d.id ?? r.id) });
+    }
+    return { items: out, next: rows.length ? key(rows[rows.length - 1]) : null, done: rows.length < limit };
+  }
   async addNote(cid, id, text, tags) {
     const sec = factSec(text, await this.firstName(), tags);
     const row = await this.archive().noteAdd(cid, sec, text, "human", { src: "bee", bee_fact_id: Number(id) });
+    if (row) await hsNoteNotify(this.env, this.tid(), GENERAL, cid, row.id);
     // A note that came back without its link (an Archive still on the code from before step 4, right after a deploy: 10-07) is
     // matched back by its text on the next full listing.
     if (row && Number(row.bee_fact_id) !== Number(id)) { this.put("facts_relink", "1"); await this.ev(`facts: note ${row.id} saved without its link to fact ${id}; relinking on the next sync`); }
@@ -716,7 +826,7 @@ export class BeeSync extends DurableObject {
   }
   // A From-Bee note with no bee_fact_id and the same text → linked to this fact (instead of a second note). → the note or null.
   async relink(cid, id, text, unlinked) {
-    const key = scrubSecrets(String(text || "").trim()).slice(0, 2000), i = unlinked.findIndex((m) => String(m.content || "").trim() === key); if (i < 0) return null;
+    const key = scrubSecrets(String(text || "").trim()), i = unlinked.findIndex((m) => String(m.content || "").trim() === key); if (i < 0) return null;
     const [m] = unlinked.splice(i, 1), row = await this.archive().noteLinkBee(cid, m.id, id);
     if (row) await this.ev(`facts: linked note ${m.id} to fact ${id} (it was saved without its link)`);
     return row;
@@ -740,7 +850,7 @@ export class BeeSync extends DurableObject {
       if (row && (row.state === "denied" || row.state === "dropped")) continue;   // denied / deleted here (or its note removed another way: not brought back)
       if (f.confirmed) {
         if (note) {
-          if (row && row.text !== text) { await A.noteEdit(cid, note.id, text); n.edited++; }   // edited in the Bee app
+          if (row && row.text !== text) { await A.noteEdit(cid, note.id, text); await hsNoteNotify(this.env, this.tid(), GENERAL, cid, note.id); n.edited++; }   // edited in the Bee app
           this.setFact(id, { text, tags, confirmed: 1, created_at: f.created_at, note_id: String(note.id), state: "note" });
         } else if (row?.state === "note") this.setFact(id, { text, tags, confirmed: 1, state: "dropped" });   // its note was removed another way (Forget): not brought back
         else { const nr = await this.addNote(cid, id, text, tags); byFact.set(id, nr); this.setFact(id, { text, tags, confirmed: 1, created_at: f.created_at, note_id: String(nr.id), state: "note" }); n.added++; }
@@ -853,8 +963,8 @@ export class BeeSync extends DurableObject {
     if (!this.tid() && tenant) this.put("tenant", tenant);
     const key = String(text || "").trim(), cid = await this.generalCid();
     const owed = this.sql.exec("SELECT * FROM facts WHERE state='denied' AND write='delete' ORDER BY at DESC LIMIT 50").toArray().find((w) => String(w.text || "").trim() === key && !this._sending?.has(Number(w.id)));
-    if (owed) { const nr = await this.archive().noteAdd(cid, sec, text, "human", { src: "bee", bee_fact_id: Number(owed.id) }); this.setFact(owed.id, { state: "note", note_id: String(nr.id), confirmed: 1, write: null }); this.ev(`facts: delete of ${owed.id} undone before it reached Bee`); return nr; }
-    const nr = await this.archive().noteAdd(cid, sec, text, "human", { src: "bee" }), tmp = -(this.num("tmp_seq") + 1); this.put("tmp_seq", -tmp);
+    if (owed) { const nr = await this.archive().noteAdd(cid, sec, text, "human", { src: "bee", bee_fact_id: Number(owed.id) }); await hsNoteNotify(this.env, this.tid(), GENERAL, cid, nr.id); this.setFact(owed.id, { state: "note", note_id: String(nr.id), confirmed: 1, write: null }); this.ev(`facts: delete of ${owed.id} undone before it reached Bee`); return nr; }
+    const nr = await this.archive().noteAdd(cid, sec, text, "human", { src: "bee" }), tmp = -(this.num("tmp_seq") + 1); this.put("tmp_seq", -tmp); await hsNoteNotify(this.env, this.tid(), GENERAL, cid, nr.id);
     await this.owe(tmp, { text, confirmed: 1, note_id: String(nr.id), state: "note", write: "post" });
     return nr;
   }
@@ -900,3 +1010,4 @@ export class BeeSync extends DurableObject {
       recent: this.sql.exec("SELECT id, start_time, end_time, updated_at, retained_at, r2_key, bytes, chars FROM convs ORDER BY start_time DESC LIMIT 50").toArray() };
   }
 }
+speakersMix(BeeSync);   // bee-speakers.js: the new speaker review (HS_ENVELOPE)

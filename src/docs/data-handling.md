@@ -50,7 +50,7 @@ Saved passwords and keys are stored encrypted and can't be shown again, even to 
 
 ## What the person controls
 
-- **Memory:** they can read, edit, and delete notes in the Notebook, ask you to correct something, or ask you to forget something (it's deleted from memory and not learned again). Deleting a note removes it from memory too. See memory.
+- **Memory:** they can read, edit, and delete notes in the Notebook, ask you to correct something. Deleting a note removes it from memory too. See memory.
 - **Contacts:** they can add, edit, and delete contacts.
 - **Files:** they can delete files in the Library, which also removes them from the channel's computer.
 - **Connected apps:** they choose what's connected and can disconnect any app in Settings → Connected accounts.

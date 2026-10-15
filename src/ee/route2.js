@@ -1,5 +1,5 @@
 // Task-aware model routing (ROUTER_MODE="two"; Captain 2026-10-08, notes/2026-10-08-privacy-routing/PROMPT.md). Replaces the two-model
-// Sol/Luna rule. Per message from the person, ONE decider call (decider.js; its model is the saved setting of the job "decider") answers
+// Sol/Luna rule (Sol is no longer in the catalog). Per message from the person, ONE decider call (decider.js; its model is the saved setting of the job "decider") answers
 // three questions on the last few messages: is it part of a task (stats only), which task CATEGORY it is (pool.js CATEGORIES), and
 // whether an earlier result fell short (quality recovery). The category's saved list (the job "chat.<category>", model-jobs.js), filtered
 // by the account's AI data privacy level (privacy.js), gives the ordered models. The decider never chooses reasoning effort: each model in
@@ -8,10 +8,10 @@
 // category (stored per session), else "general". A decider error/timeout/garbage → the task's category, else "general" (cheapest).
 // One model per turn (switching breaks the prompt cache), except a deliberate quality-recovery switch:
 //   - before the turn: the person says an earlier result fell short (decider `unmet`) or asks for the best model → pool.js RECOVERY by
-//     category (apps → Haiku, technical/spreadsheet → Sol, directly; research/general → a corrected approach, research may also take
+//     category (apps → Haiku, technical/spreadsheet → their saved Retry jobs, directly; research/general → a corrected approach, research may also take
 //     the chain's alternate). Requirements, corrections and tool state are in the context the new model reads.
 //   - inside the turn: concrete failures (the same tool failing twice, stalled steps, two malformed calls, "I'm stuck" after tool
-//     work) → Sol for the rest of the turn, once. No walk down the availability chain.
+//     work) → the saved "Switch during a task" model for the rest of the turn, once. No walk down the availability chain.
 // Availability fallback (model.js twoChat): the chain for the category at the CURRENT privacy level (re-read on every dispatch),
 // filtered by endpoint eligibility, deduplicated, bounded; each attempt carries the destination model's fixed effort.
 // Prompt cache: one key per channel (Resident.callModel), so the shared prefix stays warm across the channel's tasks.

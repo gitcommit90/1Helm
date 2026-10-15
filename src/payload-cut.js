@@ -52,12 +52,20 @@ export function guidanceFor(names, previouslyLoaded, guidance) {
 
 // Parameter skeleton: field names, types, enums and required fields, with every description dropped. The model still sees which
 // fields are arrays or objects (without it, it sends them as JSON text), and extra fields stay allowed.
+// Every array keeps an items schema and every object keeps its properties at any depth, because Google (Gemini) rejects an array
+// without items, and a skeleton cut at a fixed depth left exactly that. Descriptions and other keywords are dropped, so it stays small.
+// An array whose schema has no items gets an empty items schema; required names that are not in properties are dropped.
 const skeleton = (x, depth = 0) => {
   if (!x || typeof x !== "object" || Array.isArray(x)) return x;
   const o = {};
-  for (const k of ["type", "enum", "required"]) if (x[k] !== undefined) o[k] = x[k];
-  if (x.properties && depth < 3) o.properties = Object.fromEntries(Object.entries(x.properties).map(([k, v]) => [k, skeleton(v, depth + 1)]));
-  if (x.items && depth < 3) o.items = skeleton(x.items, depth + 1);
+  for (const k of ["type", "enum"]) if (x[k] !== undefined) o[k] = x[k];
+  const isObj = x.type === "object" || (!x.type && x.properties);
+  if (x.properties && typeof x.properties === "object") {
+    o.properties = Object.fromEntries(Object.entries(x.properties).map(([k, v]) => [k, skeleton(v, depth + 1)]));
+    if (Array.isArray(x.required)) { const r = x.required.filter((k) => Object.hasOwn(x.properties, k)); if (r.length) o.required = r; }
+    if (!o.type && isObj) o.type = "object";
+  } else if (Array.isArray(x.required) && x.required.length && !isObj) o.required = x.required;
+  if (x.type === "array") o.items = x.items && typeof x.items === "object" && !Array.isArray(x.items) ? skeleton(x.items, depth + 1) : {};
   if (x.type === "object" && depth === 0) o.additionalProperties = true;
   return o;
 };

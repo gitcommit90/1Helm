@@ -18,3 +18,5 @@ Bundled fonts:
 
 The PDF viewer bundles font and codec assets with their own notices under
 app-assets/app-static/pdfjs/standard_fonts/ and app-assets/app-static/pdfjs/wasm/.
+
+Third-party code, models and the licenses that apply to them (the plain-writing skill, Indra OCR, Symphonia, opus-decoder and wasm-audio-decoders) are listed in THIRD-PARTY-NOTICES.md and in src/vendor/audio/README.md.

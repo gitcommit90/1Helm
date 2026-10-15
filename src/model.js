@@ -32,10 +32,9 @@ export const byokFast = (route, body) => route?.two ? !!choreRouteFor(route, bod
 // as "low" there. Every call builds its reasoning field with effortBody (model-jobs.js), per model, from the model's saved facts.
 // signal (optional): the person's Stop aborts the call mid-flight (the fetch and its streamed body).
 // The background job a call belongs to (model-jobs.js), from the route's marker or the call's kind; null for the main chat.
-const MEMJOB = /^memjob-(upkeep|people|reflect)-(write|verify)$/;
 export function jobOfCall(route, meta, body) {
-  const kind = meta?.kind || "", mj = MEMJOB.exec(kind);
-  return route?.job || backgroundRole(kind) || (mj ? `${mj[1]}_${mj[2]}` : kind === "card-label" ? "label" : kind === "memory-summary" ? "memory_summary" : kind === "sidecar-card" ? "sidecar_card"
+  const kind = meta?.kind || "";
+  return route?.job || backgroundRole(kind) || (kind === "card-label" ? "label" : kind === "sidecar-card" ? "sidecar_card"
     : kind.startsWith("live-notes-") ? "notes" : isHandoff(route, body) ? "handoff" : null);
 }
 export async function openRouterChat(env, body, session, route = null, meta = {}, signal = null) {
@@ -357,7 +356,7 @@ export async function orFetch(env, payload, meta = {}, extraHeaders = {}, signal
   // Background chores historically sent temperature:0, which these endpoints silently ignored. With strict parameter
   // enforcement that now makes otherwise schema-capable endpoints ineligible. Their advertised capabilities
   // (2026-10-11) omit temperature. Apply after test-model rewriting; preserve other models and normal chat.
-  const strictChore = /^(?:live-notes-(?:note|final|refine)|ambient-(?:extract|review)|memjob-(?:upkeep|people|reflect)-(?:write|verify)|sidecar-card|sidecar-vision-[a-z]+|card-label|memory-summary|browser-(?:oss|jev))$/.test(meta?.kind || "")
+  const strictChore = /^(?:live-notes-(?:note|final|refine)|ambient-(?:extract|review)|sidecar-card|sidecar-vision-[a-z]+|card-label|browser-(?:oss|jev))$/.test(meta?.kind || "")
     || (meta?.kind === "chat" && payload.response_format?.json_schema?.name === "handoff_notes");
   if (payload.response_format?.type === "json_schema" && strictChore
       && quirkOf(env.MODEL_SETTINGS, payload.model, "no_temperature")) {

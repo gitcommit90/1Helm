@@ -19,5 +19,5 @@ export function jobView(settings, def) {
 }
 export function modelDashboard(view) {
   const settings = view.config;
-  return { jobs: JOBS.map((d) => jobView(settings, d)), groups: GROUPS, level_labels: PRIVACY_LABEL };
+  return { jobs: JOBS.filter((d) => !view.hidden?.includes(d.id)).map((d) => jobView(settings, d)), groups: GROUPS, level_labels: PRIVACY_LABEL };
 }

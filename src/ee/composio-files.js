@@ -160,6 +160,7 @@ export async function saveOutputs(data, { save, max = APP_FILE_MAX, maxFiles = M
     if (r?.full) { full = r.error; return no("storage is full"); }
     if (!r?.file) return no(r?.error ? String(r.error).replace(/^error: /, "") : "saving failed");
     const f = r.file; saved.push(f);
+    if (f.updated) return { saved_to_library: `Updated ${f.name} in place in the Library (${humanBytes(f.bytes)}), not a copy.${f.updated}`, file_id: f.id, name: f.name, bytes: f.bytes, path: `/workspace/files/${f.name}` };
     return { saved_to_library: `Saved ${f.name} (${humanBytes(f.bytes)}) to the Library`, file_id: f.id, name: f.name, bytes: f.bytes, path: `/workspace/files/${f.name}` };
   }
   async function walk(v, d) {
@@ -174,7 +175,7 @@ export async function saveOutputs(data, { save, max = APP_FILE_MAX, maxFiles = M
 }
 // The one line in front of the result (on the result's first line, so the work log's trimming keeps it).
 export function savedLine({ saved = [], skipped = [] } = {}) {
-  const s = saved.map((f) => `Saved "${f.name}" (${humanBytes(f.bytes)}) to the Library (file id ${f.id})`);
+  const s = saved.map((f) => f.updated ? `Updated "${f.name}" in place in the Library (${humanBytes(f.bytes)}, file id ${f.id}), not a copy.${f.updated}` : `Saved "${f.name}" (${humanBytes(f.bytes)}) to the Library (file id ${f.id})`);
   const k = skipped.map((x) => `NOT saved "${x.name}": ${x.why}`);
   if (!s.length && !k.length) return "";
   return ` ${[...s, ...k].join("; ")}.${s.length ? ` The person sees ${s.length > 1 ? "them" : "it"} as a download card in this chat and in the Library; on your computer: ${saved.map((f) => `/workspace/files/${f.name}`).join(", ")}. Don't paste the contents.` : ""}`;

@@ -15,7 +15,7 @@ import { personWords } from "./person-asked.js";
 import { isResetErr } from "./do-stub.js";
 import { claimOutputRecovery } from "./model-limits.js";
 import { answerText, splitProgress } from "./progress-dedupe.js";
-import {spendPausesOn,stepAllowance} from './spend-preferences.js';
+import {spendPausesOn,pausesApply,stepAllowance} from './spend-preferences.js';
 import {trimTurnState} from './spend-retention.js';
 
 // A description the agent library needs. It does not choose the model: every call goes through the resident, which uses the saved setting of the
@@ -81,7 +81,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
   const limitPrompts = new Set(); let reportInFlight = false;
   const limitPrompt = text => { const p = piUser(text); limitPrompts.add(p); return p; };
   const liftLimit = ctx => {
-    if (!limitAsked || spendPausesOn(tc) || opts.hard_charge || tc.abort === 'hard') return false;
+    if (!limitAsked || pausesApply(tc) || opts.hard_charge || tc.abort === 'hard') return false;
     limitAsked = false; stepCapped = false; delete stats.hit_limit;
     ctx.tools = tools; ctx.messages = ctx.messages.filter(m => !limitPrompts.has(m));
     finalMsgs = ctx.messages; return true;
@@ -218,7 +218,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
     shouldStopAfterTurn: async () => { await res.spendRefresh?.(tc, opts); return steps >= limit() || tc.abort === "hard"; },
     getFollowUpMessages: async () => {
       await res.spendRefresh?.(tc, opts);
-      if ((limitAsked || reportInFlight) && !spendPausesOn(tc) && !opts.hard_charge && tc.abort !== 'hard') { reportInFlight=false; return [piUser('(The person turned off spending check-ins. Continue their task; the discretionary pause no longer applies.)')]; }
+      if ((limitAsked || reportInFlight) && !pausesApply(tc) && !opts.hard_charge && tc.abort !== 'hard') { reportInFlight=false; return [piUser('(The person turned off spending check-ins. Continue their task; the discretionary pause no longer applies.)')]; }
       const last = lastAssistant;
       const late = await steerPi(true); if (late.length) return late;   // landed while the answer was being written
       if (kind === "helper" && res.helperQueued?.(tc) && steps < limit() - 1) return [piUser("(A new follow-up instruction arrived from the main helper. Read it before you finish your report.)")];

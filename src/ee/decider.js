@@ -10,7 +10,7 @@ import { jobSetting, settingsOf } from "./model-jobs.js";
 export const DECIDER_IN_NANO = 20;       // $0.02 per million input tokens; estimate only when usage.cost is missing
 export const DECIDER_URL = "https://openrouter.ai/api/v1/systemone";
 export const deciderModel = (env) => jobSetting(settingsOf(env), "decider").model;
-// Provider rules like every other route: the model's own host only (perplexity/… → "perplexity", ~typesafe/jev-latest → "typesafe"),
+// Provider rules like every other route: the model's own host only (perplexity/… → "perplexity", a ~typesafe/ model → "typesafe"),
 // no fallbacks, ZDR only, the price ceiling. If that host ever drops ZDR, OpenRouter refuses and the caller sees the error (no retry without it).
 export const deciderHost = (model) => String(model).replace(/^~/, "").split("/")[0];
 export const deciderProvider = (model) => { const h = deciderHost(model); return { order: [h], only: [h], allow_fallbacks: false, zdr: true, max_price: OR_MAX_PRICE }; };

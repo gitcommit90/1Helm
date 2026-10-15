@@ -270,6 +270,57 @@ async function press(c, key) {
   await c.send("Input.dispatchKeyEvent", { type: k[1] ? "keyDown" : "rawKeyDown", key, code: key, windowsVirtualKeyCode: k[0], ...(k[1] ? { text: k[1] } : {}) });
   await c.send("Input.dispatchKeyEvent", { type: "keyUp", key, code: key, windowsVirtualKeyCode: k[0] });
 }
+
+// ---- OCR: one warm Python process (RapidOCR + onnxruntime, PP-OCRv6 small models; /opt/1hc-browser/ocr.py), started on the first {ocr: true}
+// screenshot. Calls run one at a time. A call that takes longer than OCR_TIMEOUT_MS kills the process (the next call starts a fresh one).
+// Failures come back as { error }, never as a failed screenshot. Boxes are returned in CSS pixels (the numbers click_at takes).
+const OCR_PY = process.env.OCR_PYTHON || "/opt/python/bin/python3", OCR_SCRIPT = "/opt/1hc-browser/ocr.py", OCR_DIR = "/tmp/1hc-ocr";
+const OCR_TIMEOUT_MS = Number(process.env.OCR_TIMEOUT_MS) || 25e3;
+let ocrProc = null, ocrChain = Promise.resolve(), ocrSeq = 0;
+function ocrStart() {
+  const p = spawn(OCR_PY, ["-I", OCR_SCRIPT], { env: { PATH: process.env.PATH, HOME: HOME, LANG: "C.UTF-8", OMP_NUM_THREADS: "4" }, stdio: ["pipe", "pipe", "pipe"] });
+  p.waiters = new Map(); p.buf = ""; p.err = "";
+  const done = (id, v) => { const w = p.waiters.get(id); if (w) { p.waiters.delete(id); w(v); } };
+  p.stdout.on("data", (d) => { p.buf += d; let i; while ((i = p.buf.indexOf("\n")) >= 0) { const line = p.buf.slice(0, i); p.buf = p.buf.slice(i + 1); try { const m = JSON.parse(line); if (m.ready) done("ready", m); else done(m.id, m); } catch {} } });
+  p.stderr.on("data", (d) => { p.err = (p.err + d).slice(-1000); });
+  const gone = (why) => { if (ocrProc === p) ocrProc = null; for (const id of [...p.waiters.keys()]) done(id, { error: why }); };
+  p.on("error", (e) => gone(`could not start OCR: ${e.message}`));
+  p.on("exit", (code) => gone(`OCR process exited ${code}${p.err ? `: ${p.err.trim().split("\n").pop().slice(0, 160)}` : ""}`));
+  p.stdin.on("error", () => {});
+  return p;
+}
+const ocrWait = (p, id, ms) => new Promise((z) => { const t = setTimeout(() => { p.waiters.delete(id); z({ error: `OCR timed out after ${ms} ms` }); }, ms); p.waiters.set(id, (v) => { clearTimeout(t); z(v); }); });
+async function ocrRun(path_, ms) {
+  const t0 = Date.now();
+  if (!ocrProc) ocrProc = ocrStart();
+  const p = ocrProc;
+  if (!p.ready) { const r = await ocrWait(p, "ready", ms); if (r.error) { try { p.kill("SIGKILL"); } catch {} if (ocrProc === p) ocrProc = null; return r; } p.ready = true; }
+  const id = ++ocrSeq, w = ocrWait(p, id, Math.max(1e3, ms - (Date.now() - t0)));
+  try { p.stdin.write(JSON.stringify({ id, path: path_ }) + "\n"); } catch (e) { return { error: `OCR write failed: ${e.message}` }; }
+  const r = await w;
+  if (r.error && /timed out/.test(r.error)) { try { p.kill("SIGKILL"); } catch {} if (ocrProc === p) ocrProc = null; }
+  return r;
+}
+function jpegDims(buf) {
+  for (let i = 2; i + 9 < buf.length;) { if (buf[i] !== 0xff) { i++; continue; } const m = buf[i + 1]; if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return { w: buf.readUInt16BE(i + 7), h: buf.readUInt16BE(i + 5) }; i += 2 + buf.readUInt16BE(i + 2); }
+  return null;
+}
+function ocrJpeg(buf, cssWidth) {
+  const job = ocrChain.then(async () => {
+    const t0 = Date.now(), f = `${OCR_DIR}/${process.pid}-${Date.now()}.jpg`;
+    try {
+      fs.mkdirSync(OCR_DIR, { recursive: true }); fs.writeFileSync(f, buf);
+      const r = await ocrRun(f, OCR_TIMEOUT_MS);
+      if (r.error) return { error: String(r.error).slice(0, 200), ms: Date.now() - t0 };
+      const d = jpegDims(buf), k = d && cssWidth > 0 ? cssWidth / d.w : 1;   // picture pixels → CSS pixels (1 unless the page is zoomed or scaled)
+      const lines = (r.lines || []).map((l) => ({ text: l.text, x: Math.round(l.x * k), y: Math.round(l.y * k), w: Math.round(l.w * k), h: Math.round(l.h * k), conf: l.conf }));
+      return { lines, ms: r.ms ?? Date.now() - t0 };
+    } catch (e) { return { error: String(e.message || e).slice(0, 200), ms: Date.now() - t0 }; }
+    finally { try { fs.unlinkSync(f); } catch {} }
+  });
+  ocrChain = job.catch(() => {});
+  return job;
+}
 const OPS = {
   async status() { const up = !!procs.chrome && await portOpen(CDP_PORT); if (!up) return { running: false }; const ts = await targets(); return { running: true, tabs: ts.map((t) => ({ title: t.title, url: t.url })) }; },
   async navigate(b, c) {
@@ -280,7 +331,13 @@ const OPS = {
   },
   async snapshot(b, c) { if (FAST) await quiet(c, 1.5e3); return await snapshot(c); },
   async back(b, c) { await evalJS(c, "history.back()"); await settle(c); return await snapshot(c); },
-  async screenshot(b, c) { const r = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 78 }); const loc = await evalJS(c, "({url: location.href, title: document.title})").catch(() => ({})); return { jpeg_base64: r.data, url: loc.url, title: loc.title }; },
+  async screenshot(b, c) {
+    const r = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 78 });
+    const loc = await evalJS(c, "({url: location.href, title: document.title, view: {w: innerWidth, h: innerHeight, scroll_x: Math.round(scrollX), scroll_y: Math.round(scrollY), page_h: Math.round(Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0))}})").catch(() => ({}));
+    const out = { jpeg_base64: r.data, url: loc.url, title: loc.title, ...(loc.view ? { view: loc.view } : {}) };
+    if (b.ocr === true) out.ocr = await ocrJpeg(Buffer.from(r.data, "base64"), loc.view?.w);
+    return out;
+  },
   async act(b, c) {
     const acts = Array.isArray(b.actions) ? b.actions : []; if (!acts.length || acts.length > 20) throw new Error("actions: 1–20 steps");
     let done = 0; const before = await snapshot(c).catch(() => null);
@@ -292,6 +349,13 @@ const OPS = {
         // Off-screen controls (e.g. Stripe's hidden "AI agent" steering checkbox) can't take a mouse click; click them in the page.
         if (p.x < 0 || p.y < 0 || p.x > W || p.y > H) await evalJS(c, `(() => { const e = document.querySelector('[data-1hc="${String(a.ref).replace(/[^a-z0-9]/gi, "")}"]'); e && e.click(); })()`, p.session);
         else await click(c, p.x, p.y);
+        await settle(c, 8e3);
+      }
+      else if (kind === "click_at") {
+        // A pixel position in the page (viewport, CSS pixels: the same numbers a screenshot of the page uses), for things with no ref such as a canvas.
+        const x = Number(a.x), y = Number(a.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > W || y > H) throw new Error(`click_at needs x between 0 and ${W} and y between 0 and ${H}`);
+        await click(c, x, y);
         await settle(c, 8e3);
       }
       else if (kind === "fill" || kind === "type") {
@@ -320,7 +384,7 @@ const OPS = {
         if (isSel) { const t = JSON.stringify(String(a.text ?? "")); const ok = await evalJS(c, `(() => { const e = ${sel}; const want = ${t}; const o = [...e.options].find((o) => o.value === want || o.text.trim() === want || o.value === String(Number(want)) || o.value.endsWith(want.slice(-2)) && o.value.length <= 4); if (!o) return false; e.value = o.value; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`, fs_?.session); if (!ok) throw new Error(`could not choose that option in ${a.ref}`); }
         else { a.kind = "fill"; acts.splice(acts.indexOf(a) + 1, 0, a); done--; }
       }
-      else throw new Error(`unknown action kind "${kind}" (click, fill, type, select, press, scroll, wait)`);
+      else throw new Error(`unknown action kind "${kind}" (click, click_at, fill, type, select, press, scroll, wait)`);
       done++;
     }
     // Payment/submit buttons often call an API for several seconds before the page moves on. After clicking one,

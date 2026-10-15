@@ -22,7 +22,7 @@
 //   POST /c/<token>/iv     { op: answer|skip|goto|send, … } → { interview[, message] }. send posts the answers as the person's next text.
 // token = HMAC-SHA256 (key derived from VAULT_KEY) over tenant + channel + message id, base64url, 32 chars. It is only a lookup
 // key: nothing about the person is in it. Bad or unknown token → 404. One action per card; act attempts are rate-limited.
-import { cleanFix, saveLocation } from "./location.js";   // a card's Share my location button (texting)
+import { rawFix, saveLocation } from "./location.js";   // a card's Share my location button (texting)
 import { cardsTree, firstSay } from "./genui.js";
 import { ivCardRoute } from "./interview-chat.js";
 import { permQuestion } from "./perms.js";
@@ -147,7 +147,7 @@ export async function cardRoute(req, env, ctx, url) {
   const w = await env.DB.prepare("UPDATE cards SET answered=1, picked=?, answered_at=? WHERE token=? AND answered=0").bind(text, now, token).run();
   if (!w.meta?.changes) { const again = await env.DB.prepare("SELECT picked FROM cards WHERE token=?").bind(token).first(); return json({ error: "already_answered", picked: again?.picked ?? null }, 409); }
   // "Share my location" tapped on the card page (Button action share_location): its coarse fix is saved first, so the turn has it.
-  if (cleanFix(b?.loc)) await saveLocation(env, c.tenant_id, b.loc).catch((e) => console.log("card location", e.message));
+  if (rawFix(b?.loc)) await saveLocation(env, c.tenant_id, b.loc).catch((e) => console.log("card location", e.message));
   // Same path as a verified inbound text (textingWebhook): General's resident, its "Texts" task; the reply goes back by text.
   const R = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${c.tenant_id}:${c.channel}`));
   const run = R.textTurn(c.tenant_id, c.channel, "1", text).catch((e) => console.log("card act turn", e.message));

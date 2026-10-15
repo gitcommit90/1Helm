@@ -1,18 +1,33 @@
-// Speech to text, one model and one path (stt) for all three uses: dictation (POST /api/transcribe, below), Live notes chunks from
-// the device's microphone (live-mic.js) and audio/video file sidecars (sidecar.js).
+// Speech to text, one path (stt) for all three uses: dictation (POST /api/transcribe, below), Live notes chunks from the device's
+// microphone (live-mic.js) and audio/video file sidecars (sidecar.js). Live dictation in the composer is a fourth use with its own
+// file (transcribe-live.js), which cuts the microphone's audio into short WAV chunks and sends each one through stt() as well.
 //
-// The model: Qwen3-ASR 0.6B through OpenRouter, ZDR endpoints only (DeepInfra is its one ZDR host; privacy.js registry, below), so it
-// is allowed at every AI data privacy level (Unrestricted / No Training / ZDR). STT_MODEL is the one place it's named; env.STT_MODEL overrides it.
-// If it fails (an error, a timeout, a file over its ~50-minute limit), the same audio goes to Whisper large-v3-turbo through
-// OpenRouter (ZDR on DeepInfra and Groq); only if OpenRouter itself fails does a recording ≤ 20 MB go to Workers AI's copy of
-// Whisper (a different provider entirely, so dictation and Live notes keep working through an OpenRouter outage).
+// The order (an accuracy choice by the Captain, 2026-10-15; the saved "stt" job, model-seed.js), all through OpenRouter on ZDR endpoints
+// only, so every one is allowed at every AI data privacy level (Unrestricted / No Training / ZDR; privacy.js registry, below):
+//   1. assemblyai/universal-3-6-pro   AssemblyAI is its only host, $0.0000833/s ($0.30 per audio hour), 25x the price of Qwen. It takes
+//                                     WAV only (16-bit PCM at any sample rate or channel count) and has no length limit up to 20 min / 38 MB
+//                                     (checked 2026-10-15). Audio in any other format skips it (the model's saved "formats" fact), so
+//                                     webm, m4a, mp4 and mp3 go to the next model until the device or a converter sends WAV. Live notes' microphone chunks from the app are
+//                                     WAV (16 kHz, mono, 16-bit, 32 KB a second; design-sandbox src/pcm.ts), and live dictation sends the same PCM; only a browser
+//                                     with no AudioWorklet still sends webm or mp4. Audio inside uploaded files (mp3, FLAC, Opus and Vorbis in ogg or webm, AAC-LC and ALAC in m4a, mp4 or mov)
+//                                     is converted to 16 kHz mono WAV in the Worker when env.AUDIO_CONVERT is "on" (audio-convert.js, WebAssembly decoders, CPU
+//                                     only, nothing billed for the conversion; sidecar.js transcribeFile); a file the converter doesn't read, or when it is off,
+//                                     goes to Qwen3 as before.
+//   2. qwen/qwen3-asr-0.6b            DeepInfra (ZDR), $0.012/h, the former default (STT_MODEL named it)
+//   3. openai/whisper-large-v3-turbo  DeepInfra and Groq (ZDR), $0.012/h
+//   4. Workers AI's Whisper (job stt_cloudflare), only when every OpenRouter model failed and the recording is <= 20 MB (a different
+//      provider entirely, so dictation and Live notes keep working through an OpenRouter outage).
+// A failure at any step (an error, a timeout, a file over a model's limit) sends the same audio to the next step.
+// The saved settings are the one place the models are named; env.STT_MODEL, when set, replaces the first model in the first-run data only.
+// AssemblyAI answers one segment for the whole recording, with no timestamps inside it and no word confidence: segsOf spreads a long
+// one over sentences by their share of the text, so file transcripts keep a timestamp about every 30 s (approximate, content intact).
 //
 // Survey + bench (2026-10-08, local validation evidence: survey.json, results.json, bench.mjs). OpenRouter lists 26 transcription models;
 // 20 have a ZDR endpoint. Our audio: the 36 s two-voice meeting as 7 pause-cut webm chunks (what Live notes sends) and as one file,
 // the same with pink noise + babble, Spanish-accented English, UK/AU voices with noise, a Spanish meeting; 2.4 min and 30 min files.
 // WER: chunks clean / chunks noisy / file noisy / accent+noise / Spanish; p50 per chunk; 30 min file: WER, wall time. $ per audio hour.
-//   qwen/qwen3-asr-0.6b (DeepInfra, ZDR)            $0.012  3.5 / 4.7 / 4.7 / 9.3 / 0%    0.46 s   3.5%, 20 s    ← STT_MODEL
-//   openai/whisper-large-v3-turbo (DeepInfra, ZDR)  $0.012  5.8 / 11.6 / 8.1 / 5.8 / 0%   1.0-1.4 s 1.4%, 37 s   ← fallback
+//   qwen/qwen3-asr-0.6b (DeepInfra, ZDR)            $0.012  3.5 / 4.7 / 4.7 / 9.3 / 0%    0.46 s   3.5%, 20 s    ← the default until 2026-10-15
+//   openai/whisper-large-v3-turbo (DeepInfra, ZDR)  $0.012  5.8 / 11.6 / 8.1 / 5.8 / 0%   1.0-1.4 s 1.4%, 37 s
 //   nvidia/nemotron-3.5-asr-streaming 0.6b (ZDR)    $0.012  4.7 / 19.8 / 19.8 / 22.1 / 0% 1.2 s
 //   qwen/qwen3-asr-1.7b (ZDR)                       $0.027  2.3 / 4.7 / 3.5 / 8.1 / 0%    0.54 s   3.1%, 19 s
 //   openai/whisper-large-v3 (ZDR)                   $0.027+ 3.5 / 3.5 / 2.3 / 12.8 / 0%   0.6 s
@@ -22,12 +37,12 @@
 //   deepgram/nova-3 (ZDR)                           $0.26   2.3 / 11.6 / 3.5 / 9.3 / 100% (English only by default)  0.34 s
 //   fish-audio/transcribe-1 / -1-pro (ZDR)          $0.36   webm refused / 16-46% (speaker markup)
 //   google/chirp-3 (ZDR)                            $0.96   2.3 / 18.6 / 7.0 / 5.8 / 0%   1.1 s
-//   assemblyai/universal-3.5-pro (ZDR)              $0.45   WAV only, ≤ 120 s; nvidia/parakeet-tdt (Together, ZDR) down (404)
+//   assemblyai/universal-3.5-pro (ZDR)              $0.45   WAV only, ≤ 120 s (3.6 Pro, checked 2026-10-15: no 120 s limit); nvidia/parakeet-tdt (Together, ZDR) down (404)
 //   microsoft/mai-transcribe-1.5 / -2 (ZDR): listed at $0.36 / $0.10 per audio SECOND ($360+/h), not run
 //   No ZDR endpoint (not usable at the strictest level): openai/gpt-4o(-mini)-transcribe, gpt-transcribe, whisper-1,
 //   google/gemini-3.5-transcribe, x-ai/grok-stt-1.0, meta/muse-voice-transcribe-1.0, qwen/qwen3-asr-flash, voxtral-mini-transcribe (EU ZDR 404'd).
 // Heavy (Spanish) accent: every model ≤ $0.03/h fails (64-91% WER); scribe-v2 5.8%, chirp-3 18.6%.
-// → Qwen3-ASR 0.6B: the lowest price on OpenRouter (tied with whisper turbo, 2.5× under Workers AI's $0.031/h), the best WER of the
+// → Qwen3-ASR 0.6B (the choice of 2026-10-08, second since 2026-10-15): the lowest price on OpenRouter (tied with whisper turbo, 2.5× under Workers AI's $0.031/h), the best WER of the
 // cheap tier on live chunks and in noise, the fastest chunks (0.4-0.7 s), timed segments, webm/m4a/mp4/mp3/wav, 30 languages.
 // Its quirks, handled here: it ignores prompt and language (measured), and on pure silence it makes words up ("Ahora.", "Hoy es el
 // día de la Navidad.") with a low avg_logprob (-0.86 to -1.06; real speech, even badly accented, ≥ -0.75), and an odd off-language
@@ -36,7 +51,7 @@
 import { aiOpts, orFetchPath } from "./model.js";
 import { cappedResponseJson } from "./bounded-response.js";
 import { enforceRequest } from "./privacy.js";
-import { jobModel, jobModels } from "./ee/index.js";
+import { jobModel, jobModels, modelFacts } from "./ee/index.js";
 import { STT_NANO_PER_SEC, MARKUP } from "./stt-pricing.js";
 export { STT_NANO_PER_SEC, MARKUP } from "./stt-pricing.js";
 
@@ -47,13 +62,23 @@ export { STT_NANO_PER_SEC, MARKUP } from "./stt-pricing.js";
 // ever reaches zero-data-retention endpoints, whatever the account chose. A saved model that isn't registered gets
 // OpenRouter's strictest filter (zdr, data_collection deny). Workers AI (the last fallback) is Cloudflare's own inference, not OpenRouter.
 export const sttProvider = (model) => enforceRequest({ model, provider: { zdr: true } }, "zdr", { modality: "transcription" }).provider;
-export const WAI_NANO_PER_MIN = 513000;           // Workers AI list: $0.000513 per audio minute
+export const WAI_NANO_PER_MIN = 513000;           // Workers AI whisper-large-v3-turbo: $0.000513 per audio minute (model page and model list API; the pricing page rounds it to $0.0005; 46.63 neurons x $0.011 per 1,000 neurons = $0.000513; checked 2026-10-15)
 export const WAI_NANO_PER_NEURON = 11000;         // $0.011 per 1k neurons, if Whisper ever stops reporting the duration
 export const WAI_MAX_BYTES = 20 * 1024 * 1024;    // Workers AI's input (base64 in JSON) stays under its request limit
 export const MIN_LOGPROB = -0.8;
 export const STT_MAX_BYTES = 25 * 1024 * 1024, STT_MAX_SEC = 300;
 export const SLACK_SEC = 30;
-export const STT_RESERVE = Math.ceil((STT_MAX_SEC + SLACK_SEC) * STT_NANO_PER_SEC * MARKUP);
+export const reserveFor = (nanoPerSec) => Math.ceil((STT_MAX_SEC + SLACK_SEC) * nanoPerSec * MARKUP);
+export const STT_RESERVE = reserveFor(STT_NANO_PER_SEC);
+// The dearest price per audio second (nano-dollars) any saved speech model that takes this audio format may charge: a model's saved
+// "formats" fact lists what it accepts (absent = anything) and "sec_nano" its price (absent = STT_NANO_PER_SEC). Reservations use it,
+// so a WAV recording that AssemblyAI transcribes is reserved at AssemblyAI's price and a webm one at the cheaper models' price.
+export async function sttRate(env, format) {
+  let facts = {}; try { facts = await modelFacts(env); } catch {}
+  let rate = STT_NANO_PER_SEC;
+  for (const m of await sttModels(env)) { const f = facts[m]; if (!Array.isArray(f?.formats) || f.formats.includes(format)) rate = Math.max(rate, Number(f?.sec_nano) || 0); }
+  return rate;
+}
 export const DICTATE_TRY_MS = 30e3;               // one attempt at most this long (a 5-minute clip takes ~2 s)
 const HEARD_NOTHING = "Couldn't hear that, try again.";
 const TOO_LONG = "That recording is too long. Keep it under 5 minutes.";
@@ -134,36 +159,60 @@ export function keepSegs(segs) {
     return true;
   });
 }
-const segsOf = (list, text) => keepSegs(Array.isArray(list) && list.length ? list : [{ start: 0, text: text || "" }])
+// A long segment with no confidence value (AssemblyAI: one segment for the whole recording) → about one segment per 30 s, cut at
+// sentence ends, each starting where its share of the characters puts it. The words are all kept; only the start times are estimates.
+export const SPREAD_SEC = 30, SPREAD_MIN_SEC = 45;
+export function spreadSegs(list) {
+  return list.flatMap((x) => {
+    const a = Number(x.start || 0), b = Number(x.end), t = String(x.text || "").trim();
+    if (!(b - a > SPREAD_MIN_SEC) || Number.isFinite(Number(x.avg_logprob)) || !t) return [x];
+    const per = t.length * SPREAD_SEC / (b - a), out = []; let cur = "", from = 0;
+    for (const part of t.split(/(?<=[.!?。])\s+/)) {
+      if (cur && cur.length + part.length > per * 1.5) { out.push({ start: a + (b - a) * from / t.length, text: cur }); from += cur.length + 1; cur = ""; }
+      cur += (cur ? " " : "") + part;
+      if (cur.length >= per) { out.push({ start: a + (b - a) * from / t.length, text: cur }); from += cur.length + 1; cur = ""; }
+    }
+    if (cur) out.push({ start: a + (b - a) * from / t.length, text: cur });
+    return out;
+  });
+}
+const segsOf = (list, text) => keepSegs(spreadSegs(Array.isArray(list) && list.length ? list : [{ start: 0, text: text || "" }]))
   .map((x) => ({ s: Math.max(0, Number(x.start || 0)), t: String(x.text || "").replace(/\s+/g, " ").trim() })).filter((x) => x.t);
 
 // One recording (or one piece of one) → { segs: [{s: seconds from its start, t}], text, dur, nano (our cost, before the markup), model }.
 // src: { size, open() → ReadableStream (or a promise of one) } and/or { bytes: Uint8Array } (needed for the Workers AI step).
 // o: { format (audioFormat), meta (AI Gateway metadata), tryMs (per attempt; 0 = none), estSec (the audio's length, for what a
-// timed-out attempt may still cost us), prompt (Workers AI only: the OpenRouter models ignore it, measured) }.
+// timed-out attempt may still cost us), prompt (Workers AI only: the OpenRouter models ignore it, measured),
+// models (try only these OpenRouter models, in this order, and never Workers AI: live dictation falls back to Deepgram instead),
+// signal (abort every attempt), headers (extra AI Gateway headers) }.
+// A model whose saved "formats" fact doesn't list the audio's format is skipped without a request (AssemblyAI takes WAV only).
 // Throws when every step failed: err.nano = what timed-out attempts may cost, err.timeout = the last one timed out.
-export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, estSec = 0, prompt = "" } = {}) {
+export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, estSec = 0, prompt = "", models = null, signal = null, headers = {} } = {}) {
   const size = src.size ?? src.bytes?.byteLength ?? 0, open = src.open || (() => new Response(src.bytes).body);
   const errs = []; let lost = 0, timeout = false;
-  for (const model of await sttModels(env)) {
-    const prefix = `{"model":${JSON.stringify(model)},"provider":${JSON.stringify(sttProvider(model))},"response_format":"verbose_json","input_audio":{"format":${JSON.stringify(format)},"data":"`;
+  let facts = {}; try { facts = await modelFacts(env); } catch {}
+  for (const model of models || await sttModels(env)) {
+    const f = facts[model], rate = Number(f?.sec_nano) || STT_NANO_PER_SEC;
+    if (Array.isArray(f?.formats) && !f.formats.includes(format)) { errs.push(`${model}: doesn't take ${format}`); continue; }
     try {
+      const prefix = `{"model":${JSON.stringify(model)},"provider":${JSON.stringify(sttProvider(model))},"response_format":"verbose_json","input_audio":{"format":${JSON.stringify(format)},"data":"`;   // a model with no ZDR endpoint throws PrivacyBlocked here: next model
       const { make } = audioBody(prefix, `"}}`, size, open);
-      const r = await orFetchPath(env, "audio/transcriptions", make, meta, {}, tryMs ? AbortSignal.timeout(tryMs) : null);
+      const sig = tryMs ? (signal ? AbortSignal.any([AbortSignal.timeout(tryMs), signal]) : AbortSignal.timeout(tryMs)) : signal;
+      const r = await orFetchPath(env, "audio/transcriptions", make, meta, headers, sig);
       const j = await cappedResponseJson(r, 8 << 20).catch(() => null);
       if (r.ok && j && !j.error) {
         const dur = Number(j.duration || j.usage?.seconds) || 0, segs = segsOf(j.segments, j.text);
         timeout = false;
-        return { segs, text: segs.map((x) => x.t).join(" "), dur, model, nano: lost + (Math.ceil(Number(j.usage?.cost || 0) * 1e9) || Math.ceil((dur || estSec) * STT_NANO_PER_SEC)) };
+        return { segs, text: segs.map((x) => x.t).join(" "), dur, model, nano: lost + (Math.ceil(Number(j.usage?.cost || 0) * 1e9) || Math.ceil((dur || estSec) * rate)) };
       }
       errs.push(`${model} ${r.status}: ${JSON.stringify(j?.error || j || {}).slice(0, 160)}`); timeout = false;
     } catch (e) {
       timeout = e?.name === "TimeoutError" || e?.name === "AbortError";
-      if (timeout) lost += Math.ceil(estSec * STT_NANO_PER_SEC);   // the provider may have done (and billed) the work
+      if (timeout) lost += Math.ceil(estSec * rate);   // the provider may have done (and billed) the work
       errs.push(`${model}: ${timeout ? "timed out" : String(e?.message || e).slice(0, 160)}`);
     }
   }
-  if (!env.AI || !src.bytes || src.bytes.byteLength > WAI_MAX_BYTES) throw Object.assign(new Error(`couldn't transcribe it (${errs.join("; ")})`), { nano: lost, timeout });
+  if (models || !env.AI || !src.bytes || src.bytes.byteLength > WAI_MAX_BYTES) throw Object.assign(new Error(`couldn't transcribe it (${errs.join("; ")})`), { nano: lost, timeout });
   console.log("stt: openrouter failed, using workers ai", errs.join("; ").slice(0, 300));
   let out; const waiModel = await jobModel(env, "stt_cloudflare");
   try {
@@ -189,13 +238,14 @@ export async function transcribe(req, env, L, meta = {}) {
   if (!audio) return json({ error: TOO_LONG }, 413);
   if (audio.byteLength < 200) return json({ error: HEARD_NOTHING }, 400);
 
-  const rid = `stt:${crypto.randomUUID()}`, r = await L.reserve(rid, STT_RESERVE);
+  const format = audioFormat(type), reserve = reserveFor(await sttRate(env, format));
+  const rid = `stt:${crypto.randomUUID()}`, r = await L.reserve(rid, reserve);
   if (!r.ok) return r.reason === "day_limit" ? json({ error: "You've reached today's spending limit, so talking is paused until tomorrow.", reason: "day_limit" }, 429)
     : json({ error: "You're out of credits. Top up to keep talking to your helper.", reason: "out_of_credits" }, 402);
   let out;
-  try { out = await stt(env, { bytes: audio }, { format: audioFormat(type), meta, tryMs: DICTATE_TRY_MS, estSec: said > 0 ? said : Math.min(STT_MAX_SEC, audio.byteLength / 4000) }); }
-  catch (e) { await L.settle(rid, Math.min(STT_RESERVE, Math.ceil((e?.nano || 0) * MARKUP))); console.log("transcribe failed", meta.tenant, String(e?.message || e).slice(0, 200)); return json({ error: HEARD_NOTHING }, 502); }
-  const charge = Math.min(STT_RESERVE, Math.ceil(out.nano * MARKUP));
+  try { out = await stt(env, { bytes: audio }, { format, meta, tryMs: DICTATE_TRY_MS, estSec: said > 0 ? said : Math.min(STT_MAX_SEC, audio.byteLength / 4000) }); }
+  catch (e) { await L.settle(rid, Math.min(reserve, Math.ceil((e?.nano || 0) * MARKUP))); console.log("transcribe failed", meta.tenant, String(e?.message || e).slice(0, 200)); return json({ error: HEARD_NOTHING }, 502); }
+  const charge = Math.min(reserve, Math.ceil(out.nano * MARKUP));
   await L.settle(rid, charge);   // no transcript: dictation isn't a conversation, nothing goes into the ledger's history
   const text = out.text.replace(/\s+/g, " ").trim();
   if (!text) return json({ error: HEARD_NOTHING, charge_nano: charge }, 422);

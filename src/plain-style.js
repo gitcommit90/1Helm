@@ -1,0 +1,6 @@
+// Plain writing rules for background jobs whose text a person reads (task titles, live notes, file summary cards, Notebook items,
+// the "How to work with you" note, the API chat). One short constant, defined once and imported by each of those prompts.
+// The main helper prompt carries the full rules with examples in src/prompt/05-writing-style.md.
+// The rules come from the plain-writing skill (MIT, Copyright (c) 2026 Shreya Shankar, https://github.com/docwriter-org/plain-writing-skill);
+// the notice is in THIRD-PARTY-NOTICES.md.
+export const PLAIN_STYLE = `Writing style for any text a person will read (not for JSON keys, codes, ids, exact quotes or other exact values): use simple, everyday words and no jargon. Write complete sentences, not fragments, and keep one idea per sentence with at most two related clauses. Be literal and boring: no puffery or empty emphasis (for example "key", "crucial", "pivotal", "robust", "seamless", "leverage"), no analogies or imagery, and no fake agency for objects. Do not use em dashes, en dashes or middle dots; use a period, "and" or "to" instead, including in number ranges. Do not join clauses with a colon. Use straight quotes, sentence case for titles and headings, and the same word for the same thing throughout.`;

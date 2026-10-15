@@ -14,6 +14,7 @@ import { boundedJson, BodyTooLargeError } from "../bounded-body.js";
 // under their own DO name "beejob:<tenant>" (no workspace, no restore): Node https with ONLY the Bee CA trusted, the token passed on
 // stdin (never argv/env), the host fixed in the job. The container stops ~30 s after its last job (Computer.alarm).
 // The token is never logged, never returned to the app, never put in the helper's context. bee_events holds plain-words events only.
+import { hsEnvelope } from "../hs-flag.js";
 import nacl from "tweetnacl";
 import { sealSecret, openSecret } from "../sentinel.js";
 import { hasSecret, SECRET_NOTE } from "../secrets-scrub.js";
@@ -422,7 +423,7 @@ export const LIVE_CORE = `async function liveCore(j, get, emit, alive, sleep, op
   (j.convs || []).forEach(function (id) { addF(Number(id)); });
   var ms = function (v) { return typeof v === "number" && isFinite(v) ? (v > 1e12 ? v : v * 1000) : null; };
   var flat = function (conv) { var out = []; (Array.isArray(conv && conv.transcriptions) ? conv.transcriptions : []).forEach(function (t) { (Array.isArray(t && t.utterances) ? t.utterances : []).forEach(function (u) { out.push(u); }); }); return out; };
-  var shape = function (u, c) { var at = ms(u && u.spoken_at); return at == null || typeof u.text !== "string" || !u.text.trim() ? null : { c: c, id: typeof u.id === "number" ? u.id : null, at: at, sp: typeof u.speaker === "string" ? u.speaker.slice(0, 60) : null, tx: u.text.slice(0, 2000), rt: u.realtime === false ? 0 : 1 }; };
+  var shape = function (u, c) { var at = ms(u && u.spoken_at); return at == null || typeof u.text !== "string" || !u.text.trim() ? null : { c: c, id: typeof u.id === "number" ? u.id : null, at: at, sp: typeof u.speaker === "string" ? u.speaker : null, tx: u.text, rt: u.realtime === false ? 0 : 1 }; };
   var busy = function (r) { return r.status === 429 || r.status >= 500; };
   var holdFor = function (r) { var w = Number(r.retry_ms); w = r.retry_ms != null && isFinite(w) && w >= 0 ? Math.min(HOLD_MAX, Math.max(1000, w)) : HOLD; hold = Math.max(hold, Date.now() + w); return w; };
   var once = async function () {
@@ -777,6 +778,21 @@ export async function beeRoute(req, env, t, sub, deps = DEFAULT_DEPS) {
       if (!a || a.status !== "connected" || !s) return J({ error: a?.status === "needs_reconnect" ? "Reconnect your Bee in Settings → Ambient first." : "Bee isn't connected." }, 409);
       return J(await s.factAction(t.id, act, id, text.slice(0, 2000)));
     }
+    // New speaker detected (bee-speakers.js, HS_ENVELOPE): {op: "list"} | {op: "edit", rec, spk, name} | {op: "accept", rec, spk} |
+    // {op: "matches", rec, spk} | {op: "confirm", rec, spk, person}. Works from the saved recordings, so it needs no call to Bee.
+    if (op === "speaker") {
+      const b = await boundedJson(req), act = String(b.op || ""), name = String(b.name || "").trim();
+      if (!["list", "edit", "accept", "matches", "confirm", "not_them"].includes(act)) return J({ error: "op must be list, edit, accept, matches, confirm or not_them" }, 400);
+      const sid = String(b.sid ?? b.spk ?? "");
+      if (act !== "list" && (b.rec == null || !sid)) return J({ error: "rec and spk required" }, 400);
+      if (act === "edit" && !name) return J({ error: "name required" }, 400);
+      if (act === "edit" && hasSecret(name)) return J({ error: SECRET_NOTE, secret: true }, 400);
+      if (act === "confirm" && !b.person) return J({ error: "person required" }, 400);
+      if (act === "not_them" && !b.contact) return J({ error: "contact required" }, 400);
+      if (!hsEnvelope(env)) return J({ error: "not available" }, 404);
+      const s = deps.sync?.(env, t.id); if (!s) return J({ error: "Bee isn't connected." }, 409);
+      return J(await s.speakerAction(t.id, act, String(b.rec), sid, { name, person: b.person ? String(b.person) : "", contact: b.contact ? String(b.contact) : "" }));
+    }
     // Changes that couldn't reach Bee (the card's quiet line): {op: "retry" | "dismiss"} → the card's state.
     if (op === "writes") {
       const b = await boundedJson(req), act = String(b.op || ""), s = deps.sync?.(env, t.id);
@@ -805,6 +821,11 @@ const connectedSync = async (env, tid, deps = DEFAULT_DEPS) => { const a = await
 export async function beePendingFacts(env, tid, deps = DEFAULT_DEPS) {
   if (!env.BEE_SYNC && deps === DEFAULT_DEPS) return null;
   try { const s = await connectedSync(env, tid, deps); return s ? await s.pendingFacts() : null; } catch (e) { console.log("bee pending facts", String(e?.message || e).slice(0, 120)); return null; }
+}
+// GET /api/notebook/main: the speakers waiting for review ("New speaker detected", bee-speakers.js), with HS_ENVELOPE on.
+export async function beePendingSpeakers(env, tid, deps = DEFAULT_DEPS) {
+  if (!hsEnvelope(env) || (!env.BEE_SYNC && deps === DEFAULT_DEPS)) return null;
+  try { const s = deps.sync?.(env, tid); return s ? await (s.pendingSpeakersWithMatches ? s.pendingSpeakersWithMatches() : s.pendingSpeakers()) : null; } catch (e) { console.log("bee pending speakers", String(e?.message || e).slice(0, 120)); return null; }
 }
 // A From-Bee note was edited / deleted in the Notebook → the same change in Bee (PUT with the fact's tags / DELETE). An undo of a
 // deleted From-Bee note creates the fact again (POST) and links the new id. Each only changes the Notebook and queues the write: it is

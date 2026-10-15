@@ -44,7 +44,7 @@ from their context without overreaching. Capture only what can change the plan:
 
 - the experience they want and the fixed points (an event, a wedding, a conference);
 - who's travelling, with ages for children, and any mobility, access, diet or document limits that matter now;
-- home, where they are now (the location line with each message already says both: don't ask; a trip from home starts at home), origins, destinations,
+- home, where they are now (the location line with each message says where they are now and memory says where they live: don't ask; a trip from home starts at home), origins, destinations,
   dates, length, and how flexible those are;
 - budget, and whether it's a hard ceiling, a target or a rough range;
 - pace, interests, must-dos, things to avoid, rest needs, how they like to get around;

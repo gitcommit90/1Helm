@@ -130,8 +130,6 @@ export function importContacts(people, list, source = "csv") {
     const P = entries(c.phones, primary.phone), E = entries(c.emails, primary.email);
     sql.exec("INSERT INTO people (id,name,rel,aka,phone,email,bday,addr,grp,origin,created,updated,phones,emails) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", id, c.name, c.rel, JSON.stringify(c.aka),
       P[0]?.v ?? null, E[0]?.v ?? null, c.bday || null, primary.addr || null, c.group || "Friends", origin, now, now, JSON.stringify(P), JSON.stringify(E));
-    const p = people.get(id);
-    people.mem.put({ id: `p:${id}@${now}`, at: now, kind: "person", author: "contacts import", source: `contacts · ${c.name}`, text: people.card(p) });
     for (const f of factsFor(c, primary)) people.addFact(id, f, "You imported");
     for (const k of ks) { index(k, id); sql.exec("INSERT OR IGNORE INTO people_keys (k, person) VALUES (?, ?)", k, id); }
     if (c.photo) sql.exec("INSERT OR IGNORE INTO people_photos (person, data, at) VALUES (?, ?, ?)", id, c.photo, now);

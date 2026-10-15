@@ -1,0 +1,24 @@
+[package]
+name = "sym_audio"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+symphonia-core = "0.6.1"
+symphonia-codec-aac = "0.6.1"
+symphonia-bundle-mp3 = { version = "0.6.1", default-features = false, features = ["mp3"] }
+symphonia-bundle-flac = "0.6.1"
+symphonia-codec-vorbis = "0.6.1"
+symphonia-codec-alac = "0.6.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

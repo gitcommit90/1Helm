@@ -18,7 +18,7 @@
 // 4. work_log tool: search/list earlier lookups by words, account, tool, time; open a saved result by key.
 // 5. relevantLookups: the 3 most relevant recent lookups, one line each, for the per-message memory pack.
 // 6. retainPartial(session, turn): a turn that ended without a reply (restart, Stop, a cap) leaves a short memory item built from
-//    its rows ("Searched X, Y for Z; found …"), in Hindsight and the local ledger, and as that turn's hand-off notes.
+//    its rows ("Searched X, Y for Z; found …"), in Hindsight, and as that turn's hand-off notes.
 import { pickAccount } from "./ee/index.js";
 import { leanJSON, readMail, clip } from "./ee/index.js";
 import { scrubSecrets } from "./secrets-scrub.js";   // nosecrets: summaries never keep a password, key or code (a "your code is 482913" email)
@@ -38,7 +38,7 @@ export const APP_LEAN_CHARS = 6000;   // an app_run result over this is trimmed 
 const FULL_KEEP = 300, FULL_MAX = 300000;
 const LOOKUP_TOOLS = new Set(["gmail_search", "gmail_read", "calendar_events", "app_run", "app_proxy", "fetch_url", "web_search", "search_web_vertical"]);
 export const isLookupTool = (name) => LOOKUP_TOOLS.has(name);
-const SAVED_FILES = / ok[^\n]*\. Saved "[^"\n]+" \([^)]*\) to the Library \(file id /;
+const SAVED_FILES = / ok[^\n]*\. (?:Saved "[^"\n]+" \([^)]*\) to the Library \(file id |Updated "[^"\n]+" in place in the Library \()/;
 const FRESH = { type: "boolean", description: "true = run it again in full even if the work log has this lookup (only when the person asks to re-check, or the earlier result is clearly stale)" };
 // The fresh flag on the lookup tools (added in place, like composio.js's account param, so the definitions stay where they are).
 export function addFresh(tools) { for (const t of tools) if (LOOKUP_TOOLS.has(t?.function?.name) && t.function.parameters?.properties) t.function.parameters.properties.fresh = FRESH; return tools; }
@@ -330,7 +330,7 @@ export function partialText(sql, turn, { userText = "", why = "interrupted", tz 
   const text = `Unfinished work (${why} before a reply, ${fmtTime(rows[0].at, tz)}).${userText ? ` The person had asked: ${clip(scrubSecrets(userText), 400)}` : ""}\nLookups already done (saved in the work log; reuse them, don't redo them):\n${lines.join("\n")}${ok.length > 30 ? `\n- …and ${ok.length - 30} more (work_log lists them)` : ""}${bad ? `\n(${bad} lookup${bad === 1 ? "" : "s"} failed.)` : ""}`;
   return scrubSecrets(text).slice(0, 5000);   // it becomes memory and the turn's hand-off notes
 }
-// Retain a stopped/interrupted/capped turn's partial findings: Hindsight (when on), the local memory ledger, and the turn's
+// Retain a stopped/interrupted/capped turn's partial findings: Hindsight (when HS_WRITERS is on), and the turn's
 // hand-off notes (so the task's history shows them next time). Once per turn. Safe to call from any stop path.
 export async function retainPartial(res, session, turn, why = "stopped") {
   const sql = res.sql;
@@ -339,8 +339,10 @@ export async function retainPartial(res, session, turn, why = "stopped") {
   const text = partialText(sql, turn, { userText: t?.user_text || "", why, tz: res.tz?.() || "UTC" }); if (!text) return null;
   sql.exec("INSERT OR IGNORE INTO work_log_partial (turn,at,session,text) VALUES (?,?,?,?)", String(turn), Date.now(), session ?? null, text);
   try { sql.exec("UPDATE turns SET notes=COALESCE(notes, ?) WHERE id=?", text, String(turn)); } catch {}
-  try { if (res.memoryMode?.() !== "off" && res.mem?.put) res.mem.put({ id: `t:${turn}:p`, at: Date.now(), kind: "note", author: "work log", source: `task ${String(session || "").slice(0, 8)} · unfinished work`, session: session ?? null, text }); } catch (e) { console.log("partial ledger", e.message); }
-  try { await res.hsCapture?.([{ content: text, at: t?.at || Date.now(), context: `unfinished work in #${res.get?.("channel") || ""}`, document_id: `partial-${turn}`, metadata: { turn, session, kind: "partial" } }]); } catch (e) { console.log("partial hindsight", e.message); }
+  try {
+    // HS_WRITERS: the unfinished work is one more entry in the task's conversation document for that day (DESIGN 3.3), not its own partial-<turn> document.
+    if (res.hsW?.()) await res.hsPartialWrite({ session, turn, at: t?.at || Date.now(), text });
+  } catch (e) { console.log("partial hindsight", e.message); }
   return text;
 }
 // After recoverCards (a restart): every interrupted card that looked something up keeps what it found.

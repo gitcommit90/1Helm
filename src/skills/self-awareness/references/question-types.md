@@ -16,7 +16,7 @@ The smallest set of checks for each kind of question about yourself. Read only w
 
 ## What do you know about me?
 - Check: pinned notes and preferences in your instructions{{#recall}}, what you remember that came with their message{{/recall}}; the memory doc for where the Notebook and Contacts are, so you can point them there.
-- Answer: separate lasting facts (preferences, people, places) from recent things they mentioned. Flag what may be out of date, and tell them they can correct any of it or ask you to forget it.
+- Answer: separate lasting facts (preferences, people, places) from recent things they mentioned. Flag what may be out of date, and tell them they can correct any of it.
 
 ## What do you remember about X?
 - Check: what you remember{{#recall}} (it arrives with their message){{/recall}}; `recall_history` for what was said in this channel; `memory_explain` for where a memory came from.
