@@ -11,6 +11,7 @@ import { contextFor, speakerLabels } from "./hindsight-template.js";
 import { scrubSecrets } from "./secrets-scrub.js";
 import { hsRetainBatchNano } from "./byok-meter.js";
 import { helperName } from "./helper-name.js";
+import { conversationMessages, originLabel, fileMessageOrigin } from "./message-origin.js";
 import { stripInjectedMemory } from "./memory-block.js";   // phase 4A: memory added to a turn is never retained
 
 export { hsWriters } from "./hs-flag.js";
@@ -89,12 +90,14 @@ export function ambientSpeaker(raw, { first, isUser } = {}) {
 
 // ---- conversation entries (DESIGN 3.3): one JSON element per speaker line, appended to the day's document ----
 // reply: the text of the assistant's answer already turned into plain text (cardsToText). partial: unfinished work text.
-export function convEntries({ userText, reply, notes, partial, at, endAt, kind = "chat", labels, tz }) {
-  const L = labels || speakerLabels({}), out = [], t0 = at || Date.now(), t1 = endAt || t0, e = (speaker, time, text, n) => { const t = scrubSecrets(stripInjectedMemory(text)); if (t.trim()) out.push({ speaker, time: isoLocal(time, tz), text: t }); };
-  e(kind === "chat" ? L.user : L.scheduled, t0, userText, TURN_PART_MAX);
-  e(L.assistant, t1, reply, TURN_PART_MAX);
-  e(L.notes, t1, String(notes ?? "").split("\n").filter((l) => !/^\s*-?\s*\(1Helm:/.test(l)).join("\n"), TURN_NOTES_MAX);   // 1Helm's own notices (out of credits, a pause) are not the helper's words
-  if (partial) e(L.assistant, t1, `(unfinished) ${partial}`, 5000);
+export function convEntries({ userText, reply, notes, partial, at, endAt, kind = "chat", labels, tz, userMessages = null }) {
+  const L = labels || speakerLabels({}), out = [], t0 = at || Date.now(), t1 = endAt || t0, e = (speaker, time, text, origin = null, replyTo = null) => { const t = scrubSecrets(stripInjectedMemory(text)); if (t.trim()) out.push({ speaker, time: isoLocal(time, tz), ...(origin ? { origin } : {}), ...(replyTo ? { reply_to: { speaker: replyTo.role === "user" ? L.user : replyTo.role === "agent" ? L.assistant : "Unknown quoted speaker", text: scrubSecrets(stripInjectedMemory(String(replyTo.text || ""))), note: "Quoted earlier message, not new words from this entry's speaker" } } : {}), text: t }); };
+  if (kind === "chat" && Array.isArray(userMessages)) {
+    for (const m of userMessages) e(L.user, m.at || t0, m.text, originLabel(m.origin), m.reply);
+  } else e(kind === "chat" ? L.user : L.scheduled, t0, userText, kind === "chat" ? "Message origin unknown" : null);
+  e(L.assistant, t1, reply, "Assistant reply in the 1Helm conversation; phone delivery is not established by this entry");
+  e(L.notes, t1, String(notes ?? "").split("\n").filter((l) => !/^\s*-?\s*\(1Helm:/.test(l)).join("\n"));   // 1Helm's own notices (out of credits, a pause) are not the helper's words
+  if (partial) e(L.assistant, t1, `(unfinished) ${partial}`);
   return out;
 }
 // The document a turn belongs to: its task and its local day. A scheduled run with no task has its own document per workflow.
@@ -238,30 +241,35 @@ export const writerMethods = {
   async hsLocal() { const n = (await this.hsNames()) || {}, tz = this.tz(); return { names: { first: n.first, helper: n.helper, channel: this.get("channel") }, tz, channel: this.get("channel") }; },
   // The one place an item is sent or queued. items: retainV2 items. Returns { sent, queued, skipped }.
   async hsPut(items, o = {}) {
+    o.guard?.check();
     if (!this.hsW() || !items?.length) return { skipped: "off" };
     if (this.memoryMode() === "off") return { skipped: "memory off" };
     items = items.filter((i) => itemChars(i) > 0); if (!items.length) return { skipped: "empty" };
     if (this.hsRebuilding() && !o.rebuild) {
+      o.guard?.check();
       // The bank is being rebuilt: queue, and pay now (a normal write keeps its hold; the rebuild itself is 1HC's cost).
       const h = o.paid === false ? { done: async () => 0 } : await this.hsRetainHold(items.map(itemExtractChars));
       if (!h) { this.byokRetainSkipped(items); return { skipped: "credits" }; }
-      await h.done(); this.hsOutboxInit();
+      await h.done(); o.guard?.check(); this.hsOutboxInit();
       for (const i of items) this.sql.exec("INSERT INTO hs_outbox (doc, item, del, paid, at, ref) VALUES (?,?,0,1,?,?)", i.document_id, JSON.stringify(i), Date.now(), i.key ? String(i.key) : null);   // ref: the turn the entry came from, so the rebuild's source leaves that turn out
       return { queued: items.length };
     }
-    return this.hsSend(items, { paid: o.paid !== false, rebuild: !!o.rebuild });
+    return this.hsSend(items, { paid: o.paid !== false, rebuild: !!o.rebuild, guard: o.guard, bank: o.bank });
   },
   // Send rounds. paid: reserve the metered cost first (own AI key accounts). A failed round goes to the outbox and is tried again by the
   // alarm (a client error, HTTP 400 to 499, is dropped: sending it again cannot help).
-  async hsSend(items, { paid = true, rebuild = false } = {}) {
-    let bank; try { bank = await this.hsBank(); } catch (e) { return this.hsRetryLater(items, e, paid); }
+  async hsSend(items, { paid = true, rebuild = false, guard = null, bank: fixedBank = null } = {}) {
+    guard?.check();
+    let bank; try { bank = fixedBank || await this.hsBank(); } catch (e) { if (guard) throw e; return this.hsRetryLater(items, e, paid); }
     const res = { sent: 0, queued: 0, skipped: 0, dropped: 0 };
     for (const r of rounds(items)) {
+      guard?.check();
       const h = paid ? await this.hsRetainHold(r.map(itemExtractChars)) : { done: async () => 0 };
       if (!h) { this.byokRetainSkipped(r); res.skipped += r.length; continue; }
-      try { await retainV2(this.env, bank, r); await h.done(); res.sent += r.length; }
+      try { guard?.check(); await retainV2(this.env, bank, r, guard ? { beforeSend: id => { guard.check(); guard.submitted(id); }, timeoutMs: guard.timeoutMs() } : {}); await h.done(); res.sent += r.length; }
       catch (e) {
         await h.done(0);
+        if (guard) throw e;   // manual repair keeps its stable operation receipt; it never schedules a detached stale retry
         if (e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 409 && e.status !== 429) { console.log("hindsight retain dropped", e.message); this.mem.receipt({ mode: "hs-retain", query: r[0]?.document_id, error: String(e.message || e).slice(0, 300) }); res.dropped += r.length; }
         else if (rebuild) throw e;
         else { this.hsRetryLater(r, e, paid); res.queued += r.length; }
@@ -330,7 +338,9 @@ export const writerMethods = {
   // One finished turn: its entries are appended to the task's document for the person's local day, with a constant tag set.
   async hsTurnWrite({ turn, session, at, userText, reply, notes, kind = "chat", workflowId = null, endAt = null }) {
     if (!this.hsW()) return { skipped: "off" };
-    const { names, tz, channel } = await this.hsLocal(); let entries = convEntries({ userText, reply, notes, at, endAt, kind, labels: speakerLabels(names), tz });
+    (this._hsTurnWrites ||= new Map()).set(turn, session);
+    try {
+    const { names, tz, channel } = await this.hsLocal(); let entries = convEntries({ userText, reply, notes, at, endAt, kind, labels: speakerLabels(names), tz, userMessages: conversationMessages(this.sql, turn, { text: userText, at, kind }) });
     if (!entries.length) return { skipped: "empty" };
     const sid = convSession(session, workflowId), day = dayKey(at, tz);
     let item = turnItem({ doc: DOC.conv(sid, day), entries, at, context: ctxFor(kind === "chat" ? "chat" : "scheduled", names), channel, session: sid, day, key: turn });
@@ -344,6 +354,7 @@ export const writerMethods = {
     const r = await this.hsPut([item]);
     if (session) await this.hsTaskSync(session).catch((e) => console.log("task card", e.message));   // the title or the checklist may have changed with this turn
     return r;
+    } finally { this._hsTurnWrites.delete(turn); }
   },
   async hsPartialWrite({ session, turn, at, text }) {
     if (!this.hsW()) return { skipped: "off" };
@@ -397,6 +408,8 @@ export const writerMethods = {
   // call; any other file gets its upload time and link. The details line goes in front of the text, the item's time becomes the capture
   // time (Hindsight dates the facts by it), and the place is looked up once per rounded spot (cached in this channel's storage).
   async hsFileEnrich(f, it) {
+    const origin = fileMessageOrigin(this.sql, f);
+    if (origin && it) it = { ...it, content: `[Written by 1Helm from the original attachment event] Upload origin: ${originLabel(origin)}.\n${it.content}`, context: `${it.context} Upload origin: ${originLabel(origin)}. The upload source does not identify the speakers inside the file.`, metadata: { ...it.metadata, message_origin: originLabel(origin) } };
     if (!hsEnvelope(this.env) || !it) return it;
     const { tz, names } = await this.hsLocal(), uploadedAt = Number(f.at) || Date.now(), first = names.first;
     if (!isPhoto(f.mime, f.name) && !isVideo(f.mime, f.name)) return withEnvelope(it, makeEnvelope({ kind: f.mime || null, kind1hc: docKind1hc(f.mime, f.name), modality: "text", when: { start: uploadedAt, tz, tzSource: "account", how: "upload" }, links: { file: f.id },

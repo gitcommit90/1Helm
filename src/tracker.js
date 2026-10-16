@@ -11,6 +11,8 @@ import { cardsToText } from "./genui.js";
 import { useOpenRouter, openRouterChat } from "./model.js";
 import { presentStep, isInternalStep, safeInput, leakGuard } from "./step-present.js";
 import { replyOut, replyIn, withReply } from "./reply-to.js";
+import { photonMessage } from "./ee/index.js";
+import { originInput } from "./message-origin.js";
 import { savedTo } from "./saved-to.js";
 import { progressKeep, mustShow } from "./progress-dedupe.js";
 import { PLAIN_STYLE } from "./plain-style.js";
@@ -36,6 +38,7 @@ export const CARD_DDL = [
 export function trackerInit(sql) {
   for (const q of CARD_DDL) sql.exec(q);
   try { if (!rows(sql, "PRAGMA table_info(card_events)").some((c) => c.name === "result")) sql.exec("ALTER TABLE card_events ADD COLUMN result TEXT"); } catch {}
+  try { sql.exec("ALTER TABLE card_events ADD COLUMN full_args TEXT"); } catch {}
   try { sql.exec("ALTER TABLE card_events ADD COLUMN reply TEXT"); } catch {}   // reply: the message this one replies to (reply-to.js)
 }
 
@@ -187,9 +190,10 @@ export function addInput(sql, cardId, input, { at = Date.now(), consumed = null,
   const seq = c.next_seq, type = input.type === "handoff" ? "handoff" : "msg";
   const msgId = type === "msg" ? (input.msg_id || crypto.randomUUID()) : null;
   const files = Array.isArray(input.files) && input.files.length ? JSON.stringify(input.files.map(String).slice(0, 10)) : null;
+  const metadata = type === "msg" ? { ...photonMessage(input), ...originInput(input) } : null;
   sql.exec("INSERT INTO card_events (card,seq,type,at,msg_id,cid,text,files,via,consumed,ref,input,reply) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
     cardId, seq, type, at, msgId, cid, String(input.text ?? "").slice(0, 20000), files, type === "msg" ? (input.via || "app") : null, consumed,
-    input.ref != null ? String(input.ref) : null, type === "handoff" && input.from ? JSON.stringify(input.from) : null, type === "msg" ? replyOut(input.reply) : null);
+    input.ref != null ? String(input.ref) : null, type === "handoff" && input.from ? JSON.stringify(input.from) : metadata && Object.keys(metadata).length ? JSON.stringify(metadata) : null, type === "msg" ? replyOut(input.reply) : null);
   let src = null;
   if (type === "handoff" && input.from && !srcDone) { const l = jparse(c.src, []); l.push(input.from); src = JSON.stringify(l); }
   sql.exec(`UPDATE cards SET next_seq=next_seq+1${type === "msg" ? ", msgs=msgs+1" : ""}${src ? ", src=?" : ""} WHERE id=?`, ...(src ? [src] : []), cardId);
@@ -221,6 +225,7 @@ export function stepBegin(sql, tc, { tool, args = {}, call_id = null, title, car
   sql.exec("INSERT INTO card_events (card,seq,type,at,title,title_src,tool,call_id,input,cmd,status,ref) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
     id, seq, "step", at, clean || fallbackStepTitle(tool, a), clean ? "agent" : "fallback", tool, call_id, stepInput(a), stepCmd(tool, a), "running", ref != null ? String(ref) : null);
   sql.exec("UPDATE cards SET next_seq=next_seq+1, steps=steps+1 WHERE id=?", id);
+  if (tc?.helper?.dynamic_routing) sql.exec("UPDATE card_events SET full_args=? WHERE card=? AND seq=?", JSON.stringify(args), id, seq);
   const ev = eventView(sql, row(sql, "SELECT * FROM card_events WHERE card=? AND seq=?", id, seq));
   tc?.emit?.({ t: "card_event", card: id, event: ev });
   return ev;
@@ -348,7 +353,7 @@ export function eventView(sql, e) {
   if (e.type === "handoff") return { seq: e.seq, type: "handoff", at: e.at, ref: e.ref ?? null, from: jparse(e.input, null), text: ell(e.text, 600), consumed: e.consumed ?? null };
   const rx = e.msg_id ? row(sql, "SELECT reaction FROM reactions WHERE turn=?", e.msg_id) : null;
   const rp = replyIn(e.reply);
-  return { seq: e.seq, type: "msg", at: e.at, id: e.msg_id, cid: e.cid ?? null, text: e.text ?? "", files: fileViews(sql, e.files), via: e.via || "app", consumed: e.consumed ?? null, reaction: rx?.reaction ?? null, ...(rp ? { reply: rp } : {}) };
+  return { seq: e.seq, type: "msg", at: e.at, id: e.msg_id, cid: e.cid ?? null, text: e.text ?? "", files: fileViews(sql, e.files), via: e.via || "app", consumed: e.consumed ?? null, reaction: rx?.reaction ?? null, ...originInput(jparse(e.input, {})), ...(rp ? { reply: rp } : {}) };
 }
 // HelperView rows for a card (the helpers table belongs to helpers.js; absent until that lands).
 export function helpersOfCard(sql, cardId) {

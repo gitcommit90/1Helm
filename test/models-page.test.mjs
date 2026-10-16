@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import worker from "../src/index.js";
 import { modelsHtml, isModelAdmin } from "../src/ee/models-page.js";
-import { JOBS, JOB_IDS } from "../src/ee/model-jobs.js";
+import { JOB_IDS, MODEL_PAGE_JOBS } from "../src/ee/model-jobs.js";
 import { ID } from "./helpers/seed-settings.mjs";
 globalThis.HTMLRewriter = class { on() { return this; } transform(r) { return r; } };
 
@@ -55,9 +55,15 @@ await test("page and API read only their environment with safe headers", async (
     // the page has no built-in-default wording, no shared-slot wording and no reset to default
     for (const word of [/\bDefault\b/, /\bChanged\b/, /Reset to default/i, /replaces .* everywhere/i, /\bslot\b/i, /Restore defaults/, /Built-in/i]) assert.doesNotMatch(text, word, String(word));
     const api = await call("/models/api", { env }); const data = await api.json(); assert.equal(data.revision, 1, "the first read saves the first version"); assert.equal(data.environment, env.ENV_NAME);
-    assert.deepEqual(Object.keys(data.config.jobs).sort(), [...JOB_IDS].sort(), "every job has its own saved setting"); assert.equal(data.options.jobs.length, JOBS.length);
+    assert.deepEqual(Object.keys(data.config.jobs).sort(), [...JOB_IDS].sort(), "every job has its own saved setting"); assert.equal(data.options.jobs.length, MODEL_PAGE_JOBS.length);
     for (const j of Object.values(data.config.jobs)) assert.ok(j.model && Array.isArray(j.fallbacks));
-    assert.equal(data.dashboard.jobs.length, JOBS.length); assert.equal(data.history[0].action, "seed");
+    assert.equal(data.dashboard.jobs.length, MODEL_PAGE_JOBS.length); assert.equal(data.history[0].action, "seed");
+    assert.ok(!data.dashboard.groups.some((g) => g.id === "other")); assert.ok(!data.options.groups.some((g) => g.id === "other"));
+    for (const id of ["doors_shadow", "classic_decider", "workers_ai_chat", "classic_router"]) {
+      assert.ok(data.config.jobs[id], `${id} keeps its runtime setting`);
+      assert.ok(!data.options.jobs.some((j) => j.id === id)); assert.ok(!data.dashboard.jobs.some((j) => j.id === id));
+    }
+    assert.doesNotMatch(text, /Tool output check|Router decider|Cloudflare chat model|Older router|"title":"Other"/);
     const head = await call("/models", { env, method: "HEAD" }); assert.equal(head.status, 200); assert.equal(await head.text(), "");
   }
 });
@@ -95,6 +101,7 @@ await test("save, stale conflict and restore are versioned and dev/live isolated
   r = await post("/models/api/save", { revision: 1, config }); assert.equal(r.status, 409);
   assert.equal((await (await call("/models/api", { env: live })).json()).revision, 1, "live has its own first version");
   r = await post("/models/api/restore", { revision: 2, restore_revision: 1 }); assert.equal(r.status, 200); value = await r.json(); assert.equal(value.revision, 3); assert.deepEqual(value.config, original.config);
+  assert.ok(value.dashboard.jobs.every((j) => j.group !== "other")); assert.ok(value.options.jobs.every((j) => j.group !== "other"));
   r = await post("/models/api/restore", { revision: 3, restore_revision: 2 }); assert.equal(r.status, 200); value = await r.json(); assert.equal(value.revision, 4); assert.equal(value.config.jobs["chat.technical"].effort, "medium");
   r = await post("/models/api/restore", { revision: 4, restore_revision: 987 }); assert.equal(r.status, 404);
   assert.equal((await (await call("/models/api", { env: live })).json()).revision, 1); assert.equal((await (await call("/models/api")).json()).revision, 4);
@@ -134,7 +141,7 @@ await test("catalog is admin-only, read-only, no-store and never forwards creden
   const endpoint = { model_id: candidate.id, tag: "fixture-zdr", context_length: 131072, max_completion_tokens: 16384, pricing: { prompt: "0.000001", completion: "0.000002" }, supported_parameters: ["tools", "max_tokens", "reasoning", "response_format"], supports_tool_choice: { auto: true, none: true, required: true, function: true } };
   globalThis.fetch = async (url, init) => {
     upstream.push({ url: String(url), headers: new Headers(init.headers) });
-    return Response.json({ data: String(url).endsWith("/models") ? [candidate] : String(url).endsWith("/endpoints/zdr") ? [endpoint] : { endpoints: [] } });
+    return Response.json({ data: /\/models(\?|$)/.test(String(url)) ? [candidate] : String(url).endsWith("/endpoints/zdr") ? [endpoint] : { endpoints: [] } });
   };
   try {
     for (const token of [null, "bb22"]) assert.equal((await call("/models/api/catalog?q=fixture", { token })).status, token ? 403 : 401);
@@ -166,7 +173,7 @@ await test("storage errors are sanitized and never cached", async () => {
 await test("the dashboard shows exactly what is saved for each job, and a change shows on the very next read", async () => {
   const { modelDashboard } = await import("../src/ee/model-dashboard.js");
   const view = await (await call("/models/api")).json(), rows = Object.fromEntries(view.dashboard.jobs.map((j) => [j.id, j]));
-  for (const def of JOBS) {
+  for (const def of MODEL_PAGE_JOBS) {
     const saved = view.config.jobs[def.id], row = rows[def.id];
     assert.equal(row.main.id, saved.model, def.id); assert.deepEqual(row.fallbacks.map((f) => f.id), saved.fallbacks.map((f) => f.model), def.id);
     if (row.has_effort) { assert.equal(row.main.effort, saved.effort); assert.deepEqual(row.fallbacks.map((f) => f.effort), saved.fallbacks.map((f) => f.effort)); } else assert.equal(row.main.effort, null);
@@ -184,14 +191,14 @@ await test("the dashboard shows exactly what is saved for each job, and a change
   const { dispatchOrder, policyRoute } = await import("../src/ee/route2.js");
   assert.deepEqual(dispatchOrder(policyRoute(saved.config, "research", "zdr", "x"), "zdr", { settings: saved.config }).models, []);
   assert.deepEqual(dispatchOrder(policyRoute(saved.config, "research", "unrestricted", "x"), "unrestricted", { settings: saved.config }).models, [ID.MUSE_C]);
-  assert.equal(modelDashboard(saved).jobs.length, JOBS.length);
+  assert.equal(modelDashboard(saved).jobs.length, MODEL_PAGE_JOBS.length);
 });
 
 await test("a page change replaces the model of one job only, and the row shows it", async () => {
   const originalFetch = globalThis.fetch;
   const cand = { id: "fixture/dash-model", name: "Fixture Dash", architecture: { input_modalities: ["text"], output_modalities: ["text"] }, reasoning: { mandatory: false, supported_efforts: ["low", "high"], default_effort: "low" } };
   const ep = { model_id: cand.id, tag: "fixture-zdr", context_length: 131072, max_completion_tokens: 16384, pricing: { prompt: "0.000001", completion: "0.000002" }, supported_parameters: ["tools", "max_tokens", "reasoning", "response_format"], supports_tool_choice: { auto: true, none: true, required: true, function: true } };
-  globalThis.fetch = async (url) => Response.json({ data: String(url).endsWith("/models") ? [cand] : String(url).endsWith("/endpoints/zdr") ? [ep] : { endpoints: [] } });
+  globalThis.fetch = async (url) => Response.json({ data: /\/models(\?|$)/.test(String(url)) ? [cand] : String(url).endsWith("/endpoints/zdr") ? [ep] : { endpoints: [] } });
   try {
     const view = await (await call("/models/api")).json(), cfg = structuredClone(view.config), before = structuredClone(view.config.jobs);
     cfg.jobs["chat.skills"] = { ...cfg.jobs["chat.skills"], model: cand.id, effort: "low", fallbacks: cfg.jobs["chat.skills"].fallbacks.filter((f) => f.model !== cand.id) };

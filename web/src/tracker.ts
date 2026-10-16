@@ -6,6 +6,7 @@
 // Everything stays invisible until the server sends cards for a session: with today's backend the app is exactly as before.
 // v3.ts only hooks in: the header slots, the stage wrapper, liveLoad, the stream handler, msgHtml and repaints.
 import { cardStop, cardContinue } from "./stop";
+import { orb } from "./activity-orb";
 import { pauseOf } from "./spendguard";   // the working card's Stop
 import { nativeHandoffText } from "./native-approval-progress";
 import { focusHeaderAction } from "./headfit";
@@ -65,9 +66,7 @@ const P = {
   sum: '<path d="M4 6h16M4 12h16M4 18h10"/>', copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h11"/>',
   dl: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>', handoff: '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
 };
-// Spinners keep their phase across repaints (tied to the clock), so a live update never makes them jump back.
-const SPIN_ = `<svg class="tk-spin" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" style="animation-delay:-PHASEms"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2.2" opacity=".2"/><path d="M12 3.5a8.5 8.5 0 0 1 8.5 8.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>`;
-const spin = () => SPIN_.replace("PHASE", String(Date.now() % 900));
+const spin = () => orb("working");
 const LABEL: Record<string, string> = { working: "Working", resuming: "Working", complete: "Complete", failed: "Failed", interrupted: "Interrupted", stopped: "Stopped", queued: "Queued", paused: "Paused" };
 const isOpen = (c?: CardView | null) => !!c && (c.status === "working" || c.status === "queued" || c.status === "resuming") && !c.closed;
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
@@ -143,6 +142,7 @@ function upsertHelper(k: string, h: HelperView) {
   for (const d of Object.values(DET)) { const j = (d.helpers || []).findIndex(x => x.id === h.id); if (j >= 0) d.helpers![j] = { ...d.helpers![j], ...h }; }
 }
 const helperById = (k: string, id: any) => ss(k).helpers.find(h => String(h.id) === String(id)) || Object.values(DET).flatMap(d => d.helpers || []).find(h => String(h.id) === String(id));
+const helperStatus = (status: string) => ({ running: "working", waiting_input: "Needs clarification", awaiting_review: "Reviewing result", approved: "Approved", done: "Finished", stopped: "Stopped" }[status] || status);
 const running = (k: string) => ss(k).hoff ? [] : ss(k).helpers.filter(h => h.status === "running");
 
 // ---------- Public: data in ----------
@@ -162,13 +162,19 @@ export function tkLoad(slug: string, sid: any, d: any) {
   for (const c of d.cards) { if (DET[c.id]) Object.assign(DET[c.id], c, { events: DET[c.id].events }); for (const h of c.helpers || []) upsertHelper(k, h); }
   if (live?.id) { upsertCard(k, live); DET[live.id] = { ...(DET[live.id] || {}), ...live, events: sorted(live.events || []) }; }
   if (typeof d.session?.helpers === "number") s.hcount = d.session.helpers;
-  if (s.hcount > running(k).length) loadHelpers(slug, String(sid));
+  // Helper details are authoritative even when no worker is running: a worker
+  // may be waiting for clarification or approval after its parent turn closes.
+  void loadHelpers(slug, String(sid));
   tkSync(slug, sid);
 }
 // From the boot poll (sessionView.helpers). Returns true when the count changed.
 export function tkHelperCount(slug: string, sid: any, n: any) {
-  if (typeof n !== "number") return false; const k = key(slug, sid), s = ss(k); if (s.hcount === n) return false;
-  s.hcount = n; if (s.on) loadHelpers(slug, String(sid)); return true;
+  if (typeof n !== "number") return false; const k = key(slug, sid), s = ss(k);
+  const changed = s.hcount !== n; s.hcount = n;
+  // The count alone cannot distinguish waiting, review and approval. Refresh
+  // open workers on the existing boot poll so reconnects also settle their UI.
+  if (s.on && (changed || (D?.current() === k && (n > 0 || openHelpers(k).length)))) void loadHelpers(slug, String(sid));
+  return changed;
 }
 // A stream event. Returns true when it was one of ours (the caller repaints the chat).
 export function tkEvent(slug: string, sid: any, ev: any): boolean {
@@ -193,9 +199,9 @@ export function tkEvent(slug: string, sid: any, ev: any): boolean {
   return true;
 }
 async function loadHelpers(slug: string, sid: string) {
-  const k = key(slug, sid), s = ss(k); if (s.hbusy || s.hoff) return; s.hbusy = true;
-  try { const r = await D!.api(`/res/${slug}/sessions/${sid}/helpers`); if (Array.isArray(r?.helpers)) r.helpers.forEach((h: HelperView) => upsertHelper(k, h)); else if (r?.error) s.hoff = true; }
-  catch { s.hoff = true; }
+  const k = key(slug, sid), s = ss(k); if (s.hbusy || !D) return; s.hbusy = true;
+  try { const r = await D.api(`/res/${slug}/sessions/${sid}/helpers`); if (Array.isArray(r?.helpers)) { s.hoff = false; r.helpers.forEach((h: HelperView) => upsertHelper(k, h)); } }
+  catch { /* Keep the last server state through a temporary connection failure. */ }
   s.hbusy = false; tkSync(slug, sid);
 }
 
@@ -284,7 +290,7 @@ export function tkSync(slug: string, sid: any) {
     document.querySelectorAll<HTMLElement>(".tk-slot").forEach(w => { if (w.dataset.tks !== k) { w.dataset.tks = k; w.innerHTML = ""; } });
     document.querySelectorAll<HTMLElement>(".tk-w").forEach(w => { if (w.dataset.tkw !== k) w.dataset.tkw = k; });
   }
-  paintBtns(k); paintFeed(k); placeholder(k);
+  paintBtns(k); paintFeed(k); paintActivity(k); placeholder(k);
   if (M.k === k && M.id) paintModal();
 }
 function placeholder(k: string) {
@@ -311,6 +317,25 @@ function closeSheet(focus = true) {
   const w = document.getElementById("tkfs"), k = F.sheet; if (!k) return; F.sheet = ""; paintBtns(k);
   if (focus) focusHeaderAction(document.querySelector<HTMLElement>(`[data-tkbtn="${CSS.escape(k)}"]`), D?.phone());
   if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!F.sheet) w.innerHTML = ""; }, 320);
+}
+
+// The chat keeps worker activity visible after Primary's handoff reply has ended.
+const openHelpers = (k: string) => ss(k).helpers.filter(h => ["running", "waiting_input", "awaiting_review"].includes(h.status));
+const helperOrb = (h: HelperView) => orb(h.status === "waiting_input" ? "listening" : h.status === "awaiting_review" ? "solving" : "working", h.status !== "running");
+const helperActivityLabel = (h: HelperView) => h.status === "waiting_input" ? "Waiting for clarification" : h.status === "awaiting_review" ? "Ready for review" : "Subagent working";
+const activityHtml = (k: string) => openHelpers(k).map(h => `<button type="button" class="worker-orb-row" data-tkhelper="${esc(String(h.id))}" aria-label="${esc(h.name)}. ${helperActivityLabel(h)}. Open activity">${helperOrb(h)}<span class="worker-orb-copy"><b>${esc(h.name || "Subagent")}</b><span>${helperActivityLabel(h)}</span></span><span class="worker-orb-arrow" aria-hidden="true">${svg(P.chev, 12)}</span></button>`).join("");
+export const tkActivity = (slug: string, sid: any) => `<div class="worker-activity" data-worker-activity="${esc(key(slug, sid))}" role="group" aria-label="Subagent activity" aria-live="polite">${activityHtml(key(slug, sid))}</div>`;
+const activityPaint = new WeakMap<HTMLElement, string>();
+function paintActivity(k: string) {
+  const html = activityHtml(k);
+  document.querySelectorAll<HTMLElement>("[data-worker-activity]").forEach(el => {
+    if (el.dataset.workerActivity !== k || activityPaint.get(el) === html) return;
+    // Compare browser-normalized markup so boolean attributes and SVG paths
+    // do not remount a still orb on every status update.
+    const t = document.createElement("template"); t.innerHTML = html;
+    if (el.innerHTML !== t.innerHTML) el.replaceChildren(t.content);
+    activityPaint.set(el, html);
+  });
 }
 
 // ---------- Chat hooks: finished-turn chip, live steps ----------
@@ -376,7 +401,7 @@ function railRow(d: CardDetail, e: EventView, k: string) {
     return `<button type="button" class="tk-rr t-hand${on ? " on" : ""}" ${attr}><span class="tk-ri">${svg(P.handoff, 14)}</span><span class="tk-rtx"><b>${esc(nm)}</b><small>${esc(hm(e.at))}</small></span></button>`; }
   const st = e.status || "ok", h = e.tool === "start_helper" && e.ref ? helperById(k, e.ref) : null;
   return `<button type="button" class="tk-rr t-step s-${esc(st)}${on ? " on" : ""}" ${attr}><span class="tk-ri">${svg(toolGlyph(e.tool), 14)}</span><span class="tk-rtx"><b>${esc(e.title || e.tool || "Step")}</b>
-    <small>${st === "running" ? "Running…" : st === "skipped" ? "Not run" : st === "error" ? `Failed${e.ms != null ? ` · ${fmtMs(e.ms)}` : ""}` : fmtMs(e.ms) || "Done"}</small>${e.tool === "start_helper" && e.ref ? `<span class="tk-hchip h-${esc(h?.status || "running")}" data-tkhelper="${esc(String(e.ref))}" role="link" tabindex="-1">${svg(P.helper, 12)}Background job #${esc(String(e.ref))} · ${esc(h ? (h.status === "running" ? "working" : h.status) : "working")}</span>` : ""}</span><i class="tk-sd" aria-hidden="true"></i></button>`;
+    <small>${st === "running" ? "Running…" : st === "skipped" ? "Not run" : st === "error" ? `Failed${e.ms != null ? ` · ${fmtMs(e.ms)}` : ""}` : fmtMs(e.ms) || "Done"}</small>${e.tool === "start_helper" && e.ref ? `<span class="tk-hchip h-${esc(h?.status || "running")}" data-tkhelper="${esc(String(e.ref))}" role="link" tabindex="-1">${svg(P.helper, 12)}Background job #${esc(String(e.ref))} · ${esc(h ? helperStatus(h.status) : "working")}</span>` : ""}</span><i class="tk-sd" aria-hidden="true"></i></button>`;
 }
 function railHtml(d: CardDetail, k: string) {
   const end = isOpen(d) ? `<div class="tk-rr tk-edge live">${d.status === "queued" ? svg(P.clock, 14) : spin()}<span>${d.status === "queued" ? "Queued…" : "Working…"}</span></div>`
@@ -400,8 +425,8 @@ function summaryHtml(d: CardDetail, k: string) {
     <div class="tk-stext">${text}</div>
     ${d.progress?.length || d.progress_omitted ? `<section class="tk-progress"><h3>Progress notes</h3>${d.progress_omitted ? `<p class="tk-mute">${esc(d.progress_omitted)} earlier notes are no longer retained. The available steps remain in this card.</p>` : ""}${(d.progress || []).map(p => `<p>${esc(p)}</p>`).join("")}</section>` : ""}
     ${d.saved?.length ? `<section class="tk-saved"><h3>Saved memory</h3>${d.saved.map(x => D?.savedChip?.(slug, x) || "").join("")}</section>` : ""}
-    ${hs.map(h => `<div class="tk-hcard"><span class="tk-hico">${h.status === "running" ? spin() : svg(P.helper, 15)}</span><div><b>Background job #${h.id}: ${esc(h.name)}</b><span>${esc(h.status === "running" ? `Working · ${ago(h.started)}` : h.status === "stopped" ? `Stopped${h.stopped_by ? ` by ${h.stopped_by === "person" ? "you" : h.stopped_by === "limit" ? "its limit" : who}` : ""}` : h.status === "done" ? "Finished" : h.status)}</span></div>
-      ${h.status === "running" ? `<button type="button" class="tk-stop" data-tkstop="${h.id}"${BUSY[`stop${h.id}`] ? " disabled" : ""}>${svg(P.stop, 13, 2)}<span>${BUSY[`stop${h.id}`] ? "Stopping…" : "Stop"}</span></button>` : ""}
+    ${hs.map(h => `<div class="tk-hcard"><span class="tk-hico">${["running", "waiting_input", "awaiting_review"].includes(h.status) ? helperOrb(h) : svg(P.helper, 15)}</span><div><b>Background job #${h.id}: ${esc(h.name)}</b><span>${esc(h.status === "running" ? `Working · ${ago(h.started)}` : h.status === "stopped" ? `Stopped${h.stopped_by ? ` by ${h.stopped_by === "person" ? "you" : h.stopped_by === "limit" ? "its limit" : who}` : ""}` : helperStatus(h.status))}</span></div>
+      ${["running", "waiting_input", "awaiting_review"].includes(h.status) ? `<button type="button" class="tk-stop" data-tkstop="${h.id}"${BUSY[`stop${h.id}`] ? " disabled" : ""}>${svg(P.stop, 13, 2)}<span>${BUSY[`stop${h.id}`] ? "Stopping…" : "Stop"}</span></button>` : ""}
       ${h.card && h.card !== d.id ? `<button type="button" class="tk-lnk" data-tkopen="${esc(h.card)}">Open</button>` : ""}</div>`).join("")}
     ${reply ? `<div class="tk-reply"><h3>${d.kind === "helper" ? "Report" : "Reply"}</h3><p>${esc(reply.length > 420 ? reply.slice(0, 418).replace(/\s+\S*$/, "") + "…" : reply)}</p>${d.kind === "helper" ? "" : `<button type="button" class="tk-lnk" data-tkchat>Show in chat</button>`}</div>` : ""}</div>`;
 }
@@ -451,7 +476,7 @@ function stepPane(d: CardDetail, e: EventView, k: string) {
         <pre class="tk-out" data-tkout>${esc(out || "(no output)")}</pre></div>`;
   return `<div class="tk-step"><h3 class="tk-pt">${esc(x.title || x.tool || "Step")}</h3>
     <div class="tk-why"><b>Why it mattered</b><p${x.why ? "" : ` class="tk-mute"`}>${esc(x.why || "Written when the task completes.")}</p></div>
-    ${x.tool === "start_helper" && x.ref ? `<button type="button" class="tk-hchip big h-${esc(h?.status || "running")}" data-tkhelper="${esc(String(x.ref))}">${svg(P.helper, 13)}Background job #${esc(String(x.ref))}${h ? `: ${esc(h.name)} · ${esc(h.status === "running" ? "working" : h.status)}` : ""} ›</button>` : ""}
+    ${x.tool === "start_helper" && x.ref ? `<button type="button" class="tk-hchip big h-${esc(h?.status || "running")}" data-tkhelper="${esc(String(x.ref))}">${svg(P.helper, 13)}Background job #${esc(String(x.ref))}${h ? `: ${esc(h.name)} · ${esc(helperStatus(h.status))}` : ""} ›</button>` : ""}
     <div class="tk-sec"><div class="tk-sh"><b>Result</b>${exit}${x.ms != null && st !== "running" ? `<span class="tk-ms">${esc(fmtMs(x.ms))}</span>` : ""}<span class="tk-at">${esc(hms(x.at))}</span></div>${body}</div>
     ${ran ? `<div class="tk-sec"><div class="tk-sh"><b>${x.cmd ? "What ran" : "What it asked for"}</b><button type="button" class="tk-cp" data-tkcopy="ran">${svg(P.copy, 13)}<span>Copy</span></button></div><pre class="tk-code" data-tkran>${esc(ran)}</pre></div>` : ""}
   </div>`;

@@ -123,10 +123,17 @@ export async function imsgToken(pid, sec, cache) {
 }
 
 class PhotonSendError extends Error { constructor(m, code) { super(m); this.code = code; } }
-async function rpc(token, service, method, arr, { timeoutMs = 20000 } = {}) {
+async function rpc(token, service, method, arr, { timeoutMs = 20000, idempotencyKey = crypto.randomUUID(), maxResponseBytes = null } = {}) {
   const r = await fetch(`${IMSG}/photon.imessage.v1.${service}/${method}`, { method: "POST", signal: AbortSignal.timeout(timeoutMs),
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/grpc-web+proto", "x-grpc-web": "1", "x-idempotency-key": crypto.randomUUID() }, body: frame(arr) });
-  const buf = new Uint8Array(await r.arrayBuffer());
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/grpc-web+proto", "x-grpc-web": "1", "x-idempotency-key": idempotencyKey }, body: frame(arr) });
+  let buf;
+  if (maxResponseBytes) {
+    const reader = r.body?.getReader(), chunks = []; let size = 0;
+    if (!reader) throw new Error("Photon returned no response body.");
+    try { for (;;) { const part = await reader.read(); if (part.done) break; size += part.value.byteLength; if (size > maxResponseBytes) throw new Error("Photon metadata response exceeded its limit."); chunks.push(part.value); } }
+    catch (e) { await reader.cancel().catch(() => {}); throw e; }
+    buf = new Uint8Array(size); let offset = 0; for (const chunk of chunks) { buf.set(chunk, offset); offset += chunk.byteLength; }
+  } else buf = new Uint8Array(await r.arrayBuffer());
   let status = r.headers.get("grpc-status"), msg = decodeURIComponent(r.headers.get("grpc-message") || "");
   // grpc-web trailers may arrive in-body (flag 0x80) instead of headers.
   if (status == null) { const m = td.decode(buf).match(/grpc-status:\s*(\d+)[\s\S]*?(?:grpc-message:\s*([^\r\n]*))?/i); if (m) { status = m[1]; msg = decodeURIComponent(m[2] || ""); } }
@@ -136,11 +143,41 @@ async function rpc(token, service, method, arr, { timeoutMs = 20000 } = {}) {
 const chatGuid = (phone) => `any;-;${phone}`;
 const msgId = (buf) => strings(buf).find((s) => /^spc-msg-[0-9a-f-]{36}$/.test(s)) || strings(buf).map((s) => s.match(/spc-msg-[0-9a-f-]{36}/)?.[0]).find(Boolean) || null;
 
-export async function sendText(token, phone, text, { effect } = {}) {
-  const arr = [...pbStr(1, chatGuid(phone)), ...pbStr(2, String(text).slice(0, 8000)), ...(effect ? pbStr(5, effect) : []), ...(/^https?:\/\/\S+$/.test(String(text).trim()) ? pbBool(7, true) : [])];
-  return msgId(await rpc(token, "MessageService", "SendTextMessage", arr));
+export async function sendText(token, phone, text, { effect, clientMessageId, replyTo } = {}) {
+  const target = replyTo ? tapbackTarget(replyTo) : null;
+  const arr = [...pbStr(1, chatGuid(phone)), ...pbStr(2, String(text).slice(0, 8000)), ...(target ? pbMsg(3,[...pbStr(1,target.guid),...(target.partIndex!=null?[...key(2,0),...varint(target.partIndex)]:[])]) : []), ...(effect ? pbStr(5, effect) : []), ...(/^https?:\/\/\S+$/.test(String(text).trim()) ? pbBool(7, true) : []), ...(clientMessageId ? pbStr(100,clientMessageId) : [])];
+  return msgId(await rpc(token, "MessageService", "SendTextMessage", arr, clientMessageId ? {idempotencyKey:clientMessageId} : {}));
 }
 export async function setTyping(token, phone, on = true) { await rpc(token, "ChatService", "SetTyping", [...pbStr(1, chatGuid(phone)), ...pbBool(2, on)]).catch(() => {}); }
+
+// @photon-ai/advanced-imessage 2.3.0 poll_service.proto and poll_types.proto.
+// The server supplies opaque option identifiers; labels never identify votes.
+export function pollRequest(phone, question, choices, clientMessageId) {
+  return [...pbStr(1, chatGuid(phone)), ...pbStr(2, question), ...choices.flatMap(s => pbStr(3, s)), ...pbStr(100, clientMessageId)];
+}
+export function pollResponse(b) {
+  const poll = { pollMessageGuid: "", chatGuid: "", title: "", options: [] };
+  pbWalk(b, (f, w, span) => {
+    if (f !== 1 || w !== 2) return;
+    pbWalk(b, (n, wire, value) => {
+      if (wire !== 2) return;
+      if ([1, 2, 3].includes(n)) poll[{1:"pollMessageGuid",2:"chatGuid",3:"title"}[n]] = td.decode(b.subarray(...value));
+      if (n === 4) {
+        const option = {};
+        pbWalk(b, (k, kind, v) => { if (kind === 2 && [1,2].includes(k)) option[k === 1 ? "text" : "optionIdentifier"] = td.decode(b.subarray(...v)); }, ...value);
+        poll.options.push(option);
+      }
+    }, ...span);
+  });
+  return poll;
+}
+export async function createPoll(token, phone, question, choices, { clientMessageId } = {}) {
+  if (!clientMessageId || !String(question).trim() || !Array.isArray(choices) || choices.length < 2 || choices.some(s => !String(s).trim())) throw new PhotonSendError("A poll needs a title, at least two choices and a saved send identity.", "poll");
+  const poll = pollResponse(dataFrame(await rpc(token, "PollService", "CreatePoll", pollRequest(phone, question, choices, clientMessageId), { idempotencyKey: clientMessageId })));
+  const chat = poll.chatGuid.split(";"), ownChat = chat.length === 3 && chat[1] === "-" && chat[2] === phone && ["any","imessage"].includes(chat[0].toLowerCase());
+  if (!poll.pollMessageGuid || !ownChat || poll.options.length !== choices.length || poll.options.some(o => !o.optionIdentifier || !o.text) || new Set(poll.options.map(o => o.optionIdentifier)).size !== poll.options.length) throw new PhotonSendError("Photon returned an incomplete poll identity. Retry with the same saved send identity.", "poll_identity");
+  return poll;
+}
 
 // ---- iMessage app cards (mini apps) ----
 // spectrum-ts's universal `app(url, { live })` renders through Spectrum's own Messages extension ("Spectrum - Message Apps",
@@ -200,6 +237,27 @@ export async function sendContact(token, phone, card, fileName = "helper.vcf") {
   const guid = strings(up).map((s) => s.match(/spc-att-[0-9a-f-]{36}/)?.[0]).find(Boolean);
   if (!guid) throw new PhotonSendError("upload returned no attachment id", "upload");
   return msgId(await rpc(token, "MessageService", "SendAttachmentMessage", [...pbStr(1, chatGuid(phone)), ...pbMsg(2, [...pbStr(2, guid), ...pbStr(3, fileName)])]));
+}
+
+// advanced-imessage 2.3.0 attachment_service.proto and message_service.proto.
+// Upload once, save the returned GUID, then retry sends with the same client ID.
+export async function uploadFile(token, name, data) {
+  if (!(data instanceof Uint8Array) || data.byteLength > 5 * 1024 * 1024) throw new PhotonSendError("Phone attachment exceeds the 5 MB limit.", "attachment_size");
+  const filename = String(name || "attachment").replace(/[\\/\x00-\x1f\x7f]/g, "_").slice(0, 200);
+  // Avoid spreading megabytes into function arguments or intermediate JS arrays.
+  const header = new Uint8Array([...pbStr(1, filename), ...key(2, 2), ...varint(data.byteLength)]);
+  const request = new Uint8Array(header.length + data.length); request.set(header); request.set(data, header.length);
+  const response = await rpc(token, "AttachmentService", "UploadAttachment", request);
+  const guid = strings(response).map(s => s.match(/spc-att-[0-9a-f-]{36}/)?.[0]).find(Boolean);
+  if (!guid) throw new PhotonSendError("Upload returned no attachment identity.", "upload_identity");
+  return guid;
+}
+export async function sendFile(token, phone, { guid, name, clientMessageId, replyTo }) {
+  if (!guid || !clientMessageId) throw new PhotonSendError("A phone file needs saved upload and send identities.", "attachment_identity");
+  const target = replyTo ? tapbackTarget(replyTo) : null;
+  const request = [...pbStr(1, chatGuid(phone)), ...pbMsg(2, [...pbStr(2, guid), ...pbStr(3, name)]),
+    ...(target ? pbMsg(3, [...pbStr(1, target.guid), ...(target.partIndex != null ? [...key(2, 0), ...varint(target.partIndex)] : [])]) : []), ...pbStr(100, clientMessageId)];
+  return msgId(await rpc(token, "MessageService", "SendAttachmentMessage", request, { idempotencyKey: clientMessageId }));
 }
 
 // ---- inbound attachments: AttachmentService/DownloadAttachment (server-streaming) ----
@@ -278,7 +336,7 @@ export async function downloadAttachment(token, guid, { maxBytes = 50 * 1024 * 1
     if (status && status !== "0") throw new PhotonSendError(msg || `grpc-status ${status}`, status);
     if (!n && !(info.totalBytes === 0 && info.guid)) throw new PhotonSendError("download returned no bytes", "empty");
     const bytes = out ? (out.length === n ? out : out.subarray(0, n)) : new Uint8Array(0);
-    return { bytes, size: n, mimeType: info.mimeType || "", filename: info.fileName || "", transferState: info.transferState };
+    return { bytes, size: n, guid: info.guid || "", uti: info.uti || "", mimeType: info.mimeType || "", filename: info.fileName || "", transferState: info.transferState };
   } finally { clearTimeout(timer); }
 }
 
@@ -302,6 +360,42 @@ export const newCode = () => String(100000 + (crypto.getRandomValues(new Uint32A
 export async function recentInChat(token, phone) {
   const buf = await rpc(token, "MessageService", "ListChatMessages", [...pbStr(1, chatGuid(phone)), ...key(2, 0), ...varint(8)]);
   return strings(buf).filter((s) => !/^spc-|^any;|^\+1\d{10}$/.test(s)).slice(0, 40);
+}
+
+// Official advanced-imessage 2.3.0: GetMessageRequest.message_guid=2,
+// response.message=1. Decode only identity and attachment metadata, never text.
+export async function inspectMessageAttachments(token, phone, messageId) {
+  if (!/^spc-msg-[0-9a-f-]{36}$/i.test(String(messageId))) throw new Error("Invalid message identity.");
+  const b = dataFrame(await rpc(token, "MessageService", "GetMessage", pbStr(2, messageId), { timeoutMs: 12000, maxResponseBytes: 512 * 1024 }));
+  const out = { id: "", fromMe: false, audio: false, senderMatches: false, chatMatches: false, attachments: [] };
+  pbWalk(b, (f, w, span) => {
+    if (f !== 1 || w !== 2) return;
+    pbWalk(b, (n, wire, v) => {
+      if (n === 1 && wire === 2) out.id = td.decode(b.subarray(...v)).slice(0, 256);
+      else if (n === 21 && wire === 0) out.fromMe = !!v;
+      else if (n === 40 && wire === 0) out.audio = !!v;
+      else if (n === 20 && wire === 2) pbWalk(b, (k, kind, s) => { if (k === 1 && kind === 2) out.senderMatches = normPhone(td.decode(b.subarray(...s))) === phone; }, ...v);
+      else if (n === 92 && wire === 2) { const parts = td.decode(b.subarray(...v)).split(";"); if (parts.length === 3 && parts[1] === "-" && parts[2] === phone && ["any", "imessage", "sms", "rcs"].includes(parts[0].toLowerCase())) out.chatMatches = true; }
+      else if (n === 2 && wire === 2) pbWalk(b, (k, kind, s) => {
+        if (k === 2 && kind === 2 && out.attachments.length < 20) {
+          const a = attachmentInfo(b, ...s);
+          out.attachments.push({ id: String(a.guid || "").slice(0, 256), name: String(a.fileName || "").slice(0, 256), mimeType: String(a.mimeType || "").slice(0, 160), uti: String(a.uti || "").slice(0, 160), size: a.totalBytes ?? null, transferState: a.transferState ?? null });
+        }
+      }, ...v);
+    }, ...span);
+  });
+  if (out.id !== messageId || out.fromMe || !out.senderMatches || !out.chatMatches) return { ok: false, reason: "message_identity_not_verified" };
+  return { ok: true, ...out };
+}
+
+// The official SDK resolves an attachment reference with GetAttachmentInfo
+// before using the returned canonical info.guid. Never derive that GUID by
+// changing prefixes or using original_guid (which names an edited predecessor).
+export async function inspectAttachmentIdentity(token, attachmentId) {
+  const b = dataFrame(await rpc(token, "AttachmentService", "GetAttachmentInfo", pbStr(1, attachmentId), { timeoutMs: 12000, maxResponseBytes: 64 * 1024 }));
+  let info = null;
+  pbWalk(b, (field, wire, span) => { if (field === 1 && wire === 2) info = attachmentInfo(b, ...span); });
+  return info;
 }
 
 // ---- Which service the person's phone is on: iPhone = iMessage; Android = SMS/RCS fallback (Free includes "RCS and SMS fallback",

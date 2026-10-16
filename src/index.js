@@ -37,6 +37,8 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { deletionRoute, deletionCron, deleteNote } from "./deletion.js";
 import { archiveDeletionMix, wipeMix } from "./deletion-do.js";
 import { pomoGlobalMethods } from "./pomodoro.js";
+export { PrepContainer } from "./prep-container.js";
+export { BeeContainer } from "./ee/index.js";
 export { ChannelComputer, ComputerLink } from "./channel-computer.js";
 export { NativeTransport, NativeTransportState } from "./native-transport.js";
 export { Resident } from "./resident.js";
@@ -182,7 +184,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "225";
+const APP_V = "226";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -1852,15 +1854,29 @@ export default {
           if (rp[2] === "reschedule" && env.TEST_MODE === "1") { const b = await boundedJson(req); return json(await R.reschedule(Number(b.id), Number(b.at))); }
           if (rp[2] === "run-workflow" && env.TEST_MODE === "1") { const b = await boundedJson(req); return json(await R.runNow(Number(b.id))); }
           if (rp[2] === "stream") {
-            const { message, session, files, cid, continue: cont, loc, reply } = await boundedJson(req, 64 * 1024);
+            const { message, session, files, cid, continue: cont, loc, reply, input_reply } = await boundedJson(req, 64 * 1024);
+            let inputMeta;
+            if (input_reply != null) {
+              if (typeof input_reply !== "object" || Array.isArray(input_reply)) return json({ error: "Invalid answer identity." }, 400);
+              inputMeta = {};
+              for (const [key, max] of [["question_id", 64], ["source_turn", 64], ["response_id", 160], ["action", 100]]) {
+                if (input_reply[key] == null) continue;
+                if (typeof input_reply[key] !== "string" || input_reply[key].length > max) return json({ error: "Invalid answer identity." }, 400);
+                inputMeta[key] = input_reply[key];
+              }
+              for (const key of ["helper_id", "round"]) if (input_reply[key] != null) {
+                if (!Number.isSafeInteger(input_reply[key]) || input_reply[key] < 0) return json({ error: "Invalid answer identity." }, 400);
+                inputMeta[key] = input_reply[key];
+              }
+            }
             // The app's coarse fix rides with each message when location is on (location.js); saved before the turn reads it.
             if (rawFix(loc) && !viewAsToken(req)) await saveLocation(env, t.id, loc, Number(loc.at) || Date.now()).catch((e) => console.log("location", e.message));
             const fids = Array.isArray(files) ? files.map(String).filter((x) => /^[0-9a-f-]{36}$/.test(x)).slice(0, 10) : [];
             if ((!message && !fids.length) || String(message || "").length > 20000) return json({ error: "Message required (max 20k chars)." }, 400);
             // cid: the app's own id for this message, so a retry joins as a dup instead of twice. A message sent while the helper works
             // steers that turn ({"t":"steered"} then the stream ends); too many on one turn → 429.
-            const body = await R.chatStream(t.id, slugOf(ch), String(ch.id), String(message || ""), { session: session ? String(session) : null, files: fids, cid: typeof cid === "string" && cid ? cid.slice(0, 64) : null, ...(typeof cont === "string" && /^[0-9a-f-]{36}$/.test(cont) ? { continue: cont } : {}), ...(replyRef(reply) ? { reply: replyRef(reply) } : {}) });   // reply: the message it answers (reply-to.js)
-            if (body && !(body instanceof ReadableStream) && body.status === 429) return json({ error: body.error }, 429);
+            const body = await R.chatStream(t.id, slugOf(ch), String(ch.id), String(message || ""), { session: session ? String(session) : null, files: fids, cid: typeof cid === "string" && cid ? cid.slice(0, 64) : null, ...(typeof cont === "string" && /^[0-9a-f-]{36}$/.test(cont) ? { continue: cont } : {}), ...(replyRef(reply) ? { reply: replyRef(reply) } : {}), ...(inputMeta ? { input_reply: inputMeta } : {}) });   // reply: the message it answers (reply-to.js)
+            if (body && !(body instanceof ReadableStream) && body.error) return json({ error: body.error, ...(body.duplicate ? { duplicate: true } : {}) }, body.status || 400);
             return new Response(body, { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store", "x-accel-buffering": "no" } });
           }
           if (rp[2] === "chat") {

@@ -4,10 +4,11 @@
 //   ambient_item_vec   an int8 vector for each item's clean text and evidence
 //   ambient_vocab      every word seen, used to expand a query to stems, typos and split words
 //   ambient_qvec       the last few query vectors, so paging through results never embeds again
-// Embedding goes through Workers AI (the memory embedding model) and is charged through the existing Ledger
-// reserve/settle path. Without the AI binding the index still builds passages and tolerant keyword search works.
-import { jobModel } from "./model-settings.js";
-import { aiOpts } from "../model.js";
+// Embedding uses the saved memory embedding model and the existing Ledger reserve/settle path.
+// Without its provider connection, passages and tolerant keyword search still work.
+import { modelSettingsEnv } from "./model-settings.js";
+import { aiOpts, orFetchPath } from "../model.js";
+import { dynamicProvidersOn, isCloudflareModel } from "../cloudflare-models.js";
 import { normText, passageWindows, quantize, unitVector, cosineQ, fuse, termVariants, groupHit, idfOf, SEMANTIC_MIN } from "./ambient-search.js";
 
 const now = () => Date.now();
@@ -35,7 +36,40 @@ export class AmbientIndex {
       CREATE TABLE IF NOT EXISTS ambient_qvec (h TEXT PRIMARY KEY, vec BLOB NOT NULL, scale REAL NOT NULL, model TEXT NOT NULL, at INTEGER NOT NULL);`);
     if (!this.rows("PRAGMA table_info(ambient_chunks)").some((c) => c.name === "passages_built")) this.sql.exec("ALTER TABLE ambient_chunks ADD COLUMN passages_built INTEGER NOT NULL DEFAULT 0");
   }
-  available() { return !!this.s.host.env.AI?.run; }
+  selection() {
+    const settings = this.s.host.env.MODEL_SETTINGS, model = settings?.jobs?.embed_memory?.model;
+    if (model) return this.describe(model, settings.catalog?.[model]);
+    return this.embeddingSelection || parse(this.s.host.get("ambient_embedding_selection"));
+  }
+  describe(model, facts = {}) {
+    const equivalents = [model, ...(Array.isArray(facts.embedding_equivalents) ? facts.embedding_equivalents.filter(x => typeof x === "string") : [])];
+    const price = Number(facts.pricing?.prompt), nano = Number(facts.in_nano);
+    return { model, models: [...new Set(equivalents)].slice(0, 8), dimensions: Number(facts.embedding_dimensions) || null,
+      in_nano: Number.isFinite(price) && price >= 0 ? price * 1000 : nano > 0 ? nano : EMBED_NANO, hosts: facts.hosts || [] };
+  }
+  async configuration() {
+    const env = await modelSettingsEnv(this.s.host.env), model = env.MODEL_SETTINGS?.jobs?.embed_memory?.model;
+    if (!model) throw new Error("Ambient embedding model is not configured.");
+    const next = this.describe(model, env.MODEL_SETTINGS.catalog?.[model]), old = this.embeddingSelection || parse(this.s.host.get("ambient_embedding_selection"));
+    if (old?.model !== next.model) {
+      this.sql.exec("UPDATE ambient_passages SET tries=0,retry_at=0 WHERE vec IS NOT NULL");
+      this.sql.exec("UPDATE ambient_item_vec SET tries=0,retry_at=0 WHERE vec IS NOT NULL");
+      this.s.host.put("ambient_index_stats", null);
+    }
+    this.embeddingSelection = next; this.s.host.put("ambient_embedding_selection", JSON.stringify(next));
+    this.s.host.put("ambient_embedding_checked_at", now());
+    return { ...next, env };
+  }
+  available() {
+    const env = this.s.host.env;
+    if (!dynamicProvidersOn(env)) return !!env.AI?.run;
+    const model = env.MODEL_SETTINGS?.jobs?.embed_memory?.model;
+    return model ? isCloudflareModel(model) ? !!env.AI?.run : !!env.OPENROUTER_API_KEY : !!(env.AI?.run || env.OPENROUTER_API_KEY);
+  }
+  compatible(column = "model", vec = "vec", selected = this.selection()) {
+    if (!selected) return { sql: "1=1", args: [] };
+    return { sql: `${column} IN (${selected.models.map(() => "?").join(",")})${selected.dimensions ? ` AND length(${vec})=?` : ""}`, args: [...selected.models, ...(selected.dimensions ? [selected.dimensions] : [])] };
+  }
   // ---- deletion: nothing outlives its source ----
   purge(source = null, id = null) {
     const scope = source == null ? "" : " AND source=? AND source_id=?", a = source == null ? [] : [source, String(id)];
@@ -77,29 +111,47 @@ export class AmbientIndex {
   itemText(data) { return [data.text, ...(data.evidence || []).map((e) => e.quote)].filter(Boolean).join("\n").slice(0, 1200); }
   // ---- embedding ----
   pending() {
+    const match = this.compatible();
     const unbuilt = Number(this.rows("SELECT COUNT(*) n FROM ambient_chunks WHERE active=1 AND passages_built=0")[0]?.n || 0);
-    const p = Number(this.rows("SELECT COUNT(*) n FROM ambient_passages WHERE vec IS NULL AND tries<? AND retry_at<=?", MAX_TRIES, now())[0]?.n || 0);
-    const i = Number(this.rows("SELECT COUNT(*) n FROM ambient_items i JOIN ambient_chunks c ON c.source=i.source AND c.source_id=i.source_id AND c.hash=i.chunk_hash WHERE c.active=1 AND c.state='done' AND NOT EXISTS(SELECT 1 FROM ambient_item_vec v WHERE v.id=i.id AND (v.vec IS NOT NULL OR v.tries>=?))", MAX_TRIES)[0]?.n || 0);
+    const p = Number(this.rows(`SELECT COUNT(*) n FROM ambient_passages WHERE (vec IS NULL OR model IS NULL OR NOT (${match.sql})) AND tries<? AND retry_at<=?`, ...match.args, MAX_TRIES, now())[0]?.n || 0);
+    const itemMatch = this.compatible("v.model", "v.vec");
+    const i = Number(this.rows(`SELECT COUNT(*) n FROM ambient_items i JOIN ambient_chunks c ON c.source=i.source AND c.source_id=i.source_id AND c.hash=i.chunk_hash WHERE c.active=1 AND c.state='done' AND NOT EXISTS(SELECT 1 FROM ambient_item_vec v WHERE v.id=i.id AND ((v.vec IS NOT NULL AND ${itemMatch.sql}) OR v.tries>=?))`, ...itemMatch.args, MAX_TRIES)[0]?.n || 0);
     return { unbuilt, passages: p, items: i };
   }
   // When the next indexing pass is due, or null when there is nothing to do (or it is paused until later).
-  nextWork() { if (!this.available()) return null; const p = this.pending(); if (!(p.unbuilt || p.passages || p.items)) return null; return Math.max(now() + 1000, Number(this.s.host.get("ambient_embed_retry_at") || 0)); }
-  async embed(texts) {
-    const h = this.s.host, L = h.ledger(), chars = texts.reduce((n, t) => n + t.length + 4, 0), reserve = Math.ceil(chars * EMBED_NANO * EMBED_MARKUP), rid = `ambient:embed:${crypto.randomUUID()}`;
+  nextWork() {
+    if (!this.available()) return null;
+    const p = this.pending();
+    if (p.unbuilt || p.passages || p.items) return Math.max(now() + 1000, Number(this.s.host.get("ambient_embed_retry_at") || 0));
+    // The host holds no settings snapshot between dispatches. Check a saved model change even when every vector is populated.
+    if (dynamicProvidersOn(this.s.host.env) && !this.s.host.env.MODEL_SETTINGS && this.rows("SELECT 1 FROM ambient_passages UNION ALL SELECT 1 FROM ambient_item_vec LIMIT 1").length)
+      return Math.max(now() + 1000, Number(this.s.host.get("ambient_embedding_checked_at") || 0) + 60000, Number(this.s.host.get("ambient_embed_retry_at") || 0));
+    return null;
+  }
+  async embed(texts, selection = null) {
+    const config = selection || await this.configuration(), { model, env } = config;
+    const h = this.s.host, L = h.ledger(), chars = texts.reduce((n, t) => n + t.length + 4, 0), reserve = Math.ceil(chars * config.in_nano * EMBED_MARKUP), rid = `ambient:embed:${crypto.randomUUID()}`;
     this.sql.exec("INSERT INTO ambient_attempts VALUES(?,?)", rid, now());
     const held = await L.reserve(rid, reserve);
     if (!held?.ok) { this.sql.exec("DELETE FROM ambient_attempts WHERE id=?", rid); throw Object.assign(new Error("ambient spending paused"), { ambientPause: held?.reason === "day_limit" ? "Daily spending limit reached" : "Ambient search indexing waiting for credits" }); }
     let settled = false;
     try {
       const allowed = await this.s.privacy(texts); if (allowed.size !== texts.length) throw new Error("ambient context changed");
-      const model = await jobModel(h.env, "embed_memory");
-      const r = await h.env.AI.run(model, { text: texts }, aiOpts(h.env, { tenant: h.tid(), channel: "main", kind: "ambient-embed" }));
-      const vecs = (r?.data || []).map((v) => Array.isArray(v) || ArrayBuffer.isView(v) ? v : null);
-      const tokens = Number(r?.usage?.prompt_tokens) || Math.ceil(chars / 4), cost = Math.min(reserve, Math.ceil(tokens * EMBED_NANO * EMBED_MARKUP));
+      const meta = { tenant: h.tid(), channel: "main", kind: "ambient-embed" };
+      let r;
+      if (!dynamicProvidersOn(env)) r = await env.AI.run(model, { text: texts }, aiOpts(env, meta));
+      else {
+        const response = await orFetchPath(env, "embeddings", { model, input: texts, ...(isCloudflareModel(model) ? {} : { provider: { zdr: true, data_collection: "deny", allow_fallbacks: true, ...(config.hosts.length ? { only: config.hosts } : {}) } }) }, meta);
+        if (!response.ok) throw new Error(`Ambient embedding provider unavailable (${response.status}).`);
+        r = await response.json();
+      }
+      const vecs = (r?.data || []).map((v) => Array.isArray(v?.embedding) ? v.embedding : Array.isArray(v) || ArrayBuffer.isView(v) ? v : null);
+      const tokens = Number(r?.usage?.prompt_tokens) || Number(r?.usage?.total_tokens) || Math.ceil(chars / 4), actual = r?.usage?.cost;
+      const cost = Math.min(reserve, Math.ceil((dynamicProvidersOn(env) && actual != null && Number.isFinite(Number(actual)) && Number(actual) >= 0 ? Number(actual) * 1e9 : tokens * config.in_nano) * EMBED_MARKUP));
       await L.settle(rid, cost); settled = true; h.bump({ ambient_embed_calls: 1, ambient_embed_nano: cost });
       this.sql.exec("DELETE FROM ambient_attempts WHERE id=?", rid);
-      if (vecs.length !== texts.length || vecs.some((v) => !v)) throw new Error("embedding response incomplete");
-      return { vecs: vecs.map(unitVector), model };
+      if (vecs.length !== texts.length || vecs.some((v) => !v || !v.length || (config.dimensions && v.length !== config.dimensions) || !Array.from(v).every(Number.isFinite))) throw new Error("embedding response incomplete");
+      return { vecs: vecs.map(unitVector), model, models: config.models, dimensions: config.dimensions };
     } catch (e) { if (!settled) { await L.settle(rid, 0); this.sql.exec("DELETE FROM ambient_attempts WHERE id=?", rid); } throw e; }
   }
   // One bounded pass: build passages, then embed a few batches (passages first, newest speech first, then items).
@@ -109,14 +161,14 @@ export class AmbientIndex {
     if (!this.available() || Number(h.get("ambient_embed_retry_at") || 0) > now()) return { built, embedded: 0 };
     let embedded = 0;
     try {
+      const selection = await this.configuration(), match = this.compatible("model", "vec", selection);
       for (let call = 0; call < CALLS_PER_RUN; call++) {
-        const model = await jobModel(h.env, "embed_memory");
-        const rows = this.rows("SELECT id,text FROM ambient_passages WHERE (vec IS NULL OR model<>?) AND tries<? AND retry_at<=? ORDER BY at DESC LIMIT ?", model, MAX_TRIES, now(), BATCH);
+        const rows = this.rows(`SELECT id,text FROM ambient_passages WHERE (vec IS NULL OR model IS NULL OR NOT (${match.sql})) AND tries<? AND retry_at<=? ORDER BY at DESC LIMIT ?`, ...match.args, MAX_TRIES, now(), BATCH);
         let kind = "passage", batch = rows.map((r) => ({ id: r.id, text: r.text }));
         if (!batch.length) {
           const items = this.rows("SELECT i.id,i.data FROM ambient_items i JOIN ambient_chunks c ON c.source=i.source AND c.source_id=i.source_id AND c.hash=i.chunk_hash WHERE c.active=1 AND c.state='done' ORDER BY i.source_at DESC LIMIT 400");
           kind = "item"; batch = [];
-          for (const r of items) { const text = this.itemText(parse(r.data, {})); if (!text) continue; const th = await sha(text), v = this.rows("SELECT text_hash,model,vec,tries FROM ambient_item_vec WHERE id=?", r.id)[0]; if (v && v.text_hash === th && (v.tries >= MAX_TRIES || v.vec && v.model === model)) continue; batch.push({ id: r.id, text, th, tries: v?.tries || 0 }); if (batch.length >= BATCH) break; }
+          for (const r of items) { const text = this.itemText(parse(r.data, {})); if (!text) continue; const th = await sha(text), v = this.rows("SELECT text_hash,model,vec,tries FROM ambient_item_vec WHERE id=?", r.id)[0]; if (v && v.text_hash === th && (v.tries >= MAX_TRIES || v.vec && selection.models.includes(v.model) && (!selection.dimensions || toI8(v.vec).length === selection.dimensions))) continue; batch.push({ id: r.id, text, th, tries: v?.tries || 0 }); if (batch.length >= BATCH) break; }
         }
         if (!batch.length) break;
         // Privacy: a forgotten line is never sent, and is marked so it is not retried.
@@ -125,7 +177,7 @@ export class AmbientIndex {
         if (!send.length) continue;
         // Save progress before the paid step: the attempt is counted even if the Worker restarts mid request.
         for (const b of send) this.mark(kind, b, null);
-        let out; try { out = await this.embed(send.map((b) => b.text)); } catch (e) {
+        let out; try { out = await this.embed(send.map((b) => b.text), selection); } catch (e) {
           if (e?.ambientPause) { h.put("ambient_embed_retry_at", now() + 300000); h.put("ambient_note", e.ambientPause); return { built, embedded, paused: e.ambientPause }; }
           for (const b of send) this.mark(kind, b, "retry");
           console.log("ambient embed retry", String(e?.message || e).slice(0, 120)); if (/context changed/.test(String(e?.message))) continue; throw e;
@@ -158,23 +210,26 @@ export class AmbientIndex {
   // ---- the query vector (cached so paging never embeds, and so never bills, again) ----
   async queryVector(text) {
     if (!this.available()) return { unavailable: "Semantic search is not available here; results use tolerant keyword matching only." };
-    const q = String(text).trim().slice(0, 500), h = await sha(q), model = await jobModel(this.s.host.env, "embed_memory").catch(() => null);
+    const selection = await this.configuration().catch(() => null);
+    if (!selection) return { unavailable: "Semantic search could not read its saved model settings; results use tolerant keyword matching only." };
+    const q = String(text).trim().slice(0, 500), h = await sha(q);
     const hit = this.rows("SELECT vec,scale,model FROM ambient_qvec WHERE h=?", h)[0];
-    if (hit && hit.model === model) return { vec: toI8(hit.vec), scale: hit.scale, model };
+    if (hit && selection.models.includes(hit.model) && (!selection.dimensions || toI8(hit.vec).length === selection.dimensions)) return { vec: toI8(hit.vec), scale: hit.scale, model: hit.model, models: selection.models, dimensions: selection.dimensions };
     try {
-      const out = await this.embed([q]), u = out.vecs[0];
+      const out = await this.embed([q], selection), u = out.vecs[0];
       // The query vector stays float; the cache holds it quantized like everything else.
       const { q: i8, scale } = quantize(u); this.sql.exec("INSERT OR REPLACE INTO ambient_qvec VALUES(?,?,?,?,?)", h, this.blob(i8), scale, out.model, now());
       this.sql.exec("DELETE FROM ambient_qvec WHERE h NOT IN (SELECT h FROM ambient_qvec ORDER BY at DESC LIMIT 40)");
-      return { vec: i8, scale, model: out.model };
+      return { vec: i8, scale, model: out.model, models: selection.models, dimensions: selection.dimensions };
     } catch (e) { return { unavailable: e?.ambientPause ? `Semantic search is paused (${e.ambientPause}); results use tolerant keyword matching only.` : "Semantic search could not run for this query; results use tolerant keyword matching only." }; }
   }
   // ---- coverage ----
   status(qv) {
     const h = this.s.host; let stats = parse(h.get("ambient_index_stats"));
     if (!stats) {
-      const p = this.rows("SELECT COUNT(*) n,SUM(CASE WHEN vec IS NOT NULL THEN 1 ELSE 0 END) done,SUM(CASE WHEN vec IS NULL AND tries>=? THEN 1 ELSE 0 END) failed FROM ambient_passages", MAX_TRIES)[0] || {};
-      const i = this.rows("SELECT COUNT(*) n FROM ambient_item_vec WHERE vec IS NOT NULL")[0] || {}, ni = this.rows("SELECT COUNT(*) n FROM ambient_items")[0] || {};
+      const match = this.compatible();
+      const p = this.rows(`SELECT COUNT(*) n,SUM(CASE WHEN vec IS NOT NULL AND ${match.sql} THEN 1 ELSE 0 END) done,SUM(CASE WHEN (vec IS NULL OR model IS NULL OR NOT (${match.sql})) AND tries>=? THEN 1 ELSE 0 END) failed FROM ambient_passages`, ...match.args, ...match.args, MAX_TRIES)[0] || {};
+      const i = this.rows(`SELECT COUNT(*) n FROM ambient_item_vec WHERE vec IS NOT NULL AND ${match.sql}`, ...match.args)[0] || {}, ni = this.rows("SELECT COUNT(*) n FROM ambient_items")[0] || {};
       stats = { passages: Number(p.n || 0), passages_embedded: Number(p.done || 0), passages_failed: Number(p.failed || 0), items: Number(ni.n || 0), items_embedded: Number(i.n || 0), unbuilt_chunks: Number(this.rows("SELECT COUNT(*) n FROM ambient_chunks WHERE active=1 AND passages_built=0")[0]?.n || 0) };
       h.put("ambient_index_stats", JSON.stringify(stats));
     }
@@ -203,7 +258,8 @@ export class AmbientIndex {
     }
     const semantic = [], sims = new Map();
     if (qv?.vec) {
-      const best = [], rowsIt = this.iter(`SELECT id,vec,scale FROM ambient_passages WHERE vec IS NOT NULL AND model=?${w} ORDER BY COALESCE(at,0) DESC LIMIT ${SCAN_CAP}`, qv.model, ...args);
+      const match = this.compatible("model", "vec", { ...qv, models: qv.models || [qv.model] });
+      const best = [], rowsIt = this.iter(`SELECT id,vec,scale FROM ambient_passages WHERE vec IS NOT NULL AND ${match.sql}${w} ORDER BY COALESCE(at,0) DESC LIMIT ${SCAN_CAP}`, ...match.args, ...args);
       for (const r of rowsIt) { const sim = cosineQ(qv.vec, r.vec, r.scale * qv.scale); if (sim >= SEMANTIC_MIN) { best.push([r.id, sim]); if (best.length > RANK_CAP * 3) { best.sort((a, b) => b[1] - a[1]); best.length = RANK_CAP; } } }
       best.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])); for (const [id, sim] of best.slice(0, RANK_CAP)) { semantic.push(id); sims.set(id, sim); }
     }
@@ -221,7 +277,8 @@ export class AmbientIndex {
     const semantic = [], sims = new Map();
     if (qv?.vec && rows.length) {
       const ids = new Set(rows.map((r) => r.id)), best = [];
-      for (const v of this.iter("SELECT id,vec,scale FROM ambient_item_vec WHERE vec IS NOT NULL AND model=?", qv.model)) if (ids.has(v.id)) { const sim = cosineQ(qv.vec, v.vec, v.scale * qv.scale); if (sim >= SEMANTIC_MIN) best.push([v.id, sim]); }
+      const match = this.compatible("model", "vec", { ...qv, models: qv.models || [qv.model] });
+      for (const v of this.iter(`SELECT id,vec,scale FROM ambient_item_vec WHERE vec IS NOT NULL AND ${match.sql}`, ...match.args)) if (ids.has(v.id)) { const sim = cosineQ(qv.vec, v.vec, v.scale * qv.scale); if (sim >= SEMANTIC_MIN) best.push([v.id, sim]); }
       best.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])); for (const [id, sim] of best.slice(0, RANK_CAP)) { semantic.push(id); sims.set(id, sim); }
     }
     return { ranked: this.finish(fuse([{ name: "keyword", ids: lexical }, { name: "meaning", ids: semantic }]), info, sims), data };

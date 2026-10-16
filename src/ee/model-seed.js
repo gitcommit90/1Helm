@@ -23,6 +23,12 @@ const EMBED_FILES = "perplexity/pplx-embed-v1-0.6b", EMBED_MEMORY = "@cf/baai/bg
 // The browser look's model (sidecar.js lookModel; SIDECAR_LOOK_MODEL overrides). Not a saved job: Moondream 3.1 on Workers AI.
 export const MOONDREAM = "@cf/moondream/moondream3.1-9B-A2B";
 
+// Exact source migration selected for dev. Copied into saved settings once.
+export const SHARED_OR_MOVES = [
+  { job: "vision_files", from: "@cf/google/gemma-4-26b-a4b-it", to: "google/gemma-4-26b-a4b-it" },
+  { job: "embed_memory", from: EMBED_MEMORY, to: "baai/bge-m3", facts: { embedding_equivalents: [EMBED_MEMORY, "baai/bge-m3"], embedding_dimensions: 1024 } },
+];
+
 const LEVELS = ["unrestricted", "no_training", "zdr"];
 // OpenRouter /api/v1/models reasoning levels, checked 2026-10-10. "none" is offered only when reasoning is optional.
 const ALL = ["minimal", "low", "medium", "high", "xhigh", "max"];

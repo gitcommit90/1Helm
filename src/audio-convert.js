@@ -1,5 +1,5 @@
 // Audio inside an uploaded file → 16 kHz mono 16-bit PCM WAV pieces, in the Worker, for AssemblyAI Universal-3.6 Pro (it takes WAV only).
-// Opus in ogg and webm (libopus, BSD), and AAC-LC, mp3, FLAC, Vorbis and ALAC (Symphonia, MPL-2.0) in ogg, webm, m4a, mp4, mov, mp3 and flac files.
+// Opus in ogg, webm and CAF (libopus, BSD), PCM in CAF, and AAC-LC, mp3, FLAC, Vorbis and ALAC (Symphonia, MPL-2.0).
 // All WebAssembly, compiled at build time (CompiledWasm imports; the Worker can't compile wasm from bytes at run time). Everything streams:
 // the file is read by range (R2), packets go to the decoder in small batches, samples are resampled and cut into WAV pieces of PIECE_BYTES,
 // so memory is a few windows plus one piece whatever the length. The original file and its audio are never changed; the WAV exists only as
@@ -11,6 +11,7 @@ import symWasm from "./vendor/audio/sym.wasm";
 import OpusDecoder from "./vendor/audio/opus-decoder.js";
 import { symDecoder } from "./vendor/audio/sym-decoder.js";
 import { Source, oggAudio, webmAudio, openMp4, openFlac, Unsupported, Corrupt } from "./audio-demux.js";
+import { openCaf, cafPcmFrames } from "./audio-caf.js";
 export { Source, Unsupported, Corrupt };
 
 OpusDecoder.module = opusWasm;
@@ -20,14 +21,15 @@ export const PIECE_BYTES = 16 * 1024 * 1024;     // = splitWav's piece size in s
 export const KAISER_ZEROS = 20, KAISER_CUT = 0.47, KAISER_BETA = 8;   // resampler: sinc zeros on each side per output sample, cutoff as a share of the lower Nyquist rate, window shape
 export const MIN_PIECE_SEC = 1;                  // a last piece shorter than this is padded with silence
 export const READ_WINDOW = 1 << 20;
-export const CONVERTIBLE = ["mp3", "ogg", "webm", "mp4", "flac"];   // what sniff() can name ("mp4" is m4a, mp4 and mov)
+export const CONVERTIBLE = ["mp3", "ogg", "webm", "mp4", "flac", "caf"];   // what sniff() can name ("mp4" is m4a, mp4 and mov)
 
-// The container from the file's first bytes (not its name). → "mp3" | "ogg" | "webm" | "mp4" | "flac" | "wav" | null
+// The container from the file's first bytes (not its name). → "mp3" | "ogg" | "webm" | "mp4" | "flac" | "caf" | "wav" | null
 export function sniff(h) {
   if (h.length < 4) return null;
   const t = String.fromCharCode(h[0], h[1], h[2], h[3]);
   if (t === "OggS") return "ogg";
   if (t === "fLaC") return "flac";
+  if (t === "caff") return "caf";
   if (t === "RIFF" && h.length >= 12 && String.fromCharCode(h[8], h[9], h[10], h[11]) === "WAVE") return "wav";
   if (h[0] === 0x1a && h[1] === 0x45 && h[2] === 0xdf && h[3] === 0xa3) return "webm";
   if (h.length >= 8 && ["ftyp", "moov", "mdat", "free", "wide", "styp"].includes(String.fromCharCode(h[4], h[5], h[6], h[7]))) return "mp4";
@@ -129,15 +131,19 @@ async function* streamPcm(src, kind, extra, start = 0) {   // raw mp3 or FLAC by
 }
 // Codec packets from a demuxer: { head } starts a stream (a chained Ogg file has several), { packet } is one packet.
 async function* packetPcm(events) {
-  let dec = null, opus = false, aac = false, skip = 0, startSec = null; const mix = mono16k(); let batch = [], bytes = 0;
+  let dec = null, opus = false, aac = false, skip = 0, startSec = null, remaining = null; const mix = mono16k(); let batch = [], bytes = 0;
+  const clipped = (pcm) => {
+    if (!pcm?.length || remaining === null) return pcm;
+    const n = Math.min(pcm.length, remaining); remaining -= n; return pcm.subarray(0, n);
+  };
   const run = function* () {
     if (!batch.length) return; const list = batch; batch = []; bytes = 0;
-    if (opus) { const r = dec.decodeFrames(list); const pcm = mix(r.channelData, RATE); if (pcm?.length) yield pcm; }
+    if (opus) { const r = dec.decodeFrames(list); const pcm = clipped(mix(r.channelData, RATE)); if (pcm?.length) yield pcm; }
     else for (const seg of dec.packets(list)) {
       let ch = seg.channels;
       if (skip === null) skip = startSec > 0 ? Math.round(startSec * seg.rate) : startSec === null && aac ? 1024 : 0;   // the encoder delay: what the edit list says is not played, else AAC's 1024 samples of priming
       if (skip > 0) { const k = Math.min(ch[0].length, skip); skip -= k; ch = ch.map((c) => c.subarray(k)); }
-      const pcm = mix(ch, seg.rate); if (pcm?.length) yield pcm;
+      const pcm = clipped(mix(ch, seg.rate)); if (pcm?.length) yield pcm;
     }
   };
   const close = () => { try { dec?.free(); } catch {} dec = null; };
@@ -145,7 +151,7 @@ async function* packetPcm(events) {
     for await (const ev of events) {
       if (ev.head) {
         if (dec) { yield* run(); close(); }
-        const h = ev.head; opus = h.codec === "opus"; aac = h.codec === "aac"; skip = null; startSec = h.skipSec ?? null;
+        const h = ev.head; opus = h.codec === "opus"; aac = h.codec === "aac"; skip = null; startSec = h.skipSec ?? null; remaining = h.durationSec == null ? null : Math.max(0, Math.round(h.durationSec * RATE));
         if (opus) { dec = new OpusDecoder({ sampleRate: RATE, channels: h.channels, preSkip: Math.round(h.preSkip * RATE / 48000) })   /* the header counts 48 kHz samples; the decoder skips samples at its own output rate */; await dec.ready; }
         else dec = await symDecoder(symWasm, h.codec, h.extra).catch(refuse);
         continue;
@@ -164,6 +170,16 @@ function decoderFor(kind, src, start = 0) {
   if (kind === "ogg") return packetPcm(oggAudio(src));
   if (kind === "webm") return packetPcm(webmAudio(src));
   if (kind === "mp4") return packetPcm((async function* () { const m = await openMp4(src); yield { head: { codec: m.codec, extra: m.extra, skipSec: m.skipSec } }; for await (const p of m.packets) yield { packet: p }; })());
+  if (kind === "caf") return (async function* () {
+    try {
+      const caf = await openCaf(src);
+      if (caf.codec === "lpcm") { const mix = mono16k(); for await (const seg of cafPcmFrames(src, caf)) { const pcm = mix(seg.channels, seg.rate); if (pcm?.length) yield pcm; } }
+      else yield* packetPcm((async function* () {
+        yield { head: { codec: caf.codec, channels: caf.channels, extra: caf.extra, preSkip: Math.round((caf.table?.priming || 0) * 48000 / caf.rate), skipSec: (caf.table?.priming || 0) / caf.rate, durationSec: caf.table ? caf.table.valid / caf.rate : null } };
+        for await (const packet of caf.packets) yield { packet };
+      })());
+    } catch (error) { error.audioContainer = "caf"; throw error; }
+  })();
   throw new Unsupported(`audio container ${kind}`);
 }
 

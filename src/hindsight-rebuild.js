@@ -1,3 +1,4 @@
+import { conversationMessages } from "./message-origin.js";
 // Memory Overhaul phase 3 (DESIGN.md 5.2): rebuild one channel's Hindsight bank from 1HC's own records. A resumable job in the channel's
 // Resident, driven by its alarm, behind the added-only RPC method hsRebuild(cmd) with cmd start, pause, resume, status or estimate.
 //
@@ -17,7 +18,7 @@
 // anything written after the snapshot arrives through the outbox. A delete that arrives mid rebuild also removes the queued writes of that
 // document and goes through hs_forget (deletion.js), which deletes what was already sent. Pause stops after the current batch and resume
 // goes on from the cursor. A rerun from scratch is safe, because every document id is stable and the bank is deleted first.
-import { retainV2, listDocuments, freshStats, pendingWork, retryOperation, reprocessDocument, cancelPending, listOperations, listMentalModels, refreshMentalModel, setupBank, deleteBank, recoverConsolidation, hsOn, bankId } from "./hindsight.js";
+import { retainV2, contentHash, cancelOperation, hs, bankPath, listDocuments, freshStats, pendingWork, retryOperation, reprocessDocument, cancelPending, listOperations, listMentalModels, refreshMentalModel, setupBank, deleteBank, recoverConsolidation, hsOn, bankId } from "./hindsight.js";
 import { templateKind, templateKey, fillTemplate, speakerLabels } from "./hindsight-template.js";
 import { hsEnvelope } from "./hs-flag.js";
 import { withEnvelope, makeEnvelope } from "./memory-envelope.js";   // HS_ENVELOPE: a rebuilt conversation keeps the places its turns had
@@ -91,6 +92,8 @@ export const rebuildMethods = {
     const s = this.hsRb();
     if (cmd === "status") return this.hsRbView(s, !!o.live);
     if (cmd === "estimate") return this.hsEstimate(o);
+    if (cmd === "conversation-refresh") return this.hsConversationRefresh(o);
+    if (cmd === "conversation-status") return this.hsConversationStatus(o.session);
     if (cmd === "start") {
       if (s.status === "running" || s.status === "paused") return { error: `a rebuild is already ${s.status} (resume or wait)`, ...(await this.hsRbView(s)) };
       if (this.memoryMode() === "off") return { error: "memory is off for this channel" };
@@ -313,18 +316,18 @@ export const rebuildMethods = {
     return { items: r.items, next: day, done: !more };
   },
   // The conversation documents of the turns in [start, end): { items }. only: a set of document ids to build (forget), exclude: turn ids left out.
-  hsConvItems({ start, end, names, tz, channel, day, only = null, exclude = null }) {
+  hsConvItems({ start, end, names, tz, channel, day, only = null, exclude = null, sessionOnly = null }) {
     const sql = this.sql, L = speakerLabels(names), docs = new Map();
-    let partial = new Map(); try { partial = new Map(sql.exec("SELECT turn, text FROM work_log_partial").toArray().map((r) => [String(r.turn), r.text])); } catch {}
+    let partial = new Map(); try { partial = new Map((sessionOnly ? sql.exec("SELECT p.turn,p.text FROM work_log_partial p JOIN turns t ON t.id=p.turn WHERE t.session=? AND t.at>=? AND t.at<?", sessionOnly, start, end) : sql.exec("SELECT turn, text FROM work_log_partial")).toArray().map((r) => [String(r.turn), r.text])); } catch {}
     // A turn (or its unfinished work) that is waiting in the outbox is left out here: it is sent from there, and sending it twice would repeat its lines.
-    let queued = new Set(); try { this.hsOutboxInit(); queued = new Set(sql.exec("SELECT ref FROM hs_outbox WHERE ref IS NOT NULL").toArray().map((r) => r.ref)); } catch {}
+    let queued = new Set(); try { this.hsOutboxInit(); queued = new Set((only?.size ? sql.exec(`SELECT ref FROM hs_outbox WHERE ref IS NOT NULL AND doc IN (${[...only].map(()=>"?").join(",")})`, ...only) : sql.exec("SELECT ref FROM hs_outbox WHERE ref IS NOT NULL")).toArray().map((r) => r.ref)); } catch {}
     const env = hsEnvelope(this.env); let places = new Map();
-    if (env) { try { sql.exec(TURN_PLACE); places = new Map(sql.exec("SELECT p.turn, p.place, p.lat, p.lng FROM hs_turn_place p JOIN turns t ON t.id=p.turn WHERE t.at>=? AND t.at<?", start, end).toArray().map((r) => [String(r.turn), r])); } catch {} }
-    for (const t of sql.exec("SELECT id, at, kind, session, workflow_id, user_text, reply, notes, total_ms, error FROM turns WHERE at>=? AND at<? ORDER BY at, id LIMIT 5000", start, end).toArray()) {
-      if (t.kind === "livenote" || exclude?.has(String(t.id)) || queued.has(String(t.id))) continue;
+    if (env) { try { sql.exec(TURN_PLACE); places = new Map(sql.exec("SELECT p.turn, p.place, p.lat, p.lng FROM hs_turn_place p JOIN turns t ON t.id=p.turn WHERE t.at>=? AND t.at<? AND (? IS NULL OR t.session=?)", start, end, sessionOnly, sessionOnly).toArray().map((r) => [String(r.turn), r])); } catch {} }
+    for (const t of sql.exec("SELECT id, at, kind, session, workflow_id, user_text, reply, notes, total_ms, error FROM turns WHERE at>=? AND at<? AND (? IS NULL OR session=?) AND (? IS NULL OR kind NOT IN ('helper','livenote')) ORDER BY at, id LIMIT 5000", start, end, sessionOnly, sessionOnly, sessionOnly).toArray()) {
+      if (t.kind === "livenote" || t.kind === "helper" || exclude?.has(String(t.id)) || queued.has(String(t.id))) continue;
       const doc = DOC.conv(convSession(t.session, t.workflow_id), dayKey(Number(t.at), tz)); if (only && !only.has(doc)) continue;
       const part = queued.has(`p:${t.id}`) ? null : partial.get(String(t.id)), notes = part && t.notes === part ? null : t.notes;
-      const entries = convEntries({ userText: t.user_text, reply: t.error ? "" : cardsToText(memoryReply(t.reply || "")), notes, partial: part, at: Number(t.at), endAt: Number(t.at) + (Number(t.total_ms) || 0), kind: t.kind || "chat", labels: L, tz });
+      const entries = convEntries({ userText: t.user_text, reply: t.error ? "" : cardsToText(memoryReply(t.reply || "")), notes, partial: part, at: Number(t.at), endAt: Number(t.at) + (Number(t.total_ms) || 0), kind: t.kind || "chat", labels: L, tz, userMessages: conversationMessages(sql, t.id, { text: t.user_text, at: Number(t.at), kind: t.kind || "chat" }) });
       if (!entries.length) continue;
       const pl = places.get(String(t.id)); if (pl?.place) entries[0] = { ...entries[0], place: pl.place };
       const g = docs.get(doc) || { doc, session: convSession(t.session, t.workflow_id), day: dayKey(Number(t.at), tz), at: Number(t.at), end: Number(t.at), kind: t.kind || "chat", entries: [], places: [], env }; g.entries.push(...entries); g.end = Number(t.at); if (pl) g.places.push(pl); docs.set(doc, g);
@@ -349,20 +352,114 @@ export const rebuildMethods = {
   },
   // The documents of the turns that had to be taken out (forget, secrets sweep): the day's document is written again without them (a replace takes
   // the old facts out of the bank), and a document left with nothing is deleted. docs: conversation document ids. exclude: turn ids to leave out.
-  async hsConvRewrite(docs, exclude = []) {
+  async hsConvRewrite(docs, exclude = [], { keyPrefix = null, sessionOnly = null, guard = null, bank = null, local = null, prepared = null } = {}) {
+    guard?.check();
     if (!this.hsW()) return { skipped: "off" };
     const ids = [...new Set(docs.filter((d) => docKind(d) === "conv"))]; if (!ids.length) return { rewritten: 0, dropped: 0 };
-    const { names, tz, channel } = await this.hsLocal(), ex = new Set(exclude.map(String)); let rewritten = 0, dropped = 0;
+    const { names, tz, channel } = local || await this.hsLocal(), ex = new Set(exclude.map(String)); let rewritten = 0, dropped = 0;
     for (const doc of ids) {
-      const day = doc.slice(doc.lastIndexOf(":") + 1), { start, end } = dayRange(day, tz), r = this.hsConvItems({ start: start - 86400e3, end: end + 86400e3, names, tz, channel, day, only: new Set([doc]), exclude: ex });
-      if (!r.items.length) { await this.hsDropDocs([doc]); dropped++; continue; }
+      guard?.check();
+      const day = doc.slice(doc.lastIndexOf(":") + 1), { start, end } = dayRange(day, tz), r = prepared ? { items: prepared.filter(i => i.document_id === doc) } : this.hsConvItems({ start: start - 86400e3, end: end + 86400e3, names, tz, channel, day, only: new Set([doc]), exclude: ex, sessionOnly });
+      if (!r.items.length) { if (guard) throw new Error("No retained conversation entries remain in the previewed document."); await this.hsDropDocs([doc]); dropped++; continue; }
       this.hsOutboxInit(); this.sql.exec("DELETE FROM hs_outbox WHERE doc=? AND del=0", doc);
-      const out = await this.hsPut(r.items.map((i, n) => ({ ...i, key: `fg${Date.now()}.${n}` })), { rebuild: false });
+      const out = await this.hsPut(r.items.map((i, n) => ({ ...i, key: `${keyPrefix || `fg${Date.now()}`}.${n}` })), { rebuild: false, guard, bank });
       // Queued, dropped or skipped is not written: the caller deletes the document instead (forget.js rewriteOrDelete).
       if (out.queued || out.dropped || out.skipped) { this.hsOutboxInit(); this.sql.exec("DELETE FROM hs_outbox WHERE doc=? AND del=0", doc); throw new Error(`the conversation document could not be written again (${out.skipped || (out.dropped ? "refused" : "queued")})`); }
       rewritten++;
     }
     return { rewritten, dropped };
+  },
+
+  // The manual dev repair uses the existing task queue and rewrite writer.
+  // It stores only operation receipts, so deletion can cancel a submission even
+  // after a restart. It never retries a stale replacement through the outbox.
+  async hsConversationRefresh({ session, dry = true, fingerprint = "", deadline = Date.now() + 20000 } = {}) {
+    if (this.env.ENV_NAME !== "dev") return { error: "dev only" };
+    if (typeof session !== "string" || !session || !this.session(session)) return { error: "An existing task in this channel is required." };
+    if (this.memoryMode() === "off" || !this.hsW()) return { error: "Memory is off for this channel." };
+    const busy = () => this.sessQ.has(session) || this.liveTurn(session) || this.resumingIn(session) || [...(this._hsTurnWrites?.values() || [])].includes(session) || this.sql.exec("SELECT 1 FROM turn_runs WHERE session=? LIMIT 1", session).toArray().length || this.sql.exec("SELECT 1 FROM helpers WHERE session=? AND status IN ('running','awaiting_review','waiting_input') LIMIT 1", session).toArray().length;
+    const available = () => { if (Date.now() >= deadline) throw new Error("Conversation refresh reached its request deadline."); if (!this.session(session) || this.get("hs_origin_block_all") || this.get(`hs_origin_block:${session}`) || this.memoryMode() === "off" || this.hsRebuilding()) throw new Error("The task or memory state changed. Preview it again."); };
+    available();
+    if (busy()) return { error: "Wait for this task's work and memory writes to finish before refreshing its conversation." };
+    const local = await this.hsLocal();
+    available();
+    const { names, tz, channel } = local;
+    const totals = this.sql.exec("SELECT COUNT(*) n,COALESCE(SUM(LENGTH(COALESCE(user_text,''))+LENGTH(COALESCE(reply,''))+LENGTH(COALESCE(notes,''))),0) chars FROM turns WHERE session=? AND kind NOT IN ('helper','livenote')", session).toArray()[0];
+    const partialTotals = this.sql.exec("SELECT COALESCE(SUM(LENGTH(p.text)),0) chars FROM work_log_partial p JOIN turns t ON t.id=p.turn WHERE t.session=?", session).toArray()[0];
+    const eventTotals = this.sql.exec("SELECT COUNT(*) n,COALESCE(SUM(LENGTH(COALESCE(e.text,''))+LENGTH(COALESCE(e.input,''))+LENGTH(COALESCE(e.reply,''))),0) chars FROM card_events e JOIN cards c ON c.id=e.card WHERE c.session=? AND e.type IN ('msg','handoff')", session).toArray()[0];
+    if (Number(totals.n)>5000 || Number(eventTotals.n)>20000 || Number(totals.chars)+Number(eventTotals.chars)+Number(partialTotals.chars)>2000000) return { error: "This task exceeds the refresh source limit of 5,000 turns, 20,000 message events or 2,000,000 characters." };
+    const readSource = () => ({ turns: this.sql.exec("SELECT id,at,kind,session,workflow_id,user_text,reply,notes,total_ms,error,files FROM turns WHERE session=? AND kind NOT IN ('helper','livenote') ORDER BY at,id LIMIT 5001", session).toArray(), events: this.sql.exec("SELECT e.* FROM card_events e JOIN cards c ON c.id=e.card WHERE c.session=? AND e.type IN ('msg','handoff') ORDER BY e.card,e.seq LIMIT 20001", session).toArray() });
+    const source = readSource();
+    if (!source.turns.length) return { error: "This task has no saved conversation turns." };
+    if (source.turns.length > 5000) return { error: "This task exceeds the bounded refresh limit." };
+    const docs = [...new Set(source.turns.map(t => DOC.conv(convSession(t.session,t.workflow_id),dayKey(Number(t.at),tz))))].sort();
+    if (docs.length > 12) return { error: "This task spans more than 12 conversation documents.", documents: docs, count: docs.length };
+    this.hsOutboxInit();
+    if (docs.some(d => this.sql.exec("SELECT 1 FROM hs_outbox WHERE doc=? LIMIT 1", d).toArray().length)) return { error: "Wait for this task's queued memory writes to finish." };
+    const items = [];
+    available();
+    for (const doc of docs) {
+      const day = doc.slice(doc.lastIndexOf(":") + 1), range = dayRange(day, tz);
+      items.push(...this.hsConvItems({ start: range.start, end: range.end, names, tz, channel, day, only: new Set([doc]), sessionOnly: session }).items);
+    }
+    const normalized = items.map(({ key, metadata, ...item }) => ({ ...item, ...(metadata ? { metadata: Object.fromEntries(Object.entries(metadata).filter(([name]) => name !== "ingested_at")) } : {}) }));
+    if (items.reduce((n,i)=>n+itemChars(i),0)>2000000) return { error: "The rendered conversation exceeds the 2,000,000 character refresh limit." };
+    const sourceJSON = JSON.stringify(source), sourceFingerprint = await contentHash(JSON.stringify({ source, names, tz, items: normalized }));
+    available();
+    const key = `hs_origin_refresh:${session}:${sourceFingerprint}`, previous = jp(this.get(key));
+    const origins = {};
+    for (const item of items) for (const entry of item.content || []) if (entry.origin) origins[entry.origin] = (origins[entry.origin] || 0) + 1;
+    const preview = { session, documents: docs, count: docs.length, turns: source.turns.length, fingerprint: sourceFingerprint, characters: items.reduce((n,i)=>n+itemChars(i),0), origins, extraction_calls_estimate: items.reduce((n,i)=>n+Math.ceil(itemExtractChars(i)/3000),0), retain_nano_estimate: hsRetainBatchNano(items.map(itemExtractChars)), ...(previous ? { receipt: { status: previous.status, submitted_operations: previous.operations.length, updated: previous.updated } } : {}), note: "Execution replaces only these task/day documents from saved source. Extraction and consolidation may incur charges. Historical phone services remain unknown unless saved on the original event." };
+    if (dry) return { dry: true, ...preview };
+    if (!fingerprint || fingerprint !== sourceFingerprint) return { error: "The source changed or no preview fingerprint was supplied. Preview this task again.", ...preview };
+    if (previous?.status === "submitted") return { dry: false, duplicate: true, ...preview };
+    if (busy() || sourceJSON !== JSON.stringify(readSource())) return { error: "The task changed while the refresh was prepared. Preview it again." };
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    this.sessQ.set(session, gate);   // new turns wait; their saved inputs make the source guard fail before any later replacement
+    const row = { session, bank: this.hsBankId(), documents: docs, operations: previous?.operations || [], status: "running", updated: Date.now() };
+    this.put(key, JSON.stringify(row));
+    const state = { cancelled: false, work: null };
+    (this._hsRefreshRuns ||= new Map()).set(key, state);
+    const guard = {
+      check: () => { available(); if (state.cancelled || jp(this.get(key))?.status === "cancelled" || sourceJSON !== JSON.stringify(readSource()) || docs.some(d=>this.sql.exec("SELECT 1 FROM hs_outbox WHERE doc=? LIMIT 1",d).toArray().length)) throw new Error("The refresh was cancelled or the task received new input. Preview it again."); },
+      submitted: id => { guard.check(); if (!row.operations.includes(id)) row.operations.push(id); row.updated = Date.now(); this.put(key, JSON.stringify(row)); },
+      timeoutMs: () => Math.max(1, Math.min(10000, deadline - Date.now()))
+    };
+    state.work = Promise.resolve().then(async () => {
+      try {
+        guard.check();
+        const existing = await hs(this.env, `${bankPath(row.bank)}/config`, { timeoutMs: guard.timeoutMs() });
+        guard.check();
+        if (existing?.bank_id !== row.bank || !existing.config?.retain_strategies?.chat || !existing.config?.retain_mission || existing.config.store_document_text !== true) throw new Error("The existing configured conversation bank could not be verified. No bank was created or changed.");
+        const result = await this.hsConvRewrite(docs, [], { keyPrefix: `origin-${sourceFingerprint}`, sessionOnly: session, guard, bank: row.bank, local, prepared: items });
+        guard.check(); row.status = "submitted"; row.updated = Date.now(); this.put(key, JSON.stringify(row));
+        return { dry: false, ...preview, ...result, operation_ids: row.operations, status: "submitted" };
+      } catch (e) {
+        if (!state.cancelled) { row.status = "interrupted"; row.updated = Date.now(); this.put(key, JSON.stringify(row)); }
+        return { error: String(e.message || e), session, documents: docs, operation_ids: row.operations, status: state.cancelled ? "cancelled" : "interrupted" };
+      } finally { release(); if (this.sessQ.get(session) === gate) this.sessQ.delete(session); this._hsRefreshRuns.delete(key); }
+    });
+    return state.work;
+  },
+  hsConversationStatus(session) {
+    if (this.env.ENV_NAME !== "dev" || typeof session !== "string" || !session || !this.session(session)) return { error: "An existing dev task in this channel is required." };
+    return { session, receipts: this.sql.exec("SELECT v FROM kv WHERE k LIKE 'hs_origin_refresh:%'").toArray().map(r => jp(r.v)).filter(r => r?.session === session).map(r => ({ status: r.status, documents: r.documents, operation_ids: r.operations, updated: r.updated })) };
+  },
+  hsCancelConversationRefresh(session = null) {
+    this.put(session == null ? "hs_origin_block_all" : `hs_origin_block:${session}`, "1");
+    const rows = this.sql.exec("SELECT k,v FROM kv WHERE k LIKE 'hs_origin_refresh:%'").toArray().map(r => ({ key: r.k, row: jp(r.v) })).filter(r => r.row && (session == null || r.row.session === String(session)));
+    // The persistent and live cancellation fences precede the first await.
+    for (const r of rows) { r.row.status = "cancelled"; r.row.updated = Date.now(); this.put(r.key, JSON.stringify(r.row)); const live = this._hsRefreshRuns?.get(r.key); if (live) live.cancelled = true; }
+    return (async () => {
+      for (const r of rows) {
+        await this._hsRefreshRuns?.get(r.key)?.work;
+        const saved = jp(this.get(r.key), r.row);
+        for (const id of saved.operations || []) await cancelOperation(this.env, saved.bank, id);
+        await this.hsDropDocs(saved.documents, { tombstone: false });
+        this.sql.exec("DELETE FROM kv WHERE k=?", r.key);
+      }
+    })();
   },
 
   // ---------------------------------------------------------------- the estimate (DESIGN 5.2, dry run) ----------------------------------------------------------------
@@ -407,10 +504,22 @@ const raceMs = (p, ms) => { let t; return Promise.race([p, new Promise((_, rej) 
 // Every call does a bounded amount of work and answers within ADMIN_BUDGET_MS. It pages by tenant: offset and limit count accounts (at most
 // ADMIN_MAX_TENANTS per call), never banks, and the Archive of an account is asked for its channels only when that account is reached.
 // status reads D1 (hs_rebuild_runs) only, unless live=1 asks the channel's Resident for its own view (one channel, needs slug and channel).
-export async function hsRebuildAdmin(env, action, { dry = true, slug = "", channel = "", limit = 2, offset = 0, onlyTest = false, live: wantLive = false, now: clock = Date.now, budgetMs = ADMIN_BUDGET_MS } = {}) {
+export async function hsRebuildAdmin(env, action, { dry = true, slug = "", channel = "", session = "", fingerprint = "", limit = 2, offset = 0, onlyTest = false, live: wantLive = false, now: clock = Date.now, budgetMs = ADMIN_BUDGET_MS } = {}) {
   if (!hsWriters(env)) return { error: "HS_WRITERS is off" };
-  if (!["estimate", "start", "status", "pause", "resume"].includes(action)) return { error: "action must be estimate, start, status, pause or resume" };
+  if (!["estimate", "start", "status", "pause", "resume", "conversation-refresh", "conversation-status"].includes(action)) return { error: "action must be estimate, start, status, pause or resume" };
   if (env.ENV_NAME !== "dev") return { error: "dev only" };
+  if (action === "conversation-refresh" || action === "conversation-status") {
+    if (!slug || !channel || !session) return { error: "Conversation refresh requires one explicit workspace, channel and task." };
+    const until = clock() + Math.min(budgetMs, ADMIN_BUDGET_MS), remaining = () => until - clock();
+    const tenant = await raceMs(env.DB.prepare("SELECT id FROM tenants WHERE slug=?").bind(slug).first(), remaining());
+    if (!tenant) return { error: "no such workspace" };
+    const channels = await raceMs(archiveOf(env, tenant.id).channels(), remaining());
+    const c = channels.find(c => (c.slug || c.name) === channel && c.kind !== "dm");
+    if (!c) return { error: "no such channel" };
+    const R = residentOf(env, tenant.id, channel);
+    await raceMs(R.bind(tenant.id, channel, String(c.id)), remaining());
+    return raceMs(action === "conversation-status" ? R.hsConversationStatus(session) : R.hsConversationRefresh({ session, dry, fingerprint, deadline: until - 2000 }), remaining());
+  }
   const t0 = clock(), left = () => budgetMs - (clock() - t0);
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS hs_rebuild_runs (bank TEXT PRIMARY KEY, tenant TEXT, channel TEXT, status TEXT NOT NULL, phase TEXT, version INTEGER, started_at INTEGER, updated_at INTEGER NOT NULL, summary TEXT)").run().catch(() => {});
   const runs = (await env.DB.prepare("SELECT * FROM hs_rebuild_runs").all().catch(() => ({ results: [] }))).results || [], byBank = new Map(runs.map((r) => [r.bank, r]));

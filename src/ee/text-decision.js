@@ -12,6 +12,7 @@ import { modelSettingsEnv, readModelSettings } from "./model-settings.js";
 import { S, structuredChat } from "../structured-output.js";
 import { askSystemone, validateAnswers } from "./decision-shadow.js";
 import { clefVia } from "./router.js";
+import { authorizeCloudflare } from "../cloudflare-models.js";
 
 export const TEXT_DECISION_TIMEOUT_MS = 30_000;
 const NANO = 1e9;
@@ -19,7 +20,8 @@ const NANO = 1e9;
 // How a saved model answers: "clef" (Workers AI binding), "systemone" (Perplexity or Jev on OpenRouter's decider endpoint) or "chat" (strict JSON).
 export const methodOf = (settings, model) => {
   const m = settings?.catalog?.[model];
-  if (m?.eligible === true || !Array.isArray(m?.kinds)) return "chat";
+  if (!Array.isArray(m?.kinds)) return "chat";
+  if (m.source !== "CF" && m?.eligible === true) return "chat";
   return m.kinds.includes("workers_decider") ? "clef" : m.kinds.includes("decider") ? "systemone" : "chat";
 };
 const mainMethod = (settings, jobId) => methodOf(settings, jobSetting(settings, jobId).model);
@@ -68,7 +70,10 @@ export async function askAnswers(env, jobId, { state, questions, meta = {}, time
 // Returns { answers, usage: { input_tokens, cost }, model }; a Clef answer is returned as Clef gave it.
 async function askEntry(env, jobId, entry, { state, questions, meta, timeoutMs, chat, fetchImpl, priceInNano }) {
   const settings = env.MODEL_SETTINGS, method = methodOf(settings, entry.model);
-  if (method === "clef") return clefVia(env, entry.model, meta)({ state, questions });
+  if (method === "clef") {
+    if (settings.catalog?.[entry.model]?.source === "CF") await authorizeCloudflare(env, entry.model, { ...meta, _privacy: "zdr" }, settings.catalog[entry.model]);
+    return clefVia(env, entry.model, meta)({ state, questions });
+  }
   if (method === "systemone") {
     const r = await askSystemone(env, entry.model, state, questions, { meta, ...(timeoutMs ? { timeoutMs } : {}), ...(fetchImpl ? { fetchImpl } : {}), ...(priceInNano ? { priceInNano } : {}) });
     if (r.error) throw Object.assign(new Error(r.error), { cost: (r.nano || 0) / NANO });
@@ -90,7 +95,7 @@ export async function askJob(env, jobId, opts = {}) {
 // The function the Clef callers use: ({ state, questions }) => Promise<{ answers, usage }>. A lone Clef model is called directly, unchanged.
 export async function decisionCaller(env, jobId, meta = {}, opts = {}) {
   const settings = env?.MODEL_SETTINGS || (await readModelSettings(env)).config, job = jobSetting(settings, jobId);
-  if (!job.fallbacks?.length && methodOf(settings, job.model) === "clef") return clefVia(env, job.model, meta);
+  if (!job.fallbacks?.length && methodOf(settings, job.model) === "clef" && settings.catalog?.[job.model]?.source !== "CF") return clefVia(env, job.model, meta);
   return async ({ state, questions }) => askJob(env, jobId, { state, questions, meta, ...opts });
 }
 

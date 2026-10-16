@@ -23,7 +23,9 @@
 // the account is full), deleted with the file (deleteFile, chat/channel deletion), and made again for a new version (new r2key).
 // The Resident keeps one row per file (file_sidecars) with the card and outline, so a Send needs no R2 read for a big file's card.
 //
-// On Send (attachParts, both engines): wait at most WAIT_MS for stage 1 (up to OCR_WAIT_MS, 8 s, while scanned pages are being read on the OCR Worker). A file of ≤ INLINE_TOKENS goes in whole, wrapped as untrusted
+// On Send (attachParts, both engines): attached audio waits up to AUDIO_WAIT_MS for usable stage 1 text before routing or answering.
+// The deadline and exact file versions survive restart in the turn journal. Failure or timeout returns an application notice without
+// classifying the empty caption. Other files wait at most WAIT_MS (up to OCR_WAIT_MS for scanned pages). A file of ≤ INLINE_TOKENS goes in whole, wrapped as untrusted
 // content and headed so the helper answers from it in one step; a longer one as its card + outline (stage 2 done) or else its outline +
 // opening, with the file_text tool to read a section or search inside. Not ready in time → the note of before (the path on the computer). These parts ride in the person's message (after the cached system prompt, tools and
 // history) and only the short note is saved in the history; file_text reads any Library file again later.
@@ -52,6 +54,7 @@ import { installSnapshotRpc } from "./sqlite-snapshot.js";
 import { stPut, stDelete, stDeleteListed } from "./storage.js";
 import { openRouterChat, orFetchPath, aiOpts, h32 } from "./model.js";
 import { cappedResponseJson } from "./bounded-response.js";
+import { dynamicProvidersOn } from "./cloudflare-models.js";
 import { testModelFor } from "./internal-test-model.js";
 import { STT_NANO_PER_SEC, stt, audioBody, b64, sttRate } from "./transcribe.js";
 export { audioBody };
@@ -69,6 +72,7 @@ import { indraSetup } from "./sidecar-ocr.js";
 export const INLINE_TOKENS = 16000;
 export const INLINE_TOTAL = 24000;                  // all files of one message together
 export const WAIT_MS = 2000;                        // the most a Send waits for prep (stage 1, the text, takes well under a second for a document)
+export const AUDIO_WAIT_MS = 60000;                  // an attached recording must have usable text before a task model is called
 export const HEAD_TOKENS = 4000;                    // a long file whose card isn't made yet: its first ~4k tokens come with the outline
 export const MAX_TRIES = 4;
 export const OCR_MAX_PAGES = 40;                    // scanned pages read per file
@@ -98,6 +102,9 @@ export const CARD_MAX_OUT = backgroundPolicy("sidecar_card").maxTokens;
 export const WHISPER_MAX_BYTES = 20 * 1024 * 1024, AUDIO_MAX_SEC = 3 * 3600;   // = transcribe.js WAI_MAX_BYTES (a literal: import cycle)
 // The Computer class's "basic" container at cost + 15% per second (bee-sync.js JOB_NANO_PER_SEC).
 export const JOB_NANO_PER_SEC = Math.ceil((1 * 0.0000025 + 0.25 * 0.000020 + 4 * 0.00000007) * 1e9 * 1.15);
+export const PREP_STANDARD_NANO_PER_SEC = 23644;
+// Snapshot containers are the default wherever the PREP_CONTAINER binding exists; PREP_SNAPSHOTS="off" is the kill switch. Without the binding (self hosting) the Computer path stays.
+export const prepSnapshotsOn = env => !!env?.PREP_CONTAINER && env.PREP_SNAPSHOTS !== "off";
 export const JOB_MAX_MS = 6 * 60e3, JOB_RESERVE = Math.ceil((JOB_MAX_MS / 1000 + 60) * JOB_NANO_PER_SEC);
 export const sidecarKeyOf = (r2key) => `${r2key}.sidecar.json`;
 export const vecKeyOf = (r2key) => `${r2key}.sidecar.vec`;
@@ -176,7 +183,7 @@ export class FilePrep extends DurableObject {
     const v = { value: r.value, nano }, js = JSON.stringify(v); if (keep && r.keep !== false && js.length < 1_500_000) this.put(`step:${step}`, js);   // a DO value holds ≤ 2 MB
     return v;
   }
-  computerJob() { return this.env.COMPUTER.get(this.env.COMPUTER.idFromName(`prepjob:${this.getJ("job").tenant}`)); }
+  computerJob() { const binding = prepSnapshotsOn(this.env) ? this.env.PREP_CONTAINER : this.env.COMPUTER; return binding.get(binding.idFromName(`prepjob:${this.getJ("job").tenant}`)); }
 }
 installSnapshotRpc(FilePrep, "FilePrep", (self) => !!self._running);
 
@@ -238,7 +245,7 @@ async function writeSidecar(P, job, doc, vec, fallbackDoc = null) {
   return { bytes: body.byteLength + (vec?.bytes.byteLength || 0) };
 }
 // Stage 1: the file → Markdown. → { md, kind, notes, extra, pagesOcr } | { status: "skipped" | "failed", error }
-async function prepText(P, job) {
+export async function prepText(P, job) {
   const env = P.env, kind = kindOf(job.name, job.mime), notes = [];
   if (!kind) return { status: "skipped", error: "no text version for this kind of file" };
   const big = Number(job.bytes) > WORKER_MAX_BYTES || (kind === "sheet" && /\.(xlsx|xlsm|ods)$/i.test(job.name) && Number(job.bytes) > XLSX_WORKER_MAX);
@@ -368,7 +375,9 @@ export async function vision(env, meta, image, mode, opts = {}) {
   } else {
     const model = await jobModel(env, "vision_files");
     try {
-      const r = await structuredChat(async ({ provider, ...body }) => workersStructuredResponse(await env.AI.run(model, body, aiOpts(env, { ...meta, kind: `sidecar-vision-${mode}` }))), { messages: [{ role: "user", content }], max_tokens: 2500, temperature: 0 },
+      const r = await structuredChat(async ({ provider, ...body }) => !dynamicProvidersOn(env)
+        ? workersStructuredResponse(await env.AI.run(model, body, aiOpts(env, { ...meta, kind: `sidecar-vision-${mode}` })))
+        : openRouterChat(env, body, null, jobRoute("vision_files"), { ...meta, kind: `sidecar-vision-${mode}` }), { messages: [{ role: "user", content }], max_tokens: 2500, temperature: 0 },
         { name: "image_description", schema: VISION_SCHEMA, onUsage: u => { nano += Math.ceil(((Number(u.prompt_tokens) || 1500) * VISION_NANO.in + (Number(u.completion_tokens) || 800) * VISION_NANO.out) * MARKUP); } });
       value = r.data;
     } catch (e) { e.nano = nano; throw e; }
@@ -411,7 +420,9 @@ export async function describeVideo(P, job, meta) {
     const content = [{ type: "text", text: VIDEO_PROMPT }, { type: "video_url", video_url: { url } }];
     const model = await jobModel(P.env, "vision_files"); let nano = 0;
     try {
-      const x = await structuredChat(async ({ provider, ...body }) => workersStructuredResponse(await P.env.AI.run(model, body, aiOpts(P.env, { ...meta, kind: "sidecar-vision-video" }))),
+      const x = await structuredChat(async ({ provider, ...body }) => !dynamicProvidersOn(P.env)
+        ? workersStructuredResponse(await P.env.AI.run(model, body, aiOpts(P.env, { ...meta, kind: "sidecar-vision-video" })))
+        : openRouterChat(P.env, body, null, jobRoute("vision_files"), { ...meta, kind: "sidecar-vision-video" }),
         { messages: [{ role: "user", content }], max_tokens: 1500, temperature: 0, chat_template_kwargs: { enable_thinking: false } },
         { name: "image_description", schema: VISION_SCHEMA, onUsage: u => { nano += Math.ceil(((Number(u.prompt_tokens) || 2500) * VISION_NANO.in + (Number(u.completion_tokens) || 400) * VISION_NANO.out) * MARKUP); } });
       return { value: x.data, nano };
@@ -454,6 +465,7 @@ async function convertedPieces(P, job, ext) {
     return { pieces: pieces(), stats: c.stats, kind: c.kind };
   } catch (e) {
     if (e?.gone) throw e;
+    if ((ext === "caf" || /caf/i.test(job.mime || "") || e?.audioContainer === "caf") && (e?.name === "Unsupported" || e?.name === "Corrupt")) return { error: `The CAF recording cannot be converted (${String(e.message || e).slice(0, 160)}). Attach a WAV or M4A recording instead.` };
     console.log("audio convert skipped", job.name, `${e?.name || "Error"}: ${String(e?.message || e).slice(0, 120)}`);
     return null;
   }
@@ -461,6 +473,8 @@ async function convertedPieces(P, job, ext) {
 async function transcribeFile(P, job, meta) {
   const e = extOf(job.name) || (/video/.test(job.mime) ? "mp4" : "mp3"), size = Number(job.bytes) || 0, env = P.env;
   let pieces; const conv = await convertedPieces(P, job, e);
+  if (conv?.error) return { error: conv.error };
+  if (!conv && (e === "caf" || /caf/i.test(job.mime || ""))) return { error: "CAF voice transcription requires audio conversion. Attach a WAV or M4A recording instead." };
   if (conv) pieces = conv.pieces;
   else if (size <= STT_OR_MAX_BYTES) pieces = [{ size, open: async () => { const o = await env.WS.get(job.r2key); if (!o) throw Object.assign(new Error("the file is missing from storage"), { gone: true }); return o.body; }, small: size <= WHISPER_MAX_BYTES }];
   else if (e === "mp3" || e === "wav") {
@@ -564,6 +578,7 @@ async function indexChunks(P, job, md, chunks, meta) {
   return { packed: new Uint8Array(packed.buffer), dims: chunks.length ? Math.round(n / chunks.length) : EMBED_DIMS };
 }
 
+// Dev can restore dependencies through the dedicated PrepContainer class. See docs/PREP-SNAPSHOTS.md.
 // ---- the container job (Computer class, "prepjob:<tenant>"): what anydoc / pdf-inspector can do but not inside the Worker ----
 // Scanned PDF pages are read by the OCR Worker first (see ocrPages); this is where the pages it can't read go, and every page when the binding is absent.
 // Scanned PDF pages (Indra OCR, sidecar-ocr.js: ONNX Runtime + a small set of ONNX models, all local in the container, no hosted fallback)
@@ -604,46 +619,90 @@ const [dir,ext,op,pagesArg]=process.argv.slice(2),inp=path.join(dir,"in."+ext),r
  out({error:"unknown op"});
 })().catch((e)=>out({error:String(e&&e.message||e).slice(0,300)}));`;
 // Computer DO side (index.js Computer.prepJob). One job at a time per tenant's prepjob object; the container stops a minute after the last.
-async function prepUp(dobj) {
+// Idle policy (PrepContainer only; Computer keeps its fixed 60 s): "current" waits 60 s after the last job, "queue-empty" stops as soon as no
+// further prep job is queued on the object, "grace10" waits 10 s after the last job. The default on the PrepContainer path is "grace10". The env var PREP_IDLE overrides it
+// for that path, and a request may choose its own with the "idle" field (the benchmark does).
+export const PREP_IDLE_POLICIES = { current: 60e3, "queue-empty": 0, grace10: 10e3 };
+const knownIdle = (p) => (typeof p === "string" && Object.hasOwn(PREP_IDLE_POLICIES, p) ? p : null);
+export function prepIdlePolicy(dobj, asked) {
+  if (!dobj.prepStart) return "current";
+  return knownIdle(asked) || knownIdle(dobj.env?.PREP_IDLE) || "grace10";
+}
+async function prepUp(dobj, input) {
   const ctx = dobj.ctx; dobj.put("role", "prep");
+  if (dobj.prepStart) return dobj.prepStart(input);
   if (!ctx.container.running) ctx.container.start({ entrypoint: ["bash", "-c", "trap 'exit 0' TERM INT; while true; do sleep 3600 & wait $!; done"], enableInternet: true });
   for (let i = 0; i < 80; i++) { try { if ((await (await ctx.container.exec(["true"], { stderr: "combined" })).output()).exitCode === 0) return; } catch { await new Promise((z) => setTimeout(z, 250)); } }
   throw new Error("the prep container didn't start");
 }
 const dec = new TextDecoder();
-export async function prepJobOn(dobj, { r2key, ext, op, pages = [] }) {
+async function prepExecOutput(ctx, command, options, deadline) {
+  let process, timer;
+  try {
+    return await Promise.race([
+      (async () => { process = await ctx.container.exec(command, options); return process.output(); })(),
+      new Promise((_, reject) => { timer = setTimeout(() => { try { process?.kill(9); } catch {} reject(new Error("prep job timed out")); }, Math.max(1, deadline - now())); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
+export async function prepJobOn(dobj, { r2key, ext, op, pages = [], snapshot, template, idle }) {
   if (!/^t\/[^/]+\/files\//.test(String(r2key)) || !/^[a-z0-9]{1,8}$/.test(String(ext)) || !["md", "ocr"].includes(op)) return { error: "bad job" };
+  const policy = prepIdlePolicy(dobj, idle); let stoppedNow = false;
+  dobj._prepPending = (dobj._prepPending || 0) + 1; if (dobj.prepStart) dobj.put("prep_idle", policy);
+  const withTiming = !!dobj.prepStart || dobj.env?.TEST_MODE === "1";   // Live results keep their old shape
   const run = async () => {
-    const t0 = now(), ctx = dobj.ctx; await prepUp(dobj); dobj.put("prep_last", String(now()));
+    const t0 = now(), ctx = dobj.ctx; const startup = await prepUp(dobj, { snapshot, ...(template ? { template } : {}) }); const readyAt = now(), startupMs = readyAt - t0; const deadline = t0 + JOB_MAX_MS - 30e3; let copyMs = 0, setupMs = 0, processMs = 0, setupDoneAt = 0, processDoneAt = 0; dobj.put("prep_last", String(now()));
     const src = await dobj.env.WS.get(r2key); if (!src) return { error: "the file is missing from storage", ms: now() - t0 };
     const dir = `/tmp/1hc-prep-${crypto.randomUUID()}`;
     try {
-      const w = await ctx.container.exec(["bash", "-c", 'mkdir -p "$1" && cat > "$1/in.$2"', "_", dir, ext], { stdin: src.body, stderr: "combined" });
-      if ((await w.output()).exitCode !== 0) return { error: "couldn't copy the file in", ms: now() - t0 };
-      const inst = await (await ctx.container.exec(["bash", "-c", PREP_SETUP, "_", op], { stderr: "combined" })).output();
+      let phase = now();
+      const w = await prepExecOutput(ctx, ["bash", "-c", 'mkdir -p "$1" && cat > "$1/in.$2"', "_", dir, ext], { stdin: src.body, stderr: "combined" }, deadline);
+      if (w.exitCode !== 0) return { error: "couldn't copy the file in", ms: now() - t0 };
+      copyMs = now() - phase; phase = now();
+      const inst = await prepExecOutput(ctx, ["bash", "-c", PREP_SETUP, "_", op], { stderr: "combined" }, deadline);
+      setupDoneAt = now(); setupMs = setupDoneAt - phase; phase = setupDoneAt;
       if (inst.exitCode !== 0) return { error: `couldn't set up the tools (${dec.decode(inst.stdout).slice(-160)})`, ms: now() - t0 };
-      const p = await ctx.container.exec(["node", "-e", PREP_JS, "_", dir, ext, op, (pages || []).map(Number).filter((n) => n > 0).join(",")], { stderr: "combined" });
-      const kill = setTimeout(() => { try { p.kill(9); } catch {} }, JOB_MAX_MS - 30e3);
-      const o = await p.output(); clearTimeout(kill);
+      const o = await prepExecOutput(ctx, ["node", "-e", PREP_JS, "_", dir, ext, op, (pages || []).map(Number).filter((n) => n > 0).join(",")], { stderr: "combined" }, deadline);
+      processDoneAt = now(); processMs = processDoneAt - phase;
       const line = dec.decode(o.stdout).split("\n").find((l) => l.startsWith(PREP_MARK));
       let r; try { r = JSON.parse(line.slice(PREP_MARK.length)); } catch { r = { error: `the job stopped without an answer (exit ${o.exitCode})` }; }
-      return { ...r, ms: now() - t0 };
-    } finally { try { await (await ctx.container.exec(["rm", "-rf", "--", dir])).output(); } catch {} }
+      // timing is additive: epoch ms taken inside the object. stopped_at is filled in when this job's policy stops the container before returning.
+      return { ...r, ms: now() - t0, ...(startup ? { startup, startup_ms: startupMs, copy_ms: copyMs, setup_ms: setupMs, process_ms: processMs } : {}), ...(withTiming ? { idle: policy, timing: { start_at: startup?.start_called_at || t0, ready_at: startup?.ready_at || readyAt, setup_done_at: setupDoneAt, process_done_at: processDoneAt, stopped_at: null } } : {}) };
+    } catch (error) {
+      if (isResetErr(error)) throw error;
+      if (dobj.prepStart && ctx.container.running) { await ctx.container.destroy("prep job failed").catch(() => {}); dobj.put("prep_stopped_at", String(now())); }
+      throw error;
+    } finally { try { await prepExecOutput(ctx, ["rm", "-rf", "--", dir], {}, now() + 10000); } catch {} }
   };
-  dobj._prepQ = (dobj._prepQ || Promise.resolve()).catch(() => {}).then(run).finally(async () => { dobj.put("prep_last", String(now())); await dobj.ctx.storage.setAlarm(now() + 60e3).catch(() => {}); });
+  dobj._prepQ = (dobj._prepQ || Promise.resolve()).catch(() => {}).then(async () => {
+    dobj._prepActive = true; let result;
+    try { result = await run(); return result; }
+    finally {
+      dobj._prepActive = false; dobj._prepPending = Math.max(0, (dobj._prepPending || 1) - 1);
+      // queue-empty: nothing else is queued on this object, so stop now (the stop time goes into the result).
+      if (policy === "queue-empty" && dobj._prepPending === 0 && dobj.ctx.container.running) {
+        try { await dobj.ctx.container.destroy("prep queue empty"); stoppedNow = true; const t = now(); dobj.put("prep_stopped_at", String(t)); if (result?.timing) result.timing.stopped_at = t; } catch {}
+      }
+      if (dobj.prepRelease && !dobj.ctx.container.running) await dobj.prepRelease();
+    }
+  }).finally(async () => { dobj.put("prep_last", String(now())); if (!stoppedNow) await dobj.ctx.storage.setAlarm(now() + (PREP_IDLE_POLICIES[policy] || 60e3)).catch(() => {}); });
   return dobj._prepQ;
 }
-// Computer.alarm for the prep role: stop the container a minute after its last job.
+// Computer.alarm for the prep role: stop the container after the idle tail of its last job (60 s unless the policy says otherwise).
 export async function prepJobAlarm(dobj) {
-  if (!dobj.ctx.container.running) return;
+  if (dobj._prepActive || dobj._prepPending > 0) { await dobj.ctx.storage.setAlarm(now() + 60e3); return; }
+  if (!dobj.ctx.container.running) { if (dobj.prepRelease) await dobj.prepRelease(); return; }
+  const tail = PREP_IDLE_POLICIES[dobj.get("prep_idle")] || 60e3;
   const last = Number(dobj.get("prep_last") || 0);
-  if (now() - last >= 59e3) { await dobj.ctx.container.destroy("prep job idle"); return; }
-  await dobj.ctx.storage.setAlarm(last + 60e3);
+  if (now() - last >= tail - 1e3) { await dobj.ctx.container.destroy("prep job idle"); dobj.put("prep_stopped_at", String(now())); if (dobj.prepRelease) await dobj.prepRelease(); return; }
+  await dobj.ctx.storage.setAlarm(last + tail);
 }
 // FilePrep side: the container's seconds are paid like any step.
 async function containerJob(P, job, op, pages = [], stepSuffix = "") {
   const ext = extOf(job.name);
-  const r = await P.paid(job, `job:${op}${stepSuffix ? `:${stepSuffix}` : ""}`, JOB_RESERVE, async () => { const x = await P.computerJob().prepJob({ r2key: job.r2key, ext, op, pages }); return { value: x, nano: Math.ceil((Number(x?.ms) || 0) / 1000 * JOB_NANO_PER_SEC) }; });
+  const rate = prepSnapshotsOn(P.env) ? PREP_STANDARD_NANO_PER_SEC : JOB_NANO_PER_SEC;
+  const reserve = Math.ceil((JOB_MAX_MS / 1000 + 60) * rate);
+  const r = await P.paid(job, `job:${op}${stepSuffix ? `:${stepSuffix}` : ""}`, reserve, async () => { const x = await P.computerJob().prepJob({ r2key: job.r2key, ext, op, pages }); return { value: x, nano: Math.ceil((Number(x?.ms) || 0) / 1000 * rate) }; });
   return r.refused ? r : r.value || { error: "no answer" };
 }
 async function containerConvert(P, job) {
@@ -782,6 +841,74 @@ export function residentSidecar() { return {
     return { ok: true };
   },
   scOcrHinted(f) { const h = jp(this.get(`sc_ocr:${f.id}`)); return !!h && h.key === f.r2key && now() - Number(h.at || 0) < 60e3; },
+  sidecarAudioCurrent(tc) {
+    if (!tc?.audioSources?.length || tc.abort === "hard") return;
+    const live = this.session(tc.session) && !this.get("hs_origin_block_all") && !this.get(`hs_origin_block:${tc.session}`);
+    if (!live || tc.audioSources.some(f => this.sql.exec("SELECT r2key FROM files WHERE id=? AND deleted=0", f.id).toArray()[0]?.r2key !== f.r2key)) {
+      tc.audioFailure = { code: "audio_source_removed", audioReason: "The recording or its task was removed or changed." };
+      throw Object.assign(new Error(tc.audioFailure.audioReason), tc.audioFailure);
+    }
+  },
+  async sidecarAudioRead(tc, read) {
+    if (!tc?.audioWait) return read;
+    let timer;
+    try {
+      return await Promise.race([read, new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          tc.audioFailure = { code: "audio_preparation_pending", audioReason: "The transcript is still being prepared. The recording is saved; try again shortly." };
+          reject(Object.assign(new Error(tc.audioFailure.audioReason), tc.audioFailure));
+        }, Math.max(1, tc.audioWait.deadline - now()));
+      })]);
+    } catch (error) {
+      if (isResetErr(error) || error?.code?.startsWith("audio_")) throw error;
+      tc.audioFailure = { code: "audio_preparation_failed", audioReason: "The prepared transcript could not be loaded. The recording is saved. Try again shortly." };
+      throw Object.assign(new Error(tc.audioFailure.audioReason), tc.audioFailure);
+    } finally { clearTimeout(timer); }
+  },
+  // A recording can be the person's whole request. Do not classify an empty
+  // caption or start Primary while its transcript is still being prepared.
+  // FilePrep owns the durable work and paid-step receipts; this only waits.
+  async sidecarAudioReady(files, tc) {
+    const audio = files.filter(f => kindOf(f.name, f.mime) === "audio");
+    if (!audio.length || !tc) return;
+    tc.audioSources = [...new Map([...(tc.audioSources || []), ...audio].map(f => [f.id, { id: String(f.id), r2key: f.r2key }])).values()];
+    const fail = (reason, code = "audio_preparation_failed") => { tc.audioFailure = { code, audioReason: reason }; throw Object.assign(new Error(reason), tc.audioFailure); };
+    if (!this.scOn() || !this.env.FILE_PREP) fail("Audio transcription is disabled for this channel.");
+    const key = audio.map(f => [f.id, f.r2key]).sort((a,b) => String(a[0]).localeCompare(String(b[0])));
+    const identity = JSON.stringify(key);
+    const row = this.sql.exec("SELECT extra FROM turn_runs WHERE card=? AND session=?", tc.turn, tc.session).toArray()[0];
+    if (!row) fail("The recording could not be attached to its saved task.");
+    const saved = jp(row.extra, {})?.audioWait;
+    const deadline = saved?.identity === identity && Number.isFinite(saved.deadline) ? saved.deadline : now() + AUDIO_WAIT_MS;
+    tc.audioWait = { identity, deadline };
+    this.sql.exec("UPDATE turn_runs SET extra=json_set(COALESCE(extra,'{}'),'$.audioWait',json(?),'$.audioSources',json(?)) WHERE card=? AND session=?", JSON.stringify(tc.audioWait), JSON.stringify(tc.audioSources), tc.turn, tc.session);
+    let started = false;
+    for (;;) {
+      if (tc.abort === "hard") return;
+      this.sidecarAudioCurrent(tc);
+      if (!this.session(tc.session) || this.get("hs_origin_block_all") || this.get(`hs_origin_block:${tc.session}`)) fail("The recording's task was deleted or reset.", "audio_source_removed");
+      let pending = false;
+      for (const f of audio) {
+        const current = this.sql.exec("SELECT r2key FROM files WHERE id=? AND deleted=0", String(f.id)).toArray()[0];
+        if (!current || current.r2key !== f.r2key) fail("The recording was removed or changed before transcription finished.", "audio_source_removed");
+        if (!started) this.sidecarKick(f);
+        const r = this.scRow(f.id);
+        if (!r || r.src_key !== f.r2key || ["queued", "working"].includes(r.status)) { pending = true; continue; }
+        if (!["ready", "text"].includes(r.status)) {
+          if (r.error === "no speech in it") fail("No speech was detected in the recording.");
+          if (String(r.error || "").startsWith("The CAF recording cannot be converted")) fail("The recording's CAF format is not supported. Attach a WAV or M4A recording instead.");
+          fail("Transcription failed. The recording is saved. Try again or attach a WAV or M4A recording.");
+        }
+        const doc = await this.sidecarAudioRead(tc, this.sidecarDoc(r));
+        if (!doc?.md) fail("The prepared transcript is missing from storage.");
+        this.sidecarAudioCurrent(tc);
+      }
+      started = true;
+      if (!pending) return;
+      if (now() >= deadline) fail("The transcript is still being prepared. The recording is saved; try again shortly.", "audio_preparation_pending");
+      await new Promise(resolve => setTimeout(resolve, Math.min(100, Math.max(1, deadline - now()))));
+    }
+  },
   // Wait (≤ ms, shared by all the files) until each file's prep has finished one way or the other. → Map file_id → row
   // A wait of the usual length (WAIT_MS) is stretched, up to OCR_WAIT_MS in all, while a file that is still being prepared is having scanned pages
   // read on the OCR Worker, so the first answer usually has the text. Nothing else about the wait changes.

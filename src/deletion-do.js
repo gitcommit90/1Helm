@@ -8,6 +8,7 @@
 //     bytes leave the old layers).
 //   - Ledger, Computer (legacy per-tenant computer): wipe.
 // Real deletion only: rows are DELETEd, objects are deleted, storage is deleteAll()'d. No soft-delete flags.
+// The licensed routing, texting and agent memory cleanups come in as this.eeDeletion (resident.js sets it; importing the EE seam here would make an import cycle).
 // Mixed in from resident.js (deletionMix) and index.js (archiveDeletionMix, wipeMix) / channel-computer.js (computerDeletionMix).
 
 import { stDelete } from "./storage.js";
@@ -76,7 +77,7 @@ export const residentDeletion = {
       for (const c of chunks(turns)) for (const r of this.sql.exec(`SELECT at, session, workflow_id FROM turns WHERE id IN (${ph(c)})`, ...c).toArray()) for (const d of [-1, 0, 1]) add(convDocOf({ session: r.session, workflowId: r.workflow_id, at: Number(r.at) + d * 86400e3 }, tz));
       add(DOC.task(sid)); if (has(this.sql, "hs_outbox")) for (const d of new Set(wd)) this.sql.exec("DELETE FROM hs_outbox WHERE doc=? AND del=0", d);   // a queued write for the deleted chat never lands
     }
-    return { exists: !!this.session(sid), turns, approvals, plans, interviews, hsDocs: [...turns.map((t) => `turn-${t}`), ...mj, ...new Set(wd)], texts: this.textsSessions().includes(sid), default: this.getRaw("default_session") === sid, live: this.liveIn(sid), bank: this.hsBankId?.() || null };
+    return { exists: !!this.session(sid), turns, approvals, plans, interviews, agentMemory: this.eeDeletion.agentSessionInventory(this,sid), hsDocs: [...turns.map((t) => `turn-${t}`), ...mj, ...new Set(wd)], texts: this.textsSessions().includes(sid), default: this.getRaw("default_session") === sid, live: this.liveIn(sid), bank: this.hsBankId?.() || null };
   },
   // Is this file used outside the chat being deleted? (attached to a message in another chat, or held for a scheduled message
   // that isn't this chat's). Returns where, so the file can move there; null = only this chat used it.
@@ -98,12 +99,17 @@ export const residentDeletion = {
   // → { ok, existed, counts, kept: [file names used elsewhere, which stay], live: turns still finishing (the job re-runs) }.
   async deleteSessionData(sid, { waitMs = 20000 } = {}) {
     sid = String(sid); const sql = this.sql, counts = {};
+    const phoneFiles = this.eeDeletion.dropPhoneFiles(this,sid);
+    const memoryRefresh = this.hsCancelConversationRefresh?.(sid);
     const existed = !!this.session(sid);
     // 1. Stop it: the running turn(s) stop at their next step, its helpers stop (no handoff), unread inputs are dropped.
     for (const tc of this.active?.values() || []) if (tc.session === sid && !tc.finished) tc.abort = "hard";
+    await memoryRefresh;
+    await phoneFiles;
+    await this.eeDeletion.dropNativePolls(this,sid);
     await this.nativeCancel?.(sid, 'Task deleted');
     delWhere(sql, 'native_sessions', 'task=?', sid);
-    if (has(sql, "helpers")) for (const h of sql.exec("SELECT id FROM helpers WHERE session=? AND status='running'", sid).toArray()) { try { await this.helperStop(sid, h.id, "person"); } catch {} }
+    if (has(sql, "helpers")) for (const h of sql.exec("SELECT id FROM helpers WHERE session=? AND status IN ('running','waiting_input')", sid).toArray()) { try { await this.helperStop(sid, h.id, "person"); } catch {} }
     this.inputs?.delete(sid);
     // 2. The chat row first: from here no new message, handoff or follow-up can land in it ("No such task" / "gone").
     counts.sessions = delWhere(sql, "sessions", "id=?", sid);
@@ -124,7 +130,8 @@ export const residentDeletion = {
     }
     const shots = sql.exec("SELECT id, r2key FROM shots WHERE session=?", sid).toArray();
     for (const c of chunks(turns)) for (const s of sql.exec(`SELECT id, r2key FROM shots WHERE turn IN (${ph(c)})`, ...c).toArray()) if (!shots.some((x) => x.id === s.id)) shots.push(s);
-    counts.r2_objects = await r2DeleteKeys(this.env, [...gone.flatMap((f) => [{ key: f.r2key, size: f.bytes }, f.view_key, f.prev_key && { key: f.prev_key, size: f.prev_bytes ?? null }, f.orig_key && f.orig_key !== f.prev_key && f.orig_key !== f.r2key && { key: f.orig_key, size: f.orig_bytes ?? null }]), ...previewKeys(sql, gone.map((f) => f.id)), ...sidecarKeys(sql, gone.map((f) => f.id)), ...shots.map((s) => s.r2key)]);
+    counts.r2_objects = await r2DeleteKeys(this.env, [...gone.flatMap((f) => [{ key: f.r2key, size: f.bytes }, f.view_key, f.prev_key && { key: f.prev_key, size: f.prev_bytes ?? null }, f.orig_key && f.orig_key !== f.prev_key && f.orig_key !== f.r2key && { key: f.orig_key, size: f.orig_bytes ?? null }]), ...previewKeys(sql, gone.map((f) => f.id)), ...sidecarKeys(sql, gone.map((f) => f.id)), ...shots.map((s) => s.r2key), ...routingArtifactKeys(sql,sid)]);
+    this.eeDeletion.dropRoutingArtifacts(sql,sid);
     const rm = gone.filter((f) => Number(f.synced) !== 0).map((f) => `files/${f.name}`);   // copies on the channel computer
     // Their share links die with them (share.js keeps them in D1, keyed by file).
     const tid = this.get("tenant");
@@ -150,6 +157,11 @@ export const residentDeletion = {
     counts.todos = delWhere(sql, "todos", "session=?", sid);
     counts.reactions = delWhere(sql, "reactions", "session=?", sid) + delIn(sql, "reactions", "turn", turns);
     counts.later = delWhere(sql, "later", "session=? OR sent_session=?", sid, sid);
+    // Queue references and round/message histories go before their owning helper rows.
+    this.eeDeletion.purgeAgentSession(this,sid);
+    const helperIds=has(sql,"helpers")?sql.exec("SELECT id FROM helpers WHERE session=?",sid).toArray().map(h=>h.id):[];
+    counts.helper_rounds=delIn(sql,"helper_rounds","helper_id",helperIds);
+    counts.helper_messages=delIn(sql,"helper_messages","helper_id",helperIds);
     counts.helpers = delWhere(sql, "helpers", "session=?", sid);
     counts.approvals = delWhere(sql, "approvals", "session=?", sid) + delIn(sql, "approvals", "turn", turns);
     counts.grants = delWhere(sql, "grants", "session=?", sid);
@@ -158,6 +170,10 @@ export const residentDeletion = {
     this.forgetOrigin(sid);
     counts.connect_offers = delWhere(sql, "connect_offers", "session=?", sid);
     counts.chat_interviews = delWhere(sql, "chat_interviews", "session=?", sid);
+    counts.user_input_receipts = delWhere(sql, "user_input_receipts", "session=?", sid);
+    counts.user_questions = delWhere(sql, "user_questions", "session=?", sid);
+    counts.photon_reply_sources = delWhere(sql, "photon_reply_sources", "session=?", sid);
+    if(this.getRaw("last_text_question_session")===sid)this.put("last_text_question_session","");
     counts.pomodoro = delWhere(sql, "pomodoro", "session=?", sid) + delWhere(sql, "pomodoro_offers", "session=?", sid);
     delWhere(sql, "notif_state", "session=?", sid);   // notify.js: the last thing a push told them about this task
     counts.outbox = delIn(sql, "outbox", "turn", turns) + delIn(sql, "outbox", "workflow_id", workflows);
@@ -166,6 +182,9 @@ export const residentDeletion = {
     // 6. Its files leave the channel computer too (on its next use, or now in the background), and the next save is a full base.
     if (rm.length) { this.put("rm_paths", JSON.stringify([...new Set([...jp(this.getRaw("rm_paths")), ...rm])])); this.ctx.waitUntil?.(this.syncRemovals().catch((e) => console.log("file removal", e.message))); }
     try { await this.arm(); } catch {}
+    // The cancellation fences set at the start (phone file delivery, conversation memory refresh) only matter while the chat or a turn of it exists. Once nothing of it is
+    // running they are the last trace of the chat id, so they go too (a turn still finishing makes the job run this again).
+    if (!this.liveIn(sid)) delIn(sql, "kv", "k", [`phone_files_cutoff:${sid}`, `hs_origin_block:${sid}`]);
     return { ok: true, existed, counts, kept, removed_from_computer: rm.length, live: this.liveIn(sid), hsFileDocs: gone.map((f) => DOC.file(f.id)) };
   },
   // A task started from a plan in the deleted chat keeps living (it's its own chat), but loses the excerpt of the deleted one
@@ -199,13 +218,18 @@ export const residentDeletion = {
   },
   // The whole channel: stop everything, delete every R2 object this object knows (files, views, screenshots), then the storage.
   async wipeChannel() {
+    const phoneFiles = this.eeDeletion.dropPhoneFiles(this);
+    const memoryRefresh = this.hsCancelConversationRefresh?.();
     const sql = this.sql;
     for (const tc of this.active?.values() || []) tc.abort = "hard";
+    await memoryRefresh;
+    await phoneFiles;
+    await this.eeDeletion.dropNativePolls(this);
     await this.nativeCancel?.(null, 'Channel deleted');
     this.inputs?.clear?.();
     const counts = {};
-    for (const t of ["sessions", "turns", "msgs", "cards", "card_events", "files", "shots", "todos", "reactions", "later", "helpers", "approvals", "grants", "workflows", "outbox", "mem_rows", "mem_segments", "plans", "plan_origin", "connect_offers", "chat_interviews", "pomodoro", "pomodoro_offers"]) counts[t] = count(sql, t);
-    const keys = [...sql.exec("SELECT r2key, view_key FROM files").toArray().flatMap((f) => [f.r2key, f.view_key]), ...sql.exec("SELECT r2key FROM shots").toArray().map((s) => s.r2key), ...previewKeys(sql), ...sidecarKeys(sql)];
+    for (const t of ["sessions", "turns", "msgs", "cards", "card_events", "files", "shots", "todos", "reactions", "later", "helpers", "approvals", "grants", "workflows", "outbox", "mem_rows", "mem_segments", "plans", "plan_origin", "connect_offers", "chat_interviews", "user_questions", "user_input_receipts", "pomodoro", "pomodoro_offers"]) counts[t] = count(sql, t);
+    const keys = [...sql.exec("SELECT r2key, view_key FROM files").toArray().flatMap((f) => [f.r2key, f.view_key]), ...sql.exec("SELECT r2key FROM shots").toArray().map((s) => s.r2key), ...previewKeys(sql), ...sidecarKeys(sql), ...routingArtifactKeys(sql)];
     counts.r2_objects = await r2DeleteKeys(this.env, keys);
     await wipeStorage(this, "channel deleted");
     return counts;

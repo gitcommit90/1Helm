@@ -1,0 +1,19 @@
+/* The engine paints depth with dots. The surrounding UI stays still. */
+activity-orb{display:inline-block;width:20px;height:20px;flex:0 0 20px;vertical-align:middle;contain:strict;pointer-events:none}
+.primary-activity{align-self:flex-start;min-height:24px;margin:10px 0 2px;padding:0 2px}
+.primary-activity:empty{display:none}
+.typing-orb{display:inline-flex;align-items:center;gap:9px;min-height:24px;color:var(--mute);font:400 12px/1.4 var(--sans)}
+.worker-activity{display:flex;flex-direction:column;gap:5px;margin:12px 0 2px;max-width:100%;align-self:flex-start;min-width:0}
+.worker-activity:empty{display:none}
+.worker-orb-row{display:flex;align-items:center;gap:10px;max-width:100%;min-width:0;padding:8px 11px 8px 8px;border:1px solid color-mix(in srgb,var(--line) 75%,transparent);border-radius:14px;background:color-mix(in srgb,var(--sheet) 55%,transparent);color:var(--ink2);text-align:left;transition:background .16s,border-color .16s;cursor:pointer}
+.worker-orb-row:hover{background:var(--hover);border-color:var(--line2)}
+.worker-orb-row:focus-visible{outline:2px solid var(--ink2);outline-offset:3px}
+.worker-orb-copy{display:flex;flex-direction:column;min-width:0;gap:1px;font:400 11px/1.4 var(--sans);color:var(--mute)}
+.worker-orb-copy b{font:500 12px/1.4 var(--sans);color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:340px}
+.worker-orb-copy span{white-space:nowrap}
+.worker-orb-row .worker-orb-arrow{width:12px;height:12px;opacity:.35;margin-left:6px;flex:none}
+.tk-hico:has(activity-orb){width:20px;color:var(--ink2)}
+.tk-dot{animation:none}
+@media(max-width:767px){.worker-orb-copy b{max-width:min(245px,calc(100vw - 135px))}.worker-orb-row{padding:8px 10px 8px 7px}.worker-activity{margin-top:10px}}
+@media(prefers-reduced-motion:reduce){.worker-orb-row{transition:none}}
+@media(forced-colors:active){activity-orb{border:2px dotted currentColor;border-radius:50%}activity-orb::part(canvas){visibility:hidden}.worker-orb-row{border-color:ButtonBorder}}

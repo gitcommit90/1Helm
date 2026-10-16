@@ -2,7 +2,7 @@
 // The saved settings (model-settings.js, edited on the Models page) are the only source of those values. This file lists which jobs
 // exist, reads a job's saved setting, builds the request routes from it, and checks the privacy rule. It names no model.
 import { CATEGORIES } from "./pool.js";
-import { PRIVACY_LEVELS, eligibleHosts, normalizePrivacy, registered } from "../privacy.js";
+import { PRIVACY_LEVELS, eligibleHosts, hostOk, normalizePrivacy, registered } from "../privacy.js";
 
 export class ModelSettingsError extends Error {
   constructor(message, status = 503) { super(message); this.name = "ModelSettingsError"; this.modelSettings = true; this.status = status; }
@@ -32,13 +32,13 @@ export const JOB_KINDS = {
 export const CHAT_PICKS = ["chat", "chore", "classic"];
 export const takesChat = (kind) => CHAT_PICKS.includes(kind.pick) || !!kind.any;
 // A model's saved facts can chat when it is a validated catalog model or lists chat or chore.
-export const canChat = (meta) => meta?.eligible === true || (Array.isArray(meta?.kinds) && meta.kinds.some((k) => k === "chat" || k === "chore"));   // classic router models are not general chat models
+export const canChat = (meta) => Array.isArray(meta?.kinds) && meta.kinds.length ? meta.kinds.some((k) => k === "chat" || k === "chore") : meta?.eligible === true;   // classic router models are not general chat models
 // The decision models made for their own call: Clef (kind workers_decider) and Perplexity or Jev (kind decider). Any of them can run any
 // any-model job, each through its own call (text-decision.js); every other chat model answers as strict JSON.
 export const NATIVE_PICKS = ["workers_decider", "decider"];
-export const nativeFor = (meta, kind) => !!kind.any && meta?.eligible !== true && Array.isArray(meta?.kinds) && meta.kinds.some((k) => NATIVE_PICKS.includes(k));
+export const nativeFor = (meta, kind) => !!kind.any && Array.isArray(meta?.kinds) && meta.kinds.some((k) => NATIVE_PICKS.includes(k));
 // Whether the model's endpoints must be zero-data-retention for this kind.
-export const zdrApplies = (kind, meta) => !!kind.zdr && takesChat(kind) && !nativeFor(meta, kind);
+export const zdrApplies = (kind, meta) => !!kind.zdr && (meta?.source === "CF" || (takesChat(kind) && !nativeFor(meta, kind)));
 
 const CHAT_TEXT = {
   general: ["Everyday chat", "Questions, writing, email, calendar, reminders and connected apps."],
@@ -87,8 +87,9 @@ export const GROUPS = [
   { id: "background", title: "Background jobs", note: "Work that runs behind the scenes. These always use zero-data-retention providers." },
   { id: "speech", title: "Speech", note: "" },
   { id: "search", title: "Search and pictures", note: "" },
-  { id: "other", title: "Other", note: "" },
 ];
+// Only jobs in a listed page group get controls. Runtime settings can also cover jobs outside the Models page.
+export const MODEL_PAGE_JOBS = JOBS.filter((j) => GROUPS.some((g) => g.id === j.group));
 
 // ---- reading a job's saved setting ----
 export const settingsOf = (env) => {
@@ -117,11 +118,14 @@ export const effortBody = (e, model, settings) => { e = effortFor(e, model, sett
 // the privacy facts allow); every other model follows the privacy facts alone.
 export function configuredHosts(settings, model, level) {
   const meta = settings?.catalog?.[model];
+  if (meta?.source === "CF") return meta.levels?.includes(level) ? ["cloudflare"] : [];
   if (!meta?.hosts) return eligibleHosts(model, level);
   if (!meta.levels?.includes(level)) return [];
-  const registered = eligibleHosts(model, level);
-  // Catalog records for new IDs are strict ZDR; known IDs still intersect the static policy registry.
-  return eligibleHosts(model, "unrestricted").length ? meta.hosts.filter((h) => registered.some((base) => h === base || h.startsWith(`${base}/`))) : meta.hosts;
+  // A model the registry lists keeps only the hosts the registry allows at this level. Any other model follows its provider's recorded terms;
+  // a host with no recorded terms counts only where it was proven zero retention (the record's unproven_hosts lists the ones that weren't,
+  // which serve Unrestricted only). Older records have no such list, and all their hosts came from the published zero-data-retention list.
+  const unproven = new Set(Array.isArray(meta.unproven_hosts) ? meta.unproven_hosts : []);
+  return meta.hosts.filter((h) => hostOk(model, h, level, { proven: !unproven.has(h) }));
 }
 
 // ---- privacy ----

@@ -186,6 +186,7 @@ export async function retainV2(env, bank, items, opts = {}) {
   const operation_ids = [];
   for (const [strategy, g] of groups) {
     const operation_id = opts.operationId ? (groups.size === 1 ? opts.operationId : await opUuid(opts.operationId, strategy)) : await opUuid(bank, strategy, ...g.flatMap((x) => [x.item.document_id, x.hash, x.key]));
+    opts.beforeSend?.(operation_id);   // scoped maintenance can fence a stale source immediately before submission
     const r = await hs(env, `${B(bank)}/memories`, { method: "POST", body: { items: g.map((x) => x.item), async: true, operation_id }, timeoutMs: opts.timeoutMs || 30000 });
     operation_ids.push(r?.operation_id || operation_id);
   }

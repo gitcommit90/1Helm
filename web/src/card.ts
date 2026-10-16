@@ -14,6 +14,8 @@
 // A plan (propose_plan, made by 1HC) comes as kind:"plan" and uses the app's plan card (plan-card.ts): tick items, then
 //   POST /c/<token>/decide { decision: "approve", items: [ticked indexes] } | { decision: "deny" } | { decision: "talk" }
 //        200 { ok: true, status, plan[, already | talked] } · 410 expired · 429 slow_down. Talk = "Let's talk about the plan" as a text.
+import { responseId, type InputReply } from "./input-reply";
+import { cardPaging } from "./card-paging";
 import { paintCard, patchHtml, wireCards } from "./genui-render";
 import { approvalHtml, type Approval, type ApStatus, type Decision } from "./approval-card";
 import { planHtml, allPicks, planAnswers, type Plan, type PlanAct } from "./plan-card";
@@ -27,17 +29,19 @@ const token = decodeURIComponent(location.pathname.replace(/\/+$/, "").split("/"
 const base = `/c/${encodeURIComponent(token)}`;
 const esc = (s: any = "") => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 
-type Data = { kind?: "card" | "approval" | "plan" | "interview"; plan?: Plan | null; interview?: IvView; status?: string; task_url?: string; body: string; answered: boolean; picked?: string; helper: { name: string; avatar: number }; sentAt: number;
+type Data = { closed_reason?: string; closed_note?: string; input_reply?: InputReply; kind?: "card" | "approval" | "plan" | "interview"; plan?: Plan | null; interview?: IvView; status?: string; task_url?: string; body: string; answered: boolean; picked?: string; helper: { name: string; avatar: number }; sentAt: number;
   approval?: Approval & { status?: ApStatus }; channel?: { name?: string } };
-const st: { d?: Data; reply?: string; note: "" | "sending" | "sent" | "error" | "slow" | "noloc"; ap?: { status: ApStatus; confirm?: boolean; busy?: Decision | "" }; pl?: { picks: Set<number>; answers?: Map<number, string>; busy?: PlanAct | ""; error?: string } } = { note: "" };
+const st: { d?: Data; attempt?: { text: string; response_id: string }; reply?: string; note: "" | "sending" | "sent" | "error" | "slow" | "noloc"; ap?: { status: ApStatus; confirm?: boolean; busy?: Decision | "" }; pl?: { picks: Set<number>; answers?: Map<number, string>; busy?: PlanAct | ""; error?: string } } = { note: "" };
 const AP_STATUS = new Set(["pending", "once", "session", "channel", "always", "trust", "deny", "expired", "host_key_required", "consumed", "cancelled", "failed"]);
 // Server-owned deep link, restricted to an app task on this same origin.
 const approvalTaskHref = (value?: string) => typeof value === "string" && /^\/w\/[a-z0-9-]+\/app#\/[a-z0-9][a-z0-9-]{0,62}\/s\/[a-zA-Z0-9-]+$/.test(value) ? value : "";
 
 const root = document.createElement("main"); root.className = "cpage"; document.body.appendChild(root);
-root.innerHTML = `<header class="chead" id="chead"></header><div class="creply" id="creply"><div class="cload"><i></i><i></i><i></i></div></div><div class="cnote" id="cnote" role="status" aria-live="polite"></div>`;
+root.innerHTML = `<header class="chead" id="chead"></header><div class="creply" id="creply"><div class="cload"><i></i><i></i><i></i></div></div><nav class="cpager" id="cpager" aria-label="Card pages" hidden><button type="button" data-cprev aria-label="Previous page"><span aria-hidden="true">‹</span><span>Back</span></button><span class="cpager-center"><span data-cposition aria-live="polite"></span></span><button type="button" data-cnext aria-label="Next page"><span>Next</span><span aria-hidden="true">›</span></button></nav><div class="cnote" id="cnote" role="status" aria-live="polite"></div>`;
 const $ = (id: string) => document.getElementById(id)!;
 const owner = {};
+const refreshPages = cardPaging($("creply"), $("cpager"));
+let sentTimer = 0;
 
 function when(t: number) {
   if (!t) return ""; const d = new Date(t), n = new Date(), time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -56,7 +60,7 @@ function paint() {
     const html = ivcHtml(d.interview, { key: `c:${token}`, helper: name, phone: () => true, sentNote: `Sent ✓ ${name} will text you back.`,
       api: async (b: any) => { const r = await fetch(`${base}/iv`, { method: "POST", credentials: "omit", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }); return r.json().catch(() => ({ error: `HTTP ${r.status}` })); },
       sent: () => {} });
-    if (!document.getElementById(`ivc-c_${token.replace(/[^A-Za-z0-9_-]/g, "_")}`)) $("creply").innerHTML = html;
+    patchHtml($("creply"), html);
   } else if (d.kind === "approval" && st.ap) {
     // The permission card (same markup as the app). Decided (here or anywhere) or expired: locked, showing the result.
     const a = d.approval!, at = (k: string) => k === "cancel" ? `data-cdx` : `data-cd="${k === "confirm" ? "channel" : k}"${k === "confirm" ? " data-cdok" : ""}`;
@@ -65,13 +69,15 @@ function paint() {
     patchHtml($("creply"), approvalHtml(a, { status: st.ap.status, confirm: st.ap.confirm, busy: st.ap.busy, fresh: true }, { helper: name, channel: d.channel?.name || "", attr: at }) + next);
   } else
   // Answered (here or anywhere): the controls lock and show what was picked.
-  paintCard($("creply"), d.body, { owner, streaming: false, reply: st.reply });
+  paintCard($("creply"), d.body, { owner, streaming: false, reply: st.reply, ref: { input_reply: d.input_reply } });
   const n = $("cnote"), nm = esc(name);
-  n.className = `cnote${st.note ? " on " + (st.note === "slow" || st.note === "noloc" ? "error" : st.note) : ""}`;
-  n.innerHTML = st.note === "sending" ? `<span class="cspin"></span>Sending…` : st.note === "sent" ? `<b>Sent ✓</b> ${nm} will text you back.`
+  n.className = `cnote${!st.note && d.closed_note ? " on" : ""}${st.note ? " on " + (st.note === "slow" || st.note === "noloc" ? "error" : st.note) : ""}`;
+  n.innerHTML = st.note === "sending" ? `<span class="cspin"></span>Sending…` : st.note === "sent" ? `<b>Sent ✓</b><span>To ${nm}</span>`
     : st.note === "error" ? `Couldn't send that. Check your connection and tap again.` : st.note === "slow" ? `One moment. Tap again in a few seconds.`
-    : st.note === "noloc" ? `Couldn't get your location. Allow location for this page, then tap again, or text ${nm} the area instead.` : "";
-  document.body.classList.toggle("noted", !!st.note);
+    : st.note === "noloc" ? `Couldn't get your location. Allow location for this page, then tap again, or text ${nm} the area instead.` : esc(d.closed_note || "");
+  refreshPages();
+  clearTimeout(sentTimer);
+  if (st.note === "sent") sentTimer = window.setTimeout(() => { st.note = ""; paint(); }, 2500);
 }
 async function load() {
   try {
@@ -83,6 +89,7 @@ async function load() {
     else if (st.d!.answered) st.reply = st.d!.picked ?? ""; document.title = `${st.d!.helper?.name || "1Helm"} · 1Helm`; paint();
   } catch {
     $("creply").innerHTML = `<div class="cgone"><b>This card isn't available.</b><span>It may have expired. Your messages are all still in the thread.</span></div>`;
+    refreshPages();
   }
 }
 // Permission card taps. Always allow → "Are you sure?" → Confirm sends confirm:true. A failed send keeps the card open with a note;
@@ -148,7 +155,18 @@ async function refresh() {
     if (d?.kind === "approval" && st.ap && AP_STATUS.has(s) && s !== "pending" && st.ap.status === "pending" && !st.ap.busy) { st.d = d; st.ap.status = s; st.ap.confirm = false; st.note = ""; paint(); return true; } } catch {}
   return false;
 }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && st.d?.kind === "approval" && st.ap?.status === "pending") refresh(); if (document.visibilityState === "visible" && st.d?.kind === "plan" && st.d.plan?.status === "pending") refreshPlan(); });
+async function refreshCard() {
+  if (st.note === "sending" || st.reply !== undefined) return;
+  try { const r = await fetch(`${base}/data`, { credentials: "omit", cache: "no-store" }); const d = r.ok ? await r.json() : null;
+    if (d?.answered && st.d && (!d.kind || d.kind === "card")) { st.d = d; st.reply = d.picked ?? ""; st.note = ""; paint(); }
+  } catch {}
+}
+async function refreshInterview() {
+  try { const r = await fetch(`${base}/data`, { credentials: "omit", cache: "no-store" }); const d = r.ok ? await r.json() : null;
+    if (d?.kind === "interview" && d.interview) { st.d = d; paint(); }
+  } catch {}
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && st.d?.kind === "interview") void refreshInterview(); if (document.visibilityState === "visible" && (!st.d?.kind || st.d.kind === "card")) void refreshCard(); if (document.visibilityState === "visible" && st.d?.kind === "approval" && st.ap?.status === "pending") refresh(); if (document.visibilityState === "visible" && st.d?.kind === "plan" && st.d.plan?.status === "pending") refreshPlan(); });
 // A card's "Share my location" (Button action share_location): one rough fix (2 decimals, about 1 km) or null.
 function shareFix(): Promise<{ lat: number; lng: number } | null> {
   if (!navigator.geolocation) return Promise.resolve(null);
@@ -164,8 +182,11 @@ wireCards({
     const loc = locP ? await locP : null;
     if (want && !loc) { st.reply = undefined; st.note = "noloc"; paint(); return; }
     try {
-      const r = await fetch(`${base}/act`, { method: "POST", credentials: "omit", headers: { "content-type": "application/json" }, body: JSON.stringify(loc ? { text, loc } : { text }) });
-      if (!r.ok) throw new Error(String(r.status)); st.note = "sent";
+      const attempt = st.attempt?.text === text ? st.attempt : (st.attempt = { text, response_id: st.d?.input_reply?.response_id || responseId() });
+      const r = await fetch(`${base}/act`, { method: "POST", credentials: "omit", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, ...(loc ? { loc } : {}), ...(st.d?.input_reply ? { input_reply: st.d.input_reply } : {}), response_id: attempt.response_id, ...(meta?.action ? { action: meta.action } : {}) }) });
+      const receipt = await r.json().catch(() => ({}));
+      if (receipt.closed_reason || receipt.answered) { Object.assign(st.d!, receipt, { answered: true }); st.reply = receipt.picked ?? ""; st.note = ""; }
+      else { if (!r.ok) throw new Error(String(r.status)); st.note = "sent"; }
     } catch { st.reply = undefined; st.note = "error"; }
     paint();
   },

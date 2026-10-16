@@ -180,7 +180,7 @@ assert.equal(byokWire.body.model, "person/model"); assert.equal(byokWire.url, "h
 const seenUrls = [];
 globalThis.fetch = async (url) => {
   seenUrls.push(String(url));
-  if (String(url).endsWith("/models")) return Response.json({ data: [{ id: MUSE_C, architecture: { input_modalities: ["text"], output_modalities: ["text"] }, reasoning: { mandatory: true, supported_efforts: ["low"] } }] });
+  if (/\/models(\?|$)/.test(String(url))) return Response.json({ data: [{ id: MUSE_C, architecture: { input_modalities: ["text"], output_modalities: ["text"] }, reasoning: { mandatory: true, supported_efforts: ["low"] } }] });
   return Response.json({ data: { endpoints: [{ tag: "meta", context_length: 99999, max_completion_tokens: 12345, pricing: { prompt: "0.0000001", completion: "0.0000002" }, supported_parameters: ["tools", "max_tokens", "reasoning"], supports_tool_choice: { auto: true, none: true, required: true, function: true } }] } });
 };
 const liveShape = await taskModelCatalog(MUSE_C, settings);

@@ -3,6 +3,7 @@
 // kill(): every storage call the old instance makes from then on throws Cloudflare's reset error (the old code may still be finishing
 // a fetch, but it can't touch storage), and its hung model call / tool call never comes back. boot() then constructs a fresh Resident
 // over the SAME storage and the same alarm, exactly like the new code starting after a deploy.
+import { transactionSyncFor } from "./helpers/transaction-sync.mjs";
 import assert from "node:assert"; import { DatabaseSync } from "node:sqlite"; import { readFileSync } from "node:fs";
 import { Resident } from "../src/resident.js";
 import { confirmGate } from "../src/confirm.js";
@@ -57,7 +58,7 @@ export function world({ engine = "classic", env: extraEnv = {} } = {}) {
   const sqlFor = (my) => ({ exec: (q, ...a) => {
     if (my !== epoch) throw new Error(RESET);   // a reset object can't touch storage any more
     if (!a.length && q.split(";").filter((x) => x.trim()).length > 1) { dodb.exec(q); return { toArray: () => [], one: () => undefined }; }
-    const st = dodb.prepare(q); const r = /^\s*(SELECT|WITH|PRAGMA)/i.test(q) ? st.all(...a) : (st.run(...a), []); return { toArray: () => r, one: () => r[0] }; } });
+    const st = dodb.prepare(q); const r = /^\s*(SELECT|WITH|PRAGMA)|\bRETURNING\b/i.test(q) ? st.all(...a) : (st.run(...a), []); return { toArray: () => r, one: () => r[0] }; } });
   // ---- tools the test scripts: reads and sends that can hang mid-call ----
   W.sent = []; W.searched = []; W.hangSend = false; W.hangSearch = false; W.texted = []; W.execs = [];
   W.tools = {
@@ -79,7 +80,7 @@ export function world({ engine = "classic", env: extraEnv = {} } = {}) {
     browser: async () => ({ ok: true }), warm: async () => ({ ok: true }), save: async () => ({}), touch: async () => {}, stop: async () => {} };
   W.boot = () => {
     const my = ++epoch, waits = [];
-    const ctx = { id: { toString: () => "do-test-id-0000000000000000" }, storage: { sql: sqlFor(my), getAlarm: async () => W.alarmAt,
+    const ctx = { id: { toString: () => "do-test-id-0000000000000000" }, storage: { sql: sqlFor(my), transactionSync: (f) => { if (my !== epoch) throw new Error(RESET); return transactionSyncFor(dodb)(f); }, getAlarm: async () => W.alarmAt,
       setAlarm: async (t) => { if (my !== epoch) throw new Error(RESET); W.alarmAt = t; }, deleteAlarm: async () => { if (my === epoch) W.alarmAt = null; } }, waitUntil: (p) => waits.push(p) };
     const R = new Resident(ctx, W.env); R._waits = waits; R._epoch = my;
     R.systemPrompt = async () => "SYSTEM"; R.computer = () => W.computer; R.syncFiles = async () => {};

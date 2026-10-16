@@ -12,6 +12,7 @@
 // Exported for the billing agent (cancel at period end → delete): deleteAccount(env, tenantId, { reason }), deleteChannel(env,
 // tenantId, slug), deleteSession(env, tenantId, slug, sessionId).
 import { hsOn, bankId, forgetChannel, forgetTenant, forgetDocument } from "./hindsight.js";
+import { forgetAgentBank, forgetAgentTenant, agentSessionDocuments, cancelAgentOperations } from "./ee/index.js";
 import { disconnectAllManaged } from "./ee/index.js";
 import { selfSignOut } from "./ee/index.js";
 import { linkDisconnect } from "./ee/index.js";
@@ -143,6 +144,12 @@ export async function deleteSession(env, tenantId, slug, sessionId, { reason = "
     job.meta.counts ||= {};
     job.meta.counts.hindsight_docs = (job.meta.counts.hindsight_docs || 0) + inv.hsDocs.length;
     await forgetMemoryDocs(env, tenantId, slug, inv.hsDocs);
+    if (hsOn(env)) {
+      const saved=inv.agentMemory||{documents:[],operation_ids:[]};
+      const agent=await cancelAgentOperations(env,tenantId,slug,saved.operation_ids);
+      const remote=await agentSessionDocuments(env,tenantId,slug,sid);
+      await hsForgetDocs(env,agent.bank,[...new Set([...(saved.documents||[]),...remote.documents])]);
+    }
     const d1 = await deleteSessionD1(env, tenantId, slug, sid, inv);
     // 2. The chat itself, inside the channel's object (files out of R2 first).
     const r = await R.deleteSessionData(sid);
@@ -199,9 +206,11 @@ async function wipeChannelEverywhere(env, job, tid, slug, cid, prefix = "") {
   await step(env, job, k("hindsight"), async () => {
     if (!hsOn(env)) return 0;
     const r = await forgetChannel(env, tid, slug);
+    const agent = await forgetAgentBank(env,tid,slug);
+    await DB.prepare("DELETE FROM hs_forget WHERE bank=?").bind(agent.bank).run().catch(() => {});
     await DB.prepare("DELETE FROM hs_forget WHERE bank=?").bind(bankId(env, tid, slug)).run().catch(() => {});
     await DB.prepare("DELETE FROM hs_rebuild_runs WHERE bank=?").bind(bankId(env, tid, slug)).run().catch(() => {});   // HS_WRITERS: a channel deleted mid rebuild no longer counts as a running one
-    return r.deleted;
+    return r.deleted + agent.deleted;
   });
   await step(env, job, k("d1"), async () => {
     const out = {};
@@ -276,7 +285,7 @@ export async function deleteAccount(env, tenantId, { reason = "person" } = {}) {
       m.channels = [...list].map(([slug, cid]) => ({ slug, cid })); await jobSave(env, job);
     }
     for (const c of m.channels) await wipeChannelEverywhere(env, job, tenantId, c.slug, null, `ch:${c.slug}:`);   // Archive rows go with the Archive below
-    await step(env, job, "hindsight", async () => hsOn(env) ? (await forgetTenant(env, tenantId)).deleted : 0);
+    await step(env, job, "hindsight", async () => { if(!hsOn(env))return 0;const human=await forgetTenant(env,tenantId),agent=await forgetAgentTenant(env,tenantId);return human.deleted+agent.deleted; });
     await step(env, job, "archive", () => archive(env, tenantId).wipeArchive());
     await step(env, job, "ledger", () => env.LEDGER.get(env.LEDGER.idFromName(`tenant:${tenantId}`)).wipe());
     await step(env, job, "computer", () => env.COMPUTER ? env.COMPUTER.get(env.COMPUTER.idFromName(`computer:${tenantId}`)).wipe() : 0);

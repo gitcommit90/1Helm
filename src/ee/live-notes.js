@@ -408,7 +408,7 @@ export class LiveNotes extends DurableObject {
   ledger() { return this.env.LEDGER.get(this.env.LEDGER.idFromName(`tenant:${this.tid()}`)); }
   res() { return this.env.RESIDENT.get(this.env.RESIDENT.idFromName(`res:${this.tid()}:${this.get("channel")}`)); }
   beeSync() { return this.env.BEE_SYNC?.get(this.env.BEE_SYNC.idFromName(this.tid())) || null; }
-  computer() { return this.env.COMPUTER.get(this.env.COMPUTER.idFromName(`beejob:${this.tid()}`)); }
+  computer() { const b = this.env.BEE_SNAPSHOTS === "on" && this.env.BEE_CONTAINER ? this.env.BEE_CONTAINER : this.env.COMPUTER; return b.get(b.idFromName(`beejob:${this.tid()}`)); }   // same choice as beeJobStub in bee.js
   ev(what) { return beeEvent(this.env, this.tid(), `live notes: ${what}`).catch(() => {}); }
   tz() { return this.get("tz") || "UTC"; }
   path() { return `files/${this.get("file_name") || "Meeting notes.md"}`; }

@@ -7,13 +7,13 @@ import { boundedJson } from "./bounded-body.js";
 // - Answers are saved here as the person goes (the Resident's own SQLite, table chat_interviews), so a reload or another device
 //   picks up where they were. Nothing goes to the model until they send.
 // - "Send answers" locks the card and returns ONE plain message ("Interview answers — <title>:\n1. <question>: <answer>…",
-//   skipped questions marked "(skipped)"). The app posts it as the person's next message in that task, through the same path as
-//   typing it; the card page inside Messages (/c/<token>) has it posted here (a text turn when texting is on).
+//   skipped questions marked "(skipped)"). The server posts it once to Primary in the interview's original task. The source
+//   turn binds the answer to any waiting question and worker. Both the app and hosted Messages card use the same operation.
 // - The tool returns at once and tells the model to end its turn and wait. Chat turns only: never background helpers (not in
 //   HELPER_ALLOWED, and HELPER_DENIED names it), never scheduled runs.
 // - Texting turn: after the reply goes out by text, the card follows as an iMessage live app card opening /c/<token> (kind
 //   "interview" in D1 cards). If the live card can't be sent, a plain text with the link says what it is.
-// API (index.js): GET /w/<slug>/api/res/<ch>/interviews/<id> → view · POST {op} → view (+ message for op "send").
+// API (index.js): GET /w/<slug>/api/res/<ch>/interviews/<id> → view · POST {op} → view (+ message and posted receipt for op "send").
 //   ops: answer {q, answer: {pick|picks|other|text|scale}, step} · skip {q, step} · goto {step} · send
 import { cardToken, cardUrl } from "./cards.js";
 import { deliverCard } from "./ee/index.js";
@@ -48,6 +48,10 @@ export function interviewInit(sql) {
     questions TEXT NOT NULL, answers TEXT NOT NULL DEFAULT '{}', step INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'open', sent_at INTEGER, message TEXT,
     via TEXT NOT NULL DEFAULT 'app', texted_at INTEGER, updated INTEGER NOT NULL)`);
   sql.exec("CREATE INDEX IF NOT EXISTS chat_interviews_session ON chat_interviews(session, at)");
+  if (!sql.exec("PRAGMA table_info(chat_interviews)").toArray().some(c => c.name === "posted_at")) {
+    sql.exec("ALTER TABLE chat_interviews ADD COLUMN posted_at INTEGER");
+    sql.exec("UPDATE chat_interviews SET posted_at=sent_at WHERE status='sent'"); // old clients already posted these answers
+  }
 }
 
 // ---- Plain words ----
@@ -128,17 +132,24 @@ export const answeredCount = (iv) => iv.questions.filter((q) => has((iv.answers 
 
 // ---- Storage ----
 export function ivRow(sql, id) { return sql.exec("SELECT * FROM chat_interviews WHERE id=?", String(id)).toArray()[0] || null; }
-function ivOf(r) { return r && { id: r.id, session: r.session, turn: r.turn, at: Number(r.at), title: r.title, intro: r.intro || "", purpose: r.purpose || "", questions: parse(r.questions, []), answers: parse(r.answers, {}), step: Number(r.step) || 0, status: r.status, sent_at: r.sent_at ? Number(r.sent_at) : null, via: r.via, updated: Number(r.updated) }; }
+function ivOf(r) { return r && { id: r.id, session: r.session, turn: r.turn, at: Number(r.at), title: r.title, intro: r.intro || "", purpose: r.purpose || "", questions: parse(r.questions, []), answers: parse(r.answers, {}), step: Number(r.step) || 0, status: r.status, posted_at: r.posted_at ? Number(r.posted_at) : null, message: r.message || null, sent_at: r.sent_at ? Number(r.sent_at) : null, via: r.via, updated: Number(r.updated) }; }
 // What the app and the card page render (plain JSON).
-export function ivView(r) {
+export function ivView(r, sql = null) {
   const iv = typeof r?.questions === "string" ? ivOf(r) : r; if (!iv) return null;
+  let question = null;
+  if (sql && !iv.posted_at) {
+    try { question = sql.exec("SELECT status,answer_text FROM user_questions WHERE source_turn=? AND session=?", String(iv.turn), String(iv.session)).toArray()[0]; }
+    catch (e) { if (!/no such table.*user_questions/i.test(String(e.message))) throw e; }
+  }
+  const terminal = question && question.status !== "pending" && !(question.status === "answered" && iv.status === "sent" && question.answer_text === iv.message);
+  const closed = terminal ? { status: "closed", closed_reason: question.status === "answered" ? "answered_elsewhere" : question.status, closed_note: question.status === "answered" ? "Answered in chat" : "No longer needed" } : {};
   return { id: iv.id, session: iv.session, at: iv.at, title: iv.title, intro: iv.intro, purpose: iv.purpose, questions: iv.questions, answers: iv.answers,
-    step: Math.min(iv.step, iv.questions.length), total: iv.questions.length, status: iv.status, sent_at: iv.sent_at, answered: answeredCount(iv), updated: iv.updated, limits: { answer: LIM.answer } };
+    step: Math.min(iv.step, iv.questions.length), total: iv.questions.length, status: iv.status, posted: !!iv.posted_at, sent_at: iv.sent_at, answered: answeredCount(iv), updated: iv.updated, limits: { answer: LIM.answer }, ...closed };
 }
 // sessionDetail: each turn gets the interviews its helper showed (one query per task).
 export function attachInterviews(sql, session, turns, live) {
   const rows = sql.exec("SELECT * FROM chat_interviews WHERE session=? ORDER BY at", String(session)).toArray(); if (!rows.length) return;
-  const by = {}; for (const r of rows) (by[r.turn] ||= []).push(ivView(r));
+  const by = {}; for (const r of rows) (by[r.turn] ||= []).push(ivView(r, sql));
   for (const t of turns) if (by[t.id]) t.interviews = by[t.id];
   if (live && by[live.turn]) live.interviews = by[live.turn];
 }
@@ -153,7 +164,7 @@ export async function interviewTool(R, a, ctx = {}) {
     id, ctx.session, ctx.turn || null, now, iv.title, iv.intro, iv.purpose, JSON.stringify(iv.questions), "{}", 0, "open", via, now);
   R.sql.exec("UPDATE sessions SET waiting='interview' WHERE id=?", ctx.session);   // "Waiting on your answers" (cleared by their next message)
   ctx.line = "putting together a few questions"; ctx.emit?.({ t: "status", line: ctx.line });
-  ctx.emit?.({ t: "interview", interview: ivView(ivRow(R.sql, id)) });
+  ctx.emit?.({ t: "interview", interview: ivView(ivRow(R.sql, id), R.sql) });
   const n = iv.questions.length;
   return `The interview "${iv.title}" (${n} questions) is now on the person's screen as a card in this chat${via === "text" ? ", and it goes to their phone as a card they can tap right after your reply" : ""}. They answer at their own pace and can skip any question. Their answers will arrive as their next message, starting "${IV_PREFIX}${iv.title}:". End your turn now with one short, friendly line (don't repeat or answer the questions yourself). When the answers arrive, act on them and say briefly what changed.`;
 }
@@ -162,7 +173,12 @@ export async function interviewTool(R, a, ctx = {}) {
 export async function interviewOp(R, id, b = {}, { post = "" } = {}) {
   const r = ivRow(R.sql, id); if (!r) return { error: "No such interview.", status: 404 };
   const iv = ivOf(r), n = iv.questions.length, op = String(b.op || "");
-  if (iv.status !== "open") return { error: "already_sent", status: 409, interview: ivView(iv) };
+  const current = ivView(r, R.sql);
+  if (current.status === "closed") return { error: "question_closed", status: 409, interview: current };
+  if (iv.status !== "open") {
+    if (op === "send" && post) return submitAnswers(R, r, iv);
+    return { error: "already_sent", status: 409, interview: ivView(iv, R.sql) };
+  }
   const stepOf = (x, d) => { const s = Number(x); return Number.isFinite(s) ? Math.max(0, Math.min(n, Math.round(s))) : d; };
   if (op === "answer" || op === "skip") {
     const q = iv.questions.find((x) => x.id === String(b.q)); if (!q) return { error: "No such question.", status: 400 };
@@ -174,21 +190,33 @@ export async function interviewOp(R, id, b = {}, { post = "" } = {}) {
   else if (op === "send") {
     const message = formatAnswers(iv), now = Date.now();
     R.sql.exec("UPDATE chat_interviews SET status='sent', sent_at=?, message=?, step=?, updated=? WHERE id=? AND status='open'", now, message, n, now, id);
-    const view = ivView(ivRow(R.sql, id));
-    if (post) await postAnswers(R, iv, message).catch((e) => console.log("interview post", e.message));
+    const view = ivView(ivRow(R.sql, id), R.sql);
+    if (post) return submitAnswers(R, ivRow(R.sql, id), ivOf(ivRow(R.sql, id)));
     return { interview: view, message };
   } else return { error: "op must be answer, skip, goto or send", status: 400 };
   R.sql.exec("UPDATE chat_interviews SET answers=?, step=?, updated=? WHERE id=?", JSON.stringify(iv.answers), iv.step, Date.now(), id);
-  return { interview: ivView(ivRow(R.sql, id)) };
+  return { interview: ivView(ivRow(R.sql, id), R.sql) };
 }
-// From the card page inside Messages: the answers become the person's next message here. Texting on → a text turn (the reply
-// goes back by text, like any text). Off → a turn in the interview's own task (the reply shows in the app).
+// Sending from either UI is a server operation. The stored interview supplies the original task and turn.
+async function submitAnswers(R, row, iv) {
+  const message = row.message || formatAnswers(iv);
+  if (row.posted_at) return { interview: ivView(row, R.sql), message, posted: true, duplicate: true };
+  let result;
+  try { result = await postAnswers(R, iv, message); }
+  catch (e) { console.log("interview post", e.message); return { error: "Your answers could not be saved. Please try Send answers again.", status: 503, interview: ivView(row, R.sql) }; }
+  if (!result?.ok) {
+    const view = ivView(row, R.sql);
+    return { error: view.status === "closed" ? "question_closed" : result?.error || "Your answers could not be saved.", status: result?.status || 409, interview: view };
+  }
+  R.sql.exec("UPDATE chat_interviews SET posted_at=? WHERE id=?", Date.now(), iv.id);
+  return { interview: ivView(ivRow(R.sql, iv.id), R.sql), message, posted: true, ...(result.duplicate ? { duplicate: true } : {}) };
+}
 async function postAnswers(R, iv, message) {
   const tenant = R.get("tenant"), channel = R.get("channel"), channelId = R.get("channel_id");
+  const source = await R.inputSource(tenant, channel, channelId, String(iv.turn));
+  if (!source?.ok || String(source.session) !== String(iv.session)) return { error: source?.error || "This interview's task is no longer available.", status: source?.status || 410 };
   const tx = await R.env.DB.prepare("SELECT status FROM texting WHERE tenant_id=?").bind(tenant).first().catch(() => null);
-  if (tx?.status === "connected" && iv.via === "text") return R.textTurn(tenant, channel, channelId, message);
-  const s = await R.chatStream(tenant, channel, channelId, message, { session: iv.session });
-  if (s && typeof s.cancel === "function") s.cancel().catch(() => {});   // nobody watches this stream; the turn runs (and is saved) anyway
+  return R.inputReply(tenant, channel, channelId, iv.session, message, { source_turn: String(iv.turn), response_id: `interview:${iv.id}`, ...(source.input_request?.question_id ? { question_id: source.input_request.question_id } : {}) }, { viaText: tx?.status === "connected" && iv.via === "text", origin: { surface: "interview" } });
 }
 
 // ---- By text: the card follows the reply. ----
@@ -221,7 +249,7 @@ export async function interviewChatApi(req, env, t, m, { json, access, archive }
   if (req.method === "GET") { const v = await R.interviewView(m[2]); return v ? json({ interview: v }) : json({ error: "No such interview." }, 404); }
   if (req.method !== "POST") return json({ error: "method" }, 405);
   if (access?.mode === "read_only") return json({ error: "payment_required", message: access.message || "Your 1Helm plan isn't active, so 1Helm is read-only.", access }, 402);
-  const b = await boundedJson(req); const d = await R.interviewOp(m[2], b);
+  const b = await boundedJson(req); const d = await R.interviewOp(m[2], b, { post: b.op === "send" ? "app" : "" });
   return json(d, d.error ? d.status || 400 : 200);
 }
 

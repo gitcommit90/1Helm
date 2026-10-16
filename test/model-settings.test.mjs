@@ -66,7 +66,7 @@ const save = async (config, e = env) => { const v = await saveModelSettings(e, {
 { const cfg = clone(SEED); cfg.jobs["chat.general"] = { model: ID.LUNA, effort: "low", fallbacks: [{ model: ID.HAIKU, effort: "medium" }] };
   const v = await save(cfg); assert.equal(v.revision, 2); assert.deepEqual(v.config.jobs["chat.general"], cfg.jobs["chat.general"]);
   assert.equal(v.history[0].action, "save"); assert.equal(v.history[0].by, "unit@example.com");
-  assert.equal(v.options.groups.length, 7); assert.ok(v.options.choices.chat.some((m) => m.id === ID.LUNA));
+  assert.equal(v.options.groups.length, 6); assert.ok(v.options.choices.chat.some((m) => m.id === ID.LUNA));
   await assert.rejects(saveModelSettings(env, { revision: 1, config: cfg }, "other"), (e) => e.status === 409);
   const writes = await Promise.allSettled([saveModelSettings(env, { revision, config: cfg }, "a"), saveModelSettings(env, { revision, config: cfg }, "b")]);
   assert.equal(writes.filter((r) => r.status === "fulfilled").length, 1); assert.equal(writes.find((r) => r.status === "rejected").reason.status, 409); revision++;

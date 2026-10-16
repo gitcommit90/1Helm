@@ -10,6 +10,7 @@
 // Two ways to paint: renderCard() returns HTML for a host that already morphs its thread in place (v3.ts), or
 // paintCard(el, …) patches one element in place itself. Either way, streaming never rebuilds existing nodes.
 // Rules (1HC.md 09-29): unknown or broken parts render nothing, never raw code; every card has a plain-text form.
+import { responseId } from "./input-reply";
 import { createStreamingParser, createParser } from "@openuidev/lang-core";
 
 // ── The component library the AI may use (positional args follow this key order). Same as genui.ts. ──
@@ -242,7 +243,7 @@ export function plainPreview(s: string) {
 }
 
 // ── 4. Interaction state, per card (client-side until it's sent) and what a later reply says was picked ──
-type St = { vals: Record<string, any> };
+type St = { vals: Record<string, any>; response_id?: string };
 const STATE = new Map<string, St>();
 const hash = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
 const all = (n: any, type: string, out: Node[] = []): Node[] => {
@@ -294,7 +295,7 @@ function r(n: any, c: R): string {
     }
     case "Buttons": { const h = r(arr(p.buttons), c); return h ? `<div class="gu-btns${IN(c)}">${h}</div>` : ""; }
     case "Button": { const label = str(p.label); if (!label) return ""; const on = c.act === `b:${label}`, v = ["primary", "secondary", "ghost"].includes(p.variant) ? p.variant : "secondary";
-      const act = str(p.action).trim().slice(0, 40);   // the host acts on a few ids before sending (share_location: the browser's location first)
+      const act = str(p.action).trim().slice(0, 100);   // the host acts on a few ids before sending (share_location: the browser's location first)
       return `<button type="button" class="gu-b ${v}${on ? " picked" : ""}" data-gbtn="${esc(label)}"${act ? ` data-gact="${esc(act)}"` : ""}${dis(c)}>${on ? "✓ " : ""}${esc(label)}</button>`; }
     case "Form": { const name = str(p.name), on = c.act === `f:${name}`, sub = str(p.submit), h = r(arr(p.fields), c); if (!h && !sub) return "";
       return `<div class="gu-form${IN(c)}">${h}${sub ? `<div class="gu-btns"><button type="button" class="gu-b primary${on ? " picked" : ""}" data-gsub="${esc(name)}"${dis(c)}>${on ? "✓ " : ""}${esc(sub)}</button></div>` : ""}</div>`; }
@@ -326,6 +327,7 @@ function r(n: any, c: R): string {
 // What the click handler needs to turn a tap into a message.
 type Reg = { root: any; ref: any; s: St };
 const REG = new Map<string, Reg>();
+const SENDING = new Set<string>();
 export type Out = { html: string } | { text: string } | null;
 /**
  * Render a card body. Returns {html} for cards, {text} for the plain-text fallback (the caller paints it as markdown),
@@ -417,20 +419,24 @@ function msgFor(g: Reg, t: HTMLElement): string | null {
   return null;
 }
 /** Wire taps once per page. onSend(ref, text): send `text` as the person's message. onChange(ref): repaint that card. */
-export function wireCards(h: { onSend: (ref: any, text: string, meta?: { action?: string }) => void; onChange: (ref: any) => void }) {
+export function wireCards(h: { onSend: (ref: any, text: string, meta?: { action?: string; response_id?: string }) => void | Promise<void>; onChange: (ref: any) => void }) {
   watchSkips();
   document.addEventListener("click", (e) => {
     const sk = (e.target as HTMLElement).closest<HTMLElement>("[data-gskip]");
     if (sk) { const b = sk.closest<HTMLElement>("[data-guk]"); if (b?.classList.contains("gu-skip")) { const k = b.dataset.guk!, on = !OPEN.has(k); on ? OPEN.add(k) : OPEN.delete(k); b.classList.toggle("open", on); sk.setAttribute("aria-expanded", String(on)); } return; }
     const t = (e.target as HTMLElement).closest<HTMLElement>("[data-gset],[data-gbtn],[data-gsub],[data-ginc],[data-gchip]"); if (!t) return;
-    const box = t.closest<HTMLElement>("[data-guk]"), g = box && REG.get(box.dataset.guk!); if (!g || box!.classList.contains("locked") || (t as HTMLButtonElement).disabled) return;
+    const box = t.closest<HTMLElement>("[data-guk]"), g = box && REG.get(box.dataset.guk!); if (!g || SENDING.has(box!.dataset.guk!) || box!.classList.contains("locked") || (t as HTMLButtonElement).disabled) return;
     e.preventDefault(); const s = g.s;
     if (t.dataset.gset) { s.vals[t.dataset.gset] = t.dataset.v; h.onChange(g.ref); return; }
     if (t.dataset.ginc) { const n = t.dataset.ginc, v = (+s.vals[n] || 0) + +t.dataset.d!; if ((t.dataset.min == null || v >= +t.dataset.min) && (t.dataset.max == null || v <= +t.dataset.max)) { s.vals[n] = v; h.onChange(g.ref); } return; }
     if (t.dataset.gchip) { const n = t.dataset.gchip, v = t.dataset.v!;
       if (t.dataset.multi) { const a = new Set<string>(arr(s.vals[n])); if (/^(not this time|no |none)/i.test(v)) a.clear(); else for (const x of [...a]) if (/^(not this time|no |none)/i.test(x)) a.delete(x); a.has(v) ? a.delete(v) : a.add(v); s.vals[n] = [...a]; }
       else s.vals[n] = v; h.onChange(g.ref); return; }
-    const m = msgFor(g, t); if (m) h.onSend(g.ref, m, { action: t.dataset.gact || "" });
+    const m = msgFor(g, t); if (m) {
+      const key = box!.dataset.guk!; SENDING.add(key); box!.setAttribute("aria-busy", "true");
+      const clear = () => { SENDING.delete(key); box!.removeAttribute("aria-busy"); };
+      try { Promise.resolve(h.onSend(g.ref, m, { action: t.dataset.gact || "", response_id: g.s.response_id ||= responseId() })).catch(() => {}).finally(clear); } catch { clear(); }
+    }
   });
   document.addEventListener("input", (e) => {
     const t = e.target as HTMLInputElement; if (!t.dataset?.gin) return;

@@ -300,26 +300,49 @@ writeCore(j,req).then(out,(e)=>out({status:0,error:String(e&&e.message||e).slice
 async function beeUp(dobj, what = "the Bee job's container") {
   const ctx = dobj.ctx; let cold = false;
   dobj.put("role", "bee");
-  if (!ctx.container.running) { ctx.container.start({ entrypoint: ["bash", "-c", "trap 'exit 0' TERM INT; while true; do sleep 3600 & wait $!; done"], enableInternet: true }); cold = true; }
+  if (!ctx.container.running) {
+    // BeeContainer (bee-container.js) supplies its own start, which restores a snapshot under the durable_object policy.
+    if (typeof dobj.beeStart === "function") await dobj.beeStart();
+    else ctx.container.start({ entrypoint: ["bash", "-c", "trap 'exit 0' TERM INT; while true; do sleep 3600 & wait $!; done"], enableInternet: true });
+    cold = true;
+  }
   let up = false;
   for (let i = 0; i < 80 && !up; i++) { try { up = (await (await ctx.container.exec(["true"], { stderr: "combined" })).output()).exitCode === 0; } catch { await new Promise((z) => setTimeout(z, 250)); } }
   if (!up) throw new Error(`${what} didn't start`);
   return cold;
 }
+// Which Durable Object class runs Bee jobs. BEE_SNAPSHOTS unset or "off" = the Computer class (today's behavior). "on" = BeeContainer
+// (durable_object scheduling policy, restores a snapshot), only where that binding exists (dev).
+export const beeSnapshotsOn = (env) => env?.BEE_SNAPSHOTS === "on" && !!env?.BEE_CONTAINER;
+export const beeBinding = (env) => beeSnapshotsOn(env) ? env.BEE_CONTAINER : env.COMPUTER;
+export const beeJobStub = (env, tenantId) => { const b = beeBinding(env); return b.get(b.idFromName(`beejob:${tenantId}`)); };
+// When the container stops after a job. BEE_IDLE unset or "tail" = today's behavior (a JOB_IDLE_MS tail, and an immediate stop only
+// when the job says stop). "queue" = stop as soon as no job is queued and no Live chunk runs. "queue:<seconds>" = the same after that grace.
+export function beeIdlePolicy(value) {
+  const v = String(value ?? "").trim().toLowerCase();
+  if (v === "queue") return { mode: "queue", graceMs: 0 };
+  const m = /^queue:(\d{1,3})$/.exec(v);
+  if (m) return { mode: "queue", graceMs: Number(m[1]) * 1000 };
+  return { mode: "tail", graceMs: JOB_IDLE_MS };
+}
+const idleOf = (dobj) => beeIdlePolicy(typeof dobj.beeIdleValue === "function" ? dobj.beeIdleValue() : dobj.env?.BEE_IDLE);
 const liveBusy = (dobj) => !!(dobj._live && !dobj._live.done);
 export function beeJobOn(dobj, input) {
   dobj._beeN = (dobj._beeN || 0) + 1;
   const run = async () => {
     const ctx = dobj.ctx, t0 = now();
     const cold = await beeUp(dobj);
-    const sync = input?.kind === "sync", facts = input?.kind === "facts", probe = input?.kind === "liveprobe", { kind: _k, stop: _s, ...job } = input || {};
-    const p = await ctx.container.exec(["node", "-e", sync ? SYNC_JS : facts ? WRITE_JS : probe ? LIVE_JS : JOB_JS], { stdin: new Response(JSON.stringify(probe ? { ...job, probe: true } : job)).body, stderr: "combined" });
+    const sync = input?.kind === "sync", facts = input?.kind === "facts", probe = input?.kind === "liveprobe", { kind: _k, stop: _s, bench: _b, ...job } = input || {};
+    // Container benchmark only (dev with TEST_MODE): the script's stdin is the given text, so a script can be run on input it rejects before any network call.
+    const raw = typeof input?.bench?.stdin === "string" && dobj.env?.ENV_NAME === "dev" && String(dobj.env?.TEST_MODE) === "1" ? input.bench.stdin.slice(0, 1024) : null;
+    const p = await ctx.container.exec(["node", "-e", sync ? SYNC_JS : facts ? WRITE_JS : probe ? LIVE_JS : JOB_JS], { stdin: new Response(raw ?? JSON.stringify(probe ? { ...job, probe: true } : job)).body, stderr: "combined" });
     const kill = setTimeout(() => { try { p.kill(9); } catch {} }, sync ? SYNC_KILL_MS : 90e3);
     const o = await p.output(); clearTimeout(kill);
     const ms = now() - t0;
     let stopped = false;
-    if (input?.stop && dobj._beeN <= 1 && !liveBusy(dobj)) { try { await ctx.container.destroy("bee sync done"); stopped = true; } catch {} }   // a Live notes job keeps it up
-    if (!stopped) { dobj.put("bee_last", now()); await ctx.storage.setAlarm(now() + JOB_IDLE_MS); }
+    const idle = idleOf(dobj), alone = dobj._beeN <= 1 && !liveBusy(dobj);   // a queued job or a Live notes job keeps it up
+    if (alone && (input?.stop || (idle.mode === "queue" && idle.graceMs === 0))) { try { await ctx.container.destroy("bee sync done"); stopped = true; } catch {} }
+    if (!stopped) { dobj.put("bee_last", now()); await ctx.storage.setAlarm(now() + idle.graceMs); }
     const line = new TextDecoder().decode(o.stdout).split("\n").find((l) => l.startsWith(JOB_MARK));
     let r; try { r = JSON.parse(line.slice(JOB_MARK.length)); } catch { r = { status: 0, error: `job exited ${o.exitCode} without an answer` }; }
     return { ...r, ms, cold, stopped };
@@ -333,9 +356,10 @@ export const SYNC_KILL_MS = 120e3;
 export async function beeJobAlarm(dobj) {
   const last = Number(dobj.get("bee_last") || 0);
   if (!dobj.ctx.container.running) return;
-  if (liveBusy(dobj)) { await dobj.ctx.storage.setAlarm(now() + JOB_IDLE_MS); return; }   // Live notes is polling: not idle
-  if (now() - last >= JOB_IDLE_MS - 1000) { await dobj.ctx.container.destroy("bee job idle"); return; }
-  await dobj.ctx.storage.setAlarm(last + JOB_IDLE_MS);
+  const idle = idleOf(dobj);
+  if (liveBusy(dobj) || (idle.mode === "queue" && dobj._beeN > 0)) { await dobj.ctx.storage.setAlarm(now() + Math.max(idle.graceMs, 1000)); return; }   // Live notes is polling (or, under the queue policy, a job is queued): not idle
+  if (now() - last >= idle.graceMs - 1000) { await dobj.ctx.container.destroy("bee job idle"); return; }
+  await dobj.ctx.storage.setAlarm(last + idle.graceMs);
 }
 // ---- Live notes (SPEC §9.2-9.3): the polling job ----
 // LIVE_CORE is plain JS text like SYNC_CORE (runs in the container, and in the tests against a fake Bee). One job = one chunk of at
@@ -546,7 +570,10 @@ export async function beeLiveOn(dobj, input, deps = {}) {
     return { ok: true, ms, why, lines: L.lines, v: LIVE_V };
   } finally {
     L.done = true; if (dobj._live === L) dobj._live = null;
-    try { dobj.put("bee_last", now()); await dobj.ctx.storage.setAlarm(now() + JOB_IDLE_MS); } catch {}
+    try {
+      // Live notes keeps its container between chunks under every policy: the next chunk follows at once.
+      dobj.put("bee_last", now()); await dobj.ctx.storage.setAlarm(now() + Math.max(idleOf(dobj).graceMs, JOB_IDLE_MS));
+    } catch {}
   }
 }
 // Computer.beeLiveStop: the person stopped (or a cap): kill that run's job now.
@@ -556,25 +583,25 @@ export function beeLiveStopOn(dobj, run) {
 }
 // Worker side: /_ops/bee?live=probe (dev, read-only): ONE round of the job, the shapes only (no transcript text).
 export async function beeLiveProbe(env, tenantId, token) {
-  return env.COMPUTER.get(env.COMPUTER.idFromName(`beejob:${tenantId}`)).beeJob({ kind: "liveprobe", stop: true, token, v: LIVE_V, since: now() - 10 * 60e3, every: 1000, list_every: 1000, max_ms: 60e3, stream: true, probe_stream_ms: 10e3 });
+  return beeJobStub(env, tenantId).beeJob({ kind: "liveprobe", stop: true, token, v: LIVE_V, since: now() - 10 * 60e3, every: 1000, list_every: 1000, max_ms: 60e3, stream: true, probe_stream_ms: 10e3 });
 }
 const PATH_RE = /^\/v1\/[A-Za-z0-9_\-/]*(\?[A-Za-z0-9_=&%.\-]*)?$/;
 // Worker side: one Bee data API call for this workspace → { status, json, ms, cold } (status 0 = never reached Bee).
 export async function beeData(env, tenantId, token, method, path, body) {
   if (!PATH_RE.test(path)) throw new Error("not a Bee API path");
-  const r = await env.COMPUTER.get(env.COMPUTER.idFromName(`beejob:${tenantId}`)).beeJob({ token, method, path, ...(body != null ? { body } : {}) });
+  const r = await beeJobStub(env, tenantId).beeJob({ token, method, path, ...(body != null ? { body } : {}) });
   let json = null; try { json = r.body ? JSON.parse(r.body) : null; } catch {}
   return { status: Number(r.status) || 0, json, ms: r.ms, cold: !!r.cold, ...(r.error ? { error: r.error } : {}) };
 }
 
 // Worker side of one sync run: → the SYNC_CORE answer + { ms, cold, stopped } (status 0 = never reached Bee).
 export async function beeSyncJob(env, tenantId, token, { cursor = null, ids = [], max = 25, facts = null, only = null, from = null, catchup = null, cursor_at = null, stop = true } = {}) {
-  return env.COMPUTER.get(env.COMPUTER.idFromName(`beejob:${tenantId}`)).beeJob({ kind: "sync", stop, token, cursor, ids, max, ...(facts ? { facts } : {}), ...(only ? { only } : {}), ...(from != null ? { from } : {}),
+  return beeJobStub(env, tenantId).beeJob({ kind: "sync", stop, token, cursor, ids, max, ...(facts ? { facts } : {}), ...(only ? { only } : {}), ...(from != null ? { from } : {}),
     ...(catchup != null ? { catchup } : {}), ...(cursor_at != null ? { cursor_at } : {}) });
 }
 // Worker side of fact writes (WRITE_CORE): → {status, results[]} + {ms, cold, stopped}.
 export async function beeFactsJob(env, tenantId, token, ops) {
-  return env.COMPUTER.get(env.COMPUTER.idFromName(`beejob:${tenantId}`)).beeJob({ kind: "facts", stop: true, token, ops });
+  return beeJobStub(env, tenantId).beeJob({ kind: "facts", stop: true, token, ops });
 }
 
 // ---- state ----

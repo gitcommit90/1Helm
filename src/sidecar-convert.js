@@ -24,7 +24,7 @@ export const MD_MAX_CHARS = 4_000_000;                    // the Markdown kept (
 const OFFICE = { doc: "doc", docx: "docx", docm: "docx", dotx: "docx", odt: "odt", rtf: "rtf", epub: "epub", ppt: "ppt", pptx: "pptx", pptm: "pptx", ppsx: "pptx", pps: "ppt", odp: "odp",
   xlsx: "xlsx", xlsm: "xlsx", xls: null, ods: "ods", csv: "csv", tsv: "csv", pdf: "pdf" };
 const TEXT_EXT = new Set(["txt", "md", "markdown", "json", "html", "htm", "xml", "ics", "py", "js", "ts", "log", "yaml", "yml", "sql", "sh", "css", "vtt", "srt"]);
-const AUDIO_EXT = new Set(["mp3", "m4a", "wav", "ogg", "oga", "opus", "flac", "aac", "weba", "amr"]);
+const AUDIO_EXT = new Set(["mp3", "m4a", "wav", "ogg", "oga", "opus", "flac", "aac", "weba", "amr", "caf"]);
 const VIDEO_EXT = new Set(["mp4", "mov", "m4v", "webm", "mkv", "avi", "3gp"]);
 const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tif", "tiff"]);
 const extOf = (n) => (String(n).match(/\.([a-z0-9]{1,8})$/i)?.[1] || "").toLowerCase();

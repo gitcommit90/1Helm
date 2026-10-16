@@ -7,6 +7,7 @@ import { unsavedKind, guarded } from "./unsaved";   // second: "Save changes?" b
 import { dedupeProgress, splitParts, finishReply } from "./progress-dedupe";
 import { progressSlot, progressWorked, progressReset, progressSnapshot, progressBefore, progressAfter } from "./progress-slot";
 import { bindTouchSwipe, bindSheetDismiss, gestureControl, gestureValueControl, scrollerOwns } from "./mobile-gestures";
+import "./mobile-viewport";
 import { rpInit, rpMailto } from "./report";
 import { piKind, piOn, piInstall, piLabel, piSub, PI_ICON } from "./pwainstall";   // Install 1Helm as an app: catches beforeinstallprompt at import, before the UI renders   // Report an issue (its sheet's Esc, too; and it keeps the last log lines from the start)
 import { beeInit, beeOverview, beeSec, beeMark } from "./ee/bee";
@@ -48,7 +49,8 @@ import { lnBtn, lnSet, lnSync, lnInit, lnWrap, lnDot, lnRefineCard, lnStartFor, 
 import { mtInit } from "./ee/meetings";   // Meeting reminders for notes: "Your 2:00 “Weekly sync” is starting. Take notes?"   // Bee Live notes: header button, split view, chip, presence
 import { streamNote } from "./clientlog";   // stream lost / re-attached lines (dev only)
 import { streamState, streamLease, streamCurrent, streamRelease, streamInvalidate, streamProgress, streamCheckDue, streamFetch, streamErrorBody, readStream, type Lease } from "./stream-recovery";
-import { tkInit, tkLoad, tkEvent, tkOn, tkLiveCard, tkBtn, tkWrap, tkSync, tkChip, tkLiveSteps, tkCardLink, tkMsgOf, tkCardView, tkHelperCount, type EventView } from "./tracker";
+import { orb, type ActivityState } from "./activity-orb";
+import { tkInit, tkLoad, tkEvent, tkOn, tkLiveCard, tkBtn, tkWrap, tkSync, tkChip, tkLiveSteps, tkCardLink, tkMsgOf, tkCardView, tkHelperCount, tkActivity, type EventView } from "./tracker";
 import { dictBtn, dictInit } from "./dictate";
 import { slBtn, slInit, slGate, slSchedule, slBubbles, slSentNote, slSet } from "./send-later";
 import { schInit, schPage, schPaint, schAfter, schRedirect, isSch, schSec } from "./scheduled";   // the one Scheduled view (repeats, follow-ups, send later)
@@ -56,6 +58,7 @@ import { logoOver, logoChip, workDomain, appLogo, logoWarm } from "./logo";
 import { ivInit, ivSet, ivIs, ivView } from "./interview";
 import { apkRegister, apkHtml, apkReset, type AppOpt } from "./ee/apps-pick";   // Settings → Connected accounts → Apps I use
 import { ivcHtml } from "./interview-card";
+import { replyBinding, responseId, type InputRequest, type InputReply } from "./input-reply";
 import { offerCardHtml, offerFold, cxoInit, cxoUpdate, cxoFrom, cxoBoot, cxoDraftHtml, type OfferCard } from "./ee/connect-card";
 import { planInit, planAttach, planEvent, planCardHtml, planBriefs, briefMsgHtml } from "./plan-live";   // plan cards (propose_plan)
 import { bcxInit, bcxUsage } from "./ee/cancel";
@@ -117,7 +120,7 @@ let INITIALS = initialsOf(PERSON);
 const seed: any = BOOT ? { captured: Date.now(), channels: BOOT.channels.map((c: any) => ({ id: c.id, slug: c.slug, name: c.name, purpose: c.purpose, memory: c.memory || [], notes: c.notes || [], jobs: c.jobs || [],
   sessions: c.sessions.map((v: any) => ({ id: v.id, title: v.title, status: v.state === "waiting" ? "waiting" : v.state === "watching" ? "open" : "resolved", state: v.state === "working" ? "working" : "idle", updated: v.updated, messages: [], srv: v, pinned: v.pinned, done: v.done, unread: v.unread })) })) } : seedMock;
 
-type Msg = { id: number; role: "user" | "agent"; body: string; at: number; steps: string[]; pre?: string[]; prog?: string[]; progressOmitted?: number; cards?: any[]; note?: string; files?: FileV[]; saved?: Saved[] };
+type Msg = { id: number; role: "user" | "agent"; body: string; at: number; steps: string[]; pre?: string[]; prog?: string[]; progressOmitted?: number; cards?: any[]; input_request?: InputRequest; note?: string; files?: FileV[]; saved?: Saved[] };
 // Where a remember really saved, from the server (proto src/saved-to.js): the "Added to …" chips under the reply.
 type Saved = { to: "notebook" | "contact" | "memory" | "account"; channel?: string; sec?: string; text?: string; name?: string; fields?: string[] };
 type FileV = { id: string; name: string; mime: string; bytes: number; at: number; source?: string; session?: string | null; image?: boolean; tags?: string[] };
@@ -885,8 +888,8 @@ function fvPaint() {
     <div class="fvbody" id="fvbody">${k === "image" ? `<img class="fvimg" src="${u}" alt="${esc(f.name)}" draggable="false">`
       : k === "video" ? `<video src="${u}" controls playsinline autoplay></video>` : k === "audio" ? `<div class="fvaud"><span class="aico k-doc">${I(kd, 28)}</span><audio src="${u}" controls autoplay></audio></div>`
       : k === "other" ? `<div class="fvnonebox"><span class="aico k-${fkind(f.name, f.mime)}">${I(kd, 30)}</span><b>${esc(f.name)}</b><p>There's no preview for this kind of file yet. Download it, or ask ${esc(who(channels.find(c => c.slug === f.slug)!))} to work with it; it's on its computer at <code>files/${esc(f.name)}</code>.</p><a class="fvdl" href="${fileUrl(f.slug, f.id, true)}" download>Download</a></div>`
-      : k === "deck" || k === "word" ? `<div class="fvload"><span class="typing"><i></i><i></i><i></i></span><p>Opening ${k === "deck" ? "the slides" : "the document"}…</p><p class="fvslow" hidden>The first time takes a few seconds.</p></div>`
-      : `<div class="fvload"><span class="typing"><i></i><i></i><i></i></span></div>`}</div>
+      : k === "deck" || k === "word" ? `<div class="fvload">${orb("working", false, "dark")}<p>Opening ${k === "deck" ? "the slides" : "the document"}…</p><p class="fvslow" hidden>The first time takes a few seconds.</p></div>`
+      : `<div class="fvload">${orb("working", false, "dark")}</div>`}</div>
     ${n > 1 ? `<button class="fvnav prev" data-fvn="-1" aria-label="Previous file"${FVS.i ? "" : " disabled"}>${I('<path d="m15 18-6-6 6-6"/>', 22)}</button><button class="fvnav next" data-fvn="1" aria-label="Next file"${FVS.i < n - 1 ? "" : " disabled"}>${I('<path d="m9 18 6-6-6-6"/>', 22)}</button><span class="fvcount">${FVS.i + 1} of ${n}</span>` : ""}</div>`;
   const body = document.getElementById("fvbody")!;
   if (f.transcript) fetch(u, { credentials: "same-origin", cache: "no-store" }).then(r => { if (!r.ok) throw new Error(r.status === 404 ? "This transcript is no longer available." : "Couldn't load the transcript. Please try again."); return r.json(); }).then(data => {
@@ -992,7 +995,7 @@ if (LIVE) {
       const nv = t.closest<HTMLElement>("[data-fvn]"); if (nv) { e.preventDefault(); FVS.i = Math.max(0, Math.min(FVS.list.length - 1, FVS.i + +nv.dataset.fvn!)); fvPaint(); return; }
       const z = t.closest<HTMLElement>("[data-fvz]"); if (z) { e.preventDefault(); fvZoom(+z.dataset.fvz!); return; }
       const sl = t.closest<HTMLElement>("[data-fvs]"); if (sl) { e.preventDefault(); FVS.slide?.(+sl.dataset.fvs!); return; }
-      if (t.closest("[data-fvretry]")) { e.preventDefault(); const f = FVS.list[FVS.i], k = fvKind(f), body = document.getElementById("fvbody"); if (body && (k === "deck" || k === "word")) { const gen = ++FVS.gen; body.innerHTML = `<div class="fvload"><span class="typing"><i></i><i></i><i></i></span><p>Trying again…</p></div>`; fvOffice(f, fileUrl(f.slug, f.id), body, gen, k === "deck", true); } return; }
+      if (t.closest("[data-fvretry]")) { e.preventDefault(); const f = FVS.list[FVS.i], k = fvKind(f), body = document.getElementById("fvbody"); if (body && (k === "deck" || k === "word")) { const gen = ++FVS.gen; body.innerHTML = `<div class="fvload">${orb("working", false, "dark")}<p>Trying again…</p></div>`; fvOffice(f, fileUrl(f.slug, f.id), body, gen, k === "deck", true); } return; }
       if (t.classList.contains("fvimg")) { if (FVS.zoom > 1) fvZoom(0); else { fvZoom(1); fvZoom(1); fvZoom(1); } return; }   // tap a picture: 2× / back to fit
       if (t.classList.contains("fvbody") || t.classList.contains("fvload") || t.classList.contains("fvslide")) { closeFile(); return; }
       return;
@@ -1289,27 +1292,60 @@ const composer = (ph: string) => `<div class="ups" id="ups-box">${upsHtml("box")
   ${LIVE ? slBtn("box") + dictBtn("box", ic.mic) : cb("mic", "Talk", ic.mic, " mic")}
   <button id="go" disabled aria-label="Send">${ic.up}</button>${LIVE ? composerStop() : ""}</form>`;
 // A reply part: cards when it's OpenUI Lang (genui-render.ts), else today's markdown bubble (after the code safety net). Prose
-// followed by code lines becomes a bubble plus cards. While streaming, text that may still turn into a card shows the typing
-// dots, so code never flashes on screen.
+// followed by code lines becomes a bubble plus cards. Partial code stays hidden
+// while the independent Primary activity row indicates the turn is still working.
 const PRE_OWNERS = new WeakMap<Msg, object[]>(), PRE_OWNER = (m: Msg, j: number) => ((PRE_OWNERS.get(m) ?? (PRE_OWNERS.set(m, []), PRE_OWNERS.get(m)!))[j] ??= {});
-const TYPING = `<div class="bubble"><div class="body"><span class="typing"><i></i><i></i><i></i></span></div></div>`;
+// Activity belongs to the ongoing turn, never to a blank or partial reply.
+// Required worker-only routing reports working without a Primary stream/line;
+// its workers have their own persistent indicators below this row.
+function primaryWorking(s: Session) {
+  if (s.state !== "working") return false; // includes confirmed user/approval waits
+  if (s.streaming) return true;           // includes model waits and reconnects
+  return !(Number(s.srv?.helpers) > 0 && !s.rawLine && !s.srv?.line);
+}
+function primaryActivity(s: Session) {
+  if (!primaryWorking(s)) return `<div class="primary-activity" role="status"></div>`;
+  const line = String(s.rawLine || s.srv?.line || "");
+  const m = s.messages.findLast(m => m.role === "agent");
+  let state: ActivityState = "solving", label = "Thinking";
+  if (streamState(s).waiting) { state = "connecting"; label = streamState(s).waiting; }
+  else if (/reconnect|connecting|retry/i.test(line)) { state = "connecting"; label = "Reconnecting"; }
+  else if (/search|brows|looking up/i.test(line)) { state = "searching"; label = "Searching"; }
+  else if (/writ|compos|respond/i.test(line) || !!m?.body.trim()) { state = "composing"; label = "Responding"; }
+  else if (line && !/think|read|analy|reason/i.test(line)) { state = "working"; label = "Working"; }
+  return `<div class="primary-activity" role="status"><span class="typing-orb">${orb(state)}<span>${esc(label)}</span></span></div>`;
+}
 const MA_PARTS = new WeakMap<Msg, Map<string, string>>();
 function partHtml(text: string, ch: Channel, s: Session | undefined, owner: object, live: boolean, reply: string | undefined, pre = false, message?: Msg, part = "body") {
-  const t = text.trim(); if (!t) return pre ? "" : TYPING;
+  const t = text.trim(); if (!t) return "";
   if (LIVE && t === "Stopped.") return `<div class="stopped-note" role="status">${SQ}<span>Stopped by you</span></div>`;   // a task the person stopped (1HC stop.js)
   const bubble = (x: string, j: number) => { const y = scrubCode(x).trim(), key = `${part}-${j}`; if (!y) return "";
     if (message) MA_PARTS.get(message)!.set(key, y);
     const card = (message as TkMsg | undefined)?.card;
     return `<div class="bubble${pre ? " pre" : ""}${message ? maOpenCls(message.id, key) : ""}">${message ? maActs(message.id, key, LIVE && s && card && tkOn(ch.slug, s.id) ? card : "") : ""}<div class="body">${chatCodeHtml(chatMarkdown(y))}</div></div>`; };
   // Prose with code lines in it (or a code tail still streaming) paints part by part; a part that may still become code waits.
+  // An unrelated message does not dismiss a pending clarification card.
+  const request = message?.input_request;
+  const sourceTurn = (message as TkMsg | undefined)?.rid;
+  if (!request && message && sourceTurn) {
+    const following = (s?.messages as TkMsg[] | undefined)?.slice((s?.messages.indexOf(message) ?? -1) + 1);
+    const answer = following?.find(m => m.role === "user" && m.input_reply?.source_turn === sourceTurn);
+    const nextUser = following?.find(m => m.role === "user");
+    if (answer) reply = answer.body;
+    else if (nextUser?.input_reply) reply = undefined;
+  }
+  if (request) {
+    const answer = (s?.messages as TkMsg[] | undefined)?.find(m => m.role === "user" && m.input_reply?.question_id === request.question_id);
+    reply = answer?.body ?? (request.status === "pending" ? undefined : request.answer_text ?? reply ?? "");
+  }
   const ps = replyParts(t, live);
   return ps.map((p, j) => {
     if (p.k === "text") return bubble(p.s, j);
-    if (p.k === "pending") return j === ps.length - 1 ? TYPING : "";
-    const c = renderCard(p.s, { owner: partOwner(owner, j), ref: { ch, s }, sid: String(s?.id ?? ""), streaming: live, reply, file: n => cardFile(ch, n), icon: cardIcon });
-    if (c && "html" in c) return c.html || (live && j === ps.length - 1 ? TYPING : "");
+    if (p.k === "pending") return "";
+    const c = renderCard(p.s, { owner: partOwner(owner, j), ref: { ch, s, source_turn: (message as TkMsg | undefined)?.rid, input_request: message?.input_request }, sid: `${s?.id ?? ""}:${(message as TkMsg | undefined)?.rid || message?.id || ""}`, streaming: live, reply, file: n => cardFile(ch, n), icon: cardIcon });
+    if (c && "html" in c) return c.html || "";
     return c ? bubble(c.text, j) : "";
-  }).join("") || (live ? TYPING : "");
+  }).join("");
 }
 // File card: a file of that name in this channel's Library opens in the file viewer; otherwise it's a static card.
 function cardFile(ch: Channel, name: string) {
@@ -1323,7 +1359,7 @@ function msgsHtml(s: Session, ch: Channel) {
   settleBrowserCards(s);   // the live "using the browser" card goes once nothing is running, however the end was missed
   const next: (string | undefined)[] = []; let u: string | undefined;
   for (let i = s.messages.length - 1; i >= 0; i--) { next[i] = u; if (s.messages[i].role === "user") u = s.messages[i].body; }
-  return s.messages.map((m, i) => msgHtml(m, ch, s.messages[i - 1], !!s.streaming && i === s.messages.length - 1, s, next[i])).join("") + (LIVE && s.srv ? slBubbles(ch.slug, s.id) : "") + (LIVE && s.srv && !s.streaming && showCosts() ? usageNote(ch.slug, s.id) : "");
+  return s.messages.map((m, i) => msgHtml(m, ch, s.messages[i - 1], !!s.streaming && i === s.messages.length - 1, s, next[i])).join("") + primaryActivity(s) + (LIVE && s.srv ? tkActivity(ch.slug, s.id) + slBubbles(ch.slug, s.id) : "") + (LIVE && s.srv && !s.streaming && showCosts() ? usageNote(ch.slug, s.id) : "");
 }
 // The helper's reaction on a person's message (its react tool): a tapback badge on the bubble's top corner, like iMessage.
 // m.turn = the server's turn id (the stream's reaction event names it); m.reaction = love | like | dislike | laugh | emphasize | question.
@@ -1337,7 +1373,7 @@ function rxPop(m: Msg) {
 }
 // Tracker cards (tracker.ts): a person's message knows its client id and send state (a steer: sending → joined, or failed with
 // Retry); a reply knows its card (the finished-turn chip, the live steps' "Task card ›" link, "Show in chat").
-type TkMsg = RxMsg & { cid?: string; state?: "sending" | "joined" | "failed"; err?: string; card?: string; reply?: Pin | (Omit<Pin, "mr"> & { mr?: number }); rid?: string };
+type TkMsg = RxMsg & { input_reply?: InputReply; cid?: string; state?: "sending" | "joined" | "failed"; err?: string; card?: string; reply?: Pin | (Omit<Pin, "mr"> & { mr?: number }); rid?: string };
 // Copy + Reply target the text actually rendered in each bubble, including completed preambles during streaming.
 const rqKey = () => { const { ch, s } = route(); return s && !isLib() && !isNb() && !isCt() && !isSch() ? `${ch.slug}|${s.id}` : ""; };
 const srvId = (m: Msg): string | null => { const t = m as TkMsg; return (m.role === "user" ? t.turn : t.card || t.rid) || null; };
@@ -1365,7 +1401,7 @@ function msgHtml(m: Msg, ch: Channel, prev?: Msg, live = false, s?: Session, rep
   } else if (tkon && ["paused", "failed", "interrupted", "stopped"].includes(tkCardView(ch.slug, s!.id, tm.card)?.status || "")) steps = tkChip(ch.slug, s!.id, tm.card);
   const slot = progressSlot(m, live);
   return `<div class="m agent${first ? " first" : ""}" data-mr="${m.id}"${tkon ? ` data-card="${esc(tm.card!)}"` : ""} title="${clock(m.at)}">
-    <div class="reply-steps">${live && m.note ? `<div class="mnote">${esc(m.note)}</div>` : ""}${steps}</div><div class="reply-slot" data-progress-mode="${slot.mode}">${!live && !String(m.body || "").trim() && (m.cards || []).some(c => c.t === "lnrefine") ? "" : partHtml(slot.text, ch, s, m, live, reply, false, m, slot.part)}${live && m.pre?.length && !slot.text.trim() ? TYPING : ""}</div>${live ? `<div class="reply-history">${progNotes(m)}</div>` : ""}${tkon && !live && tkCardView(ch.slug, s!.id, tm.card)?.status === "paused" ? pausedNote(ch.slug, s!.id, tm.card!) : ""}${live ? ctUsed(m) + nbSaved(m, ch) : ""}${chatCards(m.cards || [], ch, reply)}</div>`;
+    <div class="reply-steps">${live && m.note ? `<div class="mnote">${esc(m.note)}</div>` : ""}${steps}</div><div class="reply-slot" data-progress-mode="${slot.mode}">${!live && !String(m.body || "").trim() && (m.cards || []).some(c => c.t === "lnrefine") ? "" : partHtml(slot.text, ch, s, m, live, reply, false, m, slot.part)}</div>${live ? `<div class="reply-history">${progNotes(m)}</div>` : ""}${tkon && !live && tkCardView(ch.slug, s!.id, tm.card)?.status === "paused" ? pausedNote(ch.slug, s!.id, tm.card!) : ""}${live ? ctUsed(m) + nbSaved(m, ch) : ""}${chatCards(m.cards || [], ch, reply)}</div>`;
 }
 
 document.addEventListener("click", e => {
@@ -1435,10 +1471,11 @@ function sandReply(ch: Channel, s: Session, text: string, rp: Pin | null = null)
 }
 // Cards in chat: a tap sends a normal message through the same path as typing it (the composer draft is left alone).
 wireCards({
-  onSend: ({ ch, s }: { ch: Channel; s?: Session }, text: string, meta?: { action?: string }) => { if (!s) return;
-    const go = () => { if (LIVE) liveReply(ch, s, text, [], true); else sandReply(ch, s, text); };
+  onSend: async ({ ch, s, source_turn, input_request }: { ch: Channel; s?: Session; source_turn?: string; input_request?: InputRequest }, text: string, meta?: { action?: string; response_id?: string }) => { if (!s) return;
+    const binding = replyBinding(s.srv?.pending_inputs || [], source_turn, input_request);
+    const go = () => { if (LIVE) liveReply(ch, s, text, [], true, undefined, null, { ...binding, response_id: meta?.response_id || responseId(), ...(meta?.action ? { action: meta.action } : {}) }); else sandReply(ch, s, text); };
     // "Share my location" (the helper's card button): the browser's location first (inside this tap), then the tap's words.
-    if (meta?.action === "share_location") { void dpShareNow().then(ok => { if (ok) go(); }); return; }
+    if (meta?.action === "share_location") { if (await dpShareNow()) go(); return; }
     go(); },
   onChange: ({ s }: { s?: Session }) => { if (s && route().s === s) paintChat(s); },
 });
@@ -2128,7 +2165,7 @@ document.addEventListener("click", e => {
     .catch(err => { CO.on = was; paint(); note(g("help", 14), "Couldn't save that", err.message || "Try again in a minute.", ""); })
     .finally(() => { CO.busy = false; });
 });
-const srow = (icon: string, title: string, sub: string, right: string, attrs = "") => `<div class="sr"${attrs}>${icon}<span class="srt"><b>${title}</b>${sub ? `<span>${sub}</span>` : ""}</span>${attrs.includes("data-soon") ? SP : ""}${right}</div>`;
+const srow = (icon: string, title: string, sub: string, right: string, attrs = "", tag: "div" | "a" = "div") => `<${tag} class="sr"${attrs}>${icon}<span class="srt"><b>${title}</b>${sub ? `<span>${sub}</span>` : ""}</span>${attrs.includes("data-soon") ? SP : ""}${right}</${tag}>`;
 const sa = (label: string, attr: string, cls = "") => { const k = attr.match(/data-snote="([^"]+)"/)?.[1]; return k && isSoon(k) ? `<button class="sa soonb${cls ? " " + cls : ""}" data-soon="${k}">${label}${SP}</button>` : `<button class="sa${cls ? " " + cls : ""}" ${attr}>${label}</button>`; };
 const chev = () => `<span class="schev">${ic.chev}</span>`;
 const nav = (k: string) => ` role="button" tabindex="0" data-sgo="${k}"`;
@@ -2643,7 +2680,7 @@ function liveLine(x: Session) {
   if (v.queued && !x.streaming) return "Waiting · starts when another task finishes";   // 3 tasks already working (spendguard.js)
   if (x.streaming && streamState(x).waiting) return streamState(x).waiting;
   if (x.streaming || x.state === "working") return `${w} is ${x.rawLine || v.line || "thinking"}…`;
-  if (v.state === "waiting") return v.waiting === "checkin" ? "Waiting on you · keep going or stop here" : v.waiting === "browser" ? "Waiting on you in the browser" : v.waiting === "link" ? "Waiting on you · approve the purchase in Link" : v.waiting === "plan" ? "Waiting on you · a plan to approve" : v.waiting === "interview" ? "Waiting on your answers" : v.waiting === "question" ? "Waiting on you · a question" : "Waiting on you · approve a request";
+  if (v.state === "waiting") return v.waiting === "checkin" ? "Waiting on you · keep going or stop here" : v.waiting === "browser" ? "Waiting on you in the browser" : v.waiting === "link" ? "Waiting on you · approve the purchase in Link" : v.waiting === "plan" ? "Waiting on you · a plan to approve" : v.waiting === "interview" ? "Waiting on your answers" : (v.waiting === "question" || v.waiting === "answer") ? "Waiting for your answer" : "Waiting on you · approve a request";
   if (v.state === "watching") return `Watching · ${v.jobs} scheduled ${v.jobs === 1 ? "check" : "checks"}`;
   // First real sentence of the latest reply ("1." or "Done!" alone isn't useful), capped for one line.
   const parts = plainPreview(String(v.preview || "")).replace(/^\s*(\d+[.)]|[-•])\s*/, "").split(/(?<=[.!?])\s+/);
@@ -2833,7 +2870,7 @@ async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
     pauseSet(d.pauses); usageSet(ch.slug, s.id, d.usage?.nano || 0);   // spendguard.ts
     const msgs: Msg[] = [];
     // A turn's messages: with tracker cards, every message the person sent in it (the first plus the steers) stacks before its reply.
-    const userOf = (x: any, t: any, i: number): TkMsg => ({ id: nextId++, role: "user", body: x.text || "", at: x.at || t.at, steps: [], files: x.files?.length || i ? x.files || [] : t.attached || [], turn: x.id, reaction: x.reaction || undefined, cid: x.cid || undefined, ...(x.reply?.text ? { reply: x.reply } : {}), ...(x.via === "plan" ? { via: "plan" } : {}) } as TkMsg);
+    const userOf = (x: any, t: any, i: number): TkMsg => ({ id: nextId++, role: "user", body: x.text || "", at: x.at || t.at, steps: [], files: x.files?.length || i ? x.files || [] : t.attached || [], turn: x.id, reaction: x.reaction || undefined, cid: x.cid || undefined, ...(x.input_reply ? { input_reply: x.input_reply } : {}), ...(x.reply?.text ? { reply: x.reply } : {}), ...(x.via === "plan" ? { via: "plan" } : {}) } as TkMsg);
     for (const t of d.turns) {
       if (Array.isArray(t.msgs)) t.msgs.forEach((x: any, i: number) => msgs.push(userOf(x, t, i)));
       else if (t.kind === "chat") msgs.push({ id: nextId++, role: "user", body: t.user_text || "", at: t.at, steps: [], files: t.attached || [], turn: t.id, reaction: t.reaction } as RxMsg);
@@ -2842,16 +2879,17 @@ async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
       const lnr = t.kind === "livenote" && t.livenote?.refine ? t.livenote.refine : null;   // "Update your meeting notes?": a card, not text
       msgs.push({ progressOmitted: Number(t.progress_omitted) || undefined, id: nextId++, role: "agent", pre: [], prog: sp?.prog || [], body: lnr ? "" : parts.length ? parts.join("\n\n") : t.reply || (t.error === "interrupted" ? INTERRUPTED_MSG : t.error ? `Something went wrong: ${t.error}` : ""), at: t.at + (t.total_ms || 0), steps: toSteps((t.steps || []).map((x: any) => x.line)), saved: (t.steps || []).flatMap((x: any) => x.saved || []),
         note: t.kind === "livenote" ? "Live notes" : from ? (from.type === "followup" ? "Follow-up it scheduled" : from.type === "connect" ? from.title || "App connected" : from.type === "permission" ? from.title || "You allowed it" : from.type === "confirm" ? from.title || "You confirmed it" : `Done in the background${from.title ? `: ${from.title}` : ""}`) : t.kind === "followup" ? "Follow-up it scheduled" : t.kind === "workflow" ? "From a scheduled check" : undefined,
-        cards: [...(lnr ? [{ t: "lnrefine", r: lnr, slug: ch.slug, sid: s.id }] : []), ...(t.images || []).map((x: any) => ({ t: "image", id: x.id, url: x.url, caption: x.caption })), ...(t.shared || []).map((f: any) => ({ t: "file", f })), ...(t.interviews || []).map((v: any) => ({ t: "interview", v })), ...shCards(t.offers)], ...(t.card ? { card: t.card } : {}), rid: t.id } as TkMsg);
+        cards: [...(lnr ? [{ t: "lnrefine", r: lnr, slug: ch.slug, sid: s.id }] : []), ...(t.images || []).map((x: any) => ({ t: "image", id: x.id, url: x.url, caption: x.caption })), ...(t.shared || []).map((f: any) => ({ t: "file", f })), ...(t.interviews || []).map((v: any) => ({ t: "interview", v })), ...shCards(t.offers)], ...(t.card ? { card: t.card } : {}), rid: t.id, ...(t.input_request ? { input_request: t.input_request } : {}) } as TkMsg);
     }
     if (d.live && !s.streaming) {
       const lm = (d.live.card?.events || []).filter((e: any) => e.type === "msg");
       if (lm.length) lm.forEach((x: any, i: number) => msgs.push(userOf(x, { at: d.live.started }, i)));
       else if (d.live.user_text && !nativeResumeInput(d.live.card) && !internalHandoffInput(d.live.card)) msgs.push({ id: nextId++, role: "user", body: d.live.user_text, at: d.live.started, steps: [], turn: d.live.turn, reaction: d.live.reaction || undefined } as RxMsg);
-      const r: Msg = { id: nextId++, role: "agent", body: d.live.text || "", at: Date.now(), steps: [], ...(d.live.card?.id ? { card: d.live.card.id } : {}), ...(d.live.interviews?.length ? { cards: d.live.interviews.map((v: any) => ({ t: "interview", v })) } : {}) } as TkMsg; progressSnapshot(r, d.live.reply_state); msgs.push(r);
+      const r: Msg = { id: nextId++, role: "agent", body: d.live.text || "", at: Date.now(), steps: [], rid: d.live.turn, ...(d.live.input_request ? { input_request: d.live.input_request } : {}), ...(d.live.card?.id ? { card: d.live.card.id } : {}), ...(d.live.interviews?.length ? { cards: d.live.interviews.map((v: any) => ({ t: "interview", v })) } : {}) } as TkMsg; progressSnapshot(r, d.live.reply_state); msgs.push(r);
       s.messages = msgs; s.state = "working"; s.rawLine = d.live.line || ""; liveAttach(ch, s, r);
-    } else if (!s.streaming && d.session?.state === "working" && !d.session.native_progress) {
-      // No live turn, but the task is working: its turn was cut off by an update and is being picked up (resumable turns). Wait for it.
+    } else if (!s.streaming && d.session?.state === "working" && !d.session.native_progress && !(Number(d.session.helpers) > 0 && !d.session.line)) {
+      // A worker-only task has no Primary reply to resume. Other working tasks
+      // without a live turn were interrupted by an update and should reattach.
       const r: Msg = { id: nextId++, role: "agent", body: "", at: Date.now(), steps: [] }; msgs.push(r);
       s.messages = msgs; s.state = "working"; s.rawLine = d.session.line || UPDATED_LINE; liveAttach(ch, s, r);
     } else if (!s.streaming) s.messages = msgs;
@@ -2859,7 +2897,7 @@ async function liveLoad(ch: Channel, s: Session, snapshot?: any) {
     const last = [...s.messages].reverse().find(m => m.role === "agent");
     if (last) for (const a of d.approvals || []) { const m = ["ssh","ssh_hostkey"].includes(a.perm) && a.turn ? (s.messages as TkMsg[]).find(x => x.role === "agent" && x.card === a.turn) || last : last; addApproval(m, a, false); }   // native receipts stay beside their originating request
     for (const o of d.offers || []) { const m = (s.messages as TkMsg[]).find(x => x.role === "agent" && o.turn && x.card === o.turn) || last; if (m) addOffer(m, ch, o, false); }   // connect cards, under the reply that offered them
-    applySrv(s, d.session); s.loaded = true;
+    applySrv(s, d.session && { ...d.session, pending_inputs: d.pending_inputs || d.session.pending_inputs || [] }); s.loaded = true;
   } catch (e: any) { s.messages = [{ id: nextId++, role: "agent", body: `Couldn't load this task (${e.message}).`, at: Date.now(), steps: [] }]; s.loaded = true; }
   s.loading = false; if (route().s === s) paintChat(s); else repaint(ch);
 }
@@ -2888,10 +2926,18 @@ function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
   if (ev.t === "snapshot") progressReset(reply);
   const beforeProgress = route().s === s && (replacing || finalProgress) ? progressBefore(reply.id) : undefined;
   streamProgress(s, ev);
+  if (ev.t === "snapshot" && ev.input_request) reply.input_request = ev.input_request;
   if (ev.t === "snapshot" && ev.turn) (reply as TkMsg).rid = ev.turn;   // a quote of resumed text keeps its originating turn
   if (ev.t === "model_wait") { paintTask(ch, s); return; }
   if (ev.t === "snapshot" && ev.card?.id) { tkEvent(ch.slug, s.id, ev); (reply as TkMsg).card = ev.card.id; }
   if (ev.t === "session") { const tmp = s.tmp; applySrv(s, ev.session); s.state = "working"; if (tmp && location.hash.endsWith(`/s/${tmp}`)) history.replaceState(null, "", `#/${ch.slug}/s/${s.id}`); }
+  else if (ev.t === "user_input" && ev.input?.question_id) {
+    reply.input_request = ev.input;
+    (reply as TkMsg).rid = ev.input.source_turn;
+    if (!reply.body.trim()) reply.body = ev.input.presentation || ev.input.question || "";
+    s.srv = { ...s.srv, state: "waiting", waiting: "question", pending_inputs: [...(s.srv?.pending_inputs || []).filter((x: InputRequest) => x.question_id !== ev.input.question_id), ev.input] };
+    s.status = "waiting"; s.state = "idle"; s.rawLine = "waiting for your answer";
+  }
   else if (ev.t === "queued") s.rawLine = "finishing your last message first";
   else if (ev.t === "text" || ev.t === "snapshot") { if (ev.t === "snapshot") { if (!progressSnapshot(reply, ev.reply_state)) reply.body = ev.text || ""; (reply as any).snap = 1; s.rawLine = ev.line || s.rawLine; (ev.approvals || []).forEach((a: any) => addApproval(reply, a, false)); const u = rxTarget(s, reply, ev.turn); if (u && ev.reaction) u.reaction = ev.reaction; } else reply.body += ev.s; }
   else if (ev.t === "reaction") { const u = rxTarget(s, reply, ev.msg); if (!u || !RX[ev.reaction]) return; u.reaction = ev.reaction; u.turn = ev.msg; if (route().s === s) { paintChat(s); rxPop(u); } else repaint(ch); return; }
@@ -2917,8 +2963,16 @@ function onEvent(ch: Channel, s: Session, reply: Msg, ev: any) {
   else if (ev.t === "card_open" || ev.t === "steered" || ev.t === "card_event" || ev.t === "card_update" || ev.t === "card_close" || ev.t === "helper") {
     tkEvent(ch.slug, s.id, ev);
     if (ev.t === "card_open" && ev.card?.id) {   // this reply's card; the person's message gets its server id (reactions find it)
-      (reply as TkMsg).card = ev.card.id; const ms = s.messages as TkMsg[];
-      const u = (ev.msg?.cid && ms.find(m => m.role === "user" && m.cid === ev.msg.cid)) || rxTarget(s, reply); if (u && ev.msg?.id) u.turn = ev.msg.id;
+      (reply as TkMsg).card = ev.card.id; (reply as TkMsg).rid = ev.turn || ev.card.id; const ms = s.messages as TkMsg[];
+      const u = (ev.msg?.cid && ms.find(m => m.role === "user" && m.cid === ev.msg.cid)) || rxTarget(s, reply); if (u && ev.msg?.id) { u.turn = ev.msg.id;
+        if (ev.msg.input_reply || ev.input_reply) {
+          const binding: InputReply = ev.msg.input_reply || ev.input_reply;
+          if (u.input_reply?.question_id && u.input_reply.question_id !== binding.question_id) {
+            for (const m of s.messages) if (m.input_request?.question_id === u.input_reply.question_id) m.input_request = { ...m.input_request, status: "answered", answer_text: u.body };
+          }
+          u.input_reply = binding; u.body = ev.msg.text ?? u.body;
+        }
+      }
     }
     const em = tkMsgOf(ev); if (em) addSteer(s, reply, em);
   }
@@ -2980,6 +3034,21 @@ function addSteer(s: Session, reply: Msg, e: EventView) {
   if (had) { if (e.id) had.turn = e.id; return; }
   const at = ms.indexOf(reply); ms.splice(at < 0 ? liveReplyAt(s) : at, 0, { id: nextId++, role: "user", body: e.text || "", at: e.at || Date.now(), steps: [], files: e.files || [], turn: e.id, cid: e.cid || undefined, reaction: e.reaction || undefined, ...((e as any).reply?.text ? { reply: (e as any).reply } : {}) } as TkMsg);
 }
+// A saved ambiguous answer can belong to another task. The server names that task;
+// load its existing messages instead of moving the source task object or resending input.
+async function inputRedirect(ch: Channel, source: Session, event: any) {
+  const id = String(event.session || "");
+  if (!id || (event.channel && event.channel !== ch.slug)) return;
+  let target = ch.sessions.find(x => String(x.id) === id);
+  if (!target) {
+    target = { id, title: "Task", status: "resolved", state: "idle", updated: Date.now(), messages: [], srv: { id } };
+    ch.sessions.unshift(target);
+  }
+  const follow = route().s === source;
+  source.loaded = false; target.loaded = false;
+  await Promise.all([liveLoad(ch, source), liveLoad(ch, target)]);
+  if (follow && route().s === source) location.hash = `/${ch.slug}/s/${encodeURIComponent(id)}`;
+}
 // reply = null: a steer. The server decides: {"t":"steered"} = it joined the open card (no reply bubble of its own, the stream
 // ends); {"t":"card_open"} = the card had just closed, so this starts a new turn and its reply bubble appears now.
 async function streamTurn(ch: Channel, s: Session, text: string, reply: Msg | null, files: FileV[] = [], um?: TkMsg) {
@@ -2988,14 +3057,19 @@ async function streamTurn(ch: Channel, s: Session, text: string, reply: Msg | nu
   finally { streamRelease(lease); }
 }
 async function streamTurnOwned(ch: Channel, s: Session, text: string, reply: Msg | null, files: FileV[], um: TkMsg | undefined, lease: Lease) {
-  const lazy = !reply, live = streamsOf(s); let r2 = reply, joined = false, got = 0, gotDone = false, lost = "";
+  const lazy = !reply, live = streamsOf(s); let r2 = reply, joined = false, got = 0, gotDone = false, lost = "", redirected: any = null;
   if (r2) { s.streaming = true; s.state = "working"; s.rawLine = s.rawLine || "reading your request"; live.add(r2); }
   const drop = () => { if (!r2) return; live.delete(r2); s.messages = s.messages.filter(m => m !== r2); r2 = null; s.streaming = live.size > 0; if (!s.streaming) s.state = "idle"; };
   try {
-    const r = await streamFetch(`${LIVE!.api}/res/${ch.slug}/stream`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ session: s.srv ? s.id : "new", message: text, files: files.map(f => f.id), ...(dpLoc() ? { loc: dpLoc() } : {}), ...(um?.cid ? { cid: um.cid } : {}), ...((um as any)?.cont ? { continue: (um as any).cont } : {}), ...(um?.reply?.text ? { reply: { id: um.reply.id || null, role: um.reply.role, text: um.reply.text } } : {}) }) }, lease);
+    const r = await streamFetch(`${LIVE!.api}/res/${ch.slug}/stream`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ session: s.srv ? s.id : "new", message: text, files: files.map(f => f.id), ...(dpLoc() ? { loc: dpLoc() } : {}), ...(um?.cid ? { cid: um.cid } : {}), ...(um?.input_reply ? { input_reply: um.input_reply } : {}), ...((um as any)?.cont ? { continue: (um as any).cont } : {}), ...(um?.reply?.text ? { reply: { id: um.reply.id || null, role: um.reply.role, text: um.reply.text } } : {}) }) }, lease);
     if (!r.ok || !r.body) { const d = await streamErrorBody(r, lease); if (d.error === "payment_required") pdSet(d.access || null); throw new Error(d.error === "payment_required" ? d.message || "Your plan needs attention before I can work." : d.error || `HTTP ${r.status}`); }
     await readStream(r, ev => {
       got++;
+      if (ev.t === "input_redirect") {
+        redirected = ev; lease.pending = false; joined = true; gotDone = true; drop();
+        if (um) s.messages = s.messages.filter(m => m !== um);
+        return true;
+      }
       if (["card_open", "steered", "done"].includes(ev.t)) lease.pending = false;
       if (ev.t === "steered") { joined = true; tkEvent(ch.slug, s.id, ev); drop(); if (um) joinSteer(s, um, ev); paintTask(ch, s); return true; }
       if (joined) return;
@@ -3019,6 +3093,7 @@ async function streamTurnOwned(ch: Channel, s: Session, text: string, reply: Msg
     if (r2 && !got && !r2.body) r2.body = "I couldn't confirm this task's reply yet. Check this task before sending the request again.";
   }
   if (!streamCurrent(lease)) return;
+  if (redirected) { await inputRedirect(ch, s, redirected); return; }
   if (joined || !r2) { if (r2) live.delete(r2); return; }
   if (!gotDone) {
     // The stream broke before the reply. A deploy restarts the helper (and the network can drop): never claim it's "still on it".
@@ -3112,11 +3187,15 @@ function liveStart(ch: Channel, text: string, files: FileV[] = []) {
     messages: [{ id: nextId++, role: "user", body: text, at, steps: [], files }, reply] };
   ch.sessions.unshift(x); streamTurn(ch, x, text, reply, files); return x;
 }
-function liveReply(ch: Channel, s: Session, text: string, files: FileV[] = [], keepBox = false, cont?: string, rp: Pin | null = null) {
+function liveReply(ch: Channel, s: Session, text: string, files: FileV[] = [], keepBox = false, cont?: string, rp: Pin | null = null, input?: InputReply) {
   streamProgress(s, { t: "user_input" }); // invalidates an older in-flight status snapshot
   const at = Date.now(), b = keepBox ? null : $("#box") as HTMLTextAreaElement | null;
   if (b) { b.value = ""; b.style.height = "auto"; ($("#go") as HTMLButtonElement).disabled = true; $("#send").classList.remove("has"); }
   const rid = nextId++, um: TkMsg = { id: nextId++, role: "user", body: text, at, steps: [], files, cid: newCid() };   // ids in today's order
+  const binding = input || (() => { const pending: InputRequest[] = s.srv?.pending_inputs || [];
+    const quoted = rp?.role === "agent" ? pending.find(q => q.source_turn === rp.id && q.status === "pending") : undefined;
+    const b = rp ? quoted ? replyBinding(pending, quoted.source_turn, quoted) : undefined : cont ? undefined : replyBinding(pending); return b ? { ...b, response_id: responseId() } : undefined; })();
+  if (binding) um.input_reply = binding;
   if (cont) (um as any).cont = cont;   // Continue on a paused card: the server grants this turn one more budget
   if (rp) um.reply = rp;   // Reply on a bubble (msgreply.ts): shown above this message, sent with it
   // The helper is working on an open card: this message steers it. Its bubble joins that turn (above the reply being written) and
@@ -3189,7 +3268,9 @@ function ivCard(c: any, ch: Channel, fresh: boolean) {
   if (!LIVE) return "";
   const v = c.v, key = `${ch.slug}|${v.id}`;
   return ivcHtml(v, { key, helper: who(ch), phone, api: (b: any) => api(`/res/${ch.slug}/interviews/${v.id}`, b),
-    sent: (message: string) => { const s = ch.sessions.find(x => String(x.id) === String(v.session)); if (s) liveReply(ch, s, message, [], true); } }, fresh);
+    sent: (message: string, _view, result) => { const s = ch.sessions.find(x => String(x.id) === String(v.session)); if (!s) return;
+      if (result?.posted) { s.loaded = false; void liveLoad(ch, s); }
+      else liveReply(ch, s, message, [], true, undefined, null, { ...(v.input_reply || {}), ...(v.turn ? { source_turn: v.turn } : {}), response_id: `interview:${v.id}` }); } }, fresh);
 }
 if (LIVE) {
   // Permission cards: Allow once / for this task / Always (asks "Are you sure?" first, then sends confirm:true) / Don't allow.

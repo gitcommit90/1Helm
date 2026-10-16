@@ -6,8 +6,9 @@
 // (model_settings_versions) is only read, once, to carry an environment's existing choices into the first version.
 import { PRIVACY_LEVELS } from "../privacy.js";
 import { modelCatalog, validCatalogRecord, validModelId } from "./model-catalog.js";
-import { JOBS, JOB_IDS, JOB_KINDS, GROUPS, takesChat, canChat, nativeFor, zdrApplies, ModelSettingsError, jobDef, jobSetting, settingsOf, entriesOf, factsOf, zdrBlocked, privacyCoverage } from "./model-jobs.js";
-import { seedFromLegacy, mergeLevels, SEED_FACTS } from "./model-seed.js";
+import { JOBS, JOB_IDS, MODEL_PAGE_JOBS, JOB_KINDS, GROUPS, takesChat, canChat, nativeFor, zdrApplies, ModelSettingsError, jobDef, jobSetting, settingsOf, entriesOf, factsOf, zdrBlocked, privacyCoverage, configuredHosts } from "./model-jobs.js";
+import { seedFromLegacy, mergeLevels, SEED_FACTS, SHARED_OR_MOVES } from "./model-seed.js";
+import { dynamicRoutingOn, withRoutingConfig } from "./routing-config.js";
 import { ambientSearchOn } from "../legacy-flags.js";
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -39,7 +40,9 @@ function validFacts(m, id) {
     && (m.sec_nano == null || (Number.isFinite(m.sec_nano) && m.sec_nano >= 0 && m.sec_nano <= 1000000));
 }
 // Whether a model can run a kind of job: models for the kind's own call, plus (for any-model kinds) every model that can chat.
-export const kindOk = (meta, kind) => meta?.eligible === true ? takesChat(kind) : Array.isArray(meta?.kinds) && (meta.kinds.includes(kind.pick) || (!!kind.any && (canChat(meta) || nativeFor(meta, kind))));
+export const kindOk = (meta, kind) => meta?.eligible === true
+  ? (Array.isArray(meta.kinds) && meta.kinds.length ? meta.kinds.includes(kind.pick) || (takesChat(kind) && canChat(meta)) || nativeFor(meta, kind) : takesChat(kind))
+  : Array.isArray(meta?.kinds) && (meta.kinds.includes(kind.pick) || (kind.pick === "chat" && canChat(meta)) || (!!kind.any && (canChat(meta) || nativeFor(meta, kind))));
 function validEntry(e, path, config, def, isMain) {
   const allowed = isMain ? ["model", "effort", "hosts", "pin", "strict", "fallbacks"] : ["model", "effort", "hosts", "pin", "strict"];
   if (!e || typeof e !== "object" || Array.isArray(e) || Object.keys(e).some((k) => !allowed.includes(k)) || !own(e, "model") || !own(e, "effort")) fail(`Invalid ${path}.`);
@@ -56,11 +59,11 @@ function validEntry(e, path, config, def, isMain) {
 export function validateModelSettings(config, { fill = false } = {}) {
   config = clone(config);
   if (fill && config?.jobs && typeof config.jobs === "object") for (const id of JOB_IDS) if (!own(config.jobs, id)) config.jobs[id] = null;
-  keys(config, ["version", "jobs", "catalog"], "settings");
-  if (config.version !== 2) fail("Unsupported settings version.");
-  if (!config.catalog || typeof config.catalog !== "object" || Array.isArray(config.catalog) || Object.keys(config.catalog).length > 120) fail("Invalid model metadata.");
+  keys(config, config?.version === 3 ? ["version", "jobs", "catalog", "routing"] : ["version", "jobs", "catalog"], "settings");
+  if (![2, 3].includes(config.version)) fail("Unsupported settings version.");
+  if (!config.catalog || typeof config.catalog !== "object" || Array.isArray(config.catalog) || Object.keys(config.catalog).length > 220) fail("Invalid model metadata.");
   for (const [id, m] of Object.entries(config.catalog)) if (!validFacts(m, id)) fail(`Invalid model metadata for ${id}.`);
-  if (Object.values(config.catalog).filter((m) => m.eligible === true).length > 30) fail("Too many model replacements.");
+  if (Object.values(config.catalog).filter((m) => m.eligible === true).length > 180) fail("Too many model replacements.");
   keys(config.jobs, JOB_IDS, "jobs");
   for (const def of JOBS) {
     const job = config.jobs[def.id], kind = JOB_KINDS[def.kind];
@@ -71,6 +74,33 @@ export function validateModelSettings(config, { fill = false } = {}) {
     const ids = entriesOf(job).map((e) => e.model);
     if (new Set(ids).size !== ids.length) fail(`${def.label}: each model can be listed once.`);
   }
+  if (config.version === 3) {
+    keys(config.routing, ["categories"], "routing");
+    const categories = config.routing.categories;
+    if (!Array.isArray(categories) || !categories.length || categories.length > 24) fail("Save between 1 and 24 categories.");
+    const ids = new Set(), titles = new Set();
+    for (const c of categories) {
+      keys(c, ["id", "title", "chains"], "category");
+      if (typeof c.id !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(c.id) || ids.has(c.id)) fail("Invalid category ID.");
+      ids.add(c.id);
+      if (typeof c.title !== "string" || !c.title.trim() || c.title.length > 240 || /[\u0000-\u001f\u007f]/.test(c.title)) fail("Enter a category title of 1 to 240 characters.");
+      if (c.title !== c.title.trim()) fail("Remove spaces at the start or end of the category title.");
+      if (titles.has(c.title.toLowerCase())) fail("Each category needs a different title.");
+      titles.add(c.title.toLowerCase());
+      if ((c.id === "general") !== (c.title === "General")) fail("General's title is locked.");
+      keys(c.chains, PRIVACY_LEVELS, "category privacy choices");
+      for (const level of PRIVACY_LEVELS) {
+        const chain = c.chains[level];
+        if (!Array.isArray(chain) || chain.length !== 3) fail(`${c.title}: choose 1st, 2nd and 3rd models for every privacy level.`);
+        chain.forEach((e, i) => {
+          validEntry(e, `${c.title} ${level} choice ${i + 1}`, config, { kind: "chat", label: c.title }, false);
+          if (!configuredHosts(config, e.model, level).length) fail(`${c.title}: ${e.model} is not eligible for ${level}.`);
+        });
+        if (new Set(chain.map((e) => e.model)).size !== 3) fail(`${c.title}: choose three different models for ${level}.`);
+      }
+    }
+    if (categories[0].id !== "general" || !ids.has("general")) fail("General must be the first category and cannot be deleted.");
+  }
   return config;
 }
 
@@ -79,6 +109,7 @@ export function validateModelSettings(config, { fill = false } = {}) {
 // models come from OpenRouter's live catalog.
 export function pruneCatalog(config) {
   const used = new Set(); for (const j of Object.values(config.jobs || {})) if (j) for (const e of entriesOf(j)) used.add(e.model);
+  for (const c of config.routing?.categories || []) for (const chain of Object.values(c.chains)) for (const e of chain) used.add(e.model);
   return { ...config, catalog: Object.fromEntries(Object.entries(config.catalog || {}).filter(([id]) => used.has(id))) };
 }
 
@@ -151,12 +182,37 @@ async function addMissingJobs(env, row, config) {
 }
 let FIRST_RUN;
 const firstRunSettings = () => (FIRST_RUN ||= validateModelSettings(seedFromLegacy({}, null)));
+// The Captain selected these exact source changes for dev. The append-only
+// action marker prevents the baseline migration from overriding later edits.
+const SHARED_OR_ACTION = "shared-model-source-or-v1";
+
+async function migrateSharedSources(env, row, config) {
+  if (settingsEnvironment(env) !== "dev" || !dynamicRoutingOn(env) || String(env.DYNAMIC_ROUTING_SHARED_OR || "").toLowerCase() !== "on") return false;
+  const marker = await dbOf(env).prepare(`SELECT revision FROM ${TABLE} WHERE environment=? AND action=? LIMIT 1`).bind("dev", SHARED_OR_ACTION).first();
+  if (marker) return false;
+  const moves = SHARED_OR_MOVES.filter((m) => config.jobs[m.job]?.model === m.from), next = clone(config);
+  if (moves.length) {
+    const live = new Map((await modelCatalog(env, { settings: config })).models.map((m) => [m.id, m]));
+    for (const move of moves) {
+      const record = live.get(move.to), def = jobDef(move.job);
+      if (!record?.eligible || record.source !== "OR" || !record.levels?.includes("zdr") || !validCatalogRecord(record, move.to) || !kindOk(record, JOB_KINDS[def.kind])) throw new ModelSettingsError(`The selected OpenRouter source for ${def.label} has not been verified. The saved settings have not changed.`);
+      next.jobs[move.job].model = move.to;
+      next.catalog[move.to] = { ...record, ...clone(move.facts || {}), ...(next.catalog[move.to]?.quirks ? { quirks: clone(next.catalog[move.to].quirks) } : {}) };
+    }
+    // Remove only source records replaced by this migration and now unused.
+    const used = new Set(Object.values(next.jobs).flatMap(entriesOf).map((e) => e.model));
+    for (const c of next.routing?.categories || []) for (const chain of Object.values(c.chains)) for (const e of chain) used.add(e.model);
+    for (const move of moves) if (!used.has(move.from)) delete next.catalog[move.from];
+  }
+  await insertRow(env, Number(row.revision), validateModelSettings(next), "system", SHARED_OR_ACTION);
+  return true;
+}
 export async function readModelSettings(env) {
   // Without the EE switch the shared settings table is neither read nor written: callers get the first-run data, held in memory.
   if (env?.ONEHELM_EE !== "1hc") return { revision: 0, config: firstRunSettings() };
   const key = settingsEnvironment(env);
   try {
-    for (let tries = 0; tries < 3; tries++) {
+    for (let tries = 0; tries < 5; tries++) {
       let row = await readRow(env);
       if (!row) { await firstVersion(env); row = await readRow(env); if (!row) continue; }
       let config; const stored = JSON.parse(row.config), raw = withoutRetiredJobs(stored), retired = Object.keys(stored?.jobs || {}).filter((id) => !JOB_IDS.includes(id));
@@ -166,6 +222,12 @@ export async function readModelSettings(env) {
         try { config = validateModelSettings(raw, { fill: true }); } catch { throw new ModelSettingsError("Stored model settings are invalid. Restore an earlier version from Models. Nothing was sent."); }
         if (JOB_IDS.some((id) => !config.jobs[id])) { await addMissingJobs(env, row, config); continue; }
       }
+      if (dynamicRoutingOn(env) && config.version === 2) {
+        const next = validateModelSettings(withRoutingConfig(config, { zdrThirdModel: env.DYNAMIC_ROUTING_ZDR_THIRD_MODEL }));
+        await insertRow(env, Number(row.revision), next, "system", "add-dynamic-routing");
+        continue;
+      }
+      if (await migrateSharedSources(env, row, config)) continue;
       const out = { revision: Number(row.revision), config, ...(retired.length ? { retired } : {}) };
       LAST_GOOD.set(key, out);
       return out;
@@ -211,7 +273,7 @@ function choicesOf(config) {
   for (const [id, m] of Object.entries({ ...known, ...config.catalog })) {
     for (const [pick, kind] of kinds) {
       if (!kindOk(m, kind) || (zdrApplies(kind, m) && zdrBlocked(config, id))) continue;
-      out[pick].push({ id, name: m.name || id, efforts: m.efforts || [], validated: m.eligible === true, chat: canChat(m) });
+      out[pick].push({ id, name: m.name || id, efforts: m.efforts || [], validated: m.eligible === true, chat: canChat(m), kinds: m.kinds || [], eligible: m.eligible === true, source: m.source || (id.startsWith("@cf/") ? "CF" : "OR"), levels: m.levels || PRIVACY_LEVELS.filter((level) => configuredHosts(config, id, level).length) });
     }
   }
   return out;
@@ -219,12 +281,12 @@ function choicesOf(config) {
 // Jobs the Models page doesn't show because nothing runs them in this environment. Their saved setting stays in the settings.
 // embed_memory is used only by the ambient passage index (ambient-index.js), which LEGACY_AMBIENT_SEARCH can turn off.
 export const hiddenJobs = (env) => ambientSearchOn(env) ? [] : ["embed_memory"];
-export const modelSettingsOptions = (config, hidden = []) => ({ groups: GROUPS, jobs: JOBS.filter((j) => !hidden.includes(j.id)), kinds: JOB_KINDS, levels: PRIVACY_LEVELS, choices: choicesOf(config) });
+export const modelSettingsOptions = (config, hidden = []) => ({ groups: GROUPS, jobs: MODEL_PAGE_JOBS.filter((j) => !hidden.includes(j.id)), kinds: JOB_KINDS, levels: PRIVACY_LEVELS, choices: choicesOf(config) });
 export async function modelSettingsView(env) {
   const db = dbOf(env), s = await readModelSettings(env);
   const history = (await db.prepare(`SELECT revision,at,by,action FROM ${TABLE} WHERE environment=? ORDER BY revision DESC LIMIT 30`).bind(settingsEnvironment(env)).all()).results || [];
   const hidden = hiddenJobs(env);
-  return { environment: settingsEnvironment(env), revision: s.revision, config: s.config, stale: !!s.stale, hidden, options: modelSettingsOptions(s.config, hidden), history,
+  return { dynamicRouting: dynamicRoutingOn(env), environment: settingsEnvironment(env), revision: s.revision, config: s.config, stale: !!s.stale, hidden, options: modelSettingsOptions(s.config, hidden), history,
     effective: "New tasks and background calls use these settings. Running tasks keep the model and reasoning level they started with. Privacy restrictions and explicit operator revocations still apply immediately." };
 }
 
@@ -240,19 +302,25 @@ async function write(env, revision, config, by, action) {
 // already know keeps its saved record; a new chat model is checked against OpenRouter's catalog; other new models are checked for shape.
 async function validatedSelection(env, config, current) {
   if (!config || typeof config !== "object" || Array.isArray(config) || !config.jobs || typeof config.jobs !== "object") fail("Invalid settings.");
-  const next = { version: 2, jobs: clone(config.jobs), catalog: clone(current.catalog) };
+  if (![2, 3].includes(config.version) || (config.version === 3 && (!config.routing || !Array.isArray(config.routing.categories) || config.routing.categories.some((c) => !c || typeof c !== "object" || !c.chains)))) fail("Invalid routing settings.");
+  const next = { version: config.version === 3 ? 3 : 2, jobs: clone(config.jobs), catalog: clone(current.catalog), ...(config.version === 3 ? { routing: clone(config.routing) } : {}) };
+  if (dynamicRoutingOn(env) && next.version !== 3) fail("Reload Models before saving routing settings.");
   const need = new Map();
   for (const def of JOBS) {
     const job = next.jobs[def.id]; if (!job || typeof job !== "object") continue;
-    for (const e of [job, ...(Array.isArray(job.fallbacks) ? job.fallbacks : [])]) if (e && typeof e.model === "string" && !own(next.catalog, e.model)) need.set(e.model, def);
+    for (const e of [job, ...(Array.isArray(job.fallbacks) ? job.fallbacks : [])]) if (e && typeof e.model === "string" && (!own(next.catalog, e.model) || !kindOk(next.catalog[e.model], JOB_KINDS[def.kind]) || (JOB_KINDS[def.kind].effort && !next.catalog[e.model]?.efforts?.includes(e.effort)))) need.set(e.model, def);
   }
-  let live = null;
+  for (const c of next.routing?.categories || []) for (const chain of Object.values(c.chains || {})) {
+    if (!Array.isArray(chain)) continue;
+    for (const e of chain) if (e && typeof e.model === "string" && (!own(next.catalog, e.model) || !kindOk(next.catalog[e.model], JOB_KINDS.chat) || !next.catalog[e.model]?.efforts?.includes(e.effort))) need.set(e.model, { kind: "chat" });
+  }
   for (const [id, def] of need) {
     const kind = JOB_KINDS[def.kind], pick = kind.pick;
-    if (takesChat(kind)) {
+    if (takesChat(kind) || dynamicRoutingOn(env)) {
       if (!validModelId(id)) fail("Invalid model ID.");
-      live ||= new Map((await modelCatalog(env)).models.map((m) => [m.id, m]));
-      const m = live.get(id); if (!m?.eligible) fail(`${id}: ${m?.reasons?.join("; ") || "not available in OpenRouter's catalog"}.`);
+      // The search is the model's own ID, so its endpoints are read even when it isn't on OpenRouter's zero-data-retention list.
+      const m = (await modelCatalog(env, { q: id })).models.find((x) => x.id === id); if (m?.unverified) fail(`${id}: its providers could not be verified right now, so nothing was saved. Try again shortly.`);
+      if (!m?.eligible) fail(`${id}: ${m?.reasons?.join("; ") || "not available in the model catalogs"}.`);
       next.catalog[id] = own(SEED_FACTS, id) && SEED_FACTS[id].quirks ? { ...m, quirks: clone(SEED_FACTS[id].quirks) } : m;   // known quirks (e.g. no temperature) are kept when a known model is added again
     } else {
       if (!looseId(id)) fail("Invalid model ID.");
@@ -263,11 +331,11 @@ async function validatedSelection(env, config, current) {
   }
   return validateModelSettings(pruneCatalog(next));
 }
-export async function saveModelSettings(env, { revision, config }, by) {
+export async function saveModelSettings(env, { revision, config }, by, action = "save") {
   revisionOf(revision);
   // Stale writes fail before fetching a changing external catalog (the atomic write checks again).
   const current = await readModelSettings(env); if (current.revision !== revision) fail("Settings changed in another window. Reload before saving.", 409);
-  return write(env, revision, await validatedSelection(env, config, current.config), by, "save");
+  return write(env, revision, await validatedSelection(env, config, current.config), by, String(action).slice(0, 120));
 }
 // For admin scripts: saves a complete settings object (jobs and model facts), checked by the same validator and written as a new version.
 // The Models page never uses it, because the page may not supply model facts.
@@ -281,6 +349,12 @@ export async function restoreModelSettings(env, { revision, restore_revision }, 
   const row = restore_revision ? await readRow(env, restore_revision) : null;
   if (!row) fail("That settings version does not exist.", 404);
   const current = await readModelSettings(env).catch(() => ({ config: { catalog: {} } }));
-  return write(env, revision, await validatedSelection(env, configOf(row), { catalog: { ...current.config.catalog, ...clone(configOf(row).catalog) } }), by, `restore:${restore_revision}`);
+  let restored = configOf(row);
+  if (dynamicRoutingOn(env) && restored.version === 2) {
+    const model = env.DYNAMIC_ROUTING_ZDR_THIRD_MODEL, meta = current.config.catalog?.[model];
+    const savedEntry = (current.config.routing?.categories || []).flatMap((c) => Object.values(c.chains || {}).flat()).concat(Object.values(current.config.jobs || {}).flatMap(entriesOf)).find((e) => e.model === model && meta?.efforts?.includes(e.effort));
+    restored = withRoutingConfig({ ...restored, catalog: { ...restored.catalog, ...(meta && !restored.catalog[model] ? { [model]: meta } : {}) } }, { zdrThirdModel: model, zdrThirdEntry: savedEntry });
+  }
+  return write(env, revision, await validatedSelection(env, restored, { catalog: { ...current.config.catalog, ...restored.catalog } }), by, `restore:${restore_revision}`);
 }
 export { mergeLevels, factsOf, privacyCoverage, jobDef };

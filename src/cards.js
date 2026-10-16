@@ -2,7 +2,7 @@
 //   GET  /c/<token>        HTML shell (OG tags: helper name + Say text / the question) loading /app-static/card.js + card.css (design-sandbox card.ts)
 // kind "card" (a card reply):
 //   GET  /c/<token>/data   { kind: "card", body, answered, picked, helper: { name, avatar }, sentAt }
-//   POST /c/<token>/act    { text, loc? } → (loc: Share my location, a coarse { lat, lng }, saved first) the person's next message in the same texting conversation, exactly as if they had texted it
+//   POST /c/<token>/act    { text, action?, loc? } → a saved answer to Primary in the card's original task. A lost HTTP response can be retried safely.
 // kind "approval" (a Sentinel permission request, see Resident.egressDecision):
 //   GET  /c/<token>/data   { kind: "approval", approval: { id, host, bytes?, keys?, status }, helper, channel: { name }, sentAt }
 //                          status: pending | once | session | channel | deny | expired (live from the Resident, so app decisions show too)
@@ -21,7 +21,7 @@
 //   GET  /c/<token>/data   { kind: "interview", interview: view, helper, sentAt }   (live from the Resident: answers saved as they go)
 //   POST /c/<token>/iv     { op: answer|skip|goto|send, … } → { interview[, message] }. send posts the answers as the person's next text.
 // token = HMAC-SHA256 (key derived from VAULT_KEY) over tenant + channel + message id, base64url, 32 chars. It is only a lookup
-// key: nothing about the person is in it. Bad or unknown token → 404. One action per card; act attempts are rate-limited.
+// key: nothing about the person is in it. Bad or unknown token → 404. One accepted answer per card; act attempts are rate-limited.
 import { rawFix, saveLocation } from "./location.js";   // a card's Share my location button (texting)
 import { cardsTree, firstSay } from "./genui.js";
 import { ivCardRoute } from "./interview-chat.js";
@@ -51,7 +51,7 @@ export const cardUrl = (env, token) => `https://${env.APP_HOST || env.GATEWAY_HO
 // Save a card reply and return where it lives. body = the card code only (prose said before it is sent as its own text).
 export async function saveCard(env, { tenant, channel, msgId, body }) {
   const token = await cardToken(env, tenant, channel, msgId), say = firstSay(cardsTree(body).root) || "";
-  await env.DB.prepare("INSERT OR REPLACE INTO cards (token,tenant_id,channel,msg_id,body,say,sent_at) VALUES (?,?,?,?,?,?,?)")
+  await env.DB.prepare("INSERT OR IGNORE INTO cards (token,tenant_id,channel,msg_id,body,say,sent_at) VALUES (?,?,?,?,?,?,?)")
     .bind(token, tenant, channel, String(msgId), String(body), say.slice(0, 2000), Date.now()).run();
   return { token, url: cardUrl(env, token), say };
 }
@@ -99,6 +99,14 @@ async function load(env, token) {
   return t ? { c, t } : null;
 }
 const helperOf = (t) => ({ name: helperName(t), avatar: Number(t.helper_avatar || 8) });
+function replyState(c, source) {
+  if (c.answered) return { answered: true, picked: c.picked ?? null };
+  const q = source?.input_request;
+  if (q && q.status !== "pending") return { answered: true, picked: q.answer_text ?? null, closed_reason: q.status === "answered" ? "answered_elsewhere" : q.status, closed_note: q.status === "answered" ? "Answered in chat" : "No longer needed" };
+  if (source && !source.ok) return { answered: true, picked: null, closed_reason: "cancelled", closed_note: "No longer needed" };
+  return { answered: false, picked: null };
+}
+
 
 // Returns a Response for /c/… paths, or null for anything else.
 export async function cardRoute(req, env, ctx, url) {
@@ -133,26 +141,35 @@ export async function cardRoute(req, env, ctx, url) {
 <link rel="stylesheet" href="/app-static/card.css"></head><body><script type="module" src="/app-static/card.js"></script></body></html>`,
       { headers: { "content-type": "text/html; charset=utf-8", ...NOSTORE } });
   }
-  if (sub === "/data") return json({ kind: "card", body: c.body, answered: !!c.answered, picked: c.picked ?? null, helper, sentAt: Number(c.sent_at) });
+  const R = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${c.tenant_id}:${c.channel}`));
+  if (sub === "/data") {
+    const source = await R.inputSource(c.tenant_id, c.channel, "1", String(c.msg_id));
+    const input_reply = { source_turn: String(c.msg_id), response_id: `card:${token}`, ...(source?.input_request?.question_id ? { question_id: source.input_request.question_id } : {}) };
+    return json({ kind: "card", body: c.body, ...replyState(c, source), helper, sentAt: Number(c.sent_at), input_reply });
+  }
   // POST /act
   const now = Date.now();
   if (await limited(env, c, token, now)) return json({ error: "slow_down" }, 429);
   const b = input;
   const text = typeof b?.text === "string" ? b.text.replace(/\r\n/g, "\n").trim() : "";
   if (!text || text.length > 4000) return json({ error: "text required" }, 400);
-  if (c.answered) return json({ error: "already_answered", picked: c.picked }, 409);
+  if (c.answered) return c.picked === text ? json({ ok: true, duplicate: true, picked: c.picked }) : json({ error: "already_answered", picked: c.picked }, 409);
+  // Resolve the original task from the stored turn, never the current Texts task or client-supplied ids.
+  const source = await R.inputSource(c.tenant_id, c.channel, "1", String(c.msg_id));
+  if (!source?.ok) return json({ error: "question_closed", ...replyState(c, source) }, source?.status || 410);
   const tx = await env.DB.prepare("SELECT status FROM texting WHERE tenant_id=?").bind(c.tenant_id).first();
-  if (!tx || tx.status !== "connected") return json({ error: "texting_off" }, 409);
-  // One action per card: only the first act flips answered.
-  const w = await env.DB.prepare("UPDATE cards SET answered=1, picked=?, answered_at=? WHERE token=? AND answered=0").bind(text, now, token).run();
-  if (!w.meta?.changes) { const again = await env.DB.prepare("SELECT picked FROM cards WHERE token=?").bind(token).first(); return json({ error: "already_answered", picked: again?.picked ?? null }, 409); }
-  // "Share my location" tapped on the card page (Button action share_location): its coarse fix is saved first, so the turn has it.
   if (rawFix(b?.loc)) await saveLocation(env, c.tenant_id, b.loc).catch((e) => console.log("card location", e.message));
-  // Same path as a verified inbound text (textingWebhook): General's resident, its "Texts" task; the reply goes back by text.
-  const R = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${c.tenant_id}:${c.channel}`));
-  const run = R.textTurn(c.tenant_id, c.channel, "1", text).catch((e) => console.log("card act turn", e.message));
-  ctx?.waitUntil ? ctx.waitUntil(run) : await run;
-  return json({ ok: true });
+  const meta = { source_turn: String(c.msg_id), response_id: `card:${token}`, ...(source.input_request?.question_id ? { question_id: source.input_request.question_id } : {}), ...(typeof b.action === "string" ? { action: b.action.slice(0, 100) } : {}) };
+  let accepted;
+  try { accepted = await R.inputReply(c.tenant_id, c.channel, source.channel_id || "1", source.session, text, meta, { viaText: tx?.status === "connected", origin: { surface: "hosted_card" } }); }
+  catch (e) { console.log("card input", e.message); return json({ error: "Your answer could not be saved. Please try again." }, 503); }
+  if (!accepted?.ok) {
+    const latest = await R.inputSource(c.tenant_id, c.channel, "1", String(c.msg_id)), state = replyState(c, latest);
+    return json({ error: state.closed_reason ? "question_closed" : accepted?.error || "Your answer could not be saved.", ...state }, accepted?.status || 409);
+  }
+  // The Resident durably accepts and deduplicates before this display receipt is locked. Retrying a lost response is safe.
+  await env.DB.prepare("UPDATE cards SET answered=1, picked=?, answered_at=? WHERE token=? AND answered=0").bind(text, now, token).run();
+  return json({ ok: true, ...(accepted.duplicate ? { duplicate: true } : {}) });
 }
 
 async function readOnly(env, tid) {
@@ -210,7 +227,7 @@ async function planRoute(env, ctx, sub, c, helper, token, b) {
   if (decision === "talk") {
     const tx = await env.DB.prepare("SELECT status FROM texting WHERE tenant_id=?").bind(c.tenant_id).first();
     if (!tx || tx.status !== "connected") return json({ error: "texting_off" }, 409);
-    const run = R.textTurn(c.tenant_id, c.channel, "1", "Let's talk about the plan").catch((e) => console.log("plan card talk", e.message));
+    const run = R.textTurn(c.tenant_id, c.channel, "1", "Let's talk about the plan", { origin: { surface: "hosted_card" } }).catch((e) => console.log("plan card talk", e.message));
     ctx?.waitUntil ? ctx.waitUntil(run) : await run;
     return json({ ok: true, status: "pending", talked: true, plan: cur.plan });
   }

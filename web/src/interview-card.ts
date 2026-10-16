@@ -8,14 +8,16 @@
 // what happens after Send (sent). State lives here per card key, so a whole-chat re-render (morph) keeps it.
 //   ops: answer {q, answer, step} · skip {q, step} · goto {step} · send → { interview[, message] } | { error }
 
+import type { InputReply } from "./input-reply";
+
 export type IvQ = { id: string; text: string; kind: "one" | "many" | "yesno" | "text" | "scale"; options?: string[]; allow_other?: boolean; placeholder?: string; help?: string };
 export type IvAns = { pick?: string; picks?: string[]; other?: string; text?: string; scale?: number; skipped?: boolean };
-export type IvView = { id: string; session?: string; title: string; intro?: string; purpose?: string; questions: IvQ[]; answers: Record<string, IvAns>; step: number; total: number;
-  status: "open" | "sent"; sent_at?: number | null; answered?: number; updated?: number; limits?: { answer?: number } };
+export type IvView = { id: string; session?: string; turn?: string; input_reply?: InputReply; title: string; intro?: string; purpose?: string; questions: IvQ[]; answers: Record<string, IvAns>; step: number; total: number;
+  status: "open" | "sent" | "closed"; closed_reason?: "answered_elsewhere" | "cancelled" | "superseded"; closed_note?: string; posted?: boolean; sent_at?: number | null; answered?: number; updated?: number; limits?: { answer?: number } };
 export type IvHost = {
   key: string;                                            // unique per card on the page
   api: (body: any) => Promise<any>;                       // POST one op
-  sent: (message: string, v: IvView) => void;             // after Send answers (the app posts the message as the person's)
+  sent: (message: string, v: IvView, result?: { posted?: boolean }) => void;             // after the server posts the answers
   helper: string;                                         // the helper's name
   phone: () => boolean;
   sentNote?: string;                                      // a line under the locked card right after sending (card page)
@@ -91,13 +93,15 @@ function skip(st: St, q: IvQ) {
 async function send(st: St) {
   if (st.busy) return; st.busy = true; st.err = ""; paint(st);
   let r: any = null;
-  try { await st.queue; r = await st.host.api({ op: "send" }); } catch { r = null; }
+  try { await st.queue; r = await st.host.api({ op: "send", response_id: `interview:${st.v.id}` }); } catch { r = null; }
   st.busy = false;
-  if (r?.interview && (r.message || r.error === "already_sent")) {
+  if (r?.interview?.status === "closed") { st.v = r.interview; st.err = ""; st.step = st.v.total; st.draft = {}; paint(st, true); return; }
+  if (r?.interview && r.posted !== false && (r.message || r.posted || r.error === "already_sent")) {
     st.v = r.interview; st.step = st.v.total; st.draft = {};
-    if (r.message) { st.justSent = true; try { st.host.sent(r.message, st.v); } catch {} }
+    if (r.message || r.posted) { st.justSent = true; try { st.host.sent(r.message || "", st.v, r); } catch {} }
     paint(st, true); return;
   }
+  if (r?.interview) st.v = r.interview;
   st.err = "send"; paint(st);
 }
 
@@ -166,19 +170,20 @@ function review(st: St) {
 }
 function done(st: St) {
   const n = st.v.answered ?? st.v.questions.filter(q => has(st.v.answers[q.id])).length;
-  return `<details class="ivc-done"${st.open ? " open" : ""}><summary><span class="ivc-ok">${svg(CHECK, 14)}</span><span class="ivc-dt"><b>Answered ${n} of ${st.v.total}</b><span> · ${esc(st.v.title)}</span></span><span class="ivc-chev">${svg(CHEV, 16)}</span></summary>
-    ${list(st, false)}</details>${st.justSent && st.host.sentNote ? `<p class="ivc-note">${esc(st.host.sentNote)}</p>` : ""}`;
+  const closed = st.v.status === "closed", title = closed ? st.v.closed_reason === "answered_elsewhere" ? "Answered in chat" : "Question closed" : `Answered ${n} of ${st.v.total}`;
+  return `<details class="ivc-done"${st.open ? " open" : ""}><summary><span class="ivc-ok">${svg(CHECK, 14)}</span><span class="ivc-dt"><b>${esc(title)}</b><span> · ${esc(st.v.title)}</span></span><span class="ivc-chev">${svg(CHEV, 16)}</span></summary>
+    ${list(st, false)}</details>${!closed && (st.v.posted === false || st.err === "send") ? `<p class="iv-err" role="alert">Your answers are saved. They still need to be sent.</p><button type="button" class="gu-b primary" data-ivcgo="send"${st.busy ? " disabled" : ""}>${st.busy ? "Sending…" : "Retry sending"}</button>` : ""}${closed && st.v.closed_note ? `<p class="ivc-note">${esc(st.v.closed_note)}</p>` : ""}${st.justSent && st.host.sentNote ? `<p class="ivc-note">${esc(st.host.sentNote)}</p>` : ""}`;
 }
 let ANIM_ON = true;
 const sig = (st: St) => `${st.v.status}|${st.step}`;
 const anim = (st: St) => ANIM_ON ? (st.dir > 0 ? " iv-in" : " iv-back") : "";
 function inner(st: St) {
-  if (st.v.status === "sent") return done(st);
+  if (st.v.status !== "open") return done(st);
   const err = st.err === "save" ? `<p class="iv-err" role="alert">Couldn't save that. Check your connection and try again.</p>` : "";
   const intro = st.step === 0 && st.v.intro && !Object.keys(st.v.answers).length ? `<p class="gu-sl ivc-intro">${esc(st.v.intro)}</p>` : "";
   return `${head(st)}${intro}${err}${st.step >= st.v.total ? review(st) : question(st)}`;
 }
-const cls = (st: St, fresh: boolean) => `acard gu-sys ivc${st.v.status === "sent" ? " sent" : ""}${fresh ? " gu-in" : ""}`;
+const cls = (st: St, fresh: boolean) => `acard gu-sys ivc${st.v.status !== "open" ? " sent" : ""}${fresh ? " gu-in" : ""}`;
 
 /** The card's HTML. Call on every render: state is kept per host.key; a newer server view is adopted when nothing is pending. */
 export function ivcHtml(v: IvView, host: IvHost, fresh = false) {
@@ -187,7 +192,7 @@ export function ivcHtml(v: IvView, host: IvHost, fresh = false) {
   else {
     st.host = host;
     // Another device (or a reload's fresh copy) moved on: take the server's state when we have nothing in flight.
-    if (!st.pending && !st.busy && ((v.updated || 0) > (st.v.updated || 0) || (v.status === "sent" && st.v.status !== "sent"))) { st.v = { ...v, answers: { ...(v.answers || {}) } }; st.step = Math.min(v.step || 0, v.total); }
+    if (!st.pending && !st.busy && ((v.updated || 0) > (st.v.updated || 0) || (v.status !== "open" && v.status !== st.v.status) || (v.posted === true && st.v.posted !== true))) { st.v = { ...v, answers: { ...(v.answers || {}) } }; st.step = Math.min(v.step || 0, v.total); }
   }
   ANIM_ON = st.shown !== "" && st.shown !== sig(st); st.shown = sig(st);
   return `<div class="${cls(st, fresh)}" id="${domId(host.key)}" data-ivc="${esc(host.key)}">${inner(st)}</div>`;
@@ -220,7 +225,7 @@ const stOf = (el: Element | null) => { const k = el?.closest<HTMLElement>("[data
 const qNow = (st: St) => st.step < st.v.total ? st.v.questions[st.step] : undefined;
 document.addEventListener("click", e => {
   const t = (e.target as HTMLElement).closest<HTMLElement>("[data-ivcpick],[data-ivcchip],[data-ivcscale],[data-ivcgo],[data-ivcedit]"); if (!t) return;
-  const st = stOf(t); if (!st || st.v.status !== "open") return;
+  const st = stOf(t); if (!st || (st.v.status !== "open" && !(st.v.status === "sent" && t.dataset.ivcgo === "send" && (st.v.posted === false || st.err === "send")))) return;
   e.preventDefault(); const q = qNow(st);
   if (t.dataset.ivcpick != null && q) {
     if (t.hasAttribute("data-ivcotheron")) { st.draft[q.id] = { ...cur(st, q), pick: undefined, otherOn: true }; repaintQ(st); document.querySelector<HTMLInputElement>(`#${domId(st.host.key)} [data-ivcother]`)?.focus(); return; }

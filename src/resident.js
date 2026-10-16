@@ -1,3 +1,6 @@
+import { originInput, messageOrigin, phoneOrigin, messageTime } from "./message-origin.js";
+import { phoneFilesInit, phoneFilesNext, queuePhoneFiles, deliverPhoneFiles, dropPhoneFiles, nativePollInit, sendNativePoll, receiveNativeVote, nativePollDelivered, nativeVoteNext, recoverNativeVotes, recoverNativeSends, deliverNativeFallback, dropNativePolls, photonReplyInit, photonReplyOptions, photonReplySource, recordPhotonReplySource, photonAnswerOptions, dropPhotonReplies, photonSourceInput, retainAgentRound, retainAgentMessage, flushAgentMemory, agentMemoryNextWake, searchAgentBank, readAgentDocument, AGENT_MEMORY_TOOLS, initRoutingArtifacts, collectRoutingFiles, approveRoutingFiles, discardRoutingFiles, stageRoutingFile, routingFileTool, ROUTING_FILE_TOOLS, routingImageFallback, isRoutingImageError, dynamicRoutingOn, REQUEST_INPUT_TOOL, DONE_TOOL, ORCHESTRATOR_TOOLS, orchestrationPolicy, routingToolsAllowed, storedMessages, stepLog, lineRange } from "./ee/index.js";
+import { userInputInit, acceptAmbiguous, chooseInput, createInputChooser, replyView, replyForTurn, inputView, questionForTurn, pendingInputs, createQuestion, resolveInput, acceptInput, attachInputTurn, deleteInputs, inputContext } from "./user-input.js";
 // Channel resident: the always-on agent for one channel. Runs in its own Durable Object (never in the container).
 // - Context: the channel's imported purpose, memories and recent history, plus this Cloud conversation.
 // - Tools: run_command / read_file / write_file / search_files run on this channel's ChannelComputer.
@@ -11,7 +14,7 @@ import { tolerantEnv, codeV, isResetErr } from "./do-stub.js";
 import { resumeInit, resumeMix, guardIn, JOURNALED, runIdOf } from "./resume.js";
 import { runTurnPi } from "./pi-engine.js";
 import { TaskTranscript, TASK_ARCHIVE_TOOL, contextBudget, contextSize, estimateTokens, compactionPlan, transcriptGroups, prefixDigest, transcriptDelete, hasTaskTranscript } from "./task-transcript.js";
-import { ensureTaskRuntime, authorizeTaskProfile, recordTaskServed } from "./ee/index.js";
+import { ensureTaskRuntime, authorizeTaskProfile, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./ee/index.js";
 import { trackerInit, listCards, cardDetail, stepDetail, SILENT_TOOLS } from "./tracker.js";
 import { contextV2, CONTEXT_TOOLS, CONTEXT_TOOLS_USE, RUNTIME_CONTRACT, toolCatalog, loadedTools, selectedTools, EAGER_TOOLS, contextMessages, contextReceipt, contextData } from "./context.js";
 import { channelLayers } from "./prompt/context-layers.js";
@@ -59,7 +62,7 @@ import { turnCalls, recordLines, RECORD_HEAD, REC_TURNS, usedApps, usedAppsNote 
 import { runBrowserTask } from "./ee/index.js";
 import { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput } from "./ee/index.js";
 import { CONNECT_TOOLS, CONNECT_LINES, connectOfferInit, connectTool, offersView, offerAct, offerGet, offerConnected, composioSigninOffer, connectWriteBlock, appCatalog, catalogFile } from "./ee/index.js";
-import { helpersInit, HELPER_TOOLS, HELPER_PROMPT, HELPER_MAX_STEPS, HELPER_MAX_CHARGE, HELPER_DEADLINE_MS, HELPER_GRACE_MS, HELPER_FORCE_MS, HELPER_NAME_MAX, HELPER_TASK_MAX, HELPER_MESSAGE_MAX, HELPER_MESSAGES_MAX, COORDINATOR_MAX_CHILDREN, COORDINATOR_LIMITS, helperExclude, helperAllowed, helperContextSnapshot, helperDir, helperJobText, coordinatorFinalText, helperStartedText, helperNoteText, helperMessageRows, helperMessagePending, helperMessageText, handoffSteerText, handoffAwayText, followupText, plainError, helperView, helperRow, coordinatorChildren, runningHelpers, startRefusal, recoverHelpers, pendingHandoffs, helperNextWake, liveTurnOf, helperTcOf, emitHelper } from "./helpers.js";
+import { helpersInit, HELPER_TOOLS, HELPER_PROMPT, HELPER_MAX_STEPS, HELPER_MAX_CHARGE, HELPER_DEADLINE_MS, HELPER_GRACE_MS, HELPER_FORCE_MS, HELPER_NAME_MAX, HELPER_TASK_MAX, HELPER_MESSAGE_MAX, HELPER_MESSAGES_MAX, COORDINATOR_MAX_CHILDREN, COORDINATOR_LIMITS, helperExclude, helperAllowed, helperContextSnapshot, helperDir, workerOutputPath, helperJobText, coordinatorFinalText, helperStartedText, helperNoteText, helperMessageRows, helperMessagePending, helperMessageText, handoffSteerText, handoffAwayText, followupText, plainError, helperView, helperRow, coordinatorChildren, runningHelpers, startRefusal, recoverHelpers, pendingHandoffs, helperNextWake, liveTurnOf, helperTcOf, emitHelper } from "./helpers.js";
 import { decide, currentPool, saveNightlyPool } from "./ee/index.js";
 import { decisionCaller } from "./ee/index.js";
 import { startLab } from "./internal-shim.js";   // dev only: Jev / Perplexity / Clef pick from the lab pool, never the route
@@ -73,6 +76,7 @@ import { laterInit, laterNext, laterMix } from "./send-later.js";
 import { eventsInit, eventsNext, eventsMix, evOf, appEventView } from "./ee/index.js";   // "when <app event> happens" workflows (stage 5)
 import { APP_EVENTS_TOOL, appEventsTool, eventsReady } from "./ee/index.js";
 import { deletionMix } from "./deletion-do.js";
+import { routingArtifactKeys, dropRoutingArtifacts, agentSessionInventory, purgeAgentSession } from "./ee/index.js";
 import { previewMix } from "./file-preview.js";   // decks and Word documents open in the file viewer as a PDF made on the computer
 import { ocrLines, textOnScreen, textPositions, findInOcr, pagePosition, pageLine } from "./ocr-look.js";
 import { sidecarMix, lookMoondream, MOONDREAM_RESERVE } from "./sidecar.js";
@@ -167,6 +171,20 @@ function toTextReply(md) {
   return cardsToText(String(md || "")).replace(/```[a-z]*\n?([\s\S]*?)```/g, "$1").replace(/!\[[^\]]*\]\(([^)]+)\)/g, "$1").replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, "$1: $2")
     .replace(/^#{1,6}\s+/gm, "").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/__([^_]+)__/g, "$1").replace(/(^|\s)\*([^*\n]+)\*/g, "$1$2").replace(/`([^`]+)`/g, "$1")
     .replace(/^\s*[-*]\s+/gm, "• ").replace(/^\|?\s*:?-{3,}.*$/gm, "").replace(/\|/g, "  ").replace(/\n{3,}/g, "\n\n").trim().slice(0, 4000);
+}
+// Only app-owned codes select public error text. Provider exception messages can
+// contain request details or credentials and must never be copied into a text.
+function publicTurnError(error) {
+  if (["audio_preparation_failed", "audio_preparation_pending", "audio_source_removed"].includes(error?.code)) {
+    const reason = scrubSecrets(String(error.audioReason || "Audio preparation did not finish.")).slice(0, 300);
+    return error.code === "audio_preparation_pending" ? reason : `I couldn't process the recording. ${reason}`;
+  }
+  const messages = {
+    model_catalog_unavailable: "The model catalog is unavailable, so I couldn't start your task. No task request was sent. Try again shortly.",
+    model_capabilities_unavailable: "The selected model's capabilities could not be verified, so I couldn't start your task. No task request was sent. Try again shortly.",
+    model_chain_unavailable: "None of your configured model choices could be verified as eligible, so I couldn't start your task. No task request was sent. Try again shortly."
+  };
+  return Object.hasOwn(messages, error?.code) ? messages[error.code] : null;
 }
 
 const PRICE = { in: 150, cached: 30, out: 500 };   // glm-5.3-flash, nano$ per token
@@ -398,6 +416,7 @@ export class Resident extends DurableObject {
     for (const c of ["src_path TEXT", "version INTEGER NOT NULL DEFAULT 1", "prev_key TEXT", "prev_bytes INTEGER"]) { try { this.sql.exec(`ALTER TABLE files ADD COLUMN ${c}`); } catch {} }
     // tags = a JSON array of lowercase words the Library filters on (e.g. ["meeting"]: the Library's Meetings chip; live notes save with it).
     try { this.sql.exec("ALTER TABLE files ADD COLUMN tags TEXT"); } catch {}
+    initRoutingArtifacts(this.sql);
     this.fvInit();   // file-versions.js: orig_key (the person's original, kept for good) and file_uses (which Library files the agent used)
     // A task's to-do list (todos.js): items JSON, rev = a counter bumped on every change, seen = the rev the helper last saw, next item id.
     this.sql.exec("CREATE TABLE IF NOT EXISTS todos (session TEXT PRIMARY KEY, items TEXT NOT NULL, rev INTEGER NOT NULL DEFAULT 0, seen INTEGER NOT NULL DEFAULT 0, next INTEGER NOT NULL DEFAULT 1, updated INTEGER NOT NULL)");
@@ -429,7 +448,7 @@ export class Resident extends DurableObject {
     spendInit(this.sql);   // spendguard.js: pause cards (Keep going / Stop here)
     pomoInit(this.sql);   // focus timers per task (pomodoro.js)
     this.lnInit();   // Live notes per task (live-notes.js): the LiveNotes DO's mirror
-    helpersInit(this.sql); browserJobsInit(this.sql); forgottenInit(this.sql);
+    helpersInit(this.sql); userInputInit(this.sql); nativePollInit(this.sql); photonReplyInit(this.sql); phoneFilesInit(this.sql); browserJobsInit(this.sql); forgottenInit(this.sql);
     if (env.BACKUP_MAINTENANCE !== "1") {
       this.helpersRecover({ boot: true }).catch((e) => console.log("helpers recover", e.message));
       this.browserJobsRecover({ boot: true }).catch((e) => console.log("browser jobs recover", e.message));
@@ -907,8 +926,18 @@ export class Resident extends DurableObject {
   }
   save(turn, m) {
     const store = this._appendTurns?.get(turn)?.transcript;
-    if (store) { store.bound(m); store.append(m, turn); }
-    this.sql.exec("INSERT INTO msgs (turn,role,content,tool_calls,tool_call_id,at) VALUES (?,?,?,?,?,?)", turn, m.role, typeof m.content === "object" ? JSON.stringify(m.content) : m.content ?? null, m.tool_calls ? JSON.stringify(m.tool_calls) : null, m.tool_call_id ?? null, Date.now());
+    const text = m.role === "user" ? typeof m.content === "string" ? m.content : m.content?.filter(p => p.type === "text").map(p => p.text).join("") : null;
+    const tc = text == null ? null : [...this.active.values()].find(t => t.turn === turn && t.preparedSteers?.texts.includes(text));
+    // Classic/Pi usually omit prepared file bodies from saved steering. A
+    // recording is the actual request, so keep its assembled data for resume.
+    if (tc?.preparedSteers.full) m = { ...m, content: Array.isArray(m.content) ? m.content.map(p => p.type === "text" ? { ...p, text: tc.preparedSteers.full } : p) : tc.preparedSteers.full };
+    const write = () => {
+      if (store) { store.bound(m); store.append(m, turn); }
+      this.sql.exec("INSERT INTO msgs (turn,role,content,tool_calls,tool_call_id,at) VALUES (?,?,?,?,?,?)", turn, m.role, typeof m.content === "object" ? JSON.stringify(m.content) : m.content ?? null, m.tool_calls ? JSON.stringify(m.tool_calls) : null, m.tool_call_id ?? null, Date.now());
+      if (tc) markConsumed(this.sql, tc.preparedSteers.card, tc.preparedSteers.seqs, tc.stepNo ?? 0);
+    };
+    if (tc) { if (store) store.atomic(write); else this.ctx.storage.transactionSync(write); delete tc.preparedSteers; }
+    else write();
   }
   closeTaskCalls(tc) {
     if (!tc?.transcript) return;
@@ -924,15 +953,15 @@ export class Resident extends DurableObject {
   // One model call, streamed. Fires onComputerTool() as soon as a computer tool name appears in the stream.
   // The tools the model is offered: tools() minus this run's exclusions (helpers), each with a required step_title first (§4).
   // bring_back restores steps the working set set aside; the append task runtime never sets any aside (read_task_archive is its way back), so the tool isn't offered there.
-  availableTools(tc = null) { const all = [...this.tools(), ...(tc?.context?.version === 2 ? (hsUse(this.env) ? CONTEXT_TOOLS_USE : CONTEXT_TOOLS) : []), ...(tc?.appendRuntime ? [TASK_ARCHIVE_TOOL] : [])]; return (hsWalls(this.env) ? wallsTools(this.env, this.get("channel"), all) : all).filter((t) => !tc?.exclude?.has(t.function.name) && !(tc?.appendRuntime && t.function.name === "bring_back") && (tc?.kind !== "helper" || t.function.name === "load_tools" || helperAllowed(t.function.name, tc.helper, tc.coordinatorPhase))); }
+  availableTools(tc = null) { const all = [...this.tools(), ...(dynamicRoutingOn(this.env) ? [...ORCHESTRATOR_TOOLS, ...ROUTING_FILE_TOOLS, ...AGENT_MEMORY_TOOLS, ...(tc?.helper?.dynamic_routing ? [DONE_TOOL, REQUEST_INPUT_TOOL] : [])] : []), ...(tc?.context?.version === 2 ? (hsUse(this.env) ? CONTEXT_TOOLS_USE : CONTEXT_TOOLS) : []), ...(tc?.appendRuntime ? [TASK_ARCHIVE_TOOL] : [])]; return (hsWalls(this.env) ? wallsTools(this.env, this.get("channel"), all) : all).filter((t) => routingToolsAllowed(tc, t.function.name) && !tc?.exclude?.has(t.function.name) && !(tc?.appendRuntime && t.function.name === "bring_back") && (tc?.kind !== "helper" || t.function.name === "load_tools" || tc?.helper?.dynamic_routing && t.function.name === "done" || helperAllowed(t.function.name, tc.helper, tc.coordinatorPhase))); }
   // Classic lane: every available tool in catalog order, built once per run (r35-cache-fix), so the tools block never changes.
   // Append lane with PAYLOAD_CUT lazy (tc.appendLazy): every tool from turn 0 too, but non-eager ones as stubs (payload-cut.js);
   // the list is fixed when the task is created, so the cached prefix never changes.
   modelTools(tc = null) {
-    if (tc?.appendTools) return tc.appendTools;
-    if (tc && !tc.appendRuntime && tc.classicTools) return tc.classicTools;
+    if (tc?.appendTools && !tc?.taskProfile?.dynamicRouting) return tc.appendTools;
+    if (tc && !tc.appendRuntime && tc.classicTools && !tc.helper?.dynamic_routing) return tc.classicTools;
     const compact = cutTitle(this.env) || !!tc?.appendLazy, all = this.availableTools(tc);
-    const list = withStepTitles(tc?.appendLazy ? all.map((t) => EAGER_TOOLS.has(t.function.name) || t.function.name === TASK_ARCHIVE_TOOL.function.name ? t : stubTool(t)) : all, { required: true, compact });
+    const list = withStepTitles(tc?.appendLazy ? all.map((t) => EAGER_TOOLS.has(t.function.name) || [...ORCHESTRATOR_TOOLS,REQUEST_INPUT_TOOL,...ROUTING_FILE_TOOLS,...AGENT_MEMORY_TOOLS].some(x=>x.function.name===t.function.name) || t.function.name === TASK_ARCHIVE_TOOL.function.name ? t : stubTool(t)) : all, { required: true, compact });
     if (tc && !tc.appendRuntime) tc.classicTools = list;
     return list;
   }
@@ -955,11 +984,23 @@ export class Resident extends DurableObject {
       files: !!(tc?.needImg || tc?.attached) };
   }
   async callModel(messages, onComputerTool, onText = null, maxOut = MAX_OUT, noTools = false, tc = null) {
+    this.sidecarAudioCurrent(tc);
     if (tc?.kind === "helper" && tc.helper?.id) this.helperAttachMessages(tc, messages);
+    const reviewImages = tc?.routingReviewHelper ? new Set(JSON.parse(helperRow(this.sql, tc.routingReviewHelper)?.handoff_json || "{}").imageParts?.map(p => p.image_url?.url) || []) : new Set();
+    const withoutReviewImages = input => input.map(m => Array.isArray(m.content) ? { ...m, content: m.content.filter(p => p.type !== "image_url" || !reviewImages.has(p.image_url?.url)) } : m);
+    if (tc?.routingImagesDescribed) messages = withoutReviewImages(messages);
     if (tc?.appendRuntime) await this.governTaskContext(messages, tc);
     let r;
     try { r = await this.callModelStep(messages, onComputerTool, onText, maxOut, noTools, tc); }
     catch (e) {
+      if (tc?.routingReviewHelper && !tc.routingImagesDescribed && (e.imageInputRejected || e.reason === "unsupported-image" || isRoutingImageError(e))) {
+        tc.routingImagesDescribed = true;
+        const h = helperRow(this.sql, tc.routingReviewHelper), fallback = await routingImageFallback(this, h, tc);
+        const cleaned = withoutReviewImages(messages);
+        cleaned.push({ role: "user", content: fallback.preview });
+        this.save(tc.turn, { role: "user", content: fallback.preview });
+        r = await this.callModelStep(cleaned, onComputerTool, onText, maxOut, noTools, tc);
+      } else {
       // One durable overflow allowance per turn. Provider errors other than an
       // explicit context rejection never trigger blind compression/retries.
       if (!tc?.appendRuntime || tc.contextOverflowRetried || !/context.{0,30}(length|limit|window)|too many tokens|maximum.*tokens/i.test(String(e.message))) throw e;
@@ -967,6 +1008,7 @@ export class Resident extends DurableObject {
       this.sql.exec("UPDATE turn_runs SET extra=json_set(COALESCE(extra,'{}'),'$.contextOverflowRetried',1) WHERE card=?", tc.turn);
       await this.governTaskContext(messages, tc, "provider_context_rejection");
       r = await this.callModelStep(messages, onComputerTool, onText, maxOut, noTools, tc);
+      }
     }
     if (tc?.appendRuntime) tc.transcript.observe(r.inTok, messages, this.modelTools(tc));
     if (tc?.kind === "helper" && tc.helper?.id) this.helperMessagesSeen(tc);
@@ -1050,7 +1092,9 @@ export class Resident extends DurableObject {
   async callModelOnce(messages, onComputerTool, onText = null, maxOut = MAX_OUT, noTools = false, tc = null) {
     if (tc?.abort === "hard") throw stopError();   // stopped: no further model calls
     if (tc?.modelFailure) throw modelFault(tc.modelFailure.code, tc.modelFailure.phase);
-    if (tc?.taskProfile) await authorizeTaskProfile(this.env, tc.taskProfile, this.get("tenant"), { messages });
+    // A frozen chain is authorized separately for every attempted source by
+    // taskChat. Only billing-mode changes must stop before the BYOK branch.
+    if (tc?.taskProfile && (!tc.taskProfile.poolChain?.length || this.env.BYOK)) await authorizeTaskProfile(this.env, tc.taskProfile, this.get("tenant"), { messages });
     if (tc?.context?.version === 2 && !tc?.appendRuntime) {
       tc.loadedTools = loadedTools(messages, tc.loadedTools);
       messages = contextMessages(messages, tc.context);
@@ -1070,7 +1114,7 @@ export class Resident extends DurableObject {
     let backgroundFormat = tc?.appendRuntime && noTools ? (tc.taskProfile.catalog.tool_choice.includes("none") ? { tool_choice: "none" } : {}) : noTools && messages.at(-1)?.role === "user" && String(messages.at(-1)?.content).startsWith(HANDOFF_PREFIX) ? { response_format: structuredFormat("handoff_notes", HANDOFF_SCHEMA) } : {};
     const estIn = Math.ceil(JSON.stringify(messages).length / 3);
     // Own AI key (byok.js): their endpoint and models, nothing reserved or charged for the call (their provider bills them).
-    let byok = this.env.BYOK || null, viaOR = !byok && useOpenRouter(this.env);
+    let byok = this.env.BYOK || null, viaOR = !byok && (!!tc?.taskProfile || useOpenRouter(this.env));
     if (!eeEnabled(this.env) && (!byok || byok.missing)) throw Object.assign(new Error("Set up your own AI key in Settings before starting a task."), { status: 409 });
     let reserve = byok ? 0 : Math.ceil((viaOR ? estIn * OR_RESERVE_PRICE.in * CACHE_WRITE_MULT + requestMaxOut * OR_RESERVE_PRICE.out : estIn * PRICE.in + MAX_OUT_ * PRICE.out) * MARKUP), rid = `res:${crypto.randomUUID()}`;
     guardCall(tc);   // spendguard.js: never start a call that could cross the turn's hard ceiling
@@ -1288,6 +1332,11 @@ export class Resident extends DurableObject {
     return hintNudge(this, tc, name, a);   // integration-hint.js: this turn's hint named the site's app; once per app per task
   }
   async execComputerToolInner(name, a, tc) {
+    if (tc?.helper?.dynamic_routing && (name === "write_file" || name === "edit_file")) {
+      const path = workerOutputPath(this, tc.helper, a.path);
+      if (!path) return { code: 2, out: `The file was not changed. Save outputs inside ${helperDir(tc.helper.id)}, or edit an exact existing Library copy under /workspace/files/. Files elsewhere are not collected automatically for Primary review. Move or copy command outputs into your work folder before calling done.` };
+      a = { ...a, path };
+    }
     try { await this.syncFiles(); } catch (e) { console.log("file sync", e.message); }
     let cmd;
     switch (name) {
@@ -1326,6 +1375,13 @@ export class Resident extends DurableObject {
   async collectDownloads(tc) {
     const C = this.computer(), { done = [], partial = [] } = await C.listDownloads(), files = [];
     for (const d of done) {
+      if (tc?.helper?.dynamic_routing) {
+        const moved = await C.takeDownload(d.name, safeName(d.name), helperDir(tc.helper.id).replace(/^\/workspace\//, "").replace(/\/$/, ""));
+        if (!moved?.ok) { files.push({ name: d.name, bytes: d.bytes, path: `files/downloads/${d.name}`, full: "Could not hold the download for review." }); continue; }
+        const held = await stageRoutingFile(this, tc.helper, { path: "/workspace/" + moved.path, name: d.name });
+        files.push({ file: held, said: `Downloaded "${held.name}" and held file ${held.id} for Primary review. The person cannot see it until approval.` });
+        continue;
+      }
       // An edited file fetched again (the same file downloaded after a change in a web app) is a new version of its Library file, not "name (2)".
       const m = this.resolveFile({ name: safeName(d.name), session: tc?.session }), target = m?.file || null;
       const id = target ? target.id : crypto.randomUUID(), base = `t/${this.get("tenant")}/files/${this.get("channel")}/${id}`, v = target ? Number(target.version || 1) + 1 : 1, key = target ? `${base}.v${v}` : base, name = target ? target.name : this.uniqueName(safeName(d.name));
@@ -1482,12 +1538,17 @@ export class Resident extends DurableObject {
   }
   async runTool(call, ctx = {}) {
     if (!eeToolEnabled(this.env, call.function?.name)) return `error: ${call.function.name} is unavailable on this deployment.`;
+    if (!routingToolsAllowed(ctx, call.function?.name)) {
+      const controls = new Set(["start_helper", "message_subagent", "approve_subagent", "ask_user", "interview", "send_poll", "done", "request_input", "read_log", "search_agent_bank", "file_text", "read_lines", "read_pages", "read_sheet", "search_file"]);
+      const allowed = this.modelTools(ctx).filter(t => controls.has(t.function.name));
+      return "error: this tool is not available in the current delegation state. Nothing was executed. Use the exact current tool names and required arguments below; earlier tool names are not aliases.\n" + JSON.stringify({ policy: orchestrationPolicy(ctx), tools: allowed });
+    }
     if (ctx.appendRuntime && !this.availableTools(ctx).some(t => t.function.name === call.function?.name)) return "error: this tool is no longer available under the current runtime configuration.";
     if (call.bad_args != null) return `error: your tool arguments were not valid JSON (possibly cut off at ${MAX_OUT} output tokens). Retry with shorter arguments. Received: ${call.bad_args.slice(0, 300)}`;
     let a = {}; try { a = JSON.parse(call.function.arguments || "{}"); } catch { return `error: tool arguments were not valid JSON: ${call.function.arguments?.slice(0, 200)}`; }
     a = splitStepTitle(a).args;   // the card's step title never reaches a tool
     if (ctx) { ctx.callId = call.id; ctx.callNo = (ctx.callNo || 0) + 1; }   // appfirst.js: "from step N" in a repeat's nudge
-    if (ctx.appendLazy && !EAGER_TOOLS.has(call.function.name) && call.function.name !== TASK_ARCHIVE_TOOL.function.name) {   // payload-cut.js: stubbed tool
+    if (ctx.appendLazy && !EAGER_TOOLS.has(call.function.name) && ![...ORCHESTRATOR_TOOLS,REQUEST_INPUT_TOOL,...ROUTING_FILE_TOOLS,...AGENT_MEMORY_TOOLS].some(x=>x.function.name===call.function.name) && call.function.name !== TASK_ARCHIVE_TOOL.function.name) {   // payload-cut.js: stubbed tool
       const full = this.availableTools(ctx).find((t) => t.function.name === call.function.name);
       if (full) {
         a = coerceArgs(a, full.function.parameters); const problems = checkArgs(a, full.function.parameters), seen = ctx.loadedTools?.has(full.function.name);
@@ -1524,6 +1585,10 @@ export class Resident extends DurableObject {
   }
   async localToolInner(name, a, ctx = {}) {
     const now = Date.now();
+    if (dynamicRoutingOn(this.env) && ["file_text", "read_lines", "read_pages", "read_sheet", "search_file"].includes(name)) {
+      const result = await routingFileTool(this, name, a, ctx); if (result != null) return result;
+    }
+    if (["done", "request_input", "ask_user", "send_poll", "approve_subagent", "message_subagent", "read_log", "search_agent_bank"].includes(name)) return this.orchestrationTool(name, a, ctx);
     if (NATIVE_TOOL_NAMES.has(name)) return JSON.stringify(await nativeTool(this, name, a, ctx));
     if (ctx.emit && name !== "update_todos" && name !== "react") { ctx.line = lineFor(name, a); ctx.emit({ t: "status", line: ctx.line }); }   // to-do lists and reactions show themselves
     switch (name) {
@@ -1761,7 +1826,17 @@ export class Resident extends DurableObject {
       case "save_skill": { const r = saveSkill(this.sql, a, ctx); if (hsWriters(this.env) && !/^error|^There's no/.test(String(r))) this.ctx.waitUntil?.(this.hsSkillSync(String(a.slug || "").toLowerCase().replace(/[\s_]+/g, "-")).catch((e) => console.log("skill memory", e.message))); return r; }   // skills/channel.js: only when the person asked   // skills (src/skills/): no computer
       case "bring_back": { const r = bringBack(a.key, ctx.wmFull, ctx.wmState); if (r != null) return r; const v = /^wl\d+$/i.test(String(a.key || "")) ? savedBody(this.sql, String(a.key).slice(2)) : null; return v != null ? `[restored ${a.key}]\n${v}` : "error: no set-aside step with that key in this request"; }
       case "work_log": return workLogTool(this, a, ctx);   // worklog.js: earlier lookups (email, calendar, apps, web)
-      case "interview": return interviewTool(this, a, ctx);
+      case "interview": {
+        const target=Number(ctx.orchestration?.review||ctx.orchestration?.steer||ctx.orchestration?.started)||null;
+        if(target&&helperRow(this.sql,target)?.status==="running")return "error: wait for this worker to return done or request_input before asking about its work.";
+        const existing=ctx.turn?this.sql.exec("SELECT id FROM chat_interviews WHERE turn=? AND status='open'",ctx.turn).toArray()[0]:null;
+        const out = existing ? "Your interview card is already shown. Wait for the person's answers." : await interviewTool(this, a, ctx);
+        if (ctx.kind === "chat" && ctx.session && ctx.turn && dynamicRoutingOn(this.env) && this.sql.exec("SELECT id FROM chat_interviews WHERE turn=? AND status='open'",ctx.turn).toArray().length) {
+          const q = createQuestion(this.sql,ctx,{question:a.intro || a.title});
+          if (!q.error) { ctx.inputRequest=q; ctx.orchestration ||= {}; ctx.orchestration.waitingInput=true; this.journalDelegation(ctx,"interview",out); ctx.emit?.({t:"user_input",input:q}); }
+        }
+        return out;
+      }
       case "file_text": return await this.fileTextTool(a);   // sidecar.js: a Library file's prepared text, no computer
       case "recall_history": return recallHistory(this.sql, a, ctx, { ranked: hsUse(this.env) });   // HS_USE: any word matches, more words first, then newest
       case "share_file": { const t0 = Date.now(), out = await this.shareFile(a, ctx); this.warmPreviews(t0); return out; }   // file-preview.js: a deck/document it gave gets its viewer preview now
@@ -1785,11 +1860,15 @@ export class Resident extends DurableObject {
   async armNow() {
     const wt0 = this.sql.exec("SELECT MIN(CASE WHEN lease_until>next_run THEN lease_until ELSE next_run END) t FROM workflows WHERE status='active' AND on_event IS NULL").one().t;
     const et = eventsNext(this.sql), wt = wt0 == null ? et : et == null ? wt0 : Math.min(wt0, et);   // + app events waiting to run (app-events.js)
-    const ht1 = helperNextWake(this.sql), bj = browserJobNextWake(this.sql), ht0 = ht1 == null ? bj : bj == null ? ht1 : Math.min(ht1, bj), pt = this.pomoNext(), ht = pt == null ? ht0 : ht0 == null ? pt : Math.min(ht0, pt);   // + focus timer phase ends (pomodoro.js)
+    const orphanInput=this.sql.exec("SELECT 1 FROM user_input_receipts WHERE turn IS NULL LIMIT 1").toArray().length;
+    const ht1 = orphanInput?Date.now():helperNextWake(this.sql), bj = browserJobNextWake(this.sql), ht0 = ht1 == null ? bj : bj == null ? ht1 : Math.min(ht1, bj), pt = this.pomoNext(), ht = pt == null ? ht0 : ht0 == null ? pt : Math.min(ht0, pt);   // + focus timer phase ends (pomodoro.js)
     const r0 = wt == null ? ht : ht == null ? wt : Math.min(wt, ht);   // + helper deadlines and owed results
     const lt0 = laterNext(this.sql), jt0 = this.journalNext(), bt = this.textBatchNext(), jt = jt0 == null ? bt : bt == null ? jt0 : Math.min(jt0, bt), lt = lt0 == null ? jt : jt == null ? lt0 : Math.min(lt0, jt);   // + running turns' heartbeat / due resumes (resume.js)
     const r1 = lt == null ? r0 : r0 == null ? lt : Math.min(r0, lt);   // + scheduled messages (send-later.js)
     const hn = hsWriters(this.env) ? [this.hsRebuildNext(), this.hsOutboxNext(), this.hsImportNext(), this.hsPageNext()].filter((x) => x != null) : [];   // + the Hindsight rebuild step and the retry outbox (hindsight-rebuild.js, hindsight-writers.js)
+    const agentWake = agentMemoryNextWake(this); if (agentWake != null) hn.push(agentWake);
+    const pollWake = nativeVoteNext(this.sql); if (pollWake != null) hn.push(pollWake);
+    const fileWake = phoneFilesNext(this.sql); if (fileWake != null) hn.push(fileWake);
     const r = hn.length ? Math.min(...(r1 == null ? hn : [r1, ...hn])) : r1;
     this.laterTimer(lt0);
     await this.syncRegistry(r);
@@ -1845,6 +1924,10 @@ export class Resident extends DurableObject {
     this.armBackstop();
     try { this.resumeDue(); } catch (e) { console.log("resume alarm", e.message); }   // resume.js: turns a reset cut off carry on first (not awaited)
     if (this.env.TEST_MODE === "1") await this.probeAlarmRun(info).catch((e) => console.log("alarm probe", e.message));
+    this.recoverInputReplies();
+    await recoverNativeSends(this);
+    await recoverNativeVotes(this);
+    await deliverPhoneFiles(this).catch(e => console.log("phone files recovery", e.message));
     await this.helpersRecover().catch((e) => console.log("helpers alarm", e.message));   // owed helper results, helper deadlines
     await this.browserJobsRecover().catch((e) => console.log("browser jobs alarm", e.message));
     try { this.textBatchRecover(); } catch (e) { console.log("text batch recover", e.message); }   // texts a deploy caught mid-gather (not awaited)
@@ -2244,11 +2327,12 @@ export class Resident extends DurableObject {
     if (name === "stop_helper") {
       const h = helperRow(this.sql, a.id);
       if (!h || h.session !== ctx.session || (coordinating && h.coordinator_id !== coordinator.id)) return `error: there's no helper #${a.id} available to you in this task.`;
-      if (h.status !== "running") return `Helper #${h.id} had already ${h.status === "done" ? "finished" : h.status}; nothing to stop.`;
+      if (!["running","awaiting_review","waiting_input"].includes(h.status)) return `Helper #${h.id} had already ${h.status === "done" ? "finished" : h.status}; nothing to stop.`;
       const r = await this.helperStop(ctx.session, h.id, coordinating ? "coordinator" : "agent");
       return r.error ? `error: ${r.error}` : `Stopped helper #${h.id} "${h.name}". Its result won't come back.`;
     }
     if (!ctx.session || (ctx.kind !== "chat" && !coordinating)) return "error: helpers can only be started while working on a task with the person.";
+    if (!coordinating && a.role != null && a.role !== "worker") return "error: only ordinary workers can be started.";
     const role = a.role == null ? "worker" : String(a.role);
     if (role !== "worker" && role !== "coordinator") return "error: role must be worker or coordinator.";
     if (coordinating && role !== "worker") return "error: a coordinator can start direct worker children only; there is no deeper nesting.";
@@ -2272,6 +2356,22 @@ export class Resident extends DurableObject {
     this.sql.exec("INSERT INTO helpers (session,parent_card,name,task,context,status,started,deadline,role,coordinator_id,phase,spawn_call_id) VALUES (?,?,?,?,?,'running',?,?,?,?,?,?)",
       ctx.session, parent, nm, task, inherited, now, coordinating ? coordinator.deadline : now + HELPER_DEADLINE_MS, role, coordinating ? coordinator.id : null, role === "coordinator" ? "dispatch" : null, callId);
     const h = helperRow(this.sql, this.sql.exec("SELECT last_insert_rowid() id").one().id);
+    if (ctx.taskProfile?.dynamicRouting) {
+      const profile = JSON.parse(JSON.stringify(ctx.taskProfile.dispatch.workerProfile));
+      profile.cacheSession = JSON.stringify([this.get("tenant"), this.get("channel"), ctx.session, h.id]);
+      for (const entry of profile.poolChain || []) entry.cacheSession = profile.cacheSession;
+      this.sql.exec("UPDATE helpers SET dynamic_routing=1,required_delegation=?,profile_json=?,primary_profile_json=?,category=?,round_started=? WHERE id=?", ctx.orchestration?.requiredDelegation || ctx.taskProfile.dispatch.requiredDelegation ? 1 : 0, JSON.stringify(profile), JSON.stringify(ctx.taskProfile), ctx.taskProfile.dispatch.category, now, h.id);
+      this.sql.exec("UPDATE helpers SET round_request=? WHERE id=?", task, h.id);
+      const minutes = ctx.taskProfile.dispatch.category === "skills" ? 25 : ["apps_economical", "apps_complete"].includes(ctx.taskProfile.dispatch.category) ? 15 : 10;
+      this.sql.exec("UPDATE helpers SET deadline=? WHERE id=?", now + minutes * 60000, h.id);
+      Object.assign(h, helperRow(this.sql, h.id));
+      ctx.orchestration ||= ctx.taskProfile.dispatch;
+      ctx.orchestration.started = h.id;
+      if (ctx.orchestration.requiredDelegation) ctx.orchestration.sent = true;
+      if (ctx.orchestration.requiredDelegation) ctx.delegateYield = true;
+      this.journalDelegation(ctx,"start_helper",helperStartedText(h));
+      await retainAgentMessage(this, h, task, "job", String(callId || "start"));
+    }
     // The start_helper step in the parent card carries the helper id (the app shows the helper chip on it).
     if (parent) { try { this.sql.exec("UPDATE card_events SET ref=? WHERE card=? AND call_id=? AND type='step' AND tool='start_helper' AND status='running' AND ref IS NULL", String(h.id), parent, callId); } catch {} }
     emitHelper(this, h);
@@ -2280,15 +2380,136 @@ export class Resident extends DurableObject {
     this.arm().catch(() => {});   // the alarm backs up the deadline timers
     return coordinating ? `Worker #${h.id} "${h.name}" started. Its report goes to you for your final combined report, not directly to the main helper.` : helperStartedText(h);
   }
+  async orchestrationTool(name, a, tc) {
+    if (!routingToolsAllowed(tc, name)) return "error: this tool is unavailable in the current delegation state.";
+    if (name === "send_poll") return sendNativePoll(this,a,tc);
+    if (name === "ask_user") {
+      if (tc.kind !== "chat" || tc.helper) return "error: only Primary can ask the person.";
+      const target=Number(a.id||tc.orchestration?.review||tc.orchestration?.steer||tc.orchestration?.started)||null;
+      if(target&&helperRow(this.sql,target)?.status==="running")return "error: wait for this worker to return done or request_input before asking a question about its work.";
+      if(a.presentation&&!cardsTree(String(a.presentation)).root)return "error: presentation must be valid existing OpenUI card code. Use question alone for plain text.";
+      const q=createQuestion(this.sql,tc,a);
+      if(q.error) return `error: ${q.error}`;
+      tc.inputRequest=q; tc.orchestration ||= {}; tc.orchestration.waitingInput=true;
+      this.journalDelegation(tc,"ask_user",JSON.stringify({question_id:q.question_id,status:"waiting",instruction:"Your question is shown. Wait for the person's answer. The worker remains open and unapproved."}));
+      tc.emit?.({t:"user_input",input:q});
+      return JSON.stringify({question_id:q.question_id,status:"waiting",instruction:"Your question is shown. Wait for the person's answer. The worker remains open and unapproved."});
+    }
+    if (name === "request_input") {
+      if(!tc.helper?.dynamic_routing) return "error: only an assigned worker can request input from Primary.";
+      const question=scrubSecrets(String(a.question||"").trim());
+      if(!question) return "error: question is required.";
+      this.sql.exec("UPDATE helpers SET input_question=?,input_card=? WHERE id=?",question,tc.turn,tc.helper.id);
+      tc.helperInputQuestion=question;
+      return "Your question is recorded for Primary. Your worker is paused, with its history and files kept. Primary will send clarified instructions to this same session.";
+    }
+    if (name === "done") {
+      if (!tc.helper?.dynamic_routing) return "error: done is only available to an assigned worker.";
+      tc.helperDoneResponse = String(a.response || "");
+      return "Response recorded. The system will attach the step log and produced files for review.";
+    }
+    if (name === "search_agent_bank") return JSON.stringify(await searchAgentBank(this, a.query));
+    if (name === "read_log" && typeof a.id === "string" && /^(sublog|subconv):/.test(a.id)) {
+      const record = await readAgentDocument(this, a.id);
+      return record.error ? `error: ${record.error}` : lineRange(record.text, a.from, a.to, {id:a.id}, {offset:a.offset,count:a.count});
+    }
+    const id = Number(a.id || tc.orchestration?.review || tc.orchestration?.steer), h = helperRow(this.sql, id);
+    if (!h || h.session !== tc.session || !h.dynamic_routing) return "error: no matching open worker in this task.";
+    if (name === "read_log") {
+      if (h.status === "running") return "error: the worker is running. Only finished round logs can be read.";
+      const row = this.sql.exec("SELECT log FROM helper_rounds WHERE helper_id=? ORDER BY round DESC LIMIT 1", id).toArray()[0];
+      return row ? lineRange(row.log, a.from, a.to, {id:String(id)}, {offset:a.offset,count:a.count}) : "error: no finished log exists.";
+    }
+    if (name === "approve_subagent") {
+      if(this.sql.exec("SELECT 1 FROM user_questions WHERE helper_id=? AND (status='pending' OR (status='answered' AND (answer_turn IS NULL OR answer_turn<>?) AND NOT EXISTS (SELECT 1 FROM turns WHERE turns.id=user_questions.answer_turn)))",id,tc.turn||"").toArray().length)return "error: wait for the person's answer before approving this worker.";
+      if (h.status !== "awaiting_review") return "error: approval is available only after done.";
+      if (JSON.parse(h.handoff_json || "{}").incomplete) return "error: this file handoff is incomplete. Request a revision before approving.";
+      const published = await approveRoutingFiles(this, h, a.files || [], tc);
+      this.sql.exec("UPDATE helpers SET status='approved',history_json=NULL,ended=? WHERE id=? AND status='awaiting_review'", Date.now(), id);
+      tc.orchestration = { approved: id };
+      this.journalDelegation(tc,"approve_subagent",`Worker #${id} approved. The session is closed. ${published.notice}`);
+      return `Worker #${id} approved. The session is closed. ${published.notice}`;
+    }
+    if (name === "message_subagent") {
+      const steering = tc.orchestration?.steer === id;
+      if (h.status !== "awaiting_review" && h.status !== "waiting_input" && !(steering && h.status === "running")) return "error: wait for done before sending a revision.";
+      const message = scrubSecrets(String(a.message || "").trim());
+      if (!message) return "error: message is required.";
+      let deletionNotice = "";
+      if (h.status === "awaiting_review") deletionNotice = await discardRoutingFiles(this, h);
+      let next = null;
+      if (h.status === "waiting_input") this.sql.exec("UPDATE routing_artifacts SET round=round+1 WHERE helper_id=? AND round=? AND session=? AND state IN ('held','staging')",h.id,h.round,h.session);
+      if (h.status === "running") {
+        this.sql.exec("INSERT INTO helper_messages (helper_id,session,text,status,queued_at) VALUES (?,?,?,'queued',?)", id, tc.session, message, Date.now());
+      } else {
+        const history = JSON.parse(h.history_json || "[]");
+        this.sql.exec("INSERT INTO helper_messages (helper_id,session,text,status,queued_at) VALUES (?,?,?,'queued',?)", id, tc.session, message, Date.now());
+        this.sql.exec("UPDATE helpers SET status='running',handed=0,round=round+1,round_started=?,round_request=?,history_json=?,deadline=?,report=NULL,input_question=NULL,input_card=NULL WHERE id=? AND status IN ('awaiting_review','waiting_input')", Date.now(), message, JSON.stringify(history), Date.now() + HELPER_DEADLINE_MS, id);
+        next = helperRow(this.sql, id);
+      }
+      tc.orchestration.sent = true;
+      this.journalDelegation(tc,"message_subagent",`Sent your correction to the same worker #${id}. Its next done will return the response, files and system log. ${deletionNotice}`);
+      if (next) {
+        const run = this.helperRun(next).catch(e => console.log("worker revision", id, e.message));
+        this.ctx.waitUntil?.(run); this._helperRuns = [...(this._helperRuns || []), run];
+      }
+      await retainAgentMessage(this, helperRow(this.sql, id), message, steering ? "steering" : "revision");
+      this.arm().catch(() => {});
+      this.sql.exec("UPDATE user_questions SET status='superseded' WHERE helper_id=? AND status='pending'",id);
+      return `Sent your correction to the same worker #${id}. Its next done will return the response, files and system log. ${deletionNotice}`;
+    }
+    return "error: unknown delegation tool.";
+  }
+  async orchestrationFinish(h, r = null, tc = null) {
+    if (!r && h.status === "interrupted" && h.card) {
+      const saved = this.sql.exec("SELECT id,reply,error,charge_nano,tool_calls,steps FROM turns WHERE id=?", h.card).toArray()[0];
+      if (saved) r = {turn:saved.id,reply:saved.reply,error:saved.error,charge:saved.charge_nano,tool_calls:saved.tool_calls,steps:saved.steps};
+    }
+    if (r && ["running", "interrupted"].includes(h.status)) {
+      const card = r.turn || tc?.turn || h.card;
+      const inputQuestion=tc?.helperInputQuestion || r.input_requested || (h.input_card === card ? h.input_question : null) || null;
+      const response = inputQuestion || (tc?.helperDoneResponse ?? String(r.reply || ""));
+      const limit = r.forced || r.hit_limit || tc?.helperWhy || tc?.abort ? tc?.helperWhy || "step, time or cost limit" : r.error ? `failure: ${plainError(r.error)}` : null;
+      let handoff;
+      try { handoff = inputQuestion ? {files:[],imageParts:[],preview:"The worker paused before completion. Its outputs remain held, and approval requires a completed done response."} : await collectRoutingFiles(this, { ...h, card }, tc || {}); }
+      catch (e) { handoff = { files: [], imageParts: [], incomplete: true, preview: `INCOMPLETE FILE HANDOFF. ${e.message}. Do not approve the result. Request a revision to recover the files.` }; }
+      const log = stepLog(this.sql, card, { limit, files: handoff.files });
+      this.sql.exec("UPDATE helpers SET handoff_json=? WHERE id=?", JSON.stringify(handoff), h.id);
+      const history = [...JSON.parse(h.history_json || "[]"), ...storedMessages(this.sql, card)];
+      const ended = Date.now();
+      this.sql.exec("INSERT OR REPLACE INTO helper_rounds (helper_id,round,card,response,log,files_json,ended,request,started) VALUES (?,?,?,?,?,?,?,?,?)", h.id, h.round, card, response, log, JSON.stringify(handoff.files), ended, h.round_request || h.task, h.round_started || h.started);
+      this.sql.exec("UPDATE helpers SET status=?,report=?,history_json=?,ended=?,charge_nano=charge_nano+?,steps=steps+?,model_steps=model_steps+?,card=?,handed=0 WHERE id=? AND status IN ('running','interrupted')", inputQuestion ? "waiting_input" : "awaiting_review", response, JSON.stringify(history), ended, Math.round(r.charge || 0), Number(r.tool_calls || 0), Number(r.steps || 0), card, h.id);
+      h = helperRow(this.sql, h.id); emitHelper(this, h);
+      const record = this.sql.exec("SELECT * FROM helper_rounds WHERE helper_id=? AND round=?", h.id, h.round).toArray()[0];
+      await retainAgentRound(this, h, record);
+      this.arm().catch(() => {});
+    }
+    if (!["awaiting_review","waiting_input"].includes(h.status) || h.handed) return h;
+    const round = this.sql.exec("SELECT * FROM helper_rounds WHERE helper_id=? AND round=?", h.id, h.round).toArray()[0];
+    if (!round) return h;
+    // Wait for the dispatch/steering turn to close so a fast done cannot be queued into a turn that has just yielded.
+    while (this.sessQ?.get(h.session)) await this.sessQ.get(h.session).catch(() => {});
+    h = helperRow(this.sql, h.id);
+    if (!["awaiting_review","waiting_input"].includes(h.status) || h.handed) return h;
+    this.sql.exec("UPDATE helpers SET handed=1 WHERE id=?", h.id);
+    const manifest = JSON.parse(h.handoff_json || "{}");
+    const text = `(Context note, not from the person: worker #${h.id} ${h.status === "waiting_input" ? "paused to request clarification from you. Ask the person with ask_user or interview if needed, then message_subagent to continue this same worker. It has not finished and cannot be approved." : "returned for your review."} Read its response and system evidence. Send corrections with message_subagent or approve with approve_subagent before presenting the result.\nResponse:\n${round.response}\nSystem step log:\n${lineRange(round.log, 1, 200, `read_log with id "${h.id}"`)}\nAutomatically collected files from the worker folder and changed Library copies: ${round.files_json}\n${manifest.preview || "No files were produced."})`;
+    const res = this.handoff(h.session, { text, away: text, ref: String(h.id), from: { type: "helper", id: h.id, title: h.name } });
+    if (res?.card?.id) this.sql.exec("UPDATE helpers SET result_card=? WHERE id=?", res.card.id, h.id);
+    return helperRow(this.sql, h.id);
+  }
   // One helper job: an unattended sub-turn (kind "helper": a saved snapshot, no live history or sessQ, never steerable) on the allowlisted tools.
   // resume (resume.js): a helper run a deploy cut off carries on in its own card, with its deadline timers set again.
   async helperRun(h, { resume = null, card = null, phase = null } = {}) {
     const coordinatorPhase = h.role === "coordinator" ? phase || h.phase || "dispatch" : null;
-    const share = h.coordinator_id ? COORDINATOR_LIMITS.child : coordinatorPhase ? COORDINATOR_LIMITS[coordinatorPhase] : null;
+    const measured = { general: { steps: 20, charge: 1e8, time: 10 }, research: { steps: 25, charge: 2e8, time: 10 }, apps_economical: { steps: 50, charge: 5.5e8, time: 15 }, skills: { steps: 25, charge: 3e8, time: 25 }, spreadsheet: { steps: 20, charge: 1e8, time: 10 }, technical: { steps: 20, charge: 5e8, time: 10 }, apps_complete: { steps: 50, charge: 5.5e8, time: 15 } };
+    // Custom category titles do not encode a permission policy. They receive the established general budget.
+    const budget = h.dynamic_routing ? measured[h.category] || measured.general : null;
+    const share = h.coordinator_id ? COORDINATOR_LIMITS.child : coordinatorPhase ? COORDINATOR_LIMITS[coordinatorPhase] : budget;
     const opts = { kind: "helper", session: h.session, helper: h, parent_card: h.parent_card,
       coordinator_phase: coordinatorPhase, max_steps: share?.steps || HELPER_MAX_STEPS, max_charge: share?.charge || HELPER_MAX_CHARGE,
-      ...(share ? { hard_charge: share.charge } : {}), exclude_tools: helperExclude(this.tools(), h, coordinatorPhase), ...(resume ? { resume, card } : {}) };
-    const prompt = coordinatorPhase === "aggregate" ? coordinatorFinalText(h, coordinatorChildren(this.sql, h.id), this.get("channel")) : helperJobText(h, this.get("channel"));
+      ...(share ? { hard_charge: share.charge } : {}), exclude_tools: helperExclude(this.tools(), h, coordinatorPhase).filter(n => !h.dynamic_routing || n !== "done"), ...(resume ? { resume, card } : {}) };
+    const prompt = coordinatorPhase === "aggregate" ? coordinatorFinalText(h, coordinatorChildren(this.sql, h.id), this.get("channel")) : h.dynamic_routing && h.round > 1 ? "Continue the same assigned job using the latest correction above. Call done with your response to finish this round." : helperJobText(h, this.get("channel"));
     const p = this.runTurn(this.get("tenant"), this.get("channel"), this.get("channel_id"), prompt, null, opts);
     // runTurn registers the turn (tc.helper = opts.helper, its hidden card in tc.turn) synchronously: helpers have no session queue.
     const tc = [...this.active.values()].find((t) => t.helper?.id === h.id && !t.finished) || null;
@@ -2298,9 +2519,15 @@ export class Resident extends DurableObject {
       const card = tc.card || tc.turn; if (card) this.sql.exec("UPDATE helpers SET card=? WHERE id=?", card, h.id);
       // Approvals for the helper's outgoing requests go to whoever watches the task. It counts as "watched" only while
       // someone does; otherwise egressDecision falls back to the texted card, else denies ("waiting in the app").
-      const fwd = (o) => { if (o.t === "approval" || o.t === "approval_done") liveTurnOf(this, h.session)?.emit?.(o); };
+      const fwd = (o) => {
+        if (o.t === "approval" || o.t === "approval_done") {
+          liveTurnOf(this, h.session)?.emit?.(o);
+          for (const watcher of this._routingObservers?.get(h.session) || []) watcher(o);
+        }
+        if (o.t === "done") for (const watcher of this._routingObservers?.get(h.session) || []) watcher({t:"idle",session:this.sessionView(this.session(h.session))});
+      };
       tc.subs.add(fwd);
-      Object.defineProperty(tc.subs, "size", { configurable: true, get: () => (liveTurnOf(this, h.session)?.subs?.size ? 1 : 0) });
+      Object.defineProperty(tc.subs, "size", { configurable: true, get: () => (liveTurnOf(this, h.session)?.subs?.size || this._routingObservers?.get(h.session)?.size ? 1 : 0) });
       const at = (ms, fn) => timers.push(setTimeout(async () => { if (await this.spendRefresh(tc, opts)) fn(); }, Math.max(0, ms - Date.now())));
       at(h.deadline, () => { if (!tc.finished && !tc.abort) { tc.helperWhy = "time limit"; tc.abort = "soft"; } });
       at(h.deadline + HELPER_GRACE_MS, () => { if (!tc.finished) { tc.helperWhy ||= "time limit"; tc.abort = "hard"; } });
@@ -2344,6 +2571,13 @@ export class Resident extends DurableObject {
   // r = null: only deliver an owed handoff (alarm / restart). Stops by the person or the main helper never hand off.
   helperFinish(id, r = null, tc = null, phase = null) {
     let h = helperRow(this.sql, id); if (!h) return null;
+    if (h.dynamic_routing) {
+      this._routingFinishes ||= new Map();
+      const key = `${h.id}:${h.round}`;
+      if (this._routingFinishes.has(key)) return this._routingFinishes.get(key);
+      const work = this.orchestrationFinish(h, r, tc).finally(() => this._routingFinishes.delete(key));
+      this._routingFinishes.set(key, work); this.ctx.waitUntil?.(work); return work;
+    }
     const now = Date.now();
     if (r) {
       const finalPhase = h.role === "coordinator" && phase === "aggregate";
@@ -2393,7 +2627,7 @@ export class Resident extends DurableObject {
     const viaText = this.textsSessions().includes(session);
     const run = (async () => {
       let res; try { res = await this.runTurn(this.get("tenant"), this.get("channel"), this.get("channel_id"), text, null, { session, viaText, handoff: inp.from || true, ...(r.card?.id ? { card: r.card.id } : {}) }); }
-      catch (e) { if (e?.objectReset) return null; res = { reply: "", error: e.message }; console.log("handoff turn", e.message); }   // reset: the resumed turn replies
+      catch (e) { if (e?.objectReset) return null; res = viaText ? await this.textFailureResult(this.get("tenant"), e, r.card?.id) : {reply:"",error:e.message}; console.log("handoff turn", e.message); }   // reset: the resumed turn replies
       if (viaText) { try { await this.deliverTextReply(this.get("tenant"), this.get("channel"), res); } catch (e) { console.log("handoff text", e.message); } }
       return res;
     })();
@@ -2418,6 +2652,12 @@ export class Resident extends DurableObject {
       if (h.role === "coordinator") this.coordinatorStopChildren(h.id, by);
       if (h.coordinator_id) this.sql.exec("UPDATE helpers SET handed=1 WHERE id=?", h.id);
     }
+    if (h.dynamic_routing && ["running", "awaiting_review", "waiting_input"].includes(h.status)) {
+      const notice = await discardRoutingFiles(this, h);
+      this.sql.exec("UPDATE helpers SET status='stopped',stopped_by=?,why=?,ended=?,history_json=NULL,handed=1 WHERE id=?", by, notice, Date.now(), h.id);
+    }
+    this.sql.exec("UPDATE user_questions SET status='cancelled' WHERE helper_id=? AND status='pending'",id);
+    if(!pendingInputs(this.sql,session).length)this.sql.exec("UPDATE sessions SET waiting=NULL WHERE id=? AND waiting='answer'",session);
     const v = emitHelper(this, helperRow(this.sql, id));
     if (h.coordinator_id) this.coordinatorReady(h.coordinator_id);
     this.arm().catch(() => {});
@@ -2426,6 +2666,7 @@ export class Resident extends DurableObject {
   // boot: a fresh isolate has no live turns, so running helpers were interrupted; their handoffs go out from the alarm.
   // Alarm: deliver owed results, and enforce deadlines on running helpers (the in-memory timers may be gone).
   async helpersRecover({ boot = false } = {}) {
+    await flushAgentMemory(this);
     const now = Date.now();
     // resume.js: a helper whose run is journaled carries on after a deploy (it's interrupted only when its resume gives up)
     const journaled = () => { try { return new Set(this.sql.exec("SELECT card FROM turn_runs").toArray().map((x) => x.card)); } catch { return new Set(); } };
@@ -2476,19 +2717,36 @@ export class Resident extends DurableObject {
   // opts.note: a line for the helper only (not shown as the person's words), e.g. a file that was too big to come by text.
   // opts.photonMsg: the webhook message.id of the person's text (the last text of a gathered batch), for the react tool's tapback.
   async textTurn(tenant, channel, channelId, text, opts = {}) {
+    opts = { ...opts, origin: messageOrigin(opts.origin) || (opts.photonMsg ? phoneOrigin() : null) };
     this.put("tenant", tenant); this.put("channel", channel); this.put("channel_id", channelId);
+    if(opts.session&&(!this.session(opts.session)||this.session(opts.session).done))return {ok:true,ignored:true};
     const files = (opts.files || []).map(String).slice(0, 10);
+    if(opts.photonMsg) {
+      const prior=this.sql.exec("SELECT * FROM user_input_receipts WHERE response_id=?",`text:${opts.photonMsg}`).toArray()[0];
+      if(prior){const selected=JSON.parse(prior.meta_json||"{}")._selection,expected=selected?.text??prior.answer_text;return expected===String(text)?{ok:true,duplicate:true,session:prior.session,turn:prior.turn}:{error:"This text identity belongs to another answer.",status:409};}
+    }
+    if(opts.photon_source_turn)return this.inputReply(tenant,channel,channelId,opts.session,text,{}, {...opts,viaText:true,_input:photonSourceInput(this,text,opts)});
+    const textQuestions=this.sql.exec("SELECT * FROM user_questions WHERE status='pending' AND via='text' ORDER BY created").toArray();
+    const textChoosers=this.sql.exec("SELECT session FROM user_questions WHERE status='pending' AND via='text' AND selection_json IS NOT NULL ORDER BY created").toArray();
+    if(!opts.session&&!opts.input_reply&&!opts.photon_target&&textChoosers.length===1)return this.inputReply(tenant,channel,channelId,textChoosers[0].session,text,{response_id:opts.photonMsg?`text:${opts.photonMsg}`:undefined},{...opts,viaText:true});
+    if(!opts.session&&!opts.input_reply&&!opts.photon_target&&textQuestions.length>1) {
+      const targetSession=textQuestions.find(q=>q.session===this.get("texts_session"))?.session||textQuestions[0].session;
+      return this.inputReply(tenant,channel,channelId,targetSession,text,{}, {...opts,viaText:true,_input:acceptAmbiguous(this.sql,targetSession,{ambiguous:true,pending:textQuestions.map(inputView),text:String(text),meta:{response_id:opts.photonMsg?`text:${opts.photonMsg}`:undefined}},{...opts,viaText:true})});
+    }
+    const delivered=textQuestions.length===1?textQuestions[0].session:this.get("last_text_question_session");
+    const pendingTextSession=opts.session||(delivered&&pendingInputs(this.sql,delivered).length?delivered:this.get("texts_session"));
+    if(pendingTextSession && (opts.input_reply || !opts.photon_target&&pendingInputs(this.sql,pendingTextSession).length)) return this.inputReply(tenant,channel,channelId,pendingTextSession,text,opts.input_reply||{response_id:opts.photonMsg?`text:${opts.photonMsg}`:undefined},{...opts,viaText:true});
     const input = { type: "msg", text: String(text ?? ""), files, via: "text", photonMsg: opts.photonMsg || null,
-      cid: opts.photonMsg ? `photon:${String(opts.photonMsg).slice(0, 57)}` : null, note: opts.note || "" };
+      cid: opts.photonMsg ? `photon:${String(opts.photonMsg).slice(0, 57)}` : null, note: opts.note || "", reply:replyRef(opts.reply),photon_target:opts.photon_target||null, ...originInput(opts) };
     // Steering: a text sent while the helper works on this thread joins that turn (one reply for all of them). The lookup and the
     // append happen before any await, so texts are read in the order they came.
-    let sid = this.get("texts_session"), cur = this.session(sid), so = null;
+    let sid = opts.session || this.get("texts_session"), cur = this.session(sid), so = null;
     if (cur && !cur.done) so = this.steerOrOpen(sid, input, { overflow: "open" });
     if (so && so.mode !== "open") return { ok: true, session: sid, steered: true, dup: so.mode === "dup" };
     // One "Text with <helper>" task; once the person marks it done (or deletes it), the next text starts a new one.
     const tt = await this.textsTitle(tenant);
     if (!so) {
-      sid = this.get("texts_session"); cur = this.session(sid);   // another text may have started the thread while we looked up the title
+      sid = opts.session || this.get("texts_session"); cur = this.session(sid);   // another text may have started the thread while we looked up the title
       if (!cur || cur.done) { const was = this.textsSessions(); sid = this.newSession(tt); this.put("texts_sessions", JSON.stringify([...was, sid].slice(-500))); this.put("texts_session", sid); }
       so = this.steerOrOpen(sid, input, { overflow: "open" });
       if (so.mode !== "open") return { ok: true, session: sid, steered: true, dup: so.mode === "dup" };
@@ -2499,10 +2757,10 @@ export class Resident extends DurableObject {
     const run = (async () => {
       textTyping(this.env, tenant, true).catch(() => {});   // not awaited: the turn is journaled (resume.js) the moment it starts
       const typing = setInterval(() => textTyping(this.env, tenant, true), 25e3);
-      let r; try { r = await this.runTurn(tenant, channel, channelId, text, null, { session: sid, viaText: true, files, note: opts.note || "", photonMsg: opts.photonMsg || null, card: so.card.id }); }
+      let r; try { r = await this.runTurn(tenant, channel, channelId, text, null, { session: sid, viaText: true, files, note: opts.note || "", photonMsg: opts.photonMsg || null, reply:opts.reply||null,photon_target:opts.photon_target||null, ...originInput(opts), card: so.card.id }); }
       catch (e) { if (e?.objectReset) { clearInterval(typing); return; }   // reset by a deploy: the resumed turn texts the reply
-        r = { reply: e.payRequired ? PAUSED_TEXT(appLink(this.env, (await this.env.DB.prepare("SELECT slug FROM tenants WHERE id=?").bind(tenant).first().catch(() => null))?.slug || "")) : "" }; console.log("textTurn", e.message); } finally { clearInterval(typing); }
-      try { if (!ivOnlyCard(this.sql, r)) await this.deliverTextReply(tenant, channel, r); } catch (e) { console.log("textTurn deliver", e.message); }
+        r = await this.textFailureResult(tenant, e, so.card.id); console.log("textTurn", e.message); } finally { clearInterval(typing); }
+      try { if (r.error || !ivOnlyCard(this.sql, r)) await this.deliverTextReply(tenant, channel, r); } catch (e) { console.log("textTurn deliver", e.message); }
       await ivDeliverTexted(this, tenant, channel, r).catch((e) => console.log("interview text card", e.message));   // its interview card follows the reply
     })();
     this.ctx.waitUntil?.(run);
@@ -2514,28 +2772,50 @@ export class Resident extends DurableObject {
   // TEXT_GATHER_MAX_MS in all) and run ONE turn with the text + every file. A lone text with no file around runs at once.
   // Files start downloading the moment they're announced, so the wait overlaps the download.
   async textInbound(tenant, channel, channelId, m = {}) {
+    // Hold only source lookup and setup in arrival order. Release before the
+    // gather wait, so captions can still join the photo batch they accompany.
+    const before=this._textIntake||Promise.resolve();
+    let release;
+    const gate=new Promise(resolve=>{release=resolve;});
+    this._textIntake=before.catch(()=>{}).then(()=>gate);
+    const tail=this._textIntake;
+    await before.catch(()=>{});
+    try {
     this.put("tenant", tenant); this.put("channel", channel); this.put("channel_id", channelId);
-    const text = String(m.text || "").trim(), files = Array.isArray(m.files) ? m.files : [];
+    const options={...photonReplyOptions(m),origin:messageOrigin(m.origin)||phoneOrigin()},source=await photonReplySource(this,options.photon_target);
+    if(source&&source.channel!==channel) {
+      const target=this.env.RESIDENT.get(this.env.RESIDENT.idFromName(`res:${tenant}:${source.channel}`));
+      return target.textInbound(tenant,source.channel,source.channel_id,m);
+    }
+    if(source) {
+      if(!this.session(source.session)||this.session(source.session).done)return {ok:true,ignored:true};
+      options.session=source.session;
+      const q=questionForTurn(this.sql,source.source_turn);
+      if(!q||q.status==="pending")options.input_reply={source_turn:source.source_turn,...(m.id?{response_id:`text:${m.id}`}:{})};
+      else options.photon_source_turn=source.source_turn;
+    }
+    const text = String(m.text || "").trim(), files = Array.isArray(m.files) ? m.files : [], messageAt = messageTime(m.timestamp) || Date.now();
     let b = this._textBatch;
+    if(b&&(b.options?.photon_target?.id||null)!==(options.photon_target?.id||null)){await this.flushTexts(b);b=null;}
     if (!files.length && !b) {
       if (this._lastFlush) await this._lastFlush;   // a photo batch still downloading goes first, so its turn isn't overtaken
-      return text ? this.textTurn(tenant, channel, channelId, text, { photonMsg: m.id || null }) : { ok: true };
+      return text ? await this.textTurn(tenant, channel, channelId, text, { ...options, origin_messages: [{text, at: messageAt, origin: options.origin}], photonMsg: m.id || null }) : { ok: true };
     }
     const first = !b;
-    if (!b) { b = { tenant, channel, channelId, texts: [], jobs: [], guids: new Set(), t0: Date.now(), timer: null }; b.started = new Promise((z) => { b.start = z; }); }
+    if (!b) { b = { tenant, channel, channelId, options, texts: [], originMessages: [], jobs: [], guids: new Set(), t0: Date.now(), timer: null }; b.started = new Promise((z) => { b.start = z; }); }
     const incoming = [], newGuids = new Set();
     for (const f of files) {
       const g = String(f.guid || ""); if (g && (b.guids.has(g) || newGuids.has(g))) continue;
       if (g) newGuids.add(g);
-      incoming.push(f);
+      incoming.push({ ...f, origin: phoneOrigin(options.origin?.service, f.origin_kind || null) });
     }
     const wait = Math.max(0, Math.min(this.textGatherMs ?? TEXT_GATHER_MS, b.t0 + (this.textGatherMaxMs ?? TEXT_GATHER_MAX_MS) - Date.now()));
-    const next = { ...b, texts: text ? [...b.texts, text] : b.texts, files: [...(b.files || []), ...incoming],
+    const next = { ...b, texts: text ? [...b.texts, text] : b.texts, originMessages: text ? [...(b.originMessages || []), { text, at: messageAt, origin: options.origin }] : (b.originMessages || []), files: [...(b.files || []), ...incoming],
       lastId: m.id || b.lastId, textId: text && m.id ? m.id : b.textId }; // a tapback uses the batch's last text, else its last message
     this.textBatchSave(next, Date.now() + wait);
     // Only mutate the live batch and start downloads after its new contents are saved. A failed save leaves the old timer intact.
     if (first) this._textBatch = b;
-    b.texts = next.texts; b.files = next.files; b.lastId = next.lastId; b.textId = next.textId;
+    b.texts = next.texts; b.originMessages = next.originMessages; b.files = next.files; b.lastId = next.lastId; b.textId = next.textId;
     for (const g of newGuids) b.guids.add(g);
     for (const f of incoming) b.jobs.push(this.textFileJob(tenant, channel, channelId, f));
     clearTimeout(b.timer);
@@ -2544,6 +2824,10 @@ export class Resident extends DurableObject {
     // The batch is durable now; let the webhook acknowledge it without waiting through the gather window.
     // Keep this object alive until the batch is handed to its turn, while the alarm covers an object reset.
     this.ctx.waitUntil?.(b.started);
+    } finally {
+      release();
+      if(this._textIntake===tail)this._textIntake=null;
+    }
     return { ok: true };
   }
   async flushTexts(b) {
@@ -2558,7 +2842,7 @@ export class Resident extends DurableObject {
           await deliverText(this.env, b.tenant, textProblemsText(probs, t?.slug ? appLink(this.env, t.slug) : "")).catch((e) => console.log("texting problem reply", e.message)); }
         return;
       }
-      const tr = await this.textTurn(b.tenant, b.channel, b.channelId, text, { files: ids, note: probs.length ? textProblemsNote(probs) : "", photonMsg: b.textId || b.lastId || null });
+      const tr = await this.textTurn(b.tenant, b.channel, b.channelId, text, { ...b.options,origin_messages:b.originMessages,origin_files:got.filter(x=>x.file).map(x=>({id:x.file.id,origin:x.origin})),files: ids, note: [b.options?.note,probs.length ? textProblemsNote(probs) : ""].filter(Boolean).join("\n"), photonMsg: b.textId || b.lastId || null });
       this.textBatchDone();   // its turn has its card (and is journaled): the saved batch can go
       return tr;
     })().catch((e) => console.log("texting flush", e.message)).finally(() => { if (this._lastFlush === run) this._lastFlush = null; this.textBatchDone(); });
@@ -2585,13 +2869,13 @@ export class Resident extends DurableObject {
         try { const j = await viewJpeg(this.env, d.bytes); if (j) await this.setFileView(v.id, await storeView(this.env, s.r2key, j, j.byteLength)); }
         catch (e) { console.log("texted photo view", name, String(e.message || e).slice(0, 160)); }   // the original is saved; the turn says it couldn't be shown
       }
-      return { file: v };
+      return { file: v, origin: messageOrigin(f.origin) || phoneOrigin() };
     } catch (e) { console.log("texted file save", name0, e.message); return problem("failed"); }
   }
   // The gather batch, saved (resume.js §3.4 "text turns"): its texts and the files to fetch, and when it's due. The alarm flushes a saved
   // batch that no live object holds any more (the one that held it was reset by a deploy).
   textBatchSave(b, due) {
-    const data = { tenant: b.tenant, channel: b.channel, channelId: b.channelId, texts: b.texts, files: (b.files || []).map((f) => ({ guid: f.guid, name: f.name, mime: f.mime, size: f.size })), lastId: b.lastId || null, textId: b.textId || null, t0: b.t0 };
+    const data = { tenant: b.tenant, channel: b.channel, channelId: b.channelId, options:b.options||null,texts: b.texts, originMessages:b.originMessages, files: (b.files || []).map((f) => ({ guid: f.guid, name: f.name, mime: f.mime, size: f.size, origin: f.origin })), lastId: b.lastId || null, textId: b.textId || null, t0: b.t0 };
     this.sql.exec("INSERT INTO text_batch (id, data, due) VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data, due=excluded.due", JSON.stringify(data), due);
     const t = due + 5000;
     this.ctx.waitUntil?.(this.ctx.storage.getAlarm().then((a) => (a == null || a > t ? this.ctx.storage.setAlarm(t) : null)).catch(() => {}));
@@ -2604,28 +2888,153 @@ export class Resident extends DurableObject {
     if (!row) return null;
     let d = null; try { d = JSON.parse(row.data); } catch { this.textBatchDone(); return null; }
     console.log("texting: flushing a batch a restart left behind", (d.texts || []).length, (d.files || []).length);
-    const b = { tenant: d.tenant, channel: d.channel, channelId: d.channelId, texts: d.texts || [], files: d.files || [], jobs: (d.files || []).map((f) => this.textFileJob(d.tenant, d.channel, d.channelId, f)), guids: new Set(), t0: d.t0, timer: null, lastId: d.lastId, textId: d.textId, start: null };
+    const b = { tenant: d.tenant, channel: d.channel, channelId: d.channelId, options:d.options||null,texts: d.texts || [], originMessages:d.originMessages||[], files: d.files || [], jobs: (d.files || []).map((f) => this.textFileJob(d.tenant, d.channel, d.channelId, f)), guids: new Set(), t0: d.t0, timer: null, lastId: d.lastId, textId: d.textId, start: null };
     return this.flushTexts(b);
   }
   textBatchNext() { try { return this.sql.exec("SELECT due FROM text_batch").toArray()[0]?.due ?? null; } catch { return null; } }
+  async textFailureResult(tenant, error, turn = null) {
+    const reply = error.payRequired
+      ? PAUSED_TEXT(appLink(this.env, (await this.env.DB.prepare("SELECT slug FROM tenants WHERE id=?").bind(tenant).first().catch(() => null))?.slug || ""))
+      : publicTurnError(error) || (error.modelFailure ? modelFailureReply(error) : "I couldn't finish that request because something went wrong. Any completed work remains in this task. Try again shortly.");
+    return { turn: error.failedTurn || turn, reply, error: error.payRequired ? "payment_required" : error.code || "turn_failed" };
+  }
   // A text turn's answer goes back to the phone. A real card reply (anything beyond Say/Tip talk) → an iMessage live app card
   // opening /c/<token> (deliverCard falls back to its plain-text form + the link). Prose said before the card goes first as its
   // own text, prose after it follows. Plain replies, and card replies that are only talk (`Say("You're welcome!")`): plain text.
   async deliverTextReply(tenant, channel, r) {
+    if (tenant !== this.get("tenant") || channel !== this.get("channel")) return {ok:false,reason:"wrong_channel"};
+    queuePhoneFiles(this, r?.turn);
+    try { return await this.deliverTextBodyReply(tenant, channel, r); }
+    finally { if (r?.turn) await deliverPhoneFiles(this, r.turn).catch(e => console.log("phone files", e.message)); }
+  }
+  async deliverTextBodyReply(tenant, channel, r) {
+    if(r?.input_request?.status==="pending")this.put("last_text_question_session",r.input_request.session);
+    const poll = nativePollDelivered(this,r?.turn);
+    if(poll&&!r?.error)return {ok:true,via:"poll",id:poll.poll_guid};
+    const fallback=r?.turn?this.sql.exec("SELECT * FROM native_poll_sends WHERE source_turn=? AND state='fallback'",r.turn).toArray()[0]:null;
+    if(fallback&&!r?.error)return deliverNativeFallback(this,fallback);
     const t = this.genuiOn() ? cardsTree(r?.reply || "") : { root: null };
     if (!t.root && !String(r?.reply || "").trim() && r?.reaction && !r?.error) return { ok: true, via: "reaction" };   // it only reacted (e.g. ❤️ to a "thanks!"): the tapback was the answer
-    if (!t.root || !isRealCard(t.root) || !r?.turn) return deliverText(this.env, tenant, toTextReply(r?.reply || "") || "Sorry, I hit a snag on that one. Try me again in a minute?");
-    if (t.before.trim()) await deliverText(this.env, tenant, toTextReply(t.before));
+    const sendText=async text=>recordPhotonReplySource(this,r?.turn,await deliverText(this.env,tenant,text,photonAnswerOptions(this,r?.turn)));
+    if (!t.root || !isRealCard(t.root) || !r?.turn) return sendText(toTextReply(r?.reply || "") || "Sorry, I hit a snag on that one. Try me again in a minute?");
+    if (t.before.trim()) await sendText(toTextReply(t.before));
     const prof = await this.env.DB.prepare("SELECT helper_name FROM tenants WHERE id=?").bind(tenant).first().catch(() => null);
     const card = await saveCard(this.env, { tenant, channel, msgId: r.turn, body: t.code.trim() });
     const sent = await deliverCard(this.env, tenant, { url: card.url, layout: cardLayout(card.say, helperName(prof)), text: toTextReply(t.code) });
-    if (t.after?.trim()) await deliverText(this.env, tenant, toTextReply(t.after));
-    return sent;
+    if (t.after?.trim()) await sendText(toTextReply(t.after));
+    return recordPhotonReplySource(this,r.turn,sent);
+  }
+  async testInputFixture(action,payload={}) {
+    if(this.env.ENV_NAME!=="dev"||this.env.TEST_MODE!=="1")return {error:"Not found.",status:404};
+    const owner=await this.env.DB.prepare("SELECT u.email FROM tenants t JOIN users u ON u.id=t.owner_user_id WHERE t.id=?").bind(this.get("tenant")).first();
+    if(!/@example\.com$/i.test(String(owner?.email||"")))return {error:"Not found.",status:404};
+    if(action==="seed") {
+      const session=payload.session&&this.get(`input-fixture:${String(payload.session)}`)==="1"?String(payload.session):this.newSession("Interaction check"),now=Date.now(),body='root = Stack([Say("Which option should I use?"), Options("option", [Option("First"), Option("Second")]), Buttons([Button("Continue", "answer", "primary")])])';
+      this.put(`input-fixture:${session}`,"1");
+      const o=this.openInputCard(session,"Fixture question",{}),turn=o.card.id;
+      this.sql.exec("UPDATE cards SET status='complete' WHERE id=?",turn);
+      this.sql.exec("INSERT INTO turns (id,at,user_text,reply,kind,session,steps,tool_calls,charge_nano) VALUES (?,?,?,?,?,?,?,?,?)",turn,now,"Fixture question",body,"chat",session,0,0,0);
+      this.sql.exec("INSERT INTO helpers (session,name,task,status,started,deadline,dynamic_routing,round,handed,history_json,profile_json,primary_profile_json,handoff_json) VALUES (?,?,?,'waiting_input',?,?,1,1,1,?,?,?,?)",session,"Fixture worker","Synthetic clarification",now,now-1000,JSON.stringify([{role:"user",content:"Synthetic job"}]),JSON.stringify({fixture:true}),JSON.stringify({fixture:true}),JSON.stringify({files:[]}));
+      const helper=this.sql.exec("SELECT last_insert_rowid() id").one().id;
+      this.sql.exec("INSERT INTO routing_artifacts (id,helper_id,round,session,channel,path,name,mime,bytes,state,at) VALUES (?,?,1,?,?,?,?,?,0,'held',?)",`fixture-file-${helper}`,helper,session,this.get("channel"),`/workspace/workspace/helpers/${helper}/check.txt`,"check.txt","text/plain",now);
+      const input=createQuestion(this.sql,{session,turn,viaText:!!payload.viaText,orchestration:{review:helper},taskProfile:null},{question:"Which option should I use?",presentation:payload.presentation==="interview"?null:body});
+      let interview_id=null;
+      if(payload.presentation==="interview") {
+        const tc={kind:"chat",session,turn,emit:()=>{}};
+        await interviewTool(this,{title:"Interaction check",purpose:"Verify answer delivery",questions:[{id:"one",text:"First choice?",kind:"yesno"},{id:"two",text:"Second choice?",kind:"text"},{id:"three",text:"Third choice?",kind:"yesno"}]},tc);
+        interview_id=this.sql.exec("SELECT id FROM chat_interviews WHERE turn=?",turn).toArray()[0]?.id;
+      }
+      this.inputs.delete(session);
+      return {ok:true,session,source_turn:turn,helper_id:helper,input_request:input,body,interview_id};
+    }
+    const session=String(payload.session||"");
+    if(this.get(`input-fixture:${session}`)!=="1")return {error:"No matching fixture.",status:404};
+    if(action==="text") {
+      const pending=this.sql.exec("SELECT * FROM user_questions WHERE status='pending' AND via='text'").toArray();
+      if(!pending.length||pending.some(q=>this.get(`input-fixture:${q.session}`)!=="1"))return {error:"Only generated fixture text questions may be used.",status:409};
+      return this.textTurn(this.get("tenant"),this.get("channel"),this.get("channel_id"),String(payload.text||"").slice(0,20000),{photonMsg:`fixture:${String(payload.response_id||crypto.randomUUID()).slice(0,100)}`});
+    }
+    if(action==="inspect")return {ok:true,session,input_request:this.sql.exec("SELECT * FROM user_questions WHERE session=?",session).toArray().map(inputView),pending_inputs:pendingInputs(this.sql,session),receipts:this.sql.exec("SELECT response_id,session,question_id,source_turn,answer_text,turn FROM user_input_receipts WHERE session=?",session).toArray(),helpers:this.sql.exec("SELECT id,status,round,history_json,profile_json,handoff_json,handed FROM helpers WHERE session=?",session).toArray(),files:this.sql.exec("SELECT id,state,helper_id,round FROM routing_artifacts WHERE session=?",session).toArray(),turns:this.sql.exec("SELECT id,user_text,reply,charge_nano FROM turns WHERE session=?",session).toArray(),journal:this.sql.exec("SELECT card,status FROM turn_runs WHERE session=?",session).toArray()};
+    if(action==="cleanup") {
+      this.inputs.delete(session);
+      const cardIds=this.sql.exec("SELECT id FROM cards WHERE session=?",session).toArray().map(c=>c.id);
+      for(const id of cardIds){for(const table of ["card_events","turn_effects"])this.sql.exec(`DELETE FROM ${table} WHERE card=?`,id);this.sql.exec("DELETE FROM msgs WHERE turn=?",id);}
+      for(const h of this.sql.exec("SELECT id FROM helpers WHERE session=?",session).toArray()){this.sql.exec("DELETE FROM helper_messages WHERE helper_id=?",h.id);this.sql.exec("DELETE FROM helper_rounds WHERE helper_id=?",h.id);}
+      const sources=this.sql.exec("SELECT source_turn FROM user_questions WHERE session=?",session).toArray().map(q=>q.source_turn),interviews=this.sql.exec("SELECT id FROM chat_interviews WHERE session=?",session).toArray().map(iv=>iv.id);
+      deleteInputs(this.sql,session);for(const table of ["chat_interviews","helpers","turn_runs","turns","cards","routing_artifacts"])this.sql.exec(`DELETE FROM ${table} WHERE session=?`,session);
+      this.sql.exec("DELETE FROM sessions WHERE id=?",session);this.sql.exec("DELETE FROM kv WHERE k=?",`input-fixture:${session}`);return {ok:true,source_turns:sources,interview_ids:interviews};
+    }
+    return {error:"Unknown fixture operation.",status:400};
+  }
+  async runInputFixture(tc,text,opts) {
+    if(this.env.ENV_NAME!=="dev"||this.env.TEST_MODE!=="1"||this.get(`input-fixture:${tc.session}`)!=="1")return null;
+    const chooser=tc.inputReply?.ambiguous?createInputChooser(this.sql,tc,tc.inputReply):null;
+    const reply=chooser&&!chooser.error?chooser.presentation||chooser.question:"Your answer was received by Primary. The worker remains open for clarified instructions.";
+    if(chooser&&!chooser.error){tc.inputRequest=chooser;tc.emit?.({t:"user_input",input:chooser});}
+    this.commitTurn(tc,true);this.sql.exec("INSERT INTO turns (id,at,user_text,reply,kind,session,steps,tool_calls,charge_nano) VALUES (?,?,?,?,?,?,?,?,?)",tc.turn,Date.now(),String(text),reply,"chat",tc.session,0,0,0);
+    commitCard(this.sql,tc,tc.turn,{status:"complete"});
+    return {reply,turn:tc.turn,steps:0,tool_calls:0,charge:0,models:[],error:null,fixture:true,...(tc.inputRequest?{input_request:tc.inputRequest}:{})};
+  }
+  inputSource(tenant, channel, channelId, sourceTurn) {
+    if (this.get("tenant") !== tenant || this.get("channel") !== channel) return {error:"No matching channel.",status:404};
+    const card=this.sql.exec("SELECT session FROM cards WHERE id=? AND kind<>'helper' AND hidden=0",String(sourceTurn)).toArray()[0];
+    if(!card || !this.session(card.session)) return {error:"No matching chat card.",status:404};
+    return {ok:true,session:card.session,channel_id:this.get("channel_id"),input_request:questionForTurn(this.sql,sourceTurn)};
+  }
+  prepareInput(session,text,meta=null,opts={}) {
+    if(opts.photon_target&&!meta?.question_id&&!meta?.source_turn)return null;
+    if(!meta?.response_id) {
+      const legacy=this.sql.exec("SELECT id,turn FROM chat_interviews WHERE session=? AND status='sent' AND message=?",String(session),String(text)).toArray().find(iv=>this.sql.exec("SELECT 1 FROM user_input_receipts WHERE response_id=?",`interview:${iv.id}`).toArray().length);
+      if(legacy)meta={source_turn:legacy.turn,response_id:`interview:${legacy.id}`};
+    }
+    const selection=chooseInput(this.sql,session,meta||{},String(text));
+    if(selection?.error||selection?.duplicate)return selection;
+    if(selection){session=selection.session;text=selection.text;meta=selection.meta;opts={...opts,...selection.originOptions};}
+    const explicit=meta && Object.keys(meta).length;
+    if(!explicit && (opts.reply || !pendingInputs(this.sql,session).length)) return null;
+    const prepared=resolveInput(this.sql,session,meta||{},text,{typed:!opts.reply});
+    if(prepared.error||prepared.duplicate)return prepared;
+    if(prepared.ambiguous)return acceptAmbiguous(this.sql,session,{...prepared,meta:{...(meta||{}),response_id:meta?.response_id||(opts.cid?`message:${opts.cid}`:undefined)}},opts);
+    const accepted=acceptInput(this.sql,session,{...prepared,...(selection?{selection:selection.selection}:{})},{...opts,input_reply:undefined,_input:undefined});
+    return {...accepted,session:String(session),text:String(text)};
+  }
+  async inputReply(tenant,channel,channelId,session,text,meta={},opts={}) {
+    if(this.get("tenant")!==tenant || this.get("channel")!==channel) return {error:"No matching channel.",status:404};
+    const input=opts._input||this.prepareInput(session,String(text),meta,opts);
+    if(input?.error)return input;
+    if(input?.duplicate)return {ok:true,duplicate:true,session:input.receipt?.session||session,question_id:input.question?.id||input.receipt?.question_id,turn:input.receipt?.turn||input.question?.answer_turn||null};
+    const files=(opts.files||[]).map(String).slice(0,10);
+    if(files.length)this.sql.exec(`UPDATE files SET pending=0 WHERE id IN (${files.map(()=>"?").join(",")})`,...files);
+    if(input?.session){session=input.session;text=input.text;}
+    opts={...opts,...(input?.originOptions||{})};
+    const run=this.runTurn(tenant,channel,this.get("channel_id")||channelId,text,null,{...opts,session,_input:input});
+    const work=run.then(async r=>{if(opts.viaText&&!r.fixture){if(r.error||!ivOnlyCard(this.sql,r))await this.deliverTextReply(tenant,channel,r);await ivDeliverTexted(this,tenant,channel,r);}},async e=>{if(!e.objectReset){console.log("input reply",e.message);if(opts.viaText&&e.failedTurn)await this.deliverTextReply(tenant,channel,await this.textFailureResult(tenant,e));}}).catch(e=>console.log("input reply delivery",e.message));
+    this.ctx.waitUntil?.(work);
+    return {ok:true,session,question_id:input?.question?.id||null,status:"accepted",turn:input?.response_id?this.sql.exec("SELECT turn FROM user_input_receipts WHERE response_id=?",input.response_id).toArray()[0]?.turn:null};
+  }
+  async nativePollVote(tenant,channel,channelId,event) {
+    if(!this.get("tenant")&&!this.get("channel")){this.put("tenant",tenant);this.put("channel",channel);this.put("channel_id",channelId);}
+    if(this.get("tenant")!==tenant||this.get("channel")!==channel)return {error:"No matching channel.",status:404};
+    return receiveNativeVote(this,event);
+  }
+  recoverInputReplies() {
+    for(const receipt of this.sql.exec("SELECT * FROM user_input_receipts WHERE turn IS NULL ORDER BY created").toArray()) {
+      if(!this.session(receipt.session)){deleteInputs(this.sql,receipt.session);continue;}
+      const question=receipt.question_id?this.sql.exec("SELECT * FROM user_questions WHERE id=?",receipt.question_id).toArray()[0]:null;
+      const savedMeta=JSON.parse(receipt.meta_json);
+      const input={question,response_id:receipt.response_id,source_turn:receipt.source_turn,text:receipt.answer_text,meta:savedMeta,selection:savedMeta._selection||null,...(savedMeta._ambiguity?{ambiguous:true,pending:savedMeta._ambiguity}:{})};
+      const opts=JSON.parse(receipt.opts_json),run=this.runTurn(this.get("tenant"),this.get("channel"),this.get("channel_id"),receipt.answer_text,null,{...opts,session:receipt.session,_input:input});
+      this.ctx.waitUntil?.(run.then(async r=>{if(opts.viaText&&!r.fixture){if(r.error||!ivOnlyCard(this.sql,r))await this.deliverTextReply(this.get("tenant"),this.get("channel"),r);await ivDeliverTexted(this,this.get("tenant"),this.get("channel"),r);}},async e=>{if(!e.objectReset){console.log("input recovery",e.message);if(opts.viaText&&e.failedTurn)await this.deliverTextReply(this.get("tenant"),this.get("channel"),await this.textFailureResult(this.get("tenant"),e));}}).catch(e=>console.log("input recovery delivery",e.message)));
+    }
   }
   async chat(tenant, channel, channelId, text, opts = {}) {
     this.put("tenant", tenant); this.put("channel", channel); this.put("channel_id", channelId);
     const s = this.resolveSession(opts.session, text); if (s.error) return s;
-    const r = await this.runTurn(tenant, channel, channelId, text, null, { ...opts, session: s.id });
+    const input=opts._input||this.prepareInput(s.id,text,opts.input_reply,opts);
+    if(input?.error)return input;
+    if(input?.duplicate)return {ok:true,duplicate:true,session:this.sessionView(this.session(s.id))};
+    if(input?.session){s.id=input.session;text=input.text;}
+    const r = await this.runTurn(tenant, channel, channelId, text, null, { ...opts, _input:input, session: s.id });
     return { ...r, session: this.sessionView(this.session(s.id)) };
   }
 
@@ -2639,8 +3048,29 @@ export class Resident extends DurableObject {
   async chatStream(tenant, channel, channelId, text, opts = {}) {
     this.put("tenant", tenant); this.put("channel", channel); this.put("channel_id", channelId);
     const s = this.resolveSession(opts.session, text || this.fileTitle(opts.files));
+    const repeated=!s.error&&!opts.input_reply&&opts.cid?findByCid(this.sql,String(opts.cid).slice(0,64)):null;
+    if(repeated){
+      const receipt=this.sql.exec("SELECT * FROM user_input_receipts WHERE turn=? ORDER BY created LIMIT 1",repeated.card).toArray()[0];
+      const event=receipt?.session&&receipt.session!==s.id?{t:"input_redirect",session:receipt.session,channel,turn:receipt.turn,input_reply:replyForTurn(this.sql,receipt.turn),duplicate:true}:{t:"steered",card:cardView(this.sql,repeated.card),msg:repeated.msg,dup:true};
+      return new ReadableStream({start(c){c.enqueue(new TextEncoder().encode(JSON.stringify(event)+"\n"));c.close();}});
+    }
+    const input=s.error?null:this.prepareInput(s.id,String(text??""),opts.input_reply,opts);
+    if(input?.error)return input;
+    if(input?.duplicate) {
+      const selected=input.receipt?.meta_json?JSON.parse(input.receipt.meta_json)._selection:null;
+      const event=selected?{t:"input_redirect",session:input.receipt.session,channel,turn:input.receipt.turn,input_reply:replyForTurn(this.sql,input.receipt.turn),duplicate:true}:{t:"done",duplicate:true,reply:"",turn:input.receipt?.turn||input.question?.answer_turn||null};
+      return new ReadableStream({start(c){c.enqueue(new TextEncoder().encode(JSON.stringify(event)+"\n"));c.close();}});
+    }
+    if(input?.session&&input.session!==s.id) {
+      const target=await this.inputReply(tenant,channel,channelId,input.session,input.text,{}, {...opts,_input:input});
+      if(target.error)return target;
+      const redirect={t:"input_redirect",session:input.session,channel,turn:target.turn||null,input_reply:replyView(input)};
+      return new ReadableStream({start(c){c.enqueue(new TextEncoder().encode(JSON.stringify(redirect)+"\n"));c.close();}});
+    }
+    if(input?.session){s.id=input.session;text=input.text;}
+    opts={...opts,...(input?.originOptions||{})};
     const fids = (opts.files || []).map(String);
-    const so = s.error ? null : this.steerOrOpen(s.id, { type: "msg", text: String(text ?? ""), files: fids, cid: opts.cid ? String(opts.cid).slice(0, 64) : null, via: "app", reply: replyRef(opts.reply) });
+    const so = input ? this.openInputCard(s.id,text,opts) : s.error ? null : this.steerOrOpen(s.id, { type: "msg", text: String(text ?? ""), files: fids, cid: opts.cid ? String(opts.cid).slice(0, 64) : null, via: "app", ...originInput({ ...opts, via: "app" }), reply: replyRef(opts.reply) });
     if (so?.mode === "full") return { error: so.error, status: 429 };
     const { readable, writable } = new TransformStream(), w = writable.getWriter(), enc = new TextEncoder();
     let open = true;
@@ -2649,7 +3079,7 @@ export class Resident extends DurableObject {
     if (fids.length) this.sql.exec(`UPDATE files SET pending=0 WHERE id IN (${fids.map(() => "?").join(",")})`, ...fids);   // sent: now it's a Library file
     send({ t: "session", session: this.sessionView(this.session(s.id)) });
     if (so.mode !== "open") { send({ t: "steered", card: so.card, msg: so.msg, dup: so.mode === "dup" }); w.close().catch(() => {}); open = false; return readable; }
-    send({ t: "card_open", card: so.card, msg: so.msg });
+    send({ t: "card_open", card: so.card, msg: {...so.msg,...(input?{input_reply:replyView(input)}:{})} });
     // Heartbeat: long tool calls can leave the stream silent for minutes; proxies drop idle connections. The UI ignores "hb".
     const hb = setInterval(() => send({ t: "hb" }), 15e3);
     // Continue on a paused card (its budget ran out): this turn gets one more budget, and that card stops offering it.
@@ -2657,10 +3087,14 @@ export class Resident extends DurableObject {
     if (pc) { this.sql.exec("UPDATE cards SET status='complete' WHERE id=?", pc.id); send({ t: "card_update", card: cardView(this.sql, pc.id) }); }
     const cont = pc ? await this.spendContinued(pc.id) : null;   // spendguard.js: a day check-in's Continue raises today's line
     const { continue: _c, ...ropts } = opts;
-    const run = this.runTurn(tenant, channel, channelId, text, send, { ...ropts, ...(pc ? { ...planBudget(), spendContinue: pc.id } : {}), session: s.id, card: so.card.id })
+    const run = this.runTurn(tenant, channel, channelId, text, send, { ...ropts, _input:input, ...(pc ? { ...planBudget(), spendContinue: pc.id } : {}), session: s.id, card: so.card.id })
       .catch(() => {}).finally(() => { clearInterval(hb); if (open) w.close().catch(() => {}); open = false; });
     this.ctx.waitUntil?.(run);
     return readable;
+  }
+  openInputCard(session,text,opts={}) {
+    const tc={kind:"chat",session},o=this.openTurnCard(tc,text,opts,!!this.sessQ.get(session));
+    return {mode:"open",...o};
   }
   // Watch a task's turn that is already running (e.g. a task started from the New box, opened later). Ends with "done", or "idle" if nothing runs.
   async attach(session) {
@@ -2674,8 +3108,22 @@ export class Resident extends DurableObject {
       for (let i = 0; i < 50 && !(tc = this.liveTurn(session)) && this.resumingIn(session); i++) await new Promise((z) => setTimeout(z, 500));
       if (!tc) { w.close().catch(() => {}); return readable; }
     }
+    if (!tc && dynamicRoutingOn(this.env) && this.sql.exec("SELECT 1 FROM helpers WHERE session=? AND dynamic_routing=1 AND required_delegation=1 AND status='running' LIMIT 1", session).toArray().length) {
+      this._routingObservers ||= new Map();
+      if (!this._routingObservers.has(session)) this._routingObservers.set(session,new Set());
+      const watchers=this._routingObservers.get(session);
+      let hb;
+      const cleanup=()=>{watchers.delete(observer);clearInterval(hb);if(open)w.close().catch(()=>{});open=false;};
+      const observer=o=>{send(o);if(o.t==="idle"||!open)cleanup();};
+      hb=setInterval(()=>{if(!open)cleanup();else send({t:"hb"});},15000);
+      w.closed.catch(cleanup);
+      watchers.add(observer);
+      send({t:"session",session:this.sessionView(this.session(session))});
+      for(const approval of this.approvals(false,session)) send({t:"approval",approval});
+      return readable;
+    }
     if (!tc) { send({ t: "idle", session: this.sessionView(this.session(session)) }); w.close().catch(() => {}); return readable; }
-    send({ t: "snapshot", turn: tc.turn, started: tc.t0, text: tc.text, ...liveReplyState(tc), line: tc.line, reaction: tc.reaction || null, approvals: this.approvals(false, session), card: cardDetail(this.sql, session, tc.turn, { reply: tc.text }) });
+    send({ t: "snapshot", turn: tc.turn, input_request:questionForTurn(this.sql,tc.turn), started: tc.t0, text: tc.text, ...liveReplyState(tc), line: tc.line, reaction: tc.reaction || null, approvals: this.approvals(false, session), card: cardDetail(this.sql, session, tc.turn, { reply: tc.text }) });
     const hb = setInterval(() => send({ t: "hb" }), 15e3);
     const sub = (o) => { send(o); if (o.t === "done" || !open) { tc.subs.delete(sub); clearInterval(hb); if (open) w.close().catch(() => {}); open = false; } };
     tc.subs.add(sub);
@@ -2684,7 +3132,15 @@ export class Resident extends DurableObject {
 
   async runTurn(tenant, channel, channelId, text, send, opts = {}) {
     const kind = opts.kind || "chat";
-    const session = opts.session || (kind === "chat" ? this.defaultSession() : null);
+    opts = { ...opts, ...originInput(opts._input?.originOptions || opts) };
+    let session = opts.session || (kind === "chat" ? this.defaultSession() : null);
+    if(kind==="chat"&&!opts.handoff&&!opts.resume&&!Object.prototype.hasOwnProperty.call(opts,"_input")) {
+      const input=this.prepareInput(session,String(text??""),opts.input_reply,opts);
+      if(input?.error)throw Object.assign(new Error(input.error),{status:input.status});
+      if(input?.duplicate)return {reply:"",duplicate:true,turn:input.receipt?.turn||input.question?.answer_turn||null};
+      if(input?.session){session=input.session;text=input.text;}
+      opts={...opts,...(input?.originOptions||{}),session,_input:input};
+    }
     // One turn at a time per task: a second message waits for the first to finish (different tasks run side by side).
     const qkey = kind === "chat" ? session : null, before = qkey ? this.sessQ.get(qkey) : null;
     let release; const mine = new Promise((z) => { release = z; });
@@ -2720,9 +3176,15 @@ export class Resident extends DurableObject {
     };
     // The card: opened by the caller (steerOrOpen → card_open already sent), or here.
     if (opts.card) { const p = this.inputs.get(session); tc.pend = p && p.id === String(opts.card) ? p : null; tc.turn = String(opts.card); }
-    else { const o = this.openTurnCard(tc, text, opts, !!before); tc.emit({ t: "card_open", card: o.card, msg: o.msg }); }
+    else { const o = this.openTurnCard(tc, text, opts, !!before); tc.emit({ t: "card_open", card: o.card, msg: {...o.msg,...(opts._input?{input_reply:replyView(opts._input)}:{})} }); }
     if (tc.pend) tc.pend.tc = tc;
-    this.journalStart(tc, text, opts, !!before);   // resume.js: a chat turn is journaled before anything runs (a reset resumes it)
+    tc.inputReply=opts._input||null;
+    this.journalStart(tc, text, opts, !!before);
+    if(tc.inputReply?.response_id && !this.sql.exec("SELECT 1 FROM turn_runs WHERE card=?",tc.turn).toArray().length) {
+      release();if(qkey&&this.sessQ.get(qkey)===chain)this.sessQ.delete(qkey);
+      throw new Error("The answer could not be journaled. It is saved for recovery.");
+    }
+    attachInputTurn(this.sql,tc.inputReply,tc.turn);   // resume.js: a chat turn is journaled before anything runs (a reset resumes it)
     if (JOURNALED.has(kind)) this.armBeat();   // the alarm watches its heartbeat (resume.js)
     if (before) { tc.emit({ t: "queued" }); (this.queuedTc ||= new Set()).add(tc); await before.catch(() => {}); this.queuedTc.delete(tc); }
     if (this.sql.exec("SELECT status FROM cards WHERE id=?", tc.turn).toArray()[0]?.status === "queued") setStatus(this.sql, tc, tc.turn, "working");
@@ -2736,24 +3198,27 @@ export class Resident extends DurableObject {
     const limT = limMs ? setTimeout(async () => { if (await this.spendRefresh(tc, opts) && !tc.finished && !tc.abort) { tc.limitWhy = "time"; tc.abort = "soft"; } }, limMs) : null;
     let r;
     try {
+      if (this.get("hs_origin_block_all") || session && this.get(`hs_origin_block:${session}`)) throw new Error("This task is being deleted or reset.");
       await this.spendSlot(tc, opts);   // plan-started tasks: at most 3 task turns at once here; the rest wait ("Waiting")
       // Read-only (a failed payment, or the plan ended): no model call at all, whatever started the turn (a helper's hand-back,
       // a follow-up, a text that got past the webhook). The routes refuse first; this is the backstop. (After the slot: spendSlot
       // must see the turns in the order they started.)
       const pay = await this.payBlock();
       if (pay) throw Object.assign(new Error(pay), { payRequired: true, status: 402 });
-      r = await this.runTurnInner(tenant, channel, channelId, text, tc, opts);
+      r = await this.runInputFixture(tc,text,opts) || await this.runTurnInner(tenant, channel, channelId, text, tc, opts);
       if (tc.objectReset) throw resetError();   // a reset hit this turn (resume.js carries it on): never a "done" from here
       if (r?.charge > 0) this.ctx.waitUntil?.(this.spendAfterTurn(r.charge).catch(() => null));   // 50% / 80% of the month: one notice each
       await askAfterTurn(this, tc, r).catch((e) => console.log("ask-first", e.message));   // it stopped to ask: "Waiting on you"
+      if (pendingInputs(this.sql,session).length) this.sql.exec("UPDATE sessions SET waiting='answer' WHERE id=?",session);
       // A scheduled run only surfaces in its task when it has news: follow-ups always, recurring jobs when they texted.
       if (session && r.reply && (kind === "chat" || kind === "followup" || tc.texted)) this.sql.exec("UPDATE sessions SET updated=?, preview=?, last_reply_at=? WHERE id=?", Date.now(), previewOf(cardsToText(r.reply)), Date.now(), session);
+      if (opts.viaText || tc.textSteered) queuePhoneFiles(this, r.turn);
       tc.finished = true;
       // plain: the reply's text form when it has card code in it (the classic channel page shows text, never code)
       tc.emit({ t: "done", ...r, ...(r.reply && hasCards(r.reply) ? { plain: cardsToText(r.reply) } : {}), trace: undefined, session: session ? this.sessionView(this.session(session)) : null });
       // A text that joined a turn the app started gets this turn's one reply by text.
       if (tc.textSteered && !opts.viaText) this.ctx.waitUntil?.(this.deliverTextReply(tenant, channel, r).catch((e) => console.log("steered text deliver", e.message)));
-      this.ctx.waitUntil?.(this.notifyAfterTurn(tc, r).catch((e) => console.log("notify", e.message)));
+      if(!r.fixture)this.ctx.waitUntil?.(this.notifyAfterTurn(tc, r).catch((e) => console.log("notify", e.message)));
       return r;
     } catch (e) {
       // This object was reset (a deploy) and can't touch its storage any more: the turn isn't failing, it's being carried on by the new
@@ -2766,12 +3231,13 @@ export class Resident extends DurableObject {
       if (tc.objectReset || isResetErr(e) || e?.objectReset || this.storageGone()) { tc.finished = true; tc.objectReset = true; e.objectReset = true; this.parkForResume(tc); throw e; }
       // Failed outside the model loop: the card closes as failed, and a chat turn keeps a turns row so its messages stay in history.
       this.commitTurn(tc, true);
-      const visibleError = e.payRequired ? e.message : `Something went wrong: ${e.message}`;
+      e.failedTurn = tc.turn;
+      const publicError = publicTurnError(e), visibleError = e.payRequired ? e.message : publicError || `Something went wrong: ${e.message}`;
       if (tc.appendRuntime && this._appendTurns?.has(tc.turn)) { this.closeTaskCalls(tc); this.save(tc.turn, { role: "assistant", content: visibleError }); }
       try { commitCard(this.sql, tc, tc.turn, { status: "failed" });
-        if (kind === "chat") this.sql.exec("INSERT OR IGNORE INTO turns (id,at,user_text,reply,steps,tool_calls,total_ms,charge_nano,error,kind,session) VALUES (?,?,?,?,?,?,?,?,?,?,?)", tc.turn, tc.t0, String(text), tc.appendRuntime ? visibleError : e.payRequired ? e.message : "", tc.appendStats?.steps || 0, tc.appendStats?.tool_calls || 0, Date.now() - tc.t0, tc.appendStats?.charge || 0, e.payRequired ? "payment_required" : String(e.message || e).slice(0, 500), "chat", session);
+        if (kind === "chat") this.sql.exec("INSERT OR IGNORE INTO turns (id,at,user_text,reply,steps,tool_calls,total_ms,charge_nano,error,kind,session) VALUES (?,?,?,?,?,?,?,?,?,?,?)", tc.turn, tc.t0, String(text), tc.appendRuntime || publicError ? visibleError : e.payRequired ? e.message : "", tc.appendStats?.steps || 0, tc.appendStats?.tool_calls || 0, Date.now() - tc.t0, tc.appendStats?.charge || 0, e.payRequired ? "payment_required" : String(e.message || e).slice(0, 500), "chat", session);
       } catch (e2) { console.log("failed card", e2.message); }
-      tc.finished = true; tc.emit({ t: "done", reply: e.payRequired ? e.message : `Something went wrong: ${e.message}`, error: e.payRequired ? "payment_required" : e.message }); throw e;
+      tc.finished = true; tc.emit({ t: "done", reply: visibleError, error: e.payRequired ? "payment_required" : e.message }); throw e;
     } finally {
       if (!tc.objectReset) this.commitTurn(tc, true);   // a parked turn keeps its card open for messages (they join the resumed turn)
       clearInterval(keep); if (limT) clearTimeout(limT); this.busy--; tc.finished = true; this.active.delete(tc.key); this._appendTurns?.delete(tc.turn); this.spendDone(tc);
@@ -2807,7 +3273,7 @@ export class Resident extends DurableObject {
   openTurnCard(tc, text, opts, queued) {
     const kind = tc.kind, status = queued ? "queued" : "working";
     if (kind === "chat") {
-      const p = this.inputs.get(tc.session), input = { type: "msg", text: String(text ?? ""), files: (opts.files || []).map(String).slice(0, 10), via: opts.viaText ? "text" : "app", reply: replyRef(opts.reply) };
+      const p = this.inputs.get(tc.session), input = { type: "msg", text: String(text ?? ""), files: (opts.files || []).map(String).slice(0, 10), cid:opts.cid?String(opts.cid).slice(0,64):null, via: opts.viaText ? "text" : "app", ...originInput(opts), reply: replyRef(opts.reply),...(opts.viaText?{photonMsg:opts.photonMsg||null,photon_target:opts.photon_target||null,note:opts.note||""}:{}) };
       const o = openCard(this.sql, { session: tc.session, kind: "chat", status, input });
       tc.turn = o.card.id;
       if (!(p && !p.committed)) { tc.pend = { id: o.card.id, session: tc.session, items: [], next: 0, committed: false, tc, count: 1, first: input }; this.inputs.set(tc.session, tc.pend); }
@@ -2876,6 +3342,7 @@ export class Resident extends DurableObject {
     const ctxMode = opts.ctx || this.env.CTX_MODE || "compact", compact = ctxMode !== "legacy";
     const kind = opts.kind || "chat", maxSteps = opts.max_steps || (kind === "chat" && compact ? CHAT_MAX_STEPS : MAX_STEPS);
     this.put("tenant", tenant); this.put("channel", channel); this.put("channel_id", channelId);
+    if(kind==="chat"&&tc.inputReply&&!this.session(tc.session))throw Object.assign(new Error("The original task was deleted before this answer could run."),{status:410});
     await this.byokRefresh(0, tc);   // own AI key: this turn's model calls go to their endpoint (byok.js; a backup key once credits are used up)
     this._privacy = await privacyOf(this.env, tenant);   // AI data privacy for this turn's docs (read_doc); every model dispatch re-reads it
     // resume.js: a turn a reset cut off carries on here (same card, same start time, same budget and charge so far).
@@ -2895,25 +3362,38 @@ export class Resident extends DurableObject {
       const st0 = tc.transcript.state(); tc.appendLazy = st0 ? !!st0.lazy : cutLazy(this.env) && contextV2(this.env);   // payload-cut.js: fixed when the task is created
       if (tc.appendLazy && st0?.loaded) tc.loadedTools = new Set(st0.loaded); }
     if (tc.appendRuntime && !RS) this.sql.exec("UPDATE turn_runs SET engine='append-v1',extra=json_set(COALESCE(extra,'{}'),'$.appendRuntime',1) WHERE card=?", turn);
+    tc.audioSources = resumeExtra.audioSources || null; tc.audioWait = resumeExtra.audioWait || null;
     const savedContext = resumeExtra.context || null;
     // In-flight turns keep their layout even when the deployment switch changes.
-    const layered = RS ? savedContext?.version === 2 || (tc.appendRuntime && contextV2(this.env)) : contextV2(this.env);
-    const prompt = await this.systemPrompt(compact, this.genuiOn(), layered, !!tc.appendRuntime);
+    const layered = !tc.helper?.dynamic_routing && (RS ? savedContext?.version === 2 || (tc.appendRuntime && contextV2(this.env)) : contextV2(this.env));
+    const nativeWorker = !!tc.helper?.dynamic_routing;
+    const prompt = nativeWorker ? "Use the supplied tools to carry out the assigned job. Call done with your response to finish. If information is missing, call request_input to ask Primary and pause this same job. Only Primary speaks to the person or renders interactive cards. A plain response does not end the job." : await this.systemPrompt(compact, this.genuiOn(), layered, !!tc.appendRuntime);
     tc.context = layered ? savedContext || { version: 2, ...prompt } : null;
     if (savedContext) { try { tc.loadedTools = new Set([...(tc.loadedTools || []), ...(JSON.parse(RS.extra || "{}").loadedTools || [])]); } catch { tc.loadedTools = new Set(); } }
     if (tc.context) tc.context.developer = savedContext?.developer || prompt.developer + "\n\n## Task tools\nAll tool schemas supplied with this task are already loaded. load_tools is optional and does not change the catalog. Runtime permission and approval checks remain authoritative." + (tc.appendRuntime ? " Changing account context arrives as labeled data updates, not instructions." : "");
     if (tc.appendLazy && tc.context && !savedContext?.developer) tc.context.developer = prompt.developer + LAZY_TOOLS_NOTE;   // payload-cut.js
     if (tc.context) tc.context.developer = tc.context.developer.replace("The tool catalog below lists deferred tools. Call load_tools with their exact names to expose their schemas, then use them normally.", tc.appendLazy ? "Some tools are listed with a short description and field names only. Call load_tools with their exact names to get the full description, parameters and guidance, then use them normally." : "All tools supplied with this task are already loaded; use them directly.");
     const sys = { role: "system", content: layered ? tc.context.core : prompt };
-    const hist = tc.appendRuntime ? [] : kind === "chat" ? (compact ? this.compactHistory(tc.session) : [...this.history(tc.session), ...this.usedAppsPair(tc.session)]) : [];
+    const hist = nativeWorker ? JSON.parse(tc.helper.history_json || "[]") : tc.appendRuntime ? [] : kind === "chat" ? (compact ? this.compactHistory(tc.session) : [...this.history(tc.session), ...this.usedAppsPair(tc.session)]) : [];
     const others = kind === "chat" && !layered ? this.otherTasksNote(tc.session) : "";
     const viaNote = tc.viaText ? this.genuiOn()
       ? "\n\n(This message came by text from their phone. Your reply is sent back by text. A plain reply: short and plain, no markdown, tables or headings; links are fine. A card reply arrives as a tappable card they open in Messages: use one when it saves them typing (a choice, a form, a draft to approve). If a card couldn't open, they got its options as a numbered list, so a reply like \"2\" or \"the second one\" picks that option.)"
       : "\n\n(This message came by text from their phone. Your reply is sent back as a text: keep it short and plain, no markdown, tables or headings. Links are fine.)" : "";
     // Attached files: already in R2; named in the message, copied to the computer before its first command, images shown to the model.
-    const ap = kind === "chat" ? await this.attachParts(opts.files, tc.session, turn) : { att: [], pics: [], note: "" }, att = ap.att, pics = ap.pics;
+    let routingImageNote = "";
+    const ap = kind === "chat" ? await this.attachParts(opts.files, tc.session, turn, tc) : { att: [], pics: [], note: "" }, att = ap.att, pics = ap.pics;
+    if (opts.handoff?.type === "helper" && dynamicRoutingOn(this.env)) {
+      const returned = helperRow(this.sql, Number(opts.handoff.id));
+      if (returned?.dynamic_routing) {
+        tc.routingReviewHelper = returned.id;
+        const prepared = JSON.parse(returned.handoff_json || "{}");
+        const primary = JSON.parse(returned.primary_profile_json || "{}");
+        if (prepared.imageParts?.length && primary.catalog?.input_modalities?.includes("image")) pics.push(...prepared.imageParts);
+        else if (prepared.imageParts?.length) { const described = await routingImageFallback(this, returned, tc); routingImageNote = "\n\n" + described.preview; }
+      }
+    }
     tc.attached = att.length > 0 || pics.length > 0;   // privacy.js provenance: files in the request
-    const attNote = ap.note + (opts.note ? `\n\n(${String(opts.note).slice(0, 2000)})` : "");
+    const attNote = ap.note + (opts.note ? `\n\n(${String(opts.note).slice(0, 2000)})` : "") + routingImageNote;
     const fileBody = ap.body || ""; tc.fileBody = fileBody; tc.sidecar = ap.sidecar || [];   // sidecar.js: the files' text, this message only (never saved)
     if (fileBody) tc.attached = true;   // privacy.js provenance: file contents in the request
     // Memory recall (P2): one sourced pack per message, chosen by search + rank, never a model call. Goes in the user message so the cached system prefix stays stable.
@@ -2921,7 +3401,7 @@ export class Resident extends DurableObject {
     const mmode = this.memoryMode();
     if (!layered && !RS && (kind === "chat" || kind === "followup") && mmode !== "off") recallNote = await this.recallContext(String(text), tc, { onDemand: false, at: t0 });
     // HS_USE (phase 4A, DESIGN 6.2, dev test arms B and C, and their shadow): the arms start now and the turn waits for the active one at the point where its context is built.
-    const memUse = layered ? this.memUseStart(String(text), tc, { kind, resumed: !!RS }) : null;
+    const memUse = layered && !nativeWorker ? this.memUseStart(String(text), tc, { kind, resumed: !!RS }) : null;
     // This task's to-do list (update_todos), so the helper continues it instead of starting over. In the message, not the system prompt.
     const todoNote = (kind === "chat" || kind === "followup") && tc.session ? this.todoContext(tc.session) : "";
     // Helpers still running in this task (helpers.js, when present), so a reply mentions them.
@@ -2950,8 +3430,40 @@ export class Resident extends DurableObject {
     // Own router, SHADOW mode (dev only, OWN_ROUTER=shadow): decide what our router would pick, next to Jev's real pick. Never changes the reply, never billed to the person.
     const shadow = eeEnabled(this.env) && !tc.appendRuntime && kind === "chat" && this.env.OWN_ROUTER === "shadow" && !this.env.BYOK && !RS ? this.ownRouterShadow(tc.session, hist, text, Math.ceil(JSON.stringify(messages).length / 3)).catch((e) => ({ error: String(e.message || e).slice(0, 200) })) : null;
     // Own router ON (Captain 2026-10-02): our router picks the model + effort for this message and that model answers. Jev Router is used only if our decision fails.
-    tc.route = RS?.route ? JSON.parse(RS.route) : null; let ownDecision = null;   // a resume keeps the turn's route (no new router call)
-    if (eeEnabled(this.env) && !tc.appendRuntime && this.env.OWN_ROUTER === "on" && useOpenRouter(this.env) && !this.env.BYOK && tc.abort !== "hard" && !RS) {
+    tc.route = RS?.route ? JSON.parse(RS.route) : null;
+    let delegationPolicy = "", interactionContext = "";
+    if (nativeWorker) bindTaskProfile(this, tc, JSON.parse(tc.helper.profile_json));
+    if (!nativeWorker && tc.abort !== "hard") await bindBackgroundRuntime(this, tc, { resumed: !!RS, stats, workflowId: opts.workflow_id ?? null });
+    if (tc.appendRuntime && dynamicRoutingOn(this.env) && tc.abort !== "hard") {
+      const handedWorker = opts.handoff?.type === "helper" ? helperRow(this.sql, Number(opts.handoff.id)) : null;
+      if (handedWorker?.dynamic_routing && handedWorker.primary_profile_json) bindTaskProfile(this, tc, JSON.parse(handedWorker.primary_profile_json), stats);
+      else await ensureTaskRuntime(this, tc, { kind, text: (tc.inputReply?.selection?.text || asked) + attNote + fileBody, hist, stats });
+      let boundQuestion=tc.inputReply?.question;
+      if(boundQuestion?.helper_id) {
+        const h=helperRow(this.sql,boundQuestion.helper_id);
+        if(!h||h.session!==tc.session||!['running','awaiting_review','waiting_input'].includes(h.status)||Number(h.round)!==Number(boundQuestion.round)) {
+          tc.inputReply={ambiguous:true,pending:pendingInputs(this.sql,tc.session)};boundQuestion=null;
+          tc.inputReply.pending.push({question: "The original worker was stopped or moved on while your answer was queued. Ask how the person wants to continue."});
+        }
+      }
+      if(boundQuestion?.profile_json) bindTaskProfile(this,tc,JSON.parse(boundQuestion.profile_json),stats);
+      const reviewId = boundQuestion?.helper_id || (opts.handoff?.type === "helper" ? Number(opts.handoff.id) : null);
+      tc.orchestration = { ...tc.taskProfile.dispatch, ...(reviewId ? { review: reviewId, steer: null } : {}) };
+      if (reviewId) tc.routingReviewHelper = reviewId;
+      if (tc.orchestration.steer) {
+        const h = helperRow(this.sql, tc.orchestration.steer);
+        if (["awaiting_review","waiting_input"].includes(h?.status)) { tc.orchestration.review = h.id; tc.routingReviewHelper = h.id; }
+      }
+      if(tc.inputReply?.ambiguous) tc.orchestration={clarifying:true};
+      if((tc.inputReply?.source_turn||opts.photon_target)&&!boundQuestion) {
+        tc.orchestration.steer=null;tc.orchestration.review=null;tc.routingReviewHelper=null;
+      }
+      interactionContext = inputContext(tc.inputReply);
+      if (interactionContext && !tc.context) { userText += `\n\n${contextData("INTERACTION CONTEXT", interactionContext)}`; userMsg.content = pics.length ? [{ type: "text", text: userText }, ...pics] : userText; }
+      delegationPolicy = orchestrationPolicy(tc);
+    }
+    let ownDecision = null;   // a resume keeps the turn's route (no new router call)
+    if (eeEnabled(this.env) && !nativeWorker && !tc.taskProfile?.backgroundGeneral && !tc.appendRuntime && this.env.OWN_ROUTER === "on" && useOpenRouter(this.env) && !this.env.BYOK && tc.abort !== "hard" && !RS) {
       try { ownDecision = await this.ownRouterShadow(tc.session || `wf:${opts.workflow_id || ""}`, hist, asked + attNote, Math.ceil(JSON.stringify(messages).length / 3), tc.needImg);
         if (ownDecision?.pick) { tc.route = { model: ownDecision.pick.model, effort: ownDecision.pick.effort, host: ownDecision.pick.host, fallbacks: ownDecision.fallbacks.map((f) => f.model), reason: ownDecision.reason, floor: ownDecision.floor };
           const clefNano = Math.ceil((ownDecision.clef_in || 0) * (await jobCost(this.env, "classic_decider")).in_nano * MARKUP), rid = `rtr:${crypto.randomUUID()}`;
@@ -2960,7 +3472,7 @@ export class Resident extends DurableObject {
     }
     // ---- Two-model router (route2.js, ROUTER_MODE=two): one Jev yes/no per message → Sol (task) or Luna (conversation); sets the turn's route. ----
     // Own AI key: no Jev call and no Sol/Luna; their main model runs the turn, their fast model the chores (callModelOnce).
-    if (eeEnabled(this.env) && !tc.appendRuntime && route2On(this.env) && useOpenRouter(this.env) && !this.env.BYOK && tc.abort !== "hard" && !RS) await routeTwoTurn(this, tc, { kind, text: asked + attNote, hist, stats });
+    if (eeEnabled(this.env) && !nativeWorker && !tc.taskProfile?.backgroundGeneral && !tc.appendRuntime && route2On(this.env) && useOpenRouter(this.env) && !this.env.BYOK && tc.abort !== "hard" && !RS) await routeTwoTurn(this, tc, { kind, text: asked + attNote + fileBody, hist, stats });
     // Quality recovery that corrects the approach (pool.js RECOVERY: research / general): one context note at the end of this message
     // (after the cached history, so the prefix stays warm). Saved in the turn's journal, so a resume keeps it.
     if (tc.route?.note && !RS) { userText = `${userText}\n\n${tc.route.note}`; userMsg.content = pics.length ? [{ type: "text", text: userText }, ...pics] : userText; }
@@ -2984,16 +3496,17 @@ export class Resident extends DurableObject {
           { source: "automatic recall", included: !!memJoin.block, chars: memJoin.block.length, reason: memJoin.block ? (memJoin.info ? `memory arm ${memJoin.info.arm} (test setting)` : "notes saved in the last 15 minutes") : "agent-requested through recall_memory" },
         ];
       }
+      if (interactionContext) tc.context.turn.interaction_context = interactionContext;
       tc.contextTrace = trace;
     }
     if (ih.line) trace.push({ tool: "integration_hint", args: ih.items.map((x) => x.a.s).join(","), ms: 0, out: ih.line.slice(0, 700) });   // ops/evals see it; not a step
     if (tc.sidecar?.length) trace.push({ tool: "file_sidecar", args: tc.sidecar.map((x) => x.name).join(","), ms: 0, out: tc.sidecar.map((x) => `${x.name}: ${x.mode}${x.tokens ? ` (${x.tokens} tok)` : ""}`).join("; ").slice(0, 700) });   // sidecar.js: inline / card / not ready; not a step
-    const engine = tc.appendRuntime ? "append-v1" : RS?.engine || opts.engine || this.get("engine") || this.env.ENGINE || "classic";
+    const engine = tc.appendRuntime ? "append-v1" : (nativeWorker || tc.taskProfile?.dynamicRouting) ? "classic" : RS?.engine || opts.engine || this.get("engine") || this.env.ENGINE || "classic";
     if (tc.appendRuntime) {
       const store = tc.transcript, priorState = store.state();
       // Persist the context after layering exactly once; future calls must not
       // re-layer historical messages using this turn's dynamic context.
-      const layeredInput = contextMessages([sys, userMsg], tc.context);
+      const layeredInput = contextMessages([sys, ...(delegationPolicy ? [{ role: "developer", content: delegationPolicy }] : []), userMsg], tc.context);
       const prefixN = tc.context ? 3 : 1;
       if (!priorState) {
         const old = this.sql.exec("SELECT id,user_text,reply FROM turns WHERE kind='chat' AND session=? ORDER BY at,rowid", tc.session).toArray();
@@ -3011,19 +3524,32 @@ export class Resident extends DurableObject {
           if (store.state().standing !== digest) { this.save(turn, standing); store.metadata({ standing: digest }); }
         }
         for (const m of layeredInput.slice(prefixN)) this.save(turn, m);
-        store.metadata({ lastInputTurn: turn });
+        store.metadata({ lastInputTurn: turn, dispatchContextTurn: turn });
         });
       }
       messages = store.request();
       tc.appendTrace = { tool: "task_context", args: "", ms: 0, out: "" }; trace.push(tc.appendTrace);
     }
-    let warm = null, reply = "", error = null, nudged = false, emptyNudged = false, capped = false; const said = [], saidMeta = [], steerMsgs = [];   // saidMeta[i]: the tool calls around said[i] (progress-dedupe.js splitProgress)
+    let warm = null, reply = "", error = null, nudged = false, emptyNudged = false, steerNudged = false, capped = false; const said = [], saidMeta = [], steerMsgs = [];   // saidMeta[i]: the tool calls around said[i] (progress-dedupe.js splitProgress)
     if (!RS) this.journalInput(tc, { userText, engine, ctxMode });   // resume.js: what a resume rebuilds the first message from
     // Local transcript persistence precedes authorization. A blocked dispatch
     // must not erase the person's actual message from future task context.
-    if (tc.appendRuntime && tc.abort !== "hard") await ensureTaskRuntime(this, tc, { kind, text: asked + attNote, hist, stats });
+    if (tc.appendRuntime && !tc.taskProfile?.dynamicRouting && tc.abort !== "hard") await ensureTaskRuntime(this, tc, { kind, text: asked + attNote + fileBody, hist, stats });
     // resume.js: the turn's saved steps, its open calls closed by type, one context note; stats, said and step carried over.
+    if (RS) this.restoreDelegation(tc);
     const rs = RS ? await this.resumeState(tc, RS, hist, userMsg) : null;
+    if (RS) this.restoreDelegation(tc);
+    // Older in-flight turns lack the per-turn policy. Close their unfinished
+    // tool calls first, then persist missing guidance once without changing the
+    // frozen prefix or replaying any tool. The update is atomic across resets.
+    if (RS && tc.appendRuntime && tc.transcript.state().dispatchContextTurn !== turn) {
+      tc.transcript.atomic(() => {
+        delegationPolicy = orchestrationPolicy(tc);
+        if (delegationPolicy) this.save(turn, { role: "developer", content: delegationPolicy });
+        if (interactionContext) this.save(turn, { role: "user", content: contextData("INTERACTION CONTEXT", interactionContext) });
+        tc.transcript.metadata({ dispatchContextTurn: turn });
+      });
+    }
     if (rs?.stats) Object.assign(stats, rs.stats, { models: [...(rs.stats.models || [])] });
     if (rs) { said.push(...rs.said); saidMeta.push(...(rs.saidMeta || rs.said.map(() => null)));   // old metadata remains unknown (keep)
       if (rs.phase === "tools") stats.tool_calls += rs.lastCalls || 0; }
@@ -3034,6 +3560,7 @@ export class Resident extends DurableObject {
       this.save(turn, { role: "assistant", content: reply }); stats.hit_limit = 1; send?.({ t: "text", s: reply });
     } else if (engine === "pi") {
       const r = await runTurnPi(this, { tc, sys: sys.content, hist, userText, kind, maxSteps, turn, opts, send, stats, trace, stepIn, TOOLS: this.availableTools(tc), COMPUTER_TOOLS, consts: { CHECKPOINT_TOKENS, MAX_OUT }, resume: rs });
+      if (tc.audioFailure) throw Object.assign(new Error(tc.audioFailure.audioReason), tc.audioFailure);
       reply = stripNotesEcho(r.reply); error = r.error; checkpoints = r.checkpoints; messages = r.messagesForNotes;
       said.splice(0, said.length, ...r.said); saidMeta.splice(0, saidMeta.length, ...r.saidMeta);   // Pi uses the same terminal/history classifier; unknown resumed steps stay visible
       if (error === SPEND_CEILING) { error = null; reply = pauseFallback(reply.startsWith("Something went wrong") ? "" : reply); }
@@ -3046,12 +3573,20 @@ export class Resident extends DurableObject {
       let late = false;
       for (let step = rs ? rs.step + (rs.phase === "tools" ? 1 : 0) : 0; ; step++) {
         await this.spendRefresh(tc, opts);
+        if (tc.abort !== "hard" && (tc.delegationUncertain || tc.orchestration?.sent || tc.orchestration?.waitingInput)) {
+          const q = questionForTurn(this.sql,tc.turn);
+          if (tc.delegationUncertain) { reply = "I could not confirm whether the worker update finished before the restart. I have not repeated it."; error = "delegation_outcome_unknown"; }
+          else if (tc.orchestration.waitingInput) { tc.inputRequest = q; reply = q?.status === "pending" ? q.presentation || q.question : "The question is no longer waiting for an answer."; }
+          else reply = tc.orchestration.review || tc.orchestration.steer ? "Your update was sent to the worker." : "I started the worker.";
+          said.length=0; saidMeta.length=0; said.push(reply); this.commitTurn(tc,true); break;
+        }
         if (!pausesApply(tc) && !opts.hard_charge) delete stats.hit_limit;
         trimTurnState(tc, {said, saidMeta, stats, trace, stepIn, wmLog});
         const stepLimit = stepAllowance(tc, maxSteps);
         if (step >= stepLimit) { capped = true; break; }
         if (tc.abort === "hard") break;   // stopped: no further model calls (the reply is set below)
         tc.stepNo = step;
+        if (tc.taskProfile?.dynamicRouting && tc.orchestration) { tc.taskProfile.dispatch = { ...tc.orchestration }; tc.route.taskProfile = tc.taskProfile; }
         this.journalStep(tc, { step, phase: "model", stats, said, saidMeta, checkpoints });   // resume.js: where a reset would carry on from
         // Steering: everything the person added since the last step is read before this call, as one message.
         const st = this.takeSteers(tc);
@@ -3074,17 +3609,29 @@ export class Resident extends DurableObject {
           reply = fin.content || (tc.pause ? pauseFallback() : "Stopped at the limit without a report."); stats.hit_limit = 1; break;
         }
         stats.steps++;
+        if(tc.inputReply?.ambiguous) {
+          const chooser=createInputChooser(this.sql,tc,tc.inputReply);
+          if(!chooser.error){tc.inputRequest=chooser;tc.orchestration ||= {};tc.orchestration.waitingInput=true;tc.emit?.({t:"user_input",input:chooser});reply=chooser.presentation||chooser.question;said.length=0;saidMeta.length=0;said.push(reply);this.save(turn,{role:"assistant",content:reply});this.commitTurn(tc,true);break;}
+        }
+        const savedQuestion=questionForTurn(this.sql,tc.turn);
+        const savedWorker=tc.helper?.dynamic_routing?helperRow(this.sql,tc.helper.id):null;
+        if(savedQuestion?.status==="pending" || savedWorker?.input_card===tc.turn) {
+          tc.inputRequest=savedQuestion; tc.helperInputQuestion=savedWorker?.input_card===tc.turn?savedWorker.input_question:null;
+          if(tc.inputRequest){tc.orchestration ||= {};tc.orchestration.waitingInput=true;}
+          reply=tc.helperInputQuestion||savedQuestion.presentation||savedQuestion.question;said.length=0;saidMeta.length=0;said.push(reply);this.commitTurn(tc,true);break;
+        }
         const m0 = Date.now();
         let spoke = false;
         // P4 working memory (WORKMEM=on): per-step working set from the originals (protected + scored, dropped results leave a keyed label
         // and come back when the focus touches them). Off: the old trim + 40k checkpoint.
         if (wm) { const ws = workingSet(messages, wmFull, { budget: WM_BUDGET, ...WM_HUGE, base: wmBase, task: text, state: wmState }); wmLog.push({ step, kept: ws.receipts.kept, aside: ws.receipts.dropped.length, newly: ws.receipts.newly, size: ws.receipts.size }); tc.wmView = ws.messages; tc.wmSrcLen = messages.length; }
         else if (!tc.appendRuntime) compactTools(messages);
+        const restrictedNarration = !!(tc.orchestration?.requiredDelegation || tc.orchestration?.review || tc.orchestration?.steer) && !tc.orchestration?.approved;
         const res = await this.callModel(wm ? tc.wmView : messages, () => {
           if (!warm) { const w0 = Date.now(); warm = this.computer().warm().then((r) => ({ ...r, ms: Date.now() - w0 })); }
-        }, send ? (s) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s }); } : null, kind === "chat" ? MAX_OUT : 4096, false, tc);
+        }, send && !restrictedNarration ? (s) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s }); } : null, kind === "chat" ? MAX_OUT : 4096, false, tc);
         { const names = res.calls.map((c) => c.function?.name).filter(Boolean);
-          if (res.content) { said.push(res.content); saidMeta[said.length - 1] = { text: res.content, calls: names, later: [] }; }
+          if (res.content && !restrictedNarration) { said.push(res.content); saidMeta[said.length - 1] = { text: res.content, calls: names, later: [] }; }
           else if (said.length && saidMeta[said.length - 1]) saidMeta[said.length - 1].later.push(...names); }
         stepIn.push(res.inTok);
         stats.model_ms += Date.now() - m0; stats.in += res.inTok; stats.cached += res.cached; stats.cache_write += res.cacheWrite || 0; stats.out += res.outTok; stats.charge += res.charge; if (res.model) stats.models.push((res.routing ? `${res.model} [${res.routing.reason}/${res.routing.floor}]` : res.model) + (res.fellBack ? ` [fallback: ${res.fellBack}]` : ""));
@@ -3100,6 +3647,23 @@ export class Resident extends DurableObject {
         // The person added something while this answer was being written: it isn't the reply yet. The draft stays as a progress
         // note, the new message is read next, and the helper answers again (one reply per card).
         if (!res.calls.length && this.hasSteers(tc)) { send?.({ t: "work" }); late = true; continue; }
+        if (!res.calls.length && nativeWorker && tc.abort !== "soft" && step < stepLimit - 1) {
+          const nudge = { role: "user", content: "Call done with your response to finish." };
+          messages.push(nudge); this.save(turn, nudge); continue;
+        }
+        if (!res.calls.length && tc.orchestration?.review && !tc.orchestration?.approved && step < stepLimit - 1) {
+          const nudge = { role: "user", content: "Review the returned response, files and system log, then call approve_subagent or message_subagent. Approval is required before presenting a final result." };
+          messages.push(nudge); this.save(turn, nudge); continue;
+        }
+        if (!res.calls.length && tc.orchestration?.steer && !tc.orchestration.sent && !steerNudged && step < stepLimit - 1) {
+          steerNudged = true;
+          const nudge = { role: "developer", content: orchestrationPolicy(tc) };
+          messages.push(nudge); this.save(turn, nudge); continue;
+        }
+        if (!res.calls.length && tc.orchestration?.requiredDelegation && !tc.orchestration.started && !tc.orchestration.review && step < stepLimit - 1) {
+          const nudge = { role: "user", content: "You must call start_helper with the assigned job before finishing." };
+          messages.push(nudge); this.save(turn, nudge); continue;
+        }
         if (!res.calls.length && kind === "helper" && this.helperQueued(tc) && step < stepLimit - 1) {
           said.pop(); saidMeta.pop(); continue;   // a follow-up arrived during the final model call
         }
@@ -3111,7 +3675,7 @@ export class Resident extends DurableObject {
           nudged = true; const nudge = { role: "user", content: "(Unattended run: nobody will reply. Don't describe a plan; do the work now by calling tools, then end with a short final report of what you found and did.)" };
           messages.push(nudge); this.save(turn, nudge); said.length = 0; saidMeta.length = 0; continue;
         }
-        if (!res.calls.length && !said.join("").trim() && !emptyNudged && step < stepLimit - 1) {
+        if (!res.calls.length && !restrictedNarration && !said.join("").trim() && !emptyNudged && step < stepLimit - 1) {
           emptyNudged = true; const nudge = { role: "user", content: "(Your last message was empty. Don't start over. Give your answer now from what you've already done, or call the next tool you need.)" };
           messages.push(nudge); this.save(turn, nudge); stats.empty_nudge = 1; continue;
         }
@@ -3136,6 +3700,10 @@ export class Resident extends DurableObject {
         };
         try {
         for (const call of res.calls) {
+          if (tc.helperInputQuestion != null || tc.helperDoneResponse != null || tc.orchestration?.waitingInput || tc.orchestration?.sent) {
+            const ended = { role: "tool", tool_call_id: call.id, content: "Skipped because the delegation turn ended." };
+            messages.push(ended); this.save(turn, ended); continue;
+          }
           const sp = splitStepTitle(call.function.arguments), xcall = { ...call, function: { ...call.function, arguments: sp.args } };
           if (batch && call.function.name !== "app_run") await settle();
           // A new message arrived: the calls not started yet are skipped (recorded), so the helper reads it first.
@@ -3172,6 +3740,11 @@ export class Resident extends DurableObject {
         }
         await settle();
         } finally { tc.readBatch = null; tc.onAppQueued = null; if (batch && parked.length) batch.cancel(); }   // stopped mid-step: parked reads never run
+        if (tc.helperInputQuestion != null || tc.helperDoneResponse != null || tc.orchestration?.waitingInput || tc.orchestration?.sent || tc.delegateYield) {
+          reply = tc.helperInputQuestion ?? (tc.inputRequest ? tc.inputRequest.presentation || tc.inputRequest.question : tc.helperDoneResponse ?? ((tc.orchestration?.steer || tc.orchestration?.review) ? "Your update was sent to the worker." : tc.orchestration?.requiredDelegation ? "I have the work running." : stripNotesEcho(answerText(splitProgress(said, saidMeta)))));
+          if (tc.inputRequest || tc.orchestration?.requiredDelegation || tc.orchestration?.steer || tc.orchestration?.review) { said.length=0; saidMeta.length=0; said.push(reply); }
+          this.commitTurn(tc, true); break;
+        }
         guardTools(tc, res.calls.map((c) => [c.function.name, splitStepTitle(c.function.arguments).args]));   // runaway signs → pause (report next step)
         // Mid-turn checkpoint: the work so far is folded into working notes and the raw steps leave the context.
         if (!tc.appendRuntime && !wm && compact && res.inTok > Math.max(CHECKPOINT_TOKENS, (stepIn[0] || 0) + 20000) && step < stepLimit - 2) {
@@ -3195,7 +3768,15 @@ export class Resident extends DurableObject {
         if (step === stepLimit - 1) capped = true;   // a chat turn out of steps: a short report below (after any steer is answered)
       }
     } catch (e) { if (isResetErr(e)) { tc.objectReset = true; throw e; }   // resume.js: a reset under this step isn't the turn's error
-      if (tc.abort === "hard") error = null; else if (e.budget) { error = null; reply = (kind === "workflow" ? savedWorkflowHardReport(this.sql, turn) : null) || pauseFallback(said.join("\n\n")); said.length = 0; said.push(reply); } else { error = e.message; if (!reply) reply = isByokError(e) ? e.message : e.privacy ? PRIVACY_EXHAUSTED : e.status === 402 ? (this.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : e.status === 429 ? DAY_LIMIT_REPLY : `Something went wrong: ${e.message}`; } }
+      if (tc.abort === "hard") error = null; else if (publicTurnError(e)) { error = e.code; reply = publicTurnError(e); said.length = 0; saidMeta.length = 0; said.push(reply); } else if (e.budget) { error = null; reply = (kind === "workflow" ? savedWorkflowHardReport(this.sql, turn) : null) || pauseFallback(said.join("\n\n")); said.length = 0; said.push(reply); } else { error = e.message; if (!reply) reply = isByokError(e) ? e.message : e.privacy ? PRIVACY_EXHAUSTED : e.status === 402 ? (this.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : e.status === 429 ? DAY_LIMIT_REPLY : `Something went wrong: ${e.message}`; } }
+    }
+    if (!error && tc.orchestration && !tc.orchestration.sent && !tc.orchestration.approved && !tc.orchestration.waitingInput && !tc.stoppedTurn) {
+      if (tc.orchestration.review) { reply = "The worker's result still needs review. I have not approved it."; said.length=0; saidMeta.length=0; said.push(reply); }
+      else if (tc.orchestration.steer) { reply = "I could not send your update to the worker. It has not received the update. Please try again."; error = "worker_update_not_sent"; said.length=0; saidMeta.length=0; said.push(reply); }
+      else if (tc.orchestration.requiredDelegation && !tc.orchestration.started) { reply = "I could not start the assigned worker. Please retry the request."; error = "required_delegation_not_started"; said.length=0; saidMeta.length=0; said.push(reply); }
+    }
+    if (!error && !reply && !said.join("").trim() && tc.orchestration?.started && !tc.stoppedTurn && tc.abort !== "hard") {
+      reply = "I started the worker."; said.push(reply);
     }
     // Stopped by the person (stop.js): what it already did stays, the reply is one plain line, no model call.
     // (A stop that lands after the reply already closed the card changes nothing: that card is complete.)
@@ -3216,7 +3797,7 @@ export class Resident extends DurableObject {
         stats.steps++; stats.in += fin.inTok; stats.cached += fin.cached; stats.cache_write += fin.cacheWrite || 0; stats.out += fin.outTok; stats.charge += fin.charge; if (fin.model) stats.models.push(fin.routing ? `${fin.model} [${fin.routing.reason}/${fin.routing.floor}]` : fin.model);
         const a = { role: "assistant", content: fin.content }; messages.push(a); this.save(turn, a);
         if (fin.content) { said.push(fin.content); reply = stripNotesEcho(fin.content); if (tc.limitWhy === "steps" && !tc.pause && !opts.budget) tc.limitWhy = null; }   // it answered what they added: not a pause
-      } catch (e) { if (isResetErr(e)) tc.objectReset = true; if (!e.budget) error = e.message; console.log("post-loop steer answer", e.message); }
+      } catch (e) { if (isResetErr(e)) tc.objectReset = true; if (!e.budget) error = e.code || e.message; if (publicTurnError(e)) { reply = publicTurnError(e); said.length = 0; saidMeta.length = 0; said.push(reply); } console.log("post-loop steer answer", e.message); }
     }
     // A chat turn that used all its steps (and wasn't answered above): one tools-off call for a short report, never a bare "I stopped".
     if (capped && !reply && !error && !tc.committed && !tc.stoppedTurn) {
@@ -3260,7 +3841,7 @@ export class Resident extends DurableObject {
     // Final title / one-line result / summary: a cheap labeller call, in parallel with the hand-off notes (§5).
     let ledger = null; try { ledger = this.ledger(); } catch {}
     const chatTitle = kind === "chat" && !error && !tc.stoppedTurn && !tc.modelFailure ? claimChatTitle(this, tc.session) : null;
-    const sumP = tc.modelFailure ? Promise.resolve(null) : summarizeCard({ env: this.env, ledger, meta: { tenant: this.get("tenant"), channel: this.get("channel") },
+    const sumP = tc.modelFailure || error?.startsWith("audio_") ? Promise.resolve(null) : summarizeCard({ env: this.env, ledger, meta: { tenant: this.get("tenant"), channel: this.get("channel") },
       input: { ...labelInput(this.sql, turn, { reply, error, name: kind === "chat" ? null : (opts.helper?.name || (opts.workflow_id != null ? this.wf(opts.workflow_id)?.name : null) || null) }), chatTitle: !!chatTitle } })
       .then((labels) => { applyChatTitle(this, chatTitle, labels?.chat_title); return labels; })
       .catch((e) => { console.log("labeller", e.message); return null; });
@@ -3286,7 +3867,7 @@ export class Resident extends DurableObject {
     else if (lab === undefined) this.ctx.waitUntil?.(sumP.then((l) => { if (!l) return; labelCard(this.sql, null, turn, l); if (l.billed && l.charge_nano) this.sql.exec("UPDATE turns SET charge_nano=charge_nano+? WHERE id=?", Math.round(l.charge_nano), turn); }));
     this.sql.exec("INSERT INTO turns (id,at,user_text,reply,steps,tool_calls,computer_used,computer_wait_ms,model_ms,total_ms,in_tok,cached_tok,out_tok,charge_nano,error,kind,workflow_id,trace,notes,ctx,checkpoints,step_in,engine,session,models,cache_write_tok) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", turn, t0, text, reply, stats.steps, stats.tool_calls, stats.computer_used, stats.computer_wait_ms, stats.model_ms, Date.now() - t0, stats.in, stats.cached, stats.out, stats.charge, error, kind, opts.workflow_id ?? null, diagnosticTrace(trace, tc.progressOmitted), notes, ctxMode, checkpoints, JSON.stringify(stepIn), engine, tc.session, JSON.stringify(stats.models), stats.cache_write);
     // Stopped by the person or ended by an error: the reply carries none of what it found, so its lookups are kept as "unfinished work" (worklog.js).
-    if (tc.stoppedTurn || error) {
+    if (!nativeWorker && (tc.stoppedTurn || error)) {
       this.ctx.waitUntil?.(this.nativeCancel(tc.session, tc.stoppedTurn ? 'Task stopped' : 'Task failed').catch(() => {}));
       this.ctx.waitUntil?.(retainPartial(this, tc.session, turn, tc.stoppedTurn ? "stopped by the person" : "ended by an error").catch((e) => console.log("retainPartial", e.message)));
     }
@@ -3296,7 +3877,7 @@ export class Resident extends DurableObject {
     const fullText = stripInjectedMemory(kind === "chat" ? this.cardUserText(turn, text) : text);   // the first message plus what was added while it worked; memory 1Helm added to the turn is never retained (memory-block.js)
     // status-notes.js: 1Helm's own notices (day cap, check-in, pause) aren't kept as the helper's words; a paused report is marked as a status from then.
     const memReply = memoryReply(stripInjectedMemory(reply), { paused: !!(paused || stats.hit_limit) });
-    if (this.memoryMode() !== "off" && hsWriters(this.env)) this.ctx.waitUntil?.(this.hsTurnWrite({ turn, session: tc.session, at: t0, userText: fullText, reply: cardsToText(memReply), notes, kind, workflowId: opts.workflow_id ?? null, endAt: Date.now() }).catch((e) => console.log("hindsight turn write", e.message)));
+    if (!nativeWorker && this.memoryMode() !== "off" && hsWriters(this.env)) this.ctx.waitUntil?.(this.hsTurnWrite({ turn, session: tc.session, at: t0, userText: tc.taskProfile?.dynamicRouting && opts.handoff?.type === "helper" ? this.sql.exec("SELECT text FROM card_events WHERE card=? AND type='msg' ORDER BY seq", turn).toArray().map(e => e.text || "").join("\n") : fullText, reply: cardsToText(memReply), notes, kind, workflowId: opts.workflow_id ?? null, endAt: Date.now() }).catch((e) => console.log("hindsight turn write", e.message)));
     // This channel had a chat turn (the daily billing check reads when).
     if (kind === "chat" && this.get("tenant")) this.ctx.waitUntil?.(noteActivity(this.env, this.get("tenant"), this.get("channel")).catch((e) => console.log("channel activity", e.message)));
     // Each thing it said between tool rounds is its own message bubble in the app ("Let me take a look." · steps · the answer).
@@ -3304,7 +3885,7 @@ export class Resident extends DurableObject {
     for (const x of splitProgress(said, saidMeta)) for (const p of splitCardParts(stripNotesEcho(x.text).trim())) if (p) { if (x.progress) progress.push(parts.length); parts.push(p); }
     if (kind === "chat" && (parts.length > 1 || progress.length) && !error) this.sql.exec("UPDATE turns SET parts=?, progress=? WHERE id=?", JSON.stringify(parts), progress.length ? JSON.stringify(progress) : null, turn);
     tc.lab?.tokens?.(stepIn[0] ?? null);   // router lab: the real first call's input tokens, next to its estimate
-    return { reply, turn, total_ms: Date.now() - t0, ...stats, trace, error, ...(tc.progressOmitted ? {progress_omitted:tc.progressOmitted} : {}), ...(tc.modelFailure && !tc.stoppedTurn ? { recoverable: true, failure_phase: tc.modelFailure.phase || null } : {}), notes, ctx: ctxMode, checkpoints, step_in: stepIn, engine, reaction: tc.reaction || null };
+    return { reply, turn, ...(tc.inputRequest ? {input_request:questionForTurn(this.sql,turn)} : {}), ...(tc.helperInputQuestion ? {input_requested:tc.helperInputQuestion} : {}), total_ms: Date.now() - t0, ...stats, trace, error, ...(tc.progressOmitted ? {progress_omitted:tc.progressOmitted} : {}), ...(tc.modelFailure && !tc.stoppedTurn ? { recoverable: true, failure_phase: tc.modelFailure.phase || null } : {}), notes, ctx: ctxMode, checkpoints, step_in: stepIn, engine, reaction: tc.reaction || null };
   }
 
   // ---- Own router (shadow) ----
@@ -3360,7 +3941,7 @@ export class Resident extends DurableObject {
         const msg = addInput(this.sql, pend.id, inp, { tc: pend.tc });
         if (msg.dup) return { mode: "dup", card: cardView(this.sql, pend.id), msg };
         if (files.length) this.sql.exec(`UPDATE files SET pending=0, session=COALESCE(session,?), turn=COALESCE(turn,?) WHERE id IN (${files.map(() => "?").join(",")})`, session, pend.id, ...files);
-        pend.items.push({ ...msg, type: msg.type, text: inp.text ?? "", files, from: inp.from || null, photonMsg: inp.photonMsg || null, via: inp.via || "app", note: inp.note || "", reply: replyRef(inp.reply) });
+        pend.items.push({ ...msg, type: msg.type, text: inp.text ?? "", files, from: inp.from || null, photonMsg: inp.photonMsg || null, via: inp.via || "app", note: inp.note || "", reply: replyRef(inp.reply),photon_target:inp.photon_target||null, ...originInput(inp) });
         pend.count++;
         // A text joining a turn the app started: its one reply goes back by text too (runTurn delivers it at the end).
         if (inp.via === "text" && pend.tc) pend.tc.textSteered = true;
@@ -3379,7 +3960,8 @@ export class Resident extends DurableObject {
   takeSteers(tc) {
     const p = tc?.pend; if (!p || p.next >= p.items.length) return [];
     const items = p.items.slice(p.next); p.next = p.items.length;
-    markConsumed(this.sql, p.id, items.map((x) => x.seq), tc.stepNo ?? 0);
+    if (items.some(x => x.files?.length)) tc.preparedSteers = { card: p.id, seqs: items.map(x => x.seq), texts: [] };
+    else markConsumed(this.sql, p.id, items.map((x) => x.seq), tc.stepNo ?? 0);
     for (const x of items) if (x.type === "msg") { tc.lastMsg = x.id; tc.photonMsg = x.photonMsg || null; }
     return items;
   }
@@ -3401,16 +3983,23 @@ export class Resident extends DurableObject {
   // Attached files (first message or a steer): marked sent and owned by this turn; named in a note; up to 4 pictures for the model.
   // sidecar.js: each file's prepared text (whole when short, else card + outline) as `body`, waited for at most 2 s. The body rides in
   // this message only (after the cached prefix); the note (saved in the history) carries one line per file instead.
-  async attachParts(fileIds, session, turn) {
+  async attachParts(fileIds, session, turn, tc = null) {
     const att = (fileIds || []).map((id) => this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(id)).toArray()[0]).filter(Boolean).slice(0, 10);
     // A Library file attached again (from the composer's Library picker) keeps its first turn, so the message it came with
     // (or the reply that shared it) still shows it; this message lists it through turns.files / its card event.
     if (att.length) this.noteFileUse(session, att.map((f) => f.id), "attached");
     if (att.length) this.sql.exec(`UPDATE files SET pending=0, session=COALESCE(session,?), turn=COALESCE(turn,?) WHERE id IN (${att.map(() => "?").join(",")})`, session, turn, ...att.map((f) => f.id));
+    if (att.length && tc) await this.sidecarAudioReady(att, tc);
+    if (tc?.abort === "hard") return { att, pics: [], note: "", body: "", sidecar: [] };
     // Pictures: the small JPEG view (or a small original); one with no viewable copy (e.g. HEIC whose view couldn't be made) is named instead.
     const pics = [], unseen = []; let extra = 0;
     for (const f of att.filter((f) => /^image\//.test(f.mime))) { if (pics.length >= 4) { extra++; continue; } const u = await this.imageDataUrl(f); if (u) pics.push({ type: "image_url", image_url: { url: u } }); else unseen.push(f); }
-    const sc = att.length && this.sidecarParts ? await this.sidecarParts(att).catch((e) => { console.log("sidecar parts", e?.message); return { body: "", saved: "", got: [] }; }) : { body: "", saved: "", got: [] };
+    const audio = tc?.audioSources?.filter(f => att.some(a => a.id === f.id)) || [];
+    const audioMissing = () => { tc.audioFailure = { code: "audio_preparation_failed", audioReason: "The prepared transcript could not be loaded. The recording is saved. Try again shortly." }; return Object.assign(new Error(tc.audioFailure.audioReason), tc.audioFailure); };
+    const read = att.length && this.sidecarParts ? this.sidecarParts(att) : Promise.resolve({ body: "", saved: "", got: [] });
+    const sc = await (audio.length ? this.sidecarAudioRead(tc, read) : read).catch((e) => { if (isResetErr(e) || e?.code?.startsWith("audio_")) throw e; if (audio.length) throw audioMissing(); console.log("sidecar parts", e?.message); return { body: "", saved: "", got: [] }; });
+    if (audio.length && (!sc.body || audio.some(f => !sc.got?.some(g => g.id === f.id && ["inline", "card", "head"].includes(g.mode))))) throw audioMissing();
+    this.sidecarAudioCurrent(tc);
     // Every file's text came with the message: the note names the files and says to answer from that text (the computer path last,
     // for editing or running). Otherwise, as before sidecars: where the files are on the computer.
     const withText = sc.got?.length && att.every((f) => sc.got.some((g) => g.id === f.id && ["inline", "card", "head", "outline"].includes(g.mode))), allInline = withText && sc.got.every((g) => g.mode === "inline");
@@ -3425,10 +4014,29 @@ export class Resident extends DurableObject {
   // The user-role message for inputs that arrived while the helper worked. pics=false (pi): text only.
   async steerMessage(tc, items, { late = false, pics = true } = {}) {
     const files = items.flatMap((x) => x.files || []);
-    const ap = files.length ? await this.attachParts(files, tc.session, tc.turn) : { pics: [], note: "" };
+    const ap = files.length ? await this.attachParts(files, tc.session, tc.turn, tc) : { pics: [], note: "", body: "" };
+    if (dynamicRoutingOn(this.env) && tc.kind === "chat") {
+      for (const input of items.filter(item => item.type !== "handoff" && item.type !== "helper" && (item.text || item.files?.length))) {
+        const prior = tc.route;
+        if (tc.abort === "hard") break;
+        const prepared = input.files?.length ? await this.attachParts(input.files, tc.session, tc.turn, tc) : { note: "", body: "" };
+        if (tc.abort === "hard") break;
+        const decision = await routeTwoTurn(this, { session: tc.session }, { kind: "chat", text: String(input.text || "") + prepared.note + (prepared.body || ""), hist: this.compactHistory(tc.session), stats: null, audioContext: tc });
+        tc.route = prior;
+        if (decision.route.steer) {
+          const worker = helperRow(this.sql, decision.route.steer);
+          if (worker?.session === tc.session) { tc.orchestration = { ...(tc.orchestration || {}), steer: worker.id, ...(worker.status === "awaiting_review" ? { review: worker.id } : {}) }; if (worker.status === "awaiting_review") tc.routingReviewHelper = worker.id; }
+        }
+      }
+    }
     const notes = items.map((x) => x.note).filter(Boolean).map((n) => `\n\n(${String(n).slice(0, 2000)})`).join("");   // helper-only lines (e.g. a texted file too big)
-    const text = steerText(items, { late, tz: this.tz() }) + ap.note + notes, full = text + (ap.body || "");   // text is what's saved; full what the model reads
+    const routeInstruction = tc.orchestration?.steer && !tc.orchestration.review ? `\nSystem instruction: rewrite this update and call message_subagent for worker #${tc.orchestration.steer} exactly once. You cannot inspect its running work.` : "";
+    const text = steerText(items, { late, tz: this.tz() }) + ap.note + notes, full = text + (ap.body || "") + routeInstruction;   // text is what's saved; full what the model reads
     if (ap.body) (tc.fileBodies ||= []).push(ap.body);
+    if (tc.preparedSteers) {
+      tc.preparedSteers.texts = [text, full, (tc.fileBodies || []).reduce((c, b) => c.replace(b, ""), full)];
+      if (files.some(id => tc.audioSources?.some(f => f.id === String(id)))) tc.preparedSteers.full = full;
+    }
     return { text, full, msg: { role: "user", content: pics && ap.pics.length ? [{ type: "text", text: full }, ...ap.pics] : full } };
   }
   // Helper's state, derived (never stored): working > waiting on you > watching > ready. "done" is separate and only the person sets it.
@@ -3443,9 +4051,11 @@ export class Resident extends DurableObject {
     const resuming = !tc && this.resumingIn?.(row.id);   // resume.js: a reset cut its turn off and it's carrying on
     const nativeProgress = !tc && this.nativeProgress?.(row.id);
     const checkin = !tc && this.spendWaiting?.(row.id);
-    const state = tc || resuming || nativeProgress ? "working" : nPend || row.waiting || checkin ? "waiting" : nJobs ? "watching" : "ready";
+    const routedWork = !tc && dynamicRoutingOn(this.env) && this.sql.exec("SELECT 1 FROM helpers WHERE session=? AND dynamic_routing=1 AND required_delegation=1 AND status='running' LIMIT 1",row.id).toArray().length > 0;
+    const pending = pendingInputs(this.sql,row.id);
+    const state = tc || resuming || nativeProgress || routedWork ? "working" : nPend || pending.length || row.waiting || checkin ? "waiting" : nJobs ? "watching" : "ready";
     return { id: row.id, title: row.title, title_manual: !!row.title_manual, title_revision: Number(row.title_revision || 0), pinned: !!row.pinned, done: !!row.done, done_at: row.done_at, state, line: tc ? (tc.line || "thinking") : nativeProgress ? nativeProgress.line : resuming ? "picking up where it left off (1Helm was just updated)" : null, ...(nativeProgress?{native_progress:nativeProgress}:{}), ...(tc?.slotWait ? { queued: true } : {}),
-      waiting: tc ? null : nPend ? "approval" : row.waiting || (checkin ? "checkin" : null), jobs: nJobs, unread: !!row.last_reply_at && row.last_reply_at > row.seen_at,
+      pending_inputs: pending, waiting: tc ? null : nPend ? "approval" : pending.length ? "answer" : row.waiting || (checkin ? "checkin" : null), jobs: nJobs, unread: !!row.last_reply_at && row.last_reply_at > row.seen_at,
       created: row.created, updated: row.updated, preview: row.preview || "", default: row.id === this.getRaw("default_session"), helpers: this.helperCount ? this.helperCount(row.id) : 0, ...this.pomoField(row.id), ...this.lnField(row.id), ...((texts || new Set(this.textsSessions())).has(row.id) ? { texts: true } : {}) };
   }
   // Texting conversations are titled "Text with <the helper's name>".
@@ -3475,6 +4085,16 @@ export class Resident extends DurableObject {
   // The person removes a task (offered for the Get to know you task, interview.js). Never the main chat or a texting thread.
   async removeSession(id) {
     if (!this.session(id) || id === this.getRaw("default_session") || this.textsSessions().includes(id)) return { error: "That task can't be removed." };
+    const phoneFiles = dropPhoneFiles(this,id);
+    const memoryRefresh = this.hsCancelConversationRefresh?.(id);
+    for(const tc of this.active.values())if(tc.session===id)tc.abort="hard";
+    await memoryRefresh;
+    await phoneFiles;
+    await dropNativePolls(this,id);
+    for(const h of this.sql.exec("SELECT id FROM helpers WHERE session=? AND dynamic_routing=1 AND status IN ('running','awaiting_review','waiting_input')",String(id)).toArray())await this.helperStop(id,h.id);
+    deleteInputs(this.sql,id);
+    dropPhotonReplies(this.sql,id);
+    await dropNativePolls(this,id);
     this.sql.exec("DELETE FROM sessions WHERE id=?", String(id));
     transcriptDelete(this.sql, String(id));
     this.sql.exec("DELETE FROM kv WHERE k=?", `chat_title_pending:${id}`); return { ok: true };
@@ -3488,6 +4108,10 @@ export class Resident extends DurableObject {
     if (hasTitle) this.sql.exec("UPDATE sessions SET title=?, title_manual=1, title_revision=title_revision+1 WHERE id=?", title, id);
     if (typeof b.pinned === "boolean") this.sql.exec("UPDATE sessions SET pinned=? WHERE id=?", b.pinned ? 1 : 0, id);
     // Texting conversations are ongoing threads: they can't be marked done (reopening an old one is fine).
+    if(b.done===true) {
+      for(const h of this.sql.exec("SELECT id FROM helpers WHERE session=? AND status='waiting_input'",String(id)).toArray())await this.helperStop(id,h.id);
+      this.sql.exec("UPDATE user_questions SET status='cancelled' WHERE session=? AND status='pending'",String(id));
+    }
     if (typeof b.done === "boolean" && !(b.done && this.textsSessions().includes(id))) this.sql.exec("UPDATE sessions SET done=?, done_at=? WHERE id=?", b.done ? 1 : 0, b.done ? now : null, id);
     if (b.seen === true || b.done === true) this.sql.exec("UPDATE sessions SET seen_at=? WHERE id=?", now, id);
     return this.sessionView(this.session(id));
@@ -3527,6 +4151,11 @@ export class Resident extends DurableObject {
     return this.sql.exec("SELECT * FROM files WHERE deleted=0 AND pending=0 AND (id=? OR lower(name)=lower(?)) ORDER BY at DESC LIMIT 1", w, w).toArray()[0] || null;
   }
   async shareFile(a, ctx = {}) {
+    if (ctx.helper?.dynamic_routing) {
+      const path = String(a.path || "");
+      const held = await stageRoutingFile(this, ctx.helper, { path: path.startsWith("/") || path.startsWith("workspace/helpers/") ? path : helperDir(ctx.helper.id) + path, name: a.name, replace: a.replace, copy: a.copy });
+      return `Held file ${held.id} "${held.name}" for Primary review. It is not visible to the person until approval.`;
+    }
     const tenant = this.get("tenant"), channel = this.get("channel");
     if (a.restore) {
       const f = this.libFile(a.restore); if (!f) return `error: there's no "${a.restore}" in this channel's Library.`;
@@ -3601,6 +4230,7 @@ export class Resident extends DurableObject {
   // A file an app action returned → this channel's Library (R2 through storage.js, refused when the account is full) and, when the
   // computer is up, /workspace/files right away (else the next file sync puts it there). → { file } | { error, full }.
   async appFileSave({ name, mime, bytes }, ctx = {}) {
+    if (ctx.helper?.dynamic_routing) return { file: await stageRoutingFile(this, ctx.helper, { name, mime, bytes }) };
     const tenant = this.get("tenant"), channel = this.get("channel"), nm = safeName(name), size = bytes?.byteLength ?? 0;
     // The same file returned again after a change (an edit made in the app) is a new version of its Library file, not "name (2)".
     const m = this.resolveFile({ name: nm, session: ctx.session }), target = m?.file || null;
@@ -3705,11 +4335,12 @@ export class Resident extends DurableObject {
         const handoffCard = this.sql.exec("SELECT kind FROM cards WHERE id=?", t.id).toArray()[0]?.kind === "handoff";
         const msgs = t.kind !== "chat" ? [] : ev.length ? ev.filter((e) => e.type === "msg").map((e) => eventView(this.sql, e))   // a handoff card's opening text is a "handoff" event, so only a genuine steer the person typed into it shows here
           : handoffCard ? [] : [{ seq: 1, type: "msg", at: t.at, id: t.id, cid: null, text: t.user_text ?? "", files: [], via: "app", consumed: 0, reaction: react[t.id] || null }];
+        const binding=replyForTurn(this.sql,t.id);if(binding&&msgs[0])msgs[0].input_reply=binding;
         const images = this.sql.exec("SELECT id, url, caption FROM shots WHERE turn=? ORDER BY at", t.id).toArray();
         const ups = (() => { try { return JSON.parse(t.files || "[]"); } catch { return []; } })();
         const fr = this.sql.exec("SELECT * FROM files WHERE turn=? AND deleted=0 ORDER BY at", t.id).toArray();
         const attached = ups.map((x) => this.sql.exec("SELECT * FROM files WHERE id=? AND deleted=0", String(x)).toArray()[0]).filter(Boolean).map((x) => this.fileView(x)), shared = fr.filter((x) => x.source === "helper").map((x) => this.fileView(x));
-return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id, card: t.id, msgs, at: t.at, kind: t.kind, workflow_id: t.workflow_id, user_text: t.kind === "chat" && !handoffCard ? t.user_text : null, ...(react[t.id] ? { reaction: react[t.id] } : {}), reply: t.reply, ...(t.kind === "livenote" && t.notes ? (() => { try { const m = JSON.parse(t.notes); return m?.refine ? { livenote: { refine: m.refine } } : {}; } catch { return {}; } })() : {}), parts: (() => { try { return t.parts ? JSON.parse(t.parts) : null; } catch { return null; } })(), progress: (() => { try { return t.progress ? JSON.parse(t.progress) : null; } catch { return null; } })(), tool_calls: t.tool_calls, steps, total_ms: t.total_ms, charge_nano: t.charge_nano, error: t.error, images, attached, shared }; });
+return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id, card: t.id, input_request: questionForTurn(this.sql,t.id), msgs, at: t.at, kind: t.kind, workflow_id: t.workflow_id, user_text: t.kind === "chat" && !handoffCard ? t.user_text : null, ...(react[t.id] ? { reaction: react[t.id] } : {}), reply: t.reply, ...(t.kind === "livenote" && t.notes ? (() => { try { const m = JSON.parse(t.notes); return m?.refine ? { livenote: { refine: m.refine } } : {}; } catch { return {}; } })() : {}), parts: (() => { try { return t.parts ? JSON.parse(t.parts) : null; } catch { return null; } })(), progress: (() => { try { return t.progress ? JSON.parse(t.progress) : null; } catch { return null; } })(), tool_calls: t.tool_calls, steps, total_ms: t.total_ms, charge_nano: t.charge_nano, error: t.error, images, attached, shared }; });
     const jobs = this.sql.exec("SELECT id,kind,name,interval_seconds,next_run,last_run,run_count,status FROM workflows WHERE session=? AND status IN ('active','paused') ORDER BY id", id).toArray();
     const tc = this.liveTurn(id);
     // resume.js: a turn an update cut off, waiting to carry on, shows as live too (the app attaches and gets {"t":"resuming"} first).
@@ -3722,6 +4353,8 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id,
     // opening text is a "Context note, not from the person" for the model. History never shows it (msgs is empty for these turns), so
     // the live view must not either. A card the person typed into (kind chat) keeps its user_text.
     if (live && (live.card?.kind === "handoff" || tc?.handoff)) live.user_text = null;
+    if(live?.card?.msgs?.[0]){const binding=replyForTurn(this.sql,live.turn);if(binding)live.card.msgs[0].input_reply=binding;}
+    if(live)live.input_request=questionForTurn(this.sql,live.turn);
     attachInterviews(this.sql, id, turns, live);   // interview cards, with their saved answers (interview-chat.js)
     return { session: this.sessionView(s), turns, cards: listCards(this.sql, id, { n: 30 }).cards, jobs, approvals: [...this.approvals(false, id), ...(this.nativeApprovalHistory?.(id)||[])], offers: offersView(this.sql, id), todos: this.todoItems(id), plans: plansOf(this.sql, id, this.tz()), origin: originOf(this.sql, id, this.tz()), live,
       pauses: await this.spendPauses(id), usage: this.spendTaskUsage(id) };
@@ -3732,7 +4365,7 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id,
   async planCardData(id) { return planCardData(this, Number(id)); }
   async planText(id) { return textPlan(this, Number(id)); }   // proposed in a texting turn: the same card as an iMessage live app card
   // "Interview me" cards (interview-chat.js): the app's and the card page's view, and the person's taps.
-  async interviewView(id) { return ivView(ivRow(this.sql, id)); }
+  async interviewView(id) { return ivView(ivRow(this.sql, id),this.sql); }
   async interviewOp(id, b = {}, o = {}) { return interviewOp(this, id, b, o); }
   // Other tasks in this channel, told to the helper with each message (not in the system prompt, so the cached prefix stays stable).
   otherTasksNote(session) {
@@ -3951,12 +4584,23 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id,
   // TEST: clear the default task's conversation (it becomes a fresh "Main chat"), or one given task's.
   async reset(session = null) {
     const id = session || this.defaultSession();
+    const phoneFiles = dropPhoneFiles(this,id);
+    const memoryRefresh = this.hsCancelConversationRefresh?.(id);
+    for(const tc of this.active.values())if(tc.session===id)tc.abort="hard";
+    await memoryRefresh;
+    await phoneFiles;
+    await dropNativePolls(this,id);
+    for(const h of this.sql.exec("SELECT id FROM helpers WHERE session=? AND dynamic_routing=1 AND status IN ('running','awaiting_review','waiting_input')",String(id)).toArray())await this.helperStop(id,h.id);
+    deleteInputs(this.sql,id);
+    dropPhotonReplies(this.sql,id);
+    await dropNativePolls(this,id);
     transcriptDelete(this.sql, id);
     this.sql.exec("DELETE FROM msgs WHERE turn IN (SELECT id FROM turns WHERE kind='chat' AND session=?)", id);
     this.sql.exec("DELETE FROM turns WHERE kind='chat' AND session=?", id);
     this.sql.exec("DELETE FROM todos WHERE session=?", id);
     this.sql.exec("DELETE FROM reactions WHERE session=?", id);
     if (!session) { this.sql.exec("DELETE FROM sessions WHERE id=?", id); this.put("default_session", ""); this.defaultSession(); }
+    this.sql.exec("DELETE FROM kv WHERE k=?", `hs_origin_block:${id}`);
     return { ok: true, session: this.sessionView(this.session(session || this.defaultSession())) };
   }
 }
@@ -3968,6 +4612,7 @@ Object.assign(Resident.prototype, pomoMethods);
 // Live notes per task (live-notes.js).
 Object.assign(Resident.prototype, lnResidentMethods());
 // Deleting a chat / a channel / a Notebook note's memory (deletion-do.js; orchestrated by deletion.js).
+Resident.prototype.eeDeletion = { dropNativePolls, dropPhoneFiles, routingArtifactKeys, dropRoutingArtifacts, agentSessionInventory, purgeAgentSession };
 deletionMix(Resident);
 previewMix(Resident);
 fileVersionsMix(Resident);

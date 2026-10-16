@@ -101,5 +101,13 @@ export { choreRouteOf, jobRoute, jobSetting, settingsOf, entriesOf, configuredHo
 export { decisionCaller, askDecider } from "./text-decision.js";
 export { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, START_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput, browserPurchaseGuard } from "./browser-tasks.js";
 
-export { authorizeTaskProfile, TaskAffinityBlocked, ensureTaskRuntime, recordTaskServed } from "./task-profile.js";
+export { authorizeTaskProfile, TaskAffinityBlocked, ensureTaskRuntime, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./task-profile.js";
 export { backgroundRole, backgroundPolicy, backgroundReserve } from "./background-policy.js";
+export { deliverNativeFallback, dropNativePolls, nativePollDelivered, nativePollInit, nativeVoteNext, receiveNativeVote, recoverNativeSends, recoverNativeVotes, sendNativePoll } from "./native-polls.js";
+export { DONE_TOOL, ORCHESTRATOR_TOOLS, REQUEST_INPUT_TOOL, lineRange, orchestrationPolicy, routingToolsAllowed, stepLog, storedMessages } from "./orchestrator.js";
+export { deliverPhoneFiles, dropPhoneFiles, phoneFilesInit, phoneFilesNext, queuePhoneFiles } from "./phone-files.js";
+export { dropPhotonReplies, photonAnswerOptions, photonMessage, photonReplyInit, photonReplyOptions, photonReplySource, photonSourceInput, recordPhotonReplySource } from "./photon-replies.js";
+export { AGENT_MEMORY_TOOLS, agentMemoryNextWake, agentSessionDocuments, cancelAgentOperations, forgetAgentBank, forgetAgentTenant, agentSessionInventory, flushAgentMemory, purgeAgentSession, readAgentDocument, retainAgentMessage, retainAgentRound, searchAgentBank } from "./routing-agent-memory.js";
+export { ROUTING_FILE_TOOLS, approveRoutingFiles, collectRoutingFiles, discardRoutingFiles, dropRoutingArtifacts, initRoutingArtifacts, isRoutingImageError, routingArtifactKeys, routingFileTool, routingImageFallback, stageRoutingFile } from "./routing-artifacts.js";
+export { dynamicRoutingOn } from "./routing-config.js";
+export { BeeContainer } from "./bee-container.js";

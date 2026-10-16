@@ -1,3 +1,34 @@
+# Source update: 2026-10-16
+
+## Routed tasks, durable questions, phone replies and preparation containers
+
+This update reconciles the Worker from `5b746f1072614964a776621c887a464d1d6a1901`
+to `5769787097edfaf801c5143aeb3f86ac65d3351b` and the web app from
+`b4ea73bddd011f8d2baea92fce93b38e32577f6c` to
+`4a1da4ca61790f301cb5f7a81abaa84b9445689f`.
+
+Source correspondence:
+
+- Worker: `5b746f1072614964a776621c887a464d1d6a1901` → `5769787097edfaf801c5143aeb3f86ac65d3351b`.
+- Web: `b4ea73bddd011f8d2baea92fce93b38e32577f6c` → `4a1da4ca61790f301cb5f7a81abaa84b9445689f`.
+- Public base: `e458597c3d2952cdfe25af3aeec3214236c7ab86`.
+
+Changes:
+
+- A question the helper asks is now saved with its own identity, so an answer from the app, a card, an interview or a phone text always goes to the question it answers (`src/user-input.js`). Several waiting questions can be answered by number from the phone. Each message also records where it came from (app, phone, card or interview), and the memory writers keep that origin with the retained facts.
+- The licensed Cloud modules gained routed tasks. The Models page can save categories with their own model lists for each privacy level, a small request sorter picks the category, and a worker returns its answer, its files and a step log for review before the helper delivers them. Raw agent records go to their own Hindsight banks. Native Workers AI models can be discovered and used. All of it stays in `src/ee/`, runs only when `ONEHELM_EE` is `1hc` and `DYNAMIC_ROUTING` is `on`, and the provider paths also need `ENV_NAME` to be `dev`, so a self-hosted install behaves as before.
+- The licensed texting module can send a native iMessage poll and route a vote back to its question, send produced files with a phone reply, and bind a phone reply to its original card (`src/ee/native-polls.js`, `src/ee/phone-files.js`, `src/ee/photon-replies.js`). Migration `0057` adds the `native_text_polls` table they use.
+- Native CAF voice notes (Opus and packed PCM) are converted to WAV by the audio converter when `AUDIO_CONVERT` is `on`. A recording attached as the whole request now waits up to 60 seconds for its transcript before any model is called, and a failure is reported as an application notice.
+- File preparation and Bee jobs can run on container classes that start from a saved snapshot of their installed dependencies (`PrepContainer` and `BeeContainer`, with the shared helpers in `src/job-template.js`). They are used only where a `PREP_CONTAINER` or `BEE_CONTAINER` binding exists, `PREP_SNAPSHOTS` set to `off` is the kill switch, and the example configuration defines neither binding, so a self-hosted install keeps the existing `Computer` path.
+- Interview and card answers carry the question identity (`input_reply`) on the chat stream route, a duplicate answer is reported as such, and the helper dispatch ignores a tool that the current delegation state does not allow.
+- The licensed Models page searches the live model list, accepts the latest alias of a model family, shows each result with the privacy levels it can serve instead of hiding it, and confirms a delete in the page instead of a browser dialog. The privacy module reports which providers and host terms each model has.
+- A phone file send is re-armed only after a send, and deleting a task also removes its phone file and memory origin markers.
+- The web app shows a canvas activity orb while the helper and its workers are busy (the MIT licensed thinking orbs engine, noted in `THIRD-PARTY-NOTICES.md`), keeps the chat visible above the mobile keyboard, pages long inline cards, and binds a typed or tapped answer to its question.
+
+Left out of the public source: the hosted affiliate program (referral commissions, Stripe payouts and the hosted agreement and marketing pages), the dev to Live model settings push tool (and its audit table), the hosted billing event fixtures and operator inspection of the Cloud Stripe account, the dev only container and preparation benchmark endpoints and their images, the routing counter page for the Cloud gateway logs and its two tables, the private release, wrangler and key vault tooling, the live checks, and the private design sandbox. The public example configuration is unchanged.
+
+Migration `0057` is additive and adds the `native_text_polls` table.
+
 # Source update: 2026-10-15
 
 ## Memory on Hindsight, Notebook pages, audio conversion and settings defaults

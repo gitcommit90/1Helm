@@ -26,6 +26,7 @@ import { codeV } from "./do-stub.js";
 import { recoverCards, cardView, setStatus, stepBegin, stepEnd, commitCard } from "./tracker.js";
 import { STOPPED_REPLY } from "./stop.js";
 import { commandLimitMs } from "./spendguard.js";
+import { originInput } from "./message-origin.js";
 import { replyIn } from "./reply-to.js";   // a resumed card's unread steers keep the message each one replies to
 const RUN_TIMED_OUT = "[1Helm: this command was still running after its time limit, so it was stopped.]";
 
@@ -47,7 +48,7 @@ const READ = new Set(["web_search", "search_web_vertical", "fetch_url", "read_fi
   "read_skill", "read_doc", "load_tools", "read_context", "recall_memory", "ambient_query", "location_query", "list_channels", "list_tasks", "read_task", "browser_snapshot", "browser_screenshot", "browser_navigate", "list_workflows", "app_actions", "app_events", "find_app", "memory_explain", "check_purchase", "ping"]);
 const EXEC = new Set(["run_command", "write_file", "edit_file"]);
 const ONCE = new Set(["start_helper", "schedule_followup", "schedule_workflow"]);
-const LOCAL = new Set(["update_todos", "react", "set_workflow_gate", "save_run_notes"]);   // this object's own rows, set to a value: safe to run again
+const LOCAL = new Set(["update_todos", "react", "set_workflow_gate", "save_run_notes", "ask_user", "request_input", "interview", "send_poll"]);   // own rows, or send_poll with its durable provider idempotency key
 export function toolClass(name, a = {}) {
   const n = String(name || "");
   if (n === "update_todos" && (a?.channel || a?.task)) return "write";   // a targeted replacement may already have reached another task
@@ -90,7 +91,53 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
   journalInput(tc, { userText, engine, ctxMode }) {
     if (!jk(tc)) return;
     try { this.sql.exec("UPDATE turn_runs SET user_text=?, engine=?, route=?, extra=?, updated=? WHERE card=?", typeof userText === "string" ? userText : JSON.stringify(userText), engine, tc.route ? JSON.stringify(tc.route) : null,
-      JSON.stringify({ ctx: ctxMode, appendRuntime: !!tc.appendRuntime, handoff: !!tc.handoff, handoffFrom: tc.handoffFrom || null, userText0: tc.userText, hint: tc.hint || null, outputLimitRetries: tc.outputLimitRetries || 0, modelFailure: tc.modelFailure || null, failedModelUsage: tc.failedModelUsage || null, ...(tc.context ? { context: tc.appendRuntime ? { version: 2, core: "", developer: "", standing: {}, turn: {} } : tc.context } : {}) }), Date.now(), tc.turn); } catch (e) { console.log("journal input", e.message); }
+      JSON.stringify({ ctx: ctxMode, audioWait: tc.audioWait || null, audioSources: tc.audioSources || null, appendRuntime: !!tc.appendRuntime, handoff: !!tc.handoff, handoffFrom: tc.handoffFrom || null, userText0: tc.userText, hint: tc.hint || null, outputLimitRetries: tc.outputLimitRetries || 0, modelFailure: tc.modelFailure || null, failedModelUsage: tc.failedModelUsage || null, ...(tc.context ? { context: tc.appendRuntime ? { version: 2, core: "", developer: "", standing: {}, turn: {} } : tc.context } : {}) }), Date.now(), tc.turn); } catch (e) { console.log("journal input", e.message); }
+  },
+  // A local routing mutation can finish before the next model-step checkpoint.
+  // Save its typed outcome before yielding, so recovery never repeats a send or
+  // approval based on missing live flags. No tool-result prose is interpreted.
+  journalDelegation(tc, action, result) {
+    if (!jk(tc) || !tc.orchestration || !tc.callId) return;
+    const keys = ["steer", "review", "started", "sent", "approved", "waitingInput", "requiredDelegation", "clarifying"];
+    const state = Object.fromEntries(keys.map(k => [k, tc.orchestration[k] ?? null]));
+    const id = ["ask_user","interview","send_poll"].includes(action) ? tc.inputRequest?.helper_id : state.approved || state.review || state.steer || state.started;
+    const h = id ? this.sql.exec("SELECT id,session,round FROM helpers WHERE id=?", Number(id)).toArray()[0] : null;
+    const outcome = { turn: tc.turn, session: tc.session, call_id: tc.callId, action, state, helper_id: h?.id || null, round: h?.round || null, question_id: tc.inputRequest?.question_id || null };
+    const effect = this.sql.exec("SELECT tool FROM turn_effects WHERE card=? AND call_id=?", tc.turn, tc.callId).toArray()[0];
+    if (effect?.tool !== action) throw new Error("Missing delegation call identity");
+    const write = () => {
+      const written = this.sql.exec("UPDATE turn_runs SET extra=json_set(COALESCE(extra,'{}'),'$.delegationOutcome',json(?)) WHERE card=? AND session=? RETURNING card", JSON.stringify(outcome), tc.turn, tc.session).toArray();
+      if (!written.length) throw new Error("Missing delegation turn journal");
+      this.sql.exec("UPDATE turn_effects SET status='done',result=?,done_at=? WHERE card=? AND call_id=?", String(result ?? ""), Date.now(), tc.turn, tc.callId);
+    };
+    this.ctx.storage.transactionSync(write);
+  },
+  restoreDelegation(tc) {
+    if (!jk(tc) || !tc.taskProfile?.dynamicRouting || tc.helper) return;
+    const row = this.sql.exec("SELECT extra FROM turn_runs WHERE card=? AND session=?", tc.turn, tc.session).toArray()[0];
+    const saved = J(row?.extra, {}).delegationOutcome;
+    if (saved?.turn === tc.turn && saved.session === tc.session && saved.call_id && saved.state) {
+      const effect = this.sql.exec("SELECT tool,status FROM turn_effects WHERE card=? AND call_id=?", tc.turn, saved.call_id).toArray()[0];
+      const h = saved.helper_id ? this.sql.exec("SELECT session,round FROM helpers WHERE id=?", saved.helper_id).toArray()[0] : null;
+      const action = ["start_helper", "message_subagent", "approve_subagent", "ask_user", "interview", "send_poll"].includes(saved.action) && effect?.tool === saved.action && effect.status === "done";
+      // A recorded send remains sent when its worker later advances rounds.
+      const worker = !saved.helper_id || h?.session === tc.session && Number.isInteger(saved.round) && saved.round > 0 && Number(h.round) >= saved.round;
+      const q = saved.question_id ? this.sql.exec("SELECT session,source_turn,helper_id,round FROM user_questions WHERE id=?", saved.question_id).toArray()[0] : null;
+      const question = !saved.state.waitingInput || q?.session === tc.session && q.source_turn === tc.turn && (!saved.helper_id || q.helper_id === saved.helper_id && q.round === saved.round);
+      if (action && worker && question) { tc.orchestration = { ...tc.orchestration, ...saved.state }; tc.delegationUncertain = false; }
+      else tc.delegationUncertain = true;
+      return;
+    }
+    // Old builds have no typed outcome. An exact spawn identity can safely
+    // restore a start. Other possibly completed control writes must not run
+    // again or be described as successful without an authoritative outcome.
+    const effects = this.sql.exec("SELECT call_id,tool FROM turn_effects WHERE card=? AND tool IN ('start_helper','message_subagent','approve_subagent')", tc.turn).toArray();
+    for (const effect of effects) {
+      if (effect.tool === "start_helper") {
+        const h = this.sql.exec("SELECT id FROM helpers WHERE parent_card=? AND spawn_call_id=? AND session=?", tc.turn, effect.call_id, tc.session).toArray()[0];
+        if (h) { tc.orchestration ||= {}; tc.orchestration.started = h.id; if (tc.orchestration.requiredDelegation) tc.orchestration.sent = true; }
+      } else tc.delegationUncertain = true;
+    }
   },
   // Every step: where the loop is, what it has spent, its guard, what it said. phase "model" = before step's model call, "tools" = after it.
   journalStep(tc, { step, phase = "model", stats, said, saidMeta, checkpoints = 0 }) {
@@ -183,7 +230,7 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
   // The card's inputs the helper hasn't read yet (consumed IS NULL, after the first), as a live pend for steerOrOpen/takeSteers.
   pendOf(card, session) {
     const ev = this.sql.exec("SELECT * FROM card_events WHERE card=? AND type IN ('msg','handoff') ORDER BY seq", card).toArray();
-    const items = ev.filter((e) => e.seq !== 1 && e.consumed == null).map((e) => ({ seq: e.seq, id: e.msg_id, type: e.type, text: e.text || "", files: J(e.files, []), from: J(e.input, null), via: e.via || "app", photonMsg: null, note: "", reply: replyIn(e.reply) }));
+    const items = ev.filter((e) => e.seq !== 1 && e.consumed == null).map((e) => ({ seq: e.seq, id: e.msg_id, type: e.type, text: e.text || "", files: J(e.files, []), from: e.type === "handoff" ? J(e.input, null) : null, via: e.via || "app", ...originInput(J(e.input, {})), ...(e.type === "msg" && e.via === "text" ? J(e.input, {}) : {}), reply: replyIn(e.reply) }));
     return { id: card, session, items, next: 0, committed: false, tc: null, count: ev.filter((e) => e.type === "msg").length || 1, first: { type: ev[0]?.type || "msg", text: ev[0]?.text || "" } };
   },
   // ---- the alarm (and attach): start every resume that's due. Never awaits the turns (they run like handoff()) ----
@@ -231,9 +278,9 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
     const run = (async () => {
       let res;
       try { res = await this.runTurn(tenant, channel, cid, r.text, null, opts); }
-      catch (e) { if (e?.objectReset) return null; res = { reply: "", error: e.message }; console.log("resumed turn", e.message); }   // reset again: the next object carries on
+      catch (e) { if (e?.objectReset) return null; res = opts.viaText ? await this.textFailureResult(tenant, e, r.card) : {reply:"",error:e.message}; console.log("resumed turn", e.message); }   // reset again: the next object carries on
       // A texted turn texts its one reply (the text path's own delivery died with the old object).
-      if (opts.viaText && res && !res.error) { try { await this.deliverTextReply(tenant, channel, res); } catch (e) { console.log("resumed text", e.message); } }
+      if (opts.viaText && res) { try { await this.deliverTextReply(tenant, channel, res); } catch (e) { console.log("resumed text", e.message); } }
       // A scheduled run's bookkeeping (run count, next run, notes, the gate's saved output, the app event row) finishes here.
       try { if (opts.wfRun) await this.workflowFinish(opts.wfRun, res); else if (opts.evRun) await this.eventFinish(opts.evRun, res); } catch (e) { console.log("resumed run finish", e.message); }
       if (opts.wfRun || opts.evRun) await this.arm().catch(() => {});

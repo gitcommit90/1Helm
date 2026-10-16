@@ -52,6 +52,7 @@ import { aiOpts, orFetchPath } from "./model.js";
 import { cappedResponseJson } from "./bounded-response.js";
 import { enforceRequest } from "./privacy.js";
 import { jobModel, jobModels, modelFacts } from "./ee/index.js";
+import { authorizeCloudflare, cfOptions, abortable, isCloudflareModel, dynamicProvidersOn } from "./cloudflare-models.js";
 import { STT_NANO_PER_SEC, MARKUP } from "./stt-pricing.js";
 export { STT_NANO_PER_SEC, MARKUP } from "./stt-pricing.js";
 
@@ -61,7 +62,7 @@ export { STT_NANO_PER_SEC, MARKUP } from "./stt-pricing.js";
 // checked by enforceRequest at "zdr", the strictest level, which every level allows (stricter is never a weaker route): the audio only
 // ever reaches zero-data-retention endpoints, whatever the account chose. A saved model that isn't registered gets
 // OpenRouter's strictest filter (zdr, data_collection deny). Workers AI (the last fallback) is Cloudflare's own inference, not OpenRouter.
-export const sttProvider = (model) => enforceRequest({ model, provider: { zdr: true } }, "zdr", { modality: "transcription" }).provider;
+export const sttProvider = (model) => enforceRequest({ model, provider: { zdr: true, allow_fallbacks: true } }, "zdr", { modality: "transcription" }).provider;
 export const WAI_NANO_PER_MIN = 513000;           // Workers AI whisper-large-v3-turbo: $0.000513 per audio minute (model page and model list API; the pricing page rounds it to $0.0005; 46.63 neurons x $0.011 per 1,000 neurons = $0.000513; checked 2026-10-15)
 export const WAI_NANO_PER_NEURON = 11000;         // $0.011 per 1k neurons, if Whisper ever stops reporting the duration
 export const WAI_MAX_BYTES = 20 * 1024 * 1024;    // Workers AI's input (base64 in JSON) stays under its request limit
@@ -195,6 +196,18 @@ export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, est
     const f = facts[model], rate = Number(f?.sec_nano) || STT_NANO_PER_SEC;
     if (Array.isArray(f?.formats) && !f.formats.includes(format)) { errs.push(`${model}: doesn't take ${format}`); continue; }
     try {
+      if (isCloudflareModel(model)) {
+        await authorizeCloudflare(env, model, { ...meta, _privacy: "zdr" }, f);
+        if (size > WAI_MAX_BYTES) throw new Error("The audio exceeds Cloudflare's supported size.");
+        const audio = src.bytes || await readCapped(new Response(await open()), WAI_MAX_BYTES);
+        if (!audio) throw new Error("The audio exceeds Cloudflare's supported size.");
+        const sig = tryMs ? (signal ? AbortSignal.any([AbortSignal.timeout(tryMs), signal]) : AbortSignal.timeout(tryMs)) : signal;
+        sig?.throwIfAborted();
+        const out = await abortable(env.AI.run(model, { audio: b64(audio), task: "transcribe", vad_filter: true, ...(prompt ? { initial_prompt: prompt.slice(-400) } : {}) }, { ...cfOptions(env, meta), ...(sig ? { signal: sig } : {}) }), sig);
+        sig?.throwIfAborted();
+        const segs = segsOf(out?.segments, out?.text), dur = Number(out?.transcription_info?.duration) || estSec;
+        return { segs, text: segs.map(x => x.t).join(" "), dur, model, nano: lost + Math.ceil(dur * rate) };
+      }
       const prefix = `{"model":${JSON.stringify(model)},"provider":${JSON.stringify(sttProvider(model))},"response_format":"verbose_json","input_audio":{"format":${JSON.stringify(format)},"data":"`;   // a model with no ZDR endpoint throws PrivacyBlocked here: next model
       const { make } = audioBody(prefix, `"}}`, size, open);
       const sig = tryMs ? (signal ? AbortSignal.any([AbortSignal.timeout(tryMs), signal]) : AbortSignal.timeout(tryMs)) : signal;
@@ -216,7 +229,9 @@ export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, est
   console.log("stt: openrouter failed, using workers ai", errs.join("; ").slice(0, 300));
   let out; const waiModel = await jobModel(env, "stt_cloudflare");
   try {
-    const run = env.AI.run(waiModel, { audio: b64(src.bytes), task: "transcribe", vad_filter: true, ...(prompt ? { initial_prompt: prompt.slice(-400) } : {}) }, aiOpts(env, meta));
+    if (dynamicProvidersOn(env) && !isCloudflareModel(waiModel)) throw new Error("The Cloudflare speech job requires a native Cloudflare speech model.");
+    if (dynamicProvidersOn(env)) await authorizeCloudflare(env, waiModel, meta, facts[waiModel]);
+    const run = env.AI.run(waiModel, { audio: b64(src.bytes), task: "transcribe", vad_filter: true, ...(prompt ? { initial_prompt: prompt.slice(-400) } : {}) }, dynamicProvidersOn(env) ? cfOptions(env, meta) : aiOpts(env, meta));
     let timer; out = await (tryMs ? Promise.race([run, new Promise((_, no) => { timer = setTimeout(() => no(Object.assign(new Error("timed out"), { name: "TimeoutError" })), tryMs); })]).finally(() => clearTimeout(timer)) : run);
   } catch (e) {
     const to = e?.name === "TimeoutError";

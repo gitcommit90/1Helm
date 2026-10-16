@@ -107,7 +107,7 @@ export async function verifyCode(env, req, typed, { at = Date.now() } = {}) {
   }
   const ml = await DB.prepare("UPDATE magic_links SET used=1 WHERE token_hash=? AND used=0 AND expires_at>? RETURNING email,age_version,age_confirmed_at").bind(row.token_hash, at).first();
   if (!ml) return no("used");
-  return { email: ml.email, age: ml.age_version ? { version: ml.age_version, at: ml.age_confirmed_at } : null };
+  return { email: ml.email, token_hash: row.token_hash, age: ml.age_version ? { version: ml.age_version, at: ml.age_confirmed_at } : null };
 }
 
 export async function sweepCodeFails(env, at = Date.now()) {

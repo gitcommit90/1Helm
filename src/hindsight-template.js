@@ -39,7 +39,7 @@ export function speakerLabels({ first, helper } = {}) {
 export function contextFor(kind, { first, helper, channel: ch, section, file, address, summary, page, heading } = {}) {
   const f = nm(first, 24) || "the user", h = helperName(nm(helper, 24)), c = nm(ch, 30) || "main";
   let s;
-  if (kind === "chat") s = `1Helm chat in #${c} between ${f} (the user) and ${h} (the user's AI assistant). The user's lines are the user's own words and facts about the user. The assistant's lines are what the assistant said or did.`;
+  if (kind === "chat") s = `1Helm chat in #${c} between ${f} (the user) and ${h} (the user's AI assistant). The user's lines are the user's own words and facts about the user. The assistant's lines are what the assistant said or did. Each entry may name its message origin. Keep the stated origin with facts from that entry so app messages, phone texts, voice messages and poll votes remain distinguishable. A phone service is known only when the entry names it. Do not apply one entry's origin to another entry, and do not infer successful phone delivery from an assistant reply.`;
   else if (kind === "scheduled") s = `Scheduled run of a ${h} workflow in #${c}. These lines are the assistant's own work, not the user's words.`;
   else if (kind === "note") s = `A note ${f} wrote in their 1Helm Notebook, in the ${nm(section, 30) || "notes"} section. It is ${f}'s own statement.`;
   else if (kind === "page-edit") s = `A correction ${f} made to the "${nm(page) || "notes"}" page of their 1Helm Notebook${nm(heading) ? `, in the section "${nm(heading)}"` : ""}. It is ${f}'s own statement of what the page should say, and it overrides anything else about that subject.`;

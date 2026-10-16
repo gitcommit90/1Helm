@@ -4,6 +4,7 @@ import { modelCatalog } from "./model-catalog.js";
 import { boundedText, BodyTooLargeError } from "../bounded-body.js";
 import { modelDashboard } from "./model-dashboard.js";
 import { outsideModels } from "./outside-models.js";
+import { pageDialog } from "../page-dialog.js";
 
 const HEADERS = { "cache-control": "no-store, private", "x-robots-tag": "noindex, nofollow", "x-content-type-options": "nosniff", "referrer-policy": "same-origin", "content-security-policy": "frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -23,15 +24,16 @@ export async function modelsRoute(req, env, user) {
     // All writes require exact origin proof AND a custom header AND JSON. Cross-site forms
     // and opaque/null origins cannot mutate settings using an administrator's cookie.
     if (req.headers.get("origin") !== url.origin || req.headers.get("sec-fetch-site") === "cross-site" || req.headers.get("x-model-settings") !== "1" || !/^application\/json(?:\s*;|\s*$)/i.test(req.headers.get("content-type") || "")) return json({ error: "Open Models on this site and try again." }, 403);
-    if (Number(req.headers.get("content-length")) > 32768) return json({ error: "Settings request is too large." }, 413);
+    if (Number(req.headers.get("content-length")) > (env.DYNAMIC_ROUTING === "on" ? 131072 : 32768)) return json({ error: "Settings request is too large." }, 413);
   }
   try {
     let view;
     if (catalog) view = await modelCatalog(env, { q: String(url.searchParams.get("q") || "").slice(0, 120), settings: (await readModelSettings(env)).config });
     else if (read) view = await modelSettingsView(env);
     else {
-      const raw = await boundedText(req, 32768);
-      if (new TextEncoder().encode(raw).length > 32768) return json({ error: "Settings request is too large." }, 413);
+      const limit = env.DYNAMIC_ROUTING === "on" ? 131072 : 32768;
+      const raw = await boundedText(req, limit);
+      if (new TextEncoder().encode(raw).length > limit) return json({ error: "Settings request is too large." }, 413);
       let body;
       try { body = JSON.parse(raw); } catch { return json({ error: "Settings must be valid JSON." }, 400); }
       if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "Settings must be a JSON object." }, 400);
@@ -44,7 +46,7 @@ export async function modelsRoute(req, env, user) {
     if (e instanceof BodyTooLargeError) return json({ error: "Settings request is too large." }, 413);
     // Validation messages are intentional API output; database/provider internals never are.
     const status = [400, 404, 409, 503].includes(e?.status) ? e.status : 503;
-    const error = e?.modelSettings ? e.message : status === 503 ? catalog ? "OpenRouter's model catalog is unavailable. Your settings have not changed; try again shortly." : "Model settings are temporarily unavailable. Try again shortly." : e.message;
+    const error = e?.modelSettings ? e.message : status === 503 ? catalog ? "The model catalog is unavailable. Your settings have not changed; try again shortly." : "Model settings are temporarily unavailable. Try again shortly." : e.message;
     return api ? json({ error }, status) : html(`<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Models · 1Helm</title><h1>Models</h1><p>${esc(error)}</p><p><a href="/models">Try again</a></p></html>`, status);
   }
 }
@@ -86,11 +88,17 @@ dialog.picker[open]{display:flex;flex-direction:column}.picker-head{display:flex
 .picker-list button{display:block;width:100%;text-align:left;border:0;border-radius:10px;background:none;font-weight:500;padding:8px 10px;min-height:0}.picker-list button:hover:enabled{background:var(--soft);filter:none}.picker-list button b{display:block;font-weight:600}.picker-list button span{display:block;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
 .picker-foot{padding:8px 18px 14px;font-size:12px;color:var(--muted);border-top:1px solid var(--line)}
 @media(max-width:760px){main{padding:24px 16px 60px}h1{font-size:36px}.job{padding:10px 14px}.jrow{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"n a" "m m" "e e";gap:6px 10px}.jrow>.c-name{grid-area:n}.jrow>.c-model{grid-area:m}.jrow>.c-effort{grid-area:e}.jrow>.actions{grid-area:a}.entry{grid-template-columns:1fr;gap:8px}dialog.picker{width:100%;max-width:none;margin:auto 0 0;border-radius:18px 18px 0 0;max-height:90dvh}}
+.privacy-tabs{display:flex;gap:8px;margin:22px 0 12px}.privacy-tabs button[aria-selected=true]{background:var(--ink);color:var(--bg)}
+.category-list{display:flex;align-items:flex-start;gap:16px;overflow-x:auto;padding:6px 2px 18px;scroll-snap-type:x proximity}.category-card{flex:0 0 310px;min-width:0;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 4px 14px #00000008;scroll-snap-align:start}.category-card h3{font-size:19px;margin:0 0 12px;overflow-wrap:anywhere}.category-choice{border-top:1px solid var(--line);padding:11px 0;overflow-wrap:anywhere}.category-choice strong{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}.category-choice .entry-id{margin:3px 0 5px}.category-choice .model-name{font-weight:600;line-height:1.35}.category-add{flex:0 0 150px;border:2px dashed var(--line2);border-radius:16px;min-height:180px;background:none;font-size:32px}.category-add span{display:block;font-size:13px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.category-editing{border-color:var(--focus)}.primary-action{background:var(--ink);color:var(--bg);border-color:var(--ink)}.category-caption{font-size:11px;color:var(--muted);margin:0 0 10px}.category-title-label{display:block;font-size:11px;color:var(--muted);margin-bottom:12px}.category-title-label input{display:block;width:100%;background:var(--bg);color:var(--ink);border:1px solid var(--line2);border-radius:8px;padding:7px 9px;font:600 18px IS,system-ui,sans-serif;margin-top:4px}.category-title-label input:disabled{opacity:1;background:none;border-color:transparent;padding-left:0}.category-title-label .muted{font-size:11px}.category-editing>.actions{margin-top:12px;justify-content:flex-start}.category-choice .model-select{display:flex;justify-content:space-between;align-items:center;gap:8px;width:100%;text-align:left;border-radius:8px;padding:7px 9px;min-height:38px;font-size:13px;font-weight:500}.model-select .model-name{font-weight:500}.model-select .source{margin:0;flex-shrink:0}.category-choice select{margin-top:7px;font-size:12px;min-height:32px}.category-choice .fixed{display:block;font-size:12px}.source{display:inline-block!important;font-size:10px!important;font-weight:600!important;border:1px solid var(--line2);border-radius:4px;padding:0 4px;margin-left:6px;color:var(--muted)}.category-review{flex:0 0 auto;max-width:none;scroll-snap-align:start}.category-review h2{font-size:15px;margin:0 0 8px}.category-review-cards{display:flex;gap:12px}.category-review .category-card{flex-basis:280px;width:280px;box-shadow:none}.category-review .category-card h2{font-size:11px;color:var(--muted);margin-bottom:8px}.category-review>.actions{position:sticky;left:0;width:max-content;justify-content:flex-start;margin-top:12px}.category-review>h2{position:sticky;left:0;width:max-content}.category-review>.status{position:sticky;left:0;max-width:min(340px,calc(100vw - 32px))}.shared-heading{margin-top:20px}
+dialog.picker.anchored{position:fixed;inset:auto;margin:0;width:min(360px,calc(100vw - 16px));max-height:min(440px,calc(100dvh - 16px));border-radius:12px;box-shadow:0 12px 36px #0003;z-index:10}.anchored .picker-head{padding:12px 12px 8px;gap:8px}.anchored .picker-head h2{font-size:14px}.anchored .picker-head p{font-size:11px}.anchored .picker-head #picker-close{padding:2px 8px;min-height:28px;font-size:12px}.anchored .picker-search{padding:0 12px 8px}.anchored .picker-search input{min-height:36px;font-size:13px}.anchored .picker-list button{padding:7px 8px;font-size:12px}.anchored .picker-list button span{font-size:11px}.anchored .picker-foot{padding:8px 12px;font-size:11px}
+@media(max-width:600px){.privacy-tabs{gap:6px}.privacy-tabs button{padding:6px 11px}.category-card{flex-basis:min(310px,calc(100vw - 40px))}.category-add{flex-basis:110px}.category-review .category-card{flex-basis:280px;width:280px}}
+
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}`;
 
 // Plain script text. Every dynamic value is inserted with textContent, never innerHTML.
 const JS = `(function(){
-var state=JSON.parse(document.getElementById('model-state').textContent),busy=false,target=null,seq=0,timer=null;
+var state=JSON.parse(document.getElementById('model-state').textContent),busy=false,target=null,seq=0,timer=null,activeLevel='unrestricted',draft=null,pickedFacts={},postError='';
 var EFFORT={none:'Reasoning off',default:'Provider default',minimal:'Minimal',low:'Low',medium:'Medium',high:'High',xhigh:'Extra high',max:'Maximum'};
 var pageStatus=document.getElementById('page-status'),root=document.getElementById('groups');
 var picker=document.getElementById('model-picker'),search=document.getElementById('catalog-query'),list=document.getElementById('picker-list'),pickerStatus=document.getElementById('picker-status');
@@ -104,7 +112,7 @@ function takesChat(v){return ['chat','chore','classic'].indexOf(v.pick)>=0||!!v.
 function nameOf(id){var m=state.config.catalog[id];return m&&m.name?m.name:id}
 function entriesOf(job){return [{model:job.model,effort:job.effort,hosts:job.hosts,pin:job.pin,strict:job.strict}].concat(job.fallbacks||[])}
 function pack(entries){var first=clone(entries[0]);first.fallbacks=entries.slice(1).map(function(e){return clone(e)});Object.keys(first).forEach(function(k){if(first[k]===undefined)delete first[k]});first.fallbacks.forEach(function(f){Object.keys(f).forEach(function(k){if(f[k]===undefined)delete f[k]})});return first}
-function effortsFor(id){var m=state.config.catalog[id];return m&&m.efforts?m.efforts:[]}
+function effortsFor(id){var m=pickedFacts[id]||state.config.catalog[id];return m&&m.efforts?m.efforts:[]}
 var open={};
 function row(job,idx,total,li){
  var e=document.createElement('li');e.className='entry';var v=viewOf(job.id);
@@ -150,9 +158,10 @@ function card(v){
 }
 function render(){
  var b=document.getElementById('banner');b.hidden=!state.stale;b.textContent=state.stale?'The saved settings could not be read just now, so this page and running tasks are using the last copy that was read. Check the logs, then reload.':'';
- root.replaceChildren();
+ var previousCards=root.querySelector('.category-list'),categoryScroll=previousCards?previousCards.scrollLeft:0;root.replaceChildren();
+ if(state.dynamicRouting){renderRouting();root.querySelector('.category-list').scrollLeft=categoryScroll}
  state.dashboard.groups.forEach(function(g){
-  var jobs=state.dashboard.jobs.filter(function(j){return j.group===g.id});if(!jobs.length)return;
+  var jobs=state.dashboard.jobs.filter(function(j){return j.group===g.id&&(!state.dynamicRouting||(j.group!=='chat'&&j.group!=='recovery'))});if(!jobs.length)return;
   var sec=E('section','group'),head=E('div','group-head'),ul=E('ul','jobs');head.append(E('h2','',g.title));if(g.note)head.append(E('p','',g.note));
   jobs.forEach(function(j){ul.append(card(j))});sec.append(head,ul);root.append(sec)
  });
@@ -164,29 +173,29 @@ function render(){
  (state.history||[]).forEach(function(x){var li=E('li');var t=E('span','',new Date(x.at).toLocaleString()+' by '+x.by+': '+x.action+' (revision '+x.revision+')');li.append(t);
   if(x.revision!==state.revision){var r=E('button','small','Restore');r.type='button';r.setAttribute('aria-label','Restore revision '+x.revision);r.addEventListener('click',function(){post('restore',{revision:state.revision,restore_revision:x.revision},pageStatus)});li.append(r)}h.append(li)})
 }
-function lock(v){busy=v;document.querySelectorAll('#groups button,#groups select,#history-list button').forEach(function(e){e.disabled=v})}
+function lock(v){busy=v;document.querySelectorAll('#groups button,#groups select,#groups input,#history-list button').forEach(function(e){if(v){e.dataset.beforeSaveDisabled=e.disabled?'1':'0';e.disabled=true}else if(e.dataset.beforeSaveDisabled!==undefined){e.disabled=e.dataset.beforeSaveDisabled==='1';delete e.dataset.beforeSaveDisabled}})}
 async function post(action,body,statusEl){
- if(busy)return false;lock(true);say(statusEl,'Saving…');
+ if(busy)return false;postError='';lock(true);say(statusEl,'Saving…');
  try{
   var r=await fetch('/models/api/'+action,{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json','x-model-settings':'1'},body:JSON.stringify(body)});
   var data=await r.json().catch(function(){return{}});
   if(!r.ok){
-   if(r.status===401){say(statusEl,'Not saved. Sign in again and retry.','error');lock(false);return false}
-   var msg='Not saved. '+(data.error||'Try again.');
+   if(r.status===401){postError='Not saved. Sign in again and retry.';say(statusEl,postError,'error');lock(false);return false}
+   var msg='Not saved. '+(data.error||'Try again.');postError=msg;
    if(r.status===409){try{var latest=await (await fetch('/models/api',{credentials:'same-origin',cache:'no-store'})).json();state=latest;render();say(pageStatus,msg+' Showing the latest settings.','error')}catch(e){say(statusEl,msg,'error')}}
    else say(statusEl,msg,'error');
    lock(false);return false
   }
   var key=statusEl.closest&&statusEl.closest('[data-job]')?statusEl.closest('[data-job]').dataset.job:null;
-  state=data;render();lock(false);
+  state=data;if(draft&&draft.revision===body.revision)draft.revision=state.revision;render();lock(false);
   var fresh=key?document.querySelector('[data-job="'+key+'"] .status'):pageStatus;if(fresh){say(fresh,'Saved','ok');setTimeout(function(){if(fresh.textContent==='Saved')say(fresh,'')},4000)}
   return true
- }catch(e){say(statusEl,'Not saved. Check your connection and try again.','error');lock(false);return false}
+ }catch(e){postError='Not saved. Check your connection and try again.';say(statusEl,postError,'error');lock(false);return false}
 }
 function edit(id,li,fn){
  var cfg=clone(state.config),arr=entriesOf(cfg.jobs[id]);
  if(fn(arr)===false||!arr.length)return;cfg.jobs[id]=pack(arr);
- return post('save',{revision:state.revision,config:{version:2,jobs:cfg.jobs}},li.querySelector('.status'))
+ return post('save',{revision:state.revision,config:saveConfig(cfg)},li.querySelector('.status'))
 }
 function openPicker(id,idx){
  if(busy)return;var v=viewOf(id);target={id:id,idx:idx,def:defOf(id),view:v};
@@ -198,40 +207,42 @@ function openPicker(id,idx){
  search.value='';search.placeholder=chat?'Search by name, provider or ID':'Search the list, or type a model ID';list.replaceChildren();pickerStatus.textContent=chat?'Loading models…':'';
  if(!picker.open)picker.showModal();search.focus();loadCatalog()
 }
-function closePicker(){clearTimeout(timer);seq++;if(picker.open)picker.close();target=null}
-function modelButton(m,sub,onPick){var li=E('li'),b=E('button');b.type='button';b.append(E('b','',m.name),E('span','',sub));b.addEventListener('click',onPick);li.append(b);return li}
+function closePicker(restoreFocus){clearTimeout(timer);seq++;var anchor=target&&target.anchor;if(picker.open)picker.close();picker.classList.remove('anchored');picker.removeAttribute('style');target=null;if(anchor&&anchor.isConnected){anchor.setAttribute('aria-expanded','false');if(restoreFocus!==false)anchor.focus({preventScroll:true})}}
+function sourceOf(m){return m.source||(m.id&&m.id.indexOf('@cf/')===0?'CF':'OR')}
+function modelButton(m,sub,onPick){var li=E('li'),b=E('button');b.type='button';var title=E('b','',m.name);title.append(E('span','source',sourceOf(m)));b.append(title,E('span','',sub));b.addEventListener('click',onPick);li.append(b);return li}
 function inUse(q){
+ if(target.category)return categoryChoices(q);
  var all=state.options.choices[target.view.pick]||[],taken={};
  entriesOf(state.config.jobs[target.id]).forEach(function(e,i){if(i!==target.idx)taken[e.model]=1});
  return all.filter(function(m){return !taken[m.id]&&(!q||(m.name+' '+m.id).toLowerCase().indexOf(q.toLowerCase())>=0)})
 }
-function priceLine(m){var p=m.pricing;return p&&p.prompt!=null&&p.completion!=null?m.id+' · $'+p.prompt+' in, $'+p.completion+' out per million tokens':m.id}
+function priceText(value){var n=Number(value);return Number.isFinite(n)?n.toLocaleString('en-US',{maximumFractionDigits:8}):String(value)}
+function priceLine(m){var p=m.pricing;return p&&p.prompt!=null&&p.completion!=null?m.id+', $'+priceText(p.prompt)+' in, $'+priceText(p.completion)+' out per million tokens':m.id}
 // Saved models are listed with the live catalog's name, reasoning levels and price. The saved copy is from when the model was first picked and goes out of date.
-function mergeKnown(saved,fresh,q){var by={},w=(q||'').toLowerCase();fresh.forEach(function(f){by[f.id]=f});return saved.filter(function(m){return by[m.id]||!w||(m.name+' '+m.id).toLowerCase().indexOf(w)>=0}).map(function(m){var f=by[m.id];return f?Object.assign({},m,{name:f.name||m.name,efforts:f.efforts||m.efforts,default_effort:f.default_effort,pricing:f.pricing}):m})}
+function mergeKnown(saved,fresh,q){var by={},w=(q||'').toLowerCase();fresh.forEach(function(f){by[f.id]=f});return saved.filter(function(m){return by[m.id]||!w||(m.name+' '+m.id).toLowerCase().indexOf(w)>=0}).map(function(m){var f=by[m.id];return f?Object.assign({},m,{name:f.name||m.name,efforts:f.efforts||m.efforts,default_effort:f.default_effort,pricing:f.pricing,source:f.source||m.source,levels:f.levels||m.levels,kinds:f.kinds||m.kinds,eligible:f.eligible,chat:f.chat||m.chat}):m})}
+function pickerAllowed(m,ignorePrivacy){
+ var t=target,v=t.view,known=state.config.catalog[m.id],meta=Object.assign({},known||{},m),kinds=meta.kinds||[];
+ if(t.category)return ((meta.eligible&&meta.source!=='CF'&&(!kinds.length||kinds.indexOf('chat')>=0||kinds.indexOf('chore')>=0))||meta.chat||kinds.indexOf('chat')>=0||kinds.indexOf('chore')>=0)&&(ignorePrivacy||!meta.levels||meta.levels.indexOf(t.level)>=0);
+ var chat=meta.chat||((meta.eligible&&meta.source!=='CF'&&(!kinds.length||kinds.indexOf('chat')>=0||kinds.indexOf('chore')>=0))||kinds.indexOf('chat')>=0||kinds.indexOf('chore')>=0);
+ var ok=takesChat(v)?chat||(v.any&&(kinds.indexOf('decider')>=0||kinds.indexOf('workers_decider')>=0)):kinds.indexOf(v.pick)>=0;
+ return ok&&(ignorePrivacy||v.privacy!=='zdr'||!meta.levels||meta.levels.indexOf('zdr')>=0)
+}
+function takenModels(){if(target.category)return draft.card.chains[target.level].filter(function(e,i){return e&&i!==target.idx}).map(function(e){return e.model});return entriesOf(state.config.jobs[target.id]).filter(function(e,i){return i!==target.idx}).map(function(e){return e.model})}
 async function loadCatalog(){
- var mine=++seq,q=search.value.trim(),chat=takesChat(target.view);
- list.replaceChildren();var local=inUse(q);
- if(!chat){
-  if(local.length){list.append(E('h3','','Already known'));local.forEach(function(m){list.append(modelButton(m,m.id,function(){choose(m)}))})}
-  var typed=q.length>2&&/^[@~a-zA-Z0-9][a-zA-Z0-9._~:-]*(\\/[a-zA-Z0-9][a-zA-Z0-9._:~-]*)+$/.test(q)&&!local.some(function(m){return m.id===q});
-  if(typed){list.append(E('h3','','Other model ID'));list.append(modelButton({id:q,name:q,efforts:[]},'Use this model ID exactly as typed',function(){choose({id:q,name:q,efforts:[]})}))}
-  pickerStatus.textContent=local.length||typed?'':'No match. Type a full model ID such as provider/model-name.';return
- }
+ if(!target)return;var mine=++seq,q=search.value.trim(),local=inUse(q).filter(function(m){return pickerAllowed(m,true)}),taken=takenModels();list.replaceChildren();
+ function show(models){models=models.filter(function(m){return taken.indexOf(m.id)<0&&pickerAllowed(m,true)});list.replaceChildren();models.slice(0,100).forEach(function(m){var allowed=pickerAllowed(m),row=modelButton(m,priceLine(m)+(allowed?'':'. Unavailable for this privacy level; no verified eligible provider.'),function(){choose(m)});row.querySelector('button').disabled=!allowed;list.append(row)});return models.length}
  try{
   var r=await fetch('/models/api/catalog?q='+encodeURIComponent(q),{credentials:'same-origin',cache:'no-store'}),data=await r.json();
   if(mine!==seq)return;if(!r.ok)throw new Error(data.error||'Could not load models.');
-  local=mergeKnown(inUse(''),data.models,q);var ids={};local.forEach(function(m){ids[m.id]=1});
-  var taken={};entriesOf(state.config.jobs[target.id]).forEach(function(e,i){if(i!==target.idx)taken[e.model]=1});
-  var more=data.models.filter(function(m){return m.eligible&&!ids[m.id]&&!taken[m.id]&&(target.view.privacy!=='zdr'||(m.levels||[]).indexOf('zdr')>=0)});
-  list.replaceChildren();
-  if(local.length){list.append(E('h3','','Already known'));local.forEach(function(m){list.append(modelButton(m,priceLine(m),function(){choose(m)}))})}
-  if(more.length)list.append(E('h3','','More models'));
-  more.slice(0,40).forEach(function(m){list.append(modelButton(m,priceLine(m),function(){choose(m)}))});
-  pickerStatus.textContent=local.length+more.length?(more.length>40?'Showing 40 of '+more.length+'. Type to narrow the list.':''):'No eligible models match.'
- }catch(e){if(mine!==seq)return;if(local.length){list.replaceChildren(E('h3','','Already known (saved copy)'));local.forEach(function(m){list.append(modelButton(m,m.id,function(){choose(m)}))})}pickerStatus.textContent=e.message||'Could not load models. Try again.'}
+  var fresh=data.models||[];local=mergeKnown(inUse(''),data.models,q);var merged=local,ids={};merged.forEach(function(m){ids[m.id]=1});
+  var count=show(merged.concat(fresh.filter(function(m){return m.eligible&&!ids[m.id]})));
+  pickerStatus.textContent=count?(count>100?'Showing 100 of '+count+'. Type to narrow the list.':'OR = OpenRouter. CF = Cloudflare.'):'No compatible models match this job and privacy level.'
+ }catch(e){if(mine!==seq)return;show(local);pickerStatus.textContent=e.message||'Could not load models. Try again.'}
 }
+
 function choose(m){
- var t=target;closePicker();var li=document.querySelector('[data-job="'+t.id+'"]'),pick=t.view.pick,hasEffort=t.view.has_effort;
+ var t=target;closePicker();if(t.category){pickedFacts[m.id]=m;var prev=draft.card.chains[t.level][t.idx],efforts=m.efforts||effortsFor(m.id);draft.card.chains[t.level][t.idx]={model:m.id,effort:efforts.indexOf(prev&&prev.effort)>=0?prev.effort:(m.default_effort||efforts[0]||'default')};draft.error='';render();focusCategorySlot(t.idx);return}
+ var li=document.querySelector('[data-job="'+t.id+'"]'),pick=t.view.pick,hasEffort=t.view.has_effort;
  edit(t.id,li,function(arr){
   var old=arr[t.idx],efforts=m.efforts||effortsFor(m.id),cur=old?old.effort:null,next=null;
   if(hasEffort)next=efforts.indexOf(cur)>=0?cur:(m.default_effort&&efforts.indexOf(m.default_effort)>=0?m.default_effort:efforts[0]);
@@ -240,10 +251,71 @@ function choose(m){
   if(t.idx>=arr.length)arr.push(e);else arr[t.idx]=e
  })
 }
+function saveConfig(cfg){var out={version:cfg.version,jobs:cfg.jobs};if(cfg.version===3)out.routing=cfg.routing;return out}
+var LEVELS=['unrestricted','no_training','zdr'],LEVEL_NAMES={unrestricted:'Unrestricted',no_training:'No Training',zdr:'ZDR'},ORDINALS=['1st','2nd','3rd'];
+function categories(){return state.config.routing.categories}
+function metaOf(id){return pickedFacts[id]||state.config.catalog[id]||{id:id,name:id}}
+function categoryChoices(q){return (state.options.choices.chat||[]).concat(Object.keys(pickedFacts).map(function(id){return pickedFacts[id]})).filter(function(m,i,a){return a.findIndex(function(n){return n.id===m.id})===i&&(!q||(m.name+' '+m.id).toLowerCase().indexOf(q.toLowerCase())>=0)})}
+function button(text,fn,cls){var b=E('button',cls||'',text);b.type='button';b.addEventListener('click',fn);return b}
+function categorySlot(card,level,idx,editable){
+ var field=E('div','category-choice'),entry=card.chains[level][idx],meta=entry?metaOf(entry.model):null;field.append(E('strong','',ORDINALS[idx]));
+ if(editable){var pick=button('',function(){openCategoryPicker(level,idx,pick)},'model-select');pick.dataset.choiceIndex=idx;pick.setAttribute('aria-label',(entry?'Change':'Choose')+' '+ORDINALS[idx]+' model for '+LEVEL_NAMES[level]);pick.setAttribute('aria-haspopup','dialog');pick.setAttribute('aria-controls','model-picker');pick.setAttribute('aria-expanded','false');pick.append(E('span','model-name',entry?(meta.name||entry.model):'Choose model'));if(entry)pick.append(E('span','source',sourceOf(meta)));else pick.append(E('span','muted','⌄'));field.append(pick)}
+ else if(entry){var name=E('div','model-name',meta.name||entry.model);name.append(E('span','source',sourceOf(meta)));field.append(name)}
+ if(entry){field.append(E('span','entry-id',entry.model));var choices=effortsFor(entry.model);if(editable&&choices.length>1){var select=E('select');select.setAttribute('aria-label','Reasoning for '+ORDINALS[idx]+' '+LEVEL_NAMES[level]);choices.forEach(function(e){var o=E('option','',eff(e));o.value=e;select.append(o)});select.value=entry.effort;select.addEventListener('change',function(){draft.card.chains[level][idx].effort=select.value;draft.error=''});field.append(select)}else field.append(E('span','fixed',eff(entry.effort)))}
+ return field
+}
+function categoryCard(card,level){var box=E('article','category-card');box.dataset.category=card.id;box.append(E('h3','',card.title||'New category'));for(var i=0;i<3;i++)box.append(categorySlot(card,level,i,false));return box}
+function focusCategorySlot(idx){var field=document.querySelector('#category-editor [data-choice-index="'+idx+'"]');if(field)field.focus({preventScroll:true})}
+function focusDraft(){var editor=document.getElementById('category-editor');if(!editor)return;editor.scrollIntoView({block:'nearest',inline:draft.review?'start':'nearest'});var field=document.getElementById('category-title');if(field&&!field.disabled)field.focus({preventScroll:true});else if(!draft.review)focusCategorySlot(0);else{var b=editor.querySelector('[data-save-category]');if(b)b.focus({preventScroll:true})}}
+function beginCategory(card){if(busy||draft)return;say(pageStatus,'');var start=LEVELS.indexOf(activeLevel);draft={card:card?clone(card):{id:'cat_'+crypto.randomUUID().replace(/-/g,''),title:'',chains:{unrestricted:[null,null,null],no_training:[null,null,null],zdr:[null,null,null]}},level:activeLevel,order:LEVELS.slice(start).concat(LEVELS.slice(0,start)),step:0,review:false,isNew:!card,revision:state.revision,error:''};render();focusDraft()}
+function draftProblem(level){var title=draft.card.title;if(!title.trim())return 'Enter a category title.';if(title.length>240)return 'Use a title of up to 240 characters.';if(categories().some(function(c){return c.id!==draft.card.id&&c.title.toLowerCase()===title.trim().toLowerCase()}))return 'A category already has that title.';var chain=draft.card.chains[level];if(chain.some(function(e){return !e||!e.model}))return 'Choose all three models for '+LEVEL_NAMES[level]+'.';if(new Set(chain.map(function(e){return e.model})).size!==3)return 'Choose three different models.';return ''}
+function positionCategoryPicker(){
+ if(!target||!target.category||!picker.open)return;var a=target.anchor.getBoundingClientRect(),gap=6,edge=8,width=Math.min(360,innerWidth-16),height=Math.min(440,innerHeight-16),left=Math.max(edge,Math.min(a.left,innerWidth-width-edge)),top;
+ if(innerWidth<=600){top=innerHeight-height-edge;left=(innerWidth-width)/2}else{var below=innerHeight-a.bottom-gap-edge,above=a.top-gap-edge;if(below>=Math.min(height,260)){height=Math.min(height,below);top=a.bottom+gap}else if(above>=Math.min(height,260)){height=Math.min(height,above);top=a.top-gap-height}else{top=Math.max(edge,Math.min(a.bottom+gap,innerHeight-height-edge))}}
+ picker.style.width=width+'px';picker.style.maxHeight=height+'px';picker.style.left=left+'px';picker.style.top=top+'px'
+}
+function openCategoryPicker(level,idx,anchor){if(busy)return;target={category:true,level:level,idx:idx,anchor:anchor,view:{pick:'chat',privacy:level,has_effort:true}};anchor.setAttribute('aria-expanded','true');document.getElementById('picker-title').textContent=ORDINALS[idx]+' model';document.getElementById('picker-now').textContent=LEVEL_NAMES[level];document.getElementById('picker-note').textContent='OR = OpenRouter. CF = Cloudflare.';search.value='';search.placeholder='Search models';pickerStatus.textContent='Loading models...';list.replaceChildren();picker.classList.add('anchored');picker.show();positionCategoryPicker();search.focus({preventScroll:true});loadCatalog()}
+function cancelDraft(){var id=draft.card.id,isNew=draft.isNew;draft=null;render();var b=isNew?document.querySelector('.category-add'):document.querySelector('[data-category="'+id+'"] [data-edit-category]');if(b)b.focus({preventScroll:true})}
+function showDraftError(message){draft.error=message;var status=document.querySelector('#category-editor .status');if(status){say(status,message,'error');status.focus({preventScroll:true})}}
+async function saveDraft(){
+ if(!draft||busy)return;var problem='';if(draft.isNew)LEVELS.some(function(level){problem=draftProblem(level);return !!problem});else problem=draftProblem(draft.level);if(problem){showDraftError(problem);return}
+ if(draft.revision!==state.revision){showDraftError('Settings changed elsewhere. Cancel and reopen the card to use the latest settings. Your pending changes are still shown.');return}
+ var cfg=clone(state.config),idx=cfg.routing.categories.findIndex(function(c){return c.id===draft.card.id}),id=draft.card.id;
+ if(draft.isNew){if(idx>=0){showDraftError('The category already exists. Cancel and reopen it.');return}var added=clone(draft.card);added.title=added.title.trim();cfg.routing.categories.push(added)}
+ else{if(idx<0){showDraftError('The category was deleted elsewhere. Cancel to see the latest settings.');return}cfg.routing.categories[idx].title=draft.card.title.trim();cfg.routing.categories[idx].chains[draft.level]=clone(draft.card.chains[draft.level])}
+ var status=document.querySelector('#category-editor .status'),ok=await post('save',{revision:draft.revision,config:saveConfig(cfg)},status);
+ if(ok){draft=null;render();say(pageStatus,'Saved','ok');var b=document.querySelector('[data-category="'+id+'"] [data-edit-category]');if(b)b.focus({preventScroll:true})}
+ else if(draft){draft.error=postError||'Not saved. Try again.';if(draft.revision!==state.revision)draft.error+=' Cancel and reopen the card to use the latest settings. Your pending changes are still shown.';render();var error=document.querySelector('#category-editor .status');if(error)error.focus({preventScroll:true})}
+}
+function draftActions(editor,status){
+ var actions=E('div','actions');actions.append(button('Cancel',cancelDraft));
+ if(draft.isNew&&(draft.review||draft.step>0))actions.append(button('Back',function(){draft.error='';if(draft.review)draft.review=false;else draft.step--;activeLevel=draft.order[draft.step];render();focusDraft()}));
+ var save=button(!draft.isNew||draft.review?'Save':draft.step===2?'Review':'Next Card',function(){if(!draft.isNew||draft.review){saveDraft();return}var level=draft.order[draft.step],problem=draftProblem(level);if(problem){showDraftError(problem);return}draft.card.title=draft.card.title.trim();draft.error='';if(draft.step===2)draft.review=true;else{draft.step++;activeLevel=draft.order[draft.step]}render();focusDraft()},'primary-action');if(!draft.isNew||draft.review)save.dataset.saveCategory='1';actions.append(save);editor.append(status,actions)
+}
+function renderDraft(){
+ var level=draft.isNew?draft.order[draft.step]:draft.level,editor=E(draft.review?'section':'article',draft.review?'category-review':'category-card category-editing');editor.id='category-editor';editor.dataset.category=draft.card.id;
+ var status=E('p','status');status.setAttribute('role','status');status.setAttribute('aria-live','polite');status.tabIndex=-1;if(draft.error)say(status,draft.error,'error');
+ if(draft.review){editor.append(E('h2','','Review new category'));var variants=E('div','category-review-cards');LEVELS.forEach(function(l){var card=categoryCard(draft.card,l);card.prepend(E('h2','',LEVEL_NAMES[l]));variants.append(card)});editor.append(variants)}
+ else{
+  if(draft.isNew)editor.append(E('p','category-caption','New category, '+(draft.step+1)+' of 3: '+LEVEL_NAMES[level]));
+  if(draft.card.id==='general')editor.append(E('h3','','General'));
+  else{var label=E('label','category-title-label');label.append(E('span',draft.isNew?'':'sr-only','Category title'));var input=E('input');input.id='category-title';input.type='text';input.maxLength=240;input.value=draft.card.title;input.placeholder='Category or keywords';input.addEventListener('input',function(){draft.card.title=input.value;draft.error=''});label.append(input);editor.append(label)}
+  for(var i=0;i<3;i++)editor.append(categorySlot(draft.card,level,i,true))
+ }
+ draftActions(editor,status);return editor
+}
+function renderRouting(){
+ var sec=E('section','routing-section');sec.append(E('h2','','Categories'));var tabs=E('div','privacy-tabs');tabs.setAttribute('role','tablist');LEVELS.forEach(function(level){var b=button(LEVEL_NAMES[level],function(){activeLevel=level;render()});b.disabled=!!draft;b.setAttribute('role','tab');b.setAttribute('aria-selected',String(activeLevel===level));tabs.append(b)});sec.append(tabs);
+ var cards=E('div','category-list');cards.setAttribute('aria-label',LEVEL_NAMES[activeLevel]+' category cards');categories().forEach(function(c){if(draft&&!draft.isNew&&draft.card.id===c.id){cards.append(renderDraft());return}var box=categoryCard(c,activeLevel),actions=E('div','actions'),editButton=button('Edit',function(){beginCategory(c)});editButton.dataset.editCategory='1';editButton.setAttribute('aria-label','Edit '+c.title+' for '+LEVEL_NAMES[activeLevel]);editButton.disabled=!!draft;actions.append(editButton);if(c.id!=='general'){var remove=button('Delete',function(){ask({title:'Delete '+c.title+'?',body:'This removes the category from all three privacy pages.',confirm:'Delete',danger:true}).then(function(ok){if(!ok)return;var cfg=clone(state.config);cfg.routing.categories=cfg.routing.categories.filter(function(item){return item.id!==c.id});post('save',{revision:state.revision,config:saveConfig(cfg)},pageStatus)})});remove.disabled=!!draft;actions.append(remove)}box.append(actions);cards.append(box)});
+ if(draft&&draft.isNew)cards.append(renderDraft());var add=button('+',function(){beginCategory(null)},'category-add');add.setAttribute('aria-label','Add category');add.append(E('span','','Add category'));add.disabled=!!draft||categories().length>=24;cards.append(add);sec.append(cards);root.append(sec,E('h2','shared-heading','Shared models'),E('p','muted','A change below applies to all three privacy pages.'))
+}
 search.addEventListener('input',function(){clearTimeout(timer);seq++;pickerStatus.textContent='Searching…';timer=setTimeout(loadCatalog,220)});
 document.getElementById('picker-close').addEventListener('click',closePicker);
 picker.addEventListener('cancel',function(e){e.preventDefault();closePicker()});
-picker.addEventListener('click',function(e){if(e.target===picker)closePicker()});
+picker.addEventListener('click',function(e){if(e.target===picker&&(!target||!target.category))closePicker()});
+document.addEventListener('click',function(e){if(picker.open&&target&&target.category&&!picker.contains(e.target)&&e.target!==target.anchor&&!target.anchor.contains(e.target))closePicker(!e.target.closest('button,input,select,textarea,a[href],[tabindex]'))},true);
+document.addEventListener('keydown',function(e){if(e.key==='Escape'&&picker.open&&target&&target.category){e.preventDefault();closePicker()}});
+window.addEventListener('resize',positionCategoryPicker);window.addEventListener('scroll',positionCategoryPicker,true);
 render();
 })();`;
 
@@ -254,14 +326,14 @@ export function modelsHtml(view, env) {
   const initial = JSON.stringify(view).replace(/</g, "\\u003c").replace(new RegExp("\\u2028", "g"), "\\u2028").replace(new RegExp("\\u2029", "g"), "\\u2029");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Models · ${environment} · 1Helm</title><link rel="icon" href="/1helm-icon-64.png"><style>${CSS}</style></head>
 <body class="${dev ? "dev" : "live"}" data-environment="${environment}"><main><nav aria-label="Model settings navigation"><a class="back" href="${dev ? "/releases" : "/"}">${dev ? "← Releases" : "← 1Helm"}</a><div class="environments" aria-label="Environment">${dev ? "Development" : "Production"}</div></nav>
-<h1>Models</h1><p class="lead">The model, reasoning level and fallback models saved for every job on ${environment}. The jobs listed here take their model from these settings. Accounts that bring their own key use their own endpoint, and the dev test model override (TEST_MODEL) replaces them on dev. Each change saves right away. Running tasks finish with the model they started with.</p>
+<h1>Models</h1><p class="lead">${view.dynamicRouting ? "General is your primary model. Add categories to choose models for delegated tasks." : `The model, reasoning level and fallback models saved for every job on ${environment}. Each change saves right away. Running work keeps its existing model choices. New work uses your saved changes.`}</p>
 <noscript>Turn on JavaScript to see and change model settings.</noscript><div class="banner" id="banner" role="alert" hidden></div><p id="page-status" role="status" aria-live="polite"></p>
 <div id="groups"></div>
 <div id="outside"></div>
 <details class="history"><summary>History</summary><ul id="history-list"></ul></details>
-<p class="footnote">Revision ${esc(view.revision)}. Only models that meet the privacy, tool and price limits are offered. When an account's privacy setting forbids a model, that model is skipped and the next one in the list is tried.</p></main>
+<p class="footnote">Revision ${esc(view.revision)}. Only models that meet the privacy and tool limits are offered. When an account's privacy setting forbids a model, that model is skipped and the next one in the list is tried.${view.dynamicRouting ? " Running work keeps its existing model choices. New work uses your saved changes." : ""}</p></main>
 <dialog id="model-picker" class="picker" aria-labelledby="picker-title"><div class="picker-head"><div><h2 id="picker-title">Choose a model</h2><p id="picker-now"></p><p id="picker-note"></p></div><button type="button" id="picker-close" aria-label="Close">Close</button></div>
 <label class="picker-search"><input id="catalog-query" type="search" placeholder="Search by name, provider or ID" autocomplete="off" aria-label="Search models"></label>
 <ul id="picker-list" class="picker-list" aria-label="Models"></ul><div class="picker-foot" id="picker-status" role="status" aria-live="polite"></div></dialog>
-<script id="model-state" type="application/json">${initial}</script><script>${JS}</script></body></html>`;
+${pageDialog("warm")}<script id="model-state" type="application/json">${initial}</script><script>${JS}</script></body></html>`;
 }

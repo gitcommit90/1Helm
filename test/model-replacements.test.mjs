@@ -32,7 +32,7 @@ globalThis.fetch = async (url, init = {}) => {
     catalogRequests.push(String(url)); assert.equal(init.headers?.authorization, undefined);
     if (redirect) return new Response(null, { status: 302, headers: { location: "https://redirect.invalid/private" } });
     if (outage) return new Response("unavailable", { status: 503 });
-    if (String(url).endsWith("/models")) return Response.json({ data: models });
+    if (/\/models(\?|$)/.test(String(url))) return Response.json({ data: models });
     if (String(url).endsWith("/endpoints/zdr")) return Response.json({ data: eps });
     if (String(url).includes(`/models/${MUSE_C}/`)) return Response.json({ data: { endpoints: [endpoint(MUSE_C, { tag: "meta" })] } });
     if (String(url).includes(`/models/${MUSE_S}/`)) return Response.json({ data: { endpoints: [endpoint(MUSE_S, { tag: "meta" })] } });
@@ -50,7 +50,7 @@ const call = async (route, body = { messages: [{ role: "user", content: "hello" 
 try {
   let catalog = await modelCatalog(env, { q: "ARBITRARY" }); assert.deepEqual(catalog.models.map((m) => m.id), [A, B]);
   assert.deepEqual(catalog.models[0].efforts, ["none", "low", "high"]); assert.equal(catalog.models[0].pricing.prompt, 1);
-  catalog = await modelCatalog(env); assert.equal(catalog.models.find((m) => m.id === BAD).eligible, false); assert.match(catalog.models.find((m) => m.id === BAD).reasons.join(), /\$3/);
+  catalog = await modelCatalog(env); assert.equal(catalog.models.find((m) => m.id === BAD).eligible, true, "price never hides a model"); assert.equal(catalog.models.find((m) => m.id === BAD).pricing.prompt, 4);
   assert.equal(catalog.models.find((m) => m.id === TOOLLESS).eligible, false);
   assert.deepEqual(catalog.models.find((m) => m.id === MUSE_C).levels, ["unrestricted"]);
   assert.deepEqual(catalog.models.find((m) => m.id === MUSE_S).levels, ["unrestricted", "no_training"]);
@@ -87,11 +87,14 @@ try {
   // Stale saves fail before hitting OpenRouter and cannot replace settings.
   const fetchCount = catalogRequests.length;
   await assert.rejects(saveModelSettings(env, { revision: 0, config: await current() }, "other"), (e) => e.status === 409); assert.equal(catalogRequests.length, fetchCount);
-  for (const invalid of ["https://evil.invalid/foo", "example/../escape", "example/%2fsecret", "example/model?query", "constructor", BAD, TOOLLESS, "missing/model"]) {
+  for (const invalid of ["https://evil.invalid/foo", "example/../escape", "example/%2fsecret", "example/model?query", "constructor", TOOLLESS, "missing/model"]) {
     await assert.rejects(save((c) => { c.jobs["chat.general"] = { model: invalid, effort: "low", fallbacks: [] }; }), (e) => e.status === 400 || e.status === 503, invalid);
   }
   await assert.rejects(save((c) => { c.jobs["chat.general"].effort = "max"; }), /doesn't support reasoning level/);
-  await assert.rejects(save((c) => { c.jobs["chat.general"].model = ID.STT; c.jobs["chat.general"].effort = null; }), /can't be used|doesn't support/);
+  const beforeIncompatible = (await modelSettingsView(env)).revision, dispatchesBeforeIncompatible = sent.length;
+  await assert.rejects(save((c) => { c.jobs["chat.general"].model = ID.STT; c.jobs["chat.general"].effort = null; }), (e) => e.status === 400, "a speech model cannot replace a chat model");
+  assert.equal((await modelSettingsView(env)).revision, beforeIncompatible, "an incompatible pick creates no settings revision");
+  assert.equal(sent.length, dispatchesBeforeIncompatible, "validation sends no chat request");
   // a model with a forbidden privacy level is saved but never used for that level: at ZDR the list skips it, and the page shows it
   const noImage = await dispatchOrder(route, "zdr", { body: { messages: [{ content: [{ type: "image_url", image_url: { url: "https://example.test/image" } }] }] } });
   assert.deepEqual(noImage.attempts.map((a) => a.model), [], "no listed model reads pictures here: nothing is sent to a model that can't");

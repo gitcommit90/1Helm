@@ -1,0 +1,40 @@
+// Synthetic transport tests. No paid calls and no model quality checks.
+import assert from 'node:assert/strict';
+import { assessCloudflareModels, cloudflareChat, cloudflareCatalog, cloudflareEmbeddings, dynamicProvidersOn } from '../src/cloudflare-models.js';
+import { validCatalogRecord, validModelId } from '../src/ee/model-catalog.js';
+import { openRouterChat, taskPayload, orFetch } from '../src/model.js';
+import { stt } from '../src/transcribe.js';
+import { vision, embedTexts } from '../src/sidecar.js';
+import { seedSettings, ID } from './helpers/seed-settings.mjs';
+const model = '@cf/example/chat', embed = '@cf/example/embedding', settings = seedSettings();
+const metadata = assessCloudflareModels([{ name:model, task:{name:'Text Generation'}, properties:[{property_id:'context_window',value:'32768'},{property_id:'function_calling',value:'true'},{property_id:'price',value:JSON.stringify([{unit:'per M input tokens',price:1},{unit:'per M output tokens',price:2}])}] }])[0];
+assert(validModelId(model)); assert(!validModelId('@cf/../../secret')); assert(validCatalogRecord(metadata,model));
+assert.deepEqual(metadata.levels,['unrestricted','no_training']); assert.deepEqual(metadata.tool_choice,['auto']);
+assert(!metadata.json,'function calling does not imply schema support');
+assert(dynamicProvidersOn({ENV_NAME:'dev',ONEHELM_EE:'1hc',DYNAMIC_ROUTING:'on'})); assert(!dynamicProvidersOn({ENV_NAME:'live',ONEHELM_EE:'1hc',DYNAMIC_ROUTING:'on'}));
+let level='no_training', calls=[], seen=[];
+const env={ENV_NAME:'dev',ONEHELM_EE:'1hc',DYNAMIC_ROUTING:'on',OPENROUTER_API_KEY:'synthetic',MODEL_SETTINGS:settings,PROMPT_CACHE:'off',DB:{prepare(){return {bind(){return this},async first(){return {ai_privacy:level}}}}},AI:{async run(m,body,opts){calls.push({m,body,opts});return Response.json({response:'ok',usage:{prompt_tokens:10,completion_tokens:5}})}}};
+settings.catalog[model]=metadata;
+const native=await orFetch(env,{model,messages:[{role:'user',content:'hi'}],provider:{only:['bad']},session_id:'private',usage:{include:true}},{tenant:'t'});
+const result=await native.json(); assert.equal(result.model,model);assert.equal(result.provider,'Cloudflare');assert.equal(result.usage.cost,.00002);
+assert(!('provider' in calls[0].body));assert(!('session_id' in calls[0].body));assert.equal(calls[0].opts.extraHeaders['cf-aig-collect-log'],'false');
+level='zdr';const count=calls.length;await assert.rejects(cloudflareChat(env,{model,messages:[]},{tenant:'t'}),e=>e.privacy);assert.equal(calls.length,count);level='no_training';
+const ac=new AbortController();env.AI.run=async()=>new Promise(()=>{});const aborted=cloudflareChat(env,{model,messages:[]},{tenant:'t'},ac.signal);setTimeout(()=>ac.abort(),1);await assert.rejects(aborted,e=>e.name==='AbortError');
+const enc=new TextEncoder();env.AI.run=async()=>new Response(new ReadableStream({start(c){c.enqueue(enc.encode('data: {"response":"a"}\n\ndata: {"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\ndata: [DONE]\n\n'));c.close()}}));
+const stream=await cloudflareChat(env,{model,messages:[],stream:true},{tenant:'t'});const text=await stream.text();assert(text.includes('"model":"@cf/example/chat"'));assert(text.includes('"cost":0.00002'));assert(text.includes('[DONE]'));
+// OR providers fail inside a request before the app walks the snapshotted model order.
+const profile=(requestedModel,hosts,effort='low',maxOutput=800)=>({version:1,mode:'managed',credentialRef:'managed-openrouter',requestedModel,hosts,effort,catalog:{id:requestedModel,eligible:true,efforts:['low','high'],levels:['unrestricted','no_training','zdr'],hosts,context_length:16000,max_output:maxOutput,input_modalities:['text'],pricing:{prompt:1,completion:2},tool_choice:['auto','none'],json:true},contextLength:16000,maxOutput,cacheSession:'stable',level:'no_training'});
+const a=profile(ID.DEEPSEEK,['together','modal']),b=profile(ID.SOL,['azure'],'high',400);let attempts=0;
+globalThis.fetch=async(_url,init)=>{const p=JSON.parse(init.body);seen.push(p);attempts++;return p.model===ID.DEEPSEEK?new Response('outage',{status:503}):Response.json({model:p.model,choices:[{message:{content:'ok'}}],usage:{cost:.001}})};
+const route={taskAffinity:true,taskProfile:{...a,poolChain:[a,b]}};
+await openRouterChat(env,{messages:[{role:'assistant',content:'old',reasoning_details:[{}],_rmodel:ID.DEEPSEEK}],max_tokens:50000},'ignored',route,{tenant:'t'});
+assert.deepEqual(seen.map(p=>p.model),[ID.DEEPSEEK,ID.DEEPSEEK,ID.SOL]);assert(seen.every(p=>p.provider.allow_fallbacks===true));assert.deepEqual(seen[0].provider.only,['together','modal']);assert.equal(seen[2].max_tokens,400);assert.equal(seen[2].reasoning.effort,'high');assert(!seen[2].messages[0].reasoning_details);assert.equal(route.served,ID.SOL);assert.equal(route.servedProfile.requestedModel,ID.SOL);
+// Native embedding choices never go through OpenRouter.
+settings.catalog[embed]={...metadata,id:embed,kinds:['embedding_files','embedding_memory']};env.AI.run=async(m,body)=>{assert.equal(m,embed);assert.deepEqual(body,{text:['hi']});return {data:[[.1,.2]],usage:{prompt_tokens:1}}};const vectors=await cloudflareEmbeddings(env,embed,['hi'],{tenant:'t'});assert.deepEqual(vectors.data[0].embedding,[.1,.2]);
+let pages=0;const discovered=await cloudflareCatalog({AI:{async models(){pages++;return pages===1?[{name:model,task:{name:'Text Generation'},properties:[{property_id:'context_window',value:'32768'},{property_id:'function_calling',value:'true'},{property_id:'price',value:[{unit:'per M input tokens',price:1},{unit:'per M output tokens',price:2}]}]}]:[]}}});assert.equal(discovered.length,1);assert.equal(pages,2);
+const speech='@cf/example/whisper';settings.catalog[speech]={...metadata,id:speech,kinds:['speech'],levels:['unrestricted','no_training','zdr'],sec_nano:100};settings.jobs.stt={model:speech,effort:null,fallbacks:[]};env.AI.run=async(m,body)=>{assert.equal(m,speech);assert.equal(body.audio,'AQID');return {text:'fixture',transcription_info:{duration:1},segments:[{start:0,text:'fixture'}]}};
+const audio=await stt(env,{bytes:new Uint8Array([1,2,3])},{meta:{tenant:'t'},format:'wav',estSec:1});assert.equal(audio.model,speech);assert.equal(audio.nano,100);
+settings.jobs.embed_files={model:embed,effort:null,fallbacks:[]};env.AI.run=async()=>({data:[[.1,.2]],usage:{prompt_tokens:1}});await assert.rejects(embedTexts(env,['hi'],{tenant:'t'}),e=>e.privacy);settings.catalog[embed]={...settings.catalog[embed],levels:['unrestricted','no_training','zdr']};const fileEmbed=await embedTexts(env,['hi'],{tenant:'t'});assert.equal(fileEmbed.model,embed);assert.deepEqual(fileEmbed.vectors,[[.1,.2]]);
+settings.jobs.vision_files={model:ID.SOL,effort:null,fallbacks:[]};globalThis.fetch=async(_url,init)=>{const p=JSON.parse(init.body);assert.equal(p.model,ID.SOL);assert(p.messages[0].content.some(c=>c.type==='image_url'));return Response.json({model:p.model,choices:[{message:{content:JSON.stringify({description:'fixture',text:''})},finish_reason:'stop'}],usage:{cost:.00001}})};
+const image=await vision(env,{tenant:'t'},{mime:'image/png',data:new Uint8Array([1])},'picture');assert.equal(image.value.description,'fixture');
+console.log('PASS routing providers: native discovery, source dispatch, privacy, wire policy, costs, streaming, cancellation, frozen fallback efforts/limits/reasoning');

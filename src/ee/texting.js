@@ -1,3 +1,4 @@
+import { phoneOrigin } from "../message-origin.js";
 // "Text with your helper" on Cloud: setup state machine, inbound webhook, and delivery for text_person.
 // Each workspace connects its OWN free Photon project (BYOP). Order (Captain, 10-01): number → Photon sign-up → "Text <code> to <number>".
 import * as P from "./photon.js";
@@ -5,6 +6,7 @@ import { sealSecret, openSecret } from "../sentinel.js";
 import { cardsToText } from "../genui.js";
 import { PAUSED_TEXT, INACTIVE_TEXT } from "./readonly.js";
 import { boundedText, BodyTooLargeError } from "../bounded-body.js";
+import { replyRef } from "../reply-to.js";
 
 const json = (b, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 const now = () => Date.now();
@@ -137,9 +139,37 @@ export async function deliverText(env, tenantId, message, opts = {}) {
   const r = await row(env, tenantId);
   if (!r || r.status !== "connected") return { ok: false, reason: "not_connected" };
   const tok = await token(env, r);
-  const o = isIMessage(r) ? opts : { ...opts, effect: undefined };                           // SMS/RCS: no message effects
-  const id = await withRetry(() => P.sendText(tok, r.phone, cardsToText(message), o));      // never send card code to a phone
+  const o = isIMessage(r) ? opts : { ...opts, effect: undefined, replyTo: undefined };       // SMS/RCS: no iMessage effects or threads
+  const id = await withRetry(() => {
+    if (opts.current && !opts.current()) return null;
+    return P.sendText(tok, r.phone, cardsToText(message), o);
+  });      // never send card code to a phone
   return { ok: true, id };
+}
+// Only the person's own connected iMessage phone. The caller owns the saved
+// file/upload/send receipt and checks that the task/file still exists.
+export async function deliverFile(env, tenantId, file, opts = {}) {
+  const r = await row(env, tenantId);
+  if (!r || r.status !== "connected") return { ok: false, reason: "not_connected" };
+  if (!isIMessage(r)) return { ok: false, reason: "not_imessage" };
+  const tok = await token(env, r);
+  if (!opts.current?.()) return { ok: false, reason: "cancelled" };
+  let guid = file.guid;
+  if (!guid) {
+    guid = await P.uploadFile(tok, file.name, file.data);
+    if (!opts.current()) return { ok: false, reason: "cancelled" };
+    opts.uploaded(guid);
+  }
+  if (!opts.current()) return { ok: false, reason: "cancelled" };
+  return { ok: true, id: await P.sendFile(tok, r.phone, { guid, name: file.name, clientMessageId: file.clientMessageId, replyTo: opts.replyTo }) };
+}
+// A native poll requires iMessage. Its stable client id belongs to the saved question; callers retain the send result.
+export async function deliverPoll(env, tenantId, { question, choices, clientMessageId }) {
+  const r = await row(env, tenantId);
+  if (!r || r.status !== "connected") return { ok: false, reason: "not_connected" };
+  if (!isIMessage(r)) return { ok: false, reason: "not_imessage" };
+  if (typeof clientMessageId !== "string" || !clientMessageId) throw new Error("poll client message id is required");
+  return { ok: true, ...await P.createPoll(await token(env, r), r.phone, question, choices, { clientMessageId }) };
 }
 // A card reply by text: an iMessage live app card that opens the hosted card page (/c/<token>). If the card can't be sent
 // (new-contact limit / "Target not allowed", or any error), the same reply goes as plain text followed by the link, which
@@ -235,17 +265,37 @@ export async function textingWebhook(req, env, ctx, hookId) {
   if (said) await saveService(env, t.id, r, said, "webhook");
   else if ("service_at" in r && now() - Number(r.service_at || 0) > (r.service ? SERVICE_RECHECK : SERVICE_RETRY)) ctx.waitUntil(refreshService(env, t.id, { r }));
   if (c.type === "reaction" || c.type === "read" || c.type === "typing") return accepted();
-  const { text, files } = inboundParts(c);
-  if (!text && !files.length) return accepted();
+  const parts = inboundParts(c, { sender: from });
+  const { text, files } = parts;
+  if (!text && !files.length && !parts.votes?.length) return accepted();
   // Read-only (a failed payment, or the plan ended): a fixed reply, never a model call, and nothing they sent is stored (pastdue.js).
   if (t.status !== "active") { if (t.status === "past_due" || t.status === "suspended") ctx.waitUntil(pausedReply(env, t).catch((e) => console.log("texting paused reply", e.message))); return accepted(); }
+  if (parts.votes?.length) {
+    try {
+      // General first saves the exact native event. Its durable queue resolves a known poll or waits for an in-flight send.
+      const ingress = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${t.id}:main`));
+      for (const [index, vote] of parts.votes.entries()) {
+        // Albums carry native child message ids. A delivery-local ordinal separates multiple votes when a child id is absent.
+        const { message_id: childId, ...selection } = vote;
+        const eventId = childId || (parts.votes.length === 1 ? m.id : `${m.id}:poll-item:${index}`);
+        const admitted = await ingress.nativePollVote(t.id, "main", "1", { message_id: eventId, ...selection, origin: phoneOrigin(said, "poll_vote") });
+        if (!admitted?.ok) throw new Error("native poll vote was not accepted");
+      }
+    } catch (e) {
+      // Photon retries a non-2xx delivery. Local ingress dedupes a vote accepted before a lost RPC response.
+      await env.DB.prepare("DELETE FROM texting_seen WHERE msg_id=? AND at=?").bind(seenId, pendingAt).run().catch((x) => console.log("texting retry release", x.message));
+      console.log("texting poll ingress", String(e.message || e).slice(0, 160));
+      return new Response("try again", { status: 503 });
+    }
+  }
+  if (!text && !files.length) return accepted();
   // Texts land in General, in one "Texts" task, and run on the resident like any message (the resident replies by text).
   // Photos, videos and documents are downloaded there and attached exactly like an app upload; a caption or more photos sent
   // a moment later join the same turn (Resident.textInbound).
   const R = env.RESIDENT.get(env.RESIDENT.idFromName(`res:${t.id}:main`));
   // m.id (spc-msg-…) is kept with the turn: a helper tapback (react tool) lands on this exact text.
   try {
-    const admitted = await R.textInbound(t.id, "main", "1", { id: m.id, text, files });
+    const admitted = await R.textInbound(t.id, "main", "1", { id: m.id, timestamp: m.timestamp, ...parts, origin: phoneOrigin(said, parts.origin_kind) });
     if (admitted?.ok !== true) throw new Error("Resident did not admit text");
   } catch (e) {
     await env.DB.prepare("DELETE FROM texting_seen WHERE msg_id=? AND at=?").bind(seenId, pendingAt).run().catch((x) => console.log("texting retry release", x.message));
@@ -262,19 +312,51 @@ export async function pausedReply(env, t, at = Date.now()) {
   const hold = t.status === "past_due" || !!(await env.DB.prepare("SELECT 1 x FROM payment_holds WHERE tenant_id=? AND state='unpaid'").bind(t.id).first().catch(() => null));
   return deliverText(env, t.id, (hold ? PAUSED_TEXT : INACTIVE_TEXT)(appLink(env, t.slug)));
 }
-// One webhook message → { text, files: [{ guid, name, mime, size }] }. An album arrives as one "group" message with an item
-// per photo. Content Photon documents but we can't open becomes a note for the helper.
-export function inboundParts(c) {
-  const items = c?.type === "group" && Array.isArray(c.items) ? c.items.map((i) => i?.content || {}) : [c || {}];
-  const texts = [], files = [];
-  for (const x of items) {
-    if (x.type === "text") texts.push(String(x.text || "").trim());
-    else if (x.type === "attachment") files.push({ guid: String(x.id || ""), name: String(x.name || ""), mime: String(x.mimeType || ""), size: x.size == null ? null : Number(x.size) });
-    else if (x.type === "richlink" && x.url) texts.push(String(x.url));
+// Spectrum voice.id is the provider attachment GUID. A reply wraps its actual content and a slim target reference.
+// Only actual content is opened; a quoted target is never downloaded or treated as another incoming message.
+export function inboundParts(c, { sender } = {}) {
+  const texts = [], files = [], votes = []; let reply = null, photon_target = null, visited = 0, hasVoice = false, hasOther = false;
+  const visit = (x, depth = 0, messageId = null) => {
+    if (!x || typeof x !== "object" || depth > 4 || ++visited > 60) return;
+    if (x.type === "reply") {
+      const t = x.target;
+      if (!photon_target && t && typeof t.id === "string" && t.id && t.id.length <= 256) {
+        photon_target = { id: t.id };
+        const preview = typeof t.contentPreview === "string" ? t.contentPreview : "";
+        if (preview) photon_target.preview = preview.replace(/\s+/g, " ").slice(0, 240);
+        const targetSender = typeof t.sender?.id === "string" ? P.normPhone(t.sender.id) : "";
+        if (sender && targetSender) reply = replyRef({ id: t.id, role: targetSender === sender ? "user" : "agent", text: preview });
+      }
+      visit(x.content, depth + 1, messageId);
+    } else if (x.type === "group" && Array.isArray(x.items)) {
+      for (const item of x.items.slice(0, 60)) visit(item?.content, depth + 1, typeof item?.id === "string" && item.id && item.id.length <= 1024 ? item.id : null);
+    }
+    else if (x.type === "text") { hasOther = true; texts.push(String(x.text || "").trim()); }
+    else if (x.type === "attachment") { hasOther = true; files.push({ guid: String(x.id || ""), name: String(x.name || ""), mime: String(x.mimeType || ""), size: x.size == null ? null : Number(x.size), origin_kind: "text" }); }
+    else if (x.type === "voice") {
+      hasVoice = true;
+      // Native iMessage CAF notes can have application/octet-stream metadata.
+      // Preserve their exact attachment reference and original MIME. The
+      // bounded download supplies a missing filename, and audio conversion
+      // validates the container bytes before any transcription request.
+      if (typeof x.id === "string" && x.id && x.id.length <= 256) {
+        files.push({ guid: x.id, name: typeof x.name === "string" ? x.name : "", mime: typeof x.mimeType === "string" ? x.mimeType : "", size: Number.isFinite(x.size) && x.size >= 0 ? x.size : null, origin_kind: "voice" });
+      } else texts.push("(The voice note arrived without a usable audio attachment reference. Ask them to resend the recording or attach it in the app.)");
+    }
+    else if (x.type === "richlink" && x.url) { hasOther = true; texts.push(String(x.url)); }
+    // Native definition snapshots are transport metadata. Only saved send options can answer our question.
+    else if (x.type === "poll" && ["created", "optionAdded"].includes(x.change)) {}
+    else if (x.type === "poll_option") {
+      const guid = x.pollMessageGuid, option = x.option?.optionIdentifier;
+      if (typeof guid === "string" && guid && guid.length <= 256 && typeof option === "string" && option && option.length <= 256 && typeof x.selected === "boolean") {
+        votes.push({ poll_message_guid: guid, option_identifier: option, selected: x.selected, ...(messageId ? { message_id: messageId } : {}) });
+      }
+    }
     else if (x.type === "poll_vote" || x.type === "pollVote") texts.push(`(voted in a poll: ${JSON.stringify(x).slice(0, 300)})`);
     else if (x.type) texts.push(`(sent a ${x.type} by text; you can't open it yet, so ask them to describe it or send it in the app)`);
-  }
-  return { text: texts.filter(Boolean).join("\n").slice(0, 20000), files: files.slice(0, 20) };
+  };
+  visit(c);
+  return { text: texts.filter(Boolean).join("\n").slice(0, 20000), files: files.slice(0, 20), origin_kind: hasVoice ? hasOther ? null : "voice" : "text", ...(votes.length ? { votes } : {}), ...(photon_target ? { photon_target, ...(reply ? { reply } : {}) } : {}) };
 }
 
 // The bytes of a file the person texted (the webhook only names it). Retries while Photon's Mac is still receiving it
@@ -336,4 +418,50 @@ export async function textingDebug(env, t) {
   let recent = null; try { recent = await P.recentInChat(await token(env, r), r.phone); } catch (e) { recent = `error: ${e.message}`; }
   let lookup = null; try { lookup = await P.phoneService(await token(env, r), r.phone, { timeoutMs: 6000 }); } catch (e) { lookup = `error: ${e.message}`; }
   return { hook_expected: hookUrl(env, r.hook_id), webhooks: wh, users: us, imessage: im, project_id: pid, recent, service: r.service ?? null, service_at: r.service_at ?? null, lookup };
+}
+
+// The dev ops route first proves this exact inbound ID exists in this task.
+// Credentials and the owner's phone stay inside the Worker.
+export async function textingMessageMetadata(env, tenantId, messageId, { attachmentId = "" } = {}) {
+  if (env.ENV_NAME !== "dev") return { ok: false, reason: "not_available" };
+  const r = await row(env, tenantId);
+  if (r?.status !== "connected" || !r.phone) return { ok: false, reason: "not_connected" };
+  let providerStage = "credentials";
+  try {
+    const bearer = await token(env, r); providerStage = "message_read";
+    const metadata = await P.inspectMessageAttachments(bearer, r.phone, messageId);
+    if (!attachmentId || !metadata.ok) return metadata;
+    const attachment = metadata.attachments.find(a => a.id === attachmentId), limit = 256 * 1024;
+    if (!attachment || !metadata.audio) return { ok: false, reason: "audio_attachment_not_verified" };
+    if (!Number.isSafeInteger(attachment.size) || attachment.size <= 0 || attachment.size > limit) return { ok: false, reason: "attachment_exceeds_header_limit" };
+    if (attachment.transferState !== 5) return { ok: false, reason: "attachment_not_finished" };
+    providerStage = "attachment_identity";
+    const canonical = await P.inspectAttachmentIdentity(bearer, attachmentId);
+    if (!canonical?.guid || canonical.guid.length > 256 || canonical.fileName !== attachment.name || canonical.mimeType !== attachment.mimeType || canonical.uti !== attachment.uti || canonical.totalBytes !== attachment.size || canonical.transferState !== 5) return { ok: false, reason: "canonical_attachment_not_verified" };
+    providerStage = "attachment_header_download";
+    const file = await P.downloadAttachment(bearer, attachmentId, { maxBytes: limit, timeoutMs: 12000 });
+    if (file.guid !== canonical.guid || file.size !== attachment.size) return { ok: false, reason: "download_identity_not_verified", guid_present: !!file.guid, guid_matches: file.guid === canonical.guid, expected_bytes: attachment.size, downloaded_bytes: file.size };
+    return { attachment: attachmentId, identity: "canonical_metadata_verified", ...cafHeaderMetadata(file.bytes) };
+  }
+  catch (e) {
+    const code = String(e?.code ?? ""), grpcStatus = /^(?:[0-9]|1[0-6])$/.test(code) ? Number(code) : null;
+    return { ok: false, reason: "provider_metadata_unavailable", provider_stage: providerStage, ...(grpcStatus != null ? { grpc_status: grpcStatus } : {}) };
+  }
+}
+
+// Header inspection only. Never return audio bytes or attempt to decode them.
+function cafHeaderMetadata(bytes) {
+  const base = { bytes: bytes.byteLength }, text = (at, n) => String.fromCharCode(...bytes.subarray(at, at + n));
+  if (bytes.length < 8 || text(0, 4) !== "caff") return { ok: true, ...base, caf: false };
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), version = view.getUint16(4);
+  for (let offset = 8, chunks = 0; offset + 12 <= bytes.length && chunks < 64; chunks++) {
+    const type = text(offset, 4), size = view.getBigInt64(offset + 4); offset += 12;
+    if (size < 0n || size > BigInt(bytes.length - offset)) break;
+    if (type === "desc" && size >= 32n) {
+      const formatId = text(offset + 8, 4);
+      return { ok: true, ...base, caf: true, version, format_id: /^[\x20-\x7e]{4}$/.test(formatId) ? formatId : "non_printable" };
+    }
+    offset += Number(size);
+  }
+  return { ok: false, ...base, caf: true, version, reason: "caf_description_not_found" };
 }

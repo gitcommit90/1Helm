@@ -1,8 +1,8 @@
-// What the Models page shows: for every job, the model, reasoning level and fallbacks that are saved for it, which is exactly what the
+// What the Models page shows: for each displayed job, the model, reasoning level and fallbacks that are saved for it, which is exactly what the
 // runtime uses (it reads the same saved settings, model-jobs.js). For jobs the account's privacy setting filters, it also says whether
 // each privacy setting would leave the job with no allowed model.
 import { PRIVACY_LABEL } from "../privacy.js";
-import { JOBS, JOB_KINDS, GROUPS, entriesOf, privacyCoverage, factsOf, zdrBlocked, zdrApplies } from "./model-jobs.js";
+import { MODEL_PAGE_JOBS, JOB_KINDS, GROUPS, entriesOf, privacyCoverage, factsOf, zdrBlocked, zdrApplies } from "./model-jobs.js";
 
 const nameOf = (settings, id) => factsOf(settings, id)?.name || String(id || "");
 
@@ -19,5 +19,5 @@ export function jobView(settings, def) {
 }
 export function modelDashboard(view) {
   const settings = view.config;
-  return { jobs: JOBS.filter((d) => !view.hidden?.includes(d.id)).map((d) => jobView(settings, d)), groups: GROUPS, level_labels: PRIVACY_LABEL };
+  return { jobs: MODEL_PAGE_JOBS.filter((d) => !view.hidden?.includes(d.id)).map((d) => jobView(settings, d)), groups: GROUPS, level_labels: PRIVACY_LABEL };
 }

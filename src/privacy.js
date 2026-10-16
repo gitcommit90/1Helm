@@ -84,6 +84,32 @@ export const ENDPOINTS = {
   // image: {}, video: {}, tts: {}   ← future modalities register here, verified per endpoint (see header).
 };
 export const registered = (model, modality = "chat") => !!ENDPOINTS[modality]?.[model];
+// ---- Terms recorded per provider (OpenRouter host tag, without any "/region" suffix) ----
+// What a provider does with requests, for every model it serves, including models released later. A per-model entry in ENDPOINTS
+// overrides it. A provider that isn't here has UNKNOWN terms: its endpoints count only where OpenRouter's published ZDR list proves
+// zero retention (any level), and otherwise only at Unrestricted. Record a provider only with a citation.
+//   meta: both Meta endpoints retain requests ~30 days and the Standard endpoint doesn't train (the same evidence as the per-model Muse entries above). `not` lists model IDs the
+//         provider terms don't cover: the Contributor endpoint trains, so a Contributor model gets no recorded terms.
+export const PROVIDERS = {
+  chat: { meta: { zdr: false, training: false, not: /contributor/i } },
+};
+// The recorded terms of one host for one model, or null (unknown). A model registered in ENDPOINTS uses only its own entries
+// (a host it doesn't list has none); any other model uses the provider's terms.
+export function hostTerms(model, host, { modality = "chat" } = {}) {
+  if (typeof host !== "string") return null;
+  const reg = ENDPOINTS[modality]?.[model];
+  if (reg) { const base = Object.keys(reg).filter((b) => host === b || host.startsWith(`${b}/`)).sort((a, b) => b.length - a.length)[0]; return base ? reg[base] : null; }
+  const prov = PROVIDERS[modality]?.[host.split("/")[0]];
+  return prov && !(prov.not && prov.not.test(String(model))) ? { zdr: prov.zdr, training: prov.training } : null;
+}
+// Whether a host may serve an unregistered model at a level. Unknown terms: only Unrestricted, unless the host is proven ZDR
+// (OpenRouter's published list), which satisfies every level.
+export function hostOk(model, host, level, { proven = false, modality = "chat" } = {}) {
+  level = normalizePrivacy(level);
+  const t = hostTerms(model, host, { modality });
+  if (t) return endpointOk(t, level);
+  return !ENDPOINTS[modality]?.[model] && (proven || level === "unrestricted");   // a registered model never uses a host it doesn't list
+}
 // Is one endpoint eligible at a level? Unknown endpoint → no.
 export function endpointOk(ep, level) {
   if (!ep) return false;
@@ -126,7 +152,18 @@ export function enforceRequest(payload, level, { prov = null, modality = "chat" 
     p.provider = { ...given, ...STRICT };
     return p;
   }
-  if (!registered(p.model, modality)) { p.provider = { ...given, ...STRICT }; return p; }
+  if (!registered(p.model, modality)) {
+    // An unregistered model is limited to OpenRouter's strictest filter, unless the caller pinned hosts and every one of them is allowed at
+    // this level by the provider's recorded terms (or, at Unrestricted only, has no recorded terms). Anything else stays strict.
+    const strictAsked = given.zdr === true || given.data_collection === "deny",   // a caller that asked for zdr or deny (e.g. a ZDR job) keeps it
+      pinned = !strictAsked && Array.isArray(given.only) && given.only.length && given.only.every((h) => typeof h === "string") ? given.only : null;
+    if (pinned && pinned.every((h) => hostOk(p.model, h, level, { modality }))) {
+      const terms = pinned.map((h) => hostTerms(p.model, h, { modality })), { zdr, data_collection, ...rest } = given;
+      p.provider = { ...rest, only: pinned, data_collection: terms.some((t) => !t || t.training) ? "allow" : "deny", ...(terms.every((t) => t?.zdr === true) ? { zdr: true } : {}) };
+      return p;
+    }
+    p.provider = { ...given, ...STRICT }; return p;
+  }
   const reg = ENDPOINTS[modality][p.model];
   let hosts = eligibleHosts(p.model, level, { modality, prov });
   const only = Array.isArray(given.only) ? given.only : null, order = Array.isArray(given.order) ? given.order : [];

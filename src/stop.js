@@ -53,8 +53,8 @@ export function stopMix(Resident) { return Object.assign(Resident.prototype, {
   async stopRuns(session = null, by = "person") {
     // Helpers first (marked stopped by the person, so their run never hands a "limit" result back), then every turn.
     let helpers = 0, rows = [];
-    try { rows = session == null ? this.sql.exec("SELECT id, session FROM helpers WHERE status='running'").toArray()
-      : this.sql.exec("SELECT id, session FROM helpers WHERE session=? AND status='running'", String(session)).toArray(); }
+    try { rows = session == null ? this.sql.exec("SELECT id, session FROM helpers WHERE status IN ('running','waiting_input')").toArray()
+      : this.sql.exec("SELECT id, session FROM helpers WHERE session=? AND status IN ('running','waiting_input')", String(session)).toArray(); }
     catch (e) { if (!/no such table/.test(e.message)) console.log("stop helpers", e.message); }
     const done = rows.map((h) => this.helperStop(h.session, h.id, by).then((r) => { if (r?.ok) helpers++; }, (e) => console.log("stop helper", h.id, e.message)));
     const turns = this.liveTurnsOf(session);
@@ -62,6 +62,10 @@ export function stopMix(Resident) { return Object.assign(Resident.prototype, {
     await this.nativeCancel?.(session, 'Task stopped');
     const parked = this.stopJournaled ? this.stopJournaled(session) : [];   // resume.js: a turn waiting to carry on after an update ends stopped too
     await Promise.all(done);
+    try {
+      if(session==null) {this.sql.exec("UPDATE user_questions SET status='cancelled' WHERE status='pending'");this.sql.exec("UPDATE sessions SET waiting=NULL WHERE waiting='answer'");}
+      else {this.sql.exec("UPDATE user_questions SET status='cancelled' WHERE session=? AND status='pending'",String(session));this.sql.exec("UPDATE sessions SET waiting=NULL WHERE id=? AND waiting='answer'",String(session));}
+    }catch(e){if(!/no such table/.test(e.message))throw e;}
     // The response carries the closed cards: give the turns a moment to reach their step boundary (bounded).
     const t0 = Date.now();
     while (turns.some((t) => !t.finished) && Date.now() - t0 < 4000) await new Promise((z) => setTimeout(z, 25));

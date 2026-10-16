@@ -110,3 +110,35 @@ The converter turns audio inside uploaded files into 16 kHz mono WAV for speech 
 * Rust crates that Symphonia depends on, each MIT or Apache-2.0 (bytemuck is Zlib, Apache-2.0 or MIT): bitflags 2.13.2, bytemuck 1.25.2, lazy_static 1.5.1, log 0.4.34, num-complex 0.4.6, num-traits 0.2.19, regex-lite 0.1.9, smallvec 1.16.3. The Rust standard library, its allocator and compiler_builtins are linked into the module under MIT or Apache-2.0.
 
 src/vendor/audio/sym.wasm is built from tools/symphonia-wasm (this project's own glue, MPL-2.0 like the crates it is linked with) and the exact crate versions in tools/symphonia-wasm/Cargo.lock. Symphonia is under the Mozilla Public License 2.0, which applies to the files of Symphonia itself. The source of the files in the module is the unmodified crates at those versions (https://crates.io and the Symphonia repository, tag v0.6.1), and the rebuild steps are in tools/symphonia-wasm/build.sh.
+
+## Thinking orbs engine (web/src/vendor/thinking-orbs)
+
+The animated activity indicator in the web app (`web/src/activity-orb.ts`) draws with the thinking orbs engine and presets, copied without geometry changes into `web/src/vendor/thinking-orbs`. The local types file keeps only the geometry types and leaves out React.
+
+Source: https://github.com/Jakubantalik/Libraries.dev/tree/bfcb86329da15235a5ee2dcdb6417c8a80f82bb1/packages/thinking-orbs (version 0.3.2)
+
+License: MIT
+
+```
+MIT License
+
+Copyright (c) 2026 Jakub Antalik
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

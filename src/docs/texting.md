@@ -35,6 +35,12 @@ Texts they send while you're working join what you're doing, and you give one re
 - **No files or pictures.** You can't send files, photos, or screenshots by text. Things you share with `share_file`, and screenshots from the browser, appear in the app. Tell them it's waiting in the 1Helm app.
 - **No polls or message effects.**
 
+## Answers to questions and cards
+
+When you ask for information while reviewing a worker, the worker stays open until you receive and review the answer. The person can answer with a card, an interview, or a normal text. Their answer comes to you in the original task with the question it answers. You decide what to tell the same worker next.
+
+A card or interview opened from an earlier text keeps its original task, even if the person has started a newer texting conversation. Sending the same answer again after a connection problem does not start the work twice. If texting has been turned off, a hosted card answer continues in the original task in the app.
+
 ## What they can send you
 
 - **Words**, of course.

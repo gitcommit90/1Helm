@@ -5,6 +5,7 @@ import { MAX_ATTEMPTS, modelSettingsEnv, readModelSettings, choreRouteOf, jobRou
 import { testModelFor, testPayload, testHostsOf, testEffortOf } from "./internal-test-model.js";   // dev test workspaces: every call on TEST_MODEL
 import { boundedText } from "./bounded-body.js";
 import { authorizeTaskProfile, TaskAffinityBlocked, backgroundRole } from "./ee/index.js";
+import { cloudflareChat, cloudflareEmbeddings, isCloudflareModel, dynamicProvidersOn } from "./cloudflare-models.js";
 export { effortBody, effortFor, reasoningMandatory };
 // Model provider. ROUTER_MODE="two" (dev and live): the main chat follows the routing policy (route2.js decides a task category,
 // pool.js maps category × AI data privacy level to models with fixed efforts, twoChat below builds every attempt). Classic mode
@@ -21,6 +22,9 @@ export const stepMaxOut = (env) => { const n = Math.round(Number(env?.STEP_MAX_T
 // Price ceiling (Captain, 2026-10-01): Jev may pick any model up to $3 in / $15 out per million tokens. Keeps the Sonnet 5.5 /
 // gpt-6.1-sol step-up, blocks gpt-6-astra and Opus. OpenRouter enforces it (no endpoint above it is used).
 export const OR_MAX_PRICE = { prompt: 3, completion: 15 };
+// The price ceiling sent to OpenRouter for one model. The $3 / $15 default stays, but a model whose published price (dollars per million tokens,
+// from its catalog record) is higher is not blocked by it: its own price, rounded up, becomes the ceiling (Captain 2026-10-16).
+export const maxPriceFor = (catalog) => { const up = (v, d) => Number.isFinite(v) && v > d ? Math.ceil(v * 1e4) / 1e4 : d; return { prompt: up(catalog?.pricing?.prompt, OR_MAX_PRICE.prompt), completion: up(catalog?.pricing?.completion, OR_MAX_PRICE.completion) }; };
 export const OR_RESERVE_PRICE = { in: 3000, out: 15000 }; // nano$/token = the ceiling, reservations only; settle charges usage.cost
 export const useOpenRouter = (env) => !!env.BYOK || (!!env.OPENROUTER_API_KEY && env.MODEL_PROVIDER !== "workers-ai");
 // Own AI key (byok.js): env.BYOK is set on a BYOK account's env (byokEnv). Every call below then goes to the person's endpoint, never
@@ -96,34 +100,52 @@ export function taskPayload(profile, body, { hosts, level, settings = null } = {
     throw new TaskAffinityBlocked("This task's model supports only automatic tool selection. No different model was substituted.", "unsupported-tool-choice");
   const p = { ...rest, messages: replayFor(rest.messages, profile.requestedModel), model: profile.requestedModel,
     max_tokens: Math.min(Number(rest.max_tokens) || profile.maxOutput, profile.maxOutput), ...effortBody(profile.effort, profile.requestedModel, settings),
-    provider: { only: hosts || profile.hosts, allow_fallbacks: true, require_parameters: true, max_price: OR_MAX_PRICE },
+    provider: { only: hosts || profile.hosts, allow_fallbacks: true, require_parameters: true, max_price: maxPriceFor(profile.catalog) },
     usage: { include: true }, session_id: cacheKey(profile.cacheSession), prompt_cache_key: cacheKey(profile.cacheSession) };
   return taskStickyPayload(level ? enforceRequest(p, level) : p, profile.preferredHost);
 }
 async function taskChat(env, body, route, meta, signal) {
-  const profile = route.taskProfile;
-  // Exactly one application retry for a transient pre-response failure. Endpoint
-  // fallback is bounded to this model's snapshotted eligible hosts, never models.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const auth = await authorizeTaskProfile(env, profile, meta?.tenant, body);
-    try {
-      const r = await orFetch(env, taskPayload(profile, body, { ...auth, settings: env.MODEL_SETTINGS }), { ...meta, _taskAffinity: true, _preferredHost: profile.preferredHost || null }, { "x-openrouter-metadata": "enabled" }, signal);
-      if (!r.ok) {
-        const status = r.status, detail = await boundedText(r, 64 * 1024).catch(() => "");
-        if (/context.{0,40}(length|window|limit)|maximum.{0,30}token|too many tokens/i.test(detail))
-          throw Object.assign(new Error("The task model rejected the request because its context window is full."), { orStatus: status, contextOverflow: true });
-        throw Object.assign(new Error(`Task model unavailable (${status}).`), { orStatus: status });
+  const original = route.taskProfile, chain = Array.isArray(original.poolChain) && original.poolChain.length ? original.poolChain : [original];
+  let last;
+  for (let index = 0; index < chain.length; index++) {
+    const profile = { ...original, ...chain[index], poolChain: undefined };
+    // Every model owns its snapshot, effort, limits and opaque reasoning replay.
+    // Provider fallback happens inside one OR request before advancing here.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const auth = await authorizeTaskProfile(env, profile, meta?.tenant, body);
+        const frozenSettings = { ...env.MODEL_SETTINGS, catalog: { ...env.MODEL_SETTINGS?.catalog, [profile.requestedModel]: profile.catalog } };
+        const payload = taskPayload(profile, body, { ...auth, level: isCloudflareModel(profile.requestedModel) ? null : auth.level, settings: frozenSettings });
+        const r = isCloudflareModel(profile.requestedModel)
+          ? await cloudflareChat(env, payload, { ...meta, _privacy: auth.level }, signal, profile.catalog)
+          : await orFetch(env, payload, { ...meta, _taskAffinity: true, _privacy: auth.level, _preferredHost: profile.preferredHost || null }, { "x-openrouter-metadata": "enabled" }, signal);
+        if (!r.ok) {
+          const status = r.status, detail = await boundedText(r, 64 * 1024).catch(() => "");
+          if ([400,415,422].includes(status) && /image|vision|multimodal|image_url|unsupported.{0,30}(content|media)/i.test(detail)
+              && body.messages?.some(m=>Array.isArray(m.content)&&m.content.some(p=>p.type==="image_url")))
+            throw Object.assign(new Error("The selected model rejected image input."), { status, orStatus: status, imageInputRejected: true, detail: detail.slice(0,1000) });
+          if (/context.{0,40}(length|window|limit)|maximum.{0,30}token|too many tokens/i.test(detail))
+            throw Object.assign(new Error("The task model rejected the request because its context window is full."), { orStatus: status, contextOverflow: true });
+          throw Object.assign(new Error(`Task model unavailable (${status}).`), { orStatus: status });
+        }
+        const out = await firstOk(r, !!body.stream);
+        route.served = profile.requestedModel; route.effort = profile.effort;
+        // Runtime persists which fallback served without replacing the frozen chain.
+        route.servedProfile = profile;
+        return out;
+      } catch (e) {
+        last = e;
+        if (signal?.aborted || e.contextOverflow || e.imageInputRejected || e.reason === "credential-mode-changed" || e.reason === "invalid-profile" || e.reason === "unsupported-image" || /context|maximum.*token|token.*limit/i.test(String(e.message))) throw e;
+        const transient = e.orStatus === 429 || e.orStatus >= 500 || e instanceof TypeError;
+        if (attempt === 0 && transient) continue;
+        // Legacy task profiles keep their established single-model behavior.
+        if (chain.length === 1 && (e.privacy || e.taskAffinity)) throw e;
+        break;
       }
-      const out = await firstOk(r, !!body.stream);
-      route.served = profile.requestedModel;
-      return out;
-    } catch (e) {
-      if (signal?.aborted || e.privacy || e.taskAffinity || /context|maximum.*token|token.*limit/i.test(String(e.message))) throw e;
-      const transient = e.orStatus === 429 || e.orStatus >= 500 || e instanceof TypeError;
-      if (attempt === 0 && transient) continue;
-      throw Object.assign(new TaskAffinityBlocked("This task's model is unavailable right now. Retry shortly; your conversation is saved and no different model was substituted.", "model-unavailable"), { orStatus: e.orStatus || 503 });
     }
   }
+  if (last?.privacy) throw last;
+  throw Object.assign(new TaskAffinityBlocked("The configured task models are unavailable right now. Retry shortly; your conversation is saved.", "model-unavailable"), { orStatus: last?.orStatus || 503 });
 }
 
 // Test model (test-model.js): main chat capped per step like two mode (stepMaxOut). orFetch rewrites the payload (model, hosts, ZDR, reasoning effort
@@ -169,7 +191,7 @@ export function poolPayload(env, model, level, body, session, prov = null, effor
   const { reasoning, provider, models, model: _m, ...b } = body || {};   // a caller's/router's effort or provider never reaches the wire
   if (quirkOf(env.MODEL_SETTINGS, model, "auto_tool_choice_only") && b.tool_choice != null && b.tool_choice !== "auto") throw new PrivacyBlocked(`${model} accepts only tool_choice auto`, { model });
   return { ...b, ...(meta?.max_output && meta?.context_length ? { max_tokens: Math.min(Number(b.max_tokens) || stepMaxOut(env), meta.max_output, Math.max(1, meta.context_length - 1)) } : {}), messages: replayFor(b.messages, model), model, ...effortBody(effort, model, env.MODEL_SETTINGS),
-    provider: { order: hosts, only: hosts, allow_fallbacks: true, require_parameters: true, max_price: OR_MAX_PRICE }, usage: { include: true },
+    provider: { order: hosts, only: hosts, allow_fallbacks: true, require_parameters: true, max_price: maxPriceFor(meta) }, usage: { include: true },
     ...(session ? { session_id: String(session).slice(0, 256), prompt_cache_key: cacheKey(session) } : {}) };
 }
 async function twoChat(env, body, session, route, meta, signal = null) {
@@ -177,7 +199,8 @@ async function twoChat(env, body, session, route, meta, signal = null) {
   // host: one provider or a list in order; pin: only those providers. strict: the endpoint must support every parameter sent.
   const one = async (model, effort, host, b, pin = false, strict = false) => {
     const cap = env.MODEL_SETTINGS?.catalog?.[model]?.max_output;
-    const r = await orFetch(env, { ...b, ...(cap ? { max_tokens: Math.min(Number(b.max_tokens) || OR_MAX_OUT, cap) } : {}), model, ...effortBody(effort, model, env.MODEL_SETTINGS), provider: { zdr: true, max_price: OR_MAX_PRICE, ...(strict ? { require_parameters: true } : {}), ...(host ? { order: [host].flat(), ...(pin ? { only: [host].flat(), allow_fallbacks: false } : {}) } : {}) }, usage: { include: true },
+    const dynamic = dynamicProvidersOn(env);
+    const r = await orFetch(env, { ...b, ...(cap ? { max_tokens: Math.min(Number(b.max_tokens) || OR_MAX_OUT, cap) } : {}), model, ...effortBody(effort, model, env.MODEL_SETTINGS), provider: { zdr: true, max_price: maxPriceFor(env.MODEL_SETTINGS?.catalog?.[model]), ...(strict ? { require_parameters: true } : {}), ...(host ? { order: [host].flat(), ...(pin && !dynamic ? { only: [host].flat(), allow_fallbacks: false } : {}), ...(dynamic ? { allow_fallbacks: true } : {}) } : {}) }, usage: { include: true },
       ...(session ? { session_id: String(session).slice(0, 256), prompt_cache_key: cacheKey(session) } : {}) }, meta, { "x-openrouter-metadata": "enabled" }, signal);
     if (!r.ok) { const t = await boundedText(r, 64 * 1024).catch(() => ""); throw Object.assign(new Error(`openrouter ${model} ${r.status}: ${t.slice(0, 200)}`), { orStatus: r.status }); }
     return r;
@@ -344,6 +367,7 @@ const OR_API = "https://openrouter.ai/api/v1";
 export async function orFetch(env, payload, meta = {}, extraHeaders = {}, signal = null) {
   // Own AI key: a chore (the browser agent's planner) on the fast model. Failures come back as an error body, like OpenRouter's.
   if (env.BYOK) { try { return await byokChat(env.BYOK, payload, { fast: true, signal, privacy: await privacyOf(env, meta?.tenant) }); } catch (e) { if (signal?.aborted) throw e; return new Response(JSON.stringify({ error: { message: e.message } }), { status: 502, headers: { "content-type": "application/json" } }); } }
+  if (isCloudflareModel(payload.model)) return cloudflareChat(env, payload, payload.provider?.zdr ? { ...meta, _privacy: "zdr" } : meta, signal);
   // AI data privacy (privacy.js): the one chokepoint for every OpenRouter chat call validates the request against the account's current
   // level (twoChat passes the level it just read; anything else reads it now). Ineligible → PrivacyBlocked, nothing is sent.
   payload = enforceRequest(payload, meta?._privacy ?? await privacyOf(env, meta?.tenant), { prov: meta?._prov ?? null });
@@ -371,6 +395,10 @@ export async function orFetch(env, payload, meta = {}, extraHeaders = {}, signal
 // Not LLM chat, so no test-model rewrite and no cache breakpoints. body: a payload object, or () → { body, length } for a streamed body
 // (made again for the direct retry; length is what FixedLengthStream needs). The caller asks for ZDR endpoints (provider.zdr).
 export async function orFetchPath(env, path, body, meta = {}, extraHeaders = {}, signal = null) {
+  if (typeof body === "object" && isCloudflareModel(body?.model)) {
+    if (path === "embeddings") return Response.json(await cloudflareEmbeddings(await modelSettingsEnv(env), body.model, body.input, body.provider?.zdr ? { ...meta, _privacy: "zdr" } : meta));
+    throw new Error(`No native Cloudflare adapter supports ${path}.`);
+  }
   const make = typeof body === "function" ? body : (() => { const s = JSON.stringify(body); return () => s; })();
   return orSend(env, path, make, meta, extraHeaders, signal);
 }

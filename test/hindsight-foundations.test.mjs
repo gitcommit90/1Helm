@@ -96,7 +96,7 @@ const MODES = ["concise", "verbose", "custom", "verbatim", "chunks"], STRATEGIES
   for (const k of ["chat", "note", "helper-note", "live", "bee"]) assert.ok(contextFor(k, long).includes("F".repeat(90)), `${k}: the name is kept whole`);
   assert.ok(contextFor("file", long).includes("f".repeat(300)) && contextFor("bee", long).includes("a".repeat(300)) && contextFor("bee", long).includes("z".repeat(900)) && contextFor("chat", long).includes("F".repeat(90)), "nothing is cut");
   const n = { first: "Sam", helper: "Skipper", channel: "main" };
-  assert.equal(contextFor("chat", n), "1Helm chat in #main between Sam (the user) and Skipper (the user's AI assistant). The user's lines are the user's own words and facts about the user. The assistant's lines are what the assistant said or did.");
+  assert.equal(contextFor("chat", n), "1Helm chat in #main between Sam (the user) and Skipper (the user's AI assistant). The user's lines are the user's own words and facts about the user. The assistant's lines are what the assistant said or did. Each entry may name its message origin. Keep the stated origin with facts from that entry so app messages, phone texts, voice messages and poll votes remain distinguishable. A phone service is known only when the entry names it. Do not apply one entry's origin to another entry, and do not infer successful phone delivery from an assistant reply.");
   assert.equal(contextFor("scheduled", n), "Scheduled run of a Skipper workflow in #main. These lines are the assistant's own work, not the user's words.");
   assert.match(contextFor("note", { ...n, section: "about" }), /^A note Sam wrote in their 1Helm Notebook, in the about section\. It is Sam's own statement\.$/);
   assert.match(contextFor("helper-note", { ...n, section: "about" }), /^A note Skipper saved about Sam/); assert.match(contextFor("file", { ...n, file: "menu.pdf" }), /^A file in Sam's 1Helm Library: menu\.pdf\.$/);
@@ -193,7 +193,7 @@ const MODES = ["concise", "verbose", "custom", "verbatim", "chunks"], STRATEGIES
   d1.exec("UPDATE tenants SET helper_name='Ollie', first_name='Sam'");
   // the speaker labels and context come from the names
   on.R._hsNames = null; await on.R.hsNames();
-  assert.equal(speakerLabels(on.R._hsNames).user, "Sam (user)"); assert.equal(contextFor("chat", { first: "Sam", helper: "Ollie", channel: "main" }).length <= 300, true);
+  assert.equal(speakerLabels(on.R._hsNames).user, "Sam (user)"); { const c = contextFor("chat", { first: "Sam", helper: "Ollie", channel: "main" }); assert.match(c, /^1Helm chat in #main between Sam \(the user\) and Ollie \(the user's AI assistant\)/); assert.ok(c.length <= 700, `chat context stays one short paragraph (${c.length}; Hindsight 1.0 sets no limit, message origin wording added in 3a0efaa)`); }
   // a failed import never blocks the retain and is retried later
   const fail = mk(true); fail.f.HINDSIGHT.fetch = async (u, init = {}) => { fail.f.calls.push(`${init.method || "GET"} ${new URL(u).pathname}`); return String(u).endsWith("/import") ? J({ detail: "bad" }, 400) : J({}); };
   assert.equal(await fail.R.hsBank(), "dev-t1-main"); assert.equal(fail.R.get("hs_bank"), "dev-t1-main"); assert.equal(fail.R.get("hs_tpl"), undefined, "no key recorded, so it is tried again");
