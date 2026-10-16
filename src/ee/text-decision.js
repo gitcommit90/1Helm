@@ -21,7 +21,9 @@ const NANO = 1e9;
 export const methodOf = (settings, model) => {
   const m = settings?.catalog?.[model];
   if (!Array.isArray(m?.kinds)) return "chat";
-  if (m.source !== "CF" && m?.eligible === true) return "chat";
+  // The kinds decide, also for a record the Models page verified (eligible: true): a decision model's record has no "chat" kind, and sending it
+  // to chat/completions fails (OpenRouter: "is a decisions model and cannot be used with the chat/completions endpoint").
+  if (m.kinds.includes("chat")) return "chat";
   return m.kinds.includes("workers_decider") ? "clef" : m.kinds.includes("decider") ? "systemone" : "chat";
 };
 const mainMethod = (settings, jobId) => methodOf(settings, jobSetting(settings, jobId).model);

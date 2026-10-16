@@ -324,6 +324,7 @@ async function validatedSelection(env, config, current) {
       next.catalog[id] = own(SEED_FACTS, id) && SEED_FACTS[id].quirks ? { ...m, quirks: clone(SEED_FACTS[id].quirks) } : m;   // known quirks (e.g. no temperature) are kept when a known model is added again
     } else {
       if (!looseId(id)) fail("Invalid model ID.");
+      if (id.startsWith("~")) fail(`${id}: latest-version IDs are only for chat and decision jobs. Pick a specific model for ${def.label}.`);
       // A speech model the first-run data describes keeps its name, kinds, accepted formats and price (model-seed.js SEED_FACTS).
       const known = own(SEED_FACTS, id) && SEED_FACTS[id].kinds?.includes(pick) ? { id, ...clone(SEED_FACTS[id]) } : null;
       next.catalog[id] = known || { id, name: id, kinds: [pick], efforts: [] };

@@ -101,3 +101,14 @@ assert.deepEqual(answerSchema({ s: { type: "score", criteria: ["a", "b", "c"] } 
   assert.deepEqual(sent.map((x) => x.body.model), [ID.PPLX, ID.DEEPSEEK]); assert.equal(aiCalls.length, 0);
   reset(); reply = () => Response.json({ error: "down" }, { status: 503 }); const r2 = await askJob(envFor(S7), "doors_shadow", { state: {}, questions }); assert.equal(r2.answers.same.noul, 0.9, "then Clef answers when both fail"); assert.equal(aiCalls.length, 1); }
 console.log("PASS text decisions: native Clef unchanged, JSON path for any chat model, save check, picker lists, capability notes");
+
+// ---- a decision model the Models page verified (eligible: true) still uses its own endpoint, also as a ~latest alias ----
+{ const LATEST = "~perplexity/pplx-decider-latest";
+  const rec = { id: LATEST, source: "OR", kinds: ["decider"], name: "Perplexity: Decider V1.2", eligible: true, reasons: [], efforts: ["default"], hosts: ["perplexity"], in_nano: 20 };
+  const S3 = { ...SEED, catalog: { ...SEED.catalog, [LATEST]: rec }, jobs: { ...SEED.jobs, decider: { model: LATEST, effort: null, fallbacks: [] } } };
+  assert.equal(methodOf(S3, LATEST), "systemone"); assert.equal(usesSystemone(S3, "decider"), true);
+  assert.equal(methodOf({ catalog: { x: { ...rec, kinds: ["chat", "chore"] } } }, "x"), "chat");
+  reset(); reply = () => Response.json({ model: "perplexity/pplx-decider-v1.2-20261016", answers: { same: { noul: 0.4 }, kind: { choice: "b" } }, usage: { cost: 0.00001 } });
+  const r = await askDecider(envFor(S3), { x: 1 }, questions, {});
+  assert.equal(sent.length, 1); assert.match(sent[0].url, /systemone/); assert.doesNotMatch(sent[0].url, /chat\/completions/); assert.equal(sent[0].body.model, LATEST);
+  assert.equal(sent[0].body.provider.only[0], "perplexity"); assert.equal(r.model, "perplexity/pplx-decider-v1.2-20261016"); assert.ok(!r.error, r.error); }

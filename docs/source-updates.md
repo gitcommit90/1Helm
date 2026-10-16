@@ -3,13 +3,13 @@
 ## Routed tasks, durable questions, phone replies and preparation containers
 
 This update reconciles the Worker from `5b746f1072614964a776621c887a464d1d6a1901`
-to `5769787097edfaf801c5143aeb3f86ac65d3351b` and the web app from
+to `dfe291ed66052437f6e38b0775a96dafce1bbea1` and the web app from
 `b4ea73bddd011f8d2baea92fce93b38e32577f6c` to
 `4a1da4ca61790f301cb5f7a81abaa84b9445689f`.
 
 Source correspondence:
 
-- Worker: `5b746f1072614964a776621c887a464d1d6a1901` → `5769787097edfaf801c5143aeb3f86ac65d3351b`.
+- Worker: `5b746f1072614964a776621c887a464d1d6a1901` → `dfe291ed66052437f6e38b0775a96dafce1bbea1`.
 - Web: `b4ea73bddd011f8d2baea92fce93b38e32577f6c` → `4a1da4ca61790f301cb5f7a81abaa84b9445689f`.
 - Public base: `e458597c3d2952cdfe25af3aeec3214236c7ab86`.
 
@@ -23,6 +23,7 @@ Changes:
 - Interview and card answers carry the question identity (`input_reply`) on the chat stream route, a duplicate answer is reported as such, and the helper dispatch ignores a tool that the current delegation state does not allow.
 - The licensed Models page searches the live model list, accepts the latest alias of a model family, shows each result with the privacy levels it can serve instead of hiding it, and confirms a delete in the page instead of a browser dialog. The privacy module reports which providers and host terms each model has.
 - A phone file send is re-armed only after a send, and deleting a task also removes its phone file and memory origin markers.
+- A decision model chosen on the Models page uses its own decision endpoint whenever its record has no chat kind, also when the page verified it. The saved settings refuse a latest-version model ID (starting with `~`) for any job except chat and decision jobs.
 - The web app shows a canvas activity orb while the helper and its workers are busy (the MIT licensed thinking orbs engine, noted in `THIRD-PARTY-NOTICES.md`), keeps the chat visible above the mobile keyboard, pages long inline cards, and binds a typed or tapped answer to its question.
 
 Left out of the public source: the hosted affiliate program (referral commissions, Stripe payouts and the hosted agreement and marketing pages), the dev to Live model settings push tool (and its audit table), the hosted billing event fixtures and operator inspection of the Cloud Stripe account, the dev only container and preparation benchmark endpoints and their images, the routing counter page for the Cloud gateway logs and its two tables, the private release, wrangler and key vault tooling, the live checks, and the private design sandbox. The public example configuration is unchanged.

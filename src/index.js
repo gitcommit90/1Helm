@@ -7,7 +7,7 @@ import { backupControl, isBackupPath } from "./backup-control.js";
 import { enabled as eeEnabled, features as eeFeatures, routeEnabled as eeRouteEnabled } from "./ee/index.js";
 import { tolerantEnv, DO_TRANSIENT_RE, RPC_SKEW_RE, rpcSkew, codeV, isResetErr } from "./do-stub.js";
 import { opsRoute, viewAsGate, viewAsToken } from "./internal-shim.js";
-import { ambientSettingsRoute, dailyBillingFlag } from "./ee/index.js";
+import { ambientSettingsRoute, dailyBillingFlag, deciderModel, modelSettingsEnv } from "./ee/index.js";
 import { SW_RE, swResponse } from "./pwa.js";   // Web Push service worker (notify.js)
 import { notifApi } from "./notify.js";
 import { meetingsApi, meetingsCron } from "./ee/index.js";   // Meeting reminders for notes (Google Calendar / Outlook → "Take notes?")
@@ -1538,7 +1538,7 @@ export default {
           try { const r = await (await decisionCaller(env, "doors_shadow", m))({ state: { conversation: "user: hi" }, questions: { greeting: { type: "noul", instructions: "Is this a greeting?" } } });
             out.clef = { ok: true, log: env.AI.aiGatewayLogId || null, answers: !!(r?.answers || r?.result?.answers) }; } catch (e) { out.clef = { ok: false, error: String(e.message).slice(0, 200) }; }
           try { const r = await askDecider(env, { task: "say hi" }, { done: { type: "noul", instructions: "Is the task trivial?" } }, { meta: m, title: "1Helm aig-check" });
-            out.decider = { ok: !r.error, model: r.model, ms: r.ms, nano: r.nano, error: r.error || undefined }; } catch (e) { out.decider = { ok: false, error: String(e.message).slice(0, 200) }; }
+            out.decider_configured = deciderModel(await modelSettingsEnv(env)); out.decider = { ok: !r.error, model: r.model, ms: r.ms, nano: r.nano, error: r.error || undefined }; } catch (e) { out.decider = { ok: false, error: String(e.message).slice(0, 200) }; }
           return json(out);
         }
         if (sub === "/api/test/stream" && env.TEST_MODE === "1") {
