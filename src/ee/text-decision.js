@@ -90,7 +90,7 @@ async function askEntry(env, jobId, entry, { state, questions, meta, timeoutMs, 
 export async function askJob(env, jobId, opts = {}) {
   env = await modelSettingsEnv(env);
   const entries = entriesOf(jobSetting(env.MODEL_SETTINGS, jobId)); let last;
-  for (const entry of entries) { try { return await askEntry(env, jobId, entry, { meta: {}, ...opts }); } catch (e) { last = e; if (e?.name === "AbortError") break; } }
+  for (const entry of entries) { try { return { ...(await askEntry(env, jobId, entry, { meta: {}, ...opts })), entryModel: entry.model }; } catch (e) { last = e; if (e?.name === "AbortError") break; } }
   throw last;
 }
 
@@ -112,7 +112,7 @@ export async function askDecider(env, state, questions, opts = {}) {
     const r = await askJob(env, "decider", { state, questions, meta: { ...meta, kind: meta.kind || "decider" }, timeoutMs: timeoutMs || undefined, chat, fetchImpl, priceInNano });
     const v = validateAnswers(questions, r.answers, { choiceFromProbs: true }); if (v.error) throw new Error(v.error);
     const cost = Number(r.usage?.cost), tokens = Number(r.usage?.input_tokens) || 0, served = r.model || null;
-    const nano = Number.isFinite(cost) && cost > 0 ? Math.round(cost * NANO) : Math.round(tokens * inNanoOf(env.MODEL_SETTINGS, job.model));
+    const nano = Number.isFinite(cost) && cost > 0 ? Math.round(cost * NANO) : Math.round(tokens * inNanoOf(env.MODEL_SETTINGS, r.entryModel || job.model));
     return { answers: v.answers, ms: Date.now() - t0, nano, src: cost > 0 ? "reported" : "estimated", model: served };
   } catch (e) { return { error: String(e?.message || e).slice(0, 200), ms: Date.now() - t0, nano: Math.round((Number(e?.cost) || 0) * NANO), src: null, model: null }; }
 }

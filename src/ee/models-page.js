@@ -1,6 +1,7 @@
 // Environment-wide model controls. Only MODEL_ADMINS grants access, never TEST_MODE or ops view-as.
-import { modelSettingsView, saveModelSettings, restoreModelSettings, readModelSettings } from "./model-settings.js";
-import { modelCatalog } from "./model-catalog.js";
+import { modelSettingsView, saveModelSettings, restoreModelSettings, readModelSettings, unlistedModels } from "./model-settings.js";
+import { modelCatalog, listedKinds } from "./model-catalog.js";
+import { SEED_FACTS } from "./model-seed.js";
 import { boundedText, BodyTooLargeError } from "../bounded-body.js";
 import { modelDashboard } from "./model-dashboard.js";
 import { outsideModels } from "./outside-models.js";
@@ -16,7 +17,7 @@ export async function modelsRoute(req, env, user) {
   const url = new URL(req.url), path = url.pathname, api = path !== "/models";
   if (!user) return api ? json({ error: "Sign in again to manage models." }, 401) : new Response(null, { status: 302, headers: { ...HEADERS, location: "/onboard?next=/models" } });
   if (!isModelAdmin(env, user)) return api ? json({ error: "This account cannot manage models." }, 403) : html('<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Models · 1Helm</title><h1>Models</h1><p>This account cannot manage models.</p><p><a href="/">Back to 1Helm</a></p></html>', 403);
-  const catalog = path === "/models/api/catalog", read = path === "/models" || path === "/models/api" || catalog;
+  const catalog = path === "/models/api/catalog", unl = path === "/models/api/unlisted", read = path === "/models" || path === "/models/api" || catalog || unl;
   const action = { "/models/api/save": saveModelSettings, "/models/api/restore": restoreModelSettings }[path];
   if (!read && !action) return json({ error: "Not found." }, 404);
   if (read ? !["GET", "HEAD"].includes(req.method) : req.method !== "POST") return json({ error: "Method not allowed." }, 405, { allow: read ? "GET, HEAD" : "POST" });
@@ -28,7 +29,8 @@ export async function modelsRoute(req, env, user) {
   }
   try {
     let view;
-    if (catalog) view = await modelCatalog(env, { q: String(url.searchParams.get("q") || "").slice(0, 120), settings: (await readModelSettings(env)).config });
+    if (unl) return json({ unlisted: await unlistedModels(env) });
+    if (catalog) view = await modelCatalog(env, { q: String(url.searchParams.get("q") || "").slice(0, 120), settings: (await readModelSettings(env)).config, known: Object.keys(listedKinds(SEED_FACTS)) });
     else if (read) view = await modelSettingsView(env);
     else {
       const limit = env.DYNAMIC_ROUTING === "on" ? 131072 : 32768;
@@ -62,7 +64,7 @@ h1{font:400 44px/1.1 ISe,Georgia,serif;margin:0 0 8px}h2{font-size:17px;margin:0
 .job{padding:8px 18px;border-top:1px solid var(--line)}.job:first-child{border-top:0}
 .jrow{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1.1fr) 150px auto;gap:12px;align-items:center;min-height:40px}
 .job-name{font-weight:600;line-height:1.25}.job-desc{font-size:12px;color:var(--muted);margin:0;line-height:1.3}.job-needs{font-size:12px;color:var(--muted);margin:2px 0 0;line-height:1.3;font-style:italic}
-.job-model{font-weight:600;overflow-wrap:anywhere;line-height:1.25}
+.gone{display:inline-block;margin-left:8px;font-size:11px;font-weight:600;color:var(--bad)}.job-model{font-weight:600;overflow-wrap:anywhere;line-height:1.25}
 .actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;align-items:center}
 .fixed{font-size:13px;color:var(--muted)}
 select{display:block;min-height:34px;width:100%;background:var(--card);color:var(--ink);border:1px solid var(--line2);border-radius:9px;padding:4px 24px 4px 10px;font:14px IS,system-ui,sans-serif}
@@ -109,6 +111,9 @@ function say(el,text,cls){el.textContent=text||'';el.className=el.className.repl
 function defOf(id){return state.options.jobs.find(function(j){return j.id===id})}
 function viewOf(id){return state.dashboard.jobs.find(function(j){return j.id===id})}
 function takesChat(v){return ['chat','chore','classic'].indexOf(v.pick)>=0||!!v.any}
+function refreshGone(){fetch('/models/api/unlisted',{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.json()}).then(function(d){if(Array.isArray(d.unlisted)&&JSON.stringify(d.unlisted)!==JSON.stringify(state.unlisted||[])){state.unlisted=d.unlisted;if(!busy)render()}}).catch(function(){})}
+function gone(id){return (state.unlisted||[]).indexOf(id)>=0}
+function flag(el,id){if(gone(id))el.append(E('span','gone','No longer offered'));return el}
 function nameOf(id){var m=state.config.catalog[id];return m&&m.name?m.name:id}
 function entriesOf(job){return [{model:job.model,effort:job.effort,hosts:job.hosts,pin:job.pin,strict:job.strict}].concat(job.fallbacks||[])}
 function pack(entries){var first=clone(entries[0]);first.fallbacks=entries.slice(1).map(function(e){return clone(e)});Object.keys(first).forEach(function(k){if(first[k]===undefined)delete first[k]});first.fallbacks.forEach(function(f){Object.keys(f).forEach(function(k){if(f[k]===undefined)delete f[k]})});return first}
@@ -118,7 +123,7 @@ function row(job,idx,total,li){
  var e=document.createElement('li');e.className='entry';var v=viewOf(job.id);
  var a=E('div','entry-name');a.append(E('span','entry-role',idx===0?'Model':'Fallback '+idx));
  var entry=idx===0?job.main:job.fallbacks[idx-1];
- a.append(document.createTextNode(entry.name),E('span','entry-id',entry.id));
+ a.append(document.createTextNode(entry.name),E('span','entry-id',entry.id));flag(a,entry.id);
  var mid=E('div');
  if(v.has_effort){var ch=effortsFor(entry.id);if(ch.length>1){var es=E('select');es.setAttribute('aria-label','Reasoning for '+v.label+(idx?' fallback '+idx:''));ch.forEach(function(x){var o=E('option','',eff(x));o.value=x;es.append(o)});es.value=entry.effort;es.addEventListener('change',function(){edit(job.id,li,function(arr){arr[idx].effort=es.value})});mid.append(es)}else mid.append(E('span','fixed',eff(entry.effort)))}
  var act=E('div','actions');
@@ -133,7 +138,7 @@ function row(job,idx,total,li){
 function card(v){
  var li=E('li','job');li.dataset.job=v.id;var n=1+v.fallbacks.length;
  var r=E('div','jrow'),nm=E('div','c-name');nm.append(E('div','job-name',v.label),E('p','job-desc',v.description));if(v.needs)nm.append(E('p','job-needs',v.needs));
- var md=E('div','c-model job-model',v.main.name),ef=E('div','c-effort');
+ var md=flag(E('div','c-model job-model',v.main.name),v.main.id),ef=E('div','c-effort');
  if(v.has_effort){var ch=effortsFor(v.main.id);if(ch.length>1){var es=E('select');es.setAttribute('aria-label','Reasoning for '+v.label);ch.forEach(function(x){var o=E('option','',eff(x));o.value=x;es.append(o)});es.value=v.main.effort;es.addEventListener('change',function(){edit(v.id,li,function(arr){arr[0].effort=es.value})});ef.append(es)}else ef.append(E('span','fixed',eff(v.main.effort)))}
  var act=E('div','actions');
  var change=E('button','','Change');change.type='button';change.setAttribute('aria-label','Change model for '+v.label);change.addEventListener('click',function(){openPicker(v.id,0)});act.append(change);
@@ -187,7 +192,7 @@ async function post(action,body,statusEl){
    lock(false);return false
   }
   var key=statusEl.closest&&statusEl.closest('[data-job]')?statusEl.closest('[data-job]').dataset.job:null;
-  state=data;if(draft&&draft.revision===body.revision)draft.revision=state.revision;render();lock(false);
+  var prevGone=state.unlisted;state=data;state.unlisted=prevGone;if(draft&&draft.revision===body.revision)draft.revision=state.revision;render();lock(false);refreshGone();
   var fresh=key?document.querySelector('[data-job="'+key+'"] .status'):pageStatus;if(fresh){say(fresh,'Saved','ok');setTimeout(function(){if(fresh.textContent==='Saved')say(fresh,'')},4000)}
   return true
  }catch(e){postError='Not saved. Check your connection and try again.';say(statusEl,postError,'error');lock(false);return false}
@@ -214,7 +219,7 @@ function inUse(q){
  if(target.category)return categoryChoices(q);
  var all=state.options.choices[target.view.pick]||[],taken={};
  entriesOf(state.config.jobs[target.id]).forEach(function(e,i){if(i!==target.idx)taken[e.model]=1});
- return all.filter(function(m){return !taken[m.id]&&(!q||(m.name+' '+m.id).toLowerCase().indexOf(q.toLowerCase())>=0)})
+ return all.filter(function(m){return !taken[m.id]&&!gone(m.id)&&(!q||(m.name+' '+m.id).toLowerCase().indexOf(q.toLowerCase())>=0)})
 }
 function priceText(value){var n=Number(value);return Number.isFinite(n)?n.toLocaleString('en-US',{maximumFractionDigits:8}):String(value)}
 function priceLine(m){var p=m.pricing;return p&&p.prompt!=null&&p.completion!=null?m.id+', $'+priceText(p.prompt)+' in, $'+priceText(p.completion)+' out per million tokens':m.id}
@@ -234,7 +239,8 @@ async function loadCatalog(){
  try{
   var r=await fetch('/models/api/catalog?q='+encodeURIComponent(q),{credentials:'same-origin',cache:'no-store'}),data=await r.json();
   if(mine!==seq)return;if(!r.ok)throw new Error(data.error||'Could not load models.');
-  var fresh=data.models||[];local=mergeKnown(inUse(''),data.models,q);var merged=local,ids={};merged.forEach(function(m){ids[m.id]=1});
+  if(Array.isArray(data.unlisted))state.unlisted=data.unlisted;
+  var fresh=(data.models||[]).filter(function(m){return !gone(m.id)});local=mergeKnown(inUse(''),fresh,q);var merged=local,ids={};merged.forEach(function(m){ids[m.id]=1});
   var count=show(merged.concat(fresh.filter(function(m){return m.eligible&&!ids[m.id]})));
   pickerStatus.textContent=count?(count>100?'Showing 100 of '+count+'. Type to narrow the list.':'OR = OpenRouter. CF = Cloudflare.'):'No compatible models match this job and privacy level.'
  }catch(e){if(mine!==seq)return;show(local);pickerStatus.textContent=e.message||'Could not load models. Try again.'}
@@ -255,13 +261,13 @@ function saveConfig(cfg){var out={version:cfg.version,jobs:cfg.jobs};if(cfg.vers
 var LEVELS=['unrestricted','no_training','zdr'],LEVEL_NAMES={unrestricted:'Unrestricted',no_training:'No Training',zdr:'ZDR'},ORDINALS=['1st','2nd','3rd'];
 function categories(){return state.config.routing.categories}
 function metaOf(id){return pickedFacts[id]||state.config.catalog[id]||{id:id,name:id}}
-function categoryChoices(q){return (state.options.choices.chat||[]).concat(Object.keys(pickedFacts).map(function(id){return pickedFacts[id]})).filter(function(m,i,a){return a.findIndex(function(n){return n.id===m.id})===i&&(!q||(m.name+' '+m.id).toLowerCase().indexOf(q.toLowerCase())>=0)})}
+function categoryChoices(q){return (state.options.choices.chat||[]).concat(Object.keys(pickedFacts).map(function(id){return pickedFacts[id]})).filter(function(m,i,a){return !gone(m.id)&&a.findIndex(function(n){return n.id===m.id})===i&&(!q||(m.name+' '+m.id).toLowerCase().indexOf(q.toLowerCase())>=0)})}
 function button(text,fn,cls){var b=E('button',cls||'',text);b.type='button';b.addEventListener('click',fn);return b}
 function categorySlot(card,level,idx,editable){
  var field=E('div','category-choice'),entry=card.chains[level][idx],meta=entry?metaOf(entry.model):null;field.append(E('strong','',ORDINALS[idx]));
  if(editable){var pick=button('',function(){openCategoryPicker(level,idx,pick)},'model-select');pick.dataset.choiceIndex=idx;pick.setAttribute('aria-label',(entry?'Change':'Choose')+' '+ORDINALS[idx]+' model for '+LEVEL_NAMES[level]);pick.setAttribute('aria-haspopup','dialog');pick.setAttribute('aria-controls','model-picker');pick.setAttribute('aria-expanded','false');pick.append(E('span','model-name',entry?(meta.name||entry.model):'Choose model'));if(entry)pick.append(E('span','source',sourceOf(meta)));else pick.append(E('span','muted','⌄'));field.append(pick)}
  else if(entry){var name=E('div','model-name',meta.name||entry.model);name.append(E('span','source',sourceOf(meta)));field.append(name)}
- if(entry){field.append(E('span','entry-id',entry.model));var choices=effortsFor(entry.model);if(editable&&choices.length>1){var select=E('select');select.setAttribute('aria-label','Reasoning for '+ORDINALS[idx]+' '+LEVEL_NAMES[level]);choices.forEach(function(e){var o=E('option','',eff(e));o.value=e;select.append(o)});select.value=entry.effort;select.addEventListener('change',function(){draft.card.chains[level][idx].effort=select.value;draft.error=''});field.append(select)}else field.append(E('span','fixed',eff(entry.effort)))}
+ if(entry){field.append(E('span','entry-id',entry.model));flag(field,entry.model);var choices=effortsFor(entry.model);if(editable&&choices.length>1){var select=E('select');select.setAttribute('aria-label','Reasoning for '+ORDINALS[idx]+' '+LEVEL_NAMES[level]);choices.forEach(function(e){var o=E('option','',eff(e));o.value=e;select.append(o)});select.value=entry.effort;select.addEventListener('change',function(){draft.card.chains[level][idx].effort=select.value;draft.error=''});field.append(select)}else field.append(E('span','fixed',eff(entry.effort)))}
  return field
 }
 function categoryCard(card,level){var box=E('article','category-card');box.dataset.category=card.id;box.append(E('h3','',card.title||'New category'));for(var i=0;i<3;i++)box.append(categorySlot(card,level,i,false));return box}
@@ -316,7 +322,7 @@ picker.addEventListener('click',function(e){if(e.target===picker&&(!target||!tar
 document.addEventListener('click',function(e){if(picker.open&&target&&target.category&&!picker.contains(e.target)&&e.target!==target.anchor&&!target.anchor.contains(e.target))closePicker(!e.target.closest('button,input,select,textarea,a[href],[tabindex]'))},true);
 document.addEventListener('keydown',function(e){if(e.key==='Escape'&&picker.open&&target&&target.category){e.preventDefault();closePicker()}});
 window.addEventListener('resize',positionCategoryPicker);window.addEventListener('scroll',positionCategoryPicker,true);
-render();
+render();refreshGone();
 })();`;
 
 export function modelsHtml(view, env) {

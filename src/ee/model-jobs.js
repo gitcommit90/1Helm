@@ -8,6 +8,9 @@ export class ModelSettingsError extends Error {
   constructor(message, status = 503) { super(message); this.name = "ModelSettingsError"; this.modelSettings = true; this.status = status; }
 }
 
+// Caps left at 0 on purpose. recovery: the request kind's own chat list already follows it. speech_cloudflare, workers_ai and vision call
+// env.AI.run with the one saved model (vision's non-dynamic path too), so a fallback would be saved and never run. embedding_files and
+// embedding_memory: a different model makes vectors that don't match the existing index, so a fallback would corrupt search.
 // What each kind of job can have. fallbacks: the most fallback models it may list. effort: whether it has a reasoning level.
 // level: the account's AI data privacy setting filters its list. zdr: always runs on zero-data-retention endpoints, so it never
 // breaks any privacy setting. chat/recovery/chore/classic models must be able to chat; the others are named by what they do.
@@ -17,7 +20,7 @@ export const JOB_KINDS = {
   chore: { fallbacks: 3, effort: true, zdr: true, pick: "chore" },
   // any: the work is "ask a question, read a short structured answer". The special decision models (kinds list the pick) answer through
   // their own call; every other chat model answers the same questions as strict JSON (text-decision.js). zdr applies to those chat models.
-  decider: { fallbacks: 0, effort: false, zdr: true, any: true, pick: "decider" },
+  decider: { fallbacks: 3, effort: false, zdr: true, any: true, pick: "decider" },
   speech: { fallbacks: 3, effort: false, zdr: true, pick: "speech", needs: "Needs a speech-to-text model." },
   speech_cloudflare: { fallbacks: 0, effort: false, pick: "speech_cloudflare", needs: "Needs a speech-to-text model that runs on Cloudflare." },
   speech_live: { fallbacks: 1, effort: false, pick: "speech_live", needs: "Needs a live speech-to-text model." },
@@ -25,7 +28,7 @@ export const JOB_KINDS = {
   embedding_memory: { fallbacks: 0, effort: false, pick: "embedding_memory", reindex: true, needs: "Needs a text embedding model." },
   vision: { fallbacks: 0, effort: false, pick: "vision", needs: "Needs a model that can read pictures." },
   workers_ai: { fallbacks: 0, effort: false, pick: "workers_ai", needs: "Needs a Cloudflare Workers AI model." },
-  workers_decider: { fallbacks: 0, effort: false, zdr: true, any: true, pick: "workers_decider" },
+  workers_decider: { fallbacks: 3, effort: false, zdr: true, any: true, pick: "workers_decider" },
   classic: { fallbacks: 4, effort: false, zdr: true, pick: "classic" },
 };
 // Picks that name a model able to chat. A kind with any: true also takes every chat model (through the JSON adapter).

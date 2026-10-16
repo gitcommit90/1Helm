@@ -24,6 +24,8 @@ const endpoint = (model_id, extra = {}) => ({ model_id, tag: "safe-host/fp16", s
 const A = "example/arbitrary-alpha", B = "example/arbitrary-beta", BAD = "example/too-expensive", TOOLLESS = "example/no-tools";
 const models = [model(A), model(B), model(BAD), model(TOOLLESS), model(MUSE_C, { reasoning: { mandatory: true, supported_efforts: ["high", "xhigh"] } }), model(MUSE_S), model("example/plain", { reasoning: null }),
   model("openai/gpt-oss-120b", { reasoning: { mandatory: true, supported_efforts: ["low", "medium", "high"], default_effort: "medium" } })];   // a saved model that no job uses any more leaves the catalog and comes back from this list
+// OpenRouter lists the first-run models too, so choosing one again isn't refused as no longer offered.
+for (const id of Object.keys(SEED.catalog)) if (!models.some((m) => m.id === id) && !id.startsWith("@cf/")) models.push(model(id));
 const eps = [endpoint(A), endpoint(B), endpoint(BAD, { pricing: { prompt: "0.000004", completion: "0.000020" } }), endpoint(TOOLLESS, { supported_parameters: [] }), endpoint("example/plain", { supported_parameters: ["tools", "max_tokens"] }), endpoint("openai/gpt-oss-120b", { tag: "cerebras" })];
 const originalFetch = globalThis.fetch, sent = [], catalogRequests = []; let outage = false, redirect = false, failures = new Set();
 globalThis.fetch = async (url, init = {}) => {

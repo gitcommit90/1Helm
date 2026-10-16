@@ -232,7 +232,7 @@ await test("search lists saved models with the live name, price and reasoning le
   const out = mergeKnown(saved, fresh, "mimo");
   assert.equal(out.length, 1); assert.equal(out[0].name, "Xiaomi: MiMo-V2.6-Flash"); assert.deepEqual(out[0].pricing, { prompt: 0.14, completion: 0.28 }); assert.deepEqual(out[0].efforts, ["none", "low"]);
   assert.deepEqual(mergeKnown(saved, fresh, "").map((m) => m.id), ["xiaomi/mimo-v2.6-flash", "@cf/old/model"], "saved models missing from the live catalog stay listed");
-  assert.match(page, /local=mergeKnown\(inUse\(''\),data\.models,q\)/, "search results go through the merge");
+  assert.match(page, /local=mergeKnown\(inUse\(''\),fresh,q\)/, "search results go through the merge");
 });
 
 console.log(`PASS ${checks} model page security and integration checks`);

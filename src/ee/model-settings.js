@@ -5,7 +5,7 @@
 // Storage: append-only versions in model_job_settings_versions (new in migration 058). The earlier slot-based table
 // (model_settings_versions) is only read, once, to carry an environment's existing choices into the first version.
 import { PRIVACY_LEVELS } from "../privacy.js";
-import { modelCatalog, validCatalogRecord, validModelId } from "./model-catalog.js";
+import { modelCatalog, validCatalogRecord, validModelId, unlistedIds, listedKinds, NO_LONGER_OFFERED } from "./model-catalog.js";
 import { JOBS, JOB_IDS, MODEL_PAGE_JOBS, JOB_KINDS, GROUPS, takesChat, canChat, nativeFor, zdrApplies, ModelSettingsError, jobDef, jobSetting, settingsOf, entriesOf, factsOf, zdrBlocked, privacyCoverage, configuredHosts } from "./model-jobs.js";
 import { seedFromLegacy, mergeLevels, SEED_FACTS, SHARED_OR_MOVES } from "./model-seed.js";
 import { dynamicRoutingOn, withRoutingConfig } from "./routing-config.js";
@@ -282,6 +282,12 @@ function choicesOf(config) {
 // embed_memory is used only by the ambient passage index (ambient-index.js), which LEGACY_AMBIENT_SEARCH can turn off.
 export const hiddenJobs = (env) => ambientSearchOn(env) ? [] : ["embed_memory"];
 export const modelSettingsOptions = (config, hidden = []) => ({ groups: GROUPS, jobs: MODEL_PAGE_JOBS.filter((j) => !hidden.includes(j.id)), kinds: JOB_KINDS, levels: PRIVACY_LEVELS, choices: choicesOf(config) });
+// Models in the saved settings or the first-run list that OpenRouter no longer lists. A failed lookup flags nothing.
+// Kept apart from modelSettingsView so that opening the page never waits on OpenRouter.
+export async function unlistedModels(env) {
+  const s = await readModelSettings(env);
+  return unlistedIds(Object.keys({ ...listedKinds(SEED_FACTS), ...listedKinds(s.config.catalog) })).catch(() => []);
+}
 export async function modelSettingsView(env) {
   const db = dbOf(env), s = await readModelSettings(env);
   const history = (await db.prepare(`SELECT revision,at,by,action FROM ${TABLE} WHERE environment=? ORDER BY revision DESC LIMIT 30`).bind(settingsEnvironment(env)).all()).results || [];
@@ -320,6 +326,7 @@ async function validatedSelection(env, config, current) {
       if (!validModelId(id)) fail("Invalid model ID.");
       // The search is the model's own ID, so its endpoints are read even when it isn't on OpenRouter's zero-data-retention list.
       const m = (await modelCatalog(env, { q: id })).models.find((x) => x.id === id); if (m?.unverified) fail(`${id}: its providers could not be verified right now, so nothing was saved. Try again shortly.`);
+      if (!m && !id.startsWith("@cf/")) fail(`${id}: ${NO_LONGER_OFFERED}. Nothing was saved.`);
       if (!m?.eligible) fail(`${id}: ${m?.reasons?.join("; ") || "not available in the model catalogs"}.`);
       next.catalog[id] = own(SEED_FACTS, id) && SEED_FACTS[id].quirks ? { ...m, quirks: clone(SEED_FACTS[id].quirks) } : m;   // known quirks (e.g. no temperature) are kept when a known model is added again
     } else {
@@ -330,6 +337,12 @@ async function validatedSelection(env, config, current) {
       next.catalog[id] = known || { id, name: id, kinds: [pick], efforts: [] };
     }
   }
+  // A model the settings already know skips the check above, so a model OpenRouter has since dropped is checked here when a job picks it newly.
+  const before = (job) => new Set(entriesOf(job || {}).map((e) => e.model)), fresh = new Set();
+  for (const def of JOBS) if (takesChat(JOB_KINDS[def.kind]) && next.jobs[def.id]) for (const e of entriesOf(next.jobs[def.id])) if (e?.model && !before(current.jobs?.[def.id]).has(e.model)) fresh.add(e.model);
+  for (const c of next.routing?.categories || []) { const was = (current.routing?.categories || []).find((x) => x.id === c.id); for (const [level, chain] of Object.entries(c.chains || {})) for (const e of Array.isArray(chain) ? chain : []) if (e?.model && !(was?.chains?.[level] || []).some((x) => x?.model === e.model)) fresh.add(e.model); }
+  const check = [...fresh].filter((id) => !need.has(id) && validModelId(id) && own(next.catalog, id) && listedKinds({ [id]: next.catalog[id] })[id]);
+  if (check.length) { const gone = await unlistedIds(check).catch(() => []); if (gone.length) fail(`${gone[0]}: ${NO_LONGER_OFFERED}. Nothing was saved.`); }
   return validateModelSettings(pruneCatalog(next));
 }
 export async function saveModelSettings(env, { revision, config }, by, action = "save") {

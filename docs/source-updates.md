@@ -3,13 +3,13 @@
 ## Routed tasks, durable questions, phone replies and preparation containers
 
 This update reconciles the Worker from `5b746f1072614964a776621c887a464d1d6a1901`
-to `413636a075efce748da1fa0fa46765680e265979` and the web app from
+to `a8d4e6ee87d6b5f933bd5143c07ab1acde179353` and the web app from
 `b4ea73bddd011f8d2baea92fce93b38e32577f6c` to
 `4a1da4ca61790f301cb5f7a81abaa84b9445689f`.
 
 Source correspondence:
 
-- Worker: `5b746f1072614964a776621c887a464d1d6a1901` → `413636a075efce748da1fa0fa46765680e265979`.
+- Worker: `5b746f1072614964a776621c887a464d1d6a1901` → `a8d4e6ee87d6b5f933bd5143c07ab1acde179353`.
 - Web: `b4ea73bddd011f8d2baea92fce93b38e32577f6c` → `4a1da4ca61790f301cb5f7a81abaa84b9445689f`.
 - Public base: `e458597c3d2952cdfe25af3aeec3214236c7ab86`.
 
@@ -25,6 +25,7 @@ Changes:
 - A phone file send is re-armed only after a send, and deleting a task also removes its phone file and memory origin markers.
 - A decision model chosen on the Models page uses its own decision endpoint whenever its record has no chat kind, also when the page verified it. The saved settings refuse a latest-version model ID (starting with `~`) for any job except chat and decision jobs.
 - The custom MCP server address check no longer fails every time: its DNS lookup used a redirect mode that Workers rejects, and it now handles redirects manually. The read only list of memory server models on the licensed Models page shows the latest aliases the server now uses.
+- The licensed Models page never offers a model that OpenRouter no longer lists, flags a saved one as "No longer offered", refuses to save it, and fetches the OpenRouter lists without caching. The decision and workers decision jobs allow up to 3 fallbacks, and a decision job reports the model that actually answered and its cost.
 - The web app shows a canvas activity orb while the helper and its workers are busy (the MIT licensed thinking orbs engine, noted in `THIRD-PARTY-NOTICES.md`), keeps the chat visible above the mobile keyboard, pages long inline cards, and binds a typed or tapped answer to its question.
 
 Left out of the public source: the hosted affiliate program (referral commissions, Stripe payouts and the hosted agreement and marketing pages), the dev to Live model settings push tool (and its audit table), the hosted billing event fixtures and operator inspection of the Cloud Stripe account, the dev only container and preparation benchmark endpoints and their images, the routing counter page for the Cloud gateway logs and its two tables, the private release, wrangler and key vault tooling, the live checks, and the private design sandbox. The public example configuration is unchanged.

@@ -112,3 +112,22 @@ console.log("PASS text decisions: native Clef unchanged, JSON path for any chat 
   const r = await askDecider(envFor(S3), { x: 1 }, questions, {});
   assert.equal(sent.length, 1); assert.match(sent[0].url, /systemone/); assert.doesNotMatch(sent[0].url, /chat\/completions/); assert.equal(sent[0].body.model, LATEST);
   assert.equal(sent[0].body.provider.only[0], "perplexity"); assert.equal(r.model, "perplexity/pplx-decider-v1.2-20261016"); assert.ok(!r.error, r.error); }
+
+// ---- fallbacks on the request sorter and the other decision job (r39-job-fallbacks) ----
+{ assert.equal(JOB_KINDS.decider.fallbacks, 3); assert.equal(JOB_KINDS.workers_decider.fallbacks, 3);
+  for (const k of ["embedding_files", "embedding_memory", "recovery", "vision", "workers_ai", "speech_cloudflare"]) assert.equal(JOB_KINDS[k].fallbacks, 0, `${k} stays at no fallbacks`);
+  for (const id of ["embed_files", "embed_memory"]) { const c = clone(SEED); c.jobs[id].fallbacks = [{ model: c.jobs[id].model, effort: null }]; assert.throws(() => validateModelSettings(c), /at most 0 fallback/, `${id} refuses a fallback`); }
+  for (const id of ["decider", "doors_shadow", "classic_decider"]) { const c = clone(SEED); c.jobs[id].fallbacks = [{ model: ID.DEEPSEEK, effort: null }, { model: ID.PPLX === c.jobs[id].model ? CLEF : ID.PPLX, effort: null }]; assert.doesNotThrow(() => validateModelSettings(c), `${id} saves fallbacks`); }
+  { const c = clone(SEED); c.jobs.decider.fallbacks = [ID.DEEPSEEK, ID.HAIKU, ID.OSS120, ID.OSS20].map((model) => ({ model, effort: null })); assert.throws(() => validateModelSettings(c), /at most 3 fallback/); }
+  { const c = clone(SEED); c.jobs.decider.fallbacks = [{ model: ID.MUSE_C, effort: null }]; assert.throws(() => validateModelSettings(c), /zero-data-retention/, "a fallback must pass the same privacy rule as the main model"); }
+  { const c = clone(SEED); c.jobs.decider.fallbacks = [{ model: ID.STT, effort: null }]; assert.throws(() => validateModelSettings(c), /can't be used for/, "a fallback must be a model the job accepts"); }
+  assert.equal(jobView(SEED, JOBS.find((j) => j.id === "decider")).max_fallbacks, 3, "the page offers Add fallback on the request sorter");
+  // a 429 or 5xx from the main model moves to the next one, and cost and tags belong to the model that answered
+  for (const status of [429, 503]) {
+    const S = clone(SEED); S.jobs.decider = { model: ID.PPLX, effort: null, fallbacks: [{ model: ID.DEEPSEEK, effort: null }] };
+    reset(); reply = (b) => b.model === ID.PPLX ? Response.json({ error: "busy" }, { status }) : ok('{"same":{"noul":0.2},"kind":{"choice":"b"}}');
+    const r = await askDecider(envFor(S), { x: 1 }, questions, {});
+    assert.ok(!r.error, r.error);
+    assert.deepEqual(sent.map((x) => x.body.model), [ID.PPLX, ID.DEEPSEEK], `HTTP ${status} falls through to the fallback`);
+    assert.equal(r.model, "x/y", "the answering model is the one reported"); assert.ok(r.nano > 0 && r.src === "reported", "cost is the fallback's own reported cost"); }
+}

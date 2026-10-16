@@ -36,11 +36,26 @@ async function get(path) {
     // The ZDR endpoint list isn't cached by OpenRouter and answers 404 to any query value, so it is requested as is.
     const bucket = path.startsWith("/endpoints/zdr") ? "" : `${path.includes("?") ? "&" : "?"}_=${Math.floor(Date.now() / 60000)}`;
     // Workers supports follow/manual, not error. Manual plus !ok below rejects redirects without following them.
-    const r = await fetch(`${OR}${path}${bucket}`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(12000), redirect: "manual" });
+    // cache: "no-store" keeps the Workers fetch from using or filling Cloudflare's cache for this URL, whatever OpenRouter's cache-control says.
+    const r = await fetch(`${OR}${path}${bucket}`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(12000), redirect: "manual", cache: "no-store" });
+    if (r.status === 404) throw Object.assign(new Error("not found"), { notFound: true });
     if (!r.ok) throw new Error("upstream");
     const json = await r.json(), data = json.data?.endpoints || json.data; if (!Array.isArray(data)) throw new Error("shape");
     return data;
-  } catch { throw Object.assign(new Error("OpenRouter's model catalog is unavailable. Your current settings have not changed; try again shortly."), { status: 503, code: "model_catalog_unavailable" }); }
+  } catch (e) { throw Object.assign(new Error("OpenRouter's model catalog is unavailable. Your current settings have not changed; try again shortly."), { status: 503, code: "model_catalog_unavailable", ...(e?.notFound ? { notFound: true } : {}) }); }
+}
+export const NO_LONGER_OFFERED = "no longer offered by OpenRouter";
+// IDs OpenRouter lists right now: chat, decision and embedding models. A leftover endpoint on the zero-data-retention list doesn't count as offered.
+const offeredFrom = (models, embeddings) => new Set([...models, ...embeddings].map((m) => m.id).filter(Boolean));
+// Of the given IDs, those OpenRouter no longer lists. Cloudflare models and IDs this server would never send to OpenRouter are not judged.
+const judged = (id) => validModelId(id) && !isCloudflareModel(id);
+const unlistedOf = (ids, offered) => [...new Set(ids)].filter((id) => judged(id) && !offered.has(id));
+// IDs of the records OpenRouter's model list covers (chat, decision and vision models). Speech and other records can be absent from it.
+export const listedKinds = (records) => Object.fromEntries(Object.entries(records || {}).filter(([, m]) => (m?.kinds || []).some((k) => ["chat", "chore", "vision", "decider"].includes(k))));
+export async function unlistedIds(ids) {
+  const want = [...new Set(ids)].filter(judged); if (!want.length) return [];
+  const [models, embeddings] = await Promise.all([get("/models?output_modalities=all"), get("/embeddings/models")]);
+  return unlistedOf(want, offeredFrom(models, embeddings));
 }
 // Endpoints of one model as /models/{id}/endpoints lists them, marked with whether the published zero-data-retention list proves each one.
 // Unmarked endpoints (the ZDR list itself, the registered models' lists) are never treated as unproven.
@@ -106,24 +121,28 @@ const matches = (m, terms) => { const hay = `${m.id} ${m.name}`.toLowerCase(); r
 async function openRouterLists(q = "") {
   const retained = retainedModels();
   // output_modalities=all adds the decision models (kind "decider"), which the default text-only list leaves out.
-  const [models, zdr, embeddings, ...kept] = await Promise.all([get("/models?output_modalities=all"), get("/endpoints/zdr"), get("/embeddings/models"), ...retained.map((m) => get(`/models/${m}/endpoints`).catch(() => []))]);
+  let [models, zdr, embeddings, ...kept] = await Promise.all([get("/models?output_modalities=all"), get("/endpoints/zdr"), get("/embeddings/models"), ...retained.map((m) => get(`/models/${m}/endpoints`).catch(() => []))]);
   const endpoints = [...zdr], checked = new Set(retained);
   retained.forEach((m, i) => endpoints.push(...kept[i].map((e) => ({ ...e, model_id: m }))));
   // Models the search matches that aren't registered: read their own endpoints, so a model with no zero-data-retention endpoint is still listed.
   const terms = termsOf(q), targetOf = (m) => isLatestAlias(m.id) && typeof m.alias_target?.slug === "string" ? m.alias_target.slug : m.id;
   const ids = terms.length ? [...new Set(models.filter((m) => validModelId(m.id) && m.architecture?.output_modalities?.includes("text") && matches(m, terms)).sort((a, b) => (b.created || 0) - (a.created || 0)).map(targetOf))]
     .filter((id) => validModelId(id) && !registered(id)).slice(0, CHECK_LIMIT) : [];
-  const own = await Promise.all(ids.map((id) => get(`/models/${id}/endpoints`).then((list) => ({ id, list })).catch(() => null)));
+  const own = await Promise.all(ids.map((id) => get(`/models/${id}/endpoints`).then((list) => ({ id, list })).catch((e) => e?.notFound ? { id, list: [], gone: true } : null)));
+  // A model OpenRouter still lists but whose own endpoint page answers 404 is no longer offered, so it is left out like a delisted one.
+  const gone = new Set(own.filter((r) => r?.gone).map((r) => r.id));
+  if (gone.size) models = models.filter((m) => !gone.has(targetOf(m)));
   for (const r of own) if (r?.list.length) { checked.add(r.id); for (let i = endpoints.length; i-- > 0;) if (endpoints[i].model_id === r.id && !endpoints[i].from_model) endpoints.splice(i, 1); endpoints.push(...withProof(zdr, r.id, r.list)); }
-  return { models, endpoints, embeddings, checked };
+  return { models, endpoints, embeddings, checked, offered: offeredFrom(models, embeddings) };
 }
-export async function modelCatalog(env, { q = "", settings = null } = {}) {
+export async function modelCatalog(env, { q = "", settings = null, known = [] } = {}) {
   if (typeof q !== "string" || q.length > 160) throw Object.assign(new Error("Search must be 160 characters or fewer."), { status: 400 });
   const autoOnly = (id) => !!settings?.catalog?.[id]?.quirks?.auto_tool_choice_only;
   const sources = await Promise.allSettled([openRouterLists(q), cloudflareCatalog(env, q)]);
-  const all = [], warnings = [];
+  const all = [], warnings = []; let unlisted = [];
   if (sources[0].status === "fulfilled") {
-    const { models, endpoints, embeddings, checked } = sources[0].value;
+    const { models, endpoints, embeddings, checked, offered } = sources[0].value;
+    unlisted = unlistedOf([...Object.keys(listedKinds(settings?.catalog)), ...known], offered);
     all.push(...assessModelCatalog(models, endpoints, { autoOnly, checked }), ...assessDecisionCatalog(models, endpoints), ...assessNonChatCatalog(embeddings, endpoints));
     // Speech endpoints are verified by the same public ZDR endpoint catalog.
     for (const id of Object.keys(ENDPOINTS.transcription).filter(id => !isCloudflareModel(id))) {
@@ -135,7 +154,7 @@ export async function modelCatalog(env, { q = "", settings = null } = {}) {
   if (sources.every(s => s.status === "rejected")) throw sources[0].reason;
   // Every word of the search must appear in the ID or name, so "pplx decider" finds pplx-decider-v1.2 and "~deepseek flash latest" finds the alias.
   const terms = termsOf(q);
-  return { models: all.filter(m => matches(m, terms)), warnings, fetched_at: Date.now(),
+  return { models: all.filter(m => matches(m, terms)), unlisted, warnings, fetched_at: Date.now(),
     policy: "OR uses verified eligible providers and provider fallback. CF uses native Workers AI. Cloudflare's published no-training policy does not establish zero retention, so CF choices without separate ZDR evidence cannot be used for ZDR jobs." };
 }
 // Decision models (output "decisions": Perplexity, Jev, Clef and others) answer through OpenRouter's /systemone call, so they are kind "decider",
