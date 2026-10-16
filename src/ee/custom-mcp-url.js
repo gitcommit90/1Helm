@@ -64,7 +64,7 @@ export function checkPublicUrl(raw, { what = "server URL", allowQuery = false } 
 // network and runs its own checks); NXDOMAIN is a bad_url. Pass `resolve` to stub in tests.
 export async function dnsCheck(host, { resolve = null, timeoutMs = 3000 } = {}) {
   const ask = resolve || (async (type) => {
-    const r = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${type}`, { headers: { accept: "application/dns-json" }, signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
+    const r = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${type}`, { headers: { accept: "application/dns-json" }, signal: AbortSignal.timeout(timeoutMs), redirect: "manual" });
     if (!r.ok) throw new Error(`doh ${r.status}`);
     return r.json();
   });

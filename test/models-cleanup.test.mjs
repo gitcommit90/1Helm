@@ -111,7 +111,7 @@ await test("models chosen elsewhere are listed read only on the page: browser lo
   assert.deepEqual(by.hindsight.items.map((i) => i.model), HINDSIGHT_MODELS.map((m) => m.model)); assert.match(by.hindsight.note, /compose file/);
   const { DB } = database(), view = await modelSettingsView({ ONEHELM_EE: "1hc", DB, ENV_NAME: "dev" });
   const html = modelsHtml({ ...view, dashboard: modelDashboard(view), outside: out }, { ENV_NAME: "dev" });
-  assert.match(html, /Chosen elsewhere/); assert.match(html, /moondream3\.1/); assert.match(html, /gpt-6-luna/);
+  assert.match(html, /Chosen elsewhere/); assert.match(html, /moondream3\.1/); assert.match(html, /~openai\/gpt-luna-latest/); assert.match(html, /~perplexity\/pplx-decider-latest/);
   assert.ok(!/<select|<button/.test(html.split('id="outside"')[1].split("</div>")[0]), "the section has no picker and no save");
 });
 
@@ -119,8 +119,8 @@ await test("the Hindsight list is checked against the host's variables", () => {
   const host = HINDSIGHT_MODELS.flatMap((m) => Object.entries(m.env).map(([f, name]) => `${name}=${m[f]}`)).join("\n");
   assert.deepEqual(compareHindsightEnv(host), []);
   assert.equal(HINDSIGHT_ENV_NAMES.some((n) => /KEY|TOKEN|SECRET|PASSWORD|URL/.test(n)), false, "the check reads no secret");
-  const changed = host.replace("HINDSIGHT_API_REFLECT_LLM_MODEL=deepseek/deepseek-v4.1-flash", "HINDSIGHT_API_REFLECT_LLM_MODEL=openai/gpt-oss-20b");
-  assert.deepEqual(compareHindsightEnv(changed), [{ job: "reflect", variable: "HINDSIGHT_API_REFLECT_LLM_MODEL", expected: "deepseek/deepseek-v4.1-flash", actual: "openai/gpt-oss-20b" }]);
+  const changed = host.replace("HINDSIGHT_API_REFLECT_LLM_MODEL=~deepseek/deepseek-flash-latest", "HINDSIGHT_API_REFLECT_LLM_MODEL=openai/gpt-oss-20b");
+  assert.deepEqual(compareHindsightEnv(changed), [{ job: "reflect", variable: "HINDSIGHT_API_REFLECT_LLM_MODEL", expected: "~deepseek/deepseek-flash-latest", actual: "openai/gpt-oss-20b" }]);
   assert.equal(compareHindsightEnv(host.split("\n").slice(1).join("\n")).length, 1, "a missing variable is a difference");
 });
 
