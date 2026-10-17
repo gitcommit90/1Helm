@@ -1,5 +1,5 @@
 // The model plan: what one job runs, worked out from the saved model settings alone.
-// Pure. It reads no env, no network and no clock, so the same settings give the same plan on dev and on Live.
+// Pure. It reads no env, no network and no clock, so the same settings give the same plan in every environment.
 // The one source of the model ID decides where a step goes: an ID that isCloudflareModel accepts runs on Workers AI ("CF"),
 // every other ID runs on OpenRouter ("OR"). Nothing here looks at ENV_NAME, TEST_MODE or DYNAMIC_ROUTING.
 //

@@ -11,8 +11,7 @@ export function cloudflareLevels(model, properties = {}) {
   if (verified) return ["unrestricted", "no_training", "zdr"].filter(l => endpointOk(verified, l));
   return properties.partner === "true" || properties.partner === true ? [] : ["unrestricted", "no_training"];
 }
-// Every environment runs the saved model settings the same way: an OpenRouter ID goes to OpenRouter and an @cf/ ID to Workers AI. It was dev only,
-// and Live (which has the same saved settings after "Push to prod") sent OpenRouter IDs to Workers AI and failed with 404.
+// Every deployment runs the saved model settings the same way: an OpenRouter ID goes to OpenRouter and an @cf/ ID to Workers AI.
 const propsOf = m => Object.fromEntries((m.properties || []).map(p => { let value = p.value; if (typeof value === "string" && /^[{[]/.test(value)) { try { value = JSON.parse(value); } catch {} } return [p.property_id, value]; }));
 const yes = p => p === true || p === "true";
 export function assessCloudflareModels(models) {

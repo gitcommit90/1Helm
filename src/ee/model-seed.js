@@ -34,7 +34,7 @@ export const SEARCH_LINKUP = "cloudflare/linkup";
 const SORTS = { vision_files: "throughput" };
 export const jobFieldDefaults = (id) => ({ max_output: null, sort: SORTS[id] ?? null, max_price: null, results: id === "web_search" ? 5 : null, timeout_ms: jobTimeoutDefault(id) });
 export const JOB_FIELDS = ["max_output", "sort", "max_price", "results", "timeout_ms"];
-// Jobs a later release added that an older saved version, or an older sender (push to prod), doesn't carry. They are filled in with this value
+// Jobs a later release added that an older saved version doesn't carry. They are filled in with this value
 // when read or checked, and nothing is written for it.
 export const OPTIONAL_JOB_IDS = ["look", "web_search", "browser_decider"];
 const OPTIONAL_MODEL = { look: MOONDREAM, web_search: SEARCH_LINKUP };

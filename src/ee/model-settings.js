@@ -102,7 +102,7 @@ function withOptionalJobs(config) {
   return config;
 }
 // Saved before these existed: the picture job's reasoning level (null reads as "none", and a Cloudflare model's saved facts get the levels the first-run data lists)
-// and Moondream's price. In memory only, like withOptionalJobs: the stored row is left as it was (the push sender relies on it).
+// and Moondream's price. In memory only, like withOptionalJobs: the stored row is left as it was.
 function withStartingFacts(config) {
   const cat = config?.catalog && typeof config.catalog === "object" ? config.catalog : null, jobs = config?.jobs;
   if (!cat || !jobs || typeof jobs !== "object") return config;

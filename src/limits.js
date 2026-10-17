@@ -1,5 +1,5 @@
 // Step, time and cost limits that used to be literals in the code. They are saved in the model settings document as a top level `limits` object
-// (so History, Restore and Push to prod cover them), and edited on the Models page. Nothing here reads the environment or the network:
+// (so History and Restore cover them), and edited on the Models page. Nothing here reads the environment or the network:
 // the definitions, the starting values (today's values), the validation and the pure reader live in this file, and src/limits-read.js reads the saved settings.
 //
 // A saved `limits` object holds only the limits that were changed. A limit that is missing reads as its starting value, and a saved set without `limits`

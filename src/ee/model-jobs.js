@@ -105,7 +105,7 @@ export const GROUPS = [
   { id: "background", title: "Background jobs", note: "Work that runs behind the scenes. These always use zero-data-retention providers." },
   { id: "speech", title: "Speech", note: "" },
   { id: "search", title: "Search and pictures", note: "" },
-  { id: "other", title: "Other", note: "Jobs outside the groups above. They are saved and pushed like every other job." },
+  { id: "other", title: "Other", note: "Jobs outside the groups above. They are saved like every other job." },
 ];
 // Only jobs in a listed page group get controls. Runtime settings can also cover jobs outside the Models page.
 export const MODEL_PAGE_JOBS = JOBS.filter((j) => GROUPS.some((g) => g.id === j.group));
