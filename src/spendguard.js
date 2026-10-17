@@ -29,6 +29,7 @@
 // 4. At most SLOT_MAX (3) task turns working at once per channel: extra plan-started tasks wait ("Waiting") and start, in order,
 //    as one finishes. Stop / Stop all still reach them (they are live turns, just not started).
 // 5. Usage the person can see: "This task: about $0.03" (sessionDetail.usage) and the month meter in Settings (boot account.month).
+import { PLANS } from "./plans-def.js";
 import { setStatus } from "./tracker.js";
 import { textConnected, textSend } from "./ee/index.js";
 import { ESCALATE_STALL } from "./ee/index.js";
@@ -44,7 +45,8 @@ export const SOFT_MAX = 6e8, HARD_MAX = 2e9;   // bigger plans scale up to $0.60
 export const UNATTENDED_SOFT = 0.8;        // scheduled runs (nobody to tap): report at 80% of hard
 export const DAY_FACTOR = 2;               // a day may use 2× its share before a check-in
 export const NOTICE_LEVELS = [50, 80];
-export const SLOT_MAX = 3;
+export const SLOT_MAX = 6;                  // default; a plan may set its own with `slots` in src/plans-def.js (Captain 2026-10-17: 3 -> 6)
+export const slotMaxOf = (plan, plans = PLANS) => { const n = Math.floor(Number(plans?.[plan]?.slots)); return n >= 1 ? n : SLOT_MAX; };
 // silent and fast here are only the fallback when no account values are passed (tests). Accounts get theirs from agent-checkins.js.
 export const RUNAWAY = { silent: 15, repeat: 4, repeatEdited: 7, similar: 0.7, accounts: 4, fast: 20, fastMs: 60e3, outLoops: 2, noProgress: 3, recallRun: 12 };
 const LOOK_BACK = new Set(["work_log", "bring_back", "recall_history"]);   // calls that only look back at what's already known
@@ -301,7 +303,7 @@ export function spendMix(Resident) { return Object.assign(Resident.prototype, {
   // Explicitly delegated tasks: at most SLOT_MAX task turns work at once in this channel; the rest wait in order.
   spendWorking(except = null) { return [...this.active.values()].filter((t) => t !== except && !t.finished && !t.slotWait && t.kind === "chat").length; },
   async spendSlot(tc, opts = {}) {
-    if (guardOff(this.env) || (!opts.taskKickoff && opts.handoff?.type !== "plan") || this.spendWorking(tc) < SLOT_MAX) return;
+    if (guardOff(this.env) || (!opts.taskKickoff && opts.handoff?.type !== "plan") || this.spendWorking(tc) < await this.spendSlotMax()) return;
     tc.slotWait = true; tc.line = "waiting to start";
     try { setStatus(this.sql, tc, tc.turn, "queued"); } catch {}
     tc.emit?.({ t: "queued", why: "slots" });
@@ -312,9 +314,14 @@ export function spendMix(Resident) { return Object.assign(Resident.prototype, {
     tc.slotWait = false; tc.line = "";
     if (tc.abort !== "hard") { try { setStatus(this.sql, tc, tc.turn, "working"); } catch {} }
   },
+  // This workspace's limit: its plan's `slots`, else SLOT_MAX. Read from D1 when a task starts and kept for spendWake.
+  async spendSlotMax() {
+    let plan = ""; try { plan = (await this.env.DB.prepare("SELECT plan FROM tenants WHERE id=?").bind(this.get("tenant")).first())?.plan || ""; } catch {}
+    return (this.slotLimit = slotMaxOf(plan));
+  },
   spendDone(tc) { if (tc?.guard?.wallT) clearTimeout(tc.guard.wallT); this.spendWake(); },
   spendWake() {
-    while ((this.slotQ || []).length && this.spendWorking() < SLOT_MAX) { const x = this.slotQ.shift(); x.tc.slotWait = false; x.wake(); }
+    while ((this.slotQ || []).length && this.spendWorking() < (this.slotLimit || SLOT_MAX)) { const x = this.slotQ.shift(); x.tc.slotWait = false; x.wake(); }
   },
   // The turn closes as "paused": remember why (its line under the report), → the view streamed as {t:"spend_pause"}.
   async spendPaused(tc, stats) {

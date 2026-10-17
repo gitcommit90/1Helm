@@ -31,7 +31,7 @@ export const slugPrefix = (env) => { const p = String(env?.CUSTOM_MCP_SLUG_PREFI
 const ownRe = (env) => new RegExp(`^CUSTOM_${slugPrefix(env)}_[A-Z2-7]{16}$`);   // the sweeper's filter: this environment's slugs only, never the other's
 const SLUG_RE = /^CUSTOM_H[CP]_[A-Z2-7]{16}$/;   // any valid generated slug (routing/validation); still only usable via the workspace's own rows
 const ID_RE = /^cm_[a-z2-7]{20}$/;
-export const LIMITS = { servers: 10, tools: 100, toolText: 200, syncGraceMs: 8000, syncDeadlineMs: 180000, pollMinMs: 2000, healthMs: 60000, stateTtlMs: 900000, cleanupRetryMs: 30000, lockMs: 30000, probeTtlMs: 300000 };
+export const LIMITS = { servers: 50, tools: 100, toolText: 200, syncGraceMs: 8000, syncDeadlineMs: 180000, pollMinMs: 2000, healthMs: 60000, stateTtlMs: 900000, cleanupRetryMs: 30000, lockMs: 30000, probeTtlMs: 300000 };
 const uid = (tenantId) => `1hc:${tenantId}`;
 const now = () => Date.now();
 export class ApiError extends Error { constructor(code, message, status = 400) { super(message); this.code = code; this.status = status; } }

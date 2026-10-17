@@ -25,7 +25,7 @@ assert.deepEqual(Object.keys(qs),["is_task","category","unmet","steer"]);
 assert.deepEqual(Object.keys(qs.category.criteria),settings.routing.categories.map(c=>c.title));
 assert.deepEqual(Object.keys(qs.steer.criteria),["1","none"]);
 assert.equal(START_HELPER_TOOL.function.parameters.properties.role,undefined);
-assert.equal(HELPER_MAX_RUNNING_PER_SESSION,3);assert.equal(HELPER_MAX_PER_DAY,40);
+assert.equal(HELPER_MAX_RUNNING_PER_SESSION,6);assert.equal(HELPER_MAX_PER_DAY,200);
 assert(!helperAllowed("start_helper",{dynamic_routing:1,required_delegation:1}));
 assert(helperAllowed("app_run",{dynamic_routing:1,required_delegation:1}));
 assert(!helperAllowed("app_run",{dynamic_routing:1,required_delegation:0}));

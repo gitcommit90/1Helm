@@ -14,7 +14,7 @@ import { helperName } from "./helper-name.js";
 // meetings: "Meeting reminders for notes" (meetings.js): a push / banner when a calendar meeting starts, to start Live notes.
 export const PREF_KEYS = ["needs", "finished", "sound", "needs_text", "meetings"];
 export const DEFAULT_PREFS = { needs: true, finished: true, sound: true, needs_text: true, meetings: true };
-export const PUSH_CAP = 30;
+export const PUSH_CAP = 100;   // per workspace per hour (Captain 2026-10-17: 30 -> 100)
 const json = (b, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 // Use the same endpoint check at registration and immediately before a send.
 export { okEndpoint };
@@ -98,6 +98,19 @@ export async function notifyTask(R, session, kind, { why = "", reply = "", noTex
     }
   }
   return out;
+}
+// A workflow that runs on an app event dropped events because of its hourly limit (app-events.js). One quiet push, no text, no task opened.
+// The caller sends it at most once an hour per workflow. It follows the "A task needs you" setting, because the person has to decide whether the limit is right.
+export async function notifyEventsSkipped(R, workflow, limit) {
+  const env = R.env, tenant = R.get("tenant");
+  if (!env?.DB || !tenant) return { skipped: "bad" };
+  const prefs = await getPrefs(env, tenant);
+  if (!prefs.needs) return { skipped: "off" };
+  const t = await env.DB.prepare("SELECT slug, helper_name FROM tenants WHERE id=?").bind(tenant).first().catch(() => null);
+  if (!(await underCap(env, tenant))) return { push: { capped: true } };
+  const payload = { kind: "events_skipped", title: `${helperName(t)} skipped some events`, body: `"${String(workflow?.name || "A workflow").slice(0, 80)}" runs at most ${limit} times an hour, so events past that were skipped.`,
+    url: appUrl(env, t?.slug || "", R.get("channel"), null), tag: `events-${workflow?.id ?? "x"}` };
+  return { push: await pushAll(env, tenant, payload).catch((e) => ({ error: e.message })) };
 }
 // A new turn started in the task (the person answered, or it was started again): the next state change notifies again.
 export function notifyReset(R, session) { try { stateTable(R); R.sql.exec("DELETE FROM notif_state WHERE session=?", String(session || "_")); } catch {} }

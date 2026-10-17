@@ -3199,7 +3199,7 @@ export class Resident extends DurableObject {
     let r;
     try {
       if (this.get("hs_origin_block_all") || session && this.get(`hs_origin_block:${session}`)) throw new Error("This task is being deleted or reset.");
-      await this.spendSlot(tc, opts);   // plan-started tasks: at most 3 task turns at once here; the rest wait ("Waiting")
+      await this.spendSlot(tc, opts);   // plan-started tasks: at most SLOT_MAX (6, or the plan's slots) task turns at once here; the rest wait ("Waiting")
       // Read-only (a failed payment, or the plan ended): no model call at all, whatever started the turn (a helper's hand-back,
       // a follow-up, a text that got past the webhook). The routes refuse first; this is the backstop. (After the slot: spendSlot
       // must see the turns in the order they started.)

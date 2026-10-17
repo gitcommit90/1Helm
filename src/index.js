@@ -90,6 +90,7 @@ import { customMcpRoute } from "./ee/index.js";
 const NANO = 1e9;                         // balances in nano-dollars (integers)
 const PRICE = { in: 150, cached: 30, out: 500 }; // glm-5.3-flash nano$/token (CF list); Workers AI fallback only
 import { useOpenRouter, openRouterChat, OR_MAX_OUT, OR_RESERVE_PRICE, aiOpts } from "./model.js";
+import { PLANS } from "./plans-def.js";
 import { byokApi, loadByok, byokChat, BYOK_PLAN, ledgerByok } from "./byok.js";
 import { orStart, orFinish, orCookie, orCookieOf } from "./byok-openrouter.js";   // Sign in with OpenRouter (the BYOK panel's optional button)   // own AI key: the byok plan's settings + routing (+ a backup key on a full plan)
 import { People, aliasesFor } from "./people.js";
@@ -107,6 +108,7 @@ import { locationRoute, saveLocation, rawFix } from "./location.js";   // where 
 import { replyRef } from "./reply-to.js";   // Reply on a chat bubble: the quoted message rides with /stream and send-later
 const MARKUP = 1.15;
 import { PLAIN_STYLE } from "./plain-style.js";
+import { isCapacityError, computerBusyError } from "./computer-capacity.js";
 const MAX_OUT = 2048;
 const RESERVED = new Set("admin api app assets auth billing blog cdn demo docs help mail provision security status support www 1helm cloudflare login signup static dev staging test internal captain root system cloud gateway portal account accounts dashboard console design models hooks onboard download downloads manual terms privacy legal pricing about home news careers jobs press email smtp imap ftp ns ns1 ns2 m mobile ios android".split(" "));
 const slugValid = (s) => /^(?=.{3,48}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])$/.test(s) && !s.includes("--") && !/^\d+$/.test(s) && !RESERVED.has(s);
@@ -290,16 +292,7 @@ ${d.messages.map((m) => `<div style="margin:10px 0;padding:8px;border-left:3px s
 // Why a model call or computer minute was refused. The daily limit is a "skipped:" error so scheduled jobs don't count it as a failure.
 const DAY_LIMIT_MSG = "skipped: daily safety limit reached";
 const payError = (reason) => reason === "day_limit" ? Object.assign(new Error(DAY_LIMIT_MSG), { status: 429 }) : Object.assign(new Error("out_of_credits"), { status: 402 });
-// 1HC plan ladder (Captain 09-29): every plan is its usage + a flat $10; each step up doubles the usage.
-const PLANS = {
-  personal: { name: "Personal", price: 30, usage: 20, fit: "Everyday help" },
-  plus: { name: "Plus", price: 50, usage: 40, fit: "For a busy household" },
-  power: { name: "Power", price: 90, usage: 80, fit: "For a small business" },
-  max: { name: "Max", price: 170, usage: 160, fit: "For heavy, all-day use" },
-  // Captain 10-06: "if you want to do a BYOK plan, its $10 and comes with 100gb of storage. Full stop." AI calls go to the person's own
-  // OpenAI-compatible endpoint (src/byok.js); no included usage: everything else we run is paid from credits they top up, at cost + 15%.
-  [BYOK_PLAN]: { name: "Bring your own key", price: 10, usage: 0, fit: "Use your own AI service", byok: true },
-};
+// 1HC plan ladder: src/plans-def.js (a leaf module the Durable Objects read too).
 const planPrices = (env) => { try { return JSON.parse(env.PLAN_PRICES || "{}"); } catch { return {}; } };
 const planKey = (k) => (PLANS[k] ? k : "plus");
 const planOfPrice = (env, priceId) => Object.entries(planPrices(env)).find(([, id]) => id === priceId)?.[0] || null;
@@ -2216,10 +2209,15 @@ export class Computer extends DurableObject {
     for (let i = 0; i < 120 && this.ctx.container.running && this.get("draining") === "1"; i++) await new Promise((z) => setTimeout(z, 500));
     this.put("ready", "0"); this.put("draining", "0");
     await this.ctx.container.interceptOutboundHttp("computer.internal", this.ctx.exports.ComputerControl({ props: { id: this.ctx.id.toString() } }));
-    if (!this.ctx.container.running) this.ctx.container.start({ entrypoint: ["bash", "-c", INIT_SH], enableInternet: true });
-    this.ctx.container.monitor?.().then(() => { this.put("ready", "0"); this.put("draining", "0"); this.log("container exited"); }).catch((e) => { this.put("ready", "0"); this.put("draining", "0"); this.log(`container exited: ${e?.message || e}`); });
+    let startErr = "";   // the platform's refusal when the class is at max_instances (computer-capacity.js)
+    if (!this.ctx.container.running) { try { this.ctx.container.start({ entrypoint: ["bash", "-c", INIT_SH], enableInternet: true }); } catch (e) { if (!isCapacityError(e)) throw e; startErr = String(e?.message || e); } }
+    this.ctx.container.monitor?.().then(() => { this.put("ready", "0"); this.put("draining", "0"); this.log("container exited"); }).catch((e) => { startErr = String(e?.message || e); this.put("ready", "0"); this.put("draining", "0"); this.log(`container exited: ${e?.message || e}`); });
     let up = false;
-    for (let i = 0; i < 60 && !up; i++) { try { up = (await this.sh("true", { timeoutMs: 5e3 })).code === 0; } catch { await new Promise((z) => setTimeout(z, 500)); } }
+    for (let i = 0; i < 60 && !up; i++) {
+      try { up = (await this.sh("true", { timeoutMs: 5e3 })).code === 0; } catch { await new Promise((z) => setTimeout(z, 500)); }
+      if (!up && i >= 4 && isCapacityError(startErr)) throw computerBusyError();   // refused: stop after ~2 s, not 30 s
+    }
+    if (!up && isCapacityError(startErr)) throw computerBusyError();
     if (!up) throw new Error("computer did not start within 30s");
     const bootMs = Date.now() - t0;
     const restore = await this.restore();

@@ -10,6 +10,7 @@ import { SKIP_REASON, LIMIT_REPORT_ASK } from "./steer.js";
 import { untilStopped, STOPPED_TOOL_TEXT, STEP_LIMIT_CHAT_ASK } from "./stop.js";
 import { guardModel, guardTools, reportAsk, OUT_OF_TIME_REPLY } from "./spendguard.js";
 import { isByokError, BYOK_CREDITS_REPLY } from "./byok.js";
+import { COMPUTER_BUSY_MSG, isComputerBusy } from "./computer-capacity.js";
 import { liveNudge, noteRan } from "./live-check.js";
 import { personWords } from "./person-asked.js";
 import { isResetErr } from "./do-stub.js";
@@ -251,7 +252,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
   if (tc.objectReset || (error && isResetErr(error))) { tc.objectReset = true; throw Object.assign(new Error("Durable Object reset because its code was updated."), { objectReset: true }); }
   if (stepCapped && !steerPis.length) tc.limitWhy ||= "steps";   // out of steps (not just answering what they added): a paused card
   let reply = error ? said.join("\n\n") : answerText(splitProgress(said, saidMeta));
-  if (!reply && error) reply = isByokError(error) ? error : /out_of_credits/.test(error) ? (res.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : /daily safety limit/.test(error) ? DAY_LIMIT_REPLY : `Something went wrong: ${error}`;
+  if (!reply && error) reply = isByokError(error) ? error : isComputerBusy(error) ? COMPUTER_BUSY_MSG : /out_of_credits/.test(error) ? (res.env.BYOK ? BYOK_CREDITS_REPLY : OUT_OF_TIME_REPLY) : /daily safety limit/.test(error) ? DAY_LIMIT_REPLY : `Something went wrong: ${error}`;
   if (kind === "chat" && steps >= limit() && !error) reply = reply || "I stopped after several steps; tell me if you want me to keep going.";
   return { reply, error, said, saidMeta, checkpoints, messagesForNotes: toOpenAI(sys, finalMsgs || [...histPi, userPi]) };
 }

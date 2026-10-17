@@ -10,6 +10,7 @@
 // helperTool/helperRun/helperFinish/handoff methods (resident.js, after runNow) use them.
 
 import { userInputInit } from "./user-input.js";
+import { COMPUTER_BUSY_MSG } from "./computer-capacity.js";
 import { scrubSecrets } from "./secrets-scrub.js";
 
 export const HELPERS_DDL = [
@@ -43,8 +44,8 @@ export function helpersInit(sql) {
 }
 
 // ---- limits (Captain's answer B) ----
-export const HELPER_MAX_RUNNING_PER_SESSION = 3;
-export const HELPER_MAX_PER_DAY = 40;             // started per channel, rolling 24 h
+export const HELPER_MAX_RUNNING_PER_SESSION = 6;   // Captain 2026-10-17: 3 -> 6
+export const HELPER_MAX_PER_DAY = 200;            // started per channel, rolling 24 h
 export const HELPER_MAX_STEPS = 20;
 export const HELPER_MAX_CHARGE = 5e8;             // nano$ = $0.50, checked after each model call (tc.abort = "soft")
 export const HELPER_DEADLINE_MS = 15 * 60e3;      // then soft stop: tools off, final report
@@ -211,6 +212,7 @@ export const followupText = (reason) => `(Context note, not from the person: a f
 export function plainError(e) {
   const s = String(e || "");
   if (/^Your AI service\b/.test(s)) return s.slice(0, 400);   // own AI key (byok.js): their provider's problem, already in plain words
+  if (s.includes(COMPUTER_BUSY_MSG)) return COMPUTER_BUSY_MSG;
   if (/out_of_credits|402/.test(s)) return "out of credits";
   if (/daily safety limit|429/.test(s)) return "the daily safety limit was reached";
   return s.slice(0, 200) || "error";

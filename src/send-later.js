@@ -14,7 +14,7 @@ import { validTz } from "./schedule.js";
 import { replyOut, replyIn } from "./reply-to.js";
 import { newAutoChat } from "./chat-titles.js";
 
-export const LATER_MAX_PENDING = 100, LATER_MAX_AHEAD = 366 * 86400e3, LATER_STALE_MS = 120e3, LATER_TIMER_MS = 20 * 60e3;
+export const LATER_MAX_PENDING = 500, LATER_MAX_AHEAD = 366 * 86400e3, LATER_STALE_MS = 120e3, LATER_TIMER_MS = 20 * 60e3;
 export const LATER_PAST = "That time has already passed. Pick a later time.";
 export const LATER_READ_ONLY = "read_only";
 

@@ -75,7 +75,11 @@ export const WAIT_MS = 2000;                        // the most a Send waits for
 export const AUDIO_WAIT_MS = 60000;                  // an attached recording must have usable text before a task model is called
 export const HEAD_TOKENS = 4000;                    // a long file whose card isn't made yet: its first ~4k tokens come with the outline
 export const MAX_TRIES = 4;
-export const OCR_MAX_PAGES = 40;                    // scanned pages read per file
+// Scanned pages read per file (raised from 40 to 80). The binding limit is the container fallback, which reads every page it is given in one job
+// that must end by JOB_MAX_MS - 30 s = 330 s: measured 2.8 s a page (15 pages in 42.5 s) and up to
+// 3.7 s for a dense page, plus a 27 s cold start on the standard container (median OCR cold start).
+// 80 pages: 80 x 3.7 + 27 = 323 s. The OCR Worker path is faster (15 pages in 12 to 22 s with 6 at once) and has a 60 s limit per page, not per file.
+export const OCR_MAX_PAGES = 80;
 // The OCR Worker (ocr-worker/, service binding OCR): scanned pages are read there first, one RPC call per page, and only a page it can't read
 // (a Chinese line, over its caps, an error or a timeout) goes to the container job. Workers CPU is $0.02 per million ms, plus the Worker request
 // ($0.30 per million) and the R2 read ($0.36 per million), in nano-dollars; the Worker reports the CPU ms it used (an estimate fitted to the CPU

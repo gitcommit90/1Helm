@@ -10,7 +10,8 @@
 //     finishes (not when it starts: a deploy that kills the run mid-way must not lose the event, so it runs again once the lease ends,
 //     at most EVENT_TRIES times), and the saved copies of the run (turns, msgs, memory) keep the instructions without the event body (opts.eventNote).
 //   - a noisy trigger can't burn money: at most EVENT_RUNS_PER_HOUR runs per workflow per hour and EVENT_QUEUE_MAX waiting; the rest are
-//     dropped with a line in the workflow's event log (event_log: when, verdict, never the body).
+//     dropped with a line in the workflow's event log (event_log: when, verdict, never the body), and the person gets one push per
+//     workflow per hour saying events were skipped (evSkipNotice, notify.js notifyEventsSkipped).
 // Stored per channel (Resident SQLite): workflows.on_event (JSON: trigger id, event, app, account, label), app_events (the queue),
 // event_log. Pause / Resume / Stop (the Scheduled view, set_workflow_status) disable / enable / delete the trigger at Composio.
 // resident.js hooks in: eventsInit() in the constructor, eventsNext() in armNow, appEventsDue() in alarm(), eventStatus() in
@@ -18,6 +19,7 @@
 import { createTrigger, setTriggerEnabled, deleteTrigger, saveMapping, SELF_NO_EVENTS, TEST_TRIGGER, eventsReady, EVENTS_OFF } from "./composio-triggers.js";
 import { appsMode } from "./composio-self.js";
 import { personWords, quoteProblem } from "../person-asked.js";
+import { notifyEventsSkipped } from "../notify.js";   // one push when events are skipped for the hourly limit
 
 export const EVENT_RUNS_PER_HOUR = 10, EVENT_QUEUE_MAX = 3, EVENT_MAX_STEPS = 16, EVENT_LOG_KEEP = 200, EVENT_LEASE_MS = 14 * 60e3;
 export const EVENT_FAIL_PAUSE = 6, EVENT_TRIES = 2;
@@ -27,7 +29,8 @@ export function eventsInit(sql) {
   try { sql.exec("ALTER TABLE workflows ADD COLUMN on_event TEXT"); } catch {}
   sql.exec(`CREATE TABLE IF NOT EXISTS app_events (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, workflow_id INTEGER NOT NULL, event_id TEXT, slug TEXT, body TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS event_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, workflow_id INTEGER NOT NULL, event_id TEXT, verdict TEXT NOT NULL, note TEXT);
-    CREATE INDEX IF NOT EXISTS event_log_wf ON event_log(workflow_id, at);`);
+    CREATE INDEX IF NOT EXISTS event_log_wf ON event_log(workflow_id, at);
+    CREATE TABLE IF NOT EXISTS event_notice (workflow_id INTEGER PRIMARY KEY, at INTEGER NOT NULL);`);
   // started/tries: the run that took this event (the row stays until that run finishes; a reset leaves it for the next try).
   for (const c of ["started INTEGER", "tries INTEGER NOT NULL DEFAULT 0"]) { try { sql.exec(`ALTER TABLE app_events ADD COLUMN ${c}`); } catch {} }
 }
@@ -44,6 +47,17 @@ export const eventMethods = {
   evLog(wid, verdict, note = "", eid = null) {
     this.sql.exec("INSERT INTO event_log (at,workflow_id,event_id,verdict,note) VALUES (?,?,?,?,?)", Date.now(), wid, eid, verdict, String(note || "").slice(0, 300));
     this.sql.exec("DELETE FROM event_log WHERE workflow_id=? AND id NOT IN (SELECT id FROM event_log WHERE workflow_id=? ORDER BY id DESC LIMIT ?)", wid, wid, EVENT_LOG_KEEP);
+  },
+  // Events were skipped because of the hourly limit: tell the person once per workflow per hour (a push, no new card or message in the app).
+  async evSkipNotice(w) {
+    try {
+      this.sql.exec("CREATE TABLE IF NOT EXISTS event_notice (workflow_id INTEGER PRIMARY KEY, at INTEGER NOT NULL)");
+      const now = Date.now(), last = this.sql.exec("SELECT at FROM event_notice WHERE workflow_id=?", w.id).toArray()[0];
+      if (last && now - Number(last.at) < 3600e3) return false;
+      this.sql.exec("INSERT INTO event_notice (workflow_id, at) VALUES (?,?) ON CONFLICT(workflow_id) DO UPDATE SET at=excluded.at", w.id, now);
+      await notifyEventsSkipped(this, w, EVENT_RUNS_PER_HOUR);
+      return true;
+    } catch (e) { console.log("event skip notice", e?.message); return false; }
   },
   async eventLog(wid, n = 30) { return this.sql.exec("SELECT at,workflow_id,verdict,note FROM event_log WHERE (? IS NULL OR workflow_id=?) ORDER BY id DESC LIMIT ?", wid ?? null, wid ?? null, n).toArray(); },
 
@@ -94,9 +108,9 @@ export const eventMethods = {
     if (e.event_id && (this.sql.exec("SELECT 1 x FROM event_log WHERE workflow_id=? AND event_id=? LIMIT 1", w.id, e.event_id).toArray().length ||
       this.sql.exec("SELECT 1 x FROM app_events WHERE workflow_id=? AND event_id=? LIMIT 1", w.id, e.event_id).toArray().length)) return { dropped: "duplicate" };
     const now = Date.now(), hour = this.sql.exec("SELECT COUNT(*) n FROM event_log WHERE workflow_id=? AND verdict='queued' AND at>?", w.id, now - 3600e3).one().n;
-    if (hour >= EVENT_RUNS_PER_HOUR) { this.evLog(w.id, "dropped", `rate limit: already ${EVENT_RUNS_PER_HOUR} events this hour`, e.event_id); return { dropped: "rate limit" }; }
+    if (hour >= EVENT_RUNS_PER_HOUR) { this.evLog(w.id, "dropped", `rate limit: already ${EVENT_RUNS_PER_HOUR} events this hour`, e.event_id); await this.evSkipNotice(w); return { dropped: "rate limit" }; }
     const waiting = this.sql.exec("SELECT COUNT(*) n FROM app_events WHERE workflow_id=? AND started IS NULL", w.id).one().n;
-    if (waiting >= EVENT_QUEUE_MAX) { this.evLog(w.id, "dropped", `rate limit: ${EVENT_QUEUE_MAX} events already waiting`, e.event_id); return { dropped: "rate limit" }; }
+    if (waiting >= EVENT_QUEUE_MAX) { this.evLog(w.id, "dropped", `rate limit: ${EVENT_QUEUE_MAX} events already waiting`, e.event_id); await this.evSkipNotice(w); return { dropped: "rate limit" }; }
     this.sql.exec("INSERT INTO app_events (at,workflow_id,event_id,slug,body) VALUES (?,?,?,?,?)", now, w.id, e.event_id || null, String(e.slug || ev.slug || ""), String(e.body ?? "{}"));
     this.evLog(w.id, "queued", "", e.event_id);
     await this.arm();

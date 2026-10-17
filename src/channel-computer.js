@@ -8,6 +8,7 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { tolerantEnv } from "./do-stub.js";
 import { installSnapshotRpc } from "./sqlite-snapshot.js";
 import { computerDeletionMix } from "./deletion-do.js";
+import { isCapacityError, computerBusyError, CAPACITY_RETRY_MS } from "./computer-capacity.js";
 import { computerPreviewMix } from "./file-preview.js";
 import { stPut, stDelete, keyInfo, room, noteRefused, clearRefused, fullMessage, fullToolNote } from "./storage.js";
 import { SKILL_SCRIPTS, SKILLS_VERSION, SKILLS_DIR, SKILLS_INSTALL_JS, skillsPayload } from "./skills/scripts.js";
@@ -373,12 +374,12 @@ export class ChannelComputer extends DurableObject {
       await this.ctx.container.interceptAllOutboundHttp(S);
     }
     // Bounded start: each attempt gets START_ATTEMPT_MS to answer exec; a stuck or refused start is destroyed and retried.
-    let up = false, attempts = 0, lastErr = "";
+    let up = false, attempts = 0, lastErr = "", busySince = 0;
     while (!up && Date.now() - t0 < START_TOTAL_MS) {
-      attempts++;
+      attempts++; lastErr = "";
       let exited = null;
       if (!this.ctx.container.running) {
-        try { this.ctx.container.start({ entrypoint: sentinel ? ["bash", "-c", TRUST_CA + "exec /opt/1hc/init.sh"] : ["/opt/1hc/init.sh"], enableInternet: !sentinel }); } catch (e) { lastErr = String(e?.message || e); }
+        try { this.ctx.container.start({ entrypoint: sentinel ? ["bash", "-c", TRUST_CA + "exec /opt/1hc/init.sh"] : ["/opt/1hc/init.sh"], enableInternet: !sentinel }); } catch (e) { lastErr = String(e?.message || e); if (isCapacityError(lastErr)) exited = lastErr; }   // refused: no need to wait out the attempt
       }
       this.ctx.container.monitor().then(() => { exited = "exit"; this.put("ready", "0"); this.put("draining", "0"); })
         .catch((e) => { exited = String(e?.message || e); lastErr = exited; this.put("ready", "0"); this.put("draining", "0"); });
@@ -389,10 +390,14 @@ export class ChannelComputer extends DurableObject {
       if (up) break;
       this.log(`start attempt ${attempts} failed after ${Date.now() - t0}ms: ${exited || "no answer in " + START_ATTEMPT_MS + "ms"}`);
       if (this.ctx.container.running) { try { await Promise.race([this.ctx.container.destroy("stuck start"), sleep(5e3)]); } catch {} }
+      // The class is at max_instances: stop after a short bound instead of the full START_TOTAL_MS.
+      if (isCapacityError(lastErr)) { busySince ||= Date.now(); if (Date.now() - busySince >= CAPACITY_RETRY_MS) { this.log(`no capacity after ${attempts} attempts: ${lastErr}`); throw computerBusyError(); } }
+      else busySince = 0;
       // Refusals ("no container instance…") come back in ~1–2 s and clear ~5 s after the previous stop, so retry quickly
       // instead of backing off (the old 1/2/3/4 s backoff added up to 6 s on top of the platform wait).
       await sleep(500);
     }
+    if (!up && isCapacityError(lastErr)) throw computerBusyError();
     if (!up) throw new Error(`computer did not start (${attempts} attempts in ${Date.now() - t0}ms: ${lastErr})`);
     if (attempts > 1) this.log(`started after ${attempts} attempts`);
     const bootMs = Date.now() - t0;

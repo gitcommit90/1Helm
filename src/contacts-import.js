@@ -6,7 +6,7 @@
 // person ticked "include notes") notes become facts on the contact. Every phone number and email goes on the contact itself,
 // labeled (people.js keeps a list of each, primary first); a merge adds the ones the contact doesn't have yet.
 export const IMPORT_BATCH_MAX = 500;      // contacts per request (the app sends 200 at a time)
-export const CONTACTS_MAX = 5000;         // people in one workspace's Contacts; past this, new ones are skipped (merges still apply)
+export const CONTACTS_MAX = 20000;        // people in one workspace's Contacts; past this, new ones are skipped (merges still apply)
 export const PHOTO_MAX = 24000;           // chars of a data: URL (the app sends ~96 px JPEGs, usually 3 to 6 KB)
 const GROUPS = new Set(["Family", "Work", "Friends", "Services"]);
 const SOURCES = { vcard: "Imported from a vCard", google: "Imported from Google Contacts", outlook: "Imported from Outlook", csv: "Imported from a spreadsheet" };

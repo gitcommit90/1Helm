@@ -17,7 +17,7 @@
 // later starts empty: it can't inherit an old channel's bank, DO or computer.
 import { hsOn } from "./hindsight.js";
 
-export const MAX_CHANNELS = 25;   // per workspace, General included (no plan defines a channel limit; Captain can change this)
+export const MAX_CHANNELS = 100;   // per workspace, General included (Captain 2026-10-17: 25 -> 100; no plan defines a channel limit)
 export const NAME_MAX = 40, PURPOSE_MAX = 200;
 // Slugs the app or the server already use for something else (General is "main"; the hash router's own words).
 const RESERVED = new Set(["main", "general", "new", "api", "app", "s", "settings", "apps", "library", "notebook", "contacts", "search", "home", "test"]);
