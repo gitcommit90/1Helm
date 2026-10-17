@@ -128,7 +128,7 @@ const NAME: Record<Item, string> = { loc: "location", mic: "microphone", nf: "no
 const list = (xs: Item[]) => { const n = xs.map((x) => NAME[x]); return n.length < 2 ? n.join("") : `${n.slice(0, -1).join(", ")} and ${n[n.length - 1]}`; };
 const sheetBody = () => {
   const h = esc(D?.helper() || "Your helper"), app = isApp();
-  const row = (k: Item) => k === "loc" ? `<div class="dprow"><span class="dpic">${ic.loc}</span><span class="dptx"><b>Location</b><span>What's near you, like coffee nearby or today's weather. Only a rough area (about 1 km) is shared.</span></span></div>`
+  const row = (k: Item) => k === "loc" ? `<div class="dprow"><span class="dpic">${ic.loc}</span><span class="dptx"><b>Location</b><span>What's near you, like coffee nearby or today's weather. Only the latest one is kept.</span></span></div>`
     : k === "mic" ? `<div class="dprow"><span class="dpic">${ic.mic}</span><span class="dptx"><b>Microphone</b><span>Talk instead of typing, any time, without a pop-up.</span></span></div>`
     : `<div class="dprow"><span class="dpic">${ic.bell}</span><span class="dptx"><b>Notifications</b><span>A heads-up when a task needs you or is finished, even with the app closed.</span></span></div>`;
   const elsewhere = app && (!!P.saved || !!D?.nf?.elsewhere());
@@ -282,7 +282,7 @@ export function dpSec(): string {
   const h = esc(D.helper()), { srow, sa } = D, sharing = allowed("loc") && !off(), f = cached();
   const where = P.saved?.place || f?.place || "", when = P.saved?.at || f?.at || 0;
   const locSub = P.busy === "both" || P.busy === "loc" ? "Waiting for your browser…"
-    : allowed("loc") ? (off() ? `Allowed on this device, but not shared with ${h}` : P.loc === "unknown" ? "Allowed on this device" : `On. ${h} knows roughly where you are`)
+    : allowed("loc") ? (off() ? `Allowed on this device, but not shared with ${h}` : P.loc === "unknown" ? "Allowed on this device" : `On. ${h} can use your location`)
     : P.loc === "denied" ? "Blocked in this browser" : !hasGeo() ? "Not available in this browser" : "Off. Turn it on so you're never asked mid-task";
   const locRight = allowed("loc") ? sw(sharing, `Share my location with ${D.helper()}`, "data-dp=\"locsw\"")
     : P.loc === "denied" ? sa("How to allow", 'data-dp="lochow"') : hasGeo() ? sa("Turn on", 'data-dp="loc"', "blue") : "";
@@ -294,11 +294,11 @@ export function dpSec(): string {
     ${both ? `<div class="sadd dpboth">${sa("Allow location and microphone", 'data-dp="both"', "blue")}</div>` : ""}
     <h3>Location</h3>
     <div class="sc">${srow(ic.sloc, "Location", esc(locSub), locRight, ' data-dprow="loc"')}
-      ${sharing && (where || when) ? srow("", where ? `Near ${esc(where)}` : "Location saved", `${when ? `Updated ${ago(when)} · ` : ""}a rough area, about 1 km`, sa("Update now", 'data-dp="locnow"')) : ""}
+      ${sharing && (where || when) ? srow("", where ? `Near ${esc(where)}` : "Location saved", when ? `Updated ${ago(when)}` : "Latest location", sa("Update now", 'data-dp="locnow"')) : ""}
       ${P.saved || f ? srow("", "Forget my location", `Deletes the location 1Helm keeps for your account. ${h} goes by your home in the Notebook, then your time zone.`, sa(P.busy === "forget" ? "Forgetting…" : "Forget", 'data-dp="forget"', "mute")) : ""}</div>
     <h3>Microphone</h3>
     <div class="sc">${srow(ic.smic, "Microphone", esc(micSub), micRight, ' data-dprow="mic"')}</div>
-    <p class="sfine">Only a rough area is shared, never your exact address, and 1Helm keeps just the latest one. The microphone is used only while you're talking to ${h}. To block either completely, change it in your browser's site settings.</p>`;
+    <p class="sfine">1Helm keeps only your latest location. The microphone is used only while you're talking to ${h}. To block either completely, change it in your browser's site settings.</p>`;
 }
 dpSec.asking = false; dpSec.at = 0;
 async function forget() {
@@ -322,7 +322,7 @@ export function dpInit(deps: Deps) {
     const t = (e.target as HTMLElement).closest<HTMLElement>("[data-dp]"); if (!t || P.busy) return;
     e.preventDefault(); const k = t.dataset.dp;
     if (k === "both") { allowBoth("settings"); return; }
-    if (k === "loc") { P.busy = "loc"; ls.del(K.off); D?.repaint(); void getFix().then((f) => { P.busy = ""; void dpStates().then(() => D?.repaint()); if (!f) D?.note(P.loc === "denied" ? "Location is blocked for 1Helm" : "Couldn't get your location", P.loc === "denied" ? HOW.loc : "Try again in a moment.", true); else D?.note("Location is on", `${D.helper()} knows roughly where you are now.`); }); return; }
+    if (k === "loc") { P.busy = "loc"; ls.del(K.off); D?.repaint(); void getFix().then((f) => { P.busy = ""; void dpStates().then(() => D?.repaint()); if (!f) D?.note(P.loc === "denied" ? "Location is blocked for 1Helm" : "Couldn't get your location", P.loc === "denied" ? HOW.loc : "Try again in a moment.", true); else D?.note("Location is on", `${D.helper()} can use your location now.`); }); return; }
     if (k === "mic") { P.busy = "mic"; D?.repaint(); void askMic().then((ok) => { P.busy = ""; void dpStates().then(() => D?.repaint()); if (ok) D?.note("The microphone is on", "Tap the mic in the message box to talk instead of typing."); else D?.note(P.mic === "denied" ? "The microphone is blocked for 1Helm" : "Couldn't turn on the microphone", P.mic === "denied" ? HOW.mic : "Another app may be using it. Try again.", true); }); return; }
     if (k === "lochow") { D?.note("Location is blocked for 1Helm", HOW.loc, true); return; }
     if (k === "michow") { D?.note("The microphone is blocked for 1Helm", HOW.mic, true); return; }
