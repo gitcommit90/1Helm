@@ -6,6 +6,12 @@ After reviewing new migration files and changes to `wrangler.example.jsonc`, bri
 
 When changing the channel computer Dockerfile, Wrangler builds a new container image at deploy time; a working Docker daemon is required. Existing D1 and R2 data stay in Cloudflare. Do not import a legacy v1.x Linux database into this Worker: the schema and runtime are different, so use a fresh installation.
 
+## October 17 source update, model calls and limits
+
+Apply ordered D1 migrations `0058` through `0060` using the normal migration runner. Migration `0058` adds the `model_served` table, which records what answered each saved model job and is only written by the Cloud-only Models page code. Migrations `0059` and `0060` use `DROP TABLE IF EXISTS` for the tables of the removed router experiments and the removed memory use shadow (`router_pool`, `router_shadow`, `decision_shadow`, the `router_lab_*` tables and `memory_shadow`). Only a Cloud (`ONEHELM_EE`) development deployment ever wrote those tables, so a self-hosted install loses no data. No new binding, variable or Durable Object migration is required.
+
+The variables `OWN_ROUTER`, `OWN_ROUTER_CLEF`, `ROUTER_MODE`, `ROUTER_LAB`, `DECISION_SHADOW`, `CHORE_MODEL_LABEL`, `CHORE_MODEL_BROWSER`, `DYNAMIC_ROUTING_ZDR_THIRD_MODEL`, `DYNAMIC_ROUTING_SHARED_OR`, `TEST_MODEL`, `MODEL` and `HS_USE_SHADOW` are no longer read. You can delete them from your private `wrangler.jsonc`. The example configuration never set them. A deployment without `ONEHELM_EE` uses the built-in first-run model settings, and the backup chat job runs on Workers AI.
+
 ## October 16 source update
 
 Apply ordered D1 migration `0057` using the normal migration runner. It only adds

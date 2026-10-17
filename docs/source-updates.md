@@ -1,3 +1,23 @@
+# Source update: 2026-10-17 (models and limits)
+
+## Model calls, saved limits and the Models console
+
+The Worker source is reconciled from `0b0e3a152a35fc5015b0823bda3ae9194bda44bd` to
+`72138e90896a6f9f791a8ebfee558d08ec85c7aa`. The web source is reconciled from
+`68f6204aeec37ec717f27338151d49aab80e84e9` to
+`4203134316accb0c5e4b39afc6044186082b4c87`. The public base is
+`b2c81845d1ce7a4f1ed348c3c5dfa65d21fd7c7e`.
+
+Every model call now goes through one function, `dispatch` in `src/ee/model-dispatch.js`. It reads the saved settings of a named job (for example `chat.general`, `label` or `stt`), builds a plan from them, and tries the job's models in order. The saved model, reasoning level, output limit, provider sort and price ceiling come from the job, so no code or environment variable chooses them. An OpenRouter model ID goes to OpenRouter and an ID that starts with `@cf/` goes to Workers AI. An own-key account still answers every chat call from its own endpoint. Remote answers are still read only up to a size limit.
+
+The classic router, the router lab, the decision shadow, the test model rewrite and the memory use shadow are deleted. Migrations `0059` and `0060` drop their tables. The variables that selected them or chose models are no longer read. A deployment without `ONEHELM_EE` uses the built-in first-run settings, and the backup chat job (`workers_ai_chat`) runs on Workers AI through the same function. A new regression test covers that path.
+
+The turn cost, step count, command time, helper, event and per job timeout limits are saved settings. Their starting values equal the earlier fixed values and stay in core (`src/limits.js`), so a deployment without `ONEHELM_EE` behaves as before. The licensed Models page is replaced by a console (`src/ee/models-console.js` and `app-assets/app-static/models-console*`). It shows every job with its model, limits and what last served it, and it is stored by migration `0058`. The development to production push of model settings, the signed production report and the affiliate payout switch are not part of the public source.
+
+The app now says that 1Helm keeps only the latest location and that the helper can use it, instead of describing a rough area of about 1 km.
+
+Public sign-in, own-key access, EE gates, storage limits, backup, native clients and the example configuration are unchanged. The marketing website sources, design options, hosted checks and private operations tools remain excluded. Local checks do not establish live provider or device behavior.
+
 # Source update: 2026-10-17
 
 ## Completed turns and activity controls
