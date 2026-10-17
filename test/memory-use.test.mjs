@@ -29,6 +29,8 @@ process.on("exit", (c) => { if (c) log0(LOGS.slice(-40).join("\n")); });
 const ok = (name) => console.log("  ok", name);
 const J = (b, s = 200) => new Response(JSON.stringify(b), { status: s });
 const sleep = (ms) => new Promise((z) => setTimeout(z, ms));
+// Waits for a background effect (the retain write) instead of guessing a delay: a fixed sleep is too short when the full suite loads the host.
+const until = async (fn, ms = 10000) => { const end = Date.now() + ms; while (!fn() && Date.now() < end) await sleep(10); };
 const text = (m) => typeof m.content === "string" ? m.content : m.content?.filter((p) => p.type === "text").map((p) => p.text).join("");
 const store = () => { const m = new Map(); return { get: (k) => m.get(k), put: (k, v) => m.set(k, String(v)), m }; };
 
@@ -356,7 +358,7 @@ for (const engine of ["classic", "pi"]) {
   const trace = JSON.parse(W.turns().at(-1).trace); const arm = trace.find((t) => t.tool === "memory_arm"); assert.ok(arm && arm.args === "B" && /"n":1/.test(arm.out), "the turn trace records the arm and its time"); assert.ok(Number.isFinite(arm.ms));
   assert.equal(contextReceipt({ ...{ sections: [] }, turn: { injected_memory: "x" } }, [], []).automatic_recall, true); assert.equal(contextReceipt({ sections: [], turn: {} }, [], []).automatic_recall, false);
   // retain: the added memory is never retained (the Hindsight writer and the turn row)
-  await tick(); await sleep(30); const retained = JSON.stringify(f.bank(b).retains); assert.ok(retained.includes("Build me a website"), "the conversation is retained"); assert.ok(!retained.includes("injected-memory") && !retained.includes("plain HTML for websites"), `${engine}: the added memory is not retained`);
+  await tick(); await until(() => JSON.stringify(f.bank(b).retains).includes("Build me a website")); await sleep(30); const retained = JSON.stringify(f.bank(b).retains); assert.ok(retained.includes("Build me a website"), "the conversation is retained"); assert.ok(!retained.includes("injected-memory") && !retained.includes("plain HTML for websites"), `${engine}: the added memory is not retained`);
   assert.ok(!JSON.stringify(W.turns().at(-1)).includes("injected-memory"), "nor saved in the turn row");
   // a follow up sends its own words alone: the previous turn is not added to the query
   f.calls.length = 0; await turn("and for my sister?", R.get("default_session") || undefined); assert.equal(f.calls.filter((c) => /memories\/recall/.test(c.key)).at(-1).body.query, "and for my sister?");
@@ -393,7 +395,7 @@ for (const engine of ["classic", "pi"]) {
   W.brain = () => "Try lemon chicken."; const r = await R.runTurn("t1", "main", "1", "Let's find a good recipe for dinner!", null, { session: R.newSession("T") }); assert.ok(!r.error);
   const call = W.calls.find((c) => c.who === "main"); assert.ok(!JSON.stringify(call.messages).includes("injected-memory") && !JSON.stringify(call.messages).includes("peanut"), "arm A does not change what the model sees");
   await tick(); await sleep(60); assert.equal(f.calls.filter((c) => /memories\/recall/.test(c.key)).length, 0, "arm A: no recall call");
-  await R.memArmAdmin({ arm: "default" }); f.calls.length = 0; W.calls.length = 0; await R.runTurn("t1", "main", "1", "Fourth", null, { session: R.newSession("T4") }); await sleep(80);
+  await R.memArmAdmin({ arm: "default" }); f.calls.length = 0; W.calls.length = 0; await R.runTurn("t1", "main", "1", "Fourth", null, { session: R.newSession("T4") }); await until(() => f.calls.some((c) => /memories\/recall/.test(c.key))); await sleep(80);
   const rcs = f.calls.filter((c) => /memories\/recall/.test(c.key)).map((c) => c.body.types.join(",")); assert.deepEqual(rcs, ["observation"], "the default arm B2 makes one recall, for observations");
   assert.match(JSON.stringify(W.calls.find((c) => c.who === "main").messages), /injected-memory/, "the default B2 memory is in the turn");
   assert.ok(!("shadow" in R.memArmState()), "the arm state has no shadow setting");
