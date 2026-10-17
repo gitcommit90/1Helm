@@ -3,7 +3,7 @@
 ## Completed turns and activity controls
 
 The Worker source is reconciled from `cf87089ff85438d0c22145355e666f7a37039244` to
-`4d0f541e206c801c343923d0ea5391cfdf2e5232`. The web source is reconciled from
+`0b0e3a152a35fc5015b0823bda3ae9194bda44bd`. The web source is reconciled from
 `4a1da4ca61790f301cb5f7a81abaa84b9445689f` to
 `68f6204aeec37ec717f27338151d49aab80e84e9`. The public base is
 `2f96d9d202c74e3112beccf907789d35985b398c`.
