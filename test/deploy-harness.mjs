@@ -59,6 +59,7 @@ export function world({ engine = "classic", env: extraEnv = {}, openrouter = fal
   if (openrouter) {
     const realFetch = globalThis.fetch;
     globalThis.fetch = async (url, init = {}) => {
+      if (String(url).endsWith("/systemone")) return Response.json({ model: JSON.parse(init.body).model, answers: { is_task: { noul: 1 }, category: { choice: "general" }, unmet: { noul: 0 } }, usage: { cost: 0 } });   // the decider (route2): a fixed local answer, never the network
       if (!String(url).endsWith("/chat/completions")) return realFetch(url, init);
       const body = JSON.parse(init.body);
       for (const m of body.messages || []) if (Array.isArray(m.content) && m.content.every((c) => c.type === "text")) m.content = m.content.map((c) => c.text).join("");   // cache-marked text parts back to a string
