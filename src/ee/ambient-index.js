@@ -6,6 +6,7 @@
 //   ambient_qvec       the last few query vectors, so paging through results never embeds again
 // Embedding uses the saved memory embedding model and the existing Ledger reserve/settle path.
 // Without its provider connection, passages and tolerant keyword search still work.
+import { cappedResponseJson } from "../bounded-response.js";
 import { modelSettingsEnv } from "./model-settings.js";
 import { dispatchMedia as dispatch } from "./media-job.js";
 import { isCloudflareModel } from "../cloudflare-models.js";
@@ -139,7 +140,7 @@ export class AmbientIndex {
       const meta = { tenant: h.tid(), channel: "main", kind: "ambient-embed" };
       // The model, provider fields and transport come from the saved job. A failed provider reads as unavailable (and is retried later).
       const response = await dispatch(env, "embed_memory", { input: texts }, { meta }).catch((e) => { if (e?.privacy || e?.privacyBlocked) throw e; throw Object.assign(new Error(`Ambient embedding provider unavailable (${e?.orStatus || e?.status || "error"}).`), { cause: e }); });
-      const r = await response.json();
+      const r = await cappedResponseJson(response, 16 << 20);   // bounded: a remote embedding answer is never read whole
       const vecs = (r?.data || []).map((v) => Array.isArray(v?.embedding) ? v.embedding : Array.isArray(v) || ArrayBuffer.isView(v) ? v : null);
       const tokens = Number(r?.usage?.prompt_tokens) || Number(r?.usage?.total_tokens) || Math.ceil(chars / 4), actual = r?.usage?.cost;
       const cost = Math.min(reserve, Math.ceil((Number.isFinite(Number(actual)) && Number(actual) > 0 ? Number(actual) * 1e9   /* a reported cost; none (or zero, as Workers AI gives) charges by tokens */ : tokens * config.in_nano) * EMBED_MARKUP));
