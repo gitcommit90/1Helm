@@ -350,7 +350,7 @@ export function tkLiveSteps(id?: string): { title: string; status: string }[] | 
   const d = id ? DET[id] : undefined; if (!d) return null;
   const l = sorted(d.events).filter(e => e.type === "step"); return l.length ? l.map(e => ({ title: e.title || e.tool || "Step", status: e.status || "ok" })) : null;
 }
-export const tkCardLink = (id?: string) => id && DET[id] ? `<button type="button" class="tk-link" data-tkcard="${esc(id)}">Task card ›</button>` : "";
+export const tkCardLink = (id?: string) => id && DET[id] ? `<button type="button" class="tk-link" data-tkcard="${esc(id)}" aria-label="Open task activity" aria-haspopup="dialog">Activity</button>` : "";
 // A person's message added by the server (another tab, a text): v3 adds the bubble if it's missing.
 export const tkMsgOf = (ev: any) => ev?.t === "card_event" && ev.event?.type === "msg" ? ev.event as EventView : null;
 

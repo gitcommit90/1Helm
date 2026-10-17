@@ -1683,7 +1683,6 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .sr[data-scrow][aria-expanded=true]{background:color-mix(in srgb,var(--hover) 70%,transparent)}
 @media (max-width:767px){.scedit{padding:6px 14px 14px}.scedit .sprim{flex:1 1 100%}.scedit .sa{flex:1 1 auto}}
 .sc kbd.kbig,.sccap kbd.kbig{display:inline-block}   /* the phone rule that hides key hints must not hide the ones Settings is about */
-.steps.prog{margin-bottom:6px}.steps.prog .pnote{margin:6px 0 0 6px;padding-left:10px;border-left:2px solid var(--line);color:var(--mute);font-size:13px;line-height:1.45;max-width:100%}
 .acue-enable{display:flex;align-items:center;gap:10px;min-height:44px;font-size:14px;margin:10px 0}.acue-enable input{width:18px;height:18px;accent-color:var(--accent);flex:none}.acue textarea{resize:vertical;min-height:88px}.acue .sfine{margin:10px 0;line-height:1.5}.acue-message{font-size:13px;color:var(--warn);overflow-wrap:anywhere}.acue-message:empty{display:none}.acue .sbtns{flex-wrap:wrap}
 @media(max-width:400px){.acue .sbtns>button{flex:1 1 100%;white-space:nowrap}}
 /* Notebook pages (v3.ts nbWiki): built from the Notebook's own cards, pills and rows */

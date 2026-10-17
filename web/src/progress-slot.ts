@@ -59,12 +59,12 @@ export function progressAfter(before: Before | undefined, message: object, final
   // Fade in the replacement in the same slot. No outgoing duplicate text, no
   // height animation, and no opacity flicker on every token/status repaint.
   const reveal = !final ? slot.animate([{opacity:.55,transform:'translateY(2px)'},{opacity:1,transform:'none'}],{duration:180,easing:'ease-out'}) : undefined;
-  const caret = before.row.querySelector<HTMLElement>('.prog:not([hidden]) summary > svg:last-child');
-  if (!caret) { effect = () => reveal?.cancel(); return; }
+  const activity = before.row.closest('.msgs')?.querySelector<HTMLElement>('.primary-activity activity-orb');
+  if (!activity) { effect = () => reveal?.cancel(); return; }
   // The outgoing confirmed note becomes dust at the first incoming word, which
   // might be another note or the final answer. Its old bounds are the source;
   // incoming text remains readable and no old text is resurrected or duplicated.
-  const target=caret.getBoundingClientRect(), r=before.rect;
+  const target=activity.getBoundingClientRect(), r=before.rect;
   if (!r.width || !r.height || r.bottom<0 || r.top>innerHeight || target.top>innerHeight) return;
   const layer=document.createElement('div');layer.className='progress-dust';layer.setAttribute('aria-hidden','true');layer.inert=true;
   const animations: Animation[]=[];

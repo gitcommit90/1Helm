@@ -1372,14 +1372,11 @@ function rxPop(m: Msg) {
   el.animate([{ transform: "scale(.2)", opacity: 0 }, { transform: "scale(1.25)", opacity: 1, offset: .6 }, { transform: "scale(1)" }], { duration: 420, easing: "cubic-bezier(.3,1.4,.5,1)" });
 }
 // Tracker cards (tracker.ts): a person's message knows its client id and send state (a steer: sending → joined, or failed with
-// Retry); a reply knows its card (the finished-turn chip, the live steps' "Task card ›" link, "Show in chat").
+// Retry); a reply knows its card (the finished-turn chip, the live steps' "Activity" link, "Show in chat").
 type TkMsg = RxMsg & { input_reply?: InputReply; cid?: string; state?: "sending" | "joined" | "failed"; err?: string; card?: string; reply?: Pin | (Omit<Pin, "mr"> & { mr?: number }); rid?: string };
 // Copy + Reply target the text actually rendered in each bubble, including completed preambles during streaming.
 const rqKey = () => { const { ch, s } = route(); return s && !isLib() && !isNb() && !isCt() && !isSch() ? `${ch.slug}|${s.id}` : ""; };
 const srvId = (m: Msg): string | null => { const t = m as TkMsg; return (m.role === "user" ? t.turn : t.card || t.rid) || null; };
-// Narration the helper wrote before its tool calls: kept with the steps, collapsed, never in the reply bubble.
-const progNotes = (m: Msg) => { const ps = dedupeProgress(m.prog || []).map(x => x.trim()).filter(Boolean);
-  return `<details class="steps prog"${ps.length || m.progressOmitted ? "" : " hidden"}><summary><span class="sico">${ic.term}</span><span>${m.progressOmitted ? 'Latest ' : ''}${ps.length === 1 ? "1 progress note" : `${ps.length} progress notes`}</span>${ic.chev}</summary>${m.progressOmitted ? `<p class="pnote meta">${m.progressOmitted} earlier progress notes are not shown here. Earlier activity is kept in the task card.</p>` : ''}${ps.map(x => `<p class="pnote">${esc(x)}</p>`).join("")}</details>`; };
 const msgPlain = (m: Msg) => m.role === "user" ? String(m.body || "") : dedupeProgress([...(m.pre || []), m.body].map(x => String(x ?? ""))).map(x => copyPlain(x, { cardText, scrubCode })).filter(Boolean).join("\n\n");
 const msgRich = (m: Msg) => m.role === "user" ? esc(String(m.body || "")).replace(/\n/g, "<br>") : dedupeProgress([...(m.pre || []), m.body].map(x => String(x ?? ""))).map(x => { const y = (cardText(x) || scrubCode(x)).replace(/<small>[\s\S]*?<\/small>/gi, "").trim(); return y ? chatMarkdown(y) : ""; }).join("");
 function msgHtml(m: Msg, ch: Channel, prev?: Msg, live = false, s?: Session, reply?: string) {
@@ -1395,13 +1392,13 @@ function msgHtml(m: Msg, ch: Channel, prev?: Msg, live = false, s?: Session, rep
   const tkon = !!LIVE && !!s && !!tm.card && tkOn(ch.slug, s.id);
   if (tkon && live) {   // live: the helper's own step titles, and the card one tap away
     const ls = tkLiveSteps(tm.card), n = ls ? ls.length : m.steps.length;
-    const det = n ? `<details class="steps"><summary><span class="sico">${ic.term}</span><span>${n === 1 ? "1 step" : `${n} steps`}</span>${ic.chev}</summary>
-    ${ls ? ls.map(x => `<div class="tk-sl s-${esc(x.status)}"><i></i><span>${esc(x.title)}</span></div>`).join("") : m.steps.map(x => `<code>${esc(x)}</code>`).join("")}</details>` : "";
+    const det = n ? `<details class="steps"><summary aria-label="Tool activity, ${n === 1 ? "1 step" : `${n} steps`}"><span>${n === 1 ? "1 step" : `${n} steps`}</span>${ic.chev}</summary>
+    <div class="tk-step-list">${ls ? ls.map(x => `<div class="tk-sl s-${esc(x.status)}"><i aria-hidden="true"></i><span>${esc(x.title)}</span></div>`).join("") : m.steps.map(x => `<code>${esc(x)}</code>`).join("")}</div></details>` : "";
     steps = det || tkCardLink(tm.card) ? `<div class="tk-live">${det}${tkCardLink(tm.card)}</div>` : "";
   } else if (tkon && ["paused", "failed", "interrupted", "stopped"].includes(tkCardView(ch.slug, s!.id, tm.card)?.status || "")) steps = tkChip(ch.slug, s!.id, tm.card);
   const slot = progressSlot(m, live);
   return `<div class="m agent${first ? " first" : ""}" data-mr="${m.id}"${tkon ? ` data-card="${esc(tm.card!)}"` : ""} title="${clock(m.at)}">
-    <div class="reply-steps">${live && m.note ? `<div class="mnote">${esc(m.note)}</div>` : ""}${steps}</div><div class="reply-slot" data-progress-mode="${slot.mode}">${!live && !String(m.body || "").trim() && (m.cards || []).some(c => c.t === "lnrefine") ? "" : partHtml(slot.text, ch, s, m, live, reply, false, m, slot.part)}</div>${live ? `<div class="reply-history">${progNotes(m)}</div>` : ""}${tkon && !live && tkCardView(ch.slug, s!.id, tm.card)?.status === "paused" ? pausedNote(ch.slug, s!.id, tm.card!) : ""}${live ? ctUsed(m) + nbSaved(m, ch) : ""}${chatCards(m.cards || [], ch, reply)}</div>`;
+    <div class="reply-steps">${live && m.note ? `<div class="mnote">${esc(m.note)}</div>` : ""}${steps}</div><div class="reply-slot" data-progress-mode="${slot.mode}">${!live && !String(m.body || "").trim() && (m.cards || []).some(c => c.t === "lnrefine") ? "" : partHtml(slot.text, ch, s, m, live, reply, false, m, slot.part)}</div>${tkon && !live && tkCardView(ch.slug, s!.id, tm.card)?.status === "paused" ? pausedNote(ch.slug, s!.id, tm.card!) : ""}${live ? ctUsed(m) + nbSaved(m, ch) : ""}${chatCards(m.cards || [], ch, reply)}</div>`;
 }
 
 document.addEventListener("click", e => {

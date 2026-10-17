@@ -3843,7 +3843,6 @@ export class Resident extends DurableObject {
     const chatTitle = kind === "chat" && !error && !tc.stoppedTurn && !tc.modelFailure ? claimChatTitle(this, tc.session) : null;
     const sumP = tc.modelFailure || error?.startsWith("audio_") ? Promise.resolve(null) : summarizeCard({ env: this.env, ledger, meta: { tenant: this.get("tenant"), channel: this.get("channel") },
       input: { ...labelInput(this.sql, turn, { reply, error, name: kind === "chat" ? null : (opts.helper?.name || (opts.workflow_id != null ? this.wf(opts.workflow_id)?.name : null) || null) }), chatTitle: !!chatTitle } })
-      .then((labels) => { applyChatTitle(this, chatTitle, labels?.chat_title); return labels; })
       .catch((e) => { console.log("labeller", e.message); return null; });
     let notes = null;
     if (!tc.appendRuntime && compact && kind === "chat" && !error && tc.abort !== "hard" && stats.tool_calls >= HANDOFF_MIN_TOOLS) {
@@ -3861,10 +3860,6 @@ export class Resident extends DurableObject {
     if (shadow) { try { await this.recordShadow(turn, tc.session, await shadow, stats, false, tc); } catch (e) { console.log("own-router shadow log", e.message); } }
     if (this.env.OWN_ROUTER === "on" && ownDecision) { try { await this.recordShadow(turn, tc.session, ownDecision, stats, true, tc); } catch (e) { console.log("own-router log", e.message); } }
     tc.route = null;
-    // The labels land before "done" when they're quick (≤6 s); a late one still writes the card, and the app picks it up on reload.
-    let lt; const lab = await Promise.race([sumP, new Promise((z) => { lt = setTimeout(z, 6000); })]); clearTimeout(lt);
-    if (lab) { labelCard(this.sql, tc, turn, lab); if (lab.billed) stats.charge += lab.charge_nano || 0; }
-    else if (lab === undefined) this.ctx.waitUntil?.(sumP.then((l) => { if (!l) return; labelCard(this.sql, null, turn, l); if (l.billed && l.charge_nano) this.sql.exec("UPDATE turns SET charge_nano=charge_nano+? WHERE id=?", Math.round(l.charge_nano), turn); }));
     this.sql.exec("INSERT INTO turns (id,at,user_text,reply,steps,tool_calls,computer_used,computer_wait_ms,model_ms,total_ms,in_tok,cached_tok,out_tok,charge_nano,error,kind,workflow_id,trace,notes,ctx,checkpoints,step_in,engine,session,models,cache_write_tok) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", turn, t0, text, reply, stats.steps, stats.tool_calls, stats.computer_used, stats.computer_wait_ms, stats.model_ms, Date.now() - t0, stats.in, stats.cached, stats.out, stats.charge, error, kind, opts.workflow_id ?? null, diagnosticTrace(trace, tc.progressOmitted), notes, ctxMode, checkpoints, JSON.stringify(stepIn), engine, tc.session, JSON.stringify(stats.models), stats.cache_write);
     // Stopped by the person or ended by an error: the reply carries none of what it found, so its lookups are kept as "unfinished work" (worklog.js).
     if (!nativeWorker && (tc.stoppedTurn || error)) {
@@ -3885,6 +3880,15 @@ export class Resident extends DurableObject {
     for (const x of splitProgress(said, saidMeta)) for (const p of splitCardParts(stripNotesEcho(x.text).trim())) if (p) { if (x.progress) progress.push(parts.length); parts.push(p); }
     if (kind === "chat" && (parts.length > 1 || progress.length) && !error) this.sql.exec("UPDATE turns SET parts=?, progress=? WHERE id=?", JSON.stringify(parts), progress.length ? JSON.stringify(progress) : null, turn);
     tc.lab?.tokens?.(stepIn[0] ?? null);   // router lab: the real first call's input tokens, next to its estimate
+    // Labels enrich an already saved turn. Completion and the next queued input
+    // never wait for the optional model call, and its charge belongs only to
+    // this stored turn rather than mutable stats returned to the caller.
+    this.ctx.waitUntil?.(sumP.then((labels) => {
+      if (!labels || !this.sql.exec("SELECT 1 FROM turns WHERE id=?", turn).toArray().length) return;
+      applyChatTitle(this, chatTitle, labels.chat_title);
+      labelCard(this.sql, null, turn, labels);
+      if (labels.billed && labels.charge_nano) this.sql.exec("UPDATE turns SET charge_nano=charge_nano+? WHERE id=?", Math.round(labels.charge_nano), turn);
+    }).catch((e) => console.log("labeller follow-up", e.message)));
     return { reply, turn, ...(tc.inputRequest ? {input_request:questionForTurn(this.sql,turn)} : {}), ...(tc.helperInputQuestion ? {input_requested:tc.helperInputQuestion} : {}), total_ms: Date.now() - t0, ...stats, trace, error, ...(tc.progressOmitted ? {progress_omitted:tc.progressOmitted} : {}), ...(tc.modelFailure && !tc.stoppedTurn ? { recoverable: true, failure_phase: tc.modelFailure.phase || null } : {}), notes, ctx: ctxMode, checkpoints, step_in: stepIn, engine, reaction: tc.reaction || null };
   }
 

@@ -1,3 +1,28 @@
+# Source update: 2026-10-17
+
+## Completed turns and activity controls
+
+The Worker source is reconciled from `cf87089ff85438d0c22145355e666f7a37039244` to
+`4d0f541e206c801c343923d0ea5391cfdf2e5232`. The web source is reconciled from
+`4a1da4ca61790f301cb5f7a81abaa84b9445689f` to
+`68f6204aeec37ec717f27338151d49aab80e84e9`. The public base is
+`2f96d9d202c74e3112beccf907789d35985b398c`.
+
+A completed reply is saved and released before optional task labels finish. Late
+labels update the saved turn and its card, and their charge belongs to that turn.
+A late label respects a manual task rename and cannot recreate a deleted task.
+
+The web app puts live steps and the Activity button on one row. The current
+progress note stays visible with an activity orb below it, and earlier notes
+remain in the task activity. Keyboard focus, mobile control sizes and reduced
+motion rules are retained.
+
+Public sign-in, own-key access, EE gates, native clients, schema and deployment
+configuration are unchanged. Hosted browser inspection scripts and the hosted
+browser-agent fixture remain excluded. Portable completion and title tests
+cover persistence, billing and late-label failures with controlled responses.
+Local checks do not establish live provider or device behavior.
+
 # Source update: 2026-10-16
 
 ## Routed tasks, durable questions, phone replies and preparation containers

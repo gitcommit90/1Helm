@@ -78,13 +78,25 @@
 .tk-chip span{flex:none}
 .tk-chip>svg{flex:none;color:var(--tk-green)}.tk-chip.s-failed>svg{color:var(--tk-red)}.tk-chip.s-interrupted>svg{color:var(--tk-amber)}.tk-chip.s-stopped>svg{color:var(--mute)}
 .tk-chip:hover{background:var(--abub)}
-.tk-live{display:flex;flex-wrap:wrap;align-items:center;gap:0 10px;max-width:86%;margin:0 0 8px}
-.tk-live .steps{margin:0}.tk-live .steps[open]{order:0}
-.tk-link{flex:none;white-space:nowrap;height:34px;padding:0 4px;font-size:13px;font-weight:600;color:var(--ink2);text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:3px}.tk-link:hover{color:var(--ink)}
-.tk-sl{display:flex;align-items:center;gap:9px;margin-top:6px;padding:0 4px;font-size:13px;line-height:1.4;color:var(--ink2)}
-.tk-sl:first-of-type{margin-top:10px}
-.tk-sl i{flex:none;width:6px;height:6px;border-radius:50%;background:var(--tk-green)}
+/* Native disclosures keep keyboard behavior while the controls share one row. */
+.tk-live{display:grid;grid-template-columns:max-content max-content minmax(0,1fr);align-items:start;justify-content:start;column-gap:10px;width:86%;max-width:86%;margin:0 0 4px;color:var(--mute)}
+.tk-live>.steps,.tk-live>.steps[open]{display:contents}
+.tk-live>.steps>summary,.tk-live>.tk-link{box-sizing:border-box;display:inline-flex;align-items:center;min-height:36px;height:36px;padding:0 4px;border:0;border-radius:5px;background:none;font-size:12px;font-weight:400;line-height:1;color:var(--mute);white-space:nowrap;cursor:pointer;text-decoration:none;transition:color .15s,background .15s}
+.tk-live>.steps>summary{grid-row:1;grid-column:1;gap:5px;max-width:none}
+.tk-live>.steps>summary>svg{width:12px;height:12px;flex:none}
+.tk-live>.tk-link{grid-row:1;grid-column:2;position:relative}
+.tk-live>.tk-link:only-child{grid-column:1}
+.tk-live>.steps+.tk-link::before{content:"";position:absolute;left:-6px;top:13px;height:10px;width:1px;background:var(--line2)}
+.tk-live>.steps>summary:hover,.tk-live>.tk-link:hover{color:var(--ink);background:var(--abub)}
+.tk-live>.steps>summary:focus-visible,.tk-live>.tk-link:focus-visible{outline:2px solid var(--ink2);outline-offset:2px}
+.tk-live>.steps::details-content{grid-row:2;grid-column:1/-1;min-width:0}
+.tk-live .tk-step-list{grid-row:2;grid-column:1/-1;min-width:0;max-height:220px;overflow:auto;overscroll-behavior:contain;padding:2px 0 2px 11px;margin:2px 0 8px 4px;border-left:1px solid var(--line2)}
+.tk-sl{display:flex;align-items:baseline;gap:8px;padding:4px 0;font-size:12px;line-height:1.5;color:var(--ink2);overflow-wrap:anywhere}
+.tk-sl span{min-width:0}
+.tk-sl i{flex:none;align-self:center;width:4px;height:4px;border-radius:50%;background:var(--tk-green)}
 .tk-sl.s-running i{background:var(--tk-blue);animation:tkpulse 1.8s ease-in-out infinite}.tk-sl.s-error i{background:var(--tk-red)}.tk-sl.s-skipped i{background:var(--faint)}.tk-sl.s-skipped{color:var(--mute)}
+@media (max-width:767px){.tk-live>.steps>summary,.tk-live>.tk-link{height:44px;min-height:44px}.tk-live>.steps+.tk-link::before{top:17px}}
+@media (prefers-reduced-motion:reduce){.tk-live>.steps>summary,.tk-live>.tk-link,.tk-live>.steps>summary>svg{transition:none}}
 .m.user.tk-sending .bubble{opacity:.62}
 .tk-note{font-size:12px;color:var(--mute);margin:4px 4px 0;display:inline-flex;align-items:center;gap:5px}
 .tk-note.joined{animation:tkjoin 2.2s ease forwards}

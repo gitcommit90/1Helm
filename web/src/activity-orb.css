@@ -1,6 +1,6 @@
 /* The engine paints depth with dots. The surrounding UI stays still. */
 activity-orb{display:inline-block;width:20px;height:20px;flex:0 0 20px;vertical-align:middle;contain:strict;pointer-events:none}
-.primary-activity{align-self:flex-start;min-height:24px;margin:10px 0 2px;padding:0 2px}
+.primary-activity{align-self:flex-start;min-height:24px;margin:0 0 2px;padding:0 2px}
 .primary-activity:empty{display:none}
 .typing-orb{display:inline-flex;align-items:center;gap:9px;min-height:24px;color:var(--mute);font:400 12px/1.4 var(--sans)}
 .worker-activity{display:flex;flex-direction:column;gap:5px;margin:12px 0 2px;max-width:100%;align-self:flex-start;min-width:0}

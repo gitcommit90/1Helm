@@ -7,13 +7,17 @@ import { transactionSyncFor } from "./helpers/transaction-sync.mjs";
 import assert from "node:assert"; import { DatabaseSync } from "node:sqlite"; import { readFileSync } from "node:fs";
 import { Resident } from "../src/resident.js";
 import { confirmGate } from "../src/confirm.js";
+import { SEED } from "./helpers/seed-settings.mjs";
 
 export const HANG = Symbol("hang");          // brain → HANG: this model call never answers (killed mid-call)
 export const RESET = "Durable Object reset because its code was updated.";
 export const tick = (ms = 5) => new Promise((z) => setTimeout(z, ms));
 export const never = () => new Promise(() => {});
 
-export function world({ engine = "classic", env: extraEnv = {} } = {}) {
+// openrouter: true sends every model call (the helper's steps, the card label, the hand-off notes) through the OpenRouter code path, as
+// the live Worker does (labels and notes have no Workers AI path any more, 8dec274 / 11a7df6). A global fetch stand-in answers each
+// openrouter.ai chat call with the same scripted brain: a streamed reply for stream requests, a whole JSON answer otherwise.
+export function world({ engine = "classic", env: extraEnv = {}, openrouter = false } = {}) {
   const W = {};
   // ---- D1 ----
   const d1 = new DatabaseSync(":memory:");
@@ -51,7 +55,22 @@ export function world({ engine = "classic", env: extraEnv = {} } = {}) {
       (s.calls || []).forEach(([name, args], i) => ev.push({ choices: [{ delta: { tool_calls: [{ index: i, id: `call_${W.calls.length}_${i}`, function: { name, arguments: JSON.stringify(args) } }] } }] }));
       ev.push({ choices: [{ delta: {}, finish_reason: s.calls?.length ? "tool_calls" : "stop" }], usage });
       return sse(ev);
-    } }, ...extraEnv };
+    } }, ...(openrouter ? { OPENROUTER_API_KEY: "k", MODEL_SETTINGS: SEED } : {}), ...extraEnv };
+  if (openrouter) {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      if (!String(url).endsWith("/chat/completions")) return realFetch(url, init);
+      const body = JSON.parse(init.body);
+      for (const m of body.messages || []) if (Array.isArray(m.content) && m.content.every((c) => c.type === "text")) m.content = m.content.map((c) => c.text).join("");   // cache-marked text parts back to a string
+      const stream = await W.env.AI.run(body.model, body);
+      if (body.stream) return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+      if (stream && typeof stream.pipeThrough !== "function") return Response.json({ model: body.model, choices: [{ finish_reason: "stop", message: { content: stream.response ?? "" } }], usage: { prompt_tokens: 500, completion_tokens: 50, cost: 0.0001, ...(stream.usage || {}) } });   // a test's own whole-answer stand-in ({ response, usage })
+      let text = "", buf = ""; const rd = stream.pipeThrough(new TextDecoderStream()).getReader();
+      for (;;) { const { value, done } = await rd.read(); if (done) break; buf += value; }
+      for (const l of buf.split("\n")) if (l.startsWith("data: ") && l !== "data: [DONE]") text += JSON.parse(l.slice(6)).choices?.[0]?.delta?.content || "";
+      return Response.json({ model: body.model, choices: [{ finish_reason: "stop", message: { content: text } }], usage: { prompt_tokens: 500, completion_tokens: 50, cost: 0.0001 } });
+    };
+  }
   // ---- the Durable Object's storage, shared by every instance; each boot gets its own epoch ----
   const dodb = W.dodb = new DatabaseSync(":memory:");
   let epoch = 0; W.alarmAt = null;

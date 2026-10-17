@@ -546,7 +546,7 @@ export const labelSchema = input => S.object({ title: { ...S.string, minLength: 
   why: S.object(Object.fromEntries((input.steps || []).map((_, i) => [String(i + 1), S.string]))), ...(input.chatTitle ? { chat_title: { ...S.string, minLength: 1 } } : {}) });
 // Labels one finished card. {env, ledger (the tenant Ledger stub), meta (AI Gateway tags), input (labelInput())}. Never throws:
 // any failure falls back to autoLabels. Returns {title, result, summary, why, title_src, charge_nano, billed}; the caller adds
-// charge_nano to stats.charge only when billed, and passes the result to labelCard (which adds it to cards.charge_nano).
+// charge_nano to the stored turn only when billed, and passes the result to labelCard (which adds it to cards.charge_nano).
 export async function summarizeCard({ env, ledger = null, meta = {}, input, bill = BILL_LABELLER, timeoutMs = LABEL_TIMEOUT_MS } = {}) {
   if (skipLabeller(input)) return autoLabels(input);
   const system = input.chatTitle ? `${LABEL_SYSTEM.replace('{"title","result","summary","why"}', '{"title","chat_title","result","summary","why"}')}\nchat_title: a string property inside that same JSON object, naming the conversation. Do not add any text outside the JSON object. Follow this instruction for chat_title:\n${CHAT_TITLE_PROMPT}` : LABEL_SYSTEM;
