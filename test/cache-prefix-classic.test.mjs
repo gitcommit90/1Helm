@@ -29,7 +29,11 @@ for (const engine of ["classic", "pi"]) {
     u = String(u); const body = init.body ? JSON.parse(init.body) : {};
     if (u.endsWith("/systemone")) return new Response(JSON.stringify({ answers: { is_task: { noul: 0.97 }, category: { choice: "spreadsheet" }, unmet: { noul: 0.05 } }, usage: { cost: 0.00001 } }), { status: 200 });
     if (!u.endsWith("/chat/completions")) throw new Error(`unexpected fetch ${u}`);
-    if (body.tools && body.stream) wire.push(structuredClone(body));
+    if (!body.stream) {
+      assert.equal(body.response_format?.json_schema?.name, "task_labels", "only labels use the whole-answer fixture");
+      return Response.json({ model: body.model, choices: [{ message: { content: JSON.stringify({ title: "Cache prefix", result: "Done", summary: "Completed", why: {} }) }, finish_reason: "stop" }], usage: { cost: .00001 } });
+    }
+    if (body.tools) wire.push(structuredClone(body));
     return new Response(await W.env.AI.run("m", body), { status: 200, headers: { "content-type": "text/event-stream" } });
   };
   W.tools.web_search = async () => BIG;   // a result over 20,000 chars (a command's output is capped at 20,000 before it gets here)
@@ -44,7 +48,7 @@ for (const engine of ["classic", "pi"]) {
     if (n <= 6) return { calls: [["run_command", { command: `echo step ${n}`, step_title: `Step ${n}` }]] };
     return "Turn one done."; };
   const r1 = await W.R.runTurn("t1", "main", "1", "Check the log and report.", null, { session: sess });
-  assert.ok(!r1.error, r1.error);
+  assert.ok(!r1.error, r1.error); await W.settle();
   const t1 = wire.splice(0); assert.ok(t1.length >= 7, `${engine}: turn 1 made ${t1.length} calls`);
   if (engine === "classic") assert.ok(t1.some((b) => JSON.stringify(b.messages).includes("chars set aside")), "classic: the huge result was trimmed (the pi engine has no working memory)");
   pairs(t1, "turn 1");
@@ -54,7 +58,7 @@ for (const engine of ["classic", "pi"]) {
   n = 0;
   W.brain = ({ who }) => { if (who !== "main") return "ok"; n++; return n <= 4 ? { calls: [["run_command", { command: `echo again ${n}`, step_title: `Again ${n}` }]] } : "Turn two done."; };
   const r2 = await W.R.runTurn("t1", "main", "1", "And once more.", null, { session: sess, max_steps: 3 });
-  assert.ok(!r2.error, r2.error);
+  assert.ok(!r2.error, r2.error); await W.settle();
   const t2 = wire.splice(0); assert.ok(t2.length >= 3);
   pairs(t2, "turn 2");
   const final = t2.at(-1); assert.equal(final.tool_choice, "none", `${engine}: the final report call keeps the tools and sets tool_choice none`);
