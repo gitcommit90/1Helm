@@ -1,0 +1,209 @@
+// The /models console in the browser: state, events, saving, history and the model picker.
+// The HTML comes from models-console-core.js (the Worker renders the first page with the same code). Every save goes through POST /models/api/save.
+import * as C from "./models-console-core.js";
+
+const $ = (s, r) => (r || document).querySelector(s), $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+let state = JSON.parse($("#model-state").textContent);
+const ui = { view: "all", q: "", sel: null, level: "unrestricted" };
+const app = $("#app"), layer = $("#layer"), toastEl = $("#toast");
+const editable = () => true;
+
+// ------------------------------------------------------------ rendering
+const keyOf = (el) => (el && el.dataset ? el.dataset.k || (el.dataset.df ? "d." + el.dataset.df + (el.dataset.i || "") : null) : null);
+function render() {
+  const a = document.activeElement, key = keyOf(a), sel = key && a.setSelectionRange && a.type !== "number" ? [a.selectionStart, a.selectionEnd] : null;
+  const tbl = $(".tbl"), db = $(".db"), sx = window.scrollX, sy = window.scrollY, tl = tbl ? tbl.scrollLeft : 0, rowFocus = a && a.dataset && a.dataset.row;
+  app.innerHTML = C.pageHtml(state, ui, Date.now()).toString();
+  if (tl && $(".tbl")) $(".tbl").scrollLeft = tl;
+  if (db && $(".db")) $(".db").scrollTop = db.scrollTop;
+  window.scrollTo(sx, sy);
+  if (key) { const el = $$("[data-k],[data-df]", app).find((e) => keyOf(e) === key); if (el) { el.focus({ preventScroll: true }); if (sel && el.setSelectionRange) try { el.setSelectionRange(sel[0], sel[1]); } catch (e) { /* not a text field */ } } }
+  else if (rowFocus) { const el = $(`[data-row="${CSS.escape(rowFocus)}"]`); if (el) el.focus({ preventScroll: true }); }
+}
+let toastTimer = null;
+function toast(text) { toastEl.textContent = text; toastEl.className = text ? "on" : ""; clearTimeout(toastTimer); if (text) toastTimer = setTimeout(() => toast(""), 7000); }
+const V = () => C.view(state, ui);
+
+// ------------------------------------------------------------ talking to the server
+async function api(method, path, body) {
+  try {
+    const r = await fetch(path, { method, credentials: "same-origin", cache: "no-store", headers: method === "GET" ? {} : { "content-type": "application/json", "x-model-settings": "1" }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const data = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, data };
+  } catch (e) { return { ok: false, status: 0, data: { error: "Check your connection and try again." } }; }
+}
+function adopt(data) { data.unlisted = state.unlisted || []; state = data; if (ui.sel && !C.rowByKey(state, ui.sel)) ui.sel = null; render(); }
+let queue = Promise.resolve();
+// edits: a list of edit objects (models-console-core.js applyEdit), applied one after another to the newest saved settings and saved once.
+function commit(edits, after) {
+  queue = queue.then(async () => {
+    let cfg = state.config, changed = false;
+    for (const e of edits) { const next = C.applyEdit(cfg, e); if (next) { cfg = next; changed = true; } }
+    if (!changed) { render(); return; }
+    const r = await api("POST", "/models/api/save", C.saveBody(cfg, state.revision));
+    if (r.ok) { adopt(r.data); if (after) after(); return; }
+    toast("Not saved. " + (r.data.error || "Try again."));
+    if (r.status === 409) { const latest = await api("GET", "/models/api"); if (latest.ok) adopt(latest.data); else render(); } else render();
+  });
+  return queue;
+}
+async function loadUnlisted() {
+  const r = await api("GET", "/models/api/unlisted");
+  if (r.ok && Array.isArray(r.data.unlisted) && JSON.stringify(r.data.unlisted) !== JSON.stringify(state.unlisted || [])) { state.unlisted = r.data.unlisted; render(); }
+}
+
+// ------------------------------------------------------------ dialogs
+let stack = [];
+function openModal(html, onEvent) {
+  const wrap = document.createElement("div"); wrap.innerHTML = html.toString(); const back = wrap.firstElementChild; layer.appendChild(back);
+  const close = () => { back.remove(); stack = stack.filter((x) => x !== close); };
+  back.close = close; stack.push(close);
+  back.addEventListener("mousedown", (e) => { if (e.target === back) close(); });
+  back.addEventListener("click", (e) => { if (e.target.closest("[data-x]")) close(); else if (onEvent) onEvent(e, back); });
+  const first = $("[data-q],[data-go],button:not([data-x])", back); if (first) first.focus({ preventScroll: true });
+  return back;
+}
+function confirmAsk(title, body, ok, danger) { return new Promise((res) => { let done = false; const b = openModal(C.confirmModal(title, body, ok, danger), (e, back) => { if (e.target.closest("[data-go]")) { done = true; back.close(); res(true); } }); const c = b.close; b.close = () => { c(); if (!done) res(false); }; }); }
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && stack.length) { e.preventDefault(); e.stopImmediatePropagation(); stack[stack.length - 1](); } });
+
+// ------------------------------------------------------------ field edits
+const target = (key) => { const r = C.rowByKey(state, key); return r.kind === "cat" ? { cat: r.id } : { id: r.id }; };
+function parseOut(t) { t = t.trim().replace(/,/g, ""); if (t === "") return null; const n = Number(t); if (!Number.isInteger(n) || n < 1 || n > 1000000) throw new Error("Max output is a whole number from 1 to 1,000,000, or empty."); return n; }
+function parseTimeout(t) { t = t.trim(); if (t === "") return null; const ms = Math.round(Number(t) * 1000); if (!Number.isFinite(ms) || ms < 1000 || ms > 3600000) throw new Error("Timeout is from 1 to 3,600 seconds, or empty for none."); return ms; }
+function parseResults(t) { const n = Number(t.trim()); if (!Number.isInteger(n) || n < 1 || n > 10) throw new Error("Results is a whole number from 1 to 10."); return n; }
+function parsePrice(a, b) { a = a.trim(); b = b.trim(); if (a === "" && b === "") return null; const x = Number(a), y = Number(b); if (a === "" || b === "" || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > 10000 || y > 10000) throw new Error("Enter both prices from 0 to 10,000 dollars per million tokens, or clear both."); return { prompt: x, completion: y }; }
+function parseLimit(def, t) { const n = Number(t.trim()); if (t.trim() === "" || !Number.isFinite(n) || (def.whole && !Number.isInteger(n)) || n < def.min || n > def.max) throw new Error(`${def.label}: enter ${def.whole ? "a whole number" : "a number"} of ${def.unit} from ${def.min} to ${def.max}.`); return n; }
+function fieldEdit(key, field, read) {
+  try {
+    const tg = target(key);
+    let e;
+    if (field === "effort") e = { t: "effort", ...tg, level: ui.level, idx: 0, value: read.value };
+    else if (field === "sort") e = { t: "field", ...tg, field: "sort", value: read.value || null };
+    else if (field === "max_output") e = { t: "field", ...tg, field: "max_output", value: parseOut(read.value) };
+    else if (field === "results") e = { t: "field", ...tg, field: "results", value: parseResults(read.value) };
+    else if (field === "timeout") e = { t: "field", ...tg, field: "timeout_ms", value: parseTimeout(read.value) };
+    else if (field === "price") e = { t: "field", ...tg, field: "max_price", value: parsePrice(read.a, read.b) };
+    return commit([e]);
+  } catch (err) { toast(err.message); render(); }
+}
+app.addEventListener("change", (e) => {
+  const el = e.target;
+  if (!editable()) return;
+  if (el.dataset.f) {
+    const f = el.dataset.f;
+    if (f !== "price") fieldEdit(el.dataset.id, f, { value: el.value });   // a price has two boxes, so it is saved when focus leaves both (below)
+  } else if (el.dataset.df && ui.sel) {
+    const f = el.dataset.df, key = ui.sel;
+    if (f === "effort") { try { commit([{ t: "effort", ...target(key), level: ui.level, idx: +el.dataset.i, value: el.value }]); } catch (err) { toast(err.message); } }
+    else if (f === "title") commit([{ t: "title", cat: C.rowByKey(state, key).id, value: el.value.trim() }]);
+    else if (f === "pi" || f === "po") return;
+    else fieldEdit(key, f, { value: el.value });
+  } else if (el.dataset.lim) {
+    const def = state.limits.defs.find((d) => d.key === el.dataset.lim);
+    try { const v = parseLimit(def, el.value); commit([{ t: "limit", limitKey: def.key, value: v === def.default ? null : v }]); } catch (err) { toast(err.message); render(); }
+  }
+});
+// A price is two boxes. It is saved when focus leaves the pair, and only when it changed.
+app.addEventListener("focusout", (e) => {
+  const pair = e.target.closest && e.target.closest(".pr, .two");
+  if (!pair || !editable() || (e.relatedTarget && pair.contains(e.relatedTarget))) return;
+  const inRow = pair.classList.contains("pr"), key = inRow ? e.target.dataset.id : ui.sel, boxes = $$("input", pair);
+  if (!key) return;
+  const cur = C.viewOf(state, ui, C.rowByKey(state, key), C.snapshotFromConfig(state)).max_price;
+  const a = boxes[0].value.trim(), b = boxes[1].value.trim(), same = (!cur && a === "" && b === "") || (cur && Number(a) === cur.prompt && Number(b) === cur.completion && a !== "" && b !== "");
+  if (!same) fieldEdit(key, "price", { a, b });
+});
+app.addEventListener("input", (e) => { if (e.target.dataset.q !== undefined) { ui.q = e.target.value; render(); } });
+
+// ------------------------------------------------------------ clicks
+app.addEventListener("click", (e) => {
+  const t = e.target, b = t.closest("[data-view],[data-act],[data-lvl],[data-row]");
+  if (!b) return;
+  if (t.closest("input,select") && !b.dataset.act) return;
+  if (b.dataset.view) { ui.view = b.dataset.view; ui.sel = null; render(); window.scrollTo(0, 0); return; }
+  if (b.dataset.lvl) { ui.level = b.dataset.lvl; render(); return; }
+  if (b.dataset.act) return act(b);
+  if (b.dataset.row) { ui.sel = b.dataset.row; render(); }
+});
+function slot(i) { const row = C.rowByKey(state, ui.sel), v = V().info.find((x) => x.row.key === ui.sel).v; return { key: ui.sel, row, v, idx: i, level: v.level, ...(row.kind === "cat" ? { kind: "cat" } : { kind: "job", jv: row.jv }) }; }
+function act(b) {
+  const a = b.dataset.act, i = +b.dataset.i, key = ui.sel;
+  if (a === "close") { ui.sel = null; render(); }
+  else if (a === "hist") openHistory();
+  else if (a === "chg") openPicker(slot(i), "Choose a model for " + C.rowByKey(state, key).label);
+  else if (a === "add") openPicker(slot(V().info.find((x) => x.row.key === key).v.chain.length), "Add a fallback for " + C.rowByKey(state, key).label);
+  else if (a === "up" || a === "dn") commit([{ t: "move", ...target(key), level: ui.level, idx: i, d: a === "up" ? -1 : 1 }]);
+  else if (a === "rm") commit([{ t: "remove", ...target(key), idx: i }]);
+  else if (a === "prev" || a === "next") { const ids = C.visibleInfo(state, ui, V()).map((x) => x.row.key), p = ids.indexOf(key) + (a === "next" ? 1 : -1); if (ids[p]) { ui.sel = ids[p]; render(); } }
+  else if (a === "catadd") commit([{ t: "catAdd", newId: "cat_" + crypto.randomUUID().replace(/-/g, "") }], () => { const last = state.config.routing.categories.at(-1); ui.sel = "cat:" + last.id; render(); const ti = $('[data-df="title"]'); if (ti) { ti.focus(); ti.select(); } });
+  else if (a === "catdelete") { const row = C.rowByKey(state, key); confirmAsk("Delete " + row.label + "?", "The category is removed from all three privacy levels.", "Delete", true).then((ok) => { if (ok) { ui.sel = null; commit([{ t: "catDelete", cat: row.id }]); } }); }
+}
+
+// ------------------------------------------------------------ keys
+document.addEventListener("keydown", (e) => {
+  const tag = (document.activeElement || {}).tagName, typing = /INPUT|SELECT|TEXTAREA/.test(tag);
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "/" && !typing && !stack.length) { e.preventDefault(); const q = $("[data-q]"); if (q) q.focus(); return; }
+  if (stack.length) return;
+  if (e.key === "Escape" && ui.sel) { ui.sel = null; render(); return; }
+  if (typing) { if (e.key === "Enter" && document.activeElement.dataset.q !== undefined) { const f = C.visibleInfo(state, ui, V())[0]; if (f) { ui.sel = f.row.key; render(); } } return; }
+  const rows = $$("[data-row]"), cur = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.row : null;
+  if ((e.key === "j" || e.key === "k") && rows.length) { const i = rows.findIndex((r) => r.dataset.row === cur), n = rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === "j" ? 1 : -1)))]; n.focus(); e.preventDefault(); }
+  if ((e.key === "Enter" || e.key === " ") && cur) { ui.sel = cur; render(); e.preventDefault(); }
+});
+
+// ------------------------------------------------------------ the model picker
+function openPicker(tg, title) {
+  let src = "all", q = "", sel = 0, list = [], fresh = [], seq = 0, timer = null;
+  const current = (tg.row.kind === "cat" ? tg.row.cat.chains[tg.level] : [state.config.jobs[tg.row.id], ...(state.config.jobs[tg.row.id].fallbacks || [])])[tg.idx]?.model;
+  const back = openModal(C.pickerModal(state, tg, title));
+  const qi = $("[data-q]", back), ul = $("[data-list]", back);
+  const draw = () => {
+    list = C.pickerList(state, tg, q, fresh, src);
+    list.sort((a, b) => (a.id === current ? -1 : b.id === current ? 1 : 0));
+    const t = q.trim(), custom = t && /\//.test(t) && !list.some((m) => m.id.toLowerCase() === t.toLowerCase()) && src !== "CF";
+    ul.innerHTML = list.map((m, i) => C.pickerItem(state, m, i, sel, current)).join("") + (custom ? C.h`<li class="pk-item" role="option" data-custom="${t}"><div class="n"><span>Use "${t}"</span></div><div class="id mono">Add this ID as typed. It is checked when saved.</div></li>`.toString() : "") || '<li class="empty">No models match</li>';
+  };
+  const load = async () => {
+    const mine = ++seq, r = await api("GET", "/models/api/catalog?q=" + encodeURIComponent(q.trim()));
+    if (mine !== seq) return;
+    if (r.ok) { fresh = (r.data.models || []).filter((m) => !(state.unlisted || []).includes(m.id)); if (Array.isArray(r.data.unlisted)) state.unlisted = r.data.unlisted; }
+    draw();
+  };
+  const pick = (m) => {
+    back.close();
+    const prev = tg.row.kind === "cat" ? tg.row.cat.chains[tg.level][tg.idx] : [state.config.jobs[tg.row.id], ...(state.config.jobs[tg.row.id].fallbacks || [])][tg.idx];
+    const meta = { ...(state.config.catalog[m.id] || {}), ...m };
+    commit([{ t: "entry", ...(tg.row.kind === "cat" ? { cat: tg.row.id } : { id: tg.row.id }), level: tg.level, idx: tg.idx, entry: C.newEntry(state, tg.row.jv, meta, prev, tg.row.kind === "cat" ? tg.level : null) }]);
+  };
+  const pickCustom = (id) => { back.close(); const meta = { id, efforts: [], eligible: true, chat: true }; commit([{ t: "entry", ...(tg.row.kind === "cat" ? { cat: tg.row.id } : { id: tg.row.id }), level: tg.level, idx: tg.idx, entry: C.newEntry(state, tg.row.jv, meta, null, tg.row.kind === "cat" ? tg.level : null) }]); };
+  qi.addEventListener("input", () => { q = qi.value; sel = 0; draw(); clearTimeout(timer); timer = setTimeout(load, 220); });
+  $("[data-src]", back).addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; src = b.dataset.v; $$("[data-src] button", back).forEach((x) => x.setAttribute("aria-pressed", String(x === b))); sel = 0; draw(); });
+  ul.addEventListener("click", (e) => { const li = e.target.closest(".pk-item"); if (!li) return; if (li.dataset.custom) pickCustom(li.dataset.custom); else { const m = list[+li.dataset.i]; if (m && m.allowed) pick(m); } });
+  ul.addEventListener("mousemove", (e) => { const li = e.target.closest("[data-i]"); if (li && +li.dataset.i !== sel) { sel = +li.dataset.i; $$(".pk-item", ul).forEach((x) => x.setAttribute("aria-selected", String(x === li))); } });
+  qi.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(0, Math.min(list.length - 1, sel + (e.key === "ArrowDown" ? 1 : -1))); $$(".pk-item", ul).forEach((x, i) => x.setAttribute("aria-selected", String(i === sel))); const c = $(`[data-i="${sel}"]`, ul); if (c) c.scrollIntoView({ block: "nearest" }); }
+    if (e.key === "Enter") { e.preventDefault(); const m = list[sel]; if (m && m.allowed) pick(m); else { const c = $("[data-custom]", ul); if (c) pickCustom(c.dataset.custom); } }
+  });
+  draw(); load();
+}
+
+// ------------------------------------------------------------ history
+function openHistory() {
+  let confirmRev = null;
+  const draw = (back) => { $("[data-body]", back).innerHTML = C.historyBody(state, confirmRev).toString(); };
+  const back = openModal(C.historyModal(state, null), async (e, back) => {
+    const t = e.target.closest("button"); if (!t) return;
+    if (t.dataset.rs) { confirmRev = +t.dataset.rs; draw(back); }
+    else if (t.dataset.no !== undefined) { confirmRev = null; draw(back); }
+    else if (t.dataset.do) {
+      t.disabled = true;
+      const r = await api("POST", "/models/api/restore", { revision: state.revision, restore_revision: +t.dataset.do });
+      if (r.ok) { adopt(r.data); confirmRev = null; draw(back); } else { toast("Not restored. " + (r.data.error || "Try again.")); t.disabled = false; }
+    }
+  });
+}
+
+// ------------------------------------------------------------ start
+render();
+loadUnlisted();

@@ -103,7 +103,11 @@ export function assessModelCatalog(models, endpoints, { autoOnly = () => false, 
       default_effort: efforts.includes(reasoning?.default_effort) ? reasoning.default_effort : efforts[0],
       levels, hosts, ...(unproven.length ? { unproven_hosts: unproven } : {}), terms: { zdr: levels.includes("zdr"), no_training: levels.includes("no_training") },
       context_length: limits.length ? Math.min(...limits.map((e) => e.context_length)) : Number(m.context_length) || 0,
-      max_output: limits.length ? Math.min(...limits.map((e) => e.max_completion_tokens)) : 0, input_modalities: input,
+      // The most a request may ask for is the largest limit among the usable endpoints (OpenRouter's own top_provider says the same for most models): one
+      // endpoint's small limit does not cap the model, because OpenRouter sends the request to an endpoint that can take it. Each endpoint's own limit is
+      // kept as a display fact, so the Models page can say which providers can't serve a saved number.
+      max_output: limits.length ? Math.max(...limits.map((e) => e.max_completion_tokens)) : 0,
+      ...(limits.length ? { endpoint_limits: limits.slice(0, 24).map((e) => ({ host: e.tag, max_output: e.max_completion_tokens, levels: registered(policyId) ? PRIVACY_LEVELS.filter((l) => eligibleHosts(policyId, l).some((h) => e.tag === h || e.tag.startsWith(`${h}/`))) : levelsOf(e) })) } : {}), input_modalities: input,
       pricing: { prompt: limits.length ? Math.max(...limits.map((e) => price(e.pricing.prompt))) : price(m.pricing?.prompt),
         completion: limits.length ? Math.max(...limits.map((e) => price(e.pricing.completion))) : price(m.pricing?.completion) },
       json: limits.length > 0 && limits.every((e) => e.supported_parameters.includes("response_format")),
@@ -196,12 +200,34 @@ export async function taskModelCatalog(model, settings = null, env = null) {
   if (!validCatalogRecord(record, model)) throw new ModelCapabilitiesUnavailable(model, { reasons: record?.reasons?.length ? record.reasons : ["No compatible published model record"], endpointStatuses: selected.map(endpoint => endpoint.status) });
   return record;
 }
+const validEndpointLimits = (a) => Array.isArray(a) && a.length <= 24 && a.every((x) => x && typeof x === "object" && host(x.host) && positive(x.max_output) && Array.isArray(x.levels) && x.levels.every((l) => PRIVACY_LEVELS.includes(l)));
 // Persist only this bounded, validated server snapshot. Stored rows are not a source of arbitrary provider URLs.
 export function validCatalogRecord(m, id) {
   return m && m.id === id && validModelId(id) && m.eligible === true && Array.isArray(m.hosts) && m.hosts.length > 0 && m.hosts.length <= 24 && m.hosts.every(host)
     && Array.isArray(m.efforts) && m.efforts.length > 0 && m.efforts.every((e) => EFFORTS.includes(e))
     && Array.isArray(m.levels) && m.levels.length > 0 && m.levels.every((l) => PRIVACY_LEVELS.includes(l))
-    && positive(m.context_length) && positive(m.max_output) && Array.isArray(m.input_modalities) && (m.input_modalities.includes("text") || m.kinds?.includes("speech"))
+    && positive(m.context_length) && positive(m.max_output) && (m.endpoint_limits == null || validEndpointLimits(m.endpoint_limits)) && Array.isArray(m.input_modalities) && (m.input_modalities.includes("text") || m.kinds?.includes("speech"))
     && m.pricing?.prompt >= 0 && m.pricing?.completion >= 0 && (m.unproven_hosts == null || (Array.isArray(m.unproven_hosts) && m.unproven_hosts.length <= 24 && m.unproven_hosts.every(host)))
     && Array.isArray(m.tool_choice) && typeof m.json === "boolean";
 }
+
+// Records saved before the catalog kept each endpoint's own limit carry the old lowest-endpoint number and no endpoint list. The Models page needs the
+// endpoint limits to judge a saved max output, so it asks the live catalog for those models and uses the answer for display only (nothing is saved).
+// One lookup per model per 30 minutes in this isolate; a failed lookup leaves the saved record as it was.
+const refreshed = new Map();
+const REFRESH_MS = 30 * 60e3;
+export async function withEndpointLimits(settings, { lookup = taskModelCatalog, now = Date.now(), env = null, max = 12 } = {}) {
+  const out = JSON.parse(JSON.stringify(settings));
+  const used = new Set(Object.values(out.jobs || {}).flatMap((j) => j ? [j.model, ...(j.fallbacks || []).map((f) => f.model)] : []));
+  const need = [...used].filter((id) => { const m = out.catalog?.[id]; return m?.eligible === true && m.source !== "CF" && !isCloudflareModel(id) && !Array.isArray(m.endpoint_limits) && m.kinds?.includes("chat"); }).slice(0, max);
+  await Promise.all(need.map(async (id) => {
+    let hit = refreshed.get(id);
+    if (!hit || now - hit.at > REFRESH_MS) {
+      try { const r = await lookup(id, out, env); hit = { at: now, limits: r?.endpoint_limits || null, max_output: r?.max_output || null }; } catch { hit = { at: now, limits: null, max_output: null }; }
+      refreshed.set(id, hit);
+    }
+    if (hit.limits) { out.catalog[id].endpoint_limits = hit.limits; if (hit.max_output) out.catalog[id].max_output = hit.max_output; }
+  }));
+  return out;
+}
+export const resetEndpointLimitCache = () => refreshed.clear();

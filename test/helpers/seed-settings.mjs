@@ -14,6 +14,8 @@ export const EXTRA_FACTS = {
 export const withExtraModels = (config) => { const c = clone(config); for (const [id, f] of Object.entries(EXTRA_FACTS)) if (!c.catalog[id]) c.catalog[id] = { id, ...clone(f) }; return c; };
 export const seedSettings = (env = {}, legacy = null) => validateModelSettings(withExtraModels(legacy ? seedFromLegacy(env, legacy) : seedFresh(env)));
 export const SEED = seedSettings();
+// The first-run data with some saved jobs replaced (no environment variable chooses a model any more): seedWith({ browser: { model, effort, fallbacks } }).
+export const seedWith = (jobs = {}) => { const c = clone(SEED); for (const [id, over] of Object.entries(jobs)) c.jobs[id] = { ...c.jobs[id], ...over }; return validateModelSettings(withExtraModels(c)); };
 export const withSettings = (env = {}, settings = SEED) => ({ ...env, MODEL_SETTINGS: clone(settings), MODEL_SETTINGS_REVISION: 1 });
 // The models the first-run data uses, by the names tests use (the ids appear only here and in src/model-seed.js).
 export const ID = { MUSE_C: "meta/muse-spark-1.3-contributor", MUSE_S: "meta/muse-spark-1.3", DEEPSEEK: "deepseek/deepseek-v4.1-flash", LUNA: "openai/gpt-6-luna", SOL: "openai/gpt-6.1-sol", HAIKU: "anthropic/claude-haiku-5.5",

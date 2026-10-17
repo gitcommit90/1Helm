@@ -6,6 +6,10 @@ import { fileVersionsMethods } from '../src/file-versions.js';
 import { initRoutingArtifacts,stageRoutingFile,collectRoutingFiles,approveRoutingFiles,discardRoutingFiles,routingFileTool,isRoutingImageError,routingArtifactKeys,dropRoutingArtifacts,routingImageFallback } from '../src/ee/routing-artifacts.js';
 import { stPut } from '../src/storage.js';
 import { seedSettings } from './helpers/seed-settings.mjs';
+// The call goes through dispatch, which checks the account level for a Workers AI model like every other call. A test account is at the strictest level,
+// so the saved model gets a verified zero data retention route here.
+import { ENDPOINTS } from "../src/privacy.js";
+ENDPOINTS.transcription ||= {}; for (const m of ["@cf/google/gemma-4-26b-a4b-it"]) ENDPOINTS.transcription[m] = { "cloudflare-workers-ai": { zdr: true, training: false } };
 const db=new DatabaseSync(':memory:'),d1=new DatabaseSync(':memory:');
 d1.exec(readFileSync(new URL('../db/migrations/0020_029_storage.sql',import.meta.url),'utf8'));d1.exec("CREATE TABLE tenants(id TEXT PRIMARY KEY,slug TEXT,plan TEXT,status TEXT);INSERT INTO tenants VALUES('test-tenant','fixture','plus','active');CREATE TABLE share_links(tenant_id TEXT,file_id TEXT,r2key TEXT,bytes INTEGER)");
 const DB={prepare(q){const st=d1.prepare(q);let a=[];const o={bind(...v){a=v;return o;},async first(){return st.get(...a)||null;},async all(){return{results:st.all(...a)};},async run(){return{meta:{changes:Number(st.run(...a).changes)}};}};return o;}};

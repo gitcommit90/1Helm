@@ -2,7 +2,7 @@
 // One ordered list per chat job. The account's AI data privacy setting decides which models of the list may be used: a model it forbids is
 // skipped, never tried, and a list that leaves a setting with no allowed model fails with the privacy message and sends nothing.
 import assert from "node:assert/strict";
-import { openRouterChat } from "../src/model.js";
+import { openRouterChat } from "./helpers/or-chat.mjs";
 import { policyRoute, dispatchOrder } from "../src/ee/route2.js";
 import { allowedEntries, privacyCoverage, entriesOf } from "../src/ee/model-jobs.js";
 import { PRIVACY_LEVELS, PRIVACY_EXHAUSTED, ENDPOINTS, eligibleHosts } from "../src/privacy.js";
@@ -29,8 +29,7 @@ const run = async (settings, lv, kinds = {}) => { level = lv; sent.length = 0; c
     // every model that is tried while walking the list, at every level, is one the level allows, on endpoints the level allows
     down = new Set(at(lv).slice(0, 2)); await run(S, lv); down = new Set();
     assert.deepEqual(sent.map((b) => b.model), at(lv).slice(0, 3), `${lv}: tried in order, never a forbidden model`);
-    for (const b of sent) { assert.ok(b.provider.only.length); for (const h of b.provider.only) assert.ok(eligibleHosts(b.model, lv).includes(h), `${lv}: ${b.model} on ${h}`);
-      for (const h of b.provider.only) { const ep = ENDPOINTS.chat[b.model][h]; if (lv === "zdr") assert.ok(ep.zdr && !ep.training); if (lv === "no_training") assert.ok(!ep.training); } } }
+    for (const b of sent) { assert.equal(b.provider.only, undefined); assert.equal(b.provider.order, undefined); if (lv === "zdr") assert.equal(b.provider.zdr, true); if (lv !== "unrestricted") assert.equal(b.provider.data_collection, "deny"); } }
   console.log("  ok list order with forbidden models skipped, endpoints allowed by the level only"); }
 
 // ---- a setting that leaves the list with no allowed model: privacy message, nothing sent ----

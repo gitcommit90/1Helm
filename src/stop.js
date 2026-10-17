@@ -12,17 +12,21 @@
 // Plan-started tasks also run under a safety budget (PLAN_TASK_* below): a soft stop with a final short report.
 import { cardView } from "./tracker.js";
 import { PAUSE_FACTS } from "./ee/index.js";   // facts only, no new plan (shared with spendguard.js; a leaf module, no import cycle)
+import { DEFAULT_RUNTIME_LIMITS } from "./ee/index.js";
 
 export const STOPPED_REPLY = "Stopped.";
 export const STOPPED_TOOL_TEXT = "(Stopped by the person before this finished.)";
 // A task a plan started: its first run gets this budget (like a helper's), then tools go off and it writes a short report of what
 // it found and what's left. Its card closes as "paused" ("Paused: hit its budget. Continue?"); Continue grants one more budget.
 // (Diagnosis 10-06: runaway plan tasks ran ~36 steps / ~88 tool calls / ~$0.65 in 6 minutes; a normal email turn is ~4–7 steps / ~$0.05.)
-export const PLAN_TASK_MAX_STEPS = 20;
-export const PLAN_TASK_MAX_CHARGE = 2.5e8;          // nano$ = $0.25
-export const PLAN_TASK_MAX_MS = 10 * 60e3;          // 10 minutes
-export const planBudget = () => ({ budget: true, soft_steps: PLAN_TASK_MAX_STEPS, max_steps: PLAN_TASK_MAX_STEPS + 2, max_charge: PLAN_TASK_MAX_CHARGE, max_ms: PLAN_TASK_MAX_MS });
-export const planBudgetText = () => `each started task runs on a safety budget (up to ${PLAN_TASK_MAX_STEPS} steps, $${(PLAN_TASK_MAX_CHARGE / 1e9).toFixed(2)} or ${PLAN_TASK_MAX_MS / 60e3} minutes), then pauses with a short report of what it found and what's left, and they can tap Continue`;
+// The budget is the saved plan task limits (limits.js, edited on the Models page: 20 steps, $0.25 and 10 minutes to start with). Callers read them with
+// limitsFor(env) (limits-read.js) and pass `.planTask`; without one the starting values are used.
+const PT = DEFAULT_RUNTIME_LIMITS.planTask;
+export const PLAN_TASK_MAX_STEPS = PT.steps;
+export const PLAN_TASK_MAX_CHARGE = PT.charge;          // nano$
+export const PLAN_TASK_MAX_MS = PT.ms;
+export const planBudget = (L = PT) => ({ budget: true, soft_steps: L.steps, max_steps: L.steps + 2, max_charge: L.charge, max_ms: L.ms });
+export const planBudgetText = (L = PT) => `each started task runs on a safety budget (up to ${L.steps} steps, $${(L.charge / 1e9).toFixed(2)} or ${L.ms / 60e3} minutes), then pauses with a short report of what it found and what's left, and they can tap Continue`;
 // A chat turn that used all its steps: one tools-off call for a short report, never a bare "I stopped".
 export const STEP_LIMIT_CHAT_ASK = `(You've used this turn's step limit. No more tools. Write a short report for the person now, facts only: what you found or did so far (exact values, file paths), and what's left. ${PAUSE_FACTS} Plain text only: no cards, no buttons, and don't ask whether to keep going (the app shows its own Keep going / Stop here buttons under your message).)`;
 export const stopError = () => Object.assign(new Error("stopped"), { stopped: true });

@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { validateModelSettings, readModelSettings, modelSettingsView, saveModelSettings, restoreModelSettings, modelSettingsEnv, ModelSettingsError } from "../src/ee/model-settings.js";
 import { seedFresh, seedFromLegacy } from "../src/ee/model-seed.js";
 import { JOBS, JOB_IDS, jobSetting, choreRouteOf } from "../src/ee/model-jobs.js";
-import { openRouterChat } from "../src/model.js";
+import { openRouterChat } from "./helpers/or-chat.mjs";
 import { policyRoute, dispatchOrder } from "../src/ee/route2.js";
 import { ID, SEED, seedSettings, withSettings, withExtraModels, EXTRA_FACTS } from "./helpers/seed-settings.mjs";
 
@@ -36,11 +36,12 @@ bad((c) => { c.jobs.decider.effort = "low"; }, /no reasoning level/); bad((c) =>
 bad((c) => { c.jobs["chat.general"].fallbacks.push({ model: ID.MUSE_C, effort: "low" }); }, /listed once/);
 bad((c) => { c.jobs["chat.general"].fallbacks = Array(6).fill(0).map((_, i) => ({ model: `x/m${i}`, effort: "low" })); });
 bad((c) => { c.jobs["recover.technical"].fallbacks = [{ model: ID.HAIKU, effort: "low" }]; }, /fallback/);
-bad((c) => { c.jobs.decider.model = ID.STT; }, /can't be used/); bad((c) => { c.jobs.doors_shadow.model = ID.STT; }, /can't be used/); bad((c) => { c.jobs["chat.technical"].model = ID.STT; }, /can't be used/);
+bad((c) => { c.jobs.decider.model = ID.STT; }, /can't be used/); bad((c) => { c.jobs["chat.technical"].model = ID.STT; }, /can't be used/);
 bad((c) => { c.jobs.handoff = { model: ID.MUSE_C, effort: "low", fallbacks: [] }; }, /can't be used/);
 bad((c) => { c.catalog["acme/leaky"] = { id: "acme/leaky", name: "Leaky", eligible: true, reasons: [], efforts: ["low"], default_effort: "low", levels: ["unrestricted"], hosts: ["h"], context_length: 1000, max_output: 100,
   input_modalities: ["text"], pricing: { prompt: 1, completion: 1 }, json: true, tool_choice: ["auto"] }; c.jobs.handoff = { model: "acme/leaky", effort: "low", fallbacks: [] }; }, /zero-data-retention/);
-bad((c) => { c.jobs.handoff = { model: "not a model id", effort: "low", fallbacks: [] }; }); bad((c) => { c.jobs.handoff.hosts = ["bad host!"]; });
+bad((c) => { c.jobs.handoff = { model: "not a model id", effort: "low", fallbacks: [] }; }); bad((c) => { c.jobs.handoff.hosts = ["bad host!"]; }, /provider lists/); bad((c) => { c.jobs.handoff.hosts = ["together"]; }, /provider lists/); bad((c) => { c.jobs.handoff.pin = true; }, /provider lists/);
+bad((c) => { c.jobs.handoff.fallbacks[0].hosts = ["together"]; }, /provider lists/); bad((c) => { c.jobs.handoff.fallbacks[0].pin = false; }, /provider lists/);
 bad((c) => { c.catalog["evil/x"] = { id: "evil/x", name: "x", kinds: ["chat"], efforts: ["low"], hosts: ["a"] }; }, /metadata/);
 assert.deepEqual(Object.keys(SEED.jobs).sort(), [...JOB_IDS].sort(), "every job has a saved setting, and only the known jobs");
 assert.ok(JOBS.length === 32 && new Set(JOB_IDS).size === JOBS.length);
@@ -51,13 +52,13 @@ for (const j of Object.values(SEED.jobs)) for (const e of [j, ...j.fallbacks]) a
   const [a, b] = await Promise.all([readModelSettings(env), readModelSettings(env)]);
   assert.equal(a.revision, 1); assert.equal(b.revision, 1); assert.deepEqual(rows(), [{ revision: 1, action: "seed", by: "system" }], "two readers at once still make one first version");
   assert.deepEqual(a.config, validateModelSettings(seedFresh(env)));
-  assert.equal(jobSetting(a.config, "browser").model, ID.DEEPSEEK, "CHORE_MODEL_BROWSER=dsflash was carried into the saved setting");
+  assert.equal(jobSetting(a.config, "browser").model, ID.OSS120, "CHORE_MODEL_BROWSER=dsflash is ignored: the first-run data is literals only");
   assert.equal((await readModelSettings(env)).revision, 1); assert.equal(rows().length, 1, "reading again writes nothing");
   assert.equal(rows("live").length, 0, "environments are separate");
   assert.ok(primaryReads > 0, "settings are read from the primary database");
   // from now on the variable has no say: the saved setting does, even when the variable changes
   const e2 = { ...env, CHORE_MODEL_BROWSER: "oss20", DECIDER_MODEL: ID.JEV, STT_MODEL: "x/y", MODEL: "@cf/other/model" };
-  const r = await readModelSettings(e2); assert.equal(jobSetting(r.config, "browser").model, ID.DEEPSEEK); assert.equal(jobSetting(r.config, "decider").model, ID.PPLX);
+  const r = await readModelSettings(e2); assert.equal(jobSetting(r.config, "browser").model, ID.OSS120); assert.equal(jobSetting(r.config, "decider").model, ID.PPLX);
   assert.equal(jobSetting(r.config, "workers_ai_chat").model, ID.WAI_CHAT); }
 
 // ---- 3) a save is a new version; history; stale and concurrent writes ----
@@ -66,7 +67,7 @@ const save = async (config, e = env) => { const v = await saveModelSettings(e, {
 { const cfg = clone(SEED); cfg.jobs["chat.general"] = { model: ID.LUNA, effort: "low", fallbacks: [{ model: ID.HAIKU, effort: "medium" }] };
   const v = await save(cfg); assert.equal(v.revision, 2); assert.deepEqual(v.config.jobs["chat.general"], cfg.jobs["chat.general"]);
   assert.equal(v.history[0].action, "save"); assert.equal(v.history[0].by, "unit@example.com");
-  assert.equal(v.options.groups.length, 6); assert.ok(v.options.choices.chat.some((m) => m.id === ID.LUNA));
+  assert.equal(v.options.groups.length, 7); assert.ok(v.options.choices.chat.some((m) => m.id === ID.LUNA));
   await assert.rejects(saveModelSettings(env, { revision: 1, config: cfg }, "other"), (e) => e.status === 409);
   const writes = await Promise.allSettled([saveModelSettings(env, { revision, config: cfg }, "a"), saveModelSettings(env, { revision, config: cfg }, "b")]);
   assert.equal(writes.filter((r) => r.status === "fulfilled").length, 1); assert.equal(writes.find((r) => r.status === "rejected").reason.status, 409); revision++;
@@ -89,11 +90,11 @@ try {
   c2.jobs["chat.general"] = { model: ID.LUNA, effort: "none", fallbacks: [] }; await save(c2); await call(await route()); assert.deepEqual(sent.at(-1).reasoning, { enabled: false });
   // background jobs, one by one: the saved model, effort and fallbacks for that job
   const c3 = clone((await readModelSettings(env)).config);
-  c3.jobs.label = { model: ID.OSS120, effort: "medium", hosts: ["cerebras"], pin: true, fallbacks: [] };
-  c3.jobs.handoff = { model: ID.HAIKU, effort: "high", fallbacks: [{ model: ID.OSS120, effort: "low", hosts: ["cerebras"], pin: false }] };
+  c3.jobs.label = { model: ID.OSS120, effort: "medium", fallbacks: [] };
+  c3.jobs.handoff = { model: ID.HAIKU, effort: "high", fallbacks: [{ model: ID.OSS120, effort: "low" }] };
   await save(c3);
   // gpt-oss-20b is not in the saved catalog (no job uses it), so this job is tried on a settings copy that carries its facts
-  const c20 = withExtraModels(c3); c20.jobs.ambient_review = { model: ID.OSS20, effort: "high", hosts: ["amazon-bedrock"], pin: true, strict: true, fallbacks: [] }; const e20 = withSettings(env, c20);
+  const c20 = withExtraModels(c3); c20.jobs.ambient_review = { model: ID.OSS20, effort: "high", strict: true, fallbacks: [] }; const e20 = withSettings(env, c20);
   await call({ chore: true }, "card-label"); assert.equal(sent.at(-1).model, ID.OSS120); assert.equal(sent.at(-1).reasoning.effort, "medium");
   await call((await route()), "chat", env, { messages: [{ role: "user", content: "(Turn finished; the person has your reply. Write notes.)" }] });
   assert.equal(sent.at(-1).model, ID.HAIKU, "hand-off notes read the saved handoff job"); assert.equal(sent.at(-1).reasoning.effort, "high");
@@ -101,8 +102,7 @@ try {
   assert.equal(sent.at(-1).model, ID.OSS20); assert.equal(sent.at(-1).response_format, undefined, "a model with no JSON mode gets no response format");
   failures.add(ID.OSS20); n = sent.length; await assert.rejects(call({ chore: true }, "ambient-review", e20), /503/); failures.clear();
   assert.ok(sent.slice(n).every((p) => p.model === ID.OSS20), "a job with no fallbacks never substitutes another model");
-  // Public source ignores private test model overrides and keeps the saved route; an own-key account keeps its own precedence
-  await call(await route(), "chat", { ...env, TEST_MODEL: ID.HAIKU, TEST_MODEL_SCOPE: "all-dev", TEST_MODEL_EFFORT: "high" }); assert.equal(sent.at(-1).model, ID.LUNA);
+  // a test override and an own-key account keep their own precedence
   const own = { BYOK: { model: "own-model" } }; assert.equal(await modelSettingsEnv(own), own);
   // restore an earlier version: new revision, the old content, history says so
   const hist = (await modelSettingsView(env)).history, first = hist.filter((h) => h.action === "save").at(-1).revision;
@@ -142,7 +142,7 @@ try {
   assert.deepEqual(level("technical", "unrestricted"), [[ID.HAIKU, "medium"], [ID.SOL, "low"]]);
   assert.equal(s.jobs["recover.technical"].model, ID.HAIKU); assert.equal(s.jobs["recover.technical"].effort, "medium", "recovery uses the saved effort of the slot it uses (Haiku, since Sol left the first-run data)");
   assert.equal(jobSetting(s, "decider").model, ID.JEV);
-  const lab = choreRouteOf(s, "label"); assert.deepEqual([lab.model, lab.effort, lab.host, lab.pin, lab.fallbacks.length, lab.runtimeSettings], [ID.OSS120, "medium", "cerebras", true, 0, true]);
+  const lab = choreRouteOf(s, "label"); assert.deepEqual([lab.model, lab.effort, lab.host, lab.pin, lab.fallbacks.length, lab.runtimeSettings], [ID.OSS120, "medium", undefined, undefined, 0, true]);
   const notes = choreRouteOf(s, "notes"); assert.deepEqual([notes.model, notes.effort, notes.fallbacks.length], [ID.DEEPSEEK, "none", 1]);
   const hand = choreRouteOf(s, "handoff"); assert.deepEqual([hand.model, hand.effort, hand.fallbacks.map((f) => [f.model, f.effort])], [ID.HAIKU, "high", [[ID.OSS120, "low"]]]);
   assert.equal(choreRouteOf(s, "browser").model, ID.OSS120, "oss20 is no longer a known value of CHORE_MODEL_BROWSER, so it means 120b like any unknown value");

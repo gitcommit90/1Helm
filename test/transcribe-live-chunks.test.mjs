@@ -77,7 +77,7 @@ try {
   async function harness({ fake, fallback = true, deps = {} } = {}) {
     const L = ledger(), c = new Socket(), id = crypto.randomUUID(), calls = [], dg = new Socket(), opened = [];
     await L.dictationLease(id); await L.reserve(`${id}:0`, LIVE_MINUTE_NANO);
-    const stt = fake || (async (env, src, o) => { calls.push({ n: src.bytes.length, o }); const sec = (src.bytes.length - 44) / 32000; return { text: `chunk ${calls.length}`, nano: Math.ceil(COST(sec) * 1e9), segs: [], dur: sec, model: o.models[0] }; });
+    const stt = fake || (async (env, src, o) => { calls.push({ n: src.bytes.length, o }); const sec = (src.bytes.length - 44) / 32000; return { text: `chunk ${calls.length}`, nano: Math.ceil(COST(sec) * 1e9), segs: [], dur: sec, model: o.model }; });
     const provider = new ChunkProvider({ model: ID.STT_BEST, env: {}, meta: { tenant: 't1' }, rate: 83334, liveCharge, stt, tryMs: 50, openFallback: fallback ? async () => { opened.push(1); return dg; } : null, ...deps });
     const proxy = { dictationLease: (...a) => L.dictationLease(...a), reserve: (...a) => L.reserve(...a), settle: (...a) => { calls.push(['settle', ...a]); return L.settle(...a); } };
     const time = clock(), bridge = bridgeDictation(c, provider, proxy, id, time);
@@ -90,7 +90,7 @@ try {
     assert.deepEqual(h.texts().map(e => [e.text, e.final]), [['chunk 1', true], ['chunk 2', true], ['chunk 3', true]]);
     assert.ok(h.texts().every((e, i, a) => !i || (e.revision > a[i - 1].revision && e.id !== a[i - 1].id)));
     const reqs = h.calls.filter(x => !Array.isArray(x)); assert.equal(reqs.length, 3);
-    for (const r of reqs) { assert.equal(r.o.format, 'wav'); assert.deepEqual(r.o.models, [ID.STT_BEST]); assert.equal(r.o.headers['cf-aig-collect-log'], 'false'); assert.deepEqual(r.o.meta, { tenant: 't1' }); }
+    for (const r of reqs) { assert.equal(r.o.format, 'wav'); assert.equal(r.o.job, "live_dictation"); assert.equal(r.o.model, ID.STT_BEST); assert.equal(r.o.headers['cf-aig-collect-log'], 'false'); assert.deepEqual(r.o.meta, { tenant: 't1' }); }
     const secs = reqs.reduce((n, r) => n + (r.n - 44) / 32000, 0), want = Math.ceil(reqs.reduce((n, r) => n + Math.ceil(COST((r.n - 44) / 32000) * 1e9), 0) * 1.15);
     assert.equal(h.L.totals().spent_nano, want, 'settled at the answers\' real cost x 1.15'); assert.equal(h.L.totals().reserved_nano, 0);
     assert.ok(secs > 4 && want < LIVE_MINUTE_NANO / 2, 'about 4.9 s of audio cost well under the one-minute Deepgram hold');
@@ -102,7 +102,7 @@ try {
   });
 
   await test('a chunk fails once (error, not timeout) → retried at once, the session stays on AssemblyAI', async () => {
-    let n = 0; const fake = async (e, src, o) => { n++; if (n === 1) throw Object.assign(new Error('502'), { nano: 0 }); return { text: 'second try', nano: 1000, segs: [], dur: 1, model: o.models[0] }; };
+    let n = 0; const fake = async (e, src, o) => { n++; if (n === 1) throw Object.assign(new Error('502'), { nano: 0 }); return { text: 'second try', nano: 1000, segs: [], dur: 1, model: o.model }; };
     const h = await harness({ fake }); await h.pcm(cat(tone(1), quiet(0.7))); await settle(() => h.texts().length === 1);
     assert.equal(h.texts()[0].text, 'second try'); assert.equal(h.opened.length, 0); assert.equal(n, 2);
     h.c.json({ type: 'stop' }); await settle(() => h.c.events().at(-1)?.type === 'done'); assert.equal(h.L.totals().spent_nano, Math.ceil(1000 * 1.15));
@@ -110,7 +110,7 @@ try {
 
   await test('a chunk times out → Deepgram takes over with the failed chunk and every later chunk replayed, results continue in order, billing adds both', async () => {
     const a1 = tone(1.2), a2 = tone(1.3), a3 = tone(1.1), a4 = tone(0.9);
-    let n = 0; const fake = async (e, src, o) => { n++; if (n === 1) return { text: 'first', nano: 100000, segs: [], dur: 1.2, model: o.models[0] }; throw Object.assign(new Error('timed out'), { timeout: true, nano: 55000 }); };
+    let n = 0; const fake = async (e, src, o) => { n++; if (n === 1) return { text: 'first', nano: 100000, segs: [], dur: 1.2, model: o.model }; throw Object.assign(new Error('timed out'), { timeout: true, nano: 55000 }); };
     const h = await harness({ fake }); const gap = quiet(0.7);
     await h.pcm(cat(a1, gap)); await settle(() => h.texts().length === 1);
     await h.pcm(cat(a2, gap, a3, gap, a4)); await settle(() => h.opened.length === 1 && h.dg.sent.length > 0);   // chunk 2 failed, chunks 3 and 4 are in flight or waiting
@@ -132,7 +132,7 @@ try {
   });
 
   await test('a chunk fails and there is no fallback (not allowed or not set up) → plain error, text so far stays, lease and hold released', async () => {
-    let n = 0; const fake = async (e, src, o) => { n++; if (n === 1) return { text: 'kept', nano: 1000, segs: [], dur: 1, model: o.models[0] }; throw Object.assign(new Error('timed out'), { timeout: true, nano: 0 }); };
+    let n = 0; const fake = async (e, src, o) => { n++; if (n === 1) return { text: 'kept', nano: 1000, segs: [], dur: 1, model: o.model }; throw Object.assign(new Error('timed out'), { timeout: true, nano: 0 }); };
     const h = await harness({ fake, fallback: false }); await h.pcm(cat(tone(1), quiet(0.7), tone(1), quiet(0.7)));
     await settle(() => h.c.events().at(-1)?.type === 'error'); assert.equal(h.texts()[0].text, 'kept'); assert.match(h.c.events().at(-1).message, /speech service could not continue/);
     assert.equal(h.L.totals().reserved_nano, 0); assert.equal(h.L.one('SELECT count(*) n FROM dictation_lease').n, 0);
@@ -151,9 +151,9 @@ try {
   class Pair { constructor() { this[0] = new Socket(); this[1] = new Socket(); } }
   class UpgradeResponse { constructor(_b, init) { Object.assign(this, init); } }
   const dbFor = level => ({ prepare: () => ({ bind: () => ({ first: async () => ({ ai_privacy: level }) }) }) });
-  async function route(envExtra, { level = 'zdr', dgFails = false } = {}) {
+  async function route(envExtra, { level = 'zdr', dgFails = false, settings = SEED } = {}) {
     const L = ledger(), seen = { gateway: 0 }, upstream = new Socket();
-    const env = withSettings({ DB: dbFor(level), ...envExtra });
+    const env = withSettings({ DB: dbFor(level), ...envExtra }, settings);
     const r = await transcribeLive(req(), env, L, { tenant: 't1' }, { WebSocketPair: Pair, Response: UpgradeResponse, fetch: async () => { seen.gateway++; return dgFails ? { status: 500 } : { status: 101, webSocket: upstream }; } });
     return { r, seen, L };
   }
@@ -162,17 +162,12 @@ try {
     assert.deepEqual([SEED.jobs.live_dictation.model, SEED.jobs.live_dictation.fallbacks.map(f => f.model)], [ID.STT_BEST, [ID.LIVE]]);
     for (const level of ['unrestricted', 'no_training', 'zdr']) { const x = await route({ ...KEY, ...GW }, { level }); assert.equal(x.r.status, 101, level); assert.equal(x.seen.gateway, 0, `${level}: AssemblyAI needs no Deepgram socket`); }
     const noKey = await route({ ...GW }); assert.equal(noKey.r.status, 101); assert.equal(noKey.seen.gateway, 1, 'no OpenRouter key → Deepgram');
-    const real = ENDPOINTS.transcription[ID.STT_BEST];
-    try {
-      ENDPOINTS.transcription[ID.STT_BEST] = { assemblyai: { zdr: false, training: false } };
-      const z = await route({ ...KEY, ...GW }, { level: 'zdr' }); assert.equal(z.r.status, 101); assert.equal(z.seen.gateway, 1, 'a non-ZDR AssemblyAI is not used at the ZDR level: Deepgram answers');
-      const u = await route({ ...KEY, ...GW }, { level: 'unrestricted' }); assert.equal(u.seen.gateway, 0, 'but a registry entry that is allowed at the level is used');
-      ENDPOINTS.transcription[ID.STT_BEST] = { assemblyai: { zdr: false, training: true } };
-      assert.equal((await route({ ...KEY, ...GW }, { level: 'no_training' })).seen.gateway, 1, 'a training endpoint is refused at No Training');
-      delete ENDPOINTS.transcription[ID.STT_BEST];
-      assert.equal((await route({ ...KEY, ...GW }, { level: 'unrestricted' })).seen.gateway, 1, 'an unregistered model is never used');
-      const none = await route({ ...KEY }); assert.equal(none.r.status, 451, 'AssemblyAI blocked by privacy and Deepgram has no gateway → unavailable with your privacy setting');
-    } finally { ENDPOINTS.transcription[ID.STT_BEST] = real; }
+    // Which levels a model has an endpoint for is a saved fact of the model (its catalog "levels"), not a code registry.
+    const withLevels = (levels) => { const c = JSON.parse(JSON.stringify(SEED)); c.catalog[ID.STT_BEST].levels = levels; return c; };
+    const z = await route({ ...KEY, ...GW }, { level: 'zdr', settings: withLevels(['unrestricted', 'no_training']) }); assert.equal(z.r.status, 101); assert.equal(z.seen.gateway, 1, 'a non-ZDR AssemblyAI is not used at the ZDR level: Deepgram answers');
+    const u = await route({ ...KEY, ...GW }, { level: 'unrestricted', settings: withLevels(['unrestricted', 'no_training']) }); assert.equal(u.seen.gateway, 0, 'but a model allowed at the level is used');
+    assert.equal((await route({ ...KEY, ...GW }, { level: 'no_training', settings: withLevels(['unrestricted']) })).seen.gateway, 1, 'a model with no No Training endpoint is refused at No Training');
+    const none = await route({ ...KEY }, { settings: withLevels(['unrestricted']) }); assert.equal(none.r.status, 451, 'AssemblyAI blocked by privacy and Deepgram has no gateway → unavailable with your privacy setting');
     const nothing = await route({}); assert.equal(nothing.r.status, 503); assert.equal((await route({ ...KEY, ...GW }, { level: 'zdr' })).r.status, 101);
   });
   await test('Deepgram-only sessions are unchanged: first model Deepgram → WebSocket through the gateway, same ready message', async () => {

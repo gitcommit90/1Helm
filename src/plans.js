@@ -18,6 +18,7 @@ import { savePlanCard, planLayout } from "./cards.js";
 import { deliverCard } from "./ee/index.js";
 import { createChannel } from "./channels.js";
 import { planBudget, planBudgetText } from "./stop.js";
+import { limitsFor } from "./ee/index.js";
 import { helperName } from "./helper-name.js";
 
 export const PLAN_MAX_ITEMS = 8, PLAN_MAX_PROJECTS = 1, PLAN_TITLE_MAX = 80, PLAN_BRIEF_MAX = 4000, PLAN_NOTE_MAX = 400;
@@ -164,13 +165,13 @@ export function originOf(sql, session, tz, now = Date.now()) {
 }
 
 // ---- texts the model sees ----
-export function proposedText(p, view) {
+export function proposedText(p, view, budget) {
   const k = (x) => x.kind === "followup" ? `follow-up ${x.line}` : x.kind === "project" ? `new project "${x.project_name}"` : "task";
   const qs = view.questions || [];
   return `Plan #${p.id} is on a card in front of the person with ${plural(view.items.length, "item")}: ${view.items.map((x, j) => `${j + 1}. ${qt(x.title)} (${k(x)})`).join("; ")}. ` +
     (qs.length ? `Questions first, above the items: ${qs.map((x) => qt(x.q)).join("; ")}. They answer those on the card, then approve; every started task gets the answers (and asks anything left open). ` : "") +
     "Stop here: don't call more tools and don't start any of it yourself. In one short line, ask them to tick what they want and tap Approve, or Deny, or Let's talk. Nothing starts until they choose; only they can approve it. " +
-    `Once approved, ${planBudgetText()}; they can stop any of them at any time.`;
+    `Once approved, ${planBudgetText(budget)}; they can stop any of them at any time.`;
 }
 export function approvedNote(view) {
   const ok = view.items.filter((x) => x.result && x.result.status !== "failed" && x.result.status !== "skipped");
@@ -223,7 +224,7 @@ export function proposePlan(res, a, ctx = {}) {
   const p = planRow(sql, id), view = planView(p, tz, now);
   ctx.emit?.({ t: "plan", plan: view });
   if (ctx.viaText && typeof res.planText === "function") { ctx.planTexted = id; res.ctx?.waitUntil?.(Promise.resolve(res.planText(id)).catch((e) => console.log("plan text", e.message))); }
-  return proposedText(p, view);
+  return proposedText(p, view, ctx.limits?.planTask);
 }
 // The person's own words this turn (their message plus what they added while it ran), not a handed-back result.
 function personWordsOf(tc) {
@@ -258,6 +259,7 @@ export async function decidePlan(res, id, decision, picks = null, answers = null
     return { ok: true, plan: v2, sessions: own ? [{ slug: res.get("channel"), session: res.sessionView(own), origin: true }] : [] };
   }
   // Approve: everything is created here, deterministically, with no model turn needed to create it.
+  res._limits = await limitsFor(res.env);   // the saved plan task budget (limits.js) for the tasks started below
   let helper = "your helper"; try { helper = helperName(await res.env.DB.prepare("SELECT helper_name FROM tenants WHERE id=?").bind(res.get("tenant")).first()); } catch {}
   const chName = res.get("channel") === PLAN_GENERAL ? "General" : await channelName(res);
   const origin = { helper, excerpt: p.excerpt || "", from_channel: res.get("channel"), from_name: chName, from_session: p.session, plan: p.id };
@@ -329,7 +331,7 @@ export function startPlanTask(res, x, o) {
   }
   const so = res.steerOrOpen(sid, { type: "msg", text: x.brief, via: "plan" });
   // Safety budget (stop.js): a brain-dump can start up to 8 of these at once, so each first run stops itself at the budget with a short report.
-  const budget = planBudget();
+  const budget = planBudget(res.lim?.().planTask);
   const run = res.runTurn(res.get("tenant"), res.get("channel"), res.get("channel_id"), x.brief, null, { session: sid, card: so.card.id, note: briefNote({ ...o, answers: qa || [], apps: !!res.env?.COMPOSIO_KEY }), handoff: { type: "plan", plan: o.plan ?? null }, ...budget })
     .catch((e) => console.log("plan task turn", e.message));
   res.ctx.waitUntil?.(run); (res._planRuns ||= []).push(run);

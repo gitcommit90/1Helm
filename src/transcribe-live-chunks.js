@@ -23,7 +23,7 @@ export const PAUSE_MS = 500, MAX_CHUNK_MS = 8000, LEAD_MS = 400, MIN_VOICED_BLOC
 // voiced = RMS above 2x the quietest block of the last 5 s, where that floor counts for at most 250 (about -42 dBFS) and the threshold
 // is at least 150: speech that starts the session, or runs on for 5 s, can never raise the threshold above 500 and be mistaken for silence.
 export const MIN_THRESHOLD = 150, THRESHOLD_FACTOR = 2, FLOOR_BLOCKS = 250, MAX_FLOOR = 250;
-export const CHUNK_TRY_MS = 6000, MAX_IN_FLIGHT = 3;
+export const MAX_IN_FLIGHT = 3;   // one chunk attempt is limited by the saved timeout of the live dictation job (limits.js, 6 seconds to start with)
 
 // A 16 kHz mono 16-bit WAV file around raw PCM.
 export function wavOf(pcm) {
@@ -120,11 +120,11 @@ export class ChunkProvider extends EventTarget {
     for (const j of this.jobs) { if (flying >= MAX_IN_FLIGHT) break; if (!j.started) { j.started = true; flying++; this.run(j); } }
   }
   async run(j) {
-    const secs = j.pcm.length / BYTES_PER_SEC, tryMs = this.d.tryMs || CHUNK_TRY_MS;
+    const secs = j.pcm.length / BYTES_PER_SEC, tryMs = this.d.tryMs || 0;
     for (let attempt = 0; attempt < 2; attempt++) {
       j.sent = Date.now();
       try {
-        const out = await (this.d.stt || stt)(this.d.env, { bytes: wavOf(j.pcm) }, { format: "wav", models: [this.d.model], meta: this.d.meta, tryMs, estSec: secs, signal: this.ctl.signal, headers: { "cf-aig-collect-log": "false" } });
+        const out = await (this.d.stt || stt)(this.d.env, { bytes: wavOf(j.pcm) }, { format: "wav", job: "live_dictation", model: this.d.model, meta: this.d.meta, tryMs, estSec: secs, signal: this.ctl.signal, headers: { "cf-aig-collect-log": "false" } });
         this.nano += out.nano; j.text = String(out.text || "").replace(/\s+/g, " ").trim(); j.done = true; j.err = null; j.ms = Date.now() - j.sent; break;
       } catch (e) {
         this.nano += Number(e?.nano) || 0; j.err = e; j.ms = Date.now() - j.sent;

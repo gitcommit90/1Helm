@@ -10,6 +10,7 @@
 // helperTool/helperRun/helperFinish/handoff methods (resident.js, after runNow) use them.
 
 import { userInputInit } from "./user-input.js";
+import { DEFAULT_RUNTIME_LIMITS } from "./ee/index.js";
 import { COMPUTER_BUSY_MSG } from "./computer-capacity.js";
 import { scrubSecrets } from "./secrets-scrub.js";
 
@@ -44,14 +45,18 @@ export function helpersInit(sql) {
 }
 
 // ---- limits (Captain's answer B) ----
-export const HELPER_MAX_RUNNING_PER_SESSION = 6;   // Captain 2026-10-17: 3 -> 6
-export const HELPER_MAX_PER_DAY = 200;            // started per channel, rolling 24 h
-export const HELPER_MAX_STEPS = 20;
-export const HELPER_MAX_CHARGE = 5e8;             // nano$ = $0.50, checked after each model call (tc.abort = "soft")
-export const HELPER_DEADLINE_MS = 15 * 60e3;      // then soft stop: tools off, final report
-export const HELPER_GRACE_MS = 2 * 60e3;          // then hard stop: no more model calls
-export const HELPER_FORCE_MS = 3 * 60e3;          // after the grace, a run still stuck in a tool is closed as stopped
-export const HELPER_REPORT_MAX = 6000;            // report chars handed to the main helper
+// These are the starting values. The values in effect are the saved limits (limits.js, edited on the Models page), read at the start of each turn
+// (limits-read.js): the running count, the per day count, steps, the cost target, the wrap up deadline, the grace period, the force period and the
+// report length. Functions here that need one take it as the last argument and default to these.
+const HL = DEFAULT_RUNTIME_LIMITS.helper;
+export const HELPER_MAX_RUNNING_PER_SESSION = HL.running;   // Captain 2026-10-17: 3 -> 6
+export const HELPER_MAX_PER_DAY = HL.perDay;            // started per channel, rolling 24 h
+export const HELPER_MAX_STEPS = HL.steps;
+export const HELPER_MAX_CHARGE = HL.charge;             // nano$ = $0.50, checked after each model call (tc.abort = "soft")
+export const HELPER_DEADLINE_MS = HL.deadlineMs;      // then soft stop: tools off, final report
+export const HELPER_GRACE_MS = HL.graceMs;          // then hard stop: no more model calls
+export const HELPER_FORCE_MS = HL.forceMs;          // after the grace, a run still stuck in a tool is closed as stopped
+export const HELPER_REPORT_MAX = HL.reportMax;            // report chars handed to the main helper
 export const HELPER_CONTEXT_MAX = 6000;           // same-task conversation excerpts at spawn, not tool outputs
 export const HELPER_NAME_MAX = 80, HELPER_TASK_MAX = 8000;
 export const COORDINATOR_MAX_CHILDREN = 2;
@@ -194,17 +199,17 @@ export function helperNoteText(rows = [], now = Date.now()) {
   return `\n\n(Context note, not from the person: helpers still working in this task: ${rows.map((h) => `#${h.id} ${q(h.name)} (started ${ago(now - h.started)})`).join("; ")}. If you reply before they finish, say they're still working.)`;
 }
 const outcome = (h) => h.status === "done" ? "done" : h.status === "failed" ? `failed: ${one(h.error) || "error"}` : h.status === "stopped" ? `stopped: ${one(h.why) || "limit reached"}` : h.status;
-const report = (h) => String(h.report || "").trim().slice(0, HELPER_REPORT_MAX) || "(no report)";
+const report = (h, max = HELPER_REPORT_MAX) => String(h.report || "").trim().slice(0, max) || "(no report)";
 // The handoff as a steer into an open card (it joins the task in progress).
-export function handoffSteerText(h, missed = 0) {
+export function handoffSteerText(h, missed = 0, reportMax = HELPER_REPORT_MAX) {
   if (h.status === "interrupted") return interruptedText(h, missed);
-  return `(Context note, not from the person: your helper #${h.id} ${q(h.name)} finished (${outcome(h)}). Its report:\n${report(h)}${missed ? `\n${missed} queued follow-up instruction(s) were not seen before it ended. Do not say it followed them.` : ""}\nUse it if it fits what you're doing now, and tell the person what it found in your reply.)`;
+  return `(Context note, not from the person: your helper #${h.id} ${q(h.name)} finished (${outcome(h)}). Its report:\n${report(h, reportMax)}${missed ? `\n${missed} queued follow-up instruction(s) were not seen before it ended. Do not say it followed them.` : ""}\nUse it if it fits what you're doing now, and tell the person what it found in your reply.)`;
 }
 // The handoff when no card was open: the first message of a new handoff card.
-export function handoffAwayText(h, missed = 0) {
+export function handoffAwayText(h, missed = 0, reportMax = HELPER_REPORT_MAX) {
   if (h.status === "interrupted") return interruptedText(h, missed);
   const what = h.status === "done" ? "finished" : h.status === "failed" ? `failed (${one(h.error) || "error"})` : `stopped (${one(h.why) || "limit reached"})`;
-  return `(Context note, not from the person: your helper #${h.id} ${q(h.name)} ${what} while you were away from this task. Its report:\n${report(h)}${missed ? `\n${missed} queued follow-up instruction(s) were not seen before it ended. Do not say it followed them.` : ""}\nTell the person what it found and do any next step it needs. Keep it short if there's little to say.)`;
+  return `(Context note, not from the person: your helper #${h.id} ${q(h.name)} ${what} while you were away from this task. Its report:\n${report(h, reportMax)}${missed ? `\n${missed} queued follow-up instruction(s) were not seen before it ended. Do not say it followed them.` : ""}\nTell the person what it found and do any next step it needs. Keep it short if there's little to say.)`;
 }
 export const interruptedText = (h, missed = 0) => `(Context note, not from the person: your helper #${h.id} ${q(h.name)} was interrupted (a restart) before finishing; partial work may be in ${helperDir(h.id)}.${missed ? ` ${missed} queued follow-up instruction(s) were not seen before it ended. Do not say it followed them.` : ""} Tell the person and offer to restart it.)`;
 export const followupText = (reason) => `(Context note, not from the person: a follow-up you scheduled is due now: ${q(reason)}. Do it now, then tell the person what you found.)`;
@@ -230,10 +235,10 @@ export const runningHelpers = (sql, session) => sql.exec("SELECT * FROM helpers 
 export const coordinatorChildren = (sql, id) => sql.exec("SELECT * FROM helpers WHERE coordinator_id=? ORDER BY id", Number(id)).toArray();
 export const startedToday = (sql, now = Date.now()) => sql.exec("SELECT COUNT(*) n FROM helpers WHERE started>?", now - 86400e3).toArray()[0].n;
 // Why a start is refused (null = OK). Plain words for the helper.
-export function startRefusal(sql, session, now = Date.now()) {
+export function startRefusal(sql, session, now = Date.now(), L = DEFAULT_RUNTIME_LIMITS.helper) {
   const run = sql.exec("SELECT id FROM helpers WHERE session=? AND status IN ('running','waiting_input')", String(session)).toArray();
-  if (run.length >= HELPER_MAX_RUNNING_PER_SESSION) return `error: ${HELPER_MAX_RUNNING_PER_SESSION} helpers are already working in this task, which is the limit. Wait for one to finish, or stop one with stop_helper if it is no longer needed, then start the next one.`;
-  if (startedToday(sql, now) >= HELPER_MAX_PER_DAY) return `error: ${HELPER_MAX_PER_DAY} helpers have been started in this channel in the last 24 hours, which is the limit. Do the job yourself, or tell the person it can run later.`;
+  if (run.length >= L.running) return `error: ${L.running} helpers are already working in this task, which is the limit. Wait for one to finish, or stop one with stop_helper if it is no longer needed, then start the next one.`;
+  if (startedToday(sql, now) >= L.perDay) return `error: ${L.perDay} helpers have been started in this channel in the last 24 hours, which is the limit. Do the job yourself, or tell the person it can run later.`;
   return null;
 }
 // Construction: a fresh isolate has no live turns, so running helpers were interrupted. Their handoff is due (via the alarm).
@@ -250,11 +255,11 @@ export function recoverHelpers(sql, now = Date.now(), keep = null) {
 // Undelivered results (a finished helper whose handoff didn't go out, e.g. after a restart). Running ones are handed by their run.
 export const pendingHandoffs = (sql) => sql.exec("SELECT * FROM helpers WHERE handed=0 AND coordinator_id IS NULL AND status IN ('interrupted','done','stopped','failed','awaiting_review','waiting_input') AND (stopped_by IS NULL OR stopped_by='limit') ORDER BY id").toArray();
 // The next time the alarm must wake for helpers: now for undelivered results, else the next future deadline step.
-export function helperNextWake(sql, now = Date.now()) {
+export function helperNextWake(sql, now = Date.now(), L = DEFAULT_RUNTIME_LIMITS.helper) {
   if (pendingHandoffs(sql).length) return now;
   let t = null;
   for (const h of sql.exec("SELECT deadline FROM helpers WHERE status='running'").toArray())
-    for (const x of [h.deadline, h.deadline + HELPER_GRACE_MS, h.deadline + HELPER_GRACE_MS + HELPER_FORCE_MS]) if (x > now && (t == null || x < t)) { t = x; break; }
+    for (const x of [h.deadline, h.deadline + L.graceMs, h.deadline + L.graceMs + L.forceMs]) if (x > now && (t == null || x < t)) { t = x; break; }
   return t;
 }
 // The task's live (non-helper) turn: steer's liveTurn when it's there, else the same rule by hand (chat preferred).

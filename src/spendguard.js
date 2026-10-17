@@ -30,6 +30,8 @@
 //    as one finishes. Stop / Stop all still reach them (they are live turns, just not started).
 // 5. Usage the person can see: "This task: about $0.03" (sessionDetail.usage) and the month meter in Settings (boot account.month).
 import { PLANS } from "./plans-def.js";
+import { DEFAULT_RUNTIME_LIMITS } from "./ee/index.js";
+import { limitsFor } from "./ee/index.js";
 import { setStatus } from "./tracker.js";
 import { textConnected, textSend } from "./ee/index.js";
 import { ESCALATE_STALL } from "./ee/index.js";
@@ -39,14 +41,18 @@ import { loadCheckins, normalizeCheckins } from "./agent-checkins.js";
 import { SPEND_PAUSES_KEY, CHECKIN_PAUSES, spendPausesOn, checkinsOn, applySpendPreference, readSpendPreference } from './spend-preferences.js';
 
 export const BASE_ALLOWANCE = 20e9;        // Personal plan usage ($20/month): the plan the per-turn numbers are tuned for
-export const TURN_SOFT = 15e7;             // $0.15 per turn before a pause
-export const TURN_HARD = 5e8;              // $0.50 per turn, never crossed without a tap
-export const SOFT_MAX = 6e8, HARD_MAX = 2e9;   // bigger plans scale up to $0.60 / $2.00
-export const UNATTENDED_SOFT = 0.8;        // scheduled runs (nobody to tap): report at 80% of hard
-export const DAY_FACTOR = 2;               // a day may use 2× its share before a check-in
-export const NOTICE_LEVELS = [50, 80];
-export const SLOT_MAX = 6;                  // default; a plan may set its own with `slots` in src/plans-def.js (Captain 2026-10-17: 3 -> 6)
-export const slotMaxOf = (plan, plans = PLANS) => { const n = Math.floor(Number(plans?.[plan]?.slots)); return n >= 1 ? n : SLOT_MAX; };
+// The cost, day, notice and slot numbers below are the starting values of the saved limits (limits.js, edited on the Models page, read at the start of
+// each turn by limits-read.js). The functions that use them take the saved values as an argument and default to these.
+const SP = DEFAULT_RUNTIME_LIMITS.spend;
+const limOf = (r) => r?.lim?.() || DEFAULT_RUNTIME_LIMITS;   // a Resident knows the limits of its last turn; a bare test object does not
+export const TURN_SOFT = SP.turnSoft;             // $0.15 per turn before a pause
+export const TURN_HARD = SP.turnHard;              // $0.50 per turn, never crossed without a tap
+export const SOFT_MAX = SP.softMax, HARD_MAX = SP.hardMax;   // bigger plans scale up to $0.60 / $2.00
+export const UNATTENDED_SOFT = SP.unattendedSoft;        // scheduled runs (nobody to tap): report at 80% of hard
+export const DAY_FACTOR = SP.dayFactor;               // a day may use 2× its share before a check-in
+export const NOTICE_LEVELS = [...SP.noticeLevels];
+export const SLOT_MAX = SP.slotMax;                  // default; a plan may set its own with `slots` in src/plans-def.js (Captain 2026-10-17: 3 -> 6)
+export const slotMaxOf = (plan, plans = PLANS, dflt = SLOT_MAX) => { const n = Math.floor(Number(plans?.[plan]?.slots)); return n >= 1 ? n : dflt; };
 // silent and fast here are only the fallback when no account values are passed (tests). Accounts get theirs from agent-checkins.js.
 export const RUNAWAY = { silent: 15, repeat: 4, repeatEdited: 7, similar: 0.7, accounts: 4, fast: 20, fastMs: 60e3, outLoops: 2, noProgress: 3, recallRun: 12 };
 const LOOK_BACK = new Set(["work_log", "bring_back", "recall_history"]);   // calls that only look back at what's already known
@@ -54,7 +60,8 @@ const LOOK_BACK = new Set(["work_log", "bring_back", "recall_history"]);   // ca
 //   wallMs   a turn working this long without its reply pauses (scheduled runs stop with a report); Keep going = another wallMs;
 //   cmdMs    one run_command may run this long, then it's killed with everything it started (timeout_minutes raises it, ≤ cmdMaxMs);
 //   repeatN  a command's output with the same line this many times (and ≥ a quarter of its lines) gets a "this is a loop" note.
-export const TIMING = { wallMs: 10 * 60e3, cmdMs: 4 * 60e3, cmdMaxMs: 15 * 60e3, repeatN: 8 };
+const wallOf = (L) => L?.timingSaved?.wallMs ?? TIMING.wallMs;   // the saved turn check-in time, else the starting value
+export const TIMING = { wallMs: DEFAULT_RUNTIME_LIMITS.wallMs, cmdMs: DEFAULT_RUNTIME_LIMITS.cmdMs, cmdMaxMs: DEFAULT_RUNTIME_LIMITS.cmdMaxMs, repeatN: 8 };   // the three times are starting values: the saved limits (limits.js) are in tc.limits
 const NO_LOOP = new Set(["update_todos", "react", "remember", "mark_done"]);   // bookkeeping tools repeat by design
 const EDITS = new Set(["write_file", "edit_file"]);   // a change to a file between two runs of the same command
 // Quiet calls: reading the playbook and keeping the to-do list. They never count toward "silent", and a model step whose calls are
@@ -75,14 +82,14 @@ export const OUT_OF_TIME_REPLY = "You've used all of this month's helper time, s
 export const SPEND_CEILING = "spend_ceiling";
 
 // ---- budgets ----
-export function turnBudget(allowance = 0, kind = "chat") {
+export function turnBudget(allowance = 0, kind = "chat", S = SP) {
   const k = allowance > 0 ? Math.max(1, allowance / BASE_ALLOWANCE) : 1;
-  const hard = Math.min(HARD_MAX, Math.round(TURN_HARD * k));
-  const soft = kind === "workflow" ? Math.round(hard * UNATTENDED_SOFT) : Math.min(SOFT_MAX, Math.round(TURN_SOFT * k));
+  const hard = Math.min(S.hardMax, Math.round(S.turnHard * k));
+  const soft = kind === "workflow" ? Math.round(hard * S.unattendedSoft) : Math.min(S.softMax, Math.round(S.turnSoft * k));
   return { soft, hard };
 }
 export const dayShare = (allowance) => Math.round((allowance > 0 ? allowance : BASE_ALLOWANCE) / 30);
-export const dayLine = (allowance, okLevel = 0) => Math.max(DAY_FACTOR * dayShare(allowance), Number(okLevel) || 0);
+export const dayLine = (allowance, okLevel = 0, factor = DAY_FACTOR) => Math.max(factor * dayShare(allowance), Number(okLevel) || 0);
 
 // ---- the runaway detector (pure; a watch per turn) ----
 export const newWatch = () => ({ calls: [], said: false });
@@ -143,10 +150,10 @@ const TITLES = {
   silent: "Checking in before going further", loop: "This looked like it was going in circles", time: "This is taking a long time", accounts: "Checking in before going further",
   fast: "Checking in before going further", day: "A busy day",
 };
-export function pauseLine(reason, helper = "Your helper", spent = 0) {
+export function pauseLine(reason, helper = "Your helper", spent = 0, wallMs = TIMING.wallMs) {
   if (reason === "day") return `You've used about twice a normal day's helper time today. That can be fine on a busy day. Keep going lets ${helper} carry on.`;
   const why = reason === "loop" ? `${helper} kept trying the same thing and paused to check with you.` : reason === "accounts" ? `${helper} was reaching into a lot of your accounts and paused to check with you.`
-    : reason === "time" ? `${helper} has been working on this for over ${Math.round(TIMING.wallMs / 60e3)} minutes and paused to check with you.`
+    : reason === "time" ? `${helper} has been working on this for over ${Math.round(wallMs / 60e3)} minutes and paused to check with you.`
     : reason === "silent" || reason === "fast" ? `${helper} did a lot without checking in and paused to ask you.` : reason === "steps" ? `${helper} has taken a lot of steps on this and paused to check with you.` : `This is using more than a task usually does, so ${helper} paused to check with you.`;
   return `${why} This task so far: ${about(spent)}.`;
 }
@@ -158,10 +165,10 @@ export function pauseAsk(reason) {
 }
 export const pauseFallback = (said = "") => `${String(said || "").trim() ? `${String(said).trim()}\n\n` : ""}This is taking longer than usual, so I paused here. Nothing was lost. Want me to keep going?`;
 export const DAY_PAUSE_REPLY = "I've already done a lot for you today, about twice a normal day's worth, so I'm checking in before I start on this. Want me to go ahead?";
-export function noticeText(level, used, allowance, helper = "Your helper") {
-  return level >= 80
+export function noticeText(level, used, allowance, helper = "Your helper", second = NOTICE_LEVELS[1]) {
+  return level >= second
     ? `You've used ${level}% of this month's helper time (${usd(used)} of ${usd(allowance)}). When it runs out, ${helper} pauses until it refills or you add more in Settings → General → Usage.`
-    : `You've used half of this month's helper time (${usd(used)} of ${usd(allowance)}). Nothing to do; this is just so you know. It refills when your plan renews.`;
+    : `You've used ${level === 50 ? "half" : `${level}%`} of this month's helper time (${usd(used)} of ${usd(allowance)}). Nothing to do; this is just so you know. It refills when your plan renews.`;
 }
 
 // ---- per-turn checks (tc.guard is set by spendStart; a turn without one is unguarded, e.g. helpers) ----
@@ -192,10 +199,11 @@ export function guardTools(tc, calls, now = Date.now()) {
   return s && pauseAt(tc, s.reason) ? tc.pause : null;
 }
 // ---- run_command: its time limit, and notes on what came back ----
-export function commandLimitMs(name, a = {}) {
-  if (name !== "run_command") return TIMING.cmdMs;
+export function commandLimitMs(name, a = {}, saved = null) {
+  const T = saved ? { ...TIMING, ...saved } : TIMING;   // saved: the times changed on the Models page (limits.js timingSaved)
+  if (name !== "run_command") return T.cmdMs;
   const m = Math.round(Number(a.timeout_minutes) || 0);
-  return m > 0 ? Math.min(m * 60e3, TIMING.cmdMaxMs) : TIMING.cmdMs;
+  return m > 0 ? Math.min(m * 60e3, T.cmdMaxMs) : T.cmdMs;
 }
 // The line a loop inside one command keeps printing: digits fold (timestamps, counters), → { line, n } or null.
 export function repeatedLine(out) {
@@ -239,7 +247,7 @@ export function guardResume(tc, startedAt) {
   if (!tc?.guard) return;
   tc.guard.checkins = normalizeCheckins(tc.guard.checkins);
   tc.guard.started = Number(startedAt || Date.now());
-  if (spendPausesOn(tc)) tc.guard.wallT = setTimeout(async () => { await tc.refreshSpend?.(); if (!tc.finished && !tc.committed) pauseAt(tc, "time"); }, Math.max(1000, TIMING.wallMs - (Date.now() - tc.guard.started)));
+  if (spendPausesOn(tc)) tc.guard.wallT = setTimeout(async () => { await tc.refreshSpend?.(); if (!tc.finished && !tc.committed) pauseAt(tc, "time"); }, Math.max(1000, wallOf(tc.limits) - (Date.now() - tc.guard.started)));
 }
 export function noteCharge(tc, charge) { if (!tc) return; tc.charged = (tc.charged || 0) + charge; if (tc.guard) tc.guard.biggest = Math.max(tc.guard.biggest || 0, charge); }
 export const reportAsk = (tc, limitAsk) => tc?.pause && tc.kind !== "workflow" ? pauseAsk(tc.pause.reason) : limitAsk;
@@ -255,10 +263,10 @@ export const SPEND_DDL = [
 export function spendInit(sql) { for (const q of SPEND_DDL) sql.exec(q); }
 const guardOff = (env) => env?.SPENDGUARD === "off";
 async function helperName(res) { try { return (await res.env.DB.prepare("SELECT helper_name FROM tenants WHERE id=?").bind(res.get("tenant")).first())?.helper_name || "Your helper"; } catch { return "Your helper"; } }
-export function pauseView(row, helper = "Your helper") {
+export function pauseView(row, helper = "Your helper", wallMs = TIMING.wallMs) {
   if (!row) return null;
   return { card: row.card, session: row.session, reason: row.reason, status: row.status, at: row.at, spent: about(row.spent),
-    title: TITLES[row.reason] || TITLES.budget, line: pauseLine(row.reason, helper, row.spent) };
+    title: TITLES[row.reason] || TITLES.budget, line: pauseLine(row.reason, helper, row.spent, wallMs) };
 }
 // stop.js / plans budgets say why with tc.limitWhy ("cost" | "steps" | "time"); the guard with tc.pause.reason.
 const reasonOf = (tc) => tc.pause?.reason || (tc.limitWhy === "cost" ? "budget" : tc.limitWhy) || "budget";
@@ -271,7 +279,7 @@ export function spendMix(Resident) { return Object.assign(Resident.prototype, {
     const enabled = await readSpendPreference(L);
     applySpendPreference(tc, enabled);
     if (enabled && tc.abort !== 'hard' && !tc.finished && !tc.committed) {
-      if (tc.guard && Date.now() - (tc.guard.started || tc.t0 || Date.now()) >= TIMING.wallMs) pauseAt(tc, 'time');
+      if (tc.guard && Date.now() - (tc.guard.started || tc.t0 || Date.now()) >= wallOf(tc.limits)) pauseAt(tc, 'time');
       if (opts.max_ms && Date.now() - (opts.resume?.started || tc.t0 || Date.now()) >= opts.max_ms && !tc.abort) { tc.limitWhy = 'time'; tc.abort = 'soft'; }
       if (tc.helper?.deadline && Date.now() >= tc.helper.deadline && !tc.abort) { tc.helperWhy = 'time limit'; tc.abort = 'soft'; }
     }
@@ -286,16 +294,16 @@ export function spendMix(Resident) { return Object.assign(Resident.prototype, {
     await this.spendRefresh(tc, opts);
     if (guardOff(this.env) || tc.kind === "helper") return;
     let info = null; try { const L = this.ledger(); if (typeof L.guardInfo === "function") info = await L.guardInfo(); } catch (e) { console.log("spend guard info", e.message); }
-    const allowance = Number(info?.allowance_nano) || 0, b = turnBudget(allowance, tc.kind);
+    const allowance = Number(info?.allowance_nano) || 0, SL = tc.limits || limOf(this), b = turnBudget(allowance, tc.kind, SL.spend);
     const person = tc.kind === "chat" || tc.kind === "followup";
     const checkinOff = !!info?.checkin_off && testModeOn(this.env);   // dev evals on a test account (Ledger.setCheckinTest)
-    tc.guard = { ...b, watch: newWatch(), biggest: 0, dayBase: Number(info?.day_spent_nano) || 0, dayLine: person && info && !checkinOff ? dayLine(allowance, info.day_ok_nano) : 0 };
+    tc.guard = { ...b, watch: newWatch(), biggest: 0, dayBase: Number(info?.day_spent_nano) || 0, dayLine: person && info && !checkinOff ? dayLine(allowance, info.day_ok_nano, SL.spend.dayFactor) : 0 };
     // Snapshot for this turn; resume.js persists it alongside counters, so a restart cannot reset or silently retune it.
     // A saved change applies to the next turn, including Keep going after a pause.
     tc.guard.checkins = await loadCheckins(this.env, this.get("tenant"));
     // Wall clock: working this long without its reply → pause at the next step (a running command ends by its own limit first).
     tc.guard.started = tc.t0 || Date.now();
-    tc.guard.wallT = setTimeout(async () => { await this.spendRefresh(tc, opts); if (!tc.finished && !tc.committed) pauseAt(tc, "time"); }, TIMING.wallMs);
+    tc.guard.wallT = setTimeout(async () => { await this.spendRefresh(tc, opts); if (!tc.finished && !tc.committed) pauseAt(tc, "time"); }, wallOf(tc.limits));
     // Over today's line already: the check-in comes first (not for a helper's result coming back, nor right after a Continue).
     const fresh = opts.taskKickoff || !opts.handoff || opts.handoff?.type === "plan";
     if (spendPausesOn(tc) && tc.guard.dayLine && tc.guard.dayBase >= tc.guard.dayLine && fresh && !opts.spendContinue) { tc.pause = { reason: "day" }; tc.guard.pre = true; }
@@ -317,29 +325,29 @@ export function spendMix(Resident) { return Object.assign(Resident.prototype, {
   // This workspace's limit: its plan's `slots`, else SLOT_MAX. Read from D1 when a task starts and kept for spendWake.
   async spendSlotMax() {
     let plan = ""; try { plan = (await this.env.DB.prepare("SELECT plan FROM tenants WHERE id=?").bind(this.get("tenant")).first())?.plan || ""; } catch {}
-    return (this.slotLimit = slotMaxOf(plan));
+    return (this.slotLimit = slotMaxOf(plan, undefined, (await limitsFor(this.env)).spend.slotMax));
   },
   spendDone(tc) { if (tc?.guard?.wallT) clearTimeout(tc.guard.wallT); this.spendWake(); },
   spendWake() {
-    while ((this.slotQ || []).length && this.spendWorking() < (this.slotLimit || SLOT_MAX)) { const x = this.slotQ.shift(); x.tc.slotWait = false; x.wake(); }
+    while ((this.slotQ || []).length && this.spendWorking() < (this.slotLimit || limOf(this).spend.slotMax)) { const x = this.slotQ.shift(); x.tc.slotWait = false; x.wake(); }
   },
   // The turn closes as "paused": remember why (its line under the report), → the view streamed as {t:"spend_pause"}.
   async spendPaused(tc, stats) {
     if (!tc.session || !tc.turn) return null;
     this._helperName ||= await helperName(this);
     this.sql.exec("INSERT OR REPLACE INTO spend_pauses (card, session, at, reason, spent) VALUES (?,?,?,?,?)", tc.turn, tc.session, Date.now(), reasonOf(tc), Math.round(spentOf(tc, stats)));
-    return pauseView(this.sql.exec("SELECT * FROM spend_pauses WHERE card=?", tc.turn).toArray()[0], this._helperName || "Your helper");
+    return pauseView(this.sql.exec("SELECT * FROM spend_pauses WHERE card=?", tc.turn).toArray()[0], this._helperName || "Your helper", wallOf(limOf(this)));
   },
   async spendPauses(session) {
     const helper = await helperName(this); this._helperName = helper;
-    return this.sql.exec("SELECT * FROM spend_pauses WHERE session=? ORDER BY at DESC LIMIT 30", String(session)).toArray().reverse().map((r) => pauseView(r, helper));
+    return this.sql.exec("SELECT * FROM spend_pauses WHERE session=? ORDER BY at DESC LIMIT 30", String(session)).toArray().reverse().map((r) => pauseView(r, helper, wallOf(limOf(this))));
   },
   // Continue (chatStream, continue=<card>): a day check-in's Continue also raises today's line by another 2× share.
   async spendContinued(card) {
     const row = this.sql.exec("SELECT * FROM spend_pauses WHERE card=?", String(card)).toArray()[0]; if (!row) return null;
     this.sql.exec("UPDATE spend_pauses SET status='continued', decided_at=? WHERE card=?", Date.now(), row.card);
     this.sql.exec("UPDATE sessions SET updated=? WHERE id=?", Date.now(), row.session);
-    if (row.reason === "day") { try { const L = this.ledger(); if (typeof L.dayCheckin === "function") await L.dayCheckin(); } catch (e) { console.log("day checkin", e.message); } }
+    if (row.reason === "day") { try { const L = this.ledger(); if (typeof L.dayCheckin === "function") await L.dayCheckin((await limitsFor(this.env)).spend.dayFactor); } catch (e) { console.log("day checkin", e.message); } }
     return row;
   },
   // Stop here: the card stops offering Continue (what's done stays).
@@ -350,7 +358,7 @@ export function spendMix(Resident) { return Object.assign(Resident.prototype, {
     this.sql.exec("UPDATE spend_pauses SET status='stopped', decided_at=? WHERE card=? AND status='paused'", Date.now(), c.id);
     this.sql.exec("UPDATE sessions SET updated=? WHERE id=?", Date.now(), c.session);
     const row = this.sql.exec("SELECT * FROM spend_pauses WHERE card=?", c.id).toArray()[0];
-    return { ok: true, card: c.id, pause: row ? pauseView(row, await helperName(this)) : null, session: this.sessionView(this.session(c.session)) };
+    return { ok: true, card: c.id, pause: row ? pauseView(row, await helperName(this), wallOf(limOf(this))) : null, session: this.sessionView(this.session(c.session)) };
   },
   // "This task: about $0.03": every turn of the task, its background helpers included.
   spendTaskUsage(session) {
@@ -360,7 +368,7 @@ export function spendMix(Resident) { return Object.assign(Resident.prototype, {
   // After every turn that cost something: the 50% / 80% notices (once each per month), with a text when texting is set up.
   async spendAfterTurn(charge) {
     if (guardOff(this.env) || !(charge > 0)) return null;
-    let n = null; try { const L = this.ledger(); if (typeof L.usageNotice !== "function") return null; n = await L.usageNotice(await helperName(this)); } catch (e) { console.log("usage notice", e.message); return null; }
+    let n = null; try { const L = this.ledger(); if (typeof L.usageNotice !== "function") return null; n = await L.usageNotice(await helperName(this), (await limitsFor(this.env)).spend.noticeLevels); } catch (e) { console.log("usage notice", e.message); return null; }
     if (!n?.level) return null;
     try {
       if (await textConnected(this.env, this.get("tenant"))) await textSend(this.env, this.get("tenant"), n.text);

@@ -1,10 +1,12 @@
 // Provider-neutral ambient extraction, hosted in the tenant's existing BeeSync DO.
 // Raw speech is data, never executable instructions. Queries never call a provider/model.
-import { openRouterChat } from "../model.js";
+import { dispatch } from "./model-dispatch.js";
+import { plannedMaxOutput, plannedHoldNano } from "./job-limits.js";
 import { savedModelPrice, estimateStepCost } from "../step-price.js";
 import { modelSettingsEnv } from "./model-settings.js";
-import { backgroundRole, backgroundPolicy, backgroundReserve } from "./background-policy.js";
+import { backgroundRole, backgroundReserve } from "./background-policy.js";
 import { jobRoute } from "./model-jobs.js";
+import { jobTimeoutFor } from "./limits-read.js";
 import { loadByok, byokEnv } from "../byok.js";
 import { scrubSecrets } from "../secrets-scrub.js";
 import { ambientCueLines } from "./ambient-cues.js";
@@ -568,13 +570,13 @@ export class AmbientStore {
     return this.modelRequest(messages, chunk, "ambient-review", input.context.map(l => l.text));
   }
   async modelRequest(messages, chunk, kind, privacyTexts) {
-    const schema = kind === "ambient-review" ? AMBIENT_REVIEW_SCHEMA : AMBIENT_EXTRACT_SCHEMA;
+    const schema = kind === "ambient-review" ? AMBIENT_REVIEW_SCHEMA : AMBIENT_EXTRACT_SCHEMA, maxTokens = await plannedMaxOutput(this.host?.env, backgroundRole(kind)).catch(() => null);
     const { data } = await structuredChat(async request => {
       const response = await this.modelAttempt(request, chunk, kind, privacyTexts);
       if (kind === "ambient-review") assertAmbientReview(parseStructuredResponse(response, schema), JSON.parse(messages.at(-1).content));
       return response;
     },
-      { messages, max_tokens: backgroundPolicy(backgroundRole(kind)).maxTokens, temperature: 0 },
+      { messages, ...(maxTokens ? { max_tokens: maxTokens } : {}), temperature: 0 },
       { name: kind.replaceAll("-", "_"), schema, maxAttempts: 2 });
     return data;
   }
@@ -585,7 +587,7 @@ export class AmbientStore {
     if (cfg?.missing) throw Object.assign(new Error("own key missing"), { ambientPause: "Your own AI key needs attention" });
     const L = h.ledger(), activeFallback = cfg?.fallback && (await L.byokFbState())?.active;
     const own = cfg && (!cfg.fallback || activeFallback), env = byokEnv(h.env, own ? cfg : null);
-    const reserve = own ? 0 : backgroundReserve(request), rid = `ambient:${crypto.randomUUID()}`;
+    const reserve = own ? 0 : backgroundReserve(request, 1, await plannedHoldNano(h.env, backgroundRole(kind)).catch(() => 0)), rid = `ambient:${crypto.randomUUID()}`;
     this.sql.exec("INSERT INTO ambient_attempts VALUES(?,?)", rid, now());
     if (chunk) this.sql.exec("UPDATE ambient_chunks SET reservation_id=? WHERE source=? AND source_id=? AND hash=?", rid, chunk.source, chunk.source_id, chunk.hash);
     if (chunk) chunk.phase = "reserve_spend";
@@ -600,7 +602,8 @@ export class AmbientStore {
       // Each stage gets its own lease, reservation and recoverable attempt.
       if (chunk?.claim_token) this.sql.exec("UPDATE ambient_chunks SET retry_at=? WHERE source=? AND source_id=? AND hash=? AND state='processing' AND claim_token=?", now() + 120000, chunk.source, chunk.source_id, chunk.hash, chunk.claim_token);
       if (chunk) chunk.phase = `${kind}:provider_request`;
-      const r = await openRouterChat(env, request, null, route, { tenant: h.tid(), channel: "main", kind }, AbortSignal.timeout(90000));
+      const timeoutMs = await jobTimeoutFor(env, route.job);   // the saved timeout of the job (limits.js); null means none
+      const r = await dispatch(env, route.job, request, { meta: { tenant: h.tid(), channel: "main", kind }, ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}) });
       if (chunk) chunk.phase = "provider_response";
       const j = await r.json();
       // No reported cost: the model's own saved price (step-price.js), never the reservation ceiling; with no saved price the ceiling is

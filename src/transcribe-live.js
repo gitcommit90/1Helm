@@ -3,7 +3,10 @@
 // account's AI data privacy setting allows runs the session. AssemblyAI takes whole WAV files only, so it runs through
 // transcribe-live-chunks.js (the audio cut at pauses into short chunks); Deepgram Nova 3 is a WebSocket that returns words while
 // they are spoken, and it is the fallback when AssemblyAI isn't allowed, can't be used, or fails during the session.
-import { ENDPOINTS, endpointOk, eligibleHosts, privacyOf } from './privacy.js';
+import { privacyOf } from './privacy.js';
+import { dispatch, plan } from './ee/index.js';
+import { modelSettingsEnv } from './ee/index.js';
+export { liveProviderRequest } from './ee/index.js';   // the socket request is built in the dispatcher
 // transcribe-live-chunks.js, transcribe.js and model-settings.js are imported only where they are used, so a Deepgram-only session loads none of them.
 export const PCM_SECOND = 32000, WINDOW_BYTES = PCM_SECOND * 60;
 const BURST_BYTES = PCM_SECOND * 2, STARTUP_BYTES_MAX = PCM_SECOND * 8;
@@ -32,13 +35,6 @@ export function boundedDictationLedger(ledger, deps = {}) {
   const bound = { reserve: (...a) => call('reserve', a), settle: (...a) => call('settle', a), dictationLease: (...a) => call('dictationLease', a) };
   boundedLedgers.add(bound); return bound;
 }
-export function liveProviderRequest(env, model) {
-  const query = new URLSearchParams({ model, encoding: 'linear16', sample_rate: '16000', channels: '1', interim_results: 'true', punctuate: 'true', endpointing: '300', mip_opt_out: 'true' });
-  return { url: `https://gateway.ai.cloudflare.com/v1/${env.CF_ACCOUNT_ID}/${env.AIG_ID}/workers-ai?${query}`, headers: {
-    Upgrade: 'websocket', 'cf-aig-authorization': `Bearer ${env.AIG_TOKEN}`,
-    'cf-aig-collect-log': 'false', 'cf-aig-collect-log-payload': 'false', 'cf-aig-skip-cache': 'true',
-  } };
-}
 // Additive Ledger RPC. Synchronous SQL makes acquisition atomic across tabs and isolates.
 export const ledgerDictation = {
   dictationLease(id, release = false) {
@@ -56,16 +52,11 @@ export async function transcribeLive(req, env, ledger, { tenant, look = false } 
   if (req.method !== 'GET') return fail(405, 'Use a WebSocket connection.');
   if (req.headers.get('Origin') !== new URL(req.url).origin) return fail(403, 'Open dictation from this app.');
   if (req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return fail(426, 'A WebSocket connection is required.');
-  const settings = deps.liveModel ? null : await import('./ee/index.js');
-  const models = deps.liveModel ? [deps.liveModel] : await settings.jobModels(env, 'live_dictation');   // the saved model of the job "live_dictation", then its fallback
-  const level = await privacyOf(env, tenant), gatewayOk = !!(env.AIG_TOKEN && env.AIG_ID && env.CF_ACCOUNT_ID);
-  const routes = []; let blocked = false;
-  for (const model of models) {
-    const cf = ENDPOINTS.transcription[model]?.['cloudflare-workers-ai'], deepgram = !!cf;   // a model registered on Workers AI is a streaming WebSocket; any other is a whole-recording model
-    const allowed = deepgram ? endpointOk(cf, level) : eligibleHosts(model, level, { modality: 'transcription' }).length > 0;   // only a registered endpoint, never a guess
-    if (!allowed) { blocked = true; continue; }
-    if (deepgram ? gatewayOk : !!env.OPENROUTER_API_KEY) routes.push({ model, deepgram });
-  }
+  // The saved job "live_dictation" lists its models in order; the plan keeps the ones the account's privacy level allows. A Workers AI streaming model
+  // (Deepgram) is a WebSocket; any other model takes the audio in chunks (transcribe-live-chunks.js).
+  const snap = await modelSettingsEnv(env), level = await privacyOf(env, tenant), gatewayOk = !!(env.AIG_TOKEN && env.AIG_ID && env.CF_ACCOUNT_ID);
+  const p = plan(snap.MODEL_SETTINGS, 'live_dictation', { level }), blocked = p.skipped.length > 0;
+  const routes = p.steps.map(st => ({ model: st.model, deepgram: st.adapter === 'transcribe_live' })).filter(r => r.deepgram ? gatewayOk : !!env.OPENROUTER_API_KEY);
   if (!routes.length) return blocked ? fail(451, 'Live dictation is unavailable with your privacy setting.') : fail(503, 'Live dictation is unavailable.');
   const primary = routes[0], fallbackRoute = primary.deepgram ? null : routes.find(r => r.deepgram) || null;
   const id = `dictation:${crypto.randomUUID()}`;
@@ -73,16 +64,8 @@ export async function transcribeLive(req, env, ledger, { tenant, look = false } 
   let acquired = false, reserveAttempted = false, upstream;
   // A WebSocket to Deepgram's Nova-3 through the AI gateway (accepted), or throws.
   const openDeepgram = async model => {
-    const spec = liveProviderRequest(env, model), controller = new AbortController();
-    // The fetch signal remains associated with its upgraded WebSocket. AbortSignal.timeout
-    // would therefore kill healthy dictation at 15s; clear a connection-only timer on upgrade.
-    const connectTimer = setTimeout(() => controller.abort(), 15000);
-    let response;
-    try { response = await (deps.fetch || fetch)(spec.url, { headers: spec.headers, signal: controller.signal }); }
-    finally { clearTimeout(connectTimer); }
-    const socket = response.webSocket;
-    if (response.status !== 101 || !socket) { try { socket?.close(); } catch {} throw new Error('upgrade'); }
-    socket.accept(); return socket;
+    const response = await dispatch(env, 'live_dictation', {}, { meta: { tenant, kind: 'live-dictation' }, level, model, fetch: deps.fetch });
+    const socket = response.webSocket; socket.accept(); return socket;
   };
   try {
     acquired = true; // Clean up even if acquisition committed but its acknowledgement was lost.
@@ -96,7 +79,7 @@ export async function transcribeLive(req, env, ledger, { tenant, look = false } 
       // Gateway payload logging is off for live dictation even on dev: audio and text stay in this socket.
       // The saved settings are read once here (a snapshot), so each chunk's call doesn't read them again.
       const { ChunkProvider } = await import('./transcribe-live-chunks.js'), { STT_NANO_PER_SEC } = await import('./transcribe.js');
-      const snap = await (settings || await import('./ee/index.js')).modelSettingsEnv(env), quiet = Object.assign(Object.create(snap), { AIG_LOG_PAYLOADS: '0' }), facts = snap.MODEL_SETTINGS?.catalog?.[primary.model];
+      const quiet = Object.assign(Object.create(snap), { AIG_LOG_PAYLOADS: '0' }), facts = snap.MODEL_SETTINGS?.catalog?.[primary.model];
       upstream = new ChunkProvider({ model: primary.model, env: quiet, meta: { tenant, kind: 'live-dictation' }, rate: Number(facts?.sec_nano) || STT_NANO_PER_SEC, liveCharge, tryMs: deps.chunkTryMs,
         stt: deps.stt, openFallback: fallbackRoute ? () => openDeepgram(fallbackRoute.model) : null });
     }

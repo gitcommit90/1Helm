@@ -48,11 +48,10 @@
 // día de la Navidad.") with a low avg_logprob (-0.86 to -1.06; real speech, even badly accented, ≥ -0.75), and an odd off-language
 // tail in babble ("你唔係。"). So segments under MIN_LOGPROB are dropped (this also drops Whisper's noise tails, "Am I right?" -1.02),
 // and so are short Han/Kana/Hangul segments in a transcript that isn't in those scripts. Files over ~50 min: it answers 400 → Whisper.
-import { aiOpts, orFetchPath } from "./model.js";
 import { cappedResponseJson } from "./bounded-response.js";
-import { enforceRequest } from "./privacy.js";
-import { jobModel, jobModels, modelFacts } from "./ee/index.js";
-import { authorizeCloudflare, cfOptions, abortable, isCloudflareModel, dynamicProvidersOn } from "./cloudflare-models.js";
+import { dispatch, stepsOf, jobModels, modelFacts } from "./ee/index.js";
+import { privacyOf } from "./privacy.js";
+import { isCloudflareModel } from "./cloudflare-models.js";
 import { STT_NANO_PER_SEC, MARKUP } from "./stt-pricing.js";
 export { STT_NANO_PER_SEC, MARKUP } from "./stt-pricing.js";
 
@@ -62,7 +61,6 @@ export { STT_NANO_PER_SEC, MARKUP } from "./stt-pricing.js";
 // checked by enforceRequest at "zdr", the strictest level, which every level allows (stricter is never a weaker route): the audio only
 // ever reaches zero-data-retention endpoints, whatever the account chose. A saved model that isn't registered gets
 // OpenRouter's strictest filter (zdr, data_collection deny). Workers AI (the last fallback) is Cloudflare's own inference, not OpenRouter.
-export const sttProvider = (model) => enforceRequest({ model, provider: { zdr: true, allow_fallbacks: true } }, "zdr", { modality: "transcription" }).provider;
 export const WAI_NANO_PER_MIN = 513000;           // Workers AI whisper-large-v3-turbo: $0.000513 per audio minute (model page and model list API; the pricing page rounds it to $0.0005; 46.63 neurons x $0.011 per 1,000 neurons = $0.000513; checked 2026-10-15)
 export const WAI_NANO_PER_NEURON = 11000;         // $0.011 per 1k neurons, if Whisper ever stops reporting the duration
 export const WAI_MAX_BYTES = 20 * 1024 * 1024;    // Workers AI's input (base64 in JSON) stays under its request limit
@@ -80,7 +78,7 @@ export async function sttRate(env, format) {
   for (const m of await sttModels(env)) { const f = facts[m]; if (!Array.isArray(f?.formats) || f.formats.includes(format)) rate = Math.max(rate, Number(f?.sec_nano) || 0); }
   return rate;
 }
-export const DICTATE_TRY_MS = 30e3;               // one attempt at most this long (a 5-minute clip takes ~2 s)
+// One dictation attempt is limited by the saved timeout of the speech jobs (limits.js, 30 seconds to start with; a 5-minute clip takes ~2 s).
 const HEARD_NOTHING = "Couldn't hear that, try again.";
 const TOO_LONG = "That recording is too long. Keep it under 5 minutes.";
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
@@ -188,57 +186,58 @@ const segsOf = (list, text) => keepSegs(spreadSegs(Array.isArray(list) && list.l
 // signal (abort every attempt), headers (extra AI Gateway headers) }.
 // A model whose saved "formats" fact doesn't list the audio's format is skipped without a request (AssemblyAI takes WAV only).
 // Throws when every step failed: err.nano = what timed-out attempts may cost, err.timeout = the last one timed out.
-export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, estSec = 0, prompt = "", models = null, signal = null, headers = {} } = {}) {
+export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, estSec = 0, prompt = "", models = null, model = null, job = "stt", signal = null, headers = {} } = {}) {
   const size = src.size ?? src.bytes?.byteLength ?? 0, open = src.open || (() => new Response(src.bytes).body);
   const errs = []; let lost = 0, timeout = false;
   let facts = {}; try { facts = await modelFacts(env); } catch {}
-  for (const model of models || await sttModels(env)) {
-    const f = facts[model], rate = Number(f?.sec_nano) || STT_NANO_PER_SEC;
-    if (Array.isArray(f?.formats) && !f.formats.includes(format)) { errs.push(`${model}: doesn't take ${format}`); continue; }
-    try {
-      if (isCloudflareModel(model)) {
-        await authorizeCloudflare(env, model, { ...meta, _privacy: "zdr" }, f);
-        if (size > WAI_MAX_BYTES) throw new Error("The audio exceeds Cloudflare's supported size.");
-        const audio = src.bytes || await readCapped(new Response(await open()), WAI_MAX_BYTES);
-        if (!audio) throw new Error("The audio exceeds Cloudflare's supported size.");
-        const sig = tryMs ? (signal ? AbortSignal.any([AbortSignal.timeout(tryMs), signal]) : AbortSignal.timeout(tryMs)) : signal;
-        sig?.throwIfAborted();
-        const out = await abortable(env.AI.run(model, { audio: b64(audio), task: "transcribe", vad_filter: true, ...(prompt ? { initial_prompt: prompt.slice(-400) } : {}) }, { ...cfOptions(env, meta), ...(sig ? { signal: sig } : {}) }), sig);
-        sig?.throwIfAborted();
-        const segs = segsOf(out?.segments, out?.text), dur = Number(out?.transcription_info?.duration) || estSec;
-        return { segs, text: segs.map(x => x.t).join(" "), dur, model, nano: lost + Math.ceil(dur * rate) };
+  const only = model || (models && models.length === 1 ? models[0] : null);   // run one entry of the job (a live dictation chunk)
+  const rateOf = (m) => Number(facts[m]?.sec_nano) || STT_NANO_PER_SEC;
+  // The plan lists the job's models in order, and dispatch runs one of them (model:), so the saved settings decide the model, the provider fields and
+  // the transport, and this loop keeps the cost of an attempt that timed out. A model that can't take this audio is passed over without a request.
+  const skip = (step) => {
+    const f = facts[step.model];
+    if (Array.isArray(f?.formats) && !f.formats.includes(format)) return `doesn't take ${format}`;
+    if (step.source === "CF" && size > WAI_MAX_BYTES) return "The audio exceeds Cloudflare's supported size.";
+    return null;
+  };
+  const request = { tryMs, headers,
+    openrouter: ({ model: m, provider }) => audioBody(`{"model":${JSON.stringify(m)},"provider":${JSON.stringify(provider)},"response_format":"verbose_json","input_audio":{"format":${JSON.stringify(format)},"data":"`, `"}}`, size, open).make,
+    cloudflare: async () => { const audio = src.bytes || await readCapped(new Response(await open()), WAI_MAX_BYTES); if (!audio) throw new Error("The audio exceeds Cloudflare's supported size.");
+      return { audio: b64(audio), task: "transcribe", vad_filter: true, ...(prompt ? { initial_prompt: prompt.slice(-400) } : {}) }; } };
+  const answer = async (jobId, one) => {
+    const { env: e, steps } = await stepsOf(env, jobId, { level: await privacyOf(env, meta.tenant) });
+    if (!steps.length) errs.push(`${jobId}: no model is allowed at this privacy level`);
+    for (const step of steps) {
+      if (one && step.model !== one) continue;
+      const why = skip(step); if (why) { errs.push(`${step.model}: ${why}`); continue; }
+      try { return { r: await dispatch(e, jobId, request, { meta, signal, model: step.model }), m: step.model }; }
+      catch (err) {
+        if (signal?.aborted) throw err;
+        timeout = err?.name === "TimeoutError" || err?.name === "AbortError";
+        if (timeout) lost += Math.ceil(estSec * rateOf(step.model));   // the provider may have done (and billed) the work
+        errs.push(`${step.model}: ${timeout ? "timed out" : String(err?.message || err).slice(0, 160)}`);
       }
-      const prefix = `{"model":${JSON.stringify(model)},"provider":${JSON.stringify(sttProvider(model))},"response_format":"verbose_json","input_audio":{"format":${JSON.stringify(format)},"data":"`;   // a model with no ZDR endpoint throws PrivacyBlocked here: next model
-      const { make } = audioBody(prefix, `"}}`, size, open);
-      const sig = tryMs ? (signal ? AbortSignal.any([AbortSignal.timeout(tryMs), signal]) : AbortSignal.timeout(tryMs)) : signal;
-      const r = await orFetchPath(env, "audio/transcriptions", make, meta, headers, sig);
-      const j = await cappedResponseJson(r, 8 << 20).catch(() => null);
-      if (r.ok && j && !j.error) {
-        const dur = Number(j.duration || j.usage?.seconds) || 0, segs = segsOf(j.segments, j.text);
-        timeout = false;
-        return { segs, text: segs.map((x) => x.t).join(" "), dur, model, nano: lost + (Math.ceil(Number(j.usage?.cost || 0) * 1e9) || Math.ceil((dur || estSec) * rate)) };
-      }
-      errs.push(`${model} ${r.status}: ${JSON.stringify(j?.error || j || {}).slice(0, 160)}`); timeout = false;
-    } catch (e) {
-      timeout = e?.name === "TimeoutError" || e?.name === "AbortError";
-      if (timeout) lost += Math.ceil(estSec * rate);   // the provider may have done (and billed) the work
-      errs.push(`${model}: ${timeout ? "timed out" : String(e?.message || e).slice(0, 160)}`);
     }
-  }
-  if (models || !env.AI || !src.bytes || src.bytes.byteLength > WAI_MAX_BYTES) throw Object.assign(new Error(`couldn't transcribe it (${errs.join("; ")})`), { nano: lost, timeout });
-  console.log("stt: openrouter failed, using workers ai", errs.join("; ").slice(0, 300));
-  let out; const waiModel = await jobModel(env, "stt_cloudflare");
-  try {
-    if (dynamicProvidersOn(env) && !isCloudflareModel(waiModel)) throw new Error("The Cloudflare speech job requires a native Cloudflare speech model.");
-    if (dynamicProvidersOn(env)) await authorizeCloudflare(env, waiModel, meta, facts[waiModel]);
-    const run = env.AI.run(waiModel, { audio: b64(src.bytes), task: "transcribe", vad_filter: true, ...(prompt ? { initial_prompt: prompt.slice(-400) } : {}) }, dynamicProvidersOn(env) ? cfOptions(env, meta) : aiOpts(env, meta));
-    let timer; out = await (tryMs ? Promise.race([run, new Promise((_, no) => { timer = setTimeout(() => no(Object.assign(new Error("timed out"), { name: "TimeoutError" })), tryMs); })]).finally(() => clearTimeout(timer)) : run);
-  } catch (e) {
-    const to = e?.name === "TimeoutError";
-    throw Object.assign(new Error(`couldn't transcribe it (${errs.join("; ")}; workers ai: ${String(e?.message || e).slice(0, 160)})`), { nano: lost + (to ? waiCost({}, src.bytes.byteLength) : 0), timeout: to });
-  }
-  const segs = segsOf(out?.segments, out?.text);
-  return { segs, text: segs.map((x) => x.t).join(" "), dur: Number(out?.transcription_info?.duration) || 0, model: waiModel, nano: lost + waiCost(out, src.bytes.byteLength) };
+    return {};
+  };
+  const done = async (res, m, jobId) => {
+    const j = await cappedResponseJson(res.clone(), 8 << 20), rate = rateOf(m);
+    if (isCloudflareModel(m)) {
+      const segs = segsOf(j?.segments, j?.text), dur = Number(j?.transcription_info?.duration) || estSec;
+      return { segs, text: segs.map(x => x.t).join(" "), dur, model: m, nano: lost + (jobId === "stt_cloudflare" ? waiCost(j, src.bytes?.byteLength || 0) : Math.ceil(dur * rate)) };
+    }
+    const dur = Number(j?.duration || j?.usage?.seconds) || 0, segs = segsOf(j?.segments, j?.text);
+    return { segs, text: segs.map((x) => x.t).join(" "), dur, model: m, nano: lost + (Math.ceil(Number(j?.usage?.cost || 0) * 1e9) || Math.ceil((dur || estSec) * rate)) };
+  };
+  const first = await answer(job, only);
+  if (first.r) return done(first.r, first.m, job);
+  if (job !== "stt" || only || models || !env.AI || !src.bytes || src.bytes.byteLength > WAI_MAX_BYTES) throw Object.assign(new Error(`couldn't transcribe it (${errs.join("; ")})`), { nano: lost, timeout });
+  // Every model of the job failed: the saved Workers AI job "stt_cloudflare" (a different provider, so dictation keeps working through an outage).
+  console.log("stt: the speech models failed, using the Cloudflare speech job", errs.join("; ").slice(0, 300));
+  const wai = await answer("stt_cloudflare", null);
+  if (wai.r) return done(wai.r, wai.m, "stt_cloudflare");
+  const to = timeout;
+  throw Object.assign(new Error(`couldn't transcribe it (${errs.join("; ")})`), { nano: lost + (to ? waiCost({}, src.bytes.byteLength) : 0), timeout: to });
 }
 
 // L: this workspace's Ledger stub (reserve/settle). meta: AI Gateway metadata ({ tenant, kind }).
@@ -258,7 +257,7 @@ export async function transcribe(req, env, L, meta = {}) {
   if (!r.ok) return r.reason === "day_limit" ? json({ error: "You've reached today's spending limit, so talking is paused until tomorrow.", reason: "day_limit" }, 429)
     : json({ error: "You're out of credits. Top up to keep talking to your helper.", reason: "out_of_credits" }, 402);
   let out;
-  try { out = await stt(env, { bytes: audio }, { format, meta, tryMs: DICTATE_TRY_MS, estSec: said > 0 ? said : Math.min(STT_MAX_SEC, audio.byteLength / 4000) }); }
+  try { out = await stt(env, { bytes: audio }, { format, meta, estSec: said > 0 ? said : Math.min(STT_MAX_SEC, audio.byteLength / 4000) }); }
   catch (e) { await L.settle(rid, Math.min(reserve, Math.ceil((e?.nano || 0) * MARKUP))); console.log("transcribe failed", meta.tenant, String(e?.message || e).slice(0, 200)); return json({ error: HEARD_NOTHING }, 502); }
   const charge = Math.min(reserve, Math.ceil(out.nano * MARKUP));
   await L.settle(rid, charge);   // no transcript: dictation isn't a conversation, nothing goes into the ledger's history

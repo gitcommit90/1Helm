@@ -42,19 +42,19 @@ export const ledgerGuard = {
   // the stored flag is ignored unless TEST_MODE is "1" when it's read.
   setCheckinTest(off) { if (!testModeOn(this.env)) return { error: "test mode only" }; this.guardKv(CHECKIN_TEST_KEY, off ? "off" : null); return { checkin_off: !!off }; },
   // Keep going on the day check-in: another 2× share before the next one.
-  dayCheckin() {
-    const g = this.guardInfo(), level = g.day_spent_nano + DAY_FACTOR * g.day_share_nano;
+  dayCheckin(factor = DAY_FACTOR) {
+    const g = this.guardInfo(), level = g.day_spent_nano + factor * g.day_share_nano;
     this.guardKv(`day_ok:${this.dayStart()}`, Math.max(level, g.day_ok_nano)); return { ...g, day_ok_nano: Math.max(level, g.day_ok_nano) };
   },
   // Crossed 50% / 80% since the last check: one notice (the highest level crossed), every lower level marked too.
-  usageNotice(helper = "Your helper") {
+  usageNotice(helper = "Your helper", levels = NOTICE_LEVELS) {
     if (!this.spendPreferences().enabled) return null;
     const g = this.guardInfo(); if (!g.allowance_nano) return null;
     const exact = g.period_spent_nano / g.allowance_nano * 100, per = g.period_start || "rolling";
-    const due = NOTICE_LEVELS.filter((l) => exact >= l && !this.guardKv(`notice:${per}:${l}`));
+    const due = levels.filter((l) => exact >= l && !this.guardKv(`notice:${per}:${l}`));
     if (!due.length) return null;
-    for (const l of NOTICE_LEVELS.filter((l) => exact >= l)) this.guardKv(`notice:${per}:${l}`, Date.now());
-    const level = Math.max(...due), text = noticeText(level, g.period_spent_nano, g.allowance_nano, helper);
+    for (const l of levels.filter((l) => exact >= l)) this.guardKv(`notice:${per}:${l}`, Date.now());
+    const level = Math.max(...due), text = noticeText(level, g.period_spent_nano, g.allowance_nano, helper, levels[1]);
     const n = { level, text, at: Date.now() };
     this.guardKv("notice_pending", JSON.stringify(n));
     return n;

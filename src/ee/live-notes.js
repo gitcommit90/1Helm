@@ -9,7 +9,7 @@
 //    before a deploy (another LIVE_V) is told to stop and started again a little later, the same way BeeSync handles a stale job.
 //  - Note-taker (§9.3): the DO alarm every 5 s; only if new text arrived (noteDueAt): the first pass ~12 s after the first words, then
 //    at most every 40 s (when ≥ 600 chars came in) and at least every 60 s, so a dense hour is ~75 passes. The chore model (route2.js
-//    choreRoute "notes": Claude Haiku 5.5, reasoning off, ZDR hosts; CHORE_MODEL_NOTES overrides) gets the current session's section + the new lines + a rolling summary and answers with PATCHES
+//    choreRoute "notes": Claude Haiku 5.5, reasoning off, ZDR hosts) gets the current session's section + the new lines + a rolling summary and answers with PATCHES
 //    {op: summary|add|update|remove}. Patches are applied to the doc as it is NOW (read back from the Library, versioned: a write
 //    that finds a newer version re-reads and re-applies), and only to the current session's section (anything else is rejected). A
 //    line the note-taker didn't write (the person's or the assistant's) is never changed or removed by it; a summary someone edited
@@ -44,8 +44,9 @@
 import { DurableObject } from "cloudflare:workers";
 import { tolerantEnv } from "../do-stub.js";
 import { openSecret } from "../sentinel.js";
-import { openRouterChat } from "../model.js";
-import { backgroundRole, backgroundPolicy, backgroundReserve } from "./background-policy.js";
+import { dispatch } from "./model-dispatch.js";
+import { plannedMaxOutput, plannedHoldNano } from "./job-limits.js";
+import { backgroundRole, backgroundReserve } from "./background-policy.js";
 import { jobRoute } from "./model-jobs.js";
 import { stPut, stDelete } from "../storage.js";
 import { safeName } from "../files.js";
@@ -91,9 +92,9 @@ export const MIC_GRACE_MS = 12e3, MIC_LOST_MS = 90e3, MIC_PROMPT_CHARS = 300;   
 export const JOB_NANO_PER_SEC = Math.ceil((1 * 0.0000025 + 0.25 * 0.000020 + 4 * 0.00000007) * 1e9 * 1.15);
 export const CHUNK_RESERVE = Math.ceil((CHUNK_MS + 60e3) / 1000 * JOB_NANO_PER_SEC);
 export const FINAL_ROUTE = jobRoute("notes_final");
-export function notesRequest(kind, messages) {
-  return { messages, max_tokens: backgroundPolicy(backgroundRole(`live-notes-${kind}`)).maxTokens, temperature: 0,
-    response_format: structuredFormat(`live_notes_${kind}`, kind === "note" ? NOTE_PATCH_SCHEMA : FINAL_NOTES_SCHEMA), provider: { require_parameters: true } };
+export function notesRequest(kind, messages, maxTokens = undefined) {
+  return { messages, ...(maxTokens ? { max_tokens: maxTokens } : {}), temperature: 0,
+    response_format: structuredFormat(`live_notes_${kind}`, kind === "note" ? NOTE_PATCH_SCHEMA : FINAL_NOTES_SCHEMA) };
 }
 export const lnName = (tenant, channel, task) => `ln:${tenant}:${channel}:${task}`;
 export const transcriptKey = (tid, channel, task, n) => `t/${tid}/bee/live/${channel}/${task}/s${n}.json`;
@@ -615,14 +616,14 @@ export class LiveNotes extends DurableObject {
   }
   // A model call, reserved first. → {text, nano, tokens} | {refused: reason} | throws.
   async model(kind, messages, maxTokens) {
-    const route = jobRoute(backgroundRole(`live-notes-${kind}`));
-    const r = await openRouterChat(this.env, notesRequest(kind, messages), null, route, { tenant: this.tid(), channel: this.get("channel"), kind: `live-notes-${kind}` });
+    const job = backgroundRole(`live-notes-${kind}`);
+    const r = await dispatch(this.env, job, notesRequest(kind, messages, await plannedMaxOutput(this.env, job).catch(() => null)), { meta: { tenant: this.tid(), channel: this.get("channel"), kind: `live-notes-${kind}` } });
     const j = await r.json();
     return { response: j, text: String(j?.choices?.[0]?.message?.content ?? ""), finish: j?.choices?.[0]?.finish_reason || null, nano: Math.ceil(Math.ceil(Number(j?.usage?.cost || 0) * 1e9) * MARKUP), tokens: Number(j?.usage?.prompt_tokens || 0) + Number(j?.usage?.completion_tokens || 0) };
   }
   async paid(kind, reserve, n, messages, maxTokens) {
-    const request = notesRequest(kind, messages);
-    reserve = backgroundReserve(request); maxTokens = request.max_tokens;
+    const request = notesRequest(kind, messages, await plannedMaxOutput(this.env, backgroundRole(`live-notes-${kind}`)).catch(() => null));
+    reserve = backgroundReserve(request, 1, await plannedHoldNano(this.env, backgroundRole(`live-notes-${kind}`)).catch(() => 0)); maxTokens = request.max_tokens;
     const rid = `ln-${kind}:${crypto.randomUUID()}`, L = this.ledger(); let held = null;
     try { held = await L.reserve(rid, reserve); } catch { held = { ok: false }; }
     if (!held?.ok) return { refused: held?.reason === "day_limit" ? "day" : "credits" };
@@ -846,7 +847,7 @@ export class LiveNotes extends DurableObject {
     const p0 = parseSection(cur), human = humanLines(p0, this.oursOf(n));
     let text = all.map((u) => tline({ at: u.at, speaker: u.sp, text: u.tx }, s.started_at)).join("\n"); if (text.length > FINAL_TRANSCRIPT_CHARS) text = text.slice(-FINAL_TRANSCRIPT_CHARS);
     const msgs = [{ role: "system", content: FINAL_SYSTEM }, { role: "user", content: `Meeting: ${this.get("title") || "Meeting"}, ${dayLine(s.started_at, tz)}, ${hm(s.started_at, tz)}–${hm(s.ended_at, tz)}.\n\nLive notes taken during it:\n${cur}\n\nLines a person added (keep them exactly):\n${human.map((h) => h.line).join("\n") || "(none)"}\n\nFull transcript (Bee's cleaned-up final version):\n${text}` }];
-    let r; try { r = await this.paid("refine", FINAL_RESERVE, n, msgs, backgroundPolicy("notes_refine").maxTokens); } catch (e) { this.setS(n, { refine: { state: "waiting", at: now(), tries: (s.refine?.tries || 0) + 1 } }); throw e; }
+    let r; try { r = await this.paid("refine", FINAL_RESERVE, n, msgs, null); } catch (e) { this.setS(n, { refine: { state: "waiting", at: now(), tries: (s.refine?.tries || 0) + 1 } }); throw e; }
     if (r.refused) { this.setS(n, { refine: { state: "skipped", at: now(), why: reasonText(r.refused) } }); return; }
     const draft = keepHuman(finalNotesSection(r.data, p0.heading), human), diff = sectionDiff(p0, draft);
     const md = renderSection({ ...draft, footer: null });

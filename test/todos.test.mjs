@@ -20,7 +20,7 @@ function resident() {
   R.systemPrompt = async () => "SYSTEM";
   R.script = []; R.calls = [];
   // Each model call: record what the model saw, run the step's side effect (e.g. the person ticks mid-turn), return its output.
-  R.callModel = async (messages, _w, _onText, _max, noTools) => {
+  R.callModel = async (messages, _w, _onText, noTools) => {
     R.calls.push(structuredClone(messages));
     if (noTools) return { content: "- notes", calls: [], inTok: 10, cached: 0, outTok: 3, charge: 0, finish: "stop" };   // hand-off notes
     const step = R.script.shift() || { reply: "Done." };

@@ -18,10 +18,13 @@
 // setWorkflowStatus, createEventWorkflow() from schedule_workflow, and eventsMix(Resident, deps) after the class.
 import { createTrigger, setTriggerEnabled, deleteTrigger, saveMapping, SELF_NO_EVENTS, TEST_TRIGGER, eventsReady, EVENTS_OFF } from "./composio-triggers.js";
 import { appsMode } from "./composio-self.js";
+import { limitsFor } from "./limits-read.js";
+import { DEFAULT_RUNTIME_LIMITS } from "./limits.js";
 import { personWords, quoteProblem } from "../person-asked.js";
 import { notifyEventsSkipped } from "../notify.js";   // one push when events are skipped for the hourly limit
 
-export const EVENT_RUNS_PER_HOUR = 10, EVENT_QUEUE_MAX = 3, EVENT_MAX_STEPS = 16, EVENT_LOG_KEEP = 200, EVENT_LEASE_MS = 14 * 60e3;
+// The three event limits are the saved limits (limits.js, edited on the Models page); these are their starting values.
+export const EVENT_RUNS_PER_HOUR = DEFAULT_RUNTIME_LIMITS.events.runsPerHour, EVENT_QUEUE_MAX = DEFAULT_RUNTIME_LIMITS.events.queueMax, EVENT_MAX_STEPS = DEFAULT_RUNTIME_LIMITS.events.steps, EVENT_LOG_KEEP = 200, EVENT_LEASE_MS = 14 * 60e3;
 export const EVENT_FAIL_PAUSE = 6, EVENT_TRIES = 2;
 let D = {};   // deps from resident.js: accessOf, localTime, untrusted, cardsToText
 
@@ -55,7 +58,7 @@ export const eventMethods = {
       const now = Date.now(), last = this.sql.exec("SELECT at FROM event_notice WHERE workflow_id=?", w.id).toArray()[0];
       if (last && now - Number(last.at) < 3600e3) return false;
       this.sql.exec("INSERT INTO event_notice (workflow_id, at) VALUES (?,?) ON CONFLICT(workflow_id) DO UPDATE SET at=excluded.at", w.id, now);
-      await notifyEventsSkipped(this, w, EVENT_RUNS_PER_HOUR);
+      await notifyEventsSkipped(this, w, (await limitsFor(this.env)).events.runsPerHour);
       return true;
     } catch (e) { console.log("event skip notice", e?.message); return false; }
   },
@@ -94,7 +97,7 @@ export const eventMethods = {
       return `error: couldn't save where its events go (${String(e.message || e).slice(0, 120)}). Nothing was set up.`;
     }
     this.evLog(id, "set up", `${t.label}${t.account_label ? ` · ${t.account_label}` : ""}`);
-    return `Workflow #${id} set up: it runs whenever ${t.label} happens${t.account_label ? ` in ${t.account_label}` : ""} (${t.how}), each event once, at most ${EVENT_RUNS_PER_HOUR} runs an hour. It only does what its instructions say${ev.tell ? ", and it may text the person when its instructions say to" : ", and it never messages the person (it wasn't set up to tell them)"}. It's in their Scheduled list under "When something happens", where they can pause or stop it.`;
+    return `Workflow #${id} set up: it runs whenever ${t.label} happens${t.account_label ? ` in ${t.account_label}` : ""} (${t.how}), each event once, at most ${(await limitsFor(this.env)).events.runsPerHour} runs an hour. It only does what its instructions say${ev.tell ? ", and it may text the person when its instructions say to" : ", and it never messages the person (it wasn't set up to tell them)"}. It's in their Scheduled list under "When something happens", where they can pause or stop it.`;
   },
 
   // From the webhook (composio-triggers.js): one signed event for this channel's workflow #workflow_id. → { queued } | { dropped } | { gone }.
@@ -107,10 +110,11 @@ export const eventMethods = {
     // the queue insert, a provider retry must not add the same event twice.
     if (e.event_id && (this.sql.exec("SELECT 1 x FROM event_log WHERE workflow_id=? AND event_id=? LIMIT 1", w.id, e.event_id).toArray().length ||
       this.sql.exec("SELECT 1 x FROM app_events WHERE workflow_id=? AND event_id=? LIMIT 1", w.id, e.event_id).toArray().length)) return { dropped: "duplicate" };
+    const EV = (await limitsFor(this.env)).events;   // saved limits (limits.js)
     const now = Date.now(), hour = this.sql.exec("SELECT COUNT(*) n FROM event_log WHERE workflow_id=? AND verdict='queued' AND at>?", w.id, now - 3600e3).one().n;
-    if (hour >= EVENT_RUNS_PER_HOUR) { this.evLog(w.id, "dropped", `rate limit: already ${EVENT_RUNS_PER_HOUR} events this hour`, e.event_id); await this.evSkipNotice(w); return { dropped: "rate limit" }; }
+    if (hour >= EV.runsPerHour) { this.evLog(w.id, "dropped", `rate limit: already ${EV.runsPerHour} events this hour`, e.event_id); await this.evSkipNotice(w); return { dropped: "rate limit" }; }
     const waiting = this.sql.exec("SELECT COUNT(*) n FROM app_events WHERE workflow_id=? AND started IS NULL", w.id).one().n;
-    if (waiting >= EVENT_QUEUE_MAX) { this.evLog(w.id, "dropped", `rate limit: ${EVENT_QUEUE_MAX} events already waiting`, e.event_id); await this.evSkipNotice(w); return { dropped: "rate limit" }; }
+    if (waiting >= EV.queueMax) { this.evLog(w.id, "dropped", `rate limit: ${EV.queueMax} events already waiting`, e.event_id); await this.evSkipNotice(w); return { dropped: "rate limit" }; }
     this.sql.exec("INSERT INTO app_events (at,workflow_id,event_id,slug,body) VALUES (?,?,?,?,?)", now, w.id, e.event_id || null, String(e.slug || ev.slug || ""), String(e.body ?? "{}"));
     this.evLog(w.id, "queued", "", e.event_id);
     await this.arm();
@@ -137,6 +141,7 @@ export const eventMethods = {
 
   async runEventWorkflow(w, e) {
     const t0 = Date.now(), ev = evOf(w) || {};
+    const EV = (await limitsFor(this.env)).events;   // saved limits (limits.js)
     this.sql.exec("UPDATE workflows SET lease_until=?, updated=? WHERE id=?", t0 + EVENT_LEASE_MS, t0, w.id);
     const tenant = await this.env.DB.prepare("SELECT status, past_due_since FROM tenants WHERE id=?").bind(this.get("tenant")).first().catch(() => null);
     const access = D.accessOf(tenant);
@@ -150,7 +155,7 @@ export const eventMethods = {
       const eventNote = `\n\n${D.untrusted(`the ${ev.app_name || ev.app || "app"} event that started this run (${e.slug || ev.slug})`, e.body)}`;
       // evRun: what the bookkeeping after the run needs (resume.js runs eventFinish with it when a deploy cut the run off)
       const evRun = { wid: w.id, row: e.id ?? null, event_id: e.event_id ?? null, t0 };
-      try { r = await this.runTurn(this.get("tenant"), this.get("channel"), this.get("channel_id"), text, null, { kind: "workflow", workflow_id: w.id, max_steps: EVENT_MAX_STEPS, session: w.session || null, eventNote, evRun }); }
+      try { r = await this.runTurn(this.get("tenant"), this.get("channel"), this.get("channel_id"), text, null, { kind: "workflow", workflow_id: w.id, max_steps: EV.steps, session: w.session || null, eventNote, evRun }); }
       catch (x) { r = null; err = String(x.message || x).slice(0, 300); }
       return this.eventFinish(evRun, r, err);
     }

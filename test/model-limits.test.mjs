@@ -71,7 +71,7 @@ try{
  await scenario('managed two-route stream aborts before first frame without fallback',{
   setup(W){W.env.ROUTER_MODE='two';},
   fetch:(_body,signal)=>new Response(new ReadableStream({start(c){signal.addEventListener('abort',()=>c.error(signal.reason),{once:true});}})),
-  async run({run,requests}){const r=await run;assert.equal(r.error,'model_timeout');assert.equal(requests.length,1,'timeout does not move to another model');assert.equal(requests[0].body.max_tokens,50000);assert(requests[0].signal.aborted);return r;}
+  async run({run,requests}){const r=await run;assert.equal(r.error,'model_timeout');assert.equal(requests.length,1,'timeout does not move to another model');assert.equal(requests[0].body.max_tokens,undefined,'an empty saved max output sends no max_tokens');assert(requests[0].signal.aborted);return r;}
  });
  await scenario('completed external effect is not replayed after model timeout',{
   fetch:(_b,_s,n)=>n===1?toolAnswer():new Promise(()=>{}),

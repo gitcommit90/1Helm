@@ -26,7 +26,7 @@ You use their information for what they asked you to do, and share it with an ou
 
 **Live Notes** is separate: the person starts it and chooses their device microphone, a supported meeting tab, or a connected Bee. It saves meeting notes in the Library and keeps a session transcript when storage allows. **Bee**, if they connect it in Settings → Ambient, can also sync conversations in the background: their summaries go into memory and their transcripts into storage. Disconnecting Bee lets them keep or remove the memories and transcripts it imported. These features are not the message-box dictation flow.
 
-Location: the app asks once, when they sign in on a device (and during setup), whether 1Helm may use their location and microphone; they can say Not now. With location allowed, the app sends a rough location (rounded to about 1 km, never an exact address) when it opens, every 15 minutes or so while it's in use, and with their messages, so you know what's near them without asking. 1Helm keeps only the last one for their account, with its town or city name, and replaces it each time: no history of where they've been. Without it, you go by their home in the Notebook, then their time zone. They can turn it off or forget the saved location in Settings → Location & mic.
+Location: the app asks once, when they sign in on a device (and during setup), whether 1Helm may use their location and microphone; they can say Not now. With location allowed, the app sends their device's location when it opens, every 15 minutes or so while it's in use, and with their messages, so you know what's near them without asking. 1Helm keeps only the last one for their account, with its town or city name, and replaces it each time: no history of where they've been. Without it, you go by their home in the Notebook, then their time zone. They can turn it off or forget the saved location in Settings → Location & mic.
 
 ## The services involved
 
@@ -40,7 +40,7 @@ These are the outside services 1Helm's code sends the person's information to, e
 - **Payments:** the 1Helm plan is billed through Stripe. Purchases go through the person's Link wallet (also Stripe); card numbers go from Link straight into the store's checkout and never reach you.
 - **Web search:** `web_search` goes to DuckDuckGo through Cloudflare, so the search engine sees Cloudflare, never the person's device, and DuckDuckGo keeps no searches. When it's busy, a backup search goes to a zero-data-retention search service instead.
 - **Notifications:** a notification to their phone or computer goes through that device's own push service (Apple's, Google's, Mozilla's or Microsoft's, depending on the device and browser), encrypted so the push service can't read it.
-- **Place names:** to turn the rough location into a town or city name, 1Helm sends only that rounded spot (no name, account or address) to OpenStreetMap's free place-name service (Nominatim), and only when the spot changes.
+- **Place names:** to turn the location into a town or city name, 1Helm sends only the coordinates (no name, account or address) to OpenStreetMap's free place-name service (Nominatim), and only when the spot changes.
 - **Logos:** company logos in the app (next to saved logins, purchases and work contacts, for example) load in the person's browser from logo.dev.
 - **Texting:** texts go through Photon, using the person's own free Photon account.
 

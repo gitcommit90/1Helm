@@ -2,8 +2,8 @@
 // (hs-flag.js hsUse), so with the flag off the prompt, the tools and the turn stay exactly as they were. Three parts.
 //   1. The profile: the General "profile" or the project channel "brief" mental model, read for the standing context and kept in the Resident's
 //      storage keyed by its last_refreshed_at, so the cached prompt prefix changes only when the model refreshes (6.1).
-//   2. The comparison arms (6.2): A tool only, B automatic recall, B2 observations only (the default), chosen per channel by a dev only test setting, plus a
-//      shadow mode that records what B would have added without changing the answer. Memory added to a turn goes into the turn context
+//   2. The comparison arms (6.2): A tool only, B automatic recall, B2 observations only (the default), chosen per channel by a dev only test setting.
+//      Memory added to a turn goes into the turn context
 //      inside <injected-memory> tags (memory-block.js) and is taken out again before the turn is retained.
 //   3. The recall tool's new arguments (types, from, to) and the exact list for a date range (6.3).
 // The pure functions take their network calls as arguments, so the tests run them with fakes. The Resident methods are at the bottom.
@@ -52,13 +52,10 @@ export const ARMS = ["A", "B", "B2"];
 export const ARM_DEADLINE_MS = 1500;     // the Captain's limit: at most this much added to a turn at p95. An arm that is not ready by then is left out of the turn.
 // HS_USE_DEADLINE_MS (dev tuning) replaces it, between 100 and 5000.
 export const armDeadline = (env) => { const n = Number(env?.HS_USE_DEADLINE_MS); return Number.isFinite(n) && n >= 100 && n <= 5000 ? n : ARM_DEADLINE_MS; };
-export const SHADOW_DEADLINE_MS = 6000;  // an arm that only records what it would have added may take longer, because no answer waits for it
 // B2 is the default arm of every channel while HS_USE is on (Captain decision, 2026-10-14). The dev only test setting (Resident kv "mem_arm", written by
 // POST /_ops/mem-arm) overrides it per channel, so a test can still run A or B. With the flag off nothing runs, which is arm A.
 export const DEFAULT_ARM = "B2";
 export const armOf = (env, stored) => (!hsUse(env) ? "A" : env?.ENV_NAME === "dev" && ARMS.includes(stored) ? stored : DEFAULT_ARM);
-// Shadow mode (dev only): records what arm B would have added next to the active arm. Per channel setting "1" / "0", otherwise HS_USE_SHADOW (dev: "on").
-export const shadowOf = (env, stored) => hsUse(env) && env?.ENV_NAME === "dev" && (stored === "1" || (stored !== "0" && String(env?.HS_USE_SHADOW || "").toLowerCase() === "on"));
 
 // ---- arm B: automatic recall ----
 // The latest message alone, as the person wrote it.
@@ -83,39 +80,6 @@ export async function runArmB({ arm = "B", recall, text, now = Date.now(), tz, d
     const lines = packInjected(r.results, { tz }), ids = (r.results || []).map((x) => x.id);
     return { arm, block: lines ? wrapMemory(`${B_HEADER}\n${lines}`) : "", ms: Date.now() - t0, n: ids.length, ids, chars: lines.length, hs_ms: r.ms ?? null };
   } catch (e) { return { arm, block: "", ms: Date.now() - t0, n: 0, ids: [], chars: 0, error: one(e?.message || e, 120), timedOut: /timeout|abort/i.test(`${e?.name} ${e?.message}`) }; }
-}
-
-// ---- the shadow rows (D1 memory_shadow, dev only; migration 062 also creates the table) ----
-export const SHADOW_TABLE = "CREATE TABLE IF NOT EXISTS memory_shadow (id TEXT PRIMARY KEY, at INTEGER NOT NULL, tenant_id TEXT, channel TEXT, session TEXT, turn TEXT, active TEXT, preview TEXT, b TEXT, c TEXT, b_ms INTEGER, c_ms INTEGER, c_nano INTEGER)";
-export const SHADOW_KEEP_MS = 7 * 864e5, SHADOW_TEXT = 1500;
-const tableReady = new WeakMap();   // per database binding: the CREATE runs once per isolate
-const shadowTable = (env) => { let p = tableReady.get(env.DB); if (!p) { p = env.DB.prepare(SHADOW_TABLE).run().catch((e) => { tableReady.delete(env.DB); throw e; }); tableReady.set(env.DB, p); } return p; };
-const clipText = (block) => scrubSecrets(String(block || "")).slice(0, SHADOW_TEXT);
-// What goes in a row for one arm: its numbers and a clipped, scrubbed copy of what it would have added.
-export const armRow = (r) => (r ? { ...Object.fromEntries(Object.entries(r).filter(([k]) => k !== "block")), text: clipText(r.block) } : null);
-export async function recordShadow(env, { tenant, channel, session, turn, active, preview, b, now = Date.now() }) {
-  await shadowTable(env);
-  const bb = armRow(b);
-  await env.DB.prepare("INSERT OR REPLACE INTO memory_shadow (id, at, tenant_id, channel, session, turn, active, preview, b, c, b_ms, c_ms, c_nano) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
-    .bind(`${turn || crypto.randomUUID()}`, now, tenant || null, channel || null, session || null, turn || null, active || "A", scrubSecrets(one(preview, 160)), bb ? JSON.stringify(bb) : null, null, b?.ms ?? null, null, 0).run();   // the c columns belonged to the removed arm C and stay empty
-}
-export async function pruneMemShadow(env, now = Date.now()) {
-  if (env?.ENV_NAME !== "dev" || !env?.DB) return 0;
-  await shadowTable(env); const r = await env.DB.prepare("DELETE FROM memory_shadow WHERE at < ?").bind(now - SHADOW_KEEP_MS).run(); return Number(r?.meta?.changes || 0);
-}
-const jp = (s) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
-const pct = (xs, p) => { const a = xs.filter((x) => Number.isFinite(x)).sort((x, y) => x - y); return a.length ? a[Math.min(a.length - 1, Math.floor(p * a.length))] : null; };
-// GET /_ops/memory-shadow?slug=&channel=&n=&window=24h: the rows (newest first) and a summary of the arm's time and hits.
-export async function shadowData(env, { slug, channel, n = 50, windowMs = 864e5, now = Date.now() } = {}) {
-  await shadowTable(env);
-  const w = ["s.at >= ?"], a = [now - windowMs];
-  if (slug) { w.push("t.slug = ?"); a.push(slug); } if (channel) { w.push("s.channel = ?"); a.push(channel); }
-  const rows = ((await env.DB.prepare(`SELECT s.*, t.slug AS slug FROM memory_shadow s LEFT JOIN tenants t ON t.id = s.tenant_id WHERE ${w.join(" AND ")} ORDER BY s.at DESC LIMIT ?`).bind(...a, Math.min(200, Math.max(1, n))).all()).results || [])
-    .map((r) => ({ id: r.id, at: r.at, slug: r.slug || null, channel: r.channel, session: r.session, turn: r.turn, active: r.active, preview: r.preview, b: jp(r.b) }));
-  const bs = rows.map((r) => r.b).filter(Boolean);
-  const arm = (xs) => ({ n: xs.length, errors: xs.filter((x) => x.error).length, timed_out: xs.filter((x) => x.timedOut).length, empty: xs.filter((x) => !x.error && !x.chars).length,
-    ms_p50: pct(xs.map((x) => x.ms), 0.5), ms_p95: pct(xs.map((x) => x.ms), 0.95), within_deadline: xs.filter((x) => !x.error && x.ms <= ARM_DEADLINE_MS).length, chars_mean: xs.length ? Math.round(xs.reduce((s, x) => s + (x.chars || 0), 0) / xs.length) : 0 });
-  return { now, window_ms: windowMs, deadline_ms: ARM_DEADLINE_MS, rows, summary: { B: arm(bs) } };
 }
 
 // ================= 3. the recall tool (DESIGN 6.3) =================
@@ -196,50 +160,44 @@ export const useMethods = {
     catch (e) { console.log("memory profile", e?.message); return ""; }
   },
   // ---- 2. the arms ----
-  memArmState() { const stored = this.get("mem_arm") || "", sh = this.get("mem_shadow") || ""; return { arm: stored || "default", shadow: sh || "default", effective: armOf(this.env, stored), shadow_effective: shadowOf(this.env, sh) }; },
-  // Called early in a chat turn. null = nothing to do (flag off, not dev, a resume, memory off, arm A and no shadow). Arm B2 is the default). Otherwise the arms start now and the
+  memArmState() { const stored = this.get("mem_arm") || ""; return { arm: stored || "default", effective: armOf(this.env, stored) }; },
+  // Called early in a chat turn. null = nothing to do (flag off, a resume, memory off, arm A). Arm B2 is the default). Otherwise the arms start now and the
   // turn joins the active one later (memUseJoin), so their time overlaps the rest of the turn's setup.
   memUseStart(text, tc, { kind = "chat", resumed = false } = {}) {
     const env = this.env;
     if (!hsUse(env) || !hsOn(env) || kind !== "chat" || resumed || this.memoryMode() !== "on" || env.BYOK) return null;
-    const arm = armOf(env, this.get("mem_arm")), shadow = shadowOf(env, this.get("mem_shadow"));
-    if (arm === "A" && !shadow) return null;
-    const meta = { tenant: this.get("tenant"), channel: this.get("channel") }, bank = this.hsBankId(), tz = this.tz(), now = Date.now();
+    const arm = armOf(env, this.get("mem_arm"));
+    if (arm === "A") return null;
+    const bank = this.hsBankId(), tz = this.tz(), now = Date.now();
     const dl = armDeadline(env);
     const askB = (o) => runArmB({ recall: (q, x) => hsRecall(env, bank, q, x), text, now, tz, ...o });
-    // The active arm B2 asks for observations only. The shadow's B is the full arm B (three types), so it is a second call when B2 is active.
+    // Arm B2 asks for observations only. Arm B (the dev test override) asks for all three types.
     const A2 = arm === "B2" ? askB({ arm: "B2", types: ["observation"], deadlineMs: dl }) : null;
-    const B = arm === "B" ? askB({ deadlineMs: dl }) : shadow ? askB({ deadlineMs: SHADOW_DEADLINE_MS }) : null;
-    return { arm, shadow, t0: now, deadline: dl, A2, B, text, meta };
+    const B = arm === "B" ? askB({ deadlineMs: dl }) : null;
+    return { arm, t0: now, deadline: dl, A2, B, text };
   },
-  // Wait for the active arm (it never rejects and ends by its own deadline), and record the shadow row in the background.
+  // Wait for the active arm (it never rejects and ends by its own deadline).
   // → { block, info } where block is "" or the wrapped memory for the turn context, and info is the trace line.
   async memUseJoin(h, tc) {
     if (!h) return { block: "", info: null };
-    // The turn never waits past the deadline counted from the start of the arm: a model read or a slow call that runs on is cut off here (its result still goes in the shadow row).
-    const w0 = Date.now(), p = h.arm === "B2" ? h.A2 : h.arm === "B" ? h.B : null;
-    const cur = p ? await within(p, Math.max(0, h.deadline - (w0 - h.t0)), () => ({ arm: h.arm, block: "", ms: h.deadline, chars: 0, n: 0, error: "deadline", timedOut: true })) : null, waited = Date.now() - w0;
-    if (h.shadow || h.arm === "B") this.ctx.waitUntil?.(this.memUseRecord(h, tc).catch((e) => console.log("memory shadow", e?.message)));
-    const info = cur ? { arm: h.arm, waited_ms: waited, ms: cur.ms, chars: cur.chars, ...(cur.error ? { error: cur.error } : {}), ...(cur.n != null ? { n: cur.n } : {}), } : { arm: h.arm, shadow: true, waited_ms: waited };
+    // The turn never waits past the deadline counted from the start of the arm: a model read or a slow call that runs on is cut off here.
+    const w0 = Date.now(), p = h.arm === "B2" ? h.A2 : h.B;
+    const cur = await within(p, Math.max(0, h.deadline - (w0 - h.t0)), () => ({ arm: h.arm, block: "", ms: h.deadline, chars: 0, n: 0, error: "deadline", timedOut: true })), waited = Date.now() - w0;
+    const info = { arm: h.arm, waited_ms: waited, ms: cur.ms, chars: cur.chars, ...(cur.error ? { error: cur.error } : {}), ...(cur.n != null ? { n: cur.n } : {}) };
     // A receipt for the active arm, like recall_memory writes: the arm is what answers most turns now, so without this a turn that used memory left no receipt and no recall mode.
-    if (cur && h.arm !== "A") try {
+    if (h.arm !== "A") try {
       const ids = cur.ids || [];
       this.mem.receipt({ turn: tc?.turn, session: tc?.session, mode: cur.error ? `${this.memoryMode()}:hindsight-unavailable` : `${this.memoryMode()}:hindsight`, query: h.text, ids: ids.map((x) => `hs:${x}`), ms: cur.ms, chars: cur.chars, ...(cur.error ? { error: cur.error } : {}) });
     } catch (e) { console.log("memory arm receipt", e?.message); }
     // No local memory stands in when Hindsight fails (an error, not a missed deadline), so the turn is told.
-    const down = cur && cur.error && !cur.timedOut && !cur.block;
-    return { block: cur?.block || (down ? wrapMemory(MEMORY_UNAVAILABLE_NOTE) : ""), info: down ? { ...info, unavailable: true } : info };
+    const down = cur.error && !cur.timedOut && !cur.block;
+    return { block: cur.block || (down ? wrapMemory(MEMORY_UNAVAILABLE_NOTE) : ""), info: down ? { ...info, unavailable: true } : info };
   },
-  async memUseRecord(h, tc) {
-    const b = await h.B;
-    await recordShadow(this.env, { tenant: h.meta.tenant, channel: h.meta.channel, session: tc?.session, turn: tc?.turn, active: h.arm, preview: h.text, b });
-  },
-  // POST /_ops/mem-arm (dev, ops key): set the arm and shadow for this channel, and optionally refresh its mental models; always answers the state.
+  // POST /_ops/mem-arm (dev, ops key): set the arm for this channel, and optionally refresh its mental models; always answers the state.
   async memArmAdmin(o = {}) {
     const env = this.env;
     if (!hsUse(env) || env.ENV_NAME !== "dev") return { error: "HS_USE is off, or this is not dev" };
     if (o.arm != null && o.arm !== "") { if (![...ARMS, "default"].includes(o.arm)) return { error: "arm must be A, B, B2 or default" }; this.put("mem_arm", o.arm === "default" ? "" : o.arm); }
-    if (o.shadow != null && o.shadow !== "") { if (!["0", "1", "default"].includes(String(o.shadow))) return { error: "shadow must be 0, 1 or default" }; this.put("mem_shadow", o.shadow === "default" ? "" : String(o.shadow)); }
     const bank = this.hsBankId(); let models = [], refreshed = [], error = null;
     try {
       if (o.refresh) {

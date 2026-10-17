@@ -26,7 +26,7 @@ import { replyRef, replyIn, withReply } from "./reply-to.js";   // Reply on a ch
 import { workingSet, bringBack, sameAsShown, BRING_BACK_TOOL } from "./workmem.js";
 import { linkCreatePurchase, linkGetPurchase } from "./ee/index.js";
 import { normSite, hostMatchesSite, loginForHost, loginSites } from "./logins.js";
-import { useOpenRouter, openRouterChat, jevNote, OR_MAX_OUT, OR_RESERVE_PRICE, aiOpts, prefixPrint, runPrint, CACHE_WRITE_MULT } from "./model.js";
+import { useOpenRouter, jevNote, OR_RESERVE_PRICE, prefixPrint, runPrint, CACHE_WRITE_MULT } from "./model.js";
 import { S, structuredFormat, parseStructuredResponse } from "./structured-output.js";
 export const HANDOFF_SCHEMA = S.object({ completed: S.array(S.string), changed_files: S.array(S.string), working_commands: S.array(S.string), decisions: S.array(S.string), key_facts: S.array(S.string), unfinished: S.array(S.string) });
 export const HANDOFF_PROMPT = "(Turn finished; the person has your reply. Don't call tools. Write hand-off notes for your future self, since the raw work log above will be dropped from context. Return JSON: completed (work completed), changed_files (paths), working_commands (commands/scripts that worked), decisions (decisions and why), key_facts (exact key facts/numbers), unfinished (open work). Each field is an array of strings; use empty arrays when absent. Under 200 words total.)";
@@ -34,7 +34,7 @@ export const renderHandoff = data => Object.keys(HANDOFF_SCHEMA.properties).flat
 export async function generateHandoff(res, messages, tc, onFin = () => {}) {
   const ask = { role: "user", content: HANDOFF_PROMPT };
   for (let attempt = 0; attempt < 2; attempt++) {
-    const fin = await res.callModelOnce([...messages, ask], () => {}, null, 600, true, tc);
+    const fin = await res.callModelOnce([...messages, ask], () => {}, null, true, tc);
     await onFin(fin); // each attempt's paid usage belongs to the turn even if its output is rejected
     try {
       const data = parseStructuredResponse({ choices: [{ finish_reason: fin.finish, message: { content: fin.content, tool_calls: fin.calls, refusal: fin.refusal } }] }, HANDOFF_SCHEMA);
@@ -42,7 +42,7 @@ export async function generateHandoff(res, messages, tc, onFin = () => {}) {
     } catch (e) { if (attempt === 1) throw e; }
   }
 }
-import { modelDeadline, meaningfulDelta, modelFault, modelFailureReply, rememberModelFailure, claimOutputRecovery, retainModelUsage, drainModelUsage } from "./model-limits.js";
+import { modelDeadline, MODEL_LIMITS, meaningfulDelta, modelFault, modelFailureReply, rememberModelFailure, claimOutputRecovery, retainModelUsage, drainModelUsage } from "./model-limits.js";
 import { splitProgress, answerText, mustShow } from "./progress-dedupe.js";
 import { deliverText, deliverCard, deliverReaction, textTyping, fetchTextedFile, appLink, textingLine } from "./ee/index.js";
 import { PAY_MSG, INACTIVE_MSG, PAUSED_TEXT } from "./ee/index.js";   // billing: what a read-only account is told
@@ -62,13 +62,10 @@ import { turnCalls, recordLines, RECORD_HEAD, REC_TURNS, usedApps, usedAppsNote 
 import { runBrowserTask } from "./ee/index.js";
 import { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput } from "./ee/index.js";
 import { CONNECT_TOOLS, CONNECT_LINES, connectOfferInit, connectTool, offersView, offerAct, offerGet, offerConnected, composioSigninOffer, connectWriteBlock, appCatalog, catalogFile } from "./ee/index.js";
-import { helpersInit, HELPER_TOOLS, HELPER_PROMPT, HELPER_MAX_STEPS, HELPER_MAX_CHARGE, HELPER_DEADLINE_MS, HELPER_GRACE_MS, HELPER_FORCE_MS, HELPER_NAME_MAX, HELPER_TASK_MAX, HELPER_MESSAGE_MAX, HELPER_MESSAGES_MAX, COORDINATOR_MAX_CHILDREN, COORDINATOR_LIMITS, helperExclude, helperAllowed, helperContextSnapshot, helperDir, workerOutputPath, helperJobText, coordinatorFinalText, helperStartedText, helperNoteText, helperMessageRows, helperMessagePending, helperMessageText, handoffSteerText, handoffAwayText, followupText, plainError, helperView, helperRow, coordinatorChildren, runningHelpers, startRefusal, recoverHelpers, pendingHandoffs, helperNextWake, liveTurnOf, helperTcOf, emitHelper } from "./helpers.js";
-import { decide, currentPool, saveNightlyPool } from "./ee/index.js";
-import { decisionCaller } from "./ee/index.js";
-import { startLab } from "./internal-shim.js";   // dev only: Jev / Perplexity / Clef pick from the lab pool, never the route
-import { route2On, routeTwoTurn, escalationBefore, escalationAfter, dispatchOrder, HANDOFF_PREFIX } from "./ee/index.js";   // routing policy (ROUTER_MODE=two)
+import { helpersInit, HELPER_TOOLS, HELPER_PROMPT, HELPER_NAME_MAX, HELPER_TASK_MAX, HELPER_MESSAGE_MAX, HELPER_MESSAGES_MAX, COORDINATOR_MAX_CHILDREN, COORDINATOR_LIMITS, helperExclude, helperAllowed, helperContextSnapshot, helperDir, workerOutputPath, helperJobText, coordinatorFinalText, helperStartedText, helperNoteText, helperMessageRows, helperMessagePending, helperMessageText, handoffSteerText, handoffAwayText, followupText, plainError, helperView, helperRow, coordinatorChildren, runningHelpers, startRefusal, recoverHelpers, pendingHandoffs, helperNextWake, liveTurnOf, helperTcOf, emitHelper } from "./helpers.js";
+import { routeTwoTurn, escalationBefore, escalationAfter, dispatchOrder, HANDOFF_PREFIX } from "./ee/index.js";   // routing policy
 import { privacyOf, PRIVACY_EXHAUSTED } from "./privacy.js";   // AI data privacy: the account's level, read on every dispatch
-import { jobModel, jobCost, modelSettingsEnv } from "./ee/index.js";
+import { jobModel, modelSettingsEnv, limitsFor, DEFAULT_RUNTIME_LIMITS, dispatch, mainChatJob, plannedMaxOutput, plannedHold, plannedHoldNano, holdOutNano, chatJobId } from "./ee/index.js";
 import { METER as BYOK_METER, BYOK_MARKUP, hsRetainBatchNano, hsRecallNano, HS_REFRESH_WINDOW_MS } from "./byok-meter.js";
 import { loadByok, byokEnv, byokChat, isByokError, BYOK_CREDITS_REPLY, fallbackNotice, creditsLine, CREDITS_TOOL_ERR } from "./byok.js";   // own AI key: their endpoint for AI, our parts metered
 import { checkRule, nextRun, describe, validTz, DEFAULT_TZ } from "./schedule.js";
@@ -79,7 +76,7 @@ import { deletionMix } from "./deletion-do.js";
 import { routingArtifactKeys, dropRoutingArtifacts, agentSessionInventory, purgeAgentSession } from "./ee/index.js";
 import { previewMix } from "./file-preview.js";   // decks and Word documents open in the file viewer as a PDF made on the computer
 import { ocrLines, textOnScreen, textPositions, findInOcr, pagePosition, pageLine } from "./ocr-look.js";
-import { sidecarMix, lookMoondream, MOONDREAM_RESERVE } from "./sidecar.js";
+import { sidecarMix, lookMoondream, lookReserve } from "./sidecar.js";
 import { FILE_TEXT_TOOL } from "./file-text-tool.js";   // every file arriving is turned into text in the background (FilePrep); Send uses it
 import { installSnapshotRpc } from "./sqlite-snapshot.js";
 import { stopMix, untilStopped, stopError, planBudget, STOPPED_REPLY, STOPPED_TOOL_TEXT, STEP_LIMIT_CHAT_ASK } from "./stop.js";   // Stop / Stop all
@@ -190,9 +187,8 @@ function publicTurnError(error) {
 const PRICE = { in: 150, cached: 30, out: 500 };   // glm-5.3-flash, nano$ per token
 export const DAY_LIMIT_ERR = "skipped: daily safety limit reached";
 export const DAY_LIMIT_REPLY = "I've paused until midnight Pacific. I've already used a lot of your balance today, more than a normal day's worth, so I stopped as a safety measure in case something was stuck in a loop. Nothing was lost, and I'll pick back up then.";
-const MARKUP = 1.15, MAX_OUT = 2048, MAX_STEPS = 12, WF_MAX_STEPS = 24, HISTORY_TURNS = 40;
+const MARKUP = 1.15, HISTORY_TURNS = 40;   // step limits: limits.js (saved on the Models page)
 // Bounded context ("compact" mode, default): a step costs about the same however long the session gets.
-const CHAT_MAX_STEPS = 60;           // affordable now that context is bounded
 const CHECKPOINT_TOKENS = 40000;
 const WM_BUDGET = 55000, WM_HUGE = { hugeAt: 20000, hugeKeep: 7500 };   // chars of this request's own steps kept in full under WORKMEM=on (~14k tokens); a batch starts at 10% over (workmem BATCH_MARGIN, so at about 60,000 as before)     // mid-turn: when a step's input passes this, fold the work so far into working notes
 const HANDOFF_MIN_TOOLS = 3;         // end of turn: turns with this many tool calls leave hand-off notes instead of their raw work log
@@ -501,24 +497,8 @@ export class Resident extends DurableObject {
     return row ? { id: String(row.id), sec, text: row.content, at: row.created } : { id };
   }
   async notebookBackfillOnce() { return 0; }   // kept so a Durable Object from the last deploy can still be called while it winds down; it copied old ledger rows into the Notebook once and does nothing now
-  // Door 2 (action): was this call needed, could it be narrower, could memory have answered it?
-  // Door 3 (result): how much of the output matters; which lines would we keep if we stubbed the rest?
-  async clefDoorsShadow(turn, task, call, out) {
-    this.sql.exec("CREATE TABLE IF NOT EXISTS clef_doors (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER, turn TEXT, tool TEXT, args TEXT, out_chars INTEGER, needed REAL, narrower REAL, from_memory REAL, mostly_noise REAL, keep TEXT, ms INTEGER, error TEXT)");
-    const t0 = Date.now(), args = String(call.function?.arguments || "").slice(0, 600), name = call.function?.name || "";
-    const lines = out.split("\n"), big = out.length > 2000;
-    const q = { needed: { type: "noul", instructions: "Was this tool call needed to make progress on the person's task?" },
-      narrower: { type: "noul", instructions: "Could the same answer have come from a much narrower call (fewer lines, one file, a search instead of a full read)?" },
-      from_memory: { type: "noul", instructions: "Could this have been answered from what was already known in the conversation, without calling the tool?" } };
-    if (big) { q.mostly_noise = { type: "noul", instructions: "Is most of the tool output irrelevant to the task (boilerplate, logs, repeated lines)?" };
-      q.keep = { type: "choice", instructions: "Which part of the output matters most for the task?", criteria: { start: "the first part", middle: "the middle", end: "the last part", all: "it is all needed", none: "none of it" } }; }
-    let A = {}, err = null;
-    try { const r = await (await decisionCaller(this.env, "doors_shadow", { tenant: this.get("tenant"), channel: this.get("channel"), kind: "clef-doors-shadow" }))({ state: { task, tool: name, arguments: args, output_head: lines.slice(0, 40).join("\n").slice(0, 2500), output_tail: big ? lines.slice(-20).join("\n").slice(0, 1500) : "", output_chars: out.length }, questions: q }); A = r.answers || {}; }
-    catch (e) { err = String(e.message || e).slice(0, 200); }
-    const n = (k) => A[k]?.noul ?? null, top = (k) => { const p = A[k]?.probabilities; return p ? Object.entries(p).sort((a, b) => b[1] - a[1])[0][0] : A[k]?.choice ?? null; };
-    this.sql.exec("INSERT INTO clef_doors (at,turn,tool,args,out_chars,needed,narrower,from_memory,mostly_noise,keep,ms,error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", Date.now(), turn, name, args.slice(0, 300), out.length, n("needed"), n("narrower"), n("from_memory"), n("mostly_noise"), top("keep"), Date.now() - t0, err);
-  }
-  async clefDoorsLog(n = 50) { try { return this.sql.exec("SELECT * FROM clef_doors ORDER BY id DESC LIMIT ?", n).toArray(); } catch { return []; } }
+  async clefDoorsShadow() { return null; }   // no-op stub so a Durable Object from the last deploy can still be called; remove in the deploy after release 40
+  async clefDoorsLog() { return null; }   // no-op stub, same reason; remove in the deploy after release 40
   async rememberHere(who, fact, src, sec, from = "") { if (!this.get("tenant")) return { error: "no such channel" }; return { ok: true, ...(await this.rememberLocal(who, fact, src, sec, from)) }; }   // from = "general" marks a note saved here by General, which this channel pins (pinned-notes.js)
   async recallFor() { return { rows: [] }; }   // kept so a Durable Object from the last deploy can still be called while it winds down; the local ledger it searched is gone
   // memory_explain, read by the General helper: this channel's explanation (memory-explain.js). Read-only.
@@ -828,7 +808,7 @@ export class Resident extends DurableObject {
   // The system prompt (src/prompt/): the static core (byte-identical for everyone with the same feature switches), the cards
   // section, then this person's and channel's block. Nothing that changes per message goes here; it rides in the person's message.
   // read_doc's switches: the prompt's, plus route2 (two-model main chat), checkpoint (Sentinel on by default), link_real (real Link charges).
-  docFlags() { const pv = this._privacy || "zdr"; return { ...this.promptFlags(true), ee: eeEnabled(this.env), route2: eeEnabled(this.env) && route2On(this.env), priv_unrestricted: pv === "unrestricted", priv_no_training: pv === "no_training", priv_zdr: pv === "zdr", checkpoint: this.env.SENTINEL_DEFAULT === "on", link_real: eeEnabled(this.env) && this.env.LINK_REAL === "1", byok: !!this.env.BYOK, byok_fb: !!this.env.BYOK?.fallback }; }   // byok: own AI key (docs say what's different); byok_fb: a full plan's backup key, in use because its credits ran out
+  docFlags() { const pv = this._privacy || "zdr"; return { ...this.promptFlags(true), ee: eeEnabled(this.env), priv_unrestricted: pv === "unrestricted", priv_no_training: pv === "no_training", priv_zdr: pv === "zdr", checkpoint: this.env.SENTINEL_DEFAULT === "on", link_real: this.env.LINK_REAL === "1", byok: !!this.env.BYOK, byok_fb: !!this.env.BYOK?.fallback }; }   // byok: own AI key (docs say what's different); byok_fb: a full plan's backup key, in use because its credits ran out
   // This channel's own skills (skills/channel.js, saved with save_skill at the person's ask): listed by read_skill after the built-ins
   // (same shape as SKILLS in src/skills/index.js) and in the per-channel prompt block. A built-in slug wins.
   async channelSkills() { return listChannelSkills(this.sql); }
@@ -983,7 +963,7 @@ export class Resident extends DurableObject {
     return { declared: true, personal: !!p.personal, memory: !!(p.memory || tc?.memNote), location: !!tc?.placeKnown, apps: !!(p.apps || tc?.hint?.length || tools.some((n) => n && !PUBLIC.has(n))),
       files: !!(tc?.needImg || tc?.attached) };
   }
-  async callModel(messages, onComputerTool, onText = null, maxOut = MAX_OUT, noTools = false, tc = null) {
+  async callModel(messages, onComputerTool, onText = null, noTools = false, tc = null) {
     this.sidecarAudioCurrent(tc);
     if (tc?.kind === "helper" && tc.helper?.id) this.helperAttachMessages(tc, messages);
     const reviewImages = tc?.routingReviewHelper ? new Set(JSON.parse(helperRow(this.sql, tc.routingReviewHelper)?.handoff_json || "{}").imageParts?.map(p => p.image_url?.url) || []) : new Set();
@@ -991,7 +971,7 @@ export class Resident extends DurableObject {
     if (tc?.routingImagesDescribed) messages = withoutReviewImages(messages);
     if (tc?.appendRuntime) await this.governTaskContext(messages, tc);
     let r;
-    try { r = await this.callModelStep(messages, onComputerTool, onText, maxOut, noTools, tc); }
+    try { r = await this.callModelStep(messages, onComputerTool, onText, noTools, tc); }
     catch (e) {
       if (tc?.routingReviewHelper && !tc.routingImagesDescribed && (e.imageInputRejected || e.reason === "unsupported-image" || isRoutingImageError(e))) {
         tc.routingImagesDescribed = true;
@@ -999,7 +979,7 @@ export class Resident extends DurableObject {
         const cleaned = withoutReviewImages(messages);
         cleaned.push({ role: "user", content: fallback.preview });
         this.save(tc.turn, { role: "user", content: fallback.preview });
-        r = await this.callModelStep(cleaned, onComputerTool, onText, maxOut, noTools, tc);
+        r = await this.callModelStep(cleaned, onComputerTool, onText, noTools, tc);
       } else {
       // One durable overflow allowance per turn. Provider errors other than an
       // explicit context rejection never trigger blind compression/retries.
@@ -1007,7 +987,7 @@ export class Resident extends DurableObject {
       tc.contextOverflowRetried = true;
       this.sql.exec("UPDATE turn_runs SET extra=json_set(COALESCE(extra,'{}'),'$.contextOverflowRetried',1) WHERE card=?", tc.turn);
       await this.governTaskContext(messages, tc, "provider_context_rejection");
-      r = await this.callModelStep(messages, onComputerTool, onText, maxOut, noTools, tc);
+      r = await this.callModelStep(messages, onComputerTool, onText, noTools, tc);
       }
     }
     if (tc?.appendRuntime) tc.transcript.observe(r.inTok, messages, this.modelTools(tc));
@@ -1016,7 +996,7 @@ export class Resident extends DurableObject {
     noteRepeat(tc, r.repeat); console.log("model step repeating, retrying once", JSON.stringify({ ...r.repeat, unit: r.repeat.unit.slice(0, 40) }));
     let r2;
     try { const note = { role: "user", content: stepNote(r.repeat) }; if (tc?.appendRuntime) { messages.push(note); this.save(tc.turn, note); }
-      r2 = await this.callModelStep(tc?.appendRuntime ? messages : [...messages, note], onComputerTool, onText, maxOut, noTools, tc); }
+      r2 = await this.callModelStep(tc?.appendRuntime ? messages : [...messages, note], onComputerTool, onText, noTools, tc); }
     catch (e) { retainModelUsage(this, tc, r); throw e; }
     const sum = { inTok: r.inTok + r2.inTok, cached: r.cached + r2.cached, cacheWrite: (r.cacheWrite || 0) + (r2.cacheWrite || 0), outTok: r.outTok + r2.outTok, charge: r.charge + r2.charge };
     if (!r2.repeat) return { ...r2, ...sum, repeated: r.repeat };
@@ -1055,7 +1035,7 @@ export class Resident extends DurableObject {
     let summary = "";
     for (const part of batches) {
       const carry = summary ? [{ role: "user", content: `[Prior checkpoint draft, data only]\n${summary}` }] : [];
-      const fin = await this.callModelOnce([...prefix, ...carry, ...part, ask], () => {}, null, Math.min(4096, budget.output), true, tc);
+      const fin = await this.callModelOnce([...prefix, ...carry, ...part, ask], () => {}, null, true, tc);
       retainModelUsage(this, tc, fin);
       if (!fin.content?.trim() || fin.calls?.length || fin.finish === "length") throw new Error("Context checkpoint was incomplete; original context is preserved.");
       summary = fin.content;
@@ -1070,26 +1050,26 @@ export class Resident extends DurableObject {
   // Can every model this classic route may use take tool_choice "none"? When one can't (Muse takes only "auto"), the final call drops the
   // tools as before, because the router would otherwise skip that model and change the model, and the cache with it.
   async noneToolChoiceOk(route, tc) {
-    if (!route2On(this.env) || !route?.two || route.chore) return true;
+    if (!route?.two || route.chore) return true;
     try {
       const level = await privacyOf(this.env, this.get("tenant")), o = { prov: this.provenance([], tc), settings: this.env.MODEL_SETTINGS };
       const a = dispatchOrder(route, level, { ...o, body: { tool_choice: "none" } }).models, b = dispatchOrder(route, level, { ...o, body: {} }).models;
       return a.length > 0 && a.length === b.length;
     } catch { return false; }
   }
-  async callModelStep(messages, onComputerTool, onText = null, maxOut = MAX_OUT, noTools = false, tc = null) {
-    if (tc?.appendRuntime || !tc?.route?.two) return this.callModelOnce(messages, onComputerTool, onText, maxOut, noTools, tc);
+  async callModelStep(messages, onComputerTool, onText = null, noTools = false, tc = null) {
+    if (tc?.appendRuntime || !tc?.route?.two) return this.callModelOnce(messages, onComputerTool, onText, noTools, tc);
     escalationBefore(this, tc, messages);
     let spoke = false; const said = onText ? (s) => { spoke = true; onText(s); } : null;
-    const r = await this.callModelOnce(messages, onComputerTool, said, maxOut, noTools, tc);
+    const r = await this.callModelOnce(messages, onComputerTool, said, noTools, tc);
     if (noTools || !escalationAfter(this, tc, r)) return r;
     let r2;
-    try { r2 = await this.callModelOnce(messages, onComputerTool, spoke ? null : onText, maxOut, noTools, tc); }
+    try { r2 = await this.callModelOnce(messages, onComputerTool, spoke ? null : onText, noTools, tc); }
     catch (e) { retainModelUsage(this, tc, r); throw e; }
     escalationAfter(this, tc, r2);
     return { ...r2, inTok: r.inTok + r2.inTok, cached: r.cached + r2.cached, cacheWrite: (r.cacheWrite || 0) + (r2.cacheWrite || 0), outTok: r.outTok + r2.outTok, charge: r.charge + r2.charge, redone: r.model };
   }
-  async callModelOnce(messages, onComputerTool, onText = null, maxOut = MAX_OUT, noTools = false, tc = null) {
+  async callModelOnce(messages, onComputerTool, onText = null, noTools = false, tc = null) {
     if (tc?.abort === "hard") throw stopError();   // stopped: no further model calls
     if (tc?.modelFailure) throw modelFault(tc.modelFailure.code, tc.modelFailure.phase);
     // A frozen chain is authorized separately for every attempted source by
@@ -1109,14 +1089,19 @@ export class Resident extends DurableObject {
         tc.contextAudit.out = JSON.stringify({ ...receipt, code_version: codeV(this.env), calls: tc.contextSteps });
       }
     }
-    const MAX_OUT_ = maxOut, route = tc?.route || null; let tools = noTools && !tc?.appendRuntime ? null : this.modelTools(tc);
-    const requestMaxOut = tc?.taskProfile ? Math.min(noTools ? maxOut : tc.taskProfile.maxOutput, tc.taskProfile.maxOutput) : OR_MAX_OUT;
+    const route = tc?.route || null; let tools = noTools && !tc?.appendRuntime ? null : this.modelTools(tc);
+    // The output limit is the saved max output of the category's chat job, read again at every step; empty means no limit is sent. The model and its
+    // reasoning level stay as the task froze them. The spend hold below is sized from the model's published maximum when no limit is saved.
+    const savedOut = await plannedMaxOutput(this.env, chatJobId(tc?.taskProfile?.category || route?.category)).catch(() => null), frozen = tc?.taskProfile;
+    const requestMaxOut = savedOut;
+    const holdOutNanoNow = frozen ? holdOutNano({ catalog: { [frozen.requestedModel]: frozen.catalog } }, frozen.requestedModel, savedOut) : await plannedHoldNano(this.env, chatJobId(route?.category)).catch(() => 0);
     let backgroundFormat = tc?.appendRuntime && noTools ? (tc.taskProfile.catalog.tool_choice.includes("none") ? { tool_choice: "none" } : {}) : noTools && messages.at(-1)?.role === "user" && String(messages.at(-1)?.content).startsWith(HANDOFF_PREFIX) ? { response_format: structuredFormat("handoff_notes", HANDOFF_SCHEMA) } : {};
     const estIn = Math.ceil(JSON.stringify(messages).length / 3);
     // Own AI key (byok.js): their endpoint and models, nothing reserved or charged for the call (their provider bills them).
     let byok = this.env.BYOK || null, viaOR = !byok && (!!tc?.taskProfile || useOpenRouter(this.env));
     if (!eeEnabled(this.env) && (!byok || byok.missing)) throw Object.assign(new Error("Set up your own AI key in Settings before starting a task."), { status: 409 });
-    let reserve = byok ? 0 : Math.ceil((viaOR ? estIn * OR_RESERVE_PRICE.in * CACHE_WRITE_MULT + requestMaxOut * OR_RESERVE_PRICE.out : estIn * PRICE.in + MAX_OUT_ * PRICE.out) * MARKUP), rid = `res:${crypto.randomUUID()}`;
+    const fallbackOut = viaOR || byok ? 0 : await plannedHold(this.env, "workers_ai_chat").catch(() => 0);
+    let reserve = byok ? 0 : Math.ceil((viaOR ? estIn * OR_RESERVE_PRICE.in * CACHE_WRITE_MULT + holdOutNanoNow : estIn * PRICE.in + fallbackOut * PRICE.out) * MARKUP), rid = `res:${crypto.randomUUID()}`;
     guardCall(tc);   // spendguard.js: never start a call that could cross the turn's hard ceiling
     if (!byok) {
       this.resOpen(rid, reserve, tc);   // written down before it's reserved: a reset mid-call releases it at the next start (resOpenRelease)
@@ -1143,7 +1128,7 @@ export class Resident extends DurableObject {
     // Stop: the person's Stop aborts this call mid-flight (the OpenRouter fetch and the stream being read).
     const ac = new AbortController(), signal = ac.signal; if (tc) tc.ac = ac;
     // BYOK already has its own headers/idle/total limits. Do not shorten them.
-    const deadline = byok ? null : modelDeadline(ac);
+    const deadline = byok ? null : modelDeadline(ac, { ...MODEL_LIMITS, ...tc?.limits?.modelSaved });   // the saved waits (limits.js); none: the starting values
     const aborted = () => signal.reason?.modelFailure ? signal.reason : stopError();
     const waitModel = (p, late = r => r?.body?.cancel?.()) => deadline ? deadline.wait(p, late) : p;
     let onAbort = null, reader = null, modelResponding = false;
@@ -1155,7 +1140,7 @@ export class Resident extends DurableObject {
       if (byok) {
         // Hand-off notes are a chore: the fast model. Everything else in the turn: the main model. No other provider is ever tried.
         const last = messages.at(-1); byokFast = noTools && last?.role === "user" && typeof last.content === "string" && last.content.startsWith(HANDOFF_PREFIX);
-        stream = (await byokChat(byok, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true, max_tokens: OR_MAX_OUT }, { fast: byokFast, signal, privacy: await privacyOf(this.env, this.get("tenant")) })).body;
+        stream = (await byokChat(byok, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true, ...(Number.isFinite(requestMaxOut) ? { max_tokens: requestMaxOut } : {}) }, { fast: byokFast, signal, privacy: await privacyOf(this.env, this.get("tenant")) })).body;
         provider = "byok";
       }
       if (viaOR) {
@@ -1163,24 +1148,24 @@ export class Resident extends DurableObject {
         const px = `${prefixPrint(messages, tools)}.${runPrint(tc)}`;   // gateway log: which cached prefix this call used, and which task/run it belongs to (model.js)
         const prov = this.provenance(messages, tc);   // what this payload carries
         try {
-          stream = (await waitModel(openRouterChat(this.env, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true, max_tokens: requestMaxOut }, sess, route, { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat", px, _prov: prov }, signal))).body;
+          stream = (await waitModel(dispatch(this.env, mainChatJob(route), { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true }, { meta: { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat", px, _prov: prov }, signal, session: sess, route }))).body;
           provider = "openrouter"; thinkDone = true;   // OpenRouter streams reasoning separately; content is the answer
         } catch (e) {
           // 400 = our request is wrong: surface it. Anything else (402/429/5xx/network): retry once after 1.5 s, then Workers AI.
           if (e.taskAffinity || e.contextOverflow || e.orStatus === 400 || e.privacy || signal.aborted) throw signal.aborted ? aborted() : e;
           fellBack = String(e.message || e).slice(0, 160);
           try { await waitModel(new Promise((z) => setTimeout(z, 1500))); if (signal.aborted) throw aborted();
-            stream = (await waitModel(openRouterChat(this.env, { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true, max_tokens: requestMaxOut }, sess, route, { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat-retry", px, _prov: prov }, signal))).body;
+            stream = (await waitModel(dispatch(this.env, mainChatJob(route), { messages, ...(tools ? { tools } : {}), ...backgroundFormat, stream: true }, { meta: { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat-retry", px, _prov: prov }, signal, session: sess, route }))).body;
             provider = "openrouter"; thinkDone = true; fellBack = null;
           } catch (e2) { if (e2.orStatus === 400 || e2.privacy || signal.aborted) throw signal.aborted ? aborted() : e2; fellBack = String(e2.message || e2).slice(0, 160); console.log("openrouter unavailable twice, using workers ai", fellBack); }
         }
       }
-      if (!stream && viaOR && (tc?.appendRuntime || (eeEnabled(this.env) && route2On(this.env)))) throw new Error(`model unavailable: ${fellBack}`);
+      if (!stream && viaOR) throw new Error(`model unavailable: ${fellBack}`);
       for (let attempt = 0; !stream; attempt++) {
         if (signal.aborted) throw aborted();
         try {
-          stream = await waitModel(this.env.AI.run(await jobModel(this.env, "workers_ai_chat"), { messages, ...(tools && !keepToolsOff ? { tools } : {}), ...(keepToolsOff ? {} : backgroundFormat), stream: true, max_tokens: MAX_OUT_, reasoning_effort: "low" },
-            aiOpts(this.env, { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat-fallback" }, { extraHeaders: { "x-session-affinity": `res-${this.ctx.id.toString().slice(0, 24)}` } })), s => s?.cancel?.());
+          stream = (await waitModel(dispatch(this.env, "workers_ai_chat", { messages, ...(tools && !keepToolsOff ? { tools } : {}), ...(keepToolsOff ? {} : backgroundFormat), stream: true },
+            { meta: { tenant: this.get("tenant"), channel: this.get("channel"), kind: "chat-fallback" }, signal, session: `res-${this.ctx.id.toString().slice(0, 24)}` }), r => r?.body?.cancel?.())).body;
           break;
         } catch (e) {
           if (signal.aborted) throw aborted();
@@ -1215,7 +1200,7 @@ export class Resident extends DurableObject {
           if (route?.two && ev.openrouter_metadata && !ep) { const md = ev.openrouter_metadata, i = (md.endpoints?.available || []).findIndex((x) => x.selected), n = Number(md.summary?.match(/attempts=(\d+)/)?.[1] || 1);
             ep = i > 0 || n > 1 ? ` ep${Math.max(i, 0)}${n > 1 ? `x${n}` : ""}` : ""; if (routing) routing.floor = `${route.floor}${ep}`; }
           else if (ev.openrouter_metadata) { routing = jevNote(ev.openrouter_metadata); if (routing && tc && !tc.jevFirst) tc.jevFirst = routing; }
-          const u = ev.usage; if (u) { usage.prompt_tokens += u.prompt_tokens || 0; usage.completion_tokens += u.completion_tokens || 0; usage.cached += u.prompt_tokens_details?.cached_tokens || 0; usage.cacheWrite += u.prompt_tokens_details?.cache_write_tokens || 0; if (u.cost != null) usage.cost = (usage.cost || 0) + Number(u.cost); }
+          const u = ev.usage; if (u) { usage.prompt_tokens += u.prompt_tokens || 0; usage.completion_tokens += u.completion_tokens || 0; usage.cached += u.prompt_tokens_details?.cached_tokens || 0; usage.cacheWrite += u.prompt_tokens_details?.cache_write_tokens || 0; if (u.cost != null && provider !== "workers-ai") usage.cost = (usage.cost || 0) + Number(u.cost); }
           if (ev.choices?.[0]?.finish_reason) finish = ev.choices[0].finish_reason;
           const delta = ev.choices?.[0]?.delta || {};
           if (delta.refusal) refusal = (refusal || "") + delta.refusal;
@@ -1352,7 +1337,7 @@ export class Resident extends DurableObject {
     // Every command has its own shell. Give a helper a private default cwd so concurrent jobs do not
     // accidentally read or write each other's relative paths on the shared channel computer.
     const work = tc?.kind === "helper" && tc.helper?.id ? `mkdir -p -- ${q(helperDir(tc.helper.id))} && cd -- ${q(helperDir(tc.helper.id))} && ` : "";
-    const r = await this.computer().exec(work + cmd, { save: name === "read_file" || name === "search_files" ? "none" : "defer", ...(tc?.key ? { tag: tc.key } : {}), ...(tc?.turn && tc?.callId ? { run: runIdOf(tc.turn, tc.callId) } : {}), timeoutMs: commandLimitMs(name, a) });   // run: a deploy mid-command can re-attach to it (resume.js)   // tag: Stop can kill it
+    const r = await this.computer().exec(work + cmd, { save: name === "read_file" || name === "search_files" ? "none" : "defer", ...(tc?.key ? { tag: tc.key } : {}), ...(tc?.turn && tc?.callId ? { run: runIdOf(tc.turn, tc.callId) } : {}), timeoutMs: commandLimitMs(name, a, tc?.limits?.timingSaved) });   // run: a deploy mid-command can re-attach to it (resume.js)   // tag: Stop can kill it
     if (r?.storage_note) r.out = `${String(r.out || "").replace(/\n*$/, "")}\n\n${r.storage_note}`;   // storage.js: a computer save was refused (storage full)
     return name === "run_command" ? commandNotes(r, tc) : r;   // spendguard.js: timed out / the same line over and over → a note (and the runaway watch counts it)
   }
@@ -1405,11 +1390,11 @@ export class Resident extends DurableObject {
   async lookAtScreen(r, bytes, a, tc) {
     if (this.get("card_filled_url") && this.get("card_filled_url") === pageKey(r.url)) return { code: 1, out: "A card was just filled in on this page, so it can't be looked at while it is still open here. Move on to another page first, or ask the person." };
     const question = String(a.question || "").replace(/\s+/g, " ").trim().slice(0, 500), find = String(a.find || "").replace(/\s+/g, " ").trim().slice(0, 200), L = this.ledger(), rid = `look:${crypto.randomUUID()}`;
-    let held; try { held = await L.reserve(rid, MOONDREAM_RESERVE); } catch (e) { return { code: 1, out: `error: couldn't look at the page (${String(e?.message || e).slice(0, 80)})` }; }
+    const lookCeiling = await lookReserve(this.env).catch(() => 0); let held; try { held = await L.reserve(rid, lookCeiling); } catch (e) { return { code: 1, out: `error: couldn't look at the page (${String(e?.message || e).slice(0, 80)})` }; }
     if (!held?.ok) return { code: 1, out: "error: out of credits, so the page can't be looked at. Use browser_snapshot instead." };
     const size = jpegSize(bytes) || { width: 1280, height: 800 };
     const v = await lookMoondream(this.env, { tenant: this.get("tenant"), channel: this.get("channel") }, { data: bytes, mime: "image/jpeg" }, { question, find, ...size });   // parts fail alone
-    const nano = Math.max(0, Math.min(MOONDREAM_RESERVE, Math.ceil(Number(v.nano) || 0)));
+    const nano = Math.max(0, Math.min(lookCeiling, Math.ceil(Number(v.nano) || 0)));
     await L.settle(rid, nano).catch(() => {}); if (tc && nano) tc.extraCharge = (tc.extraCharge || 0) + nano;   // charged like browser_task's own cost
     const asked = 1 + (question ? 1 : 0) + (find ? 1 : 0);
     if (v.failed.length >= asked) return { code: 1, out: "error: couldn't look at the page (the vision model gave no answer). Use browser_snapshot instead." };
@@ -1544,7 +1529,7 @@ export class Resident extends DurableObject {
       return "error: this tool is not available in the current delegation state. Nothing was executed. Use the exact current tool names and required arguments below; earlier tool names are not aliases.\n" + JSON.stringify({ policy: orchestrationPolicy(ctx), tools: allowed });
     }
     if (ctx.appendRuntime && !this.availableTools(ctx).some(t => t.function.name === call.function?.name)) return "error: this tool is no longer available under the current runtime configuration.";
-    if (call.bad_args != null) return `error: your tool arguments were not valid JSON (possibly cut off at ${MAX_OUT} output tokens). Retry with shorter arguments. Received: ${call.bad_args.slice(0, 300)}`;
+    if (call.bad_args != null) return `error: your tool arguments were not valid JSON (possibly cut off by the model's output limit). Retry with shorter arguments. Received: ${call.bad_args.slice(0, 300)}`;
     let a = {}; try { a = JSON.parse(call.function.arguments || "{}"); } catch { return `error: tool arguments were not valid JSON: ${call.function.arguments?.slice(0, 200)}`; }
     a = splitStepTitle(a).args;   // the card's step title never reaches a tool
     if (ctx) { ctx.callId = call.id; ctx.callNo = (ctx.callNo || 0) + 1; }   // appfirst.js: "from step N" in a repeat's nudge
@@ -1861,7 +1846,7 @@ export class Resident extends DurableObject {
     const wt0 = this.sql.exec("SELECT MIN(CASE WHEN lease_until>next_run THEN lease_until ELSE next_run END) t FROM workflows WHERE status='active' AND on_event IS NULL").one().t;
     const et = eventsNext(this.sql), wt = wt0 == null ? et : et == null ? wt0 : Math.min(wt0, et);   // + app events waiting to run (app-events.js)
     const orphanInput=this.sql.exec("SELECT 1 FROM user_input_receipts WHERE turn IS NULL LIMIT 1").toArray().length;
-    const ht1 = orphanInput?Date.now():helperNextWake(this.sql), bj = browserJobNextWake(this.sql), ht0 = ht1 == null ? bj : bj == null ? ht1 : Math.min(ht1, bj), pt = this.pomoNext(), ht = pt == null ? ht0 : ht0 == null ? pt : Math.min(ht0, pt);   // + focus timer phase ends (pomodoro.js)
+    const ht1 = orphanInput?Date.now():helperNextWake(this.sql, undefined, this.hl()), bj = browserJobNextWake(this.sql), ht0 = ht1 == null ? bj : bj == null ? ht1 : Math.min(ht1, bj), pt = this.pomoNext(), ht = pt == null ? ht0 : ht0 == null ? pt : Math.min(ht0, pt);   // + focus timer phase ends (pomodoro.js)
     const r0 = wt == null ? ht : ht == null ? wt : Math.min(wt, ht);   // + helper deadlines and owed results
     const lt0 = laterNext(this.sql), jt0 = this.journalNext(), bt = this.textBatchNext(), jt = jt0 == null ? bt : bt == null ? jt0 : Math.min(jt0, bt), lt = lt0 == null ? jt : jt == null ? lt0 : Math.min(lt0, jt);   // + running turns' heartbeat / due resumes (resume.js)
     const r1 = lt == null ? r0 : r0 == null ? lt : Math.min(r0, lt);   // + scheduled messages (send-later.js)
@@ -2002,7 +1987,7 @@ export class Resident extends DurableObject {
         (cur.notes ? `\n\nNOTES FROM THE PREVIOUS RUN:\n${cur.notes}` : prev ? `\n\nYour report from the previous run (for continuity/dedup):\n${String(prev).slice(0, 3000)}` : "") + (gateOut || "");
       // wfRun: what the bookkeeping after the run needs (resume.js runs workflowFinish with it when a deploy cut the run off).
       const wfRun = { id: w.id, t0, next, notes0: w.notes || "", fails0: w.fails, status0: w.status, next0: w.next_run };
-      r = await this.runTurn(this.get("tenant"), this.get("channel"), this.get("channel_id"), text, null, { kind: w.kind, workflow_id: w.id, max_steps: WF_MAX_STEPS, session: w.session || null, wfRun });
+      r = await this.runTurn(this.get("tenant"), this.get("channel"), this.get("channel_id"), text, null, { kind: w.kind, workflow_id: w.id, max_steps: (await limitsFor(this.env)).workflowSteps, session: w.session || null, wfRun });
       return this.workflowFinish(wfRun, r);
     }
     return this.workflowFinish({ id: w.id, t0, next, notes0: w.notes || "", fails0: w.fails, status0: w.status, next0: w.next_run }, null, err);
@@ -2345,7 +2330,7 @@ export class Resident extends DurableObject {
       const priorSpawn = this.sql.exec("SELECT * FROM helpers WHERE parent_card=? AND spawn_call_id=?", parent, callId).toArray()[0];
       if (priorSpawn) return `Helper #${priorSpawn.id} "${priorSpawn.name}" was already started by this call. Do not start it again.`;
     }
-    const now = Date.now(), no = startRefusal(this.sql, ctx.session, now); if (no) return no;
+    const now = Date.now(), no = startRefusal(this.sql, ctx.session, now, this.hl()); if (no) return no;
     if (role === "coordinator" && runningHelpers(this.sql, ctx.session).length >= 2) return "error: a coordinator needs room for at least one child within this task's three running helper slots.";
     if (coordinating && coordinatorChildren(this.sql, coordinator.id).length >= COORDINATOR_MAX_CHILDREN) return `error: this coordinator has already started its ${COORDINATOR_MAX_CHILDREN} direct children.`;
     if (coordinating && now >= coordinator.deadline) return "error: the coordinator's shared deadline has passed; report the work completed so far.";
@@ -2354,7 +2339,7 @@ export class Resident extends DurableObject {
     const current = parent ? this.cardUserText(parent, ctx.userText || ctx.context?.userText || "") : ctx.userText || ctx.context?.userText || "";
     const inherited = coordinating ? coordinator.context || helperContextSnapshot({ current: coordinator.task }) : helperContextSnapshot({ current, prior });
     this.sql.exec("INSERT INTO helpers (session,parent_card,name,task,context,status,started,deadline,role,coordinator_id,phase,spawn_call_id) VALUES (?,?,?,?,?,'running',?,?,?,?,?,?)",
-      ctx.session, parent, nm, task, inherited, now, coordinating ? coordinator.deadline : now + HELPER_DEADLINE_MS, role, coordinating ? coordinator.id : null, role === "coordinator" ? "dispatch" : null, callId);
+      ctx.session, parent, nm, task, inherited, now, coordinating ? coordinator.deadline : now + this.hl().deadlineMs, role, coordinating ? coordinator.id : null, role === "coordinator" ? "dispatch" : null, callId);
     const h = helperRow(this.sql, this.sql.exec("SELECT last_insert_rowid() id").one().id);
     if (ctx.taskProfile?.dynamicRouting) {
       const profile = JSON.parse(JSON.stringify(ctx.taskProfile.dispatch.workerProfile));
@@ -2444,7 +2429,7 @@ export class Resident extends DurableObject {
       } else {
         const history = JSON.parse(h.history_json || "[]");
         this.sql.exec("INSERT INTO helper_messages (helper_id,session,text,status,queued_at) VALUES (?,?,?,'queued',?)", id, tc.session, message, Date.now());
-        this.sql.exec("UPDATE helpers SET status='running',handed=0,round=round+1,round_started=?,round_request=?,history_json=?,deadline=?,report=NULL,input_question=NULL,input_card=NULL WHERE id=? AND status IN ('awaiting_review','waiting_input')", Date.now(), message, JSON.stringify(history), Date.now() + HELPER_DEADLINE_MS, id);
+        this.sql.exec("UPDATE helpers SET status='running',handed=0,round=round+1,round_started=?,round_request=?,history_json=?,deadline=?,report=NULL,input_question=NULL,input_card=NULL WHERE id=? AND status IN ('awaiting_review','waiting_input')", Date.now(), message, JSON.stringify(history), Date.now() + this.hl().deadlineMs, id);
         next = helperRow(this.sql, id);
       }
       tc.orchestration.sent = true;
@@ -2507,7 +2492,7 @@ export class Resident extends DurableObject {
     const budget = h.dynamic_routing ? measured[h.category] || measured.general : null;
     const share = h.coordinator_id ? COORDINATOR_LIMITS.child : coordinatorPhase ? COORDINATOR_LIMITS[coordinatorPhase] : budget;
     const opts = { kind: "helper", session: h.session, helper: h, parent_card: h.parent_card,
-      coordinator_phase: coordinatorPhase, max_steps: share?.steps || HELPER_MAX_STEPS, max_charge: share?.charge || HELPER_MAX_CHARGE,
+      coordinator_phase: coordinatorPhase, max_steps: share?.steps || this.hl().steps, max_charge: share?.charge || this.hl().charge,
       ...(share ? { hard_charge: share.charge } : {}), exclude_tools: helperExclude(this.tools(), h, coordinatorPhase).filter(n => !h.dynamic_routing || n !== "done"), ...(resume ? { resume, card } : {}) };
     const prompt = coordinatorPhase === "aggregate" ? coordinatorFinalText(h, coordinatorChildren(this.sql, h.id), this.get("channel")) : h.dynamic_routing && h.round > 1 ? "Continue the same assigned job using the latest correction above. Call done with your response to finish this round." : helperJobText(h, this.get("channel"));
     const p = this.runTurn(this.get("tenant"), this.get("channel"), this.get("channel_id"), prompt, null, opts);
@@ -2530,8 +2515,8 @@ export class Resident extends DurableObject {
       Object.defineProperty(tc.subs, "size", { configurable: true, get: () => (liveTurnOf(this, h.session)?.subs?.size || this._routingObservers?.get(h.session)?.size ? 1 : 0) });
       const at = (ms, fn) => timers.push(setTimeout(async () => { if (await this.spendRefresh(tc, opts)) fn(); }, Math.max(0, ms - Date.now())));
       at(h.deadline, () => { if (!tc.finished && !tc.abort) { tc.helperWhy = "time limit"; tc.abort = "soft"; } });
-      at(h.deadline + HELPER_GRACE_MS, () => { if (!tc.finished) { tc.helperWhy ||= "time limit"; tc.abort = "hard"; } });
-      at(h.deadline + HELPER_GRACE_MS + HELPER_FORCE_MS, () => { if (!tc.finished) this.helperFinish(h.id, { reply: "", charge: 0, tool_calls: 0, forced: true }, tc, coordinatorPhase); });
+      at(h.deadline + this.hl().graceMs, () => { if (!tc.finished) { tc.helperWhy ||= "time limit"; tc.abort = "hard"; } });
+      at(h.deadline + this.hl().graceMs + this.hl().forceMs, () => { if (!tc.finished) this.helperFinish(h.id, { reply: "", charge: 0, tool_calls: 0, forced: true }, tc, coordinatorPhase); });
     }
     let r;
     try { r = await p; } catch (e) { r = { reply: "", error: e.message }; } finally { for (const t of timers) clearTimeout(t); }
@@ -2553,7 +2538,7 @@ export class Resident extends DurableObject {
     if (!h || h.role !== "coordinator" || h.status !== "running" || h.phase !== "waiting") return h;
     const children = coordinatorChildren(this.sql, id);
     if (children.some((x) => x.status === "running")) return h;
-    if (Date.now() >= h.deadline + HELPER_GRACE_MS) {
+    if (Date.now() >= h.deadline + this.hl().graceMs) {
       const partial = children.map((c) => `Worker #${c.id} "${c.name}": ${c.status}. ${String(c.report || c.error || c.why || "No report.").slice(0, 1400)}`).join("\n");
       this.sql.exec("UPDATE helpers SET status='stopped', stopped_by='limit', why='time limit', report=?, ended=?, handed=0 WHERE id=? AND status='running' AND phase='waiting'",
         `The coordinator ran out of time before it could combine its workers' reports.\n${partial}`, Date.now(), id);
@@ -2585,7 +2570,7 @@ export class Resident extends DurableObject {
       const steps = finalPhase ? (h.steps || 0) + (Number(r.tool_calls) || 0) : Math.max(h.steps || 0, Number(r.tool_calls) || 0);
       const modelSteps = finalPhase ? (h.model_steps || 0) + (Number(r.steps) || 0) : Math.max(h.model_steps || 0, Number(r.steps) || 0);
       const rep = cardsToText(String(r.reply || "")).trim().slice(0, 20000) || null, card = r.turn || tc?.card || tc?.turn || h.card || null;
-      if (h.role === "coordinator" && phase === "dispatch" && h.phase === "dispatch" && h.status === "running" && coordinatorChildren(this.sql, id).length && !r.error && !r.forced && !tc?.helperWhy && now < h.deadline + HELPER_GRACE_MS) {
+      if (h.role === "coordinator" && phase === "dispatch" && h.phase === "dispatch" && h.status === "running" && coordinatorChildren(this.sql, id).length && !r.error && !r.forced && !tc?.helperWhy && now < h.deadline + this.hl().graceMs) {
         this.sql.exec("UPDATE helpers SET phase='waiting', dispatch_report=?, charge_nano=?, steps=?, model_steps=?, card=? WHERE id=? AND status='running' AND phase='dispatch'", rep, charge, steps, modelSteps, card, id);
         h = helperRow(this.sql, id); emitHelper(this, h);
         return this.coordinatorReady(id);
@@ -2595,8 +2580,8 @@ export class Resident extends DurableObject {
         let status = "done", why = null, error = null, by = null;
         if (r.forced) { status = "stopped"; by = "limit"; why = "took too long"; }
         else if (r.error) { status = "failed"; error = plainError(r.error); }
-        else if (tc?.helperWhy || tc?.abort || r.hit_limit || (spendPausesOn(tc) && charge >= HELPER_MAX_CHARGE)) {
-          status = "stopped"; by = "limit"; why = tc?.helperWhy || (tc?.limitWhy === "cost" || charge >= HELPER_MAX_CHARGE ? (h.coordinator_id || h.role === "coordinator" ? "cost target" : "cost limit") : "step limit");
+        else if (tc?.helperWhy || tc?.abort || r.hit_limit || (spendPausesOn(tc) && charge >= this.hl().charge)) {
+          status = "stopped"; by = "limit"; why = tc?.helperWhy || (tc?.limitWhy === "cost" || charge >= this.hl().charge ? (h.coordinator_id || h.role === "coordinator" ? "cost target" : "cost limit") : "step limit");
         }
         if (r.forced && tc) tc.abort = "hard";
         this.sql.exec("UPDATE helpers SET status=?, ended=?, report=?, error=?, stopped_by=?, why=?, charge_nano=?, steps=?, model_steps=?, card=?, phase=CASE WHEN role='coordinator' THEN 'done' ELSE phase END WHERE id=?", status, now, rep, error, by, why, charge, steps, modelSteps, card, id);
@@ -2612,7 +2597,7 @@ export class Resident extends DurableObject {
     if (h.handed || !["done", "stopped", "failed", "interrupted"].includes(h.status) || (h.stopped_by && h.stopped_by !== "limit")) return h;
     this.sql.exec("UPDATE helpers SET handed=1 WHERE id=?", id);
     const unseen = helperMessageRows(this.sql, h.id).filter((m) => m.status === "not_seen").length;
-    const res = this.handoff(h.session, { text: handoffSteerText(h, unseen), away: handoffAwayText(h, unseen), ref: String(h.id), from: { type: "helper", id: h.id, title: h.name } });
+    const res = this.handoff(h.session, { text: handoffSteerText(h, unseen, this.hl().reportMax), away: handoffAwayText(h, unseen, this.hl().reportMax), ref: String(h.id), from: { type: "helper", id: h.id, title: h.name } });
     if (res?.card?.id) this.sql.exec("UPDATE helpers SET result_card=? WHERE id=?", res.card.id, id);
     h = helperRow(this.sql, id); emitHelper(this, h);
     return h;
@@ -2665,8 +2650,11 @@ export class Resident extends DurableObject {
   }
   // boot: a fresh isolate has no live turns, so running helpers were interrupted; their handoffs go out from the alarm.
   // Alarm: deliver owed results, and enforce deadlines on running helpers (the in-memory timers may be gone).
+  lim() { return this._limits || DEFAULT_RUNTIME_LIMITS; }
+  hl() { return this.lim().helper; }   // the saved helper limits as of the last turn or alarm that read them (limits.js)
   async helpersRecover({ boot = false } = {}) {
     await flushAgentMemory(this);
+    if (this.sql.exec("SELECT 1 x FROM helpers WHERE status='running' LIMIT 1").toArray().length) this._limits = await limitsFor(this.env);   // the saved helper limits (limits.js), only when a helper is running
     const now = Date.now();
     // resume.js: a helper whose run is journaled carries on after a deploy (it's interrupted only when its resume gives up)
     const journaled = () => { try { return new Set(this.sql.exec("SELECT card FROM turn_runs").toArray().map((x) => x.card)); } catch { return new Set(); } };
@@ -2695,7 +2683,7 @@ export class Resident extends DurableObject {
     for (const saved of this.sql.exec("SELECT id FROM helpers WHERE status='running'").toArray()) {
       const h = helperRow(this.sql, saved.id); if (!h || h.status !== "running") continue;
       if (h.role === "coordinator" && h.phase === "waiting") {
-        if (now >= h.deadline + HELPER_GRACE_MS) this.coordinatorStopChildren(h.id, "limit");
+        if (now >= h.deadline + this.hl().graceMs) this.coordinatorStopChildren(h.id, "limit");
         this.coordinatorReady(h.id); continue;
       }
       if (h.role === "coordinator" && h.phase === "aggregating" && !h.card) { this.sql.exec("UPDATE helpers SET phase='waiting' WHERE id=?", h.id); this.coordinatorReady(h.id); continue; }
@@ -2703,8 +2691,8 @@ export class Resident extends DurableObject {
       if (!tc && h.card && jr.has(h.card)) continue;   // waiting to carry on (resumeDue starts it)
       if (!tc) { this.sql.exec("UPDATE helpers SET status='interrupted', ended=?, handed=0 WHERE id=?", now, h.id); if (h.role === "coordinator") this.coordinatorStopChildren(h.id); if (h.coordinator_id) this.helperFinish(h.id); continue; }   // its run is gone
       if (!await this.spendRefresh(tc)) continue;
-      if (now >= h.deadline + HELPER_GRACE_MS + HELPER_FORCE_MS) { this.helperFinish(h.id, { reply: "", charge: 0, tool_calls: 0, forced: true }, tc, tc.coordinatorPhase); continue; }
-      if (now >= h.deadline + HELPER_GRACE_MS) { tc.helperWhy ||= "time limit"; tc.abort = "hard"; }
+      if (now >= h.deadline + this.hl().graceMs + this.hl().forceMs) { this.helperFinish(h.id, { reply: "", charge: 0, tool_calls: 0, forced: true }, tc, tc.coordinatorPhase); continue; }
+      if (now >= h.deadline + this.hl().graceMs) { tc.helperWhy ||= "time limit"; tc.abort = "hard"; }
       else if (now >= h.deadline && !tc.abort) { tc.helperWhy = "time limit"; tc.abort = "soft"; }
     }
     for (const child of this.sql.exec("SELECT id FROM helpers WHERE coordinator_id IS NOT NULL AND status IN ('done','failed','stopped','interrupted') AND handed=0").toArray()) this.helperFinish(child.id);
@@ -3087,7 +3075,7 @@ export class Resident extends DurableObject {
     if (pc) { this.sql.exec("UPDATE cards SET status='complete' WHERE id=?", pc.id); send({ t: "card_update", card: cardView(this.sql, pc.id) }); }
     const cont = pc ? await this.spendContinued(pc.id) : null;   // spendguard.js: a day check-in's Continue raises today's line
     const { continue: _c, ...ropts } = opts;
-    const run = this.runTurn(tenant, channel, channelId, text, send, { ...ropts, _input:input, ...(pc ? { ...planBudget(), spendContinue: pc.id } : {}), session: s.id, card: so.card.id })
+    const run = this.runTurn(tenant, channel, channelId, text, send, { ...ropts, _input:input, ...(pc ? { ...planBudget((await limitsFor(this.env)).planTask), spendContinue: pc.id } : {}), session: s.id, card: so.card.id })
       .catch(() => {}).finally(() => { clearInterval(hb); if (open) w.close().catch(() => {}); open = false; });
     this.ctx.waitUntil?.(run);
     return readable;
@@ -3340,7 +3328,10 @@ export class Resident extends DurableObject {
   async runTurnInner(tenant, channel, channelId, text, tc, opts = {}) {
     const send = tc.emit;
     const ctxMode = opts.ctx || this.env.CTX_MODE || "compact", compact = ctxMode !== "legacy";
-    const kind = opts.kind || "chat", maxSteps = opts.max_steps || (kind === "chat" && compact ? CHAT_MAX_STEPS : MAX_STEPS);
+    const kind = opts.kind || "chat";
+    // The saved limits (limits.js) are read once here, so a change on the Models page applies from the next message.
+    tc.limits = this._limits = await limitsFor(this.env);
+    const maxSteps = opts.max_steps || (kind === "chat" && compact ? tc.limits.chatSteps : tc.limits.otherTurnSteps);
     this.put("tenant", tenant); this.put("channel", channel); this.put("channel_id", channelId);
     if(kind==="chat"&&tc.inputReply&&!this.session(tc.session))throw Object.assign(new Error("The original task was deleted before this answer could run."),{status:410});
     await this.byokRefresh(0, tc);   // own AI key: this turn's model calls go to their endpoint (byok.js; a backup key once credits are used up)
@@ -3400,7 +3391,7 @@ export class Resident extends DurableObject {
     let recallNote = "";
     const mmode = this.memoryMode();
     if (!layered && !RS && (kind === "chat" || kind === "followup") && mmode !== "off") recallNote = await this.recallContext(String(text), tc, { onDemand: false, at: t0 });
-    // HS_USE (phase 4A, DESIGN 6.2, dev test arms B and C, and their shadow): the arms start now and the turn waits for the active one at the point where its context is built.
+    // HS_USE (phase 4A, DESIGN 6.2, dev test arms A, B and B2): the arms start now and the turn waits for the active one at the point where its context is built.
     const memUse = layered && !nativeWorker ? this.memUseStart(String(text), tc, { kind, resumed: !!RS }) : null;
     // This task's to-do list (update_todos), so the helper continues it instead of starting over. In the message, not the system prompt.
     const todoNote = (kind === "chat" || kind === "followup") && tc.session ? this.todoContext(tc.session) : "";
@@ -3427,9 +3418,6 @@ export class Resident extends DurableObject {
     const userMsg = { role: "user", content: pics.length ? [{ type: "text", text: userText }, ...pics] : userText };
     tc.needImg = pics.length > 0;
     let messages = [sys, ...hist, userMsg];
-    // Own router, SHADOW mode (dev only, OWN_ROUTER=shadow): decide what our router would pick, next to Jev's real pick. Never changes the reply, never billed to the person.
-    const shadow = eeEnabled(this.env) && !tc.appendRuntime && kind === "chat" && this.env.OWN_ROUTER === "shadow" && !this.env.BYOK && !RS ? this.ownRouterShadow(tc.session, hist, text, Math.ceil(JSON.stringify(messages).length / 3)).catch((e) => ({ error: String(e.message || e).slice(0, 200) })) : null;
-    // Own router ON (Captain 2026-10-02): our router picks the model + effort for this message and that model answers. Jev Router is used only if our decision fails.
     tc.route = RS?.route ? JSON.parse(RS.route) : null;
     let delegationPolicy = "", interactionContext = "";
     if (nativeWorker) bindTaskProfile(this, tc, JSON.parse(tc.helper.profile_json));
@@ -3462,23 +3450,12 @@ export class Resident extends DurableObject {
       if (interactionContext && !tc.context) { userText += `\n\n${contextData("INTERACTION CONTEXT", interactionContext)}`; userMsg.content = pics.length ? [{ type: "text", text: userText }, ...pics] : userText; }
       delegationPolicy = orchestrationPolicy(tc);
     }
-    let ownDecision = null;   // a resume keeps the turn's route (no new router call)
-    if (eeEnabled(this.env) && !nativeWorker && !tc.taskProfile?.backgroundGeneral && !tc.appendRuntime && this.env.OWN_ROUTER === "on" && useOpenRouter(this.env) && !this.env.BYOK && tc.abort !== "hard" && !RS) {
-      try { ownDecision = await this.ownRouterShadow(tc.session || `wf:${opts.workflow_id || ""}`, hist, asked + attNote, Math.ceil(JSON.stringify(messages).length / 3), tc.needImg);
-        if (ownDecision?.pick) { tc.route = { model: ownDecision.pick.model, effort: ownDecision.pick.effort, host: ownDecision.pick.host, fallbacks: ownDecision.fallbacks.map((f) => f.model), reason: ownDecision.reason, floor: ownDecision.floor };
-          const clefNano = Math.ceil((ownDecision.clef_in || 0) * (await jobCost(this.env, "classic_decider")).in_nano * MARKUP), rid = `rtr:${crypto.randomUUID()}`;
-          if (clefNano > 0 && (await this.ledger().reserve(rid, clefNano)).ok) { await this.ledger().settle(rid, clefNano); stats.charge += clefNano; } }
-      } catch (e) { ownDecision = { error: String(e.message || e).slice(0, 200) }; console.log("own router failed, using jev router", ownDecision.error); }
-    }
-    // ---- Two-model router (route2.js, ROUTER_MODE=two): one Jev yes/no per message → Sol (task) or Luna (conversation); sets the turn's route. ----
+    // ---- Routing policy (route2.js): one decider yes/no per message → Sol (task) or Luna (conversation); sets the turn's route. ----
     // Own AI key: no Jev call and no Sol/Luna; their main model runs the turn, their fast model the chores (callModelOnce).
-    if (eeEnabled(this.env) && !nativeWorker && !tc.taskProfile?.backgroundGeneral && !tc.appendRuntime && route2On(this.env) && useOpenRouter(this.env) && !this.env.BYOK && tc.abort !== "hard" && !RS) await routeTwoTurn(this, tc, { kind, text: asked + attNote + fileBody, hist, stats });
+    if (eeEnabled(this.env) && !nativeWorker && !tc.taskProfile?.backgroundGeneral && !tc.appendRuntime && useOpenRouter(this.env) && !this.env.BYOK && tc.abort !== "hard" && !RS) await routeTwoTurn(this, tc, { kind, text: asked + attNote + fileBody, hist, stats });
     // Quality recovery that corrects the approach (pool.js RECOVERY: research / general): one context note at the end of this message
     // (after the cached history, so the prefix stays warm). Saved in the turn's journal, so a resume keeps it.
     if (tc.route?.note && !RS) { userText = `${userText}\n\n${tc.route.note}`; userMsg.content = pics.length ? [{ type: "text", text: userText }, ...pics] : userText; }
-    // Router lab (router-lab.js, dev + ROUTER_LAB="on" only): Jev, Perplexity and Clef each pick from the lab pool for this exact prompt,
-    // in the background, next to the route just set. Independent of the test override; never changes the route, never billed.
-    if (!tc.appendRuntime && kind === "chat" && !this.env.BYOK && tc.abort !== "hard" && !RS) tc.lab = startLab(this, tc, { kind, text: asked + attNote, hist, messages, needImg: tc.needImg, plan: opts.handoff?.type === "plan" });
     const stepIn = []; let checkpoints = 0;
     const trace = [];
     const memJoin = await this.memUseJoin(memUse, tc).catch((e) => { console.log("memory arm", e?.message); return { block: "", info: null }; });   // never throws, ends by its own deadline
@@ -3559,7 +3536,7 @@ export class Resident extends DurableObject {
       if (!RS && !tc.appendRuntime) this.save(turn, { role: "user", content: asked + attNote }); reply = DAY_PAUSE_REPLY; said.push(reply);
       this.save(turn, { role: "assistant", content: reply }); stats.hit_limit = 1; send?.({ t: "text", s: reply });
     } else if (engine === "pi") {
-      const r = await runTurnPi(this, { tc, sys: sys.content, hist, userText, kind, maxSteps, turn, opts, send, stats, trace, stepIn, TOOLS: this.availableTools(tc), COMPUTER_TOOLS, consts: { CHECKPOINT_TOKENS, MAX_OUT }, resume: rs });
+      const r = await runTurnPi(this, { tc, sys: sys.content, hist, userText, kind, maxSteps, turn, opts, send, stats, trace, stepIn, TOOLS: this.availableTools(tc), COMPUTER_TOOLS, consts: { CHECKPOINT_TOKENS }, resume: rs });
       if (tc.audioFailure) throw Object.assign(new Error(tc.audioFailure.audioReason), tc.audioFailure);
       reply = stripNotesEcho(r.reply); error = r.error; checkpoints = r.checkpoints; messages = r.messagesForNotes;
       said.splice(0, said.length, ...r.said); saidMeta.splice(0, saidMeta.length, ...r.saidMeta);   // Pi uses the same terminal/history classifier; unknown resumed steps stay visible
@@ -3596,7 +3573,7 @@ export class Resident extends DurableObject {
           // A limit (cost cap or deadline) stopped this run: tools off, one final report.
           const ask = { role: "user", content: reportAsk(tc, LIMIT_REPORT_ASK) }; messages.push(ask); this.save(turn, ask); 
           let spoke = false;   // a pause's report is the reply the person reads: it streams
-          const fin = await this.callModel(this.finalView(tc, messages), () => {}, tc.pause && send ? (s) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s }); } : null, 1500, true, tc);
+          const fin = await this.callModel(this.finalView(tc, messages), () => {}, tc.pause && send ? (s) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s }); } : null, true, tc);
           stats.steps++; stats.in += fin.inTok; stats.cached += fin.cached; stats.cache_write += fin.cacheWrite || 0; stats.out += fin.outTok; stats.charge += fin.charge; if (fin.model) stats.models.push(fin.routing ? `${fin.model} [${fin.routing.reason}/${fin.routing.floor}]` : fin.model);
           const a = { role: "assistant", content: fin.content }; messages.push(a); this.save(turn, a);
           await this.spendRefresh(tc, opts);
@@ -3629,7 +3606,7 @@ export class Resident extends DurableObject {
         const restrictedNarration = !!(tc.orchestration?.requiredDelegation || tc.orchestration?.review || tc.orchestration?.steer) && !tc.orchestration?.approved;
         const res = await this.callModel(wm ? tc.wmView : messages, () => {
           if (!warm) { const w0 = Date.now(); warm = this.computer().warm().then((r) => ({ ...r, ms: Date.now() - w0 })); }
-        }, send && !restrictedNarration ? (s) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s }); } : null, kind === "chat" ? MAX_OUT : 4096, false, tc);
+        }, send && !restrictedNarration ? (s) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s }); } : null, false, tc);
         { const names = res.calls.map((c) => c.function?.name).filter(Boolean);
           if (res.content && !restrictedNarration) { said.push(res.content); saidMeta[said.length - 1] = { text: res.content, calls: names, later: [] }; }
           else if (said.length && saidMeta[said.length - 1]) saidMeta[said.length - 1].later.push(...names); }
@@ -3732,8 +3709,6 @@ export class Resident extends DurableObject {
           }
           if (!out) { const x0 = Date.now(); out = await untilStopped(tc, this.runTool(xcall, tc), STOPPED_TOOL_TEXT); trace.push({ tool: call.function.name, args: String(sp.args).slice(0, 300), ms: Date.now() - x0, out: out.slice(0, 300) }); }
           stepEnd(this.sql, tc, sv?.seq, { out, ms: Date.now() - s0, ...(tc.lastCmd ? { cmd: tc.lastCmd } : {}) });
-          // P4 Clef doors 2 + 3, SHADOW: judged after the fact, in the background, logged only. Never changes the call, the result or the reply.
-          if (this.memoryMode() !== "off" && this.env.CLEF_DOORS !== "off" && call.function.name !== "update_todos") this.ctx.waitUntil?.(this.clefDoorsShadow(turn, String(text).slice(0, 1500), xcall, String(out)).catch((e) => console.log("clef doors", e.message)));
           out = stepNotes(tc, call.function.name, res.calls, out, (() => { try { return JSON.parse(sp.args || "{}"); } catch { return {}; } })());   // spendguard.js: to-dos alone, research past a file's budget
           const dup = wm ? sameAsShown(out, messages, wmState, wmBase, call.function.name) : null, toolMsg = { role: "tool", tool_call_id: call.id, content: dup ?? out }; if (wm) wmFull.set(call.id, dup ?? out);
           messages.push(toolMsg); this.save(turn, toolMsg); this.effectDone(tc, call.id, out);
@@ -3749,7 +3724,7 @@ export class Resident extends DurableObject {
         // Mid-turn checkpoint: the work so far is folded into working notes and the raw steps leave the context.
         if (!tc.appendRuntime && !wm && compact && res.inTok > Math.max(CHECKPOINT_TOKENS, (stepIn[0] || 0) + 20000) && step < stepLimit - 2) {
           const ask = { role: "user", content: "(Context checkpoint. Don't call tools. Write your working notes so you can continue without the raw steps above: the goal, what you've done, key findings with exact values/paths/commands, what's left and your next step. Be complete but compact.)" };
-          const fin = await this.callModel([...messages, ask], () => {}, null, 1500, true, tc);
+          const fin = await this.callModel([...messages, ask], () => {}, null, true, tc);
           stats.steps++; stats.in += fin.inTok; stats.cached += fin.cached; stats.cache_write += fin.cacheWrite || 0; stats.out += fin.outTok; stats.charge += fin.charge; if (fin.model) stats.models.push(fin.routing ? `${fin.model} [${fin.routing.reason}/${fin.routing.floor}]` : fin.model); checkpoints++;
           const lastTool = [...messages].reverse().find((m) => m.role === "tool");
           const resume = { role: "user", content: `[Checkpoint ${checkpoints}: your own working notes so far on this request]\n${fin.content}\n\n[Most recent tool result]\n${String(lastTool?.content || "").slice(0, 4000)}${tc.session ? this.todoContext(tc.session) : ""}\n\nContinue the task from here. Earlier raw steps are searchable with recall_history.` };
@@ -3760,7 +3735,7 @@ export class Resident extends DurableObject {
           // Out of steps on an unattended run: one final tools-off call so the run always ends with a real report.
           const ask = { role: "user", content: "(Step limit reached. No more tools. Write your final report now: what you checked, what you found, whether you texted, and what the next run should reuse or do differently.)" };
           messages.push(ask); this.save(turn, ask); 
-          const fin = await this.callModel(this.finalView(tc, messages), () => {}, null, 1500, true, tc);
+          const fin = await this.callModel(this.finalView(tc, messages), () => {}, null, true, tc);
           stats.steps++; stats.in += fin.inTok; stats.cached += fin.cached; stats.cache_write += fin.cacheWrite || 0; stats.out += fin.outTok; stats.charge += fin.charge; if (fin.model) stats.models.push(fin.routing ? `${fin.model} [${fin.routing.reason}/${fin.routing.floor}]` : fin.model);
           const a = { role: "assistant", content: fin.content }; messages.push(a); this.save(turn, a);
           reply = fin.content || "Run ended at the step limit without a report."; error = error || null; stats.hit_limit = 1; break;
@@ -3793,7 +3768,7 @@ export class Resident extends DurableObject {
         const sm = await this.steerMessage(tc, this.takeSteers(tc), { pics: engine !== "pi" });
         messages.push(sm.msg); this.save(turn, tc.appendRuntime ? sm.msg : { role: "user", content: sm.text }); 
         let spoke = false;
-        const fin = await this.callModel(this.finalView(tc, messages), () => {}, send ? (s) => { if (!spoke && (said.length || reply)) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s }); } : null, kind === "chat" ? MAX_OUT : 4096, true, tc);
+        const fin = await this.callModel(this.finalView(tc, messages), () => {}, send ? (s) => { if (!spoke && (said.length || reply)) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s }); } : null, true, tc);
         stats.steps++; stats.in += fin.inTok; stats.cached += fin.cached; stats.cache_write += fin.cacheWrite || 0; stats.out += fin.outTok; stats.charge += fin.charge; if (fin.model) stats.models.push(fin.routing ? `${fin.model} [${fin.routing.reason}/${fin.routing.floor}]` : fin.model);
         const a = { role: "assistant", content: fin.content }; messages.push(a); this.save(turn, a);
         if (fin.content) { said.push(fin.content); reply = stripNotesEcho(fin.content); if (tc.limitWhy === "steps" && !tc.pause && !opts.budget) tc.limitWhy = null; }   // it answered what they added: not a pause
@@ -3804,7 +3779,7 @@ export class Resident extends DurableObject {
       try {
         const ask = { role: "user", content: STEP_LIMIT_CHAT_ASK }; messages.push(ask); this.save(turn, ask); 
         let spoke = false;
-        const fin = await this.callModel(this.finalView(tc, messages), () => {}, send ? (x) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s: x }); } : null, MAX_OUT, true, tc);
+        const fin = await this.callModel(this.finalView(tc, messages), () => {}, send ? (x) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s: x }); } : null, true, tc);
         stats.steps++; stats.in += fin.inTok; stats.cached += fin.cached; stats.cache_write += fin.cacheWrite || 0; stats.out += fin.outTok; stats.charge += fin.charge; if (fin.model) stats.models.push(fin.routing ? `${fin.model} [${fin.routing.reason}/${fin.routing.floor}]` : fin.model);
         const a = { role: "assistant", content: fin.content }; messages.push(a); this.save(turn, a);
         reply = stripNotesEcho(fin.content || "") || "I used all my steps on this one. Say \"keep going\" and I'll continue.";
@@ -3857,8 +3832,6 @@ export class Resident extends DurableObject {
     if (tc.extraCharge) { stats.charge += tc.extraCharge; tc.extraCharge = 0; }   // browser_task's own Ledger charges (already settled)
     // A computer that was started must stay saved: end-of-turn save (the computer sleeps on its own after 60 s idle).
     if (stats.computer_used) { try { await this.computer().save("turn"); } catch {} }
-    if (shadow) { try { await this.recordShadow(turn, tc.session, await shadow, stats, false, tc); } catch (e) { console.log("own-router shadow log", e.message); } }
-    if (this.env.OWN_ROUTER === "on" && ownDecision) { try { await this.recordShadow(turn, tc.session, ownDecision, stats, true, tc); } catch (e) { console.log("own-router log", e.message); } }
     tc.route = null;
     this.sql.exec("INSERT INTO turns (id,at,user_text,reply,steps,tool_calls,computer_used,computer_wait_ms,model_ms,total_ms,in_tok,cached_tok,out_tok,charge_nano,error,kind,workflow_id,trace,notes,ctx,checkpoints,step_in,engine,session,models,cache_write_tok) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", turn, t0, text, reply, stats.steps, stats.tool_calls, stats.computer_used, stats.computer_wait_ms, stats.model_ms, Date.now() - t0, stats.in, stats.cached, stats.out, stats.charge, error, kind, opts.workflow_id ?? null, diagnosticTrace(trace, tc.progressOmitted), notes, ctxMode, checkpoints, JSON.stringify(stepIn), engine, tc.session, JSON.stringify(stats.models), stats.cache_write);
     // Stopped by the person or ended by an error: the reply carries none of what it found, so its lookups are kept as "unfinished work" (worklog.js).
@@ -3879,7 +3852,6 @@ export class Resident extends DurableObject {
     const parts = [], progress = [];   // progress = indexes of parts that are narration before a tool call (not the answer); old turns have none and the app classifies them itself
     for (const x of splitProgress(said, saidMeta)) for (const p of splitCardParts(stripNotesEcho(x.text).trim())) if (p) { if (x.progress) progress.push(parts.length); parts.push(p); }
     if (kind === "chat" && (parts.length > 1 || progress.length) && !error) this.sql.exec("UPDATE turns SET parts=?, progress=? WHERE id=?", JSON.stringify(parts), progress.length ? JSON.stringify(progress) : null, turn);
-    tc.lab?.tokens?.(stepIn[0] ?? null);   // router lab: the real first call's input tokens, next to its estimate
     // Labels enrich an already saved turn. Completion and the next queued input
     // never wait for the optional model call, and its charge belongs only to
     // this stored turn rather than mutable stats returned to the caller.
@@ -3890,31 +3862,6 @@ export class Resident extends DurableObject {
       if (labels.billed && labels.charge_nano) this.sql.exec("UPDATE turns SET charge_nano=charge_nano+? WHERE id=?", Math.round(labels.charge_nano), turn);
     }).catch((e) => console.log("labeller follow-up", e.message)));
     return { reply, turn, ...(tc.inputRequest ? {input_request:questionForTurn(this.sql,turn)} : {}), ...(tc.helperInputQuestion ? {input_requested:tc.helperInputQuestion} : {}), total_ms: Date.now() - t0, ...stats, trace, error, ...(tc.progressOmitted ? {progress_omitted:tc.progressOmitted} : {}), ...(tc.modelFailure && !tc.stoppedTurn ? { recoverable: true, failure_phase: tc.modelFailure.phase || null } : {}), notes, ctx: ctxMode, checkpoints, step_in: stepIn, engine, reaction: tc.reaction || null };
-  }
-
-  // ---- Own router (shadow) ----
-  async ownRouterShadow(session, hist, text, inTok, needImg = false) {
-    if (!eeEnabled(this.env)) return null;
-    if (eeEnabled(this.env) && route2On(this.env)) return null;   // two-model router on: the classic router (pool, tiers, Clef questions) doesn't run
-    let pool = await currentPool(this.env); if (!pool) { await saveNightlyPool(this.env); pool = await currentPool(this.env); }
-    // A message with pictures can only go to models that see images (hard rule, like ZDR/tools).
-    if (needImg) { const v = pool.pairs.filter((p) => p.img); if (v.length) pool = { ...pool, pairs: v }; }
-    const convo = [...hist.filter((m) => m.role === "user" || m.role === "assistant").filter((m) => !String(m.content || "").startsWith("(Context note")).slice(-6), { role: "user", content: text }]
-      .map((m) => ({ role: m.role, content: (m.role === "assistant" ? cardsToText(m.content || "") : String(m.content || "")).slice(0, 1500) }));
-    const incRaw = this.get(`own_inc:${session}`), incumbent = incRaw ? JSON.parse(incRaw) : null;
-    const failed = Number(this.get(`jev_failed:${session}`) || 0);
-    const d = await decide(this.env, { pool, convo, incumbent, failed, inTok, cachedTok: incumbent ? Math.round(inTok * 0.8) : 0, clef: await decisionCaller(this.env, "classic_decider", { tenant: this.get("tenant"), channel: this.get("channel"), kind: "router" }) });
-    if (d.pick) this.put(`own_inc:${session}`, JSON.stringify({ model: d.pick.model, effort: d.pick.effort }));
-    return d;
-  }
-  async recordShadow(turn, session, d, stats, live = false, tc = null) {
-    const jevFirst = stats.models[0] || null, m = jevFirst && String(jevFirst).match(/^(\S+)(?: \[(\w+)\/(\w+)\])?/), jf = tc?.jevFirst || null;
-    const jev = { live, served: stats.models, model: m?.[1] || null, reason: m?.[2] || null, floor: m?.[3] || null, effort: jf?.effort ?? null, est_cost: jf?.est_cost ?? null, steps: stats.steps, charge_nano: stats.charge, in: stats.in, out: stats.out };
-    if (jf) this.put(`jev_failed:${session}`, String(jf.failed || 0));
-    if (tc) tc.jevFirst = null;
-    const clefCost = Math.round((d.clef_in || 0) * (await jobCost(this.env, "classic_decider")).in_nano);   // nano$ (Workers AI price), our cost only
-    await this.env.DB.prepare("INSERT INTO router_shadow (at, tenant_id, channel, session, turn, ours, jev, clef_nano) VALUES (?,?,?,?,?,?,?,?)")
-      .bind(Date.now(), this.get("tenant") || "", this.get("channel") || "", session || "", turn, JSON.stringify(d), JSON.stringify(jev), clefCost).run();
   }
 
   async transcript(limit = 60, session = null) {
@@ -4365,7 +4312,7 @@ return { ...(historyOmitted ? {progress_omitted:historyOmitted} : {}), id: t.id,
   }
   // ---- Plans (plans.js): the person approves or denies a plan card (route or texted card, never a tool); a project's first task starts here by RPC. ----
   async planDecide(id, decision, picks = null, answers = null) { return decidePlan(this, Number(id), String(decision), picks, answers); }
-  async planStartTask(item, origin) { if (!this.get("tenant")) return { error: "no such channel" }; return startPlanTask(this, item, origin); }
+  async planStartTask(item, origin) { if (!this.get("tenant")) return { error: "no such channel" }; this._limits = await limitsFor(this.env); return startPlanTask(this, item, origin); }
   async planCardData(id) { return planCardData(this, Number(id)); }
   async planText(id) { return textPlan(this, Number(id)); }   // proposed in a texting turn: the same card as an iMessage live app card
   // "Interview me" cards (interview-chat.js): the app's and the card page's view, and the person's taps.

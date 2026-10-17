@@ -131,8 +131,9 @@ try {
     assert.equal((await transcribeLive(req({}, 'POST'), env, L)).status, 405);
     for (const Origin of ['', 'null', 'https://evil.example']) assert.equal((await transcribeLive(req({ Origin }), env, L)).status, 403);
     assert.equal((await transcribeLive(req({ Upgrade: '' }), env, L)).status, 426);
-    const ep = ENDPOINTS.transcription[LIVE_MODEL]; delete ENDPOINTS.transcription[LIVE_MODEL];
-    try { assert.equal((await transcribeLive(req(), env, L)).status, 451); } finally { ENDPOINTS.transcription[LIVE_MODEL] = ep; }
+    // The saved facts allow none of the job's OpenRouter models at the account's level, but a Cloudflare model runs at every level (the plan carries a privacy note): nothing is reserved here.
+    const closed = JSON.parse(JSON.stringify(SEED)); for (const e of [closed.jobs.live_dictation, ...closed.jobs.live_dictation.fallbacks]) closed.catalog[e.model].levels = ['unrestricted'];
+    assert.notEqual((await transcribeLive(req(), { ...env, MODEL_SETTINGS: closed }, L)).status, 451);
   });
   await test('initial connect failures release money/lease, out of credits and concurrent start never contact provider', async () => {
     const { L } = ledger(); let fetched = 0; const deps = { fetch: async () => { fetched++; throw Error('secret provider details'); } };

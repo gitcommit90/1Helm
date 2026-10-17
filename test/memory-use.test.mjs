@@ -14,7 +14,7 @@ import { world, tick } from "./deploy-harness.mjs";
 import { hsUse } from "../src/hs-flag.js";
 import { wrapMemory, stripInjectedMemory, MEM_OPEN, MEM_CLOSE } from "../src/memory-block.js";
 import { fillTemplate, templateKey, TEMPLATE_VERSION } from "../src/hindsight-template.js";
-import { cachedModelText, modelKey, autoQuery, packInjected, runArmB, recallArgs, dayStart, armOf, shadowOf, ARM_DEADLINE_MS, B_HEADER, shadowData, recordShadow } from "../src/memory-use.js";
+import { cachedModelText, modelKey, autoQuery, packInjected, runArmB, recallArgs, dayStart, armOf, ARM_DEADLINE_MS, B_HEADER } from "../src/memory-use.js";
 import { recall, mentalModelContent, memoriesList, memoryHistory } from "../src/hindsight.js";
 import { convEntries } from "../src/hindsight-writers.js";
 import { speakerLabels } from "../src/hindsight-template.js";
@@ -44,11 +44,7 @@ const store = () => { const m = new Map(); return { get: (k) => m.get(k), put: (
   assert.equal(armOf({ HS_USE: "on", HS_FOUNDATIONS: "on", ENV_NAME: "dev" }, "A"), "A", "dev can override to A");
   assert.equal(armOf({ HS_USE: "off", HS_FOUNDATIONS: "on", ENV_NAME: "dev" }, "B"), "A", "flag off");
   assert.equal(armOf({ HS_USE: "on", HS_FOUNDATIONS: "on", ENV_NAME: "dev" }, "zzz"), "B2", "an unknown setting falls back to the default");
-  assert.equal(shadowOf({ HS_USE: "on", HS_FOUNDATIONS: "on", ENV_NAME: "dev", HS_USE_SHADOW: "on" }, ""), true);
-  assert.equal(shadowOf({ HS_USE: "on", HS_FOUNDATIONS: "on", ENV_NAME: "dev", HS_USE_SHADOW: "on" }, "0"), false, "a channel can turn it off");
-  assert.equal(shadowOf({ HS_USE: "on", HS_FOUNDATIONS: "on", ENV_NAME: "dev" }, "1"), true, "or on");
-  assert.equal(shadowOf({ HS_USE: "on", HS_FOUNDATIONS: "on", ENV_NAME: "live", HS_USE_SHADOW: "on" }, "1"), false);
-  ok("A1. the flag needs HS_FOUNDATIONS; arms and shadow are dev only");
+  ok("A1. the flag needs HS_FOUNDATIONS; the arm override is dev only");
 }
 {
   // the profile cache
@@ -219,7 +215,7 @@ function fakeHs(o = {}) {
 const T = Date.UTC(2026, 9, 14, 17, 0);
 function mk({ flag = "on", engine = "classic", server, notes = [], channel = "main", extraEnv = {} } = {}) {
   const f = server || fakeHs();
-  const W = world({ engine, env: { CONTEXT_LAYOUT: "v2", RESUME_DELAY_MS: 0, RESUME_WRITE_DELAY_MS: 0, GENUI: "on", MEMORY: "on", ...f.env({ HS_USE: flag, HS_WRITERS: "on", HS_USE_SHADOW: "off" }), ...extraEnv } });
+  const W = world({ engine, env: { CONTEXT_LAYOUT: "v2", RESUME_DELAY_MS: 0, RESUME_WRITE_DELAY_MS: 0, GENUI: "on", MEMORY: "on", ...f.env({ HS_USE: flag, HS_WRITERS: "on" }), ...extraEnv } });
   W.d1.exec("ALTER TABLE tenants ADD COLUMN helper_tone INTEGER; CREATE TABLE vault (tenant_id TEXT,name TEXT,hosts TEXT); CREATE TABLE logins (tenant_id TEXT,site TEXT,username TEXT);");
   W.d1.exec("CREATE TABLE IF NOT EXISTS hs_forget (bank TEXT NOT NULL, doc TEXT NOT NULL, due INTEGER NOT NULL, tries INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (bank, doc)); CREATE TABLE IF NOT EXISTS hs_rebuild_runs (bank TEXT PRIMARY KEY, tenant TEXT, channel TEXT, status TEXT NOT NULL, phase TEXT, version INTEGER, started_at INTEGER, updated_at INTEGER NOT NULL, summary TEXT);");
   const rows = notes, arch = { channel: async () => ({ channel: { name: channel, purpose: "Home base" }, memory: rows, messages: [] }), channels: async () => [{ id: 1, name: channel, slug: channel }, { id: 2, name: "recipes", slug: "recipes" }],
@@ -380,40 +376,31 @@ for (const engine of ["classic", "pi"]) {
   ok("D4. the turn context message carries injected_memory and the profile rides in the standing context (the append lane uses the same assembly)");
 }
 {
-  // the turn never waits past the deadline, whatever the arm is still doing; its real result still goes in the shadow row
+  // the turn never waits past the deadline, whatever the arm is still doing
   const f = fakeHs({ recall: [{ id: "o1", type: "observation", text: "Slow memory.", mentioned_at: "2026-10-03T12:00:00Z" }], delay: 500 });
-  const W = mk({ server: f, extraEnv: { HS_USE_DEADLINE_MS: "150" } }), R = W.R; R.memoryMode = () => "on"; await R.memArmAdmin({ arm: "B", shadow: "0" });
+  const W = mk({ server: f, extraEnv: { HS_USE_DEADLINE_MS: "150" } }), R = W.R; R.memoryMode = () => "on"; await R.memArmAdmin({ arm: "B" });
   const h = R.memUseStart("Dinner?", { session: "s", turn: "tt" }); assert.equal(h.deadline, 150); const t0 = Date.now(); const j = await R.memUseJoin(h, { session: "s", turn: "tt" }); const took = Date.now() - t0;
   assert.ok(took < 400, `the join returned at the deadline (${took} ms), not when the recall finished`); assert.equal(j.block, ""); assert.equal(j.info.error, "deadline"); assert.ok(j.info.waited_ms < 400);
-  await sleep(900); const d = await shadowData(W.env, { now: Date.now() + 1000 }); assert.equal(d.rows.length, 1); assert.match(d.rows[0].b.text, /Slow memory/, "the late result is still recorded"); assert.equal(d.rows[0].active, "B");
   const { armDeadline } = await import("../src/memory-use.js"); assert.equal(armDeadline({}), 1500); assert.equal(armDeadline({ HS_USE_DEADLINE_MS: "50" }), 1500); assert.equal(armDeadline({ HS_USE_DEADLINE_MS: "900" }), 900);
   { const rc = R.mem.stats().receipts.find((x) => x.turn === "tt"); assert.ok(rc && /^on:hindsight/.test(rc.mode), "the arm leaves a receipt with the recall mode, even when it timed out"); }
-  ok("D2b. the active arm never holds the turn past the deadline (HS_USE_DEADLINE_MS, default 1500 ms); its late result is still recorded");
+  ok("D2b. the active arm never holds the turn past the deadline (HS_USE_DEADLINE_MS, default 1500 ms)");
 }
 {
-  // shadow mode: recorded, never in the answer
-  const f = fakeHs({ recall: [{ id: "o1", type: "observation", text: "Sam is allergic to peanuts (my key is sk-abcdefghijklmnopqrstuvwx1234).", mentioned_at: "2026-10-03T12:00:00Z" }] }), b = "dev-t1-main";
-  const W = mk({ server: f, extraEnv: { HS_USE_SHADOW: "on" } }), R = W.R; R.memoryMode = () => "on";
-  W.d1.exec("CREATE TABLE IF NOT EXISTS tenants_x (a)");
-  await R.memArmAdmin({ arm: "A" });   // the dev override: shadow mode beside arm A leaves the answer alone
+  // no shadow: the active arm is the only memory call of a turn
+  const f = fakeHs({ recall: [{ id: "o1", type: "observation", text: "Sam is allergic to peanuts.", mentioned_at: "2026-10-03T12:00:00Z" }] });
+  const W = mk({ server: f }), R = W.R; R.memoryMode = () => "on";
+  await R.memArmAdmin({ arm: "A" });   // the dev override: arm A adds nothing and makes no recall
   W.brain = () => "Try lemon chicken."; const r = await R.runTurn("t1", "main", "1", "Let's find a good recipe for dinner!", null, { session: R.newSession("T") }); assert.ok(!r.error);
-  const call = W.calls.find((c) => c.who === "main"); assert.ok(!JSON.stringify(call.messages).includes("injected-memory") && !JSON.stringify(call.messages).includes("peanut"), "shadow mode does not change what the model sees");
-  await tick(); await sleep(60); const d = await shadowData(W.env, { now: Date.now() + 1000 }); assert.equal(d.rows.length, 1); const row = d.rows[0];
-  assert.equal(row.active, "A"); assert.equal(row.channel, "main"); assert.match(row.preview, /good recipe/); assert.equal(row.b.n, 1); assert.match(row.b.text, /peanuts/); assert.ok(!/sk-abcdefghijklmnopqrstuvwx1234/.test(JSON.stringify(row)), "the stored text is scrubbed");
-  assert.ok(!("c" in row), "arm C is gone");
-  assert.equal(d.summary.B.n, 1); assert.ok(!("C" in d.summary)); assert.equal(d.deadline_ms, 1500); assert.equal(d.summary.B.within_deadline, 1);
-  // a per channel off switch, and an active arm uses the same row
-  await R.memArmAdmin({ shadow: "0" }); const n0 = f.calls.filter((c) => /recall/.test(c.key)).length; await R.runTurn("t1", "main", "1", "Again", null, { session: R.newSession("T2") }); await sleep(40); assert.equal(f.calls.filter((c) => /recall/.test(c.key)).length, n0, "shadow off for the channel: no calls");
-  await R.memArmAdmin({ shadow: "1", arm: "B" }); await R.runTurn("t1", "main", "1", "Third", null, { session: R.newSession("T3") }); await sleep(60); const d2 = await shadowData(W.env, { now: Date.now() + 1000 }); assert.equal(d2.rows[0].active, "B");
-  // the default arm B2 with the shadow: B2 answers, and the shadow records the full arm B next to it
-  await R.memArmAdmin({ arm: "default", shadow: "1" }); f.calls.length = 0; W.calls.length = 0; await R.runTurn("t1", "main", "1", "Fourth", null, { session: R.newSession("T4") }); await sleep(80);
-  const rcs = f.calls.filter((c) => /memories\/recall/.test(c.key)).map((c) => c.body.types.join(",")).sort(); assert.deepEqual(rcs, ["observation", "observation,world,experience"], "B2 for the turn and the full B for the shadow");
+  const call = W.calls.find((c) => c.who === "main"); assert.ok(!JSON.stringify(call.messages).includes("injected-memory") && !JSON.stringify(call.messages).includes("peanut"), "arm A does not change what the model sees");
+  await tick(); await sleep(60); assert.equal(f.calls.filter((c) => /memories\/recall/.test(c.key)).length, 0, "arm A: no recall call");
+  await R.memArmAdmin({ arm: "default" }); f.calls.length = 0; W.calls.length = 0; await R.runTurn("t1", "main", "1", "Fourth", null, { session: R.newSession("T4") }); await sleep(80);
+  const rcs = f.calls.filter((c) => /memories\/recall/.test(c.key)).map((c) => c.body.types.join(",")); assert.deepEqual(rcs, ["observation"], "the default arm B2 makes one recall, for observations");
   assert.match(JSON.stringify(W.calls.find((c) => c.who === "main").messages), /injected-memory/, "the default B2 memory is in the turn");
-  const d3 = await shadowData(W.env, { now: Date.now() + 1000 }); assert.equal(d3.rows[0].active, "B2"); assert.ok(d3.rows[0].b, "B is recorded next to the active B2");
+  assert.ok(!("shadow" in R.memArmState()), "the arm state has no shadow setting");
   // a BYOK account never runs the arms
-  const W2 = mk({ server: fakeHs({ recall: [] }), extraEnv: { HS_USE_SHADOW: "on", BYOK: { fallback: null } } }); W2.R.memoryMode = () => "on"; assert.equal(W2.R.memUseStart("hi", { session: "s" }), null, "own AI key: memory costs their credits, so no extra calls");
+  const W2 = mk({ server: fakeHs({ recall: [] }), extraEnv: { BYOK: { fallback: null } } }); W2.R.memoryMode = () => "on"; assert.equal(W2.R.memUseStart("hi", { session: "s" }), null, "own AI key: memory costs their credits, so no extra calls");
   assert.equal(R.memUseStart("hi", { session: "s" }, { kind: "workflow" }), null, "only chat turns"); assert.equal(R.memUseStart("hi", { session: "s" }, { resumed: true }), null, "a resumed turn keeps its saved context");
-  ok("D2. shadow mode: arm B recorded with numbers and a scrubbed clipped text, the answer unchanged, a per channel switch, active arm in the same row, no extra calls for an own key account");
+  ok("D2. no shadow: arm A makes no recall, the default B2 makes one, and an own key account makes none");
 }
 // ================= E. the correction tool is gone =================
 {

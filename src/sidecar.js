@@ -47,15 +47,14 @@
 //   qwen3-embedding-8b / -4b                                0.41 / 0.28 hit@1, MRR 0.52 / 0.37
 // pplx-embed-v1-0.6b ties the best quality at a third of bge-m3's price and the lowest latency, so it indexes the sidecars.
 import { DurableObject } from "cloudflare:workers";
-import { S, structuredChat, structuredFormat, workersStructuredResponse } from "./structured-output.js";
-import { backgroundPolicy, backgroundReserve, jobRoute, jobModel, MOONDREAM } from "./ee/index.js";
+import { S, structuredChat, structuredFormat } from "./structured-output.js";
+import { dispatchMedia as dispatch, jobReserveNano, stepsOf, firstStep } from "./ee/index.js";
+import { privacyOf } from "./privacy.js";
 import { tolerantEnv, isResetErr } from "./do-stub.js";
 import { installSnapshotRpc } from "./sqlite-snapshot.js";
 import { stPut, stDelete, stDeleteListed } from "./storage.js";
-import { openRouterChat, orFetchPath, aiOpts, h32 } from "./model.js";
+import { h32 } from "./model.js";
 import { cappedResponseJson } from "./bounded-response.js";
-import { dynamicProvidersOn } from "./cloudflare-models.js";
-import { testModelFor } from "./internal-test-model.js";
 import { STT_NANO_PER_SEC, stt, audioBody, b64, sttRate } from "./transcribe.js";
 export { audioBody };
 export const MARKUP = 1.15;   // cost + 15%, like every metered part (transcribe.js MARKUP; local so module import order never matters)
@@ -93,16 +92,36 @@ export const OCR_WAIT_MS = 8000;                    // the most a Send waits in 
 // The index's vectors come from the saved model of the job "embed_files", through OpenRouter (zero-data-retention endpoints only).
 // Each index records its model, so a file is always searched with the model it was indexed with. Bench below the header.
 export const EMBED_DIMS = 1024, EMBED_BATCH = 50, INDEX_MAX_CHUNKS = 3000;
-export const EMBED_NANO_PER_TOKEN = 30;   // reservation ceiling ($0.03/M, the dearest ZDR model compared); settled at usage.cost
+export const EMBED_NANO_PER_TOKEN = 30;   // reservation price per token only when the catalog has no price for the saved model; settled at usage.cost
+// The reservation price per input token (nano dollars): the dearest catalog price among the job's models.
+export async function embedNano(env) {
+  const { env: e, steps } = await stepsOf(env, "embed_files"); let most = 0, known = false;
+  for (const st of steps) { const v = e.MODEL_SETTINGS?.catalog?.[st.model]?.pricing?.prompt; if (v != null && v !== "" && Number.isFinite(Number(v)) && Number(v) >= 0) { known = true; most = Math.max(most, Number(v) * 1000); } }
+  return known ? most : EMBED_NANO_PER_TOKEN;
+}
 // Pictures (photos, screenshots; never documents: those are anydoc / pdf-inspector's): the saved model of the job "vision_files" on Workers AI.
-// A dev test workspace (test-model.js) uses its test model through OpenRouter instead, like every other model call there.
-export const VISION_NANO = { in: 100, out: 300 };
+// OpenRouter's dearest zero-data-retention Gemma 4 26B A4B endpoint (Google, checked 2026-10-17): $0.15 and $0.60 per million tokens.
+// Reservations assume it. The charge is the cost OpenRouter reports, and these prices stand in only when it reports none.
+export const VISION_NANO = { in: 150, out: 600 };
+const visionNano = (u, tokensIn, tokensOut) => Math.ceil((Number(u.cost) > 0 ? Math.ceil(Number(u.cost) * 1e9) : tokensIn * VISION_NANO.in + tokensOut * VISION_NANO.out) * MARKUP);
 // Moondream 3.1 (Workers AI, not a chat model: {task, image, ...} in, {answer, caption, points} out): $0.30 / $1.00 per million tokens.
+// MOONDREAM_NANO is the price used only when the saved catalog has no price for the look model (nano dollars per token).
 export const MOONDREAM_NANO = { in: 300, out: 1000 };
-export const lookModel = (env) => String(env?.SIDECAR_LOOK_MODEL || "").trim() || MOONDREAM;   // the browser look's model
+// The look model's price: its catalog price, else MOONDREAM_NANO.
+export async function lookNano(env) {
+  const { env: e, steps } = await stepsOf(env, "look"), p = e.MODEL_SETTINGS?.catalog?.[steps[0]?.model]?.pricing, ok = (v) => v != null && v !== "" && Number.isFinite(Number(v)) && Number(v) >= 0;
+  return { in: ok(p?.prompt) ? Number(p.prompt) * 1000 : MOONDREAM_NANO.in, out: ok(p?.completion) ? Number(p.completion) * 1000 : MOONDREAM_NANO.out };
+}
+// The saved model of the look job when the settings are already on env, else null. Shown on the Models page only; the call itself is made by dispatch.
+export const lookModel = (env) => env?.MODEL_SETTINGS?.jobs?.look?.model ?? null;
+// Up to three calls on one picture (about 3000 tokens in and 500 out each), reserved at the saved price.
+export const lookReserve = async (env) => { const n = await lookNano(env); return Math.ceil((9000 * n.in + 1500 * n.out) * MARKUP); };
 export const MOONDREAM_RESERVE = Math.ceil((9000 * MOONDREAM_NANO.in + 1500 * MOONDREAM_NANO.out) * MARKUP);   // up to three calls on one picture
-export const VISION_RESERVE = Math.ceil((3000 * VISION_NANO.in + 2500 * VISION_NANO.out) * MARKUP);
-export const CARD_MAX_OUT = backgroundPolicy("sidecar_card").maxTokens;
+// Reservations follow the saved job: its output limit (max_output) and its models' catalog prices (media-job.js), with the input a call can carry.
+export const VISION_INPUT_TOKENS = 3000;
+export const visionReserve = async (env) => Math.ceil(await jobReserveNano(env, "vision_files", VISION_INPUT_TOKENS) * MARKUP);
+// The card's request is about its bytes in tokens (a byte is at most one token) plus the framing, once per attempt.
+export const cardReserve = async (env, request, attempts = 1) => Math.ceil(await jobReserveNano(env, "sidecar_card", new TextEncoder().encode(JSON.stringify(request)).length + 1024) * MARKUP * attempts);
 export const WHISPER_MAX_BYTES = 20 * 1024 * 1024, AUDIO_MAX_SEC = 3 * 3600;   // = transcribe.js WAI_MAX_BYTES (a literal: import cycle)
 // The Computer class's "basic" container at cost + 15% per second (bee-sync.js JOB_NANO_PER_SEC).
 export const JOB_NANO_PER_SEC = Math.ceil((1 * 0.0000025 + 0.25 * 0.000020 + 4 * 0.00000007) * 1e9 * 1.15);
@@ -217,9 +236,9 @@ export async function runPrep(P, job, tries = 1) {
     if (r?.ok) P.put("text_reported", "1");
   }
   // Stage 2: the card (a refusal leaves it out; everything else stays), then the index.
-  const c = await P.paid(job, "card", backgroundReserve(cardRequest(job, kind, md, sections), 2), () => makeCard(env, job, kind, md, sections, meta(job, kind)));
+  const c = await P.paid(job, "card", await cardReserve(env, cardRequest(job, kind, md, sections), 2), () => makeCard(env, job, kind, md, sections, meta(job, kind)));
   const card = c.refused ? null : c.value; if (c.refused) notes.push(`no summary card: ${refusedLine(c.refused)}`);
-  let vec = null, vecDims = EMBED_DIMS; const embModel = await jobModel(env, "embed_files"); job.emb_model = embModel;
+  let vec = null, vecDims = EMBED_DIMS; const embModel = (await firstStep(env, "embed_files"))?.model || null; job.emb_model = embModel;
   if (chunks.length) { const v = await indexChunks(P, job, md, chunks.slice(0, INDEX_MAX_CHUNKS), meta(job, kind)); if (v.refused) notes.push(`searched by words only: ${refusedLine(v.refused)}`); else { vec = v.packed; vecDims = v.dims; } }
   const w2 = await writeSidecar(P, job, { ...doc, card, notes, made_at: now(), ...(vec ? { vec: { model: embModel, dims: vecDims } } : {}) }, vec ? { bytes: vec, dims: vecDims, model: embModel } : null, doc);
   if (w2.skipped) return { ...text, status: "ready", notes: [...notes, "no summary card or index (storage is full)"] };
@@ -311,10 +330,10 @@ ${PLAIN_STYLE}`;
 export function cardRequest(job, kind, md, sections) {
   const src = cardSource(md, sections);
   const messages = [{ role: "system", content: CARD_SYSTEM }, { role: "user", content: `File: ${job.name} (${kind}, ${humanBytes(Number(job.bytes) || 0)}, about ${tokensOf(md)} tokens)\n\n${untrustedFile(job.name, src)}` }];
-  return { messages, max_tokens: CARD_MAX_OUT, temperature: 0, response_format: structuredFormat("file_card", CARD_SCHEMA) };
+  return { messages, temperature: 0, response_format: structuredFormat("file_card", CARD_SCHEMA) };
 }
 export async function makeCard(env, job, kind, md, sections, meta) {
-  const r = await structuredChat(body => openRouterChat(env, body, null, jobRoute("sidecar_card"), { ...meta, kind: "sidecar-card" }), cardRequest(job, kind, md, sections), { name: "file_card", schema: CARD_SCHEMA });
+  const r = await structuredChat(body => dispatch(env, "sidecar_card", body, { meta: { ...meta, kind: "sidecar-card" } }), cardRequest(job, kind, md, sections), { name: "file_card", schema: CARD_SCHEMA });
   return { value: parseCard(JSON.stringify(r.data)), nano: Math.ceil(Math.ceil(Number(r.usage.cost || 0) * 1e9) * MARKUP) };
 }
 export function parseCard(text) {
@@ -331,13 +350,13 @@ export function parseCard(text) {
 // ---- pictures: a vision model ----
 // One Moondream call. stream:false; the answer is unwrapped from .result when nested; an empty answer is retried up to 2 more times.
 // → { out, nano }; throws with .nano (the cost so far) on failure.
-export async function moondreamRun(env, meta, model, body) {
-  let nano = 0;
+export async function moondreamRun(env, meta, body) {
+  let nano = 0; const price = await lookNano(env);
   try {
     for (let i = 0; i < 3; i++) {
-      const r = await env.AI.run(model, { ...body, stream: false }, aiOpts(env, meta));
+      const r = await (await dispatch(env, "look", body, { meta })).json();
       const out = r?.result && typeof r.result === "object" ? r.result : r, u = out?.metrics || r?.metrics || out?.usage || {};
-      nano += Math.ceil(((Number(u.input_tokens ?? u.prompt_tokens) || 1500) * MOONDREAM_NANO.in + (Number(u.output_tokens ?? u.completion_tokens) || 100) * MOONDREAM_NANO.out) * MARKUP);
+      nano += Math.ceil(((Number(u.input_tokens ?? u.prompt_tokens) || 1500) * price.in + (Number(u.output_tokens ?? u.completion_tokens) || 100) * price.out) * MARKUP);
       if (String(out?.answer ?? "").trim() || String(out?.caption ?? "").trim() || out?.points?.length) return { out, nano };
     }
     return { out: {}, nano };
@@ -348,10 +367,10 @@ export const pointsToPixels = (points, { width, height }) => (Array.isArray(poin
 // The browser's look: caption always; query when there is a question; point when there is a find. Parts run side by side and fail alone.
 // → { description, answer, points, failed: [part names], nano }
 export async function lookMoondream(env, meta, image, { question, find, width, height }) {
-  const model = lookModel(env), url = `data:${image.mime};base64,${b64(image.data)}`, m = { ...meta, kind: "browser-look" };
-  const calls = { description: () => moondreamRun(env, m, model, { task: "caption", image: url, caption_length: "normal" }) };
-  if (question) calls.answer = () => moondreamRun(env, m, model, { task: "query", image: url, question, reasoning: false, max_tokens: 300, temperature: 0 });
-  if (find) calls.points = () => moondreamRun(env, m, model, { task: "point", image: url, target: find });
+  const url = `data:${image.mime};base64,${b64(image.data)}`, m = { ...meta, kind: "browser-look" };
+  const calls = { description: () => moondreamRun(env, m, { task: "caption", image: url, caption_length: "normal" }) };
+  if (question) calls.answer = () => moondreamRun(env, m, { task: "query", image: url, question, reasoning: false, temperature: 0 });
+  if (find) calls.points = () => moondreamRun(env, m, { task: "point", image: url, target: find });
   const names = Object.keys(calls), rs = await Promise.allSettled(names.map((k) => calls[k]()));
   const res = { description: "", answer: "", points: null, failed: [], nano: 0 };
   rs.forEach((r, i) => {
@@ -365,27 +384,16 @@ export async function lookMoondream(env, meta, image, { question, find, width, h
   return res;
 }
 // image: { data: Uint8Array, mime } → { value: {description, text} | {text}, nano }
-export async function vision(env, meta, image, mode, opts = {}) {
+export async function vision(env, meta, image, mode) {
   const url = `data:${image.mime};base64,${b64(image.data)}`;
   let prompt = `Describe this picture in 2-3 sentences, then copy every piece of text in it exactly, line by line. Answer with JSON only: {"description": "...", "text": "..."} (text empty when there is none).`;
-  // The browser's look: one more line asking for the answer (and pixel positions) inside the description. VISION_SCHEMA stays the same.
-  if (opts.question) prompt += `\nAlso answer this question inside "description": ${JSON.stringify(String(opts.question).slice(0, 500))}. Give the x,y pixel position (from the top left corner) of anything the question names, for this ${opts.width || 1280}x${opts.height || 800} picture.`;
-  const content = [{ type: "text", text: prompt }, { type: "image_url", image_url: { url } }];
-  const tm = await testModelFor(env, meta.tenant);
-  let value, nano = 0;
-  if (tm) {
-    const r = await structuredChat(body => openRouterChat(env, body, null, jobRoute("sidecar_card"), { ...meta, kind: `sidecar-vision-${mode}` }), { messages: [{ role: "user", content }], max_tokens: 2500, temperature: 0 }, { name: "image_description", schema: VISION_SCHEMA });
-    value = r.data; nano = Math.ceil(Math.ceil(Number(r.usage.cost || 0) * 1e9) * MARKUP);
-  } else {
-    const model = await jobModel(env, "vision_files");
-    try {
-      const r = await structuredChat(async ({ provider, ...body }) => !dynamicProvidersOn(env)
-        ? workersStructuredResponse(await env.AI.run(model, body, aiOpts(env, { ...meta, kind: `sidecar-vision-${mode}` })))
-        : openRouterChat(env, body, null, jobRoute("vision_files"), { ...meta, kind: `sidecar-vision-${mode}` }), { messages: [{ role: "user", content }], max_tokens: 2500, temperature: 0 },
-        { name: "image_description", schema: VISION_SCHEMA, onUsage: u => { nano += Math.ceil(((Number(u.prompt_tokens) || 1500) * VISION_NANO.in + (Number(u.completion_tokens) || 800) * VISION_NANO.out) * MARKUP); } });
-      value = r.data;
-    } catch (e) { e.nano = nano; throw e; }
-  }
+  const content = [{ type: "text", text: prompt }, { type: "image_url", image_url: { url } }]; let value;
+  let nano = 0;
+  try {
+    const r = await structuredChat((body) => dispatch(env, "vision_files", body, { meta: { ...meta, kind: `sidecar-vision-${mode}` } }), { messages: [{ role: "user", content }], temperature: 0 },
+      { name: "image_description", schema: VISION_SCHEMA, onUsage: u => { nano += visionNano(u, Number(u.prompt_tokens) || 1500, Number(u.completion_tokens) || 800); } });
+    value = r.data;
+  } catch (e) { e.nano = nano; throw e; }
   return { value, nano };
 }
 // The picture the vision model gets: the app's small JPEG when there is one, a small original as is, else Cloudflare Images (HEIC too).
@@ -399,7 +407,7 @@ async function pictureFor(env, job) {
 }
 async function describePicture(P, job, meta) {
   const pic = await pictureFor(P.env, job); if (!pic) return { value: { description: "(a picture that couldn't be opened here)", text: "" } };
-  const r = await P.paid(job, "picture", VISION_RESERVE, () => vision(P.env, meta, pic, "picture"));
+  const r = await P.paid(job, "picture", await visionReserve(P.env), () => vision(P.env, meta, pic, "picture"));
   return r.refused ? r : r.value;
 }
 // Put OCR'd text into the page slots ([Page N] with nothing after it); a PDF that was all scan has no slots yet, so they're made.
@@ -413,22 +421,20 @@ export function fillPages(md, texts, needsOcr) {
 // so a video up to 12 MB; the model samples a fixed number of frames, ~2.4k input tokens for 3 s or 60 s alike). Thinking is off:
 // otherwise Gemma spends its whole max_tokens on hidden reasoning.
 export const VIDEO_MAX_BYTES = 12 * 1024 * 1024;
-export const VIDEO_RESERVE = Math.ceil((3000 * VISION_NANO.in + 1500 * VISION_NANO.out) * MARKUP);
+export const videoReserve = visionReserve;   // the same job, the same ceiling
 export const VIDEO_PROMPT = `Describe what happens in this video over time in a few sentences (what is shown, what changes, what is done), then copy every piece of on-screen text exactly, line by line. Answer with JSON only: {"description": "...", "text": "..."} (text empty when there is none).`;
 export async function describeVideo(P, job, meta) {
   const size = Number(job.bytes) || 0;
   if (size > VIDEO_MAX_BYTES) return { error: `too big to look at (${humanBytes(size)}; up to ${humanBytes(VIDEO_MAX_BYTES)})` };
-  const r = await P.paid(job, "video", VIDEO_RESERVE, async () => {
+  const r = await P.paid(job, "video", await videoReserve(P.env), async () => {
     const o = await P.env.WS.get(job.r2key); if (!o) throw Object.assign(new Error("the file is missing from storage"), { gone: true });
     const url = `data:${/^video\//.test(job.mime) ? job.mime : "video/mp4"};base64,${b64(new Uint8Array(await o.arrayBuffer()))}`;
     const content = [{ type: "text", text: VIDEO_PROMPT }, { type: "video_url", video_url: { url } }];
-    const model = await jobModel(P.env, "vision_files"); let nano = 0;
+    let nano = 0;
     try {
-      const x = await structuredChat(async ({ provider, ...body }) => !dynamicProvidersOn(P.env)
-        ? workersStructuredResponse(await P.env.AI.run(model, body, aiOpts(P.env, { ...meta, kind: "sidecar-vision-video" })))
-        : openRouterChat(P.env, body, null, jobRoute("vision_files"), { ...meta, kind: "sidecar-vision-video" }),
-        { messages: [{ role: "user", content }], max_tokens: 1500, temperature: 0, chat_template_kwargs: { enable_thinking: false } },
-        { name: "image_description", schema: VISION_SCHEMA, onUsage: u => { nano += Math.ceil(((Number(u.prompt_tokens) || 2500) * VISION_NANO.in + (Number(u.completion_tokens) || 400) * VISION_NANO.out) * MARKUP); } });
+      const x = await structuredChat((body) => dispatch(P.env, "vision_files", body, { meta: { ...meta, kind: "sidecar-vision-video" } }),
+        { messages: [{ role: "user", content }], temperature: 0 },
+        { name: "image_description", schema: VISION_SCHEMA, onUsage: u => { nano += visionNano(u, Number(u.prompt_tokens) || 2500, Number(u.completion_tokens) || 400); } });
       return { value: x.data, nano };
     } catch (e) { e.nano = nano; throw e; }
   });
@@ -555,21 +561,26 @@ export function splitWav(b, max) {
 }
 
 // ---- the index: vectors for each chunk, in batches, each batch kept as it's paid for ----
-// texts → { vectors, nano } through OpenRouter's /embeddings (model.js orFetchPath: the AI Gateway, our key), ZDR endpoints only.
+// texts → { vectors, nano } through dispatch (the saved embed_files job; the model, the provider fields and the transport come from /models).
+// model: the model the index was made with. A saved model that isn't it (or an equivalent the catalog lists) can't continue or search that
+// index, so the call throws with .modelChanged and nothing is sent.
 export async function embedTexts(env, texts, meta, model = null) {
-  const m = model || await jobModel(env, "embed_files");
-  const r = await orFetchPath(env, "embeddings", { model: m, input: texts, provider: { zdr: true } }, meta);
+  const first = await firstStep(env, "embed_files", await privacyOf(env, meta?.tenant));
+  if (!first) await dispatch(env, "embed_files", { input: texts }, { meta });   // no model is allowed at this account's privacy level: dispatch throws the privacy error
+  const m = first.model;
+  if (model && model !== m) { const same = (await stepsOf(env, "embed_files")).env.MODEL_SETTINGS?.catalog?.[m]?.embedding_equivalents; if (!Array.isArray(same) || !same.includes(model)) throw Object.assign(new Error(`the file index was made with ${model}, and the saved model is ${m}`), { modelChanged: true }); }
+  const r = await dispatch(env, "embed_files", { input: texts }, { meta });
   const j = await cappedResponseJson(r, 8 << 20).catch(() => null);
   if (!r.ok || !Array.isArray(j?.data) || j.data.length !== texts.length) throw new Error(`embeddings ${r.status}: ${JSON.stringify(j?.error || j || {}).slice(0, 160)}`);
   const vectors = j.data.slice().sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map((d) => d.embedding);
   const tok = Number(j.usage?.prompt_tokens) || texts.reduce((a, t) => a + tokensOf(t), 0);
-  return { vectors, model: m, nano: Math.ceil(Math.ceil(Number(j.usage?.cost) * 1e9 || tok * EMBED_NANO_PER_TOKEN) * MARKUP) };
+  return { vectors, model: m, nano: Math.ceil(Math.ceil(Number(j.usage?.cost) * 1e9 || tok * await embedNano(env)) * MARKUP) };
 }
 async function indexChunks(P, job, md, chunks, meta) {
   const vecs = [];
   for (let i = 0; i < chunks.length; i += EMBED_BATCH) {
     const texts = chunks.slice(i, i + EMBED_BATCH).map(([s, e]) => md.slice(s, e).slice(0, 6000));
-    const tok = texts.reduce((a, t) => a + tokensOf(t), 0), reserve = Math.ceil(tok * 1.5 * EMBED_NANO_PER_TOKEN * MARKUP) + 1000;
+    const tok = texts.reduce((a, t) => a + tokensOf(t), 0), reserve = Math.ceil(tok * 1.5 * await embedNano(P.env) * MARKUP) + 1000;
     const r = await P.paid(job, `emb:${i}`, reserve, async () => {
       const x = await embedTexts(P.env, texts, { ...meta, kind: "sidecar-embed" }, job.emb_model);
       const q = quantize(x.vectors); let bin = ""; for (let k = 0; k < q.length; k += 0x8000) bin += String.fromCharCode.apply(null, new Uint8Array(q.buffer, q.byteOffset + k, Math.min(0x8000, q.length - k)));
@@ -999,11 +1010,11 @@ export function residentSidecar() { return {
   // The query's vector against the file's chunk vectors, with the model the file was indexed with. Paid like any step (a few tokens).
   async sidecarVecRank(vecKey, q) {
     const o = await this.env.WS.get(vecKey); if (!o) return [];
-    const dims = Number(o.customMetadata?.dims) || EMBED_DIMS, model = o.customMetadata?.model || await jobModel(this.env, "embed_files");
+    const dims = Number(o.customMetadata?.dims) || EMBED_DIMS, model = o.customMetadata?.model || null;
     const packed = new Int8Array(await o.arrayBuffer());
-    const rid = `fq:${crypto.randomUUID()}`, L = this.ledger(), reserve = Math.ceil((tokensOf(q) + 16) * EMBED_NANO_PER_TOKEN * MARKUP) + 100;
+    const rid = `fq:${crypto.randomUUID()}`, L = this.ledger(), reserve = Math.ceil((tokensOf(q) + 16) * await embedNano(this.env) * MARKUP) + 100;
     const held = await L.reserve(rid, reserve).catch(() => ({ ok: false })); if (!held?.ok) return [];
-    let x; try { x = await embedTexts(this.env, [q], { tenant: this.get("tenant"), channel: this.get("channel"), kind: "sidecar-query" }, model); } catch (e) { await L.settle(rid, 0).catch(() => {}); throw e; }
+    let x; try { x = await embedTexts(this.env, [q], { tenant: this.get("tenant"), channel: this.get("channel"), kind: "sidecar-query" }, model); } catch (e) { await L.settle(rid, 0).catch(() => {}); if (e?.modelChanged) return []; throw e; }
     await L.settle(rid, Math.min(reserve, x.nano)).catch(() => {});
     return x.vectors[0] ? vectorRank(x.vectors[0], packed, dims) : [];
   },

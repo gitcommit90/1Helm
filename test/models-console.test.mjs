@@ -1,19 +1,23 @@
-// node --import ./test/stubs/register.mjs test/models-page.test.mjs
+// node --import ./test/stubs/register.mjs test/models-console.test.mjs
 // Real Worker auth/CSRF boundary + real settings persistence on independent SQLite D1 fixtures.
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import worker from "../src/index.js";
-import { modelsHtml, isModelAdmin } from "../src/ee/models-page.js";
-import { JOB_IDS, MODEL_PAGE_JOBS } from "../src/ee/model-jobs.js";
+import { consoleHtml, consoleState, isModelAdmin } from "../src/ee/models-console.js";
+import { mergeKnown } from "../app-assets/app-static/models-console-core.js";
+import { JOB_IDS, JOBS } from "../src/ee/model-jobs.js";
 import { ID } from "./helpers/seed-settings.mjs";
+// The test never asks live OpenRouter: restoring an older version checks each model against its public list, so every fetch here fails
+// (the check treats "could not read the list" as "nothing is gone") and a test that needs a list installs its own stub.
+globalThis.fetch = async () => { throw new Error("offline: this test does not use the network"); };
 globalThis.HTMLRewriter = class { on() { return this; } transform(r) { return r; } };
 
 function environment(name) {
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT); CREATE TABLE sessions(token_hash TEXT,user_id TEXT,expires_at INTEGER);");
-  db.exec(readFileSync(new URL("fixtures/migrations/migrations_055_model_settings.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("fixtures/migrations/migrations_055_model_settings.sql", import.meta.url), "utf8"));   // the earlier table (read once, if it has rows)
   db.exec(readFileSync(new URL("../db/migrations/0050_model_job_settings.sql", import.meta.url), "utf8"));
   const hash = (v) => createHash("sha256").update(v).digest("hex");
   for (const [id, email, token, expires] of [["admin", "admin@example.com", "aa11", Date.now() + 3600000], ["other", "other@example.com", "bb22", Date.now() + 3600000], ["expired", "admin@example.com", "cc33", 1]]) {
@@ -50,20 +54,22 @@ await test("scoped allowlist does not inherit release/test permissions", async (
 await test("page and API read only their environment with safe headers", async () => {
   for (const env of [dev, live]) {
     const r = await call("/models", { env }); assert.equal(r.status, 200); noStore(r); assert.match(r.headers.get("content-security-policy"), /frame-ancestors 'none'/);
-    const text = await r.text(); assert.match(text, /Models/); assert.doesNotMatch(text, /https:\/\/[^" ]+\/models/);
-    assert.match(text, env === dev ? /Each change saves right away[\s\S]*on Dev|saved for every job on Dev/ : /saved for every job on Production/);
+    const text = await r.text(); assert.match(text, /Models/); assert.doesNotMatch(text, /1helm\.com|data-e=|Push to prod|Differs from Live|payout/i);
+    assert.match(text, /<link rel="stylesheet" href="\/app-static\/models-console\.css">/); assert.match(text, /<script type="module" src="\/app-static\/models-console\.js">/); assert.doesNotMatch(text, /<script>|<style|style="/, "no inline script or style, so the page's content security policy can forbid them");
+    assert.match(r.headers.get("content-security-policy"), /script-src 'self'/);
     // the page has no built-in-default wording, no shared-slot wording and no reset to default
-    for (const word of [/\bDefault\b/, /\bChanged\b/, /Reset to default/i, /replaces .* everywhere/i, /\bslot\b/i, /Restore defaults/, /Built-in/i]) assert.doesNotMatch(text, word, String(word));
+    for (const word of [/\bChanged\b/, /Reset to default/i, /replaces .* everywhere/i, /\bslot\b/i, /Restore defaults/, /Built-in/i]) assert.doesNotMatch(text, word, String(word));
     const api = await call("/models/api", { env }); const data = await api.json(); assert.equal(data.revision, 1, "the first read saves the first version"); assert.equal(data.environment, env.ENV_NAME);
-    assert.deepEqual(Object.keys(data.config.jobs).sort(), [...JOB_IDS].sort(), "every job has its own saved setting"); assert.equal(data.options.jobs.length, MODEL_PAGE_JOBS.length);
+    assert.deepEqual(Object.keys(data.config.jobs).sort(), [...JOB_IDS].sort(), "every job has its own saved setting"); assert.equal(data.jobs.length, JOB_IDS.length, "every job has a controls row");
     for (const j of Object.values(data.config.jobs)) assert.ok(j.model && Array.isArray(j.fallbacks));
-    assert.equal(data.dashboard.jobs.length, MODEL_PAGE_JOBS.length); assert.equal(data.history[0].action, "seed");
-    assert.ok(!data.dashboard.groups.some((g) => g.id === "other")); assert.ok(!data.options.groups.some((g) => g.id === "other"));
-    for (const id of ["doors_shadow", "classic_decider", "workers_ai_chat", "classic_router"]) {
-      assert.ok(data.config.jobs[id], `${id} keeps its runtime setting`);
-      assert.ok(!data.options.jobs.some((j) => j.id === id)); assert.ok(!data.dashboard.jobs.some((j) => j.id === id));
+    assert.equal(data.jobs.length, JOB_IDS.length); assert.equal(data.history[0].action, "seed");
+    assert.ok(data.groups.some((g) => g.id === "other")); assert.ok(data.groups.some((g) => g.id === "other"));
+    for (const id of ["workers_ai_chat", "look", "embed_memory"]) {
+      assert.ok(data.config.jobs[id], `${id} has a saved setting`);
+      assert.ok(data.jobs.some((j) => j.id === id), `${id} is shown`);
     }
-    assert.doesNotMatch(text, /Tool output check|Router decider|Cloudflare chat model|Older router|"title":"Other"/);
+    assert.match(text, /Backup chat/); assert.match(text, /Other/);
+    for (const j of data.jobs) { assert.ok(j.limits && "max_output" in j.limits && "sort" in j.limits && "max_price" in j.limits, `${j.id} shows its limits`); assert.deepEqual(Object.keys(j.main).filter((k) => /^(hosts|pin)$/.test(k)), []); }
     const head = await call("/models", { env, method: "HEAD" }); assert.equal(head.status, 200); assert.equal(await head.text(), "");
   }
 });
@@ -90,18 +96,18 @@ await test("the removed reset endpoint is gone", async () => { assert.equal((awa
 
 await test("body validation and size limits reject bad input", async () => {
   for (const raw of ["{broken", "[]", "null", "1"]) assert.equal((await post("/models/api/save", raw)).status, 400);
-  assert.equal((await post("/models/api/save", " ".repeat(32769))).status, 413);
-  assert.equal((await post("/models/api/save", {}, { headers: { "content-length": "32769" } })).status, 413);
+  assert.equal((await post("/models/api/save", " ".repeat(131073))).status, 413);
+  assert.equal((await post("/models/api/save", {}, { headers: { "content-length": "131073" } })).status, 413);
 });
 
-await test("save, stale conflict and restore are versioned and dev/live isolated", async () => {
+await test("save, stale conflict and restore are versioned and environment isolated", async () => {
   const original = await (await call("/models/api")).json();
   const config = structuredClone(original.config); config.jobs["chat.technical"].effort = "medium";
   let r = await post("/models/api/save", { revision: 1, config }); assert.equal(r.status, 200); let value = await r.json(); assert.equal(value.revision, 2); assert.equal(value.config.jobs["chat.technical"].effort, "medium"); assert.equal(value.history[0].by, "admin@example.com");
   r = await post("/models/api/save", { revision: 1, config }); assert.equal(r.status, 409);
   assert.equal((await (await call("/models/api", { env: live })).json()).revision, 1, "live has its own first version");
   r = await post("/models/api/restore", { revision: 2, restore_revision: 1 }); assert.equal(r.status, 200); value = await r.json(); assert.equal(value.revision, 3); assert.deepEqual(value.config, original.config);
-  assert.ok(value.dashboard.jobs.every((j) => j.group !== "other")); assert.ok(value.options.jobs.every((j) => j.group !== "other"));
+  assert.ok(value.jobs.some((j) => j.group === "other"));
   r = await post("/models/api/restore", { revision: 3, restore_revision: 2 }); assert.equal(r.status, 200); value = await r.json(); assert.equal(value.revision, 4); assert.equal(value.config.jobs["chat.technical"].effort, "medium");
   r = await post("/models/api/restore", { revision: 4, restore_revision: 987 }); assert.equal(r.status, 404);
   assert.equal((await (await call("/models/api", { env: live })).json()).revision, 1); assert.equal((await (await call("/models/api")).json()).revision, 4);
@@ -110,7 +116,14 @@ await test("save, stale conflict and restore are versioned and dev/live isolated
 await test("invalid model settings do not create a version", async () => {
   const current = await (await call("/models/api")).json();
   current.config.jobs["chat.technical"].effort = "not-an-effort";
-  const r = await post("/models/api/save", { revision: current.revision, config: current.config }); assert.equal(r.status, 400);
+  // The model list is a local stub that offers the job's own model with the reasoning levels low and high, so "not-an-effort" is refused by 1Helm's check.
+  const originalFetch = globalThis.fetch, id = current.config.jobs["chat.technical"].model;
+  const candidate = { id, name: "Fixture", architecture: { input_modalities: ["text"], output_modalities: ["text"] }, reasoning: { mandatory: false, supported_efforts: ["low", "high"], default_effort: "low" } };
+  const endpoint = { model_id: id, tag: "fixture-zdr", context_length: 131072, max_completion_tokens: 16384, pricing: { prompt: "0.000001", completion: "0.000002" }, supported_parameters: ["tools", "max_tokens", "reasoning", "response_format"], supports_tool_choice: { auto: true, none: true, required: true, function: true } };
+  globalThis.fetch = async (url) => Response.json({ data: /\/models(\?|$)/.test(String(url)) ? [candidate] : String(url).endsWith("/endpoints/zdr") ? [endpoint] : { endpoints: [] } });
+  try {
+    const r = await post("/models/api/save", { revision: current.revision, config: current.config }); assert.equal(r.status, 400);
+  } finally { globalThis.fetch = originalFetch; }
   assert.equal((await (await call("/models/api")).json()).revision, current.revision);
 });
 
@@ -129,7 +142,7 @@ await test("a corrupt saved version is reported, the last good copy keeps servin
 await test("history actor markup cannot escape JSON script or create HTML", async () => {
   const current = await (await call("/models/api")).json();
   current.history.push({ revision: 50, at: Date.now(), by: '</script><img src=x onerror="alert(1)">\u2028\u2029', action: "save" });
-  const result = modelsHtml(current, dev);
+  const result = consoleHtml(current);
   assert.doesNotMatch(result, /<img src=x/); assert.match(result, /\\u003c\/script>/); assert.match(result, /\\u2028\\u2029/);
   const data = result.match(/<script id="model-state" type="application\/json">([\s\S]*?)<\/script>/)[1];
   assert.equal(JSON.parse(data).history.at(-1).by, current.history.at(-1).by);
@@ -172,8 +185,8 @@ await test("storage errors are sanitized and never cached", async () => {
 
 await test("the dashboard shows exactly what is saved for each job, and a change shows on the very next read", async () => {
   const { modelDashboard } = await import("../src/ee/model-dashboard.js");
-  const view = await (await call("/models/api")).json(), rows = Object.fromEntries(view.dashboard.jobs.map((j) => [j.id, j]));
-  for (const def of MODEL_PAGE_JOBS) {
+  const view = await (await call("/models/api")).json(), rows = Object.fromEntries(view.jobs.map((j) => [j.id, j]));
+  for (const def of JOBS) {
     const saved = view.config.jobs[def.id], row = rows[def.id];
     assert.equal(row.main.id, saved.model, def.id); assert.deepEqual(row.fallbacks.map((f) => f.id), saved.fallbacks.map((f) => f.model), def.id);
     if (row.has_effort) { assert.equal(row.main.effort, saved.effort); assert.deepEqual(row.fallbacks.map((f) => f.effort), saved.fallbacks.map((f) => f.effort)); } else assert.equal(row.main.effort, null);
@@ -183,7 +196,7 @@ await test("the dashboard shows exactly what is saved for each job, and a change
   assert.deepEqual(rows["chat.general"].warnings, []);
   // a list that leaves a privacy setting with no allowed model is reported (and still saved: the privacy rule skips the model at run time)
   const cfg = structuredClone(view.config); cfg.jobs["chat.research"] = { model: ID.MUSE_C, effort: "xhigh", fallbacks: [] };
-  const saved = await (await post("/models/api/save", { revision: view.revision, config: { version: 2, jobs: cfg.jobs } })).json(), after = Object.fromEntries(saved.dashboard.jobs.map((j) => [j.id, j]));
+  const saved = await (await post("/models/api/save", { revision: view.revision, config: { version: 2, jobs: cfg.jobs } })).json(), after = Object.fromEntries(saved.jobs.map((j) => [j.id, j]));
   assert.equal(after["chat.research"].main.id, ID.MUSE_C); assert.equal(after["chat.research"].coverage.zdr.allowed, 0); assert.equal(after["chat.research"].coverage.no_training.allowed, 0); assert.equal(after["chat.research"].coverage.unrestricted.allowed, 1);
   assert.equal(after["chat.research"].warnings.length, 2); assert.match(after["chat.research"].warnings[0], /no allowed model/);
   assert.equal(after["chat.general"].warnings.length, 0);
@@ -191,7 +204,7 @@ await test("the dashboard shows exactly what is saved for each job, and a change
   const { dispatchOrder, policyRoute } = await import("../src/ee/route2.js");
   assert.deepEqual(dispatchOrder(policyRoute(saved.config, "research", "zdr", "x"), "zdr", { settings: saved.config }).models, []);
   assert.deepEqual(dispatchOrder(policyRoute(saved.config, "research", "unrestricted", "x"), "unrestricted", { settings: saved.config }).models, [ID.MUSE_C]);
-  assert.equal(modelDashboard(saved).jobs.length, MODEL_PAGE_JOBS.length);
+  assert.equal(modelDashboard(saved).jobs.length, JOB_IDS.length);
 });
 
 await test("a page change replaces the model of one job only, and the row shows it", async () => {
@@ -202,10 +215,10 @@ await test("a page change replaces the model of one job only, and the row shows 
   try {
     const view = await (await call("/models/api")).json(), cfg = structuredClone(view.config), before = structuredClone(view.config.jobs);
     cfg.jobs["chat.skills"] = { ...cfg.jobs["chat.skills"], model: cand.id, effort: "low", fallbacks: cfg.jobs["chat.skills"].fallbacks.filter((f) => f.model !== cand.id) };
-    const saved = await (await post("/models/api/save", { revision: view.revision, config: { version: 2, jobs: cfg.jobs } })).json(), row = saved.dashboard.jobs.find((j) => j.id === "chat.skills");
+    const saved = await (await post("/models/api/save", { revision: view.revision, config: { version: 2, jobs: cfg.jobs } })).json(), row = saved.jobs.find((j) => j.id === "chat.skills");
     assert.equal(row.main.id, cand.id); assert.equal(row.main.name, "Fixture Dash"); assert.equal(row.main.effort, "low");
     for (const id of JOB_IDS) if (id !== "chat.skills") assert.deepEqual(saved.config.jobs[id], before[id], `${id} is untouched: no shared slot moved with it`);
-    const html = await (await call("/models")).text(); assert.match(html, /id="groups"/); assert.match(html, /Fixture Dash/);
+    const html = await (await call("/models")).text(); assert.match(html, /id="app"/); assert.match(html, /Fixture Dash/);
   } finally { globalThis.fetch = originalFetch; }
 });
 
@@ -223,16 +236,20 @@ await test("fallback order, reasoning and removal save like any other change", a
 });
 
 await test("search lists saved models with the live name, price and reasoning levels, not the saved copy", async () => {
-  const page = await (await call("/models")).text();
-  const src = page.match(/function mergeKnown\(.*\n/)?.[0];
-  assert.ok(src, "the picker has a function that merges saved models with the live catalog");
-  const mergeKnown = new Function(`${src}; return mergeKnown;`)();
   const saved = [{ id: "xiaomi/mimo-v2.6-flash", name: "Xiaomi: MiMo-V2.6-Flash (old)", efforts: ["low"] }, { id: "@cf/old/model", name: "Old model", efforts: [] }];
   const fresh = [{ id: "xiaomi/mimo-v2.6-flash", name: "Xiaomi: MiMo-V2.6-Flash", efforts: ["none", "low"], default_effort: "low", pricing: { prompt: 0.14, completion: 0.28 } }];
   const out = mergeKnown(saved, fresh, "mimo");
   assert.equal(out.length, 1); assert.equal(out[0].name, "Xiaomi: MiMo-V2.6-Flash"); assert.deepEqual(out[0].pricing, { prompt: 0.14, completion: 0.28 }); assert.deepEqual(out[0].efforts, ["none", "low"]);
   assert.deepEqual(mergeKnown(saved, fresh, "").map((m) => m.id), ["xiaomi/mimo-v2.6-flash", "@cf/old/model"], "saved models missing from the live catalog stay listed");
-  assert.match(page, /local=mergeKnown\(inUse\(''\),fresh,q\)/, "search results go through the merge");
+});
+
+await test("the push, receive, live and payout routes do not exist, and the page and assets name no private host", async () => {
+  for (const path of ["/models/api/live", "/models/api/push-prod", "/models/api/receive", "/models/api/payout-switch", "/models/api/report"]) {
+    for (const method of ["GET", "POST"]) { const r = await (method === "POST" ? post(path, {}) : call(path)); assert.equal(r.status, 404, `${method} ${path}`); }
+  }
+  const files = ["models-console-core.js", "models-console.js", "models-console.css"].map((f) => readFileSync(new URL(`../app-assets/app-static/${f}`, import.meta.url), "utf8"));
+  const page = await (await call("/models")).text();
+  for (const text of [page, ...files]) assert.doesNotMatch(text, /dev\.1helm\.com|app\.1helm\.com|Push to prod|Match Live|Differs from Live|payout-switch|push-prod/i);
 });
 
 console.log(`PASS ${checks} model page security and integration checks`);

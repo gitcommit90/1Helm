@@ -11,7 +11,8 @@ export function cloudflareLevels(model, properties = {}) {
   if (verified) return ["unrestricted", "no_training", "zdr"].filter(l => endpointOk(verified, l));
   return properties.partner === "true" || properties.partner === true ? [] : ["unrestricted", "no_training"];
 }
-export const dynamicProvidersOn = env => env?.ONEHELM_EE === "1hc" && env?.ENV_NAME === "dev" && ["1", "true", "on"].includes(String(env.DYNAMIC_ROUTING));
+// Every environment runs the saved model settings the same way: an OpenRouter ID goes to OpenRouter and an @cf/ ID to Workers AI. It was dev only,
+// and Live (which has the same saved settings after "Push to prod") sent OpenRouter IDs to Workers AI and failed with 404.
 const propsOf = m => Object.fromEntries((m.properties || []).map(p => { let value = p.value; if (typeof value === "string" && /^[{[]/.test(value)) { try { value = JSON.parse(value); } catch {} } return [p.property_id, value]; }));
 const yes = p => p === true || p === "true";
 export function assessCloudflareModels(models) {
@@ -47,9 +48,17 @@ export async function authorizeCloudflare(env, model, meta = {}, catalog = null)
   if (!isCloudflareModel(model) || !env?.AI?.run) throw new Error("Cloudflare Workers AI is unavailable.");
   const level = normalizePrivacy(meta._privacy ?? await privacyOf(env, meta.tenant));
   // Catalog facts come only from a server-validated saved snapshot.
-  const levels = catalog?.source === "CF" ? catalog.levels : cloudflareLevels(model);
-  if (!levels.includes(level)) throw new PrivacyBlocked(`Cloudflare has no verified ${level} route for ${model}.`, { model, level });
+  // A saved Cloudflare model runs at every level, as it does today. cloudflarePrivacyNote says what Cloudflare promises where the level asks for more.
+  // Only a partner-hosted model (no published no-training promise at all, so no level) stays blocked.
+  const levels = catalog?.source === "CF" && Array.isArray(catalog.levels) ? catalog.levels : cloudflareLevels(model);
+  if (!levels.length) throw new PrivacyBlocked(`Cloudflare has no verified privacy promise for ${model}.`, { model, level });
   return level;
+}
+// The text /models shows beside a Cloudflare model the account's level asks more of than Cloudflare promises, or null.
+export function cloudflarePrivacyNote(model, level, catalog = null) {
+  const levels = catalog?.source === "CF" && Array.isArray(catalog.levels) ? catalog.levels : cloudflareLevels(model);
+  if (levels.includes(normalizePrivacy(level))) return null;
+  return levels.length ? "Cloudflare promises no training, not zero retention. It runs at this level as it does today." : "Cloudflare has no privacy promise for this model.";
 }
 export const cfOptions = (env, meta = {}) => ({ ...(env.AIG_ID ? { gateway: { id: env.AIG_ID, collectLog: false, skipCache: true } } : {}),
   extraHeaders: { "cf-aig-no-wholesale": "true", "cf-aig-collect-log": "false", "cf-aig-collect-log-payload": "false", "cf-aig-skip-cache": "true" } });

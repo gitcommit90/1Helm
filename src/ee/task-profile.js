@@ -1,17 +1,15 @@
 // Managed append-runtime task identity. This is routing state, not credentials.
 // Default settings select NEW tasks; persisted tasks retain their selection.
 // Current privacy, credential mode, and explicit operator revocations still win.
-import { routeTwoTurn, dispatchOrder, setTurnRoute } from "./route2.js";
+import { routeTwoTurn, dispatchOrder, setTurnRoute, policyRoute } from "./route2.js";
 import { modelSettingsEnv } from "./model-settings.js";
 import { configuredHosts } from "./model-jobs.js";
 import { taskModelCatalog, validCatalogRecord, effectiveTaskCatalog, catalogUnavailable, isLatestAlias } from "./model-catalog.js";
 import { privacyOf, enforceRequest, PrivacyBlocked } from "../privacy.js";
 import { dynamicRoutingOn, generalRoutingChain } from "./routing-config.js";
-import { testEffortOf } from "../internal-test-model.js";
 
 export const TASK_PROFILE_KEY = (session) => `task-profile:${session}`;
 const clone = (v) => JSON.parse(JSON.stringify(v));
-const list = (value) => String(value || "").split(",").map((s) => s.trim()).filter(Boolean);
 export class TaskAffinityBlocked extends Error {
   constructor(message, reason) { super(message); this.status = 409; this.taskAffinity = true; this.code = "task_affinity_blocked"; this.reason = reason; }
 }
@@ -70,28 +68,38 @@ export async function ensureTaskRuntime(R, tc, args = {}) {
     return bindTaskProfile(R, tc, profile, args.stats);
   }
   let profile = readTaskProfile(R, tc.session, settingsEnv.MODEL_SETTINGS);
-  if (profile) {
+  // A running task picks up a change made on the Models page at the NEXT person message (Captain, 2026-10-17); inside one turn the model stays fixed.
+  // profile.refreshedTurn is the turn the profile was last read from the saved settings. A profile saved before this field existed is stamped with the
+  // current turn and kept (a turn resumed after a deploy must not change model half way); it refreshes at the next message.
+  const turn = tc.turn ?? null;
+  if (profile && profile.refreshedTurn === undefined) { profile = { ...profile, refreshedTurn: turn }; R.put(TASK_PROFILE_KEY(tc.session), JSON.stringify(profile)); }
+  if (profile && (turn == null || profile.refreshedTurn === turn)) {
     await authorizeTaskProfile(R.env, profile, R.get("tenant"));
     return bindTaskProfile(R, tc, profile, args.stats);
   }
+  const previous = profile;
+  // A tightened privacy setting still stops the task before anything is sent (nothing is substituted); only a task that is still allowed moves to the saved list.
+  if (previous) await authorizeTaskProfile(R.env, previous, R.get("tenant"));
   // Arbitrary BYOK endpoints do not yet provide verified capacity metadata.
   // They remain on the established BYOK lane, never a managed-model substitute.
   if (R.env.BYOK) throw new TaskAffinityBlocked("This task uses your own AI service and must continue on the own-key runtime.", "byok-legacy");
   const env = await modelSettingsEnv(R.env), level = await privacyOf(env, R.get("tenant"));
-  const { route } = await routeTwoTurn(R, tc, args);
-  const pick = route.test ? { model: route.model, effort: null } : dispatchOrder(route, level, { settings: env.MODEL_SETTINGS }).attempts[0], selected = pick?.model;
+  // A refresh keeps the task's category and reads that category's saved list again; it asks the request sorter nothing.
+  const { route } = previous ? { route: policyRoute(env.MODEL_SETTINGS, previous.category || "general", level, "saved settings") } : await routeTwoTurn(R, tc, args);
+  const pick = dispatchOrder(route, level, { settings: env.MODEL_SETTINGS }).attempts[0], selected = pick?.model;
   if (!selected) throw new PrivacyBlocked("No task model is eligible under the current AI data privacy setting. Review Settings → General → AI data privacy.");
   // Only server-injected fixtures or validated catalog settings can supply a snapshot.
   const saved = env.TASK_MODEL_CATALOG?.[selected] || env.MODEL_SETTINGS?.catalog?.[selected];
   const catalog = effectiveTaskCatalog(await taskCatalogFor(selected, saved, env), selected, env.MODEL_SETTINGS);
   const hosts = configuredHosts({ catalog: { [selected]: catalog } }, selected, level);
   if (!hosts.length) throw new PrivacyBlocked(`The selected task model ${selected} is not allowed by your current AI data privacy setting.`);
-  const stepBudget = Number(env.STEP_MAX_TOKENS) >= 1024 ? Math.min(Math.round(Number(env.STEP_MAX_TOKENS)), 128000) : 50000;
-  profile = { version: 1, mode: "managed", credentialRef: "managed-openrouter", requestedModel: selected, servedModel: null, servedProvider: null,
-    effort: route.test ? testEffortOf(env) : pick.effort, category: route.category || "general", level,
-    hosts, catalog, contextLength: catalog.context_length, maxOutput: Math.min(stepBudget, catalog.max_output, catalog.context_length - 1),
-    cacheSession: JSON.stringify([R.get("tenant"), R.get("channel"), tc.session]), settingsRevision: env.MODEL_SETTINGS_REVISION || 0,
-    createdAt: Date.now(), transitions: [] };
+  const same = previous && previous.requestedModel === selected;
+  profile = { version: 1, mode: "managed", credentialRef: "managed-openrouter", requestedModel: selected, servedModel: same ? previous.servedModel : null, servedProvider: same ? previous.servedProvider : null,
+    effort: pick.effort, category: route.category || "general", level,
+    hosts, catalog, contextLength: catalog.context_length, maxOutput: Math.min(catalog.max_output, catalog.context_length - 1),   // the model's own ceiling; the limit a step uses is the saved job's max_output (model.js taskPayload)
+    cacheSession: previous?.cacheSession || JSON.stringify([R.get("tenant"), R.get("channel"), tc.session]), settingsRevision: env.MODEL_SETTINGS_REVISION || 0,
+    createdAt: previous?.createdAt || Date.now(), refreshedTurn: turn,
+    transitions: [...(previous?.transitions || []), ...(previous && !same ? [{ from: previous.requestedModel, to: selected, reason: "saved settings changed", at: Date.now() }] : [])] };
   await authorizeTaskProfile(env, profile, R.get("tenant"));
   R.put(TASK_PROFILE_KEY(tc.session), JSON.stringify(profile));
   return bindTaskProfile(R, tc, profile, args.stats);
@@ -107,7 +115,7 @@ async function taskCatalogFor(model, saved, env) {
 // Freeze the complete saved chain when a new dispatch starts. Open workers keep this snapshot through revisions.
 export async function routingProfile(R, entries, { category = "general", session, env = R.env } = {}) {
   env = await modelSettingsEnv(env);
-  const level = await privacyOf(env, R.get("tenant")), stepBudget = Number(env.STEP_MAX_TOKENS) >= 1024 ? Math.min(Math.round(Number(env.STEP_MAX_TOKENS)), 128000) : 50000;
+  const level = await privacyOf(env, R.get("tenant"));
   const poolChain = [], unavailableChoices = [];
   for (const [index, entry] of (entries || []).entries()) {
     const model = entry.model, saved = env.TASK_MODEL_CATALOG?.[model] || env.MODEL_SETTINGS?.catalog?.[model];
@@ -124,7 +132,7 @@ export async function routingProfile(R, entries, { category = "general", session
     poolChain.push({ version: 1, mode: "managed", credentialRef: cf ? "managed-cloudflare" : "managed-openrouter", source: cf ? "CF" : "OR",
       requestedModel: model, servedModel: null, servedProvider: null, effort: entry.effort ?? null, category, level,
       hosts: cf ? ["cloudflare"] : configuredHosts({ catalog: { [model]: catalog } }, model, level), catalog,
-      contextLength: catalog.context_length, maxOutput: Math.min(stepBudget, catalog.max_output, catalog.context_length - 1),
+      contextLength: catalog.context_length, maxOutput: Math.min(catalog.max_output, catalog.context_length - 1),   // the model's own ceiling; the limit a step uses is the saved job's max_output (model.js taskPayload)
       cacheSession: JSON.stringify([R.get("tenant"), R.get("channel"), session]), settingsRevision: env.MODEL_SETTINGS_REVISION || 0,
       createdAt: Date.now(), transitions: [] });
   }
@@ -141,32 +149,25 @@ export async function authorizeTaskProfile(env, profile, tenant, body = {}) {
   if (env.BYOK) throw new TaskAffinityBlocked("Your AI billing mode changed to your own key. This task has stopped before sending its history to a different model. Start a new task with your own AI service, or restore the original mode.", "credential-mode-changed");
   const cf = profile.source === "CF" || profile.catalog?.source === "CF";
   if (cf && !env.AI) throw new TaskAffinityBlocked("Cloudflare AI is unavailable.", "credential-unavailable");
-  if (!cf && (!env.OPENROUTER_API_KEY || env.MODEL_PROVIDER === "workers-ai")) throw new TaskAffinityBlocked("This task's AI service is unavailable. Restore the managed service and retry; no other model was substituted.", "credential-unavailable");
-  if (list(env.TASK_REVOKED_MODELS).includes(profile.requestedModel)) throw new TaskAffinityBlocked("This task's model has been disabled. Start a new task with an available model; no history was sent to a replacement.", "model-revoked");
-  const level = await privacyOf(env, tenant), revoked = list(env.TASK_REVOKED_HOSTS);
+  if (!cf && !env.OPENROUTER_API_KEY) throw new TaskAffinityBlocked("This task's AI service is unavailable. Restore the managed service and retry; no other model was substituted.", "credential-unavailable");
+  const level = await privacyOf(env, tenant);
   if (cf) {
     if (!profile.catalog?.levels?.includes(level)) throw new PrivacyBlocked("The saved Cloudflare model is not allowed at the current privacy level.");
-    if (revoked.includes("cloudflare")) throw new TaskAffinityBlocked("Cloudflare AI has been disabled.", "provider-revoked");
     const c = effectiveTaskCatalog(profile.catalog, profile.requestedModel, env.MODEL_SETTINGS), choice = typeof body.tool_choice === "object" ? "function" : body.tool_choice;
     if (body.tools?.length && !c.tool_choice?.length) throw new TaskAffinityBlocked("The saved Cloudflare model cannot use tools.", "unsupported-tools");
     if (choice && !c.tool_choice?.includes(choice)) throw new TaskAffinityBlocked("The saved Cloudflare model does not support the requested tool choice.", "unsupported-tool-choice");
     if (body.messages?.some(m => Array.isArray(m.content) && m.content.some(p => p.type === "image_url")) && !c.input_modalities?.includes("image")) throw new TaskAffinityBlocked("The saved Cloudflare model cannot read images.", "unsupported-image");
     return { level, hosts: ["cloudflare"] };
   }
-  // Session-based provider stickiness belongs to OpenRouter. Keep the original
-  // whitelist order stable; observed canonical hosts are diagnostic, not a
-  // manual order that would disable upstream stickiness.
-  const hosts = profile.hosts.filter((h) => !revoked.some((r) => h === r || h.startsWith(`${r}/`)));
-  if (!hosts.length) throw new TaskAffinityBlocked("This task's AI providers have been disabled. Retry after service is restored or start a new task.", "provider-revoked");
   // Static privacy registry and OpenRouter's strict filter are applied afresh,
   // never widened to make an old profile work under a changed privacy choice.
   try {
-    const checked = enforceRequest({ model: profile.requestedModel, provider: { order: hosts, only: hosts } }, level);
+    enforceRequest({ model: profile.requestedModel, provider: {} }, level);
     const c = effectiveTaskCatalog(profile.catalog, profile.requestedModel, env.MODEL_SETTINGS), choice = typeof body.tool_choice === "object" ? "function" : body.tool_choice;
     if (choice && !c.tool_choice.includes(choice)) throw new TaskAffinityBlocked(`This task's model does not support ${choice} tool selection. No different model was substituted.`, "unsupported-tool-choice");
     if (body.messages?.some((m) => Array.isArray(m.content) && m.content.some((p) => p.type === "image_url")) && !c.input_modalities.includes("image"))
       throw new TaskAffinityBlocked("This task's model cannot read images. Start a new task with an image-capable model.", "unsupported-image");
-    return { level, hosts: checked.provider.only || hosts };
+    return { level, hosts: profile.hosts };
   } catch (e) {
     if (!e.privacy) throw e;
     throw new PrivacyBlocked("This task's original model is no longer allowed by your AI data privacy setting. Nothing was sent to a replacement. Restore the setting or start a new task using an allowed model.", { reason: "task-privacy-revoked", model: profile.requestedModel, level });

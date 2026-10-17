@@ -4,7 +4,7 @@
 // and to background helpers.
 // - DOCS is the one list: name, one-line summary (shown in the static core's docs index and in read_doc's "unknown name" answer), text.
 // - Same {{#flag}}…{{/flag}} syntax as the prompt (render() from src/prompt/index.js), so a doc only describes what this
-//   deployment really has (flags: the prompt's switches, plus route2 = the two-model main chat).
+//   deployment really has (flags: the prompt's switches).
 // - Lines starting with "TODO(Captain)" are notes for the Captain (facts nobody has confirmed yet). They show on the parity page
 //   and are never served to the helper.
 // Facts in these docs come from the code and the live app. A new feature adds its doc lines (and its prompt line) in the same change.

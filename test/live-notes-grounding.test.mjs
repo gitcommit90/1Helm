@@ -41,7 +41,7 @@ for (const f of cases) {
     },
   });
   await ln.refineStep();
-  assert.equal(calls.length, 1); assert.equal(calls[0].kind, "refine"); assert.equal(calls[0].cap, 8192);
+  assert.equal(calls.length, 1); assert.equal(calls[0].kind, "refine");
   assert.equal(calls[0].messages[0].content, FINAL_SYSTEM);
   const input = calls[0].messages[1].content;
   assert.ok(input.includes(`[+0:10] ${f.speaker}: ${rows[0].tx}`));

@@ -11,12 +11,12 @@
 //     with the ddgs library itself: 1/4), so the straight fetch is only used when there is no BROWSER binding.
 //  2. A bot check or broken page → one retry after a short pause (a fresh browser usually gets through).
 //  3. Still nothing → one paid search: Brave (only if BRAVE_SEARCH_KEY, a ZDR key, is set) else Cloudflare's Web Search API
-//     (env.AI.websearch through our AI Gateway, provider Linkup: zero data retention, 10/10 in the benchmark, $5 per 1,000).
-//     Cloudflare's default provider (Ceramic, $0.25 per 1,000) scored 3/10, so it isn't used. WEB_SEARCH_FALLBACK=off skips this.
+//     (through the dispatcher and our AI Gateway; the provider is the saved setting of the job "web_search", Linkup at first: zero data retention, 10/10 in
+//     the benchmark, $5 per 1,000). Cloudflare's default provider (Ceramic, $0.25 per 1,000) scored 3/10, so it isn't used. WEB_SEARCH_FALLBACK=off skips this.
 //  4. All of that failed → a short "busy" note that points at fetch_url. No retry storm.
 // Billing: DuckDuckGo searches are free to the person. A paid fallback search is charged like a model call (× MARKUP) on the turn.
 import { cappedResponseJson } from "./bounded-response.js";
-
+import { dispatch } from "./ee/index.js";
 export const BRAVE_URL = "https://api.search.brave.com/res/v1/web/search";
 export const DDG_URL = "https://html.duckduckgo.com/html/";
 export const BRAVE_NANO = 5_000_000;                 // $0.005 per search (Brave Search plan), before markup
@@ -26,6 +26,7 @@ export const BUSY = "Web search is busy right now; read a specific page with fet
 export const isSearchFail = (s) => /^error/.test(s) || String(s).startsWith(BUSY);
 // freshness (day/week/month/year) works in webSearch() but isn't offered to the model: in the population replay Luna set it on every
 // "current …" question (year, then month once year was gone), which hid the Census QuickFacts page; without it the page is the top hit.
+import { jobTimeoutFor } from "./ee/index.js";
 const FRESH_BRAVE = { day: "pd", week: "pw", month: "pm", year: "py" }, FRESH_DDG = { day: "d", week: "w", month: "m", year: "y" };
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 
@@ -110,13 +111,13 @@ async function ddgOnce(env, q, o, { fetchImpl, timeoutMs }) {
     html = String(j.result ?? "");
   } else {
     const r = await fetchImpl(DDG_URL, { method: "POST", headers: { "user-agent": UA, accept: "text/html", "accept-language": "en-US,en;q=0.9", "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ q, b: "", kl: o.region || "us-en", ...(FRESH_DDG[o.freshness] ? { df: FRESH_DDG[o.freshness] } : {}) }).toString(), signal: AbortSignal.timeout(timeoutMs) });
+      body: new URLSearchParams({ q, b: "", kl: o.region || "us-en", ...(FRESH_DDG[o.freshness] ? { df: FRESH_DDG[o.freshness] } : {}) }).toString(), signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined });
     html = (await pagePrefix(r)).text; if (!r.ok && r.status !== 202) return { ok: false, why: `HTTP ${r.status}` };
   }
   const p = parseDdg(html, o.count);
   return p.blocked ? { ok: false, blocked: true, why: "bot check" } : p.ok ? { ok: true, results: p.results } : { ok: false, why: `unreadable page (${html.length} chars)` };
 }
-const withTimeout = (p, ms) => { let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`timed out after ${ms} ms`)), ms); })]).finally(() => clearTimeout(t)); };
+const withTimeout = (p, ms) => { if (!ms) return p; let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`timed out after ${ms} ms`)), ms); })]).finally(() => clearTimeout(t)); };
 
 // ---- paid fallbacks ----
 // Brave's JSON → { query, results }. News results (when Brave adds them) go first, marked.
@@ -129,14 +130,15 @@ async function braveOnce(env, q, o, { fetchImpl, timeoutMs }) {
   u.searchParams.set("q", q); u.searchParams.set("count", String(o.count)); u.searchParams.set("text_decorations", "false"); u.searchParams.set("safesearch", "moderate");
   if (FRESH_BRAVE[o.freshness]) u.searchParams.set("freshness", FRESH_BRAVE[o.freshness]);
   if (o.region && o.region !== "wt-wt") u.searchParams.set("country", o.region.slice(0, 2) === "uk" ? "gb" : o.region.slice(0, 2));
-  const r = await fetchImpl(u, { headers: { accept: "application/json", "x-subscription-token": env.BRAVE_SEARCH_KEY }, signal: AbortSignal.timeout(timeoutMs) });
+  const r = await fetchImpl(u, { headers: { accept: "application/json", "x-subscription-token": env.BRAVE_SEARCH_KEY }, signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined });
   if (!r.ok) return { ok: false, why: `brave HTTP ${r.status}` };
   const j = await cappedResponseJson(r, SEARCH_JSON_BYTES);
   return j ? { ok: true, results: leanResults(q, j, o.count).results, nano: BRAVE_NANO } : { ok: false, why: "brave response too large or invalid" };
 }
 // Cloudflare Web Search API (AI Gateway): { items: [{ url, title, description }] }.
+// The provider and the largest number of results are the saved settings of the job "web_search" (Models page); the dispatcher makes the call.
 async function cfOnce(env, q, o, { timeoutMs }) {
-  const r = await withTimeout(env.AI.websearch({ gatewayId: env.AIG_ID, query: q, provider: "linkup", limit: o.count }), timeoutMs);
+  let r; try { r = await dispatch(env, "web_search", { query: q, limit: o.count }, { meta: { kind: "web-search" }, signal: AbortSignal.timeout(timeoutMs) }); } catch (e) { return { ok: false, why: `cloudflare search ${String(e?.message || e).slice(0, 100)}` }; }
   if (!r?.ok) return { ok: false, why: `cloudflare search HTTP ${r?.status}` };
   const j = await cappedResponseJson(r, SEARCH_JSON_BYTES);
   if (!j) return { ok: false, why: "cloudflare search response too large or invalid" };
@@ -147,8 +149,9 @@ const paidOn = (env) => env?.WEB_SEARCH_FALLBACK !== "off" && (!!env?.BRAVE_SEAR
 
 // One search. Never throws. → { out, nano, via }: out is the lean JSON the model reads (and the work log summarizes), an "error: …"
 // line, or BUSY; nano is what it cost before markup (0 for DuckDuckGo and for failures).
-export async function webSearch(env, a = {}, { fetchImpl = globalThis.fetch, timeoutMs = 12000, backoffMs = 600, sleep = (ms) => new Promise((s) => setTimeout(s, ms)), log = (x) => console.log("web_search", JSON.stringify(x)) } = {}) {
+export async function webSearch(env, a = {}, { fetchImpl = globalThis.fetch, timeoutMs, backoffMs = 600, sleep = (ms) => new Promise((s) => setTimeout(s, ms)), log = (x) => console.log("web_search", JSON.stringify(x)) } = {}) {
   const q = normQuery(a.query); if (!q) return { out: "error: query is empty", nano: 0, via: "" };
+  if (timeoutMs === undefined) timeoutMs = await jobTimeoutFor(env, "web_search");   // the saved timeout of the web_search job (limits.js, 12 seconds to start with); null means none
   const o = { count: countOf(a.count), freshness: a.freshness, region: regionOf(a.region) }, deps = { fetchImpl, timeoutMs }, tries = [];
   const attempt = async (via, fn) => { const t0 = Date.now(); let r; try { r = await fn(); } catch (e) { r = { ok: false, why: String(e?.message || e).slice(0, 120) }; }
     tries.push({ via, ok: r.ok, ms: Date.now() - t0, ...(r.ok ? { n: r.results.length } : { why: r.why }) }); return r; };

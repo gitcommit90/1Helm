@@ -349,7 +349,7 @@ export function resumeMix(Resident) { return Object.assign(Resident.prototype, {
       else if (eff.cls === "exec") {
         // The command kept running in the computer through the deploy: wait for it (what's left of its time limit) and take its real result.
         let r = null;
-        if (COMPUTER_EXEC.has(name)) { try { r = await this.computer().reattach(runIdOf(turn, call.id), { timeoutMs: Math.max(5e3, commandLimitMs(name, a) - (Date.now() - eff.at)) }); } catch (e) { console.log("reattach", e.message); } }
+        if (COMPUTER_EXEC.has(name)) { try { r = await this.computer().reattach(runIdOf(turn, call.id), { timeoutMs: Math.max(5e3, commandLimitMs(name, a, this._limits?.timingSaved) - (Date.now() - eff.at)) }); } catch (e) { console.log("reattach", e.message); } }
         text = r && !r.lost ? `exit ${r.code}\n${String(r.out ?? "")}`.slice(-20000) + (r.timed_out ? `\n${RUN_TIMED_OUT}` : "") : MAYBE_RAN;
         if (r && !r.lost) tc.reattached = (tc.reattached || 0) + 1;
       }

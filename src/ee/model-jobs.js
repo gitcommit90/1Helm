@@ -2,6 +2,7 @@
 // The saved settings (model-settings.js, edited on the Models page) are the only source of those values. This file lists which jobs
 // exist, reads a job's saved setting, builds the request routes from it, and checks the privacy rule. It names no model.
 import { CATEGORIES } from "./pool.js";
+import { jobFieldDefaults } from "./model-seed.js";
 import { PRIVACY_LEVELS, eligibleHosts, hostOk, normalizePrivacy, registered } from "../privacy.js";
 
 export class ModelSettingsError extends Error {
@@ -25,12 +26,20 @@ export const JOB_KINDS = {
   speech_cloudflare: { fallbacks: 0, effort: false, pick: "speech_cloudflare", needs: "Needs a speech-to-text model that runs on Cloudflare." },
   speech_live: { fallbacks: 1, effort: false, pick: "speech_live", needs: "Needs a live speech-to-text model." },
   embedding_files: { fallbacks: 0, effort: false, zdr: true, pick: "embedding_files", reindex: true, needs: "Needs a text embedding model." },
-  embedding_memory: { fallbacks: 0, effort: false, pick: "embedding_memory", reindex: true, needs: "Needs a text embedding model." },
-  vision: { fallbacks: 0, effort: false, pick: "vision", needs: "Needs a model that can read pictures." },
+  embedding_memory: { fallbacks: 0, effort: false, zdr: true, pick: "embedding_memory", reindex: true, needs: "Needs a text embedding model." },
+  // vision has a reasoning level (starting value "none": Gemma does not think). effortNullOk: a version saved before the level existed has null, which reads as "none" (model-settings.js).
+  vision: { fallbacks: 0, effort: true, effortNullOk: true, zdr: true, pick: "vision", needs: "Needs a model that can read pictures." },
   workers_ai: { fallbacks: 0, effort: false, pick: "workers_ai", needs: "Needs a Cloudflare Workers AI model." },
   workers_decider: { fallbacks: 3, effort: false, zdr: true, any: true, pick: "workers_decider" },
   classic: { fallbacks: 4, effort: false, zdr: true, pick: "classic" },
+  // The browser look: Cloudflare only (cloudflare: true), one model, no fallback. noOutput: the job writes no text, so max_output must stay null.
+  look: { fallbacks: 0, effort: false, pick: "look", cloudflare: true, needs: "Needs a Cloudflare model that can look at a page." },
+  // Web search through the Cloudflare Web Search API: the saved "model" is the search provider, written "cloudflare/<provider>". It writes no text, so
+  // it has no token limit; its `results` field is the number of results (1 to 10), never empty. resultCount marks that meaning.
+  search: { fallbacks: 0, effort: false, pick: "search", resultCount: true, needs: "Needs a web search provider." },
 };
+// Kinds whose job writes no text, so max_output can only be null.
+for (const k of ["speech", "speech_cloudflare", "speech_live", "embedding_files", "embedding_memory"]) JOB_KINDS[k].noOutput = true;
 // Picks that name a model able to chat. A kind with any: true also takes every chat model (through the JSON adapter).
 export const CHAT_PICKS = ["chat", "chore", "classic"];
 export const takesChat = (kind) => CHAT_PICKS.includes(kind.pick) || !!kind.any;
@@ -41,7 +50,9 @@ export const canChat = (meta) => Array.isArray(meta?.kinds) && meta.kinds.length
 export const NATIVE_PICKS = ["workers_decider", "decider"];
 export const nativeFor = (meta, kind) => !!kind.any && Array.isArray(meta?.kinds) && meta.kinds.some((k) => NATIVE_PICKS.includes(k));
 // Whether the model's endpoints must be zero-data-retention for this kind.
-export const zdrApplies = (kind, meta) => !!kind.zdr && (meta?.source === "CF" || (takesChat(kind) && !nativeFor(meta, kind)));
+// Pictures and the two search indexes are not chat picks, but a model for them on OpenRouter must also have zero-data-retention endpoints.
+const ZDR_PICKS = ["vision", "embedding_files", "embedding_memory"];
+export const zdrApplies = (kind, meta) => !!kind.zdr && (meta?.source === "CF" || ((takesChat(kind) || ZDR_PICKS.includes(kind.pick)) && !nativeFor(meta, kind)));
 
 const CHAT_TEXT = {
   general: ["Everyday chat", "Questions, writing, email, calendar, reminders and connected apps."],
@@ -74,12 +85,16 @@ export const JOBS = [
   { id: "stt_cloudflare", kind: "speech_cloudflare", group: "speech", label: "Speech to text on Cloudflare", description: "Runs only for the Speech to text job, and only when every model above failed and the audio is under 20 MB." },
   { id: "live_dictation", kind: "speech_live", group: "speech", label: "Live dictation", description: "Transcribes live dictation. AssemblyAI transcribes WAV chunks cut at pauses and returns the text after each pause. Deepgram Nova 3 on Cloudflare streams is the fallback." },
   { id: "embed_files", kind: "embedding_files", group: "search", label: "File search index", description: "Makes the search index for your files. Changing it means files must be indexed again." },
-  { id: "embed_memory", kind: "embedding_memory", group: "search", label: "Ambient search index", description: "Makes the embeddings for the ambient passage index (recordings from connected apps), not for saved memory. Shown only while the ambient passage index runs. Changing it means ambient passages must be indexed again." },
+  { id: "embed_memory", kind: "embedding_memory", group: "search", label: "Ambient search index", description: "Makes the embeddings for the ambient passage index, which holds recordings from connected apps. Changing it means ambient passages must be indexed again." },
   { id: "vision_files", kind: "vision", group: "search", label: "Picture descriptions", description: "Describes pictures and reads text in them when a file is a picture." },
-  { id: "doors_shadow", kind: "workers_decider", group: "other", label: "Tool output check", description: "Reads each tool's output and answers questions about it, for measurement only. It never changes a reply." },
-  { id: "classic_decider", kind: "workers_decider", group: "other", label: "Router decider", description: "Makes the routing decision while OWN_ROUTER is on, which it is on dev." },
-  { id: "workers_ai_chat", kind: "workers_ai", group: "other", label: "Cloudflare chat model", description: "Answers when no OpenRouter key is set up (self-hosted installs)." },
-  { id: "classic_router", kind: "classic", group: "other", label: "Older router", description: "Used only when ROUTER_MODE is set to classic. It is dormant while ROUTER_MODE is two." },
+  { id: "workers_ai_chat", kind: "workers_ai", group: "other", label: "Backup chat", description: "Answers when OpenRouter can't be reached, or on a self-hosted install with no OpenRouter key." },
+  { id: "web_search", kind: "search", group: "search", label: "Web search", description: "Finds web pages for a question when DuckDuckGo has no answer. The model is the search provider, and max output is the number of results it asks for." },
+  { id: "browser_decider", kind: "decider", group: "routing", label: "Browser decisions", description: "Decides the browser's next step on each page." },
+  { id: "look", kind: "look", group: "other", label: "Browser look", description: "Looks at a page in the browser and answers questions about it, or points at something on it." },
+];
+// Calls that use no hosted model. The Models page shows them as read-only lines so every outside call is listed in one place.
+export const NO_MODEL_LINES = [
+  { id: "ocr", label: "Text in scans (OCR)", text: "No hosted model. Local ONNX models in the OCR Worker and the preparation container read the text." },
 ];
 export const JOB_IDS = JOBS.map((j) => j.id);
 export const jobDef = (id) => JOBS.find((j) => j.id === id) || null;
@@ -90,6 +105,7 @@ export const GROUPS = [
   { id: "background", title: "Background jobs", note: "Work that runs behind the scenes. These always use zero-data-retention providers." },
   { id: "speech", title: "Speech", note: "" },
   { id: "search", title: "Search and pictures", note: "" },
+  { id: "other", title: "Other", note: "Jobs outside the groups above. They are saved and pushed like every other job." },
 ];
 // Only jobs in a listed page group get controls. Runtime settings can also cover jobs outside the Models page.
 export const MODEL_PAGE_JOBS = JOBS.filter((j) => GROUPS.some((g) => g.id === j.group));
@@ -105,12 +121,25 @@ export function jobSetting(settings, id) {
   if (!j || typeof j.model !== "string") throw new ModelSettingsError(`No saved model setting for "${id}". Open Models and set it. Nothing was sent.`);
   return j;
 }
+// The saved per job fields max_output, sort, max_price and results. A job saved before they existed has none, and reads the starting value (model-seed.js).
+// A saved null is a real value (no output limit is sent, no sort, the default price ceiling).
+export const SORTS = ["price", "throughput", "latency"];
+const jobField = (settings, id, name) => { const j = settings?.jobs?.[id]; return j && Object.prototype.hasOwnProperty.call(j, name) ? j[name] : jobFieldDefaults(id)[name]; };
+export const jobMaxOutput = (settings, id) => jobField(settings, id, "max_output");
+export const jobSort = (settings, id) => jobField(settings, id, "sort");
+export const jobMaxPrice = (settings, id) => jobField(settings, id, "max_price");
+export const jobResults = (settings, id) => jobField(settings, id, "results");
+export const jobTimeoutMs = (settings, id) => jobField(settings, id, "timeout_ms");   // milliseconds for one model attempt, or null for no timeout (limits.js)
+export const jobLimits = (settings, id) => ({ max_output: jobMaxOutput(settings, id), sort: jobSort(settings, id), max_price: jobMaxPrice(settings, id), timeout_ms: jobTimeoutMs(settings, id) });
 export const factsOf = (settings, model) => settings?.catalog?.[model] || null;
 export const quirkOf = (settings, model, name) => !!factsOf(settings, model)?.quirks?.[name];
-// A job's models in order: its main model, then its fallbacks. Each: { model, effort, hosts?, pin?, strict? }.
-export const entriesOf = (job) => [{ model: job.model, effort: job.effort ?? null, ...(job.hosts ? { hosts: job.hosts } : {}), ...(job.pin != null ? { pin: job.pin } : {}), ...(job.strict ? { strict: true } : {}) },
+// A job's models in order: its main model, then its fallbacks. Each: { model, effort, strict? }. Saved entries never carry provider lists.
+export const entriesOf = (job) => [{ model: job.model, effort: job.effort ?? null, ...(job.strict ? { strict: true } : {}) },
   ...(job.fallbacks || []).map((f) => ({ ...f, effort: f.effort ?? null }))];
 export const chatJobId = (category) => `chat.${CATEGORIES.includes(category) ? category : "general"}`;
+// The saved job a main chat call belongs to: the category of a running task's frozen profile, or of the routing policy's route. Recovery models
+// (route.recoveryJob) and escalation (route.limitsJob) are read from their own saved jobs inside the dispatcher.
+export const mainChatJob = (route) => chatJobId(route?.taskAffinity ? route.taskProfile?.category : route?.category);
 
 // The effort the model's own rules allow. Some models can't turn reasoning off, so "none" is sent as "low" there.
 export const reasoningMandatory = (settings, model) => quirkOf(settings, model, "reasoning_mandatory");
@@ -152,15 +181,16 @@ export function zdrBlocked(settings, model) {
 }
 
 // ---- request routes for background jobs ----
+// OpenRouter chooses the provider (zero data retention, price ceiling, and the job's saved sort). No provider list is saved or sent.
 function routeEntry(settings, e, def = {}) {
   const facts = factsOf(settings, e.model);
-  const hosts = e.hosts?.length ? e.hosts : (() => { const h = configuredHosts(settings, e.model, "zdr"); return h.length ? h : null; })();
-  return { model: e.model, effort: e.effort ?? def.effort ?? "default", ...(hosts ? { host: hosts.length > 1 ? [...hosts] : hosts[0] } : {}), pin: e.pin != null ? !!e.pin : !!hosts,
-    ...(e.strict ? { strict: true } : {}), ...(facts?.max_output ? { max_output: facts.max_output } : {}) };
+  return { model: e.model, effort: e.effort ?? def.effort ?? "default", ...(e.strict ? { strict: true } : {}) };
 }
 // The route a background job runs: its model first, then its own fallbacks one at a time, nothing else.
 export function choreRouteOf(settings, id) {
-  const job = jobSetting(settings, id), [first, ...rest] = entriesOf(job).map((e) => routeEntry(settings, e)), facts = factsOf(settings, job.model);
+  const job = jobSetting(settings, id), [first0, ...rest] = entriesOf(job).map((e) => routeEntry(settings, e)), facts = factsOf(settings, job.model), sort = jobSort(settings, id), maxOut = jobMaxOutput(settings, id);
+  // A job with a sort asks OpenRouter for the fastest zero-data-retention endpoint now.
+  const first = sort ? { ...first0, sort, ...(maxOut ? { maxOut } : {}) } : first0;
   return { ...first, fallbacks: rest, only: true, chore: true, job: id, runtimeSettings: !!first.strict, json: !(facts?.quirks?.no_json) && facts?.json !== false };
 }
 // A route that only names the job. The model is read from the saved settings when the call is made (model.js openRouterChat).

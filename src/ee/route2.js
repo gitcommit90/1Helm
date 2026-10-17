@@ -1,4 +1,4 @@
-// Task-aware model routing (ROUTER_MODE="two"; Captain 2026-10-08, notes/2026-10-08-privacy-routing/PROMPT.md). Replaces the two-model
+// Task-aware model routing (Captain 2026-10-08, notes/2026-10-08-privacy-routing/PROMPT.md). Replaces the two-model
 // Sol/Luna rule (Sol is no longer in the catalog). Per message from the person, ONE decider call (decider.js; its model is the saved setting of the job "decider") answers
 // three questions on the last few messages: is it part of a task (stats only), which task CATEGORY it is (pool.js CATEGORIES), and
 // whether an earlier result fell short (quality recovery). The category's saved list (the job "chat.<category>", model-jobs.js), filtered
@@ -15,23 +15,17 @@
 // Availability fallback (model.js twoChat): the chain for the category at the CURRENT privacy level (re-read on every dispatch),
 // filtered by endpoint eligibility, deduplicated, bounded; each attempt carries the destination model's fixed effort.
 // Prompt cache: one key per channel (Resident.callModel), so the shared prefix stays warm across the channel's tasks.
-// Chores never use the pool routing: hand-off notes go to gpt-oss (choreRouteFor, CHORE_MODEL); the browser agent, summaries and
+// Chores never use the pool routing: hand-off notes go to gpt-oss (choreRouteFor, the saved handoff job); the browser agent, summaries and
 // labellers keep their own routes, always on zero-data-retention endpoints (stricter than any level).
-// The classic router (router.js) stays behind ROUTER_MODE="classic". Jev Router (typesafe/jev-router) is never used in two mode.
 
 import { splitChoiceQuestions, resolveChoiceAnswers } from "./decision-choices.js";
 import { dynamicRoutingOn, routingCategories, routingCategory, routingChain, generalRoutingChain } from "./routing-config.js";
-import { testModelFor, testRoute } from "../internal-test-model.js";   // dev test workspaces: no decider call, one model (TEST_MODEL)
-import { deciderFetch, deciderModel, deciderProvider } from "./decider.js";
+import { dispatch } from "./model-dispatch.js";
 import { askDecider, usesSystemone } from "./text-decision.js";
 import { modelSettingsEnv } from "./model-settings.js";
-import { settingsOf, jobSetting, entriesOf, allowedEntries, chatJobId, configuredHosts, choreRouteOf, jobRoute, factsOf } from "./model-jobs.js";
-import { startShadow, shadowOn, residentWaitUntil } from "./decision-shadow.js";   // dev only: another decider next to the live one, never decides
+import { settingsOf, jobSetting, entriesOf, allowedEntries, chatJobId, configuredHosts, choreRouteOf, jobRoute, factsOf, jobTimeoutMs } from "./model-jobs.js";
 import { privacyOf, normalizePrivacy, eligibleHosts, ineligibleWhy } from "../privacy.js";
 import { CATEGORIES, CATEGORY_LABEL, DEFAULT_CATEGORY, RECOVERY, IN_TURN_JOB, MAX_MODELS, normalizeCategory, guessCategory } from "./pool.js";
-
-export const ROUTER_TWO = "two";
-export const route2On = (env) => env?.ONEHELM_EE === "1hc" && String(env?.ROUTER_MODE || "classic").trim().toLowerCase() === ROUTER_TWO;
 
 // The person asks for the best model → treated as an explicit request for a more thorough attempt (RECOVERY), never an effort change.
 export const BEST_RE = /\b(use (your|the) (best|smartest|strongest|top|most powerful|biggest) (model|brain|ai)|your (best|smartest|strongest|most powerful) (model|ai))\b/i;
@@ -40,8 +34,7 @@ export const CONTINUE_RE = /^\s*(?:(?:ok(?:ay)?|yes|sure)[,.!]?\s+)?(?:please\s+
 // Background jobs (chores: nobody waits on them or reads them directly) each have their own saved setting (model-jobs.js choreRouteOf):
 // the model, its reasoning level and its fallbacks. They run on zero-data-retention endpoints at every privacy level.
 
-export const JEV_URL = "https://openrouter.ai/api/v1/systemone";
-export const JEV_TIMEOUT_MS = 4000;                     // a slow decider never holds the reply: timeout → the task's category / general
+// A slow decider never holds the reply: its saved timeout (limits.js, 4 seconds to start with) passes, and the task's category or General is used.
 export const JEV_CONVO_BELOW = 0.35, JEV_TASK_FROM = 0.65;   // is_task bands (stats only)
 export const UNMET_FROM = 0.6;                           // P(unmet) at or above this → quality recovery
 export const JEV_CONTEXT_MSGS = 4;                      // last few user/assistant messages the decider sees
@@ -110,7 +103,7 @@ export function verdict(p) {
   return p < JEV_CONVO_BELOW ? "conversation" : p >= JEV_TASK_FROM ? "task" : "unsure";
 }
 
-// The questions and the systemone body. The decision shadow (decision-shadow.js) and the router lab send these same questions.
+// The questions and the systemone body.
 export const JEV_QUESTIONS = { is_task: { type: "noul", instructions: JEV_QUESTION }, category: { type: "choice", instructions: CATEGORY_QUESTION, criteria: CATEGORY_CRITERIA },
   unmet: { type: "noul", instructions: UNMET_QUESTION } };
 export function routingQuestions(env, state = {}) {
@@ -122,7 +115,7 @@ export function routingQuestions(env, state = {}) {
     steer: { type: "choice", instructions: "Does the latest message correct, clarify, or follow up on one of the open sub-agent jobs? Choose its id only when the message concerns that job. Otherwise choose none. Approved jobs are closed and cannot be steered.",
       criteria: Object.fromEntries([["none", "A new request or no matching open sub-agent."], ...(state.open_subagents || []).map(h => [String(h.id), `${h.name}: ${h.task}`])]) } };
 }
-export const jevBody = (state, env) => ({ model: deciderModel(env), provider: deciderProvider(deciderModel(env)), state, questions: splitChoiceQuestions(routingQuestions(env, state)).questions });
+export const jevBody = (state, env) => ({ state, questions: splitChoiceQuestions(routingQuestions(env, state)).questions });
 function routedCategory(answer, env) {
   if (!dynamicRoutingOn(env)) return categoryOf(answer);
   const criteria = routingCategories(env.MODEL_SETTINGS).map(c => c.title);
@@ -138,10 +131,12 @@ export function categoryOf(a) {
 }
 
 // One decider call, three questions. Never throws: { p, category, unmet, cost, ms, model, error }.
-export async function jevAsk(env, state, { fetchImpl = globalThis.fetch, timeoutMs = JEV_TIMEOUT_MS, meta = {} } = {}) {
-  const t0 = Date.now(), ac = new AbortController(), timer = setTimeout(() => ac.abort(Object.assign(new Error("timeout"), { name: "TimeoutError" })), timeoutMs);
+export async function jevAsk(env, state, { fetchImpl = globalThis.fetch, timeoutMs, meta = {} } = {}) {
+  const t0 = Date.now(), ac = new AbortController(); let timer = null;
   try {
     env = await modelSettingsEnv(env);
+    if (timeoutMs === undefined) timeoutMs = jobTimeoutMs(env.MODEL_SETTINGS, "decider");   // the saved timeout of the decider job; null means none
+    if (timeoutMs) timer = setTimeout(() => ac.abort(Object.assign(new Error("timeout"), { name: "TimeoutError" })), timeoutMs);
     const { questions, localAnswers } = splitChoiceQuestions(routingQuestions(env, state));
     if (!Object.keys(questions).length) return { p: null, category: routedCategory(localAnswers.category, env), steer: localAnswers.steer?.choice || "none", answers: localAnswers,
       modelAnswers: null, localAnswers, unmet: null, cost: 0, ms: Date.now() - t0, model: null };
@@ -152,7 +147,7 @@ export async function jevAsk(env, state, { fetchImpl = globalThis.fetch, timeout
       return { p: answers?.is_task?.noul ?? null, category, steer: answers?.steer?.choice || "none", answers, modelAnswers: a.answers, localAnswers,
         unmet: answers?.unmet?.noul ?? null, cost: Number(a.nano || 0) / 1e9, ms: a.ms, model: a.model || null, ...(category ? {} : { error: "decider: no category" }) };
     }
-    const r = await deciderFetch(env, JSON.stringify(jevBody(state, env)), { signal: ac.signal, title: "1Helm router", meta, fetchImpl });
+    const r = await dispatch(env, "decider", jevBody(state, env), { signal: ac.signal, meta });
     const j = await r.json().catch(() => null);
     if (!r.ok || !j) return { p: null, cost: 0, ms: Date.now() - t0, error: `decider ${r.status}: ${JSON.stringify(j?.error || j || "").slice(0, 160)}` };
     const answers = resolveChoiceAnswers(j.answers, localAnswers), p = answers?.is_task?.noul, u = answers?.unmet?.noul, category = routedCategory(answers?.category, env);
@@ -175,7 +170,7 @@ export function jevState({ hist = [], text = "", prevTools = 0, openWork = [], p
     ...(prevCategory ? { task_so_far: CATEGORY_LABEL[prevCategory] || prevCategory } : {}), latest_message: String(text).slice(0, JEV_TEXT_CHARS) };
 }
 
-// The decider's answers → the route. Pure: chooseTwo, the decision shadow and the router lab all use it.
+// The decider's answers → the route. Pure.
 //   category: the decider's choice; missing → the task's category so far, else general.
 //   recovery: unmet ≥ UNMET_FROM, or "use your best model" → RECOVERY for the task's category (the work that fell short).
 export function routeFromAnswers(env, text, { p = null, category = null, unmet = null, error = null } = {}, { level = "zdr", prevCategory = null } = {}) {
@@ -190,34 +185,19 @@ export function routeFromAnswers(env, text, { p = null, category = null, unmet =
   }
   return { route: policyRoute(settings, cat, level, category ? "decider" : error ? "decider:unsure" : "default"), verdict: v };
 }
-// What the dashboard shows for one side (decision-shadow.js judge): the route's model is the comparison key, the label the second one.
-export function routeJudge(env, text, ctx = {}) {
-  return (a) => {
-    const err = a?.error || null, ans = err ? { error: err } : { p: a?.is_task?.noul ?? null, category: categoryOf(a?.category), unmet: a?.unmet?.noul ?? null };
-    const { route, verdict: label } = routeFromAnswers(env, text, ans, ctx);
-    return { key: route.model, label, route: modelLabel(settingsOf(env), route.model), why: route.why, category: route.category, effort: route.effort, p: ans.p ?? null, unmet: ans.unmet ?? null };
-  };
-}
-
 // The routes decided without asking the decider (a job, a bare go-on with work open), or null when the message goes to the decider.
-// The decision shadow's test-mode probe uses the same gates, so it only probes messages the decider would really see.
 export function jevGate(env, { kind = "chat", text, prevTools = 0, openWork = [], prevCategory = null, level = "zdr" }) {
   if (dynamicRoutingOn(env) && kind === "chat") return null;
   if (kind !== "chat") return policyRoute(settingsOf(env), prevCategory || DEFAULT_CATEGORY, level, "job");
   if (CONTINUE_RE.test(String(text || "")) && (prevTools > 0 || openWork.length)) return policyRoute(settingsOf(env), prevCategory || DEFAULT_CATEGORY, level, "continue");
   return null;
 }
-// The decider's answer in the decision shadow's shape (decision-shadow.js startShadow finish / jevProbe).
-export const jevOutcome = (jev) => jev.error && !jev.category ? { error: jev.error, ms: jev.ms } : { answers: { is_task: { noul: jev.p }, category: { choice: jev.category }, unmet: { noul: jev.unmet } }, ms: jev.ms, nano: Math.round((jev.cost || 0) * 1e9), src: jev.cost ? "reported" : null, model: jev.model || null };
-
 export async function chooseTwo(env, { kind = "chat", text, hist, prevTools = 0, openWork = [], openAgents = [], prevCategory = null, level = "zdr" }, opts = {}) {
   env = await modelSettingsEnv(env);
   const g = jevGate(env, { kind, text, prevTools, openWork, prevCategory, level }); if (g) return { route: g, jev: null };
   const state = { ...jevState({ hist, text, prevTools, openWork, prevCategory }), ...(dynamicRoutingOn(env) ? { open_subagents: openAgents } : {}) }, jevP = jevAsk(env, state, opts);   // the decider's request is on its way first
-  let sh = null; try { sh = opts.shadow?.({ kind: "route", state, questions: JEV_QUESTIONS, judge: routeJudge(env, text, { level, prevCategory }), preview: state.latest_message }) || null; } catch {}
   const jev = await jevP, d = routeFromAnswers(env, text, jev, { level, prevCategory });
   if (dynamicRoutingOn(env)) d.route.steer = jev.steer !== "none" && openAgents.some(h => String(h.id) === jev.steer) ? Number(jev.steer) : null;
-  sh?.finish?.(jevOutcome(jev));
   return { route: d.route, jev: { ...jev, verdict: d.verdict } };
 }
 
@@ -244,18 +224,9 @@ export async function routeTwoTurn(R, tc, { kind, text, hist, stats, audioContex
   let d;
   const env = await modelSettingsEnv(R.env);   // unreadable settings stop the turn here, with a clear error, before anything is sent
   const tenant = R.get?.("tenant"), level = await privacyOf(env, tenant), prevCategory = sessionCategory(R, tc?.session);
-  // Dev test workspace (test-model.js): no decider call; the test model runs the whole turn and never escalates. The route the policy
-  // WOULD have taken (task category by keyword guess / the task's category, the account's current level) rides on the route for labels.
-  const tm = dynamicRoutingOn(env) ? null : await testModelFor(env, tenant);
   if (audioContext?.audioSources?.length && audioContext.abort === "hard") throw Object.assign(new Error("The recording's task was stopped."), { code: "audio_source_removed", audioReason: "The recording's task was stopped." });
   R.sidecarAudioCurrent?.(audioContext);   // settings/privacy reads must not outlive the attached recording or its task
-  if (tm) {
-    const would = policyRoute(env.MODEL_SETTINGS, kind === "chat" ? (prevCategory && CONTINUE_RE.test(String(text || "")) ? prevCategory : guessCategory(text)) : prevCategory || DEFAULT_CATEGORY, level, "would");
-    d = { route: { ...testRoute(tm), category: would.category, level, would: { model: would.model, effort: would.effort, chain: [would.model, ...would.fallbacks] } }, jev: null };
-    d.route.label = `${d.route.label} would:${modelLabel(env.MODEL_SETTINGS, would.model)}@${would.effort} ${would.category}·${level}`;
-    testShadow(R, tc, d.route, { kind, text, hist, level, prevCategory }, env);
-  }
-  else try { d = await chooseTwo(env, { kind, text, hist, prevTools: prevToolsOf(R, tc?.session), openWork: openWorkOf(R, tc?.session), openAgents: dynamicRoutingOn(env) ? R.sql.exec("SELECT id,name,task FROM helpers WHERE session=? AND dynamic_routing=1 AND status IN ('running','awaiting_review','waiting_input') ORDER BY id", tc?.session || "").toArray().map(h => ({...h,task:h.task.slice(0,300)})) : [], prevCategory, level }, { shadow: routeShadow(R, tc, env), meta: { tenant, channel: R.get?.("channel") } }); }
+  try { d = await chooseTwo(env, { kind, text, hist, prevTools: prevToolsOf(R, tc?.session), openWork: openWorkOf(R, tc?.session), openAgents: dynamicRoutingOn(env) ? R.sql.exec("SELECT id,name,task FROM helpers WHERE session=? AND dynamic_routing=1 AND status IN ('running','awaiting_review','waiting_input') ORDER BY id", tc?.session || "").toArray().map(h => ({...h,task:h.task.slice(0,300)})) : [], prevCategory, level }, { meta: { tenant, channel: R.get?.("channel") } }); }
   catch (e) { d = { route: policyRoute(env.MODEL_SETTINGS, dynamicRoutingOn(env) ? DEFAULT_CATEGORY : prevCategory || DEFAULT_CATEGORY, level, "decider:unsure", { dynamic: dynamicRoutingOn(env) }), jev: { error: String(e?.message || e).slice(0, 160), verdict: "unsure" } }; }
   const nano = Math.ceil((d.jev?.cost || 0) * 1e9 * JEV_MARKUP);
   if (nano > 0) { try { const rid = `rtr:${crypto.randomUUID()}`; if ((await R.ledger().reserve(rid, nano)).ok) { await R.ledger().settle(rid, nano); if (stats) stats.charge += nano; } } catch (e) { console.log("decider charge", e.message); } }
@@ -264,28 +235,6 @@ export async function routeTwoTurn(R, tc, { kind, text, hist, stats, audioContex
   if (stats) stats.route = { label: d.route.label, category: d.route.category, level, p: d.jev?.p ?? null, unmet: d.jev?.unmet ?? null, ms: d.jev?.ms ?? null, error: d.jev?.error || null, ...(dynamicRoutingOn(env) ? { answers: d.jev?.answers || null, steer: d.route.steer || null, categoryTitle: d.route.categoryTitle, settingsRevision: env.MODEL_SETTINGS_REVISION || 0, primaryChain: d.route.chain, workerChain: d.route.workerChain } : {}) };
   if (tc) { tc.esc = newEsc(); tc.routeStats = stats?.route || null; }
   return d;
-}
-
-// The decision shadow's starter for this turn (dev + DECISION_SHADOW="on" only; decision-shadow.js), or undefined.
-function routeShadow(R, tc, env) {
-  const wu = residentWaitUntil(R); if (!wu || !shadowOn(env)) return undefined;
-  const meta = { tenant: R.get?.("tenant") || null, channel: R.get?.("channel") || null, session: tc?.session || null };
-  return ({ preview, ...spec }) => startShadow(env, wu, { ...spec, meta: { ...meta, preview } });
-}
-
-// Dev test override (decision-shadow.js both_shadow): the test model runs the turn exactly as before (testRoute, no decider call in the
-// turn); for a message the decider would have seen (same gates), the live and shadow deciders are asked in the background on the
-// exact state. Nothing is billed, nothing waits, the route never changes.
-function testShadow(R, tc, route, { kind, text, hist, level, prevCategory }, env) {
-  try {
-    const wu = residentWaitUntil(R); if (!wu || !shadowOn(env)) return;
-    const prevTools = prevToolsOf(R, tc?.session), openWork = openWorkOf(R, tc?.session);
-    if (jevGate(env, { kind, text, prevTools, openWork, prevCategory, level })) return;
-    const state = jevState({ hist, text, prevTools, openWork, prevCategory });
-    const sh = startShadow(env, wu, { kind: "route", state, questions: JEV_QUESTIONS, judge: routeJudge(env, text, { level, prevCategory }), jevProbe: () => jevAsk(env, state).then(jevOutcome),
-      meta: { tenant: R.get?.("tenant") || null, channel: R.get?.("channel") || null, session: tc?.session || null, preview: state.latest_message } });
-    sh.actual({ model: route.model, route: route.label });
-  } catch (e) { console.log("decision shadow (test mode)", String(e?.message || e).slice(0, 160)); }
 }
 
 // ---- In-turn quality recovery (both engines: Resident.callModel calls these around every main-chat model call) ----

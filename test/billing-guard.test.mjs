@@ -7,7 +7,8 @@
 // workflow turn, and a helper, whose counted charge (what its cost limit compares) must be the real charge, not a ceiling charge.
 import assert from "node:assert"; import { DatabaseSync } from "node:sqlite"; import { readFileSync } from "node:fs";
 import { Resident } from "../src/resident.js";
-import { HANDOFF_PREFIX, JEV_URL } from "../src/ee/route2.js";
+import { HANDOFF_PREFIX } from "../src/ee/route2.js";
+import { JEV_URL } from "./helpers/or-chat.mjs";
 import { HELPER_MAX_CHARGE } from "../src/helpers.js";
 import { unmark } from "./cache-unmark.mjs";
 

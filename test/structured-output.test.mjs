@@ -2,7 +2,7 @@
 import { SEED } from "./helpers/seed-settings.mjs";
 import assert from "node:assert/strict";
 import { S, structuredFormat, structuredChat, parseStructuredResponse, assertStructuredSchema } from "../src/structured-output.js";
-import { openRouterChat } from "../src/model.js";
+import { openRouterChat } from "./helpers/or-chat.mjs";
 import { byokChat } from "../src/byok.js";
 import { generateHandoff, HANDOFF_PROMPT, HANDOFF_SCHEMA, renderHandoff } from "../src/resident.js";
 import { summarizeCard } from "../src/tracker.js";
@@ -30,7 +30,7 @@ globalThis.fetch = async (url, init) => { sent.push(JSON.parse(init.body)); retu
 try {
   await openRouterChat({ MODEL_SETTINGS: SEED, OPENROUTER_API_KEY: "test", PROMPT_CACHE: "off" }, { messages: [{ role: "user", content: "test" }], response_format: structuredFormat("test", schema), provider: { require_parameters: true } }, null,
     { model: "qwen/qwen3.8-27b", host: "cerebras/fp16", effort: "none" });
-  assert.deepEqual(sent[0].provider.order, ["cerebras/fp16"]); assert.equal(sent[0].provider.max_price.prompt, 3);
+  assert.equal(sent[0].provider.order, undefined); assert.equal(sent[0].provider.max_price.prompt, 3);
   assert.equal(sent[0].provider.require_parameters, true); assert.equal(sent[0].provider.zdr, true);
 } finally { globalThis.fetch = saved; }
 const cfg = { base: "https://structured.example/v1", model: "main", fast: "fast", key: "" };
@@ -50,8 +50,8 @@ console.log("PASS strict schema validation, bounded retry/accounting, classic pr
 const notes = Object.fromEntries(Object.keys(HANDOFF_SCHEMA.properties).map(k => [k, [k]]));
 assert.equal(renderHandoff(Object.fromEntries(Object.entries(notes).reverse())), renderHandoff(notes));
 let fins = 0, paid = 0;
-const rendered = await generateHandoff({ callModelOnce: async (messages, _tool, _text, cap, noTools) => {
-  assert.equal(messages.at(-1).content, HANDOFF_PROMPT); assert.equal(cap, 600); assert.equal(noTools, true);
+const rendered = await generateHandoff({ callModelOnce: async (messages, _tool, _text, noTools) => {
+  assert.equal(messages.at(-1).content, HANDOFF_PROMPT); assert.equal(noTools, true);
   fins++; return { content: JSON.stringify(notes), finish: fins === 1 ? "length" : "stop", calls: [], charge: 100 };
 } }, [], null, fin => { paid += fin.charge; });
 assert.equal(fins, 2); assert.equal(paid, 200); assert.equal(rendered, renderHandoff(notes));

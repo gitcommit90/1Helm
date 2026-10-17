@@ -31,10 +31,11 @@ const CHORES = {
   handoff: [DS, "low", DSH, true, [[HA, "low", HAH, true]]],
   label: [HA, "low", HAH, true, [[DS, "low", DSH, true]]], notes: [LU, "low", NEW, true, [[DS, "low", DSH, true]]], notes_refine: [DS, "low", DSH, true, [[HA, "low", HAH, true]]], notes_final: [HA, "low", HAH, true, [[DS, "low", DSH, true]]],
   sidecar_card: [HA, "low", HAH, true, [[DS, "low", DSH, true]]], ambient_extract: [LU, "low", NEW, true, [[DS, "low", DSH, true]]], ambient_review: [DS, "low", DSH, true, [[HA, "low", HAH, true]]],
-  // CHORE_MODEL_BROWSER=dsflash was set in the earlier hosted configuration: that is what ran then
-  browser: [DS, "none", DSH, true, [[O120, "low", ["cerebras"], true]]],
+  // the first-run data (dev and Live already saved their own browser setting; no variable chooses it any more)
+  browser: [O120, "low", ["cerebras"], true, [[DS, "low", DSH, true]]],
 };
-const shape = (r) => [r.model, r.effort, r.host === undefined ? undefined : [r.host].flat(), r.pin, r.fallbacks.map((f) => [f.model, f.effort, f.host === undefined ? undefined : [f.host].flat(), f.pin])];
+// the saved hosts and pins stay in the saved settings but are no longer part of the route: OpenRouter picks the provider
+const shape = (r) => [r.model, r.effort, r.host, r.pin, r.fallbacks.map((f) => [f.model, f.effort, f.host, f.pin])];
 
 for (const file of ["earlier hosted variables"]) {
   const env = vars(), s = validateModelSettings(seedFromLegacy(env, null)), tag = file;
@@ -51,7 +52,7 @@ for (const file of ["earlier hosted variables"]) {
     assert.deepEqual([s.jobs[job].model, s.jobs[job].effort, s.jobs[job].fallbacks], [model, EFFORT[model], []], `${tag} ${job}`);
   // background jobs, with the real environment variables
   for (const [id, [model, effort, hosts, pin, fbs]] of Object.entries(CHORES)) {
-    const r = choreRouteOf(s, id); assert.deepEqual(shape(r), [model, effort, hosts, pin, fbs], `${tag} ${id}`);
+    const r = choreRouteOf(s, id); assert.deepEqual(shape(r), [model, effort, undefined, undefined, fbs.map((f) => [f[0], f[1], undefined, undefined])], `${tag} ${id}`);
   }
   assert.equal(choreRouteOf(s, "label").json && choreRouteOf(s, "browser").json, true);
   // everything else
@@ -60,15 +61,15 @@ for (const file of ["earlier hosted variables"]) {
   assert.deepEqual([J.stt.model, J.stt.fallbacks.map((f) => f.model), J.stt_cloudflare.model, J.live_dictation.model], [ID.STT_BEST, [ID.STT, ID.STT_FALLBACK], ID.STT_WAI, ID.STT_BEST]);
   assert.deepEqual(J.live_dictation.fallbacks.map((f) => f.model), [ID.LIVE], "Deepgram Nova 3 is the live dictation fallback");
   assert.deepEqual([J.embed_files.model, J.embed_memory.model, J.vision_files.model], [ID.EMBED_FILES, ID.EMBED_MEMORY, ID.VISION]);
-  assert.equal(J.workers_ai_chat.model, env.MODEL, "the Workers AI model variable's value is the saved Workers AI model"); assert.equal(env.MODEL, ID.WAI_CHAT);
-  assert.deepEqual([J.classic_router.model, J.classic_router.fallbacks.map((f) => f.model)], ["typesafe/jev-router", [DS, GLM]]);
-  assert.deepEqual([J.doors_shadow.model, J.classic_decider.model], ["@cf/cloudflare/clef-flash", "@cf/cloudflare/clef"]);
-  assert.equal(env.OWN_ROUTER_CLEF, "clef", "the classic decider variable's value is what is saved");
+  assert.equal(J.workers_ai_chat.model, ID.WAI_CHAT, "the first-run Workers AI model (the MODEL variable is no longer read)");
+  for (const gone of ["classic_router", "doors_shadow", "classic_decider"]) assert.ok(!(gone in J), `${gone} is no longer a job`);
+  // the config files' variables are decoys now: the first-run data is the same with or without them
+  assert.deepEqual(seedFromLegacy(env, null), seedFromLegacy({}, null), `${tag}: no environment variable changes the first-run data`);
 }
 
 // the first-run data for an environment with no variables set has the same shape, and the same chat lists
 { const s = validateModelSettings(seedFresh({})); assert.equal(Object.keys(s.jobs).length, 32);
-  assert.deepEqual(shape(choreRouteOf(s, "browser")), [O120, "low", ["cerebras"], true, [[DS, "low", ["together", "modal", "coreweave"], true]]], "no CHORE_MODEL_BROWSER variable: gpt-oss-120b, with DeepSeek Flash as its fallback"); }
+  assert.deepEqual(shape(choreRouteOf(s, "browser")), [O120, "low", undefined, undefined, [[DS, "low", undefined, undefined]]], "gpt-oss-120b, with DeepSeek Flash as its fallback"); }
 
 // a saved earlier configuration is carried exactly: replaced slots, custom lists, configured chores, the decider
 { const catalog = { "acme/alpha": { id: "acme/alpha", name: "Alpha", eligible: true, reasons: [], efforts: ["none", "low", "high"], default_effort: "low", levels: ["unrestricted", "no_training", "zdr"], hosts: ["safe/fp16"], context_length: 16384,
@@ -80,7 +81,7 @@ for (const file of ["earlier hosted variables"]) {
   legacy.chores.browser = { model: "acme/alpha", effort: "high" }; legacy.chores.sidecar_card = { model: "haiku", effort: "medium" };
   const s = validateModelSettings(seedFromLegacy({}, legacy));
   assert.deepEqual(dispatchOrder(policyRoute(s, "general", "zdr", "x"), "zdr", { settings: s }).attempts.map((a) => [a.model, a.effort]), [["acme/alpha", "high"], [LU, "xhigh"], [HA, "xhigh"]]);
-  const w = choreRouteOf(s, "browser"); assert.deepEqual([w.model, w.effort, w.host, w.pin, w.runtimeSettings, w.fallbacks.map((f) => [f.model, f.effort, f.host, f.pin])], ["acme/alpha", "high", "safe/fp16", true, true, [[O120, "low", "cerebras", true]]]);
+  const w = choreRouteOf(s, "browser"); assert.deepEqual([w.model, w.effort, w.host, w.pin, w.runtimeSettings, w.fallbacks.map((f) => [f.model, f.effort, f.host, f.pin])], ["acme/alpha", "high", undefined, undefined, true, [[O120, "low", undefined, undefined]]]);
   const v = choreRouteOf(s, "sidecar_card"); assert.deepEqual([v.model, v.effort, v.fallbacks.length], [HA, "medium", 1], "an evaluated role keeps its one chosen model and gets the DeepSeek Flash fallback");
   assert.ok(s.catalog["acme/alpha"].hosts, "the validated record of a replacement model came along"); }
 

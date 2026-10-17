@@ -7,8 +7,8 @@
 // Embedding uses the saved memory embedding model and the existing Ledger reserve/settle path.
 // Without its provider connection, passages and tolerant keyword search still work.
 import { modelSettingsEnv } from "./model-settings.js";
-import { aiOpts, orFetchPath } from "../model.js";
-import { dynamicProvidersOn, isCloudflareModel } from "../cloudflare-models.js";
+import { dispatchMedia as dispatch } from "./media-job.js";
+import { isCloudflareModel } from "../cloudflare-models.js";
 import { normText, passageWindows, quantize, unitVector, cosineQ, fuse, termVariants, groupHit, idfOf, SEMANTIC_MIN } from "./ambient-search.js";
 
 const now = () => Date.now();
@@ -45,7 +45,7 @@ export class AmbientIndex {
     const equivalents = [model, ...(Array.isArray(facts.embedding_equivalents) ? facts.embedding_equivalents.filter(x => typeof x === "string") : [])];
     const price = Number(facts.pricing?.prompt), nano = Number(facts.in_nano);
     return { model, models: [...new Set(equivalents)].slice(0, 8), dimensions: Number(facts.embedding_dimensions) || null,
-      in_nano: Number.isFinite(price) && price >= 0 ? price * 1000 : nano > 0 ? nano : EMBED_NANO, hosts: facts.hosts || [] };
+      in_nano: Number.isFinite(price) && price >= 0 ? price * 1000 : nano > 0 ? nano : EMBED_NANO };
   }
   async configuration() {
     const env = await modelSettingsEnv(this.s.host.env), model = env.MODEL_SETTINGS?.jobs?.embed_memory?.model;
@@ -62,7 +62,6 @@ export class AmbientIndex {
   }
   available() {
     const env = this.s.host.env;
-    if (!dynamicProvidersOn(env)) return !!env.AI?.run;
     const model = env.MODEL_SETTINGS?.jobs?.embed_memory?.model;
     return model ? isCloudflareModel(model) ? !!env.AI?.run : !!env.OPENROUTER_API_KEY : !!(env.AI?.run || env.OPENROUTER_API_KEY);
   }
@@ -124,7 +123,7 @@ export class AmbientIndex {
     const p = this.pending();
     if (p.unbuilt || p.passages || p.items) return Math.max(now() + 1000, Number(this.s.host.get("ambient_embed_retry_at") || 0));
     // The host holds no settings snapshot between dispatches. Check a saved model change even when every vector is populated.
-    if (dynamicProvidersOn(this.s.host.env) && !this.s.host.env.MODEL_SETTINGS && this.rows("SELECT 1 FROM ambient_passages UNION ALL SELECT 1 FROM ambient_item_vec LIMIT 1").length)
+    if (!this.s.host.env.MODEL_SETTINGS && this.rows("SELECT 1 FROM ambient_passages UNION ALL SELECT 1 FROM ambient_item_vec LIMIT 1").length)
       return Math.max(now() + 1000, Number(this.s.host.get("ambient_embedding_checked_at") || 0) + 60000, Number(this.s.host.get("ambient_embed_retry_at") || 0));
     return null;
   }
@@ -138,16 +137,12 @@ export class AmbientIndex {
     try {
       const allowed = await this.s.privacy(texts); if (allowed.size !== texts.length) throw new Error("ambient context changed");
       const meta = { tenant: h.tid(), channel: "main", kind: "ambient-embed" };
-      let r;
-      if (!dynamicProvidersOn(env)) r = await env.AI.run(model, { text: texts }, aiOpts(env, meta));
-      else {
-        const response = await orFetchPath(env, "embeddings", { model, input: texts, ...(isCloudflareModel(model) ? {} : { provider: { zdr: true, data_collection: "deny", allow_fallbacks: true, ...(config.hosts.length ? { only: config.hosts } : {}) } }) }, meta);
-        if (!response.ok) throw new Error(`Ambient embedding provider unavailable (${response.status}).`);
-        r = await response.json();
-      }
+      // The model, provider fields and transport come from the saved job. A failed provider reads as unavailable (and is retried later).
+      const response = await dispatch(env, "embed_memory", { input: texts }, { meta }).catch((e) => { if (e?.privacy || e?.privacyBlocked) throw e; throw Object.assign(new Error(`Ambient embedding provider unavailable (${e?.orStatus || e?.status || "error"}).`), { cause: e }); });
+      const r = await response.json();
       const vecs = (r?.data || []).map((v) => Array.isArray(v?.embedding) ? v.embedding : Array.isArray(v) || ArrayBuffer.isView(v) ? v : null);
       const tokens = Number(r?.usage?.prompt_tokens) || Number(r?.usage?.total_tokens) || Math.ceil(chars / 4), actual = r?.usage?.cost;
-      const cost = Math.min(reserve, Math.ceil((dynamicProvidersOn(env) && actual != null && Number.isFinite(Number(actual)) && Number(actual) >= 0 ? Number(actual) * 1e9 : tokens * config.in_nano) * EMBED_MARKUP));
+      const cost = Math.min(reserve, Math.ceil((Number.isFinite(Number(actual)) && Number(actual) > 0 ? Number(actual) * 1e9   /* a reported cost; none (or zero, as Workers AI gives) charges by tokens */ : tokens * config.in_nano) * EMBED_MARKUP));
       await L.settle(rid, cost); settled = true; h.bump({ ambient_embed_calls: 1, ambient_embed_nano: cost });
       this.sql.exec("DELETE FROM ambient_attempts WHERE id=?", rid);
       if (vecs.length !== texts.length || vecs.some((v) => !v || !v.length || (config.dimensions && v.length !== config.dimensions) || !Array.from(v).every(Number.isFinite))) throw new Error("embedding response incomplete");

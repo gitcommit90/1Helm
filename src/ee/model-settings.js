@@ -6,10 +6,11 @@
 // (model_settings_versions) is only read, once, to carry an environment's existing choices into the first version.
 import { PRIVACY_LEVELS } from "../privacy.js";
 import { modelCatalog, validCatalogRecord, validModelId, unlistedIds, listedKinds, NO_LONGER_OFFERED } from "./model-catalog.js";
-import { JOBS, JOB_IDS, MODEL_PAGE_JOBS, JOB_KINDS, GROUPS, takesChat, canChat, nativeFor, zdrApplies, ModelSettingsError, jobDef, jobSetting, settingsOf, entriesOf, factsOf, zdrBlocked, privacyCoverage, configuredHosts } from "./model-jobs.js";
-import { seedFromLegacy, mergeLevels, SEED_FACTS, SHARED_OR_MOVES } from "./model-seed.js";
+import { SORTS, JOBS, JOB_IDS, MODEL_PAGE_JOBS, JOB_KINDS, GROUPS, takesChat, canChat, nativeFor, zdrApplies, ModelSettingsError, jobDef, jobSetting, settingsOf, entriesOf, factsOf, zdrBlocked, privacyCoverage, configuredHosts } from "./model-jobs.js";
+import { seedFromLegacy, mergeLevels, SEED_FACTS, ROUTING_ZDR_THIRD_MODEL, JOB_FIELDS, OPTIONAL_JOB_IDS, optionalJobDefault } from "./model-seed.js";
 import { dynamicRoutingOn, withRoutingConfig } from "./routing-config.js";
 import { ambientSearchOn } from "../legacy-flags.js";
+import { limitsProblem, compactLimits, timeoutProblem } from "./limits.js";
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const own = (o, k) => Object.prototype.hasOwnProperty.call(o || {}, k);
@@ -24,42 +25,106 @@ const CREATE = `CREATE TABLE IF NOT EXISTS ${TABLE} (environment TEXT NOT NULL, 
 // Other models (speech, search index, pictures, Cloudflare) can't be checked against OpenRouter's chat catalog: only the shape is.
 const looseId = (id) => typeof id === "string" && id.length <= 160 && /^[@~a-zA-Z0-9][a-zA-Z0-9._~:-]*(\/[a-zA-Z0-9][a-zA-Z0-9._:~-]*)+$/.test(id);
 
+// ---- provider lists ----
+// Saved job entries used to carry "hosts" and "pin" (a provider list sent to OpenRouter). They are no longer saved or sent. The saved catalog's own
+// "hosts" and "unproven_hosts" are facts about a model and stay. A version is stripped once, as a new append-only version (STRIP_ACTION).
+export const STRIP_ACTION = "strip-provider-lists";
+const entriesIn = (config) => {
+  const out = [];
+  for (const j of Object.values(config?.jobs || {})) if (j && typeof j === "object") { out.push(j); for (const f of Array.isArray(j.fallbacks) ? j.fallbacks : []) if (f && typeof f === "object") out.push(f); }
+  for (const c of config?.routing?.categories || []) for (const chain of Object.values(c?.chains || {})) for (const e of Array.isArray(chain) ? chain : []) if (e && typeof e === "object") out.push(e);
+  return out;
+};
+export const hasProviderLists = (config) => entriesIn(config).some((e) => own(e, "hosts") || own(e, "pin"));
+export function withoutProviderLists(config) {
+  if (!hasProviderLists(config)) return config;
+  const next = clone(config);
+  for (const e of entriesIn(next)) { delete e.hosts; delete e.pin; }
+  return next;
+}
+
 // ---- validation ----
 function keys(o, expected, path) {
   if (!o || typeof o !== "object" || Array.isArray(o) || Object.keys(o).length !== expected.length || expected.some((k) => !own(o, k))) fail(`Invalid ${path}: supply exactly ${expected.join(", ")}.`);
 }
 function validFacts(m, id) {
   if (m?.eligible === true) return validCatalogRecord(m, id);
-  const allowed = ["id", "name", "kinds", "efforts", "quirks", "json", "in_nano", "formats", "sec_nano"];
+  const allowed = ["id", "name", "kinds", "efforts", "quirks", "json", "in_nano", "formats", "sec_nano", "pricing"];
   return !!m && typeof m === "object" && m.id === id && Object.keys(m).every((k) => allowed.includes(k)) && typeof m.name === "string" && m.name.length <= 160
     && (m.kinds == null || (Array.isArray(m.kinds) && m.kinds.length <= 8 && m.kinds.every((k) => typeof k === "string" && k.length <= 40)))
     && Array.isArray(m.efforts) && m.efforts.length <= 12 && m.efforts.every((e) => EFFORTS.includes(e))
     && (m.quirks == null || (typeof m.quirks === "object" && Object.entries(m.quirks).every(([k, v]) => QUIRKS.includes(k) && v === true)))
     && (m.json == null || typeof m.json === "boolean") && (m.in_nano == null || (Number.isFinite(m.in_nano) && m.in_nano >= 0 && m.in_nano <= 100000))
     && (m.formats == null || (Array.isArray(m.formats) && m.formats.length >= 1 && m.formats.length <= 12 && m.formats.every((f) => typeof f === "string" && /^[a-z0-9]{2,8}$/.test(f))))
+    && (m.pricing == null || (typeof m.pricing === "object" && !Array.isArray(m.pricing) && Object.keys(m.pricing).length === 2 && [m.pricing.prompt, m.pricing.completion].every((v) => Number.isFinite(v) && v >= 0 && v <= 10000)))
     && (m.sec_nano == null || (Number.isFinite(m.sec_nano) && m.sec_nano >= 0 && m.sec_nano <= 1000000));
 }
 // Whether a model can run a kind of job: models for the kind's own call, plus (for any-model kinds) every model that can chat.
 export const kindOk = (meta, kind) => meta?.eligible === true
   ? (Array.isArray(meta.kinds) && meta.kinds.length ? meta.kinds.includes(kind.pick) || (takesChat(kind) && canChat(meta)) || nativeFor(meta, kind) : takesChat(kind))
   : Array.isArray(meta?.kinds) && (meta.kinds.includes(kind.pick) || (kind.pick === "chat" && canChat(meta)) || (!!kind.any && (canChat(meta) || nativeFor(meta, kind))));
+// The per job fields (model-seed.js JOB_FIELDS). Each may be missing (older saved settings), which reads as its starting value.
+function validJobFields(job, path, kind) {
+  if (kind.resultCount && !(own(job, "results") ? Number.isSafeInteger(job.results) && job.results >= 1 && job.results <= 10 : true)) fail(`${path}: the number of results must be a whole number from 1 to 10.`);
+  if (!kind.resultCount && own(job, "results") && job.results !== null) fail(`${path}: only a web search job has a number of results.`);
+  if (own(job, "max_output") && job.max_output !== null && !(Number.isSafeInteger(job.max_output) && job.max_output >= 1 && job.max_output <= 1000000)) fail(`${path}: max output must be a whole number from 1 to 1000000, or empty.`);
+  if (own(job, "max_output") && job.max_output !== null && (kind.noOutput || kind.resultCount)) fail(`${path}: this job writes no text, so it has no max output.`);
+  if (own(job, "timeout_ms") && timeoutProblem(job.timeout_ms)) fail(`${path}: ${timeoutProblem(job.timeout_ms)}`);
+  if (own(job, "sort") && job.sort !== null && !SORTS.includes(job.sort)) fail(`${path}: sort must be price, throughput or latency, or empty.`);
+  if (own(job, "max_price") && job.max_price !== null) {
+    const p = job.max_price, price = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 10000;
+    if (!p || typeof p !== "object" || Array.isArray(p) || Object.keys(p).length !== 2 || !own(p, "prompt") || !own(p, "completion") || !price(p.prompt) || !price(p.completion)) fail(`${path}: max price needs a prompt and a completion price in dollars per million tokens (0 to 10000), or empty.`);
+  }
+}
 function validEntry(e, path, config, def, isMain) {
-  const allowed = isMain ? ["model", "effort", "hosts", "pin", "strict", "fallbacks"] : ["model", "effort", "hosts", "pin", "strict"];
+  const allowed = isMain ? ["model", "effort", "strict", "fallbacks", ...JOB_FIELDS] : ["model", "effort", "strict"];
+  if (e && typeof e === "object" && (own(e, "hosts") || own(e, "pin"))) fail(`${path}: provider lists (hosts, pin) are not saved. OpenRouter picks the provider. A sender older than this release (or an old saved copy) must drop them first.`);
   if (!e || typeof e !== "object" || Array.isArray(e) || Object.keys(e).some((k) => !allowed.includes(k)) || !own(e, "model") || !own(e, "effort")) fail(`Invalid ${path}.`);
   const kind = JOB_KINDS[def.kind], meta = config.catalog?.[e.model];
   if (!looseId(e.model) || !meta) fail(`${path}: choose a validated model.`);
   if (!kindOk(meta, kind)) fail(`${path}: ${meta.name || e.model} can't be used for ${def.label}.${kind.needs ? ` ${kind.needs}` : ""}`);
-  if (kind.effort) { if (!(meta.efforts || []).includes(e.effort)) fail(`${path}: ${meta.name || e.model} doesn't support reasoning level ${String(e.effort)}.`); }
+  if (kind.effort) { if (kind.effortNullOk && e.effort == null) { /* saved before the level existed */ } else if (!(meta.efforts || []).includes(e.effort)) fail(`${path}: ${meta.name || e.model} doesn't support reasoning level ${String(e.effort)}.`); }
   else if (e.effort != null) fail(`${path}: this job has no reasoning level.`);
-  if (e.hosts != null && (!Array.isArray(e.hosts) || e.hosts.length > 8 || !e.hosts.every((h) => typeof h === "string" && /^[a-z0-9][a-z0-9/_.-]{0,99}$/.test(h)))) fail(`${path}: invalid providers.`);
-  if (e.pin != null && typeof e.pin !== "boolean") fail(`${path}: invalid provider pin.`);
   if (e.strict != null && e.strict !== true) fail(`${path}: invalid flag.`);
+  if (kind.cloudflare && !(meta.source === "CF" || String(e.model).startsWith("@cf/"))) fail(`${path}: ${def.label} runs only on Cloudflare models.`);
+  if (isMain) validJobFields(e, path, kind);
   if (zdrApplies(kind, meta) && zdrBlocked(config, e.model)) fail(`${path}: ${meta.name || e.model} has no zero-data-retention provider, so it can't run ${def.label}.`);
 }
+// A job a later release added (OPTIONAL_JOB_IDS) that the settings don't carry reads as its starting value, in memory only.
+function withOptionalJobs(config) {
+  if (!config?.jobs || typeof config.jobs !== "object" || Array.isArray(config.jobs)) return config;
+  for (const id of OPTIONAL_JOB_IDS) {
+    if (own(config.jobs, id)) continue;
+    const d = optionalJobDefault(id, config.jobs);
+    config.jobs[id] = d.job;
+    if (d.facts && config.catalog && typeof config.catalog === "object" && !own(config.catalog, d.facts.id)) config.catalog[d.facts.id] = d.facts;
+  }
+  return config;
+}
+// Saved before these existed: the picture job's reasoning level (null reads as "none", and a Cloudflare model's saved facts get the levels the first-run data lists)
+// and Moondream's price. In memory only, like withOptionalJobs: the stored row is left as it was (the push sender relies on it).
+function withStartingFacts(config) {
+  const cat = config?.catalog && typeof config.catalog === "object" ? config.catalog : null, jobs = config?.jobs;
+  if (!cat || !jobs || typeof jobs !== "object") return config;
+  const look = jobs.look?.model, seed = look && SEED_FACTS[look];
+  if (seed?.pricing && cat[look] && typeof cat[look] === "object" && !cat[look].eligible && !own(cat[look], "pricing")) cat[look].pricing = clone(seed.pricing);
+  // The web search job kept its number of results in max_output before it had its own field.
+  const ws = jobs.web_search;
+  if (ws && typeof ws === "object" && own(ws, "max_output") && ws.max_output !== null && !own(ws, "results")) { ws.results = ws.max_output; ws.max_output = null; }
+  const v = jobs.vision_files;
+  if (v && typeof v === "object" && v.effort == null) {
+    const meta = cat[v.model];
+    if (meta && typeof meta === "object" && !meta.eligible && Array.isArray(meta.efforts) && !meta.efforts.length && SEED_FACTS[v.model]?.efforts?.length) meta.efforts = clone(SEED_FACTS[v.model].efforts);
+    if (meta && Array.isArray(meta.efforts) && meta.efforts.includes("none")) v.effort = "none";
+  }
+  return config;
+}
 export function validateModelSettings(config, { fill = false } = {}) {
-  config = clone(config);
+  config = withStartingFacts(withOptionalJobs(clone(config)));
   if (fill && config?.jobs && typeof config.jobs === "object") for (const id of JOB_IDS) if (!own(config.jobs, id)) config.jobs[id] = null;
-  keys(config, config?.version === 3 ? ["version", "jobs", "catalog", "routing"] : ["version", "jobs", "catalog"], "settings");
+  const expected = config?.version === 3 ? ["version", "jobs", "catalog", "routing"] : ["version", "jobs", "catalog"];
+  keys(config, config && typeof config === "object" && own(config, "limits") ? [...expected, "limits"] : expected, "settings");   // `limits` (limits.js) is optional: older saved settings have none
+  if (own(config, "limits")) { const problem = limitsProblem(config.limits); if (problem) fail(problem); }
   if (![2, 3].includes(config.version)) fail("Unsupported settings version.");
   if (!config.catalog || typeof config.catalog !== "object" || Array.isArray(config.catalog) || Object.keys(config.catalog).length > 220) fail("Invalid model metadata.");
   for (const [id, m] of Object.entries(config.catalog)) if (!validFacts(m, id)) fail(`Invalid model metadata for ${id}.`);
@@ -135,6 +200,7 @@ async function insertRow(env, revision, config, by, action) {
 }
 // A saved version can name jobs that a later release removed (for example the memory jobs). The validator requires exactly the jobs that exist
 // now, so reading drops any job id that is not in the registry, and nothing else is changed. The stored row is left as it is.
+export const hasRetiredJobs = (raw) => !!raw && typeof raw === "object" && !!raw.jobs && typeof raw.jobs === "object" && !Array.isArray(raw.jobs) && Object.keys(raw.jobs).some((id) => !JOB_IDS.includes(id));
 export function withoutRetiredJobs(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || !raw.jobs || typeof raw.jobs !== "object" || Array.isArray(raw.jobs)) return raw;
   const known = new Set(JOB_IDS), dropped = Object.keys(raw.jobs).filter((id) => !known.has(id));
@@ -142,7 +208,7 @@ export function withoutRetiredJobs(raw) {
   return { ...raw, jobs: Object.fromEntries(Object.entries(raw.jobs).filter(([id]) => known.has(id))) };
 }
 function configOf(row) {
-  try { return validateModelSettings(withoutRetiredJobs(JSON.parse(row.config))); }
+  try { return validateModelSettings(withoutProviderLists(withoutRetiredJobs(JSON.parse(row.config)))); }
   catch { throw new ModelSettingsError("Stored model settings are invalid. Restore an earlier version from Models. Nothing was sent."); }
 }
 // The earlier slot-based settings, read once to carry over what an environment had chosen. Absent table, row or reset = no saved choices.
@@ -182,31 +248,7 @@ async function addMissingJobs(env, row, config) {
 }
 let FIRST_RUN;
 const firstRunSettings = () => (FIRST_RUN ||= validateModelSettings(seedFromLegacy({}, null)));
-// The Captain selected these exact source changes for dev. The append-only
-// action marker prevents the baseline migration from overriding later edits.
-const SHARED_OR_ACTION = "shared-model-source-or-v1";
 
-async function migrateSharedSources(env, row, config) {
-  if (settingsEnvironment(env) !== "dev" || !dynamicRoutingOn(env) || String(env.DYNAMIC_ROUTING_SHARED_OR || "").toLowerCase() !== "on") return false;
-  const marker = await dbOf(env).prepare(`SELECT revision FROM ${TABLE} WHERE environment=? AND action=? LIMIT 1`).bind("dev", SHARED_OR_ACTION).first();
-  if (marker) return false;
-  const moves = SHARED_OR_MOVES.filter((m) => config.jobs[m.job]?.model === m.from), next = clone(config);
-  if (moves.length) {
-    const live = new Map((await modelCatalog(env, { settings: config })).models.map((m) => [m.id, m]));
-    for (const move of moves) {
-      const record = live.get(move.to), def = jobDef(move.job);
-      if (!record?.eligible || record.source !== "OR" || !record.levels?.includes("zdr") || !validCatalogRecord(record, move.to) || !kindOk(record, JOB_KINDS[def.kind])) throw new ModelSettingsError(`The selected OpenRouter source for ${def.label} has not been verified. The saved settings have not changed.`);
-      next.jobs[move.job].model = move.to;
-      next.catalog[move.to] = { ...record, ...clone(move.facts || {}), ...(next.catalog[move.to]?.quirks ? { quirks: clone(next.catalog[move.to].quirks) } : {}) };
-    }
-    // Remove only source records replaced by this migration and now unused.
-    const used = new Set(Object.values(next.jobs).flatMap(entriesOf).map((e) => e.model));
-    for (const c of next.routing?.categories || []) for (const chain of Object.values(c.chains)) for (const e of chain) used.add(e.model);
-    for (const move of moves) if (!used.has(move.from)) delete next.catalog[move.from];
-  }
-  await insertRow(env, Number(row.revision), validateModelSettings(next), "system", SHARED_OR_ACTION);
-  return true;
-}
 export async function readModelSettings(env) {
   // Without the EE switch the shared settings table is neither read nor written: callers get the first-run data, held in memory.
   if (env?.ONEHELM_EE !== "1hc") return { revision: 0, config: firstRunSettings() };
@@ -215,7 +257,15 @@ export async function readModelSettings(env) {
     for (let tries = 0; tries < 5; tries++) {
       let row = await readRow(env);
       if (!row) { await firstVersion(env); row = await readRow(env); if (!row) continue; }
-      let config; const stored = JSON.parse(row.config), raw = withoutRetiredJobs(stored), retired = Object.keys(stored?.jobs || {}).filter((id) => !JOB_IDS.includes(id));
+      const stored = JSON.parse(row.config);
+      if (hasProviderLists(stored) || hasRetiredJobs(stored)) {
+        // One time, append only: a saved version that still has provider lists, or jobs that no longer exist, is replaced by a new version without them. The old row stays in History.
+        // Only a version that is otherwise valid is written; any other fault is reported below, never repaired by guessing.
+        // Everything else stays exactly as it was (a missing optional job is not filled in).
+        const clean = withoutRetiredJobs(withoutProviderLists(stored)); let ok = false; try { validateModelSettings(clean); ok = true; } catch { /* reported by the normal path below */ }
+        if (ok) { if (await insertRow(env, Number(row.revision), clean, "system", STRIP_ACTION)) console.log("model settings: provider lists and retired jobs removed", JSON.stringify({ environment: key, from_revision: Number(row.revision) })); continue; }
+      }
+      let config; const raw = withoutRetiredJobs(withoutProviderLists(stored)), retired = Object.keys(stored?.jobs || {}).filter((id) => !JOB_IDS.includes(id));
       try { config = validateModelSettings(raw); }
       catch {
         // Only jobs missing from an otherwise valid version are filled in; any other fault is reported, never repaired by guessing.
@@ -223,11 +273,10 @@ export async function readModelSettings(env) {
         if (JOB_IDS.some((id) => !config.jobs[id])) { await addMissingJobs(env, row, config); continue; }
       }
       if (dynamicRoutingOn(env) && config.version === 2) {
-        const next = validateModelSettings(withRoutingConfig(config, { zdrThirdModel: env.DYNAMIC_ROUTING_ZDR_THIRD_MODEL }));
+        const next = validateModelSettings(withRoutingConfig(config, { zdrThirdModel: ROUTING_ZDR_THIRD_MODEL }));
         await insertRow(env, Number(row.revision), next, "system", "add-dynamic-routing");
         continue;
       }
-      if (await migrateSharedSources(env, row, config)) continue;
       const out = { revision: Number(row.revision), config, ...(retired.length ? { retired } : {}) };
       LAST_GOOD.set(key, out);
       return out;
@@ -278,9 +327,8 @@ function choicesOf(config) {
   }
   return out;
 }
-// Jobs the Models page doesn't show because nothing runs them in this environment. Their saved setting stays in the settings.
-// embed_memory is used only by the ambient passage index (ambient-index.js), which LEGACY_AMBIENT_SEARCH can turn off.
-export const hiddenJobs = (env) => ambientSearchOn(env) ? [] : ["embed_memory"];
+// Jobs left out of the settings view's option list because nothing runs them here. The Models page itself shows every job on every environment (Captain, 2026-10-17).
+export const hiddenJobs = (env) => ambientSearchOn(env) ? [] : ["embed_memory"];   // only the settings view's own option list: the Models page shows every job (model-dashboard.js)
 export const modelSettingsOptions = (config, hidden = []) => ({ groups: GROUPS, jobs: MODEL_PAGE_JOBS.filter((j) => !hidden.includes(j.id)), kinds: JOB_KINDS, levels: PRIVACY_LEVELS, choices: choicesOf(config) });
 // Models in the saved settings or the first-run list that OpenRouter no longer lists. A failed lookup flags nothing.
 // Kept apart from modelSettingsView so that opening the page never waits on OpenRouter.
@@ -310,6 +358,9 @@ async function validatedSelection(env, config, current) {
   if (!config || typeof config !== "object" || Array.isArray(config) || !config.jobs || typeof config.jobs !== "object") fail("Invalid settings.");
   if (![2, 3].includes(config.version) || (config.version === 3 && (!config.routing || !Array.isArray(config.routing.categories) || config.routing.categories.some((c) => !c || typeof c !== "object" || !c.chains)))) fail("Invalid routing settings.");
   const next = { version: config.version === 3 ? 3 : 2, jobs: clone(config.jobs), catalog: clone(current.catalog), ...(config.version === 3 ? { routing: clone(config.routing) } : {}) };
+  // The limits (limits.js): what the page sent, kept sparse (only values that differ from the starting value); a save that sends none keeps the saved ones.
+  if (own(config, "limits")) { const problem = limitsProblem(config.limits); if (problem) fail(problem); const sparse = compactLimits(config.limits); if (Object.keys(sparse).length) next.limits = sparse; }
+  else if (current.limits && Object.keys(current.limits).length) next.limits = clone(current.limits);
   if (dynamicRoutingOn(env) && next.version !== 3) fail("Reload Models before saving routing settings.");
   const need = new Map();
   for (const def of JOBS) {
@@ -365,7 +416,7 @@ export async function restoreModelSettings(env, { revision, restore_revision }, 
   const current = await readModelSettings(env).catch(() => ({ config: { catalog: {} } }));
   let restored = configOf(row);
   if (dynamicRoutingOn(env) && restored.version === 2) {
-    const model = env.DYNAMIC_ROUTING_ZDR_THIRD_MODEL, meta = current.config.catalog?.[model];
+    const model = ROUTING_ZDR_THIRD_MODEL, meta = current.config.catalog?.[model];
     const savedEntry = (current.config.routing?.categories || []).flatMap((c) => Object.values(c.chains || {}).flat()).concat(Object.values(current.config.jobs || {}).flatMap(entriesOf)).find((e) => e.model === model && meta?.efforts?.includes(e.effort));
     restored = withRoutingConfig({ ...restored, catalog: { ...restored.catalog, ...(meta && !restored.catalog[model] ? { [model]: meta } : {}) } }, { zdrThirdModel: model, zdrThirdEntry: savedEntry });
   }

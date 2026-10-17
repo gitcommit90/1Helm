@@ -6,12 +6,15 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { Resident, jpegSize } from "../src/resident.js";
-import { vision, VISION_RESERVE, MOONDREAM_RESERVE, MOONDREAM_NANO, pointsToPixels, lookModel } from "../src/sidecar.js";
+import { ENDPOINTS } from "../src/privacy.js";
+import { vision, MOONDREAM_RESERVE, MOONDREAM_NANO, pointsToPixels, lookModel } from "../src/sidecar.js";
 import { MOONDREAM } from "../src/ee/model-seed.js";
 import { browserPurchaseGuard } from "../src/ee/browser-tasks.js";
 import { classifySteps } from "../src/personal-fill.js";
 import { ocrLines, textOnScreen, textPositions, findInOcr, pagePosition, pageLine } from "../src/ocr-look.js";
 
+// The picture goes through dispatch, which checks the account level for a Workers AI model: the saved Gemma gets a verified zero data retention route here.
+ENDPOINTS.transcription ||= {}; ENDPOINTS.transcription["@cf/google/gemma-4-26b-a4b-it"] = { "cloudflare-workers-ai": { zdr: true, training: false } };
 const db = new DatabaseSync(":memory:");
 const sql = { exec(q, ...args) {
   if (!args.length && q.split(";").filter((x) => x.trim()).length > 1) { db.exec(q); return { toArray: () => [], one: () => undefined }; }
@@ -50,21 +53,18 @@ assert.deepEqual(jpegSize(jpeg), { width: 1280, height: 715 });
 assert.equal(jpegSize(new Uint8Array([1, 2, 3])), null);
 
 const G = { ...env, MODEL_SETTINGS: { ...SEED, jobs: { ...SEED.jobs, vision_files: { ...SEED.jobs.vision_files, model: "@cf/google/gemma-4-26b-a4b-it" } } } };   // Gemma picked on the Models page
-// 1. vision(): existing callers get exactly the old prompt; a question only adds one line.
+// 1. vision(): one prompt for every caller (the browser look uses Moondream, so vision() takes no question).
 {
   const before = aiCalls.length;
   const img = { data: jpeg, mime: "image/jpeg" };
   const plain = await vision(G, { tenant: "t1" }, img, "picture");
   assert.equal(plain.value.text, "Save\nSECRET"); assert.ok(plain.nano > 0);
-  const withQ = await vision(G, { tenant: "t1" }, img, "browser", { question: "Where is Save?", width: 1280, height: 715 });
-  const textOf = (b) => b.messages[0].content[0].text;
-  const p0 = textOf(aiCalls[before]), p1 = textOf(aiCalls[before + 1]);
+  const p0 = aiCalls[before].messages[0].content[0].text;
   assert.equal(p0, 'Describe this picture in 2-3 sentences, then copy every piece of text in it exactly, line by line. Answer with JSON only: {"description": "...", "text": "..."} (text empty when there is none).');
-  assert.ok(p1.startsWith(p0) && p1.length > p0.length);
-  assert.match(p1, /Where is Save\?/); assert.match(p1, /x,y pixel position/); assert.match(p1, /1280x715/);
-  assert.deepEqual(aiCalls[before].response_format, aiCalls[before + 1].response_format, "VISION_SCHEMA is unchanged");
+  const withQ = await vision(G, { tenant: "t1" }, img, "browser", { question: "Where is Save?", width: 1280, height: 715 });
+  assert.equal(aiCalls[before + 1].messages[0].content[0].text, p0, "a question is ignored: the same prompt goes out");
   assert.ok(withQ.nano > 0);
-  ok("vision(): old callers unchanged, the question adds one line, schema unchanged");
+  ok("vision(): one prompt for every caller");
 }
 
 // 2. look:true (Moondream): a caption always, a query for a question, a point for find; nothing is saved, stored or shown; the cost is added.
@@ -75,7 +75,7 @@ const G = { ...env, MODEL_SETTINGS: { ...SEED, jobs: { ...SEED.jobs, vision_file
   const calls = aiCalls.slice(n0), by = Object.fromEntries(calls.map((c) => [c.task, c]));
   assert.equal(calls.length, 3); assert.ok(aiModels.slice(n0).every((m) => m === MOONDREAM));
   assert.equal(by.caption.caption_length, "normal"); assert.equal(by.caption.stream, false); assert.match(by.caption.image, /^data:image\/jpeg;base64,/);
-  assert.equal(by.query.question, "Where is the Save button?"); assert.equal(by.query.reasoning, false); assert.equal(by.query.max_tokens, 300); assert.equal(by.query.temperature, 0);
+  assert.equal(by.query.question, "Where is the Save button?"); assert.equal(by.query.reasoning, false); assert.equal(by.query.max_tokens, undefined, "the look job has no saved max output, so none is sent"); assert.equal(by.query.temperature, 0);
   assert.equal(by.point.target, "Save button"); assert.equal(by.point.stream, false);
   assert.match(r.out, /Description: A normal caption\./); assert.match(r.out, /Answer to your question: The Save button\./);
   assert.match(r.out, /Positions of Save button \(click_at pixels[^)]*1280x715[^)]*\): \(640, 179\)/, "fractions x the screenshot size");
@@ -110,8 +110,11 @@ const G = { ...env, MODEL_SETTINGS: { ...SEED, jobs: { ...SEED.jobs, vision_file
   const qd = await run("query-down"); assert.equal(qd.r.code, 0); assert.match(qd.r.out, /Answer unavailable/); assert.match(qd.r.out, /\(640, 179\)/);
   const all = await run("down"); assert.equal(all.r.code, 1); assert.match(all.r.out, /browser_snapshot/);
   assert.ok(ledger.settled.at(-1)[1] >= 0);
-  env.SIDECAR_LOOK_MODEL = "@cf/other/look"; const n0 = aiModels.length; await R.browserToolInner("browser_screenshot", { look: true }, mkTc()); assert.equal(aiModels[n0], "@cf/other/look"); env.SIDECAR_LOOK_MODEL = "";
-  assert.equal(lookModel(env), MOONDREAM); assert.deepEqual(pointsToPixels([{ x: 0.1, y: 0.5 }], { width: 1000, height: 200 }), [[100, 100]]); assert.deepEqual(pointsToPixels(null, { width: 1, height: 1 }), []);
+  // The look model is the saved model of the job "look"; no environment variable changes it.
+  const savedSettings = env.MODEL_SETTINGS, alt = JSON.parse(JSON.stringify(savedSettings)); alt.jobs.look = { model: "@cf/other/look", effort: null, fallbacks: [] }; alt.catalog["@cf/other/look"] = { id: "@cf/other/look", name: "other look", kinds: ["look"], efforts: [] };
+  env.SIDECAR_LOOK_MODEL = "@cf/decoy/look"; env.MODEL_SETTINGS = alt; const n0 = aiModels.length; await R.browserToolInner("browser_screenshot", { look: true }, mkTc()); assert.equal(aiModels[n0], "@cf/other/look"); assert.equal(lookModel(env), "@cf/other/look");
+  env.MODEL_SETTINGS = savedSettings; delete env.SIDECAR_LOOK_MODEL;
+  assert.deepEqual(pointsToPixels([{ x: 0.1, y: 0.5 }], { width: 1000, height: 200 }), [[100, 100]]); assert.deepEqual(pointsToPixels(null, { width: 1, height: 1 }), []);
   ok("nested result, empty retries, failing parts and the model override");
 }
 

@@ -69,7 +69,7 @@ export function formatExec(r, limit) {
 }
 
 export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, turn, opts, send, stats, trace, stepIn, TOOLS, COMPUTER_TOOLS, consts, resume = null }) {
-  const { CHECKPOINT_TOKENS, MAX_OUT } = consts;
+  const { CHECKPOINT_TOKENS } = consts;
   let lastAssistant = null, finalMsgs = null, outputRecovery = null;
   // resume.js: a turn a reset cut off carries on from its saved steps (step count, what it said and its checkpoints carried over).
   let stepCapped = false, warm = null, checkpoints = resume?.checkpoints || 0, steps = resume ? resume.step + (resume.phase === "tools" ? 1 : 0) : 0, nudged = !!resume, toolCalls = resume ? stats.tool_calls : 0, error = null, limitAsked = false;
@@ -105,7 +105,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
         let spoke = false;
         const r = await res.callModel(toOpenAI(context.systemPrompt, context.messages), () => {
           if (!warm) { const w0 = Date.now(); warm = res.computer().warm().then((x) => ({ ...x, ms: Date.now() - w0 })); }
-        }, send ? (t) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s: t }); } : null, kind === "chat" ? MAX_OUT : 4096, noTools, tc);
+        }, send ? (t) => { if (!spoke && said.length) send({ t: "text", s: "\n\n" }); spoke = true; send({ t: "text", s: t }); } : null, noTools, tc);
         stepIn.push(r.inTok); queueMicrotask(() => journal("tools")); stats.in += r.inTok; stats.cached += r.cached; stats.cache_write += r.cacheWrite || 0; stats.out += r.outTok; stats.charge += r.charge; if (r.model) stats.models.push(r.routing ? `${r.model} [${r.routing.reason}/${r.routing.floor}]` : r.model);
         if ((opts.hard_charge || spendPausesOn(tc)) && opts.max_charge && stats.charge >= opts.max_charge && !tc.abort) { tc.limitWhy = "cost"; tc.abort = "soft"; }
         if (spendPausesOn(tc) && opts.soft_steps && steps + 1 >= opts.soft_steps && !tc.abort) { tc.limitWhy = "steps"; tc.abort = "soft"; }
@@ -208,7 +208,7 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
       // Mid-turn checkpoint (1Helm bounded context): fold the work so far into working notes, restart from them.
       if (message.usage?.input > Math.max(CHECKPOINT_TOKENS, (stepIn[0] || 0) + 20000) && steps < limit() - 2) {
         const ask = { role: "user", content: "(Context checkpoint. Don't call tools. Write your working notes so you can continue without the raw steps above: the goal, what you've done, key findings with exact values/paths/commands, what's left and your next step. Be complete but compact.)" };
-        const fin = await res.callModel([...toOpenAI(ctx.systemPrompt, ctx.messages), ask], () => {}, null, 1500, true, tc);
+        const fin = await res.callModel([...toOpenAI(ctx.systemPrompt, ctx.messages), ask], () => {}, null, true, tc);
         stats.in += fin.inTok; stats.cached += fin.cached; stats.cache_write += fin.cacheWrite || 0; stats.out += fin.outTok; stats.charge += fin.charge; if (fin.model) stats.models.push(fin.routing ? `${fin.model} [${fin.routing.reason}/${fin.routing.floor}]` : fin.model); checkpoints++;
         const lastTool = [...ctx.messages].reverse().find((m) => m.role === "toolResult");
         res.save(turn, ask); res.save(turn, { role: "assistant", content: fin.content });

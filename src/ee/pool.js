@@ -28,8 +28,7 @@ export const RECOVERY = {
 // work) are technical blockers: the rest of the turn moves to the saved model of the job "escalate".
 export const IN_TURN_JOB = "escalate";
 
-// Deterministic keyword guess, used ONLY to label what a dev test turn would have routed to (test-model.js turns never call the decider)
-// and by the ops route preview. Never dispatched in place of the decider.
+// Deterministic keyword guess, used ONLY to label the ops route preview. Never dispatched in place of the decider.
 export function guessCategory(text) {
   const t = String(text || "");
   if (/\b(spreadsheet|workbook|excel|xlsx|csv|google sheets?)\b/i.test(t)) return "spreadsheet";

@@ -50,8 +50,7 @@ export async function setPrivacy(env, tenantId, level, at = Date.now()) {
 // ---- The endpoint registry: modality → model → OpenRouter provider host → what that endpoint does with requests ----
 //   zdr:      verified zero data retention for this modality (OpenRouter /api/v1/endpoints/zdr, checked 2026-10-06…08)
 //   training: the endpoint may train on requests
-// Hosts are listed in preference order. Sources: route2.js TWO_HOSTS / CHORE_MODELS, test-model.js (Haiku 5.5 ZDR on Bedrock and
-// Vertex), local validation evidence (both Meta endpoints retain ~30 days; Contributor trains, Standard doesn't;
+// Hosts are listed in preference order. Sources: the OpenRouter endpoint lists, local validation evidence (both Meta endpoints retain ~30 days; Contributor trains, Standard doesn't;
 // per-request data_collection deny / zdr were verified to reject Contributor).
 const Z = { zdr: true, training: false };
 export const ENDPOINTS = {
@@ -136,14 +135,16 @@ export class PrivacyBlocked extends Error {
 }
 export const PRIVACY_EXHAUSTED = "No AI model allowed by your AI data privacy setting is available right now, so I stopped here. Nothing was sent anywhere else. Try again in a few minutes, or review the setting in Settings → General → AI data privacy.";
 
-// The validator around every OpenRouter chat request: returns the request rewritten so OpenRouter can only route it to endpoints
-// eligible at `level`, or throws PrivacyBlocked (nothing is sent). The caller's own host choices are intersected, never widened.
-//   - registered model: provider.only = eligible hosts ∩ the caller's only/order; data_collection "allow" only when an eligible host
-//     trains (unrestricted), else "deny"; zdr: true when every remaining host is ZDR (or the level is zdr).
-//   - unregistered model, or a `models` fallback list: OpenRouter's strictest filter (zdr: true, data_collection "deny").
+// The validator around every OpenRouter chat request: returns the request with OpenRouter's own data policy fields set for `level`, or throws
+// PrivacyBlocked (nothing is sent). The levels map to OpenRouter's fields and nothing else:
+//   zdr -> zdr: true and data_collection "deny";  no_training -> data_collection "deny";  unrestricted -> data_collection "allow".
+// A request that already asks for a stricter value (zdr, or "deny") keeps it, so a stricter job is never weakened. No host list is built or kept:
+// provider.order, provider.only and provider.ignore are removed from every request. A model the registry (ENDPOINTS) lists must have at least one
+// endpoint allowed at the level, or the request is refused here; every other model is left to OpenRouter's filter.
+// A `models` fallback list always gets the strictest filter.
 export function enforceRequest(payload, level, { prov = null, modality = "chat" } = {}) {
   level = normalizePrivacy(level);
-  const p = { ...payload }, given = p.provider && typeof p.provider === "object" ? p.provider : {};
+  const p = { ...payload }, { order, only, ignore, ...given } = p.provider && typeof p.provider === "object" ? p.provider : {};
   const STRICT = { zdr: true, data_collection: "deny" };
   if (Array.isArray(p.models) && p.models.length) {
     const ok = (m) => !registered(m, modality) || eligibleHosts(m, "zdr", { modality, prov }).length > 0;
@@ -152,30 +153,11 @@ export function enforceRequest(payload, level, { prov = null, modality = "chat" 
     p.provider = { ...given, ...STRICT };
     return p;
   }
-  if (!registered(p.model, modality)) {
-    // An unregistered model is limited to OpenRouter's strictest filter, unless the caller pinned hosts and every one of them is allowed at
-    // this level by the provider's recorded terms (or, at Unrestricted only, has no recorded terms). Anything else stays strict.
-    const strictAsked = given.zdr === true || given.data_collection === "deny",   // a caller that asked for zdr or deny (e.g. a ZDR job) keeps it
-      pinned = !strictAsked && Array.isArray(given.only) && given.only.length && given.only.every((h) => typeof h === "string") ? given.only : null;
-    if (pinned && pinned.every((h) => hostOk(p.model, h, level, { modality }))) {
-      const terms = pinned.map((h) => hostTerms(p.model, h, { modality })), { zdr, data_collection, ...rest } = given;
-      p.provider = { ...rest, only: pinned, data_collection: terms.some((t) => !t || t.training) ? "allow" : "deny", ...(terms.every((t) => t?.zdr === true) ? { zdr: true } : {}) };
-      return p;
-    }
-    p.provider = { ...given, ...STRICT }; return p;
-  }
-  const reg = ENDPOINTS[modality][p.model];
-  let hosts = eligibleHosts(p.model, level, { modality, prov });
-  const only = Array.isArray(given.only) ? given.only : null, order = Array.isArray(given.order) ? given.order : [];
-  // OpenRouter endpoint tags may refine a registered provider (cerebras/fp16). Keep that narrower
-  // caller pin; do not replace it with the broad provider or accept an unrelated prefix.
-  const policyHost = (h) => Object.keys(reg).filter((base) => h === base || h.startsWith(`${base}/`)).sort((a, b) => b.length - a.length)[0];
-  if (only) hosts = only.filter((h) => typeof h === "string" && hosts.some((base) => h === base || h.startsWith(`${base}/`) && reg[base].zdr === true && reg[base].training === false) && endpointOk(reg[policyHost(h)], level));
-  if (!hosts.length) throw new PrivacyBlocked(`privacy: ${p.model} is not allowed at ${level} (${ineligibleWhy(p.model, level, { modality, prov }) || "no requested host is eligible"})`, { model: p.model, level });
-  const ordered = [...order.filter((h) => hosts.includes(h)), ...hosts.filter((h) => !order.includes(h))];
-  const allZdr = ordered.every((h) => reg[policyHost(h)].zdr === true && reg[policyHost(h)].training === false), trains = ordered.some((h) => reg[policyHost(h)].training);
-  const { zdr, data_collection, ...rest } = given;
-  p.provider = { ...rest, order: ordered, only: ordered, data_collection: trains ? "allow" : "deny", ...(allZdr || level === "zdr" ? { zdr: true } : {}) };
+  if (registered(p.model, modality) && !eligibleHosts(p.model, level, { modality, prov }).length)
+    throw new PrivacyBlocked(`privacy: ${p.model} is not allowed at ${level} (${ineligibleWhy(p.model, level, { modality, prov })})`, { model: p.model, level });
+  const zdr = level === "zdr" || given.zdr === true, deny = zdr || level !== "unrestricted" || given.data_collection === "deny";
+  const { zdr: _z, data_collection: _d, ...rest } = given;
+  p.provider = { ...rest, ...(zdr ? { zdr: true } : {}), data_collection: deny ? "deny" : "allow" };
   return p;
 }
 

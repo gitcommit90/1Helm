@@ -13,7 +13,7 @@ const finalBody='root = Stack([Big("$69.64", "Each person"), Rows([["Total with 
 function result(content='',calls=[]){return{content,calls:calls.map(([name,args])=>({id:`fixture_${++callId}`,type:'function',function:{name,arguments:JSON.stringify({step_title:'Recorded task step',...args})}})),inTok:50,outTok:10,cached:0,charge:0,model:ids[0],finish:calls.length?'tool_calls':'stop'};}
 function attach(R){
   R.computer=()=>({...W.computer,readFile:async()=>({ok:true,bytes:new TextEncoder().encode('[]')})});
-  R.callModel=async(messages,_warm,_text,_max,_off,tc)=>{
+  R.callModel=async(messages,_warm,_text,_off,tc)=>{
     const tools=R.modelTools(tc).map(t=>t.function.name);
     if(tc.kind==='helper'){
       workerProfiles.push(JSON.stringify(tc.taskProfile));

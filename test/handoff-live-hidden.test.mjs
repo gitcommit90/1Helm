@@ -31,8 +31,8 @@ const setup = (r) => { r.systemPrompt = async () => "SYSTEM"; r.callModel = mode
 let script = [], calls = [], spy = [], toolGate = null, notesHook = null;
 const T = (...cs) => ({ calls: cs });
 let cn = 0;
-async function model(messages, _w, onText, maxOut, noTools, tc) {
-  if (maxOut === 600 && noTools) { if (notesHook) { const h = notesHook; notesHook = null; await h(); } return { content: "- notes", calls: [], inTok: 1, cached: 0, outTok: 1, charge: 0, finish: "stop" }; }
+async function model(messages, _w, onText, noTools, tc) {
+  if (noTools && String(messages.at(-1)?.content).startsWith("(Turn finished")) { if (notesHook) { const h = notesHook; notesHook = null; await h(); } return { content: "- notes", calls: [], inTok: 1, cached: 0, outTok: 1, charge: 0, finish: "stop" }; }
   calls.push({ messages: JSON.parse(JSON.stringify(messages)), noTools: !!noTools, tools: noTools ? null : this.modelTools(tc) });
   let s = script.shift() ?? "Done.";
   while (s && s.wait) { await s.wait; s = s.then; }

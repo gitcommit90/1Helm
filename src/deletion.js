@@ -176,9 +176,6 @@ async function deleteSessionD1(env, tid, slug, sid, inv) {
     if (o.prefix && o.status !== "accepted" && /^t\/[^/]+\/pages\/[0-9a-f-]{36}$/.test(o.prefix)) await r2DeletePrefix(env, `${o.prefix}/`);
     await DB.prepare("DELETE FROM share_offers WHERE id=?").bind(o.id).run(); out.share_offers++;
   }
-  out.router_shadow = Number((await DB.prepare("DELETE FROM router_shadow WHERE tenant_id=? AND channel=? AND session=?").bind(tid, slug, sid).run()).meta?.changes || 0);
-  if (env.ENV_NAME === "dev") out.decision_shadow = Number((await DB.prepare("DELETE FROM decision_shadow WHERE tenant_id=? AND channel=? AND session=?").bind(tid, slug, sid).run().catch(() => ({ meta: {} }))).meta?.changes || 0);   // dev only (decision-shadow.js)
-  if (env.ENV_NAME === "dev") for (const t of ["router_lab_runs", "router_lab_incumbents"]) out[t] = Number((await DB.prepare(`DELETE FROM ${t} WHERE tenant_id=? AND channel=? AND session=?`).bind(tid, slug, sid).run().catch(() => ({ meta: {} }))).meta?.changes || 0);   // dev only (router-lab.js)
   out.approval_policy = Number((await DB.prepare("DELETE FROM approval_policy WHERE tenant_id=? AND scope='session' AND scope_key=?").bind(tid, `${slug}:${sid}`).run()).meta?.changes || 0);
   // Get to know you: deleting its task removes the answers too (the row stays as "offered once", empty, so it isn't offered again).
   out.interview = Number((await DB.prepare("UPDATE interviews SET status='removed', answers='{}', known='{}', session_id=NULL, updated_at=? WHERE tenant_id=? AND session_id=?").bind(now(), tid, sid).run().catch(() => ({ meta: {} }))).meta?.changes || 0);
@@ -214,7 +211,7 @@ async function wipeChannelEverywhere(env, job, tid, slug, cid, prefix = "") {
   });
   await step(env, job, k("d1"), async () => {
     const out = {};
-    for (const [t, q] of [["resident_schedules", "DELETE FROM resident_schedules WHERE tenant_id=? AND channel=?"], ["texted_cards", "DELETE FROM cards WHERE tenant_id=? AND channel=?"], ["router_shadow", "DELETE FROM router_shadow WHERE tenant_id=? AND channel=?"], ...(env.ENV_NAME === "dev" ? [["decision_shadow", "DELETE FROM decision_shadow WHERE tenant_id=? AND channel=?"], ["router_lab_runs", "DELETE FROM router_lab_runs WHERE tenant_id=? AND channel=?"], ["router_lab_incumbents", "DELETE FROM router_lab_incumbents WHERE tenant_id=? AND channel=?"]] : []),
+    for (const [t, q] of [["resident_schedules", "DELETE FROM resident_schedules WHERE tenant_id=? AND channel=?"], ["texted_cards", "DELETE FROM cards WHERE tenant_id=? AND channel=?"],
       ["link_purchases", "DELETE FROM link_purchases WHERE tenant_id=? AND channel=?"], ["memory_dedupe", "DELETE FROM memory_dedupe WHERE tenant_id=? AND channel=?"], ["memory_tombstones", "DELETE FROM memory_tombstones WHERE tenant_id=? AND channel=?"], ["approval_policy", "DELETE FROM approval_policy WHERE tenant_id=? AND scope='channel' AND scope_key=?"]])
       out[t] = Number((await DB.prepare(q).bind(tid, slug).run().catch(() => ({ meta: {} }))).meta?.changes || 0);
     // Share links of its files, offers prepared in it, and pages published from it (bytes first, then the row).

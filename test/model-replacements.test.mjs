@@ -4,9 +4,10 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { modelCatalog, assessModelCatalog } from "../src/ee/model-catalog.js";
 import { saveModelSettings, restoreModelSettings, modelSettingsView, readModelSettings } from "../src/ee/model-settings.js";
-import { openRouterChat, orFetch } from "../src/model.js";
+import { orFetch } from "../src/model.js";
+import { openRouterChat } from "./helpers/or-chat.mjs";
 import { policyRoute as policyRoute0, dispatchOrder as dispatchOrder0 } from "../src/ee/route2.js";
-import { browserPlan } from "../src/ee/browser-agent.js";
+import { browserPlan } from "./helpers/browser-plan.mjs";
 import { enforceRequest } from "../src/privacy.js";
 import { jobSetting } from "../src/ee/model-jobs.js";
 import { ID, SEED } from "./helpers/seed-settings.mjs";
@@ -74,7 +75,7 @@ try {
   assert.deepEqual(view.config.catalog[A].hosts, ["safe-host/fp16"]); assert.equal(view.config.catalog[A].name, `Name ${A}`);
   let route = await policyRoute("general", "zdr", "kept-before-save");
   await call(route); assert.equal(sent.at(-1).model, A); assert.equal(sent.at(-1).reasoning.effort, "high"); assert.equal(route.effort, "high");
-  assert.equal(sent.at(-1).max_tokens, 4096); assert.deepEqual(sent.at(-1).provider.only, ["safe-host/fp16"]);
+  assert.equal(sent.at(-1).max_tokens, undefined); assert.equal(sent.at(-1).provider.only, undefined);
   assert.equal(sent.at(-1).provider.zdr, true); assert.equal(sent.at(-1).provider.data_collection, "deny"); assert.equal(sent.at(-1).provider.require_parameters, true);
   assert.deepEqual(sent.at(-1).provider.max_price, { prompt: 3, completion: 15 });
   assert.equal(sent.at(-1).models, undefined);
@@ -103,21 +104,21 @@ try {
   // Background jobs take replacements too, with strict pins; their fallbacks are separate settings.
   await save((c) => { c.jobs.label = { model: A, effort: "none", strict: true, fallbacks: [] }; c.jobs.browser = { model: B, effort: "high", strict: true, fallbacks: [] }; });
   await call({ chore: true }, { messages: [{ role: "user", content: "label" }], model: "attacker/model", provider: { only: ["attacker"] }, reasoning: { effort: "max" }, max_tokens: 9999 }, "card-label");
-  assert.equal(sent.at(-1).model, A); assert.deepEqual(sent.at(-1).reasoning, { enabled: false }); assert.equal(sent.at(-1).max_tokens, 4096); assert.deepEqual(sent.at(-1).provider.only, ["safe-host/fp16"]);
+  assert.equal(sent.at(-1).model, A); assert.deepEqual(sent.at(-1).reasoning, { enabled: false }); assert.equal(sent.at(-1).max_tokens, undefined); assert.equal(sent.at(-1).provider.only, undefined);
   const plan = await browserPlan(env); await orFetch(env, { ...plan[0], messages: [{ role: "user", content: "browser" }] }, { tenant: "t" });
-  assert.equal(sent.at(-1).model, B); assert.equal(sent.at(-1).reasoning.effort, "high"); assert.equal(sent.at(-1).max_tokens, 4096);
+  assert.equal(sent.at(-1).model, B); assert.equal(sent.at(-1).reasoning.effort, "high"); assert.equal(sent.at(-1).max_tokens, undefined);
   // Choosing the original model again drops the replacement; an old resumed route naming the replaced model can't resurrect it as a primary of the list.
   await save((c) => { c.jobs["chat.general"] = clone(SEED.jobs["chat.general"]); c.jobs.label = clone(SEED.jobs.label); c.jobs.browser = clone(SEED.jobs.browser); c.jobs["recover.technical"] = clone(SEED.jobs["recover.technical"]); });
   assert.ok(!(await current()).catalog[A], "a replacement nothing uses is dropped from the saved catalog");
   await call(); assert.equal(sent.at(-1).model, ID.DEEPSEEK, "at zero data retention the first allowed model of the saved list answers");
   const restored = await restoreModelSettings(env, { revision, restore_revision: firstReplacement }, "admin"); revision = restored.revision;
   await call(); assert.equal(sent.at(-1).model, A);
-  // Narrow endpoint pins are not widened to a whole registered provider. Unknown retained endpoint suffixes are refused.
-  const qualified = enforceRequest({ model: "openai/gpt-oss-120b", provider: { only: ["cerebras/fp16"] } }, "unrestricted");
-  assert.deepEqual(qualified.provider.only, ["cerebras/fp16"]); assert.equal(qualified.provider.zdr, true); assert.equal(qualified.provider.data_collection, "deny");
-  assert.throws(() => enforceRequest({ model: "openai/gpt-oss-120b", provider: { only: ["cerebras-evil/fp16"] } }, "unrestricted"), (e) => e.privacy);
-  assert.throws(() => enforceRequest({ model: MUSE_C, provider: { only: ["meta/unverified"] } }, "unrestricted"), (e) => e.privacy);
-  assert.throws(() => enforceRequest({ model: MUSE_S, provider: { only: ["meta/unverified"] } }, "no_training"), (e) => e.privacy);
+  // No host list survives: a pin is dropped, and the level sets OpenRouter's own fields. A registered model with no endpoint at the level is refused.
+  const qualified = enforceRequest({ model: "openai/gpt-oss-120b", provider: { only: ["cerebras/fp16"], order: ["cerebras"], ignore: ["x"] } }, "zdr");
+  assert.deepEqual(Object.keys(qualified.provider).sort(), ["data_collection", "zdr"]); assert.equal(qualified.provider.zdr, true); assert.equal(qualified.provider.data_collection, "deny");
+  assert.equal(enforceRequest({ model: "openai/gpt-oss-120b", provider: {} }, "unrestricted").provider.data_collection, "allow");
+  assert.throws(() => enforceRequest({ model: MUSE_C, provider: {} }, "zdr"), (e) => e.privacy);
+  assert.throws(() => enforceRequest({ model: MUSE_S, provider: {} }, "zdr"), (e) => e.privacy);
   const qualifiedCatalog = assessModelCatalog([model("openai/gpt-oss-120b")], [endpoint("openai/gpt-oss-120b", { tag: "cerebras/fp16" })]); assert.equal(qualifiedCatalog[0].eligible, true);
   console.log("PASS replacements: public catalog/search/capabilities, authoritative snapshots, actual wire IDs/efforts, strict privacy and pins, caps, recovery/fallback/resume, main+background, outage and stale safety, restore, invalid IDs and efforts");
 } finally { globalThis.fetch = originalFetch; sql.close(); }

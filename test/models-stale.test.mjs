@@ -18,7 +18,7 @@ const env = { DB, ONEHELM_EE: "1hc", ENV_NAME: "dev", ROUTER_MODE: "two", OPENRO
 const model = (id, extra = {}) => ({ id, name: `Name ${id}`, context_length: 16384, architecture: { input_modalities: ["text"], output_modalities: ["text"] }, reasoning: { mandatory: false, supported_efforts: ["low", "high"], default_effort: "low" }, pricing: { prompt: "0.000001", completion: "0.000002" }, ...extra });
 const endpoint = (model_id, extra = {}) => ({ model_id, tag: "safe-host/fp16", status: 0, context_length: 16384, max_completion_tokens: 4096,
   pricing: { prompt: "0.000001", completion: "0.000002" }, supported_parameters: ["tools", "max_tokens", "reasoning", "reasoning_effort", "response_format"], supports_tool_choice: { auto: true, none: true, required: true, function: true }, ...extra });
-import { modelsHtml } from "../src/ee/models-page.js";
+import { readFileSync as readText } from "node:fs";
 import { unlistedIds } from "../src/ee/model-catalog.js";
 const A = "example/gone-a", B = "example/keep-b", C = "example/gone-c";
 let list = [model(A), model(B), model(C)], zdr = [endpoint(A), endpoint(B), endpoint(C)], dead = new Set(), inits = [], failLists = false;
@@ -68,8 +68,8 @@ try {
   assert.equal((await current()).jobs["chat.general"].model, A);
   // 5. A lookup failure flags nothing and refuses nothing it can't judge as gone.
   failLists = true; assert.deepEqual(await unlistedModels(env), []); failLists = false;
-  // 6. The page flags a delisted model on its card and keeps it out of the picker's lists.
-  const page = modelsHtml({ ...(await modelSettingsView(env)) }, env);
-  for (const piece of ["/models/api/unlisted", "No longer offered", "!gone(m.id)"]) assert.ok(page.includes(piece), piece);
+  // 6. The console flags a delisted model on its row and keeps it out of the picker's lists.
+  const code = readText(new URL("../app-assets/app-static/models-console.js", import.meta.url), "utf8") + readText(new URL("../app-assets/app-static/models-console-core.js", import.meta.url), "utf8");
+  for (const piece of ["/models/api/unlisted", "A model is no longer offered", '!(state.unlisted || []).includes(m.id)']) assert.ok(code.includes(piece), piece);
   console.log("PASS models-stale: no-store fetches, delisted models hidden, refused on save, flagged in the view");
 } finally { globalThis.fetch = originalFetch; sql.close(); }

@@ -111,7 +111,9 @@ export function estimateTokens(messages, tools = []) {
 export function contextBudget(profile) {
   const context = Number(profile?.contextLength);
   if (!Number.isFinite(context) || context < 16384) throw new Error("Selected model has no usable context limit");
-  const output = Number(profile.maxOutput) || 16384;
+  // The room kept for the answer when the input is trimmed to fit. It is a planning estimate from the model's published maximum, never sent as a limit,
+  // and it is held to a quarter of the context so a model with a very large maximum still has room for input.
+  const output = Math.min(Number(profile.maxOutput) || 16384, Math.floor(context * .25));
   const reserve = Math.max(4096, Math.min(16384, Math.floor(context * .02)));
   if (context - output - reserve < 4096) throw new Error("Selected model has insufficient input capacity after its configured output reservation");
   return { context, output, reserve, input: context - output - reserve };

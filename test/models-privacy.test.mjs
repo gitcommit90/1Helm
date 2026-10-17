@@ -65,16 +65,17 @@ try {
   assert.equal(zdrBlocked({ catalog: cat }, WONDER), true); assert.equal(zdrBlocked({ catalog: cat }, UNKNOWN), true); assert.equal(zdrBlocked({ catalog: cat }, PROVEN), false);
   for (const m of [w, u, find(r, PROVEN)]) assert.equal(validCatalogRecord(m, m.id), true, m.id);
 
-  // Dispatch: the request is as strict as the level and the recorded terms.
+  // Dispatch: the level sets OpenRouter's own fields, no host list is kept, and a stricter request is never weakened.
   const req = (model, only, extra = {}) => ({ model, messages: [], provider: { only, ...extra } });
-  let p = enforceRequest(req(WONDER, ["meta"]), "unrestricted").provider; assert.deepEqual(p.only, ["meta"]); assert.equal(p.data_collection, "deny"); assert.equal(p.zdr, undefined);
+  let p = enforceRequest(req(WONDER, ["meta"]), "unrestricted").provider; assert.equal(p.only, undefined); assert.equal(p.data_collection, "allow"); assert.equal(p.zdr, undefined);
   p = enforceRequest(req(WONDER, ["meta"]), "no_training").provider; assert.equal(p.data_collection, "deny"); assert.equal(p.zdr, undefined);
   p = enforceRequest(req(WONDER, ["meta"]), "zdr").provider; assert.equal(p.zdr, true); assert.equal(p.data_collection, "deny"); // the strict filter: OpenRouter finds no ZDR endpoint
   p = enforceRequest(req(UNKNOWN, ["newhost"]), "unrestricted").provider; assert.equal(p.data_collection, "allow"); assert.equal(p.zdr, undefined);
-  for (const l of ["no_training", "zdr"]) { p = enforceRequest(req(UNKNOWN, ["newhost"]), l).provider; assert.equal(p.zdr, true); assert.equal(p.data_collection, "deny"); }
+  p = enforceRequest(req(UNKNOWN, ["newhost"]), "no_training").provider; assert.equal(p.zdr, undefined); assert.equal(p.data_collection, "deny");
+  p = enforceRequest(req(UNKNOWN, ["newhost"]), "zdr").provider; assert.equal(p.zdr, true); assert.equal(p.data_collection, "deny");
   p = enforceRequest(req(UNKNOWN, ["newhost"], { zdr: true }), "unrestricted").provider; assert.equal(p.zdr, true, "a caller that asked for zdr keeps it");
-  p = enforceRequest({ model: UNKNOWN, messages: [] }, "unrestricted").provider; assert.equal(p.zdr, true, "no pinned host: strict as before");
-  p = enforceRequest(req(CONTRIB, ["meta"]), "no_training").provider; assert.equal(p.zdr, true, "a Contributor model has no recorded terms");
+  p = enforceRequest({ model: UNKNOWN, messages: [] }, "unrestricted").provider; assert.equal(p.data_collection, "allow", "the level alone decides");
+  p = enforceRequest(req(CONTRIB, ["meta"]), "no_training").provider; assert.equal(p.data_collection, "deny");   // OpenRouter finds the endpoints that don't train
 
   // A task reads the model's own endpoints when it isn't on the ZDR list.
   const t = await taskModelCatalog(WONDER, null, env); assert.deepEqual(t.hosts, ["meta"]); assert.deepEqual(t.levels, ["unrestricted", "no_training"]);

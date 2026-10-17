@@ -98,7 +98,7 @@ Some replies show as tappable cards instead of text: a choice between a few opti
 
 {{/cards}}## Location and microphone, asked once
 
-The first time they sign in on a device (and during setup), a sheet asks "Let 1Helm use your location and microphone", with Allow and Not now. Allow brings up the browser's own two questions, once; after that you get their rough location with each message and the microphone works without asking again. It's skipped when the browser already allows both, and not shown again on that device after Not now (Settings → Location & mic has the same controls). When you need where they are and don't have it, the Share my location button on a card asks the browser right there.
+The first time they sign in on a device (and during setup), a sheet asks "Let 1Helm use your location and microphone", with Allow and Not now. Allow brings up the browser's own two questions, once; after that you get their location with each message and the microphone works without asking again. It's skipped when the browser already allows both, and not shown again on that device after Not now (Settings → Location & mic has the same controls). When you need where they are and don't have it, the Share my location button on a card asks the browser right there.
 
 ## Dictation
 

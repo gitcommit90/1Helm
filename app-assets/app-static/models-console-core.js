@@ -1,0 +1,391 @@
+// The /models console: logic and HTML text shared by the Worker (first page render) and the browser (every later render).
+// Pure: no document, no fetch, no clock except where a time is passed in. Every value that goes into HTML passes through h`...` or esc().
+// There are no inline style attributes anywhere, because the page's content security policy does not allow them.
+
+const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ESC[c]);
+class Raw { constructor(s) { this.s = s; } toString() { return this.s; } }
+export const raw = (s) => new Raw(String(s));
+const val = (v) => (v instanceof Raw ? v.s : Array.isArray(v) ? v.map(val).join("") : v == null ? "" : esc(v));
+export const h = (strings, ...vals) => new Raw(strings.reduce((a, s, i) => a + s + (i < vals.length ? val(vals[i]) : ""), ""));
+export const own = (o, k) => Object.prototype.hasOwnProperty.call(o || {}, k);
+const clone = (x) => JSON.parse(JSON.stringify(x));
+export const num = (n) => (n == null ? "" : Number(n).toLocaleString("en-US"));
+
+export const LEVELS = ["unrestricted", "no_training", "zdr"];
+export const LEVEL_NAME = { unrestricted: "Unrestricted", no_training: "No training", zdr: "ZDR" };
+export const EFFORT = { none: "None", default: "Default", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Maximum" };
+export const SORT = { "": "Default", price: "Price", throughput: "Throughput", latency: "Latency" };
+export const GROUP_TITLE = { chat: "Chat categories", recovery: "Retries", routing: "Routing", background: "Background jobs", speech: "Speech", search: "Search and media", other: "Other", chatlimits: "Reply limits" };
+export const EDITABLE_VIEWS = ["all", "attention"];
+const CHAT_PICKS = ["chat", "chore", "classic"];
+
+// ---------------------------------------------------------------- names, sources, times
+export const srcOf = (state, id, hint) => (hint === "CF" || hint === "OR" ? hint : state.config?.catalog?.[id]?.source === "CF" || /^(@cf\/|cloudflare\/)/.test(String(id)) ? "CF" : "OR");
+export const shortName = (id) => String(id || "").replace(/^[~@]/, "").replace(/^(cf|cloudflare)\//, "").split("/").pop();
+export const nameOf = (state, id) => state.config?.catalog?.[id]?.name || shortName(id);
+export const effortsOf = (state, id) => state.config?.catalog?.[id]?.efforts || [];
+export const effortName = (e) => (e ? EFFORT[e] || e : "");
+export const sortName = (v) => SORT[v || ""] || String(v);
+export const outText = (v) => (v == null ? "Provider max" : num(v));
+export const secText = (ms) => (ms == null ? "None" : (ms % 1000 ? ms / 1000 : num(ms / 1000)) + "s");
+export const priceText = (p) => (p ? `$${p.prompt} / $${p.completion}` : "No cap");
+export const agoText = (ms, now) => { const m = Math.max(0, Math.round((now - ms) / 60000)); return m < 1 ? "just now" : m < 60 ? m + " min ago" : m < 1440 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " d ago"; };
+export const badge = (src) => { const s = src === "CF" ? "CF" : "OR"; return h`<span class="badge ${s}" title="${s === "OR" ? "OpenRouter" : "Cloudflare"}">${s}</span>`; };
+// ---------------------------------------------------------------- rows
+// A row is one line of the table: a saved job, a routing category, or (with category routing on) the reply limits of a chat job.
+export function rowsOf(state) {
+  const out = [], dyn = !!state.dynamicRouting && state.config?.version === 3;
+  const jobs = state.jobs || [];
+  const seen = new Set();
+  for (const g of state.groups || []) {
+    if (seen.has(g.id)) continue; seen.add(g.id);
+    if (g.id === "chat" && dyn) {
+      for (const c of state.config.routing.categories) out.push({ key: "cat:" + c.id, kind: "cat", id: c.id, label: c.title, desc: c.id === "general" ? "The primary model. Other categories are for delegated tasks." : "Delegated tasks", group: "chat", cat: c });
+      const lim = jobs.filter((j) => j.group === "chat").map((j) => ({ key: j.id, kind: "lim", id: j.id, label: j.label, desc: j.description, group: "chatlimits", jv: j }));
+      out.push(...lim);
+      continue;
+    }
+    for (const j of jobs) if (j.group === g.id) out.push({ key: j.id, kind: "job", id: j.id, label: j.label, desc: j.description, group: g.id, jv: j });
+  }
+  return out;
+}
+export const groupsOf = (state) => {
+  const dyn = !!state.dynamicRouting && state.config?.version === 3, out = [];
+  const seen = new Set();
+  for (const g of state.groups || []) { if (seen.has(g.id)) continue; seen.add(g.id); out.push({ id: g.id, title: GROUP_TITLE[g.id] || g.title }); if (g.id === "chat" && dyn) out.push({ id: "chatlimits", title: GROUP_TITLE.chatlimits }); }
+  return out;
+};
+export const rowByKey = (state, key) => rowsOf(state).find((r) => r.key === key) || null;
+
+// ---------------------------------------------------------------- snapshots: what one environment runs, in one shape
+// The saved settings as a snapshot, for showing and editing (a field a job doesn't carry reads as its starting value).
+export function snapshotFromConfig(state) {
+  const cfg = state.config, def = state.defaults || {}, jobs = {};
+  for (const [id, j] of Object.entries(cfg.jobs || {})) {
+    if (!j) continue;
+    const f = (k) => (own(j, k) ? j[k] : (def[id] || {})[k]);
+    jobs[id] = { chain: [{ model: j.model, effort: j.effort ?? null, strict: j.strict }, ...(j.fallbacks || []).map((x) => ({ model: x.model, effort: x.effort ?? null, strict: x.strict }))],
+      max_output: f("max_output") ?? null, sort: f("sort") ?? null, max_price: f("max_price") ?? null, timeout_ms: f("timeout_ms") ?? null, results: f("results") ?? null };
+  }
+  const cats = {};
+  for (const c of cfg.routing?.categories || []) cats[c.id] = { levels: c.chains };
+  return { jobs, cats, limits: state.limits ? { ...state.limits.values } : null };
+}
+
+export const limitText = (d, v) => (d.unit === "dollars" ? "$" + v : d.unit === "percent" ? v + "%" : d.unit === "times" ? v + " times" : num(v) + (d.unit === "count" ? "" : " " + d.unit));
+
+// ---------------------------------------------------------------- what a row shows
+export const levelOf = (row, ui) => (row.kind === "cat" ? ui.level : "unrestricted");
+export function viewOf(state, ui, row, snap) {
+  // snap: the snapshot being shown (the saved settings).
+  const lv = levelOf(row, ui);
+  let chain = [], f = {};
+  if (row.kind === "cat") chain = (snap.cats[row.id]?.levels?.[lv] || []).map((e) => ({ ...e, source: e.source }));
+  else if (snap.jobs[row.id]) { chain = snap.jobs[row.id].chain; f = snap.jobs[row.id]; }
+  const jv = row.jv, kindText = row.kind === "cat";
+  const noOut = kindText ? true : !!jv.no_output;
+  const orOnly = kindText ? false : !!jv.on_openrouter;
+  return { chain, level: lv, max_output: f.max_output ?? null, sort: f.sort ?? null, max_price: f.max_price ?? null, timeout_ms: f.timeout_ms, results: f.results,
+    hasEffort: kindText ? true : !!jv.has_effort,
+    showOut: row.kind !== "cat" && !noOut, showResults: row.kind !== "cat" && jv.results != null,
+    showSort: row.kind !== "cat" && (orOnly || (!jv.no_output && jv.on_openrouter)), showTimeout: row.kind === "job" && jv.group !== "recovery",
+    maxChain: kindText ? 3 : row.kind === "lim" ? 0 : 1 + (jv.max_fallbacks || 0), fixedChain: kindText, hasChain: row.kind !== "lim" };
+}
+
+// ---------------------------------------------------------------- last served and flags
+const baseId = (id) => String(id || "").replace(/-\d{8}$/, "").replace(/^~/, "").replace(/-latest$/, "");
+export function servedKey(row) { return row.kind === "cat" ? (row.id === "general" ? "chat.general" : null) : row.id; }
+export function servedState(state, row, chains, served) {
+  const sv = (served || {})[servedKey(row)];
+  if (!sv) return { k: "none" };
+  const ids = chains.flat().map((e) => e.model), firsts = chains.map((c) => c[0]?.model).filter(Boolean);
+  if (sv.last_status && sv.last_status !== "ok") return { k: "error", t: "Last call failed", sv };
+  if (!sv.served_model) return { k: "none", sv };
+  const m = baseId(sv.served_model), family = (id) => baseId(id).split("/")[0];
+  const isMain = firsts.some((id) => baseId(id) === m || (String(id).startsWith("~") && family(id) === m.split("/")[0]));
+  if (isMain) return { k: "ok", sv };
+  if (ids.some((id) => baseId(id) === m || (String(id).startsWith("~") && family(id) === m.split("/")[0]))) return { k: "fallback", t: "Served a fallback", sv };
+  return { k: "other", t: "Served an unlisted model", sv };
+}
+export function chainsOf(state, row, snap) {
+  if (row.kind === "cat") return LEVELS.map((lv) => snap.cats[row.id]?.levels?.[lv] || []);
+  return [snap.jobs[row.id]?.chain || []];
+}
+export function flagsOf(state, ui, row, ctx) {
+  // ctx: { snap, served }
+  const f = [], jv = row.jv;
+  const ss = servedState(state, row, chainsOf(state, row, ctx.snap), ctx.served);
+  if (ss.t) f.push({ k: ss.k === "fallback" ? "warn" : "bad", t: ss.t });
+  const gone = state.unlisted || [];
+  if (chainsOf(state, row, ctx.snap).flat().some((e) => gone.includes(e.model))) f.push({ k: "warn", t: "A model is no longer offered" });
+  if (jv) {
+    for (const w of jv.warnings || []) if (/no allowed model|can't run here/.test(w)) f.push({ k: "bad", t: w });
+    if (jv.limit_note?.level === "warn") f.push({ k: "warn", t: "Max output above what the providers can serve" });
+  }
+  return f;
+}
+export const attentionKinds = (fl) => fl.filter((x) => x.k === "bad" || x.k === "warn");
+
+// ---------------------------------------------------------------- edits to the saved settings (pure; the page posts the result)
+export function newEntry(state, jv, meta, prev, level) {
+  const efforts = meta.efforts || [];
+  const hasEffort = level ? true : jv.has_effort;
+  let effort = null;
+  if (hasEffort) effort = efforts.includes(prev?.effort) ? prev.effort : meta.default_effort && efforts.includes(meta.default_effort) ? meta.default_effort : efforts[0] ?? null;
+  const e = { model: meta.id, effort };
+  if (!level && (jv.pick === "chore" || jv.pick === "classic" || (jv.any && (meta.chat || meta.eligible)))) e.strict = true;
+  return e;
+}
+const clean = (e) => { const o = { ...e }; for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k]; return o; };
+const JOB_FIELDS = ["max_output", "sort", "max_price", "timeout_ms", "results"];
+const entriesOfJob = (job) => [{ model: job.model, effort: job.effort, ...(job.strict ? { strict: true } : {}) }, ...(job.fallbacks || []).map(clean)].map(clean);
+function packJob(old, entries) {
+  const first = clean(entries[0]);
+  first.fallbacks = entries.slice(1).map(clean);
+  for (const k of JOB_FIELDS) if (own(old, k)) first[k] = old[k];
+  return first;
+}
+// edit: { t, ... }. Returns a new settings object, or null when nothing changes.
+export function applyEdit(config, edit) {
+  const cfg = clone(config), job = edit.id && cfg.jobs ? cfg.jobs[edit.id] : null;
+  const cat = edit.cat ? cfg.routing.categories.find((c) => c.id === edit.cat) : null;
+  const chainOf = () => (cat ? cat.chains[edit.level] : null);
+  switch (edit.t) {
+    case "field": job[edit.field] = edit.value; return cfg;
+    case "limit": { const cur = { ...(cfg.limits || {}) }; if (edit.value === null) delete cur[edit.limitKey]; else cur[edit.limitKey] = edit.value; cfg.limits = cur; return cfg; }
+    case "effort": if (cat) chainOf()[edit.idx].effort = edit.value; else { const arr = entriesOfJob(job); arr[edit.idx].effort = edit.value; cfg.jobs[edit.id] = packJob(job, arr); } return cfg;
+    case "entry": {
+      if (cat) { chainOf()[edit.idx] = edit.entry; return cfg; }
+      const arr = entriesOfJob(job);
+      if (arr[edit.idx] && arr[edit.idx].model === edit.entry.model) return null;
+      if (edit.idx >= arr.length) arr.push(edit.entry); else arr[edit.idx] = edit.entry;
+      cfg.jobs[edit.id] = packJob(job, arr); return cfg;
+    }
+    case "move": {
+      const arr = cat ? chainOf() : entriesOfJob(job), t = edit.idx + edit.d;
+      if (t < 0 || t >= arr.length) return null;
+      [arr[edit.idx], arr[t]] = [arr[t], arr[edit.idx]];
+      if (!cat) cfg.jobs[edit.id] = packJob(job, arr);
+      return cfg;
+    }
+    case "remove": { const arr = entriesOfJob(job); if (arr.length < 2) return null; arr.splice(edit.idx, 1); cfg.jobs[edit.id] = packJob(job, arr); return cfg; }
+    case "chain": {   // replace a whole list (a whole list): entries are { model, effort, strict? }
+      if (cat) { cat && (cat.chains[edit.level] = edit.entries.map(clean)); return cfg; }
+      cfg.jobs[edit.id] = packJob(job, edit.entries.map(clean)); return cfg;
+    }
+    case "title": { if (!cat || cat.id === "general") return null; cat.title = edit.value; return cfg; }
+    case "catAdd": {
+      const general = cfg.routing.categories.find((c) => c.id === "general"), titles = cfg.routing.categories.map((c) => c.title.toLowerCase());
+      let n = 1, title = "New category"; while (titles.includes(title.toLowerCase())) title = "New category " + ++n;
+      cfg.routing.categories.push({ id: edit.newId, title, chains: clone(general.chains) }); return cfg;
+    }
+    case "catDelete": { if (!cat || cat.id === "general") return null; cfg.routing.categories = cfg.routing.categories.filter((c) => c.id !== cat.id); return cfg; }
+    default: return null;
+  }
+}
+// The body of a save request: the same shape the server's save path takes.
+export function saveBody(config, revision) {
+  const out = { version: config.version, jobs: config.jobs };
+  if (config.version === 3) out.routing = config.routing;
+  if (config.limits) out.limits = config.limits;
+  return { revision, config: out };
+}
+// ---------------------------------------------------------------- picker rules (which models a slot may take)
+export const takesChat = (jv) => CHAT_PICKS.includes(jv.pick) || !!jv.any;
+export function pickerAllowed(state, target, m, ignorePrivacy) {
+  const known = state.config.catalog?.[m.id], meta = { ...(known || {}), ...m }, kinds = meta.kinds || [];
+  const chatish = meta.chat || (meta.eligible && meta.source !== "CF" && (!kinds.length || kinds.includes("chat") || kinds.includes("chore"))) || kinds.includes("chat") || kinds.includes("chore");
+  if (target.kind === "cat") return !!chatish && (ignorePrivacy || !meta.levels || meta.levels.includes(target.level));
+  const jv = target.jv;
+  const ok = takesChat(jv) ? chatish || (jv.any && (kinds.includes("decider") || kinds.includes("workers_decider"))) : kinds.includes(jv.pick);
+  return !!ok && (ignorePrivacy || jv.privacy !== "zdr" || !meta.levels || meta.levels.includes("zdr"));
+}
+export function pickerChoices(state, target) {
+  const taken = new Set(takenModels(state, target));
+  const base = target.kind === "cat" ? state.choices.chat || [] : state.choices[target.jv.pick] || [];
+  return base.filter((m) => !taken.has(m.id) && !(state.unlisted || []).includes(m.id));
+}
+export function takenModels(state, target) {
+  const row = rowByKey(state, target.key);
+  const cur = row.kind === "cat" ? row.cat.chains[target.level] : [state.config.jobs[row.id], ...(state.config.jobs[row.id].fallbacks || [])];
+  return cur.filter((e, i) => i !== target.idx).map((e) => e.model);
+}
+// Saved models first, shown with the live catalog's name, reasoning levels and price when the search found them.
+export function mergeKnown(saved, fresh, q) {
+  const by = Object.fromEntries(fresh.map((f) => [f.id, f])), w = (q || "").toLowerCase();
+  return saved.filter((m) => by[m.id] || !w || (m.name + " " + m.id).toLowerCase().includes(w)).map((m) => {
+    const f = by[m.id];
+    return f ? { ...m, name: f.name || m.name, efforts: f.efforts || m.efforts, default_effort: f.default_effort, pricing: f.pricing, source: f.source || m.source, levels: f.levels || m.levels, kinds: f.kinds || m.kinds, eligible: f.eligible, chat: f.chat || m.chat, context_length: f.context_length } : m;
+  });
+}
+export function pickerList(state, target, q, fresh, src) {
+  const t = (q || "").trim().toLowerCase();
+  const local = mergeKnown(pickerChoices(state, target), fresh, q), ids = new Set(local.map((m) => m.id));
+  const taken = new Set(takenModels(state, target));
+  const all = local.concat(fresh.filter((m) => m.eligible && !ids.has(m.id)));
+  const out = all.filter((m) => !taken.has(m.id) && pickerAllowed(state, target, m, true) && (src === "all" || srcOf(state, m.id, m.source) === src) && (!t || (m.id + " " + (m.name || "")).toLowerCase().includes(t)));
+  return out.map((m) => ({ ...m, allowed: pickerAllowed(state, target, m, false) }));
+}
+const ctxText = (n) => (n >= 1e6 ? n / 1e6 + "M" : Math.round(n / 1000) + "K");
+export function termsTag(m) {
+  if (!m.levels) return h`<span class="tag mut2">Terms unknown</span>`;
+  if (m.levels.includes("zdr")) return h`<span class="tag ok">ZDR</span>`;
+  if (m.levels.includes("no_training")) return h`<span class="tag">No training</span>`;
+  return h`<span class="tag warn">Unrestricted only</span>`;
+}
+export function pickerItem(state, m, i, sel, current) {
+  const p = m.pricing && m.pricing.prompt != null && m.pricing.completion != null ? `$${m.pricing.prompt} / $${m.pricing.completion} per M` : "";
+  return h`<li class="pk-item${m.allowed ? "" : " off"}" role="option" data-i="${i}" aria-selected="${i === sel}" aria-disabled="${!m.allowed}"><div class="n"><span>${m.name || shortName(m.id)}</span>${badge(srcOf(state, m.id, m.source))}${m.id === current ? h`<span class="tag acc">Current</span>` : ""}</div><div class="r">${termsTag(m)}</div><div class="id mono ell">${m.id}</div><div class="px">${p}${m.context_length > 1 ? " | " + ctxText(m.context_length) + " ctx" : ""}</div></li>`;
+}
+
+// ---------------------------------------------------------------- HTML: table
+const ICON = { search: '<path d="M11 18a7 7 0 100-14 7 7 0 000 14zM21 21l-5-5"/>', x: '<path d="M6 6l12 12M18 6L6 18"/>', up: '<path d="M6 15l6-6 6 6"/>', down: '<path d="M6 9l6 6 6-6"/>', plus: '<path d="M12 5v14M5 12h14"/>', undo: '<path d="M9 14L4 9l5-5M4 9h10a6 6 0 010 12h-3"/>', clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>' };
+export const icon = (n) => raw(`<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`);
+
+export function view(state, ui) {
+  const shown = snapshotFromConfig(state), served = state.served || {};
+  const rows = rowsOf(state);
+  const info = rows.map((row) => {
+    const flags = flagsOf(state, ui, row, { snap: shown, served });
+    return { row, v: viewOf(state, ui, row, shown), flags, ss: servedState(state, row, chainsOf(state, row, shown), served) };
+  });
+  return { editable: true, shown, info, served, rows };
+}
+
+const attention = (V) => V.info.filter((x) => attentionKinds(x.flags).length);
+export function visibleInfo(state, ui, V) {
+  const q = (ui.q || "").trim().toLowerCase();
+  const att = new Set(attention(V).map((x) => x.row.key));
+  return V.info.filter((x) => {
+    const g = x.row.group;
+    if (ui.view === "attention" && !att.has(x.row.key)) return false;
+    if (!["all", "attention", "limits", "readonly"].includes(ui.view) && g !== ui.view) return false;
+    if (q) {
+      const hay = [x.row.label, x.row.desc, x.row.id, ...x.v.chain.flatMap((e) => [e.model, nameOf(state, e.model)])].join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function dot(flags) {
+  const k = flags.find((x) => x.k === "bad") ? "bad" : flags.find((x) => x.k === "warn") ? "warn" : "";
+  return k ? h`<span class="dot ${k}" title="${flags.map((x) => x.t).join(", ")}"></span>` : "";
+}
+function effortSelect(state, x, ro, extra) {
+  const e0 = x.v.chain[0];
+  if (!e0 || !x.v.hasEffort) return h`<span class="mut2 pad">None</span>`;
+  const efs = effortsOf(state, e0.model);
+  if (!efs.length) return e0.effort ? h`<span class="pad">${effortName(e0.effort)}</span>` : h`<span class="mut2 pad">None</span>`;
+  const opts = efs.includes(e0.effort) || !e0.effort ? efs : [e0.effort, ...efs];
+  return h`<select class="cell" ${ro ? "disabled" : ""} data-f="effort" data-id="${x.row.key}" data-k="${x.row.key}.e" aria-label="Reasoning for ${x.row.label}">${opts.map((e) => h`<option value="${e}" ${e === e0.effort ? "selected" : ""}>${effortName(e)}</option>`)}</select>`;
+}
+function rowHtml(state, ui, V, x, now) {
+  const { row, v, flags } = x, ro = !V.editable, dis = ro ? "disabled" : "", id = row.key;
+  const m = v.chain[0], fb = v.chain.slice(1);
+  const sv = x.ss.sv, st = x.ss.k;
+  const served = !sv ? "" : !sv.served_model ? (st === "error" ? h`<div class="sv bad"><span class="mut2">Failed ${agoText(sv.last_error_at || sv.last_at, now)}</span></div>` : "") : h`<div class="sv ${st === "error" || st === "other" ? "bad" : st === "fallback" ? "warn" : ""}"><span class="ell">${nameOf(state, sv.served_model)}</span><span class="mut2">${st === "error" ? "Failed " + agoText(sv.last_error_at || sv.last_at, now) : agoText(sv.last_at, now)}</span></div>`;
+  const first = attentionKinds(flags)[0] || flags[0];
+  const phone = first ? h`<span class="tag ${first.k}">${{ warn: "Warning", bad: "Problem" }[first.k]}</span>` : "";
+  const out = v.showOut ? h`<input class="cell r2" ${dis} data-f="max_output" data-id="${id}" data-k="${id}.o" inputmode="numeric" value="${v.max_output ?? ""}" placeholder="Max" title="Empty means the provider's maximum" aria-label="Max output for ${row.label}">` : v.showResults ? h`<span class="mut2 pad r2">${v.results} results</span>` : h`<span class="mut2">n/a</span>`;
+  const sortCell = v.showSort ? h`<select class="cell" ${dis} data-f="sort" data-id="${id}" data-k="${id}.s" aria-label="Provider sort for ${row.label}">${Object.keys(SORT).map((k) => h`<option value="${k}" ${k === (v.sort || "") ? "selected" : ""}>${SORT[k]}</option>`)}</select>` : h`<span class="mut2">n/a</span>`;
+  const priceCell = v.showSort ? h`<div class="pr"><input class="cell r2" ${dis} data-f="price" data-w="prompt" data-id="${id}" data-k="${id}.pi" inputmode="decimal" placeholder="in" value="${v.max_price ? v.max_price.prompt : ""}" aria-label="Max input price for ${row.label}"><input class="cell r2" ${dis} data-f="price" data-w="completion" data-id="${id}" data-k="${id}.po" inputmode="decimal" placeholder="out" value="${v.max_price ? v.max_price.completion : ""}" aria-label="Max output price for ${row.label}"></div>` : h`<span class="mut2">n/a</span>`;
+  const timeout = v.showTimeout && v.timeout_ms !== undefined ? h`<input class="cell r2" ${dis} data-f="timeout" data-id="${id}" data-k="${id}.t" inputmode="decimal" placeholder="None" value="${v.timeout_ms == null ? "" : v.timeout_ms / 1000}" aria-label="Timeout in seconds for ${row.label}">` : h`<span class="mut2">n/a</span>`;
+  const modelCell = !v.hasChain ? "" : m ? h`<div class="mdl"><span class="ell">${nameOf(state, m.model)}</span>${badge(srcOf(state, m.model, m.source))}</div>` : h`<span class="mut2">None</span>`;
+  const fbCell = fb.length ? h`<span class="ell" title="${fb.map((e) => nameOf(state, e.model)).join(", ")}">${fb.map((e) => nameOf(state, e.model)).join(", ")}</span>` : h`<span class="mut2">None</span>`;
+  return h`<div class="rw" role="row" tabindex="0" data-row="${id}" aria-selected="${ui.sel === id}"><div class="cf">${dot(flags)}</div><div class="nm cn"><b class="ell">${row.label}</b></div><div class="cm">${modelCell}</div><div>${v.hasChain ? effortSelect(state, x, ro) : ""}</div><div class="fb">${v.hasChain ? fbCell : ""}</div><div>${out}</div><div>${sortCell}</div><div>${priceCell}</div><div>${timeout}</div><div class="cs">${served}</div><div class="cp">${phone}</div></div>`;
+}
+const HEAD = h`<div class="gh" role="row"><div></div><div>Job</div><div>Model</div><div>Reasoning</div><div>Fallbacks</div><div class="r2">Max output</div><div>Sort</div><div>Max price in / out $</div><div class="r2">Timeout</div><div>Last served</div></div>`;
+function jobsTable(state, ui, V, now) {
+  const vis = visibleInfo(state, ui, V), groups = groupsOf(state);
+  const body = groups.map((g) => {
+    const items = vis.filter((x) => x.row.group === g.id);
+    if (!items.length) return "";
+    const seg = g.id === "chat" && state.dynamicRouting ? h`<span class="seg ml-auto" role="group" aria-label="Privacy level">${LEVELS.map((l) => h`<button data-lvl="${l}" aria-pressed="${ui.level === l}">${LEVEL_NAME[l]}</button>`)}</span>${V.editable ? h`<button class="btn sm" data-act="catadd" aria-label="Add category" title="Add category">${icon("plus")}<span class="lbl">Add category</span></button>` : ""}` : "";
+    return h`<div class="gtitle">${g.title} <span class="mut2 gc">${items.length}</span>${seg}</div>${items.map((x) => rowHtml(state, ui, V, x, now))}`;
+  });
+  return h`<div class="tbl" role="table">${HEAD}${body.some((b) => b !== "") ? body : h`<div class="empty">No jobs match</div>`}</div>`;
+}
+
+// ---------------------------------------------------------------- HTML: limits and read only
+export function limitsView(state, ui, V) {
+  const L = state.limits, ro = !V.editable;
+  const vals = L ? L.values : null;
+  if (!L || !vals) return h`<div class="vh"><h1>Limits</h1></div>`;
+  const tables = L.groups.map((g) => {
+    const defs = L.defs.filter((d) => d.group === g.id);
+    if (!defs.length) return "";
+    return h`<div class="vh vh2"><h1>${g.title}</h1></div><div class="lim"><div class="lh"><div>Limit</div><div>Value</div><div>Starting value</div></div>${defs.map((d) => {
+      return h`<div class="lr"><div class="ln"><b>${d.label}</b><span class="mut ell" title="${d.description}">${d.description}</span></div><span class="lv-in"><input class="cell r2 box" ${ro ? "disabled" : ""} data-lim="${d.key}" data-k="lim.${d.key}" inputmode="decimal" value="${vals[d.key]}" aria-label="${d.label}, ${d.unit}"><span class="mut2 unit">${d.unit}</span></span><span class="mut2">${num(d.default)}</span></div>`;
+    })}</div>`;
+  });
+  return h`<div class="vh"><h1>Limits</h1></div>${tables}`;
+}
+export function readonlyView(state) {
+  return h`<div class="vh"><h1>Read only</h1><span class="tag">Set outside this page</span></div>${(state.outside || []).map((g) => h`<div class="ro"><h3>${g.title}</h3>${g.items.map((i) => h`<div class="lr"><b>${i.label}</b><span class="mono">${i.model}${i.source ? badge(i.source) : ""}</span><span class="mut">${i.detail || ""}</span></div>`)}</div>`)}`;
+}
+
+// ---------------------------------------------------------------- HTML: inspector
+export function drawerHtml(state, ui, V, now) {
+  const x = V.info.find((i) => i.row.key === ui.sel);
+  if (!x) return h``;
+  const { row, v, flags } = x, ro = !V.editable, jv = row.jv, ids = visibleInfo(state, ui, V).map((i) => i.row.key), pos = ids.indexOf(row.key);
+  const ent = v.chain.map((e, i) => {
+    const efs = effortsOf(state, e.model), src = srcOf(state, e.model, e.source);
+    const sel = v.hasEffort && efs.length ? h`<div class="rs"><span class="mut">Reasoning</span><select class="sel" ${ro ? "disabled" : ""} data-df="effort" data-i="${i}" aria-label="Reasoning for model ${i + 1}">${(efs.includes(e.effort) || !e.effort ? efs : [e.effort, ...efs]).map((o) => h`<option value="${o}" ${o === e.effort ? "selected" : ""}>${effortName(o)}</option>`)}</select></div>` : "";
+    const ac = ro ? "" : h`<button class="btn sm" data-act="chg" data-i="${i}">Change</button><button class="btn sm ico ghost" data-act="up" data-i="${i}" aria-label="Move up" ${i === 0 ? "disabled" : ""}>${icon("up")}</button><button class="btn sm ico ghost" data-act="dn" data-i="${i}" aria-label="Move down" ${i === v.chain.length - 1 ? "disabled" : ""}>${icon("down")}</button>${v.fixedChain ? "" : h`<button class="btn sm ico ghost" data-act="rm" data-i="${i}" aria-label="Remove" ${v.chain.length < 2 ? "disabled" : ""}>${icon("x")}</button>`}`;
+    return h`<div class="ent"><span class="p">${i + 1}</span><div class="m"><span class="ell">${nameOf(state, e.model)}</span>${badge(src)}</div><div class="ac">${ac}</div><div class="id mono ell">${e.model}</div>${sel}</div>`;
+  });
+  const canAdd = !ro && v.hasChain && !v.fixedChain && v.chain.length < v.maxChain;
+  const title = row.kind === "cat" && row.id !== "general" && !ro ? h`<input class="inp title-in" data-df="title" value="${row.label}" maxlength="240" aria-label="Category title">` : h`<h2>${row.label}</h2>`;
+  const seg = row.kind === "cat" ? h`<div class="seg seg-top" role="group" aria-label="Privacy level">${LEVELS.map((l) => h`<button data-lvl="${l}" aria-pressed="${ui.level === l}">${LEVEL_NAME[l]}</button>`)}</div>` : "";
+  const modelsSec = v.hasChain ? h`<div class="sec"><h4>Models${row.kind === "cat" ? ", " + LEVEL_NAME[v.level] : ""}${canAdd ? h`<button class="btn sm ml-auto nocaps" data-act="add">${icon("plus")}Add fallback</button>` : ""}</h4>${ent}${jv?.warnings?.some((w) => /re-index/.test(w)) ? h`<span class="tag warn">Changing it needs a re-index</span>` : ""}</div>` : "";
+  const fl = [];
+  if (v.showOut) fl.push(h`<div><label>Max output</label><input class="inp r" ${ro ? "disabled" : ""} data-df="max_output" inputmode="numeric" placeholder="Provider max" value="${v.max_output ?? ""}" aria-label="Max output"></div>`);
+  if (v.showResults) fl.push(h`<div><label>Results</label><input class="inp r" ${ro ? "disabled" : ""} data-df="results" inputmode="numeric" value="${v.results}" aria-label="Results"></div>`);
+  if (v.showTimeout && v.timeout_ms !== undefined) fl.push(h`<div><label>Timeout, seconds</label><input class="inp r" ${ro ? "disabled" : ""} data-df="timeout" inputmode="decimal" placeholder="None" value="${v.timeout_ms == null ? "" : v.timeout_ms / 1000}" aria-label="Timeout in seconds"></div>`);
+  if (v.showSort) fl.push(h`<div><label>Provider sort</label><select class="sel" ${ro ? "disabled" : ""} data-df="sort" aria-label="Provider sort">${Object.keys(SORT).map((k) => h`<option value="${k}" ${k === (v.sort || "") ? "selected" : ""}>${SORT[k]}</option>`)}</select></div>`);
+  if (v.showSort) fl.push(h`<div><label>Max price per M tokens</label><div class="two"><input class="inp r" ${ro ? "disabled" : ""} data-df="pi" placeholder="in" value="${v.max_price ? v.max_price.prompt : ""}" aria-label="Max input price per million tokens"><input class="inp r" ${ro ? "disabled" : ""} data-df="po" placeholder="out" value="${v.max_price ? v.max_price.completion : ""}" aria-label="Max output price per million tokens"></div></div>`);
+  const limSec = fl.length ? h`<div class="sec"><h4>Limits</h4><div class="fg">${fl}</div>${jv?.limit_note ? h`<p class="note ${jv.limit_note.level}">${jv.limit_note.text}</p>` : ""}</div>` : "";
+  const sv = x.ss.sv;
+  const svSec = !sv || (!sv.served_model && x.ss.k !== "error") ? "" : h`<div class="sec"><h4>Last served</h4>${sv && sv.served_model ? h`<dl class="kv"><dt>Model</dt><dd>${sv.served_model}</dd><dt>Provider</dt><dd>${sv.served_provider || ""}</dd><dt>When</dt><dd>${agoText(sv.last_at, now)}</dd><dt>Calls</dt><dd>${num(sv.calls)}</dd><dt>Status</dt><dd>${sv.last_status && sv.last_status !== "ok" ? h`<span class="tag bad">${sv.last_status}</span>` : "OK"}</dd></dl>` : ""}</div>`;
+  const del = row.kind === "cat" && row.id !== "general" && !ro ? h`<button class="btn sm danger" data-act="catdelete">Delete</button>` : "";
+  return h`<div class="dh"><div class="t">${title}<button class="btn sm ghost ico" data-act="close" aria-label="Close">${icon("x")}</button></div><div class="tg">${flags.map((f) => h`<span class="tag ${f.k}">${f.t}</span>`)}</div><p>${row.desc}</p>${seg}</div><div class="db">${modelsSec}${limSec}${svSec}</div><div class="dfoot"><button class="btn sm ico" data-act="prev" aria-label="Previous job" ${pos < 1 ? "disabled" : ""}>${icon("up")}</button><button class="btn sm ico" data-act="next" aria-label="Next job" ${pos < 0 || pos >= ids.length - 1 ? "disabled" : ""}>${icon("down")}</button><span class="grow"></span>${del}<button class="btn sm pri" data-act="close">Done</button></div>`;
+}
+
+// ---------------------------------------------------------------- HTML: the page
+export function pageHtml(state, ui, now) {
+  const V = view(state, ui);
+  const counts = {}; for (const r of V.rows) counts[r.group] = (counts[r.group] || 0) + 1;
+  const att = attention(V).length;
+  const navb = (v, label, count, cls) => h`<button data-view="${v}" aria-current="${ui.view === v}">${label}${count != null ? h`<span class="c ${cls || ""}">${count}</span>` : ""}</button>`;
+  const jobsMode = !["limits", "readonly"].includes(ui.view);
+  const titleOf = () => (ui.view === "all" ? "All jobs" : ui.view === "attention" ? "Needs attention" : groupsOf(state).find((g) => g.id === ui.view)?.title || "");
+  const body = jobsMode ? h`<div class="vh"><h1>${titleOf()}</h1><span class="mut">${visibleInfo(state, ui, V).length} jobs</span></div>${jobsTable(state, ui, V, now)}` : ui.view === "limits" ? limitsView(state, ui, V) : readonlyView(state);
+  const stale = state.stale ? h`<div class="stale" role="alert">The saved settings could not be read just now, so this page is showing the last copy that was read.</div>` : "";
+  return h`<div class="shell"><aside class="side"><a class="brand" href="/"><i></i>1Helm</a>
+<div class="nav"><h6>Models</h6>${navb("all", "All jobs", V.rows.length)}${navb("attention", "Needs attention", att, att ? "hot" : "")}</div>
+<div class="nav"><h6>Groups</h6>${groupsOf(state).map((g) => navb(g.id, g.title, counts[g.id] || 0))}</div>
+<div class="nav"><h6>Settings</h6>${navb("limits", "Limits")}${navb("readonly", "Read only")}</div></aside>
+<div class="main">${stale}<div class="top"><div class="sr"><span class="ico">${icon("search")}</span><input class="inp" data-k="q" data-q placeholder="Search jobs and models" value="${ui.q}" aria-label="Search" autocomplete="off"><span class="kbd">/</span></div><span class="sp"></span><button class="btn" data-act="hist">${icon("clock")}History</button></div>${body}</div></div>
+<div class="scrim${ui.sel ? " open" : ""}" data-act="close"></div><aside class="drawer${ui.sel ? " open" : ""}" aria-label="Job inspector">${ui.sel ? drawerHtml(state, ui, V, now) : ""}</aside>`;
+}
+
+// ---------------------------------------------------------------- HTML: dialogs
+export const modalHtml = (title, tag, body, foot, cls) => h`<div class="back"><div class="modal ${cls || ""}" role="dialog" aria-modal="true" aria-label="${title}"><div class="mh"><h3>${title}</h3>${tag ? h`<span class="tag ${tag.cls || ""}">${tag.text}</span>` : ""}<button class="btn sm ghost ico" data-x aria-label="Close">${icon("x")}</button></div><div class="mb" data-body>${body}</div>${foot ? h`<div class="mf" data-foot>${foot}</div>` : ""}</div></div>`;
+export function historyBody(state, confirmRev) {
+  const rows = (state.history || []).map((x) => {
+    const cur = x.revision === state.revision;
+    const act = cur ? "" : confirmRev === x.revision ? h`<button class="btn sm pri" data-do="${x.revision}">Restore</button> <button class="btn sm" data-no>Cancel</button>` : h`<button class="btn sm" data-rs="${x.revision}">Restore</button>`;
+    return h`<tr><td><b>${x.revision}</b> ${cur ? h`<span class="tag ok">Now</span>` : ""}</td><td>${new Date(x.at).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}</td><td>${x.by}</td><td>${x.action}</td><td class="r2">${act}</td></tr>`;
+  });
+  return h`<table class="t"><thead><tr><th>Revision</th><th>When</th><th>By</th><th>What</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+export const historyModal = (state, confirmRev) => modalHtml("History", null, historyBody(state, confirmRev), null, "wide");
+export const confirmModal = (title, body, ok, danger) => modalHtml(title, null, h`<div class="pad16">${body}</div>`, h`<span class="grow"></span><button class="btn" data-x>Cancel</button><button class="btn pri${danger ? " bad" : ""}" data-go>${ok}</button>`, "");
+export function pickerModal(state, target, title) {
+  const lv = target.kind === "cat" ? target.level : target.jv.privacy === "zdr" ? "zdr" : "unrestricted";
+  return modalHtml(title, lv !== "unrestricted" ? { cls: "ok", text: lv === "zdr" ? "ZDR models" : "No training models" } : null,
+    h`<div class="pk-top"><input class="inp" data-q type="search" placeholder="Search every model or paste an ID" autocomplete="off" spellcheck="false" aria-label="Search models"><div class="seg" data-src><button aria-pressed="true" data-v="all">All</button><button aria-pressed="false" data-v="OR">OpenRouter</button><button aria-pressed="false" data-v="CF">Cloudflare</button></div></div><ul class="pk-list" data-list role="listbox"></ul>`, null, "pk");
+}

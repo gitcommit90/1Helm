@@ -5,6 +5,10 @@ import assert from "node:assert/strict";
 import { makeStore, T } from "./helpers/search-store.mjs";
 import { termVariants, groupHit, normText, passageWindows, quantize, cosineQ, fuse } from "../src/ee/ambient-search.js";
 import { fakeEmbed } from "./helpers/fake-embedder.mjs";
+// The call goes through dispatch, which checks the account level for a Workers AI model like every other call. A test account is at the strictest level,
+// so the saved model gets a verified zero data retention route here.
+import { ENDPOINTS } from "../src/privacy.js";
+ENDPOINTS.transcription ||= {}; for (const m of ["@cf/baai/bge-m3"]) ENDPOINTS.transcription[m] = { "cloudflare-workers-ai": { zdr: true, training: false } };
 import { ambientQuery } from "../src/ee/ambient-query.js";
 
 const DAY1 = ["so um i gotta call the land lord about the leak in the bathroom", "Remind me to pick up Sarah's prescripshun tomorrow around five", "maybe I could learn the cello someday", "buy oat milk and some bread"];

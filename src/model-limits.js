@@ -1,5 +1,6 @@
 // Managed model waits are bounded independently of the Resident's liveness
 // heartbeat. Heartbeats and SSE comments are not evidence of model progress.
+// Starting values. The values in effect are the saved limits (limits.js: first reply, silence and total time of a main chat call), which a turn passes in.
 export const MODEL_LIMITS = { headersMs: 120_000, idleMs: 120_000, totalMs: 300_000 };
 export const OUTPUT_RECOVERY_NOTE = "(Your last message was cut off at the output limit. This is the single recovery attempt. Call the tools you need with short arguments, or give a concise answer now.)";
 export const modelFault = (code, phase = null) => Object.assign(new Error(code), { modelFailure: true, code, phase, recoverable: true });

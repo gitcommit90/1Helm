@@ -34,7 +34,7 @@ const WORKSPACE = [
   /^\/api\/res\/[^/]+\/(?:event-log|event-workflow)$/,
 ];
 const EE_SKILLS = Object.freeze(["gmail", "google-calendar", "google-drive"]);
-const EE_CRONS = Object.freeze(["meetings", "bee", "cancel", "pastdue", "router_pool", "decision_shadow"]);
+const EE_CRONS = Object.freeze(["meetings", "bee", "cancel", "pastdue"]);
 const EMPTY = Object.freeze({ routes: Object.freeze({ global: [], workspace: [] }), tools: [], crons: [], durableObjects: {}, skills: [], features: [] });
 // This is the service registration surface. Public deployments get no EE entries.
 export const registry = (env) => enabled(env) ? {
@@ -64,7 +64,6 @@ export { APP_EVENTS_TOOL, appEventsTool, composioWebhook, eventsReady } from "./
 export { APP_TOOLS, GOOGLE_TOOLS, GOOGLE_TOOL_NAMES, RETIRED_APPS, RETIRED_NOTE, SUPER_COVERS, appName, disconnectAllManaged, googleDisconnect, googleStatus, listConnections, managedCount, pickAccount, runAppTool, runGoogleTool, setAccountNote, setDefaultAccount, tidyAfterConnect } from "./composio.js";
 export { CONNECT_LINES, CONNECT_TOOLS, appCatalog, catalogFile, composioSigninOffer, connectOfferApi, connectOfferDone, connectOfferInit, connectTool, connectWriteBlock, offerAct, offerCallbackQuery, offerConnected, offerGet, offersView } from "./connect-offer.js";
 export { deciderModel } from "./decider.js";
-export { askSystemone, pruneShadow, shadowData } from "./decision-shadow.js";
 export { hintNudge, integrationHint } from "./integration-hint.js";
 export { clip, leanJSON, readMail } from "./lean.js";
 export { Ledger };
@@ -78,8 +77,7 @@ export { US_ONLY } from "./photon.js";
 export { changePlan, nextPlan } from "./plan-change.js";
 export { MAX_ATTEMPTS } from "./pool.js";
 export { INACTIVE_MSG, PAUSED_TEXT, PAY_MSG } from "./readonly.js";
-export { ESCALATE_STALL, HANDOFF_PREFIX, choreRouteFor, dispatchOrder, escalationAfter, escalationBefore, isHandoff, markServed, policyRoute, route2On, routeTwoTurn } from "./route2.js";
-export { clefVia, currentPool, decide, saveNightlyPool } from "./router.js";
+export { ESCALATE_STALL, HANDOFF_PREFIX, choreRouteFor, dispatchOrder, escalationAfter, escalationBefore, isHandoff, markServed, policyRoute, routeTwoTurn } from "./route2.js";
 export { ledgerGuard } from "./spendguard-ledger.js";
 export { appLink, deliverCard, deliverReaction, deliverText, fetchTextedFile, textTyping, textingDebug, textingLine, textingNewCode, textingOff, textingPoll, textingStart, textingStatus, textingUseProject, textingWebhook } from "./texting.js";
 export { VERTICAL_SEARCH_TOOL, VS_NANO, VS_TOOL_NAME, loopWords, searchNote, verticalSearch } from "./vertical-search.js";
@@ -88,7 +86,7 @@ export { ambientSettingsRoute } from "./ambient-settings.js";
 
 export { paypalSetupRoute } from "./composio-paypal.js";
 
-export { modelsRoute } from "./models-page.js";
+export { modelsRoute } from "./models-console.js";
 
 export { customMcpRoute, isCustomSlug, customUsable, ownerOf, CUSTOM_DENIED, withCustomRows, CUSTOM_WORDS } from "./custom-mcp.js";
 
@@ -97,8 +95,13 @@ export { ambientQuery, AMBIENT_QUERY_TOOL } from "./ambient-query.js";
 export { modelSettingsEnv, readModelSettings, jobModel, jobModels, jobCost, modelFacts } from "./model-settings.js";
 export { MOONDREAM } from "./model-seed.js";
 export { dailyBillingFlag, flagTurns, FLAG_MIN_CHARGE } from "./billing-flag.js";
-export { choreRouteOf, jobRoute, jobSetting, settingsOf, entriesOf, configuredHosts, quirkOf, effortBody, effortFor, reasoningMandatory } from "./model-jobs.js";
-export { decisionCaller, askDecider } from "./text-decision.js";
+export { chatJobId, choreRouteOf, jobLimits, jobRoute, mainChatJob, jobSetting, settingsOf, entriesOf, configuredHosts, quirkOf, effortBody, effortFor, reasoningMandatory } from "./model-jobs.js";
+export { askDecider } from "./text-decision.js";
+export { DEFAULT_RUNTIME_LIMITS, jobTimeoutDefault } from "./limits.js";
+export { limitsFor, jobTimeoutFor } from "./limits-read.js";
+export { holdOutNano, plannedHold, plannedHoldNano, plannedMaxOutput } from "./job-limits.js";
+export { dispatch, liveProviderRequest, plan } from "./model-dispatch.js";
+export { dispatchMedia, firstStep, jobReserveNano, stepsOf } from "./media-job.js";
 export { browserJobsInit, browserTaskInput, browserTaskWaitMs, browserTaskMovedText, LIST_BROWSER_JOBS_TOOL, STOP_BROWSER_JOB_TOOL, START_BROWSER_JOB_TOOL, BROWSER_JOB_DEADLINE_MS, BROWSER_JOB_LEASE_MS, BROWSER_JOB_RELEASE_GRACE_MS, browserJobRow, activeBrowserJob, pendingBrowserHandoffs, browserJobNextWake, browserJobView, browserJobStartedText, browserJobNote, browserJobHandoff, browserJobInput, browserPurchaseGuard } from "./browser-tasks.js";
 
 export { authorizeTaskProfile, TaskAffinityBlocked, ensureTaskRuntime, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./task-profile.js";

@@ -1,6 +1,7 @@
 // node --import ./test/stubs/register.mjs test/structured-notes-compat.test.mjs
 import assert from "node:assert/strict";
-import { orFetch, openRouterChat, OR_MAX_PRICE } from "../src/model.js";
+import { orFetch, OR_MAX_PRICE } from "../src/model.js";
+import { openRouterChat } from "./helpers/or-chat.mjs";
 import { ID, SEED, withSettings } from "./helpers/seed-settings.mjs";
 import { choreRouteOf, quirkOf } from "../src/ee/model-jobs.js";
 const LUNA = ID.LUNA, noTemperature = (m) => quirkOf(SEED, m, "no_temperature");
@@ -21,7 +22,7 @@ try {
     await openRouterChat(env, body, null, route, { kind });
     const wire = sent.at(-1);
     assert.equal(wire.model, route.model); assert.equal(wire.temperature, undefined);
-    assert.equal(wire.max_tokens, 1500); assert.equal(wire.provider.require_parameters, true);
+    assert.equal(wire.max_tokens, undefined, "an empty saved max_output sends no max_tokens"); assert.equal(wire.provider.require_parameters, true);
     assert.equal(wire.provider.zdr, true); assert.deepEqual(wire.provider.max_price, OR_MAX_PRICE);
     if (route.host) assert.deepEqual(wire.provider.order, [route.host].flat());
     assert.deepEqual(wire.response_format, body.response_format);
@@ -41,10 +42,6 @@ try {
   // An explicit custom route stays intact, including its temperature and pinned host.
   await orFetch(env, { ...body, model: LUNA, response_format: structuredFormat("handoff_notes", S.object({ summary: S.string })) }, { kind: "chat" });
   assert.equal(sent.at(-1).temperature, undefined, "system-owned handoff contract uses chat metadata");
-  await openRouterChat(env, body, null, { model: "openai/gpt-oss-120b", host: "cerebras", pin: true, effort: "low", chore: true }, { kind: "other-custom-chore" });
-  assert.equal(sent.at(-1).temperature, 0); assert.deepEqual(sent.at(-1).provider.only, ["cerebras"]);
-  assert.equal(sent.at(-1).provider.allow_fallbacks, false);
-  // Private test-model overrides are deliberately absent from the public edition.
   assert.equal(body.temperature, 0, "caller request is immutable");
   for (const selected of [LUNA, "anthropic/claude-haiku-5.5"]) {
     for (const fast of [false, true]) {

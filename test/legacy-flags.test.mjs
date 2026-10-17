@@ -10,6 +10,9 @@ import { world, tick } from "./deploy-harness.mjs";
 import { Resident } from "../src/resident.js";
 import { ambientSearchOn } from "../src/legacy-flags.js";
 import { MEMORY_UNAVAILABLE, MEMORY_UNAVAILABLE_NOTE } from "../src/memory-unavailable.js";
+// The ambient index call goes through dispatch, which checks the account level for a Workers AI model: the saved model gets a verified zero data retention route here.
+import { ENDPOINTS } from "../src/privacy.js";
+ENDPOINTS.transcription ||= {}; ENDPOINTS.transcription["@cf/baai/bge-m3"] = { "cloudflare-workers-ai": { zdr: true, training: false } };
 
 const log0 = console.log, LOGS = []; console.log = (...a) => { if (/^ {2}ok /.test(a.join(" "))) log0(...a); else LOGS.push(a.join(" ")); };
 process.on("exit", (c) => { if (c) log0(LOGS.slice(-40).join("\n")); });
@@ -64,7 +67,7 @@ function fakeHs(o = {}) {
 const T0 = Date.UTC(2026, 9, 14, 17, 0);
 function mkR({ channel = "work", server, notes = [], extra = {} } = {}) {
   const f = server || fakeHs();
-  const W = world({ engine: "classic", env: { CONTEXT_LAYOUT: "v2", RESUME_DELAY_MS: 0, RESUME_WRITE_DELAY_MS: 0, GENUI: "on", MEMORY: "on", ...f.env({ HS_USE: "on", HS_WRITERS: "on", HS_USE_SHADOW: "off" }), ...extra } });
+  const W = world({ engine: "classic", env: { CONTEXT_LAYOUT: "v2", RESUME_DELAY_MS: 0, RESUME_WRITE_DELAY_MS: 0, GENUI: "on", MEMORY: "on", ...f.env({ HS_USE: "on", HS_WRITERS: "on" }), ...extra } });
   W.d1.exec("ALTER TABLE tenants ADD COLUMN helper_tone INTEGER; CREATE TABLE vault (tenant_id TEXT,name TEXT,hosts TEXT); CREATE TABLE logins (tenant_id TEXT,site TEXT,username TEXT);");
   W.d1.exec("CREATE TABLE IF NOT EXISTS hs_forget (bank TEXT NOT NULL, doc TEXT NOT NULL, due INTEGER NOT NULL, tries INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (bank, doc)); CREATE TABLE IF NOT EXISTS hs_rebuild_runs (bank TEXT PRIMARY KEY, tenant TEXT, channel TEXT, state TEXT, status TEXT, phase TEXT, version INTEGER, started_at INTEGER, updated_at INTEGER NOT NULL, summary TEXT);");
   const arch = { channel: async () => ({ channel: { name: channel, purpose: "Home base" }, memory: arch.rows, messages: [] }), channels: async () => [{ id: 1, name: channel, slug: channel }, { id: 2, name: "recipes", slug: "recipes" }],

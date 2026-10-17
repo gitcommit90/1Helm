@@ -44,7 +44,8 @@ assert.equal(store.state().epoch, 1); assert.deepEqual(store.messages(0), before
 assert.equal(store.messages()[0].content, "summary"); assert.equal(store.state().compactions, 1);
 const budget = contextBudget({ contextLength: 1000000, maxOutput: 50000 });
 assert.equal(budget.input, 933616); assert.equal(budget.output, 50000);
-assert.throws(() => contextBudget({ contextLength: 16384, maxOutput: 16384 }), /insufficient/);
+assert.equal(contextBudget({ contextLength: 16384, maxOutput: 16384 }).output, 4096, "the room kept for the answer is at most a quarter of the context");
+assert.equal(contextBudget({ contextLength: 400000, maxOutput: 235929 }).output, 100000, "a very large published maximum does not take the input window");
 store.observe(500, store.request(), tools);
 const appended = [...store.request(), { role: "user", content: "new " .repeat(500) }];
 assert.ok(contextSize(store, appended, tools) >= 500 + estimateTokens(appended, tools) - estimateTokens(store.request(), tools));

@@ -63,13 +63,8 @@ import { AGE_VERSION, AGE_ERROR, ageOf, ageCookie, agePage, ageNext, recordAge }
 import { modelsRoute } from "./ee/index.js";
 import { healthCron } from "./hindsight-health.js";
 import { hindsightSelfTest, hsOn, sweepBanks, recall as hsRecall, bankId as hsBankId } from "./hindsight.js";
-import { saveNightlyPool } from "./ee/index.js";
-import { route2On } from "./ee/index.js";
 import { privacyBoot, privacyView, setPrivacy, isPrivacyLevel } from "./privacy.js";   // AI data privacy (onboarding step, boot)
-import { routerPage, routerData, routerLabApi } from "./internal-shim.js";
-import { pruneShadow, shadowData } from "./ee/index.js";
-import { decisionCaller, askDecider, jobModel, jobRoute } from "./ee/index.js";
-import { pruneLab, labData } from "./internal-shim.js";
+import { askDecider, jobModel, dispatch, plannedMaxOutput, plannedHoldNano } from "./ee/index.js";
 import { parityRoute } from "./internal-shim.js";
 import { pageDialog } from "./page-dialog.js";
 import { helperName, DEFAULT_HELPER } from "./helper-name.js";
@@ -89,7 +84,7 @@ import { customMcpRoute } from "./ee/index.js";
 
 const NANO = 1e9;                         // balances in nano-dollars (integers)
 const PRICE = { in: 150, cached: 30, out: 500 }; // glm-5.3-flash nano$/token (CF list); Workers AI fallback only
-import { useOpenRouter, openRouterChat, OR_MAX_OUT, OR_RESERVE_PRICE, aiOpts } from "./model.js";
+import { OR_RESERVE_PRICE } from "./model.js";
 import { PLANS } from "./plans-def.js";
 import { byokApi, loadByok, byokChat, BYOK_PLAN, ledgerByok } from "./byok.js";
 import { orStart, orFinish, orCookie, orCookieOf } from "./byok-openrouter.js";   // Sign in with OpenRouter (the BYOK panel's optional button)   // own AI key: the byok plan's settings + routing (+ a backup key on a full plan)
@@ -109,7 +104,6 @@ import { replyRef } from "./reply-to.js";   // Reply on a chat bubble: the quote
 const MARKUP = 1.15;
 import { PLAIN_STYLE } from "./plain-style.js";
 import { isCapacityError, computerBusyError } from "./computer-capacity.js";
-const MAX_OUT = 2048;
 const RESERVED = new Set("admin api app assets auth billing blog cdn demo docs help mail provision security status support www 1helm cloudflare login signup static dev staging test internal captain root system cloud gateway portal account accounts dashboard console design models hooks onboard download downloads manual terms privacy legal pricing about home news careers jobs press email smtp imap ftp ns ns1 ns2 m mobile ios android".split(" "));
 const slugValid = (s) => /^(?=.{3,48}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])$/.test(s) && !s.includes("--") && !/^\d+$/.test(s) && !RESERVED.has(s);
 const enc = new TextEncoder();
@@ -186,7 +180,7 @@ async function onboardAppsChoice(env, t) {
   return { mode: await appsMode(env, t.id), available: selfAvailable(env), signin: s.status, who: s.who, connect_url: `/w/${t.slug}/composio/connect?back=close` };
 }
 const onboardNext = (t) => !t ? "/onboard" : t.status !== "active" ? null : onboarded(t) ? `/w/${t.slug}/app` : t.first_name ? "/onboard/helper" : "/onboard/profile";
-const APP_V = "259";
+const APP_V = "260";
 // Starts the first-screen data request while app.js downloads. The app takes this promise (window.__1HC_BOOT) instead of fetching again.
 // Same URL, same cookie and same time zone as the app's own request, and a failed request resolves to an empty channel list as before.
 const BOOT_EARLY = `try{var H=window.__1HC;window.__1HC_BOOT=fetch(H.api+"/app/boot?tz="+encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone||""),{credentials:"same-origin"}).then(function(r){return r.json()}).catch(function(){return{channels:[]}})}catch(e){}`;
@@ -602,10 +596,6 @@ export default {
     if (ev.cron === "17 * * * *" && eeEnabled(env) && new Date(ev.scheduledTime).getUTCHours() === 10) ctx.waitUntil(dailyBillingFlag(env, { since: (ev.scheduledTime || Date.now()) - 864e5, residentOf: (tid, ch) => env.RESIDENT.get(env.RESIDENT.idFromName(`res:${tid}:${ch}`)), ledgerOf: (tid) => ledger(env, tid) }).catch((e) => console.log("billing flag failed", e.message)));
     // Hindsight bank health (hindsight-health.js, HS_FOUNDATIONS): about one check per bank per day, spread over the hourly runs. Results: /_ops/hs-health.
     if (ev.cron === "17 * * * *" && hsOn(env)) ctx.waitUntil(healthCron(env, { now: ev.scheduledTime }).then((r) => { if (r.checked || r.errors) console.log("hindsight health", JSON.stringify(r)); }).catch((e) => console.log("hindsight health failed", e.message)));
-    // Decision shadow rows (dev only): kept 7 days.
-    if (ev.cron === "17 * * * *" && env.ENV_NAME === "dev") ctx.waitUntil(pruneLab(env).then((n) => { if (n) console.log("router lab pruned", n); }).catch((e) => console.log("router lab prune failed", e.message)));
-    if (ev.cron === "17 * * * *" && eeEnabled(env) && env.ENV_NAME === "dev") ctx.waitUntil(pruneShadow(env).then((n) => { if (n) console.log("decision shadow pruned", n); }).catch((e) => console.log("decision shadow prune failed", e.message)));
-    if (ev.cron === "17 * * * *" && eeEnabled(env) && env.OWN_ROUTER && !route2On(env) && new Date(ev.scheduledTime).getUTCHours() === 9) ctx.waitUntil(saveNightlyPool(env).then((r) => console.log("router pool", JSON.stringify(r))).catch((e) => console.log("router pool failed", e.message)));
   },
   async fetch(req, env, ctx) {
     env = tolerantEnv(env);   // do-stub.js: every Durable Object call survives a deploy's skew/reset window
@@ -745,23 +735,6 @@ export default {
       // Models have their own admin gate on both environments. Writes only touch this environment's D1.
       if (p === "/models" || p.startsWith("/models/")) return modelsRoute(req, env, await currentUser(req, env));
 
-      // Router lab settings (src/router-lab.js): dev only, release admins, same-origin JSON only (CSRF: the Origin must be this site and the
-      // x-router-lab header set, which a cross-site form can't send). GETs are no-store; /_ops stays read-only.
-      if (env.ENV_NAME === "dev" && p.startsWith("/router/lab/")) {
-        const u = await currentUser(req, env), H = { "content-type": "application/json", "cache-control": "no-store" }, J = (o, s = 200) => new Response(JSON.stringify(o), { status: s, headers: H });
-        if (!isReleaseAdmin(env, u)) return J({ error: u ? "not_found" : "signed_out" }, u ? 404 : 401);
-        return routerLabApi(req, env, url, { origin, by: u?.email || null, json: J });
-      }
-      // Decision shadow: Jev vs Perplexity's decider, live (src/decision-shadow.js, src/router-page.js). Dev only, release admins, GET only.
-      if (env.ENV_NAME === "dev" && (p === "/router" || p === "/router/data")) {
-        const u = await currentUser(req, env), H = { "cache-control": "no-store" };
-        if (!isReleaseAdmin(env, u)) {
-          if (p === "/router/data") return new Response(JSON.stringify({ error: u ? "not_found" : "signed_out" }), { status: u ? 404 : 401, headers: { "content-type": "application/json", ...H } });
-          return u ? new Response("Not found", { status: 404, headers: H }) : new Response(null, { status: 302, headers: { location: `${origin}/onboard?next=/router`, ...H } });
-        }
-        if (req.method !== "GET" && req.method !== "HEAD") return new Response("Method not allowed", { status: 405, headers: { allow: "GET", ...H } });
-        return p === "/router" ? routerPage(env, url) : routerData(env, url);
-      }
       // Hindsight private-link self-test (dev only; needs the Hindsight API key as a bearer token).
       if (env.ENV_NAME === "dev" && p === "/_ops/hindsight-selftest") {
         if (!env.HINDSIGHT_API_KEY || req.headers.get("authorization") !== `Bearer ${env.HINDSIGHT_API_KEY}`) return new Response("Not found", { status: 404 });
@@ -774,7 +747,7 @@ export default {
         try { return Response.json(await hsSweep(env, { dry: url.searchParams.get("dry") === "1", graceMs: url.searchParams.has("grace") ? Number(url.searchParams.get("grace")) : undefined })); } catch (e) { return Response.json({ error: e.message }, { status: 502 }); }
       }
       // Dev debugging (src/ops-read.js): read-only JSON on any dev account, and a look-only "view as". Dev + x-ops-key only; else 404.
-      if (p.startsWith("/_ops/")) return opsRoute(req, env, url, { routerPage, shadowData, labData, archive, ledger, storageOf, storageView, textingStatus, listConnections, holdOf, hsOn, hsRecall, bankId: hsBankId, beeOps });
+      if (p.startsWith("/_ops/")) return opsRoute(req, env, url, { archive, ledger, storageOf, storageView, textingStatus, listConnections, holdOf, hsOn, hsRecall, bankId: hsBankId, beeOps });
       // Kanban board (dev only, release admins): Kan behind Workers VPC.
       if (env.ENV_NAME === "dev" && (p === "/kanban" || p.startsWith("/kanban/"))) {
         // Kan's public app shell files (no board data) load without our cookie: browsers fetch the manifest without credentials.
@@ -1465,23 +1438,23 @@ export default {
           const bk = t.plan === BYOK_PLAN ? await loadByok(env, t.id).catch(() => null) : null;
           if (bk) {
             try {
-              const j = await (await byokChat(bk, { messages, max_tokens: OR_MAX_OUT })).json(); let text = String(j.choices?.[0]?.message?.content ?? "");
+              const j = await (await byokChat(bk, { messages, max_tokens: await plannedMaxOutput(env, "chat.general").catch(() => undefined) })).json(); let text = String(j.choices?.[0]?.message?.content ?? "");
               if (text.includes("</think>")) text = text.split("</think>").pop();
               const st = await L.settle(`byok:${crypto.randomUUID()}`, 0, [{ role: "user", content: String(message) }, { role: "assistant", content: text.trim() }]);
               return json({ reply: text.trim(), charge_nano: 0, model: j.model, usage: { in: j.usage?.prompt_tokens || 0, cached: 0, out: j.usage?.completion_tokens || 0 }, state: st });
             } catch (e) { return json({ error: e.message }, 502); }
           }
           const estIn = Math.ceil(JSON.stringify(messages).length / 3);
-          const viaOR = useOpenRouter(env);
-          const reserveNano = Math.ceil((viaOR ? estIn * OR_RESERVE_PRICE.in + OR_MAX_OUT * OR_RESERVE_PRICE.out : estIn * PRICE.in + MAX_OUT * PRICE.out) * MARKUP);
+          const reserveNano = Math.ceil((estIn * OR_RESERVE_PRICE.in + (await plannedHoldNano(env, "chat.general").catch(() => 0) || 0)) * MARKUP);   // the saved job's output limit (or the model's published maximum), at the model's price
           const rid = crypto.randomUUID();
           const r = await L.reserve(rid, reserveNano);
           if (!r.ok) return r.reason === "day_limit" ? json({ error: "day_limit", day: r.day, state: r.state }, 429) : json({ error: "out_of_credits", state: r.state }, 402);
           let out, usage, orCost = null, served = null;
           try {
             let res = null;
-            if (viaOR) { try { res = await (await openRouterChat(env, { messages, max_tokens: OR_MAX_OUT }, `ledger:${t.id}`, null, { tenant: t.id, kind: "api-chat" })).json(); orCost = res.usage?.cost ?? null; served = res.model; } catch (e) { if (e.orStatus === 400) throw e; res = null; } }
-            if (!res) res = await env.AI.run(await jobModel(env, "workers_ai_chat"), { messages, max_tokens: MAX_OUT, reasoning_effort: "low" }, aiOpts(env, { tenant: t.id, kind: "api-chat-fallback" }));
+            // The saved job chat.general answers; when it can't, the saved job workers_ai_chat does. Neither is named here.
+            try { res = await (await dispatch(env, "chat.general", { messages }, { meta: { tenant: t.id, kind: "api-chat" }, session: `ledger:${t.id}` })).json(); orCost = String(res.provider).toLowerCase() === "cloudflare" ? null : res.usage?.cost ?? null; served = res.model; } catch (e) { if (e.orStatus === 400) throw e; res = null; }
+            if (!res) res = await (await dispatch(env, "workers_ai_chat", { messages }, { meta: { tenant: t.id, kind: "api-chat-fallback" } })).json();
             let text = res.choices?.[0]?.message?.content ?? res.response ?? "";
             if (text.includes("</think>")) text = text.split("</think>").pop();
             out = text.trim(); usage = res.usage || {};
@@ -1524,20 +1497,11 @@ export default {
         // TEST_MODE only: one tiny call down each model path, reporting whether it went through the AI Gateway.
         if (sub === "/api/test/aig" && env.TEST_MODE === "1") {
           const out = { gateway: env.AIG_ID || null, tenant: t.id }, m = { tenant: t.id, kind: "aig-check" }, msg = [{ role: "user", content: "Say OK" }];
-          try { const r = await openRouterChat(env, { messages: msg, max_tokens: 40 }, null, jobRoute("label"), m);
+          try { const r = await dispatch(env, "label", { messages: msg }, { meta: m });
             const j = await r.json(); out.openrouter = { ok: true, via: r.headers.get("cf-aig-log-id") ? "gateway" : "direct", log: r.headers.get("cf-aig-log-id"), model: j.model, cost: j.usage?.cost }; } catch (e) { out.openrouter = { ok: false, error: String(e.message).slice(0, 200) }; }
-          try { const r = await env.AI.run(await jobModel(env, "workers_ai_chat"), { messages: msg, max_tokens: 40, chat_template_kwargs: { enable_thinking: false } }, aiOpts(env, m));
-            out.workers_ai = { ok: true, log: env.AI.aiGatewayLogId || null, text: String(r.choices?.[0]?.message?.content ?? r.response ?? "").slice(0, 40) }; } catch (e) { out.workers_ai = { ok: false, error: String(e.message).slice(0, 200) }; }
-          try { const r = await (await decisionCaller(env, "doors_shadow", m))({ state: { conversation: "user: hi" }, questions: { greeting: { type: "noul", instructions: "Is this a greeting?" } } });
-            out.clef = { ok: true, log: env.AI.aiGatewayLogId || null, answers: !!(r?.answers || r?.result?.answers) }; } catch (e) { out.clef = { ok: false, error: String(e.message).slice(0, 200) }; }
           try { const r = await askDecider(env, { task: "say hi" }, { done: { type: "noul", instructions: "Is the task trivial?" } }, { meta: m, title: "1Helm aig-check" });
             out.decider_configured = deciderModel(await modelSettingsEnv(env)); out.decider = { ok: !r.error, model: r.model, ms: r.ms, nano: r.nano, error: r.error || undefined }; } catch (e) { out.decider = { ok: false, error: String(e.message).slice(0, 200) }; }
           return json(out);
-        }
-        if (sub === "/api/test/stream" && env.TEST_MODE === "1") {
-          const tools = [{ type: "function", function: { name: "run_command", description: "Run a shell command", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } }];
-          const s = await env.AI.run(await jobModel(env, "workers_ai_chat"), { messages: [{ role: "user", content: url.searchParams.get("q") || "List the files in the current directory using the tool." }], tools, stream: true, max_tokens: 300, chat_template_kwargs: { enable_thinking: false } });
-          return new Response(s, { headers: { "content-type": "text/plain" } });
         }
         if (sub === "/api/test/wf" && env.TEST_MODE === "1") { const d = await archive(env, t.id).channel(url.searchParams.get("c") || "7", 1); return json({ workflows: d.workflows, followups: d.followups }); }
         // TEST_MODE only: add a bench channel (bench1..bench9) so parallel e2e runs each get their own resident + computer.
@@ -1823,7 +1787,6 @@ export default {
           if (rp[2] === "turnstats" && env.TEST_MODE === "1") return json(await R.turnStats(Number(url.searchParams.get("n")) || 20));
           if (rp[2] === "anatomy" && env.TEST_MODE === "1") return json(await R.contextAnatomy());
           if (rp[2] === "memory" && env.TEST_MODE === "1") { if (req.method === "POST") { const b = await boundedJson(req); return json(b.workmem != null ? await R.setWorkmem(String(b.workmem)) : b.seed ? await R.rememberHere(String(b.seed.who || "them"), String(b.seed.fact || ""), "bench seed") : await R.setMemoryMode(String(b.mode ?? ""))); } return json(await R.memoryStats()); }
-          if (rp[2] === "clef-doors" && env.TEST_MODE === "1") return json(await R.clefDoorsLog(Number(url.searchParams.get("n")) || 50));
           if (rp[2] === "gates") return json(await R.gateRuns(Number(url.searchParams.get("n")) || 30));
           if (rp[2] === "approvals" && req.method === "GET") return json({ pending: await R.approvals(url.searchParams.get("all") === "1", url.searchParams.get("session")), policy: await R.approvalPolicy(url.searchParams.get("session")), grants: await R.listGrants() });
           if (rp[2] === "egress") return json(await R.egress(Number(url.searchParams.get("n")) || 50));

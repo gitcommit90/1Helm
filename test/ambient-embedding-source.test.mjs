@@ -20,7 +20,7 @@ assert.equal(idx.nextWork(),null,'a complete index with an explicit current snap
 const before=F.store.rows('SELECT model,hex(vec) bytes FROM ambient_passages WHERE id=?',id)[0];
 let calls=0;
 const originalFetch=globalThis.fetch;
-globalThis.fetch=async(url,init)=>{calls++;const body=JSON.parse(init.body);assert(String(url).endsWith('/embeddings'));assert.equal(body.model,chosen);assert.equal(body.provider.zdr,true);assert.equal(body.provider.allow_fallbacks,true);assert.deepEqual(body.provider.only,['parasail','deepinfra/fp32']);return Response.json({data:body.input.map((_,index)=>({index,embedding:vec})),usage:{prompt_tokens:3,cost:.00000001}});};
+globalThis.fetch=async(url,init)=>{calls++;const body=JSON.parse(init.body);assert(String(url).endsWith('/embeddings'));assert.equal(body.model,chosen);assert.equal(body.provider.zdr,true);assert.equal(body.provider.allow_fallbacks,true);assert.equal(body.provider.only,undefined,'no saved provider list is sent');return Response.json({data:body.input.map((_,index)=>({index,embedding:vec})),usage:{prompt_tokens:3,cost:.00000001}});};
 try {
   const out=await idx.embed(['query']);assert.equal(out.model,chosen);assert.equal(F.settled.at(-1)[1],12,'actual reported OR cost is charged with markup');
   assert.equal(F.reserved.at(-1)[1],Math.ceil(('query'.length+4)*10*1.15),'reserve uses saved OR price');
