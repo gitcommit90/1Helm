@@ -10,7 +10,7 @@
 // helperTool/helperRun/helperFinish/handoff methods (resident.js, after runNow) use them.
 
 import { userInputInit } from "./user-input.js";
-import { DEFAULT_RUNTIME_LIMITS } from "./ee/index.js";
+import { DEFAULT_RUNTIME_LIMITS } from "./limits.js";
 import { COMPUTER_BUSY_MSG } from "./computer-capacity.js";
 import { scrubSecrets } from "./secrets-scrub.js";
 

@@ -30,7 +30,7 @@
 //    as one finishes. Stop / Stop all still reach them (they are live turns, just not started).
 // 5. Usage the person can see: "This task: about $0.03" (sessionDetail.usage) and the month meter in Settings (boot account.month).
 import { PLANS } from "./plans-def.js";
-import { DEFAULT_RUNTIME_LIMITS } from "./ee/index.js";
+import { DEFAULT_RUNTIME_LIMITS } from "./limits.js";
 import { limitsFor } from "./ee/index.js";
 import { setStatus } from "./tracker.js";
 import { textConnected, textSend } from "./ee/index.js";

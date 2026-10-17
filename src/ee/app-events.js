@@ -19,7 +19,7 @@
 import { createTrigger, setTriggerEnabled, deleteTrigger, saveMapping, SELF_NO_EVENTS, TEST_TRIGGER, eventsReady, EVENTS_OFF } from "./composio-triggers.js";
 import { appsMode } from "./composio-self.js";
 import { limitsFor } from "./limits-read.js";
-import { DEFAULT_RUNTIME_LIMITS } from "./limits.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../limits.js";
 import { personWords, quoteProblem } from "../person-asked.js";
 import { notifyEventsSkipped } from "../notify.js";   // one push when events are skipped for the hourly limit
 

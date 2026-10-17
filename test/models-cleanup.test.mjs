@@ -73,7 +73,7 @@ await test("descriptions: speech jobs, group name, page lead, router jobs", asyn
   for (const gone of ["classic_decider", "classic_router", "doors_shadow"]) assert.equal(jobDef(gone), null, `${gone} is not a job`);
   assert.equal(jobDef("workers_ai_chat").label, "Backup chat"); assert.match(d("workers_ai_chat"), /OpenRouter can't be reached/);
   for (const j of JOBS) assert.doesNotMatch(j.label + j.description, /OWN_ROUTER|ROUTER_MODE/, j.id);
-  const { DB } = database(), state = await consoleState(await modelSettingsView({ DB, ENV_NAME: "dev" }), { DB, ENV_NAME: "dev" }), html = consoleHtml(state);
+  const { DB } = database(), state = await consoleState(await modelSettingsView({ ONEHELM_EE: "1hc", DB, ENV_NAME: "dev" }), { ONEHELM_EE: "1hc", DB, ENV_NAME: "dev" }), html = consoleHtml(state);
   assert.doesNotMatch(html, /only place models are chosen/); assert.match(html, /data-view="readonly"/);
 });
 

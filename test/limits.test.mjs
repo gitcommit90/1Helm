@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import "../src/resident.js";   // first, so the modules that import each other load in the order the Worker loads them
 import { DatabaseSync } from "node:sqlite";
-import { LIMIT_DEFS, LIMIT_KEYS, LIMIT_DEFAULTS, LIMIT_GROUPS, limitsProblem, compactLimits, limitValues, runtimeLimits, DEFAULT_RUNTIME_LIMITS, JOB_TIMEOUT_DEFAULTS, jobTimeoutDefault, timeoutProblem } from "../src/ee/limits.js";
+import { LIMIT_DEFS, LIMIT_KEYS, LIMIT_DEFAULTS, LIMIT_GROUPS, limitsProblem, compactLimits, limitValues, runtimeLimits, DEFAULT_RUNTIME_LIMITS, JOB_TIMEOUT_DEFAULTS, jobTimeoutDefault, timeoutProblem } from "../src/limits.js";
 import { limitsFor, jobTimeoutFor } from "../src/ee/limits-read.js";
 import { validateModelSettings, readModelSettings, saveModelSettings, restoreModelSettings } from "../src/ee/model-settings.js";
 import { jobTimeoutMs, jobLimits, JOB_IDS } from "../src/ee/model-jobs.js";

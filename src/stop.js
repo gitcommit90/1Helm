@@ -12,7 +12,7 @@
 // Plan-started tasks also run under a safety budget (PLAN_TASK_* below): a soft stop with a final short report.
 import { cardView } from "./tracker.js";
 import { PAUSE_FACTS } from "./ee/index.js";   // facts only, no new plan (shared with spendguard.js; a leaf module, no import cycle)
-import { DEFAULT_RUNTIME_LIMITS } from "./ee/index.js";
+import { DEFAULT_RUNTIME_LIMITS } from "./limits.js";
 
 export const STOPPED_REPLY = "Stopped.";
 export const STOPPED_TOOL_TEXT = "(Stopped by the person before this finished.)";

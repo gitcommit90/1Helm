@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import worker from "../src/index.js";
 import { consoleState, consoleHtml } from "../src/ee/models-console.js";
-import { LIMIT_DEFS } from "../src/ee/limits.js";
+import { LIMIT_DEFS } from "../src/limits.js";
 import * as C from "../app-assets/app-static/models-console-core.js";
 
 globalThis.fetch = async () => { throw new Error("offline: this test does not use the network"); };

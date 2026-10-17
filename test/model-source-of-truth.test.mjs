@@ -135,7 +135,6 @@ assert.equal(choreRouteFor({ two: true }, { messages: [{ role: "user", content: 
 // ---- 3) settings that can't be read: a clear error and nothing is sent ----
 wire = [];
 await assert.rejects(openRouterChat({ OPENROUTER_API_KEY: "k", ONEHELM_EE: "1hc", DB: { prepare() { throw new Error("db down"); } }, ENV_NAME: "isolated" }, { messages: [] }, null, jobRoute("label"), { kind: "card-label" }),
-await assert.rejects(openRouterChat({ OPENROUTER_API_KEY: "k", ONEHELM_EE: "1hc" }, { messages: [] }, null, jobRoute("label"), { kind: "card-label" }), (e) => e instanceof ModelSettingsError);
   (e) => e instanceof ModelSettingsError && /Nothing was sent/.test(e.message));
 assert.equal(wire.length, 0, "no request went out");
 await assert.rejects(openRouterChat({ OPENROUTER_API_KEY: "k", ONEHELM_EE: "1hc" }, { messages: [] }, null, jobRoute("label"), { kind: "card-label" }), (e) => e instanceof ModelSettingsError);

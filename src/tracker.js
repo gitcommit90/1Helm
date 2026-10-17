@@ -4,7 +4,9 @@
 // Mutating calls take the per-turn context `tc` and emit the stream events themselves (card_event, card_update, card_close).
 import { isCustomSlug, CUSTOM_WORDS } from "./ee/index.js";
 import { S, structuredChat, structuredFormat } from "./structured-output.js";
-import { backgroundReserve, jobTimeoutDefault, jobTimeoutFor, jobRoute } from "./ee/index.js";
+import { backgroundReserve, jobRoute } from "./ee/index.js";
+import { jobTimeoutDefault } from "./limits.js";
+import { jobTimeoutFor } from "./ee/index.js";
 import { titleFrom } from "./resident.js";
 import { CHAT_TITLE_PROMPT, cleanChatTitle, fallbackChatTitle } from "./chat-titles.js";
 import { cardsToText } from "./genui.js";

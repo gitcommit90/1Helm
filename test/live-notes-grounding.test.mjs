@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { LiveNotes, FINAL_SYSTEM, FINAL_SYSTEM_MIC, FINAL_SYSTEM_TAB, notesRequest, norm, sectionText } from "../src/ee/live-notes.js";
 import { backgroundReserve } from "../src/ee/background-policy.js";
+import { plannedMaxOutput, plannedHoldNano } from "../src/ee/job-limits.js";
 
 for (const prompt of [FINAL_SYSTEM, FINAL_SYSTEM_MIC, FINAL_SYSTEM_TAB]) {
   for (const rule of ["speaker, subject and relationship direction distinct", 'Resolve "I", "my" and "we" against the speaker', "An action item requires an explicit request, assignment or commitment", "Record relevant status in summary or notes", "Preserve salient qualifications and negatives", "transcript can correct those earlier notes", "never someone only mentioned"]) assert.ok(prompt.includes(rule), rule);
@@ -49,7 +50,8 @@ for (const f of cases) {
   assert.ok(input.includes(`Lines a person added (keep them exactly):\n${human}`));
   assert.equal(doc, before, "refinement only drafts; never silently applies");
   assert.equal(state.refine.state, "asked"); assert.equal(cards.length, 1);
-  assert.equal(holds[0].amount, backgroundReserve(notesRequest("refine", calls[0].messages))); assert.equal(settlements[0].amount, 123);
+  // A bare test object has no env: the public edition then reads the first-run settings (a private Worker without one throws), so the hold uses the same planned values.
+  assert.equal(holds[0].amount, backgroundReserve(notesRequest("refine", calls[0].messages, await plannedMaxOutput(undefined, "notes_refine")), 1, await plannedHoldNano(undefined, "notes_refine"))); assert.equal(settlements[0].amount, 123);
   assert.equal(state.cost_nano, 123); assert.equal(state.tokens, 77);
   ln.view = () => ({ refine: state.refine });
   await ln.refineAct(1, true);

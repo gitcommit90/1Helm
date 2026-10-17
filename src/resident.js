@@ -65,7 +65,9 @@ import { CONNECT_TOOLS, CONNECT_LINES, connectOfferInit, connectTool, offersView
 import { helpersInit, HELPER_TOOLS, HELPER_PROMPT, HELPER_NAME_MAX, HELPER_TASK_MAX, HELPER_MESSAGE_MAX, HELPER_MESSAGES_MAX, COORDINATOR_MAX_CHILDREN, COORDINATOR_LIMITS, helperExclude, helperAllowed, helperContextSnapshot, helperDir, workerOutputPath, helperJobText, coordinatorFinalText, helperStartedText, helperNoteText, helperMessageRows, helperMessagePending, helperMessageText, handoffSteerText, handoffAwayText, followupText, plainError, helperView, helperRow, coordinatorChildren, runningHelpers, startRefusal, recoverHelpers, pendingHandoffs, helperNextWake, liveTurnOf, helperTcOf, emitHelper } from "./helpers.js";
 import { routeTwoTurn, escalationBefore, escalationAfter, dispatchOrder, HANDOFF_PREFIX } from "./ee/index.js";   // routing policy
 import { privacyOf, PRIVACY_EXHAUSTED } from "./privacy.js";   // AI data privacy: the account's level, read on every dispatch
-import { jobModel, modelSettingsEnv, limitsFor, DEFAULT_RUNTIME_LIMITS, dispatch, mainChatJob, plannedMaxOutput, plannedHold, plannedHoldNano, holdOutNano, chatJobId } from "./ee/index.js";
+import { jobModel, modelSettingsEnv, dispatch, mainChatJob, plannedMaxOutput, plannedHold, plannedHoldNano, holdOutNano, chatJobId } from "./ee/index.js";
+import { limitsFor } from "./ee/index.js";
+import { DEFAULT_RUNTIME_LIMITS } from "./limits.js";
 import { METER as BYOK_METER, BYOK_MARKUP, hsRetainBatchNano, hsRecallNano, HS_REFRESH_WINDOW_MS } from "./byok-meter.js";
 import { loadByok, byokEnv, byokChat, isByokError, BYOK_CREDITS_REPLY, fallbackNotice, creditsLine, CREDITS_TOOL_ERR } from "./byok.js";   // own AI key: their endpoint for AI, our parts metered
 import { checkRule, nextRun, describe, validTz, DEFAULT_TZ } from "./schedule.js";

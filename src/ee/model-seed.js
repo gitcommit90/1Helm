@@ -11,7 +11,7 @@
 // Literals only: no environment variable chooses a model, a provider list or a limit here. A saved entry never carries provider lists (hosts, pin).
 import { CATEGORIES } from "./pool.js";
 import { JOBS, JOB_KINDS, configuredHosts } from "./model-jobs.js";
-import { jobTimeoutDefault } from "./limits.js";
+import { jobTimeoutDefault } from "../limits.js";
 
 const MUSE_C = "meta/muse-spark-1.3-contributor", MUSE_S = "meta/muse-spark-1.3", DEEPSEEK = "deepseek/deepseek-v4.1-flash";
 const LUNA = "openai/gpt-6-luna", HAIKU = "anthropic/claude-haiku-5.5";

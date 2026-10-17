@@ -10,7 +10,7 @@ import { SORTS, JOBS, JOB_IDS, MODEL_PAGE_JOBS, JOB_KINDS, GROUPS, takesChat, ca
 import { seedFromLegacy, mergeLevels, SEED_FACTS, ROUTING_ZDR_THIRD_MODEL, JOB_FIELDS, OPTIONAL_JOB_IDS, optionalJobDefault } from "./model-seed.js";
 import { dynamicRoutingOn, withRoutingConfig } from "./routing-config.js";
 import { ambientSearchOn } from "../legacy-flags.js";
-import { limitsProblem, compactLimits, timeoutProblem } from "./limits.js";
+import { limitsProblem, compactLimits, timeoutProblem } from "../limits.js";
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const own = (o, k) => Object.prototype.hasOwnProperty.call(o || {}, k);

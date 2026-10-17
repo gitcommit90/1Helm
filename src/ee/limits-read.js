@@ -2,7 +2,7 @@
 // the units the code uses. A turn reads them once at its start, so a change on the Models page applies from the next message.
 // If the saved settings can't be read, the starting values (today's values) are used, so a settings outage never removes a safety limit.
 import { readModelSettings } from "./model-settings.js";
-import { runtimeLimits, DEFAULT_RUNTIME_LIMITS, jobTimeoutDefault } from "./limits.js";
+import { runtimeLimits, DEFAULT_RUNTIME_LIMITS, jobTimeoutDefault } from "../limits.js";
 import { jobTimeoutMs } from "./model-jobs.js";
 
 const settingsOf = async (env) => env?.MODEL_SETTINGS || (await readModelSettings(env)).config;

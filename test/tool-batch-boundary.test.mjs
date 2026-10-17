@@ -56,7 +56,7 @@ test('actual retry wrapper discards batches and retries once, including the appe
       R.callModelStep=(...args)=>Resident.prototype.callModelOnce.call(R,...args);
       globalThis.fetch=async(_url,init)=>{wire.push(JSON.parse(init.body));return new Response(stream(requests++===0?'repeat':second,{pulled:0,cancelled:0}));};
       const messages=[{role:'user',content:'Read only.'}],tc=appendRuntime?{appendRuntime:true,turn:'fixture',transcript:{observe:()=>{}}}:null;
-      const result=await Resident.prototype.callModel.call(R,messages,()=>{},null,2048,false,tc);
+      const result=await Resident.prototype.callModel.call(R,messages,()=>{},null,false,tc);
       assert.equal(requests,2);assert.deepEqual(result.calls,[]);assert.equal(result.content,second==='safe'?'Safe report.':REPEAT_FALLBACK);
       assert.ok(!JSON.stringify(wire[1].messages).includes('distinct-'));
       assert.ok(!saved.some(m=>m.tool_calls?.length));

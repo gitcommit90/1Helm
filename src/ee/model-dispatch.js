@@ -37,7 +37,7 @@ import { modelSettingsEnv, readModelSettings } from "./model-settings.js";
 import { effortBody, quirkOf, jobTimeoutMs } from "./model-jobs.js";
 import { privacyOf } from "../privacy.js";
 import { boundedText } from "../bounded-body.js";
-import { cappedResponseJson } from "../bounded-response.js";
+import { cappedResponseBytes } from "../bounded-response.js";
 import { byokChat } from "../byok.js";
 import { orFetch, orFetchPath, firstOk, replayFor, cacheKey, aiOpts, routedChat, byokFast } from "../model.js";
 import { cloudflareChat, cloudflareEmbeddings, authorizeCloudflare, cfOptions, abortable, isCloudflareModel } from "../cloudflare-models.js";
@@ -47,6 +47,13 @@ const OR_HEADERS = { "x-openrouter-metadata": "enabled" };
 const fail = (what, status, text) => Object.assign(new Error(`${what} ${status}: ${String(text || "").slice(0, 200)}`), { orStatus: status });
 // Throws for a Response that is not a success, so the next step runs.
 async function okOrThrow(r, what) { if (!r.ok) throw fail(what, r.status, await boundedText(r, 64 * 1024).catch(() => "")); return r; }
+// Reads a remote answer once, up to a limit, and gives it back as a Response that can be read again (the stream is cancelled when it is too big, and the
+// answer is then empty so the caller reports its own error). A tee of the stream (response.clone) would wait for the other copy to be cancelled.
+async function hold(r, maxBytes) {
+  const bytes = await cappedResponseBytes(r, maxBytes);
+  let json = null; try { if (bytes) json = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch {}
+  return { json, response: new Response(bytes || "", { status: r.status, statusText: r.statusText, headers: r.headers }) };
+}
 const withTimeout = (signal, ms) => ms ? (signal ? AbortSignal.any([AbortSignal.timeout(ms), signal]) : AbortSignal.timeout(ms)) : signal;
 
 // The Workers AI streaming WebSocket (Deepgram) through our AI Gateway. Logging, payload logging and caching are off: audio and text stay in the socket.
@@ -87,9 +94,9 @@ const ADAPTERS = {
     }
     if (!q.openrouter) throw new Error("no OpenRouter body for this recording");
     const r = await orFetchPath(c.env, "audio/transcriptions", q.openrouter({ model: s.model, provider: s.provider }), c.meta, c.request?.headers || {}, signal);
-    const j = await cappedResponseJson(r.clone(), 8 << 20);   // bounded: a remote answer is never read whole
+    const { json: j, response } = await hold(r, 8 << 20);   // bounded: a remote answer is never read whole
     if (!r.ok || !j || j.error) throw fail(s.model, r.status, JSON.stringify(j?.error || j || {}));
-    return r;
+    return response;
   },
   async transcribe_live(c, s) {
     const spec = liveProviderRequest(c.env, s.model), controller = new AbortController();
@@ -132,13 +139,14 @@ ADAPTERS.decide_json = ADAPTERS.chat;
 // the served model and provider in its JSON ("model" and "provider"; a chat stream carries them in its first event, which firstOk reads). When the answer
 // names none, nothing is recorded as served: the requested ID is never copied in its place.
 const cloudflareServed = (model) => isCloudflareModel(model) ? { model, provider: "cloudflare" } : null;
+// A plain answer (not a stream or a socket) is read once, bounded, to see which model and provider named themselves. → { response, served }.
 async function servedOf(r, step) {
-  if (step.source === "CF") return { model: step.model, provider: "cloudflare" };
+  if (step.source === "CF") return { response: r, served: { model: step.model, provider: "cloudflare" } };
+  if (!r || typeof r.clone !== "function" || r.webSocket || r.status === 101 || /event-stream/i.test(r.headers?.get?.("content-type") || "")) return { response: r, served: null };
   try {
-    if (!r || typeof r.clone !== "function" || /event-stream/i.test(r.headers?.get?.("content-type") || "")) return null;
-    const j = await cappedResponseJson(r.clone(), 16 << 20);
-    return { model: typeof j?.model === "string" ? j.model : null, provider: typeof j?.provider === "string" ? j.provider : null };
-  } catch { return null; }
+    const { json: j, response } = await hold(r, 16 << 20);
+    return { response, served: j && (typeof j.model === "string" || typeof j.provider === "string") ? { model: typeof j.model === "string" ? j.model : null, provider: typeof j.provider === "string" ? j.provider : null } : null };
+  } catch { return { response: r, served: null }; }
 }
 
 export async function dispatch(env, jobId, request = {}, { meta = {}, signal = null, level = null, session = null, model = null, fetch: fetchImpl = null, route = null } = {}) {
@@ -170,9 +178,11 @@ export async function dispatch(env, jobId, request = {}, { meta = {}, signal = n
   const timeoutMs = jobTimeoutMs(settings, jobId);
   for (const step of steps) {
     try {
-      const r = await ADAPTERS[step.adapter](timeoutMs && step.adapter !== "transcribe_live" ? { ...ctx, signal: withTimeout(signal, timeoutMs) } : ctx, step);
+      let r = await ADAPTERS[step.adapter](timeoutMs && step.adapter !== "transcribe_live" ? { ...ctx, signal: withTimeout(signal, timeoutMs) } : ctx, step);
+      let served = r?.served || null;
+      if (!served) ({ response: r, served } = await servedOf(r, step));
       if (r && typeof r === "object") { try { r.requested = step.model; r.effort = step.effort; } catch {} }   // for callers that record which step answered
-      noteServed(env, { job: jobId, requested: step.model, served: step.source === "CF" ? cloudflareServed(step.model) || { model: step.model, provider: "cloudflare" } : r?.served || await servedOf(r, step), ok: true });
+      noteServed(env, { job: jobId, requested: step.model, served: step.source === "CF" ? cloudflareServed(step.model) || { model: step.model, provider: "cloudflare" } : served, ok: true });
       return r;
     } catch (e) {
       if (signal?.aborted) throw e;

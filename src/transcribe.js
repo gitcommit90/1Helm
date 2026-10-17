@@ -221,7 +221,7 @@ export async function stt(env, src, { format = "webm", meta = {}, tryMs = 0, est
     return {};
   };
   const done = async (res, m, jobId) => {
-    const j = await cappedResponseJson(res.clone(), 8 << 20), rate = rateOf(m);
+    const j = await cappedResponseJson(res, 8 << 20), rate = rateOf(m);
     if (isCloudflareModel(m)) {
       const segs = segsOf(j?.segments, j?.text), dur = Number(j?.transcription_info?.duration) || estSec;
       return { segs, text: segs.map(x => x.t).join(" "), dur, model: m, nano: lost + (jobId === "stt_cloudflare" ? waiCost(j, src.bytes?.byteLength || 0) : Math.ceil(dur * rate)) };

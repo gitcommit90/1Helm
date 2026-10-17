@@ -7,7 +7,7 @@ import { modelCatalog, listedKinds, withEndpointLimits } from "./model-catalog.j
 import { SEED_FACTS, jobFieldDefaults } from "./model-seed.js";
 import { modelDashboard } from "./model-dashboard.js";
 import { JOB_IDS } from "./model-jobs.js";
-import { LIMIT_GROUPS, LIMIT_DEFS, limitValues } from "./limits.js";
+import { LIMIT_GROUPS, LIMIT_DEFS, limitValues } from "../limits.js";
 import { outsideModels } from "./outside-models.js";
 import { servedView } from "./model-served.js";
 import { boundedText, BodyTooLargeError } from "../bounded-body.js";
