@@ -70,7 +70,7 @@ import { indraSetup } from "./sidecar-ocr.js";
 // another full request (~60k tokens with the system prompt) and ~5 s, more than the extra 8k tokens inline.
 export const INLINE_TOKENS = 16000;
 export const INLINE_TOTAL = 24000;                  // all files of one message together
-export const WAIT_MS = 2000;                        // the most a Send waits for prep (stage 1, the text, takes well under a second for a document)
+export const WAIT_MS = 8000;                        // the most a Send waits for prep (stage 1, the text, takes well under a second for a document when the system is idle, but several seconds when many files are prepared at once: a cold FilePrep object, its alarm and the converter all queue). A file that is ready ends the wait at once.
 export const AUDIO_WAIT_MS = 60000;                  // an attached recording must have usable text before a task model is called
 export const HEAD_TOKENS = 4000;                    // a long file whose card isn't made yet: its first ~4k tokens come with the outline
 export const MAX_TRIES = 4;
@@ -88,7 +88,7 @@ export const OCR_PAGE_TIMEOUT_MS = 60e3;            // a page that takes longer 
 export const OCR_NANO_PER_CPU_MS = 20, OCR_NANO_PER_CALL = 660, OCR_CPU_CAP_MS = 20000;
 export const ocrNano = (cpuMs) => Math.ceil((Math.max(0, Number(cpuMs) || 0) * OCR_NANO_PER_CPU_MS + OCR_NANO_PER_CALL) * MARKUP);
 export const OCR_PAGE_RESERVE = ocrNano(OCR_CPU_CAP_MS);
-export const OCR_WAIT_MS = 8000;                    // the most a Send waits in all when the pages are being read by the OCR Worker (WAIT_MS otherwise)
+export const OCR_WAIT_MS = 20000;                   // the most a Send waits in all when the pages are being read by the OCR Worker (WAIT_MS otherwise)
 // The index's vectors come from the saved model of the job "embed_files", through OpenRouter (zero-data-retention endpoints only).
 // Each index records its model, so a file is always searched with the model it was indexed with. Bench below the header.
 export const EMBED_DIMS = 1024, EMBED_BATCH = 50, INDEX_MAX_CHUNKS = 3000;
