@@ -903,7 +903,7 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
    fold into ⋯ (never squeezed, never under the button). Every action keeps its full label: only the title ellipsizes. */
 body.pc-on #stage>header{padding-right:20px}
 #stage>header.th .ho{display:contents}#stage>header.th .ho.hhid{display:none}
-#stage>header.th :is(.who-chip,.hpin,.hdone-wrap,.hdone,.meta,.hdel,.lnbtn,.pmbtn,.tdbtn,.hstop,.hmore){flex:none;white-space:nowrap}
+#stage>header.th :is(.who-chip,.hpin,.hdone-wrap,.hdone,.meta,.hdel,.lnbtn,.pmbtn,.tdbtn,.tk-btn,.hstop,.hmore){flex:none;white-space:nowrap}
 .hmore{position:relative;width:34px;height:30px;border-radius:999px;display:inline-grid;place-items:center;color:var(--ink2)}
 .hmore svg{width:18px;height:18px}.hmore:hover,.hmore[aria-expanded=true]{background:var(--abub);color:var(--ink)}.hmore[hidden]{display:none}
 .hmore.lit::after{content:"";position:absolute;top:3px;right:4px;width:7px;height:7px;border-radius:50%;background:#f0ae2c;box-shadow:0 0 0 2px var(--sheet)}
@@ -1508,7 +1508,7 @@ body.fvopen #uptray{opacity:0;pointer-events:none}
 .mpill{flex:1 1 auto;min-width:0;max-width:max-content}
 .mpill>span:last-child{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mpill>.av,.mpill>.pico{flex:none}
-.mh .cb,.mh .pmbtn,.mh .tdbtn{flex:none}
+.mh .cb,.mh .tk-btn,.mh .pmbtn,.mh .tdbtn{flex:none}
 .srow.atask span{min-width:0;overflow-wrap:anywhere;line-height:1.35}.srow.atask small{margin-bottom:2px}
 /* Connection checks can cold-start a trusted client: show activity before they finish. */
 .netloading{padding:20px 0 24px;min-width:0}.netloading b{display:block;font-size:15px;font-weight:600}.netloading p{margin:8px 0 0;font-size:14px;line-height:1.5;color:var(--mute);overflow-wrap:anywhere}.netprogress{height:4px;overflow:hidden;border-radius:8px;background:var(--line);margin-bottom:18px}.netprogress i{display:block;width:38%;height:100%;border-radius:inherit;background:var(--accent);animation:net-loading 1.5s ease-in-out infinite}@keyframes net-loading{0%,100%{transform:translateX(0)}50%{transform:translateX(163%)}}@media(prefers-reduced-motion:reduce){.netprogress i{animation:none;transform:translateX(80%)}}

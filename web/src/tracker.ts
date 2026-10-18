@@ -9,6 +9,7 @@ import { cardStop, cardContinue } from "./stop";
 import { orb } from "./activity-orb";
 import { pauseOf } from "./spendguard";   // the working card's Stop
 import { nativeHandoffText } from "./native-approval-progress";
+import { focusHeaderAction } from "./headfit";
 export type HelperView = { id: number; name: string; task?: string; status: string; started: number; ended?: number | null; steps?: number; charge_nano?: number;
   parent_card?: string | null; card?: string | null; result_card?: string | null; stopped_by?: string | null; input_kind?: string | null };
 export type CardView = { id: string; session?: string; kind: string; status: string; title: string; title_src?: string; result?: string | null; opened: number;
@@ -204,13 +205,22 @@ async function loadHelpers(slug: string, sid: string) {
   s.hbusy = false; tkSync(slug, sid);
 }
 
-// ---------- Feed mode (no header button: nothing opens the feed panel) ----------
+// ---------- Header slot ("Activity") ----------
 const mode = () => D?.phone() ? "sheet" : innerWidth >= 1200 && !document.body.classList.contains("pc-on") ? "panel" : "drawer";
 const PREF = { panel: "1hc-tk-panel", drawer: "1hc-tk-drawer" };
-function pref(m: "panel" | "drawer") { try { const v = localStorage.getItem(PREF[m]); return v === null ? m === "panel" : v === "1"; } catch { return m === "panel"; } }
+function pref(m: "panel" | "drawer") { try { const v = localStorage.getItem(PREF[m]); return v === null ? false : v === "1"; } catch { return false; } }
 function setPref(m: "panel" | "drawer", on: boolean) { try { localStorage.setItem(PREF[m], on ? "1" : "0"); } catch {} }
-const feedOpen = () => false;   // no Activity button: the panel, drawer and sheet are never opened from the header
-const busy = (k: string) => ss(k).cards.some(c => c.status === "working" || c.status === "resuming") || running(k).length > 0;
+const feedOpen = () => { const m = mode(); return m === "sheet" ? false : pref(m); };
+// A plain tool button like Live notes and To-dos: no dot, no badge, no animation, shown whether or not work is running.
+function btnInner(k: string, phone: boolean) {
+  if (!ss(k).on) return "";
+  const open = phone ? F.sheet === k : feedOpen();
+  return phone ? `<button class="cb tk-btn m${open ? " on" : ""}" data-tkbtn="${esc(k)}" aria-label="Activity" aria-haspopup="dialog" aria-expanded="${open}">${svg(P.act, 19)}</button>`
+    : `<button class="tk-btn${open ? " on" : ""}" data-tkbtn="${esc(k)}" title="Activity: each request as a task card" aria-label="Activity" aria-expanded="${open}">${svg(P.act, 16)}<span>Activity</span></button>`;
+}
+export function tkBtn(slug: string, sid: any, phone = false) {
+  const k = key(slug, sid); return `<span class="tk-slot${phone ? " m" : ""}" data-tks="${esc(k)}">${btnInner(k, phone)}</span>`;
+}
 // ---------- The feed (panel / drawer / sheet) ----------
 export function tkWrap(slug: string, sid: any, inner: string) {
   const k = key(slug, sid), on = ss(k).on;
@@ -269,9 +279,10 @@ function paintFeed(k: string) {
 export function tkSync(slug: string, sid: any) {
   const k = key(slug, sid);
   if (D?.current() === k) {
+    document.querySelectorAll<HTMLElement>(".tk-slot").forEach(w => { if (w.dataset.tks !== k) { w.dataset.tks = k; w.innerHTML = ""; } });
     document.querySelectorAll<HTMLElement>(".tk-w").forEach(w => { if (w.dataset.tkw !== k) w.dataset.tkw = k; });
   }
-  paintFeed(k); paintProgress(k); placeholder(k);
+  paintBtns(k); paintFeed(k); paintProgress(k); placeholder(k);
   if (M.k === k && M.id) paintModal();
 }
 function placeholder(k: string) {
@@ -280,8 +291,30 @@ function placeholder(k: string) {
   if (b.dataset.tkph === undefined) b.dataset.tkph = b.placeholder;
   b.placeholder = on ? (D.phone() ? "Add more or steer" : `Add more or steer · ${D.helper(slug)} is working`) : b.dataset.tkph!;   // the phone's one line fits the short form
 }
-function closeSheet() {
-  const w = document.getElementById("tkfs"), k = F.sheet; if (!k) return; F.sheet = "";
+function paintBtns(k: string) {
+  document.querySelectorAll<HTMLElement>(".tk-slot").forEach(w => {
+    if (w.dataset.tks !== k) return; const h = btnInner(k, w.classList.contains("m")); if (w.dataset.h === h && (!!h === !!w.firstElementChild)) return;
+    const f = document.activeElement === w.firstElementChild; w.dataset.h = h; w.innerHTML = h;
+    const b = w.firstElementChild as HTMLElement | null; if (b && f) b.focus({ preventScroll: true });
+  });
+}
+function toggleFeed(k: string, btn?: HTMLElement, kb = false) {
+  const m = mode(); if (m === "sheet") { openSheet(k); return; }
+  const on = !feedOpen(); setPref(m, on); paintFeed(k); paintBtns(k);
+  if (on && m === "drawer" && kb) document.querySelector<HTMLElement>(`.tk-w[data-tkw="${CSS.escape(k)}"] .tk-feed .tk-row, .tk-w[data-tkw="${CSS.escape(k)}"] .tk-feed .tk-x`)?.focus({ preventScroll: true });
+  else if (!on && btn) document.querySelector<HTMLElement>(`[data-tkbtn="${CSS.escape(k)}"]`)?.focus({ preventScroll: true });
+}
+function openSheet(k: string) {
+  if (!D) return; F.sheet = k;
+  let w = document.getElementById("tkfs"); if (!w) { w = document.createElement("div"); w.id = "tkfs"; document.body.appendChild(w); }
+  w.innerHTML = `<div class="tk-sback" data-tkfeedx></div><div class="tk-sheet" role="dialog" aria-modal="true" aria-label="Activity">${feedHtml(k, true)}</div>`;
+  D.dragToClose(w.querySelector<HTMLElement>(".tk-sheet")!, () => closeSheet());
+  paintBtns(k); requestAnimationFrame(() => requestAnimationFrame(() => w!.classList.add("on")));
+  w.querySelector<HTMLElement>(".tk-row, .tk-x")?.focus({ preventScroll: true });
+}
+function closeSheet(focus = true) {
+  const w = document.getElementById("tkfs"), k = F.sheet; if (!k) return; F.sheet = ""; paintBtns(k);
+  if (focus) focusHeaderAction(document.querySelector<HTMLElement>(`[data-tkbtn="${CSS.escape(k)}"]`), D?.phone());
   if (!w) return; w.classList.remove("on"); setTimeout(() => { if (!F.sheet) w.innerHTML = ""; }, 320);
 }
 
@@ -358,9 +391,10 @@ async function loadStep() {
 export function tkClose(focus = true) {
   const w = document.getElementById("tkm"); if (!M.id) return; M.id = ""; M.back = [];
   if (w) { w.classList.remove("on"); setTimeout(() => { if (!M.id) w.innerHTML = ""; }, 240); }
-  // Focus goes back where it came from, if it's still shown.
-  if (focus) { const f = M.from, shown = !!f?.isConnected && !!f.offsetParent && !f.closest(".tk-w:not(.tk-open) .tk-feed");
-    if (shown) f!.focus({ preventScroll: true }); }
+  // Focus goes back where it came from; if that's gone or hidden (the drawer closed when the card opened), to the Activity button.
+  if (focus) { const f = M.from, k = M.k, shown = !!f?.isConnected && !!f.offsetParent && !f.closest(".tk-w:not(.tk-open) .tk-feed");
+    if (shown) f!.focus({ preventScroll: true });
+    else focusHeaderAction(document.querySelector<HTMLElement>(`[data-tkbtn="${CSS.escape(k)}"]`), D?.phone()); }
   M.from = null;
 }
 function railRow(d: CardDetail, e: EventView, k: string) {
@@ -513,14 +547,15 @@ export function tkInit(d: Deps) {
   D = d;
   document.addEventListener("click", e => {
     const t = e.target as HTMLElement;
-    if (t.closest("[data-tkfeedx]")) { e.preventDefault(); const w = t.closest<HTMLElement>(".tk-w"); if (F.sheet && t.closest("#tkfs")) closeSheet(); else if (w) { const m = mode(); if (m !== "sheet") setPref(m, false); paintFeed(w.dataset.tkw!); } return; }
+    const b = t.closest<HTMLElement>("[data-tkbtn]"); if (b) { e.preventDefault(); e.stopPropagation(); toggleFeed(b.dataset.tkbtn!, b, !(e as MouseEvent).detail); return; }
+    if (t.closest("[data-tkfeedx]")) { e.preventDefault(); const w = t.closest<HTMLElement>(".tk-w"); if (F.sheet && t.closest("#tkfs")) closeSheet(); else if (w) { const m = mode(); if (m !== "sheet") setPref(m, false); paintFeed(w.dataset.tkw!); paintBtns(w.dataset.tkw!); } return; }
     const st = t.closest<HTMLElement>("[data-tkstop]"); if (st) { e.preventDefault(); e.stopPropagation(); const k = M.id && t.closest("#tkm") ? M.k : (t.closest<HTMLElement>(".tk-w")?.dataset.tkw || F.sheet || D!.current()); stopHelper(k, st.dataset.tkstop!); return; }
     const hp = t.closest<HTMLElement>("[data-tkhelper]"); if (hp) { e.preventDefault(); e.stopPropagation(); const k = t.closest("#tkm") ? M.k : (t.closest<HTMLElement>(".tk-w")?.dataset.tkw || F.sheet || D!.current()); if (k) { if (F.sheet && t.closest("#tkfs")) closeSheet(); openHelper(k, hp.dataset.tkhelper!); } return; }
     const op = t.closest<HTMLElement>("[data-tkopen]"); if (op && M.id) { e.preventDefault(); const [slug, sid] = M.k.split("|"); tkOpen(slug, sid, op.dataset.tkopen!, "sum", true); return; }
     const c = t.closest<HTMLElement>("[data-tkcard]"); if (c) {
       e.preventDefault(); const k = t.closest<HTMLElement>(".tk-w")?.dataset.tkw || (t.closest("#tkfs") ? F.sheet : "") || D!.current();
       if (!k) return; const [slug, sid] = k.split("|"); if (t.closest("#tkfs")) closeSheet();
-      if (mode() === "drawer" && t.closest(".tk-feed")) { setPref("drawer", false); paintFeed(k); }
+      if (mode() === "drawer" && t.closest(".tk-feed")) { setPref("drawer", false); paintFeed(k); paintBtns(k); }
       tkOpen(slug, sid, c.dataset.tkcard!); return;
     }
     if (t.closest("[data-tkmore]")) { e.preventDefault(); const k = t.closest<HTMLElement>(".tk-w")?.dataset.tkw || F.sheet; if (k) loadMore(k); return; }
@@ -553,12 +588,12 @@ export function tkInit(d: Deps) {
       return;
     }
     if (e.key === "Escape" && F.sheet) { e.preventDefault(); e.stopImmediatePropagation(); closeSheet(); return; }
-    if (e.key === "Escape" && mode() === "drawer" && (e.target as HTMLElement).closest?.(".tk-feed")) { const w = (e.target as HTMLElement).closest<HTMLElement>(".tk-w")!; e.preventDefault(); e.stopImmediatePropagation(); setPref("drawer", false); paintFeed(w.dataset.tkw!); }
+    if (e.key === "Escape" && mode() === "drawer" && (e.target as HTMLElement).closest?.(".tk-feed")) { const w = (e.target as HTMLElement).closest<HTMLElement>(".tk-w")!; e.preventDefault(); e.stopImmediatePropagation(); setPref("drawer", false); paintFeed(w.dataset.tkw!); paintBtns(w.dataset.tkw!); document.querySelector<HTMLElement>(`[data-tkbtn="${CSS.escape(w.dataset.tkw!)}"]`)?.focus(); }
   }, true);
   // Result folds (Last lines, Details) keep their state across live repaints.
   document.addEventListener("toggle", e => { const t = e.target as HTMLDetailsElement; if (t?.matches?.("#tkm details[data-tkfold]")) M.det[t.dataset.tkfold!] = t.open; }, true);
   let lastMode = mode();
-  window.addEventListener("resize", () => { const m = mode(); if (m === lastMode) return; lastMode = m; document.querySelectorAll<HTMLElement>(".tk-w").forEach(w => { paintFeed(w.dataset.tkw!); }); if (M.id) paintModal(); if (m !== "sheet") closeSheet(); });
+  window.addEventListener("resize", () => { const m = mode(); if (m === lastMode) return; lastMode = m; document.querySelectorAll<HTMLElement>(".tk-w").forEach(w => { paintFeed(w.dataset.tkw!); paintBtns(w.dataset.tkw!); }); if (M.id) paintModal(); if (m !== "sheet") closeSheet(); });
   new MutationObserver(() => { const m = mode(); if (m !== lastMode) { lastMode = m; document.querySelectorAll<HTMLElement>(".tk-w").forEach(w => paintFeed(w.dataset.tkw!)); } }).observe(document.body, { attributes: true, attributeFilter: ["class"] });
   window.addEventListener("hashchange", () => { tkClose(false); closeSheet(); });
   // Live clocks on the helper strip; a running helper's card refreshes every 3 s while it's open.

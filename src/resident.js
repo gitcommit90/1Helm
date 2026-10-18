@@ -15,6 +15,7 @@ import { resumeInit, resumeMix, guardIn, JOURNALED, runIdOf } from "./resume.js"
 import { runTurnPi } from "./pi-engine.js";
 import { TaskTranscript, TASK_ARCHIVE_TOOL, contextBudget, contextSize, estimateTokens, compactionPlan, transcriptGroups, prefixDigest, transcriptDelete, hasTaskTranscript } from "./task-transcript.js";
 import { ensureTaskRuntime, authorizeTaskProfile, recordTaskServed, bindTaskProfile, bindBackgroundRuntime } from "./ee/index.js";
+import { effectiveTaskCatalog } from "./ee/index.js";
 import { trackerInit, listCards, cardDetail, stepDetail, SILENT_TOOLS } from "./tracker.js";
 import { contextV2, CONTEXT_TOOLS, CONTEXT_TOOLS_USE, RUNTIME_CONTRACT, toolCatalog, loadedTools, selectedTools, EAGER_TOOLS, contextMessages, contextReceipt, contextData } from "./context.js";
 import { channelLayers } from "./prompt/context-layers.js";
@@ -157,6 +158,7 @@ import { integrationHint, hintNudge } from "./ee/index.js";
 import { wantsWebsiteLive, websiteLiveNote } from "./website-live.js";
 import { APPS_USED_TOOL, APPS_USED_LINE, appsUsedTool, appsUsedLine, getAppsUsed, usedSlugs } from "./ee/index.js";   // "Apps I use": the person's own list, a heads-up for offers and hints   // a named service that has an integration: one hint line per message, one nudge per app per task
 import { memoryReply, isStatusNotice, looksLikeStatus, STATUS_MARK } from "./status-notes.js";
+import { ackNudge } from "./ack-stall.js";
 import { liveNudge, noteRan } from "./live-check.js";   // live status (flights, prices, scores) needs a lookup in this turn   // 1Helm's pause / limit notices are past status, never work to resume   // connected app first; no repeated searches / lists / pages in a turn
 import { plansInit, PROPOSE_PLAN_TOOL, proposePlan, decidePlan, startPlanTask, planCardData, plansOf, originOf, textPlan } from "./plans.js";
 import { INTERVIEW_TOOL, interviewInit, interviewTool, interviewOp, ivView, ivRow, attachInterviews, ivDeliverTexted, ivOnlyCard } from "./interview-chat.js";
@@ -1076,7 +1078,14 @@ export class Resident extends DurableObject {
   }
   // Can every model this classic route may use take tool_choice "none"? When one can't (Muse takes only "auto"), the final call drops the
   // tools as before, because the router would otherwise skip that model and change the model, and the cache with it.
+  // A task-affinity route freezes its own pool chain. dispatchOrder lists only the first model for it and skips the body checks, but taskChat
+  // authorizes every pool entry and skips one that can't take "none", so the whole frozen chain must accept it or the tools-off call
+  // drops the tools block and sends no tool_choice, which keeps it on the first model.
   async noneToolChoiceOk(route, tc) {
+    if (route?.taskAffinity) {
+      const profile = tc?.taskProfile || route.taskProfile, chain = profile?.poolChain?.length ? profile.poolChain : profile ? [profile] : [];
+      return chain.length > 0 && chain.every((p) => effectiveTaskCatalog(p.catalog, p.requestedModel, this.env.MODEL_SETTINGS)?.tool_choice?.includes("none"));
+    }
     if (!route?.two || route.chore) return true;
     try {
       const level = await privacyOf(this.env, this.get("tenant")), o = { prov: this.provenance([], tc), settings: this.env.MODEL_SETTINGS };
@@ -3900,6 +3909,9 @@ export class Resident extends DurableObject {
           emptyNudged = true; const nudge = { role: "user", content: "(Your last message was empty. Don't start over. Give your answer now from what you've already done, or call the next tool you need.)" };
           messages.push(nudge); this.save(turn, nudge); stats.empty_nudge = 1; continue;
         }
+        // ack-stall.js: the whole reply is a promise ("reading it now") and nothing ran → do it, once. The line stays as progress (it was streamed).
+        const an = !res.calls.length && step < stepLimit - 1 ? ackNudge(tc, stats, said) : null;
+        if (an) { if (saidMeta[said.length - 1]) saidMeta[said.length - 1].ack = true; send?.({ t: "work" }); const nudge = { role: "user", content: an }; messages.push(nudge); this.save(turn, nudge); stats.ack_nudge = 1; continue; }
         // live-check.js: the answer states live status (a flight landed, a price, a score) with no lookup in this turn → look first, once.
         const ln = !res.calls.length && step < stepLimit - 1 ? liveNudge(tc, personWords(tc), res.content) : null;
         if (ln) { said.pop(); saidMeta.length = Math.min(saidMeta.length, said.length); send?.({ t: "work" }); const nudge = { role: "user", content: ln }; messages.push(nudge); this.save(turn, nudge); stats.live_nudge = 1; continue; }

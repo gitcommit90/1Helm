@@ -90,7 +90,7 @@ for (const engine of ["classic", "pi"]) {
     assert.deepEqual(d.todos.map((x) => x.text), ["Find flights", "Compare prices", "Book the cheapest", "Send you the summary"]);
     assert.ok(d.turns.every((t) => !t.steps.some((s) => s.tool === "update_todos")), "update_todos is not a step in the chat");
     // Next message: the list is in the per-turn context, not in the system prompt.
-    R.script = [{ reply: "On it." }];
+    R.script = [{ reply: "Flights are found and I am comparing prices." }];
     await turn(R, "how's it going?", session);
     const msgs = R.calls.at(-1), u = lastUser(msgs).content;
     assert.equal(msgs[0].content, "SYSTEM");

@@ -53,6 +53,7 @@ export function dedupeProgress(parts) { const xs = (parts || []).map((x) => Stri
 // writes its answer and then calls only bookkeeping tools (or the closing text is trivial), that text is still the answer.
 // splitProgress(said, meta) -> [{ text, progress }] (deduped; order kept). meta[i] = { calls: names of the tool calls in the step that
 // wrote said[i], later: names of calls in the following steps that wrote no text } or null/absent when unknown. Unsure => not progress.
+// meta.ack === true marks a promise-only line the loop kept after a nudge (ack-stall.js): progress even though no call came with it.
 // A part with a question, a card, a file link or code is never progress: it is something to act on or keep.
 export const BOOKKEEPING = new Set(["remember", "react", "note_account", "save_run_notes", "update_todos", "rename_task", "mark_task_done", "set_workflow_status", "set_workflow_gate", "share_file", "share_file_link", "publish_page", "offer_connect", "pomodoro"]);
 const bk = (m) => !!m && [...(m.calls || []), ...(m.later || [])].every((n) => BOOKKEEPING.has(n));
@@ -70,7 +71,7 @@ function classified(said, meta, dedupe) {
     let ok = true; for (let j = k; j < n; j++) if (ms[j] ? !bk(ms[j]) : j !== n - 1) ok = false;   // a trailing unknown (closing text) is fine
     if (ok) a = k; break;
   }
-  return idx.map((i, j) => ({ index: i, text: xs[i], progress: j < a && !!ms[j] && ms[j].calls.length > 0 && !mustShow(xs[i]) }));
+  return idx.map((i, j) => ({ index: i, text: xs[i], progress: j < a && !!ms[j] && (ms[j].calls.length > 0 || ms[j].ack === true) && !mustShow(xs[i]) }));
 }
 export function splitProgress(said, meta = []) { return classified(said, meta, true).map(({text, progress}) => ({text, progress})); }
 // Retention needs classification before display dedupe, by position rather than

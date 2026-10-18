@@ -9,6 +9,17 @@
 @keyframes tkspin{to{transform:rotate(360deg)}}
 @keyframes tkpulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--tk-blue) 50%,transparent)}50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--tk-blue) 0%,transparent)}}
 
+/* header button: a quiet pill like the to-do button; no dot, no badge, no animation */
+.tk-slot{display:contents}
+.tk-btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px 0 10px;border-radius:999px;background:var(--abub);color:var(--ink2);font-size:13px;flex:none;position:relative;transition:background .15s,color .15s,box-shadow .2s}
+.tk-btn:hover,.tk-btn.on{background:var(--hover);color:var(--ink)}
+.tk-btn.on{box-shadow:0 0 0 1.5px var(--line2)}
+.tk-btn span{font-weight:600}
+.tk-btn.m{padding:0;gap:0;width:48px;height:48px;border-radius:50%;display:grid;place-items:center;color:var(--ink)}
+.tk-btn.m.on{box-shadow:none;background:var(--hover)}
+@media (max-width:767px){.mh:has(.tk-btn){gap:5px}.mh:has(.tk-btn) .mpill{padding-right:14px}}
+/* A narrower header keeps the title's room: the label drops and only the icon shows. */
+@media (max-width:1279px) and (min-width:768px){#stage>header:has(.tk-btn):has(.tdbtn) .tk-btn span{display:none}#stage>header:has(.tk-btn):has(.tdbtn) .tk-btn{padding:0 9px}}
 
 /* the session view: chat column + the feed beside it (or over it) */
 .tk-w{flex:1;min-height:0;display:flex;position:relative}

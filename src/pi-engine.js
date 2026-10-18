@@ -12,6 +12,7 @@ import { guardModel, guardTools, reportAsk, OUT_OF_TIME_REPLY } from "./spendgua
 import { stallCheck } from "./stall-guard.js";
 import { isByokError, BYOK_CREDITS_REPLY } from "./byok.js";
 import { COMPUTER_BUSY_MSG, isComputerBusy } from "./computer-capacity.js";
+import { ackNudge } from "./ack-stall.js";
 import { liveNudge, noteRan } from "./live-check.js";
 import { personWords } from "./person-asked.js";
 import { isResetErr } from "./do-stub.js";
@@ -229,6 +230,9 @@ export async function runTurnPi(res, { tc, sys, hist, userText, kind, maxSteps, 
         return [piUser(outputRecovery)];
       if (kind !== "chat" && toolCalls === 0 && !nudged && !limitAsked) { nudged = true; said.length = 0; saidMeta.length = 0;
         return [piUser("(Unattended run: nobody will reply. Don't describe a plan; do the work now by calling tools, then end with a short final report of what you found and did.)")]; }
+      // ack-stall.js: the whole reply is a promise ("reading it now") and nothing ran → do it, once. The line stays as progress (it was streamed).
+      const an = !limitAsked && steps < limit() - 1 && last?.role === "assistant" ? ackNudge(tc, stats, said) : null;
+      if (an) { if (saidMeta[said.length - 1]) saidMeta[said.length - 1].ack = true; send?.({ t: "work" }); stats.ack_nudge = 1; return [piUser(an)]; }
       // live-check.js: the answer states live status with no lookup in this turn → look first, once (the draft stays a progress note).
       const ln = !limitAsked && steps < limit() - 1 && last?.role === "assistant" ? liveNudge(tc, personWords(tc), last.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")) : null;
       if (ln) { said.pop(); saidMeta.pop(); send?.({ t: "work" }); stats.live_nudge = 1; return [piUser(ln)]; }
