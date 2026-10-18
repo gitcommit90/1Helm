@@ -551,7 +551,7 @@ export function tkInit(d: Deps) {
   let lastMode = mode();
   window.addEventListener("resize", () => { const m = mode(); if (m === lastMode) return; lastMode = m; document.querySelectorAll<HTMLElement>(".tk-w").forEach(w => { paintFeed(w.dataset.tkw!); }); if (M.id) paintModal(); if (m !== "sheet") closeSheet(); });
   new MutationObserver(() => { const m = mode(); if (m !== lastMode) { lastMode = m; document.querySelectorAll<HTMLElement>(".tk-w").forEach(w => paintFeed(w.dataset.tkw!)); } }).observe(document.body, { attributes: true, attributeFilter: ["class"] });
-  window.addEventListener("hashchange", () => { tkClose(false); closeSheet(false); });
+  window.addEventListener("hashchange", () => { tkClose(false); closeSheet(); });
   // Live clocks on the helper strip; a running helper's card refreshes every 3 s while it's open.
   setInterval(() => document.querySelectorAll<HTMLElement>("[data-tkel]").forEach(x => { x.textContent = `In the background · ${ago(+x.dataset.tkel!)}`; }), 20e3);
   setInterval(() => { const d = M.id ? DET[M.id] : null; if (d && d.kind === "helper" && isOpen(d) && !document.hidden) fetchCard(); }, 3000);

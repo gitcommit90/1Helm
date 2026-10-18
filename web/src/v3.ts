@@ -19,6 +19,7 @@ import { dpInit, dpSec, dpSheetMaybe, dpSheetOpen, dpLoc, dpShareNow, DP_ICON } 
 import { delInit, rowMore, headDelete, channelMore, sheetRows, MORE } from "./delete";   // deleting a chat / channel / the account
 import { openNewChannel, createViaApi, type NewChannel } from "./newchannel";   // second, for the same reason (New channel sheet)
 import { shInit, shFiles, shCards, shEvent, shCardHtml, shFold, shFileBtn, shViewerBtns, shBadge, shLibHtml, shFileGone } from "./share";   // share links + published pages (its sheet's Esc, too)
+import { orb } from "./activity-orb";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { fileUrl as fileResUrl } from "./file-url.mjs";
